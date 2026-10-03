@@ -16,14 +16,16 @@ import {
 } from '../WorkflowFieldComponents';
 import {
   DBMS_OPTIONS,
-  FIELD_PLACEHOLDERS,
   formatFieldLabel,
   getCodeLanguage,
   getDropdownOptionsForField,
+  getExamplePlaceholder,
   isTemplateString,
+  parseJsonExample,
   resolveFieldType,
   type SchemaProperty,
 } from '../../utils/fieldTypeUtils';
+import FieldGuidance from '../FieldGuidance';
 import { useTaskFormData } from '../../hooks/data-fetchers/useTaskFormData';
 import type { PreviousTask } from '../../utils/templateUtils';
 
@@ -60,6 +62,12 @@ const LABEL_SX = {
  * channel pickers, resource cascades) — those degrade to template text
  * fields, which is the accepted v1 fidelity gap.
  */
+// Field types whose editor holds a parsed value rather than text: `json` and
+// `nested_schema` both render a JsonEditor, `array` renders an ArrayEditor.
+// Example values for these must be parsed before they reach form state, or the
+// editor is handed a string it cannot display.
+const JSON_SHAPED_FIELD_TYPES = new Set(['json', 'nested_schema', 'array']);
+
 const SubTaskParamForm: React.FC<SubTaskParamFormProps> = ({
   taskDefinition,
   values,
@@ -159,7 +167,7 @@ const SubTaskParamForm: React.FC<SubTaskParamFormProps> = ({
 
     const error = errors[fieldName] || '';
     const label = fieldSchema.title || formatFieldLabel(fieldName);
-    const placeholder = FIELD_PLACEHOLDERS[fieldName] || fieldSchema.description || `Enter ${fieldName.replace(/_/g, ' ')}`;
+    const placeholder = getExamplePlaceholder(fieldName, fieldSchema) || fieldSchema.description || `Enter ${fieldName.replace(/_/g, ' ')}`;
     // The sub-task form skips the sidebar's resource-name cascade heuristic
     // (no hasResourceNameField opt-in) — `name` renders as a template field.
     const fieldType = resolveFieldType(fieldName, fieldSchema);
@@ -183,6 +191,13 @@ const SubTaskParamForm: React.FC<SubTaskParamFormProps> = ({
         <Box sx={{ flex: '1 1 240px', minWidth: '200px' }}>
           {control}
           {withDescription && description}
+          <FieldGuidance
+            fieldName={fieldName}
+            help={fieldSchema.help}
+            examples={fieldSchema.examples}
+            disabled={disabled}
+            onApply={(value) => onChange(fieldName, JSON_SHAPED_FIELD_TYPES.has(fieldType) ? parseJsonExample(value) : value)}
+          />
         </Box>
       </Box>
     );
@@ -316,7 +331,7 @@ const SubTaskParamForm: React.FC<SubTaskParamFormProps> = ({
     }
 
     if (fieldType === 'json' || fieldType === 'nested_schema') {
-      return row(<JsonEditor value={fieldValue} onChange={(value) => onChange(fieldName, value)} error={error} />);
+      return row(<JsonEditor value={fieldValue} onChange={(value) => onChange(fieldName, value)} error={error} placeholder={placeholder} />);
     }
 
     // textarea / timestamp / resource_dropdown / textfield → template-aware

@@ -404,13 +404,17 @@ func handleTenantAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 		}
 
 		c.JSON(200, resp)
-		// Drop the cached tenant-level log label mapping so an edit applies on the
-		// next query rather than after the 10 min TTL. Scoped to the attribute that
-		// feeds that cache — this handler writes many unrelated tenant attrs.
+		// Drop the cached tenant-level log/trace label mappings so an edit applies on the
+		// next query rather than after the 10 min TTL. Scoped to the attributes that
+		// feed those caches — this handler writes many unrelated tenant attrs.
+		// Tenant id comes from the security context, not AttributeObject.TenantId: the UI
+		// omits that field and UpsertTenantAttributes overwrites it with this same value.
 		for _, attr := range request.Object {
-			if attr.Name == "log_labels" {
+			switch attr.Name {
+			case "log_labels":
 				observability.InvalidateLogLabelsCacheForTenant(ctx.GetSecurityContext().GetTenantId())
-				break
+			case "trace_labels":
+				observability.InvalidateTraceLabelsCacheForTenant(ctx.GetSecurityContext().GetTenantId())
 			}
 		}
 		return

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Box, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
@@ -8,6 +8,7 @@ import RestartAltOutlinedIcon from '@mui/icons-material/RestartAltOutlined';
 import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 import Link from 'next/link';
 import CustomDrawer from '@shared/CustomDrawer';
+import CustomTable from '@shared/tables/CustomTable';
 import Tabs from '@shared/navigation/Tabs';
 import Currency from '@shared/format/Currency';
 import Datetime from '@shared/format/Datetime';
@@ -274,63 +275,35 @@ const ResolutionDetailPanel = ({ open, onClose, resolution, accounts, onRetry, r
                     </Box>
                   }
                 >
-                  <TableContainer
-                    sx={{
-                      borderRadius: ds.radius.lg,
-                      border: `1px solid ${ds.gray[200]}`,
-                      backgroundColor: ds.background[100],
-                      '& .MuiTableCell-root': { px: ds.space[3], py: ds.space[2], fontSize: ds.text.small, borderColor: ds.gray[200] },
-                    }}
-                  >
-                    <Table size='small'>
-                      <TableHead>
-                        <TableRow sx={{ backgroundColor: ds.gray[100] }}>
-                          {['Container', ...changeColumns].map((heading) => (
-                            <TableCell
-                              key={heading}
-                              sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: `${ds.text.caption} !important` }}
-                            >
-                              {heading}
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {changes.map((change) => (
-                          <TableRow key={change.containerName} sx={{ '&:last-child td': { borderBottom: 'none' } }}>
-                            <TableCell>
-                              <Typography
-                                sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.medium, fontFamily: ds.font.mono }}
-                              >
-                                {change.containerName}
-                              </Typography>
-                            </TableCell>
-                            {changeColumns.map((column) => {
-                              const row = change.rows.find((candidate) => candidate.label === column);
-                              if (!row) {
-                                return (
-                                  <TableCell key={column}>
-                                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>—</Typography>
-                                  </TableCell>
-                                );
-                              }
-                              return (
-                                <TableCell key={column}>
-                                  {row.after === null ? (
-                                    // Unparseable quantity: show what was written rather
-                                    // than the cell's dash for "no value".
-                                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700] }}>{row.afterText}</Typography>
-                                  ) : (
-                                    <ResourceChangeCell current={row.before} recommended={row.after} isMem={row.isMem} />
-                                  )}
-                                </TableCell>
-                              );
-                            })}
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
+                  <CustomTable
+                    headers={['Container', ...changeColumns]}
+                    tableData={changes.map((change) => [
+                      {
+                        component: (
+                          <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.medium, fontFamily: ds.font.mono }}>
+                            {change.containerName}
+                          </Typography>
+                        ),
+                        data: change.containerName,
+                      },
+                      ...changeColumns.map((column) => {
+                        const row = change.rows.find((candidate) => candidate.label === column);
+                        if (!row) {
+                          return { component: <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>—</Typography> };
+                        }
+                        return {
+                          component:
+                            row.after === null ? (
+                              // Unparseable quantity: show what was written rather
+                              // than the cell's dash for "no value".
+                              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700] }}>{row.afterText}</Typography>
+                            ) : (
+                              <ResourceChangeCell current={row.before} recommended={row.after} isMem={row.isMem} />
+                            ),
+                        };
+                      }),
+                    ])}
+                  />
                 </Card>
               )}
 
@@ -392,7 +365,7 @@ const ResolutionDetailPanel = ({ open, onClose, resolution, accounts, onRetry, r
                       )}
                       {recommendationId && (
                         <Link
-                          href={`/optimise?id=${recommendationId}#recommendations`}
+                          href={`/optimise?id=${recommendationId}#cost`}
                           style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: ds.text.small }}
                         >
                           View

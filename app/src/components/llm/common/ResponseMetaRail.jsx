@@ -9,17 +9,27 @@ import Tooltip from '@ui/Tooltip';
 import { MessageTokenUsage } from './TokenUsageDisplay';
 import EgressFilterDetailModal from './EgressFilterDetailModal';
 
-const formatDuration = (createdAt, updatedAt) => {
+// The chip shows the model's own time — followup wait (inside [createdAt,
+// updatedAt] since the row isn't COMPLETED until it resumes) is subtracted
+// out and broken back out in the tooltip when present.
+const formatDuration = (createdAt, updatedAt, followupWaitSeconds) => {
   if (!createdAt || !updatedAt) {
     return null;
   }
   const start = new Date(createdAt).getTime();
   const end = new Date(updatedAt).getTime();
-  const diffMs = end - start;
-  if (Number.isNaN(diffMs) || diffMs < 0) {
+  const totalMs = end - start;
+  if (Number.isNaN(totalMs) || totalMs < 0) {
     return null;
   }
-  return formatDurationInTrace(diffMs * 1000000, false);
+  const waitMs = Math.max(0, Number(followupWaitSeconds) || 0) * 1000;
+  const answerMs = Math.max(0, totalMs - waitMs);
+  return {
+    // formatDurationInTrace returns '0ns' at exactly 0 — guard against that
+    // unit leaking through if a wait is ever clamped to the full span.
+    text: answerMs === 0 ? '0s' : formatDurationInTrace(answerMs * 1000000, false),
+    waitText: waitMs > 0 ? formatDurationInTrace(waitMs * 1000000, false) : null,
+  };
 };
 
 // `DD-MMM HH:mm` in the browser's local timezone, e.g. "28-Apr 17:02".
@@ -266,8 +276,190 @@ const piiScrubItem = (events, onClickDetails) => {
   };
 };
 
+// Per-message AI confidence signal — the agent's self-assessment of how well
+// its answer is supported by the evidence it gathered, written by llm-server to
+// `metadata.confidence` (see agents/core/answer_confidence.go).
+//
+// Only investigation turns produce one, and only when the model emitted a
+// parseable `<confidence>` block — a missing or unrecognised level means the
+// backend stored nothing and we render nothing. We never infer a level here:
+// a fabricated badge is worse than an absent one.
+//
+// Levels are the closed set the backend normalises to (high / medium / low);
+// anything else is treated as absent, mirroring normalizeConfidenceLevel. Tones
+// must come from the design system's ChipTone union (see Chip.tsx).
+//
+// The tooltip carries the model's rationale and the concrete gaps it could not
+// correlate — the "say what you couldn't verify" half of the feature. The
+// answer body states the same thing in prose (the prompt requires it for
+// medium/low), so the chip is a glance summary, not the only disclosure.
+const CONFIDENCE_TONES = {
+  high: 'success',
+  medium: 'warning',
+  low: 'critical',
+};
+
+// Heading colour per level — the same green/amber/red families the chip tones
+// resolve to (Chip.tsx TONE_PALETTE), so the tooltip header reads as the same
+// signal as the pill the user is hovering.
+const CONFIDENCE_HEADING_COLORS = {
+  high: 'var(--ds-green-700)',
+  medium: 'var(--ds-amber-700)',
+  low: 'var(--ds-red-700)',
+};
+
+// One-line gloss of what each level means, so the tooltip explains the badge
+// rather than assuming the reader knows the rubric. Mirrors the rubric in
+// llm-server's planner_react_3_base.txt (CONFIDENCE SELF-ASSESSMENT).
+const CONFIDENCE_SUMMARIES = {
+  high: 'Root cause identified and corroborated by multiple independent sources.',
+  medium: 'Root cause identified, but corroboration is partial or some data was unavailable.',
+  low: 'No specific root cause could be confirmed from the available data.',
+};
+
+// Plain-text mirror of the tooltip, for `aria-label` — the visual tooltip is
+// JSX, and a screen reader needs the same content as a flat string on the chip
+// itself (a hover-only tooltip is not reliably announced).
+const confidenceAriaLabel = (level, rationale, limitations) => {
+  const parts = [`${level} confidence.`, CONFIDENCE_SUMMARIES[level]];
+  if (rationale) {
+    parts.push(rationale);
+  }
+  if (limitations.length > 0) {
+    parts.push(`Could not verify: ${limitations.join('; ')}.`);
+  }
+  return parts.join(' ');
+};
+
+// Structured tooltip body: a tone-coloured heading, the level gloss, the
+// model's own rationale, then the unverified gaps as a real bullet list.
+// Previously this was one run-on sentence, which buried the gaps — the part a
+// reader most needs to scan. Tooltip's `title` takes a ReactNode and its
+// default variant already scrolls past 400px, so a list is safe here.
+const confidenceTooltip = (level, rationale, limitations) => (
+  <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
+    <Box
+      component='span'
+      sx={{
+        fontSize: 'var(--ds-text-small)',
+        fontWeight: 'var(--ds-font-weight-semibold)',
+        color: CONFIDENCE_HEADING_COLORS[level],
+        textTransform: 'capitalize',
+      }}
+    >
+      {level} confidence
+    </Box>
+
+    <Box component='span' sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)' }}>
+      {CONFIDENCE_SUMMARIES[level]}
+    </Box>
+
+    {rationale && (
+      <Box component='span' sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-foreground)' }}>
+        {rationale}
+      </Box>
+    )}
+
+    {limitations.length > 0 && (
+      <Box sx={{ mt: ds.space[0] }}>
+        <Box
+          component='span'
+          sx={{
+            display: 'block',
+            fontSize: 'var(--ds-text-caption)',
+            fontWeight: 'var(--ds-font-weight-semibold)',
+            color: 'var(--ds-gray-600)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            mb: ds.space[0],
+          }}
+        >
+          Could not verify
+        </Box>
+        <Box
+          component='ul'
+          sx={{
+            listStyle: 'none',
+            m: 0,
+            p: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: ds.space[0],
+          }}
+        >
+          {limitations.map((item, idx) => (
+            <Box
+              component='li'
+              // Index-suffixed: the list is model-generated and never reordered,
+              // so two identical gaps would otherwise collide on key.
+              key={`${idx}-${item}`}
+              sx={{
+                position: 'relative',
+                pl: ds.space[3],
+                fontSize: 'var(--ds-text-small)',
+                color: 'var(--ds-foreground)',
+                // Bullet drawn via ::before rather than list-style so it aligns
+                // with the first line of a wrapped multi-line gap.
+                '&::before': {
+                  content: '"•"',
+                  position: 'absolute',
+                  left: 0,
+                  color: 'var(--ds-gray-500)',
+                },
+              }}
+            >
+              {item}
+            </Box>
+          ))}
+        </Box>
+      </Box>
+    )}
+  </Box>
+);
+
+const confidenceItem = (confidence) => {
+  const level = typeof confidence?.level === 'string' ? confidence.level.toLowerCase() : '';
+  const tone = CONFIDENCE_TONES[level];
+  if (!tone) {
+    return null;
+  }
+
+  const label = `${level} confidence`;
+  const rationale = confidence.rationale ? String(confidence.rationale) : '';
+  const limitations = Array.isArray(confidence.limitations) ? confidence.limitations.filter(Boolean).map(String) : [];
+
+  // Pinned tooltip width: Tooltip's auto-sizing jumps between 300px and 550px
+  // on a text-length threshold, which would render the same chip at two
+  // different widths depending on how verbose the model was. 380px keeps bullet
+  // lines at a scannable length either way.
+  return {
+    key: 'confidence',
+    node: (
+      <Tooltip title={confidenceTooltip(level, rationale, limitations)} placement='top' tooltipStyle={{ maxWidth: '380px' }}>
+        <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center' }}>
+          <Chip
+            variant='tag'
+            tone={tone}
+            size='xs'
+            aria-label={confidenceAriaLabel(level, rationale, limitations)}
+            sx={{ textTransform: 'capitalize' }}
+          >
+            {label}
+          </Chip>
+        </Box>
+      </Tooltip>
+    ),
+  };
+};
+
 const buildItems = (props) => {
   const items = [];
+  // Confidence leads the rail: it qualifies how much to trust everything the
+  // answer says, so it should be read before the counts and timings.
+  const confidence = confidenceItem(props.confidence);
+  if (confidence) {
+    items.push(confidence);
+  }
   // Token-usage widget always renders for response messages — the widget itself shows a
   // placeholder until data arrives, and `onTokenUsageHover` lazy-fetches on first hover.
   if (props.onTokenUsageHover) {
@@ -309,14 +501,40 @@ const buildItems = (props) => {
     items.push(countItem('watches', 'success', props.watchCount, props.onOpenWatches));
   }
   if (props.duration) {
+    const chip = (
+      <Chip variant='tag' size='xs' tone='neutral'>
+        {props.duration.text}
+      </Chip>
+    );
     // `boundary: true` swaps the trailing separator from `·` to `|` — visually distinguishes
     // "how long it took" from "when it happened".
     items.push({
       key: 'duration',
-      node: (
-        <Chip variant='tag' size='xs' tone='neutral'>
-          {props.duration}
-        </Chip>
+      node: props.duration.waitText ? (
+        <Tooltip
+          title={
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
+              <Box component='span' sx={{ display: 'flex', justifyContent: 'space-between', gap: ds.space[3] }}>
+                <Box component='span'>Answer</Box>
+                <Box component='span'>{props.duration.text}</Box>
+              </Box>
+              <Box component='span' sx={{ display: 'flex', justifyContent: 'space-between', gap: ds.space[3] }}>
+                <Box component='span'>Waited for approval</Box>
+                <Box component='span'>{props.duration.waitText}</Box>
+              </Box>
+            </Box>
+          }
+          placement='top'
+        >
+          {/* MUI clones the Tooltip child with a ref; Chip.tsx is a plain function
+              component (no forwardRef), so it can't hold one directly — same
+              pattern the other three Tooltip+Chip pairs in this file already use. */}
+          <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center' }}>
+            {chip}
+          </Box>
+        </Tooltip>
+      ) : (
+        chip
       ),
       boundary: true,
     });
@@ -337,6 +555,7 @@ const buildItems = (props) => {
 const ResponseMetaRail = ({
   createdAt,
   updatedAt,
+  followupWaitSeconds,
   taskCount = 0,
   contextCount = 0,
   memoryCount = 0,
@@ -351,8 +570,9 @@ const ResponseMetaRail = ({
   onTokenUsageHover,
   isFetchingTokenData,
   egressfilterEvents,
+  confidence,
 }) => {
-  const duration = formatDuration(createdAt, updatedAt);
+  const duration = formatDuration(createdAt, updatedAt, followupWaitSeconds);
   const absoluteTime = formatAbsoluteTime(updatedAt || createdAt);
 
   // Modal state lives here (not in the chip factories) so the chips can
@@ -376,6 +596,7 @@ const ResponseMetaRail = ({
     onTokenUsageHover,
     isFetchingTokenData,
     egressfilterEvents,
+    confidence,
     onOpenEgressDetails,
     duration,
     absoluteTime,
@@ -421,6 +642,7 @@ const ResponseMetaRail = ({
 ResponseMetaRail.propTypes = {
   createdAt: PropTypes.string,
   updatedAt: PropTypes.string,
+  followupWaitSeconds: PropTypes.number,
   taskCount: PropTypes.number,
   contextCount: PropTypes.number,
   memoryCount: PropTypes.number,
@@ -444,9 +666,22 @@ ResponseMetaRail.propTypes = {
       rule_ids: PropTypes.arrayOf(PropTypes.string),
     })
   ),
+  // Parsed `metadata.confidence` object from the message — the agent's
+  // investigation self-assessment. Null/undefined (query turns, or an
+  // investigation whose answer carried no parseable block) renders no chip.
+  confidence: PropTypes.shape({
+    level: PropTypes.oneOf(['high', 'medium', 'low']),
+    rationale: PropTypes.string,
+    limitations: PropTypes.arrayOf(PropTypes.string),
+  }),
 };
 
 export default ResponseMetaRail;
 
 // Exported for unit tests only. Not part of the public component API.
-export { egressfilterItem as __egressfilterItemForTest, piiScrubItem as __piiScrubItemForTest };
+export {
+  egressfilterItem as __egressfilterItemForTest,
+  piiScrubItem as __piiScrubItemForTest,
+  confidenceItem as __confidenceItemForTest,
+  formatDuration as __formatDurationForTest,
+};

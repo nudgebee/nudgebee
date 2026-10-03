@@ -12,6 +12,7 @@ interface KnowledgeBaseOutput {
   data_filename: string;
   data_size_bytes?: number;
   status: string;
+  enabled: boolean;
   kb_type: string;
   kb_source?: string;
   integration_id?: string;
@@ -32,6 +33,7 @@ interface KnowledgeBaseOutput {
  * llm_kb_agent_mappings, and every agent resolves it alongside its own name.
  */
 export const KB_AGENT_WILDCARD = '*';
+export const KB_DOCUMENTS_PAGE_SIZE = 50;
 
 interface CreateKnowledgeBasePayload {
   name: string;
@@ -94,6 +96,7 @@ const apiKnowledgeBase = {
             data_filename
             data_size_bytes
             status
+            enabled
             kb_type
             kb_source
             integration_id
@@ -131,6 +134,7 @@ const apiKnowledgeBase = {
           format: kb.data_format,
           fileName: kb.data_filename,
           status: kb.status,
+          enabled: kb.enabled,
           kb_type: kb.kb_type,
           kb_source: kb.kb_source,
           integration_id: kb.integration_id,
@@ -703,6 +707,220 @@ const apiKnowledgeBase = {
     } catch (error) {
       console.error('Error fetching KB load history:', error);
       return { data: [], errors: [{ message: 'An error occurred while fetching load history' }] };
+    }
+  },
+
+  /**
+   * List one page of a knowledge base's stored documents (title and link, no
+   * content). Pass the returned nextOffset back to fetch the next page.
+   */
+  getKBDocuments: async (accountId: string, kbId: string, offset?: string | null) => {
+    const LIST_KB_DOCUMENTS = `
+      query ListKBDocuments($request: ListKBDocumentsRequest!) {
+        ai_list_kb_documents(request: $request) {
+          data {
+            items {
+              id
+              title
+              url
+              document_key
+              note_category
+            }
+            next_offset
+          }
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      if (accountId === 'demo') {
+        return { data: { items: [], nextOffset: null }, errors: [] };
+      }
+      const response = await queryGraphQL(LIST_KB_DOCUMENTS, 'ListKBDocuments', {
+        request: { account_id: accountId, kb_id: kbId, limit: KB_DOCUMENTS_PAGE_SIZE, offset: offset || '' },
+      });
+      const result = response?.data?.data?.ai_list_kb_documents;
+      if (result?.errors?.length) {
+        return { data: null, errors: result.errors };
+      }
+      if (result?.data) {
+        return { data: { items: result.data.items || [], nextOffset: result.data.next_offset || null }, errors: [] };
+      }
+      return { data: null, errors: [{ message: extractErrorMessage(response, 'Failed to fetch documents') }] };
+    } catch (error) {
+      console.error('Error fetching KB documents:', error);
+      return { data: null, errors: [{ message: 'An error occurred while fetching documents' }] };
+    }
+  },
+
+  /**
+   * Fetch one stored document of a knowledge base with its full content.
+   */
+  getKBDocument: async (accountId: string, kbId: string, documentId: string) => {
+    const GET_KB_DOCUMENT = `
+      query GetKBDocument($request: GetKBDocumentRequest!) {
+        ai_get_kb_document(request: $request) {
+          data {
+            id
+            title
+            url
+            document_key
+            note_category
+            content
+          }
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      if (accountId === 'demo') {
+        return { data: null, errors: [{ message: 'Demo account does not have access.' }] };
+      }
+      const response = await queryGraphQL(GET_KB_DOCUMENT, 'GetKBDocument', {
+        request: { account_id: accountId, kb_id: kbId, document_id: documentId },
+      });
+      const result = response?.data?.data?.ai_get_kb_document;
+      if (result?.errors?.length) {
+        return { data: null, errors: result.errors };
+      }
+      if (result?.data) {
+        return { data: result.data, errors: [] };
+      }
+      return { data: null, errors: [{ message: extractErrorMessage(response, 'Failed to fetch document') }] };
+    } catch (error) {
+      console.error('Error fetching KB document:', error);
+      return { data: null, errors: [{ message: 'An error occurred while fetching document' }] };
+    }
+  },
+
+  /**
+   * Mark one document of a knowledge base as a procedure ('sop') or reference
+   * material ('fact'). An empty category clears the mark.
+   *
+   * Keyed on documentKey, not the document id: ids are content hashes the next
+   * sync replaces, so a mark stored against one would quietly detach.
+   */
+  setKBDocumentCategory: async (accountId: string, kbId: string, documentKey: string, noteCategory: string) => {
+    const SET_KB_DOCUMENT_CATEGORY = `
+      mutation UpsertKBDocumentCategory($request: UpsertKBDocumentCategoryRequest!) {
+        ai_upsert_kb_document_category(request: $request) {
+          data {
+            status
+            document_key
+            note_category
+          }
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      if (accountId === 'demo') {
+        return { data: null, errors: [{ message: 'Demo account does not have access.' }] };
+      }
+      const response = await queryGraphQL(SET_KB_DOCUMENT_CATEGORY, 'UpsertKBDocumentCategory', {
+        request: { account_id: accountId, kb_id: kbId, document_key: documentKey, note_category: noteCategory },
+      });
+      const result = response?.data?.data?.ai_upsert_kb_document_category;
+      if (result?.errors?.length) {
+        return { data: null, errors: result.errors };
+      }
+      if (result?.data) {
+        return { data: result.data, errors: [] };
+      }
+      return { data: null, errors: [{ message: extractErrorMessage(response, 'Failed to update document category') }] };
+    } catch (error) {
+      console.error('Error setting KB document category:', error);
+      return { data: null, errors: [{ message: 'An error occurred while updating the document category' }] };
+    }
+  },
+
+  /**
+   * Run the real KB pre-step retrieval for a question without asking an agent
+   * anything. Returns each retrieved document ranked, with whether it would
+   * actually reach the prompt.
+   *
+   * kbId is optional — supplying it searches ONLY that knowledge base's own
+   * collection, answering "does this KB answer the question?". Omitting it
+   * probes every KB in the account, which is what the pre-step does.
+   */
+  testRetrieval: async (accountId: string, query: string, kbId?: string) => {
+    const TEST_RETRIEVAL = `
+      query TestKBRetrieval($request: TestKBRetrievalRequest!) {
+        ai_list_kb_retrieval(request: $request) {
+          data
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      if (accountId === 'demo') {
+        return { data: null, errors: [{ message: 'Demo account does not have access.' }] };
+      }
+      const response = await queryGraphQL(TEST_RETRIEVAL, 'TestKBRetrieval', {
+        request: { account_id: accountId, query, kb_id: kbId || '' },
+      });
+      if (response?.data?.data?.ai_list_kb_retrieval) {
+        const result = response.data.data.ai_list_kb_retrieval;
+        if (result.errors && result.errors.length > 0) {
+          return { data: null, errors: result.errors };
+        }
+        return { data: result.data, errors: [] };
+      }
+      return { data: null, errors: [{ message: extractErrorMessage(response, 'Failed to test retrieval') }] };
+    } catch (error) {
+      console.error('Error testing KB retrieval:', error);
+      return { data: null, errors: [{ message: 'An error occurred while testing retrieval' }] };
+    }
+  },
+
+  /**
+   * Turn a knowledge base on or off. A disabled KB keeps its content, its
+   * indexed vectors and its agent mappings, but is excluded from RAG search
+   * and from every agent prompt until it is re-enabled.
+   */
+  setKnowledgeBaseEnabled: async (accountId: string, kbId: string, enabled: boolean) => {
+    const SET_KB_ENABLED = `
+      mutation SetKBEnabled($request: UpdateKBEnabledRequest!) {
+        ai_update_kb_enabled(request: $request) {
+          data
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      if (accountId === 'demo') {
+        return { data: null, errors: [{ message: 'Demo account does not have access.' }] };
+      }
+      const response = await queryGraphQL(SET_KB_ENABLED, 'SetKBEnabled', {
+        request: { account_id: accountId, kb_id: kbId, enabled },
+      });
+
+      if (response?.data?.errors && response.data.errors.length > 0) {
+        const errorMessage = extractErrorMessage(response, 'Failed to update knowledge base');
+        return { data: null, errors: [{ message: errorMessage }] };
+      }
+
+      if (response?.data?.data?.ai_update_kb_enabled) {
+        const result = response.data.data.ai_update_kb_enabled;
+        if (result.errors && result.errors.length > 0) {
+          return { data: null, errors: result.errors };
+        }
+        return { data: result.data, errors: [] };
+      }
+      return { data: null, errors: [{ message: 'Failed to update knowledge base' }] };
+    } catch (error) {
+      console.error('Error updating knowledge base enabled flag:', error);
+      return { data: null, errors: [{ message: 'An error occurred while updating the knowledge base' }] };
     }
   },
 

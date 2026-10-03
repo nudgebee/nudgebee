@@ -2006,7 +2006,7 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 	// again is a gap-filling fallback rather than mandatory first-turn work.
 	eventAnalsysisPrompt = eventAnalsysisPrompt +
 		"\n\n## Related-Alert Candidates\nReuse related-alert candidates already present in the preliminary summary or collected evidence. " +
-		"Only when that information is absent or incomplete, call get_incident_assembly with event_id=" + request.EventId +
+		"Only when that information is absent or incomplete, call get_event_incident_assembly with event_id=" + request.EventId +
 		". It returns the alerts around this event grouped by timing and topology: " +
 		"same_incident (this alert's other firings and cross-source copies), cause (config changes and " +
 		"upstream-dependency alerts shortly before it), impact (dependent services alerting after it) and " +
@@ -2312,7 +2312,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			// Beyond fetching the event's details, ask the events agent to explain
 			// Nudgebee's auto-triage decision. Step 1 is the only stage of the
 			// automatic pipeline that runs the events agent, so it is where the
-			// triage tools (get_triage_explanation) get exercised — recording *why*
+			// triage tools (get_event_triage_explanation) get exercised — recording *why*
 			// an event was suppressed/duplicated/scored into the summary (and thus
 			// event_log_analysis and the synthesized detailed response), not just in
 			// interactive chat. Degrades to a plain summary when no triage data is
@@ -2320,8 +2320,8 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			summaryQuery := "Get the details of Event with id - " + eventData.Id +
 				". Also explain how Nudgebee auto-triaged this event: its triage status (nb_status), " +
 				"computed priority and the score_factors that produced it, and the deduplication chain and " +
-				"firing history behind the decision. Use get_triage_explanation for the dedup chain and " +
-				"firing history, and get_incident_assembly for what else is involved in the same incident."
+				"firing history behind the decision. Use get_event_triage_explanation for the dedup chain and " +
+				"firing history, and get_event_incident_assembly for what else is involved in the same incident."
 			summaryResp, err := core.HandleConversationSessionRequest(ctx, eventSummaryAgent, request.UserId, request.AccountId, parentConversationId, summaryQuery, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithEnableCritique(false), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels}))
 			if err != nil {
 				if errors.Is(err, core.ErrConversationInProgress) {

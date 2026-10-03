@@ -16,18 +16,24 @@ test.describe("Knowledge Base", () => {
 
     await loginPage.doFullLogin();
     await nubi.openPanel();
-    await kb.openBCortex();
 
+    // The whole navigation is inside the watcher, not just the sub-tab click:
+    // b-Cortex's Knowledge group opens on Knowledge Base already
+    // (BCortexModal's DEFAULT_TAB_STATE), so clicking that sub-tab on its own
+    // re-selects what is selected and issues nothing. Naming the operation is
+    // also what makes this an assertion — "any GraphQL POST" was satisfied by
+    // whatever background poll happened to land in the window.
     await waitForGraphQLAndValidate(
       page,
       async () => {
+        await kb.openBCortex();
         await kb.knowledgeBaseTab.first().click();
-        await page.waitForLoadState("networkidle");
+        await kb.knowledgeBaseLanded();
       },
       {
         testName: "Clicking Knowledge Base tab API validation",
-        operationNames: [],
-        timeoutMs: 20000,
+        operationNames: ["ListKnowledgeBases"],
+        timeoutMs: 45000,
       }
     );
   });
@@ -55,10 +61,9 @@ test.describe("Knowledge Base", () => {
     await nubi.openPanel();
     await kb.navigateToKnowledgeBase(nubi);
     await kb.navigateToUserTab();
-    const existingCard = kb.getKBCardByName(KB_NAME);
-    if (await existingCard.isVisible().catch(() => false)) {
-      await kb.deleteKBByName(KB_NAME);
-    }
+    // An aborted run can leave more than one KB under this fixed name, and the
+    // create below fails on a duplicate.
+    await kb.removeAllKBsNamed(KB_NAME);
 
     await kb.openCreateModal();
     await kb.fillForm(
@@ -129,17 +134,22 @@ test.describe("Knowledge Base", () => {
 
     await loginPage.doFullLogin();
     await nubi.openPanel();
-    await kb.openBCortex();
+
+    // Same reason as the API-validation case above: b-Cortex's Knowledge group
+    // opens on Knowledge Base already, so the query fires on that selection and
+    // clicking the sub-tab afterwards issues nothing. networkidle never arrives
+    // either — the Nubi surface behind the modal keeps polling.
     await waitForGraphQLAndValidate(
       page,
       async () => {
+        await kb.openBCortex();
         await kb.knowledgeBaseTab.first().click();
-        await page.waitForLoadState("networkidle");
+        await kb.knowledgeBaseLanded();
       },
       {
         testName: "User tab shows created KB card after ListKnowledgeBases query",
         operationNames: ["ListKnowledgeBases"],
-        timeoutMs: 20000,
+        timeoutMs: 45000,
       }
     );
 

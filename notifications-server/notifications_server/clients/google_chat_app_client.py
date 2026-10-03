@@ -144,13 +144,22 @@ class GoogleChatAppClient:
                 last_error_message = error_message
 
                 if not is_retryable_error(e):
-                    LOG.error(
-                        "Google Chat (app auth) API error for tenant %s: %s (status=%s, code=%d)",
-                        tenant,
-                        error_message,
-                        error_status,
-                        status_code,
-                    )
+                    if status_code == 403 or error_status == "PERMISSION_DENIED":
+                        LOG.warning(
+                            "Google Chat (app auth) permission denied for tenant %s: %s (status=%s, code=%d)",
+                            tenant,
+                            error_message,
+                            error_status,
+                            status_code,
+                        )
+                    else:
+                        LOG.error(
+                            "Google Chat (app auth) API error for tenant %s: %s (status=%s, code=%d)",
+                            tenant,
+                            error_message,
+                            error_status,
+                            status_code,
+                        )
                     return {
                         "success": False,
                         "channel_id": space_id,

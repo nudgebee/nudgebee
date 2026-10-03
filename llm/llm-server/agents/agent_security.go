@@ -31,7 +31,7 @@ func (l SecurityAgent) GetName() string {
 }
 
 func (l SecurityAgent) GetNameAliases() []string {
-	return []string{"Security"}
+	return []string{"Security & Compliance Scanner", "Security"}
 }
 
 func (l SecurityAgent) GetDescription() string {

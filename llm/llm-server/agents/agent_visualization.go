@@ -35,7 +35,7 @@ func (l *VisualizationAgent) GetName() string {
 }
 
 func (a *VisualizationAgent) GetNameAliases() []string {
-	return []string{"Visualizer", "MermaidGenerator"}
+	return []string{"Diagram & Chart Maker", "Visualizer", "MermaidGenerator"}
 }
 
 func (l *VisualizationAgent) GetDescription() string {

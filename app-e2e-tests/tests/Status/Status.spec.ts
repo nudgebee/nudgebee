@@ -29,7 +29,7 @@ test.beforeEach(() => {
 });
 
 test(
-  "Status sanity - open /status, verify the page renders the Nudgebee Status heading, the overall status bar and the components card",
+  "Status sanity - open /status, verify the page renders the brand Status heading, the overall status bar and the components card",
   { tag: ["@dev", "@sanity", "@functional"] },
   async ({ page }) => {
     const locators = await openStatusPage(page);

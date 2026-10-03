@@ -647,6 +647,11 @@ type UpsertResult struct {
 	FilterID           uuid.UUID
 	RemovedAccounts    []string
 	RemovedFlowSources []string
+	// Filter contents before this save, as stored (the "empty == all" sentinel
+	// is NOT expanded). Carried out so the caller can audit prev -> new without
+	// re-reading the row it just overwrote.
+	PreviousAccountIDs  []string
+	PreviousFlowSources []string
 }
 
 // toggleableFlowSources is the set of flow sources a tenant can turn on/off from the
@@ -701,8 +706,11 @@ func (r *FilterRepository) UpsertDefaultFilterForTenant(
 	}
 
 	var removedAccounts, removedFlowSources []string
+	var previousAccountIDs, previousFlowSources []string
 
 	if existing != nil {
+		previousAccountIDs = existing.AccountIDs
+		previousFlowSources = existing.FlowSources
 		// An empty account_ids / flow_sources list means "all" (that's how the
 		// build path resolves it), so a plain set-difference is wrong here: the
 		// nightly cron pre-creates the default row with empty arrays, so for almost
@@ -754,9 +762,11 @@ func (r *FilterRepository) UpsertDefaultFilterForTenant(
 	}
 
 	return &UpsertResult{
-		FilterID:           existing.ID,
-		RemovedAccounts:    removedAccounts,
-		RemovedFlowSources: removedFlowSources,
+		FilterID:            existing.ID,
+		RemovedAccounts:     removedAccounts,
+		RemovedFlowSources:  removedFlowSources,
+		PreviousAccountIDs:  previousAccountIDs,
+		PreviousFlowSources: previousFlowSources,
 	}, nil
 }
 

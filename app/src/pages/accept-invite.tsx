@@ -1,5 +1,6 @@
 import * as React from 'react';
 import Head from 'next/head';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { useRouter } from 'next/router';
 import { useSession } from 'next-auth/react';
 import Loader from '@shared/Loader';
@@ -20,6 +21,7 @@ import cache from '@lib/cache';
  * their default tenant (which the invite already set server-side).
  */
 function AcceptInvite() {
+  const { title: baseTitle } = useBrandingConfig();
   const router = useRouter();
   // `required: true` bounces unauthenticated users to sign-in with this full
   // URL (incl. the ?tenant= query) as callbackUrl, so they return here after
@@ -59,7 +61,7 @@ function AcceptInvite() {
   return (
     <>
       <Head>
-        <title>Nudgebee: Accepting invitation</title>
+        <title>{`${baseTitle}: Accepting invitation`}</title>
       </Head>
       <Loader />
     </>

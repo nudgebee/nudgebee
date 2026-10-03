@@ -751,7 +751,7 @@ func (s *K8sServiceIPMatchStrategy) Match(name string, ctx *MatchingContext) Enr
 		return NoMatch()
 	}
 	callerCluster := pluralityCluster(ctx.CallerClusterIndex[name])
-	node, reason, ok := ResolveIPToK8sService(name, callerCluster, ctx.K8sServiceIPResolver)
+	node, reason, ok := ResolveIPToK8sService(name, ctx.CloudAccountID, callerCluster, ctx.K8sServiceIPResolver)
 	if !ok {
 		return NoMatch()
 	}

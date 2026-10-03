@@ -239,7 +239,7 @@ function InvestigateSidebar({
             value={row?.title || ''}
             showAutoEllipsis
             placement='right'
-            sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: 'var(--ds-text-title)', fontFamily: 'Roboto' }}
+            sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: 'var(--ds-text-title)' }}
           />
           <Box sx={{ ml: 'auto', flexShrink: 0 }}>
             <Button

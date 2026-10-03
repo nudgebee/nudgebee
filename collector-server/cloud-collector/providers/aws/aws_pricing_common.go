@@ -115,12 +115,20 @@ func alternateInstancesBasedOnPricing(instances []map[string]interface{}, curren
 	return recommendedInstances, nil
 }
 
-func getAvailableInstancesFromPricing(cfg aws.Config, serviceName string, filtersMap map[string]string) ([]map[string]interface{}, error) {
-
-	svc := pricing.NewFromConfig(cfg)
-	filters := []types.Filter{}
-	for key, value := range filtersMap {
-		// Skip filters with empty values (allows services to explicitly exclude filters)
+// pricingFilters turns a caller's filter map into Pricing API TERM_MATCH filters,
+// sending exactly what it is given and nothing implicit. Empty values are dropped
+// so a caller can name a key it deliberately does not want to filter on.
+//
+// The helper used to add operatingSystem=Linux whenever the caller left it out.
+// Only EC2 instance products carry that attribute, so the default made every
+// RDS, Redshift, load-balancer and IP-address lookup match nothing and their
+// recommendations price at $0. Callers that need an OS filter pass it themselves.
+func pricingFilters(filtersMap map[string]string) []types.Filter {
+	keys := maps.Keys(filtersMap)
+	sort.Strings(keys)
+	filters := make([]types.Filter, 0, len(keys))
+	for _, key := range keys {
+		value := filtersMap[key]
 		if value == "" {
 			continue
 		}
@@ -130,15 +138,13 @@ func getAvailableInstancesFromPricing(cfg aws.Config, serviceName string, filter
 			Value: aws.String(value),
 		})
 	}
-	// Add a default filter for Linux OS if not provided, as it's common for many services.
-	// Services can explicitly exclude this by setting "operatingSystem": ""
-	if _, ok := filtersMap["operatingSystem"]; !ok {
-		filters = append(filters, types.Filter{
-			Field: aws.String("operatingSystem"),
-			Type:  types.FilterTypeTermMatch,
-			Value: aws.String("Linux"),
-		})
-	}
+	return filters
+}
+
+func getAvailableInstancesFromPricing(cfg aws.Config, serviceName string, filtersMap map[string]string) ([]map[string]interface{}, error) {
+
+	svc := pricing.NewFromConfig(cfg)
+	filters := pricingFilters(filtersMap)
 
 	priceList := []map[string]interface{}{}
 	paginator := pricing.NewGetProductsPaginator(svc, &pricing.GetProductsInput{

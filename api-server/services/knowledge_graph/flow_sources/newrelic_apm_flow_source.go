@@ -429,7 +429,7 @@ func (s *NewRelicAPMFlowSource) resolveTarget(
 	case "database":
 		return s.findDatabaseNode(targetVal, dbSystem, cloudAccountID)
 	case "cluster_ip":
-		n, ok := ipResolver.Resolve(callerCluster, targetVal)
+		n, ok := ipResolver.Resolve(cloudAccountID, callerCluster, targetVal)
 		if !ok {
 			return nil
 		}
@@ -587,7 +587,7 @@ func (s *NewRelicAPMFlowSource) resolveNerdGraphTarget(
 		if n := s.matchK8sInternalDNS(t.FQDN, cloudAccountID); n != nil {
 			return n, t.FQDN
 		}
-		if n, ok := ipResolver.Resolve(callerCluster, t.IP); ok {
+		if n, ok := ipResolver.Resolve(cloudAccountID, callerCluster, t.IP); ok {
 			return n, t.FQDN
 		}
 		return nil, ""

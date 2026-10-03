@@ -25,12 +25,17 @@ import (
 // template variable that was never declared (both would fail Format).
 func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool) string {
 	t.Helper()
-	return renderReact3BaseWithRoles(t, notebookEnabled, hypothesisModeEnabled, false, false)
+	return renderReact3BaseWithRolesAndGrounding(t, notebookEnabled, hypothesisModeEnabled, false, false, false)
 }
 
 // renderReact3BaseWithRoles is renderReact3Base with the orchestrator/executor
 // role-overlay gates exposed, mirroring resolveOrchestratorRoleModes outputs.
 func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnabled, orchestratorMode, executorMode bool) string {
+	t.Helper()
+	return renderReact3BaseWithRolesAndGrounding(t, notebookEnabled, hypothesisModeEnabled, orchestratorMode, executorMode, false)
+}
+
+func renderReact3BaseWithRolesAndGrounding(t *testing.T, notebookEnabled, hypothesisModeEnabled, orchestratorMode, executorMode, groundingEnabled bool) string {
 	t.Helper()
 	base := nbprompts.GetPrompt(context.Background(), nbprompts.PromptReact3Base, "")
 	assert.NotEmpty(t, base, "embedded react_3 base prompt must load")
@@ -38,7 +43,7 @@ func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnab
 	vars := []string{
 		"tool_names", "tool_descriptions",
 		"delegate_agent_enabled", "notebook_enabled", "hypothesis_mode_enabled",
-		"is_top_level", "orchestrator_mode", "executor_mode", "is_investigation",
+		"is_top_level", "orchestrator_mode", "executor_mode", "grounding_enabled", "is_investigation",
 		"conversation_context_enabled", "context_management_rules", "time_handling_rules",
 		"data_protection_rules", "code_analysis_rules", "security_rules",
 		"memory_consumption_rules", "async_completion_rules",
@@ -53,6 +58,7 @@ func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnab
 		"is_top_level":                 true,
 		"orchestrator_mode":            orchestratorMode,
 		"executor_mode":                executorMode,
+		"grounding_enabled":            groundingEnabled,
 		"is_investigation":             true, // keep the full (investigation) prompt for these role/hypothesis fences
 		"conversation_context_enabled": false,
 		"context_management_rules":     "",
@@ -107,6 +113,50 @@ func TestReAct3CustomAgentQueryOmitsInvestigationPolicy(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, out, "INVESTIGATION PATTERN")
 	assert.NotContains(t, out, "plausible failure domains")
+}
+
+func TestReAct3GroundingPromptFence(t *testing.T) {
+	const groundingHeader = "GROUND THE REQUEST BEFORE COMMITTING TO AN INVESTIGATION PATH"
+	const softOrdering = "Prefer an early, inexpensive authoritative check"
+
+	t.Run("enabled: shared soft contract renders", func(t *testing.T) {
+		out := renderReact3BaseWithRolesAndGrounding(t, false, false, false, false, true)
+		assert.Contains(t, out, groundingHeader)
+		assert.Contains(t, out, softOrdering)
+		assert.Contains(t, out, "ask one focused clarification")
+	})
+
+	t.Run("disabled: contract is absent", func(t *testing.T) {
+		out := renderReact3BaseWithRolesAndGrounding(t, false, false, false, false, false)
+		assert.NotContains(t, out, groundingHeader)
+		assert.NotContains(t, out, softOrdering)
+	})
+}
+
+func TestResolveOrchestratorGroundingScope(t *testing.T) {
+	originalGrounding := config.Config.OrchestratorGroundingEnabled
+	originalPremise := config.Config.PremiseVerificationEnabled
+	t.Cleanup(func() {
+		config.Config.OrchestratorGroundingEnabled = originalGrounding
+		config.Config.PremiseVerificationEnabled = originalPremise
+	})
+
+	orchestrator := &MockAgent{}
+	regularReAct := notebookOptOutAgent{}
+	top := NBAgentRequest{AgentId: "top", Query: "why is the api failing?"}
+	child := NBAgentRequest{AgentId: "child", ParentAgentId: "top", Query: top.Query}
+
+	config.Config.OrchestratorGroundingEnabled = true
+	assert.True(t, resolveOrchestratorGroundingEnabled(top, orchestrator))
+	assert.False(t, resolveOrchestratorGroundingEnabled(child, orchestrator))
+	assert.False(t, resolveOrchestratorGroundingEnabled(top, regularReAct))
+
+	config.Config.PremiseVerificationEnabled = true
+	assert.True(t, resolvePremiseVerificationEnabled(top, orchestrator))
+	assert.False(t, resolvePremiseVerificationEnabled(child, orchestrator))
+	assert.False(t, resolvePremiseVerificationEnabled(top, regularReAct))
+	top.Query = "list the pods"
+	assert.False(t, resolvePremiseVerificationEnabled(top, orchestrator))
 }
 
 // TestReAct3HypothesisModeFence verifies the hypothesis-driven investigation
@@ -228,6 +278,15 @@ func TestReAct3RoleOverlayFence(t *testing.T) {
 	const anomalyReconciliation = "Reconcile every anomaly your sub-agents surfaced"
 	const requeryThin = "Re-query thin sub-agent answers"
 	const evidenceReporting = "include the decisive evidence behind your finding"
+	// Orchestrator-fenced rules from the RCA-fidelity hardening (issue #33867).
+	const realPathMeasure = "an actual measurement of the running path"
+	const citationIntegrity = "A citation must point at non-empty evidence"
+	const regressionOnset = "Regressions need onset-and-change"
+	// UNFENCED rules — they target failures that occur inside sub-agents (the
+	// reconstructed-query trap; the ANALYZE that silently did nothing in #33867),
+	// so they must reach the executor path too and render regardless of overlay.
+	const evidenceFidelity = "Evidence must be the real artifact, not a reconstruction of it"
+	const verifyStateChange = "Verify a state-changing action took effect"
 
 	t.Run("orchestrator: answer contract + thought exception, no executor block", func(t *testing.T) {
 		out := renderReact3BaseWithRoles(t, true, true, true, false)
@@ -240,6 +299,11 @@ func TestReAct3RoleOverlayFence(t *testing.T) {
 		assert.Contains(t, out, targetResolution, "orchestrator must be told to resolve locator/subject pointers to concrete entities before investigating")
 		assert.Contains(t, out, anomalyReconciliation, "orchestrator must reconcile sub-agent-surfaced anomalies before finalizing")
 		assert.Contains(t, out, requeryThin, "orchestrator must re-query thin sub-agent answers instead of concluding from them")
+		assert.Contains(t, out, realPathMeasure, "orchestrator must require a measurement of the real path for root-cause claims")
+		assert.Contains(t, out, verifyStateChange, "orchestrator must verify a state-changing action took effect")
+		assert.Contains(t, out, citationIntegrity, "orchestrator citations must point at non-empty evidence")
+		assert.Contains(t, out, regressionOnset, "orchestrator must require onset-and-change for regressions")
+		assert.Contains(t, out, evidenceFidelity, "unfenced evidence-fidelity rule also renders for the orchestrator")
 		assert.NotContains(t, out, evidenceReporting, "sender-side evidence-reporting rule belongs to the executor overlay, not the orchestrator")
 		assert.NotContains(t, out, executorHeader)
 	})
@@ -256,10 +320,15 @@ func TestReAct3RoleOverlayFence(t *testing.T) {
 		out := renderReact3BaseWithRoles(t, true, false, false, true)
 		assert.Contains(t, out, executorHeader)
 		assert.Contains(t, out, evidenceReporting, "executor must report the decisive evidence behind its finding, not a bare conclusion")
+		assert.Contains(t, out, evidenceFidelity, "unfenced evidence-fidelity rule must reach sub-agents (the executor path)")
+		assert.Contains(t, out, verifyStateChange, "unfenced verify-state-change rule must reach sub-agents (the executor path)")
 		assert.NotContains(t, out, contractHeader)
 		assert.NotContains(t, out, thoughtException)
 		assert.NotContains(t, out, safetyClaimsHeader)
 		assert.NotContains(t, out, requeryThin, "re-query rule is orchestrator-side, must not render for executors")
+		assert.NotContains(t, out, realPathMeasure, "real-path measurement rule is orchestrator-side")
+		assert.NotContains(t, out, citationIntegrity, "citation integrity rule is orchestrator-side")
+		assert.NotContains(t, out, regressionOnset, "regression onset rule is orchestrator-side")
 	})
 
 	t.Run("feature off: neither overlay renders (legacy prompt)", func(t *testing.T) {
@@ -272,6 +341,13 @@ func TestReAct3RoleOverlayFence(t *testing.T) {
 		assert.NotContains(t, out, anomalyReconciliation)
 		assert.NotContains(t, out, requeryThin)
 		assert.NotContains(t, out, evidenceReporting)
+		assert.NotContains(t, out, realPathMeasure)
+		assert.NotContains(t, out, citationIntegrity)
+		assert.NotContains(t, out, regressionOnset)
+		// Evidence-fidelity and verify-state-change are unfenced: they render even
+		// with both overlays off.
+		assert.Contains(t, out, evidenceFidelity, "evidence-fidelity rule is unfenced and must render regardless of role overlay")
+		assert.Contains(t, out, verifyStateChange, "verify-state-change rule is unfenced and must render regardless of role overlay")
 	})
 }
 
@@ -551,9 +627,9 @@ func TestReAct3CritiquerPremiseGateFence(t *testing.T) {
 		assert.NotContains(t, out, unconfirmable)
 	})
 
-	t.Run("premise_verification is question-type agnostic (also renders for plain query)", func(t *testing.T) {
+	t.Run("render helper follows the caller-provided gate", func(t *testing.T) {
 		out := renderReactCritiquer(t, "query", false, false, true)
-		assert.Contains(t, out, gateHeader, "gate is not gated on question_type — a false premise is just as wrong in a query")
+		assert.Contains(t, out, gateHeader)
 	})
 }
 
@@ -1692,6 +1768,38 @@ func TestReAct3NotebookAsToolCallInParallelActions(t *testing.T) {
 	assert.Equal(t, 1, planner.notebookUpdateCount)
 }
 
+func TestReAct3InlineNotebookAlongsideParallelActions(t *testing.T) {
+	output := `<thought_action>
+	<thought>I will query metrics and logs in parallel.</thought>
+	<actions>
+		<action>
+			<tool_name>metrics</tool_name>
+			<tool_input>{"service":"checkout-svc"}</tool_input>
+		</action>
+		<action>
+			<tool_name>logs</tool_name>
+			<tool_input>{"service":"checkout-svc"}</tool_input>
+		</action>
+	</actions>
+	<update_notebook>## Plan
+1. [DOING] Parallel metrics + logs evidence batch</update_notebook>
+</thought_action>`
+
+	response := &llms.ContentResponse{
+		Choices: []*llms.ContentChoice{{Content: output}},
+	}
+	planner := &NBReActPlanner3{notebookLastUpdateTurn: -1, notebookFirstUpdateTurn: -1}
+	actions, finish, err := planner.parseOutputInternal(response, nil)
+
+	assert.NoError(t, err)
+	assert.Nil(t, finish)
+	assert.Len(t, actions, 2)
+	assert.Equal(t, "metrics", actions[0].Tool)
+	assert.Equal(t, "logs", actions[1].Tool)
+	assert.Contains(t, planner.Notebook, "Parallel metrics + logs evidence batch")
+	assert.Equal(t, 1, planner.notebookUpdateCount)
+}
+
 // TestReAct3NotebookAsNonFirstParallelAction verifies notebook content is
 // captured even when update_notebook is NOT the first action in a parallel
 // block (processNotebookUpdate's fallback only checks the first <tool_name>).
@@ -1918,42 +2026,6 @@ func TestReAct3NotebookAliasAsToolCall(t *testing.T) {
 	}
 }
 
-// TestReAct3HumanPrompt_TodayIncludesTimeOfDay guards against a real bug
-// found via benchmark run dd7bc6b21b45 (test 43_current_datetime_from_prompt,
-// which routes through this exact "lean" prompt-variant path per
-// LLM_SERVER_K8S_ORCHESTRATOR_MODE=lean and reproduced live against a local
-// llm-server): the only grounded "current time" fact reaching the model for
-// a no-tool-call turn was date-only ("January 02, 2006"), so a direct "what
-// time is it" question had no time-of-day data to draw on and the model
-// fabricated 00:00:00. The injected "today" value must carry both an actual
-// UTC date AND a time-of-day component the model can read directly.
-func TestReAct3HumanPrompt_TodayIncludesTimeOfDay(t *testing.T) {
-	ctx := security.NewRequestContextForSuperAdmin()
-	ctx.SetContext(context.WithValue(ctx.GetContext(), ContextKeyPromptVariant, promptVariantLean))
-	agent := &MockAgent{}
-
-	req := NBAgentRequest{AgentId: "orch-1", AccountId: "acc-1"}
-	tmpl, _, err := reActCreatePrompt3(ctx, "agent prompt", []toolcore.NBTool{}, "", nil, req, agent)
-	require.NoError(t, err)
-
-	promptValue, err := tmpl.FormatPrompt(map[string]any{
-		"input":      "what time is it right now?",
-		"scratchpad": "",
-		"notebook":   "",
-	})
-	require.NoError(t, err)
-
-	messages := promptValue.Messages()
-	humanText := messages[len(messages)-1].GetContent()
-
-	assert.Regexp(t, regexp.MustCompile(`\d{2}:\d{2}:\d{2} UTC`), humanText,
-		"today must carry a real time-of-day component, not just a date")
-
-	wantDate := time.Now().UTC().Format("January 2, 2006")
-	assert.Contains(t, humanText, wantDate,
-		"today's date component must be rendered in UTC, matching time.Now().UTC()")
-}
-
 // TestReAct3LeanSubagentPrompt verifies that sub-agents omit orchestrator rule
 // fragments and top-level conversation history via template conditionals.
 func TestReAct3LeanSubagentPrompt(t *testing.T) {
@@ -2065,4 +2137,65 @@ func TestReAct3LeanSubagentPrompt(t *testing.T) {
 		assert.Contains(t, humanText, "distilled conversation memory facts")
 		assert.Contains(t, humanText, "slack channel context")
 	})
+}
+
+// TestReAct3HumanPrompt_TodayIncludesTimeOfDay guards against a real bug
+// found via benchmark run dd7bc6b21b45 (test 43_current_datetime_from_prompt,
+// which routes through this exact "lean" prompt-variant path per
+// LLM_SERVER_K8S_ORCHESTRATOR_MODE=lean and reproduced live against a local
+// llm-server): the only grounded "current time" fact reaching the model for
+// a no-tool-call turn was date-only ("January 02, 2006"), so a direct "what
+// time is it" question had no time-of-day data to draw on and the model
+// fabricated 00:00:00. The injected "today" value must carry both an actual
+// UTC date AND a time-of-day component the model can read directly.
+func TestReAct3HumanPrompt_TodayIncludesTimeOfDay(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	ctx.SetContext(context.WithValue(ctx.GetContext(), ContextKeyPromptVariant, promptVariantLean))
+	agent := &MockAgent{}
+
+	req := NBAgentRequest{AgentId: "orch-1", AccountId: "acc-1"}
+	tmpl, _, err := reActCreatePrompt3(ctx, "agent prompt", []toolcore.NBTool{}, "", nil, req, agent)
+	require.NoError(t, err)
+
+	promptValue, err := tmpl.FormatPrompt(map[string]any{
+		"input":      "what time is it right now?",
+		"scratchpad": "",
+		"notebook":   "",
+	})
+	require.NoError(t, err)
+
+	messages := promptValue.Messages()
+	humanText := messages[len(messages)-1].GetContent()
+
+	assert.Regexp(t, regexp.MustCompile(`\d{2}:\d{2}:\d{2} UTC`), humanText,
+		"today must carry a real time-of-day component, not just a date")
+
+	wantDate := time.Now().UTC().Format("January 2, 2006")
+	assert.Contains(t, humanText, wantDate,
+		"today's date component must be rendered in UTC, matching time.Now().UTC()")
+}
+
+// Macro expansion is shared with ReAct4 through resolveToolInputMacros. ReAct3 has
+// always expanded (it is why the ReAct4 gap in #39201 was a regression rather than a
+// missing feature), but nothing pinned it — so unwiring ReAct3's side of the seam
+// would have been silent. A literal `[[Time:-24h]]` in an Elasticsearch range filter
+// matches nothing and still returns HTTP 200, which reads as "no data in this
+// environment" rather than as a malformed query.
+func TestReAct3ExpandsTimeMacrosInToolInput(t *testing.T) {
+	output := `<thought_action>
+		<thought>Checking the last day.</thought>
+		<action><tool_name>es_metrics_query</tool_name><tool_input>{"gte":"[[Time:-24h]]"}</tool_input></action>
+	</thought_action>`
+
+	planner := &NBReActPlanner3{}
+	actions := planner.processToolAction(output)
+
+	require.Len(t, actions, 1)
+	assert.NotContains(t, actions[0].ToolInput, "[[Time:",
+		"macro survived into the execution input and would reach the backend verbatim")
+
+	// parseFirstTime is the helper #39241 added alongside the ReAct4 test; both
+	// planners assert the same shape, so they share it.
+	assert.WithinDuration(t, time.Now().UTC().Add(-24*time.Hour),
+		parseFirstTime(t, actions[0].ToolInput), time.Minute)
 }

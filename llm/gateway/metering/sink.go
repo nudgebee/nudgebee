@@ -1,7 +1,9 @@
 package metering
 
 import (
+	"context"
 	"log/slog"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,12 +94,31 @@ func (s *dbSink) Close() error {
 // Close is called before a connection succeeds. Runs off the request path, so the
 // DB being slow/down never affects serving — events buffer until it is ready.
 func (s *dbSink) connect() *common.DatabaseManager {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger := slog.Default()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("metering: panic in connect cancel monitor", "recover", r, "stack", string(debug.Stack()))
+			}
+		}()
+		select {
+		case <-s.done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
 	backoff := connectRetryInitial
 	for {
-		db, err := common.GetDatabaseManager(common.MeteringSink)
+		db, err := common.GetDatabaseManagerWithContext(ctx, common.MeteringSink)
 		if err == nil {
 			slog.Info("metering: sink DB connected")
 			return db
+		}
+		if ctx.Err() != nil {
+			return nil
 		}
 		slog.Warn("metering: sink DB not ready, retrying in background", "error", err, "retry_in", backoff.String())
 		timer := time.NewTimer(backoff)

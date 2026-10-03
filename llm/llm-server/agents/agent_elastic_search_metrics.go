@@ -37,7 +37,7 @@ func (e ElasticSearchMetricsAgent) GetName() string {
 }
 
 func (e ElasticSearchMetricsAgent) GetNameAliases() []string {
-	return []string{"Elastic Search Metrics", "Opensearch Metrics"}
+	return []string{"Elasticsearch Metrics Reader", "Elastic Search Metrics", "Opensearch Metrics"}
 }
 
 func (e ElasticSearchMetricsAgent) GetDescription() string {

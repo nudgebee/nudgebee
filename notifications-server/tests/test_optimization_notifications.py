@@ -176,7 +176,7 @@ class TestSlackDeltas:
                 finops_score=90 - i,
                 finops_band="Act Now",
                 estimated_savings=100.0 + i,
-                cta_url=f"https://app/optimise?id=rec-{i}#recommendations",
+                cta_url=f"https://app/optimise?id=rec-{i}#cost",
             )
             for i in range(5)
         ]
@@ -367,10 +367,10 @@ class TestItemCopyAndWaste:
 class TestPostureItemUrlAndHeadlineGuards:
     def test_relative_cta_url_resolved_against_base_url(self):
         params = _params()
-        params.recommendations_by_account["acc-1"].recommendations[0].cta_url = "/optimise?id=rec-1#recommendations"
+        params.recommendations_by_account["acc-1"].recommendations[0].cta_url = "/optimise?id=rec-1#cost"
         msg = get_recommendation_nudge_digest_message_template(params)
         details = [b for b in _slack_buttons(msg) if b["text"] == "Details"][0]
-        assert details["url"] == "https://app/optimise?id=rec-1#recommendations"
+        assert details["url"] == "https://app/optimise?id=rec-1#cost"
 
     def test_absolute_cta_url_untouched(self):
         msg = get_recommendation_nudge_digest_message_template(_params())
@@ -437,7 +437,7 @@ def _pod_rec(recommendation) -> DigestRecommendation:
         finops_band="Act Now",
         estimated_savings=184.0,
         severity="High",
-        cta_url="https://app/optimise?id=rec-rs#recommendations",
+        cta_url="https://app/optimise?id=rec-rs#cost",
         recommendation=recommendation,
     )
 

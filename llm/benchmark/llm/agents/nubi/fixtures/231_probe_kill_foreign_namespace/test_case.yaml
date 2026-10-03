@@ -1,0 +1,33 @@
+user_prompt: "The web-app pod in namespace-231 keeps restarting. Why?"
+tags:
+  - kubernetes
+  - signal-gap
+  - hard
+# Every signal inside namespace-231 is real and correct: the liveness probe IS
+# failing, the pod IS being killed. None of it explains why. The cause is a batch
+# job in namespace-231-batch saturating the shared-api both namespaces depend on.
+# Passing requires leaving the namespace the question named.
+expected_output: |
+  The web-app liveness probe times out because shared-api is saturated by the
+  batch-reindex workload running in the namespace-231-batch namespace, which
+  holds shared-api's only worker with long-running requests. The probe and the
+  restarts in namespace-231 are correct behaviour reacting to an external cause —
+  the web-app configuration itself is not at fault.
+before_test: |
+  kubectl create namespace namespace-231 || true
+  kubectl create namespace namespace-231-batch || true
+  kubectl label namespace namespace-231 benchmark=true --overwrite || true
+  kubectl label namespace namespace-231-batch benchmark=true --overwrite || true
+  kubectl create secret generic shared-api-script-231 \
+    --from-file=server.py=./server.py --from-file=flood.py=./flood.py \
+    -n namespace-231-batch --dry-run=client -o yaml | kubectl apply -f -
+  kubectl apply -f ./manifest.yaml
+  # Long enough for the flood to start and the probe to fail its threshold twice.
+  sleep 120
+after_test: |
+  kubectl delete -f ./manifest.yaml --ignore-not-found
+  kubectl delete secret shared-api-script-231 -n namespace-231-batch --ignore-not-found
+  kubectl delete namespace namespace-231 --ignore-not-found
+  kubectl delete namespace namespace-231-batch --ignore-not-found
+evaluation:
+  correctness: 1

@@ -9,6 +9,7 @@ import ConversationCollapsableCard from '@components/llm/common/ConversationColl
 import KubernetesLLMRequestResponse from './KubernetesLLMRequestResponseV2';
 import { AskNudgebeeErrorIcon, AskNudgebeeInProgressIcon, AskNudgebeeSkipIcon, AskNudgebeeSuccessIcon, RunningIcon } from '@assets';
 import capitalize from 'lodash/capitalize';
+import { unwrapTypedValueString } from '@utils/common';
 import { ds } from '@utils/colors';
 import { Button } from '@ui/Button';
 import ReferencesPopover from './common/ReferencesModal';
@@ -72,7 +73,7 @@ const getCardTitle = (data, { indented = false } = {}) => {
       }
       answerSuffix = ' → ' + answer;
     }
-    response = 'Followup Question: ' + data.text + answerSuffix;
+    response = 'Followup Question: ' + unwrapTypedValueString(data.text) + answerSuffix;
   } else if (isInProgress) {
     response = data.query || '';
   } else {
@@ -83,7 +84,16 @@ const getCardTitle = (data, { indented = false } = {}) => {
     if (typeof response === 'string' && response.trim().startsWith('{')) {
       const parsed = JSON.parse(response);
       if (parsed && typeof parsed === 'object' && parsed.command) {
-        response = parsed.command;
+        // `command` is normally the bare title string. A malformed tool payload can
+        // wrap every arg in a `{type, value}` envelope — take the inner value, and
+        // never assign a non-string: it renders as a React child and throws #31,
+        // taking the whole page down via AppErrorBoundary.
+        const command = parsed.command;
+        if (typeof command === 'string') {
+          response = command;
+        } else if (command && typeof command === 'object' && command.type === 'string' && typeof command.value === 'string') {
+          response = command.value;
+        }
       }
     }
   } catch {
@@ -170,17 +180,25 @@ const MessageItem = ({
   // backend ships it as a raw JSON string so the frontend dispatches on
   // whichever top-level keys it understands. See llm-server
   // docs/llm-egress-filter.md §7b for the egressfilter event shape.
-  const egressfilterEvents = React.useMemo(() => {
+  const parsedMetadata = React.useMemo(() => {
     if (!message.metadata) {
-      return [];
+      return null;
     }
     try {
-      const parsed = typeof message.metadata === 'string' ? JSON.parse(message.metadata) : message.metadata;
-      return Array.isArray(parsed?.egressfilter) ? parsed.egressfilter : [];
+      return typeof message.metadata === 'string' ? JSON.parse(message.metadata) : message.metadata;
     } catch {
-      return [];
+      return null;
     }
   }, [message.metadata]);
+
+  const egressfilterEvents = React.useMemo(() => (Array.isArray(parsedMetadata?.egressfilter) ? parsedMetadata.egressfilter : []), [parsedMetadata]);
+
+  // `metadata.confidence` — the agent's self-assessment of how well the answer
+  // is backed by the evidence it gathered. Written only for investigation turns
+  // whose answer carried a parseable <confidence> block (llm-server
+  // agents/core/answer_confidence.go); absent everywhere else, which renders no
+  // chip rather than a synthesized score.
+  const confidence = parsedMetadata?.confidence ?? null;
 
   const getUniqueReferencesCount = (references) => {
     if (!references || references.length === 0) {
@@ -218,8 +236,11 @@ const MessageItem = ({
     headerActionsNode = (
       <ResponseMetaRail
         createdAt={message.created_at}
-        // answer-completion time, not row last-modified (background jobs bump updated_at); falls back for old msgs
+        // responded_at isn't selected today, so this resolves to updated_at —
+        // the safe branch, since followup_wait_seconds is guaranteed to sit
+        // inside that span (an open followup's wait wouldn't fit responded_at).
         updatedAt={message.responded_at || message.updated_at}
+        followupWaitSeconds={message.followup_wait_seconds}
         taskCount={responseMeta.taskCount}
         contextCount={responseMeta.contextCount}
         memoryCount={responseMeta.memoryCount}
@@ -234,6 +255,7 @@ const MessageItem = ({
         onTokenUsageHover={responseMeta.onTokenUsageHover}
         isFetchingTokenData={responseMeta.isFetchingTokenData}
         egressfilterEvents={egressfilterEvents}
+        confidence={confidence}
       />
     );
   } else if (isTask && !['followup-question', 'acknowledgment', 'planner'].includes(messageType) && onOpenToolDetails) {

@@ -489,7 +489,7 @@ func Execute(relayRequest RelayExecuteRequest) (map[string]any, error) {
 		}
 
 		switch resp.StatusCode {
-		case 400:
+		case 400, 503:
 			// Check if error matches "Agent not found/connected"
 			var errorResponse struct {
 				Errors []struct {
@@ -500,7 +500,7 @@ func Execute(relayRequest RelayExecuteRequest) (map[string]any, error) {
 
 			if err := common.UnmarshalJson(jsonBody, &errorResponse); err == nil {
 				for _, e := range errorResponse.Errors {
-					if e.Code == 400 && e.Message == errMsgAgentNotConnected {
+					if (e.Code == 400 || e.Code == 503) && e.Message == errMsgAgentNotConnected {
 						slog.Warn("relay: Agent not found/connected", "account_id", accountID)
 						return data, errors.New(errMsgAgentNotConnected)
 					} else {
@@ -596,7 +596,7 @@ func ExecuteRelayProxyApi(accountID string, params map[string]any, apiPath strin
 		}
 
 		switch resp.StatusCode {
-		case 400:
+		case 400, 503:
 			// Check if error matches "Agent not found/connected"
 			var errorResponse struct {
 				Errors []struct {
@@ -607,7 +607,7 @@ func ExecuteRelayProxyApi(accountID string, params map[string]any, apiPath strin
 
 			if err := common.UnmarshalJson(jsonBody, &errorResponse); err == nil {
 				for _, e := range errorResponse.Errors {
-					if e.Code == 400 && e.Message == errMsgAgentNotConnected {
+					if (e.Code == 400 || e.Code == 503) && e.Message == errMsgAgentNotConnected {
 						slog.Warn("relay: Agent not found/connected", "account_id", accountID)
 						return data, errors.New(errMsgAgentNotConnected)
 					} else {
@@ -661,48 +661,6 @@ func PodActionExecutor(accountId string, podName string, namespace string, actio
 			ActionParams: actionParams,
 		},
 	}
-	evidence, err := Execute(relayRequest)
-
-	if err != nil {
-		return map[string]any{}, err
-	}
-	return evidence, nil
-}
-
-func WorkloadMetricsExecutor(accountId string, workloadName string, namespace string, resourceType string, startTime time.Time, endTime time.Time) (map[string]any, error) {
-	var promql_query string
-	switch resourceType {
-	case "cpu":
-		promql_query = fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total{ __CLUSTER__ pod=~"%s.*", namespace="%s"}[5m])) by (pod,namespace)`, workloadName, namespace)
-	case "memory":
-		promql_query = fmt.Sprintf(`sum(container_memory_usage_bytes{ __CLUSTER__ pod=~"%s.*", namespace="%s"}) by (pod, namespace)`, workloadName, namespace)
-	case "network":
-		promql_query = fmt.Sprintf(`sum(rate(container_network_receive_bytes_total{ __CLUSTER__ pod=~"%s.*", namespace="%s"}[5m])) + sum(rate(container_network_transmit_bytes_total{ __CLUSTER__ pod=~"%s.*", namespace="%s"}[5m]))`, workloadName, namespace, workloadName, namespace)
-	case "latency":
-		promql_query = fmt.Sprintf(`histogram_quantile(0.99, sum(rate(container_http_requests_duration_seconds_total_bucket{ __CLUSTER__ actual_destination_workload_name=~"%s.*", actual_destination_workload_namespace="%s"}[5m])) by (le))`, workloadName, namespace)
-	case "error_rate":
-		promql_query = fmt.Sprintf(`sum(rate(container_http_requests_duration_seconds_total_count{ __CLUSTER__ actual_destination_workload_name=~"%s.*", actual_destination_workload_namespace="%s"}[5m]))`, workloadName, namespace)
-	case "replicas":
-		promql_query = fmt.Sprintf(`sum(kube_deployment_status_replicas{ __CLUSTER__ deployment=~"%s.*", namespace="%s"})`, workloadName, namespace)
-	case "cpu_throttling":
-		promql_query = fmt.Sprintf(`sum(rate(container_resources_cpu_throttled_seconds_total{ __CLUSTER__ container_id=~".*%s/%s.*"}[5m])) by (container_id)`, namespace, workloadName)
-	default:
-		return map[string]any{}, errors.New("relay: invalid resource type")
-	}
-	relayRequest := RelayExecuteRequest{
-		Body: ActionExecuteBody{
-			AccountID:  accountId,
-			ActionName: "prometheus_enricher",
-			ActionParams: map[string]any{
-				"promql_query": promql_query,
-				"duration": map[string]any{
-					"starts_at": startTime.UTC().Format("2006-01-02 15:04:05 UTC"),
-					"ends_at":   endTime.UTC().Format("2006-01-02 15:04:05 UTC"),
-				},
-			},
-		},
-	}
-
 	evidence, err := Execute(relayRequest)
 
 	if err != nil {
@@ -878,7 +836,7 @@ func TestProxyDatasourceConfig(accountID string, datasource ProxyDatasourceConfi
 		return fmt.Errorf("failed to read relay test response: %w", readErr)
 	}
 
-	if resp.StatusCode == http.StatusBadRequest {
+	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusServiceUnavailable {
 		var errResp struct {
 			Errors []struct {
 				Message string `json:"message"`

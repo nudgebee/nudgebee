@@ -32,6 +32,9 @@
  * visually distinct from the neutral, right-aligned `type` chip. Use it to show
  * a second dimension per row (e.g. a KG node's type on the left while the right
  * chip shows its namespace/region). Optional; rows without it are unchanged.
+ * Both flank the label, which is the growth slot: `badge` and `type` are capped
+ * at 150px/160px (or 35%/40% of a narrower row, whichever is smaller) and hand
+ * whatever they don't use to the label.
  *
  * Option search: search matches an option's visible label plus an optional
  * `searchText` field. Set `searchText` when the label is intentionally short but
@@ -225,14 +228,19 @@ const OptionItem = React.memo(function OptionItem({ opt, selected, multiple, onT
     >
       {multiple && <OverlayCheckbox checked={selected} />}
       {opt?.icon && <SafeIcon src={opt.icon} alt={opt?.type ?? ''} style={{ width: 16, height: 16, flexShrink: 0, objectFit: 'contain' }} />}
+      {/* Badge and type are capped in px as well as by share of the row: the
+          percentages alone let them reserve 75% of a wide panel even when their
+          text is short, starving the label — the one field that usually
+          distinguishes same-named rows. min() keeps the old proportional
+          behaviour on a narrow panel (the 220px floor). */}
       {opt?.badge && (
-        <Box sx={{ flexShrink: 0, maxWidth: '35%' }}>
+        <Box sx={{ flexShrink: 0, maxWidth: 'min(150px, 35%)' }}>
           <Label text={opt.badge} tone='info' maxWidth='100%' displayTooltip tooltipCharLimit={18} />
         </Box>
       )}
       <OptionLabel label={getLabel(opt)} />
       {opt?.type && (
-        <Box sx={{ ml: 'auto', flexShrink: 0, maxWidth: '40%' }}>
+        <Box sx={{ ml: 'auto', flexShrink: 0, maxWidth: 'min(160px, 40%)' }}>
           {/* Label capitalizes by default; pass typeTextTransform='none' for
               chips holding case-sensitive identifiers (k8s namespace, region,
               vpc/resource id) so their casing is preserved verbatim. */}
@@ -482,6 +490,7 @@ function GroupedOptionsList({
   onSelect,
   groupIcon,
   selectionWithinGroup,
+  forceOpen,
 }) {
   const groups = useMemo(() => {
     const groupMap = new Map();
@@ -568,7 +577,9 @@ function GroupedOptionsList({
         const selectedInGroup = groupOptions.filter(isSelected);
         const unselectedInGroup = groupOptions.filter((opt) => !isSelected(opt));
         const hasGroupSelection = selectedInGroup.length > 0;
-        const isOpen = !!openGroups[groupName];
+        // While searching, a group that survived filtering matched at least one of its
+        // options — auto-expand it so the match is visible without an extra click.
+        const isOpen = forceOpen || !!openGroups[groupName];
 
         return (
           <Box key={groupName}>
@@ -728,6 +739,7 @@ GroupedOptionsList.propTypes = {
   onSelect: PropTypes.func,
   groupIcon: PropTypes.func,
   selectionWithinGroup: PropTypes.bool,
+  forceOpen: PropTypes.bool,
 };
 
 function TruncatedLabel({ label, maxWidth = '90px', color, fontWeight = 500, placement = 'top' }) {
@@ -736,9 +748,16 @@ function TruncatedLabel({ label, maxWidth = '90px', color, fontWeight = 500, pla
 
   useEffect(() => {
     const el = spanRef.current;
-    if (el) {
-      setIsOverflowing(el.scrollWidth > el.clientWidth);
-    }
+    if (!el) return undefined;
+    const measure = () => setIsOverflowing(el.scrollWidth > el.clientWidth);
+    measure();
+    // Labels share the trigger row and shrink to fit, so how much a label is
+    // clipped changes with the trigger width — re-measure instead of trusting
+    // the mount-time reading, or the tooltip goes stale.
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [label]);
 
   return (
@@ -749,6 +768,9 @@ function TruncatedLabel({ label, maxWidth = '90px', color, fontWeight = 500, pla
           color: color ?? 'var(--ds-blue-600)',
           fontWeight,
           maxWidth,
+          // Flex items default to min-width:auto, which refuses to shrink below
+          // min-content — the ellipsis never kicks in without this.
+          minWidth: 0,
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           display: 'inline-block',
@@ -837,6 +859,27 @@ function FilterDropdownButton({
     [optionLabelMap]
   );
 
+  // freeSolo values legitimately live outside `options` — an email the user
+  // typed, or a `{{ Inputs.x }}` template written by the workflow generator.
+  // Surface them as options so they render in the panel's "Selected" section
+  // and can be unchecked one by one; otherwise the only way to drop one is
+  // Clear All, which takes the real selections with it.
+  const selectableOptions = useMemo(() => {
+    if (!freeSolo || !hasSelection) return options;
+    const known = new Set(options.map(getValue));
+    const seen = new Set();
+    const selected = multiple && Array.isArray(value) ? value : [value];
+    const extras = [];
+    selected.forEach((v) => {
+      if (v == null || v === '') return;
+      const val = getValue(v);
+      if (known.has(val) || seen.has(val)) return;
+      seen.add(val);
+      extras.push(typeof v === 'object' ? v : { label: getLabel(v), value: val });
+    });
+    return extras.length ? [...extras, ...options] : options;
+  }, [freeSolo, hasSelection, multiple, options, value]);
+
   // Build display values: max limitTag for multi, 1 for single
   // Single-select only: the chosen option, so its `icon` can lead the trigger.
   const selectedOption = useMemo(() => {
@@ -864,7 +907,7 @@ function FilterDropdownButton({
   // node row showing just the name while still matching on namespace/region).
   const filteredOptions = useMemo(() => {
     const q = search.trim();
-    if (!q) return options;
+    if (!q) return selectableOptions;
     const haystack = (opt) => {
       const extra = typeof opt === 'object' && opt?.searchText ? ` ${opt.searchText}` : '';
       return `${getLabel(opt)}${extra}`;
@@ -878,7 +921,7 @@ function FilterDropdownButton({
         .replace(/\?/g, '.');
       try {
         const re = new RegExp(escaped, 'i');
-        return options.filter((opt) => re.test(haystack(opt)));
+        return selectableOptions.filter((opt) => re.test(haystack(opt)));
       } catch {
         // Fall through to substring match on regex compile failure.
       }
@@ -891,7 +934,7 @@ function FilterDropdownButton({
     // exact "services-server". Stable within each tier (secondary sort on the
     // original index) so order is otherwise preserved.
     const ranked = [];
-    options.forEach((opt, i) => {
+    selectableOptions.forEach((opt, i) => {
       const label = getLabel(opt).toLowerCase();
       const extra = typeof opt === 'object' && opt?.searchText ? String(opt.searchText).toLowerCase() : '';
       const inLabel = label.includes(lower);
@@ -905,7 +948,7 @@ function FilterDropdownButton({
     });
     ranked.sort((a, b) => a.rank - b.rank || a.i - b.i);
     return ranked.map((r) => r.opt);
-  }, [options, search]);
+  }, [selectableOptions, search]);
 
   // Only render group headers when the full options list actually spans more
   // than one group. With a single group (e.g. a tenant that has only K8s
@@ -1149,11 +1192,13 @@ function FilterDropdownButton({
                 <>
                   {selectedDisplayText.labels.map((lbl, idx) => (
                     <React.Fragment key={lbl}>
-                      {idx > 0 && <span style={{ color: 'var(--ds-gray-700)', fontWeight: 400 }}>, </span>}
+                      {idx > 0 && <span style={{ color: 'var(--ds-gray-700)', fontWeight: 400, flexShrink: 0 }}>, </span>}
                       <TruncatedLabel
                         label={lbl}
-                        // A lone selection may use the whole trigger; several share it.
-                        maxWidth={selectedDisplayText.labels.length === 1 ? '100%' : '90px'}
+                        // Labels are flex items that shrink only once the row runs
+                        // out of room, so a value that fits is shown in full and
+                        // several long ones share what is left evenly.
+                        maxWidth='100%'
                         color='var(--ds-blue-500)'
                         fontWeight={600}
                       />
@@ -1371,6 +1416,7 @@ function FilterDropdownButton({
             onSelect={onSelect}
             groupIcon={groupIcon}
             selectionWithinGroup={selectionWithinGroup}
+            forceOpen={!!search.trim()}
           />
         ) : (
           <OptionsList

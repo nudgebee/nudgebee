@@ -5,7 +5,9 @@ import { CommonLocators } from "../../GlobalLocators";
 import { registerWelcomeTourAutoDismiss } from "../../utils/helpers";
 import { LISTING_TITLE } from "./ownershipConstants";
 
-// Page object for Admin -> Ownership (/user-management#ownership).
+// Page object for Admin -> Ownership (/user-management#access-users/ownership).
+// Ownership is a sub-tab of Access & Users (AnchorComponent's 2-level hash
+// routing), not its own top-level admin tab.
 //
 // LOCATOR LADDER — OwnershipRules.jsx, OwnershipRuleModal.jsx and OwnerPicker.jsx
 // render ZERO data-testid between them (verified with
@@ -47,11 +49,17 @@ export class OwnershipLocators extends CommonLocators {
   constructor(page: Page) {
     super(page);
 
-    // AnchorComponent renders each tab as `#anchor-tab-<name>` carrying
-    // data-tab-selected — the only selection signal on it (no aria-selected).
-    this.ownershipTab = page.locator("#anchor-tab-Ownership").or(page.getByRole("link", { name: "Ownership", exact: true })).first();
-    // The sibling tab this suite navigates away to and back from.
-    this.usersTab = page.locator("#anchor-tab-Users").or(page.getByRole("link", { name: "Users", exact: true })).first();
+    // Ownership is a SUB-tab of Access & Users, rendered by the shared Tabs.jsx (a
+    // real MUI Tab, not AnchorComponent's own top-level anchor-tab-<name> button)
+    // — id comes from a11yProps(value, opt.id) where opt.id is "ownership" (see
+    // user-management/index.jsx's Access & Users tabOptions). No data-tab-selected
+    // here (that's the top-level strip's own attribute); selection is MUI's
+    // standard aria-selected, asserted in the spec instead.
+    this.ownershipTab = page.locator("#ownership").or(page.getByRole("tab", { name: "Ownership", exact: true })).first();
+    // The sibling sub-tab this suite navigates away to and back from — also a
+    // Tabs.jsx MUI Tab now (Users is the default sub-tab of Access & Users), not
+    // AnchorComponent's own top-level anchor-tab-<name> button.
+    this.usersTab = page.locator("#users").or(page.getByRole("tab", { name: "Users", exact: true })).first();
 
     // id-only: ListingLayout's root takes a data-testid prop but OwnershipRules
     // does not pass one, and the wrapper has no role or text of its own — any
@@ -137,7 +145,7 @@ export class OwnershipLocators extends CommonLocators {
     // domcontentloaded, not the default "load": the dashboard's subresources keep
     // the load event pending well past the point the tab is usable on dev. The
     // listing root below is the real readiness signal.
-    await this.page.goto("/user-management#ownership", { waitUntil: "domcontentloaded" });
+    await this.page.goto("/user-management#access-users/ownership", { waitUntil: "domcontentloaded" });
     await this.listingRoot.waitFor({ state: "visible", timeout: 60000 });
   }
 

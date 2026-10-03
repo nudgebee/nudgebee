@@ -316,7 +316,7 @@ def get_ai_cost_account_report_message_template(params: AiCostAccountReportParam
     # than what the digest just reported (today's cost is still partial; the digest
     # always reports on the last fully-completed day). This keeps the two consistent
     # regardless of when the link is actually clicked.
-    footer_url = f"{base_url}/optimise?utm=slack-digest&asOf={params.reference_date}#cost-analyser/cost-report"
+    footer_url = f"{base_url}/optimise?utm=slack-digest&asOf={params.reference_date}#llm-analyser/cost-report"
     action_elements: List[Dict[str, Any]] = [
         {
             "type": "button",

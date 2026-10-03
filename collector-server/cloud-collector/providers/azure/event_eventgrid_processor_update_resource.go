@@ -75,13 +75,16 @@ func (p *TemplatedEventGridProcessor) executeUpdateCloudResourceAction(ctx provi
 		"newStatus", newStatus,
 		"accountNumber", account.AccountNumber)
 
-	// Get account metadata (UUID) from cache
-	accountID, tenantID, found := GetAzureAccountMetadata(account.AccountNumber)
+	// The account UUID is already on the resolved account; only its tenant needs
+	// looking up, keyed by that UUID so two tenants sharing one Azure subscription
+	// cannot be attributed to each other.
+	accountID := account.ID
+	tenantID, found := GetAzureAccountTenant(accountID)
 	if !found {
-		logger.Error("update_cloud_resource: account metadata not found in cache", "accountNumber", account.AccountNumber)
-		return nil, fmt.Errorf("update_cloud_resource: account metadata not found in cache for account %s", account.AccountNumber)
+		logger.Error("update_cloud_resource: account tenant not found in cache", "accountId", accountID, "accountNumber", account.AccountNumber)
+		return nil, fmt.Errorf("update_cloud_resource: account tenant not found in cache for account %s", account.AccountNumber)
 	}
-	logger.Info("update_cloud_resource: found account metadata", "accountID", accountID, "tenantID", tenantID)
+	logger.Info("update_cloud_resource: resolved account tenant", "accountID", accountID, "tenantID", tenantID)
 
 	// Get database manager
 	dbms, err := common.GetDatabaseManager(common.Metastore)

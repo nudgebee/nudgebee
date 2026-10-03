@@ -3,13 +3,17 @@ import { useData } from '@context/DataContext';
 import { useEffect, useMemo, useState } from 'react';
 import KubernetesPodLogs from './KubernetesPodLogs';
 import PropTypes from 'prop-types';
-import CustomDropdown from '@shared/CustomDropdown';
+import { Box } from '@mui/material';
+import { Select } from '@ui/Select';
+import { ListingLayout } from '@ui/ListingLayout';
 import CodeMirror, { EditorView } from '@uiw/react-codemirror';
 import Datetime from '@shared/format/Datetime';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
+import Loader from '@shared/Loader';
 import { json } from '@codemirror/lang-json';
-import { Text } from '@shared';
+import Text from '@shared/format/Text';
 import apiUser from '@api1/user';
+import { ds } from 'src/utils/colors';
 
 const KubernetesAutoScalerLogs = ({ accountId, namespace, autoscalerType }) => {
   const { setPodLogRequest } = useData();
@@ -18,6 +22,7 @@ const KubernetesAutoScalerLogs = ({ accountId, namespace, autoscalerType }) => {
   const [podOptions, setPodOptions] = useState([]);
   const [selectedPod, setSelectedPod] = useState('');
   const [loading, setLoading] = useState(true);
+  const [podDetailsLoading, setPodDetailsLoading] = useState(false);
   const [gkeAutoscalerLogData, setGkeAutoscalerLogData] = useState([]);
   const [recordsPerPage, setRecordsPerPage] = useState(apiUser.getUserPreferencesTablePageSize());
   const [currentPage, setCurrentPage] = useState(0);
@@ -35,7 +40,7 @@ const KubernetesAutoScalerLogs = ({ accountId, namespace, autoscalerType }) => {
         extensions={[json(), EditorView.lineWrapping]}
         editable={false}
         style={{
-          border: '1px solid silver',
+          border: `1px solid ${ds.gray[300]}`,
         }}
       />
     );
@@ -127,9 +132,20 @@ const KubernetesAutoScalerLogs = ({ accountId, namespace, autoscalerType }) => {
   }, [recordsPerPage, currentPage, gkeAutoscalerLogData]);
 
   useEffect(() => {
-    if (selectedPod) {
-      apiKubernetes.getPodDetails(selectedPod).then((res) => {
-        const pod = res.data.cloud_resourses[0];
+    if (!selectedPod) {
+      return;
+    }
+    // selectedPod can change again before this request resolves (fast dropdown
+    // switching); isCancelled ensures only the latest request commits state, so
+    // an in-flight response for a since-abandoned pod can't overwrite it.
+    let isCancelled = false;
+    setPodData({});
+    setPodDetailsLoading(true);
+    apiKubernetes
+      .getPodDetails(selectedPod)
+      .then((res) => {
+        if (isCancelled) return;
+        const pod = res?.data?.cloud_resourses?.[0];
         if (pod) {
           setPodData(pod);
           setPodLogRequest(accountId, {
@@ -137,46 +153,57 @@ const KubernetesAutoScalerLogs = ({ accountId, namespace, autoscalerType }) => {
             subject_namespace: namespace,
           });
         }
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setPodDetailsLoading(false);
+        }
       });
-    }
-  }, [selectedPod]);
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedPod, accountId, namespace]);
 
   const renderingLogs = () => {
     if (autoscalerType == 'karpenter' || autoscalerType == 'cluster-autoscaler') {
       return (
         <div>
-          <CustomDropdown
-            options={podOptions}
-            label='Select Pod'
-            value={selectedPod}
-            onChange={(e) => setSelectedPod(e.target.value)}
-            loading={loading}
-          />
-          {podData && Object.keys(podData).length > 0 ? <KubernetesPodLogs podData={podData} /> : null}
+          <Select options={podOptions} label='Select Pod' value={selectedPod} onChange={(v) => setSelectedPod(v)} loading={loading} />
+          {podData && Object.keys(podData).length > 0 ? (
+            <KubernetesPodLogs podData={podData} />
+          ) : loading || podDetailsLoading ? (
+            <Box sx={{ position: 'relative', minHeight: ds.space.mul(0, 100) }}>
+              <Loader style={{ width: '100%' }} />
+            </Box>
+          ) : null}
         </div>
       );
     } else if (autoscalerType == 'gke') {
       return (
-        <CustomTable
-          loading={loading}
-          tableData={pageData}
-          headers={[
-            { name: 'Created At', width: '10%' },
-            { name: 'Summary', width: '80%' },
-          ]}
-          onPageChange={onPageChange}
-          rowsPerPage={recordsPerPage}
-          totalRows={gkeAutoscalerLogData.length}
-          pageNumber={currentPage + 1}
-          expandable={{
-            tabs: [
-              {
-                componentFn: SummaryDetails,
-                text: 'Details',
-              },
-            ],
-          }}
-        />
+        <ListingLayout>
+          <ListingLayout.Body>
+            <CustomTable
+              loading={loading}
+              tableData={pageData}
+              headers={[
+                { name: 'Created At', width: '10%' },
+                { name: 'Summary', width: '80%' },
+              ]}
+              onPageChange={onPageChange}
+              rowsPerPage={recordsPerPage}
+              totalRows={gkeAutoscalerLogData.length}
+              pageNumber={currentPage + 1}
+              expandable={{
+                tabs: [
+                  {
+                    componentFn: SummaryDetails,
+                    text: 'Details',
+                  },
+                ],
+              }}
+            />
+          </ListingLayout.Body>
+        </ListingLayout>
       );
     }
   };

@@ -231,10 +231,14 @@ test(
 
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
-    // 'Diff State' is the tab AuditsTable declares for every audit row
-    // (audits/index.jsx:707); the Command tab is filtered out unless the row is
-    // a CLI_EXECUTE, so it is the only one guaranteed here.
-    await expect(locators.listingCard.getByText("Diff State", { exact: true }).first()).toBeVisible();
+    // Not asserting the 'Diff State' tab label: AuditExpandedComponent filters the Command
+    // tab out unless the row is a CLI_EXECUTE (audits/index.jsx:91), so a typical row is left
+    // with exactly one tab — and CustomTable's ExpandedRowComponent only renders the tab strip
+    // when more than one tab is present, so the label never reaches the screen here. DiffTab's
+    // own DiffViewer (audits/index.jsx:100) renders with its default showHeader, which shows
+    // its 'Previous State' / 'Current State' column labels as plain text — that's the panel's
+    // own content, present regardless of whether the tab strip is showing.
+    await expect(locators.listingCard.getByText("Previous State", { exact: true }).first()).toBeVisible();
 
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -282,13 +286,13 @@ test(
 
     await test.step("The Users tab replaces the audit listing", async () => {
       await locators.usersTab.click();
-      await expect(locators.usersTab).toHaveAttribute("data-tab-selected", "true");
+      await expect(locators.usersTab).toHaveAttribute("aria-selected", "true");
       await expect(locators.table).toHaveCount(0);
     });
 
     await test.step("Returning reselects Audits and refetches the log", async () => {
       const returned = await withAuditsCapture(page, () => locators.auditsTab.click());
-      await expect(locators.auditsTab).toHaveAttribute("data-tab-selected", "true");
+      await expect(locators.auditsTab).toHaveAttribute("aria-selected", "true");
       await expect(locators.table).toBeVisible();
       await expect(locators.dataRows).toHaveCount(returned.rows.length);
     });

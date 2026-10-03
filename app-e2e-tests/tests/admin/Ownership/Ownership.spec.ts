@@ -65,13 +65,13 @@ test.describe("Admin -> Ownership: ownership rules", () => {
   });
 
   test(
-    "Ownership sanity - open /user-management#ownership, verify the Ownership tab is selected and the Ownership rules listing renders with its table and Add rule action",
+    "Ownership sanity - open /user-management#access-users/ownership, verify the Ownership sub-tab is selected and the Ownership rules listing renders with its table and Add rule action",
     { tag: ["@dev", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await openOwnership(page);
 
-      await test.step("The module opens on its own tab of the admin strip", async () => {
-        await expect(locators.ownershipTab).toHaveAttribute("data-tab-selected", "true");
+      await test.step("The module opens on its own sub-tab under Groups", async () => {
+        await expect(locators.ownershipTab).toHaveAttribute("aria-selected", "true");
       });
 
       await test.step("The listing renders its heading and its rules table", async () => {
@@ -429,7 +429,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
         await test.step("The Users tab takes over the page", async () => {
           await locators.usersTab.click();
-          await expect(locators.usersTab).toHaveAttribute("data-tab-selected", "true");
+          await expect(locators.usersTab).toHaveAttribute("aria-selected", "true");
           // The ownership listing owns this id, so its absence is what proves the
           // other tab's body actually replaced it.
           await expect(locators.listingRoot).toBeHidden();
@@ -437,7 +437,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
         await test.step("Coming back re-selects Ownership and re-renders its listing", async () => {
           await locators.ownershipTab.click();
-          await expect(locators.ownershipTab).toHaveAttribute("data-tab-selected", "true");
+          await expect(locators.ownershipTab).toHaveAttribute("aria-selected", "true");
           await expect(locators.listingRoot).toBeVisible();
           await expect(locators.ruleRow(name)).toBeVisible();
         });

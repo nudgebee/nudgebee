@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/gorilla/websocket"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/tidwall/gjson"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
@@ -23,6 +25,7 @@ import (
 	"nudgebee/relay-server/pkg/config"
 	"nudgebee/relay-server/pkg/db"
 	"nudgebee/relay-server/pkg/mq"
+	"nudgebee/relay-server/pkg/server/health"
 	"nudgebee/relay-server/pkg/server/metrics"
 	"nudgebee/relay-server/pkg/signing"
 	"nudgebee/relay-server/pkg/utils"
@@ -34,6 +37,40 @@ var upgrader = websocket.Upgrader{
 
 // RegisterHandler sets up a /register WebSocket that forwards RPCs to RabbitMQ in parallel,
 // and properly handles shutdown and channel-reconnect without hitting "channel not open" errors.
+// relaySessionHeartbeatInterval is how often a live websocket session
+// records that it is still alive (connection_status.relayLastSeenAt).
+//
+// It MUST stay well under api-server's agentConnectThresholdMinutes (30m,
+// services/account/agent_service.go), which retires agents that have not been
+// heard from in that window. Three heartbeats of headroom means a couple of
+// failed writes cannot retire a healthy agent. TestHeartbeatFitsCronThreshold
+// pins the relationship.
+const relaySessionHeartbeatInterval = 10 * time.Minute
+
+// deliverReplyLocally hands reply to a caller waiting inside this process.
+//
+// It reports whether a caller took the reply, and separately whether the
+// request was raised by this process at all. Those differ when the local caller
+// has already timed out, and the distinction matters: the reply is then owed to
+// nobody, because the request named us as its publisher and correlation IDs are
+// unique per publisher, not globally — NewRequestHandler mints them from
+// time.Now().UnixNano() when the caller supplies none. Republishing such a reply
+// would send it to our own reply queue for our own consumer to discard.
+//
+// That per-publisher scoping is also why the handover is only attempted when
+// the header names this process: matching a correlation ID raised on another
+// replica could wake an unrelated request with someone else's payload.
+func deliverReplyLocally(rpcClient mq.RPCClient, d amqp.Delivery, reply []byte) (delivered, isLocal bool) {
+	if rpcClient == nil {
+		return false, false
+	}
+	instance, _ := d.Headers[mq.HeaderRelayInstance].(string)
+	if instance == "" || instance != rpcClient.InstanceID() {
+		return false, false
+	}
+	return rpcClient.DeliverLocal(d.CorrelationId, reply), true
+}
+
 func RegisterHandler(
 	store db.AgentStore,
 	connMgr *mq.ConnectionManager,
@@ -41,6 +78,8 @@ func RegisterHandler(
 	cfg *config.Config,
 	exchange string,
 	signer *signing.Signer,
+	rpcClient mq.RPCClient,
+	healthTracker *health.Tracker,
 	roottracer *trace.Tracer,
 	rootmeter *metric.Meter,
 	rootLogger *slog.Logger,
@@ -67,6 +106,11 @@ func RegisterHandler(
 			queue = fmt.Sprintf("relay_requests_%s_%s", accountID, agentType)
 		}
 		logger.Info("[Register] starting session", "account", accountID, "agent_type", agentType, "queue", queue)
+
+		// A session that has gone away is not a stuck session. Without this the
+		// last failure of a disconnecting agent would keep the relay unhealthy
+		// forever and restart the pod over a tenant that simply left.
+		defer healthTracker.SessionEnded(queue)
 
 		sessionStart := time.Now()
 		if metrics.AsyncMetricsInstance != nil {
@@ -237,6 +281,34 @@ func RegisterHandler(
 			}
 		})
 
+		// —— heartbeat: record that this session is still alive ——
+		//
+		// The row otherwise only records when a session *started*, which is
+		// not evidence that it is still up. api-server's "Agent Status Check"
+		// cron retires agents that have not been heard from in 30 minutes, and
+		// with nothing refreshing that timestamp it was retiring healthy
+		// long-lived sessions (nudgebee/nudgebee#36114). This is what it reads
+		// instead. Also re-asserts CONNECTED, so a lost connect write repairs
+		// itself within one interval instead of stranding the account.
+		eg.Go(func() error {
+			ticker := time.NewTicker(relaySessionHeartbeatInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-egCtx.Done():
+					return egCtx.Err()
+				case <-ticker.C:
+					if err := store.TouchRelaySession(egCtx, accountID, agentType); err != nil && egCtx.Err() == nil {
+						// Not fatal to the session: the socket is fine and the
+						// next tick retries. Only the cron's view goes stale.
+						// A cancelled context means the session is ending and
+						// the write was abandoned on purpose — not a warning.
+						logger.Warn("failed to record relay session heartbeat", "err", err, "account", accountID, "agent_type", agentType)
+					}
+				}
+			}
+		})
+
 		// —— pinger: send periodic pings to keep the connection alive through LBs ——
 		eg.Go(func() error {
 			const pingInterval = 30 * time.Second
@@ -306,6 +378,14 @@ func RegisterHandler(
 			}
 		})
 
+		// —— answer requests that died in the queue ——
+		// Runs for as long as the session does, so a caller whose request aged
+		// out behind a full prefetch window fails fast instead of hanging until
+		// its own timeout. See consumeExpiredRequests.
+		eg.Go(func() error {
+			return consumeExpiredRequests(egCtx, connMgr, queue, accountID, logger)
+		})
+
 		consumerTag := fmt.Sprintf("reg-%s-%d", accountID, time.Now().UnixNano())
 		// —— consumer + dispatch with auto‐reconnect ——
 		eg.Go(func() error {
@@ -316,8 +396,17 @@ func RegisterHandler(
 					return fmt.Errorf("get channel: %w", err)
 				}
 
-				// 2) apply QoS
-				if err := sessCh.Qos(10, 0, false); err != nil {
+				// 2) apply QoS.
+				//
+				// This bounds a single tenant's concurrent in-flight agent
+				// requests. It was hardcoded to 10, and production tenants hit
+				// that ceiling: with unacked pinned at 10 the broker stops
+				// delivering, so further requests sit in the ready queue until
+				// the 1m queue TTL dead-letters them — silently, with no error
+				// to the caller. The messages held here are requests, which are
+				// small; the large payloads are replies, bounded separately on
+				// the RPC client's own channel.
+				if err := sessCh.Qos(cfg.RabbitMQ.PrefetchCount, 0, false); err != nil {
 					sessCh.Close() // nolint:errcheck
 					logger.Error("QoS setup failed, retrying", "err", err)
 					time.Sleep(time.Second)
@@ -331,10 +420,32 @@ func RegisterHandler(
 				msgs, err := sessCh.Consume(queue, consumerTag, false, false, false, false, nil)
 				if err != nil {
 					sessCh.Close() // nolint:errcheck
-					logger.Error("Consume failed, retrying", "err", err)
-					time.Sleep(time.Second)
+					logger.Error("Consume failed, re-declaring topology and retrying", "queue", queue, "err", err)
+
+					// The broker disagrees with us about this queue, so the
+					// "already declared" record is wrong. A RabbitMQ that came
+					// back without its definitions is the case that matters:
+					// Consume then fails with NOT_FOUND forever, nothing
+					// re-creates the queue, and the session sits here retrying
+					// a queue that does not exist while the agent's WebSocket
+					// stays open — so the pod looks healthy and serves nothing
+					// until someone deletes it. Re-declaring is a cheap no-op
+					// when the queue is really there.
+					healthTracker.ConsumeFailed(queue)
+					topo.ForgetTenant(accountID, agentType)
+					if derr := topo.EnsureTenantForAgentType(egCtx, accountID, agentType); derr != nil {
+						logger.Error("re-declare after consume failure failed", "queue", queue, "err", derr)
+					}
+
+					select {
+					case <-egCtx.Done():
+						return egCtx.Err()
+					case <-time.After(time.Second):
+					}
 					continue
 				}
+
+				healthTracker.ConsumerAttached(queue)
 
 			ConsumeLoop:
 				for {
@@ -394,14 +505,37 @@ func RegisterHandler(
 
 							deliveryLogger.Info("processing action")
 
-							// forward to WebSocket
-							safeSend(d.Body)
+							// Spend what is left of the publisher's budget
+							// instead of starting a fresh full-length timer.
+							// See mq.HeaderRelayDeadline.
+							budget := cfg.HTTP.ReadTimeout
+							if deadline, ok := mq.DeadlineFromHeaders(d.Headers); ok {
+								// Still capped by our own timeout, so a publisher
+								// with skewed config can never buy a longer slot
+								// than this process would have granted anyway.
+								if remaining := time.Until(deadline); remaining < budget {
+									budget = remaining
+								}
+							}
+							if budget <= 0 {
+								// Already past the caller's deadline while this
+								// message queued. Forwarding it would only make
+								// the agent produce a reply nobody can receive.
+								deliveryLogger.Warn("request expired before delivery")
+								d.Ack(false) // nolint
+								metrics.WS_RepliesDelivered.Add(ctx, 1, metric.WithAttributes(
+									metrics.AttrAccount(accountID), attribute.String("delivery", "expired")))
+								return nil
+							}
 
-							// wait for reply or timeout
+							// Register the reply channel *before* handing the
+							// request to the agent: the WebSocket reader logs
+							// and drops any reply whose request ID has no entry
+							// here, so an agent fast enough to answer before
+							// this goroutine is rescheduled had its reply lost.
 							ch := make(chan []byte, 1)
 							respMap.Lock()
 							respMap.m[d.CorrelationId] = ch
-							deliveryLogger.Debug("awaiting reply")
 							respMap.Unlock()
 
 							// Defer cleanup of response map
@@ -411,12 +545,52 @@ func RegisterHandler(
 								respMap.Unlock()
 							}()
 
-							timeout := time.NewTimer(cfg.HTTP.ReadTimeout)
+							// forward to WebSocket
+							safeSend(d.Body)
+							deliveryLogger.Debug("awaiting reply")
+
+							// When the caller is in this process, it closes this
+							// channel the moment it gives up — typically its HTTP
+							// client disconnecting, long before the budget above
+							// expires. Watching it releases the prefetch slot at
+							// the caller's real abort instead of holding it for
+							// the remainder of a wait nobody is left for.
+							var abandoned <-chan struct{}
+							if instance, _ := d.Headers[mq.HeaderRelayInstance].(string); rpcClient != nil && instance == rpcClient.InstanceID() {
+								abandoned = rpcClient.AbandonCh(d.CorrelationId)
+							}
+
+							timeout := time.NewTimer(budget)
 							defer timeout.Stop()
 
 							select {
 							case reply := <-ch:
 								deliveryLogger.Info("received reply from agent")
+
+								// The relay publishes the request and, here, receives its
+								// reply. When the caller blocked in rpcClient.Call sits in
+								// this same process — every request at the chart's default
+								// replicaCount: 1 — hand the reply over directly.
+								// Publishing would serialise a multi-megabyte payload out
+								// to RabbitMQ purely for our own consumer to reassemble.
+								//
+								// A request we published ourselves is owed to nobody else,
+								// so when its caller has already timed out the reply is
+								// dropped rather than republished onto our own reply queue
+								// for our own consumer to discard.
+								if delivered, isLocal := deliverReplyLocally(rpcClient, d, reply); isLocal {
+									route := "local"
+									if delivered {
+										deliveryLogger.Info("reply delivered in-process")
+									} else {
+										route = "dropped"
+										deliveryLogger.Warn("local caller gone, dropping reply")
+									}
+									d.Ack(false) // nolint
+									metrics.WS_RepliesDelivered.Add(ctx, 1, metric.WithAttributes(
+										metrics.AttrAccount(accountID), attribute.String("delivery", route)))
+									return nil
+								}
 
 								err := sessCh.Publish(
 									"", d.ReplyTo, false, false,
@@ -434,12 +608,29 @@ func RegisterHandler(
 								} else {
 									deliveryLogger.Info("reply published successfully")
 									d.Ack(false) // nolint
+									metrics.WS_RepliesDelivered.Add(ctx, 1, metric.WithAttributes(
+										metrics.AttrAccount(accountID), attribute.String("delivery", "amqp")))
 								}
 								logger.Debug("reply sent", "corr_id", d.CorrelationId, "account", accountID)
+							case <-abandoned:
+								// Ack rather than Nack: the request was handled
+								// to the extent anyone still cares about, so
+								// dead-lettering it would only add noise.
+								d.Ack(false) // nolint
+								deliveryLogger.Info("caller gave up, releasing prefetch slot")
+								metrics.WS_RepliesDelivered.Add(ctx, 1, metric.WithAttributes(
+									metrics.AttrAccount(accountID), attribute.String("delivery", "abandoned")))
+
 							case <-timeout.C:
 								d.Nack(false, false) // nolint
 								deliveryLogger.Warn("request timeout")
-								metrics.WS_RequestTimeouts.Add(ctx, 1, metric.WithAttributes(metrics.AttrAccount(accountID)))
+								// Counted here as a delivery outcome, not as
+								// nb_relay_ws_request_timeouts_total: that
+								// counter is incremented by the caller-side
+								// handler for the same request, and counting it
+								// on both sides double-counted every timeout.
+								metrics.WS_RepliesDelivered.Add(ctx, 1, metric.WithAttributes(
+									metrics.AttrAccount(accountID), attribute.String("delivery", "timeout")))
 							case <-egCtx.Done():
 								deliveryLogger.Info("context canceled, sending error reply")
 								// Send an error reply matching AgentResponse format so the
@@ -532,7 +723,10 @@ func RegisterHandler(
 		}
 
 		// —— wait for everything to finish ——
-		if err := eg.Wait(); err != nil && err != context.Canceled {
+		// errors.Is, not !=: several goroutines in this group wrap their cause
+		// (the consumer's "get channel: %w" among them), so a plain comparison
+		// reported every clean shutdown as a session failure.
+		if err := eg.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("register session ended with error", "err", err, "account", accountID)
 		} else {
 			logger.Info("register session ended cleanly", "account", accountID)

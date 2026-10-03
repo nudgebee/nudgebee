@@ -24,7 +24,9 @@ type DatadogLogQueryAgent struct{}
 
 func (d DatadogLogQueryAgent) GetName() string { return DatadogLogQueryAgentName }
 
-func (d DatadogLogQueryAgent) GetNameAliases() []string { return []string{"Datadog Log Query"} }
+func (d DatadogLogQueryAgent) GetNameAliases() []string {
+	return []string{"Datadog Log Query Writer", "Datadog Log Query"}
+}
 
 func (d DatadogLogQueryAgent) GetDescription() string {
 	return `Generate Datadog log query based on natural language question.`

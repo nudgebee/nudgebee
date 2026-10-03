@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box } from '@mui/material';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import Text from '@shared/format/Text';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import Chip from '@ui/Chip';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
@@ -16,21 +17,13 @@ import EmptyData from '@shared/EmptyData';
 import { DataNotAvailable } from '@assets';
 import { toast as snackbar } from '@ui/Toast';
 import { hasWriteAccess } from '@lib/auth';
-import apiCriticality, { type Criticality, type WorkloadCriticalityItem } from '@api1/criticality';
+import apiCriticality, { CRITICALITY_TONE, type Criticality, type WorkloadCriticalityItem } from '@api1/criticality';
 
 interface WorkloadCriticalityManagerProps {
   accountId?: string;
 }
 
 const LEVELS: Criticality[] = ['critical', 'high', 'medium', 'low'];
-
-// Map a criticality to a design-system Chip tone (for the per-row tier pill).
-const LEVEL_TONE: Record<Criticality, 'critical' | 'warning' | 'info' | 'neutral'> = {
-  critical: 'critical',
-  high: 'warning',
-  medium: 'info',
-  low: 'neutral',
-};
 
 const SOURCE_LABEL: Record<string, string> = {
   user: 'You',
@@ -203,7 +196,7 @@ const WorkloadCriticalityManager: React.FC<WorkloadCriticalityManagerProps> = ({
         { component: <Text value={item.kind} /> },
         {
           component: (
-            <Chip variant='tag' size='xs' tone={LEVEL_TONE[item.criticality]}>
+            <Chip variant='tag' size='xs' tone={CRITICALITY_TONE[item.criticality]}>
               {item.criticality}
             </Chip>
           ),
@@ -229,7 +222,7 @@ const WorkloadCriticalityManager: React.FC<WorkloadCriticalityManagerProps> = ({
           dismissible
           onDismiss={() => setShowInfo(false)}
           title='Why set service criticality?'
-          message='Criticality tells Nudgebee how much each workload matters, so incident triage surfaces and prioritizes failures on your important services first — and downranks the noise from demo, test, and internal tooling. Nudgebee infers a baseline automatically (topology + AI); review and correct it here so scoring reflects what is actually business-critical in your environment. Your edits are kept and never overwritten by the automatic refresh.'
+          message={`Criticality tells ${getBrandTitle()} how much each workload matters, so incident triage surfaces and prioritizes failures on your important services first — and downranks the noise from demo, test, and internal tooling. ${getBrandTitle()} infers a baseline automatically (topology + AI); review and correct it here so scoring reflects what is actually business-critical in your environment. Your edits are kept and never overwritten by the automatic refresh.`}
         />
       )}
       <ListingLayout id='workload-criticality-list-box'>

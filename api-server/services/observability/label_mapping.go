@@ -1,6 +1,12 @@
 package observability
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"nudgebee/services/security"
+)
 
 // providerRef identifies the specific integration a label mapping is read from.
 //
@@ -15,6 +21,30 @@ import "sort"
 type providerRef struct {
 	Provider string
 	Source   string
+}
+
+// The signal a GetLabelMappingRequest asks about. Empty means logs, so the action
+// predates the trace sibling without a contract break — the shape GetLabelMappingRequest
+// was written for.
+const (
+	labelMappingProviderTypeLogs   = "logs"
+	labelMappingProviderTypeTraces = "traces"
+)
+
+// GetLabelMapping dispatches observability_get_label_mapping to the resolver for the
+// requested signal. One entry point rather than two actions, because the request and
+// response shapes are identical and ProviderType already exists to select between them.
+func GetLabelMapping(ctx *security.RequestContext, request GetLabelMappingRequest) (LabelMappingResponse, error) {
+	switch strings.TrimSpace(request.ProviderType) {
+	case "", labelMappingProviderTypeLogs:
+		return GetLogLabelMapping(ctx, request)
+	case labelMappingProviderTypeTraces:
+		return GetTraceLabelMapping(ctx, request)
+	default:
+		return LabelMappingResponse{}, fmt.Errorf(
+			"provider_type %q is not supported (only %q and %q)",
+			request.ProviderType, labelMappingProviderTypeLogs, labelMappingProviderTypeTraces)
+	}
 }
 
 // LabelMappingTier names one layer of the canonical -> provider field merge.

@@ -181,13 +181,14 @@ type AgenticAnalyzeRequest struct {
 // llm-server (see core.ForwardedLLMConfig). Only non-empty fields override the
 // startup defaults. The API key is plaintext and must never be logged.
 type LLMConfigOverride struct {
-	Provider    string `json:"provider,omitempty"`
-	Model       string `json:"model,omitempty"`
-	ApiKey      string `json:"api_key,omitempty"`
-	ApiEndpoint string `json:"endpoint,omitempty"`
-	ApiVersion  string `json:"api_version,omitempty"`
-	ApiType     string `json:"api_type,omitempty"`
-	Region      string `json:"region,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	Model        string `json:"model,omitempty"`
+	ApiKey       string `json:"api_key,omitempty"`
+	ApiEndpoint  string `json:"endpoint,omitempty"`
+	ApiVersion   string `json:"api_version,omitempty"`
+	ApiType      string `json:"api_type,omitempty"`
+	Region       string `json:"region,omitempty"`
+	ExtraHeaders string `json:"extra_headers,omitempty"`
 	// AccessKey/SecretKey/SessionToken are the AWS static credentials for
 	// Bedrock, which authenticates with a SigV4 credential triple instead of a
 	// single API key. llm-server sends them only as a complete pair. Like the
@@ -216,6 +217,7 @@ func (o *LLMConfigOverride) toConfigOverride() config.LLMOverride {
 		ApiVersion:   o.ApiVersion,
 		ApiType:      o.ApiType,
 		Region:       o.Region,
+		ExtraHeaders: o.ExtraHeaders,
 		AccessKey:    o.AccessKey,
 		SecretKey:    o.SecretKey,
 		SessionToken: o.SessionToken,

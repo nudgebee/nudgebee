@@ -39,6 +39,8 @@ export class OptimizeModuleLocators extends OptimizeLocators {
 
   // Summary tab.
   readonly summarySavingsCard: Locator;
+  readonly summaryInsightWidget: Locator;
+  readonly summaryEnvFacet: Locator;
   readonly summaryCategoryFacet: Locator;
   readonly summaryProviderFacet: Locator;
   readonly summaryAccountFilter: Locator;
@@ -93,6 +95,10 @@ export class OptimizeModuleLocators extends OptimizeLocators {
     // accessible name — "Account" names the Recommendations and Resolutions account
     // filters too. Id-only, for the same document-order reason as the strip above.
     this.summarySavingsCard = page.locator("#summary-savings-card");
+    // Present only once the metrics grid moved out of the headline card into its
+    // own widget — absent on builds that predate that. See the probe in the spec.
+    this.summaryInsightWidget = page.locator("#summary-insight-widget");
+    this.summaryEnvFacet = page.locator("#summary-filter-env");
     this.summaryCategoryFacet = page.locator("#summary-filter-category");
     this.summaryProviderFacet = page.locator("#summary-filter-provider");
     this.summaryAccountFilter = page.locator("#auto-complete-account-filter-select");

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import FilterDropdown from '@ui/FilterDropdown';
 
 interface AutoRefreshControlsProps {
@@ -9,13 +9,13 @@ const AutoRefreshControls: React.FC<AutoRefreshControlsProps> = ({ callBack }) =
   const [interval, setInterval] = useState('5');
   const intervalRef = useRef<number | null>(null);
 
-  const callback2 = () => {
+  const callback2 = useCallback(() => {
     let interval2 = 0;
     if (typeof interval === 'string') {
       interval2 = parseInt(interval);
     }
     callBack(interval2);
-  };
+  }, [interval, callBack]);
 
   useEffect(() => {
     if (intervalRef.current) {
@@ -33,7 +33,7 @@ const AutoRefreshControls: React.FC<AutoRefreshControlsProps> = ({ callBack }) =
         clearInterval(intervalRef.current);
       }
     };
-  }, [interval, callBack]);
+  }, [interval, callback2]);
 
   return (
     <FilterDropdown

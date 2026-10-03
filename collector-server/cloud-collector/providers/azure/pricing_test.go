@@ -179,3 +179,52 @@ func TestMapDiskSKUToProductName(t *testing.T) {
 		})
 	}
 }
+
+// Azure returns every meter for a disk family in one response — the
+// whole-disk band meters, the far cheaper "Disk Mount" shared-disk meters,
+// both redundancies, and Operations / Burst / Snapshot lines. Selecting by
+// exact band meter name is what keeps them apart.
+func TestAzureDiskTierMeter(t *testing.T) {
+	cases := []struct {
+		sku    string
+		sizeGB float64
+		want   string
+	}{
+		{"Premium_LRS", 100, "P10 LRS Disk"},
+		{"Premium_LRS", 128, "P10 LRS Disk"},
+		{"Premium_LRS", 129, "P15 LRS Disk"},
+		{"Premium_ZRS", 100, "P10 ZRS Disk"},
+		{"StandardSSD_LRS", 100, "E10 LRS Disk"},
+		{"StandardSSD_ZRS", 512, "E20 ZRS Disk"},
+		{"Standard_LRS", 10, "S4 LRS Disk"},     // no S1/S2/S3 band exists
+		{"Standard_LRS", 40000, "S80 LRS Disk"}, // above Azure's largest disk
+		{"PremiumV2_LRS", 100, ""},              // per-GiB, no bands
+		{"UltraSSD_LRS", 100, ""},
+		// SKU casing and padding vary by payload; the family match and
+		// diskRedundancy must agree on the same normalization.
+		{" premium_zrs ", 100, "P10 ZRS Disk"},
+		{"STANDARDSSD_LRS", 100, "E10 LRS Disk"},
+		{"premiumv2_lrs", 100, ""},
+	}
+	for _, c := range cases {
+		if got := azureDiskTierMeter(c.sku, c.sizeGB); got != c.want {
+			t.Errorf("azureDiskTierMeter(%s, %v) = %q, want %q", c.sku, c.sizeGB, got, c.want)
+		}
+	}
+}
+
+func TestAzureDiskCapacityMeter(t *testing.T) {
+	cases := map[string]string{
+		"PremiumV2_LRS":   "Premium LRS Provisioned Capacity",
+		"UltraSSD_LRS":    "Ultra LRS Provisioned Capacity",
+		"Premium_LRS":     "",
+		"StandardSSD_LRS": "",
+		" premiumv2_zrs ": "Premium ZRS Provisioned Capacity",
+		"ultrassd_lrs":    "Ultra LRS Provisioned Capacity",
+	}
+	for sku, want := range cases {
+		if got := azureDiskCapacityMeter(sku); got != want {
+			t.Errorf("azureDiskCapacityMeter(%s) = %q, want %q", sku, got, want)
+		}
+	}
+}

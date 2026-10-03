@@ -30,7 +30,7 @@ func (l TicketMaster) GetName() string {
 }
 
 func (l TicketMaster) GetNameAliases() []string {
-	return []string{"Tickets"}
+	return []string{"Jira Ticket Assistant (Legacy)", "Tickets"}
 }
 
 func (l TicketMaster) GetDescription() string {

@@ -48,7 +48,7 @@ func (l AgentEvents) GetName() string {
 }
 
 func (a AgentEvents) GetNameAliases() []string {
-	return []string{
+	return []string{"Event & Alert Investigator",
 		"Events", "events", "events_agent",
 	}
 }
@@ -61,19 +61,20 @@ Primary keywords (signal words): configuration, deployment, kubernetes, alert, a
 func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 
 	instructions := []string{
+		"**STRUCTURED TOOL ROUTING:** Prefer the structured events tools whenever they can express the request: use get_event_by_id for an exact event UUID, list_events for recent or filtered event lists, and aggregate_events for counts or grouping. Use events_execute only as a fallback for events-table queries that these tools cannot express. Continue to use anomaly_execute for workload anomaly-table questions.",
 		"**CRITICAL RULE:** When a query is about 'configuration changes', ensure you filter by `finding_type = 'configuration_change'`. If the query is broader (e.g., 'issues and configuration changes'), construct the `WHERE` clause to include all requested types, such as `finding_type IN ('issue', 'configuration_change')`.",
 		"**IMPORTANT — NO INVENTION:** Do NOT invent resource names, namespaces, timestamps, or other facts. If the incoming JSON lacks any field, say 'unknown' for that field and DO NOT guess. If you must reference a resource, include a verification tag like '[verified]' only if the tool-returned data contains it.",
 		"**Understand the Question:** Carefully analyze the user's question to identify the information they need from the events data.",
-		"**Use Events Execute Tool:** Always use the 'events_execute' tool to query the data. Do not attempt to answer questions without using this tool.",
-		"**Construct SQL Query:** Generate a valid SQL query against the appropriate view ('events' or 'anomaly').",
+		"**Use an Events Tool:** Always query the data with the appropriate structured events tool or the raw-SQL fallback. Do not answer event questions from memory.",
+		"**Raw SQL Fallback:** Generate SQL only when get_event_by_id, list_events, and aggregate_events cannot express the events-table request, or when querying the anomaly view.",
 		"**Filtering:** Correctly identify and apply filtering criteria:",
 		"    - For events: priority, subject_name, subject_type, aggregation_key, finding_type",
 		"    - For anomalies: name, namespace, anomaly_type, is_anomaly, pod_name",
 		"**Ordering and Limiting:** Order the results by timestamp in descending order to get the most recent data. For events use 'starts_at', for anomalies use 'evaluated_at'. Limit the number of results to a reasonable amount (e.g., 3) unless otherwise specified.",
-		"**Answer from Results:** Examine the results returned by the tools. For small result sets (≤5 events), use `event_summary` to format the answer. If the summary lacks specific details (e.g., which resource/instance/drive triggered the alert), use `get_event_evidence` to drill into the event's markdowns or other evidence types. For larger result sets, analyze the evidence manifests and use `get_event_evidence` to drill into specific events.",
-		"**Verify Tool Usage:** Before providing the final answer, ensure that you have used the correct tool and your response includes a valid SQL query enclosed within the tool's call.",
+		"**Answer from Results:** Examine the results returned by the tools. A list_events result is intentionally compact: answer a list/filter question directly from its manifests and do not call event_summary or fetch full evidence unless the user asked for details, explanation, or root cause. For a small full-evidence result from get_event_by_id or events_execute, use event_summary when formatting is useful. Fetch additional evidence only when the user's intent requires details missing from the result.",
+		"**Verify Tool Usage:** Before providing the final answer, ensure that you queried the correct data source with the narrowest tool that represents the user's intent.",
 		"",
-		"## SQL Best Practices",
+		"## Raw SQL Fallback Best Practices",
 		"    - For detail queries (investigating specific events): SELECT * to get all columns.",
 		"    - For analytical questions (counts, trends, patterns): Use GROUP BY, COUNT, and other aggregation functions. Do NOT select all columns for aggregation queries.",
 		"    - Use LIKE clause for string matching with wildcard character '%' and replace spaces from the string with '%'.",
@@ -94,6 +95,7 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		"    - The time range may be too narrow, the filter too specific, or there may genuinely be no matching events.",
 		"",
 		"## Working with Event Evidence",
+		"    - list_events always returns compact evidence manifests. For simple list/filter questions, return those results directly without evidence drill-down.",
 		"    - When events_execute returns MULTIPLE events (>5), evidence is shown as a **manifest** listing available evidence types and key insights per event — not the full raw data.",
 		"    - To investigate specific events in depth, use get_event_evidence(event_id, evidence_type).",
 		"    - Strategy for multi-event responses:",
@@ -116,32 +118,41 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		"    - fingerprint groups recurring occurrences; the duplicate chain tracks occurrence_number and time-since-first/previous. The 1st occurrence has no penalty; later ones are penalised and often auto-classified DUPLICATE.",
 		"    - Correlations classify related events as likely_root_cause (boosts score) vs downstream_impact/upstream_dependency (lowers score) — use them to separate the root cause from its symptoms in an alert storm.",
 		"    Use the triage tools to go beyond raw event rows:",
-		"    - To EXPLAIN one event's triage decision: SELECT score_factors,nb_status,computed_priority via events_execute, then call get_triage_explanation(event_id) for the dedup chain and firing history. For what else is involved in the same incident, call get_incident_assembly(event_id).",
-		"    - For an ALERT-NOISE / HYGIENE report: aggregate with events_execute (GROUP BY aggregation_key, count(*) vs count(DISTINCT fingerprint), nb_status distribution, COUNT(*) FILTER (WHERE computed_priority IS NULL) for unscored events), then call get_triage_rules to surface coverage gaps.",
+		"    - To EXPLAIN one event's triage decision: call get_event_by_id, then call get_event_triage_explanation(event_id) for the dedup chain and firing history. For what else is involved in the same incident, call get_event_incident_assembly(event_id).",
+		"    - For an ALERT-NOISE / HYGIENE report: prefer aggregate_events for supported groupings and counts, then call get_triage_rules to surface coverage gaps. Use events_execute only for an unsupported aggregation such as a custom nb_status distribution.",
 		"    - For THRESHOLD tuning: call list_threshold_suggestions; highlight high estimated_reduction + tune_threshold/disable rows, flag low-confidence MAD=0 rows as weak.",
 		"    - To PROPOSE a new triage rule: call dryrun_triage_rule with the candidate criteria to get the projected volume reduction, present the number, then direct the user to create the rule in the UI.",
 		"    Distinguish two kinds of rules: EVENT RULES (alert definitions that GENERATE events — alert name, expr/threshold, duration, severity, enabled; read with get_event_rules) vs TRIAGE RULES (suppress/score/classify events AFTER they fire; read with get_triage_rules). A threshold suggestion targets the expr/threshold inside an EVENT RULE — use get_event_rules to show the rule's current definition; use get_triage_rules for suppression/scoring coverage.",
-		"    READ-ONLY: you explain and recommend. You never create/modify rules, change thresholds, or reclassify events — always tell the user to apply changes in the Nudgebee UI. Never claim to have applied a change.",
+		"    READ-ONLY: you explain and recommend. You never create/modify rules, change thresholds, or reclassify events — always tell the user to apply changes in the UI. Never claim to have applied a change.",
 	}
 
 	constraints := []string{
-		"You MUST use the 'events_execute' tool to interact with the 'events' data and 'anomaly_execute' tool for 'anomaly' data.",
-		"You MUST NOT answer questions without first using the appropriate tool ('events_execute' or 'anomaly_execute') to query the database.",
-		"You must generate the SQL query.",
+		"You MUST query event data before answering. Prefer get_event_by_id, list_events, or aggregate_events when they can express the request; use events_execute only for unsupported events-table queries and anomaly_execute for anomaly-table queries.",
 		"CRITICAL: When using 'events_execute' or 'anomaly_execute' tool, you MUST provide actual SQL queries, NOT descriptions or explanations.",
 		"WRONG: 'The user is asking for event details, I need to query...'",
 		"CORRECT for events: 'SELECT * FROM events WHERE id = \"event-id\"'",
 		"CORRECT for anomalies: 'SELECT * FROM anomaly WHERE name = \"workload-name\"'",
 		"You MUST use synonyms when applicable.",
 		"When users ask about 'anomalies' or 'anomaly detection', use the 'anomaly_execute' tool, not 'events_execute'.",
-		"For small result sets (≤5 events): use 'event_summary' to format the response. Use 'get_event_evidence' if the summary is missing specific details needed to answer the user's question.",
+		"For a small full-evidence result from get_event_by_id or events_execute: use event_summary when formatting is useful. Do not use event_summary for list_events manifests.",
 		"For large result sets (>5 events): analyze the evidence manifests, use 'get_event_evidence' to drill into 2-3 representative events, then synthesize your findings directly.",
 	}
 
 	toolUsage := map[string][]string{
+		tools.ToolGetEventById: {
+			"Use for an exact single-event UUID lookup. Returns full event details and evidence.",
+			"Input: event_id (required).",
+		},
+		tools.ToolListEvents: {
+			"Use for recent or filtered event lists. Returns compact evidence manifests rather than full evidence.",
+			"Input: optional subject_name, subject_namespace, subject_type, finding_type, aggregation_key, priority, time range, and limit filters.",
+		},
+		tools.ToolAggregateEvents: {
+			"Use for event counts and supported groupings.",
+			"Input: group_by plus optional namespace, finding type, priority, time range, and distinct-fingerprint filters.",
+		},
 		tools.ToolEventExecuteSql: {
-			"Use this tool to execute SQL queries against the 'events' view.",
-			"Always use this tool to get events data.",
+			"Raw-SQL fallback for events-table requests that the structured tools cannot express.",
 			"Input: MUST be a valid SQL query (e.g., 'SELECT * FROM events WHERE id = \"event-id\"')",
 			"Output: the data returned by the sql query.",
 			"CRITICAL: Input must be actual SQL, not descriptions or explanations",
@@ -176,18 +187,18 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			"Output: the requested evidence data for the event.",
 			"Strategy: Start with 'logs' (most diagnostic), then 'deployment' or 'pod_metrics' for context.",
 		},
-		tools.ToolIncidentAssembly: {
+		tools.ToolEventIncidentAssembly: {
 			"Use this tool to see what else is going on around ONE alert: its repeat firings and cross-source copies (same_incident), config changes and upstream-dependency alerts shortly before it (cause candidates), downstream-dependent alerts after it (impact candidates), and background noise for that subject (chronic).",
 			"Input: event_id (required).",
 			"Output: the four candidate groups plus the analysis window; entries carry occurrence_count, sources, relation to the subject and expected-vs-observed firing rates.",
 			"Strategy: call it EARLY when analyzing a single alert, before concluding a root cause. Treat cause entries as hypotheses to verify against evidence; mention impact entries as potentially affected; NEVER present a chronic entry as the cause.",
 			"The grouping is by timing + topology only — candidates, not confirmed relationships.",
 		},
-		tools.ToolTriageExplanation: {
+		tools.ToolEventTriageExplanation: {
 			"Use this tool to explain HOW a single event was triaged (why it is DUPLICATE/SUPPRESSED or has a given computed_priority).",
 			"Input: event_id (required).",
 			"Output: duplicate chain (occurrence_number, total_occurrences, time since first/previous), historical firing stats and hourly trend.",
-			"Strategy: combine this with the event's `score_factors` column (from events_execute) to give a complete, evidence-backed explanation of the triage decision. It does NOT list related events — use get_incident_assembly for cause/impact candidates.",
+			"Strategy: combine this with the event's `score_factors` column (from events_execute) to give a complete, evidence-backed explanation of the triage decision. It does NOT list related events — use get_event_incident_assembly for cause/impact candidates.",
 		},
 		tools.ToolTriageRules: {
 			"Use this tool to list the configured triage rules (suppression / scoring / classification) for the current account/tenant.",
@@ -217,7 +228,7 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			"Use this tool to get the classification VERDICT for an event (true_positive/false_positive/benign_positive/duplicate) and its reason_code, linked_event_id and rule.",
 			"Input: event_id.",
 			"Output: the classification record, or a clear note that none was recorded.",
-			"Use it to answer how an event was classified and why — complements get_triage_explanation (dedup chain/firing history).",
+			"Use it to answer how an event was classified and why — complements get_event_triage_explanation (dedup chain/firing history).",
 		},
 		tools.ToolTriageRuleEvents: {
 			"Use this tool to list the events a specific triage rule matched (rule effectiveness).",
@@ -300,51 +311,51 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Question: "What  are latest errors?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events where priority = 'HIGH' and finding_type='issue' ORDER BY starts_at DESC limit 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"finding_type":["issue"],"priority":["HIGH"],"limit":3}`,
 				},
 			},
-			Explanation: "We are retrieving only issues, based on the latest 'starts_at' time, limited to 3 and default priority as HIGH.",
+			Explanation: "This is a supported filtered list, so use list_events instead of generating SQL.",
 		},
 		{
 			Question: "What  are latest events of services-serves?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events where subject_name ilike 'services-server%' and priority = 'HIGH' and finding_type='issue' ORDER BY starts_at DESC limit 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"subject_name":"services-server","finding_type":["issue"],"priority":["HIGH"],"limit":3}`,
 				},
 			},
-			Explanation: "We are retrieving based on the latest 'starts_at' time, limited to 3, and using like query on `subject_name` also using default priority as HIGH",
+			Explanation: "subject_name, finding_type, priority, and limit are supported list_events filters.",
 		},
 		{
 			Question: "What are latest oom or out of memory errors?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events WHERE aggregation_key='pod_oom_killer_enricher' and finding_type='issue' and priority = 'HIGH' ORDER BY starts_at DESC limit 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"aggregation_key":["pod_oom_killer_enricher"],"finding_type":["issue"],"priority":["HIGH"],"limit":3}`,
 				},
 			},
-			Explanation: "We are filtering using `aggregation_key` and `finding_type`, based on the latest 'starts_at' time, limited to 3",
+			Explanation: "This aggregation key and its list filters are directly supported by list_events.",
 		},
 		{
 			Question: "Get all events for nodes within a specific time range?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events WHERE ((starts_at >= '2024-05-07T09:07:53.710Z') AND (starts_at <= '2024-05-14T09:07:53.710Z') AND (subject_type IN ('node')) ORDER BY starts_at DESC LIMIT 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"subject_type":"node","start_time":"2024-05-07T09:07:53.710Z","end_time":"2024-05-14T09:07:53.710Z","limit":3}`,
 				},
 			},
-			Explanation: "We are filtering using `starts_at` and `subject_type`, limited to 3",
+			Explanation: "The resource type and absolute time range are supported by list_events.",
 		},
 		{
 			Question: "Get all events for pods within a specific time range?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events WHERE ((starts_at >= '2024-05-07T09:17:48.191Z') AND (starts_at <= '2024-05-14T09:17:48.191Z') AND (subject_type IN ('pod')) ORDER BY starts_at DESC LIMIT 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"subject_type":"pod","start_time":"2024-05-07T09:17:48.191Z","end_time":"2024-05-14T09:17:48.191Z","limit":3}`,
 				},
 			},
-			Explanation: "We are filtering using `starts_at` and `subject_type`, limited to 3",
+			Explanation: "The resource type and absolute time range are supported by list_events.",
 		},
 		{
 			Question: "How many events are there for nodes within a specific time range?",
@@ -360,19 +371,19 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Question: "How many events are thre for each aggregation key within a specific time range?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT aggregation_key, count(*) AS event_count FROM events WHERE ((starts_at >= '2024-05-07T09:19:21.743Z') AND (starts_at <= '2024-05-14T09:19:21.743Z') group by aggregation_key",
+					Tool:  tools.ToolAggregateEvents,
+					Input: `{"group_by":"aggregation_key","start_time":"2024-05-07T09:19:21.743Z","end_time":"2024-05-14T09:19:21.743Z"}`,
 				},
 			},
-			Explanation: "We are filtering using `starts_at`. grouping by aggregation_key and counting",
+			Explanation: "This is a supported grouped count, so use aggregate_events instead of generating SQL.",
 		},
 		{
 			Question:    "How many distinct event patterns are there per namespace in the last 24 hours?",
 			Explanation: "Using fingerprint with COUNT(DISTINCT) to count unique event patterns vs total occurrences. No LIMIT needed for aggregation.",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT subject_namespace, count(DISTINCT fingerprint) AS unique_patterns, count(*) AS total_events FROM events WHERE starts_at >= NOW() - INTERVAL '24 hours' GROUP BY subject_namespace ORDER BY total_events DESC",
+					Tool:  tools.ToolAggregateEvents,
+					Input: `{"group_by":"subject_namespace","count_distinct_fingerprint":true,"relative_range":"24h"}`,
 				},
 			},
 		},
@@ -488,14 +499,14 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		},
 		{
 			Question:    "Why is this event suppressed / why is it only P3?",
-			Explanation: "First read the score breakdown and triage status from the events table, then fetch the dedup chain and correlations to explain the decision end-to-end.",
+			Explanation: "First retrieve the exact event and its score breakdown, then fetch the dedup chain and correlations to explain the decision end-to-end.",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT id, nb_status, computed_priority, computed_score, score_factors, fingerprint FROM events WHERE id = 'your-event-id'",
+					Tool:  tools.ToolGetEventById,
+					Input: `{"event_id":"your-event-id"}`,
 				},
 				{
-					Tool:  tools.ToolTriageExplanation,
+					Tool:  tools.ToolEventTriageExplanation,
 					Input: "{\"event_id\": \"your-event-id\"}",
 				},
 			},
@@ -511,6 +522,16 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 				{
 					Tool:  tools.ToolTriageRules,
 					Input: "{\"rule_type\": \"suppression\"}",
+				},
+			},
+		},
+		{
+			Question:    "Group all HIGH priority events from the last 7 days by their aggregation key.",
+			Explanation: "Priority is a supported aggregate_events filter, so this grouped count does not need raw SQL.",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolAggregateEvents,
+					Input: `{"group_by":"aggregation_key","priority":["HIGH"],"relative_range":"7d"}`,
 				},
 			},
 		},
@@ -547,7 +568,7 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 	}
 
 	return core.NBAgentPrompt{
-		Role:         "a PostgreSQL database expert",
+		Role:         "an events and anomaly investigation expert",
 		Instructions: instructions,
 		Constraints:  constraints,
 		ToolUsage:    toolUsage,
@@ -562,6 +583,7 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 
 func (p AgentEvents) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	return []toolcore.NBTool{
+		tools.GetEventByIdTool{}, tools.ListEventsTool{}, tools.AggregateEventsTool{},
 		tools.EventsExecuteTool{}, tools.AnomalyExecuteTool{}, EventSummaryTool{}, tools.GetEventEvidenceTool{},
 		tools.TriageExplanationTool{}, tools.TriageRulesTool{}, tools.ThresholdSuggestionsTool{}, tools.TriageDryRunTool{},
 		tools.EventRulesTool{}, tools.EventClassificationTool{}, tools.TriageRuleEventsTool{},
@@ -1043,7 +1065,7 @@ func isHTTPError(status string) bool {
 }
 
 func (l AgentEvents) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlannerToolAction, toolResponse string) string {
-	if strings.EqualFold(toolRequest.Tool, tools.ToolEventExecuteSql) {
+	if strings.EqualFold(toolRequest.Tool, tools.ToolEventExecuteSql) || strings.EqualFold(toolRequest.Tool, tools.ToolGetEventById) {
 		eventsData := []events.Event{}
 		err := common.UnmarshalJson([]byte(toolResponse), &eventsData)
 		if err != nil {

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/utils"
+	"os"
+	"strings"
 )
 
 // extractGithubConfigFields pulls auth_type, url, and password from a github
@@ -30,6 +32,14 @@ func extractGithubConfigFields(values []core.ToolConfigValue) (authType, apiUrl,
 func resolveGithubToken(ctx context.Context, authType, apiUrl, password string) (string, error) {
 	if authType != "application" {
 		return password, nil
+	}
+	// Local-dev escape hatch: see the matching one in tool_github.go — a local
+	// llm-server has no GitHub App credentials provisioned, so this exchange
+	// always fails there even though the tenant's DB config is correct.
+	// GITHUB_TOKEN matches the existing local-testing fallback in
+	// agent_code2.go's resolveGitToken.
+	if localToken := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); localToken != "" {
+		return localToken, nil
 	}
 	var installationID int64
 	if _, err := fmt.Sscanf(password, "%d", &installationID); err != nil {

@@ -35,6 +35,13 @@ const (
 	EventCategoryTriage      EventCategory = "TRIAGE"
 	EventCategoryOwnership   EventCategory = "OWNERSHIP"
 	EventCategoryDashboard   EventCategory = "DASHBOARDS"
+	// Operator edits to what the Knowledge Graph is built from: the coverage
+	// filter (cloud accounts / flow sources) and manual dependency
+	// declarations. Both deactivate nodes or edges on write, so who changed
+	// them is worth keeping. Mirror any addition here in the Audits page's
+	// CategoryListing (app/src/components/audits/common.ts) or the rows are
+	// written but cannot be filtered.
+	EventCategoryKnowledgeGraph EventCategory = "KNOWLEDGE_GRAPH"
 )
 
 type EventType string
@@ -72,6 +79,15 @@ const (
 	EventTypeCustomRoleUpdate EventType = "CUSTOM_ROLE_UPDATE"
 	EventTypeCustomRoleDelete EventType = "CUSTOM_ROLE_DELETE"
 	EventTypeCustomRoleAssign EventType = "CUSTOM_ROLE_ASSIGN"
+
+	EventTypeKGCoverageUpdate      EventType = "KG_COVERAGE_UPDATE"
+	EventTypeKGDependencyCreate    EventType = "KG_DEPENDENCY_CREATE"
+	EventTypeKGDependencyUpdate    EventType = "KG_DEPENDENCY_UPDATE"
+	EventTypeKGDependencyDelete    EventType = "KG_DEPENDENCY_DELETE"
+	EventTypeKGDependencyDeleteAll EventType = "KG_DEPENDENCY_DELETE_ALL"
+	EventTypeKGDependencyImport    EventType = "KG_DEPENDENCY_IMPORT"
+	EventTypeKGDependencyResolve   EventType = "KG_DEPENDENCY_RESOLVE"
+	EventTypeKGDependencyReresolve EventType = "KG_DEPENDENCY_RERESOLVE"
 
 	EventTypeUserLogin       EventType = "USER_AUTH_LOGIN"
 	EventTypeUserLoginCreate EventType = "USER_AUTH_CREATE"

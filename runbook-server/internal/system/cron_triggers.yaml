@@ -188,6 +188,23 @@
     num_retries: 0
     timeout_seconds: 180
   comment: Check agent connectivity every 5 minutes
+- name: Provider Status Check
+  webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
+  # Resolves which backend actually serves each cluster's logs, metrics and traces,
+  # and probes the ones served by a non-agent integration (hosted Loki, Datadog, ...)
+  # through that integration's own validation. Result is stamped onto
+  # agent.connection_status.providerStatus, which the Agent Details page reads — so a
+  # SaaS-backed signal stops being reported as disconnected just because the in-cluster
+  # agent does not serve it. Only clusters with such an integration are checked.
+  schedule: '*/10 * * * *' # every 10 minutes
+  payload: {}
+  headers:
+    - name: X-ACTION-TOKEN
+      value_from_env: ACTION_API_SERVER_TOKEN
+  retry_conf:
+    num_retries: 0
+    timeout_seconds: 600
+  comment: Check non-agent observability providers every 10 minutes
 - name: ML-Server Recommendation Refresh
   webhook: http://ml-k8s-server:9999/update_recommendations
   schedule: '0 */12 * * *'

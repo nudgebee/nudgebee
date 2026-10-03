@@ -172,6 +172,22 @@ func (t *TransformTask) InputSchema() *types.Schema {
 				Description: "The raw string data to be transformed (e.g., from a previous task's output).",
 				Required:    true,
 				Order:       1,
+				Help: "The raw document the expression runs against, parsed using **Input Type** (`json` by default). " +
+					"JSON requires double quotes.\n\n" +
+					"To transform the output of an earlier action, reference it instead of pasting a literal: " +
+					"`{{ Tasks['previous_task'].output.result }}`.",
+				Examples: []types.PropertyExample{
+					{
+						Label: `{"pods": [{"name": "checkout"}, ...]}`,
+						Value: `{"pods": [{"name": "checkout"}, {"name": "payments"}]}`,
+						Note:  "A JSON object — project a field out of it with an expression like `pods.name`.",
+					},
+					{
+						Label: "Output of a previous action",
+						Value: "{{ Tasks['previous_task'].output.result }}",
+						Note:  "Replace `previous_task` with the id of the action whose output you want to transform.",
+					},
+				},
 			},
 			"inputType": {
 				Type:        types.PropertyTypeString,
@@ -194,6 +210,35 @@ func (t *TransformTask) InputSchema() *types.Schema {
 				Description: "The expression (JSONata or JavaScript) to apply to the input data.",
 				Required:    true,
 				Order:       4,
+				Help: "Which language this is depends on **Script Type** (`jsonata` by default).\n\n" +
+					"**JSONata** walks the parsed input: `pods.name` projects a field, `pods[cpu > 80]` filters, " +
+					"`$count(pods)` aggregates, `{\"total\": $count(pods)}` builds a new object. " +
+					"Reference: https://docs.jsonata.org/simple\n\n" +
+					"**JavaScript** receives the parsed input as `data` and evaluates to the value of its last expression — " +
+					"there is no enclosing function, so a top-level `return` is a syntax error. " +
+					"Write `data.pods.map(function (p) { return p.name; })`, or assign to a variable last: `result = data.pods; result`.",
+				Examples: []types.PropertyExample{
+					{
+						Label: "pods.name",
+						Value: "pods.name",
+						Note:  "JSONata — project one field out of every element.",
+					},
+					{
+						Label: "pods[cpu > 80]",
+						Value: "pods[cpu > 80]",
+						Note:  "JSONata — keep only the elements matching a predicate.",
+					},
+					{
+						Label: `{"total": $count(pods)}`,
+						Value: `{"total": $count(pods)}`,
+						Note:  "JSONata — build a new object from the input.",
+					},
+					{
+						Label: "data.pods.map(function (p) { return p.name; })",
+						Value: "data.pods.map(function (p) { return p.name; })",
+						Note:  "JavaScript — only valid when Script Type is `javascript`. The parsed input arrives as `data`, and the last expression is the result (no top-level `return`).",
+					},
+				},
 			},
 			"outputType": {
 				Type:        types.PropertyTypeString,

@@ -320,11 +320,16 @@ def finalize_workload_rows(
     workload's category and severity. Severity takes the worst container by
     severity rank, which is not the same as the highest priority number.
 
-    Savings are floored at zero here, once every container has been merged, so a
-    workload that is over-provisioned on one resource and under-provisioned on
-    another still reports its true net. A workload whose net is negative costs
-    more to apply, so it is a reliability finding worth no savings rather than a
-    negative number to subtract from the tenant's savings headline.
+    estimated_savings keeps the sign of the merged net, so a workload that is
+    over-provisioned on one resource and under-provisioned on another reports its
+    true cost impact. A negative value means applying the recommendation costs
+    more -- an under-provisioned workload is a reliability finding with a price,
+    and the row is the only place that price is recorded. Savings roll-ups filter
+    it out at aggregation time (recommendation_groupings_v2.sum_estimated_savings
+    and the spend summaries) so a reliability finding never subtracts from a
+    tenant's savings headline; flooring it here instead would report the price as
+    zero everywhere and leave the Optimise table unable to tell "costs more" from
+    "no data".
 
     Dropped workloads must also leave the archive keep-set the caller builds from
     this dict, otherwise the rows already stored for them stay Open forever.
@@ -336,7 +341,6 @@ def finalize_workload_rows(
         merged_content = json.loads(row["recommendation"])
         row["category"] = classify_pod_right_sizing_category(merged_content)
         row["severity"] = get_severity(worst_priority(priorities_by_resource[resource_id]))
-        row["estimated_savings"] = max(row["estimated_savings"], 0.0)
         # Either signal suffices: an all-GOOD scan, or a recommendation whose
         # numbers clamp back to exactly what is already allocated.
         if is_no_change_workload(priorities_by_resource[resource_id]) or is_value_no_change_workload(merged_content):

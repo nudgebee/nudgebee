@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/asserts"
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"os"
@@ -129,6 +130,10 @@ type k8sTestCase struct {
 	// WantToolInvoked asserts a specific tool name appears in the invocation log.
 	WantToolInvoked string
 
+	// WantFirstTool asserts the first investigation action uses this exact tool.
+	// Use for authoritative prerequisite checks that establish downstream scope.
+	WantFirstTool string
+
 	// WantAnyToolMatching asserts at least one tool whose name contains any of
 	// these substrings was invoked. Use for tool-family checks ("any
 	// prometheus tool").
@@ -234,6 +239,9 @@ func assertExpectations(t *testing.T, tc k8sTestCase, resp core.NBAgentResponse)
 	// Specific tool invocation
 	if tc.WantToolInvoked != "" {
 		asserts.ToolUsed(t, resp, tc.WantToolInvoked)
+	}
+	if tc.WantFirstTool != "" {
+		asserts.FirstToolIs(t, resp, tc.WantFirstTool)
 	}
 
 	// Tool-family OR check
@@ -1530,4 +1538,128 @@ func TestK8sAgent_LoadSkillsForSubagents(t *testing.T) {
 		ApprovalResponses: []string{},
 	}
 	runTestMinimal(t, agent, tc)
+}
+
+func TestK8sAgent_Grounding(t *testing.T) {
+	skipIfNoFixtureEnv(t)
+	originalGrounding := config.Config.OrchestratorGroundingEnabled
+	originalPremise := config.Config.PremiseVerificationEnabled
+	t.Cleanup(func() {
+		config.Config.OrchestratorGroundingEnabled = originalGrounding
+		config.Config.PremiseVerificationEnabled = originalPremise
+	})
+	config.Config.OrchestratorGroundingEnabled = true
+	config.Config.PremiseVerificationEnabled = true
+
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
+
+	tc := k8sTestCase{
+		Name:              "grounding_test_7",
+		SessionId:         "ut-grounding-7",
+		AccountId:         os.Getenv("TEST_ACCOUNT"),
+		UserId:            os.Getenv("TEST_USER"),
+		Query:             "show me current CPU of app-dev",
+		ApprovalResponses: []string{},
+	}
+	runTestMinimal(t, agent, tc)
+}
+
+func TestK8sAgent_NudgebeeHealthGate(t *testing.T) {
+	skipIfNoFixtureEnv(t)
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
+
+	for _, tc := range []k8sTestCase{
+		{
+			Name:          "nudgebee_prometheus_health_gate",
+			SessionId:     "ut-nudgebee-health-gate-prometheus-1",
+			AccountId:     os.Getenv("TEST_ACCOUNT"),
+			UserId:        os.Getenv("TEST_USER"),
+			Query:         "Why is Prometheus disconnected in Nudgebee?",
+			WantFirstTool: NudgebeeAgentName,
+			WantLLMClaims: []string{
+				"The answer states whether current Nudgebee health evidence confirms or contradicts the user's disconnected premise before offering troubleshooting guidance.",
+			},
+		},
+		{
+			Name:          "nudgebee_agent_health_gate",
+			SessionId:     "ut-nudgebee-health-gate-agent-1",
+			AccountId:     os.Getenv("TEST_ACCOUNT"),
+			UserId:        os.Getenv("TEST_USER"),
+			Query:         "Why is my Nudgebee agent disconnected?",
+			WantFirstTool: NudgebeeAgentName,
+			WantLLMClaims: []string{
+				"The answer begins from Nudgebee-recorded agent health and does not diagnose a guessed Kubernetes namespace.",
+			},
+		},
+	} {
+		t.Run(tc.Name, func(t *testing.T) {
+			runTest(t, agent, tc)
+		})
+	}
+}
+
+func TestCloudOrchestrators_NudgebeeHealthGate(t *testing.T) {
+	skipIfNoFixtureEnv(t)
+	accountID := os.Getenv("TEST_ACCOUNT")
+	for _, tc := range []struct {
+		name  string
+		agent core.NBAgent
+	}{
+		{name: "aws", agent: newAwsOrchestratorAgent(accountID)},
+		{name: "gcp", agent: newGcpOrchestratorAgent(accountID)},
+		{name: "azure", agent: newAzureOrchestratorAgent(accountID)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runTest(t, tc.agent, k8sTestCase{
+				Name:             "nudgebee_agent_health_gate_" + tc.name,
+				SessionId:        "ut-nudgebee-cloud-health-gate-" + tc.name + "-1",
+				AccountId:        accountID,
+				UserId:           os.Getenv("TEST_USER"),
+				Query:            "Why is my Nudgebee agent disconnected?",
+				WantFirstTool:    NudgebeeAgentName,
+				WantMaxToolCalls: 1,
+				WantLLMClaims: []string{
+					"The answer begins from Nudgebee-recorded health and does not invent Kubernetes, project, subscription, region, or resource scope that the health result did not provide.",
+					"If normalized Nudgebee health is unknown, the answer preserves unknown and does not infer synchronization state or a root cause from raw status, timestamps, or generic documentation.",
+				},
+			})
+		})
+	}
+}
+
+// TEST_AGENTLESS_ACCOUNT must identify an AWS, Azure, or GCP account whose
+// normalized health is unknown while its compatibility status is CONNECTED and
+// last_connected_at is populated. The direct Nudgebee E2E asserts that payload;
+// this test verifies the outer provider orchestrator preserves its meaning.
+func TestCloudOrchestrator_AgentlessHealthPrecedence(t *testing.T) {
+	accountID := os.Getenv("TEST_AGENTLESS_ACCOUNT")
+	provider := strings.ToLower(os.Getenv("TEST_AGENTLESS_PROVIDER"))
+	if os.Getenv("TEST_TENANT") == "" || os.Getenv("TEST_USER") == "" || accountID == "" || provider == "" {
+		t.Skip("requires TEST_TENANT, TEST_USER, TEST_AGENTLESS_ACCOUNT, and TEST_AGENTLESS_PROVIDER=aws|azure|gcp")
+	}
+
+	var agent core.NBAgent
+	switch provider {
+	case "aws":
+		agent = newAwsOrchestratorAgent(accountID)
+	case "azure":
+		agent = newAzureOrchestratorAgent(accountID)
+	case "gcp":
+		agent = newGcpOrchestratorAgent(accountID)
+	default:
+		t.Fatalf("TEST_AGENTLESS_PROVIDER must be aws, azure, or gcp; got %q", provider)
+	}
+
+	runTest(t, agent, k8sTestCase{
+		Name:             "nudgebee_agentless_health_precedence_" + provider,
+		SessionId:        "ut-nudgebee-agentless-health-precedence-1",
+		AccountId:        accountID,
+		UserId:           os.Getenv("TEST_USER"),
+		Query:            "Troubleshoot this selected account health. Stay within this account.",
+		WantFirstTool:    NudgebeeAgentName,
+		WantMaxToolCalls: 1,
+		WantLLMClaims: []string{
+			"The answer reports agentless synchronization health as unknown despite raw connected status and last_connected_at compatibility fields, and it does not invent a root cause.",
+		},
+	})
 }

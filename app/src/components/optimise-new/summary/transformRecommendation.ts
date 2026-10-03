@@ -45,7 +45,7 @@ const CATEGORY_MAPPERS: Record<string, (rule: string) => CategoryMapping> = {
   K8sVersionUpgrade: () => ({ category: 'security_config', subCategory: 'critical_config' }),
 };
 
-function mapCategoryAndSubCategory(apiCategory: string, ruleName: string): CategoryMapping {
+export function mapCategoryAndSubCategory(apiCategory: string, ruleName: string): CategoryMapping {
   // pod_right_sizing keeps its sizing presentation under either API category
   // (requests-unset rows live under Configuration)
   if (ruleName === 'pod_right_sizing') return mapRightSizing(ruleName);
@@ -186,15 +186,20 @@ const computeConfidence = (apiRec: any): number => {
   return apiRec.estimated_savings > 0 ? Math.min(100, base + 5) : base;
 };
 
-// ─── Environment heuristic ────────────────────────────────────────────────
+// ─── Environment ──────────────────────────────────────────────────────────
 
-const deriveEnvironment = (accountName: string): Environment => {
+/**
+ * cloud_accounts.account_env is the operator-set source of truth, so use it
+ * whenever the accounts fetch supplied it. The name-substring fallback only
+ * covers account rows that predate the column; unlike the previous heuristic it
+ * defaults to non_prod — the column's own default — rather than labelling every
+ * unmatched account 'prod'.
+ */
+const deriveEnvironment = (accountEnv: string | undefined, accountName: string): Environment => {
+  if (accountEnv) return accountEnv === 'prod' ? 'prod' : 'non_prod';
   const lower = (accountName || '').toLowerCase();
-  if (lower.includes('prod')) return 'prod';
-  if (lower.includes('stag')) return 'staging';
-  if (lower.includes('dev')) return 'dev';
-  if (lower.includes('sandbox')) return 'sandbox';
-  return 'prod';
+  if (/non[-_\s]?prod/.test(lower)) return 'non_prod';
+  return lower.includes('prod') ? 'prod' : 'non_prod';
 };
 
 // ─── Next step label ──────────────────────────────────────────────────────
@@ -240,7 +245,7 @@ const toProvider = (cloudProvider: string): Provider => {
 
 export function transformApiToInsight(
   apiRec: any,
-  accountsMap: Record<string, { account_name: string; cloud_provider: string }>,
+  accountsMap: Record<string, { account_name: string; cloud_provider: string; account_env?: string }>,
   currencySymbols?: Record<string, string>
 ): InsightItem {
   const { category, subCategory } = mapCategoryAndSubCategory(apiRec.category, apiRec.rule_name);
@@ -271,7 +276,7 @@ export function transformApiToInsight(
     resourceId: apiRec.account_object_id || apiRec.resource_id || apiRec.resource_name || '',
     resourceName,
     provider,
-    env: deriveEnvironment(acct?.account_name || ''),
+    env: deriveEnvironment(acct?.account_env, acct?.account_name || ''),
     region: apiRec.resource_k8s_namespace || apiRec.cloud_resourse?.meta?.region || '',
     impactValue: savings > 0 ? `${currencySymbols?.[apiRec.account_id] || '$'}${savings.toLocaleString()}/mo` : '',
     impactLabel: savings > 0 ? 'savings potential' : '',

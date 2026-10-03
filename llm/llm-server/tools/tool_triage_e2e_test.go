@@ -26,7 +26,7 @@ import (
 //	TEST_TENANT=<tenant-uuid> TEST_ACCOUNT=<account-uuid> TEST_USER=<user-uuid> \
 //	go test -tags e2e -run TestTriageToolsE2E ./tools/ -v
 //
-// Optional: TEST_TRIAGE_EVENT_ID=<event-uuid> exercises get_triage_explanation.
+// Optional: TEST_TRIAGE_EVENT_ID=<event-uuid> exercises get_event_triage_explanation.
 // Each subtest asserts the live call succeeds and returns parseable JSON; the
 // number of rows depends on the target account's data.
 
@@ -106,10 +106,10 @@ func TestTriageToolsE2E(t *testing.T) {
 		t.Logf("dryrun preview: %s", resp.Data)
 	})
 
-	t.Run("get_triage_explanation", func(t *testing.T) {
+	t.Run("get_event_triage_explanation", func(t *testing.T) {
 		eventID := os.Getenv("TEST_TRIAGE_EVENT_ID")
 		if eventID == "" {
-			t.Skip("set TEST_TRIAGE_EVENT_ID to exercise get_triage_explanation")
+			t.Skip("set TEST_TRIAGE_EVENT_ID to exercise get_event_triage_explanation")
 		}
 		tool := TriageExplanationTool{}
 		resp, err := tool.Call(newE2EToolContext(t, tool), core.NBToolCallRequest{

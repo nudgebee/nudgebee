@@ -46,12 +46,16 @@ interface VmPackagesProps {
   vmNames?: Record<string, string>;
 }
 
+// A `= {}` default would be a fresh object every render, so every memo keyed on
+// vmNames would miss on the embedded view that omits the prop.
+const NO_VM_NAMES: Record<string, string> = {};
+
 /**
  * Installed-package inventory (vm_package), as collected by the last scan.
  * Only active rows are listed — a re-scan archives what it no longer sees, so
  * `is_active = false` means "was installed, isn't any more".
  */
-const VmPackages = ({ accountId, cloudResourceId, embedded = false, vmNames = {} }: VmPackagesProps) => {
+const VmPackages = ({ accountId, cloudResourceId, embedded = false, vmNames = NO_VM_NAMES }: VmPackagesProps) => {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<VmPackage[]>([]);
   const [total, setTotal] = useState(0);
@@ -115,25 +119,29 @@ const VmPackages = ({ accountId, cloudResourceId, embedded = false, vmNames = {}
     setPage(0);
   };
 
-  const tableData = rows.map((pkg) => {
-    const cells: any[] = [
-      { component: <CellText text={pkg.name} /> },
-      // Epoch is part of the identity for rpm, and absent (not zero) for most
-      // packages — show it only when the package manager actually reported one.
-      { component: <CellText text={pkg.version} subtext={pkg.epoch != null ? `epoch ${pkg.epoch}` : undefined} mono /> },
-      { component: <CellText text={pkg.arch} /> },
-      { component: <CellText text={pkg.pkg_type} /> },
-      { component: <CellText text={pkg.source_name} subtext={pkg.source_version} /> },
-    ];
-    if (!embedded) {
-      cells.push({ component: <CellText text={[pkg.os_family, pkg.os_version].filter(Boolean).join(' ')} /> });
-      // A row is one package across every VM that carries it — an embedded table
-      // is already scoped to one machine, so it drops the column.
-      cells.push({ component: <CellText text={joinVmNames(pkg.resource_ids, vmNames)} /> });
-    }
-    cells.push({ component: <Datetime value={pkg.last_seen_at} /> });
-    return cells;
-  });
+  const tableData = useMemo(
+    () =>
+      rows.map((pkg) => {
+        const cells: any[] = [
+          { component: <CellText text={pkg.name} /> },
+          // Epoch is part of the identity for rpm, and absent (not zero) for most
+          // packages — show it only when the package manager actually reported one.
+          { component: <CellText text={pkg.version} subtext={pkg.epoch != null ? `epoch ${pkg.epoch}` : undefined} mono /> },
+          { component: <CellText text={pkg.arch} /> },
+          { component: <CellText text={pkg.pkg_type} /> },
+          { component: <CellText text={pkg.source_name} subtext={pkg.source_version} /> },
+        ];
+        if (!embedded) {
+          cells.push({ component: <CellText text={[pkg.os_family, pkg.os_version].filter(Boolean).join(' ')} /> });
+          // A row is one package across every VM that carries it — an embedded table
+          // is already scoped to one machine, so it drops the column.
+          cells.push({ component: <CellText text={joinVmNames(pkg.resource_ids, vmNames)} /> });
+        }
+        cells.push({ component: <Datetime value={pkg.last_seen_at} /> });
+        return cells;
+      }),
+    [rows, embedded, vmNames]
+  );
 
   const table = (
     <CustomTable

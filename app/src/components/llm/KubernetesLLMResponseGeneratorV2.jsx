@@ -9,7 +9,6 @@ import Tooltip from '@ui/Tooltip';
 import AskNudgebeeLayout from '@shared/layout/AskNudgebeeLayoutV2';
 import { Button } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';
-import SettingsModal from '@components/llm/SettingsModal';
 import { useData } from '@context/DataContext';
 import { useOptionalNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { useAgentConfiguration } from '@hooks/useAgentConfiguration';
@@ -23,7 +22,7 @@ import { applyFiltersOnRouter } from '@lib/router';
 import { Avatar, Box, CircularProgress, Divider, Typography } from '@mui/material';
 import { useRouter } from 'next/router';
 import PropTypes from 'prop-types';
-import { useEffect, useRef, useReducer, useMemo, useCallback } from 'react';
+import { useEffect, useRef, useReducer, useMemo, useCallback, useState } from 'react';
 import { ds } from '@utils/colors';
 import AutoSuggestTextarea from '@components/k8s/common/TextAreaV2';
 import { SummaryBlock } from '@components/k8s/KubernetesClusterSummary';
@@ -183,7 +182,6 @@ const KubernetesLLMResponseGenerator = ({
       generateQuestionText: queryPrefix || '',
       isConversationListVisible: false,
       collapsedObj: {},
-      openSettingsModal: false,
       // Per-question "Show more / Show less" expand state, keyed by message index —
       // mirrors collapsedObj so each question bubble owns its own toggle (issue #35751).
       showFullText: {},
@@ -209,7 +207,6 @@ const KubernetesLLMResponseGenerator = ({
     generateQuestionText,
     isConversationListVisible,
     collapsedObj,
-    openSettingsModal,
     showFullText,
     selectedSessionId,
     selectedConversationId,
@@ -221,7 +218,6 @@ const KubernetesLLMResponseGenerator = ({
   const setGenerateQuestionText = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'generateQuestionText', payload }), []);
   const setIsConversationListVisible = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'isConversationListVisible', payload }), []);
   const setCollapsedObj = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'collapsedObj', payload }), []);
-  const setOpenSettingsModal = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'openSettingsModal', payload }), []);
   const setShowFullText = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'showFullText', payload }), []);
   const setSelectedSessionId = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'selectedSessionId', payload }), []);
   const setSelectedConversationId = useCallback((payload) => uiDispatch({ type: 'SET_FIELD', field: 'selectedConversationId', payload }), []);
@@ -318,6 +314,13 @@ const KubernetesLLMResponseGenerator = ({
     [messages]
   );
 
+  // Conversation-wide total for the header's hover metrics — sums each
+  // response's already-loaded followup_wait_seconds, no extra fetch needed.
+  const followupWaitSeconds = useMemo(
+    () => messages.filter((m) => (m.tool ?? m.type) === 'response').reduce((sum, m) => sum + (m.followup_wait_seconds || 0), 0),
+    [messages]
+  );
+
   // Backend holds the parent conversationMessage in WAITING between a followup answer
   // POST and the next agent tick — `isConversationInProgress` (IN_PROGRESS-only) goes
   // false in that window, so anything that means "is the system working right now?"
@@ -330,6 +333,8 @@ const KubernetesLLMResponseGenerator = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [conversationStatus, currentlyProcessingQuestion]
   );
+
+  const [optimisticFollowupAnswer, setOptimisticFollowupAnswer] = useState(null);
 
   // Derive the latest follow-up that's waiting for the user — this is what the bottom-anchored
   // FollowupSheet renders. The followup message itself is saved as IN_PROGRESS while it sits
@@ -375,11 +380,55 @@ const KubernetesLLMResponseGenerator = ({
     ? `${activeWaitingFollowup.response?.message_id || ''}:${activeWaitingFollowup.response?.agent_id || ''}`
     : null;
 
+  // True once the user has optimistically answered the currently-active followup — hides the
+  // sheet the instant they submit, before the poll confirms it.
+  const isActiveFollowupOptimisticallyAnswered = Boolean(activeFollowupKey) && optimisticFollowupAnswer?.key === activeFollowupKey;
+
   // Only surface the followup prompt while the conversation itself is still open. The
   // per-message terminal check above can lag the conversation (a stale followup message can
   // still read IN_PROGRESS after the run finished), so gate on conversationStatus too —
-  // a COMPLETED conversation must never render an answerable followup sheet.
-  const showFollowupSheet = Boolean(activeWaitingFollowup) && conversationStatus !== 'COMPLETED';
+  // a COMPLETED conversation must never render an answerable followup sheet. Also drop it the
+  // moment the user optimistically answers, so the sheet collapses into its inline pill
+  // instead of sitting with a loader until the next poll.
+  const showFollowupSheet = Boolean(activeWaitingFollowup) && conversationStatus !== 'COMPLETED' && !isActiveFollowupOptimisticallyAnswered;
+
+  const displayMessages = useMemo(() => {
+    if (!optimisticFollowupAnswer) {
+      return messages;
+    }
+    return messages.map((m) => {
+      const type = m?.tool ?? m?.type;
+      if (type !== 'followup-question') {
+        return m;
+      }
+      const key = `${m.response?.message_id || ''}:${m.response?.agent_id || ''}`;
+      if (key !== optimisticFollowupAnswer.key || TERMINAL_FOLLOWUP_STATUSES.includes(m.response?.status)) {
+        return m;
+      }
+      return { ...m, response: { ...m.response, status: 'COMPLETED', text: optimisticFollowupAnswer.answer } };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, optimisticFollowupAnswer]);
+
+  // Drop the overlay once the server confirms the answer — the polled `messages` now carry the
+  // real terminal status + text, so we stop shadowing them with the optimistic copy.
+  useEffect(() => {
+    if (!optimisticFollowupAnswer) {
+      return;
+    }
+    const confirmed = messages.some((m) => {
+      const type = m?.tool ?? m?.type;
+      if (type !== 'followup-question') {
+        return false;
+      }
+      const key = `${m.response?.message_id || ''}:${m.response?.agent_id || ''}`;
+      return key === optimisticFollowupAnswer.key && TERMINAL_FOLLOWUP_STATUSES.includes(m.response?.status);
+    });
+    if (confirmed) {
+      setOptimisticFollowupAnswer(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, optimisticFollowupAnswer]);
 
   const currentSessionId = router.query.session_id || sessionId;
   const notifyNavigateTo = currentSessionId ? `/ask-nudgebee?accountId=${accountId}&session_id=${currentSessionId}` : '';
@@ -1113,14 +1162,6 @@ const KubernetesLLMResponseGenerator = ({
 
   const content = (
     <>
-      <SettingsModal
-        open={openSettingsModal}
-        onClose={() => setOpenSettingsModal(false)}
-        accountId={accountId}
-        allAgents={allAgents}
-        refreshAgentListing={refreshAgents}
-        loadingAgents={loadingAgents}
-      />
       <Box
         sx={{
           position: popup ? 'relative' : 'static',
@@ -1404,7 +1445,11 @@ const KubernetesLLMResponseGenerator = ({
                     </Tooltip>
                   )}
                   <Box onMouseEnter={handleTokenUsageHover}>
-                    <ConversationTokenUsage tokenUsageData={tokenUsageData} isLoading={isFetchingTokenData} />
+                    <ConversationTokenUsage
+                      tokenUsageData={tokenUsageData}
+                      isLoading={isFetchingTokenData}
+                      followupWaitSeconds={followupWaitSeconds}
+                    />
                   </Box>
                 </Box>
                 <Divider orientation='vertical' variant='middle' flexItem sx={{ height: ds.space.mul(1, 7), mx: ds.space.mul(0, 5) }} />
@@ -1778,7 +1823,7 @@ const KubernetesLLMResponseGenerator = ({
             )}
 
             <MessageStream
-              messages={messages}
+              messages={displayMessages}
               isProcessing={isConversationInProgress}
               collapsedObj={collapsedObj}
               setCollapsedObj={setCollapsedObj}
@@ -1955,6 +2000,11 @@ const KubernetesLLMResponseGenerator = ({
                     selectedTierModels={selectedTierModels}
                     popup={popup}
                     onStop={handleStopInvestigation}
+                    onOptimisticSubmit={(answer) => setOptimisticFollowupAnswer({ key: activeFollowupKey, answer })}
+                    onSubmitError={() => {
+                      setOptimisticFollowupAnswer(null);
+                      snackbar.error('Couldn’t submit your response. Please try again.');
+                    }}
                   />
                 </Box>
               )}

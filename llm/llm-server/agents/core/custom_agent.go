@@ -374,10 +374,9 @@ func (a *nbCustomAgent) GetSystemPrompt(ctx *security.RequestContext, query NBAg
 		}
 	}
 
-	// Orchestrating agents run as ReAct3. The user's prompt may contain
-	// ReWoo-era XML plan format instructions that would conflict with the
-	// thought/action/observation loop. Append a corrective note so the planner's base
-	// prompt format takes precedence over any stale format instructions in the user prompt.
+	// A stored orchestrating-agent prompt may contain legacy XML plan instructions
+	// that conflict with the current planner protocol. Append a corrective note so
+	// the planner's base prompt format takes precedence over stale user-authored rules.
 	if a.agent.ExecutorType == AgentPlannerTypeOrchestrating {
 		prompt.Instructions = append(prompt.Instructions,
 			"Use the ReAct thought/action/observation format. Do not generate an XML step plan.")

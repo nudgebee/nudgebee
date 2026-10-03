@@ -415,7 +415,7 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
                   sx={{ fontSize: ds.text.caption, color: ds.gray[600] }}
                 />
               )}
-          <Button tone='link' size='xs' href='/user-management#audits'>
+          <Button tone='link' size='xs' href='/user-management#access-users/audit-log'>
             View in audit log
           </Button>
         </Box>

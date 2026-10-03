@@ -3,7 +3,7 @@ import { LoginPage } from "../../../pages/LoginPage";
 import { NubiLocators } from "../nubiLocators";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
 
-// Nubi › Settings › Functions tab.
+// Nubi › AI & Tools › Functions tab.
 
 const OP_CREATE = "CreateAiFunction";
 const OP_UPDATE = "AiEditFunction";
@@ -19,9 +19,12 @@ async function openFunctionsTab(page: Page): Promise<NubiLocators> {
   const locators = new NubiLocators(page);
   await loginPage.doFullLogin();
   await locators.openPanel(); // retries the Nubi panel open (known flaky)
-  await locators.settingsBtn.click();
-  await locators.functionsTab.waitFor({ state: "visible", timeout: 20000 });
+  await locators.openAITools(locators.functionsTab);
   await locators.functionsTab.click();
+  // FunctionsAdminTab defaults to tenant-wide (accountId=''), and ListFunctions
+  // hides Create entirely at tenant-wide — narrow to a real account first, same
+  // as an admin would via the header filter.
+  await locators.selectFirstAdminAccount();
   await locators.createFunctionBtn.waitFor({ state: "visible", timeout: 15000 });
   return locators;
 }

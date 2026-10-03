@@ -51,6 +51,7 @@ func AnalyzeNoisyAlerts(ctx *security.RequestContext) error {
 			SELECT
 				CASE e.source
 					WHEN 'prometheus' THEN e.labels->>'alertname'
+					WHEN 'prometheus_alertmanager_webhook' THEN e.labels->>'alertname'
 					WHEN 'pagerduty_webhook' THEN COALESCE(e.labels->>'nb_alert_name', e.labels->>'alertname')
 					WHEN 'AWS_CloudWatch_Alarm' THEN e.labels->>'aws_event_arn'
 					WHEN 'azure_monitor_webhook' THEN COALESCE(e.labels->>'azure_alert_name', e.labels->>'alertname')
@@ -61,7 +62,7 @@ func AnalyzeNoisyAlerts(ctx *security.RequestContext) error {
 				COUNT(*) as fire_count
 			FROM events e
 			JOIN cloud_accounts ca ON ca.id = e.cloud_account_id AND ca.status != 'disabled'
-			WHERE e.source IN ('prometheus','pagerduty_webhook','AWS_CloudWatch_Alarm',
+			WHERE e.source IN ('prometheus','prometheus_alertmanager_webhook','pagerduty_webhook','AWS_CloudWatch_Alarm',
 			                 'azure_monitor_webhook','Azure_Monitor_Alert','GCP_Metric_Alert')
 			  AND e.starts_at > NOW() - INTERVAL '30 days'
 			  AND e.cloud_account_id IS NOT NULL
@@ -157,7 +158,7 @@ func processNoisyAlert(ctx *security.RequestContext, db *sqlx.DB, na noisyAlert,
 	// Azure and PagerDuty use COALESCE fallback to match the batch query grouping.
 	var whereCondition string
 	switch na.Source {
-	case "prometheus":
+	case "prometheus", "prometheus_alertmanager_webhook":
 		whereCondition = "labels->>'alertname' = $1"
 	case "pagerduty_webhook":
 		whereCondition = "COALESCE(labels->>'nb_alert_name', labels->>'alertname') = $1"

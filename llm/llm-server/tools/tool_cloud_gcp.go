@@ -29,6 +29,7 @@ func init() {
 // Orchestrator prompt owns the investigation methodology.
 func (t GcpCliTool) ToolPrompt() []string {
 	return []string{
+		"**Routing boundary:** These rules apply after the active agent has selected `gcloud_execute`; they do not override an agent policy that routes GCP reads and local computation through the workspace shell.",
 		"**Evidence-based:** Run command → parse output → make statement. NEVER invent resource IDs or make assumptions from empty results.",
 		"**IAM safety:** NEVER attempt to modify your own IAM permissions or bindings. `gcloud projects add-iam-policy-binding`, `gcloud projects set-iam-policy`, `gsutil iam set` are OFF LIMITS for granting yourself access. Report missing permissions as a finding.",
 		"**Project already set:** GCP project is pre-configured from account credentials. Do NOT run `gcloud config set project` before commands — pass `--project <project_id>` inline as a flag instead. Config-set slows execution and is unnecessary.",
@@ -75,7 +76,7 @@ func (t GcpCliTool) Description() string {
 
 		**Usage:**
 
-		* **Prioritize this tool:** When interacting with GCP, use this tool to retrieve information or perform actions.
+		* **Routing:** Availability does not make this tool the default for every GCP command. Follow the active agent's system prompt when choosing between this direct tool and a workspace shell. If that prompt assigns GCP reads to the workspace shell, do not use this tool for those reads; keep this direct path for supported mutations and commands with uncertain effects so approval and resume behavior is preserved.
 		* **Input:** A valid 'gcloud' CLI command string. Include necessary options and arguments. Be explicit about projects, zones, and regions.
 		* **Output:** The raw output of the executed 'gcloud' CLI command.
 
@@ -89,7 +90,6 @@ func (t GcpCliTool) Description() string {
 
 		* Ensure correct command formatting and arguments. Always specify the project, zone, and/or region when necessary.
 		* Do not include GCP credentials in commands. Assume they are configured correctly in the environment.
-		* For complex queries, use tools like 'jq' to parse and filter the JSON output. Indicate this in the command.
 		* **Auth commands are blocked:** Do NOT use 'gcloud auth' commands (auth list, auth activate-service-account, etc.). The environment is pre-authenticated. Use 'gcloud config list' to check current identity or 'gcloud iam service-accounts describe' for service account details instead.
 		`
 }
@@ -428,6 +428,26 @@ func inferGcpVerbType(command string) core.ToolRequestType {
 
 	if len(parts) < 2 {
 		return ""
+	}
+	// A BigQuery query always creates a server-side query job and may contain
+	// DML/DDL even when its leading SQL token looks read-only. Global bq flags may
+	// precede the subcommand, and some flags are boolean while others consume the
+	// next token. Rather than guessing flag arity (and potentially skipping the
+	// query token after a boolean flag such as --nosync), fail closed whenever an
+	// exact query token appears anywhere after bq. Use the shell-aware tokenizer
+	// so quoted SQL, descriptions, and payloads remain one token and cannot create
+	// a false match. If tokenization fails, keep the conservative Fields fallback:
+	// malformed quoting must not create an approval bypass.
+	if strings.EqualFold(parts[0], "bq") {
+		bqParts, err := shlex.Split(strings.TrimSpace(command))
+		if err != nil {
+			bqParts = parts
+		}
+		for _, part := range bqParts[1:] {
+			if strings.EqualFold(part, "query") {
+				return core.ToolRequestTypeUpdate
+			}
+		}
 	}
 	// Skip "gcloud" prefix
 	start := 0

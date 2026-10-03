@@ -18,6 +18,7 @@ jest.mock('@lib/auth', () => ({
   // Feature-off answers: this suite asserts the built-in tenant-admin behavior.
   isTenantWideRole: () => true,
   hasPermission: () => false,
+  canReadCustomRoles: () => false,
 }));
 
 // TourLauncher needs a <TourProvider> ancestor and throws without one. It rides
@@ -268,6 +269,27 @@ describe('AllUsers (integration)', () => {
     expect(screen.getByText('Tenant Admin')).toBeInTheDocument();
     expect(screen.getByText('readonly')).toBeInTheDocument();
     expect(screen.getByText('Admins')).toBeInTheDocument();
+  });
+
+  it('collapses a long group list into two tags plus a "+N more" chip', async () => {
+    getUsersByTenant.mockResolvedValue(
+      mockUsersResponse([
+        {
+          ...sampleUsers[0],
+          user_groups: JSON.stringify([{ name: 'Admins' }, { name: 'Platform' }, { name: 'On Call' }, { name: 'Billing' }, { name: 'Auditors' }]),
+        },
+      ])
+    );
+
+    render(<AllUsers />);
+
+    await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
+    expect(screen.getByText('Admins')).toBeInTheDocument();
+    expect(screen.getByText('Platform')).toBeInTheDocument();
+    // The remaining names live in the overflow chip's tooltip, which MUI only
+    // mounts on hover — so they must not be in the cell itself.
+    expect(screen.queryByText('On Call')).not.toBeInTheDocument();
+    expect(screen.getByTestId('user-groups-overflow')).toHaveTextContent('+3 more');
   });
 
   it('populates status dropdown from getAllStatuses', async () => {

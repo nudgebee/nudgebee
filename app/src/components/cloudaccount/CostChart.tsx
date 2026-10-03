@@ -44,6 +44,7 @@ const TotalCostChart = ({
     if (!accountId) {
       return;
     }
+    let cancelled = false;
     setComputeSummaryLoading(true);
     const chartData: any = [];
     const chartLabels: any = [];
@@ -55,6 +56,7 @@ const TotalCostChart = ({
         chartUnit
       )
       .then((res: any) => {
+        if (cancelled) return;
         res?.data?.spend_groupings?.forEach((item: any) => {
           chartData.push(item?.spend_amount);
           chartLabels.push(getDateStringFromDateUnit(item?.spend_date, chartUnit));
@@ -65,8 +67,11 @@ const TotalCostChart = ({
         });
       })
       .finally(() => {
-        setComputeSummaryLoading(false);
+        if (!cancelled) setComputeSummaryLoading(false);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, chartUnit, selectedDateRange.startDate, selectedDateRange.endDate, resourceServiceName, resourceId]);
 
   const handleDateRangeChange = (passedSelectedDateTime: any) => {

@@ -39,7 +39,7 @@ func (t ProposeRecommendationApplyTool) Name() string { return ToolProposeRecomm
 func (t ProposeRecommendationApplyTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (t ProposeRecommendationApplyTool) Description() string {
-	return "Returns a deep link to the optimise page where the user can review a cost recommendation's blast radius and apply it. Use this to hand an apply off to the user AFTER presenting the recommendation's safety band (safe / review / risky / unknown), blast radius, and estimated savings. This does NOT apply the change — the user reviews and applies in the UI. Never claim a recommendation has been applied."
+	return "Returns a deep link to the optimise page where the user can review a cost recommendation's blast radius and apply it. Use this to hand an apply off to the user AFTER presenting the recommendation's safety band in the product's words (Safe / Quick check / Plan it / Irreversible / Not assessed), blast radius, and estimated savings. This does NOT apply the change — the user reviews and applies in the UI. Never claim a recommendation has been applied."
 }
 
 func (t ProposeRecommendationApplyTool) InputSchema() core.ToolSchema {
@@ -104,5 +104,5 @@ func (t ProposeRecommendationApplyTool) Call(ctx core.NbToolContext, input core.
 // (config base URL + /optimise?id=...).
 func buildRecommendationApplyLink(recID, accountID string) string {
 	base := strings.TrimRight(config.Config.BaseUrl, "/")
-	return fmt.Sprintf("%s/optimise?id=%s&accountId=%s#recommendations", base, url.QueryEscape(recID), url.QueryEscape(accountID))
+	return fmt.Sprintf("%s/optimise?id=%s&accountId=%s#cost", base, url.QueryEscape(recID), url.QueryEscape(accountID))
 }

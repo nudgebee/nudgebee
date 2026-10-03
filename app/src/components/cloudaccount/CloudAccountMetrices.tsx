@@ -63,8 +63,16 @@ const CloudAccountMetrics = (props: { accountId: string | undefined; heading: st
 
   useEffect(() => {
     if (!props?.accountId && !props?.serviceName) {
+      // Settles the spinner for a request the cancellation latch below is about to abandon:
+      // `accountId` can go truthy -> undefined while mounted (the parent recomputes it from
+      // router.query, which empties during a route transition), and this bail would otherwise
+      // leave `loading` true with nothing left in flight to clear it.
+      setLoading(false);
       return;
     }
+    // The effect re-fires on every page and filter change, so a slower earlier request can
+    // resolve after a newer one and repaint the table with the previous page's rows.
+    let cancelled = false;
     setLoading(true);
     apiCloudAccount
       .getCloudResource({
@@ -75,6 +83,9 @@ const CloudAccountMetrics = (props: { accountId: string | undefined; heading: st
         fetchTicket: true,
       })
       .then((res: any) => {
+        if (cancelled) {
+          return;
+        }
         setLoading(false);
         const ec2ResourceData = res.data?.data?.cloud_resourses?.map((item: any) => {
           const data: ICustomTableRow[] = [];
@@ -125,8 +136,14 @@ const CloudAccountMetrics = (props: { accountId: string | undefined; heading: st
         setEC2RightSizingCount(0);
       })
       .catch(() => {
+        if (cancelled) {
+          return;
+        }
         setLoading(false);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [props?.accountId, page, selectedServiceName, selectedSeverity, recommendationStatus]);
 
   return (

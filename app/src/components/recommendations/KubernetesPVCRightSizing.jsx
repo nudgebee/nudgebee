@@ -22,9 +22,8 @@ import { Modal } from '@ui/Modal';
 import apiHome from '@api1/home';
 import TicketLink from '@shared/links/TicketLink';
 import { Link as CustomLink } from '@ui/Link';
-import EmptyData from '@shared/EmptyData';
+import { EmptyState } from '@ui/EmptyState';
 import Link from 'next/link';
-import { DataNotAvailable } from '@assets';
 import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { latestUpdatedAt } from 'src/utils/common';
@@ -532,10 +531,10 @@ const KubernetesPVCRightSizing = ({ enabledSummary = true, enabledFilters = true
   if (!isOptimisePage && !selectedCluster?.agent?.connection_status?.prometheusConnection) {
     return (
       <WidgetCard id='pvc-right-sizing' sx={{ mt: 0, mb: 0 }}>
-        <EmptyData
-          img={DataNotAvailable}
-          heading='Agent Not Connected'
-          subHeading='Prometheus is not connected for this cluster. Connect an agent to start monitoring.'
+        <EmptyState
+          illustration='first-time'
+          title='Agent Not Connected'
+          description='Prometheus is not connected for this cluster. Connect an agent to start monitoring.'
         >
           <Typography sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[600], mt: 'var(--ds-space-2)' }}>
             Check the{' '}
@@ -544,7 +543,7 @@ const KubernetesPVCRightSizing = ({ enabledSummary = true, enabledFilters = true
             </Link>{' '}
             page for connection details.
           </Typography>
-        </EmptyData>
+        </EmptyState>
       </WidgetCard>
     );
   }

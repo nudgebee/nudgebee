@@ -10,7 +10,7 @@
  * / data-testid that already ships in the product. If you retarget a flow,
  * update the selector here in the same change.
  */
-import { getAssistantName, getBrandTitle } from '@hooks/useTenantBranding';
+import { fillBrandTokens, getAssistantName } from '@hooks/useTenantBranding';
 import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
 import { isUiFeatureEnabled, hasFeatureAccessCached, getUserSession, isTenantAdmin } from '@lib/auth';
 import apiUser from '@api1/user';
@@ -31,7 +31,7 @@ import apiUser from '@api1/user';
  * `TourProvider`, `GuidesMenu`, `TourLauncher`, `FirstLoginTour`,
  * `SectionFirstVisitTour`.
  */
-export const brandText = (text: string): string => text.replaceAll('{brand}', getBrandTitle()).replaceAll('{assistant}', getAssistantName());
+export const brandText = (text: string): string => fillBrandTokens(text);
 
 export type TourSide = 'top' | 'right' | 'bottom' | 'left';
 export type TourAlign = 'start' | 'center' | 'end';
@@ -371,8 +371,11 @@ const connectClusterTour: TourDef = {
 /**
  * First-login "app overview" walkthrough of the left sidebar plus the header
  * cluster/cloud controls. Anchors to the sidebar nav button ids (set in
- * components/common/layout/index.jsx via `id={item.id}`) and two header ids set
- * in components/common/header/Header1.jsx:
+ * components/common/layout/index.jsx via `id={item.id}`) and three header ids
+ * set in components/common/header/Header1.jsx:
+ *   #auto-complete-global-page-search → the header search pill (GlobalPageSearch).
+ *        A single info step here — the standalone `globalSearchTour` below covers
+ *        the dropdown's contents step by step; this tour just points it out.
  *   #global-cluster-filter → the active cluster / cloud account picker
  *   #cluster-detail-view   → the "detail view" button
  * The sidebar is global; the header controls render on /home (where the tour
@@ -394,7 +397,7 @@ const appOverviewTour: TourDef = {
     {
       element: '#home-sidenavbutton',
       title: 'Home',
-      description: 'Your starting point — ask Nubi anything and see a live snapshot of every connected cluster and cloud account.',
+      description: 'Your starting point — ask {Assistant} anything and see a live snapshot of every connected cluster and cloud account.',
       side: 'right',
       align: 'start',
     },
@@ -446,15 +449,24 @@ const appOverviewTour: TourDef = {
     },
     {
       element: '[data-testid="nav-bcortex-btn"]',
-      title: 'Nubi',
+      title: '{Assistant}',
       description:
-        'Nubi is the AI that runs alongside you — ask it anything from Home, or about any finding you’re looking at. b-Cortex is its memory: what it has learned about your estate and past incidents, so its answers get sharper over time.',
+        '{Assistant} is the AI that runs alongside you — ask it anything from Home, or about any finding you’re looking at. b-Cortex is its memory: what it has learned about your estate and past incidents, so its answers get sharper over time.',
       side: 'right',
       align: 'start',
       // Hidden in OSS deployments (NUDGEBEE_DEPLOYMENT_MODE=oss) — see
       // NubiBrainNav.jsx, which gates the button on the same check.
       optional: true,
       isAvailable: () => !isOSSDeploymentMode(),
+    },
+    {
+      element: '#auto-complete-global-page-search',
+      title: 'Search, from anywhere',
+      get description() {
+        return `Press Ctrl/⌘+K any time to jump straight to a page, scope your search to one cluster or cloud account, or hand the question straight to ${getAssistantName()}.`;
+      },
+      side: 'bottom',
+      align: 'start',
     },
     {
       element: '#global-cluster-filter',
@@ -1333,7 +1345,7 @@ const automationFromScratchTour: TourDef = {
  * and the page itself only gates on session presence.
  *
  * `route` is '/optimise' with NO hash on purpose. useLaunchGuide compares base
- * paths and ignores the fragment, so a '/optimise#recommendations' route would
+ * paths and ignores the fragment, so a '/optimise#cost' route would
  * skip navigation for a user already on '/optimise#summary' — starting the tour
  * on Summary, where these anchors don't exist. Step 2 clicks through to
  * Recommendations instead, which also makes the guide robust when launched from
@@ -1434,7 +1446,7 @@ const optimizeTour: TourDef = {
       element: '#optimize-recommendations-table',
       title: 'The recommendations',
       description:
-        'One row per finding, with its estimated saving. Click a row to open the details panel — that’s where you review the change, ask Nubi about it, raise a ticket, or apply it.',
+        'One row per finding, with its estimated saving. Click a row to open the details panel — that’s where you review the change, ask {Assistant} about it, raise a ticket, or apply it.',
       side: 'top',
       align: 'center',
     },
@@ -1502,21 +1514,22 @@ const optimizeTour: TourDef = {
  * wrappers exist but only for K8s pod-right-sizing recs behind a row click, which
  * is too data-dependent to build a step on.
  *
- * Anchors for "Optimize: Summary" (#summary-savings-card, #summary-filter-category,
- * #summary-filter-provider and #summary-view-toggle were added with this guide —
- * Card/ToggleGroup already forwarded `id`; FilterFacet gained an optional one):
+ * Anchors for "Optimize: Summary":
  *   #anchor-tab-summary                    → the tab
- *   #summary-savings-card                  → headline savings + freshness Card
- *   #summary-filter-category / -provider   → the two chip facets
- *   #auto-complete-account-filter-select   → Account (FilterDropdown rewrites its id)
- *   #top3-open-autopilot / #sort-toggle / #ask-nubi-footer
- *                                          → all render only once findings load and
- *                                            are non-empty → optional
- *   #summary-view-toggle                   → cards/list switch
- * Note the findings table (#summary-findings-table) is NOT spotlit: viewMode
- * defaults to 'cards', so it isn't mounted on landing. The view-toggle step covers
- * it. And #category-section-<category> is a decoy — InsightSection passes that id to
- * CollapsableCard, which only uses it as a localStorage key and never renders it.
+ *   #summary-savings-card                  → headline savings + briefing Card
+ *   #summary-do-this-first                 → the ranked "Do this first" queue
+ *                                             (severity × impact × age — not a
+ *                                             filtered view; the category/provider
+ *                                             facets below don't touch it)
+ *   #summary-filter-category / -provider   → the two chip facets — narrow the
+ *                                             "Top findings" table only
+ *   #auto-complete-account-filter-select   → Account (FilterDropdown rewrites its id) —
+ *                                             narrows the whole page, ranked queue included
+ *   #sort-toggle / #summary-findings-table → render only once findings load and
+ *                                             are non-empty → optional
+ * The card/list view toggle was removed — the table is the only view now, so
+ * #summary-findings-table is always mounted (once findings load) and gets its
+ * own step instead of being skipped.
  */
 const optimizeSummaryTour: TourDef = {
   id: 'optimize-summary',
@@ -1545,34 +1558,34 @@ const optimizeSummaryTour: TourDef = {
       align: 'start',
     },
     {
+      element: '#summary-do-this-first',
+      title: 'Do this first',
+      description: '{brand} ranks findings by severity, impact and age — not just savings — and surfaces the ones worth your time first.',
+      side: 'bottom',
+      align: 'start',
+      // Only renders once findings have loaded and are non-empty.
+      optional: true,
+    },
+    {
       element: '#summary-filter-category',
       title: 'Filter by category',
-      description: 'Cost, Performance, or Security & Config — pick the kind of problem you’re here to solve. All is the default.',
+      description: 'Cost, Performance, or Security & Config — narrows the findings table below. All is the default.',
       side: 'bottom',
       align: 'start',
     },
     {
       element: '#summary-filter-provider',
       title: 'Filter by provider',
-      description: 'Narrow to AWS, Azure, GCP, or Kubernetes when you only own one slice of the estate.',
+      description: 'Narrow the table to AWS, Azure, GCP, or Kubernetes when you only own one slice of the estate.',
       side: 'bottom',
       align: 'start',
     },
     {
       element: '#auto-complete-account-filter-select',
       title: 'Filter by account',
-      description: 'Scope everything below to one cloud account or cluster.',
+      description: 'Scope everything on this page to one cloud account or cluster.',
       side: 'bottom',
       align: 'start',
-    },
-    {
-      element: '#top3-open-autopilot',
-      title: 'Start with the top 3',
-      description: '{brand} picks the three findings worth your time first. Open the Autopilot queue to let automations handle the repetitive ones.',
-      side: 'top',
-      align: 'end',
-      // Only renders once findings have loaded and there are more than the top 3.
-      optional: true,
     },
     {
       element: '#sort-toggle',
@@ -1584,16 +1597,9 @@ const optimizeSummaryTour: TourDef = {
       optional: true,
     },
     {
-      element: '#summary-view-toggle',
-      title: 'Cards or list',
-      description: 'Cards read better when you’re exploring; switch to list for a dense, sortable table of every finding.',
-      side: 'bottom',
-      align: 'end',
-    },
-    {
-      element: '#ask-nubi-footer',
-      title: 'Ask Nubi',
-      description: 'Not sure what a finding means or whether it’s safe to apply? Ask Nubi about any of it in plain language.',
+      element: '#summary-findings-table',
+      title: 'Every finding, sortable',
+      description: 'A dense table of everything matching your filters — not just the curated picks above.',
       side: 'top',
       align: 'center',
       optional: true,
@@ -1805,8 +1811,7 @@ const optimizeAutoOptimizeTour: TourDef = {
  * the tenant flag is the gate that actually decides visibility.
  *
  * Anchors (all pre-existing):
- *   #anchor-tab-llm-analyser → the tab (id 'llm-analyser'; note its hash is
- *                              'cost-analyser' — fragment and id differ here)
+ *   #anchor-tab-llm-analyser → the tab (id and hash are both 'llm-analyser')
  *   #cost-kpi-row / #cost-over-time / #cost-filter-bar / #cost-filter-reset
  *   #auto-complete-cost-filter-{account,model,user} → FilterDropdown rewrites ids
  *   #tab-conversations / #tab-models / #tab-agents / #tab-tools / #tab-users /

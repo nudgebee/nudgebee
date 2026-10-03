@@ -15,20 +15,15 @@ test("CRUD Custom Agent", { tag: ["@dev", "@test", "@regression", "@functional",
   console.log(`Creating Agent with Name: ${agentName}`);
 
   await loginPage.doFullLogin();
-  await locators.askNudgebeeBtn.click();
-  // SettingsModal builds its tab strip from an async hasFeatureAccess('LLM_FUNCTION')
-  // round trip, and a Settings click that lands while the nubi panel is still animating
-  // in opens nothing at all — leaving the panel on screen with no tabs to click. Retry
-  // the pair until the tabs are actually there.
-  await expect(async () => {
-    if (!(await locators.customAgentTab.isVisible().catch(() => false))) {
-      await locators.settingsBtn.click();
-    }
-    await locators.customAgentTab.waitFor({ state: "visible", timeout: 5000 });
-  }).toPass({ timeout: 60000, intervals: [1000, 2000, 3000] });
-  console.log("Navigated to Settings");
+  await locators.openPanel();
+  await locators.openAITools(locators.customAgentTab);
+  console.log("Navigated to AI & Tools");
 
   await locators.customAgentTab.click();
+  // AgentsAdminTab defaults to tenant-wide (accountId=''), and ListAgents hides
+  // Create entirely at tenant-wide — narrow to a real account first, same as an
+  // admin would via the header filter.
+  await locators.selectFirstAdminAccount();
   await locators.createCustomAgentBtn.waitFor({ state: "visible", timeout: 30000 });
   await locators.createCustomAgentBtn.click();
   // The first field is the readiness signal: every card on this form is rendered

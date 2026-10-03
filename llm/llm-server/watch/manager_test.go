@@ -303,6 +303,7 @@ func TestCreate_PersistsAllFields(t *testing.T) {
 	in := validCreateInput()
 	in.PredicateNegate = true
 	in.NotifyTemplate = "Done: {summary}"
+	in.NotifySession = "C0123ABCD-1699900000.001500"
 
 	mock.ExpectExec("INSERT INTO llm_watch_tasks").
 		WithArgs(
@@ -316,7 +317,8 @@ func TestCreate_PersistsAllFields(t *testing.T) {
 			frozen.Add(time.Duration(in.PollIntervalSec)*time.Second),
 			frozen.Add(time.Duration(in.MaxDurationSec)*time.Second),
 			frozen, frozen,
-			in.ParentMessageID, // parent_message_id (nil unless set on the input)
+			in.ParentMessageID,            // parent_message_id (nil unless set on the input)
+			"C0123ABCD-1699900000.001500", // notify_session
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -326,6 +328,8 @@ func TestCreate_PersistsAllFields(t *testing.T) {
 	assert.True(t, w.PredicateNegate)
 	require.NotNil(t, w.NotifyTemplate)
 	assert.Equal(t, "Done: {summary}", *w.NotifyTemplate)
+	require.NotNil(t, w.NotifySession)
+	assert.Equal(t, "C0123ABCD-1699900000.001500", *w.NotifySession)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

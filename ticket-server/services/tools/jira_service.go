@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -736,7 +737,7 @@ func QueryIssueFieldDetails(ctx *gin.Context, configuration models.TicketConfigu
 	var fieldValues []models.FieldValue
 	switch request.Input.KEY {
 	case "assignee":
-		fieldValues, err = usersToFieldValues(ctx, jiraClient, resp, fieldValues)
+		fieldValues, err = usersToFieldValues(jiraClient, resp, fieldValues)
 	case "labels":
 		fieldValues, err = labelsToFieldValues(resp, fieldValues)
 	default:
@@ -769,47 +770,54 @@ func labelsToFieldValues(resp *jira.Response, fieldValues []models.FieldValue) (
 	return fieldValues, nil
 }
 
-func usersToFieldValues(ctx *gin.Context, client *jira.Client, resp *jira.Response, fieldValues []models.FieldValue) ([]models.FieldValue, error) {
+// usersToFieldValues maps a user picker's autocomplete results to field
+// values. ID is the identifier the deployment assigns by (accountId on Cloud,
+// name on Server/Data Center); Value is the email, looked up when the picker
+// omits it.
+func usersToFieldValues(client *jira.Client, resp *jira.Response, fieldValues []models.FieldValue) ([]models.FieldValue, error) {
 	var users []jira.User
 	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
 		return nil, err
 	}
 
+	searchParam := ""
 	for _, user := range users {
-		fieldValue := models.FieldValue{
-			ID:   user.AccountID,
-			Name: user.DisplayName,
-			Value: func() string {
-				if user.EmailAddress != "" {
-					return user.EmailAddress
-				}
-				email, err := getEmailForUser(ctx, client, user.DisplayName)
-				if err != nil {
-					slog.Debug("Error fetching email address for user " + user.DisplayName + ": " + err.Error())
-					return ""
-				}
-				return email
-			}(),
+		id := user.AccountID
+		if id == "" {
+			id = user.Name
 		}
-
-		fieldValues = append(fieldValues, fieldValue)
+		email := user.EmailAddress
+		if email == "" {
+			if searchParam == "" {
+				searchParam = jiraUserSearchParam(client)
+			}
+			if u := lookupJiraUser(client, searchParam, user.DisplayName); u != nil {
+				email = u.EmailAddress
+			}
+		}
+		fieldValues = append(fieldValues, models.FieldValue{
+			ID:    id,
+			Name:  user.DisplayName,
+			Value: email,
+		})
 	}
 	return fieldValues, nil
 }
 
-func getEmailForUser(ctx *gin.Context, client *jira.Client, displayName string) (string, error) {
-	users, _, err := client.User.FindWithContext(ctx, displayName)
+// jiraUserSearchParam is the user/search query parameter the deployment
+// accepts: Cloud takes `query`, Server/Data Center takes `username`. Cloud is
+// assumed when the deployment cannot be determined, matching the older
+// behaviour of this lookup.
+func jiraUserSearchParam(client *jira.Client) string {
+	cloud, err := clients.IsJiraCloud(client)
 	if err != nil {
-		return "", err
+		slog.Warn("Jira: could not determine deployment type for user lookup", "error", slog.AnyValue(err))
+		return "query"
 	}
-
-	// Check if user is found
-	if len(users) == 0 {
-		return "", fmt.Errorf("user with display name %s not found", displayName)
+	if cloud {
+		return "query"
 	}
-
-	// Return the email address of the first user found
-	return users[0].EmailAddress, nil
+	return "username"
 }
 
 func GetTicketComments(config models.TicketConfigurations, ticketID string) ([]models.Comments, error) {
@@ -962,14 +970,35 @@ func (s *JiraService) List(ctx *gin.Context, config models.TicketConfigurations,
 	}
 	jql += fmt.Sprintf(" ORDER BY %s %s", orderField, orderDir)
 
-	searchOpts := &jira.SearchOptions{
-		StartAt:    params.Offset,
-		MaxResults: params.Limit,
+	cloud, err := clients.IsJiraCloud(jiraClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to detect Jira deployment: %w", err)
 	}
 
-	issues, resp, err := jiraClient.Issue.Search(jql, searchOpts)
-	if err != nil {
-		return nil, fmt.Errorf("failed to search Jira issues: %w", err)
+	var (
+		issues  []jira.Issue
+		total   int
+		hasMore bool
+	)
+	if cloud {
+		var seen int
+		issues, hasMore, seen, err = searchJiraCloudPage(listContext(ctx), jiraClient, jql, params.Offset, params.Limit)
+		if err != nil {
+			return nil, fmt.Errorf("failed to search Jira issues: %w", err)
+		}
+		if !hasMore {
+			total = seen
+		}
+	} else {
+		var resp *jira.Response
+		issues, resp, err = jiraClient.Issue.Search(jql, &jira.SearchOptions{StartAt: params.Offset, MaxResults: params.Limit})
+		if err != nil {
+			return nil, fmt.Errorf("failed to search Jira issues: %w", err)
+		}
+		if resp != nil {
+			total = resp.Total
+		}
+		hasMore = total > params.Offset+len(issues)
 	}
 
 	tickets := make([]models.Ticket, 0, len(issues))
@@ -1008,16 +1037,74 @@ func (s *JiraService) List(ctx *gin.Context, config models.TicketConfigurations,
 		})
 	}
 
-	total := 0
-	if resp != nil {
-		total = resp.Total
-	}
 	return &models.ListResult{
 		Tickets: tickets,
 		Total:   total,
 		Limit:   params.Limit,
 		Offset:  params.Offset,
+		HasMore: hasMore,
 	}, nil
+}
+
+// listContext returns the request context, or a background one when the
+// handler runs without a request (unit tests).
+func listContext(ctx *gin.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+// jiraSearchPage is the cursor-paged envelope Jira Cloud's search/jql returns.
+type jiraSearchPage struct {
+	Issues        []jira.Issue `json:"issues"`
+	NextPageToken string       `json:"nextPageToken"`
+}
+
+// searchJiraCloudPage serves an offset/limit window from Jira Cloud's
+// cursor-paged search (rest/api/2/search/jql), which replaced the offset-paged
+// rest/api/2/search. Pages are walked from the start until the window is
+// filled or the cursor ends; hasMore reports whether anything follows the
+// window and seen is how many rows the walk covered, which is the exact total
+// once the cursor ends. Cloud may return fewer rows per page than requested,
+// so the page size is only a hint.
+func searchJiraCloudPage(ctx context.Context, jiraClient *jira.Client, jql string, offset, limit int) ([]jira.Issue, bool, int, error) {
+	const maxPages = 20
+	want := offset + limit
+	var collected []jira.Issue
+	token := ""
+	for page := 0; page < maxPages; page++ {
+		body := map[string]interface{}{
+			"jql":        jql,
+			"fields":     []string{"summary", "status", "priority", "assignee", "created"},
+			"maxResults": want - len(collected) + 1,
+		}
+		if token != "" {
+			body["nextPageToken"] = token
+		}
+		req, err := jiraClient.NewRequestWithContext(ctx, "POST", "rest/api/2/search/jql", body)
+		if err != nil {
+			return nil, false, 0, err
+		}
+		var result jiraSearchPage
+		if _, err := jiraClient.Do(req, &result); err != nil {
+			return nil, false, 0, err
+		}
+		collected = append(collected, result.Issues...)
+		token = result.NextPageToken
+		if len(collected) >= want || token == "" || len(result.Issues) == 0 {
+			break
+		}
+	}
+	hasMore := len(collected) > want || token != ""
+	if offset >= len(collected) {
+		if token != "" {
+			return nil, false, 0, fmt.Errorf("offset %d is beyond the %d issues reachable through cursor paging", offset, len(collected))
+		}
+		return nil, hasMore, len(collected), nil
+	}
+	end := min(want, len(collected))
+	return collected[offset:end], hasMore, len(collected), nil
 }
 
 // Update updates fields on a Jira issue. Status changes go through the

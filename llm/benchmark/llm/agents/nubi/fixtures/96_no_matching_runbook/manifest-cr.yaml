@@ -1,0 +1,26 @@
+# WhaleWatcher instances, kept out of manifest.yaml on purpose: applying a
+# CRD and instances of that CRD in the same `kubectl apply -f` races CRD
+# establishment on the API server ("no matches for kind WhaleWatcher ...
+# ensure CRDs are installed first") — reproducible even when the applying
+# principal has full permissions. before_test applies manifest.yaml, waits
+# for the CRD to report Established, then applies this file.
+apiVersion: ocean.io/v1
+kind: WhaleWatcher
+metadata:
+  name: blue-whale
+  namespace: app-96
+spec:
+  whaleType: "blue"
+  location: "Pacific Ocean"
+  depth: 200
+
+---
+apiVersion: ocean.io/v1
+kind: WhaleWatcher
+metadata:
+  name: humpback-whale
+  namespace: app-96
+spec:
+  whaleType: "humpback"
+  location: "Atlantic Ocean"
+  depth: 150

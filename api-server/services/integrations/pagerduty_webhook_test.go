@@ -1,6 +1,9 @@
 package integrations
 
 import (
+	"errors"
+	"fmt"
+	"net/http"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/internal/testenv"
 	"nudgebee/services/security"
@@ -1040,4 +1043,61 @@ func TestAddWorkloadCandidate(t *testing.T) {
 	assert.Equal(t, "a,b", labels["nb_workload_candidates"], "empty name is a no-op")
 
 	assert.NotPanics(t, func() { addWorkloadCandidate(nil, "x") })
+}
+
+func TestIsRetriablePagerDutyFetchError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			// The Q1JVZB8HK4C5OS case: PagerDuty's read API had not caught up with the
+			// incident yet when the triggered webhook fired ~1s after creation.
+			name: "404 incident not readable yet is retriable",
+			err:  &pagerDutyAPIError{StatusCode: http.StatusNotFound, Status: "404 Not Found"},
+			want: true,
+		},
+		{
+			name: "429 throttle is retriable",
+			err:  &pagerDutyAPIError{StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests"},
+			want: true,
+		},
+		{
+			name: "502 is retriable",
+			err:  &pagerDutyAPIError{StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway"},
+			want: true,
+		},
+		{
+			name: "401 bad token is permanent",
+			err:  &pagerDutyAPIError{StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized"},
+			want: false,
+		},
+		{
+			name: "403 unauthorized token is permanent",
+			err:  &pagerDutyAPIError{StatusCode: http.StatusForbidden, Status: "403 Forbidden"},
+			want: false,
+		},
+		{
+			name: "400 malformed request is permanent",
+			err:  &pagerDutyAPIError{StatusCode: http.StatusBadRequest, Status: "400 Bad Request"},
+			want: false,
+		},
+		{
+			name: "transport failure is retriable",
+			err:  errors.New("error sending request to PagerDuty API: dial tcp: i/o timeout"),
+			want: true,
+		},
+		{
+			name: "wrapped API error is still classified",
+			err:  fmt.Errorf("enrich: %w", &pagerDutyAPIError{StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized"}),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isRetriablePagerDutyFetchError(tt.err))
+		})
+	}
 }

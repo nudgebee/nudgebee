@@ -41,7 +41,7 @@ func (a *jobInfoAction) Execute(ctx PlaybookActionContext, rawParams map[string]
 	if err != nil {
 		return nil, fmt.Errorf("job_info_enricher: %w", err)
 	}
-	job := firstResourceDict(data)
+	job := resourceDictNamed(data, jobName, namespace)
 	if job == nil {
 		return nil, errors.New("job_info_enricher: job not found")
 	}

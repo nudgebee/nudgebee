@@ -1,3 +1,4 @@
+import dynamic from 'next/dynamic';
 import apiWorkflow from '@api1/workflow';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiUser from '@api1/user';
@@ -29,7 +30,6 @@ import { getDefaultTriggerInputs, getWorkflowInputSchema, getPrimaryTriggerType 
 import AiGenerateWorkflowModal from './components/AiGenerateWorkflowModal';
 import ConfigurationManager from './ConfigurationManager';
 import CreateWorkflowOptionsModal from './components/CreateWorkflowOptionsModal';
-import CreateWorkflowFromCodeModal from './components/CreateWorkflowFromCodeModal';
 import WorkflowTemplatesModal from './components/WorkflowTemplatesModal';
 import { getAutomationToggleAction } from './automationMenu';
 import { buildWorkflowExportJson, buildWorkflowShareUrl, sanitizeWorkflowDefinitionForExport } from './workflowExport';
@@ -49,6 +49,10 @@ import {
 import { applyFiltersOnRouter } from '@lib/router';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { Refresh, StopCircleOutlined, Visibility } from '@mui/icons-material';
+
+// CodeMirror plus its JSON/YAML language packs and js-yaml only matter once this
+// modal is opened; a static import puts all of it in the listing route's bundle.
+const CreateWorkflowFromCodeModal = dynamic(() => import('./components/CreateWorkflowFromCodeModal'), { ssr: false });
 
 // Icons for menu items
 const pauseIcon = require('@assets/m_block.svg');
@@ -2023,18 +2027,22 @@ const WorkflowListing: React.FC = () => {
           <DialogContentText>Are you sure you want to cancel the currently running execution? This action cannot be undone.</DialogContentText>
         </Modal>
 
-        <TriggerWorkflowModal
-          open={triggerModalOpen}
-          onClose={handleCloseTriggerModal}
-          workflowName={selectedWorkflow.name}
-          triggerType={getPrimaryTriggerType(selectedWorkflow)}
-          defaultInputs={getDefaultTriggerInputs(selectedWorkflow)}
-          inputSchema={getWorkflowInputSchema(selectedWorkflow)}
-          onTrigger={handleTriggerWorkflow}
-          loading={triggerLoading}
-          liveVersionNumber={selectedWorkflow.live_version_number}
-          liveVersionName={selectedWorkflow.live_version_name}
-        />
+        {/* Mounted only while open so each open seeds the inputs fresh. */}
+        {triggerModalOpen && (
+          <TriggerWorkflowModal
+            key={selectedWorkflow.id}
+            open={triggerModalOpen}
+            onClose={handleCloseTriggerModal}
+            workflowName={selectedWorkflow.name}
+            triggerType={getPrimaryTriggerType(selectedWorkflow)}
+            defaultInputs={getDefaultTriggerInputs(selectedWorkflow)}
+            inputSchema={getWorkflowInputSchema(selectedWorkflow)}
+            onTrigger={handleTriggerWorkflow}
+            loading={triggerLoading}
+            liveVersionNumber={selectedWorkflow.live_version_number}
+            liveVersionName={selectedWorkflow.live_version_name}
+          />
+        )}
 
         <AiGenerateWorkflowModal
           open={aiGenerateModalOpen}

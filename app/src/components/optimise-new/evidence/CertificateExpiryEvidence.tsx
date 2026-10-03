@@ -1,4 +1,5 @@
 import { Box, Typography } from '@mui/material';
+import { Card } from '@ui/Card';
 import { ProgressBar } from '@ui/ProgressBar';
 import { ds } from 'src/utils/colors';
 import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
@@ -115,15 +116,7 @@ const CertificateExpiryEvidence = ({ recommendation, estimatedSavings }: Certifi
       )}
 
       {/* Certificate details */}
-      <Box
-        sx={{
-          backgroundColor: ds.gray[100],
-          borderRadius: ds.radius.lg,
-          p: ds.space[3],
-          border: `1px solid ${ds.gray[200]}`,
-          mb: ds.space[3],
-        }}
-      >
+      <Card variant='tinted' tone='neutral' size='sm' sx={{ mb: ds.space[3] }}>
         {certName && <MetricRow label='Certificate Name' value={certName} />}
         {namespace && <MetricRow label='Namespace' value={namespace} />}
         {expiryDate && (
@@ -145,10 +138,10 @@ const CertificateExpiryEvidence = ({ recommendation, estimatedSavings }: Certifi
             highlight
           />
         )}
-      </Box>
+      </Card>
 
       {/* Recommendation */}
-      <Box sx={{ backgroundColor: ds.green[100], borderRadius: ds.radius.lg, p: ds.space[3], border: `1px solid ${ds.green[200]}` }}>
+      <Card variant='tinted' tone='success' size='sm'>
         <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, color: ds.green[700], mb: ds.space[1] }}>
           Recommendation
         </Typography>
@@ -159,7 +152,7 @@ const CertificateExpiryEvidence = ({ recommendation, estimatedSavings }: Certifi
           {!isExpired && !isCritical && isWarning && 'Plan certificate renewal soon. Consider automating certificate management with cert-manager.'}
           {!isExpired && !isCritical && !isWarning && 'Certificate is valid. Monitor for upcoming expiry.'}
         </Typography>
-      </Box>
+      </Card>
 
       {estimatedSavings != null && estimatedSavings !== 0 && <SavingsFooter savings={estimatedSavings} />}
     </Box>

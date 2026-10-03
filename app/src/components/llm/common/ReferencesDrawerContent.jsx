@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import PropTypes from 'prop-types';
-import { Tabs, Tab, Box, Stack, Table, TableBody, TableCell, TableRow, IconButton, Collapse, Typography, Link as MuiLink } from '@mui/material';
+import { Tabs, Tab, Box, Stack, Table, TableBody, TableCell, TableRow, IconButton, Collapse, Typography } from '@mui/material';
+import { Link } from '@ui/Link';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
-import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import Chip from '@ui/Chip';
 import CustomTablePagination from '@shared/tables/CustomTablePagination';
 
@@ -471,18 +471,11 @@ const ReferencesDrawerContent = ({ references = [] }) => {
                             {typeof ref?.metadata?.url === 'string' && /^https?:\/\//.test(ref.metadata.url) && (
                               // Source-document link (e.g. the Confluence
                               // runbook page a KB reference came from).
-                              // stopPropagation so the click doesn't collapse
-                              // the row it lives in.
-                              <MuiLink
-                                href={ref.metadata.url}
-                                target='_blank'
-                                rel='noopener noreferrer'
-                                onClick={(e) => e.stopPropagation()}
-                                sx={{ fontSize: 12, alignSelf: 'center', display: 'inline-flex', alignItems: 'center', gap: 0.25 }}
-                              >
+                              // ds/Link stopPropagation's internally, so the
+                              // click doesn't collapse the row it lives in.
+                              <Link href={ref.metadata.url} openInNew secondaryText style={{ alignSelf: 'center' }}>
                                 Open source page
-                                <OpenInNewIcon sx={{ fontSize: 13 }} />
-                              </MuiLink>
+                              </Link>
                             )}
                           </Stack>
                           <Box

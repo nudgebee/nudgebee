@@ -181,6 +181,8 @@ const METRIC_HELP = {
   'Tool Calls': 'Number of data-fetch operations run, with the successful count in brackets.',
   'Wall Time':
     'Total elapsed from your question until the conversation fully settles. Includes background work that runs after the answer appears, so it is a little longer than the answer time on the message.',
+  'Followup Wait':
+    'Time spent waiting for you to approve a command, summed across every turn in this conversation. Already excluded from each message duration chip.',
   'Agent Active': 'How long agents were actually running, excluding time spent waiting between turns.',
   'API Time':
     'Time spent waiting on the AI models, added up across agents that ran at the same time. Because agents run in parallel this can exceed Agent Active — over 100% means the work was parallelised, not that something went wrong. Shown as a share of Agent Active.',
@@ -219,7 +221,7 @@ MetricLabel.propTypes = {
  * Conversation-level token usage display component
  * Shows total token usage, cost, cache savings, and performance metrics
  */
-export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) => {
+export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, followupWaitSeconds = 0 }) => {
   // Show loading state in full tooltip popup with bee animation
   if (isLoading && !tokenUsageData) {
     const loadingContent = (
@@ -379,7 +381,8 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) =>
     total_requests > 0 ||
     total_tool_calls > 0 ||
     wall_time_seconds !== null ||
-    agent_active_time_seconds !== null;
+    agent_active_time_seconds !== null ||
+    followupWaitSeconds > 0;
 
   if (!hasMeaningfulMetrics) {
     const placeholderContent = (
@@ -461,7 +464,7 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) =>
       )}
 
       {/* Performance Section */}
-      {(wall_time_seconds !== null || agent_active_time_seconds !== null || average_latency_seconds !== null) && (
+      {(wall_time_seconds !== null || agent_active_time_seconds !== null || average_latency_seconds !== null || followupWaitSeconds > 0) && (
         <Box sx={{ marginBottom: ds.space[2] }}>
           <Typography
             sx={{
@@ -479,6 +482,14 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) =>
               <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-semibold)' }}>
                 {formatTime(wall_time_seconds)}
               </Typography>
+            </Box>
+          )}
+          {followupWaitSeconds > 0 && (
+            <Box
+              sx={{ display: 'grid', gridTemplateColumns: '1fr auto', columnGap: ds.space[4], marginBottom: ds.space[0], paddingLeft: ds.space[2] }}
+            >
+              <MetricLabel label='Followup Wait' text='» Followup Wait:' />
+              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)' }}>{formatTime(followupWaitSeconds)}</Typography>
             </Box>
           )}
           {agent_active_time_seconds !== null && (
@@ -1507,6 +1518,7 @@ ConversationTokenUsage.propTypes = {
     average_latency_seconds: PropTypes.number,
   }),
   isLoading: PropTypes.bool,
+  followupWaitSeconds: PropTypes.number,
 };
 
 MessageTokenUsage.propTypes = {

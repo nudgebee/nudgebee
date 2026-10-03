@@ -30,12 +30,14 @@ data:
         alias /app/.next/static/;
         expires 30d;
         add_header Cache-Control "public";
+        log_not_found off;
       }
 
       location /public/ {
         alias /app/public/;
         expires 30d;
         add_header Cache-Control "public";
+        log_not_found off;
       }
 
       # Webhook fan-out to sibling services.

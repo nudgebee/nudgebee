@@ -442,3 +442,42 @@ def test_bf16_speed_probe_reports_unknown_rather_than_raising():
             raise RuntimeError("no randn here")
 
     assert lr._bf16_is_fast(_Broken()) is None
+
+
+def test_model_still_loads_when_interop_threads_are_already_fixed(monkeypatch):
+    """Torch refuses set_num_interop_threads once parallel work has started.
+
+    With EMBEDDINGS_PROVIDER=ondevice the embedding model always runs before
+    the first rerank, so this call raised, the model load aborted, and every
+    search came back empty with only a WARNING in the log. Losing a thread
+    tuning preference must not cost us reranking.
+    """
+    calls = {"threads": 0, "interop": 0, "loaded": 0}
+
+    class _FakeTorch:
+        float32 = "float32"
+        bfloat16 = "bfloat16"
+
+        @staticmethod
+        def set_num_threads(_n):
+            calls["threads"] += 1
+
+        @staticmethod
+        def set_num_interop_threads(_n):
+            calls["interop"] += 1
+            raise RuntimeError("cannot set number of interop threads after parallel work has started")
+
+    class _FakeCrossEncoder:
+        def __init__(self, *_a, **_k):
+            calls["loaded"] += 1
+            self.model = type("m", (), {"eval": lambda self: None, "to": lambda self, *a: None})()
+
+    monkeypatch.setitem(sys.modules, "torch", _FakeTorch)
+    monkeypatch.setitem(sys.modules, "sentence_transformers", type("st", (), {"CrossEncoder": _FakeCrossEncoder}))
+    monkeypatch.setattr(lr, "_resolve_dtype", lambda *_a, **_k: "float32")
+
+    model = lr._load_model()
+
+    assert calls["interop"] == 1, "the interop call should still be attempted"
+    assert calls["loaded"] == 1, "the model must load despite the interop failure"
+    assert model is not None

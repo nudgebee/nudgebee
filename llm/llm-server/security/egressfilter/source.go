@@ -68,6 +68,10 @@ type SourceRegion struct {
 	Source     Source
 	MsgIdx     int
 	PartIdx    int
+	// Tool is the tool name for tool-call / tool-result regions, empty
+	// otherwise. Copied onto Hit so an audit row says WHICH tool emitted a
+	// credential, not just that some tool did.
+	Tool string
 }
 
 // tagHitsBySource fills Hit.Source for each hit by binary-searching its
@@ -95,6 +99,7 @@ func tagHitsBySource(hits []Hit, regions []SourceRegion) []Hit {
 			r := regions[idx]
 			if h.Start >= r.Start && h.Start < r.End {
 				h.Source = r.Source
+				h.Tool = r.Tool
 			}
 		}
 	}

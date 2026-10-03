@@ -1,9 +1,10 @@
 // Not for OSS
 
-// The Audits tab of /user-management (app/src/pages/user-management/index.jsx:31),
-// whose body is AuditsTable (app/src/components/audits/index.jsx).
-export const AUDITS_PATH = "/user-management#audits";
-export const USERS_PATH = "/user-management#users";
+// The Audit Log sub-tab of /user-management's Access & Users tab
+// (app/src/pages/user-management/index.jsx), whose body is AuditsTable
+// (app/src/components/audits/index.jsx).
+export const AUDITS_PATH = "/user-management#access-users/audit-log";
+export const USERS_PATH = "/user-management#access-users";
 
 // The GraphQL operation AuditsTable issues for every filter, page and page-size
 // change (app/src/api1/audits/index.ts:3).

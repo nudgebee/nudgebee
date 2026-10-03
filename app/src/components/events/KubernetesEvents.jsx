@@ -61,7 +61,7 @@ import { useEventCloudFilter } from '@hooks/useCloudFilters';
 // Assets
 import TicketsIcon from '@assets/sidebar-icon/tickets-icon.svg';
 import { dashboardIcon1 as ClassifyIcon, infoIcon } from '@assets';
-import { getTriageStatusTooltip } from '@api1/triage';
+import { TRIAGE_SCORE_INFO, getTriageStatusTooltip } from '@api1/triage';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
 import { readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
 import WorkflowIcon from '@assets/WorkflowIcon';
@@ -125,9 +125,13 @@ const DEFAULT_TABLE_COLUMNS = [
   {
     name: 'Triage Score',
     width: '10%',
+    // The cell packs a score, a bar, an info icon and the priority-pin control — ~173px
+    // of content. Without a floor the resize hook happily allots it 10% (~74px) and the
+    // whole group spills over the columns on both sides.
+    minWidth: 175,
     align: 'left',
     defaultVisible: true,
-    info: "Triage Score is NudgeBee's context-aware triage score/level, computed using multiple signals beyond raw thresholds such as service criticality, customer/user impact, recurrence frequency, dependency (upstream/downstream) blast radius, and the nature of the service/workload.",
+    info: TRIAGE_SCORE_INFO,
   },
   {
     name: 'Alert Status',
@@ -466,8 +470,9 @@ const KubernetesEventsTable = ({
       {
         name: 'Triage Score',
         width: '10%',
+        minWidth: 175,
         align: 'left',
-        info: "Triage Score is NudgeBee's context-aware triage score/level, computed using multiple signals beyond raw thresholds such as service criticality, customer/user impact, recurrence frequency, dependency (upstream/downstream) blast radius, and the nature of the service/workload.",
+        info: TRIAGE_SCORE_INFO,
       },
       {
         name: 'Alert Status',
@@ -744,6 +749,14 @@ const KubernetesEventsTable = ({
           info: item?.info,
           infoPlacement: item?.infoPlacement,
           component: item?.component,
+          // `truncate` and `align` have to survive this remap: they're what makes the
+          // table clamp a cell to its own column. Dropping them let a long alert title
+          // render at full width and paint over the Triage Score column beside it.
+          ...(item?.truncate && { truncate: item.truncate }),
+          ...(item?.align && { align: item.align }),
+          ...(item?.size && { size: item.size }),
+          ...(item?.minWidth !== undefined && { minWidth: item.minWidth }),
+          ...(item?.maxWidth !== undefined && { maxWidth: item.maxWidth }),
           ...(item?.mandatory && { mandatory: item.mandatory }),
           ...(item?.defaultVisible !== undefined && { defaultVisible: item.defaultVisible }),
         };
@@ -1294,7 +1307,9 @@ const KubernetesEventsTable = ({
             component: ClusterNameWithRegion({
               name: item.title,
               hideIcon: true,
-              smallScreenWidth: ds.space.mul(0, 60),
+              // No `smallScreenWidth`: the Message column is already percentage-sized by the
+              // table, so pinning it to a fixed 120px under 1100px only squeezed the copy into
+              // a sliver while the cell around it stayed wide.
               maxWidth: '100%',
               showAutoEllipsis: true,
               lineClamp: 3,
@@ -1515,13 +1530,18 @@ const KubernetesEventsTable = ({
       countPromise = k8sApi.getK8sEventsCount(query);
     }
 
-    // Data + tickets chain: once data arrives, fetch ticket summaries, then render
+    // Render rows as soon as events arrive; ticket badges are a non-blocking second pass.
     const dataAndTicketsPromise = dataPromise.then((res) => {
       if (requestId !== eventsRequestIdRef.current) return;
       const events = res.data?.events || [];
+      rawEventsRef.current = events;
+      ticketReferenceMapRef.current = new Map();
+      setData(buildRowData(events, ticketReferenceMapRef.current));
+      setLoading(false);
+
       const uniqueReferenceIds = new Set();
       events.forEach((item) => {
-        uniqueReferenceIds.add(item.fingerprint);
+        if (item.fingerprint) uniqueReferenceIds.add(item.fingerprint);
       });
       const references = Array.from(uniqueReferenceIds);
 
@@ -1531,11 +1551,8 @@ const KubernetesEventsTable = ({
         ticketRes?.data?.tickets?.forEach((element) => {
           ticketReferenceMap.set(element.reference_id, element);
         });
-        rawEventsRef.current = events;
         ticketReferenceMapRef.current = ticketReferenceMap;
-        const data = buildRowData(events, ticketReferenceMap);
-        setData(data);
-        setLoading(false);
+        setData(buildRowData(events, ticketReferenceMap));
       });
     });
 
@@ -1971,7 +1988,7 @@ const KubernetesEventsTable = ({
               {isTroubleshootPage && !disabledFilters.includes('nubiRank') && (
                 <FilterDropdown
                   id='filter-nubi-rank'
-                  label='Nubi Rank'
+                  label='Triage Priority'
                   options={nubiRankFilter}
                   value={selectedNubiRank}
                   onSelect={onNubiRankFilterChange}

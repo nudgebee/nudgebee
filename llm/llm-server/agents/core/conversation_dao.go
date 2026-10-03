@@ -306,10 +306,10 @@ type IConversationDao interface {
 	GetConversationCosts(models []string, tenantId string) (map[string]modelPricing, error)
 	GetImageSupportCatalog() (map[string]bool, error)
 	GetConversationTokenUsageDetailed(conversationId, accountId string) ([]TokenUsageDetailedRecord, error)
-	GetConversationToolCallAgents(conversationId, accountId string) ([]ToolCallAgent, error)
-	ResolveSessionId(idOrSessionId string) string
 	GetConversationLifecycleStorageCost(conversationId string, tenantId string) (float64, error)
 	GetConversationToolCallsStats(conversationId, accountId string) (ToolCallsStats, error)
+	GetConversationToolCallAgents(conversationId, accountId string) ([]ToolCallAgent, error)
+	ResolveSessionId(idOrSessionId string) string
 	GetConversationTimeBreakdown(conversationId, accountId string) (TimeBreakdown, error)
 	GetConversationTimeAggregates(filter ConversationTimeAggregatesFilter) (ConversationTimeAggregates, error)
 	GetUsageMetrics(filter UsageMetricsFilter, dims []string, topN int, granularity string, skipStorage bool) (UsageMetrics, error)
@@ -323,6 +323,7 @@ type IConversationDao interface {
 	ListToolUsage(filter UsageMetricsFilter, sortBy string, limit int) (ToolUsageList, error)
 	ListToolCalls(filter UsageMetricsFilter, toolName string, statuses []string, limit int) (ToolCallList, error)
 	InsertTokenUsage(record *TokenUsageRecord) error
+	SaveClaimCritiqueAudit(ctx context.Context, record *ClaimCritiqueAuditRecord) error
 	InsertCacheLifecycle(ctx context.Context, record *CacheLifecycleRecord) error
 	SetCacheLifecycleInvalidated(ctx context.Context, cacheName string) error
 	GetConversationWithMessages(conversationId string, accountId string) (*ConversationWithMessages, error)
@@ -338,6 +339,7 @@ type IConversationDao interface {
 	DeleteLongTermMemory(id, accountId string) error
 	UpdateMessageProductivityMetrics(messageId string, classification string, successfulTasks int) error
 	GetSuccessfulToolCallsCountByMessage(messageId string) (int, error)
+	ListToolCallOutcomesByMessage(messageId string) ([]ToolCallOutcome, error)
 	RetrieveRelevantMemories(accountId string, query string, limit int) ([]LongTermMemory, error)
 	// FindSimilarMemories performs a RAG similarity search using content as the query and
 	// populates SimilarityScore on each result. Unlike RetrieveRelevantMemories it does NOT
@@ -439,6 +441,7 @@ type ConversationDao struct {
 
 // TokenUsageRecord represents a single LLM API call token usage
 type TokenUsageRecord struct {
+	ID                  string // Optional explicit ID for a single-call audit; other callers use the DB default.
 	ConversationID      string
 	MessageID           string
 	AgentID             *string // Nullable
@@ -1823,22 +1826,23 @@ func (chat *ConversationDao) UpdateConversationMessage(id, response string, stat
 	return nil
 }
 
-var (
-	conversationStatusUpdateWorkerPool *common.WorkerPool
-	onceStatusUpdateWorkerPool         sync.Once
-)
-
-func getStatusUpdateWorkerPool() *common.WorkerPool {
-	onceStatusUpdateWorkerPool.Do(func() {
-		// Dedicated pool for fast DB I/O (status updates).
-		// We use a high queue size (500) as these are non-blocking, quick operations.
-		conversationStatusUpdateWorkerPool = common.NewWorkerPool("conversation_status_updates", config.Config.AsyncPlanExecutionWorkerCount, 500)
-	})
-	return conversationStatusUpdateWorkerPool
-}
-
-// UpdateConversationMessageMetadata merges subsystem-owned top-level keys into
-// the message metadata without overwriting metadata written by another subsystem.
+// UpdateConversationMessageMetadata merges the supplied keys into the
+// metadata jsonb column on the llm_conversation_messages row. The column
+// is a generic per-message attachment slot — first consumer is the
+// outbound egressfilter (writes under the "egressfilter" key); future
+// per-message subsystems (e.g. PII tokenization) write under their own
+// top-level keys. The column was added in migration V761
+// (1781680308449_V761_add_metadata_to_llm_conversation_messages).
+//
+// We MERGE rather than overwrite (`COALESCE(metadata, '{}') || $2::jsonb`)
+// because multiple subsystems can each write independently for the same
+// message; a `SET metadata = $2` would let a later writer wipe an earlier
+// writer's namespace. The merge is shallow (top-level keys), which matches
+// the convention: each subsystem owns one top-level key and the value
+// underneath is opaque to other subsystems.
+//
+// An empty or nil metadata is treated as a no-op so callers can call
+// unconditionally without an empty-check at the call site.
 func (chat *ConversationDao) UpdateConversationMessageMetadata(id string, metadata map[string]any) error {
 	if id == "" || len(metadata) == 0 {
 		return nil
@@ -1855,6 +1859,20 @@ func (chat *ConversationDao) UpdateConversationMessageMetadata(id string, metada
 		return fmt.Errorf("history: failed to update message metadata: %w", err)
 	}
 	return nil
+}
+
+var (
+	conversationStatusUpdateWorkerPool *common.WorkerPool
+	onceStatusUpdateWorkerPool         sync.Once
+)
+
+func getStatusUpdateWorkerPool() *common.WorkerPool {
+	onceStatusUpdateWorkerPool.Do(func() {
+		// Dedicated pool for fast DB I/O (status updates).
+		// We use a high queue size (500) as these are non-blocking, quick operations.
+		conversationStatusUpdateWorkerPool = common.NewWorkerPool("conversation_status_updates", config.Config.AsyncPlanExecutionWorkerCount, 500)
+	})
+	return conversationStatusUpdateWorkerPool
 }
 
 func (chat *ConversationDao) UpdateConversationMessageAsync(id, response string, status ConversationStatus) {
@@ -3386,21 +3404,44 @@ type TimeBreakdown struct {
 	ToolTimeSeconds        float64
 }
 
+// maxMeasuredDurationSeconds caps any single wall / agent / tool duration in
+// the time rollup. These tables record no end-of-work timestamp, so a duration
+// is (updated_at - created_at) — row mtime, which anything touching the row
+// later re-stamps. Uncapped, one such row buries the sum: on dev the median
+// root-agent duration is 42 seconds while a single re-touched row measured
+// 4,460 hours. One hour is far above any real investigation and far below the
+// re-stamp artifacts, so it discards the artifacts without truncating real work.
+const maxMeasuredDurationSeconds = 3600
+
+// escapeLikePattern neutralises the LIKE metacharacters in a literal prefix so
+// it matches only itself. Postgres LIKE uses backslash as the default escape
+// character, so the backslash has to be escaped first.
+func escapeLikePattern(literal string) string {
+	replaced := strings.ReplaceAll(literal, `\`, `\\`)
+	replaced = strings.ReplaceAll(replaced, "%", `\%`)
+	return strings.ReplaceAll(replaced, "_", `\_`)
+}
+
 // ConversationTimeAggregatesFilter selects which conversations to roll up.
 // AccountIDs scopes the rollup to the caller's accessible accounts (matches
 // RPC RLS behavior for the existing GraphQL widgets); empty means "no
 // accessible accounts" and short-circuits to a zero result. Empty Sources
 // means "any source"; EventScoped narrows to conversations whose title
 // contains a UUID, matching the auto-investigation tab in the UI.
-// ExcludedTitles filters out infrastructure conversations like the
-// "Event details retrieval by ID" lookup that never represents real work.
+// ExcludedTitles filters out infrastructure conversations that never represent
+// real work, by exact title. ExcludedTitlePrefixes does the same for the ones
+// that carry the event id in the title, so no exact string can match them —
+// "Get the details of Event with id - <uuid>" is both infrastructure AND a
+// UUID-bearing title, so without a prefix filter it passes EventScoped and gets
+// counted as an investigation.
 type ConversationTimeAggregatesFilter struct {
-	AccountIDs     []string
-	StartDate      time.Time
-	EndDate        time.Time
-	Sources        []string
-	ExcludedTitles []string
-	EventScoped    bool
+	AccountIDs            []string
+	StartDate             time.Time
+	EndDate               time.Time
+	Sources               []string
+	ExcludedTitles        []string
+	ExcludedTitlePrefixes []string
+	EventScoped           bool
 }
 
 // ConversationTimeAggregates rolls up TimeBreakdown numbers across many
@@ -3568,9 +3609,17 @@ func (chat *ConversationDao) GetConversationTimeBreakdown(conversationId, accoun
 // (excluding user-input wait, complexity-aware baselines) only land in one
 // place.
 //
-// Window semantics match the existing groupings_v2 / list_v2 frontend queries:
-// filter by updated_at, exclude infrastructure titles, and optionally narrow to
-// auto-investigations (title contains a UUID).
+// The window is on created_at — when the work STARTED — not updated_at.
+// updated_at is row mtime: a cleanup job, a resume, or a status backfill
+// re-stamps it, which sweeps months-old conversations into a seven-day window
+// and drags their equally stale durations in with them. On dev one conversation
+// created in February and touched in August contributed 4,460 hours to a 7-day
+// rollup, 98% of the total, which drove the frontend's time-saved widget
+// negative. created_at cannot be re-stamped, so the population is stable.
+//
+// For the same reason every per-row duration below is capped at
+// maxMeasuredDurationSeconds: the only end-of-work timestamp these tables carry
+// is updated_at, so a single re-touched row would otherwise dominate a SUM.
 //
 // All three time totals (wall / agent / tool) are scoped to COMPLETED
 // conversations so that any future caller doing `time / completed_count`
@@ -3601,6 +3650,18 @@ func (chat *ConversationDao) GetConversationTimeAggregates(filter ConversationTi
 	if len(filter.ExcludedTitles) > 0 {
 		excludedTitleClause = fmt.Sprintf(" AND (c.title IS NULL OR c.title <> ALL($%d))", argCounter)
 		args = append(args, pq.Array(filter.ExcludedTitles))
+		argCounter++
+	}
+
+	// LIKE patterns are built here rather than taken from the caller so a
+	// prefix containing % or _ cannot silently widen the exclusion.
+	if len(filter.ExcludedTitlePrefixes) > 0 {
+		patterns := make([]string, 0, len(filter.ExcludedTitlePrefixes))
+		for _, prefix := range filter.ExcludedTitlePrefixes {
+			patterns = append(patterns, escapeLikePattern(prefix)+"%")
+		}
+		excludedTitleClause += fmt.Sprintf(" AND (c.title IS NULL OR c.title NOT LIKE ALL($%d))", argCounter)
+		args = append(args, pq.Array(patterns))
 	}
 
 	eventScopedClause := ""
@@ -3621,8 +3682,8 @@ func (chat *ConversationDao) GetConversationTimeAggregates(filter ConversationTi
 			SELECT c.id, c.status, c.created_at, c.updated_at
 			FROM llm_conversations c
 			WHERE c.account_id = ANY($1::uuid[])
-				AND c.updated_at >= $2
-				AND c.updated_at <= $3
+				AND c.created_at >= $2
+				AND c.created_at <= $3
 				AND EXISTS (
 					SELECT 1 FROM llm_conversation_messages m
 					WHERE m.conversation_id = c.id
@@ -3636,11 +3697,11 @@ func (chat *ConversationDao) GetConversationTimeAggregates(filter ConversationTi
 			WHERE status = 'COMPLETED'
 		),
 		wall_time AS (
-			SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (updated_at - created_at))), 0) AS seconds
+			SELECT COALESCE(SUM(LEAST(EXTRACT(EPOCH FROM (updated_at - created_at)), %[4]d)), 0) AS seconds
 			FROM completed_conversations
 		),
 		agent_time AS (
-			SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (a.updated_at - a.created_at))), 0) AS seconds
+			SELECT COALESCE(SUM(LEAST(EXTRACT(EPOCH FROM (a.updated_at - a.created_at)), %[4]d)), 0) AS seconds
 			FROM llm_conversation_agent a
 			WHERE a.conversation_id IN (SELECT id FROM completed_conversations)
 				AND a.updated_at IS NOT NULL
@@ -3648,7 +3709,7 @@ func (chat *ConversationDao) GetConversationTimeAggregates(filter ConversationTi
 				AND (a.parent_agent_id IS NULL OR a.parent_agent_id = '00000000-0000-0000-0000-000000000000')
 		),
 		tool_time AS (
-			SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (tc.updated_at - tc.created_at))), 0) AS seconds
+			SELECT COALESCE(SUM(LEAST(EXTRACT(EPOCH FROM (tc.updated_at - tc.created_at)), %[4]d)), 0) AS seconds
 			FROM llm_conversation_tool_calls tc
 			WHERE tc.conversation_id IN (SELECT id FROM completed_conversations)
 				AND tc.metadata->>'parent_tool_call_id' IS NULL
@@ -3667,7 +3728,7 @@ func (chat *ConversationDao) GetConversationTimeAggregates(filter ConversationTi
 			(SELECT seconds FROM wall_time) AS wall_time,
 			(SELECT seconds FROM agent_time) AS agent_time,
 			(SELECT seconds FROM tool_time) AS tool_time;`,
-		sourceClause, excludedTitleClause, eventScopedClause)
+		sourceClause, excludedTitleClause, eventScopedClause, maxMeasuredDurationSeconds)
 
 	var result struct {
 		CompletedCount int     `db:"completed_count"`
@@ -3710,7 +3771,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			ttft_ms, itl_ms_avg, tokens_per_second, was_streaming,
 			cost_usd,
 			model_tier, task_type,
-			llm_config_source
+			llm_config_source, id
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8,
@@ -3724,13 +3785,23 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			$27, $28, $29, $30,
 			$31,
 			$32, $33,
-			$34
+			$34, COALESCE($35::uuid, gen_random_uuid())
 		)
 	`
 
+	// Background-job rows (memory consolidators, maintenance) have no owning
+	// conversation or account — they're system cost, not customer-billable.
+	// Pass NULL for those columns so the insert succeeds; V760 made both
+	// nullable on llm_conversation_token_usage. Budget rollups that INNER
+	// JOIN llm_conversations naturally exclude these rows.
+	convID := nullableUUID(record.ConversationID)
+	acctID := nullableUUID(record.AccountID)
+	msgID := nullableUUID(record.MessageID)
+	usrID := nullableUUID(record.UserID)
+
 	_, err := chat.dbManager.Db.Exec(query,
-		record.ConversationID, record.MessageID, record.AgentID, record.AgentName,
-		record.AccountID, record.UserID,
+		convID, msgID, record.AgentID, record.AgentName,
+		acctID, usrID,
 		record.LLMProvider, record.LLMModel,
 		record.InputTokens, record.OutputTokens, record.CachedInputTokens, record.CacheCreationTokens,
 		record.IsCacheHit, record.CacheHitRate,
@@ -3742,7 +3813,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 		record.TTFTMs, record.ITLMsAvg, record.TokensPerSecond, record.WasStreaming,
 		record.CostUsd,
 		record.ModelTier, record.TaskType,
-		record.LLMConfigSource,
+		record.LLMConfigSource, nullableUUID(record.ID),
 	)
 
 	if err != nil {
@@ -3752,8 +3823,8 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			slog.Warn("InsertTokenUsage: agent_id FK violation, retrying with NULL agent_id", "agent_id", *record.AgentID, "agent_name", record.AgentName)
 			record.AgentID = nil
 			_, retryErr := chat.dbManager.Db.Exec(query,
-				record.ConversationID, record.MessageID, record.AgentID, record.AgentName,
-				record.AccountID, record.UserID,
+				convID, msgID, record.AgentID, record.AgentName,
+				acctID, usrID,
 				record.LLMProvider, record.LLMModel,
 				record.InputTokens, record.OutputTokens, record.CachedInputTokens, record.CacheCreationTokens,
 				record.IsCacheHit, record.CacheHitRate,
@@ -3765,7 +3836,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 				record.TTFTMs, record.ITLMsAvg, record.TokensPerSecond, record.WasStreaming,
 				record.CostUsd,
 				record.ModelTier, record.TaskType,
-				record.LLMConfigSource,
+				record.LLMConfigSource, nullableUUID(record.ID),
 			)
 			if retryErr != nil {
 				return fmt.Errorf("failed to insert token usage (retry without agent_id): %w", retryErr)
@@ -3776,6 +3847,16 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 	}
 
 	return nil
+}
+
+// nullableUUID converts an empty string to a nil interface so the postgres
+// driver inserts SQL NULL instead of trying to parse "" as a uuid.
+// Returns the original string when non-empty.
+func nullableUUID(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func (chat *ConversationDao) GetLatestConversationBySessionID(sessionID string, accountId string) (Conversation, error) {
@@ -4246,4 +4327,33 @@ func (chat *ConversationDao) GetSuccessfulToolCallsCountByMessage(messageId stri
 		return 0, fmt.Errorf("history: failed to count successful tool calls for message: %w", err)
 	}
 	return count, nil
+}
+
+// ToolCallOutcome is one row of a message's execution manifest: which tool ran
+// and how it ended. Deliberately carries NO tool response body — the post-hoc
+// answer-confidence scorer only needs to know which distinct sources were
+// consulted and whether any failed, and shipping raw observations into a second
+// LLM call would both balloon the prompt and re-expose infrastructure output
+// that already passed the egress filter once.
+type ToolCallOutcome struct {
+	ToolName string `db:"tool_name"`
+	Status   string `db:"status"`
+	Count    int    `db:"count"`
+}
+
+// ListToolCallOutcomesByMessage returns the distinct (tool, status) pairs for a
+// message with their call counts, ordered most-used first. Used to build the
+// execution manifest handed to the answer-confidence scorer.
+func (chat *ConversationDao) ListToolCallOutcomesByMessage(messageId string) ([]ToolCallOutcome, error) {
+	query := `
+	SELECT tool_name, status, count(*) AS count
+	FROM llm_conversation_tool_calls
+	WHERE message_id = $1 AND COALESCE(tool_name, '') <> ''
+	GROUP BY tool_name, status
+	ORDER BY count DESC, tool_name ASC;`
+	outcomes := []ToolCallOutcome{}
+	if err := chat.dbManager.Db.Select(&outcomes, query, messageId); err != nil {
+		return nil, fmt.Errorf("history: failed to list tool call outcomes for message: %w", err)
+	}
+	return outcomes, nil
 }

@@ -48,7 +48,7 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData = nul
   const router = useRouter();
   const currentFragment = useMemo(() => {
     const hash = router.asPath.split('#')[1];
-    return hash || 'users';
+    return hash || 'access-users';
   }, [router.asPath]);
 
   const [validationError, setValidationError] = useState({});

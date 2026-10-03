@@ -1,5 +1,5 @@
 import { Box, Typography } from '@mui/material';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import LogQueryBuilderAutocomplete from './LogQueryBuilderAutocomplete';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -192,7 +192,65 @@ const QueryModeSwitcher = ({
     logProvider === 'ES' && esQueryType === 'kql'
       ? 'Example: status:200 and service.name:"auth" and http.response.status_code >= 400'
       : getSampleQuery(logProvider, providerType);
-  const extensions = [EditorView.lineWrapping, cmPlaceholder(codeSample)];
+  // Every keystroke re-renders this component (onChange -> setQuery), so building the
+  // extension list inline meant a new PromQLExtension + linter per character typed,
+  // and a new array identity that made CodeMirror reconfigure itself each time.
+  const extensions = useMemo(() => {
+    const list = [EditorView.lineWrapping, cmPlaceholder(codeSample)];
+    if (!isPromQLMetricProvider(logProvider)) {
+      return list;
+    }
+    list.push(
+      new PromQLExtension()
+        .setComplete({
+          remote: {
+            cache: {
+              initialMetricList: metricsList,
+            },
+            fetchFn: (url) => {
+              const requestUrl = typeof url === 'string' ? url : url.url;
+              if (
+                requestUrl.includes('api/v1/metadata') ||
+                requestUrl.includes('api/v1/series') ||
+                requestUrl.includes('api/v1/label/__name__/values')
+              ) {
+                const mockResponse = new Response(JSON.stringify({}));
+                return Promise.resolve(mockResponse);
+              }
+              return fetch(url);
+            },
+          },
+        })
+        .activateCompletion(true)
+        .asExtension()
+    );
+    list.push(
+      linter(null, {
+        tooltipFilter: (diagnostics) => {
+          const uniqueMessages = new Map();
+          const filtered = [];
+          const addedKeys = new Set();
+
+          for (const diagnostic of diagnostics) {
+            const key = `${diagnostic.message}-${diagnostic.from}-${diagnostic.to}`;
+            if (!uniqueMessages.has(diagnostic.message)) {
+              uniqueMessages.set(diagnostic.message, true);
+              filtered.push(diagnostic);
+              addedKeys.add(key);
+            } else if (!addedKeys.has(key)) {
+              const existing = filtered.find((d) => d.message === diagnostic.message);
+              if (!existing || existing.to < diagnostic.from || existing.from > diagnostic.to) {
+                filtered.push(diagnostic);
+                addedKeys.add(key);
+              }
+            }
+          }
+          return filtered;
+        },
+      })
+    );
+    return list;
+  }, [codeSample, logProvider, metricsList]);
 
   const resetStates = () => {
     setQuery('');
@@ -551,61 +609,6 @@ const QueryModeSwitcher = ({
     </Box>
   );
 
-  const getExtension = () => {
-    if (isPromQLMetricProvider(logProvider)) {
-      extensions.push(
-        new PromQLExtension()
-          .setComplete({
-            remote: {
-              cache: {
-                initialMetricList: metricsList,
-              },
-              fetchFn: (url) => {
-                const requestUrl = typeof url === 'string' ? url : url.url;
-                if (
-                  requestUrl.includes('api/v1/metadata') ||
-                  requestUrl.includes('api/v1/series') ||
-                  requestUrl.includes('api/v1/label/__name__/values')
-                ) {
-                  const mockResponse = new Response(JSON.stringify({}));
-                  return Promise.resolve(mockResponse);
-                }
-                return fetch(url);
-              },
-            },
-          })
-          .activateCompletion(true)
-          .asExtension()
-      );
-      extensions.push(
-        linter(null, {
-          tooltipFilter: (diagnostics) => {
-            const uniqueMessages = new Map();
-            const filtered = [];
-            const addedKeys = new Set();
-
-            for (const diagnostic of diagnostics) {
-              const key = `${diagnostic.message}-${diagnostic.from}-${diagnostic.to}`;
-              if (!uniqueMessages.has(diagnostic.message)) {
-                uniqueMessages.set(diagnostic.message, true);
-                filtered.push(diagnostic);
-                addedKeys.add(key);
-              } else if (!addedKeys.has(key)) {
-                const existing = filtered.find((d) => d.message === diagnostic.message);
-                if (!existing || existing.to < diagnostic.from || existing.from > diagnostic.to) {
-                  filtered.push(diagnostic);
-                  addedKeys.add(key);
-                }
-              }
-            }
-            return filtered;
-          },
-        })
-      );
-    }
-    return extensions;
-  };
-
   const sendConversationIdAndLLMResponseToParent = (conversationId, llmResponse) => {
     if (conversationId && setConversationId) {
       setConversationId(conversationId);
@@ -896,7 +899,7 @@ const QueryModeSwitcher = ({
             theme='dark'
             editable={true}
             aria-expanded={true}
-            extensions={getExtension()}
+            extensions={extensions}
             onChange={(e) => {
               codeQueryRef.current = e;
               setQuery(e);
@@ -1034,7 +1037,7 @@ const QueryModeSwitcher = ({
                 theme='dark'
                 editable={true}
                 aria-expanded={true}
-                extensions={getExtension()}
+                extensions={extensions}
                 onChange={(e) => {
                   setQuery(e);
                   if (onQueryChange) {

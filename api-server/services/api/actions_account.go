@@ -614,12 +614,15 @@ func handleAccountAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			return
 		}
 		c.JSON(200, resp)
-		// Drop the cached account-level log label mapping so an edit applies on the
-		// next query instead of after the 10 min TTL. Scoped to the attribute that
-		// actually feeds that cache — this handler also writes unrelated attrs.
+		// Drop the cached account-level log/trace label mappings so an edit applies on
+		// the next query instead of after the 10 min TTL. Scoped to the attributes that
+		// actually feed those caches — this handler also writes unrelated attrs.
 		for _, attr := range request.Objects {
-			if attr.Name == "log_labels" {
+			switch attr.Name {
+			case "log_labels":
 				observability.InvalidateLogLabelsCacheForAccount(attr.CloudAccountId)
+			case "trace_labels":
+				observability.InvalidateTraceLabelsCacheForAccount(attr.CloudAccountId)
 			}
 		}
 		if err := audit.PublishAuditEvent(ctx, audit.Audit{

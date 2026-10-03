@@ -28,6 +28,34 @@ export const parseUniqueKey = (key) => {
   return { provider, account, location, nodeType, hierarchy, name };
 };
 
+// Brand prefix each provider's specific_types carry (KubernetesConfigMap, AzureKeyVault,
+// GCPServiceAccount, …), keyed by the unique_key's provider segment. AWS types carry no
+// "AWS" prefix (EC2Instance, RDSInstance) so aws is absent.
+const PROVIDER_TYPE_PREFIX = {
+  k8s: 'Kubernetes',
+  azure: 'Azure',
+  gcp: 'GCP',
+  github: 'GitHub',
+  gitlab: 'GitLab',
+  pagerduty: 'PagerDuty',
+};
+
+// Type label for a node row's badge: the specific_type (or node_type) humanized from
+// PascalCase, with the provider's brand prefix dropped when the row renders that
+// provider's icon — the icon already says "Kubernetes", so repeating it in the badge
+// only crowds out the part that identifies the resource (Config Map, Service Account).
+// `hasIcon` false (unknown provider, or Nudgebee's own `external` identity nodes) keeps
+// the prefix, since then nothing else on the row names the source.
+export const formatTypeBadge = (type, provider, hasIcon) => {
+  let label = type || '';
+  const prefix = PROVIDER_TYPE_PREFIX[provider];
+  // Only strip on a PascalCase word boundary, and never down to an empty label.
+  if (hasIcon && prefix && label.startsWith(prefix) && /^[A-Z]/.test(label.slice(prefix.length))) {
+    label = label.slice(prefix.length);
+  }
+  return label.replace(/([a-z])([A-Z])/g, '$1 $2');
+};
+
 // Decode the columnar v2 payload (kg_get_filter_options.data) into the shapes the UI
 // consumes. The columns are index-aligned; -1 indices mean "none". node_bucket_idx is
 // shipped per node so the client never recomputes bucket ids (no sort-order coupling).

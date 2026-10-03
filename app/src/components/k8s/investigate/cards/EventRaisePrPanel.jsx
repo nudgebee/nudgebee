@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Box, Typography, CircularProgress } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { Select } from '@ui/Select';
+import { Input } from '@ui/Input';
 import { Button } from '@ui/Button';
 import { Link } from '@ui/Link';
 import { Modal } from '@ui/Modal';
@@ -185,26 +186,12 @@ const EventRaisePrPanel = ({ data, repoUrl, filePath, gitDiff, sx }) => {
             </Typography>
           )}
 
-          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600], mb: 'var(--ds-space-1)' }}>
-            Additional guidance (optional)
-          </Typography>
-          <textarea
+          <Input
+            label='Additional guidance (optional)'
+            type='textarea'
             value={guidance}
-            onChange={(e) => setGuidance(e.target.value)}
+            onChange={setGuidance}
             placeholder='Steer how the fix is implemented — constraints, a preferred approach, or things to avoid.'
-            rows={3}
-            style={{
-              width: '100%',
-              boxSizing: 'border-box',
-              padding: 'var(--ds-space-2) var(--ds-space-3)',
-              border: `0.5px solid ${ds.gray[300]}`,
-              borderRadius: 'var(--ds-radius-sm)',
-              fontFamily: 'inherit',
-              fontSize: 'var(--ds-text-body)',
-              resize: 'vertical',
-              backgroundColor: ds.background[100],
-              color: ds.gray[900],
-            }}
           />
 
           {result && (
@@ -228,8 +215,8 @@ const EventRaisePrPanel = ({ data, repoUrl, filePath, gitDiff, sx }) => {
             <Button size='sm' tone='secondary' onClick={closeModal} disabled={submitting}>
               Cancel
             </Button>
-            <Button size='sm' onClick={handleRaise} disabled={!selected || submitting || (result && result.ok)}>
-              {submitting ? <CircularProgress size={16} /> : 'Raise PR'}
+            <Button size='sm' onClick={handleRaise} loading={submitting} disabled={!selected || (result && result.ok)}>
+              Raise PR
             </Button>
           </Box>
         </Box>

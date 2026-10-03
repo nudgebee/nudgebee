@@ -165,17 +165,71 @@ func isRetryableError(err error) bool {
 	return false
 }
 
+// ForgetTenant drops the "already declared" record for a tenant queue, so the
+// next EnsureTenantForAgentType really talks to the broker instead of trusting
+// the cache.
+//
+// The cache assumes the broker still holds what we once declared, which stops
+// being true the moment the broker loses its definitions — a RabbitMQ that comes
+// back without its queues leaves consumers retrying a queue that no longer
+// exists, and nothing re-creates it, because the cache says it is already there.
+// Callers that see the broker disagree with the cache must call this first.
+func (t *Topology) ForgetTenant(id, agentType string) {
+	t.declared.Delete(RelayQueueName(id, agentType))
+}
+
+// declaration is an in-flight or finished attempt to declare one tenant's
+// queue. Concurrent callers for the same queue wait on it and share its result,
+// rather than the second caller assuming success because the first merely
+// started.
+//
+// err is written before done is closed and read only after, so the close is the
+// happens-before edge that makes it safe without a second lock.
+type declaration struct {
+	done chan struct{}
+	err  error
+}
+
 // EnsureTenantForAgentType idempotently declares the per-tenant queue for a specific agent type.
 // For k8s agents, uses the standard queue name. For other types (e.g. proxy), appends the type suffix.
 func (t *Topology) EnsureTenantForAgentType(ctx context.Context, id, agentType string) error {
 	qName := RelayQueueName(id, agentType)
-	// Use the queue name itself as the dedup key
-	if _, loaded := t.declared.LoadOrStore(qName, struct{}{}); loaded {
-		return nil
+
+	// Keyed on the queue name, so callers for the same tenant collapse onto one
+	// declare. This matters because the proxy config-push and resync handlers
+	// can run against the same queue a proxy agent is registering on: telling
+	// the second caller "declared" while the first is still talking to the
+	// broker would let it publish into an exchange with nothing bound yet, and
+	// that message is discarded without an error.
+	mine := &declaration{done: make(chan struct{})}
+	actual, loaded := t.declared.LoadOrStore(qName, mine)
+	if loaded {
+		theirs := actual.(*declaration)
+		select {
+		case <-theirs.done:
+			return theirs.err
+		case <-ctx.Done():
+			// Wait on our own deadline, never inherit theirs: the declaring
+			// caller may be a long-lived session while we are a short HTTP
+			// request, and blocking past our own deadline would be worse than
+			// reporting that we could not confirm the queue.
+			return ctx.Err()
+		}
 	}
 
-	dlqName := qName + ".dlq"
+	// The entry above is staked before the declare actually runs, so a failed
+	// declare has to retract it. Leaving it behind marks a queue that does not
+	// exist as declared, and every later call short-circuits to success — the
+	// tenant is then permanently unroutable until the process restarts.
+	mine.err = t.declareTenant(ctx, qName, qName+".dlq")
+	if mine.err != nil {
+		t.declared.Delete(qName)
+	}
+	close(mine.done)
+	return mine.err
+}
 
+func (t *Topology) declareTenant(ctx context.Context, qName, dlqName string) error {
 	return t.retryRabbitMQOperation(ctx, func(ch *amqp.Channel) error {
 		// 1) DLQ with TTL
 		dlqArgs := amqp.Table{

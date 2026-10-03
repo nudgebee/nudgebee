@@ -824,6 +824,34 @@ func extractFilterSQL(request *QueryRequest, filterName string, sqlColumn string
 	return sql
 }
 
+// renderFilterSQLForColumn is extractFilterSQL without the delete: it renders the
+// eq/IN fragment against an arbitrary sqlColumn and leaves request.Where untouched.
+// Must run before extractFilterSQL, which deletes the top-level filter this then
+// can't locate.
+func renderFilterSQLForColumn(request *QueryRequest, filterName string, sqlColumn string) string {
+	if request == nil {
+		return ""
+	}
+	dialect := &postgresDialect{}
+	filter, holder := locateBinaryFilter(&request.Where, filterName)
+	if holder == nil {
+		return ""
+	}
+	if eqVal, ok := filter[Eq]; ok {
+		return " AND " + sqlColumn + " = " + dialect.QuoteLiteral(eqVal)
+	}
+	if inVal, ok := filter[In]; ok {
+		if vals, ok := inVal.([]any); ok && len(vals) > 0 {
+			quoted := make([]string, len(vals))
+			for i, v := range vals {
+				quoted[i] = dialect.QuoteLiteral(v)
+			}
+			return " AND " + sqlColumn + " IN (" + strings.Join(quoted, ",") + ")"
+		}
+	}
+	return ""
+}
+
 // VulnerabilityRecommendationSQL reconstructs the legacy recommendation.recommendation
 // JSON shape (the one every consumer — frontend, LLM security tool, PR-prompt
 // generator — was written against) from the deduplicated vulnerabilities row,
@@ -3515,9 +3543,14 @@ var table_metadata = map[string]TableDefinition{
 				Def:          "count(*)",
 				IsAggregated: true,
 			},
+			// GREATEST clamps at the roll-up, not in the stored row: a negative
+			// estimated_savings is a real cost impact (an under-provisioned
+			// right-sizing costs more to apply) that the Optimise table and the
+			// "Cost increase (< $0)" filter both render, so the row keeps its
+			// sign and only the savings headline drops it.
 			"sum_estimated_savings": {
 				Type:         ColumnDefinitionTypeFloat,
-				Def:          "sum(CASE WHEN is_primary_recommendation THEN estimated_savings ELSE 0 END)",
+				Def:          "sum(CASE WHEN is_primary_recommendation THEN GREATEST(estimated_savings, 0) ELSE 0 END)",
 				IsAggregated: true,
 			},
 			// VM package-scan findings (rule_name = 'vm_package_vulnerability') keep
@@ -5268,14 +5301,24 @@ var table_metadata = map[string]TableDefinition{
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			pushdownFilters := extractFilterSQL(&request, "account_id", "r.cloud_account_id")
 			pushdownFilters += extractFilterSQL(&request, "status", "r.status")
+			// needsWindow: is_primary_recommendation is a ROW_NUMBER() OVER (...) window,
+			// which Postgres cannot compute until it has materialized every row in the
+			// partition — that defeats the ORDER BY .. LIMIT top-N pushdown every paginated
+			// caller relies on. The two real production callers (the main recommendations
+			// table, the vulnerabilities list) never reference this column; only the
+			// dashboard-panel "Is primary" filter/column does. Gated the same way as the
+			// sibling recommendation_groupings_v2 generator above (windowRequiringCols).
+			needsWindow := requestReferencesColumns(request, map[string]bool{"is_primary_recommendation": true})
 			// id is not part of PARTITION BY, so pushing it pre-window would narrow
 			// the sibling set is_primary_recommendation is ranked against — a caller
 			// that filters by id AND reads that column would see rank computed only
 			// among the requested ids, not the full history. Only take the shortcut
 			// when the request provably doesn't touch that column (mirrors the
 			// joinRequiringCols guard in recommendation_groupings_v2 above); otherwise
-			// fall back to the correct-but-slower outer-filter path.
-			if !requestReferencesColumns(request, map[string]bool{"is_primary_recommendation": true}) {
+			// fall back to the correct-but-slower outer-filter path. When the window
+			// isn't computed at all (needsWindow false), there is no partition to
+			// narrow, so pushing early is always safe.
+			if !needsWindow {
 				pushdownFilters += extractFilterSQL(&request, "id", "r.id")
 				pushdownFilters += extractFilterSQL(&request, "rule_name", "r.rule_name")
 				pushdownFilters += extractFilterSQL(&request, "account_object_id", "r.account_object_id")
@@ -5319,10 +5362,9 @@ var table_metadata = map[string]TableDefinition{
 							v.cvss_score AS v_cvss_score, v.cvss_vector AS v_cvss_vector, v.description AS v_description,
 							v.data_source AS v_data_source, v.details AS v_details`
 			}
-			def := `(
-					WITH all_recommendations AS (
-						SELECT
-							r.*,
+			// resourceCols is shared verbatim by both shapes below — the join and its
+			// display projection are unaffected by needsWindow, only the ranking is.
+			resourceCols := `
 							COALESCE(
 								cr.meta ->> 'namespace',
 								cr.meta -> 'config' ->> 'namespace',
@@ -5344,7 +5386,30 @@ var table_metadata = map[string]TableDefinition{
 							cr.cloud_provider as resource_cloud_provider,
 							cr.arn as resource_arn,
 							cr.region as resource_region,
-							cr.status as resource_status,
+							cr.status as resource_status`
+
+			if !needsWindow {
+				// Lean path: no CTE, no ROW_NUMBER(). Same join and display columns (the
+				// main recommendations table and the vulnerabilities list both need
+				// resource_name/resource_type), but skipping the window lets Postgres push
+				// ORDER BY .. LIMIT through as a top-N heapsort straight off the join
+				// instead of first materializing and ranking every matching row.
+				def := `(
+					SELECT
+						r.*,` + resourceCols + vulnCols + `
+					FROM recommendation r
+					LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
+					LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
+					` + vulnJoin + `
+					WHERE ca.status = 'active'` + pushdownFilters + `
+				) as r1`
+				return def, request, nil
+			}
+
+			def := `(
+					WITH all_recommendations AS (
+						SELECT
+							r.*,` + resourceCols + `,
 							ROW_NUMBER() OVER (
 								PARTITION BY
 									CASE
@@ -5626,7 +5691,7 @@ var table_metadata = map[string]TableDefinition{
 			},
 			"sum_estimated_savings": {
 				Type:         ColumnDefinitionTypeFloat,
-				Def:          "sum(estimated_savings)",
+				Def:          "sum(GREATEST(estimated_savings, 0))",
 				IsAggregated: true,
 			},
 		},
@@ -6223,6 +6288,13 @@ var table_metadata = map[string]TableDefinition{
 				resourceWhereStrNoStatus = "1 = 1"
 			}
 
+			// Scope the spend/recommendation sub-aggregations to the account too;
+			// without it the planner rolls those tables up across every account before
+			// the join discards all but one (full seq scan of spends). Their columns
+			// are named differently, and this must precede the extractFilterSQL below.
+			spendAcctTenantWhereSQL := renderFilterSQLForColumn(&request, "account_id", "cloud_account") + renderFilterSQLForColumn(&request, "tenant_id", "tenant")
+			recAcctTenantWhereSQL := renderFilterSQLForColumn(&request, "account_id", "cloud_account_id") + renderFilterSQLForColumn(&request, "tenant_id", "tenant_id")
+
 			// Push account_id and tenant_id into the CTE so the planner can use
 			// the account/tenant index before the full status+type scan.
 			// extractFilterSQL also removes them from request.Where to avoid
@@ -6260,10 +6332,10 @@ var table_metadata = map[string]TableDefinition{
 					// cost includes spend on now-Deleted resources. resource_count below still
 					// comes from the status-filtered resource_base.
 					spendResourceBaseCTE = `, spend_resource_base as (select tenant, account, id, service_name from cloud_resourses where __resources_nostatus__where__)`
-					spendJoin = `left join (select sum(spends1.spend_amount) as spend_amount, cr2.tenant, cr2.service_name, spends1.cloud_account from (select amount as spend_amount, "date" as spend_date, cloud_resource_id, cloud_account from spends) spends1 join spend_resource_base cr2 on cr2.id = spends1.cloud_resource_id and cr2.account = spends1.cloud_account where __spends__where__ group by cr2.tenant, cr2.service_name, spends1.cloud_account) s on s.tenant = cr.tenant and s.service_name = cr.service_name and s.cloud_account = cr.account`
+					spendJoin = `left join (select sum(spends1.spend_amount) as spend_amount, cr2.tenant, cr2.service_name, spends1.cloud_account from (select amount as spend_amount, "date" as spend_date, cloud_resource_id, cloud_account from spends where __spends_acct__where__) spends1 join spend_resource_base cr2 on cr2.id = spends1.cloud_resource_id and cr2.account = spends1.cloud_account where __spends__where__ group by cr2.tenant, cr2.service_name, spends1.cloud_account) s on s.tenant = cr.tenant and s.service_name = cr.service_name and s.cloud_account = cr.account`
 				}
 				if needsRec {
-					recJoin = `left join (select count(*) as recommendation_count, sum(r1.recommendation_estimated_savings) as recommendation_estimated_savings, r1.cloud_account_id, cr3.tenant, cr3.service_name from (select id as recommendation_id, rule_name as recommendation_rule_name, category as recommendation_category, status as recommendation_status, severity as recommendation_severity, estimated_savings as recommendation_estimated_savings, resource_id, cloud_account_id from recommendation) r1 join resource_base cr3 on cr3.id = r1.resource_id and cr3.account = r1.cloud_account_id where __recommendations__where__ group by cr3.tenant, cr3.service_name, r1.cloud_account_id) r on r.tenant = cr.tenant and r.service_name = cr.service_name and r.cloud_account_id = cr.account`
+					recJoin = `left join (select count(*) as recommendation_count, sum(r1.recommendation_estimated_savings) as recommendation_estimated_savings, r1.cloud_account_id, cr3.tenant, cr3.service_name from (select id as recommendation_id, rule_name as recommendation_rule_name, category as recommendation_category, status as recommendation_status, severity as recommendation_severity, estimated_savings as recommendation_estimated_savings, resource_id, cloud_account_id from recommendation where __recommendations_acct__where__) r1 join resource_base cr3 on cr3.id = r1.resource_id and cr3.account = r1.cloud_account_id where __recommendations__where__ group by cr3.tenant, cr3.service_name, r1.cloud_account_id) r on r.tenant = cr.tenant and r.service_name = cr.service_name and r.cloud_account_id = cr.account`
 				}
 				baseQuery = fmt.Sprintf(`(
 					with resource_base as (
@@ -6279,10 +6351,10 @@ var table_metadata = map[string]TableDefinition{
 				) as resource_group`, spendResourceBaseCTE, spendSelect, recSelect, spendJoin, recJoin)
 			} else {
 				if needsSpend {
-					spendJoin = `left join (select sum(spend_amount) as spend_amount, cloud_resource_id, cloud_account from (select amount as spend_amount, "date" as spend_date, cloud_resource_id, cloud_account from spends) spends1 where __spends__where__ group by cloud_resource_id, cloud_account) s on s.cloud_resource_id = cr.id and s.cloud_account = cr.account`
+					spendJoin = `left join (select sum(spend_amount) as spend_amount, cloud_resource_id, cloud_account from (select amount as spend_amount, "date" as spend_date, cloud_resource_id, cloud_account from spends where __spends_acct__where__) spends1 where __spends__where__ group by cloud_resource_id, cloud_account) s on s.cloud_resource_id = cr.id and s.cloud_account = cr.account`
 				}
 				if needsRec {
-					recJoin = `left join (select count(*) as recommendation_count, sum(recommendation_estimated_savings) as recommendation_estimated_savings, resource_id, cloud_account_id from (select id as recommendation_id, rule_name as recommendation_rule_name, category as recommendation_category, status as recommendation_status, severity as recommendation_severity, estimated_savings as recommendation_estimated_savings, resource_id, cloud_account_id from recommendation ) r1 where __recommendations__where__ group by resource_id, cloud_account_id ) r on r.resource_id = cr.id and r.cloud_account_id = cr.account`
+					recJoin = `left join (select count(*) as recommendation_count, sum(recommendation_estimated_savings) as recommendation_estimated_savings, resource_id, cloud_account_id from (select id as recommendation_id, rule_name as recommendation_rule_name, category as recommendation_category, status as recommendation_status, severity as recommendation_severity, estimated_savings as recommendation_estimated_savings, resource_id, cloud_account_id from recommendation where __recommendations_acct__where__ ) r1 where __recommendations__where__ group by resource_id, cloud_account_id ) r on r.resource_id = cr.id and r.cloud_account_id = cr.account`
 				}
 				baseQuery = fmt.Sprintf(`(
 					select cr.tenant as tenant_id, cr.account as account_id, cr.id, cr.name, cr.service_name, cr.status, cr."type", cr.region, cr.arn, cr.tags
@@ -6299,6 +6371,8 @@ var table_metadata = map[string]TableDefinition{
 			baseQuery = strings.ReplaceAll(baseQuery, "__resources__where__", resourceWhereStr)
 			baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", spendsWhereStr)
 			baseQuery = strings.ReplaceAll(baseQuery, "__recommendations__where__", recommendationWhereStr)
+			baseQuery = strings.ReplaceAll(baseQuery, "__spends_acct__where__", "1 = 1"+spendAcctTenantWhereSQL)
+			baseQuery = strings.ReplaceAll(baseQuery, "__recommendations_acct__where__", "1 = 1"+recAcctTenantWhereSQL)
 
 			return baseQuery, request, nil
 		},
@@ -7701,6 +7775,7 @@ var table_metadata = map[string]TableDefinition{
 				status_message,
 				status,
 				last_connected_at,
+				last_synced_at,
 				created_at,
 				k8s_version,
 				k8s_provider,
@@ -7739,6 +7814,10 @@ var table_metadata = map[string]TableDefinition{
 			"last_connected_at": {
 				Type: ColumnDefinitionTypeDatetime,
 				Def:  "last_connected_at",
+			},
+			"last_synced_at": {
+				Type: ColumnDefinitionTypeDatetime,
+				Def:  "last_synced_at",
 			},
 			"k8s_version": {
 				Type: ColumnDefinitionTypeString,

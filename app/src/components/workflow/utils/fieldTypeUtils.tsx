@@ -25,9 +25,22 @@ export const DBMS_OPTIONS = [
   { label: 'Oracle', value: 'oracle', icon: ouOracle },
 ];
 
+// A ready-to-use sample value for a field, mirroring runbook-server's
+// types.PropertyExample. Rendered as a click-to-fill chip under the input.
+export interface PropertyExample {
+  label: string;
+  value: any;
+  note?: string;
+}
+
 export interface SchemaProperty {
   type: string;
   description?: string;
+  // Long-form markdown reference content, shown in an info-icon tooltip in the
+  // guidance row below the input (backend: types.Property.Help).
+  help?: string;
+  // Click-to-fill sample values shown in the same guidance row.
+  examples?: PropertyExample[];
   required?: boolean;
   default?: any;
   enum?: string[];
@@ -91,6 +104,29 @@ export const FIELD_PLACEHOLDERS: Record<string, string> = {
   script: "#!/bin/bash\necho 'Starting script execution...'\ncurl -X GET 'https://api.example.com/data'\necho 'Script completed successfully'",
   env: '{"API_KEY": "your-key", "ENV": "production"}',
   resources: '{\n  "cpu_request": "100m",\n  "cpu_limit": "500m",\n  "memory_request": "128Mi",\n  "memory_limit": "512Mi"\n}',
+};
+
+// Placeholder text for a field's empty state: an explicit FIELD_PLACEHOLDERS
+// entry wins, otherwise the first string example doubles as one. That makes the
+// empty box self-documenting for any field that declares examples, without a
+// second place to keep sample values in sync.
+export const getExamplePlaceholder = (fieldName: string, fieldSchema: SchemaProperty): string => {
+  if (FIELD_PLACEHOLDERS[fieldName]) return FIELD_PLACEHOLDERS[fieldName];
+  const first = fieldSchema.examples?.[0]?.value;
+  return typeof first === 'string' ? first : '';
+};
+
+// Click-to-fill example values arrive as strings, because that is what a user
+// would type. For JSON-typed fields, store the parsed value so the field holds
+// the same shape typing it by hand would produce; anything that isn't JSON — a
+// `{{ Tasks[...].output }}` template, most of all — stays a string.
+export const parseJsonExample = (value: any): any => {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
 };
 
 // Jinja (default engine) uses {{ }} for expressions and {% %} for statements;
@@ -162,6 +198,12 @@ export const resolveFieldType = (fieldName: string, fieldSchema: SchemaProperty,
   // Check sub_type from backend schema (e.g., "textarea" for prompt fields)
   if (fieldSchema.sub_type === 'textarea') {
     return 'textarea';
+  }
+
+  // A field declaring JSON gets the code editor, whatever it is called; the
+  // name-based rule below only catches fields called script/command/query.
+  if (fieldSchema.sub_type === 'json') {
+    return 'script';
   }
 
   // Check for nested schema objects

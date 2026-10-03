@@ -1384,16 +1384,103 @@ class Events:
         except Exception as e:
             LOG.debug("Failed to update finding card status after analysis: %s", e)
 
-    def handle_final_response(self, payload, cached_entry, channel_id: str, thread_ts: str, team_id: str):
-        try:
-            slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
+    def handle_watch_registered(self, payload, cached_entry, channel_id: str, thread_ts: str, team_id: str):
+        """Claim the 'watching…' indicator for this watch. Does not post — the
+        turn's own final response does (see _post_watch_indicator)."""
+        watch_id = getattr(payload, "watch_id", None)
+        if not watch_id:
+            LOG.debug("watch_registered received without watch_id; skipping")
+            return
 
+        try:
+            # One atomic SET NX carrying the full coordinates: proves Redis is
+            # healthy (never claim what we can't later resolve), dedups concurrent
+            # registrations, and leaves no window where the key exists without its
+            # channel/thread. False -> skip; the reply fallback stands.
+            #
+            # Deliberately not posted here. This callback fires while the agent
+            # is still composing, ~20s before its answer reaches the thread, so
+            # posting now strands "Watching…" above the message it refers to.
+            # Record the intent against the thread instead; handle_final_response
+            # posts it once the answer is out, where it reads as the last word.
+            claimed = self.cache.cache_watch_status(
+                watch_id,
+                {
+                    "channel_id": channel_id,
+                    "thread_ts": thread_ts,
+                    "status_msg_ts": "PENDING",
+                    "team_id": team_id,
+                    "platform": "slack",
+                },
+                nx=True,
+            )
+            if not claimed:
+                LOG.debug(
+                    "watch_registered: watch_id=%s already claimed or Redis unavailable; skipping indicator", watch_id
+                )
+                return
+
+            event_cache.update_event_entry(thread_ts, pending_watch_id=watch_id)
+            LOG.debug("Deferred watch in-progress indicator for watch_id=%s until final response", watch_id)
+        except Exception as e:
+            self.cache.remove_watch_status(watch_id)
+            LOG.warning("Failed to claim watch in-progress indicator for watch_id=%s: %s", watch_id, e)
+
+    def _post_watch_indicator(self, watch_id: str, channel_id: str, team_id: str, thread_ts: str) -> None:
+        """Post the deferred "watching…" message and record its ts so the watch's
+        terminal callback can delete it. Skipped when the watch already finished
+        (its status entry is gone), so a watch that beats the final response back
+        can't leave an indicator pointing at nothing."""
+        try:
+            if not self.cache.get_watch_status(watch_id):
+                LOG.debug("watch_id=%s already terminated; not posting indicator", watch_id)
+                return
+            status_text = "🔭 *Watching…* I'll update this message as soon as it's done."
+            blocks = Transformer.to_slack(MarkdownBlock(text=status_text))
+            status_msg_ts = self.common_service.slack_reply_in_thread_as_blocks(channel_id, team_id, thread_ts, blocks)
+            if not status_msg_ts:
+                # Post failed -> drop claim + marker so the terminal callback
+                # just replies and later turns don't retry.
+                self.cache.remove_watch_status(watch_id)
+                event_cache.remove_event_keys(thread_ts, ["pending_watch_id"])
+                return
+            self.cache.cache_watch_status(
+                watch_id,
+                {
+                    "channel_id": channel_id,
+                    "thread_ts": thread_ts,
+                    "status_msg_ts": status_msg_ts,
+                    "team_id": team_id,
+                    "platform": "slack",
+                },
+            )
+            # remove_event_keys, not update_event_entry(...=None): the latter
+            # drops None values, so it can't clear a field (see cache.py).
+            event_cache.remove_event_keys(thread_ts, ["pending_watch_id"])
+            LOG.debug("Posted watch in-progress indicator for watch_id=%s (ts=%s)", watch_id, status_msg_ts)
+        except Exception as e:
+            # Drop claim + marker, else every later turn in the thread retries
+            # this and orphans another "Watching…".
+            self.cache.remove_watch_status(watch_id)
+            event_cache.remove_event_keys(thread_ts, ["pending_watch_id"])
+            LOG.warning("Failed to post watch in-progress indicator for watch_id=%s: %s", watch_id, e)
+
+    def handle_final_response(self, payload, cached_entry, channel_id: str, thread_ts: str, team_id: str):
+        # If this final closes out a watch, post the result as a new message (so
+        # Slack actually notifies) and retire the "watching…" placeholder after.
+        watch_id = getattr(payload, "watch_id", None)
+        watch_status = self.cache.get_watch_status(watch_id) if watch_id else None
+        try:
             # llm-server's per-stage webhooks (no reply_ref) duplicate what the
             # actions_common poller already posts -- only a real @mention reply
             # (has reply_ref) should reach here.
             if (payload.conversation_id or "").startswith(EVENT_CONVERSATION_SESSION_PREFIX) and not payload.reply_ref:
                 return
 
+            # Live-turn side effect, keyed on thread_ts not on the watch: a
+            # watch's terminal callback must not settle another turn's panel.
+            if not watch_id:
+                slack_progress.stop_progress_stream(self.common_service, cached_entry, channel_id, team_id, thread_ts)
             response_text = payload.response
             view_url = self._diagram_view_url(cached_entry)
 
@@ -1425,7 +1512,27 @@ class Events:
 
             self._mark_finding_card_status(payload, channel_id, team_id, thread_ts, outcome="completed")
 
-            if cached_entry:
+            # Retire the "watching…" placeholder, but only once the result has
+            # actually landed. A chat.update fires no Slack notification, so a
+            # watch the user asked to be told about would resolve silently in a
+            # thread they stopped reading; posting the result as a new message
+            # pings them and lands it in thread order. Delete after the post,
+            # never before — a delete-then-failed-post leaves them with nothing.
+            status_msg_ts = watch_status.get("status_msg_ts") if watch_status else None
+            if status_msg_ts and status_msg_ts != "PENDING":
+                self.common_service.delete_slack_message(channel_id, team_id, status_msg_ts)
+
+            # A watch registered during this turn deferred its indicator to here
+            # (see handle_watch_registered) so it lands under the answer instead
+            # of above it. Only for the turn's own final — the watch's terminal
+            # callback carries watch_id and is the thing that removes it.
+            pending_watch_id = cached_entry.get("pending_watch_id") if cached_entry else None
+            if not watch_id and pending_watch_id:
+                self._post_watch_indicator(pending_watch_id, channel_id, team_id, thread_ts)
+
+            # Same reason as stop_progress_stream above — a watch terminating
+            # mid-turn must not mark an unrelated in-flight turn COMPLETED.
+            if cached_entry and not watch_id:
                 event_cache.update_event_entry(thread_ts, status="COMPLETED")
                 LOG.debug("Conversation marked as COMPLETED.")
 
@@ -1443,6 +1550,11 @@ class Events:
                 ),
             )
             self._mark_finding_card_status(payload, channel_id, team_id, thread_ts, outcome="failed")
+        finally:
+            # Always drop the tracked status (error path included) so a failed edit
+            # or "PENDING" leftover can't orphan the key for its full 25h TTL.
+            if watch_status:
+                self.cache.remove_watch_status(watch_id)
 
     @staticmethod
     def _diagram_view_url(cached_entry: Optional[dict]) -> Optional[str]:

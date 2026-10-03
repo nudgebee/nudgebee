@@ -3,9 +3,11 @@ package data
 import (
 	"encoding/json"
 	"nudgebee/runbook/internal/tasks/types"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFilterTask_GetName(t *testing.T) {
@@ -251,4 +253,61 @@ func TestFilterTask_Execute(t *testing.T) {
 		assert.Nil(t, result)
 		assert.Contains(t, err.Error(), "failed to parse 'list' parameter as JSON array")
 	})
+}
+
+// The examples in the schema are what users click to fill the form, so a broken
+// one is worse than none at all. Execute every declared example the way the UI
+// would submit it, and pin the quoting gotcha the help text warns about.
+func TestFilterTask_SchemaExamplesAreRunnable(t *testing.T) {
+	ctx := GetTestTaskContext()
+	task := &FilterTask{}
+	props := task.InputSchema().Properties
+
+	listExamples := props["list"].Examples
+	conditionExamples := props["condition"].Examples
+	assert.NotEmpty(t, listExamples, "list must offer examples")
+	assert.NotEmpty(t, conditionExamples, "condition must offer examples")
+	assert.NotEmpty(t, props["list"].Help, "list must offer help")
+	assert.NotEmpty(t, props["condition"].Help, "condition must offer help")
+
+	// Literal list examples must be JSON arrays. Template references resolve at
+	// execution time, so they are excluded here and covered by templating tests.
+	literalLists := make([]string, 0, len(listExamples))
+	for _, example := range listExamples {
+		value, ok := example.Value.(string)
+		assert.True(t, ok, "list example %q must be a string", example.Label)
+		if strings.Contains(value, "{{") {
+			continue
+		}
+		var parsed []any
+		assert.NoError(t, json.Unmarshal([]byte(value), &parsed), "list example %q must parse as a JSON array", example.Label)
+		literalLists = append(literalLists, value)
+	}
+	assert.NotEmpty(t, literalLists, "at least one list example must be a literal array")
+
+	for _, condition := range conditionExamples {
+		value, ok := condition.Value.(string)
+		assert.True(t, ok, "condition example %q must be a string", condition.Label)
+		for _, list := range literalLists {
+			_, err := task.Execute(ctx, map[string]any{"list": list, "condition": value})
+			assert.NoErrorf(t, err, "condition example %q failed against list %s", condition.Label, list)
+		}
+	}
+}
+
+// The bug report's exact mistake: `name = 23` silently matches nothing because
+// 23 is a number and the field holds the string "23". The Condition help text
+// claims this; assert the claim rather than trusting it.
+func TestFilterTask_UnquotedNumberDoesNotMatchStringField(t *testing.T) {
+	ctx := GetTestTaskContext()
+	task := &FilterTask{}
+	list := `[{"name":"23"},{"name":"24"},{"name":"25"}]`
+
+	unquoted, err := task.Execute(ctx, map[string]any{"list": list, "condition": "name = 23"})
+	require.NoError(t, err)
+	assert.Empty(t, unquoted.(map[string]any)["result"], "an unquoted number must not match a string field")
+
+	quoted, err := task.Execute(ctx, map[string]any{"list": list, "condition": `name = "23"`})
+	require.NoError(t, err)
+	assert.Equal(t, []any{map[string]any{"name": "23"}}, quoted.(map[string]any)["result"])
 }

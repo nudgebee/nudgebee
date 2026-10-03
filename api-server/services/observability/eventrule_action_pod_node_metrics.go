@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/security"
-	"strconv"
 	"strings"
 )
 
@@ -120,48 +119,15 @@ func (a *podNodeMetricsAction) Execute(ctx playbooks.PlaybookActionContext, rawP
 	return playbooks.NewPlaybookActionResponseJson(payload, additionalInfo, []playbooks.PlaybookActionResponseInsight{}, metadata), nil
 }
 
-// seriesListByQueryKey renders a utilisation result in the same wire shape
-// relay-server's /prometheus facade produced, keyed by metric name.
-//
-// The UI consumes this payload verbatim, so the shape is a contract, not an
-// implementation detail: {"<metric>": {"series_list_result": [{metric, timestamps,
-// values}]}} with values and timestamps as strings — that is what
-// transformToPrometheusValues on the relay side emits and what the existing
-// consumers parse. Query keys with no payload are omitted so a metric the backend
-// cannot answer is absent rather than present-and-empty.
+// seriesListByQueryKey renders a utilisation result in the wire shape the
+// relay-server's /prometheus facade produced, keyed by metric name — the same
+// matrix entries every persisted Prometheus card carries (promQLSeriesList).
+// Query keys with no payload are omitted so a metric the backend cannot answer
+// is absent rather than present-and-empty.
 func seriesListByQueryKey(out OutputMetricQuery) map[string]any {
 	data := map[string]any{}
 	for _, qr := range out.Results {
-		if len(qr.Payload) == 0 {
-			continue
-		}
-		seriesList := make([]any, 0, len(qr.Payload))
-		for _, res := range qr.Payload {
-			if len(res.Values) == 0 {
-				continue
-			}
-			metric := make(map[string]any, len(res.Metric))
-			for k, v := range res.Metric {
-				metric[k] = v
-			}
-			// Both are filled by the loop over res.Values, so that is the capacity
-			// they need — Timestamps can be shorter, and is padded with zero above.
-			timestamps := make([]any, 0, len(res.Values))
-			values := make([]any, 0, len(res.Values))
-			for i, v := range res.Values {
-				ts := int64(0)
-				if i < len(res.Timestamps) {
-					ts = res.Timestamps[i]
-				}
-				timestamps = append(timestamps, strconv.FormatInt(ts, 10))
-				values = append(values, strconv.FormatFloat(v, 'f', -1, 64))
-			}
-			seriesList = append(seriesList, map[string]any{
-				"metric":     metric,
-				"timestamps": timestamps,
-				"values":     values,
-			})
-		}
+		seriesList := promQLSeriesList(qr.Payload)
 		if len(seriesList) == 0 {
 			continue
 		}

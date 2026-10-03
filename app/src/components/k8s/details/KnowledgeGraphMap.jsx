@@ -445,15 +445,20 @@ const KnowledgeGraphMapInner = ({ nodes: kgNodes, edges: kgEdges, targetService 
       return;
     }
 
+    let cancelled = false;
     const runLayout = async () => {
       setIsLayoutLoading(true);
       const { nodes: lNodes, edges: lEdges } = await getLayoutedElements(rawNodes, rawEdges);
+      if (cancelled) return;
       setNodes(lNodes);
       setEdges(lEdges);
       setIsLayoutLoading(false);
     };
 
     runLayout();
+    return () => {
+      cancelled = true;
+    };
   }, [rawNodes, rawEdges, setNodes, setEdges]);
 
   const [highlightedEdges, setHighlightedEdges] = useState([]);

@@ -1,3 +1,5 @@
+import type { PropertyExample } from './utils/fieldTypeUtils';
+
 export interface SubCategory {
   label: string;
   description: string;
@@ -88,6 +90,8 @@ export interface TaskDefinitionField {
   options?: string[];
   sub_type?: string;
   is_encrypted?: boolean;
+  help?: string;
+  examples?: PropertyExample[];
 }
 
 export interface TaskDefinitionSchema {

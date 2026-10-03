@@ -1,11 +1,24 @@
-import { Page, Locator } from "@playwright/test";
+import { Page, Locator, expect } from "@playwright/test";
 
 export class NubiLocators {
   readonly askNudgebeeBtn: Locator;
   readonly newChatBtn: Locator;
   readonly chatTextbox: Locator;
   readonly submitBtn: Locator;
-  readonly settingsBtn: Locator;
+  // SettingsModal is deleted (docs/ia-consolidation-plan.md, PR 3/Decision AA).
+  // Its content now lives behind "AI & Tools" (admin-gated — every tab-name
+  // locator below that used to open through "More", e.g. customAgentTab/
+  // ToolButton/functionsTab, opens through this one now). A non-admin-gated
+  // "Memory" button was tried as a fix for tenants without b-Cortex losing
+  // access to Memory/Account Context, then reverted (Decision AB) — that
+  // narrowing is an accepted trade-off. The rail is just these two buttons;
+  // neither is unconditionally present ("AI & Tools" is admin-gated, "b-Cortex"
+  // is hidden in OSS mode), so openPanel()'s own "did it open" check uses
+  // chatTextbox instead.
+  readonly aiToolsBtn: Locator;
+  readonly bcortexBtn: Locator;
+  readonly aiToolsDialog: Locator;
+  readonly bcortexDialog: Locator;
   // Create Custom Agent Locators
   readonly customAgentTab: Locator;
   readonly searchAgentInput: Locator;
@@ -39,7 +52,6 @@ export class NubiLocators {
   readonly searchToolInput: Locator;
   readonly ContainerImage: Locator;
   readonly ContainerCommand: Locator;
-  readonly ContainerArguments: Locator;
   readonly editToolBtn: Locator;
   readonly updateToolBtn: Locator;
   readonly updateToolSuccessMessage: Locator;
@@ -108,7 +120,15 @@ export class NubiLocators {
       .first();
     this.submitBtn = page.locator('#set-config-btn')
     // Create Custom Agent Locators
-    this.settingsBtn = page.getByRole('button', { name: 'Settings', exact: true });
+    this.aiToolsBtn = page.getByTestId('nav-nubi-ai-tools-btn').or(page.getByRole('button', { name: 'AI & Tools', exact: true }));
+    this.bcortexBtn = page.getByTestId('nav-bcortex-btn').or(page.getByRole('button', { name: 'b-Cortex', exact: true }));
+    // Each modal identified by its own ds/Modal title. Matched by attribute
+    // rather than getByRole("dialog"): MUI aria-hides a dialog the moment a
+    // nested overlay (an open ds/Select panel, the pattern dialog, the Soul
+    // expand editor) is up, and a role lookup would then read "the modal
+    // closed" while it is still perfectly on screen.
+    this.aiToolsDialog = page.locator('[role="dialog"]').filter({ hasText: 'AI & Tools' }).first();
+    this.bcortexDialog = page.locator('[role="dialog"]').filter({ hasText: 'b-Cortex' }).first();
     this.createCustomAgentBtn = page.getByRole("button", { name: "Create Custom Agent" });
     this.customAgentTab = page.getByRole("tab", { name: /agents/i });
     this.searchAgentInput = page.getByPlaceholder('Search Agent')
@@ -123,7 +143,11 @@ export class NubiLocators {
     this.submitCreateAgentBtn = page.getByRole("button", { name: "Create Agent" });
 
     // create custom tool locators
-    this.ToolButton = page.getByRole('tab', { name: 'Tools' });
+    // "Tools" is now a ToggleGroup option (role=radio) nested inside the
+    // "Tools & MCP" top-level tab (ToolsAndMCPAdminTab.jsx), not a top-level
+    // tab itself — but that inner toggle already defaults to 'tools', so
+    // clicking the top-level tab alone lands on the same view "Tools" used to.
+    this.ToolButton = page.getByRole('tab', { name: 'Tools & MCP' });
     this.CreateToolButton = page.locator('#create-tool');
     this.ToolName = page.getByPlaceholder('Enter tool name');
     this.ToolDescription = page.getByPlaceholder('Describe what this tool does');
@@ -137,7 +161,6 @@ export class NubiLocators {
     this.HTTPurl = page.getByRole('textbox', { name: 'Enter MCP server URL' });
     this.ContainerImage = page.getByPlaceholder('e.g., alpine:latest or myrepo/myimage:tag');
     this.ContainerCommand = page.getByPlaceholder('e.g., /bin/sh or printenv (overrides image ENTRYPOINT)');
-    this.ContainerArguments = page.getByPlaceholder('e.g., -c "echo hello" or --verbose');
     this.editToolBtn = page.getByRole('button', { name: 'Edit tool' });
     this.updateToolBtn = page.getByRole('button', { name: 'Update' });
     this.updateToolSuccessMessage = page.getByText('Tool updated successfully');
@@ -236,19 +259,126 @@ export class NubiLocators {
     await popover.waitFor({ state: "detached", timeout }).catch(() => {});
   }
 
+  // Admin → AI & Tools' Agents/Tools & MCP/Functions sub-tabs each mount their
+  // own AdminAccountFilter (AdminAccountFilter.jsx), defaulting to tenant-wide
+  // (accountId=''). ListAgents/ListTools/ListFunctions all hide their Create
+  // button entirely at tenant-wide (`!isTenantWide && hasWriteAccess(...)`) —
+  // the old Settings mount always carried a real accountId from the panel, so
+  // this never came up there. Picks the first real account so Create becomes
+  // reachable, same as an admin narrowing the filter by hand.
+  //
+  // AccountSelect (ds/Select, `grouped`) always has 2+ groups once any real
+  // account exists — the synthetic "All accounts" entry is its own group
+  // ('All'), so `effectiveGrouped` is true and every group renders collapsed
+  // behind a group-header button. Expanding those headers in order is what
+  // makes an option clickable regardless of which provider group holds the
+  // first real account.
+  //
+  // Every locator below is matched by ARIA attribute rather than through
+  // getByRole. ds/Select renders its panel as a nested MUI Menu with
+  // disablePortal, so while it is up MUI's ModalManager marks the AI & Tools
+  // dialog that contains it aria-hidden - the whole dialog, panel included,
+  // drops out of the accessibility tree and every role lookup inside it
+  // resolves to nothing. Same trap soulLocators.ts already documents for the
+  // expand editor; the attribute selectors see the DOM directly.
+  async selectFirstAdminAccount(timeout = 30000): Promise<void> {
+    const trigger = this.page.locator("#account-select");
+    await trigger.click();
+    const listbox = this.page.locator('[role="listbox"]');
+    await listbox.waitFor({ state: "visible", timeout });
+
+    // AccountSelect fetches its accounts on mount, and the panel opens on
+    // whatever that fetch has got to: while it is in flight ds/Select renders
+    // skeleton rows and NO group headers at all. Expanding the headers in a
+    // single pass therefore ran against an empty panel and left every group
+    // collapsed for good, so the option wait below could only time out. The
+    // headers are what has to be waited for, not the panel.
+    const groupHeaders = listbox.locator('[role="button"]');
+    await expect
+      .poll(() => groupHeaders.count(), { timeout, message: "the account picker never listed a group to expand" })
+      .toBeGreaterThan(0);
+
+    const groupCount = await groupHeaders.count();
+    const realAccountOption = listbox.locator('[role="option"]').filter({ hasNotText: "All accounts" }).first();
+    for (let i = 0; i < groupCount; i++) {
+      // Each header TOGGLES its group, so an already-expanded one would close
+      // again — stop as soon as a real account is reachable.
+      if (await realAccountOption.isVisible().catch(() => false)) break;
+      await groupHeaders.nth(i).click();
+      // Short wait, not the method timeout: "this group holds no real account"
+      // is a normal branch here, so the loop has to move on quickly — but
+      // reading visibility straight after the click can beat the re-render and
+      // expand a group nothing needed.
+      await realAccountOption.waitFor({ state: "visible", timeout: 2000 }).catch(() => {});
+    }
+
+    await realAccountOption.waitFor({ state: "visible", timeout });
+    await realAccountOption.click();
+    await listbox.waitFor({ state: "detached", timeout }).catch(() => {});
+  }
+
   // Clicks the Nubi icon and retries up to 3 times if the panel does not open.
   // Uses a generous click timeout because on the /home page the icon navigates
   // to /ask-nudgebee (slow on dev env) before the panel settles.
+  //
+  // chatTextbox is the "did it open" signal because neither rail button is a
+  // reliable universal one any more: "AI & Tools" only renders for an admin
+  // user, and "Memory" only renders for a tenant without b-Cortex (Decision AA).
+  // chatTextbox has no such condition — it is the panel's own chat input.
   async openPanel(): Promise<void> {
     await this.askNudgebeeBtn.waitFor({ state: "visible", timeout: 30000 });
     for (let attempt = 1; attempt <= 3; attempt++) {
       await this.askNudgebeeBtn.click({ timeout: 30000 });
-      const opened = await this.settingsBtn
+      const opened = await this.chatTextbox
         .waitFor({ state: "visible", timeout: 10000 })
         .then(() => true)
         .catch(() => false);
       if (opened) return;
       if (attempt === 3) throw new Error("Nubi panel did not open after 3 click attempts");
     }
+  }
+
+  // Opens one of the two rail modals and waits until the tab it must land on is
+  // on screen. Both modals build their tab strip behind an async round trip
+  // (AIToolsModal: hasFeatureAccess('LLM_FUNCTION'); BCortexModal:
+  // useBCortexEnabled), and a rail click landing while the panel is still
+  // animating in opens nothing at all - so the click and the wait are retried
+  // as a pair rather than the click being fired once.
+  //
+  // The retry re-clicks only while the modal is NOT up. Retrying on "the tab is
+  // not visible yet" instead deadlocks the moment the modal opens but its strip
+  // is slow: the modal's own backdrop now covers the rail button, so the next
+  // click waits out its action timeout, and the pair can never pass inside
+  // toPass' budget. That is exactly how CreateCustomAgent.spec.ts failed on CI
+  // while passing locally.
+  //
+  // The dialog is matched by attribute, not getByRole: an open ds/Select panel
+  // inside the modal makes MUI aria-hide the dialog, and a role lookup would
+  // then read "the modal closed". Deliberately takes the tab to wait for -
+  // "the modal is up" and "the tab this suite needs is up" are the same wait,
+  // and every caller has to make it.
+  private async openRailModal(dialog: Locator, railBtn: Locator, tab: Locator, timeout = 60000): Promise<void> {
+    await expect(async () => {
+      // Probe: "the modal is not up yet" is the normal state on the first pass
+      // and must come back as false rather than throw, since that is what
+      // drives the retry.
+      if (!(await dialog.isVisible().catch(() => false))) {
+        await railBtn.click();
+      }
+      await tab.waitFor({ state: "visible", timeout: 15000 });
+    }).toPass({ timeout, intervals: [1000, 2000, 3000] });
+  }
+
+  // Admin -> AI & Tools, the rail button that replaced Settings
+  // (docs/ia-consolidation-plan.md, PR 3). Admin-gated and rendered on the
+  // Ask-Nubi rail only, so openPanel() has to have run first.
+  async openAITools(tab: Locator, timeout = 60000): Promise<void> {
+    await this.openRailModal(this.aiToolsDialog, this.aiToolsBtn, tab, timeout);
+  }
+
+  // b-Cortex, which took Soul, Privacy, Preferences, Feedback, My Usage and
+  // My Functions out of Settings (docs/ia-consolidation-plan.md, PR 4).
+  async openBCortex(tab: Locator, timeout = 60000): Promise<void> {
+    await this.openRailModal(this.bcortexDialog, this.bcortexBtn, tab, timeout);
   }
 }

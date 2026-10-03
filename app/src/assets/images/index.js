@@ -756,6 +756,13 @@ export const TracesBlueIcon = require('@assets/ask-nudgebee/traces-blue-icon.svg
 export const AgentIcon = require('@assets/ask-nudgebee/agent-icon.svg');
 export const ToolsIcon = require('@assets/ask-nudgebee/tools-icon.svg');
 export const LLMFunctionIcon = require('@assets/ask-nudgebee/llm-function-icon.svg');
+// Same glyphs as above, recolored to the design system's brand blue
+// (#3B82F6) — for menus (AI & Tools) where these sit beside other tabs'
+// custom icons that already hardcode that blue, so an unstyled dark/black
+// glyph here would be the odd one out.
+export const AgentIconTabBlue = require('@assets/ask-nudgebee/agent-icon-blue.svg');
+export const ToolsIconTabBlue = require('@assets/ask-nudgebee/tools-icon-blue.svg');
+export const LLMFunctionIconTabBlue = require('@assets/ask-nudgebee/llm-function-icon-blue.svg');
 export const LLMConsumptionIcon = LLMConsumptionIconComp;
 export const FollowUpBlueIcon = require('@assets/ask-nudgebee/followup-blue.svg');
 export const UploadIcon = require('@assets/upload-icon.svg');

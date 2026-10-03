@@ -87,7 +87,7 @@ def get_recommendation_proactive_nudge_message_template(
         neutral_footer_attachment(
             text=f"_+{remaining} more in the dashboard_" if remaining > 0 else "",
             actions=[
-                link_button("View All Recommendations", f"{base_url}/optimise?utm=slack#recommendations", "primary"),
+                link_button("View All Recommendations", f"{base_url}/optimise?utm=slack#cost", "primary"),
                 link_button("Ask Nubi", build_ask_nubi_url(params, base_url, "slack")),
             ],
             fallback="View all recommendations",

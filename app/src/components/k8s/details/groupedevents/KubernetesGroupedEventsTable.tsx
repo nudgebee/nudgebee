@@ -46,7 +46,7 @@ import { Box, Typography } from '@mui/material';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
 import { useEventCloudFilter } from '@hooks/useCloudFilters';
 import EventClassifyModal, { type ClassifyUpdate } from '@components/events/EventClassifyModal';
-import { CLASSIFICATION_OPTIONS, getTriageStatusTooltip } from '@api1/triage';
+import { CLASSIFICATION_OPTIONS, TRIAGE_SCORE_INFO, getTriageStatusTooltip } from '@api1/triage';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import { action } from 'src/utils/actionStyles';
 import CategoryOutlinedIcon from '@mui/icons-material/CategoryOutlined';
@@ -496,6 +496,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   });
   const [selectedStatus, setSelectedStatus] = useState<string>('');
   const [selectedPriority, setSelectedPriority] = useState('');
+  const [selectedNbPriority, setSelectedNbPriority] = useState('');
 
   const [selectedSource, setSelectedSource] = useState<any[]>([]);
   const [selectedNBStatus, setSelectedNBStatus] = useState<Array<{ label: string; value: string }>>([]);
@@ -768,7 +769,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
           name: 'Triage Score',
           width: '10%',
           sortable: true,
-          info: "Triage Score is NudgeBee's context-aware triage score/level, computed using multiple signals beyond raw thresholds such as service criticality, customer/user impact, recurrence frequency, dependency (upstream/downstream) blast radius, and the nature of the service/workload.",
+          info: TRIAGE_SCORE_INFO,
         },
         triageStatusHeader,
         {
@@ -869,7 +870,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       priority: selectedPriority,
       priority_nin: !selectedPriority ? ['DEBUG', 'INFO'] : undefined,
       source: selectedSource?.map((f: any) => f.value) || [],
-      nb_priority: '',
+      nb_priority: selectedNbPriority,
       nb_status: selectedNBStatus.length > 0 ? selectedNBStatus.map((s) => s?.value || s) : undefined,
       is_new_issue: selectedIssueType === 'new' ? true : selectedIssueType === 'recurring' ? false : undefined,
     };
@@ -969,6 +970,9 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       const groupings = res?.data?.event_groupings ?? [];
       setRawEventGroupings(groupings);
       setTotalRows(res.data.event_groupings_aggregate.aggregate.count);
+      // Table can render now; ticket badges repopulate as a non-blocking second pass.
+      setTicketReferenceMap(new Map());
+      setLoading(false);
 
       // Only the fingerprint variant has a Create Ticket action keyed off fingerprint
       if (groupEventType === 'fingerprint') {
@@ -983,17 +987,11 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
             setTicketReferenceMap(map);
           } catch (err) {
             console.error('Failed to fetch ticket summaries', err);
-            setTicketReferenceMap(new Map());
           }
-        } else {
-          setTicketReferenceMap(new Map());
         }
-      } else {
-        setTicketReferenceMap(new Map());
       }
     } catch (e) {
       console.error(e);
-    } finally {
       setLoading(false);
     }
   }, [
@@ -1008,6 +1006,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     selectedAggregationKey,
     selectedStatus,
     selectedPriority,
+    selectedNbPriority,
 
     selectedSource,
     selectedNBStatus,
@@ -1252,6 +1251,22 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       : []),
     ...(groupEventType === 'fingerprint'
       ? [
+          {
+            type: 'dropdown',
+            enabled: true,
+            options: [
+              { value: 'P0', label: 'P0' },
+              { value: 'P1', label: 'P1' },
+              { value: 'P2', label: 'P2' },
+              { value: 'P3', label: 'P3' },
+            ],
+            onSelect: (e: any) => {
+              setSelectedNbPriority(e?.target?.value || '');
+              setCurrentPage(1);
+            },
+            label: 'Triage Priority',
+            value: selectedNbPriority,
+          },
           {
             type: 'dropdown',
             enabled: true,

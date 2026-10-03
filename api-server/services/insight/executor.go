@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/observability"
 	"nudgebee/services/query"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
@@ -1546,71 +1547,47 @@ func ProcessPrometheusInstantRule(rule InsightRule, accountId string) (Insight, 
 		}
 	}()
 
-	relayRequest := relay.RelayExecuteRequest{
-		Body: relay.ActionExecuteBody{
-			AccountID:  accountId,
-			ActionName: "prometheus_enricher",
-			ActionParams: map[string]any{
-				"promql_query": rule.Query,
-				"instant":      true,
-			},
-		},
-	}
-	resp, err := relay.Execute(relayRequest)
+	// The rule loop only visits accounts with a connected agent, which is
+	// where the tenant comes from; the metrics layer then resolves whether
+	// the PromQL runs on the agent's Prometheus or a user-connected one.
+	details, err := getAccountDetails(security.NewRequestContextForSuperAdmin(nil, nil, nil), accountId)
 	if err != nil {
-		slog.Error("Failed to execute relay task", "error", err, "accountId", accountId)
+		return Insight{}, fmt.Errorf("insight: account %s: %w", accountId, err)
+	}
+	tenantID := details[accountId].tenant
+	if tenantID == "" {
+		return Insight{}, fmt.Errorf("insight: account %s has no tenant", accountId)
+	}
+	now := time.Now().UTC()
+	output, err := observability.FetchMetricsQuery(security.NewRequestContextForTenantAdmin(tenantID, slog.Default(), nil, nil), observability.FetchMetricsRequest{
+		AccountId:      accountId,
+		MetricProvider: "prometheus",
+		Queries:        map[string]string{"rule": rule.Query},
+		EndTime:        now.UnixMilli(),
+		Instant:        true,
+	})
+	if err != nil {
+		slog.Error("Failed to run prometheus rule", "error", err, "accountId", accountId)
 		return Insight{}, err
 	}
-	if resp["status_code"] == 500 {
-		slog.Error("Failed to execute relay task", "error", resp["response"], "accountId", accountId)
-		return Insight{}, fmt.Errorf("insight: failed to execute relay task error %s accountId %s ", resp["response"], accountId)
-	}
-
-	evidence, err := relay.FormatEvidenceResponseFromAgent("Prometheus Metric", resp)
-	if err != nil {
-		slog.Error("anomaly: error formatting evidence response in anomaly at cpu", "error", err)
-	}
-
-	evidenceData, ok := evidence["data"].(map[string]any)
-	if !ok || len(evidenceData) == 0 {
-		slog.Warn("No data found in evidence for Prometheus rule", "rule", rule.UniqueID, "accountId", accountId)
-		return Insight{}, nil
-	}
-	// check for "vector_result" in evidenceData
-	vectorResult, ok := evidenceData["vector_result"].([]any)
-	if !ok || len(vectorResult) == 0 {
-		slog.Warn("No vector_result found in evidence for Prometheus rule", "rule",
-			rule.UniqueID, "accountId", accountId)
+	vectorResult := observability.PromQLLabels(output, "rule")
+	if len(vectorResult) == 0 {
+		slog.Warn("No series found for Prometheus rule", "rule", rule.UniqueID, "accountId", accountId)
 		return Insight{}, nil
 	}
 	relevantApplications := make([]RelevantApplications, 0)
-	for _, item := range vectorResult {
-		itemMap, ok := item.(map[string]any)
-		if !ok {
-			slog.Warn("Invalid item in vector_result", "item", item)
-			continue
-		}
-		metrics, ok := itemMap["metric"].(map[string]any)
-		if !ok {
-			slog.Warn("Invalid metric in vector_result item", "item", item)
-			continue
-		}
-
+	for _, metrics := range vectorResult {
 		name, namespace := "", ""
 		if len(metrics) >= 2 && len(rule.GroupedBy) >= 2 {
-			name = metrics[rule.GroupedBy[0]].(string)
-			namespace = metrics[rule.GroupedBy[1]].(string)
+			name = metrics[rule.GroupedBy[0]]
+			namespace = metrics[rule.GroupedBy[1]]
 		} else if len(metrics) == 1 && len(rule.GroupedBy) == 1 {
-			name = metrics[rule.GroupedBy[0]].(string)
+			name = metrics[rule.GroupedBy[0]]
 		} else {
 			slog.Warn("Didnt found required data")
 			// Fallback to default labels
-			if nameVal, ok := metrics["name"]; ok {
-				name = nameVal.(string)
-			}
-			if namespaceVal, ok := metrics["namespace"]; ok {
-				namespace = namespaceVal.(string)
-			}
+			name = metrics["name"]
+			namespace = metrics["namespace"]
 		}
 		application := RelevantApplications{
 			Name:      name,

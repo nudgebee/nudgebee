@@ -23,6 +23,7 @@ func mockMetastore(t *testing.T) (*sqlx.DB, sqlmock.Sqlmock) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	sqlxDB := sqlx.NewDb(db, "postgresql")
+	common.ResetDatabaseManager(common.Metastore)
 	common.RegisterDatabaseManagerHook(common.Metastore, func() (*common.DatabaseManager, error) {
 		return &common.DatabaseManager{Db: sqlxDB}, nil
 	})

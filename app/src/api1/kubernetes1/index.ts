@@ -4,6 +4,11 @@ import cache from '@lib/cache';
 import observability from '@api1/observability';
 import { safeJSONParse, EXCLUDED_TRIAGE_AGGREGATION_KEYS } from 'src/utils/common';
 
+// Event rule names are read for pickers and re-read often; five minutes keeps a
+// newly created or renamed rule from being invisible for long without making the
+// picker re-query on every render.
+const EVENT_RULE_NAMES_TTL_SEC = 5 * 60;
+
 export const GET_EVENT_RULES = `
 query GetEventRules($limit: Int, $offset: Int) {
   event_rules_v2(where: __WHERE__, order_by: [{column: "updated_at", order: desc}], limit: $limit, offset: $offset) {
@@ -544,9 +549,17 @@ const apiKubernetes1 = {
         const transformedData = {
           event_rules: response?.data?.data?.event_rules_v2?.rows || [],
         };
-        cache.set(`${query.accountId}.listAllEventRuleNames`, {
-          data: transformedData,
-        });
+        // cache.set defaults ttlSec to 0, which cache.ts turns into a ONE YEAR
+        // expiry, and nothing invalidates this key when a rule is created,
+        // renamed or deleted — so the picker kept serving the rule names it
+        // first saw. Five minutes matches the other event-rule reads here.
+        cache.set(
+          `${query.accountId}.listAllEventRuleNames`,
+          {
+            data: transformedData,
+          },
+          EVENT_RULE_NAMES_TTL_SEC
+        );
         return {
           data: transformedData,
         };

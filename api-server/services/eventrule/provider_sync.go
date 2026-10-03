@@ -66,6 +66,12 @@ var syncableProviders = map[string]syncableProvider{
 	// rules. There is no signal to distinguish that from rules having been
 	// deleted, so deletions are never reconciled for this source.
 	"elasticsearch": {"ES", "user", "elasticsearch_webhook", false},
+	// The direct (agentless) Prometheus only: an in-cluster agent pushes its own
+	// inventory through the collector. Rows land on the Alertmanager webhook's
+	// source so a synced definition and the firings the webhook reports share one
+	// row; that source name predates the *_webhook convention, hence the exception
+	// in TestSyncableProvidersAreWellFormed.
+	"prometheus": {"prometheus", "user", "prometheus_alertmanager_webhook", true},
 }
 
 // SyncableProviders lists the source values SyncProviderRules accepts, whether

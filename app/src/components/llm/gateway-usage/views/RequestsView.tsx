@@ -17,6 +17,7 @@
  */
 import * as React from 'react';
 import { Box, CircularProgress } from '@mui/material';
+import { ds } from '@utils/colors';
 import dayjs from 'dayjs';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import GppMaybeOutlinedIcon from '@mui/icons-material/GppMaybeOutlined';
@@ -156,9 +157,9 @@ function DLPBadge({ dlp }: { dlp: { mode: string; rules: string[] } }) {
       sx={{
         display: 'inline-flex',
         alignItems: 'center',
-        gap: '2px',
+        gap: ds.space[0],
         alignSelf: 'flex-start',
-        marginTop: '2px',
+        marginTop: ds.space[0],
         padding: '0 5px',
         borderRadius: 'var(--ds-radius-sm)',
         fontSize: 'var(--ds-text-small)',
@@ -210,7 +211,7 @@ function SessionCell({ id, source, onSelect }: { id: string; source: string; onS
         display: 'inline-flex',
         alignItems: 'center',
         alignSelf: 'flex-start',
-        marginTop: '2px',
+        marginTop: ds.space[0],
         padding: 0,
         border: 'none',
         background: 'none',

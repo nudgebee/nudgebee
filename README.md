@@ -293,19 +293,81 @@ The repo ships a `docker-compose.yaml` that wires every service against the publ
 | `ml-k8s-server`                    | `postgres`                         | Reads/writes scaling features.                                                                                                                                        |
 | `llm-server`                       | `postgres`, `qdrant`               | LLM session state + vector lookups. Spawns `code-analysis` per account on demand (not a long-running compose service).                                                |
 | `rag-server`                       | `postgres`, `qdrant`               | RAG retrieval against Qdrant; metadata in PG.                                                                                                                         |
+| `llm-gateway`                      | `postgres`, `api-server-services`  | **Not in `docker-compose.yaml`** — run from source (`llm/gateway`, default port 8000). Backs the AI Gateway tab and Admin → AI & Tools → Gateway. Redis is optional (`cache_provider` defaults to in-memory). |
+| `vulnerability-server`             | none                               | **Not in `docker-compose.yaml`** — run from source (`vulnerability-server`, default port 8080). Stateless matcher; needs a local vulnerability DB on disk (~1.8 GB unpacked). `api-server-services` calls it to produce VM vulnerability findings. |
 
 ### Frontend
 
 | Service         | Min upstream deps     | Why                                                                                                                                                                                                                                    |
 | --------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `app` (Next.js) | `api-server-services` | All GraphQL operations are served by the in-process RPC gateway in the Next.js server (`/api/graphql`) and forwarded to api-server-services action handlers. RabbitMQ/Redis are required indirectly via api-server-services' own deps. |
+| `app` (Next.js) | `api-server-services` | Client calls are served by the in-process RPC gateway in the Next.js server (`/api/graphql`), which fans out to **six** upstreams — `api-server-services`, `llm-server`, `workflow-server`, `llm-gateway`, `ticket-server`, `notifications-server` — plus a direct proxy to `relay-server`. Only `api-server-services` is needed to boot and sign in; the rest gate individual tabs (see the next section). RabbitMQ/Redis come in transitively via api-server-services' own deps. |
+
+### Which services does each tab need?
+
+**Baseline — every tab needs these three:** `postgres`, `api-server-services`, `app`. They carry sign-in, tenant/account context, the left nav, and the RPC gateway itself. `rabbitmq` and `redis` come along transitively (`api-server-services` won't boot without them). The table lists only what a tab needs **on top of** that baseline.
+
+| Nav section     | Tab / surface                                                              | Extra services beyond the baseline                                | Notes                                                                                                              |
+| --------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| **Home**        | Home, Account Overview                                                     | —                                                                 |                                                                                                                    |
+| **Dashboards**  | Dashboard List, Application Grouping                                       | —                                                                 |                                                                                                                    |
+| **Troubleshoot**| All Events (Triage Inbox, Events, group-by-type / -app, Triage Rules, Alert Tuning) | —                                                        | The **Create ticket** action on an event needs `ticket-server`; the **Investigate** button needs `llm-server`.     |
+|                 | Investigations (Auto / Manual Investigated), `/investigate`                | `llm-server`                                                      | Add `relay-server` when an investigation pulls live cluster evidence (pod logs, live resources).                   |
+|                 | Event Resolutions                                                          | `ticket-server`                                                   | Resolution rows create and comment on tickets.                                                                     |
+|                 | Knowledge Graph, Analytics                                                 | —                                                                 |                                                                                                                    |
+|                 | Agent Health (`/agentHealth`)                                              | —                                                                 | Agent connectivity is read from Postgres, so the page works with the collectors down — it just reports them down.  |
+| **Automations** | Automations, Executions, Task Runner                                       | `workflow-server` + `temporal`                                    | `workflow-server` dials Temporal on `:7233` at startup and exits if it's unreachable.                              |
+| **Optimize**    | Summary, Cost, Configuration, Security, Resolutions                        | —                                                                 | Reading is baseline-only. **Generating** the findings needs `ml-k8s-server` (right-sizing) and `vulnerability-server` (VM vulnerabilities) — see below. |
+|                 | Auto Optimize (Optimizations, Approvals)                                   | `workflow-server` + `temporal`                                    |                                                                                                                    |
+|                 | LLM Analyser                                                               | `llm-server`                                                      | Also gated by the per-tenant `LLM_ANALYSER` feature flag (Tenant Settings → Feature Flags).                        |
+|                 | AI Gateway                                                                 | `llm-gateway`                                                     | Also gated by `UI_ENABLE_LLM_GATEWAY=true` in `app/.env`.                                                          |
+| **Infra**       | K8s, Cloud, VM (list + detail)                                             | —                                                                 | VM → Vulnerabilities / Packages read stored matches; producing them needs `vulnerability-server`.                  |
+|                 | K8s detail: live resources, pod logs, pod shell, embedded Grafana          | `relay-server`                                                    | These proxy through `/api/proxy/relay` and `/api/proxy/grafana`, not the RPC gateway.                              |
+| **Tickets**     | All Tickets, Assigned to me                                                | `ticket-server`                                                   |                                                                                                                    |
+| **Admin**       | Access & Users, Tenant Settings                                            | —                                                                 |                                                                                                                    |
+|                 | Notification Rules                                                         | `notifications-server`                                            | Channel pickers and delivery-mode checks call it directly.                                                         |
+|                 | Integrations                                                               | —                                                                 | **Test connection** needs the owning service: `notifications-server` for Slack / Teams / Google Chat, `ticket-server` for Jira / ServiceNow / PagerDuty / Zenduty. |
+|                 | AI & Tools → Agents, Tools & MCP, Functions, Providers, Egress Filter, Memory Policy, RCA Format | `llm-server`                            |                                                                                                                    |
+|                 | AI & Tools → Gateway, Budgets & Limits                                     | `llm-gateway` (Gateway), `llm-server` (Budgets & Limits)          |                                                                                                                    |
+| **Nubi**        | Assistant panel (header) and `/ask-nudgebee`                               | `llm-server`                                                      | Knowledge-base answers additionally need `rag-server` + `qdrant`; `llm-server` spawns `code-analysis` on demand.   |
+
+**What a missing service looks like.** `app` never crashes on an unreachable upstream — the page renders and only the calls that need that service fail:
+
+- Service down, env var set → GraphQL response carries `Upstream unreachable for <action>`; `/api/rpc` answers **502**.
+- Env var unset (e.g. no `LLM_GATEWAY_URL`) → `Handler URL unresolved for <action>` and a **500**. The dev-server console logs the missing variable name.
+
+Both come out of [app/src/lib/rpcGateway.ts](app/src/lib/rpcGateway.ts) and [app/src/pages/api/rpc.ts](app/src/pages/api/rpc.ts). `/status` in the running app probes API, Data Ingest (relay), Nubi AI, Automation (workflow-server + Temporal) and Notifications, which is the fastest way to see what's actually up.
+
+**Services that supply data rather than gate a tab.** `cloud-collector`, `k8s-collector-app`, `relay-server`, `ml-k8s-server` and `vulnerability-server` don't sit on the request path for most tabs — they populate the tables those tabs read. Without them the tabs render **empty**, not broken. `ml-k8s-server` owns right-sizing (`krr_scan`), unused-volume analysis and anomaly detection, so Optimize → Cost stays empty until it has run; `vulnerability-server` matches VM package inventories against the vulnerability database, and `api-server-services` calls it via `VULN_MATCHER_SERVER_ENDPOINT`.
+
+**Deriving this yourself.** [`app/src/lib/actions.yaml`](app/src/lib/actions.yaml) is the source of truth: each action's `handler:` names the upstream via a `{{SERVICE_URL}}` placeholder. The six the gateway can route to are `SERVICE_API_SERVER_URL`, `LLM_SERVER_URL`, `WORKFLOW_SERVER_URL`, `LLM_GATEWAY_URL`, `TICKET_SERVICE_URL` and `NOTIFICATION_SERVICE_URL`. A tab's calls live under `app/src/api1/<domain>/` — cross-reference the action names in that directory against `actions.yaml` to get the tab's service set.
+
+### Port gotcha: compose vs `app/.env.example`
+
+`docker compose` publishes several services on **different host ports** than `app/.env.example` defaults to. Running the frontend from source against the compose stack means overriding these in `app/.env`:
+
+| Service                | Compose host port | `app/.env.example` default                 |
+| ---------------------- | ----------------- | ------------------------------------------ |
+| `api-server-services`  | 8000              | `SERVICE_API_SERVER_URL` — 8000 ✅         |
+| `llm-server`           | 8005              | `LLM_SERVER_URL` — 8005 ✅                 |
+| `ticket-server`        | 8001              | `TICKET_SERVICE_URL` — 8004 ❌             |
+| `cloud-collector`      | 8002              | `CLOUD_COLLECTOR_SERVER_URL` — 8001 ❌     |
+| `relay-server`         | 8004              | `RELAY_SERVER_ENDPOINT` — 8006 ❌          |
+| `workflow-server`      | 8007              | `WORKFLOW_SERVER_URL` — 8002 ❌            |
+| `notifications-server` | 8090              | `NOTIFICATION_SERVICE_URL` — 8003 ❌       |
+| `llm-gateway`          | not in compose    | `LLM_GATEWAY_URL` — 8007 (collides with compose `workflow-server`) |
+
+Inside compose this doesn't bite — the `full` profile wires every upstream by service name through the `x-app-common` anchor at the top of `docker-compose.yaml`. The one exception is `LLM_GATEWAY_URL`: `llm-gateway` has no compose service, so the AI Gateway tab has no upstream in a pure-compose stack.
 
 ### Common minimal stacks
 
 - **DB exploration:** `postgres` (connect with `psql` / DBeaver).
-- **Login + dashboard render:** `postgres` + `api-server-services` + `app` (pulls RabbitMQ/Redis transitively).
+- **Login + dashboard render:** `postgres` + `api-server-services` + `app` (pulls RabbitMQ/Redis transitively). This is the baseline every tab needs.
 - **Cloud findings pipeline:** add `rabbitmq` + `cloud-collector`.
-- **LLM/RAG flows:** add `qdrant` + `llm-server` + `rag-server`.
+- **Recommendation generation (Optimize → Cost):** add `ml-k8s-server`.
+- **LLM/RAG flows + Nubi:** add `qdrant` + `llm-server` + `rag-server`.
+- **Automations / Auto Optimize:** add `temporal` + `workflow-server`.
+- **Tickets:** add `ticket-server`. **Notification Rules:** add `notifications-server`.
+- **Live K8s (pod logs, pod shell, embedded Grafana):** add `relay-server`.
 
 Start a subset with `docker compose up -d <service> [<service> ...]` (or `podman-compose up -d ...`); transitive deps are pulled in automatically via `depends_on`.
 

@@ -20,6 +20,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import PropTypes from 'prop-types';
 import React, { useEffect, useState } from 'react';
 import { ds } from '@utils/colors';
+import { unwrapTypedValueString } from '@utils/common';
 import { convertToReadableFormat } from 'src/utils/common';
 import KubernetesTable from '@components/k8s/common/KubernetesTable';
 import { mapToTableData } from '@components/k8s/common/logTableMapper';
@@ -847,7 +848,7 @@ const KubernetesLLMRequestResponse = (props) => {
                 },
               }}
             >
-              <MarkDowns data={messageConfig.question} />
+              <MarkDowns data={unwrapTypedValueString(messageConfig.question)} />
             </Box>
           )}
           {isCompleted && displayResponse && (

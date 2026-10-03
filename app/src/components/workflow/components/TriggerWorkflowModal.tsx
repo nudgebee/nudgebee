@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import { Typography, Box } from '@mui/material';
 import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
@@ -34,6 +34,25 @@ interface TriggerWorkflowModalProps {
   runVariant?: 'live' | 'current';
 }
 
+// Initial box contents: explicit defaultInputs first, then schema defaults, else {}.
+const seedInputs = (defaultInputs: any, inputSchema: NonNullable<TriggerWorkflowModalProps['inputSchema']>): string => {
+  try {
+    if (defaultInputs && Object.keys(defaultInputs).length > 0) {
+      return JSON.stringify(defaultInputs, null, 2);
+    }
+    if (inputSchema.length > 0) {
+      const fromSchema = inputSchema.reduce((acc, input) => {
+        acc[input.id] = input.default;
+        return acc;
+      }, {} as any);
+      return JSON.stringify(fromSchema, null, 2);
+    }
+  } catch (_error) {
+    console.error(_error);
+  }
+  return '{}';
+};
+
 const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
   open,
   onClose,
@@ -48,54 +67,15 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
   draftVersionNumber,
   runVariant = 'live',
 }) => {
-  const [inputsJson, setInputsJson] = useState<string>('{}');
+  // Seeded once, at mount. Call sites mount this modal only while it is open
+  // (keyed per workflow), so every open is a fresh mount and nothing a parent
+  // does afterwards — polling re-renders, new prop identities — can overwrite
+  // what the user typed. Seeding from an effect kept re-wiping the box (#37242).
+  const [inputsJson, setInputsJson] = useState<string>(() => seedInputs(defaultInputs, inputSchema));
   const [jsonError, setJsonError] = useState<string>('');
   const [useDefaults, setUseDefaults] = useState<boolean>(true);
 
   const hasDefaults = inputSchema.some((input) => input.default !== undefined && input.default !== null && input.default !== '');
-
-  // Tracks the previous `open` value so the seeding effect below only fires on
-  // the closed -> open transition.
-  const wasOpenRef = useRef<boolean>(false);
-
-  // Seed the inputs once, when the modal opens.
-  //
-  // `defaultInputs` / `inputSchema` are built inline at every call site
-  // (getDefaultTriggerInputs(w) / getWorkflowInputSchema(w)), so they get a new
-  // identity on every parent render. The listing polls the workflow list every
-  // 10s and a running execution every 0.5-3s, so re-seeding on those deps wiped
-  // whatever the user had typed into the JSON box a moment later. Gate on the
-  // open transition instead, and leave the box alone for the rest of the
-  // session. Fixes #37242.
-  useEffect(() => {
-    if (open && !wasOpenRef.current) {
-      try {
-        let initialInputs = {};
-
-        // First try to use defaultInputs if available
-        if (defaultInputs && Object.keys(defaultInputs).length > 0) {
-          initialInputs = defaultInputs;
-        }
-        // If no defaultInputs but we have inputSchema, generate initial structure from schema
-        else if (inputSchema && inputSchema.length > 0) {
-          initialInputs = inputSchema.reduce((acc, input) => {
-            acc[input.id] = input.default;
-            return acc;
-          }, {} as any);
-        }
-
-        setInputsJson(JSON.stringify(initialInputs, null, 2));
-        setJsonError('');
-        setUseDefaults(true);
-      } catch (_error) {
-        console.error(_error);
-        setInputsJson('{}');
-        setJsonError('');
-        setUseDefaults(true);
-      }
-    }
-    wasOpenRef.current = open;
-  }, [open, defaultInputs, inputSchema]);
 
   const validateJson = (jsonString: string): boolean => {
     if (!jsonString.trim()) {
@@ -121,6 +101,8 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
   const handleInputsChange = (value: string) => {
     setInputsJson(value);
     validateJson(value);
+    // An edited box no longer holds the defaults.
+    setUseDefaults(false);
   };
 
   const handleTrigger = async () => {
@@ -139,8 +121,6 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
   };
 
   const handleClose = () => {
-    setInputsJson('{}');
-    setJsonError('');
     onClose();
   };
 
@@ -402,10 +382,8 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
                   }, {} as any);
                   setInputsJson(JSON.stringify(defaults, null, 2));
                   setJsonError('');
-                } else {
-                  setInputsJson('{}');
-                  setJsonError('');
                 }
+                // Unchecking keeps the current text — clearing it discarded typed input.
               }}
             />
           </Box>

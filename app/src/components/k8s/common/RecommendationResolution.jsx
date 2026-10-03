@@ -5,6 +5,7 @@ import { ListingLayout } from '@ui/ListingLayout';
 import CustomTable from '@shared/tables/CustomTable2';
 import Datetime from '@shared/format/Datetime';
 import { Link } from '@ui/Link';
+import { CodeBlock } from '@ui/CodeBlock';
 import { containsLink } from 'src/utils/common';
 import { Typography } from '@mui/material';
 import { ds } from 'src/utils/colors';
@@ -22,7 +23,8 @@ const RecommendationResolutionRequest = function (accountId, drilldownQuery, _ro
   } else {
     data = JSON.stringify(data, null, 2);
   }
-  return <pre>{data}</pre>;
+  // `JSON.stringify(undefined)` returns undefined, so fall back to an empty snippet.
+  return <CodeBlock code={data ?? ''} language='json' />;
 };
 
 const RecommendationResolutionStatusDetails = function (_accountId, drilldownQuery, _row) {

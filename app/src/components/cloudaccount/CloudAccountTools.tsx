@@ -8,6 +8,7 @@ import DownloadButton from '@shared/buttons/DownloadButton';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { Button as DsButton } from '@ui/Button';
+import { CodeBlock } from '@ui/CodeBlock';
 import { SeverityIcon as DsSeverityIcon } from '@ui/SeverityIcon';
 import CloudAccountTable from './CloudAccountTable';
 import HelpBeeModal from '@components/helpbee';
@@ -84,6 +85,7 @@ const CloudAccountTools = (props: { accountId: string | undefined; serviceName: 
     if (!props?.accountId) {
       return;
     }
+    let cancelled = false;
     setLoading(true);
     apiCloudAccount
       .listEvents(
@@ -95,9 +97,13 @@ const CloudAccountTools = (props: { accountId: string | undefined; serviceName: 
         page * ROWS_PER_PAGE
       )
       .then((res: any) => {
+        if (cancelled) {
+          return;
+        }
         setLoading(false);
         const ticketReferenceMap = new Map();
-        const eventsData = res.data?.events?.map((item: any) => {
+        const rawEvents = Array.isArray(res.data?.events) ? res.data.events : [];
+        const eventsData = rawEvents.map((item: any) => {
           const data: ICustomTableRow[] = [];
           const MENU_ITEMS = [
             {
@@ -176,8 +182,13 @@ const CloudAccountTools = (props: { accountId: string | undefined; serviceName: 
         setEventsCount(res.data?.events_aggregate?.aggregate?.count ?? 0);
       })
       .catch(() => {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       });
+    return () => {
+      cancelled = true;
+    };
   }, [props?.accountId, page, selectedEventName, selectedServiceName, selectedSeverity]);
 
   return (
@@ -245,11 +256,7 @@ const CloudAccountTools = (props: { accountId: string | undefined; serviceName: 
                       const inner = safeJSONParse(evidencesData[0].data);
                       if (inner) evidencesData = inner;
                     }
-                    return (
-                      <div>
-                        <pre>{JSON.stringify(evidencesData, null, 2)}</pre>
-                      </div>
-                    );
+                    return <CodeBlock code={JSON.stringify(evidencesData, null, 2)} language='json' />;
                   },
                   text: 'EventDetails',
                 },

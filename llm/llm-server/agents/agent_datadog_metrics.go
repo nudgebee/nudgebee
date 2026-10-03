@@ -267,7 +267,9 @@ func NewDatadogMetricsAgent(accountId string) DatadogMetricsAgent {
 
 func (d DatadogMetricsAgent) GetName() string { return DatadogMetricsAgentName }
 
-func (d DatadogMetricsAgent) GetNameAliases() []string { return []string{"Datadog Metrics"} }
+func (d DatadogMetricsAgent) GetNameAliases() []string {
+	return []string{"Datadog Metrics Reader", "Datadog Metrics"}
+}
 
 func (d DatadogMetricsAgent) GetDescription() string {
 	return `Uses Datadog to provide metrics based on the given question.`

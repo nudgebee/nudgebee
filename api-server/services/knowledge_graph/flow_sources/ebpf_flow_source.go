@@ -158,7 +158,7 @@ func (s *EbpfFlowSource) BuildFlowRelationships(
 			externalServiceNodesByAccount[account.CloudAccountID] = make(map[string]*core.DbNode)
 		}
 
-		accountEdges, accountNewNodes, accountExternalNodes, err := s.processK8sAccount(ctx, req, account, externalServiceNodesByAccount[account.CloudAccountID], ipResolver, nodeIPResolver)
+		accountEdges, accountNewNodes, accountExternalNodes, err := s.processK8sAccount(ctx, reqCtx, req, account, externalServiceNodesByAccount[account.CloudAccountID], ipResolver, nodeIPResolver)
 		if err != nil {
 			s.logger.Error("failed to process K8s account",
 				"cloud_account_id", account.CloudAccountID,
@@ -223,6 +223,7 @@ func (s *EbpfFlowSource) enrichNodeWithLanguage(node *core.DbNode, app *core.Ser
 // account because it queries kube_pod_info via the per-account Prometheus relay.
 func (s *EbpfFlowSource) processK8sAccount(
 	ctx context.Context,
+	reqCtx *security.RequestContext,
 	req *core.FlowSourceBuildRequest,
 	account core.K8sAccount,
 	globalExternalServiceNodes map[string]*core.DbNode,
@@ -286,7 +287,7 @@ func (s *EbpfFlowSource) processK8sAccount(
 	// branch consults it after ResolveIPToK8sService misses, so traffic to a
 	// raw pod IP (e.g. a headless-service backend like rabbitmq-0) becomes a
 	// CALLS edge to the owning Workload instead of an orphan ExternalService.
-	podIPResolver := NewPodIPResolver(K8sAccountID, req.ExistingNodes, s.logger)
+	podIPResolver := NewPodIPResolver(reqCtx, K8sAccountID, req.ExistingNodes, s.logger)
 
 	// Track unmatched services for analysis
 	unmatchedSources := make(map[string]int)
@@ -468,9 +469,11 @@ func (s *EbpfFlowSource) processK8sAccount(
 				//
 				// Caller cluster is unknown here (the bypass branch has no
 				// source-node cluster context) — pass "" and rely on the
-				// resolvers' global-unique fallback.
+				// resolvers' global-unique fallback. K8sAccountID still scopes
+				// that fallback to this account, which is the only guard left
+				// once the cluster is unknown.
 				upstreamNode, resolvedFromIP, resolvedReason, resolutionSource, resolvedOK =
-					resolveIPNamedExternalService(upstreamID.Name, "", ipResolver, podIPResolver, nodeIPResolver)
+					resolveIPNamedExternalService(upstreamID.Name, K8sAccountID, "", ipResolver, podIPResolver, nodeIPResolver)
 				switch {
 				case resolvedOK:
 					skipNodeSearch = true

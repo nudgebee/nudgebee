@@ -13,8 +13,9 @@ import { DropdownMenu } from '@ui/DropdownMenu';
 import { toast } from '@ui/Toast';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import MarkDowns from '@shared/viewers/MarkDowns';
-import { getNubiIconUrl } from '@hooks/useTenantBranding';
+import { getNubiIconUrl, getAssistantName } from '@hooks/useTenantBranding';
 import { ds } from '@utils/colors';
+import { unwrapTypedValueString } from '@utils/common';
 
 const ZERO_UUID = '00000000-0000-0000-0000-000000000000';
 
@@ -121,12 +122,12 @@ const NubiBeeIcon = () => (
   <Box
     component='img'
     src={getNubiIconUrl()}
-    alt='Nudgebee'
+    alt={getAssistantName()}
     sx={{ flexShrink: 0, width: ds.space.mul(0, 11), height: ds.space.mul(0, 11), display: 'block' }}
   />
 );
 
-const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, popup, onStop, onSubmitted }) => {
+const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, popup, onStop, onSubmitted, onOptimisticSubmit, onSubmitError }) => {
   const messageConfig = useMemo(() => {
     if (!followup?.response?.message_config) {
       return {};
@@ -144,7 +145,7 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
 
   const options = useMemo(() => messageConfig.followupOptions || [], [messageConfig]);
   const sheetType = resolveSheetType(messageConfig.followupType, options);
-  const question = messageConfig.question || '';
+  const question = unwrapTypedValueString(messageConfig.question || '');
   const isDanger = sheetType === 'yn' && isDangerQuestion(question);
 
   // For multi-paragraph or very long questions (e.g. clarification agent's "give me five
@@ -242,11 +243,16 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
       if (isSubmitting) {
         return;
       }
-      // Paint the user's selection instantly before the network call goes out — the rest
-      // (sheet hide, inline "You replied" pill) flows naturally through the polling cycle
-      // once the followup transitions to COMPLETED on the server.
+      // Paint the user's selection instantly, then hand the answer up so the parent can
+      // optimistically collapse this sheet into its inline "You replied" pill and surface
+      // the main-screen loader immediately — without waiting for the ~5s poll to flip the
+      // followup to COMPLETED on the server. `onOptimisticSubmit` fires *before* the POST
+      // resolves; if the POST later fails, `onSubmitError` (below) reverses it.
       setPendingAnswer(payloadQuery);
       setIsSubmitting(true);
+      if (onOptimisticSubmit) {
+        onOptimisticSubmit(payloadQuery);
+      }
       try {
         const agentId = followup?.response?.agent_id;
         const parentAgentId = followup?.response?.parent_agent_id;
@@ -280,13 +286,19 @@ const FollowupSheet = ({ followup, accountId, conversationId, selectedModel, pop
         // think nothing is happening. We let the parent unmount the sheet when the
         // followup transitions out of WAITING; that's the real "done" signal here.
       } catch (err) {
-        // Rollback so the user can retry from the sheet.
+        // Rollback so the user can retry: clear local paint AND tell the parent to reverse
+        // the optimistic collapse (bring the sheet back). By now the optimistic hide may
+        // have already unmounted this sheet, so the parent-side reversal is what the user
+        // actually sees — the local resets just keep a still-mounted sheet consistent.
         setPendingAnswer(null);
         setIsSubmitting(false);
+        if (onSubmitError) {
+          onSubmitError();
+        }
         throw err;
       }
     },
-    [accountId, conversationId, followup, isSubmitting, onSubmitted, selectedModel]
+    [accountId, conversationId, followup, isSubmitting, onSubmitted, onOptimisticSubmit, onSubmitError, selectedModel]
   );
 
   // Soft-skips the current question without answering it: writes a dismissal marker
@@ -1384,6 +1396,8 @@ FollowupSheet.propTypes = {
   popup: PropTypes.bool,
   onStop: PropTypes.func,
   onSubmitted: PropTypes.func,
+  onOptimisticSubmit: PropTypes.func,
+  onSubmitError: PropTypes.func,
 };
 
 export default FollowupSheet;

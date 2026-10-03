@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Box, Typography, Radio, RadioGroup, FormControlLabel, CircularProgress } from '@mui/material';
 import { Input } from '@ui/Input';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import { Select } from '@ui/Select';
 import { Modal } from '@ui/Modal';
 import { Button as DsButton } from '@ui/Button';
@@ -355,7 +356,7 @@ const EventClassifyModal: React.FC<EventClassifyModalProps> = ({ open, handleClo
             </Box>
             {correctedPriority && (
               <Typography variant='caption' sx={{ color: ds.gray[600], mt: ds.space[2], display: 'block' }}>
-                {`NudgeBee will keep this alert at ${correctedPriority} and won't re-score it automatically.`}
+                {`${getBrandTitle()} will keep this alert at ${correctedPriority} and won't re-score it automatically.`}
               </Typography>
             )}
           </BlockWithHeading>

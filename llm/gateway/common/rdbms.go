@@ -241,7 +241,7 @@ func MaskDBConnectionString(dbURL string) string {
 
 // newPostgresDatabaseManager opens the gateway Postgres (metastore, and the
 // metering sink when gateway_metering_sink=postgres).
-func newPostgresDatabaseManager() (*DatabaseManager, error) {
+func newPostgresDatabaseManager(ctx context.Context) (*DatabaseManager, error) {
 	dbURL := config.Config.GatewayDBURL
 	if !connectTimeoutRegex.MatchString(dbURL) {
 		if strings.Contains(dbURL, "?") {
@@ -261,10 +261,13 @@ func newPostgresDatabaseManager() (*DatabaseManager, error) {
 	db.SetMaxIdleConns(config.Config.GatewayDBMinConns)
 	db.SetConnMaxIdleTime(time.Duration(config.Config.GatewayDBIdleMinute) * time.Minute)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		slog.Error("dbms: error pinging postgres", "error", err)
+	err = RetryWithBackoff(ctx, "postgres-ping", 5, 500*time.Millisecond, 5*time.Second, func(ctx context.Context) error {
+		pingCtx, pingCancel := context.WithTimeout(ctx, 15*time.Second)
+		defer pingCancel()
+		return db.PingContext(pingCtx)
+	})
+	if err != nil {
+		slog.Error("dbms: error pinging postgres after retries", "error", err)
 		return nil, err
 	}
 	slog.Info("dbms: postgres ping successful")
@@ -328,43 +331,49 @@ func RegisterDatabaseManagerHook(name DatabaseManagerType, callback func() (*Dat
 }
 
 func GetDatabaseManager(name DatabaseManagerType) (*DatabaseManager, error) {
+	return GetDatabaseManagerWithContext(context.Background(), name)
+}
+
+func GetDatabaseManagerWithContext(ctx context.Context, name DatabaseManagerType) (*DatabaseManager, error) {
 	databaseManagerMutex.Lock()
-	defer databaseManagerMutex.Unlock()
 	if manager, ok := databaseManager[name]; ok {
+		databaseManagerMutex.Unlock()
 		return manager, nil
 	}
+	hook := databaseManagerHooks[name]
+	databaseManagerMutex.Unlock()
+
+	var manager *DatabaseManager
+	var err error
 
 	// A registered hook takes precedence (e.g. ClickHouse sink).
-	if hook := databaseManagerHooks[name]; hook != nil {
-		manager, err := hook()
-		if err != nil {
-			return nil, err
+	if hook != nil {
+		manager, err = hook()
+	} else {
+		switch name {
+		case Metastore:
+			manager, err = newPostgresDatabaseManager(ctx)
+		case MeteringSink:
+			if config.Config.MeteringSink == config.SinkClickhouse {
+				return nil, fmt.Errorf("dbms: clickhouse metering sink requires a registered hook (RegisterDatabaseManagerHook)")
+			}
+			manager, err = newPostgresDatabaseManager(ctx)
+		default:
+			return nil, fmt.Errorf("dbms: database manager not found - %v", name)
 		}
-		databaseManager[name] = manager
-		return manager, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 
-	switch name {
-	case Metastore:
-		manager, err := newPostgresDatabaseManager()
-		if err != nil {
-			return nil, err
-		}
-		databaseManager[name] = manager
-		return manager, nil
-	case MeteringSink:
-		if config.Config.MeteringSink == config.SinkClickhouse {
-			return nil, fmt.Errorf("dbms: clickhouse metering sink requires a registered hook (RegisterDatabaseManagerHook)")
-		}
-		manager, err := newPostgresDatabaseManager()
-		if err != nil {
-			return nil, err
-		}
-		databaseManager[name] = manager
-		return manager, nil
-	default:
-		return nil, fmt.Errorf("dbms: database manager not found - %v", name)
+	databaseManagerMutex.Lock()
+	defer databaseManagerMutex.Unlock()
+	if existing, ok := databaseManager[name]; ok {
+		_ = manager.Close()
+		return existing, nil
 	}
+	databaseManager[name] = manager
+	return manager, nil
 }
 
 type DatabaseHealth struct {

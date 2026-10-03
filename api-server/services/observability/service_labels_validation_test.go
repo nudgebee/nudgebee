@@ -192,6 +192,12 @@ type fakeTraceSource struct {
 	lastValuesReq TracesV3LabelValuesRequest
 }
 
+// completeFakeTraceSource is a fakeTraceSource that declares its value enumeration complete, so
+// validateReferencedTraceLabelValues will actually run against it.
+type completeFakeTraceSource struct{ fakeTraceSource }
+
+func (f *completeFakeTraceSource) TraceLabelValuesAreComplete() {}
+
 func (f *fakeTraceSource) QueryTraces(*security.RequestContext, TracesV3Request) ([]common.OpenTelemetryTrace, error) {
 	return nil, nil
 }

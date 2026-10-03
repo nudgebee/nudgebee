@@ -355,6 +355,49 @@ func TestMapGroupingRowToTraceGroupingValues_DurationNS(t *testing.T) {
 	})
 }
 
+// TestMapGroupingRowToTraceGroupingValues_MapsEveryGroupedDimension is the regression
+// guard for the Workload column coming back blank on every ClickHouse grouped row --
+// traces_grouping_v3 both SELECTed and GROUPed BY workload_name, but the mapper never
+// read it off the row, so the panel and the Trace Group tab showed an empty Workload
+// next to a populated Namespace. Same class as the duration_ns bug above: a dimension
+// the query asks for that the mapper drops. Asserting the whole row round-trips is what
+// makes the next omission fail here instead of in the UI.
+func TestMapGroupingRowToTraceGroupingValues_MapsEveryGroupedDimension(t *testing.T) {
+	// Shaped like a real dev row: an external call out of cloud-collector-server.
+	row := map[string]interface{}{
+		"workload_name":                  "cloud-collector-server",
+		"workload_namespace":             "nudgebee",
+		"destination_workload_name":      "sqs.us-east-1.amazonaws.com",
+		"destination_workload_namespace": "external",
+		"resource":                       "/",
+		"span_name":                      "POST",
+		"http_status_code":               "200",
+		"count":                          "27",
+		"error_count":                    "1",
+		"avg_duration_ns":                "430459500",
+		"p99_latency":                    float64(20044553849),
+		"p95_latency":                    float64(19000000000),
+		"max_latency":                    "21000000000",
+	}
+
+	trace, err := MapGroupingRowToTraceGroupingValues(row)
+	require.NoError(t, err)
+
+	assert.Equal(t, "cloud-collector-server", trace.WorkloadName)
+	assert.Equal(t, "nudgebee", trace.WorkloadNamespace)
+	assert.Equal(t, "sqs.us-east-1.amazonaws.com", trace.DestinationWorkloadName)
+	assert.Equal(t, "external", trace.DestinationWorkloadNamespace)
+	assert.Equal(t, "/", trace.Resource)
+	assert.Equal(t, "POST", trace.SpanName)
+	assert.Equal(t, "200", trace.HTTPStatusCode)
+	assert.Equal(t, 27, trace.Count)
+	assert.Equal(t, 1, trace.ErrorCount)
+	assert.Equal(t, int64(430459500), trace.DurationNS)
+	assert.Equal(t, int64(20044553849), trace.P99Latency)
+	assert.Equal(t, int64(19000000000), trace.P95Latency)
+	assert.Equal(t, int64(21000000000), trace.MaxLatency)
+}
+
 // TestRedirectDurationNsSortToAvg is the regression guard for sorting the grouped-traces
 // "Avg Duration" column silently sorting by max instead: the frontend/API sort key stays
 // "duration_ns" (matching every other trace source), but on ClickHouse that column is the raw,

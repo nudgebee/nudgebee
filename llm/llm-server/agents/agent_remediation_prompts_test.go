@@ -201,7 +201,7 @@ func TestRemediationToolsetInvariance(t *testing.T) {
 	assert.Equal(t, core.AgentPlannerTypeReAct, agent.GetPlannerType())
 	assert.True(t, agent.IsWatchCapable())
 	assert.Equal(t, core.ModelTierReasoning, agent.GetModelCategory())
-	assert.ElementsMatch(t, []string{"Remediation", "AutoFix", "Fixer"}, agent.GetNameAliases())
+	assert.ElementsMatch(t, []string{"Remediation Planner & Executor", "Remediation", "AutoFix", "Fixer"}, agent.GetNameAliases())
 
 	// The agent-as-tool registration other agents delegate through.
 	agentTool, found := toolcore.GetNBTool("ACCOUNT_PLACEHOLDER", RemediationAgentName)

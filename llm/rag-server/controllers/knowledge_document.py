@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from rag.core.documents.collection import SOURCE_ID_KEYS
 from rag.core.llm.rag import _filter_collections_for_module_and_account, _is_kb_backed_collection
 from rag.core.utils.db_query import get_live_kb_collection_names, get_tenant_id_for_account
 from rag.qdrant.client import get_qdrant_client
@@ -43,9 +44,13 @@ def discovery_document(text: str, metadata: dict, limit: int) -> tuple[str, dict
         # the loader can explicitly reject, instead of failing the whole search.
         version, size = "", MAX_DOCUMENT_BYTES + 1
     excerpt = text[:limit].encode("utf-8")[:limit].decode("utf-8", errors="ignore")
+    # The scraper's own document id (SOURCE_ID_KEYS) is kept: llm-server keys a
+    # document's Fact/SOP mark on it, and the Documents list reads the same id
+    # from the point. Dropping it here left every hit keyed on its URL instead,
+    # so no mark ever matched in this search mode.
     safe: dict[str, Any] = {
         key: str(metadata[key])[:1024]
-        for key in ("title", "url", "source", "collection", "retrieval_id", "kb_id", "kb_name")
+        for key in ("title", "url", "source", "collection", "retrieval_id", "kb_id", "kb_name", *SOURCE_ID_KEYS)
         if metadata.get(key) is not None
     }
     safe.update(content_sha256=version, content_bytes=size, completeness="indexed_document")

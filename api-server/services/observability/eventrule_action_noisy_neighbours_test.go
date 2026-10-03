@@ -116,3 +116,134 @@ func TestNoisyNeighboursEmptyNodeRendersAsEmptyList(t *testing.T) {
 	assert.Empty(t, payload.Data.Neighbours)
 	assert.Contains(t, envelope.Data, `"neighbours":[]`)
 }
+
+// The alert-sourced events are the ones that actually suggest contention, and
+// they were all excluded — so the question "is a neighbour to blame?" was never
+// asked for a throttled container or a pod that never became ready.
+func TestNoisyNeighboursRunsForContentionAlerts(t *testing.T) {
+	ctxFor := func(aggKey string) playbooks.PlaybookActionContext {
+		return playbooks.NewPlaybookActionContext("t", "a", slog.Default(), playbooks.PlaybookEvent{
+			AggregationKey:   aggKey,
+			SubjectType:      "pod",
+			SubjectName:      "p1",
+			SubjectNamespace: "ns",
+			SubjectNode:      "node-1",
+		})
+	}
+	a := &noisyNeighboursAction{}
+
+	for _, key := range []string{
+		"CPUThrottlingHigh",
+		"KubePodNotReady",
+		"KubeContainerWaiting",
+		"KubePodCrashLooping",
+		"Kubernetes Warning Event",
+	} {
+		assert.True(t, a.CanAutoExecute(ctxFor(key)), "expected %s to enrich with neighbours", key)
+	}
+
+	// Still scoped: unrelated events do not drag the node's whole neighbourhood in.
+	assert.False(t, a.CanAutoExecute(ctxFor("job_failure")))
+	assert.False(t, a.CanAutoExecute(ctxFor("image_pull_backoff_reporter")))
+}
+
+// A node pinned on CPU starves everything on it while memory looks fine, so the
+// payload has to carry CPU for a reader to reach the right answer.
+func TestNoisyNeighboursPayloadCarriesCPUWhenMeasured(t *testing.T) {
+	resp, err := noisyNeighboursResponse("p1", "ns", nil, &esNoisyNeighbourData{
+		NodeName:        "node-1",
+		CPUMeasured:     true,
+		NodeCPUUsed:     5.994,
+		NodeCPUCapacity: 6,
+		CPUNeighbours: []map[string]any{
+			{"pod_name": "batch-job", "namespace": "other-team", "cpu_used": 5.2},
+		},
+	})
+	require.NoError(t, err)
+
+	data := payloadData(t, resp)
+	assert.Equal(t, 5.994, data["cpu_used"])
+	assert.Equal(t, float64(6), data["cpu_allocatable"])
+	neighbours, ok := data["cpu_neighbours"].([]any)
+	require.True(t, ok, "cpu_neighbours missing from payload")
+	require.Len(t, neighbours, 1)
+	first, ok := neighbours[0].(map[string]any)
+	require.True(t, ok)
+	// The whole point: the culprit's namespace is named, not just the pod.
+	assert.Equal(t, "other-team", first["namespace"])
+}
+
+// Elasticsearch clusters cannot report CPU here. Reporting zero would read as
+// "nothing is using CPU", which is a stronger and wronger claim than silence.
+func TestNoisyNeighboursOmitsCPUWhenNotMeasured(t *testing.T) {
+	resp, err := noisyNeighboursResponse("p1", "ns", nil, &esNoisyNeighbourData{
+		NodeName:   "node-1",
+		Neighbours: []map[string]any{},
+	})
+	require.NoError(t, err)
+
+	data := payloadData(t, resp)
+	assert.NotContains(t, data, "cpu_used")
+	assert.NotContains(t, data, "cpu_allocatable")
+	assert.NotContains(t, data, "cpu_neighbours")
+	// The memory half is unchanged for the existing card.
+	assert.Contains(t, data, "memory_used")
+}
+
+// payloadData unwraps the response envelope, whose `data` is itself a JSON
+// string, and returns the card's data object.
+func payloadData(t *testing.T, resp playbooks.PlaybookActionResponse) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(resp)
+	require.NoError(t, err)
+	var envelope struct {
+		Data string `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &envelope))
+	var payload struct {
+		Data map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(envelope.Data), &payload))
+	return payload.Data
+}
+
+// Node resolution goes to the pod's inventory row, not to the event's fields.
+// KubePodCrashLooping carries the KSM scrape address in subject_node
+// ("10.64.21.224:8080") and produced 0 cards from 124 events on test because
+// every query filtered on a node by that name and matched nothing.
+//
+// There is no metastore in a unit test, so the lookup returns "" and execution
+// reaches the fallback — which is what makes the ordering observable here.
+func TestNoisyNeighboursNodeNameComesFromThePodRow(t *testing.T) {
+	podEvent := func(subjectNode string, labels map[string]string) playbooks.PlaybookActionContext {
+		return playbooks.NewPlaybookActionContext("t", "a", slog.Default(), playbooks.PlaybookEvent{
+			AggregationKey:   "KubePodCrashLooping",
+			SubjectType:      "pod",
+			SubjectName:      "payments-79b78b4c7b-2rr7d",
+			SubjectNamespace: "shop",
+			SubjectNode:      subjectNode,
+			Labels:           labels,
+		})
+	}
+
+	// An address in any event field is never used as a node name: not from
+	// subject_node, and not from the `instance` label that put it there.
+	assert.Empty(t, noisyNeighboursNodeName(podEvent("", map[string]string{"instance": "10.64.21.224:8080"})),
+		"the instance label is a scrape address, not a node")
+	assert.Empty(t, noisyNeighboursNodeName(podEvent("", map[string]string{"instance": "10.64.21.224"})),
+		"a port-less address is still an address — no node is named by IP")
+
+	// obj.spec.nodeName from an agent-sourced event is a real node name, and
+	// remains usable when the inventory has never seen the pod.
+	assert.Equal(t, "gke-example-cluster-spot-pool-02132c6e-z2nc",
+		noisyNeighboursNodeName(podEvent("gke-example-cluster-spot-pool-02132c6e-z2nc", nil)),
+		"a real node name on the event is the fallback when the pod row is missing")
+
+	// A node-subject event has no pod to look up and names the node itself.
+	nodeEvent := playbooks.NewPlaybookActionContext("t", "a", slog.Default(), playbooks.PlaybookEvent{
+		AggregationKey: "node_not_ready",
+		SubjectType:    "node",
+		SubjectName:    "gke-example-cluster-default-pool-597d4e75-23sr",
+	})
+	assert.Equal(t, "gke-example-cluster-default-pool-597d4e75-23sr", noisyNeighboursNodeName(nodeEvent))
+}

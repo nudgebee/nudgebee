@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Modal } from '@ui/Modal';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { Typography, Box } from '@mui/material';
 import { Input } from '@ui/Input';
 import { Checkbox } from '@ui/Checkbox';
@@ -19,6 +20,7 @@ const PAGERDUTY_DEFAULT_URL = 'api.pagerduty.com';
 const TOKEN_PLACEHOLDER = '••••••••';
 
 const PagerDutyAccountModal = ({ openModal, handleClose, editConfig = null }) => {
+  const { title: baseTitle } = useBrandingConfig();
   const isEdit = !!editConfig;
   const [pagerDutyName, setPagerDutyName] = useState('');
   const [pagerDutyEmail, setPagerDutyEmail] = useState('');
@@ -302,7 +304,7 @@ const PagerDutyAccountModal = ({ openModal, handleClose, editConfig = null }) =>
               onChange={(next) => setRcaWritebackEnabled(next)}
               disabled={isSubmitting}
               label='Post RCA analysis to PagerDuty incidents'
-              description='When enabled, NudgeBee posts its root-cause analysis as a note on the originating PagerDuty incident (HIGH severity).'
+              description={`When enabled, ${baseTitle} posts its root-cause analysis as a note on the originating PagerDuty incident (HIGH severity).`}
             />
           </Box>
         </Box>

@@ -50,6 +50,7 @@ import {
   thresholdTone,
 } from './panelThresholds';
 import { referencedVariables, type VariableValues } from './templating';
+import { fillBrandTokens, useBrandingConfig } from '@hooks/useTenantBranding';
 
 interface Props {
   open: boolean;
@@ -88,7 +89,9 @@ const DATASOURCES: { label: string; value: PanelDatasource }[] = [
   { label: 'RabbitMQ', value: 'rabbitmq' },
   { label: 'PostgreSQL', value: 'postgresql' },
   { label: 'kubectl', value: 'kubectl' },
-  { label: 'Nudgebee (events)', value: 'nudgebee' },
+  // `{brand}` is filled at render (see fillBrandTokens) — DATASOURCES is a
+  // module-level constant, so a literal here would latch the house brand.
+  { label: '{brand} (events)', value: 'nudgebee' },
 ];
 
 /** What each command datasource accepts. */
@@ -254,9 +257,16 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
    * one names the grant to ask for. Nothing is gated for a tenant admin or any
    * account user — see panelAccess.ts.
    */
+  // Subscribed for the re-render, not the value: fillBrandTokens reads the
+  // branding cache imperatively, and this memo is otherwise dep-free — it would
+  // bake in whatever the brand was on first paint and never recompute, which is
+  // the latch this placeholder work exists to remove. `title` in the deps is
+  // what makes the option list repaint once /api/public/app_config lands.
+  const { title: brandTitle } = useBrandingConfig();
   const datasourceOptions = useMemo(
     () =>
-      DATASOURCES.map((option) => {
+      DATASOURCES.map((template) => {
+        const option = { ...template, label: fillBrandTokens(template.label) };
         const missing = missingDatasourceGrant(option.value);
         if (!missing) return option;
         return {
@@ -275,7 +285,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
           ),
         };
       }),
-    []
+    [brandTitle]
   );
 
   /**

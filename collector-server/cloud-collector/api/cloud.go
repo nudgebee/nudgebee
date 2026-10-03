@@ -101,6 +101,25 @@ type executeCommand struct {
 	Command   string `json:"command" validate:"required"`
 }
 
+// cliCredentialsRequest asks for credentials that authenticate a caller's own
+// process as the account. DurationSeconds is what the caller needs them for;
+// the provider clamps it to what its credential type allows.
+type cliCredentialsRequest struct {
+	AccountId string `json:"account_id" validate:"required"`
+	// Bounded here as well as clamped by the provider: an unchecked value
+	// large enough to overflow time.Duration comes back negative, which reads
+	// as "unset" further down.
+	DurationSeconds int `json:"duration_seconds" validate:"min=0,max=86400"`
+}
+
+// cliCredentialsResponse carries the environment and when it stops working.
+// ExpiresAt is empty for credentials that cannot expire, which the caller is
+// expected to surface rather than hide.
+type cliCredentialsResponse struct {
+	Env       map[string]string `json:"env"`
+	ExpiresAt string            `json:"expires_at,omitempty"`
+}
+
 // maxBatchCommands caps the number of commands in a single execute_cli_batch call.
 // Recommendation resolution scripts rarely exceed 5 steps; 10 covers the most complex cases.
 const maxBatchCommands = 10
@@ -799,6 +818,44 @@ func handleCloudProviderApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.
 			return
 		}
 		c.JSON(200, buildApiResponse(resp))
+	})
+
+	// cli_credentials hands the caller an environment instead of running the
+	// command here. It exists for callers whose work is not a single CLI
+	// process — a workflow script running terraform, say — where relaying each
+	// command is not possible. Credential resolution still happens in this
+	// service; only the result crosses the wire, and it is never logged.
+	groupV2.POST("/cli_credentials", func(c *gin.Context) {
+		request := cliCredentialsRequest{}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(400, buildApiResponse(nil, err))
+			return
+		}
+		if err := common.ValidateStruct(request); err != nil {
+			slog.Error("error validating cli_credentials", "error", err)
+			c.JSON(400, buildApiResponse(nil, err))
+			return
+		}
+
+		ctx, cancel, err := buildContextFromGin(c, logger, tracer, meter, request.AccountId)
+		if err != nil {
+			c.JSON(400, buildApiResponse(nil, err))
+			return
+		}
+		if cancel != nil {
+			defer cancel()
+		}
+
+		credentials, err := account.CliCredentials(ctx, request.AccountId, time.Duration(request.DurationSeconds)*time.Second)
+		if err != nil {
+			c.JSON(500, buildApiResponse(nil, err))
+			return
+		}
+		response := cliCredentialsResponse{Env: credentials.Env}
+		if credentials.ExpiresAt != nil {
+			response.ExpiresAt = credentials.ExpiresAt.UTC().Format(time.RFC3339)
+		}
+		c.JSON(200, buildApiResponse(response))
 	})
 
 	groupV2.POST("/execute_cli_batch", func(c *gin.Context) {

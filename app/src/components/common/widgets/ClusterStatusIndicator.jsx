@@ -54,12 +54,32 @@ export const checkConnections = (clusterData = {}) => {
     return false;
   }
 
-  const requiredProps = ['logsConnection', 'nodeAgentConnection', 'prometheusConnection', 'relayConnection'];
+  // Signals the agent may not be the one serving. When a non-agent integration is the
+  // account's provider for one of these, the agent's flag describes a backend it never
+  // touches — demanding it kept a cluster amber forever on healthy SaaS logs or metrics.
+  // A healthy integration satisfies the check instead, exactly as opencostServerSide does
+  // for OpenCost below. `integration_id` present means the provider-status check probed a
+  // real backend; see api-server observability/provider_status.go.
+  const providerStatus = connectionStatus.providerStatus;
+  const servedByHealthyIntegration = (signal) => {
+    const entry = providerStatus?.[signal];
+    return !!entry?.integration_id && !!entry.connected;
+  };
 
-  for (const prop of requiredProps) {
+  // Relay and the node agent are the agent's own business; nothing can stand in for them.
+  const agentOwnedProps = ['nodeAgentConnection', 'relayConnection'];
+  for (const prop of agentOwnedProps) {
     if (!connectionStatus[prop]) {
       return false;
     }
+  }
+
+  if (!connectionStatus.logsConnection && !servedByHealthyIntegration('logs')) {
+    return false;
+  }
+
+  if (!connectionStatus.prometheusConnection && !servedByHealthyIntegration('metrics')) {
+    return false;
   }
 
   // OpenCost is healthy when cost is collected either in-cluster (legacy opencostConnection)

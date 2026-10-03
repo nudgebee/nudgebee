@@ -19,6 +19,17 @@ def test_discovery_bounds_body_and_metadata():
     assert metadata["completeness"] == "indexed_document"
 
 
+def test_discovery_keeps_the_scrapers_document_id():
+    # llm-server keys a document's Fact/SOP mark on "<collection>|<source id>";
+    # without the id every hit falls back to its URL and no mark matches.
+    _, confluence = kd.discovery_document(
+        "steps", {"page_id": 114458625, "url": "https://wiki/p", "collection": "c"}, 4096
+    )
+    assert confluence["page_id"] == "114458625"
+    _, servicenow = kd.discovery_document("steps", {"sys_id": "abc123", "collection": "c"}, 4096)
+    assert servicenow["sys_id"] == "abc123"
+
+
 @pytest.fixture
 def endpoint(monkeypatch):
     state = {"body": "reference\n" * 200000 + "FINAL-CANARY", "live": {"kb_123"}, "account": "account"}

@@ -69,6 +69,11 @@ type FilterEvent struct {
 	// match across all registered Filters).
 	Hits []Hit `json:"hits"`
 
+	// HitsTruncated is set when HitCount exceeded maxDetailValues and Hits
+	// carries only the first maxDetailValues entries. HitCount remains the
+	// true total. Mirrors PIIScrubEvent.ValuesTruncated.
+	HitsTruncated bool `json:"hits_truncated,omitempty"`
+
 	// Redactions is the per-action slice — "what we did about each hit".
 	// Populated only when Mode is "redact" or future "tokenize"; nil under
 	// audit/enforce. Same length as Hits when populated; entries align by
@@ -99,16 +104,28 @@ type FilterEvent struct {
 // header. Centralizes the derive-the-aggregates logic so the wrapper and
 // any future caller emit identically shaped events.
 func newFilterEvent(auditID string, mode Mode, payloadBytes int, r Result, agentName string) FilterEvent {
+	// Cap the per-hit array for the same reason PIIScrubEvent.Values is
+	// capped: this metadata is persisted AND returned on every conversation
+	// message-list read, and each hit now carries a 64-char shape on top of
+	// the existing fields. HitCount / RuleIDs / HitSources below are computed
+	// from the FULL result, so the cap can never make the event understate.
+	hits := r.Hits
+	truncated := false
+	if len(hits) > maxDetailValues {
+		hits = hits[:maxDetailValues]
+		truncated = true
+	}
 	return FilterEvent{
-		AuditID:      auditID,
-		Detector:     DetectorSecrets,
-		Mode:         mode,
-		PayloadBytes: payloadBytes,
-		Hits:         r.Hits,
-		HitCount:     len(r.Hits),
-		RuleIDs:      r.RuleIDs(),
-		HitSources:   distinctSources(r.Hits),
-		AgentName:    agentName,
+		AuditID:       auditID,
+		Detector:      DetectorSecrets,
+		Mode:          mode,
+		PayloadBytes:  payloadBytes,
+		Hits:          hits,
+		HitsTruncated: truncated,
+		HitCount:      len(r.Hits),
+		RuleIDs:       r.RuleIDs(),
+		HitSources:    distinctSources(r.Hits),
+		AgentName:     agentName,
 	}
 }
 

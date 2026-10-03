@@ -1,6 +1,8 @@
-import { Grid, CircularProgress, Typography, RadioGroup, FormControlLabel, Radio, Alert, Box, Collapse, IconButton } from '@mui/material';
-import { HelpOutline, ExpandMore, ExpandLess, InfoOutlined } from '@mui/icons-material';
+import { Grid, CircularProgress, Typography, RadioGroup, FormControlLabel, Radio, Alert, Box, IconButton } from '@mui/material';
+import { HelpOutline, InfoOutlined } from '@mui/icons-material';
 import Tooltip from '@ui/Tooltip';
+import { CollapsableCard } from '@ui/CollapsableCard';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import Tabs from '@shared/navigation/Tabs';
 import { ds } from 'src/utils/colors';
 import { Switch } from '@ui/Switch';
@@ -14,7 +16,7 @@ import { Button } from '@ui/Button';
 import { snackbar } from '@shared/snackbarService';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import ValidationResultBanner from '@components/accounts/ValidationResultBanner';
-import { ACCOUNT_ENV_PROD, ACCOUNT_ENV_NON_PROD, DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
+import { ACCOUNT_ENV_PROD, ACCOUNT_ENV_NON_PROD, DEFAULT_ACCOUNT_ENV, accountEnvTooltip } from '@shared/forms/AccountEnvToggle';
 
 const CF_INSTRUCTIONS = `### Step 1. Give Account Name
   ### Step 2. Click on Connect via AWS Console
@@ -25,8 +27,8 @@ const CF_INSTRUCTIONS = `### Step 1. Give Account Name
      - Once the CloudFormation stack is created, the account will be detected automatically.
      - No need to copy any values.`;
 
-const ROLE_INSTRUCTIONS = `### IAM Role ARN
-  Use this flow if you already have a cross-account IAM role that Nudgebee can assume.
+const roleInstructions = () => `### IAM Role ARN
+  Use this flow if you already have a cross-account IAM role that ${getBrandTitle()} can assume.
   The role must allow \`sts:AssumeRole\`, \`cur:DescribeReportDefinitions\`, and \`s3:GetBucketLocation\` / \`s3:ListBucket\` on the CUR bucket.
   Click **Validate** before connecting — we will probe STS, Cost & Usage Report discovery, and CUR S3 access upfront.
   Only the STS check is required: without a usable CUR the account still connects, but cost data stays empty until you attach one via **Edit Billing Config**.`;
@@ -73,7 +75,6 @@ const parseRegions = (value) =>
 
 const AddAwsAccountModal = ({ open, onClose }) => {
   const [activeTab, setActiveTab] = useState(TAB_CLOUDFORMATION);
-  const [guideExpanded, setGuideExpanded] = useState(false);
   const [accountNameValue, setAccountNameValue] = useState('');
   const [accountEnvValue, setAccountEnvValue] = useState(DEFAULT_ACCOUNT_ENV);
   const [validationError, setValidationError] = useState({});
@@ -119,7 +120,6 @@ const AddAwsAccountModal = ({ open, onClose }) => {
     setIsValidating(false);
     setValidationResult(null);
     setActiveTab(TAB_CLOUDFORMATION);
-    setGuideExpanded(false);
     stopPolling();
   }, [stopPolling]);
 
@@ -363,7 +363,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
       return CF_INSTRUCTIONS;
     }
     if (activeTab === TAB_ROLE_ARN) {
-      return ROLE_INSTRUCTIONS;
+      return roleInstructions();
     }
     return KEYS_INSTRUCTIONS;
   };
@@ -536,54 +536,29 @@ const AddAwsAccountModal = ({ open, onClose }) => {
       </Box>
 
       {/* Collapsible Setup Guide — mirrors AddAzureAccountModal / AddGcpAccountModal */}
-      <Box sx={{ mb: ds.space[2] }}>
-        <Box
-          component='button'
-          type='button'
-          aria-expanded={guideExpanded}
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            cursor: 'pointer',
-            gap: ds.space[1],
-            py: ds.space[2],
-            px: 0,
-            background: 'none',
-            border: 'none',
-            font: 'inherit',
-            color: 'inherit',
-            textAlign: 'left',
-          }}
-          onClick={() => setGuideExpanded(!guideExpanded)}
-        >
-          <HelpOutline sx={{ fontSize: 18, color: ds.gray[600] }} />
-          <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], fontWeight: ds.weight.medium }}>
-            Setup Guide — How to connect your AWS account
-          </Typography>
-          {guideExpanded ? <ExpandLess sx={{ fontSize: 18, color: ds.gray[600] }} /> : <ExpandMore sx={{ fontSize: 18, color: ds.gray[600] }} />}
-        </Box>
-        <Collapse in={guideExpanded}>
-          <Box
-            sx={{
-              mt: ds.space[2],
-              p: ds.space[4],
-              bgcolor: ds.background[200],
-              borderRadius: ds.radius.lg,
-              border: `1px solid ${ds.gray[300]}`,
-            }}
-          >
-            <MarkDowns
-              data={getInstructionsData()}
-              sx={{
-                maxHeight: ds.space.mul(1, 75),
-                overflowY: 'auto',
-                padding: '0px',
-                borderRadius: '0px',
-              }}
-            />
+      <CollapsableCard
+        defaultOpen={false}
+        elevation='flat'
+        sx={{ mb: ds.space[2] }}
+        header={
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+            <HelpOutline sx={{ fontSize: 18, color: ds.gray[600] }} />
+            <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], fontWeight: ds.weight.medium }}>
+              Setup Guide — How to connect your AWS account
+            </Typography>
           </Box>
-        </Collapse>
-      </Box>
+        }
+      >
+        <MarkDowns
+          data={getInstructionsData()}
+          sx={{
+            maxHeight: ds.space.mul(1, 75),
+            overflowY: 'auto',
+            padding: '0px',
+            borderRadius: '0px',
+          }}
+        />
+      </CollapsableCard>
 
       <Grid container>
         <Box sx={{ mt: 2, width: '100%' }}>
@@ -624,10 +599,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
               <Box>
                 <Box sx={{ display: 'flex', alignItems: 'center' }}>
                   <Typography variant='subtitle2'>Account Type</Typography>
-                  <Tooltip
-                    title='Determines how NudgeBee prioritises alerts, recommendations and incidents for this account. Production accounts are scored at full weight. You can change this anytime later.'
-                    placement='right'
-                  >
+                  <Tooltip title={accountEnvTooltip()} placement='right'>
                     <IconButton id='aws-account-env-info-btn' size='small' sx={{ p: 0.5 }}>
                       <InfoOutlined fontSize='small' />
                     </IconButton>
@@ -668,7 +640,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
                   <Box sx={{ display: 'flex', alignItems: 'center' }}>
                     <Typography variant='subtitle2'>SSM Parameter Store access</Typography>
                     <Tooltip
-                      title='Allows Nudgebee to read parameter values. Only enable if your parameters do not contain secrets.'
+                      title={`Allows ${getBrandTitle()} to read parameter values. Only enable if your parameters do not contain secrets.`}
                       placement='right'
                     >
                       <IconButton id='aws-ssm-info-btn' size='small' sx={{ p: 0.5 }}>
@@ -677,7 +649,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
                     </Tooltip>
                   </Box>
                   <Typography sx={OPTION_DESC_SX}>
-                    Allows Nudgebee to read parameter values. Only enable if your parameters do not contain secrets.
+                    {`Allows ${getBrandTitle()} to read parameter values. Only enable if your parameters do not contain secrets.`}
                   </Typography>
                 </Box>
                 <Switch

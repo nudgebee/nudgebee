@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const expectedBundledCount = 22
+const expectedBundledCount = 23
 
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
@@ -54,7 +54,7 @@ func TestBundledSourceFetch(t *testing.T) {
 	}
 
 	// Spot-check a couple of known slugs from each seed migration.
-	for _, want := range []string{"rollout_restart_deployment", "investigate_rds_performance", "restart_cloud_sql_instance"} {
+	for _, want := range []string{"rollout_restart_deployment", "investigate_rds_performance", "restart_cloud_sql_instance", "application_diagnostic_check"} {
 		if !seen[want] {
 			t.Errorf("expected bundled template %q to be present", want)
 		}

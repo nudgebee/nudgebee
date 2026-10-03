@@ -35,7 +35,18 @@ jest.mock('@api1/user', () => ({
   __esModule: true,
   default: {
     listUserTenants: jest.fn().mockResolvedValue({ data: [{ name: 'TestTenant' }] }),
+    // Read during useState initialisation by CustomTable, which the Features tab renders.
+    getUserPreferencesTablePageSize: jest.fn(() => 10),
   },
+}));
+
+jest.mock('@hooks/useTenantBranding', () => ({
+  useBrandingConfig: () => ({ title: 'Nudgebee', assistantName: 'nubi' }),
+  toAssistantLabel: (name) => (name ? name.charAt(0).toUpperCase() + name.slice(1) : name),
+  fillBrandTokens: (text) =>
+    String(text)
+      .replace(/\{Assistant\}/g, 'Nubi')
+      .replace(/\{brand\}/g, 'Nudgebee'),
 }));
 
 jest.mock('@ui/Toast', () => ({
@@ -54,21 +65,31 @@ jest.mock('src/utils/common', () => ({
   }),
 }));
 
-jest.mock('@ui/Modal', () => ({
-  __esModule: true,
-  Modal: ({ open, children, title }) =>
-    open ? (
-      <div data-testid='modal'>
-        <h2>{title}</h2>
-        {children}
-      </div>
-    ) : null,
-}));
-
+// Props-driven stub, keyed on idPrefix: the tab renders this component twice
+// (logs and traces), so a single fixed data-testid would be ambiguous. It renders
+// one input per supplied field — flat, no disclosure, which is the real component's own
+// test's job — so the hydrate and save-payload tests can drive the trace mapper without
+// mounting the real grid. @shared/settings/labelMapperFields is deliberately NOT mocked,
+// so the payload assertions run the real serialiser.
 jest.mock('@shared/settings/TenantAccountCommonSettings', () => ({
   __esModule: true,
-  default: ({ logSettings: _logSettings, setLogSettings: _setLogSettings }) => (
-    <div data-testid='tenant-account-common-settings'>Log Label Mapper</div>
+  default: ({ idPrefix = 'log-label', title, fields = [], advancedFields = [], settings = {}, setSettings, disabled }) => (
+    <div data-testid={`common-settings-${idPrefix}`}>
+      <span>{title}</span>
+      {[...fields, ...advancedFields].map(({ field, label }) => (
+        <input
+          key={field}
+          aria-label={label}
+          data-testid={`${idPrefix}-${field}`}
+          value={settings[field] || ''}
+          disabled={disabled}
+          onChange={(e) => {
+            const next = e.target.value;
+            setSettings((prev) => ({ ...prev, [field]: next }));
+          }}
+        />
+      ))}
+    </div>
   ),
 }));
 
@@ -128,121 +149,79 @@ global.fetch = jest.fn().mockResolvedValue({
   json: jest.fn().mockResolvedValue({}),
 });
 
+// TenantSettings is a plain Admin page-tab body now (relocated from an
+// avatar-menu modal — see docs/ia-consolidation-plan.md): no open/onClose
+// props, no Modal wrapper, no Cancel/Close button to dismiss.
 describe('TenantSettings', () => {
-  const defaultProps = {
-    open: true,
-    title: 'Tenant Settings',
-    onClose: jest.fn(),
-  };
-
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('renders modal when open is true', async () => {
+  // Tabbed: General / Label Mapping / Features, with Logs / Traces / Webhook
+  // alerts nested under Label Mapping. Anything below the General tab has to
+  // be navigated to before it exists in the DOM.
+  const openTab = async (...tabNames) => {
     await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
+      render(<TenantSettings />);
     });
-    expect(screen.getByTestId('modal')).toBeInTheDocument();
-  });
+    for (const name of tabNames) {
+      fireEvent.click(screen.getByRole('tab', { name }));
+    }
+  };
 
-  it('does not render modal when open is false', () => {
-    render(<TenantSettings {...defaultProps} open={false} />);
-    expect(screen.queryByTestId('modal')).not.toBeInTheDocument();
-  });
-
-  it('renders the modal title', async () => {
+  it('renders the General tab by default', async () => {
     await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
+      render(<TenantSettings />);
     });
-    expect(screen.getByText('Tenant Settings')).toBeInTheDocument();
+    expect(screen.getByTestId('field-Tenant Name')).toBeInTheDocument();
   });
 
   it('renders Tenant Name field', async () => {
-    render(<TenantSettings {...defaultProps} />);
+    render(<TenantSettings />);
     await waitFor(() => {
       expect(screen.getByTestId('field-Tenant Name')).toBeInTheDocument();
     });
   });
 
-  it('renders Save and Cancel buttons', async () => {
+  it('renders the Save button', async () => {
     await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
+      render(<TenantSettings />);
     });
     expect(screen.getByTestId('btn-Save')).toBeInTheDocument();
-    expect(screen.getByTestId('btn-Cancel')).toBeInTheDocument();
-  });
-
-  it('calls onClose when Cancel button is clicked', async () => {
-    await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
-    });
-    fireEvent.click(screen.getByTestId('btn-Cancel'));
-    expect(defaultProps.onClose).toHaveBeenCalledWith(null, 'hide');
   });
 
   it('renders domain login checkbox', async () => {
     await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
+      render(<TenantSettings />);
     });
     expect(screen.getByText('Allow self-onboarding via domain login')).toBeInTheDocument();
   });
 
   it('renders Allowed Domains field (disabled by default)', async () => {
     await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
+      render(<TenantSettings />);
     });
     expect(screen.getByTestId('field-Allowed Domains')).toBeDisabled();
   });
 
   it('renders Default Auth Role field (disabled by default)', async () => {
     await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
+      render(<TenantSettings />);
     });
     expect(screen.getByTestId('field-Default Auth Role')).toBeDisabled();
   });
 
   it('enables Allowed Domains field after checking the checkbox', async () => {
     await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
+      render(<TenantSettings />);
     });
     fireEvent.click(screen.getByRole('checkbox'));
     expect(screen.getByTestId('field-Allowed Domains')).not.toBeDisabled();
   });
 
-  it('renders TenantAccountCommonSettings component', async () => {
-    await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
-    });
-    expect(screen.getByTestId('tenant-account-common-settings')).toBeInTheDocument();
-  });
-
-  it('renders Webhook Label Mapping section', async () => {
-    await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
-    });
-    expect(screen.getByText('Webhook Label Mapping')).toBeInTheDocument();
-  });
-
-  it('renders Feature Flag section', async () => {
-    await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
-    });
-    expect(screen.getByText('Feature Flags')).toBeInTheDocument();
-  });
-
-  it('renders webhook autocomplete fields', async () => {
-    await act(async () => {
-      render(<TenantSettings {...defaultProps} />);
-    });
-    expect(screen.getByTestId('autocomplete-Subject Name Labels')).toBeInTheDocument();
-    expect(screen.getByTestId('autocomplete-Namespace Labels')).toBeInTheDocument();
-    expect(screen.getByTestId('autocomplete-Severity Labels')).toBeInTheDocument();
-  });
-
   it('shows error snackbar when empty allowed domains with checkbox enabled', async () => {
     const { toast } = require('@ui/Toast');
-    render(<TenantSettings {...defaultProps} />);
+    render(<TenantSettings />);
 
     await waitFor(() => {
       expect(screen.getByTestId('btn-Save')).not.toBeDisabled();
@@ -256,35 +235,178 @@ describe('TenantSettings', () => {
     });
   });
 
+  describe('Label Mapping tab', () => {
+    it('renders the log label mapper on the Logs sub-tab (default)', async () => {
+      await openTab('Label Mapping');
+      expect(screen.getByTestId('common-settings-log-label')).toBeInTheDocument();
+    });
+
+    it('renders webhook autocomplete fields on the Webhook alerts sub-tab', async () => {
+      await openTab('Label Mapping', 'Webhook alerts');
+      expect(screen.getByTestId('autocomplete-Subject Name Labels')).toBeInTheDocument();
+      expect(screen.getByTestId('autocomplete-Namespace Labels')).toBeInTheDocument();
+      expect(screen.getByTestId('autocomplete-Severity Labels')).toBeInTheDocument();
+    });
+  });
+
+  // The log mapper's inputs come from the real LOG_LABEL_FIELDS, which the component mock
+  // does not render, so these drive the save through the hydrate path instead. That is the
+  // path that matters: the risk in removing the "Default query" box (#37402) was mangling
+  // the log_labels JSON, not the input itself.
+  describe('log label mapping', () => {
+    const { getTenantAttributes, upsertTenantAttributes } = require('@lib/UserService');
+
+    const saveAndParseLogLabels = async () => {
+      fireEvent.click(screen.getByTestId('btn-Save'));
+      await waitFor(() => expect(upsertTenantAttributes).toHaveBeenCalled());
+      const attr = upsertTenantAttributes.mock.calls[0][0].find(({ name }) => name === 'log_labels');
+      expect(attr).toBeDefined();
+      return JSON.parse(attr.value);
+    };
+
+    it('round-trips the three label mappings through hydrate and save', async () => {
+      getTenantAttributes.mockResolvedValueOnce([{ name: 'log_labels', value: '{"pod":"pod_name","namespace":"ns_name","app":"app_name"}' }]);
+      await openTab('Label Mapping');
+      expect(await saveAndParseLogLabels()).toEqual({ pod: 'pod_name', namespace: 'ns_name', app: 'app_name' });
+    });
+
+    // A stored blob from before the box was removed still carries the key. Saving must drop
+    // it rather than write it back — nothing reads it, and keeping it alive is what made the
+    // setting look configured in the first place.
+    it('never writes the dead defaultQuery key, even from a stored blob that had one', async () => {
+      getTenantAttributes.mockResolvedValueOnce([
+        { name: 'log_labels', value: '{"pod":"pod_name","namespace":"ns_name","app":"app_name","defaultQuery":"level=error"}' },
+      ]);
+      await openTab('Label Mapping');
+      const saved = await saveAndParseLogLabels();
+      expect(saved).not.toHaveProperty('defaultQuery');
+      expect(saved.pod).toBe('pod_name');
+    });
+
+    // The Cluster Label box was the card's other write-only field: stored as the
+    // tenant_attrs row `log_cluster_label` and never referenced by any backend file, in
+    // any commit, since it shipped. Removed with the same reasoning as defaultQuery, and
+    // pinned here because a save is the only place its absence is observable.
+    it('no longer writes the dead log_cluster_label attribute', async () => {
+      getTenantAttributes.mockResolvedValueOnce([{ name: 'log_cluster_label', value: '{cluster_name="k8s-cluster"}' }]);
+      await openTab('Label Mapping');
+      fireEvent.click(screen.getByTestId('btn-Save'));
+      await waitFor(() => expect(upsertTenantAttributes).toHaveBeenCalled());
+      const names = upsertTenantAttributes.mock.calls[0][0].map(({ name }) => name);
+      expect(names).not.toContain('log_cluster_label');
+      expect(names).toContain('log_labels');
+    });
+  });
+
+  describe('trace label mapping', () => {
+    const { getTenantAttributes, upsertTenantAttributes } = require('@lib/UserService');
+
+    const openTraceTab = () => openTab('Label Mapping', 'Traces');
+
+    const savedAttr = (name) => {
+      const call = upsertTenantAttributes.mock.calls[0];
+      expect(call).toBeDefined();
+      return call[0].find((attr) => attr.name === name);
+    };
+
+    const saveAndParseTraceLabels = async () => {
+      fireEvent.click(screen.getByTestId('btn-Save'));
+      await waitFor(() => expect(upsertTenantAttributes).toHaveBeenCalled());
+      const attr = savedAttr('trace_labels');
+      expect(attr).toBeDefined();
+      return JSON.parse(attr.value);
+    };
+
+    it('renders the trace mapper on its own sub-tab', async () => {
+      await openTraceTab();
+      expect(screen.getByTestId('common-settings-trace-label')).toBeInTheDocument();
+      expect(screen.getByText('Trace Label Mapper')).toBeInTheDocument();
+    });
+
+    it('hydrates the inputs from a stored trace_labels blob', async () => {
+      getTenantAttributes.mockResolvedValueOnce([{ name: 'trace_labels', value: '{"service_name":"k8s.service","trace_id":"traceID"}' }]);
+      await openTraceTab();
+      expect(screen.getByTestId('trace-label-service_name')).toHaveValue('k8s.service');
+      expect(screen.getByTestId('trace-label-trace_id')).toHaveValue('traceID');
+    });
+
+    it('saves the edited mapping under the trace_labels attribute', async () => {
+      await openTraceTab();
+      fireEvent.change(screen.getByTestId('trace-label-service_name'), { target: { value: 'k8s.service' } });
+      const saved = await saveAndParseTraceLabels();
+      expect(saved.service_name).toBe('k8s.service');
+      expect(Object.keys(saved)).toHaveLength(11);
+    });
+
+    // Pins the unconditional write. Gating it on "has the operator typed anything" would
+    // make clearing the last override a silent no-op.
+    it('writes an all-empty mapping from an untouched form', async () => {
+      await openTraceTab();
+      const saved = await saveAndParseTraceLabels();
+      expect(Object.values(saved).every((v) => v === '')).toBe(true);
+    });
+
+    it('writes an empty string when a configured field is cleared', async () => {
+      getTenantAttributes.mockResolvedValueOnce([{ name: 'trace_labels', value: '{"service_name":"k8s.service"}' }]);
+      await openTraceTab();
+      fireEvent.change(screen.getByTestId('trace-label-service_name'), { target: { value: '' } });
+      expect(await saveAndParseTraceLabels()).toHaveProperty('service_name', '');
+    });
+
+    // The SQL-era overrides this screen replaces may carry keys the form does not render.
+    // They are working mapping entries, so a save must not silently delete them.
+    it('preserves a non-canonical key the form never renders', async () => {
+      getTenantAttributes.mockResolvedValueOnce([{ name: 'trace_labels', value: '{"service_name":"k8s.service","my_custom_field":"x"}' }]);
+      await openTraceTab();
+      const saved = await saveAndParseTraceLabels();
+      expect(saved.my_custom_field).toBe('x');
+      expect(saved.service_name).toBe('k8s.service');
+    });
+
+    it('never writes the dead defaultQuery key', async () => {
+      await openTraceTab();
+      expect(await saveAndParseTraceLabels()).not.toHaveProperty('defaultQuery');
+    });
+  });
+
+  it('renders the Feature Flags section on the Features tab', async () => {
+    await openTab('Features');
+    expect(screen.getByText('Feature Flags')).toBeInTheDocument();
+  });
+
   describe('read-only viewer (tenants:Read, no write grant)', () => {
     const { canEditTenantSettings } = require('@lib/auth');
 
     beforeEach(() => canEditTenantSettings.mockReturnValue(false));
     afterEach(() => canEditTenantSettings.mockReturnValue(true));
 
-    it('drops Save and offers Close instead of Cancel', async () => {
+    it('drops the Save button', async () => {
       await act(async () => {
-        render(<TenantSettings {...defaultProps} />);
+        render(<TenantSettings />);
       });
       expect(screen.queryByTestId('btn-Save')).not.toBeInTheDocument();
-      expect(screen.getByTestId('btn-Close')).toBeInTheDocument();
     });
 
     it('explains why, naming the grant to ask for', async () => {
       await act(async () => {
-        render(<TenantSettings {...defaultProps} />);
+        render(<TenantSettings />);
       });
       expect(screen.getByText(/You need the "tenants:Write" permission/)).toBeInTheDocument();
     });
 
     it('renders the tenant name field read-only', async () => {
       await act(async () => {
-        render(<TenantSettings {...defaultProps} />);
+        render(<TenantSettings />);
       });
       // The whole form is inert for a viewer, so the backend write gate is never
       // reached from the UI — Tenant Name stands in for every field here.
       const input = screen.getByLabelText(/Tenant Name/i);
       expect(input).toBeDisabled();
+    });
+
+    it('renders the trace label inputs read-only', async () => {
+      await openTab('Label Mapping', 'Traces');
+      expect(screen.getByTestId('trace-label-service_name')).toBeDisabled();
     });
   });
 });

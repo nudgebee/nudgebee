@@ -1,5 +1,6 @@
 import { Box, Grid, Typography, Stack, Alert } from '@mui/material';
 import { Input } from '@ui/Input';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import { ContentCopy, CheckCircleOutline, ErrorOutline } from '@mui/icons-material';
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import apiAccount from '@api1/account';
@@ -841,7 +842,9 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
       >
         <Box sx={{ px: ds.space[4], py: ds.space[2] }}>
           <Typography variant='body2' sx={{ mb: ds.space[4], color: ds.gray[400] }}>
-            {`Set the environment type for "${selectedAccount?.account_name}". This determines how NudgeBee prioritises its alerts, recommendations and incidents.`}
+            {`Set the environment type for "${
+              selectedAccount?.account_name
+            }". This determines how ${getBrandTitle()} prioritises its alerts, recommendations and incidents.`}
           </Typography>
           <AccountEnvToggle id='cloud-account-env' value={newAccountEnv} onChange={setNewAccountEnv} disabled={envLoading} />
         </Box>

@@ -180,6 +180,13 @@ func (WatchResourceTool) Call(nbCtx core.NbToolContext, input core.NBToolCallReq
 		}
 	}
 
+	// Capture the chat routing key here → no DB re-derivation (or its failure
+	// modes) at notify time. Chat-routable only; web goes via the DB responder.
+	notifySession := ""
+	if watch.IsRoutableChatSession(nbCtx.SessionId) {
+		notifySession = nbCtx.SessionId
+	}
+
 	manager := watch.NewManager()
 	created, err := manager.Create(nbCtx.Ctx.GetContext(), watch.CreateInput{
 		ConversationID:  conversationID,
@@ -193,11 +200,21 @@ func (WatchResourceTool) Call(nbCtx core.NbToolContext, input core.NBToolCallReq
 		PredicateExpr:   parsed.PredicateExpr,
 		PredicateNegate: parsed.PredicateNegate,
 		NotifyTemplate:  parsed.NotifyTemplate,
+		NotifySession:   notifySession,
 		PollIntervalSec: parsed.PollIntervalSec,
 		MaxDurationSec:  parsed.MaxDurationSec,
 	})
 	if err != nil {
 		return errorResponse(fmt.Sprintf("failed to register watch: %v", err)), nil
+	}
+
+	// Claim a "watching…" indicator for the chat thread, retired once the result
+	// is posted (web already shows progress in the Watches tab). Best-effort.
+	if notifySession != "" {
+		if nerr := watch.NotifyWatchRegistered(nbCtx.Ctx, created, notifySession); nerr != nil {
+			nbCtx.Ctx.GetLogger().Warn("watch_resource: failed to post watching indicator",
+				"watch_id", created.ID.String(), "error", nerr)
+		}
 	}
 
 	respBody := map[string]any{

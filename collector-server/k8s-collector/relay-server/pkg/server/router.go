@@ -17,6 +17,7 @@ import (
 	"nudgebee/relay-server/pkg/db"
 	"nudgebee/relay-server/pkg/mq"
 	"nudgebee/relay-server/pkg/server/handlers"
+	"nudgebee/relay-server/pkg/server/health"
 	"nudgebee/relay-server/pkg/server/middleware"
 	"nudgebee/relay-server/pkg/signing"
 
@@ -100,13 +101,19 @@ func SetupRouter(cfg *config.Config, tracer *trace.Tracer, meter *metric.Meter, 
 		return nil, fmt.Errorf("message signer init: %w", err)
 	}
 
+	// Tracks whether sessions can actually attach their consumers, so a relay
+	// that is running but serving nothing can be restarted instead of sitting
+	// there looking healthy.
+	healthTracker := health.NewTracker(connMgr)
+
 	// 3) Public health check
 	r.GET("/status", handlers.Status)
+	r.GET("/healthz/live", handlers.Liveness(healthTracker, cfg.Health.ConsumeFailureRestartAfter, logger))
 
 	// 4) Agent registration (WebSocket), protected by Basic‐auth on agent keys
 	r.GET("/register",
 		middleware.AgentAuthMiddleware(store),
-		handlers.RegisterHandler(store, connMgr, topo, cfg, cfg.RabbitMQ.ExchangeName, signer, tracer, meter, logger),
+		handlers.RegisterHandler(store, connMgr, topo, cfg, cfg.RabbitMQ.ExchangeName, signer, rpcClient, healthTracker, tracer, meter, logger),
 	)
 
 	// 5) Interactive shell over WS, protected by client secret

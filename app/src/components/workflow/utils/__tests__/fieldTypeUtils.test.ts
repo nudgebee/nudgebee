@@ -1,4 +1,4 @@
-import { filterTicketOptionsBySubType, getDropdownOptionsForField } from '../fieldTypeUtils';
+import { filterTicketOptionsBySubType, getDropdownOptionsForField, resolveFieldType } from '../fieldTypeUtils';
 
 const TICKET_CONFIGS = [
   { label: 'Jira Prod', value: 'jira-1', tool: 'jira' },
@@ -47,5 +47,24 @@ describe('getDropdownOptionsForField', () => {
   it('offers every ticket integration when the field declares no sub_types', () => {
     const options = getDropdownOptionsForField('integration_id', { type: 'ticket' }, dropdownData);
     expect(options).toHaveLength(5);
+  });
+});
+
+describe('resolveFieldType', () => {
+  // events.add_evidence declares json_data and rows as JSON; without this they
+  // fell through to a single-line text box, which is where hand-written
+  // evidence JSON went wrong in the first place.
+  it('gives a field declaring JSON the code editor, whatever it is called', () => {
+    expect(resolveFieldType('json_data', { type: 'string', sub_type: 'json' })).toBe('script');
+    expect(resolveFieldType('rows', { type: 'string', sub_type: 'json' })).toBe('script');
+  });
+
+  it('still uses a textarea for textarea sub_types, and a plain field otherwise', () => {
+    expect(resolveFieldType('content', { type: 'string', sub_type: 'textarea' })).toBe('textarea');
+    expect(resolveFieldType('title', { type: 'string' })).toBe('textfield');
+  });
+
+  it('renders a field with options as a dropdown', () => {
+    expect(resolveFieldType('type', { type: 'string', options: ['markdown', 'json', 'table'] })).toBe('dropdown');
   });
 });

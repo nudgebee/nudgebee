@@ -146,6 +146,14 @@
                                     "Resource": "*"
                                 },
                                 {
+                                    "Sid": "EC2VolumeActions",
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "ec2:ModifyVolume"
+                                    ],
+                                    "Resource": "*"
+                                },
+                                {
                                     "Sid": "RDSInstanceActions",
                                     "Effect": "Allow",
                                     "Action": [

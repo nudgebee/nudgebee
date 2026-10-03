@@ -3,6 +3,7 @@ package common
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 )
@@ -29,6 +30,80 @@ func (i *IntOrString) UnmarshalJSON(b []byte) error {
 
 	*i = IntOrString(intVal)
 	return nil
+}
+
+// DatadogString is a Datadog span field that is normally a string but can also
+// arrive as a nested object. Datadog has moved parts of the `custom` tag bag to
+// the OpenTelemetry nested form — db.statement is now {"text":"SELECT ..."},
+// db.system is {"name":"postgresql"}, service is service-catalog metadata
+// {"criticality":"low","namespace":"..."} — and the same key can arrive in
+// either shape within a single response.
+//
+// A bare string decodes as itself; an object yields its conventional value key
+// (text/name/value) so the data survives the shape change; anything else
+// decodes empty. It never fails, because one drifted tag must not reject the
+// whole trace response.
+//
+// Deliberately, an empty result here is not counted as drift by
+// DatadogShapeDrift: service legitimately arrives as a catalog object carrying
+// no scalar value, so treating that as drift would warn on nearly every span.
+// The cost is that a future unmodelled shape on these three fields blanks the
+// value silently; the tags this struct does not model still report.
+type DatadogString string
+
+// datadogStringValueKeys are the keys OpenTelemetry uses to carry the value a
+// flat string used to hold, in the order they are preferred.
+var datadogStringValueKeys = []string{"text", "name", "value"}
+
+func (s *DatadogString) UnmarshalJSON(b []byte) error {
+	var strVal string
+	if err := json.Unmarshal(b, &strVal); err == nil {
+		*s = DatadogString(strVal)
+		return nil
+	}
+
+	*s = ""
+	var obj map[string]any
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return nil
+	}
+	for _, key := range datadogStringValueKeys {
+		if nested, ok := obj[key].(string); ok {
+			*s = DatadogString(nested)
+			return nil
+		}
+	}
+	return nil
+}
+
+// LogDatadogShapeDrift warns when spans carried a `custom` tag whose shape did
+// not match the struct. Decoding tolerates the drift (see
+// DatadogCustom.UnmarshalJSON), so every path that decodes Datadog spans calls
+// this — otherwise a change in Datadog's payload silently thins the attributes
+// it produces. `source` names the calling path.
+func LogDatadogShapeDrift(logger *slog.Logger, source string, spans []DatadogSpan) {
+	drifted, sample := DatadogShapeDrift(spans)
+	if drifted == 0 || logger == nil {
+		return
+	}
+	logger.Warn("datadog: span tag shapes did not match, some attributes dropped",
+		"source", source, "spans_affected", drifted, "total_spans", len(spans), "sample_error", sample)
+}
+
+// DatadogShapeDrift reports how many of these spans carried a `custom` tag whose
+// shape did not match the struct, plus one sample error.
+func DatadogShapeDrift(spans []DatadogSpan) (int, string) {
+	count, sample := 0, ""
+	for _, span := range spans {
+		if span.Attributes.Custom.DecodeError == "" {
+			continue
+		}
+		count++
+		if sample == "" {
+			sample = span.Attributes.Custom.DecodeError
+		}
+	}
+	return count, sample
 }
 
 // Datadog trace structures
@@ -68,9 +143,9 @@ type DatadogMongoDB struct {
 }
 
 type DatadogDB struct {
-	System      string          `json:"system"`
+	System      DatadogString   `json:"system"`
 	User        string          `json:"user"`
-	Statement   string          `json:"statement"`
+	Statement   DatadogString   `json:"statement"`
 	Application string          `json:"application"`
 	Instance    string          `json:"instance"`
 	Operation   string          `json:"operation"`
@@ -90,7 +165,7 @@ type DatadogCustom struct {
 	Span             DatadogSpanInfo        `json:"span"`
 	ProcessID        string                 `json:"process_id"`
 	RuntimeID        string                 `json:"runtime-id"`
-	Service          string                 `json:"service"`
+	Service          DatadogString          `json:"service"`
 	Network          *DatadogNetwork        `json:"network,omitempty"`
 	Peer             *DatadogPeer           `json:"peer,omitempty"`
 	Flask            *DatadogFlask          `json:"flask,omitempty"`
@@ -115,6 +190,7 @@ type DatadogCustom struct {
 	Tags             *DatadogTags           `json:"tags,omitempty"`
 	SpanLinks        []DatadogSpanLink      `json:"span_links,omitempty"`
 	AdditionalFields map[string]interface{} `json:"-"` // Catch-all for custom fields not explicitly defined
+	DecodeError      string                 `json:"-"` // Set when a tag's shape did not match this struct; see UnmarshalJSON
 }
 
 // UnmarshalJSON custom unmarshaler for DatadogCustom to capture additional fields
@@ -129,8 +205,12 @@ func (c *DatadogCustom) UnmarshalJSON(data []byte) error {
 		Alias: (*Alias)(c),
 	}
 
+	// A decode error here is recorded, not returned. `custom` is Datadog's
+	// free-form tag bag and its field shapes drift (see DatadogString); failing
+	// the unmarshal rejects every span in the response, so keep the fields that
+	// did decode and let the caller report the drift.
 	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
+		c.DecodeError = err.Error()
 	}
 
 	// Then unmarshal into a map to get all fields
@@ -618,7 +698,7 @@ func mapKafkaAttributes(spanAttrs map[string]string, kafka *DatadogKafka, messag
 func mapDatabaseAttributes(spanAttrs map[string]string, db *DatadogDB, peer *DatadogPeer) {
 	if db != nil {
 		if db.System != "" {
-			spanAttrs["db.system"] = db.System
+			spanAttrs["db.system"] = string(db.System)
 		}
 		if db.Operation != "" {
 			spanAttrs["db.operation"] = db.Operation
@@ -628,7 +708,7 @@ func mapDatabaseAttributes(spanAttrs map[string]string, db *DatadogDB, peer *Dat
 			spanAttrs["db.name"] = db.Instance     // OTel semantic convention
 		}
 		if db.Statement != "" {
-			spanAttrs["db.statement"] = db.Statement
+			spanAttrs["db.statement"] = string(db.Statement)
 		}
 		if db.User != "" {
 			spanAttrs["db.user"] = db.User
@@ -1088,7 +1168,7 @@ func mapResource(custom DatadogCustom) string {
 		return custom.HTTP.URL
 	}
 	if custom.DB != nil {
-		return custom.DB.Statement
+		return string(custom.DB.Statement)
 	}
 	return ""
 }
@@ -1158,9 +1238,9 @@ func mapHeaders(attrs DatadogAttributes) string {
 func mapSpanAttributes(attrs DatadogAttributes) map[string]string {
 	spanAttrs := make(map[string]string)
 	if attrs.Custom.DB != nil {
-		spanAttrs["db.system"] = attrs.Custom.DB.System
+		spanAttrs["db.system"] = string(attrs.Custom.DB.System)
 		spanAttrs["db.user"] = attrs.Custom.DB.User
-		spanAttrs["db.statement"] = attrs.Custom.DB.Statement
+		spanAttrs["db.statement"] = string(attrs.Custom.DB.Statement)
 		spanAttrs["db.instance"] = attrs.Custom.DB.Instance
 		spanAttrs["db.application"] = attrs.Custom.DB.Application
 		spanAttrs["db.name"] = attrs.Custom.DB.Instance

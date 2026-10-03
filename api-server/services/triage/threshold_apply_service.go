@@ -313,7 +313,14 @@ func GetThresholdApplyOptions(ctx *security.RequestContext, alertRuleKey, cloudA
 	case ruleErr != nil:
 		direct.Reason = "no editable rule found for this alert"
 	case promQLSources[sug.Source]:
-		if eventrule.IsK8sAgentConnected(cloudAccountID) {
+		// The rule row decides the write path: prometheus_user goes to the account's
+		// own ruler (Mimir / Cortex / Grafana Cloud) over the direct integration,
+		// anything else is a PrometheusRule CR pushed through the k8s agent.
+		if rule.Source == "prometheus_user" {
+			ok, reason := alertrule.PrometheusRulerConfigured(ctx, cloudAccountID)
+			direct.Available = ok
+			direct.Reason = reason
+		} else if eventrule.IsK8sAgentConnected(cloudAccountID) {
 			direct.Available = true
 		} else {
 			direct.Reason = "k8s agent not connected — cannot push the PrometheusRule change"

@@ -112,8 +112,10 @@ export async function openAuditsTab(page: Page): Promise<{ locators: AuditsLocat
   });
 
   // UserManagement reads the hash to pick the section (index.jsx:70-77), so the
-  // tab must already be the selected one — no click needed to get here.
-  await expect(locators.auditsTab).toHaveAttribute("data-tab-selected", "true");
+  // tab must already be the selected one — no click needed to get here. Audit
+  // Log is a sub-tab (MUI Tab) of Access & Users, so selection is aria-selected,
+  // not the top-level strip's data-tab-selected.
+  await expect(locators.auditsTab).toHaveAttribute("aria-selected", "true");
   await expect(locators.table).toBeVisible();
   return { locators, capture };
 }

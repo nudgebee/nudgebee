@@ -11,7 +11,14 @@
     "typescript/no-explicit-any": "warn",
     "eqeqeq": "warn",
     "curly": "warn",
-    "typescript/no-unused-vars": "error",
+    "typescript/no-unused-vars": [
+      "error",
+      {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_"
+      }
+    ],
     "typescript/explicit-function-return-type": "warn",
     "typescript/no-empty-interface": "off",
     "typescript/consistent-type-imports": "warn",

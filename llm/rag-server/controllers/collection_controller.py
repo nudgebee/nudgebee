@@ -58,6 +58,37 @@ async def download_collection(collection_name: str):
         raise HTTPException(status_code=500, detail=f"Error downloading collection '{collection_name}': {str(e)}")
 
 
+@router.get("/collections/{collection_name}/documents")
+async def list_collection_documents(
+    collection_name: str,
+    limit: int = Query(50, ge=1, le=200),
+    offset: Optional[str] = Query(None),
+):
+    """List a page of a collection's documents (title and link, no content)."""
+    try:
+        return {"data": document_collection.list_collection_documents(collection_name, limit, offset)}
+    except Exception as e:
+        if is_not_found_error(e):
+            raise HTTPException(status_code=404, detail=f"Collection '{collection_name}' not found")
+        logger.error(f"Error listing documents of collection {collection_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error listing documents of collection '{collection_name}'")
+
+
+@router.get("/collections/{collection_name}/documents/{document_id}")
+async def get_collection_document(collection_name: str, document_id: str):
+    """Get one document of a collection with its content."""
+    try:
+        document = document_collection.get_collection_document(collection_name, document_id)
+    except Exception as e:
+        if is_not_found_error(e):
+            raise HTTPException(status_code=404, detail=f"Collection '{collection_name}' not found")
+        logger.error(f"Error getting document {document_id} of collection {collection_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting document of collection '{collection_name}'")
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"data": document}
+
+
 # Generic route - MUST come after specific routes
 @router.get("/collections/{collection_name}")
 async def get_collection(collection_name: str):

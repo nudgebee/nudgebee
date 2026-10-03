@@ -102,9 +102,9 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Troubleshoot', label: 'Troubleshoot Events group by app', path: '/troubleshoot#all-events/event-app' },
   { group: 'Troubleshoot', label: 'Troubleshoot Triage Rules', path: '/troubleshoot#all-events/triage-rules' },
   { group: 'Troubleshoot', label: 'Alert Tuning', path: '/troubleshoot#all-events/threshold-suggestions' },
-  { group: 'Troubleshoot', label: 'Event Resolutions', path: '/troubleshoot#all-events/event-resolutions' },
   { group: 'Troubleshoot', label: 'Auto Investigated', path: '/troubleshoot#investigations/auto-investigated' },
   { group: 'Troubleshoot', label: 'Manual Investigated', path: '/troubleshoot#investigations/manual-investigated' },
+  { group: 'Troubleshoot', label: 'Event Resolutions', path: '/troubleshoot#event-resolutions' },
   { group: 'Troubleshoot', label: 'Knowledge Graph', path: '/troubleshoot#kg' },
   { group: 'Troubleshoot', label: 'Analytics', path: '/troubleshoot#analytics' },
 
@@ -119,7 +119,7 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Dashboards', label: 'Application Grouping', path: '/dashboards#groups' },
 
   { group: 'Optimize', label: 'Optimize Summary', path: '/optimise#summary' },
-  { group: 'Optimize', label: 'Optimize Cost', path: '/optimise#recommendations' },
+  { group: 'Optimize', label: 'Optimize Cost', path: '/optimise#cost' },
   { group: 'Optimize', label: 'Optimize Configuration', path: '/optimise#configuration' },
   { group: 'Optimize', label: 'Security - Image Scan', path: '/optimise#security/image-scan' },
   { group: 'Optimize', label: 'Security - CIS Scan', path: '/optimise#security/cis-scan' },
@@ -132,7 +132,7 @@ export const navSearchPages: NavSearchPage[] = [
   // use: LLM Analyser on the per-tenant LLM_ANALYSER feature flag, AI Gateway on
   // the deployment's UI_ENABLE_LLM_GATEWAY env var (read off the session — see
   // optimise/index.jsx), each narrowed by hasReadAccess(selectedCluster?.value).
-  { group: 'Optimize', label: 'LLM Analyser', path: '/optimise#cost-analyser' },
+  { group: 'Optimize', label: 'LLM Analyser', path: '/optimise#llm-analyser' },
   { group: 'Optimize', label: 'AI Gateway', path: '/optimise#ai-gateway' },
 
   // Infra → VM. The account in scope comes from the header cluster dropdown, and
@@ -149,19 +149,40 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Tickets', label: 'All Tickets', path: '/tickets#tickets' },
   { group: 'Tickets', label: 'All Tickets - Assigned to me', path: '/tickets#assigned-me' },
 
-  { group: 'Admin', label: 'Users', path: '/user-management#users' },
-  { group: 'Admin', label: 'Groups', path: '/user-management#groups' },
-  { group: 'Admin', label: 'Audits', path: '/user-management#audits' },
-  { group: 'Admin', label: 'Notification Rules', path: '/user-management#notification-rules' },
-  { group: 'Admin', label: 'Integrations', path: '/user-management#integrations' },
-  { group: 'Admin', label: 'Ownership', path: '/user-management#ownership' },
+  // Users, Groups, Ownership, Roles and Audit Log all consolidated into one
+  // "Access & Users" top-level tab as sibling sub-tabs (AnchorComponent's
+  // parent/child hash routing) — Users is the default sub-tab, so its path
+  // carries no child fragment.
+  { group: 'Admin', label: 'Users', path: '/user-management#access-users' },
+  { group: 'Admin', label: 'Groups', path: '/user-management#access-users/groups' },
+  { group: 'Admin', label: 'Ownership', path: '/user-management#access-users/ownership' },
   // Registered dynamically via registerUserManagementFilter in
   // src/ee/components/user-management/RolePermissions.jsx, not a static
-  // baseFilters entry. Gated in search by GlobalPageSearch.jsx's own
-  // canAccessRoles check, mirroring that registration's shouldShow — the tab
-  // is absent for a tenant without the CUSTOM_ROLES feature, so a search row
-  // leading to it would dead-end.
-  { group: 'Admin', label: 'Roles', path: '/user-management#roles' },
+  // baseFilters entry — folded into Access & Users as a sub-tab rather than
+  // staying a top-level fragment. Gated in search by GlobalPageSearch.jsx's
+  // own canAccessRoles check, mirroring that registration's shouldShow — the
+  // tab is absent for a tenant without the CUSTOM_ROLES feature, so a search
+  // row leading to it would dead-end.
+  { group: 'Admin', label: 'Roles', path: '/user-management#access-users/roles' },
+  { group: 'Admin', label: 'Audit Log', path: '/user-management#access-users/audit-log' },
+  { group: 'Admin', label: 'Notification Rules', path: '/user-management#notification-rules' },
+  { group: 'Admin', label: 'Integrations', path: '/user-management#integrations' },
+  // Relocated from the Settings modal (see docs/ia-consolidation-plan.md,
+  // PR 3) into one "AI & Tools" top-level tab, same sibling-sub-tab shape as
+  // Access & Users above. Agents is the default sub-tab, so its path carries
+  // no child fragment.
+  { group: 'Admin', label: 'Agents', path: '/user-management#ai-tools' },
+  { group: 'Admin', label: 'Tools & MCP', path: '/user-management#ai-tools/tools-mcp' },
+  { group: 'Admin', label: 'Functions', path: '/user-management#ai-tools/functions' },
+  { group: 'Admin', label: 'Providers', path: '/user-management#ai-tools/providers' },
+  { group: 'Admin', label: 'Gateway', path: '/user-management#ai-tools/gateway' },
+  { group: 'Admin', label: 'Egress Filter', path: '/user-management#ai-tools/egress-filter' },
+  { group: 'Admin', label: 'Budgets & Limits', path: '/user-management#ai-tools/budgets-limits' },
+  { group: 'Admin', label: 'Memory Policy', path: '/user-management#ai-tools/memory-policy' },
+  { group: 'Admin', label: 'RCA Format', path: '/user-management#ai-tools/rca-format' },
+  // Relocated from an avatar-menu modal (see docs/ia-consolidation-plan.md) —
+  // now a plain top-level Admin tab, gated the same way (tenants:Read).
+  { group: 'Admin', label: 'Tenant Settings', path: '/user-management#tenant-settings' },
   // Billing tab removed from admin panel (PR #32989) — billingFilter.tsx is no
   // longer imported from src/ee/init.ts, so the tab never registers. Commented
   // out (not deleted) rather than added to navSearchIgnoredFragments below,
@@ -194,6 +215,7 @@ export interface AccountScopedSearchFragment {
 
 export const accountScopedSearchFragments: AccountScopedSearchFragment[] = [
   { label: 'Agent', slug: 'agent-health/agent', fragment: 'agent', basePath: '/agentHealth', group: 'Agent Health' },
+  { label: 'Observability', slug: 'agent-health/observability', fragment: 'observability', basePath: '/agentHealth', group: 'Agent Health' },
   { label: 'Proxy Agent', slug: 'agent-health/proxy-agent', fragment: 'proxy-agent', basePath: '/agentHealth', group: 'Agent Health' },
 ];
 
@@ -402,6 +424,8 @@ export const awsDetailsSearchFragments: AwsDetailsSearchFragment[] = [
 
   { label: 'AWS Services', slug: 'aws/services', fragment: 'services' },
 
+  { label: 'AWS Vulnerabilities', slug: 'aws/vulnerabilities', fragment: 'vulnerabilities' },
+
   { label: 'AWS Events', slug: 'aws/troubleshoot/events', fragment: 'events/events' },
   { label: 'AWS Triage Rules', slug: 'aws/troubleshoot/triage-rules', fragment: 'events/triage-rules' },
   {
@@ -460,6 +484,8 @@ export const azureDetailsSearchFragments: AzureDetailsSearchFragment[] = [
   },
 
   { label: 'Azure Services', slug: 'azure/services', fragment: 'services' },
+
+  { label: 'Azure Vulnerabilities', slug: 'azure/vulnerabilities', fragment: 'vulnerabilities' },
 
   { label: 'Azure Events', slug: 'azure/troubleshoot/events', fragment: 'events/events' },
   { label: 'Azure Triage Rules', slug: 'azure/troubleshoot/triage-rules', fragment: 'events/triage-rules' },
@@ -521,6 +547,8 @@ export const gcpDetailsSearchFragments: GcpDetailsSearchFragment[] = [
   },
 
   { label: 'GCP Services', slug: 'gcp/services', fragment: 'services' },
+
+  { label: 'GCP Vulnerabilities', slug: 'gcp/vulnerabilities', fragment: 'vulnerabilities' },
 
   { label: 'GCP Events', slug: 'gcp/troubleshoot/events', fragment: 'events/events' },
   { label: 'GCP Triage Rules', slug: 'gcp/troubleshoot/triage-rules', fragment: 'events/triage-rules' },

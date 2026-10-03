@@ -1094,24 +1094,40 @@ type cloudServiceMapActionParams struct {
 	ResourceId  string `json:"resource_id" validate:"required"`
 }
 
+// CanAutoExecute always returns false: the cloud provider's service map is no
+// longer attached to events. The knowledge graph is the single source of
+// dependency topology, and this map does not add to it — it contradicts it.
+//
+// What it returns for an EC2 instance, as "Downstreams": the AMI it booted
+// from, its VPC, its subnet, its security group, its instance profile and its
+// EBS volume. Those are attributes of the resource, not things it depends on —
+// nothing downstream of an instance is its own AMI. The payload carries no
+// relationship type, only Upstreams/Downstreams, so containment cannot be
+// filtered out of it.
+//
+// Beside the knowledge-graph card it is worse than redundant: it is labelled
+// like topology, so an operator reads six downstream dependencies where there
+// are none, while the real ones — from VPC flow logs, eBPF or traces — sit in
+// the card below.
+//
+// An earlier attempt suppressed only maps where nothing had any upstream or
+// downstream (see Execute). That tested whether links were present, not whether
+// they meant anything, so a VPC/subnet/AMI map passed it and still rendered.
+//
+// Refused for every provider, not just AWS: Azure returns the same shape, and a
+// per-provider carve-out would leave the contradiction wherever it was not
+// applied. (GCP was already skipped here — unimplemented in cloud-collector.)
+//
+// Declining at the gate rather than in Execute means existing deployments,
+// whose agent_playbook_action rows the template upsert never deletes, stop
+// scheduling the action instead of running a provider query per cloud event
+// and discarding the result.
+//
+// Execute is left intact, so a playbook naming this action explicitly still
+// gets an answer. The direct API path never reached it anyway —
+// handleCloudServiceMap calls cloud.QueryServiceMap itself — so the RPC is
+// unaffected.
 func (a *cloudServiceMapAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
-	labels := ctx.GetEvent().Labels
-
-	// AWS
-	if labels["aws_region"] != "" && labels["aws_event_instance"] != "" && labels["aws_service_name"] != "" {
-		return true
-	}
-
-	// GCP — service map is not implemented in cloud-collector (returns ErrUnsupported),
-	// so skip auto-execution to avoid producing an empty card.
-
-	// Azure Monitor Alert (polling-based or webhook)
-	if isAzureAlertSource(ctx.GetEvent().Source) && labels["azure_alert_target_resource"] != "" {
-		if isAzureResourceID(labels["azure_alert_target_resource"]) {
-			return true
-		}
-	}
-
 	return false
 }
 
@@ -1403,6 +1419,31 @@ func gcpLogRawParams(labels map[string]string) map[string]any {
 	return params
 }
 
+// logMetricLookbackWindow returns the query window for a log-based metric alert: the
+// hour ending at the alert. The default 10-minute window from getPlaybookStartEndTime is
+// too narrow because such alerts accumulate over time before firing; with the metric's
+// own filter applied the result set stays small enough for the wider window.
+//
+// The window is anchored on the event's end when it has one, else on when it fired.
+// Webhook-ingested GCP alerts (gcp_monitoring_webhook) carry no ends_at, so before the
+// startedAt fallback the widening was skipped entirely and buildLogFilter defaulted the
+// end to time.Now() — a forward-looking [fired, now] window. A log-based metric fires
+// *because* of logs that already happened, so that window structurally cannot contain
+// them, the query returned nothing, and no Logs card was ever rendered (#36870).
+func logMetricLookbackWindow(startTime, endTime, startedAt *time.Time) (*time.Time, *time.Time) {
+	anchor := endTime
+	if anchor == nil {
+		anchor = startedAt
+	}
+	if anchor == nil {
+		return startTime, endTime
+	}
+	// Copy rather than hand back the event's own StartedAt pointer.
+	end := *anchor
+	start := end.Add(-1 * time.Hour)
+	return &start, &end
+}
+
 // logQueryIncomplete reports whether a log query ended before it finished, as opposed to
 // finishing with nothing to show. Both cases used to return zero rows and no card, so a
 // provider rate-limit was indistinguishable from a resource that simply has no logs.
@@ -1554,13 +1595,8 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 		params.EndTime = ctx.GetEvent().EndedAt
 	}
 
-	// For log-based metric alerts, widen the time window to 1 hour.
-	// The default 10-minute window from getPlaybookStartEndTime is too narrow
-	// because alerts accumulate over time before firing. With the metric filter
-	// applied, the result set will be small enough for a wider window.
-	if params.LogMetricName != "" && params.EndTime != nil {
-		widerStart := params.EndTime.Add(-1 * time.Hour)
-		params.StartTime = &widerStart
+	if params.LogMetricName != "" {
+		params.StartTime, params.EndTime = logMetricLookbackWindow(params.StartTime, params.EndTime, ctx.GetEvent().StartedAt)
 	}
 
 	query := params.Query

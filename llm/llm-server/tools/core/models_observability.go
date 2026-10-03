@@ -111,7 +111,9 @@ type ObservabilityMetricsQueryRequest struct {
 	Queries        map[string]string `json:"queries"`
 	StartTime      int64             `json:"start_time"`
 	EndTime        int64             `json:"end_time"`
-	Request        map[string]any    `json:"request,omitempty"`
+	// StepInterval is the range step in seconds; zero lets the provider pick.
+	StepInterval int            `json:"step_interval,omitempty"`
+	Request      map[string]any `json:"request,omitempty"`
 }
 
 // ObservabilityMetricsQueryResponse mirrors api-server's OutputMetricQuery.

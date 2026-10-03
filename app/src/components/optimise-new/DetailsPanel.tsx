@@ -1,5 +1,4 @@
-import { Box, Typography, CircularProgress, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
-import { Divider } from '@ui/Divider';
+import { Box, Typography, Divider, CircularProgress } from '@mui/material';
 import { useState, useEffect, type ReactNode } from 'react';
 import { useEffectiveRecommendation } from '@hooks/useEffectiveRecommendation';
 import { Select as DsSelect } from '@ui/Select';
@@ -18,12 +17,13 @@ import MarkDowns from '@shared/viewers/MarkDowns';
 import { Label } from '@ui/Label';
 import { Card } from '@ui/Card';
 import { CollapsableCard } from '@ui/CollapsableCard';
+import CustomTable from '@shared/tables/CustomTable';
 import recommendationApi from '@api1/recommendation';
 import { interpolateMitigations } from '@api1/recommendation/data';
 import { formatRuleName } from './utils';
 import {
-  safetyBandTone,
-  safetyBandLabel,
+  presentRecommendation,
+  coverageLabel,
   getImpactSummary,
   dependentRoleLabel,
   proximityLabel,
@@ -37,7 +37,14 @@ import {
   getChangeClass,
   changeClassLabel,
   changeClassTone,
+  deriveVerdict,
+  criticalityTone,
+  criticalityLabel,
+  businessCriticalCount,
+  observedAgeLabel,
+  OBSERVED_AGE_HELP,
   CHANGE_CLASS_HELP,
+  CRITICALITY_HELP,
   coverageTone,
   coverageSubtitle,
   coverageExplainer,
@@ -45,6 +52,7 @@ import {
   PROD_CHIP_HELP,
   ENV_UNKNOWN_HELP,
   type DependentRef,
+  type SafetyPresentation,
 } from './safetyBand';
 import { Banner } from '@ui/Banner';
 import DsTooltip from '@ui/Tooltip';
@@ -103,29 +111,16 @@ const PROXIMITY_HELP =
 const BLAST_RADIUS_HELP =
   'What else could be affected if you apply this change — the workloads that depend on this resource, how directly, and how confident we are in that picture.';
 
-// Plain-language explanation for each safety band, shown in the header chip tooltip.
-const SAFETY_BAND_HELP: Record<string, string> = {
-  safe: 'No dependents were found and the graph is well-observed. Generally safe to apply.',
-  review:
-    'Dependents exist but none look production, the change only adds capacity, or nothing was found but graph coverage is limited. Safe to apply after a quick human check.',
-  risky: 'Production dependents would be affected, the blast radius is very large, or the change is irreversible. Review carefully before applying.',
-  unknown: "This resource isn't in the dependency graph, so its impact can't be measured — don't assume it's safe.",
-};
-
-// Turns the safety band + impact counts into a one-line verdict for the banner
-// at the top of the card. Non-success verdicts get a colored callout; success
-// verdicts stay quiet (no banner).
-const deriveVerdict = (
-  band?: string,
-  prod?: number,
-  depCount?: number,
-  truncated?: boolean
-): { tone: 'success' | 'warning' | 'critical'; title: string } => {
-  if ((prod ?? 0) > 0) return { tone: 'critical', title: `${prod} production dependent${prod === 1 ? '' : 's'} affected` };
-  if (band === 'risky' || truncated) return { tone: 'critical', title: 'Large blast radius' };
-  if (band === 'unknown') return { tone: 'warning', title: 'Impact unknown' };
-  if (depCount === 0 || band === 'safe') return { tone: 'success', title: 'No known dependents' };
-  return { tone: 'success', title: 'Contained blast radius' };
+// Plain-language explanation for each safety reading, shown in the header chip tooltip.
+const SAFETY_BAND_HELP: Record<SafetyPresentation['key'], string> = {
+  safe: 'No dependents were found and the graph is well-observed. Apply now.',
+  quick_check:
+    'Dependents exist but none look production, the change only adds capacity, or nothing was found but graph coverage is limited. A glance at the dependents, then apply.',
+  plan: 'Production callers are in the blast radius, or the blast radius is very large. Apply with a safeguard — a no-restart apply, a maintenance window, or a heads-up to the owner.',
+  irreversible:
+    "This change removes the resource and can't be undone. Take a last look at what still points at it, and snapshot first where the resource supports it.",
+  not_assessed:
+    "This resource isn't in the dependency graph yet, so impact isn't assessed. Apply as you normally would; the reading appears once the graph sees it.",
 };
 
 // Wraps a chip so the tooltip gets a ref-holding element (Label doesn't forward refs).
@@ -141,7 +136,8 @@ const ChipTip = ({ title, children }: { title: string; children: ReactNode }) =>
 // chips (kind, proximity, role, provenance, environment). Chips render only
 // when the backend attributed the field, so sparse graphs degrade to
 // name-only rows. Proximity is omitted downstream (always one hop).
-const DependentRow = ({ dep, direction }: { dep: DependentRef; direction: 'upstream' | 'downstream' }) => {
+const DependentRow = ({ dep, direction, computedAt }: { dep: DependentRef; direction: 'upstream' | 'downstream'; computedAt?: string }) => {
+  const observedAge = direction === 'upstream' ? observedAgeLabel(dep, computedAt) : null;
   const id = dep.namespace ? `${dep.namespace}/${dep.name}` : dep.name;
   const role = dependentRoleLabel(dep.relationship, direction);
   const proximity = direction === 'upstream' ? proximityLabel(dep.hops_away) : null;
@@ -206,6 +202,20 @@ const DependentRow = ({ dep, direction }: { dep: DependentRef; direction: 'upstr
             {formatEnvironment(dep.environment)}
           </Label>
         )}
+        {observedAge && (
+          <ChipTip title={OBSERVED_AGE_HELP}>
+            <Label size='sm' tone='warning'>
+              {observedAge}
+            </Label>
+          </ChipTip>
+        )}
+        {criticalityLabel(dep.criticality) && (
+          <ChipTip title={CRITICALITY_HELP}>
+            <Label size='sm' tone={criticalityTone(dep.criticality)}>
+              {criticalityLabel(dep.criticality)}
+            </Label>
+          </ChipTip>
+        )}
         {(dep.pod_count ?? 0) > 0 && (
           <Label size='sm' tone='neutral'>
             {`${dep.pod_count} pod${dep.pod_count === 1 ? '' : 's'} here`}
@@ -267,6 +277,7 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
   const band = rec?.safety_band as string | undefined;
   const impact = getImpactSummary(rec);
   const changeClass = getChangeClass(rec);
+  const safety = presentRecommendation(rec);
   const [showAllDeps, setShowAllDeps] = useState(false);
   const [showAllDownstream, setShowAllDownstream] = useState(false);
   const downstream = impact?.downstream_dependencies || [];
@@ -279,7 +290,7 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
     (impact.dependent_count != null || impact.production_dependents != null || impact.coverage_confidence || impact.safety_reason)
   );
   if (!band && !hasImpactData) return null;
-  const verdict = deriveVerdict(band, impact?.production_dependents, impact?.dependent_count, impact?.truncated);
+  const verdict = deriveVerdict(band, impact?.production_dependents, impact?.dependent_count, impact?.truncated, changeClass);
   return (
     <Card
       elevation='flat'
@@ -305,10 +316,10 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
             </DsTooltip>
           </Box>
           {band && (
-            <DsTooltip variant='explainer' title={`Safety: ${safetyBandLabel(band)}`} desc={SAFETY_BAND_HELP[band] ?? ''}>
+            <DsTooltip variant='explainer' title={`Safety: ${safety.label}`} desc={SAFETY_BAND_HELP[safety.key]}>
               <Box component='span' sx={{ display: 'inline-flex', cursor: 'help' }}>
-                <Label size='sm' tone={safetyBandTone(band)} dot>
-                  {safetyBandLabel(band)}
+                <Label size='sm' tone={safety.tone} dot>
+                  {safety.label}
                 </Label>
               </Box>
             </DsTooltip>
@@ -368,10 +379,10 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
         {impact?.coverage_confidence && (
           <SafetyRow label='Graph coverage'>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], minWidth: 0 }}>
-              <DsTooltip variant='explainer' title={`Graph coverage: ${safetyBandLabel(impact.coverage_confidence)}`} desc={COVERAGE_HELP}>
+              <DsTooltip variant='explainer' title={`Graph coverage: ${coverageLabel(impact.coverage_confidence)}`} desc={COVERAGE_HELP}>
                 <Box component='span' sx={{ display: 'inline-flex', cursor: 'help' }}>
                   <Label size='sm' tone={coverageTone(impact.coverage_confidence)}>
-                    {safetyBandLabel(impact.coverage_confidence)}
+                    {coverageLabel(impact.coverage_confidence)}
                   </Label>
                 </Box>
               </DsTooltip>
@@ -405,9 +416,18 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
         )}
         {impact?.dependents && impact.dependents.length > 0 && (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], mt: ds.space[1] }}>
-            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium }}>Impacted workloads</Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium }}>Impacted workloads</Typography>
+              {businessCriticalCount(impact.dependents) > 0 && (
+                <ChipTip title={CRITICALITY_HELP}>
+                  <Label size='sm' tone='critical'>
+                    {`${businessCriticalCount(impact.dependents)} business-critical`}
+                  </Label>
+                </ChipTip>
+              )}
+            </Box>
             {(showAllDeps ? impact.dependents : impact.dependents.slice(0, DEP_COLLAPSE_LIMIT)).map((dep, i) => (
-              <DependentRow key={`${dep.namespace || ''}/${dep.name}-${i}`} dep={dep} direction='upstream' />
+              <DependentRow key={`${dep.namespace || ''}/${dep.name}-${i}`} dep={dep} direction='upstream' computedAt={impact.computed_at} />
             ))}
             {impact.dependents.length > DEP_COLLAPSE_LIMIT && (
               <Typography
@@ -475,7 +495,7 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
             <Banner
               tone={impact?.coverage_confidence === 'observed' ? 'info' : 'warning'}
               surface='section'
-              title={`Why coverage is ${safetyBandLabel(impact?.coverage_confidence)}`}
+              title={`Why coverage is ${coverageLabel(impact?.coverage_confidence)}`}
               message={explainer}
             />
           </Box>
@@ -553,6 +573,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
           savings: rec.estimated_savings || 0,
           recData,
           recommendations: details?.recommendations,
+          workload: { kind: rec.cloud_resourse?.meta?.controllerKind, pods: rec.cloud_resourse?.meta?.total_pods ?? null },
         })}
       />
 
@@ -568,6 +589,12 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
           drawer swaps to a different recommendation (it isn't remounted). */}
       <BlastRadiusSection key={rec?.id} rec={rec} />
 
+      {/* What applying does — surfaced prominently so the impact is clear before the
+          user clicks Apply (e.g. the async, non-disruptive EBS gp2→gp3 modification). */}
+      {recData?.apply_impact && (
+        <Banner surface='section' tone='info' title='What applying does' message={String(recData.apply_impact)} id='recommendation-apply-impact' />
+      )}
+
       {/* Recommendation Summary — key "what changes" data from JSONB */}
       <RecommendationSummary recData={recData} category={category} ruleName={ruleName} />
 
@@ -575,7 +602,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
           interpretation "why", so only render the remainder here (if any). */}
       {details?.recommendations?.length > 1 && (
         <>
-          <Divider sx={{ my: 0 }} />
+          <Divider />
           <Box>
             <SectionHeading>Recommendations</SectionHeading>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
@@ -675,7 +702,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
       {/* Compliance */}
       {details?.compliances?.length > 0 && (
         <>
-          <Divider sx={{ my: 0 }} />
+          <Divider />
           <Box>
             <SectionHeading>Compliance</SectionHeading>
             <Box sx={{ display: 'flex', gap: ds.space[2], flexWrap: 'wrap' }}>
@@ -692,7 +719,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
       {/* References */}
       {details?.references?.length > 0 && (
         <>
-          <Divider sx={{ my: 0 }} />
+          <Divider />
           <Box>
             <SectionHeading>References</SectionHeading>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
@@ -722,7 +749,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence, 
       {/* Linked Items */}
       {(rec.ticket || hasRenderablePRState(rec.resolution)) && (
         <>
-          <Divider sx={{ my: 0 }} />
+          <Divider />
           <Box>
             <SectionHeading>Linked Items</SectionHeading>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
@@ -875,53 +902,33 @@ const K8sRightSizingSummary = ({ recData }: { recData: any }) => {
         </Box>
       }
     >
-      <TableContainer
-        sx={{
-          borderRadius: ds.radius.lg,
-          border: `1px solid ${ds.gray[200]}`,
-          backgroundColor: ds.background[100],
-          '& .MuiTableCell-root': { px: ds.space[3], py: ds.space[2], fontSize: ds.text.small, borderColor: ds.gray[200] },
-        }}
-      >
-        <Table size='small'>
-          <TableHead>
-            <TableRow sx={{ backgroundColor: ds.gray[100] }}>
-              <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: `${ds.text.caption} !important` }}>Container</TableCell>
-              <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: `${ds.text.caption} !important` }}>
-                CPU Request
-              </TableCell>
-              <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: `${ds.text.caption} !important` }}>
-                Memory Request
-              </TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {containers.map(({ containerName, cpu, memory }) => (
-              <TableRow key={containerName} sx={{ '&:last-child td': { borderBottom: 'none' } }}>
-                <TableCell>
-                  <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.medium, fontFamily: ds.font.mono }}>
-                    {containerName}
-                  </Typography>
-                </TableCell>
-                <TableCell>
-                  {cpu ? (
-                    <ResourceChangeCell current={cpu.allocated?.request} recommended={cpu.recommended?.request} isMem={false} />
-                  ) : (
-                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>{'—'}</Typography>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {memory ? (
-                    <ResourceChangeCell current={memory.allocated?.request} recommended={memory.recommended?.request} isMem />
-                  ) : (
-                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>{'—'}</Typography>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </TableContainer>
+      <CustomTable
+        headers={['Container', 'CPU Request', 'Memory Request']}
+        tableData={containers.map(({ containerName, cpu, memory }) => [
+          {
+            component: (
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.medium, fontFamily: ds.font.mono }}>
+                {containerName}
+              </Typography>
+            ),
+            data: containerName,
+          },
+          {
+            component: cpu ? (
+              <ResourceChangeCell current={cpu.allocated?.request} recommended={cpu.recommended?.request} isMem={false} />
+            ) : (
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>{'—'}</Typography>
+            ),
+          },
+          {
+            component: memory ? (
+              <ResourceChangeCell current={memory.allocated?.request} recommended={memory.recommended?.request} isMem />
+            ) : (
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>{'—'}</Typography>
+            ),
+          },
+        ])}
+      />
     </Card>
   );
 };
@@ -1111,6 +1118,7 @@ const ConfigurationSummary = ({ recData }: { recData: any }) => {
 // interpretation, plus internal routing identifiers (raw UUIDs) that are noise.
 const SUMMARY_HIDDEN_FIELDS = new Set([
   'reason',
+  'apply_impact', // shown prominently in its own Banner, not as a generic summary row
   'message',
   'description',
   'Description',

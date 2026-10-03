@@ -77,17 +77,17 @@ func TestFetchLogsV3Tool_Registered(t *testing.T) {
 // top-level agent.
 func TestLogAgentV3_Registered(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
-	agent, ok := core.GetNBAgent(ctx, LogsAgentV3Name, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "")
-	assert.True(t, ok, "logs_v3 must be registered as a system agent")
+	agent, ok := core.GetNBAgent(ctx, LogsAgentName, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "")
+	assert.True(t, ok, "logs must be registered as a system agent")
 	assert.NotNil(t, agent)
-	assert.Equal(t, LogsAgentV3Name, agent.GetName())
+	assert.Equal(t, LogsAgentName, agent.GetName())
 }
 
 func TestLogAgentV3_RegisteredAsTool(t *testing.T) {
-	tool, ok := toolcore.GetNBTool("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", LogsAgentV3Name)
-	require.True(t, ok, "logs_v3 must be registered as a system tool so other agents can delegate to it")
+	tool, ok := toolcore.GetNBTool("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", LogsAgentName)
+	require.True(t, ok, "logs must be registered as a system tool so other agents can delegate to it")
 	require.NotNil(t, tool)
-	assert.Equal(t, LogsAgentV3Name, tool.Name())
+	assert.Equal(t, LogsAgentName, tool.Name())
 }
 
 func TestGetLogAgentV3(t *testing.T) {
@@ -95,7 +95,7 @@ func TestGetLogAgentV3(t *testing.T) {
 	agent, err := getLogAgentV3(sc, os.Getenv("TEST_ACCOUNT"))
 	assert.Nil(t, err)
 	assert.NotNil(t, agent)
-	assert.Equal(t, LogsAgentV3Name, agent.GetName())
+	assert.Equal(t, LogsAgentName, agent.GetName())
 }
 
 // TestLogAgentV3_SystemPrompt_MatchesModeClassification confirms v3 reuses
@@ -477,4 +477,38 @@ func TestLogsV3DelegatedContextReachesTranslator(t *testing.T) {
 	require.Contains(t, human.String(), "fetch checkout logs")
 	require.Empty(t, request.KBPrestepContent)
 	require.Empty(t, request.SkillsContext)
+}
+
+// The parent owns knowledge loading. Its chosen constraints must reach the leaf
+// unchanged, whether it authors canonical JSON or asks the translator to do so.
+// This does not assert that a live model selects the right knowledge guidance.
+func TestLogsV3KnowledgeDerivedCommandHandoff(t *testing.T) {
+	for _, command := range []string{
+		"Read index checkout-preprod for host preprod-01 from 2026-09-06T10:00:00Z to 2026-09-06T10:15:00Z; filter service=checkout",
+		`{"where":{"host":{"eq":"preprod-01"}},"index":"checkout-preprod","start_time":"2026-09-06T10:00:00Z","end_time":"2026-09-06T10:15:00Z","limit":200}`,
+	} {
+		t.Run(command, func(t *testing.T) {
+			ctx := toolcore.NbToolContext{AccountId: "preprod-account", OriginalQuery: "Investigate checkout in PreProd", QueryContext: "environment=PreProd"}
+			request := buildFetchLogsV3Request(ctx, toolcore.NBToolCallRequest{Command: command})
+			require.Equal(t, command, request.Query)
+			require.Equal(t, ctx.AccountId, request.AccountId)
+			require.Equal(t, ctx.QueryContext, request.QueryContext)
+			canonical, fast := preBuiltCanonicalQuery(request.Query)
+			if strings.HasPrefix(command, "{") {
+				require.True(t, fast)
+				require.Equal(t, command, canonical)
+			} else {
+				require.False(t, fast)
+				messages := buildLogIntentMessages("translator", request)
+				var text strings.Builder
+				for _, part := range messages[len(messages)-1].Parts {
+					if content, ok := part.(llms.TextContent); ok {
+						text.WriteString(content.Text)
+					}
+				}
+				require.Contains(t, text.String(), command)
+				require.Contains(t, text.String(), ctx.OriginalQuery)
+			}
+		})
+	}
 }

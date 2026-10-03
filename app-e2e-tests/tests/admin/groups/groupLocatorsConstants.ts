@@ -101,7 +101,10 @@ export class GroupLocators extends CommonLocators {
   constructor(page: Page) {
     super(page);
 
-    this.groupsTab = page.locator("#anchor-tab-Groups");
+    // Groups is a sub-tab of Access & Users now (AnchorComponent's 2-level hash
+    // routing), rendered by the shared Tabs.jsx (a real MUI Tab) — not its own
+    // top-level anchor-tab-<name> button.
+    this.groupsTab = page.locator("#groups").or(page.getByRole("tab", { name: "Groups", exact: true })).first();
     this.newUserGroupIdentifier = page.locator("#new-user-group");
 
     this.addUserGroupBtn = page.getByText("Add User Group");

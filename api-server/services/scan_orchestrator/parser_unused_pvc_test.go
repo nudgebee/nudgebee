@@ -215,11 +215,11 @@ func TestResolveStoragePricing_Ladder(t *testing.T) {
 		return map[string]any{"spec": map[string]any{"storage_class_name": class}}
 	}
 
-	if p := resolveStoragePricing(pvWithClass("custom-ssd"), gkeClasses, ""); p.Source != "parameters" || p.PricePerGB != 0.17 {
+	if p := resolveStoragePricing(pvWithClass("custom-ssd"), gkeClasses, "", 0); p.Source != "parameters" || p.PricePerGB != 0.17 {
 		t.Errorf("parameters rung: got %+v", p)
 	}
 	// Class without parameters → well-known GKE name.
-	if p := resolveStoragePricing(pvWithClass("standard"), gkeClasses, ""); p.Source != "class_name" || p.PricePerGB != 0.04 {
+	if p := resolveStoragePricing(pvWithClass("standard"), gkeClasses, "", 0); p.Source != "class_name" || p.PricePerGB != 0.04 {
 		t.Errorf("class_name rung: got %+v", p)
 	}
 	// Unknown class, provider from the PV's own CSI driver → provider default.
@@ -227,7 +227,7 @@ func TestResolveStoragePricing_Ladder(t *testing.T) {
 		"storage_class_name": "who-knows",
 		"csi":                map[string]any{"driver": "ebs.csi.aws.com"},
 	}}
-	if p := resolveStoragePricing(pvCSI, nil, ""); p.Source != "provider_default" || p.DiskType != "gp2" {
+	if p := resolveStoragePricing(pvCSI, nil, "", 0); p.Source != "provider_default" || p.DiskType != "gp2" {
 		t.Errorf("provider_default rung: got %+v", p)
 	}
 	// Azure skuName casing normalizes.
@@ -237,13 +237,13 @@ func TestResolveStoragePricing_Ladder(t *testing.T) {
 			"parameters":  map[string]any{"skuName": "Premium_LRS"},
 		},
 	}
-	if p := resolveStoragePricing(pvWithClass("fast"), azClasses, ""); p.Source != "parameters" || p.PricePerGB != 0.12 {
+	if p := resolveStoragePricing(pvWithClass("fast"), azClasses, "", 0); p.Source != "parameters" || p.PricePerGB != 0.15 {
 		t.Errorf("azure skuName: got %+v", p)
 	}
 	// No PV-level signal at all → the account-provider backstop decides,
 	// matching the python producers' get_k8s_provider rung.
 	bare := map[string]any{"spec": map[string]any{}}
-	if p := resolveStoragePricing(bare, nil, "azure"); p.Source != "provider_default" || p.PricePerGB != 0.075 {
+	if p := resolveStoragePricing(bare, nil, "azure", 0); p.Source != "provider_default" || p.PricePerGB != 0.075 {
 		t.Errorf("account-provider backstop: got %+v", p)
 	}
 	// GKE's newer default class, and the only GCP type whose rate is not
@@ -255,14 +255,14 @@ func TestResolveStoragePricing_Ladder(t *testing.T) {
 			"parameters":  map[string]any{"type": "hyperdisk-balanced"},
 		},
 	}
-	if p := resolveStoragePricing(pvWithClass("hyperdisk-balanced-rwo"), hdClasses, ""); p.Source != "parameters" || p.PricePerGB != 0.08 {
+	if p := resolveStoragePricing(pvWithClass("hyperdisk-balanced-rwo"), hdClasses, "", 0); p.Source != "parameters" || p.PricePerGB != 0.08 {
 		t.Errorf("hyperdisk-balanced: got %+v", p)
 	}
 	// On-prem class name that collides with a GKE default must NOT price as GCP.
 	onPrem := map[string]map[string]any{
 		"standard": {"provisioner": "rancher.io/local-path"},
 	}
-	if p := resolveStoragePricing(pvWithClass("standard"), onPrem, ""); p.Source != "fallback" || p.PricePerGB != fallbackStorageRatePerGBMonth {
+	if p := resolveStoragePricing(pvWithClass("standard"), onPrem, "", 0); p.Source != "fallback" || p.PricePerGB != fallbackStorageRatePerGBMonth {
 		t.Errorf("on-prem fallback: got %+v", p)
 	}
 }
@@ -296,5 +296,64 @@ func TestParseSizeToGB(t *testing.T) {
 		if diff := got - want; diff > 0.001 || diff < -0.001 {
 			t.Errorf("parseSizeToGB(%q) = %f, want %f", in, got, want)
 		}
+	}
+}
+
+// Golden vectors for Azure tier pricing. The same cases are asserted in the
+// other three producers (ml-k8s-server, k8s-collector, cost-server); if a
+// rate moves in one copy and not the others, these diverge.
+func TestAzureTierMonthlyCost_Golden(t *testing.T) {
+	cases := []struct {
+		diskType string
+		sizeGB   float64
+		tier     string
+		monthly  float64
+	}{
+		{"premium_lrs", 100, "P10", 19.71},
+		{"premium_lrs", 128, "P10", 19.71},
+		{"premium_lrs", 129, "P15", 38.012142},
+		{"premium_lrs", 1024, "P30", 135.17},
+		{"premium_zrs", 100, "P10", 29.565},
+		{"standardssd_lrs", 100, "E10", 9.6},
+		{"standardssd_zrs", 512, "E20", 57.6},
+		{"standard_lrs", 10, "S4", 1.536},
+		{"standard_lrs", 40000, "S80", 953.55}, // above Azure's largest disk
+	}
+	for _, c := range cases {
+		got, ok := azureTierMonthlyCost(c.diskType, c.sizeGB)
+		if !ok || got.Name != c.tier || got.MonthlyUSD != c.monthly {
+			t.Errorf("azureTierMonthlyCost(%s, %v) = %+v %v, want %s $%v",
+				c.diskType, c.sizeGB, got, ok, c.tier, c.monthly)
+		}
+	}
+
+	// Per-GiB SKUs have no bands and must not be tier-priced.
+	for _, dt := range []string{"premiumv2_lrs", "ultrassd_lrs"} {
+		if _, ok := azureTierMonthlyCost(dt, 100); ok {
+			t.Errorf("%s must not be tiered", dt)
+		}
+	}
+	// Unknown size falls back to the flat rate.
+	if _, ok := azureTierMonthlyCost("premium_lrs", 0); ok {
+		t.Error("size 0 must not resolve a tier")
+	}
+}
+
+// A 100 GiB Premium disk is billed as P10 ($19.71/mo), so its savings must
+// be the whole tier price — not 100 x a flat per-GB rate.
+func TestResolveStoragePricing_AzureTierEffectiveRate(t *testing.T) {
+	classes := map[string]map[string]any{
+		"managed-premium": {
+			"provisioner": "disk.csi.azure.com",
+			"parameters":  map[string]any{"skuName": "Premium_LRS"},
+		},
+	}
+	pv := map[string]any{"spec": map[string]any{"storage_class_name": "managed-premium"}}
+	p := resolveStoragePricing(pv, classes, "", 100)
+	if p.Tier != "P10" || p.TierMonthlyUSD != 19.71 {
+		t.Fatalf("got %+v, want tier P10 @ $19.71", p)
+	}
+	if savings := p.PricePerGB * 100; savings != 19.71 {
+		t.Errorf("rate x size = %v, want the P10 monthly price 19.71", savings)
 	}
 }

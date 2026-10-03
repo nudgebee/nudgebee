@@ -49,18 +49,33 @@ describe('TriggerWorkflowModal — input parameters box', () => {
     expect(getJsonBox().value).toBe(CUSTOM_JSON);
   });
 
-  it('keeps the edit after unchecking "Use default values", across polls', async () => {
+  it('keeps typed JSON when "Use default values" is unchecked', async () => {
     const user = userEvent.setup();
     const { rerender } = render(<Harness />);
 
     await user.click(screen.getByText('Use default values'));
-    expect(getJsonBox().value).toBe('{}');
+    expect(getJsonBox().value).toBe(JSON.stringify({ namespace: 'default' }, null, 2));
 
     fireEvent.change(getJsonBox(), { target: { value: CUSTOM_JSON } });
     rerender(<Harness />);
     rerender(<Harness />);
 
     expect(getJsonBox().value).toBe(CUSTOM_JSON);
+  });
+
+  it('unchecks "Use default values" on edit, and re-checking restores the defaults', async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    const checkbox = () => screen.getByRole('checkbox') as HTMLInputElement;
+
+    expect(checkbox().checked).toBe(true);
+    fireEvent.change(getJsonBox(), { target: { value: CUSTOM_JSON } });
+    expect(checkbox().checked).toBe(false);
+    expect(getJsonBox().value).toBe(CUSTOM_JSON);
+
+    await user.click(screen.getByText('Use default values'));
+    expect(checkbox().checked).toBe(true);
+    expect(getJsonBox().value).toBe(JSON.stringify({ namespace: 'default' }, null, 2));
   });
 
   it('passes the custom inputs to onTrigger, not the defaults', async () => {
@@ -76,13 +91,12 @@ describe('TriggerWorkflowModal — input parameters box', () => {
     expect(onTrigger).toHaveBeenCalledWith({ event: { id: 'evt-1', fingerprint: 'fp-1' } });
   });
 
-  it('re-seeds defaults when the modal is closed and reopened', () => {
-    const { rerender } = render(<Harness />);
-
+  it('re-seeds defaults on a fresh mount (call sites mount it only while open)', () => {
+    const { unmount } = render(<Harness />);
     fireEvent.change(getJsonBox(), { target: { value: CUSTOM_JSON } });
-    rerender(<Harness open={false} />);
-    rerender(<Harness open />);
+    unmount();
 
+    render(<Harness />);
     expect(getJsonBox().value).toBe(JSON.stringify({ namespace: 'default' }, null, 2));
   });
 });

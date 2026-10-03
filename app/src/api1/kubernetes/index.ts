@@ -12,9 +12,31 @@ import {
   formatDateTime,
 } from '@lib/datetime';
 import { getBudgetExpectedMonthlyExpense, getExpectedYearlyExpense } from '@lib/budget';
-import { convertNumberToTimestampPromFormat, parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
+import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
 import getMockData from '@api1/mock';
+import observability from '@api1/observability';
 import { getClusterData } from '@context/DataContext';
+
+// Range step for a PromQL window when the caller has no opinion — the same table
+// the relay-server applies on the agent path, so a chart is as dense on a
+// Prometheus connected without an agent as it is behind one.
+function promqlDefaultStepSeconds(startMs: number, endMs: number) {
+  const seconds = Math.max(1, (endMs - startMs) / 1000);
+  let resolution: number;
+  if (seconds <= 3600) resolution = 250;
+  else if (seconds <= 86400) resolution = Math.ceil(seconds / 60);
+  else if (seconds <= 7 * 86400) resolution = Math.ceil(seconds / 300);
+  else resolution = 3000;
+  return Math.max(1, Math.round(seconds / resolution));
+}
+
+// '1d' | '1w' | '30d' — the bucket sizes getClusterMetrices2 charts by.
+function promStepToSeconds(step: string) {
+  const match = /^(\d+)([smhdw])$/.exec(step);
+  if (!match) return undefined;
+  const unit: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400, w: 7 * 86400 };
+  return parseInt(match[1], 10) * unit[match[2]];
+}
 
 function parseInsightJsonFields(rows: any[]) {
   if (!rows) return rows;
@@ -2556,6 +2578,35 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       return error;
     }
   },
+  /**
+   * Runs PromQL through the account's metrics provider (`metrics_list`) rather than the
+   * relay, so a Prometheus connected without an agent answers too; hands back the relay's
+   * `{key: {series_list_result: [{metric, timestamps, values}]}}` shape the chart code
+   * was written against. `null` when the request itself failed.
+   */
+  async promqlSeriesListByKey(
+    accountId: string,
+    queries: { key: string; query: string }[],
+    startMs: number,
+    endMs: number,
+    stepSeconds?: number
+  ): Promise<Record<string, { series_list_result: any[] }> | null> {
+    const queryMap: Record<string, string> = {};
+    for (const q of queries) queryMap[q.key] = q.query;
+    const response = await observability.metricsQuery({
+      account_id: accountId,
+      queries: queryMap,
+      instant: false,
+      start_time: startMs,
+      end_time: endMs,
+      step_interval: stepSeconds || promqlDefaultStepSeconds(startMs, endMs),
+    });
+    const results = response?.data?.data?.metrics_list?.results;
+    if (!Array.isArray(results)) return null;
+    const byKey: Record<string, { series_list_result: any[] }> = {};
+    for (const r of results) byKey[r.query_key] = { series_list_result: r.payload || [] };
+    return byKey;
+  },
   async getK8sPodGroupings(
     limit = 10,
     query: any = {},
@@ -2958,78 +3009,33 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       }
     }
 
-    const data = {
-      no_sinks: true,
-      body: {
-        account_id: query.accountId || query.account_Id,
-        action_name: 'prometheus_queries_enricher',
-        action_params: {
-          promql_query: '',
-          promql_queries: queries,
-          steps: '',
-          duration: {
-            starts_at: convertNumberToTimestampPromFormat(time1),
-            ends_at: convertNumberToTimestampPromFormat(time2),
-          },
-        },
-        origin: 'Nudgebee UI',
-      },
-    };
-    const response = await this.relayForwardRequest(data);
-
     let result: any[] = [];
-    const isSuccess = response?.data?.success || false;
+    const promqlParsed = await this.promqlSeriesListByKey(query.accountId || query.account_Id, queries, time1, time2);
+    if (promqlParsed) {
+      const metrics = ['cpu_usage', 'memory_usage', 'cpu_request', 'memory_request', 'cpu_limit', 'memory_limit', 'disk_used', 'disk_total'];
+      const hasData = metrics.some((metric) => promqlParsed[metric]?.series_list_result?.length > 0);
 
-    if (isSuccess) {
-      const findings = response?.data?.findings || [];
-      if (findings && findings.length == 1) {
-        const findingEvidence = findings[0]?.evidence || [];
-        if (findingEvidence && findingEvidence.length == 1) {
-          const evidenceData = findingEvidence[0]?.data || '';
-          if (evidenceData) {
-            const evidenceParsed = JSON.parse(evidenceData);
-            if (evidenceParsed && evidenceParsed.length == 1) {
-              const promqlData = evidenceParsed[0]?.data || '';
-              if (promqlData) {
-                const promqlParsed = JSON.parse(promqlData);
-                const metrics = [
-                  'cpu_usage',
-                  'memory_usage',
-                  'cpu_request',
-                  'memory_request',
-                  'cpu_limit',
-                  'memory_limit',
-                  'disk_used',
-                  'disk_total',
-                ];
-                const hasData = metrics.some((metric) => promqlParsed[metric]?.series_list_result?.length > 0);
+      if (hasData) {
+        const firstAvailableMetric = metrics.find((metric) => promqlParsed[metric]?.series_list_result?.length > 0);
 
-                if (hasData) {
-                  const firstAvailableMetric = metrics.find((metric) => promqlParsed[metric]?.series_list_result?.length > 0);
-
-                  if (firstAvailableMetric) {
-                    result = promqlParsed[firstAvailableMetric].series_list_result[0].timestamps.map((timestamp: any, index: any) => ({
-                      timestamp: formatDateTime(timestamp),
-                      avg_cpu_used: parseFloat(promqlParsed.cpu_usage?.series_list_result[0]?.values?.[index]),
-                      avg_memory_used: parseFloat(promqlParsed.memory_usage?.series_list_result[0]?.values?.[index]),
-                      avg_cpu_request: parseFloat(promqlParsed.cpu_request?.series_list_result[0]?.values?.[index]),
-                      avg_cpu_limit: parseFloat(promqlParsed.cpu_limit?.series_list_result[0]?.values?.[index]),
-                      avg_memory_request: parseFloat(promqlParsed.memory_request?.series_list_result[0]?.values?.[index]),
-                      avg_memory_limit: parseFloat(promqlParsed.memory_limit?.series_list_result[0]?.values?.[index]),
-                      sum_gpu_used: parseFloat(promqlParsed.gpu_usage?.series_list_result[0]?.values?.[index]),
-                      sum_gpu_temp: parseFloat(promqlParsed.gpu_temp?.series_list_result[0]?.values?.[index]),
-                      sum_gpu_mem_temp: parseFloat(promqlParsed.gpu_temp?.series_list_result[0]?.values?.[index]),
-                      sum_gpu_mem_usage: parseFloat(promqlParsed.gpu_mem_usage?.series_list_result[0]?.values?.[index]),
-                      disk_total: parseFloat(promqlParsed.disk_total?.series_list_result[0]?.values?.[index]),
-                      disk_used: parseFloat(promqlParsed.disk_used?.series_list_result[0]?.values?.[index]),
-                      pod_cost: '',
-                      account_id: query.accountId || query.account_Id,
-                    }));
-                  }
-                }
-              }
-            }
-          }
+        if (firstAvailableMetric) {
+          result = promqlParsed[firstAvailableMetric].series_list_result[0].timestamps.map((timestamp: any, index: any) => ({
+            timestamp: formatDateTime(timestamp),
+            avg_cpu_used: parseFloat(promqlParsed.cpu_usage?.series_list_result[0]?.values?.[index]),
+            avg_memory_used: parseFloat(promqlParsed.memory_usage?.series_list_result[0]?.values?.[index]),
+            avg_cpu_request: parseFloat(promqlParsed.cpu_request?.series_list_result[0]?.values?.[index]),
+            avg_cpu_limit: parseFloat(promqlParsed.cpu_limit?.series_list_result[0]?.values?.[index]),
+            avg_memory_request: parseFloat(promqlParsed.memory_request?.series_list_result[0]?.values?.[index]),
+            avg_memory_limit: parseFloat(promqlParsed.memory_limit?.series_list_result[0]?.values?.[index]),
+            sum_gpu_used: parseFloat(promqlParsed.gpu_usage?.series_list_result[0]?.values?.[index]),
+            sum_gpu_temp: parseFloat(promqlParsed.gpu_temp?.series_list_result[0]?.values?.[index]),
+            sum_gpu_mem_temp: parseFloat(promqlParsed.gpu_temp?.series_list_result[0]?.values?.[index]),
+            sum_gpu_mem_usage: parseFloat(promqlParsed.gpu_mem_usage?.series_list_result[0]?.values?.[index]),
+            disk_total: parseFloat(promqlParsed.disk_total?.series_list_result[0]?.values?.[index]),
+            disk_used: parseFloat(promqlParsed.disk_used?.series_list_result[0]?.values?.[index]),
+            pod_cost: '',
+            account_id: query.accountId || query.account_Id,
+          }));
         }
       }
     }
@@ -3293,6 +3299,11 @@ query k8s_event_groupings($limit:Int,$offset:Int){
         data: [],
       };
     }
+    if (!accountId) {
+      return {
+        data: [],
+      };
+    }
 
     let steps = '1d';
     if (dateUnit == 'week') {
@@ -3343,85 +3354,51 @@ query k8s_event_groupings($limit:Int,$offset:Int){
         endDate = new Date();
       }
 
-      const data = {
-        no_sinks: true,
-        body: {
-          account_id: accountId,
-          action_name: 'prometheus_queries_enricher',
-          action_params: {
-            promql_query: '',
-            promql_queries: queries,
-            step: steps,
-            duration: {
-              starts_at: convertNumberToTimestampPromFormat(startDate.getTime()),
-              ends_at: convertNumberToTimestampPromFormat(endDate.getTime()),
-            },
-          },
-          origin: 'Nudgebee UI',
-        },
-      };
-      const response = await this.relayForwardRequest(data);
       let result: any[] = [];
-      const isSuccess = response?.data?.success || false;
-      if (isSuccess) {
-        const findings = response?.data?.findings || [];
-        if (findings && findings.length == 1) {
-          const findingEvidence = findings[0]?.evidence || [];
-          if (findingEvidence && findingEvidence.length == 1) {
-            const evidenceData = findingEvidence[0]?.data || '';
-            if (evidenceData) {
-              const evidenceParsed = JSON.parse(evidenceData);
-              if (evidenceParsed && evidenceParsed.length == 1) {
-                const promqlData = evidenceParsed[0]?.data || '';
-                if (promqlData) {
-                  const promqlParsed = JSON.parse(promqlData);
-                  const metrics = ['networkReceiveBytes', 'networkTransferBytes', 'cpu_usage', 'cpu_total', 'memory_usage', 'memory_total'];
-                  const hasData = metrics.some((metric) => promqlParsed[metric]?.series_list_result?.length > 0);
-                  if (hasData) {
-                    const firstAvailableMetric = metrics.find((metric) => promqlParsed[metric]?.series_list_result?.length > 0);
+      const promqlParsed = await this.promqlSeriesListByKey(accountId, queries, startDate.getTime(), endDate.getTime(), promStepToSeconds(steps));
+      if (promqlParsed) {
+        const metrics = ['networkReceiveBytes', 'networkTransferBytes', 'cpu_usage', 'cpu_total', 'memory_usage', 'memory_total'];
+        const hasData = metrics.some((metric) => promqlParsed[metric]?.series_list_result?.length > 0);
+        if (hasData) {
+          const firstAvailableMetric = metrics.find((metric) => promqlParsed[metric]?.series_list_result?.length > 0);
 
-                    if (firstAvailableMetric) {
-                      result = promqlParsed[firstAvailableMetric].series_list_result[0].timestamps.flatMap((timestamp: any, index: any) => {
-                        const response: any = [];
-                        if (metric?.includes('networkTransferBytes')) {
-                          response.push({
-                            timestamp: formatDateTime(timestamp),
-                            metric: 'networkTransferBytes',
-                            avg_value: parseFloat(promqlParsed.networkTransferBytes?.series_list_result[0]?.values?.[index]),
-                            account_id: accountId,
-                          });
-                        }
-                        if (metric?.includes('networkReceiveBytes')) {
-                          response.push({
-                            timestamp: formatDateTime(timestamp),
-                            metric: 'networkReceiveBytes',
-                            avg_value: parseFloat(promqlParsed.networkReceiveBytes?.series_list_result[0]?.values?.[index]),
-                            account_id: accountId,
-                          });
-                        }
-                        if (metric?.includes('cpu')) {
-                          response.push({
-                            timestamp: formatDateTime(timestamp),
-                            avg_cpu_used_node: parseFloat(promqlParsed.cpu_usage?.series_list_result[0]?.values?.[index]),
-                            total_cpu_allocatable: parseFloat(promqlParsed.cpu_total?.series_list_result[0]?.values?.[index]),
-                            account_id: accountId,
-                          });
-                        }
-                        if (metric?.includes('memory')) {
-                          response.push({
-                            timestamp: formatDateTime(timestamp),
-                            avg_memory_used_node: parseFloat(promqlParsed.memory_usage?.series_list_result[0]?.values?.[index]),
-                            total_memory_allocatable: parseFloat(promqlParsed.memory_total?.series_list_result[0]?.values?.[index]),
-                            account_id: accountId,
-                          });
-                        }
-                        return response;
-                      });
-                    }
-                  }
-                }
+          if (firstAvailableMetric) {
+            result = promqlParsed[firstAvailableMetric].series_list_result[0].timestamps.flatMap((timestamp: any, index: any) => {
+              const response: any = [];
+              if (metric?.includes('networkTransferBytes')) {
+                response.push({
+                  timestamp: formatDateTime(timestamp),
+                  metric: 'networkTransferBytes',
+                  avg_value: parseFloat(promqlParsed.networkTransferBytes?.series_list_result[0]?.values?.[index]),
+                  account_id: accountId,
+                });
               }
-            }
+              if (metric?.includes('networkReceiveBytes')) {
+                response.push({
+                  timestamp: formatDateTime(timestamp),
+                  metric: 'networkReceiveBytes',
+                  avg_value: parseFloat(promqlParsed.networkReceiveBytes?.series_list_result[0]?.values?.[index]),
+                  account_id: accountId,
+                });
+              }
+              if (metric?.includes('cpu')) {
+                response.push({
+                  timestamp: formatDateTime(timestamp),
+                  avg_cpu_used_node: parseFloat(promqlParsed.cpu_usage?.series_list_result[0]?.values?.[index]),
+                  total_cpu_allocatable: parseFloat(promqlParsed.cpu_total?.series_list_result[0]?.values?.[index]),
+                  account_id: accountId,
+                });
+              }
+              if (metric?.includes('memory')) {
+                response.push({
+                  timestamp: formatDateTime(timestamp),
+                  avg_memory_used_node: parseFloat(promqlParsed.memory_usage?.series_list_result[0]?.values?.[index]),
+                  total_memory_allocatable: parseFloat(promqlParsed.memory_total?.series_list_result[0]?.values?.[index]),
+                  account_id: accountId,
+                });
+              }
+              return response;
+            });
           }
         }
       }

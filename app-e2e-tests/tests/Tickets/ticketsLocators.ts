@@ -66,7 +66,6 @@ export class TicketsLocators extends CommonLocators {
 
   readonly filterOptions: Locator;
 
-  readonly ticketDetailsTab: Locator;
   readonly detailsDescriptionHeading: Locator;
   readonly detailsAdditionalHeading: Locator;
 
@@ -142,7 +141,6 @@ export class TicketsLocators extends CommonLocators {
     // unmounts on close, so at most one panel is mounted at a time.
     this.filterOptions = page.locator('[role="option"]:visible');
 
-    this.ticketDetailsTab = page.getByRole("tab", { name: "Ticket Details" }).first();
     // The drill-down's two section headings are plain Typography with no id or role, so
     // they are matched on text and scoped to the table body — the only place in the module
     // that renders them, and only while a row is expanded.

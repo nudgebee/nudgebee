@@ -16,7 +16,6 @@ jest.mock('@lib/auth', () => ({
     appVersion: '1.0.0',
   })),
   isTenantAdmin: jest.fn(() => false),
-  canViewTenantSettings: jest.fn(() => true),
   missingPermissionMessage: jest.fn((p) => `You need the "${p}" permission. Ask an admin to grant it.`),
 }));
 
@@ -41,12 +40,11 @@ jest.mock('src/utils/colors', () => {
 });
 
 const { signOut } = require('next-auth/react');
-const { getUserSession, isTenantAdmin, canViewTenantSettings } = require('@lib/auth');
+const { getUserSession, isTenantAdmin } = require('@lib/auth');
 
 describe('UserMenuItems', () => {
   let setAnchorElUser;
   let setOpenSwitchAccount;
-  let setOpenSettings;
   let setOpenApiTokens;
   let handleSubMenuClick;
   let getMenuItem;
@@ -55,13 +53,11 @@ describe('UserMenuItems', () => {
     jest.clearAllMocks();
     setAnchorElUser = jest.fn();
     setOpenSwitchAccount = jest.fn();
-    setOpenSettings = jest.fn();
     setOpenApiTokens = jest.fn();
     handleSubMenuClick = jest.fn();
     getMenuItem = createGetMenuItem({
       setAnchorElUser,
       setOpenSwitchAccount,
-      setOpenSettings,
       setOpenApiTokens,
       handleSubMenuClick,
     });
@@ -125,29 +121,6 @@ describe('UserMenuItems', () => {
       expect(screen.getByText(/Version: N\/A/)).toBeInTheDocument();
     });
 
-    it('renders Settings item and handles click', () => {
-      render(<>{getMenuItem('Settings')}</>);
-      const menuItem = screen.getByText(/Settings/);
-      fireEvent.click(menuItem.closest('[role="menuitem"]') || menuItem);
-      expect(setAnchorElUser).toHaveBeenCalledWith(null);
-      expect(setOpenSettings).toHaveBeenCalledWith(true);
-    });
-
-    it('disables Settings and suppresses the click when the user cannot view tenant settings', () => {
-      // A user with neither a tenant-wide role nor tenants:Read still SEES the
-      // entry — it is disabled and names the grant to ask for, rather than
-      // vanishing from the menu.
-      canViewTenantSettings.mockReturnValue(false);
-      render(<>{getMenuItem('Settings')}</>);
-      const label = screen.getByText(/Tenant Settings/);
-      const menuItem = label.closest('[role="menuitem"]');
-      expect(menuItem).toBeInTheDocument();
-      expect(menuItem).toHaveAttribute('aria-disabled', 'true');
-      fireEvent.click(menuItem);
-      expect(setOpenSettings).not.toHaveBeenCalled();
-      canViewTenantSettings.mockReturnValue(true);
-    });
-
     it('renders API Tokens item and handles click', () => {
       render(<>{getMenuItem('API Tokens')}</>);
       const menuItem = screen.getByText(/API Tokens/);
@@ -166,15 +139,14 @@ describe('UserMenuItems', () => {
   });
 
   describe('generateMenuItems', () => {
-    it('returns basic menu without multi-tenant and not admin', () => {
+    it('returns basic menu without multi-tenant', () => {
       isTenantAdmin.mockReturnValue(false);
       const menu = generateMenuItems(false);
       expect(menu).toContain('UserInfo');
       expect(menu).not.toContain('Switch Tenant');
-      // Settings is listed for every user now — entitlement is applied at render
-      // time (disabled + a tooltip naming the missing grant), not by omitting the
-      // entry, so a non-admin can see the surface exists and what to ask for.
-      expect(menu).toContain('Settings');
+      // Tenant Settings relocated to the Admin page as a real tab (gated by
+      // hasAdminSurfaceAccess there) — it's no longer part of this avatar menu.
+      expect(menu).not.toContain('Settings');
       expect(menu).toContain('API Tokens');
       expect(menu).toContain('Logout');
       expect(menu).toContain('Version');
@@ -184,19 +156,6 @@ describe('UserMenuItems', () => {
       isTenantAdmin.mockReturnValue(false);
       const menu = generateMenuItems(true);
       expect(menu).toContain('Switch Tenant');
-    });
-
-    it('includes Settings when user is tenant admin', () => {
-      isTenantAdmin.mockReturnValue(true);
-      const menu = generateMenuItems(false);
-      expect(menu).toContain('Settings');
-    });
-
-    it('includes both Switch Tenant and Settings when both conditions true', () => {
-      isTenantAdmin.mockReturnValue(true);
-      const menu = generateMenuItems(true);
-      expect(menu).toContain('Switch Tenant');
-      expect(menu).toContain('Settings');
     });
 
     it('uses default parameter value of false for hasMultipleTenantAccess', () => {

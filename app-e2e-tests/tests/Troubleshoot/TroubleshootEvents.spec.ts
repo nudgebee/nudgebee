@@ -8,6 +8,7 @@ import {
 import {
   openTroubleshoot,
   openEventSubTab,
+  openEventResolutions,
   openInvestigationSubTab,
   deepLinkTroubleshoot,
   expectSelectedSubTab,
@@ -26,7 +27,7 @@ import {
 const NO_MATCH_RULE_NAME = `zz-no-such-rule-${Date.now()}`;
 
 test(
-  "Troubleshoot sanity - open Troubleshoot from the sidebar, verify all seven All Events sub-tabs render and Triage Inbox is the one selected",
+  "Troubleshoot sanity - open Troubleshoot from the sidebar, verify all six All Events sub-tabs render and Triage Inbox is the one selected",
   { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
@@ -128,17 +129,17 @@ test(
 );
 
 test(
-  "Troubleshoot - open the Event Resolutions sub-tab, verify the resolutions listing renders with its CSV download control",
+  "Troubleshoot - open the Event Resolutions top-level tab, verify the resolutions listing renders with its CSV download control",
   { tag: ["@dev", "@test", "@regression", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
     const locators = await openTroubleshoot(page);
-    await openEventSubTab(locators, EventSubTabs.eventResolutions);
+    await openEventResolutions(locators);
 
     await expect(locators.eventResolutionsListBox).toBeVisible({ timeout: 30000 });
     await expect(locators.eventResolutionsDownload).toBeVisible();
-    await expect(page).toHaveURL(/#all-events\/event-resolutions\b/);
+    await expect(page).toHaveURL(/#event-resolutions\b/);
   }
 );
 

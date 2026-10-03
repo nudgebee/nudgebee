@@ -980,6 +980,20 @@ func (p *TemplatedEventBridgeProcessor) executeAction(
 		if err != nil {
 			return nil, fmt.Errorf("eventprocessor: parsing time offsets for aws_get_metric: %w", err)
 		}
+
+		// Never query coarser than the alarm evaluated. A 60s alarm that fired on
+		// a 99.9% datapoint, queried at the rule's default 300s period, comes back
+		// as a ~33% five-minute bucket — below its own 40% threshold — so the
+		// evidence card contradicts the alarm it is meant to explain.
+		if alarmPeriod := extractAlarmEvaluation(ebEvent).PeriodSeconds; alarmPeriod > 0 &&
+			(params.PeriodSeconds <= 0 || alarmPeriod < params.PeriodSeconds) {
+			if int64(endTime.Sub(startTime).Seconds())/alarmPeriod <= maxMetricDatapoints {
+				logger.Info("eventprocessor: narrowing metric period to the alarm evaluation period",
+					"rulePeriodSeconds", params.PeriodSeconds, "alarmPeriodSeconds", alarmPeriod)
+				params.PeriodSeconds = alarmPeriod
+			}
+		}
+
 		metricQuery := providers.QueryMetricsRequest{
 			ServiceName:     params.Namespace,
 			MetricNamespace: params.Namespace, // Pass CW namespace directly so getAwsCloudwatchMetrics uses it as-is
@@ -1476,13 +1490,16 @@ func (p *TemplatedEventBridgeProcessor) updateCloudResource(
 		"newStatus", params.NewStatus,
 		"accountNumber", awsAccount.AccountNumber)
 
-	// Get account metadata (UUID) from cache
-	accountID, tenantID, found := GetAccountMetadata(awsAccount.AccountNumber)
+	// The account UUID is already on the resolved account; only its tenant needs
+	// looking up, keyed by that UUID so two tenants sharing one AWS account
+	// number cannot be attributed to each other.
+	accountID := awsAccount.ID
+	tenantID, found := GetAccountTenant(accountID)
 	if !found {
-		logger.Error("eventprocessor: account metadata not found in cache", "accountNumber", awsAccount.AccountNumber)
-		return nil, fmt.Errorf("eventprocessor: account metadata not found in cache for account %s", awsAccount.AccountNumber)
+		logger.Error("eventprocessor: account tenant not found in cache", "accountId", accountID, "accountNumber", awsAccount.AccountNumber)
+		return nil, fmt.Errorf("eventprocessor: account tenant not found in cache for account %s", awsAccount.AccountNumber)
 	}
-	logger.Info("eventprocessor: found account metadata", "accountID", accountID, "tenantID", tenantID)
+	logger.Info("eventprocessor: resolved account tenant", "accountID", accountID, "tenantID", tenantID)
 
 	// Get database manager
 	dbms, err := common.GetDatabaseManager(common.Metastore)
@@ -2337,7 +2354,7 @@ func (p *TemplatedEventBridgeProcessor) Process(ctx providers.CloudProviderConte
 			} else {
 				provEvent.AdditionalContext = append(provEvent.AdditionalContext, providers.EventEvidence{
 					Type:    providers.EventEvidenceTypeJson,
-					Insight: []string{actionDef.Name, actionDef.Description},
+					Insight: buildActionEvidenceInsight(ebEvent, actionDef, actionResult),
 					Data:    string(actionResultJson),
 					AdditionalInfo: map[string]string{
 						"action_name": actionDef.Name,

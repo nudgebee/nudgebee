@@ -28,7 +28,9 @@ type SignozLogQueryAgent struct{}
 
 func (d SignozLogQueryAgent) GetName() string { return SignozLogQueryAgentName }
 
-func (d SignozLogQueryAgent) GetNameAliases() []string { return []string{"Signoz Log Query"} }
+func (d SignozLogQueryAgent) GetNameAliases() []string {
+	return []string{"SigNoz Log Query Writer", "Signoz Log Query"}
+}
 
 func (d SignozLogQueryAgent) GetDescription() string {
 	return `Generate Signoz log query based on natural language question.`

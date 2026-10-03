@@ -1158,7 +1158,9 @@ def close_events_for_recovered_workloads(cloud_account_id: str, workloads: List[
     accident.
 
     "Recovered" is `ready_pods == total_pods` on the workload the event is linked to,
-    with `total_pods > 0` so a scaled-to-zero workload does not read as healthy.
+    with `total_pods > 0` so a scaled-to-zero workload does not read as healthy,
+    AND none of the workload's live pods is unready (see _workloads_with_unready_pods:
+    the counts alone read a stuck rollout as healthy).
     Deliberately NOT the pod phase: a pod stuck in CrashLoopBackOff reports
     `status.phase = Running` between restarts, which is what made the legacy
     status-diff path (run_status_update) close crashloop events on a live crashloop.
@@ -1205,6 +1207,10 @@ def close_events_for_recovered_workloads(cloud_account_id: str, workloads: List[
     recovered = [w for w in workloads if w.total_pods > 0 and w.ready_pods == w.total_pods]
     if not recovered:
         return
+    unready = _workloads_with_unready_pods(cloud_account_id, recovered)
+    recovered = [w for w in recovered if (w.namespace, w.name) not in unready]
+    if not recovered:
+        return
 
     observed_at = None
     for w in recovered:
@@ -1246,6 +1252,50 @@ def close_events_for_recovered_workloads(cloud_account_id: str, workloads: List[
         closing_reason="workload_recovered",
         metadata={"method": "discovery", "trigger": "all_pods_ready"},
     )
+
+
+def _workloads_with_unready_pods(cloud_account_id: str, workloads: List[Any]) -> set:
+    """(namespace, name) of the given workloads that still own a live pod that is not ready.
+
+    The workload's own counts cannot see a stuck rollout: the agent sends
+    `total_pods = spec.replicas` and `ready_pods = status.readyReplicas`, so while a
+    new ReplicaSet's pod sits in ImagePullBackOff the old ReplicaSet's pods keep the
+    Deployment at 2/2 and it reads as recovered -- which closed the ImagePullBackOff
+    event of a pod that was still failing (observed on production, hello-world).
+    The pod rows are written from the same batch just before this runs, so they are
+    the current view.
+
+    For a pod, the agent's `ready_pods` is its count of READY CONTAINERS and
+    `total_pods` is always 1, so ready < total misses a pod whose sidecar is ready
+    and whose main container is not. Ready containers are compared with the
+    containers in the pod spec instead; on production that agrees with the pod's
+    Ready condition on every live row, and unlike that condition it is present
+    for older agents too.
+
+    Matched on namespace + name, not kind: _resolve_pod_owner's fallback labels a
+    pod "Deployment" when its ReplicaSet is not in the batch, which would hide an
+    Argo Rollout's unready pod. A same-named workload of another kind only keeps
+    events open longer, which is the safe direction.
+
+    Completed / succeeded / failed pods are skipped: they are finished, not
+    unhealthy, and discovery already treats them as inactive (see the is_deleted
+    handling in process_service_discovery).
+    """
+    rows = database.run_query(
+        "SELECT DISTINCT namespace, workload_name FROM k8s_pods "
+        "WHERE cloud_account_id = %s AND is_active "
+        "AND namespace = ANY(%s) AND workload_name = ANY(%s) "
+        "AND lower(status) NOT IN ('completed', 'succeeded', 'failed') "
+        "AND jsonb_typeof(meta->'ready_pods') = 'number' "
+        "AND jsonb_typeof(meta->'config'->'containers') = 'array' "
+        "AND (meta->>'ready_pods')::int < jsonb_array_length(meta->'config'->'containers')",
+        [
+            cloud_account_id,
+            list({w.namespace for w in workloads}),
+            list({w.name for w in workloads}),
+        ],
+    )
+    return {(r[0], r[1]) for r in rows or []}
 
 
 def process_deleted_resources(cloud_account_id, deleted_resources, tenant):

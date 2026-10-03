@@ -939,6 +939,14 @@ export async function upsertTenantAttributes(
   return response;
 }
 
+// cache.set takes the TTL in SECONDS (cache.ts multiplies by 1000). Both callers
+// below passed `60 * 60 * 1000`, reading as "one hour" but meaning 3.6M seconds —
+// about 41 days, so each pod served whatever it first read for the rest of its
+// life. Nothing invalidates these on write either (tenant attributes are edited
+// through the API, and each app replica caches independently), so the TTL is the
+// only thing that refreshes them.
+const TENANT_CACHE_TTL_SEC = 60 * 60;
+
 const TENANT_ATTRIBUTES_QUERY = `query TenantAttributes {
   tenant_attributes_v2 {
     rows { id name value tenant_id }
@@ -950,7 +958,7 @@ export async function getTenantAttributes(refresh = false) {
   if (!cachedTenantAttrList || refresh) {
     const response = await queryGraphQL(TENANT_ATTRIBUTES_QUERY, 'TenantAttributes', {});
     const tenantAttrs = response?.data?.data?.tenant_attributes_v2?.rows || [];
-    cache.setWithSuffix('tenant.listTenantAttr', tenantAttrs, {}, 60 * 60 * 1000);
+    cache.setWithSuffix('tenant.listTenantAttr', tenantAttrs, {}, TENANT_CACHE_TTL_SEC);
     cachedTenantAttrList = tenantAttrs;
   }
   return cachedTenantAttrList;
@@ -977,7 +985,7 @@ export async function getFeatures() {
   if (!cachedTenantAttrList) {
     const response = await queryGraphQL(GET_FEATURES, 'GetFeatures', {});
     const features = response?.data?.data?.features_list?.rows || [];
-    cache.setWithSuffix('tenant.listFeatures', features, {}, 60 * 60 * 1000);
+    cache.setWithSuffix('tenant.listFeatures', features, {}, TENANT_CACHE_TTL_SEC);
     cachedTenantAttrList = features;
   }
   return cachedTenantAttrList;

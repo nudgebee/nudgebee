@@ -27,7 +27,7 @@ import (
 func cloudLeanCoreToolNames(cliToolName string) []string {
 	names := []string{
 		cliToolName,
-		getLogsAgentName(),
+		LogsAgentName,
 		MetricsAgentName,
 		TracesAgentName,
 		ServiceDependencyGraph,

@@ -36,7 +36,7 @@ func (r RemediationAgent) GetName() string {
 }
 
 func (r RemediationAgent) GetNameAliases() []string {
-	return []string{"Remediation", "AutoFix", "Fixer"}
+	return []string{"Remediation Planner & Executor", "Remediation", "AutoFix", "Fixer"}
 }
 
 func (r RemediationAgent) GetDescription() string {

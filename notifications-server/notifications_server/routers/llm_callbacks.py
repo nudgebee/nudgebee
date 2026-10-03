@@ -29,7 +29,7 @@ event_cache = Cache()
 
 class LLMResponse(BaseModel):
     conversation_id: str
-    type: str  # "follow-up", "final" or "error"
+    type: str  # "follow-up", "final", "error", or "watch_registered"
     response: str
     tenant_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -41,6 +41,9 @@ class LLMResponse(BaseModel):
     # existed, and on responses to non-Slack-chat requests that never set it
     # (e.g. the automated event-investigation pipeline).
     reply_ref: Optional[str] = None
+    # From the llm-server watch feature: keys the in-progress status message on
+    # "watch_registered", and on "final" lets the handler retire it.
+    watch_id: Optional[str] = None
 
 
 async def get_cached_or_fallback_entry(
@@ -134,9 +137,12 @@ def _handle_event_conversation(common_service: CommonService, conversation_id: s
                 extra={"conversation_id": conversation_id, "reply_ref": payload.reply_ref},
             )
 
+    # Exclude watch_registered only: it carries an empty response, so this path
+    # would just log a spurious "Missing required fields". Other types keep
+    # their prior behaviour — an allow-list here would silently drop `error`.
     if reply_ref_channel_id and reply_ref_thread_ts:
         channel_id, thread_ts = reply_ref_channel_id, reply_ref_thread_ts
-    elif payload.tenant_id:
+    elif payload.tenant_id and payload.type != "watch_registered":
         with Session(sync_engine) as session:
             if is_feature_enabled(session, "EVENT_ANALYSIS_ON_CHANNEL", payload.tenant_id):
                 parts = conversation_id.split("-", 1)
@@ -225,6 +231,7 @@ async def handle_llm_response(request: Request, background_tasks: BackgroundTask
                     "follow-up": events_service.handle_followup_response,
                     "final": events_service.handle_final_response,
                     "error": events_service.handle_error_response,
+                    "watch_registered": events_service.handle_watch_registered,
                 },
                 "ms_teams": {
                     "follow-up": events_service.handle_teams_followup_response,
@@ -255,6 +262,15 @@ async def handle_llm_response(request: Request, background_tasks: BackgroundTask
 
             handler = platform_handlers.get(payload.type)
             if not handler:
+                # watch_registered = best-effort Slack-only indicator; other
+                # platforms skip rather than 400 (llm-server fires it for any chat).
+                if payload.type == "watch_registered":
+                    LOG.debug(
+                        "watch_registered not supported for platform=%s; skipping (conversation_id=%s)",
+                        platform,
+                        payload.conversation_id,
+                    )
+                    return {"status": "skipped"}
                 LOG.error("Unknown response type '%s' for conversation_id=%s", payload.type, payload.conversation_id)
                 raise HTTPException(status_code=400, detail=f"Unknown response type: {payload.type}")
 

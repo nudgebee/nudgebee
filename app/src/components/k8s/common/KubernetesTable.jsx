@@ -36,8 +36,6 @@ import PropTypes from 'prop-types';
 import KubernetesSecurity from '@components/recommendations/KubernetesSecurity';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import CodeMirror, { EditorView } from '@uiw/react-codemirror';
-import { json } from '@codemirror/lang-json';
 import apiKubernetes1 from '@api1/kubernetes1';
 import apiTriage from '@api1/triage';
 import { SeverityIcon } from '@ui/SeverityIcon';
@@ -54,6 +52,7 @@ import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import KubernetesPlusMinusLogsGradual from '@components/k8s/details/KubernetesPlusMinusLogsGradual';
 const CodeMirrorDiffViewer = dynamic(() => import('@shared/viewers/DiffViewer'), { ssr: false });
+const KubernetesLogstashDetails = dynamic(() => import('./KubernetesLogstashDetails'), { ssr: false });
 import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { md5 } from '@lib/encode';
 import { buildNubiChartPrompt } from 'src/utils/nubiPromptBuilder';
@@ -1096,23 +1095,6 @@ const KubernetesLogDetails = ({ query }) => {
   );
 };
 KubernetesLogDetails.propTypes = {
-  query: PropTypes.object,
-};
-
-const KubernetesLogstashDetails = ({ query }) => {
-  return (
-    <CodeMirror
-      value={JSON.stringify(query, null, 4)}
-      height={ds.space.mul(0, 150)}
-      extensions={[json(), EditorView.lineWrapping]}
-      editable={false}
-      style={{
-        border: '1px solid silver',
-      }}
-    />
-  );
-};
-KubernetesLogstashDetails.propTypes = {
   query: PropTypes.object,
 };
 

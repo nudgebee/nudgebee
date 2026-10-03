@@ -60,8 +60,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/llms/anthropic"
-
+	"nudgebee/llm/llms/anthropic"
 	"nudgebee/llm/llms/openai"
 )
 
@@ -302,13 +301,14 @@ func GetLLMModel(provider string, modelName string, agentName string, appendAgen
 // pod's global secret-env fallback. It deliberately carries only what the
 // code-analysis llm.Client consumes.
 type ForwardedLLMConfig struct {
-	Provider    string `json:"provider,omitempty"`
-	Model       string `json:"model,omitempty"`
-	ApiKey      string `json:"api_key,omitempty"`
-	ApiEndpoint string `json:"endpoint,omitempty"`
-	ApiVersion  string `json:"api_version,omitempty"`
-	ApiType     string `json:"api_type,omitempty"`
-	Region      string `json:"region,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	Model        string `json:"model,omitempty"`
+	ApiKey       string `json:"api_key,omitempty"`
+	ApiEndpoint  string `json:"endpoint,omitempty"`
+	ApiVersion   string `json:"api_version,omitempty"`
+	ApiType      string `json:"api_type,omitempty"`
+	Region       string `json:"region,omitempty"`
+	ExtraHeaders string `json:"extra_headers,omitempty"`
 	// AccessKey/SecretKey/SessionToken are the AWS static credentials for
 	// Bedrock, whose "API key" is a SigV4 credential triple rather than a single
 	// token. Without them a forwarded provider=bedrock reaches the code-analysis
@@ -388,6 +388,14 @@ func ResolveLLMConfigForForwarding(ctx *security.RequestContext, accountId, agen
 		ApiVersion:  getLLMApiVersion(accountId, provider, agentName, appendAgentName, res),
 		ApiType:     getLLMApiType(accountId, provider, agentName, appendAgentName, res),
 		Region:      getLLMRegion(accountId, provider, agentName, appendAgentName, res),
+		ExtraHeaders: func() string {
+			headers := resolveLLMAuthSettings(accountId, res).ExtraHeaders
+			if len(headers) == 0 {
+				return ""
+			}
+			encoded, _ := json.Marshal(headers)
+			return string(encoded)
+		}(),
 		// The AWS credential triple is the Bedrock equivalent of ApiKey. Only
 		// forwarded as a complete pair: the AWS SDK treats a half-set static
 		// provider as a hard error rather than falling through to the next
@@ -2796,6 +2804,10 @@ func GetAllConfiguredModels(accountId string) ([]ModelConfig, error) {
 // IsOpenAIModelWithoutStopSupport checks if the model doesn't support the 'stop' parameter
 // OpenAI's reasoning models (o1, o3) and newer GPT-5 series don't support stop words
 func IsOpenAIModelWithoutStopSupport(provider, model string) bool {
+	// The o1/o3/gpt-5 families reject `stop` whoever serves them: OpenAI direct,
+	// or an OpenAI-compatible gateway on the custom provider. Both route through
+	// the same client, so gating on provider identity alone silently re-enables
+	// stop words for gateway-served models.
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "openai", "custom":
 	default:

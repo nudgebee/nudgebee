@@ -310,8 +310,14 @@ func GetLlmMinCacheTokens(model string) int {
 	// Gemini 1.5 Pro/Flash require 32,768 tokens minimum
 	case strings.Contains(n, "gemini-1.5"):
 		return 32_768
-	// Gemini 3 Flash requires 1,024 tokens minimum (same as 2.x Flash family)
-	case strings.Contains(n, "gemini-3-flash") || strings.Contains(n, "gemini-3.0-flash"):
+	// Gemini 3 Flash requires 1,024 tokens minimum (same as 2.x Flash family).
+	// Matched on "flash" rather than on enumerated names: the previous form
+	// listed only gemini-3-flash and gemini-3.0-flash, so every dotted release
+	// (gemini-3.5-flash, gemini-3.7-flash, gemini-3.1-flash-lite) fell through
+	// to the Pro branch below and was told it needed 4,096 tokens — which
+	// silently disabled caching for every Flash model actually in use (#38511).
+	// Must stay ahead of the gemini-3 catch-all.
+	case strings.Contains(n, "gemini-3") && strings.Contains(n, "flash"):
 		return 1_024
 	// Gemini 3 Pro / other Gemini 3 variants — use 4,096
 	case strings.Contains(n, "gemini-3"):

@@ -195,14 +195,28 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
       return;
     }
 
+    let cancelled = false;
+
     const fetchSLOData = async () => {
       try {
         const last24Hours = getLast24Hrs(new Date()).toISOString();
 
-        // Fetch all configured SLOs in the account (overall total)
-        const configResponse = await apiKubernetes1.listSLOConfigs({
-          cloud_account_id: accountId,
-        });
+        // Fetch all configured SLOs in the account (overall total) alongside the
+        // last-24h observations — neither read depends on the other.
+        const [configResponse, observationResponse] = await Promise.all([
+          apiKubernetes1.listSLOConfigs({
+            cloud_account_id: accountId,
+          }),
+          apiKubernetes1.getSLOObservation({
+            accountId,
+            timestamp: last24Hours,
+          }),
+        ]);
+
+        if (cancelled) {
+          return;
+        }
+
         const configuredSLOs = configResponse?.data?.data?.slo_config || [];
         const configuredWorkloads = new Set();
         configuredSLOs.forEach((config) => {
@@ -212,11 +226,6 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
         const totalConfiguredCount = configuredWorkloads.size;
         setTotalSlo(totalConfiguredCount);
 
-        // Fetch SLO observations for last 24 hours to get firing status
-        const observationResponse = await apiKubernetes1.getSLOObservation({
-          accountId,
-          timestamp: last24Hours,
-        });
         const sloResponseData = observationResponse?.data?.data?.slo_report_observation_v2?.rows || [];
 
         if (sloResponseData.length > 0) {
@@ -246,6 +255,10 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
     };
 
     fetchSLOData();
+
+    return () => {
+      cancelled = true;
+    };
   }, [accountId]);
 
   return (

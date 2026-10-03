@@ -23,8 +23,8 @@ query GetDistinctRegions($where: CloudResourceGroupingsWhereRequest) {
 `;
 
 const LIST_NOTIFICATION_TARGETS = `
-mutation CloudListNotificationTargets($account_id: String!, $region: String) {
-  cloud_list_notification_targets(account_id: $account_id, region: $region) {
+mutation CloudListNotificationTargets($account_id: String!, $region: String, $resource_id: String) {
+  cloud_list_notification_targets(account_id: $account_id, region: $region, resource_id: $resource_id) {
     targets {
       id
       name
@@ -807,7 +807,13 @@ const apiCloudAccount = {
       return [];
     }
   },
-  listNotificationTargets: async function (accountId: string, region?: string): Promise<{ targets: CloudNotificationTarget[]; error?: string }> {
+  // Pass the resource id when the region is unknown: the server resolves the
+  // resource's own region so regional targets (SNS topics) still list.
+  listNotificationTargets: async function (
+    accountId: string,
+    region?: string,
+    resourceId?: string
+  ): Promise<{ targets: CloudNotificationTarget[]; error?: string }> {
     if (accountId === 'demo') {
       return { targets: [] };
     }
@@ -815,6 +821,7 @@ const apiCloudAccount = {
       const response = await queryGraphQL(LIST_NOTIFICATION_TARGETS, 'CloudListNotificationTargets', {
         account_id: accountId,
         region: region || undefined,
+        resource_id: resourceId || undefined,
       });
       const errors = response?.data?.errors;
       if (errors && errors.length > 0) {
@@ -956,6 +963,7 @@ const apiCloudAccount = {
       principal?: string | string[];
       source?: string | string[];
       nbStatus?: string | string[];
+      nbPriority?: string | string[];
       messageSearch?: string;
       startDate?: Date;
       endDate?: Date;
@@ -1064,6 +1072,14 @@ const apiCloudAccount = {
           filterParams['nb_status'] = { _in: query.nbStatus };
         } else {
           filterParams['nb_status'] = { _eq: query.nbStatus };
+        }
+      }
+
+      if (query?.nbPriority) {
+        if (Array.isArray(query.nbPriority)) {
+          filterParams['computed_priority'] = { _in: query.nbPriority };
+        } else {
+          filterParams['computed_priority'] = { _eq: query.nbPriority };
         }
       }
 

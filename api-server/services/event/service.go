@@ -39,7 +39,25 @@ func init() {
 		podOwnerCacheNamespace,
 		common.CacheNamespaceWithExpiration(podOwnerCacheTTL),
 	)
+	common.CacheCreateNamespace(
+		disabledAccountCacheNamespace,
+		common.CacheNamespaceWithExpiration(disabledAccountCacheTTL),
+	)
 }
+
+// InvestigateEvent is the single funnel every event producer reaches: the
+// trigger_investigation RPC (k8s-collector and cloud-collector) and every
+// incoming webhook, via integrationcore.InvestigateEventFn above. Turning a
+// cloud account off has to be honoured here or it is not honoured at all —
+// nothing tells a customer's agent or a third-party alert source to stop
+// sending, so a disabled account keeps producing and we keep running the full
+// enrichment path for it, including relay calls back to that account's own
+// (often unresponsive) agent. Cached because this is the per-event hot path.
+const (
+	disabledAccountCacheNamespace = "cloud_account_disabled"
+	disabledAccountCacheTTL       = time.Minute
+	cloudAccountStatusDisabled    = "disabled"
+)
 
 // Pod → owning workload (Deployment/StatefulSet/DaemonSet) lookups happen on
 // the per-event hot path when ingestion left SubjectOwner empty. The k8s state
@@ -191,6 +209,41 @@ func lookupPodOwner(sc *security.RequestContext, dbms *database.DatabaseManager,
 
 	_ = common.CacheSet(podOwnerCacheNamespace, cacheKey, []byte(ownerName+podOwnerCacheSep+ownerKind))
 	return ownerName, ownerKind
+}
+
+// isCloudAccountDisabled reports whether the account has been turned off.
+//
+// Fail-open by design: an unknown account, an unexpected status value, a
+// malformed id, or a query error all report false, i.e. "keep processing".
+// Only an explicit 'disabled' stops an event, so a lookup problem can never
+// silently halt ingestion for a live tenant. Unknown accounts are deliberately
+// not cached — a row that does not exist yet is a race, not a decision.
+func isCloudAccountDisabled(sc *security.RequestContext, dbms *database.DatabaseManager, accountId string) bool {
+	if accountId == "" {
+		return false
+	}
+	// Guard the ::uuid cast below: account ids reaching here come from webhook
+	// payloads too, and a malformed one would otherwise error on every event.
+	if _, err := uuid.Parse(accountId); err != nil {
+		return false
+	}
+
+	if cached, hit := common.CacheGet(disabledAccountCacheNamespace, accountId); hit {
+		return string(cached) == cloudAccountStatusDisabled
+	}
+
+	var status string
+	err := dbms.Db.Get(&status, `SELECT COALESCE(status, '') FROM cloud_accounts WHERE id = $1::uuid`, accountId)
+	switch {
+	case err == sql.ErrNoRows:
+		return false
+	case err != nil:
+		sc.GetLogger().Warn("cloud_account_status: lookup failed, processing event", "error", err, "account_id", accountId)
+		return false
+	}
+
+	_ = common.CacheSet(disabledAccountCacheNamespace, accountId, []byte(status))
+	return status == cloudAccountStatusDisabled
 }
 
 func GetEvent(context *security.RequestContext, id string) (models.Event, error) {
@@ -1810,6 +1863,57 @@ func WithoutWorkflowRefire() InsertOption {
 	return func(c *insertConfig) { c.skipWorkflowRefire = true }
 }
 
+// legacyEventSources maps event source values that were renamed in the
+// event_source lookup table onto their current canonical value.
+//
+// events.source is a FK onto event_source.value (V175), so an insert carrying a
+// retired value fails outright rather than degrading. Producers are not all
+// under our rollout control — an un-rolled pod mid-deploy, or an on-prem
+// runbook-server on an older tag, keeps emitting the old string long after the
+// migration that retired it has run. That is exactly how V706's rename of
+// 'workflow' -> 'automation' took event ingestion down (inc-cbb58afb8f): the
+// migration Job deleted the lookup row while producers still sent 'workflow'.
+//
+// Normalizing at ingestion makes the rename survivable in both directions: old
+// producers keep working against the new schema, and the retired value never
+// has to be kept alive in the lookup table.
+var legacyEventSources = map[string]string{
+	"workflow": "automation",
+}
+
+// normalizeEventSource maps a retired event source onto its canonical value.
+// Unknown values pass through untouched — this is a rename shim, not an
+// allowlist; the FK remains the authority on what is valid.
+func normalizeEventSource(source string) string {
+	if canonical, ok := legacyEventSources[source]; ok {
+		return canonical
+	}
+	return source
+}
+
+// normalizeSubjectNode drops a value that cannot be a node name.
+//
+// Alert-sourced events get subject_node from the alert's `instance` label, and
+// for anything scraped from kube-state-metrics that is the KSM pod's scrape
+// address — "10.64.21.224:8080". A Kubernetes node name is an object name, so
+// it is a DNS-1123 subdomain and a colon is not a legal character in one: the
+// test is exact, not a heuristic.
+//
+// Blanking it is lossless — the raw value stays in labels["instance"] — and it
+// is what every consumer needs, because an empty subject_node is the documented
+// "resolve it yourself" signal that the pod-inventory fallback keys off. Left
+// populated, it is worse than absent: it looks authoritative, so consumers use
+// it, and every node-scoped query built from it silently matches nothing.
+// Measured on the test env: 104 of 124 KubePodCrashLooping events in 36h
+// carried a scrape address here, and the noisy-neighbours card rendered for
+// none of them.
+func normalizeSubjectNode(subjectNode string) string {
+	if strings.Contains(subjectNode, ":") {
+		return ""
+	}
+	return subjectNode
+}
+
 func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 	var cfg insertConfig
 	for _, o := range opts {
@@ -1830,8 +1934,10 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 		return "", fmt.Errorf("event: account_id is not a valid UUID: %s", event.AccountId)
 	}
 
+	event.Source = normalizeEventSource(event.Source)
 	event.SubjectType = strings.ToLower(event.SubjectType)
 	event.SubjectName = truncateStringToMaxBytes(event.SubjectName, maxSubjectNameBytes)
+	event.SubjectNode = normalizeSubjectNode(event.SubjectNode)
 
 	// A configuration_change event describes a moment that has already passed
 	// ("this resource was changed"), not a condition that can recover — no
@@ -2038,6 +2144,14 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 	start := time.Now().UTC()
 	tenantId := sc.GetSecurityContext().GetTenantId()
 	accountId := webhookEvent.AccountId
+	// Normalize here as well as in InsertEvent: everything below this line
+	// (structured logs, processing metrics, event-rule matching) reads the
+	// source, and must see the canonical value rather than a retired alias.
+	webhookEvent.Source = normalizeEventSource(webhookEvent.Source)
+	// Same reason: the playbook run below is handed webhookEvent.SubjectNode
+	// directly, before InsertEvent ever sees it, so normalizing only there would
+	// leave the enrichers reading the raw scrape address.
+	webhookEvent.SubjectNode = normalizeSubjectNode(webhookEvent.SubjectNode)
 	eventSource := webhookEvent.Source
 	aggregationKey := webhookEvent.AggregationKey
 
@@ -2094,6 +2208,21 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 	if err != nil {
 		sc.GetLogger().Error("event: unable to get database manager", "error", err)
 		return "", err
+	}
+
+	// Drop the event before any enrichment runs if its account is switched off.
+	// Returning a nil error rather than an error is deliberate: the event was
+	// handled, just not stored. An error here would make the RPC caller retry
+	// and the webhook delivery record as failed, both of which would recreate
+	// the load this check exists to shed.
+	if isCloudAccountDisabled(sc, dbms, accountId) {
+		sc.GetLogger().Info("InvestigateEvent: skipping event, cloud account is disabled",
+			"account_id", accountId,
+			"tenant", tenantId,
+			"source", eventSource,
+			"finding_id", webhookEvent.FindingId)
+		common.MetricsEventProcessingFailed(sc.GetContext(), eventSource, tenantId, accountId, common.MetricReasonAccountDisabled)
+		return "", nil
 	}
 
 	// Populate SubjectOwner from labels or k8s state when ingestion left it
@@ -2234,12 +2363,14 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 			existingEvidenceActions := extractEvidenceActionNames(webhookEvent.Evidences)
 
 			evidenceResponse, err = eventrule.ExecutePlaybook(sc, webhookEvent.AccountId, playbooks.PlaybookEvent{
-				EventId:                 id,
-				Name:                    playbookName,
-				Labels:                  webhookEvent.Labels,
-				Annotations:             map[string]string{},
-				StartedAt:               &eventruleStart,
-				EndedAt:                 &eventruleEnd,
+				EventId:     id,
+				Name:        playbookName,
+				Labels:      webhookEvent.Labels,
+				Annotations: map[string]string{},
+				StartedAt:   &eventruleStart,
+				EndedAt:     &eventruleEnd,
+				IncidentAt: resolveIncidentAt(sc, webhookEvent.AggregationKey, webhookEvent.AccountId,
+					webhookEvent.SubjectName, webhookEvent.SubjectNamespace, webhookEvent.SubjectType, webhookEvent.StartsAt),
 				Source:                  webhookEvent.Source,
 				SubjectName:             webhookEvent.SubjectName,
 				SubjectType:             webhookEvent.SubjectType,
@@ -2363,6 +2494,39 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 	}
 }
 
+// resolveIncidentAt returns when the subject container actually terminated, for
+// the event classes where that differs from when the event was raised. Returns
+// nil whenever the cluster cannot answer, so enrichment falls back to the
+// event's own timestamps. See playbooks.PodTerminationTime.
+func resolveIncidentAt(sc *security.RequestContext, aggregationKey, accountId, subjectName, subjectNamespace, subjectType string, startsAt *time.Time) *time.Time {
+	if !playbooks.NeedsIncidentTimeAnchor(aggregationKey) {
+		return nil
+	}
+	// The anchor is read off a Pod's container statuses, so a subject that is not
+	// a pod can only ever miss — and missing is expensive: get_resource ignores
+	// its name filter, so each futile lookup ships back every pod in the cluster.
+	// Measured on dev, events whose subject was a workload name (report-worker,
+	// web-app — no ReplicaSet hash) each pulled 501-543 objects to find nothing.
+	switch strings.ToLower(subjectType) {
+	case "", "pod":
+		// Unspecified is treated as a pod, matching linkK8sCloudResourceId.
+	default:
+		return nil
+	}
+	terminatedAt, ok := playbooks.PodTerminationTime(accountId, subjectName, subjectNamespace, sc.GetLogger())
+	if !ok {
+		return nil
+	}
+	if startsAt != nil {
+		if skew := startsAt.Sub(terminatedAt); skew > 2*time.Minute {
+			sc.GetLogger().Info("event: anchoring evidence on container termination rather than detection time",
+				"aggregation_key", aggregationKey, "pod", subjectName, "namespace", subjectNamespace,
+				"detected_at", startsAt.UTC(), "terminated_at", terminatedAt, "skew_seconds", int(skew.Seconds()))
+		}
+	}
+	return &terminatedAt
+}
+
 func extractEvidenceActionNames(evidences []any) map[string]bool {
 	actions := map[string]bool{}
 	for _, e := range evidences {
@@ -2420,6 +2584,9 @@ func evidenceHasContent(evidence map[string]any) bool {
 				// Undecodable is not the same as empty — leave the old behaviour.
 				return true
 			}
+			if playbooks.IsLogRetrievalFailure(decoded) {
+				return false
+			}
 			return strings.TrimSpace(decoded) != ""
 		}
 		if trimmed := strings.TrimSpace(data); trimmed == "" {
@@ -2465,6 +2632,50 @@ func dedupeEvidencesByContent(evidences []any) []any {
 		out = append(out, ev)
 	}
 	return out
+}
+
+// retainEvidenceOnRefresh reports whether an evidence element already on the
+// event survives a playbook refresh, which regenerates enricher cards and drops
+// the previous copies so they do not stack up.
+func retainEvidenceOnRefresh(evidence map[string]any, regeneratedActions map[string]bool, sourceEvidenceActions map[string]bool) bool {
+	additionalInfo, ok := evidence["additional_info"].(map[string]any)
+	if !ok {
+		return false
+	}
+
+	// Evidence an automation attached (events.add_evidence) is not this
+	// playbook's output and cannot be regenerated by it, so it is kept
+	// unconditionally — ahead of the regeneratedActions skip below, because
+	// automation cards render under a shared action name and a run emitting that
+	// same action would otherwise delete them as stale duplicates.
+	//
+	// Two marks say "an automation wrote this". The stamp is present whenever a
+	// workflow run produced the card. A card written by the builder's Run Task,
+	// which executes one task with no workflow identity to stamp, carries only
+	// actual_action_name — and keying on the stamp alone quietly deleted those on
+	// the next refresh, minutes after the author watched the card appear. Both
+	// are written server-side, so neither can be spoofed to retain enricher output.
+	if _, fromWorkflow := additionalInfo[evidenceSourceWorkflowKey].(map[string]any); fromWorkflow {
+		return true
+	}
+	actualActionName, _ := additionalInfo["actual_action_name"].(string)
+	if actualActionName == authoredEvidenceRenderer {
+		return true
+	}
+
+	actionName, _ := additionalInfo["action_name"].(string)
+	// Skip an action the playbook just regenerated — the fresh copy in
+	// newEvidences replaces it. Retaining it duplicates the card on every refresh.
+	if (actionName != "" && regeneratedActions[actionName]) || (actualActionName != "" && regeneratedActions[actualActionName]) {
+		return false
+	}
+	if actionName == "webhook_event" || sourceEvidenceActions[actionName] {
+		return true
+	}
+	if actionType, ok := additionalInfo["action_type"].(string); ok && actionType == "event_detail" {
+		return true
+	}
+	return false
 }
 
 func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
@@ -2538,12 +2749,14 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 	}
 
 	newEvidenceResponse, err := eventrule.ExecutePlaybook(eventSc, accountId, playbooks.PlaybookEvent{
-		EventId:          eventId,
-		Name:             playbookName,
-		Labels:           labels,
-		Annotations:      map[string]string{},
-		StartedAt:        &eventruleStart,
-		EndedAt:          &eventruleEnd,
+		EventId:     eventId,
+		Name:        playbookName,
+		Labels:      labels,
+		Annotations: map[string]string{},
+		StartedAt:   &eventruleStart,
+		EndedAt:     &eventruleEnd,
+		IncidentAt: resolveIncidentAt(sc, *event.AggregationKey, accountId,
+			*event.SubjectName, subjectNamespace, common.StrVal(event.SubjectType), event.StartsAt),
 		Source:           *event.Source,
 		SubjectName:      *event.SubjectName,
 		SubjectType:      *event.SubjectType,
@@ -2642,19 +2855,8 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 
 	retainedEvidences := []any{}
 	for _, evidence := range existingEvidences {
-		if additionalInfo, ok := evidence["additional_info"].(map[string]any); ok {
-			actionName, _ := additionalInfo["action_name"].(string)
-			actualActionName, _ := additionalInfo["actual_action_name"].(string)
-			// Skip an action the playbook just regenerated — the fresh copy in
-			// newEvidences replaces it. Retaining it duplicates the card on every refresh.
-			if (actionName != "" && regeneratedActions[actionName]) || (actualActionName != "" && regeneratedActions[actualActionName]) {
-				continue
-			}
-			if actionName == "webhook_event" || sourceEvidenceActions[actionName] {
-				retainedEvidences = append(retainedEvidences, evidence)
-			} else if actionType, ok := additionalInfo["action_type"].(string); ok && (actionType == "event_detail") {
-				retainedEvidences = append(retainedEvidences, evidence)
-			}
+		if retainEvidenceOnRefresh(evidence, regeneratedActions, sourceEvidenceActions) {
+			retainedEvidences = append(retainedEvidences, evidence)
 		}
 	}
 
@@ -3319,6 +3521,11 @@ func UpdateEvent(ctx *security.RequestContext, request models.UpdateEventRequest
 	return r, nil
 }
 
+// evidenceSourceWorkflowKey is the additional_info field carrying the automation
+// run that produced an evidence element. Written by AddEvidence, read by
+// RefreshInvestigation and by the Investigate page.
+const evidenceSourceWorkflowKey = "source_workflow"
+
 // AddEvidence appends evidences to an event that already exists.
 //
 // This exists because InvestigateEvent's duplicate branch deliberately refuses
@@ -3335,10 +3542,18 @@ func UpdateEvent(ctx *security.RequestContext, request models.UpdateEventRequest
 // `evidences || $1::jsonb` is a single atomic statement, so concurrent appends
 // both survive.
 //
-// Duplicate suppression therefore happens on read (dedupeEvidencesByContent is
-// already applied where evidences are consumed) rather than by rewriting the
-// column here.
-func AddEvidence(ctx *security.RequestContext, eventId string, evidences []any) error {
+// There is no read-side duplicate suppression to rely on: dedupeEvidencesByContent
+// runs only inside RefreshInvestigation, and the Investigate page reads this column
+// straight through GraphQL. So a stamped append collapses its own history here —
+// see the `source` handling below.
+//
+// `source` identifies the automation run that produced these evidences. When set,
+// each element is stamped with it under `additional_info.source_workflow`. The
+// stamp is injected here rather than trusted from the caller for two reasons: a
+// workflow author hand-writing evidence objects cannot omit or forge it, and
+// RefreshInvestigation uses it to tell evidence it must preserve from evidence it
+// regenerates itself.
+func AddEvidence(ctx *security.RequestContext, eventId string, evidences []any, source *models.EvidenceSourceWorkflow) error {
 	if eventId == "" {
 		return fmt.Errorf("event: event_id is required")
 	}
@@ -3357,6 +3572,10 @@ func AddEvidence(ctx *security.RequestContext, eventId string, evidences []any) 
 		return common.ErrorUnauthorized("access denied for account: " + *existing.CloudAccountId)
 	}
 
+	if source != nil && source.WorkflowID != "" {
+		stampEvidencesWithSourceWorkflow(evidences, source)
+	}
+
 	evidencesJson, err := common.MarshalJson(evidences)
 	if err != nil {
 		return fmt.Errorf("event: failed to marshal evidences: %w", err)
@@ -3371,17 +3590,60 @@ func AddEvidence(ctx *security.RequestContext, eventId string, evidences []any) 
 	// A SQL NULL would make the whole expression NULL. A jsonb 'null' would
 	// not — `'null'::jsonb || '[{...}]'::jsonb` yields `[null, {...}]`, which
 	// keeps the evidence but leaves a junk null element in the array for every
-	// consumer to skip. The CASE covers both; coalesce alone only covers the
-	// first.
-	res, err := dbms.Db.Exec(
-		`UPDATE events
-		    SET evidences = CASE
-		            WHEN evidences IS NULL OR evidences = 'null'::jsonb THEN '[]'::jsonb
-		            ELSE evidences
-		        END || $1::jsonb,
-		        updated_at = $2
-		  WHERE id = $3`,
-		string(evidencesJson), time.Now().UTC(), eventId)
+	// consumer to skip. jsonb_typeof covers both, plus any non-array value.
+	var res sql.Result
+	if source != nil && source.WorkflowID != "" {
+		// A re-running automation replaces its own previous output instead of
+		// stacking another copy of the same cards on the event — the same
+		// "regenerate replaces" rule the playbook enrichers follow. Without it an
+		// alert that re-fires daily grows this row per run, and `evidences` is a
+		// TOASTed column already holding 150KB-900KB blobs.
+		//
+		// The replacement is scoped to (workflow, task), not to the workflow alone.
+		// Two tasks in one automation each attaching evidence is a real shape — the
+		// pprof collector captures two heap profiles and attaches both — and keying
+		// on the workflow alone made the second attach delete the first.
+		//
+		// A legacy element stamped before task_id existed carries none, and is
+		// treated as the current task's to replace: it is a straggler from the same
+		// automation, and leaving it would strand a copy nothing can ever clean up.
+		//
+		// Both predicates are IS DISTINCT FROM rather than <>/=, so an element with
+		// no source_workflow at all (every enricher-produced card) compares as
+		// "different" and is kept. A NULL-propagating form here would drop them all.
+		//
+		// Still one statement, so the atomicity argument above holds: the filter
+		// and the append are evaluated against the same row version under a single
+		// row lock. A concurrent append from another workflow cannot be lost
+		// between them.
+		res, err = dbms.Db.Exec(
+			`UPDATE events
+			    SET evidences = (
+			            SELECT coalesce(jsonb_agg(elem), '[]'::jsonb)
+			              FROM jsonb_array_elements(
+			                     CASE WHEN jsonb_typeof(evidences) = 'array'
+			                          THEN evidences ELSE '[]'::jsonb
+			                     END) AS elem
+			             WHERE elem->'additional_info'->'source_workflow'->>'workflow_id'
+			                   IS DISTINCT FROM $4
+			                OR coalesce(
+			                     elem->'additional_info'->'source_workflow'->>'task_id',
+			                     $5) IS DISTINCT FROM $5
+			        ) || $1::jsonb,
+			        updated_at = $2
+			  WHERE id = $3`,
+			string(evidencesJson), time.Now().UTC(), eventId, source.WorkflowID, source.TaskID)
+	} else {
+		res, err = dbms.Db.Exec(
+			`UPDATE events
+			    SET evidences = CASE
+			            WHEN jsonb_typeof(evidences) = 'array' THEN evidences
+			            ELSE '[]'::jsonb
+			        END || $1::jsonb,
+			        updated_at = $2
+			  WHERE id = $3`,
+			string(evidencesJson), time.Now().UTC(), eventId)
+	}
 	if err != nil {
 		return fmt.Errorf("event: failed to append evidences: %w", err)
 	}
@@ -3391,4 +3653,38 @@ func AddEvidence(ctx *security.RequestContext, eventId string, evidences []any) 
 
 	slog.Info("event: appended evidences", "event_id", eventId, "count", len(evidences))
 	return nil
+}
+
+// stampEvidencesWithSourceWorkflow writes the producing automation onto each
+// evidence element, creating the additional_info bag when the caller did not
+// supply one. Elements that are not JSON objects are left alone — they cannot
+// carry a stamp, and dropping them here would lose evidence.
+func stampEvidencesWithSourceWorkflow(evidences []any, source *models.EvidenceSourceWorkflow) {
+	for _, evidence := range evidences {
+		evidenceMap, ok := evidence.(map[string]any)
+		if !ok {
+			continue
+		}
+		// The nil check is not redundant with ok: a JSON `null` fails the assertion
+		// (ok=false) and takes this path anyway, but a Go caller passing a typed nil
+		// map passes the assertion with a nil map, and writing to that panics.
+		additionalInfo, ok := evidenceMap["additional_info"].(map[string]any)
+		if !ok || additionalInfo == nil {
+			additionalInfo = map[string]any{}
+			evidenceMap["additional_info"] = additionalInfo
+		}
+		// Overwrites any caller-supplied value: the server is the authority on
+		// which run this is.
+		stamp := map[string]any{
+			"workflow_id":   source.WorkflowID,
+			"workflow_name": source.WorkflowName,
+			"execution_id":  source.ExecutionID,
+		}
+		// Omitted rather than written empty when the caller has no task to name,
+		// so the replace filter's coalesce() treats it as a legacy element.
+		if source.TaskID != "" {
+			stamp["task_id"] = source.TaskID
+		}
+		additionalInfo[evidenceSourceWorkflowKey] = stamp
+	}
 }

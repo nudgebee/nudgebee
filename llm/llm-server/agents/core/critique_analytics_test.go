@@ -76,3 +76,14 @@ func TestGetCritiqueSummary_ByAgentAcceptedCount(t *testing.T) {
 	assert.Equal(t, int64(10), summary.ByAgent[0].Judged)
 	assert.Equal(t, int64(4), summary.ByAgent[0].Refined)
 }
+
+func TestCritiqueAnalyticsExcludeShadow(t *testing.T) {
+	// Summary, trend, theme examples and browse all share this predicate. It
+	// excludes shadow accept/refine as well as unfinished/skipped shadow rows.
+	for _, filter := range []CritiqueFilter{
+		{}, {Decisions: []string{"accept", "refine"}}, {AgentNames: []string{"aws"}}, {Theme: "evidence"},
+	} {
+		where, _ := filter.buildWhere()
+		require.Contains(t, where, "critique_type IS DISTINCT FROM 'claim_shadow'")
+	}
+}

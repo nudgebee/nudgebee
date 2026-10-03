@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Box } from '@mui/material';
-import TrendArrowPercentage from '@shared/widgets/TrendArrowPercentage';
+import { Trend } from '@ui/Trend';
 import Text from '@shared/format/Text';
 import ThreeDotLoader from '@shared/ThreeDotLoader';
 import apiKubernetes from '@api1/kubernetes';
@@ -62,7 +62,7 @@ const KubernetesIssuesOverView = ({ accountId, occurence = ['last 24 hours'] }) 
                 <Text value={entry.current_count || '-'} sx={{ fontSize: 'var(--ds-text-heading)', fontWeight: 'var(--ds-font-weight-semibold)' }} />
                 {entry?.current_count > 0 ? (
                   <>
-                    <TrendArrowPercentage
+                    <Trend
                       width='auto'
                       sign={entry?.old_count > entry?.current_count ? 1 : -1}
                       value={(Math.abs(entry?.old_count - entry?.current_count) * 100) / entry?.old_count}

@@ -313,12 +313,13 @@ func renderReact4Base(ctx *security.RequestContext, request NBAgentRequest, agen
 	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
 	vars := []string{
 		"notebook_enabled", "hypothesis_mode_enabled", "is_top_level", "orchestrator_mode", "executor_mode",
-		"delegate_agent_enabled", "is_investigation",
+		"delegate_agent_enabled", "is_investigation", "grounding_enabled",
 		"context_management_rules", "time_handling_rules", "data_protection_rules",
 		"code_analysis_rules", "security_rules", "memory_consumption_rules", "async_completion_rules",
 	}
 	tmpl := prompts.NewPromptTemplate(base, vars)
 	out, err := tmpl.Format(map[string]any{
+		"grounding_enabled":       resolveOrchestratorGroundingEnabled(request, agent),
 		"notebook_enabled":        notebookEnabled,
 		"hypothesis_mode_enabled": hypothesisModeEnabled,
 		"is_investigation":        isInvestigation,
@@ -1081,6 +1082,9 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 		nativeArgs := tc.FunctionCall.Arguments
 		args, actionThought := extractReact4Thought(nativeArgs)
 		args, memoryRefs := extractReact4MemoryAttribution(args)
+		// Keep the model's original arguments for replay and stable synthesized IDs,
+		// but execute with the same expanded time macros as ReAct3.
+		executionArgs := resolveToolInputMacros(args)
 		if actionThought == "" {
 			actionThought = thought
 		}
@@ -1119,7 +1123,7 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 		}
 		actions = append(actions, NBAgentPlannerToolAction{
 			Tool:             name,
-			ToolInput:        args,
+			ToolInput:        executionArgs,
 			NativeToolInput:  nativeArgs,
 			ToolID:           id,
 			Log:              actionThought,
@@ -1639,7 +1643,10 @@ func (o *NBReActPlanner4) flattenTranscript(steps []NBAgentPlannerToolActionStep
 // (saveCritique / saveCritiqueAsToolCall), which the seam map flagged as
 // optional (errors there are swallowed and never affect the decision). Wiring
 // analytics persistence for react_4 is a follow-up.
-func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, intermediateSteps []NBAgentPlannerToolActionStep) (string, string) {
+func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, intermediateSteps []NBAgentPlannerToolActionStep) (resultDecision, resultFeedback string) {
+	defer func() {
+		runClaimCritiqueShadow(o.ctx, o.request, "react4", o.nbAgent.GetName(), resultDecision, resultFeedback, input, finalAnswer, o.Notebook, intermediateSteps)
+	}()
 	logger := o.ctx.GetLogger()
 
 	questionType := "query"
@@ -1671,7 +1678,7 @@ func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, int
 		"tools_invoked":                extractToolsInvoked(intermediateSteps),
 		"hypothesis_mode_enabled":      resolveHypothesisModeEnabled(o.request, o.nbAgent),
 		"sdg_grounding_enabled":        config.Config.LlmServerSDGGroundingContractEnabled && HasServiceDependencyGraphTool(o.tools),
-		"premise_verification_enabled": config.Config.PremiseVerificationEnabled,
+		"premise_verification_enabled": resolvePremiseVerificationEnabled(o.request, o.nbAgent),
 	})
 	if promptErr != nil {
 		logger.Error("react4: failed to format critique prompt, accepting answer", "error", promptErr)

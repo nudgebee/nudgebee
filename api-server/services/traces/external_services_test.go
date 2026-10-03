@@ -8,63 +8,70 @@ func TestCreateExternalServiceApplications(t *testing.T) {
 	builder := NewTraceServiceMapBuilder()
 
 	// Create mock dependency map with external services
+	// Keys are namespace-qualified (see serviceKey/depKey): service identity is
+	// (namespace, name), so the fixtures below mirror what the builder produces.
 	dependencyMap := map[string]*ServiceDependency{
-		"user-service->postgres-db": {
-			Source:         "user-service",
-			Target:         "postgres-prod.example.invalid",
-			CallCount:      50,
-			ErrorCount:     2,
-			TotalDuration:  250000000, // 50 calls * 5ms each = 250ms total in nanoseconds
-			Protocol:       "POSTGRESQL",
-			DependencyType: "db_connection",
-			Environment:    "production",
+		depKey("default", "user-service", "", "postgres-prod.example.invalid"): {
+			Source:          "user-service",
+			SourceNamespace: "default",
+			Target:          "postgres-prod.example.invalid",
+			CallCount:       50,
+			ErrorCount:      2,
+			TotalDuration:   250000000, // 50 calls * 5ms each = 250ms total in nanoseconds
+			Protocol:        "POSTGRESQL",
+			DependencyType:  "db_connection",
+			Environment:     "production",
 		},
-		"worker-service->kafka-topic": {
-			Source:         "worker-service",
-			Target:         "production-dlq-global-worker",
-			CallCount:      25,
-			ErrorCount:     0,
-			TotalDuration:  50000000000, // 50ms in nanoseconds
-			Protocol:       "KAFKA",
-			DependencyType: "messaging_system",
-			Environment:    "production",
+		depKey("workers", "worker-service", "", "production-dlq-global-worker"): {
+			Source:          "worker-service",
+			SourceNamespace: "workers",
+			Target:          "production-dlq-global-worker",
+			CallCount:       25,
+			ErrorCount:      0,
+			TotalDuration:   50000000000, // 50ms in nanoseconds
+			Protocol:        "KAFKA",
+			DependencyType:  "messaging_system",
+			Environment:     "production",
 		},
-		"cache-service->redis": {
-			Source:         "cache-service",
-			Target:         "redis-cluster.internal",
-			CallCount:      100,
-			ErrorCount:     1,
-			TotalDuration:  20000000, // 100 calls * 0.2ms each = 20ms total in nanoseconds
-			Protocol:       "REDIS",
-			DependencyType: "db_connection",
-			Environment:    "production",
+		depKey("default", "cache-service", "", "redis-cluster.internal"): {
+			Source:          "cache-service",
+			SourceNamespace: "default",
+			Target:          "redis-cluster.internal",
+			CallCount:       100,
+			ErrorCount:      1,
+			TotalDuration:   20000000, // 100 calls * 0.2ms each = 20ms total in nanoseconds
+			Protocol:        "REDIS",
+			DependencyType:  "db_connection",
+			Environment:     "production",
 		},
-		"user-service->order-service": {
-			Source:         "user-service",
-			Target:         "order-service",
-			CallCount:      30,
-			ErrorCount:     0,
-			Protocol:       "HTTP",
-			DependencyType: "direct_service",
-			Environment:    "production",
+		depKey("default", "user-service", "default", "order-service"): {
+			Source:          "user-service",
+			SourceNamespace: "default",
+			Target:          "order-service",
+			TargetNamespace: "default",
+			CallCount:       30,
+			ErrorCount:      0,
+			Protocol:        "HTTP",
+			DependencyType:  "direct_service",
+			Environment:     "production",
 		},
 	}
 
 	// Create mock service stats (only for actual services)
 	serviceStats := map[string]*serviceMetrics{
-		"user-service": {
+		serviceKey("default", "user-service"): {
 			ServiceName: "user-service",
 			Namespace:   "default",
 		},
-		"worker-service": {
+		serviceKey("workers", "worker-service"): {
 			ServiceName: "worker-service",
 			Namespace:   "workers",
 		},
-		"cache-service": {
+		serviceKey("default", "cache-service"): {
 			ServiceName: "cache-service",
 			Namespace:   "default",
 		},
-		"order-service": {
+		serviceKey("default", "order-service"): {
 			ServiceName: "order-service",
 			Namespace:   "default",
 		},

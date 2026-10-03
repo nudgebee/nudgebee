@@ -147,6 +147,8 @@ var recommendationView = `
 			(r.finops_score_breakdown -> 'impact_summary' ->> 'dependent_count')::int AS dependent_count,
 			(r.finops_score_breakdown -> 'impact_summary' ->> 'production_dependents')::int AS production_dependents,
 			r.finops_score_breakdown -> 'impact_summary' -> 'dependents' AS dependents,
+			r.finops_score_breakdown -> 'impact_summary' ->> 'computed_at' AS computed_at,
+			r.finops_score_breakdown ->> 'change_class' AS change_class,
 			r.dedupe_group,
 			-- One row per opportunity; see PrimaryRecommendationRank.
 			(` + PrimaryRecommendationRank("r", "ca") + ` = 1) AS is_primary_recommendation
@@ -158,10 +160,10 @@ var recommendationView = `
 
 // RecommendationDefaultColumns is the explicit column list queries should
 // default to, instead of SELECT * (the recommendation JSON can exceed 100 KB
-// per row). id and safety_band are part of the set on purpose: callers need
-// the id to act on a row, and safety_band is the gate to present before any
-// apply.
-const RecommendationDefaultColumns = "id, namespace, service, resource_name, controller_name, category, rule_name, severity, status, estimated_saving, safety_band, created_at, updated_at"
+// per row). id, safety_band and change_class are part of the set on purpose:
+// callers need the id to act on a row, and the band plus the change class are
+// what the safety reading is presented from before any apply.
+const RecommendationDefaultColumns = "id, namespace, service, resource_name, controller_name, category, rule_name, severity, status, estimated_saving, safety_band, change_class, created_at, updated_at"
 
 // ToolPrompt implements core.NBToolPromptProvider: the SQL-construction rules,
 // view schema, and canonical query shapes for recommendation_view. This is the
@@ -201,10 +203,14 @@ func (m RecommendationExecuteTool) ToolPrompt() []string {
 		"- dedupe_group (STRING): Marks rows that are alternative ways to act on the SAME opportunity, e.g. 'aws_commitment:<account>:AmazonEC2' for the 1yr/3yr × All/No-Upfront purchase variants of one Savings Plan. NULL for standalone recommendations",
 		"",
 		"**Safety / Impact Fields (blast radius from the dependency graph):**",
-		"- safety_band (STRING): How safe it is to act — 'safe', 'review', 'risky', 'unknown'; NULL when impact has not been computed yet",
+		"- safety_band (STRING): What applying calls for — 'safe', 'review', 'risky', 'unknown'; NULL when impact has not been computed yet. Show people the product's words — safe → Safe, review → Quick check, risky → Plan it, NULL/unknown → Not assessed, and Irreversible when change_class is 'destructive' — but pass the stored value unchanged to any tool that takes safety_band",
+		"- change_class (STRING): What the change does to the resource — 'additive', 'reductive', 'destructive'; NULL when unclassified",
 		"- safety_reason (STRING): One-line reason behind the band (e.g. '2 production dependent(s) would be affected')",
 		"- dependent_count (INT), production_dependents (INT): Number of dependent services, and how many are production",
-		"- dependents (JSON): Compact list of the dependent services (name, namespace, hops away); select only when the caller asks for the blast radius in detail",
+		"- dependents (JSON): Compact list of the dependent services (name, namespace, hops away, and criticality when the workload carries a curated tier); select only when the caller asks for the blast radius in detail",
+		"- computed_at (TIMESTAMP): When the blast radius was assessed; the anchor for any dependent's last_observed_at",
+		"- A dependent's criticality is informational and is NOT reflected in safety_band: never present it as raising or lowering the safety verdict. An absent criticality means no tier is stated (an ordinary workload, or one that cannot carry a tier) — never report it as 'not important'.",
+		"- A dependent's last_observed_at (present only on direct dependents seen by an active traffic signal) is a coarse window, not an instant: measure it against the summary's computed_at, never against now, and round to days. Absence means no traffic signal vouched for the edge, not that the dependency is stale.",
 		"- finops_score (INT 0-100), finops_band (STRING): Priority score and band ('Act Now', 'Critical', 'High', 'Medium', 'Low') — prioritization, NOT apply-safety; safety_band is the safety verdict",
 		"",
 		"**Temporal Fields:**",
@@ -257,7 +263,7 @@ func (m RecommendationExecuteTool) GetType() core.NBToolType {
 }
 
 func (m RecommendationExecuteTool) Description() string {
-	return "Executes a SQL query for recommendation_view and returns the result. Columns: id, namespace, service, resource_name, estimated_saving, category, severity, status, rule_name, is_dismissed, dismissed_reason, snoozed_until, recommendation, finops_score, finops_band, safety_band, safety_reason, dependent_count, production_dependents, dependents, dedupe_group, is_primary_recommendation. " +
+	return "Executes a SQL query for recommendation_view and returns the result. Columns: id, namespace, service, resource_name, estimated_saving, category, severity, status, rule_name, is_dismissed, dismissed_reason, snoozed_until, recommendation, finops_score, finops_band, safety_band, safety_reason, dependent_count, production_dependents, dependents, computed_at, change_class, dedupe_group, is_primary_recommendation. " +
 		"Savings totals MUST filter is_primary_recommendation (rows sharing a dedupe_group are alternative ways to buy ONE opportunity — only one is purchasable, so summing them overstates savings)."
 }
 

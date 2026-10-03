@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"nudgebee/services/account"
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/knowledge_graph/sources"
 	"nudgebee/services/security"
@@ -27,6 +28,10 @@ type K8sSource struct {
 	config  K8sSourceConfig
 	logger  *slog.Logger
 	enabled bool
+
+	// agentConnected is the relay-availability probe — an instance field rather
+	// than a package var so parallel tests can stub it without racing.
+	agentConnected func(accountID string) bool
 }
 
 // K8sSourceConfig holds configuration for K8s source
@@ -101,10 +106,11 @@ func NewK8sSource(config K8sSourceConfig, logger *slog.Logger) (*K8sSource, erro
 	}
 
 	return &K8sSource{
-		BaseSource: sources.NewBaseSource("k8s"),
-		config:     config,
-		logger:     logger,
-		enabled:    true,
+		BaseSource:     sources.NewBaseSource("k8s"),
+		config:         config,
+		logger:         logger,
+		enabled:        true,
+		agentConnected: account.IsK8sAgentConnected,
 	}, nil
 }
 
@@ -200,6 +206,27 @@ func (s *K8sSource) GenerateUniqueKey(node *core.DbNode) string {
 	return keyComponents.Build()
 }
 
+// relayFetchesAvailable reports whether this build should make relay round-trips
+// for the account, logging the one line that replaces ~20 ERROR/WARN lines when it
+// says no. Fails open on an undetermined answer (see account.IsK8sAgentConnected)
+// — same rationale as the Karpenter gate in karpenter.go.
+func (s *K8sSource) relayFetchesAvailable(req *core.SourceBuildRequest) bool {
+	if req.CloudAccountID == "" {
+		return false
+	}
+	probe := s.agentConnected // nil when built as a bare struct literal
+	if probe == nil {
+		probe = account.IsK8sAgentConnected
+	}
+	if probe(req.CloudAccountID) {
+		return true
+	}
+	s.logger.Info("skipping relay-backed K8s fetches: no connected agent",
+		"tenant_id", req.TenantID,
+		"cloud_account_id", req.CloudAccountID)
+	return false
+}
+
 // BuildGraph builds a knowledge graph from Kubernetes resources
 func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.SourceBuildRequest) (*core.Graph, error) {
 	ctx := reqCtx.GetContext()
@@ -234,14 +261,24 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 
 	s.logger.Info("fetched K8s nodes", "count", len(k8sNodes))
 
-	// Fetch K8s services from relay server
-	k8sServices, err := s.fetchK8sServicesFromRelay(ctx, req)
-	if err != nil {
-		s.logger.Warn("failed to fetch K8s services from relay, continuing without them", "error", err)
-		k8sServices = []K8sServiceFromRelay{}
-	}
+	// Everything below that reads from the relay needs a connected in-cluster
+	// agent; without one each round-trip fails with "agent not connected". Only
+	// the relay-derived slices are skipped — workloads and K8s nodes come from
+	// Postgres and are still emitted, so the subgraph is persisted as before and
+	// markInactiveNodes has no new reason to tombstone it.
+	relayAvailable := s.relayFetchesAvailable(req)
 
-	s.logger.Info("fetched K8s services from relay", "count", len(k8sServices))
+	// Fetch K8s services from relay server
+	k8sServices := []K8sServiceFromRelay{}
+	if relayAvailable {
+		k8sServices, err = s.fetchK8sServicesFromRelay(ctx, req)
+		if err != nil {
+			s.logger.Warn("failed to fetch K8s services from relay, continuing without them", "error", err)
+			k8sServices = []K8sServiceFromRelay{}
+		}
+
+		s.logger.Info("fetched K8s services from relay", "count", len(k8sServices))
+	}
 
 	// Convert K8s nodes to graph nodes and edges first
 	k8sNodeGraphNodes, k8sNodeEdges := s.convertK8sNodesToGraph(k8sNodes, req)
@@ -269,22 +306,28 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 	edges = append(edges, serviceEdges...)
 
 	// Fetch K8s PVCs from relay server
-	k8sPVCs, err := s.fetchK8sPVCsFromRelay(ctx, req)
-	if err != nil {
-		s.logger.Warn("failed to fetch K8s PVCs from relay, continuing without them", "error", err)
-		k8sPVCs = []K8sPVCFromRelay{}
-	}
+	k8sPVCs := []K8sPVCFromRelay{}
+	if relayAvailable {
+		k8sPVCs, err = s.fetchK8sPVCsFromRelay(ctx, req)
+		if err != nil {
+			s.logger.Warn("failed to fetch K8s PVCs from relay, continuing without them", "error", err)
+			k8sPVCs = []K8sPVCFromRelay{}
+		}
 
-	s.logger.Info("fetched K8s PVCs from relay", "count", len(k8sPVCs))
+		s.logger.Info("fetched K8s PVCs from relay", "count", len(k8sPVCs))
+	}
 
 	// Fetch K8s PVs from relay server
-	k8sPVs, err := s.fetchK8sPVsFromRelay(ctx, req)
-	if err != nil {
-		s.logger.Warn("failed to fetch K8s PVs from relay, continuing without them", "error", err)
-		k8sPVs = []K8sPVFromRelay{}
-	}
+	k8sPVs := []K8sPVFromRelay{}
+	if relayAvailable {
+		k8sPVs, err = s.fetchK8sPVsFromRelay(ctx, req)
+		if err != nil {
+			s.logger.Warn("failed to fetch K8s PVs from relay, continuing without them", "error", err)
+			k8sPVs = []K8sPVFromRelay{}
+		}
 
-	s.logger.Info("fetched K8s PVs from relay", "count", len(k8sPVs))
+		s.logger.Info("fetched K8s PVs from relay", "count", len(k8sPVs))
+	}
 
 	// Convert PVs to nodes and edges first (needed for PVC -> PV relationships)
 	pvNodes, pvEdges, _, _ := s.convertK8sPVsToGraph(k8sPVs, workloads, k8sClusterMap, k8sNAmespaceMap, req)
@@ -304,12 +347,15 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 	// annotation (eks.amazonaws.com/role-arn) that ties a workload to an IAM
 	// role; the cross-account ASSUMES edge is emitted by the phase-3 rules
 	// engine via default_relationships.json.
-	k8sServiceAccounts, err := s.fetchK8sServiceAccountsFromRelay(ctx, req)
-	if err != nil {
-		s.logger.Warn("failed to fetch K8s ServiceAccounts from relay, continuing without them", "error", err)
-		k8sServiceAccounts = []K8sServiceAccountFromRelay{}
+	k8sServiceAccounts := []K8sServiceAccountFromRelay{}
+	if relayAvailable {
+		k8sServiceAccounts, err = s.fetchK8sServiceAccountsFromRelay(ctx, req)
+		if err != nil {
+			s.logger.Warn("failed to fetch K8s ServiceAccounts from relay, continuing without them", "error", err)
+			k8sServiceAccounts = []K8sServiceAccountFromRelay{}
+		}
+		s.logger.Info("fetched K8s ServiceAccounts from relay", "count", len(k8sServiceAccounts))
 	}
-	s.logger.Info("fetched K8s ServiceAccounts from relay", "count", len(k8sServiceAccounts))
 
 	saNodes, saEdges, saByKey := s.convertK8sServiceAccountsToGraph(k8sServiceAccounts, workloads, k8sClusterMap, k8sNAmespaceMap, req)
 	nodes = append(nodes, saNodes...)
@@ -327,19 +373,25 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 	// metadata. Helm release state (`helm.sh/release.v1` type) is dropped
 	// at fetch time to avoid drowning the graph in 500+ noise nodes per
 	// cluster.
-	k8sConfigMaps, err := s.fetchK8sConfigMapsFromRelay(ctx, req)
-	if err != nil {
-		s.logger.Warn("failed to fetch K8s ConfigMaps from relay, continuing without them", "error", err)
-		k8sConfigMaps = []K8sConfigMapFromRelay{}
+	k8sConfigMaps := []K8sConfigMapFromRelay{}
+	if relayAvailable {
+		k8sConfigMaps, err = s.fetchK8sConfigMapsFromRelay(ctx, req)
+		if err != nil {
+			s.logger.Warn("failed to fetch K8s ConfigMaps from relay, continuing without them", "error", err)
+			k8sConfigMaps = []K8sConfigMapFromRelay{}
+		}
 	}
 	cmNodes, cmEdges, configMapByKey := s.convertK8sConfigMapsToGraph(k8sConfigMaps, workloads, k8sClusterMap, k8sNAmespaceMap, req)
 	nodes = append(nodes, cmNodes...)
 	edges = append(edges, cmEdges...)
 
-	k8sSecrets, err := s.fetchK8sSecretsFromRelay(ctx, req)
-	if err != nil {
-		s.logger.Warn("failed to fetch K8s Secrets from relay, continuing without them", "error", err)
-		k8sSecrets = []K8sSecretFromRelay{}
+	k8sSecrets := []K8sSecretFromRelay{}
+	if relayAvailable {
+		k8sSecrets, err = s.fetchK8sSecretsFromRelay(ctx, req)
+		if err != nil {
+			s.logger.Warn("failed to fetch K8s Secrets from relay, continuing without them", "error", err)
+			k8sSecrets = []K8sSecretFromRelay{}
+		}
 	}
 	secNodes, secEdges, secretByKey := s.convertK8sSecretsToGraph(k8sSecrets, workloads, k8sClusterMap, k8sNAmespaceMap, req)
 	nodes = append(nodes, secNodes...)
@@ -349,7 +401,10 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 	// (the existing meta column strips them for everything except PVCs).
 	// One round-trip per workload kind against the relay rebuilds the
 	// ConfigMap / Secret reference map.
-	workloadSpecRefs := s.fetchWorkloadConfigSecretRefs(ctx, req)
+	workloadSpecRefs := map[string]workloadSpecRefs{}
+	if relayAvailable {
+		workloadSpecRefs = s.fetchWorkloadConfigSecretRefs(ctx, req)
+	}
 	workloadCMSecEdges := s.createWorkloadConfigSecretEdges(workloads, workloadNodesMap, configMapByKey, secretByKey, workloadSpecRefs, req)
 	edges = append(edges, workloadCMSecEdges...)
 	s.logger.Info("emitted ConfigMap/Secret nodes + Workload edges",
@@ -372,7 +427,7 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 	// the cluster a question the backend has already answered.
 	karpenterNodePools := []K8sCRDFromRelay{}
 	karpenterNodeClaims := []K8sCRDFromRelay{}
-	if s.clusterHasKarpenter(req) {
+	if relayAvailable && s.clusterHasKarpenter(req) {
 		nodePools, err := s.fetchKarpenterNodePoolsFromRelay(ctx, req)
 		if err != nil {
 			s.logger.Warn("failed to fetch Karpenter NodePools from relay, continuing without them", "error", err)
@@ -441,7 +496,7 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 
 	// Find ingress controller nodes and resolve backend services
 	ingressControllers := s.findIngressControllerNodes(workloadNodesMap, serviceNodes)
-	if len(ingressControllers) > 0 {
+	if relayAvailable && len(ingressControllers) > 0 {
 		s.logger.Info("Found ingress controller nodes", "count", len(ingressControllers))
 		ingressBackendNodes, ingressBackendEdges := s.resolveIngressBackendServices(ctx, reqCtx, ingressControllers, serviceNodes, req)
 		nodes = append(nodes, ingressBackendNodes...)

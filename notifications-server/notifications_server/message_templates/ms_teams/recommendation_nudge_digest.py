@@ -78,7 +78,7 @@ def get_teams_recommendation_nudge_digest_template(
     footer_url = f"{base_url}/optimise?utm=teams-digest"
     if params.digest_date:
         footer_url += f"&d={params.digest_date}"
-    footer_url += "#recommendations"
+    footer_url += "#cost"
     return {
         "$schema": "https://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",

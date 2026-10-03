@@ -3,12 +3,14 @@ package tools
 import (
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"nudgebee/llm/events"
+	"nudgebee/llm/tools/core"
 )
 
 func TestCapInsight_TruncatesOversizedData(t *testing.T) {
@@ -253,4 +255,72 @@ func TestCapAlertLabelsInsight_FallsBackToCapInsightForNonSliceData(t *testing.T
 	dataStr, ok := capped.Data.(string)
 	assert.True(t, ok)
 	assert.LessOrEqual(t, len(dataStr), maxEvidenceInsightDataChars+len("\n... (truncated)"))
+}
+
+func TestAggregateEventsToolSchemaIncludesPriorityFilter(t *testing.T) {
+	schema := (AggregateEventsTool{}).InputSchema()
+	priority, ok := schema.Properties["priority"]
+	assert.True(t, ok)
+	assert.Equal(t, core.ToolSchemaTypeArray, priority.Type)
+}
+
+func TestBuildListEventsMetadataViewFiltersBeforeDedupWithoutEvidence(t *testing.T) {
+	view := buildListEventsMetadataView("a2a30b02-0f67-42e5-a2ab-c658230fd798", []string{
+		"priority IN ('HIGH')",
+		"starts_at >= '2026-07-01T00:00:00Z'",
+	})
+
+	assert.Contains(t, view, "cloud_account_id = 'a2a30b02-0f67-42e5-a2ab-c658230fd798'::uuid")
+	assert.Contains(t, view, "priority IN ('HIGH')")
+	assert.Contains(t, view, "starts_at >= '2026-07-01T00:00:00Z'")
+	assert.Contains(t, view, "COUNT(*) OVER")
+	assert.Contains(t, view, "ROW_NUMBER() OVER")
+	assert.NotContains(t, view, "evidences")
+	assert.Less(t, strings.Index(view, "priority IN ('HIGH')"), strings.Index(view, ") ranked_events"))
+}
+
+func TestAppendDefaultEventStartOnlyWhenNoExplicitStart(t *testing.T) {
+	now := time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC)
+
+	withDefault := appendDefaultEventStart([]string{"priority = 'HIGH'"}, "", now)
+	assert.Equal(t, []string{"priority = 'HIGH'", "starts_at >= '2026-08-02T12:00:00Z'"}, withDefault)
+
+	explicit := []string{"starts_at >= '2026-01-01T00:00:00Z'"}
+	assert.Equal(t, explicit, appendDefaultEventStart(explicit, "2026-01-01T00:00:00Z", now))
+}
+
+func TestBuildListEventsEvidenceViewUsesOnlySelectedUUIDs(t *testing.T) {
+	view := buildListEventsEvidenceView("550e8400-e29b-41d4-a716-446655440000", []map[string]any{
+		{"id": "fca7480a-496b-4654-8453-63058aa6c21e"},
+		{"id": "99dffbb0-0a79-4427-ac74-e4e919adbbf7"},
+		{"id": "not-a-uuid"},
+	})
+
+	assert.Equal(t, "SELECT id::text, evidences::text FROM events WHERE cloud_account_id = "+
+		"'550e8400-e29b-41d4-a716-446655440000'::uuid AND id IN ("+
+		"'fca7480a-496b-4654-8453-63058aa6c21e'::uuid, '99dffbb0-0a79-4427-ac74-e4e919adbbf7'::uuid)", view)
+	assert.NotContains(t, view, "not-a-uuid")
+	assert.Empty(t, buildListEventsEvidenceView("550e8400-e29b-41d4-a716-446655440000", []map[string]any{{"title": "missing id"}}))
+}
+
+func TestMergeEvidenceManifestsPreservesMetadataOrderAndMissingEvidence(t *testing.T) {
+	firstManifest := map[string]any{"has_logs": true}
+	secondManifest := map[string]any{"has_metrics": true}
+	data := []map[string]any{
+		{"id": "event-2", "title": "second"},
+		{"id": "event-1", "title": "first"},
+		{"id": "event-missing", "title": "missing"},
+	}
+	evidenceData := []map[string]any{
+		{"id": "event-1", "evidences": firstManifest},
+		{"id": "event-2", "evidences": secondManifest},
+	}
+
+	mergeEvidenceManifests(data, evidenceData)
+
+	assert.Equal(t, "event-2", data[0]["id"])
+	assert.Equal(t, secondManifest, data[0]["evidences"])
+	assert.Equal(t, "event-1", data[1]["id"])
+	assert.Equal(t, firstManifest, data[1]["evidences"])
+	assert.NotContains(t, data[2], "evidences")
 }

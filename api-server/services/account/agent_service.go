@@ -14,8 +14,33 @@ import (
 	"time"
 )
 
+// agentConnectThresholdMinutes is how long an agent can go unheard-from
+// before this cron retires it.
+//
+// MUST stay comfortably above relay-server's relaySessionHeartbeatInterval
+// (10m, relay-server/pkg/server/handlers/register.go); its
+// TestHeartbeatFitsCronThreshold pins the relationship from the other side.
 const agentConnectThresholdMinutes = 30
 
+// AgentCheckAndUpdateStatus retires agents nothing has heard from recently.
+//
+// It reads two independent signals, and only retires an agent when BOTH are
+// stale:
+//
+//   - last_connected_at — when the agent's current session STARTED (written by
+//     relay-server on connect/disconnect), plus the k8s runner's 60s telemetry
+//     post. It is not a liveness signal on its own: a session that stays up for
+//     hours never moves it, which is how this cron used to retire perfectly
+//     healthy long-lived connections and fail every request routed through them
+//     (#36114).
+//   - connection_status.relayLastSeenAt — written every 10 minutes by the relay
+//     for each live websocket session. This is the real liveness signal.
+//
+// Requiring both to be stale means the check is correct whether or not a given
+// agent's relay is emitting heartbeats yet, so no deploy ordering is implied.
+// Its remaining job is the case no in-band signal can cover: a relay pod killed
+// before its disconnect write runs, which would otherwise leave rows CONNECTED
+// forever.
 func AgentCheckAndUpdateStatus(ctx *security.RequestContext) error {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -24,7 +49,9 @@ func AgentCheckAndUpdateStatus(ctx *security.RequestContext) error {
 	rows, err := dbms.Db.Queryx(fmt.Sprintf(`select ca.account_name, ca.id::varchar as account_id, a.id::varchar as agent_id, a.last_connected_at as agent_last_connected_at, a.status  as agent_status
 		from agent a
 		join cloud_accounts ca on ca.id = cloud_account_id
-		where a.last_connected_at  < (now() - interval '%d minutes') and a.status != 'NOT_CONNECTED'
+		where a.status != 'NOT_CONNECTED'
+		and a.last_connected_at < (now() - interval '%[1]d minutes')
+		and coalesce((a.connection_status->>'relayLastSeenAt')::timestamptz, '-infinity'::timestamptz) < (now() - interval '%[1]d minutes')
 		and (ca.cloud_provider not in ('AWS', 'Azure', 'GCP', 'CloudFoundry') or a.type = 'proxy')`, agentConnectThresholdMinutes))
 
 	if err != nil {
@@ -111,7 +138,14 @@ type AgentDetailsFeatures struct {
 	// (spend.setOpenCostServerSide). It is true when OpenCost is collected
 	// server-side for this cluster (the migrated default, agent OpenCost off);
 	// not reported by the agent itself.
-	OpencostServerSide      *bool          `json:"opencostServerSide" mapstructure:"opencostServerSide"`
+	OpencostServerSide *bool `json:"opencostServerSide" mapstructure:"opencostServerSide"`
+	// ProviderStatus is a server-managed record of which provider actually serves
+	// each signal (logs / metrics / traces) and, for the ones served by a non-agent
+	// integration, whether that integration passed its own validation probe. Written
+	// by observability.RefreshProviderStatus on a cron, never by the agent. Kept as
+	// pass-through JSONB: the Agent Details page reads it straight from
+	// connection_status, and typing it here would duplicate that contract.
+	ProviderStatus          map[string]any `json:"providerStatus" mapstructure:"providerStatus"`
 	OpencostUrl             *string        `json:"opencostUrl" mapstructure:"opencostUrl"`
 	PrometheusConnection    *bool          `json:"prometheusConnection" mapstructure:"prometheusConnection"`
 	PrometheusRetentionTime *string        `json:"prometheusRetentionTime" mapstructure:"prometheusRetentionTime"`
@@ -137,6 +171,13 @@ func init() {
 }
 
 var inFlightUpdates sync.Map // key: accountId, value: struct{}
+
+// InvalidateAgentCache drops the cached AgentDetails for one account, so a writer
+// that changed the agent row (e.g. observability's provider-status stamp) is not
+// shadowed by this package's 15-minute cache until it expires.
+func InvalidateAgentCache(accountId string) error {
+	return common.CacheDelete(agentCacheNamespace, accountId)
+}
 
 func GetAgentConnectionDetails(accountId string) (AgentDetails, error) {
 	if accountId == "" {
@@ -262,4 +303,42 @@ func GetAgentConnectionDetails(accountId string) (AgentDetails, error) {
 	}
 
 	return details, nil
+}
+
+// IsK8sAgentConnected reports whether accountId has a connected (non-proxy) K8s
+// agent — the same condition GetAgentConnectionDetails requires before it returns
+// details. Boolean rather than error-returning so "no agent row" and "the database
+// is unreachable" stay distinguishable; see agentConnectedFromLookup.
+//
+// eventrule keeps its own copy of this query (failing closed) because it cannot
+// import this package: eventrule -> account -> adapter -> llm -> tenant ->
+// eventrule. Leave the two independent.
+func IsK8sAgentConnected(accountId string) bool {
+	if accountId == "" {
+		return false
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return agentConnectedFromLookup(err)
+	}
+
+	var exists int
+	return agentConnectedFromLookup(dbms.Db.Get(&exists,
+		`SELECT 1 FROM agent WHERE cloud_account_id = $1 AND type != 'proxy' AND connection_status IS NOT NULL LIMIT 1`,
+		accountId))
+}
+
+// agentConnectedFromLookup is the pure fail-open policy behind IsK8sAgentConnected,
+// split out to be testable without a database. Only a definitive no-rows answer
+// means "no agent": a wasted relay round-trip is cheaper than mistaking a DB blip
+// for "no agent" and silently truncating the account's graph.
+func agentConnectedFromLookup(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	return true // undetermined — fail open
 }

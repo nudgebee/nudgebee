@@ -65,6 +65,11 @@ type Message struct {
 	// has no metadata. See migration V761 + llm-server docs/llm-egress-filter.md.
 	Metadata *string `json:"metadata" db:"metadata"`
 
+	// Seconds this turn was parked on a followup waiting for a human answer —
+	// already inside [CreatedAt, UpdatedAt]. 0 when nobody was asked. See
+	// messagesQuery for how it's computed.
+	FollowupWaitSeconds float64 `json:"followup_wait_seconds" db:"followup_wait_seconds"`
+
 	// AttachmentsRaw is the json_agg blob scanned from the messagesQuery
 	// subquery (never NULL — COALESCE'd to '[]'). It is unmarshalled into
 	// Attachments in fetchMessages and excluded from the API response.

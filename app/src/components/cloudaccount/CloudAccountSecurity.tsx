@@ -7,6 +7,7 @@ import FilterDropdown from '@ui/FilterDropdown';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { Button as DsButton } from '@ui/Button';
+import { CodeBlock } from '@ui/CodeBlock';
 import { SeverityIcon as DsSeverityIcon } from '@ui/SeverityIcon';
 import CloudAccountTable from './CloudAccountTable';
 import HelpBeeModal from '@components/helpbee';
@@ -66,8 +67,16 @@ const CloudAccountSecurity = (props: { accountId: string | undefined; serviceNam
 
   useEffect(() => {
     if (!props?.accountId) {
+      // Settles the spinner for a request the cancellation latch below is about to abandon:
+      // `accountId` can go truthy -> undefined while mounted (the parent recomputes it from
+      // router.query, which empties during a route transition), and this bail would otherwise
+      // leave `loading` true with nothing left in flight to clear it.
+      setLoading(false);
       return;
     }
+    // The effect re-fires on every page and filter change, so a slower earlier request can
+    // resolve after a newer one and repaint the table with the previous page's rows.
+    let cancelled = false;
     setLoading(true);
     apiCloudAccount
       .listEvents(
@@ -79,6 +88,9 @@ const CloudAccountSecurity = (props: { accountId: string | undefined; serviceNam
         page * ROWS_PER_PAGE
       )
       .then((res: any) => {
+        if (cancelled) {
+          return;
+        }
         setLoading(false);
         const eventsData = res.data?.events?.map((item: any) => {
           const data: ICustomTableRow[] = [];
@@ -151,8 +163,14 @@ const CloudAccountSecurity = (props: { accountId: string | undefined; serviceNam
         setEventsCount(res.data?.events_aggregate?.aggregate?.count ?? 0);
       })
       .catch(() => {
+        if (cancelled) {
+          return;
+        }
         setLoading(false);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [props?.accountId, page, selectedEventName, selectedServiceName, selectedSeverity]);
 
   return (
@@ -208,11 +226,7 @@ const CloudAccountSecurity = (props: { accountId: string | undefined; serviceNam
                       const inner = safeJSONParse(evidencesData[0].data);
                       if (inner) evidencesData = inner;
                     }
-                    return (
-                      <div>
-                        <pre>{JSON.stringify(evidencesData, null, 2)}</pre>
-                      </div>
-                    );
+                    return <CodeBlock code={JSON.stringify(evidencesData, null, 2)} language='json' />;
                   },
                   text: 'EventDetails',
                 },

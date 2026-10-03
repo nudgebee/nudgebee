@@ -11,6 +11,91 @@ import (
 	"time"
 )
 
+// namespaceOpaqueDependencyTypes are dependency types whose target is genuinely
+// outside the cluster's DNS namespace model — a database host, a message broker
+// topic, a raw address. They never carry a Kubernetes namespace.
+//
+// Deliberately NOT including "http_client": that is an HTTP call to a host that
+// emitted no spans of its own, which is very often an in-cluster service that
+// simply isn't instrumented, and it is resolved by the caller's DNS search path
+// like any other.
+var namespaceOpaqueDependencyTypes = map[string]bool{
+	"messaging_system": true,
+	"net_peer":         true,
+	"db_connection":    true,
+	"http_external":    true,
+	"external_address": true,
+	"ip_address":       true,
+}
+
+// resolveEndpointNamespace determines the namespace of a dependency endpoint that
+// the spans identified by bare name only (a destination_name, an http.host, a
+// caller attribute). peerNamespace is the namespace of the endpoint on the other
+// side of the dependency, which is always known.
+//
+// The rules follow Kubernetes DNS resolution, because that is what the workload
+// itself did when it made the call:
+//
+//  1. Database hosts, broker topics and raw addresses have no namespace at all.
+//     Checked first so a bare-named Kafka topic never inherits one, and so the
+//     consumer inversion (topic → service, source and target swapped) cannot
+//     stamp the local service's namespace onto the topic.
+//  2. A service of that name observed in the peer's own namespace: both the
+//     DNS-correct answer and one corroborated by an actual observation.
+//  3. A dotted name is an FQDN or an outside host. The caller's namespace search
+//     path does not apply to it, so it is never defaulted to the peer's namespace.
+//  4. A bare single-label name is resolved by Kubernetes within the caller's own
+//     namespace (the ndots:5 search path). A call to "notification-server" from a
+//     pod in "nudgebee" therefore means nudgebee/notification-server — it can
+//     never mean another namespace's copy, even if that is the only one observed.
+//     Adopting that other copy is precisely the cross-namespace edge this
+//     function exists to prevent.
+//
+// Returns the namespace and the Kind the endpoint should be identified by.
+func (t *TraceServiceMapBuilder) resolveEndpointNamespace(
+	name, peerNamespace, depType string,
+	serviceStats map[string]*serviceMetrics,
+	nsIndex map[string]*nsTracker,
+	externalServices map[string]*ExternalServiceInfo,
+) (namespace, kind string) {
+	if name == "" {
+		return "", "ExternalService"
+	}
+
+	_, observedInPeerNamespace := serviceStats[serviceKey(peerNamespace, name)]
+
+	// 1. Namespace-opaque targets. An observed service in the peer's own namespace
+	//    still wins, so a service that merely looks external is not misfiled.
+	if namespaceOpaqueDependencyTypes[depType] && !observedInPeerNamespace {
+		return "", "ExternalService"
+	}
+
+	// 2. Observed sibling in the peer's namespace.
+	if peerNamespace != "" && observedInPeerNamespace {
+		return peerNamespace, applicationKindFor(peerNamespace)
+	}
+
+	// Is this name unambiguous across namespaces? O(1) via the precomputed index.
+	sole := nsIndex[name]
+
+	// 3. FQDN or outside host — not subject to the caller's search path.
+	if strings.Contains(name, ".") {
+		if sole.isSole() {
+			return sole.sole, applicationKindFor(sole.sole)
+		}
+		return "", "ExternalService"
+	}
+
+	// 4. Bare single-label name: the caller's own namespace, always.
+	if peerNamespace != "" {
+		return peerNamespace, applicationKindFor(peerNamespace)
+	}
+	if sole.isSole() {
+		return sole.sole, applicationKindFor(sole.sole)
+	}
+	return "", "Service"
+}
+
 // buildServiceLinks creates Link objects for a service's dependencies
 func (t *TraceServiceMapBuilder) buildServiceLinks(dependencyMap map[string]*ServiceDependency, serviceStats map[string]*serviceMetrics, externalServices map[string]*ExternalServiceInfo, serviceName, namespace string, durationMinutes float64, earliestTime, latestTime time.Time, isUpstream bool) interface{} {
 	var links interface{}
@@ -30,12 +115,19 @@ func (t *TraceServiceMapBuilder) buildServiceLinks(dependencyMap map[string]*Ser
 
 		// CORRECT: Upstream = services I call (my dependencies, I am the source)
 		// Downstream = services calling me (my consumers, I am the target)
-		if isUpstream && dep.Source == serviceName {
+		//
+		// Both name AND namespace must match. Matching on name alone means two
+		// same-named services in different namespaces each absorb the other's
+		// links, which is the cross-namespace edge this whole path exists to avoid.
+		var targetNamespace string
+		if isUpstream && dep.Source == serviceName && dep.SourceNamespace == namespace {
 			shouldInclude = true
 			targetName = dep.Target // Services I call (my dependencies)
-		} else if !isUpstream && dep.Target == serviceName {
+			targetNamespace = dep.TargetNamespace
+		} else if !isUpstream && dep.Target == serviceName && dep.TargetNamespace == namespace {
 			shouldInclude = true
 			targetName = dep.Source // Services calling me (my consumers)
+			targetNamespace = dep.SourceNamespace
 		}
 
 		if !shouldInclude {
@@ -47,15 +139,19 @@ func (t *TraceServiceMapBuilder) buildServiceLinks(dependencyMap map[string]*Ser
 		dep.ErrorRate = float64(dep.ErrorCount) / float64(dep.CallCount) * 100
 		reqPerMin := float64(dep.CallCount) / durationMinutes
 
-		// Look up the target service's namespace and determine if it's external
-		targetNamespace := namespace // fallback to source namespace if not found
-		targetKind := "Service"
-		if targetStats, exists := serviceStats[targetName]; exists {
-			targetNamespace = targetStats.Namespace
-		} else if _, exists := externalServices[targetName]; exists {
-			// This is an external service
-			targetNamespace = ""
-			targetKind = "ExternalService"
+		// The peer namespace was resolved once, after both dependency passes
+		// completed, and is carried on the dependency itself. The old name-only
+		// serviceStats[targetName] lookup here is exactly what stamped a
+		// same-named service from an unrelated namespace onto this link.
+		//
+		// Kind must agree with how the peer's own application is built
+		// (applicationKindFor), or a consumer keying on Kind+Namespace+Name will
+		// miss the application and fall back to minting an external service.
+		targetKind := applicationKindFor(targetNamespace)
+		if targetNamespace == "" {
+			if _, isExternal := externalServices[targetName]; isExternal {
+				targetKind = "ExternalService"
+			}
 		}
 
 		link := UpstreamLink{
@@ -163,26 +259,28 @@ func (t *TraceServiceMapBuilder) updateDependency(dep *ServiceDependency, span T
 }
 
 // createNewDependency creates a new ServiceDependency
-func (t *TraceServiceMapBuilder) createNewDependency(source, target string, span TraceSpan, attrs *SpanAttributes, duration float64, isError bool) *ServiceDependency {
+func (t *TraceServiceMapBuilder) createNewDependency(source, sourceNamespace, target, targetNamespace string, span TraceSpan, attrs *SpanAttributes, duration float64, isError bool) *ServiceDependency {
 	protocol := t.inferProtocol(span, attrs)
 	depType := t.detectDependencyType(span, attrs)
 
 	dep := &ServiceDependency{
-		Source:         source,
-		Target:         target,
-		CallCount:      1,
-		TotalDuration:  duration,
-		ErrorCount:     0,
-		Protocol:       protocol,
-		Environment:    attrs.DeploymentEnv,
-		TraceIds:       []string{span.TraceID},
-		FailedTraceIds: []string{},
-		Operations:     make(map[string]int64),
-		StatusCodes:    make(map[int]int64),
-		ErrorTypes:     make(map[string]int64),
-		DependencyType: depType,
-		OriginalTarget: target,
-		SampleSpanID:   span.SpanID,
+		Source:          source,
+		SourceNamespace: sourceNamespace,
+		Target:          target,
+		TargetNamespace: targetNamespace,
+		CallCount:       1,
+		TotalDuration:   duration,
+		ErrorCount:      0,
+		Protocol:        protocol,
+		Environment:     attrs.DeploymentEnv,
+		TraceIds:        []string{span.TraceID},
+		FailedTraceIds:  []string{},
+		Operations:      make(map[string]int64),
+		StatusCodes:     make(map[int]int64),
+		ErrorTypes:      make(map[string]int64),
+		DependencyType:  depType,
+		OriginalTarget:  target,
+		SampleSpanID:    span.SpanID,
 	}
 
 	dep.Operations[span.SpanName] = 1
@@ -1320,12 +1418,10 @@ func (t *TraceServiceMapBuilder) buildExternalServiceDownstreams(dependencyMap m
 		if targetName == externalServiceName {
 			// This service depends on our external service
 			sourceName := dep.Source
-			sourceNamespace := ""
-
-			// Look up the source service's namespace
-			if sourceStats, exists := serviceStats[sourceName]; exists {
-				sourceNamespace = sourceStats.Namespace
-			}
+			// The dependency already carries its source namespace, resolved once
+			// after both passes. The old name-keyed serviceStats lookup here
+			// returned whichever namespace's copy was reached first.
+			sourceNamespace := dep.SourceNamespace
 
 			// Calculate metrics
 			dep.AvgDuration = dep.TotalDuration / float64(dep.CallCount) / t.config.NanosecondsToMilliseconds
@@ -1518,20 +1614,25 @@ func ExtractServiceNameFromUpstreamId(upstreamId string) string {
 	return ""
 }
 
-// ParseUpstreamId parses upstream ID format and returns name and kind
+// ParseUpstreamId parses upstream ID format and returns namespace, name and kind.
 // Format: "namespace:Kind:name" (e.g., ":Service:my-service" or "default:ExternalService:redis")
-func ParseUpstreamId(id string) (name, kind string) {
+//
+// The namespace is returned, not discarded: callers resolving the link to a real
+// service need it to tell two same-named services in different namespaces apart.
+// An empty namespace is a legitimate answer (external services, non-K8s workloads)
+// and means "unknown", not "default".
+func ParseUpstreamId(id string) (namespace, name, kind string) {
 	parts := strings.Split(id, ":")
 	if len(parts) >= 3 {
 		// Format: namespace:Kind:name
-		return parts[2], parts[1]
+		return parts[0], parts[2], parts[1]
 	}
 	if len(parts) == 2 {
 		// Format: Kind:name (no namespace)
-		return parts[1], parts[0]
+		return "", parts[1], parts[0]
 	}
 	// Single value, assume it's just the name
-	return id, "Service"
+	return "", id, "Service"
 }
 
 // extractK8sMetadataFromSpans extracts K8s infrastructure metadata from the spans

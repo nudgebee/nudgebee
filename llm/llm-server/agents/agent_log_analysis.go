@@ -88,7 +88,7 @@ func (l LogAnalysisAgent) GetName() string {
 }
 
 func (l LogAnalysisAgent) GetNameAliases() []string {
-	return []string{"Log Analysis"}
+	return []string{"Log Root-Cause Analyzer", "Log Analysis"}
 }
 
 func (l LogAnalysisAgent) GetDescription() string {

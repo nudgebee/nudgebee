@@ -1391,6 +1391,44 @@ actions:
       - role: account_admin_readonly
       - role: tenant_admin
     comment: Get load history for a knowledge base
+  - name: ai_list_kb_documents
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: account_admin_readonly
+      - role: tenant_admin
+    comment: List a page of the stored documents of a knowledge base (title and link)
+  - name: ai_get_kb_document
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: account_admin_readonly
+      - role: tenant_admin
+    comment: Get one stored document of a knowledge base with its content
+  - name: ai_upsert_kb_document_category
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: tenant_admin
+    comment: Mark one document of a knowledge base as a procedure (sop) or reference material (fact)
   - name: ai_list_kb_retrieval
     definition:
       kind: "synchronous"
@@ -3361,6 +3399,21 @@ actions:
       timeout: 120
     permissions:
       - role: tenant_admin
+  - name: integrations_diagnose_connection
+    comment: Safely diagnose connectivity of a saved integration visible through a linked account
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/integration'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 120
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: account_admin
+      - role: account_admin_readonly
   - name: integrations_check_connection_config
     comment: Test connectivity of integration settings before saving
     definition:
@@ -6163,6 +6216,22 @@ actions:
     permissions:
       - role: account_admin
       - role: tenant_admin
+  - name: workflow_check_trigger_match
+    comment: Check whether an event payload would fire an automation's trigger
+    definition:
+      kind: "synchronous"
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
   - name: workflow_check
     comment: Validate a workflow definition
     definition:
@@ -7240,6 +7309,7 @@ custom_types:
     - name: WorkflowTaskLayoutRequest
     - name: WorkflowTriggerRequest
     - name: WorkflowDryrunRequest
+    - name: WorkflowCheckTriggerMatchRequest
     - name: WorkflowExecutionListRequest
     - name: WorkflowExecutionGetRequest
     - name: TraceHeatMapInput
@@ -7832,6 +7902,7 @@ custom_types:
     - name: Error
     - name: WorkflowValidateResponse
     - name: WorkflowDryrunResponse
+    - name: WorkflowCheckTriggerMatchResponse
     - name: ExportRecommendationResponse
     - name: WorkflowDefinitionFailurePolicyResponse
     - name: WorkflowDefinitionRetryPolicyResponse

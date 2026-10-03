@@ -1,4 +1,7 @@
-import VerticalStepNavigation from '@shared/navigation/NewVerticalStepper';
+import { Card } from '@ui/Card';
+import { Stepper } from '@ui/Stepper';
+import SafeIcon from '@shared/icons/SafeIcon';
+import { checklistIcon } from '@assets';
 import { Box, Typography } from '@mui/material';
 import React, { useState, useRef, useEffect } from 'react';
 import PropTypes from 'prop-types';
@@ -314,6 +317,14 @@ const CreateAgentExtension = ({ accountId, handleClose, agentData, existingExten
     }
   }, [triggerSubmit]);
 
+  const stepErrors = getStepErrors();
+  const stepperSteps = extensionSteps.map((step, index) => ({
+    id: step.id,
+    label: step.title,
+    sub: step.description,
+    state: stepErrors[index] ? 'failed' : index === activeStep - 1 ? 'current' : 'upcoming',
+  }));
+
   return (
     <Box sx={{ display: 'flex', height: '80vh', overflow: 'hidden', position: 'relative' }}>
       {/* Left Sidebar - Step Navigation */}
@@ -333,13 +344,26 @@ const CreateAgentExtension = ({ accountId, handleClose, agentData, existingExten
           zIndex: 1,
         }}
       >
-        <VerticalStepNavigation
-          steps={extensionSteps}
-          title='Extension Steps'
-          activeStep={activeStep}
-          onStepChange={scrollToStep}
-          stepErrors={getStepErrors()}
-        />
+        <Card
+          variant='outlined'
+          elevation='flat'
+          size='sm'
+          header={
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+              <SafeIcon src={checklistIcon} alt='checklist' width={20} height={20} />
+              Extension Steps
+            </Box>
+          }
+          sx={{ height: '100%', overflowY: 'auto' }}
+        >
+          <Stepper
+            steps={stepperSteps}
+            current={activeStep - 1}
+            orientation='vertical'
+            interactivity='all-clickable'
+            onStepClick={(id, index) => scrollToStep(index + 1)}
+          />
+        </Card>
       </Box>
 
       {/* Main Content Area */}

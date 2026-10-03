@@ -814,25 +814,28 @@ func (s *LokiSource) ensureCompleteLokiQuery(fetchLogRequest *FetchLogRequest) (
 	return finalParams.Encode(), nil
 }
 
-func (s *LokiSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, error) {
-	var err error
-
+// prepareQueryParams validates the request and builds the Loki API query string for it.
+// The result is a URL-encoded parameter list (query, start, end, limit, step, direction)
+// that /loki/api/v1/query_range accepts verbatim — the agent relay simply forwards it, and
+// LokiSaasSource appends it to the configured endpoint. Kept transport-free so both paths
+// share one implementation of the validation, limit rules and LogQL construction.
+func (s *LokiSource) prepareQueryParams(fetchLogRequest *FetchLogRequest) (string, error) {
 	if fetchLogRequest.AccountId == "" {
-		return nil, fmt.Errorf("loki: account ID is required")
+		return "", fmt.Errorf("loki: account ID is required")
 	}
 
 	// LogQL requires at least one positive label matcher inside {…}. If the caller provides
 	// neither a raw query nor a builder where-clause, BuildLokiQuery emits "{}", and Loki
 	// rejects it with an opaque parse error. Fail fast with a clear message instead.
 	if strings.TrimSpace(fetchLogRequest.Query) == "" && isEmptyWhereClause(fetchLogRequest.QueryRequest.Where) {
-		return nil, fmt.Errorf("loki: query must contain at least one label selector")
+		return "", fmt.Errorf("loki: query must contain at least one label selector")
 	}
 
 	// Default limit before building the query so it gets included in the Loki API request.
 	if fetchLogRequest.Limit == 0 {
 		fetchLogRequest.Limit = 5000
 	} else if fetchLogRequest.Limit > 5000 {
-		return nil, fmt.Errorf("loki: limit exceeds maximum of 5000")
+		return "", fmt.Errorf("loki: limit exceeds maximum of 5000")
 	}
 
 	// Check if structured query_request is provided (builder mode)
@@ -840,16 +843,25 @@ func (s *LokiSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest Fet
 		// Build LogQL query from structured request
 		lokiQuery, err := s.BuildLokiQuery(fetchLogRequest.QueryRequest)
 		if err != nil {
-			return nil, fmt.Errorf("failed to build loki query from query_request: %w", err)
+			return "", fmt.Errorf("failed to build loki query from query_request: %w", err)
 		}
 		// Store the built query so ensureCompleteLokiQuery can add time range, limit, etc.
 		fetchLogRequest.Query = lokiQuery
 	}
 
-	fetchLogRequest.Query, err = s.ensureCompleteLokiQuery(&fetchLogRequest)
+	params, err := s.ensureCompleteLokiQuery(fetchLogRequest)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build complete loki query: %w", err)
+		return "", fmt.Errorf("failed to build complete loki query: %w", err)
 	}
+	return params, nil
+}
+
+func (s *LokiSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, error) {
+	params, err := s.prepareQueryParams(&fetchLogRequest)
+	if err != nil {
+		return nil, err
+	}
+	fetchLogRequest.Query = params
 
 	lokiRequest := relay.ActionExecuteBody{
 		AccountID:  fetchLogRequest.AccountId,

@@ -16,6 +16,11 @@ jest.mock('@api1/ask-nudgebee', () => ({
   __esModule: true,
   default: { getRcaFormat: jest.fn(), updateRcaFormat: jest.fn() },
 }));
+let mockBrandTitle = 'Nudgebee';
+jest.mock('@hooks/useTenantBranding', () => ({
+  ...jest.requireActual('@hooks/useTenantBranding'),
+  useBrandingConfig: () => ({ title: mockBrandTitle, assistantName: 'nubi', isWhiteLabel: mockBrandTitle !== 'Nudgebee', loading: false }),
+}));
 
 const SAVED = 'SAVED FORMAT TEXT';
 const NB_DEFAULT = 'NUDGEBEE DEFAULT FORMAT TEXT';
@@ -35,6 +40,7 @@ async function pickTemplate(user, label) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockBrandTitle = 'Nudgebee';
   apiAskNudgebee.getRcaFormat.mockResolvedValue({
     data: { format: SAVED, is_default: false, default_format: NB_DEFAULT },
     errors: [],
@@ -72,6 +78,17 @@ describe('RCAFormatTab template picker', () => {
     await pickTemplate(user, 'Nudgebee default');
 
     expect(editor()).toHaveValue(NB_DEFAULT);
+  });
+
+  it('names the built-in template after the tenant brand', async () => {
+    mockBrandTitle = 'Acme';
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    await user.click(picker());
+    expect(await screen.findByRole('menuitem', { name: /Acme default/, hidden: true })).toBeInTheDocument();
+    expect(screen.getByText('The built-in Acme template.')).toBeInTheDocument();
+    expect(screen.queryByText(/Nudgebee/)).not.toBeInTheDocument();
   });
 
   it('asks before overwriting unsaved edits and only replaces on confirm', async () => {

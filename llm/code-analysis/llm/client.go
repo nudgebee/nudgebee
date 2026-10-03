@@ -2,9 +2,13 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
+	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +24,47 @@ import (
 	"github.com/tmc/langchaingo/llms/openai"
 	"google.golang.org/genai"
 )
+
+// customHTTPClient adds the explicitly configured, non-authentication headers
+// required by customer-owned OpenAI-compatible gateways.
+func customHTTPClient(raw string) (*http.Client, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var headers map[string]string
+	if err := json.Unmarshal([]byte(raw), &headers); err != nil {
+		return nil, err
+	}
+	if headers == nil {
+		return nil, errors.New("headers must be a JSON object")
+	}
+	if len(headers) == 0 {
+		return nil, nil
+	}
+	for name := range headers {
+		if strings.EqualFold(name, "authorization") ||
+			strings.EqualFold(name, "api-key") ||
+			strings.EqualFold(name, "x-api-key") ||
+			strings.EqualFold(name, "x-auth-token") ||
+			strings.EqualFold(name, "x-access-token") {
+			return nil, fmt.Errorf("authentication header %q is managed by the provider configuration", name)
+		}
+	}
+	return &http.Client{Transport: &customHeadersTransport{base: http.DefaultTransport, headers: headers}}, nil
+}
+
+type customHeadersTransport struct {
+	base    http.RoundTripper
+	headers map[string]string
+}
+
+func (t *customHeadersTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	for name, value := range t.headers {
+		clone.Header.Set(name, value)
+	}
+	return t.base.RoundTrip(clone)
+}
 
 type Client struct {
 	llm         llms.Model
@@ -173,82 +218,111 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	var llm llms.Model
 	var err error
 
-	switch Provider(cfg.LLM.Provider) {
-	case ProviderBedrock:
-		// Pass the region via an explicitly-configured client rather than
-		// os.Setenv("AWS_REGION", ...). NewClient is built per request, so
-		// mutating process-global env would be a data race across concurrent
-		// requests (and would also leak the region into child commands).
-		// The region can arrive explicitly or be carried inside an
-		// inference-profile ARN; either is enough to configure the client.
-		region := cfg.LLM.Region
-		if region == "" {
-			region = regionFromModelARN(cfg.LLM.Model)
+	// Workspace pods are provisioned by llm-server with a scoped JWT and its
+	// service URL. Prefer that bridge whenever present so the code agent uses
+	// the same provider resolution, caching and accounting as every other agent.
+	// The local branches remain available for standalone CLI/development runs.
+	if strings.TrimSpace(os.Getenv("NB_LLM_SERVER_URL")) != "" {
+		llm, err = newLLMServerModel()
+		if err == nil {
+			log.Printf("INFO: llm: routing code-analysis generation through llm-server bridge (forwarded provider=%q model=%q)",
+				cfg.LLM.Provider, cfg.LLM.Model)
 		}
-		// Static credentials are the Bedrock analogue of an API key, forwarded
-		// per request by llm-server from the tenant's resolved config. Build an
-		// explicit AWS config whenever we have either a region or credentials —
-		// keying this on region alone used to drop forwarded credentials on the
-		// floor. With neither, fall through to the SDK default chain, which is
-		// what serves EKS deployments through the node role or IRSA.
-		hasStaticCreds := cfg.LLM.AccessKey != "" && cfg.LLM.SecretKey != ""
-		// Bound the AWS config load so a stuck IMDS/STS lookup fails fast
-		// instead of blocking client construction indefinitely.
-		awsCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		opts := []func(*awsconfig.LoadOptions) error{}
-		if region != "" {
-			opts = append(opts, awsconfig.WithRegion(region))
-		}
-		if hasStaticCreds {
-			opts = append(opts, awsconfig.WithCredentialsProvider(
-				credentials.NewStaticCredentialsProvider(cfg.LLM.AccessKey, cfg.LLM.SecretKey, cfg.LLM.SessionToken),
-			))
-		}
-		awsCfg, cerr := awsconfig.LoadDefaultConfig(awsCtx, opts...)
-		if cerr != nil {
-			return nil, fmt.Errorf("failed to load AWS config for region %q: %w", region, cerr)
-		}
-		// Converse rather than langchaingo's bedrock package: the latter supports
-		// no tool calling on any model family, which leaves this agent unable to
-		// read a single file. See bedrock_converse.go.
-		llm = newBedrockConverseLLM(bedrockruntime.NewFromConfig(awsCfg), cfg.LLM.Model)
-	case ProviderOpenAI, ProviderHuggingFace:
-		opts := []openai.Option{
-			openai.WithModel(cfg.LLM.Model),
-		}
-		if cfg.LLM.ApiKey != "" {
-			opts = append(opts, openai.WithToken(cfg.LLM.ApiKey))
-		}
-		baseURL := cfg.LLM.ApiEndpoint
-		// HuggingFace deployments here are dedicated endpoints fronted by an
-		// OpenAI-compatible API (llm-server resolves LLM_PROVIDER_API_TYPE=openai
-		// for them), so they run through the same client rather than a second SDK.
-		// Reject the native HuggingFace inference protocol up front instead of
-		// silently sending it OpenAI-shaped requests that only fail once the agent
-		// is already mid-run.
-		if Provider(cfg.LLM.Provider) == ProviderHuggingFace {
-			if baseURL == "" {
-				return nil, errors.New("LLM_PROVIDER_API_ENDPOINT is required for the huggingface provider")
+	} else {
+		switch Provider(cfg.LLM.Provider) {
+		case ProviderBedrock:
+			// Pass the region via an explicitly-configured client rather than
+			// os.Setenv("AWS_REGION", ...). NewClient is built per request, so
+			// mutating process-global env would be a data race across concurrent
+			// requests (and would also leak the region into child commands).
+			// The region can arrive explicitly or be carried inside an
+			// inference-profile ARN; either is enough to configure the client.
+			region := cfg.LLM.Region
+			if region == "" {
+				region = regionFromModelARN(cfg.LLM.Model)
 			}
-			if !strings.EqualFold(cfg.LLM.ApiType, "openai") {
-				return nil, fmt.Errorf("huggingface provider requires an OpenAI-compatible endpoint (api_type %q, want \"openai\")", cfg.LLM.ApiType)
+			// Static credentials are the Bedrock analogue of an API key, forwarded
+			// per request by llm-server from the tenant's resolved config. Build an
+			// explicit AWS config whenever we have either a region or credentials —
+			// keying this on region alone used to drop forwarded credentials on the
+			// floor. With neither, fall through to the SDK default chain, which is
+			// what serves EKS deployments through the node role or IRSA.
+			hasStaticCreds := cfg.LLM.AccessKey != "" && cfg.LLM.SecretKey != ""
+			// Bound the AWS config load so a stuck IMDS/STS lookup fails fast
+			// instead of blocking client construction indefinitely.
+			awsCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			opts := []func(*awsconfig.LoadOptions) error{}
+			if region != "" {
+				opts = append(opts, awsconfig.WithRegion(region))
 			}
-			baseURL = huggingFaceBaseURL(baseURL)
+			if hasStaticCreds {
+				opts = append(opts, awsconfig.WithCredentialsProvider(
+					credentials.NewStaticCredentialsProvider(cfg.LLM.AccessKey, cfg.LLM.SecretKey, cfg.LLM.SessionToken),
+				))
+			}
+			awsCfg, cerr := awsconfig.LoadDefaultConfig(awsCtx, opts...)
+			if cerr != nil {
+				return nil, fmt.Errorf("failed to load AWS config for region %q: %w", region, cerr)
+			}
+			// Converse rather than langchaingo's bedrock package: the latter supports
+			// no tool calling on any model family, which leaves this agent unable to
+			// read a single file. See bedrock_converse.go.
+			llm = newBedrockConverseLLM(bedrockruntime.NewFromConfig(awsCfg), cfg.LLM.Model)
+		case ProviderOpenAI, ProviderHuggingFace:
+			opts := []openai.Option{
+				openai.WithModel(cfg.LLM.Model),
+			}
+			if cfg.LLM.ApiKey != "" {
+				opts = append(opts, openai.WithToken(cfg.LLM.ApiKey))
+			}
+			baseURL := cfg.LLM.ApiEndpoint
+			// HuggingFace deployments here are dedicated endpoints fronted by an
+			// OpenAI-compatible API (llm-server resolves LLM_PROVIDER_API_TYPE=openai
+			// for them), so they run through the same client rather than a second SDK.
+			// Reject the native HuggingFace inference protocol up front instead of
+			// silently sending it OpenAI-shaped requests that only fail once the agent
+			// is already mid-run.
+			if Provider(cfg.LLM.Provider) == ProviderHuggingFace {
+				if baseURL == "" {
+					return nil, errors.New("LLM_PROVIDER_API_ENDPOINT is required for the huggingface provider")
+				}
+				if !strings.EqualFold(cfg.LLM.ApiType, "openai") {
+					return nil, fmt.Errorf("huggingface provider requires an OpenAI-compatible endpoint (api_type %q, want \"openai\")", cfg.LLM.ApiType)
+				}
+				baseURL = huggingFaceBaseURL(baseURL)
+			}
+			if baseURL != "" {
+				opts = append(opts, openai.WithBaseURL(baseURL))
+			}
+			llm, err = openai.New(opts...)
+		case "custom":
+			if cfg.LLM.ApiEndpoint == "" {
+				return nil, errors.New("LLM_PROVIDER_API_ENDPOINT is required for the custom provider")
+			}
+			opts := []openai.Option{
+				openai.WithModel(cfg.LLM.Model),
+				openai.WithBaseURL(strings.TrimRight(cfg.LLM.ApiEndpoint, "/")),
+			}
+			if cfg.LLM.ApiKey != "" {
+				opts = append(opts, openai.WithToken(cfg.LLM.ApiKey))
+			}
+			if httpClient, headerErr := customHTTPClient(cfg.LLM.ExtraHeaders); headerErr != nil {
+				return nil, fmt.Errorf("invalid custom provider headers: %w", headerErr)
+			} else if httpClient != nil {
+				opts = append(opts, openai.WithHTTPClient(httpClient))
+			}
+			llm, err = openai.New(opts...)
+		case "googleai":
+			if cfg.LLM.ApiKey == "" {
+				return nil, errors.New("LLM_PROVIDER_API_KEY environment variable is required for GoogleAI provider")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+			defer cancel()
+			llm, err = googleai.New(ctx, googleai.WithAPIKey(cfg.LLM.ApiKey), googleai.WithDefaultModel(cfg.LLM.Model))
+		default:
+			return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.LLM.Provider)
 		}
-		if baseURL != "" {
-			opts = append(opts, openai.WithBaseURL(baseURL))
-		}
-		llm, err = openai.New(opts...)
-	case "googleai":
-		if cfg.LLM.ApiKey == "" {
-			return nil, errors.New("LLM_PROVIDER_API_KEY environment variable is required for GoogleAI provider")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-		defer cancel()
-		llm, err = googleai.New(ctx, googleai.WithAPIKey(cfg.LLM.ApiKey), googleai.WithDefaultModel(cfg.LLM.Model))
-	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s", cfg.LLM.Provider)
 	}
 
 	if err != nil {

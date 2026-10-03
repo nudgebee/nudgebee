@@ -2,10 +2,8 @@ package observability
 
 import (
 	"fmt"
-	"nudgebee/services/common"
 	"nudgebee/services/eventrule/playbooks"
-	"nudgebee/services/relay"
-	"strconv"
+	"nudgebee/services/security"
 	"strings"
 	"time"
 )
@@ -85,34 +83,20 @@ func (a *aggregatedAlertLabelEnricher) AutoExecute(ctx playbooks.PlaybookActionC
 		endTime = *event.EndedAt
 	}
 
-	relayRequest := relay.RelayExecuteRequest{
-		Body: relay.ActionExecuteBody{
-			AccountID:  ctx.GetAccountId(),
-			ActionName: "prometheus_queries_enricher",
-			ActionParams: map[string]any{
-				"duration": map[string]any{
-					"ends_at":   endTime.UTC().Format("2006-01-02 15:04:05 UTC"),
-					"starts_at": startTime.UTC().Format("2006-01-02 15:04:05 UTC"),
-				},
-				"instant": false,
-				"promql_queries": []playbooks.NamedQuery{
-					{Key: "A", Query: query},
-				},
-			},
-			Origin: "services-server",
-		},
-		NoSinks: true,
-		Cache:   false,
-	}
-
-	relayResponse, _, err := relay.ExecuteAndExtractResponse(relayRequest)
+	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
+	output, err := FetchMetricsQuery(requestCtx, FetchMetricsRequest{
+		AccountId:      ctx.GetAccountId(),
+		MetricProvider: integrationPrometheus,
+		Queries:        map[string]string{"A": query},
+		StartTime:      startTime.UnixMilli(),
+		EndTime:        endTime.UnixMilli(),
+	})
 	if err != nil {
-		ctx.GetLogger().Warn("aggregated_alert_label_enricher: relay query failed", "error", err, "query", query)
+		ctx.GetLogger().Warn("aggregated_alert_label_enricher: metrics query failed", "error", err, "query", query)
 		return nil, err
 	}
 
-	// Parse response: relayResponse["data"] -> data["A"] -> series_list_result
-	topMetric := pickTopSeriesMetric(relayResponse, ctx)
+	topMetric := pickTopSeriesMetric(output)
 	if topMetric == nil {
 		ctx.GetLogger().Info("aggregated_alert_label_enricher: no series found", "query", query)
 		return nil, fmt.Errorf("no series found for query")
@@ -143,95 +127,21 @@ func (a *aggregatedAlertLabelEnricher) Execute(ctx playbooks.PlaybookActionConte
 	return a.AutoExecute(ctx)
 }
 
-// pickTopSeriesMetric parses the relay response and returns the metric labels of the series with the highest value.
-func pickTopSeriesMetric(relayResponse map[string]any, ctx playbooks.PlaybookActionContext) map[string]any {
-	// Extract data from response
-	var data map[string]any
-	if relayResponse["data"] != nil {
-		switch d := relayResponse["data"].(type) {
-		case map[string]any:
-			data = d
-		case string:
-			err := common.UnmarshalJson([]byte(d), &data)
-			if err != nil {
-				ctx.GetLogger().Warn("aggregated_alert_label_enricher: failed to parse data", "error", err)
-				return nil
-			}
-		}
-	}
-	if data == nil {
-		return nil
-	}
-
-	// Get query result (key "A")
-	queryResult, ok := data["A"]
-	if !ok {
-		return nil
-	}
-
-	// The relay response for "A" can be:
-	// 1. []any — flat array of series (from ExecuteAndExtractResponse parsing)
-	// 2. map[string]any — with "vector_result" or "series_list_result" keys
-	var seriesList []any
-	switch qr := queryResult.(type) {
-	case []any:
-		seriesList = qr
-	case map[string]any:
-		seriesList, _ = qr["vector_result"].([]any)
-		if len(seriesList) == 0 {
-			seriesList, _ = qr["series_list_result"].([]any)
-		}
-	}
-	if len(seriesList) == 0 {
-		return nil
-	}
-
-	var topMetric map[string]any
+// pickTopSeriesMetric returns the labels of the series whose latest sample is
+// the highest — the (path, method, status) or container that failed most.
+func pickTopSeriesMetric(output OutputMetricQuery) map[string]any {
+	var top map[string]any
 	topValue := -1.0
-
-	for _, item := range seriesList {
-		series, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		metric, ok := series["metric"].(map[string]any)
-		if !ok {
-			continue
-		}
-
-		// For instant queries, value is [timestamp, "value_string"]
-		value, ok := series["value"].([]any)
-		if ok && len(value) >= 2 {
-			if vStr, ok := value[1].(string); ok {
-				if v, err := strconv.ParseFloat(vStr, 64); err == nil && v > topValue {
-					topValue = v
-					topMetric = metric
-				}
+	for _, result := range output.Results {
+		for _, series := range result.Payload {
+			if len(series.Values) == 0 {
+				continue
 			}
-		}
-
-		// For range queries, values can be flat strings ["v1", "v2"] or
-		// nested [timestamp, value] pairs after relay transformation.
-		values, ok := series["values"].([]any)
-		if ok && len(values) > 0 {
-			lastVal := values[len(values)-1]
-			var vStr string
-			switch lv := lastVal.(type) {
-			case string:
-				vStr = lv
-			case []any:
-				if len(lv) >= 2 {
-					vStr, _ = lv[1].(string)
-				}
-			}
-			if vStr != "" {
-				if v, err := strconv.ParseFloat(vStr, 64); err == nil && v > topValue {
-					topValue = v
-					topMetric = metric
-				}
+			if v := series.Values[len(series.Values)-1]; v > topValue {
+				topValue = v
+				top = promQLMetricLabels(series.Metric)
 			}
 		}
 	}
-
-	return topMetric
+	return top
 }

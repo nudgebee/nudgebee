@@ -624,6 +624,7 @@ const CloudOptimizeRecommendationsTable = (props: {
   // Fetch summary totals (count + optional savings)
   useEffect(() => {
     if (!selectedAccountId && !props.isOptimisePage) return;
+    let cancelled = false;
     setLoadingTotal(true);
     const promise = config.useSummaryApi
       ? apiRecommendations.getK8sRecommendationSummary({
@@ -643,13 +644,19 @@ const CloudOptimizeRecommendationsTable = (props: {
 
     promise
       .then((res: any) => {
+        if (cancelled) return;
         if (config.useSummaryApi) {
           setTotalEstimatedSavings(res?.data?.recommendation_aggregate?.aggregate?.sum?.estimated_savings ?? 0);
         }
         setTotalRecommendationsCount(res?.data?.recommendation_aggregate?.aggregate?.count ?? 0);
       })
       .catch(console.error)
-      .finally(() => setLoadingTotal(false));
+      .finally(() => {
+        if (!cancelled) setLoadingTotal(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedAccountId, selectedStatus, props?.serviceName, props.category]);
 
   const SEVERITY_TOOLTIP =

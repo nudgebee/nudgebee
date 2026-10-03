@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Box, Typography, Radio, RadioGroup, FormControlLabel, Tabs, Tab, CircularProgress } from '@mui/material';
+import { Box, Typography, Radio, RadioGroup, FormControlLabel, CircularProgress } from '@mui/material';
+import Tabs from '@shared/navigation/Tabs';
 import { Input } from '@ui/Input';
 import { Modal } from '@ui/Modal';
 import { Button as DsButton } from '@ui/Button';
@@ -26,6 +27,8 @@ const RULE_TYPES = [
   { value: 'scoring', label: 'Scoring', description: 'Adjust the priority score of matching events' },
   { value: 'classification', label: 'Classification', description: 'Automatically classify matching events' },
 ];
+
+const RULE_TYPE_TAB_OPTIONS = { tabOptions: RULE_TYPES.map((t) => ({ value: t.value, text: t.label })) };
 
 const SUPPRESSION_ACTIONS = [
   { value: 'suppress', label: 'Suppress', description: 'Mark as suppressed but keep visible' },
@@ -474,15 +477,7 @@ const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, ac
         </BlockWithHeading>
 
         <BlockWithHeading number={2} heading='Rule Type' isExpandable={false}>
-          <Tabs
-            value={ruleType}
-            onChange={(_, v) => setRuleType(v)}
-            sx={{ mb: ds.space[4], '& .MuiTab-root': { textTransform: 'none', minWidth: 'auto', px: ds.space[4] } }}
-          >
-            {RULE_TYPES.map((t) => (
-              <Tab key={t.value} value={t.value} label={t.label} />
-            ))}
-          </Tabs>
+          <Tabs value={ruleType} onChange={setRuleType} behavior='filter' variant='secondary' ariaLabel='Rule type' options={RULE_TYPE_TAB_OPTIONS} />
           <Typography variant='body2' sx={{ color: ds.gray[600] }}>
             {RULE_TYPES.find((t) => t.value === ruleType)?.description}
           </Typography>

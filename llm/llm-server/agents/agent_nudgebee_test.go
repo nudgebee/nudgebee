@@ -37,6 +37,8 @@ func TestNudgebeeAgentToolAllowlist(t *testing.T) {
 		tools.ToolNudgebeeIntegrationsList,
 		tools.ToolNudgebeeIntegrationsCount,
 		tools.ToolNudgebeeIntegrationGetStatus,
+		tools.ToolNudgebeeIntegrationDiagnose,
+		tools.ToolNudgebeeAgentHealthGet,
 	}
 	assert.Len(t, got, len(want))
 	for _, name := range want {
@@ -60,7 +62,7 @@ func TestNudgebeeAgentEffectiveToolSurfaceIsClosed(t *testing.T) {
 	for _, tool := range effective {
 		got = append(got, tool.Name())
 	}
-	assert.Len(t, got, 7)
+	assert.Len(t, got, 9)
 	assert.NotContains(t, got, toolcore.ToolExecuteShellCommand)
 	assert.NotContains(t, got, tools.LoadSkillsToolName)
 }
@@ -79,7 +81,28 @@ func TestNudgebeeAgentPromptSeparatesDocsFromLiveState(t *testing.T) {
 	text := strings.Join(prompt.Instructions, "\n") + "\n" + strings.Join(prompt.Constraints, "\n")
 	assert.Contains(t, text, tools.ToolNudgebeeDocsSearch)
 	assert.Contains(t, text, tools.ToolNudgebeeIntegrationGetStatus)
+	assert.Contains(t, text, tools.ToolNudgebeeIntegrationDiagnose)
 	assert.Contains(t, text, "Never answer current state from documentation")
+	assert.Contains(t, text, "do not infer that a disabled match is the one the user meant")
+	assert.Contains(t, text, "If nudgebee_integration_diagnose returns an error, stop")
+	assert.Contains(t, text, "test_status not_supported")
+	assert.Contains(t, text, "connectivity was not tested")
+	assert.Contains(t, text, tools.ToolNudgebeeAgentHealthGet)
+	assert.Contains(t, text, "authoritative over the user's premise")
+	assert.Contains(t, text, "deployment_model, overall_health, health_signal, and feature_health")
+	assert.Contains(t, text, "do not enumerate Kubernetes feature names as missing")
+	assert.Contains(t, text, "only when the relevant row, synchronization feature, or datasource returns health_error.reason_code")
+	assert.Contains(t, text, "report synchronization_health per feature")
+	assert.Contains(t, text, "report the heartbeat separately from datasource_health")
+	assert.Contains(t, text, "Call nudgebee_agent_health_get exactly once without account_id")
+	assert.Contains(t, text, "Do not call account or integration inventory tools")
+	assert.Contains(t, text, "does not apply to a question about one configured integration")
+	assert.Contains(t, text, "raw status and last_connected_at are compatibility fields")
+	assert.Contains(t, text, "use its reason_code instead of interpreting status_message")
+	assert.Contains(t, text, "Documentation may explain possible checks, but it does not prove")
+	assert.Contains(t, text, "Never broaden a current-account health question")
+	assert.Contains(t, text, "server-managed OpenCost")
+	assert.Contains(t, text, "updated_at only as the time the integration record was last updated")
 	assert.Contains(t, text, "Never invent or accept a tenant id")
 }
 

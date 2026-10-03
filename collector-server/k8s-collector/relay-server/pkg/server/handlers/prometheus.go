@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -198,7 +200,7 @@ func processRequest(c *gin.Context, accountID string, logger *slog.Logger, store
 	}
 	if !connected {
 		logger.Info("agent not connected", "account", accountID)
-		c.JSON(400, utils.BuildError(400, "agent not connected"))
+		c.JSON(http.StatusServiceUnavailable, utils.BuildError(http.StatusServiceUnavailable, "agent not connected"))
 		return
 	}
 
@@ -278,72 +280,154 @@ func processRequest(c *gin.Context, accountID string, logger *slog.Logger, store
 
 }
 
-func transformToPrometheusValues(seriesList []any) ([]any, error) {
-	var newSeriesList []any
-	for _, seriesItem := range seriesList {
-		seriesMap, ok := seriesItem.(map[string]any)
-		if !ok {
-			return nil, errors.New("invalid series item format")
-		}
-
-		// Check if the format is already the prometheus one
-		if _, ok := seriesMap["values"].([][]any); ok {
-			newSeriesList = append(newSeriesList, seriesMap)
-			continue
-		}
-
-		timestamps, okTs := seriesMap["timestamps"].([]any)
-		values, okVal := seriesMap["values"].([]any)
-
-		if !okTs || !okVal {
-			if _, ok := seriesMap["values"].([][]any); ok {
-				newSeriesList = append(newSeriesList, seriesMap)
-				continue
-			}
-			return nil, errors.New("missing or invalid 'timestamp' or 'values' in series")
-		}
-
-		if len(timestamps) != len(values) {
-			return nil, errors.New("mismatch between number of timestamps and values")
-		}
-
-		var promValues [][]any
-		for i := range timestamps {
-			tsStr, ok := timestamps[i].(string)
-			if !ok {
-				if tsFloat, ok := timestamps[i].(float64); ok {
-					promValues = append(promValues, []any{tsFloat, values[i]})
-					continue
-				}
-				return nil, fmt.Errorf("timestamp is not a string or float64: %T", timestamps[i])
-			}
-
-			ts, err := strconv.ParseFloat(tsStr, 64)
-			if err != nil {
-				return nil, fmt.Errorf("could not parse timestamp string: %w", err)
-			}
-			promValues = append(promValues, []any{ts, values[i]})
-		}
-
-		delete(seriesMap, "timestamps") // remove old timestamp field
-		seriesMap["values"] = promValues
-		newSeriesList = append(newSeriesList, seriesMap)
+// appendPrometheusSeries appends one series from the agent's
+// {metric, timestamps, values} shape as Prometheus' {metric, values:[[ts,val]]}
+// shape, copying every field it does not have to rewrite straight out of the
+// source JSON. tsBuf is a scratch slice reused across series; the grown slice
+// is returned so the caller can hand it back on the next call.
+func appendPrometheusSeries(dst []byte, tsBuf []gjson.Result, series gjson.Result) ([]byte, []gjson.Result, error) {
+	if !series.IsObject() {
+		return dst, tsBuf, errors.New("invalid series item format")
 	}
-	return newSeriesList, nil
+
+	timestamps := series.Get("timestamps")
+	values := series.Get("values")
+	if !timestamps.IsArray() || !values.IsArray() {
+		return dst, tsBuf, errors.New("missing or invalid 'timestamp' or 'values' in series")
+	}
+
+	timestamps.ForEach(func(_, ts gjson.Result) bool {
+		tsBuf = append(tsBuf, ts)
+		return true
+	})
+
+	dst = append(dst, '{')
+	// Everything other than the two arrays we zip is copied verbatim.
+	series.ForEach(func(key, value gjson.Result) bool {
+		if k := key.Str; k == "timestamps" || k == "values" {
+			return true
+		}
+		dst = append(dst, key.Raw...)
+		dst = append(dst, ':')
+		dst = append(dst, value.Raw...)
+		dst = append(dst, ',')
+		return true
+	})
+
+	dst = append(dst, `"values":`...)
+	valuesStart := len(dst)
+	dst = append(dst, '[')
+
+	var (
+		i      int
+		valErr error
+	)
+	values.ForEach(func(_, value gjson.Result) bool {
+		if i >= len(tsBuf) {
+			valErr = errors.New("mismatch between number of timestamps and values")
+			return false
+		}
+		if i > 0 {
+			dst = append(dst, ',')
+		}
+		dst = append(dst, '[')
+		if dst, valErr = appendPrometheusTimestamp(dst, tsBuf[i]); valErr != nil {
+			return false
+		}
+		dst = append(dst, ',')
+		dst = append(dst, value.Raw...)
+		dst = append(dst, ']')
+		i++
+		return true
+	})
+	if valErr != nil {
+		return dst, tsBuf, valErr
+	}
+	if i != len(tsBuf) {
+		return dst, tsBuf, errors.New("mismatch between number of timestamps and values")
+	}
+
+	if i == 0 {
+		// The previous implementation built the sample list with append onto a
+		// nil slice, so a series with no samples marshalled to null rather than
+		// []. Keep that on the wire.
+		dst = append(dst[:valuesStart], "null"...)
+	} else {
+		dst = append(dst, ']')
+	}
+	return append(dst, '}'), tsBuf, nil
 }
 
+// appendPrometheusTimestamp writes a sample timestamp as a JSON number. The
+// agent sends them either as numbers or as decimal strings; both used to land
+// in a float64 and be rendered by encoding/json, so render them the same way.
+func appendPrometheusTimestamp(dst []byte, ts gjson.Result) ([]byte, error) {
+	switch ts.Type {
+	case gjson.Number:
+		return appendJSONFloat(dst, ts.Num)
+	case gjson.String:
+		f, err := strconv.ParseFloat(ts.Str, 64)
+		if err != nil {
+			return dst, fmt.Errorf("could not parse timestamp string: %w", err)
+		}
+		return appendJSONFloat(dst, f)
+	default:
+		return dst, fmt.Errorf("timestamp is not a string or float64: %s", ts.Type)
+	}
+}
+
+// appendJSONFloat renders f exactly as encoding/json's float encoder does.
+func appendJSONFloat(dst []byte, f float64) ([]byte, error) {
+	if math.IsInf(f, 0) || math.IsNaN(f) {
+		return dst, fmt.Errorf("unsupported timestamp value: %v", f)
+	}
+	format := byte('f')
+	if abs := math.Abs(f); abs != 0 && (abs < 1e-6 || abs >= 1e21) {
+		format = 'e'
+	}
+	dst = strconv.AppendFloat(dst, f, format, -1, 64)
+	if format == 'e' {
+		// clean up e-09 to e-9, the same fixup encoding/json applies
+		if n := len(dst); n >= 4 && dst[n-4] == 'e' && dst[n-3] == '-' && dst[n-2] == '0' {
+			dst[n-2] = dst[n-1]
+			dst = dst[:n-1]
+		}
+	}
+	return dst, nil
+}
+
+// processRelayResponsePayload reshapes the agent's reply into the Prometheus
+// HTTP API response.
+//
+// It copies raw JSON out of the reply wherever it does not have to rewrite the
+// value, instead of decoding into map[string]any and re-marshalling. That round
+// trip used to dominate this handler: on a 50 MB query_range reply it allocated
+// ~630 MB, which held the process in continuous GC (56% of relay CPU) and was
+// the bulk of the response latency.
+//
+// Copying raw leaves three JSON-equivalent differences from the old output:
+// object keys keep their source order rather than being sorted, `<`, `>` and `&`
+// inside strings are no longer escaped to their \u00XX forms, and numeric sample
+// values are no longer round-tripped through float64.
 func processRelayResponsePayload(resp []byte, requestType string) ([]byte, error) {
 	// Use gjson to traverse the nested response without unmarshalling the full payload.
 	// Structure: data.success, data.findings[0].evidence[0].data → JSON string → [0].data → JSON string
 	errMsg := errors.New("relay: unable to execute relay query")
 
-	success := gjson.GetBytes(resp, "data.success")
+	// gjson.GetBytes copies the matched Raw and Str out of the caller's buffer
+	// for safety, which on a 60 MB reply means copying the whole escaped
+	// evidence blob we never look at. Read through a string view instead: resp
+	// is the AMQP delivery body, nobody mutates it, and every Raw we keep is
+	// appended (copied) into the response buffer before this returns.
+	respStr := unsafe.String(unsafe.SliceData(resp), len(resp))
+
+	success := gjson.Get(respStr, "data.success")
 	if success.Exists() && !success.Bool() {
 		slog.Error("relay: relay query success is false")
 		return nil, errMsg
 	}
 
-	evidenceData := gjson.GetBytes(resp, "data.findings.0.evidence.0.data")
+	evidenceData := gjson.Get(respStr, "data.findings.0.evidence.0.data")
 	if !evidenceData.Exists() {
 		slog.Error("relay: evidence data not found in response path data.findings.0.evidence.0.data")
 		return nil, errMsg
@@ -363,48 +447,84 @@ func processRelayResponsePayload(resp []byte, requestType string) ([]byte, error
 		return nil, errMsg
 	}
 
-	if requestType == "query" || requestType == "query_range" {
-		resultType := "vector"
-		var result any
+	switch requestType {
+	case "query_range":
+		seriesList := mapData.Get("query.series_list_result")
+		if !seriesList.Exists() {
+			return nil, errors.New("series_list_result not found")
+		}
+		if seriesList.Type != gjson.Null && !seriesList.IsArray() {
+			return nil, errors.New("failed to parse series_list_result: not an array")
+		}
+		// gjson's ForEach yields a non-container result once, as itself, so a
+		// null series list has to skip iteration rather than fall into it.
+		isArray := seriesList.IsArray()
 
-		if requestType == "query_range" {
-			resultType = "matrix"
-			seriesListRaw := mapData.Get("query.series_list_result")
-			if !seriesListRaw.Exists() {
-				return nil, errors.New("series_list_result not found")
-			}
-			// transformToPrometheusValues needs []any, so unmarshal just this slice
-			var seriesList []any
-			if err := json.Unmarshal([]byte(seriesListRaw.Raw), &seriesList); err != nil {
-				return nil, fmt.Errorf("failed to parse series_list_result: %w", err)
-			}
-			transformedResult, err := transformToPrometheusValues(seriesList)
-			if err != nil {
-				slog.Error("failed to transform query_range result", "err", err)
-				return nil, err
-			}
-			result = transformedResult
+		// The emitted matrix carries the same samples as the source, so size the
+		// buffer off the source rather than letting append double a
+		// multi-megabyte slice. Measured output runs ~5% over the source, so
+		// 12.5% headroom keeps this to a single allocation.
+		out := make([]byte, 0, len(seriesList.Raw)+len(seriesList.Raw)/8+promEnvelopeSlack)
+		out = append(out, `{"data":{"result":`...)
+		resultStart := len(out)
+		out = append(out, '[')
+
+		var (
+			tsBuf     []gjson.Result
+			seriesErr error
+			count     int
+		)
+		if isArray {
+			seriesList.ForEach(func(_, series gjson.Result) bool {
+				if count > 0 {
+					out = append(out, ',')
+				}
+				out, tsBuf, seriesErr = appendPrometheusSeries(out, tsBuf[:0], series)
+				if seriesErr != nil {
+					return false
+				}
+				count++
+				return true
+			})
+		}
+		if seriesErr != nil {
+			slog.Error("failed to transform query_range result", "err", seriesErr)
+			return nil, seriesErr
+		}
+
+		if count == 0 {
+			// Matches the old nil-slice marshalling: an empty or null series
+			// list came out as null, not [].
+			out = append(out[:resultStart], "null"...)
 		} else {
-			result = mapData.Get("query").Value()
+			out = append(out, ']')
 		}
+		return append(out, `,"resultType":"matrix"},"stats":{},"status":"success"}`...), nil
 
-		response := map[string]any{
-			"status": "success",
-			"data": map[string]any{
-				"resultType": resultType,
-				"result":     result,
-			},
-			"stats": map[string]any{},
-		}
-		return json.Marshal(response)
-	}
+	case "query":
+		return appendPrometheusEnvelope(
+			[]byte(`{"data":{"result":`), mapData.Get("query"),
+			`,"resultType":"vector"},"stats":{},"status":"success"}`), nil
 
-	response := map[string]any{
-		"status": "success",
-		"data":   mapData.Get("data").Value(),
-		"stats":  map[string]any{},
+	default:
+		return appendPrometheusEnvelope(
+			[]byte(`{"data":`), mapData.Get("data"),
+			`,"stats":{},"status":"success"}`), nil
 	}
-	return json.Marshal(response)
+}
+
+// promEnvelopeSlack covers the fixed JSON scaffolding around the result array.
+const promEnvelopeSlack = 128
+
+// appendPrometheusEnvelope splices result verbatim between prefix and suffix,
+// rendering a missing value as null the way the old .Value() + Marshal path did.
+func appendPrometheusEnvelope(prefix []byte, result gjson.Result, suffix string) []byte {
+	if result.Exists() {
+		prefix = append(prefix, result.Raw...)
+	} else {
+		prefix = append(prefix, "null"...)
+	}
+	return append(prefix, suffix...)
 }
 
 func parsePromTime(timeStr string, defaultTime time.Time, logger *slog.Logger) time.Time {

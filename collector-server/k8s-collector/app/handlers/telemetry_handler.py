@@ -261,8 +261,22 @@ def handle_telemetry(tenant_id: str, cloud_account_id: str, agent_id: str, data:
     # agentBuild / relayConnection) own their own top-level keys; a full replace
     # here used to wipe them on every heartbeat, which caused scan_orchestrator
     # to treat every scheduled scan as "never run" and re-fire it each cycle.
+    # Deliberately does NOT write `status`. This heartbeat proves the runner
+    # process is alive and can reach us over HTTP — it says nothing about the
+    # relay websocket, which is what `status` means to every consumer
+    # (relay-server gates request routing on it, and the UI shows it). Writing
+    # CONNECTED here re-marked agents whose websocket was dead within 60s of
+    # relay-server correctly marking them NOT_CONNECTED, so requests were
+    # routed onto a queue with no consumer and timed out instead of failing
+    # fast, and the UI reported a connected agent that could not be reached.
+    # relay-server owns `status`; see its UpdateRelayConnectionStatus and
+    # TouchRelaySession.
+    #
+    # last_connected_at stays: api-server's "Agent Status Check" cron uses it
+    # as one of two staleness signals, and this post is genuine evidence the
+    # agent side is alive.
     update_agent = sql.SQL("""UPDATE {}
-           SET version = %s, last_connected_at = %s, status = %s,
+           SET version = %s, last_connected_at = %s,
                k8s_version = %s,
                connection_status = COALESCE(connection_status, '{{}}'::jsonb) || %s::jsonb,
                k8s_provider = %s
@@ -273,7 +287,6 @@ def handle_telemetry(tenant_id: str, cloud_account_id: str, agent_id: str, data:
         [
             data["version"],
             datetime.datetime.now(datetime.timezone.utc),
-            "CONNECTED",
             k8s_version,
             connection_status,
             k8s_provider,

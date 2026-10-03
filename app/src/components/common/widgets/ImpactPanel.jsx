@@ -128,7 +128,7 @@ const TierRow = ({ item, color, goTo, showRarity, isChange, folded, seedName }) 
         borderLeft: `3px solid ${color}`,
         bgcolor: folded ? 'var(--ds-gray-100)' : 'var(--ds-background-100)',
         borderRadius: 'var(--ds-radius-sm)',
-        boxShadow: folded ? 'none' : '0 1px 2px rgba(0,0,0,0.05)',
+        boxShadow: folded ? 'none' : '0 1px 2px var(--ds-gray-alpha-100)',
         p: 1,
         mb: 0.75,
         cursor: item.event_id ? 'pointer' : 'default',
@@ -180,11 +180,23 @@ const TierRow = ({ item, color, goTo, showRarity, isChange, folded, seedName }) 
 };
 
 // TierSection renders a labelled tier with a colored dot, a plain count, and its rows.
+const plural = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+
 // `label` overrides the tier's default heading (used to name the service explicitly);
 // `unit` is the singular noun for the count ("alert" -> "3 alerts").
-const TierSection = ({ tierKey, label, unit = 'alert', note, items, goTo, showRarity, folded, seedName }) => {
+//
+// `subjectUnit` makes the count honest when a tier holds one row per ALERT but is
+// describing services. The impact tier does: two machines each firing several alarms
+// rendered as "8 services", which reads as eight things broken when two did. A
+// customer who checks that number once and finds it wrong stops trusting the card the
+// number exists to summarise. Both figures are worth showing — the services are the
+// blast radius, the alerts are the evidence — so say both rather than pick one.
+const TierSection = ({ tierKey, label, unit = 'alert', subjectUnit, note, items, goTo, showRarity, folded, seedName }) => {
   if (!items || items.length === 0) return null;
   const t = TIERS[tierKey];
+  // Rows carry the subject they fired on; fall back to the row itself so an item
+  // without one is never silently merged into another subject's count.
+  const subjects = subjectUnit ? new Set(items.map((it, i) => it.subject || `#${i}`)).size : 0;
   return (
     <Box sx={{ mt: 1.75 }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 0.5 }}>
@@ -193,8 +205,9 @@ const TierSection = ({ tierKey, label, unit = 'alert', note, items, goTo, showRa
           {label || t.label}
         </Typography>
         <Typography sx={{ ml: 'auto', fontSize: 11, color: 'var(--ds-gray-400)' }}>
-          {items.length} {unit}
-          {items.length === 1 ? '' : 's'}
+          {subjectUnit && subjects !== items.length
+            ? `${plural(subjects, subjectUnit)}, ${plural(items.length, unit)}`
+            : plural(items.length, subjectUnit || unit)}
         </Typography>
       </Box>
       {note && <Typography sx={{ fontSize: 11.5, color: 'var(--ds-gray-400)', mb: 0.75 }}>{note}</Typography>}
@@ -402,7 +415,8 @@ const ImpactPanel = ({ eventId, prefetched }) => {
 
         <TierSection
           tierKey='impact'
-          unit='service'
+          unit='alert'
+          subjectUnit='service'
           note='These broke after this one did. How often each normally alerts is shown on the right.'
           items={a.impact}
           seedName={seed.name}

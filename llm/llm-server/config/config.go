@@ -607,18 +607,17 @@ type appConfig struct {
 	// LogAgentV2Enabled gates the canonical, provider-independent fetch_logs
 	// agent (FetchLogsAgentV2). Global per-deploy toggle; default false.
 	LogAgentV2Enabled bool `mapstructure:"llm_server_log_agent_v2_enabled"`
-	// LogsV3CanonicalFastPathEnabled gates logs_v3's ROUTINE-mode canonical-JSON
-	// fast path (canonicalQueryAuthoringForRoutine / preBuiltCanonicalQuery /
-	// FetchLogsAgentV2.ExecuteV3, all in agent_log_v3.go): when the ReAct loop
-	// already knows namespace + app/pod, it builds the canonical `{"where": ...}`
-	// query itself and calls fetch_logs_v3 with it directly, skipping the
-	// tool's internal NL-translation LLM call. Global per-deploy toggle,
-	// default true — logs_v3 itself is already the safety gate (a distinct,
-	// opt-in agent name not wired into production routing), so this exists for
-	// a clean on/off A/B and instant rollback of just this sub-feature without
-	// reverting the whole agent. When false: the prompt never advertises the
-	// canonical-JSON option (fastPathAppAnchor and the tool description fall
-	// back to their NL-only phrasing) and fetchLogsV3Tool.Call never inspects
+	// LogsV3CanonicalFastPathEnabled gates the `logs` agent's ROUTINE-mode
+	// canonical-JSON fast path (canonicalQueryAuthoringForRoutine /
+	// preBuiltCanonicalQuery / FetchLogsAgentV2.ExecuteV3, all in
+	// agent_log_v3.go): when the ReAct loop already knows namespace + app/pod,
+	// it builds the canonical `{"where": ...}` query itself and calls
+	// fetch_logs_v3 with it directly, skipping the tool's internal
+	// NL-translation LLM call. Global per-deploy toggle, default true — kept
+	// as its own flag for a clean on/off A/B and instant rollback of just this
+	// sub-feature without reverting the whole agent. When false: the prompt
+	// never advertises the canonical-JSON option (fastPathAppAnchor and the
+	// tool description fall back to their NL-only phrasing) and fetchLogsV3Tool.Call never inspects
 	// tool_input shape — every fetch goes through the original NL →
 	// generateCanonicalLogQuery path unchanged.
 	LogsV3CanonicalFastPathEnabled bool `mapstructure:"llm_server_logs_v3_canonical_fast_path_enabled"`
@@ -630,20 +629,22 @@ type appConfig struct {
 	// Unknown/empty falls back to "lean". The AWS/GCP/Azure orchestrators are
 	// lean-only after the collapse and no longer read a per-cloud mode setting.
 	K8sOrchestratorMode string `mapstructure:"llm_server_k8s_orchestrator_mode"`
-	// K8sGroundingEnabled appends a "ground before you fan out" discipline to the
-	// lean k8s orchestrator prompt: for a live symptom, probe with the cheap
-	// authoritative kubectl tools it already holds (and, for a hostname/URL symptom,
-	// resolve what serves that host) BEFORE delegating to heavy metrics/logs
-	// sub-agents. Dark/default-off flag for A/B; scopes but never replaces the deep
-	// investigation. See agents/agent_k8s_orchestrator.go k8sGroundingIfEnabled.
-	K8sGroundingEnabled bool `mapstructure:"llm_k8s_grounding_enabled"`
+	// OrchestratorGroundingEnabled adds a soft grounding discipline to top-level
+	// orchestrators: establish the subject/scope/symptom from existing context,
+	// clarify genuinely ambiguous requests, prefer bounded discovery, and treat an
+	// asserted symptom as a claim rather than a fact. Each orchestrator keeps its
+	// own provider-specific evidence recipe. Dark/default-off global deploy flag.
+	OrchestratorGroundingEnabled bool `mapstructure:"llm_orchestrator_grounding_enabled"`
+	// ClaimCritiqueShadowEnabled compares a claim audit with existing critique; never enforces it.
+	ClaimCritiqueShadowEnabled bool `mapstructure:"llm_claim_critique_shadow_enabled"`
 	// PremiseVerificationEnabled gates the "confirm the symptom before diagnosing it"
-	// discipline: a proactive nudge on the lean k8s orchestrator prompt plus an answer-
-	// critiquer gate. When on, the agent must treat a user-asserted symptom ("X is down",
+	// discipline in the answer critiquer. When on, the top-level investigation must
+	// treat a user-asserted symptom ("X is down",
 	// "there's a surge") as a claim to VERIFY; if behavioural evidence disproves it, the
 	// honest "not occurring" answer is accepted (not forced into a root cause), and if the
 	// confirming tool FAILS/returns nothing the agent must say "cannot confirm" rather than
 	// fabricate an RCA on an unconfirmed symptom. Dark/default-off flag for A/B.
+
 	PremiseVerificationEnabled bool `mapstructure:"llm_premise_verification_enabled"`
 	// TraceAgentV2Enabled gates the canonical, provider-independent traces agent
 	// (TracesDefaultAgentV2). Global per-deploy toggle; default false.
@@ -907,10 +908,6 @@ type appConfig struct {
 	// looks up the agent's correct message_id from DB instead of trusting
 	// the request's message_id. Falls back to legacy path when disabled.
 	FollowupResumeV2Enabled bool `mapstructure:"llm_server_followup_resume_v2_enabled"`
-	// LogsV3Enabled redirects "logs" (implicit routing + lean-orchestrator
-	// default) to logs_v3 — same redirect pattern as TicketV2Enabled. See
-	// docs/logs-v3-agent-investigation.md. Default false until validated further.
-	LogsV3Enabled bool `mapstructure:"llm_server_logs_v3_enabled"`
 
 	// FollowupCancelEnabled gates the "dismiss" resolution on a pending AI
 	// follow-up (#27582) — lets a user skip a WAITING conversation instead
@@ -1396,8 +1393,9 @@ func init() {
 	// k8s_orchestrator mode: lean (default) | native. Cloud orchestrators are
 	// lean-only after the #32503 Phase 1 collapse — no per-cloud mode setting.
 	viper.SetDefault("llm_server_k8s_orchestrator_mode", "lean")
-	viper.SetDefault("llm_k8s_grounding_enabled", false)
+	viper.SetDefault("llm_orchestrator_grounding_enabled", false)
 	viper.SetDefault("llm_premise_verification_enabled", false)
+	viper.SetDefault("llm_claim_critique_shadow_enabled", false)
 	viper.SetDefault("llm_server_workspace_port", 8080)
 	viper.SetDefault("llm_server_workspace_local_url", "")   // e.g. http://localhost:8080 for local dev
 	viper.SetDefault("llm_server_workspace_local_token", "") // must match NB_WORKSPACE_TOKEN on the local code-analysis process
@@ -1507,7 +1505,6 @@ func init() {
 
 	viper.SetDefault("llm_server_ticket_v2_enabled", true)
 	viper.SetDefault("llm_server_events_v2_enabled", false)
-	viper.SetDefault("llm_server_logs_v3_enabled", false)
 
 	viper.SetDefault("llm_server_followup_resume_v2_enabled", true)
 	viper.SetDefault("llm_server_followup_cancel_enabled", false)

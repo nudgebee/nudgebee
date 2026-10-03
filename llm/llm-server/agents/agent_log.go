@@ -17,7 +17,10 @@ import (
 	"sync"
 )
 
-const LogsAgentName = "logs"
+// LegacyLogsAgentName is the pre-v3 log investigator, superseded by the
+// `logs` agent now implemented in agent_log_v3.go. Kept unregistered
+// (no init() factory) rather than deleted.
+const LegacyLogsAgentName = "legacy_logs"
 
 // logMode is the deterministic intent bucket the Go classifier emits. The
 // LogAgent's prompt then has a single authoritative MODE flag instead of
@@ -96,15 +99,6 @@ func classifyLogMode(query, originalQuery string) logMode {
 	return logModeRoutine
 }
 
-func init() {
-	core.RegisterNBAgentFactory(LogsAgentName, func(accountId string) (core.NBAgent, error) {
-		return getLogAgent(security.NewRequestContextForSuperAdmin(), accountId)
-	})
-	toolcore.RegisterNBToolFactory(LogsAgentName, func(accountId string) (toolcore.NBTool, error) {
-		return LogAgentTool{}, nil
-	})
-}
-
 // getLogAgent resolves the account's observability provider; empty (or
 // unresolved) routes fetch_logs to the kubectl path.
 func getLogAgent(ctx *security.RequestContext, accountId string) (core.NBAgent, error) {
@@ -146,9 +140,9 @@ func newLogAgent(accountId string, provider services_server.ObservabilityProvide
 	return &LogAgent{accountId: accountId, provider: provider}
 }
 
-func (l *LogAgent) GetName() string { return LogsAgentName }
+func (l *LogAgent) GetName() string { return LegacyLogsAgentName }
 
-func (l *LogAgent) GetNameAliases() []string { return []string{"Logs"} }
+func (l *LogAgent) GetNameAliases() []string { return []string{"Log Investigator", "Logs"} }
 
 func (l *LogAgent) GetDescription() string {
 	return `Retrieves and analyzes logs from various sources (Kubernetes, Loki, Elasticsearch, Datadog, Signoz) by translating natural language questions into log queries. Handles its own resource discovery (e.g., finding the correct pod name or namespace) and runs investigation loops over saved log files when the user is asking about root causes. Use this for: fetching application or container logs, searching log entries by keyword or time range, troubleshooting pod/container errors via log output, correlating logs across services. Do NOT use for: querying performance metrics (use ` + "`metrics`" + ` agent), running kubectl commands (use ` + "`kubectl`" + ` or ` + "`kubectl_execute`" + `), or querying Kubernetes events (use ` + "`events`" + ` agent).
@@ -469,7 +463,7 @@ func sharedConstraints(mode logMode) []string {
 type LogAgentTool struct{}
 
 func (m LogAgentTool) Name() string {
-	return LogsAgentName
+	return LegacyLogsAgentName
 }
 
 func (m LogAgentTool) GetType() toolcore.NBToolType {
@@ -621,7 +615,7 @@ func buildLogToolResponse(nbRequestContext toolcore.NbToolContext, agent core.NB
 	// BEFORE the in-place reverse below — otherwise the `logs` sub-agent (a
 	// high-volume target of the manifest) drops its evidence at this bespoke
 	// tool boundary, since this wrapper bypasses factory_agent's generic path.
-	subAgentEvidence := core.BuildSubAgentEvidenceForTool(nbRequestContext.Ctx, LogsAgentName, resp.AgentStepResponse)
+	subAgentEvidence := core.BuildSubAgentEvidenceForTool(nbRequestContext.Ctx, LegacyLogsAgentName, resp.AgentStepResponse)
 
 	if _, ok := agent.(*LogAgent); ok && resp.Status == core.ConversationStatusCompleted {
 		return toolcore.NBToolResponse{

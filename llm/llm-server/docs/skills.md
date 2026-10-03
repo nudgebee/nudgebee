@@ -1,258 +1,323 @@
-# Skills — Design Document
+# Knowledge discovery and skills
 
-## Overview
+This document defines the runtime meaning of knowledge bases and skills in `llm-server`.
 
-Skills are user-authored knowledge base entries (rows in `llm_knowledgebases`) that users map to agents via the `llm_kb_agent_mappings` junction table. When an agent runs, the executor makes the mapped skills visible to the LLM so the user's expert guidance (runbooks, conventions, domain rules) actually shapes the agent's reasoning — without the user having to restate it in every prompt.
+## Terminology
 
-Two agent families consume skills via two different mechanisms, because they run with fundamentally different execution loops:
+| Term | Meaning |
+| --- | --- |
+| Knowledge base (KB) | The account-owned record in `llm_knowledgebases`. It may contain manual content or describe an external integration. |
+| Knowledge document | A searchable RAG document. For an integration KB, this is usually one Confluence, ServiceNow, or similar article. |
+| Knowledge candidate | A compact, turn-scoped search result shown to a ReAct planner. It has an opaque `knowledge:<hash>` ID, title, source, and short snippet. |
+| Skill | The planner-facing use of knowledge as expert instructions. `load_skills` loads a candidate or, for compatibility, a KB by name. A skill is not a separate storage model. |
+| Agent mapping | A legacy association between a KB and an agent name. It is retained for UI/backward compatibility and legacy-document attribution, but it does not limit what an agent may discover. |
 
-```
- User Query
-   → Executor Entry (top-level stamps OriginalQuery + optional SelectedSkillIds)
-   ├─ ReAct / Orchestrating agent (both run under ReAct3)
-   │    → injectKBContext:
-   │         ├─ manual KBs: <skill-lists> (names+descriptions from DB)
-   │         └─ integration KBs: parallel RAG search (module: "knowledge_base")
-   │              → appends previews (title + source + first 2-3 lines) to <skill-lists>
-   │              → 5s timeout
-   │    → FilterAndInjectDefaultTools: auto-injects load_skills tool
-   │    → LLM picks relevant names, calls load_skills(name)
-   │         ├─ kb_type='manual' → body from DB (cached)
-   │         ├─ kb_type='integration' (DB row, empty data) → RAG fallback via enrichIntegrationSkillsFromRAG
-   │         │    → single QueryRAG(module: "knowledge_base") + optional metadata_filter
-   │         │    → 10s timeout, result cached
-   │         └─ not in DB (RAG-only) → parallel RAG search by name, 10s timeout
-   │
-   └─ Custom-planner agent (loganalysis, metrics, traces, logs, logs_default,
-                            resource_search, websearch)
-        → LoadActiveAgentSkillContents: eager bodies → request.SkillsContext
-        → Execute() prepends the <skills>...</skills> block to its LLM prompt
-```
+In short: KBs and documents are stored knowledge; candidates are search results; a loaded skill is knowledge admitted into the planner's working context.
 
 ## Storage model
 
-### `llm_knowledgebases`
+Manual KBs store their authored body on the KB record. Integration KBs represent an external source, while the individual synchronized articles live as RAG documents with source and collection metadata.
 
-One row per skill: `id`, `account_id`, `tenant_id`, `name`, `description`, `data` (the full body — Markdown, text, YAML, etc.), `data_format`, `status` (`active` / inactive), `kb_type` (`manual` or `integration`), `kb_source` (nullable — `confluence`, `servicenow`, etc.), `integration_id` (nullable — FK to the integration that created the entry), plus audit columns.
+Both forms are searched through the same account-scoped knowledge discovery operation. Confluence and ServiceNow are not a separate preload mechanism: their synchronized articles enter the same RAG result set as other knowledge documents.
 
-- **`kb_type = 'manual'`** (default): content lives in the `data` column, authored by users directly.
-- **`kb_type = 'integration'`**: content lives externally (indexed in Qdrant via the RAG server). The `data` column is empty; `kb_source` identifies the integration origin. These entries are auto-created by `knowledgebase_sync.go` when a Confluence or ServiceNow integration is connected.
+## Runtime flow
 
-### `llm_kb_agent_mappings`
+The account's `knowledge_policy` is resolved first (missing means `auto`). When
+the policy permits automatic discovery and the agent declares a knowledge mode:
 
-Junction table mapping KBs to agents by **agent name**, not UUID. A single KB can be mapped to multiple agents; a single agent can have many mapped KBs. The UI (`app/src/components1/llm/ListAgents.jsx`) passes `agent.name` on both sides — system and custom — so there is no UUID/name ambiguity. The schema comment on `agent_id` confirms `"Agent name/ID"`.
+1. The executor builds a search query from the original user question, the current delegated task, and useful resource identifiers.
+2. RAG searches active knowledge across the account. In parallel, a small relevance-selected set of KBs mapped to the executing agent receives reserved collection-level retrieval capacity.
+3. The two result pools are merged, deduplicated, and converted to turn-scoped candidates. Mapped results lead the merged list so a specialist runbook cannot be crowded out by a large integration KB.
+4. Consumption depends on the planner type.
 
-```
-llm_knowledgebases
- ├── id (uuid)
- ├── name (unique per account)
- ├── description
- ├── data            ← full body (empty for integration-type)
- ├── status          ← 'active' is a precondition for loading
- ├── kb_type         ← 'manual' (default) | 'integration'
- ├── kb_source       ← nullable: 'confluence', 'servicenow', …
- └── integration_id  ← nullable: FK to source integration
-        ▲
-        │ 1 : N
-        │
-llm_kb_agent_mappings
- ├── kb_id
- ├── agent_id    ← agent.Name (not uuid)
- └── account_id
+### ReAct and orchestrating agents
+
+These agents use `AgentKnowledgeIndexOnly`. The executor adds only a compact `<skill-lists>` candidate index to the human message. Full document bodies are not added to the prompt.
+
+The planner decides whether a candidate is useful and calls:
+
+```json
+{"skill_name":"knowledge:<hash>"}
 ```
 
-## Execution paths
+`load_skills` resolves the ID from the turn-scoped cache and returns the bounded document content. It also accepts an exact, case-insensitive active KB name within the account, without requiring an agent mapping. Unknown names are reported as missing: the loader never substitutes substring matches or nearest-neighbour RAG results. Known integration KB records retain their content-retrieval path.
 
-### Path A — Lazy `load_skills` (ReAct3 planner)
+`search_skills` remains an explicit fallback tool for follow-up discovery. It returns exact names for manual KBs and cached candidate IDs for RAG documents, with compact previews. Load those IDs in the same turn. It is not required for the automatic first-pass candidate search. Search ranking can still return weak matches; discovery results do not prove relevance or count as loaded knowledge.
 
-This is the existing, designed path for any agent whose planner runs a tool-execution loop — i.e. every Orchestrating and ReAct agent, all executing via ReAct3.
+### Custom-planner agents
 
-1. **`injectKBContext`** (`agents/core/executor.go`) fetches active mapped KBs for the union of `agent.GetName()` + any inherited ancestor names. For **manual** KBs it renders **names and descriptions** from the DB. For **integration** KBs (detected via `kb.KBType == "integration"`), it runs a parallel RAG search with the user's query (`module: "knowledge_base"`, top 3 results) and appends **previews** — title, source, and first 2-3 lines of each RAG result — to the same `<skill-lists>` block. The RAG preview fetch has a 5-second timeout. The combined list is prepended as an `Instructions` item on `basePrompt`.
-2. **`FilterAndInjectDefaultTools`** (`agents/core/utils.go`) sees the `<skill-lists>` marker in the rendered system message and auto-injects the `load_skills` tool into the agent's toolset. No per-agent configuration.
-3. The ReAct3 planner executes normally. The LLM reads the skill list — which now contains both manual skill names and RAG-sourced previews — decides which entries look relevant, and calls `load_skills(name)` when it wants the full body.
-4. **`LoadSkillsTool`** (`tools/skills.go`) resolves the requested name through a three-tier lookup:
-   - **DB exact match** → fetches `kb.data` from `llm_knowledgebases` (cached in `CacheNamespaceLlmSkillContent`).
-   - **DB fuzzy match** → ILIKE substring search if exact match fails.
-   - **RAG fallback** → if still not found (e.g. RAG-only integration content the LLM saw in previews), searches RAG in parallel using each missing name as the query. All RAG lookups run concurrently with a 10-second timeout per call.
-   
-   For **integration-type** skills found in DB but with empty `data`, `enrichIntegrationSkillsFromRAG` fires — a single `QueryRAG` call with `module: "knowledge_base"`. If all integration skills share the same `kb_source` (e.g. `"confluence"`), the call includes a `metadata_filter` (e.g. `{"source": "confluence"}`) to narrow results. Results are cached in `CacheNamespaceLlmSkillContent`.
-   
-   All RAG results are capped at `LlmServerMaxSkillContentLength` (default 5000 chars), split evenly across documents with a per-doc minimum of 500 chars.
+Custom agents build their own LLM calls and do not necessarily have a `load_skills` loop. A custom agent that directly needs customer conventions must implement `NBAgentKnowledgeModeProvider` and return `AgentKnowledgeAutoChunks`.
 
-**Why lazy is the right default**: the `<skill-lists>` marker is cheap (names + descriptions, a handful of lines per skill), the LLM has already read the user's question when it decides what to load, and only the bodies the LLM actually needs are paid for in tokens.
+The executor then places only bounded, relevant content in `NBAgentRequest.KBPrestepContent`. The custom agent must include that field in the appropriate LLM message. Direct log fetch, log query, log analysis, and unified search currently opt in.
 
-### Path B — Eager inline (custom-planner agents)
+Database-backed agents created by users are declarative agents, despite the
+`nbCustomAgent` implementation name. When their `executor_type` is `react` or
+`orchestrating`, they run through the shared planner and receive the same compact
+candidate index as built-in ReAct agents. Their configured tools remain authoritative
+for operational capabilities, but the framework exposes `search_skills` and
+`load_skills` for every knowledge-enabled ReAct invocation, including when no
+candidate menu is available. This does not grant shell or watch tools; explicit
+tool restrictions remain authoritative.
 
-Agents whose `GetPlannerType()` is `AgentPlannerTypeCustom` implement their own `Execute()` and never run a planner or the `load_skills` tool. If we did nothing, mapped skills would be invisible to them. For these agents the executor eagerly inlines the bodies.
+`search_skills` requires `load_skills` even when initial discovery times out or
+returns no menu. The framework adds this dependency for built-in and curated
+agents alike, without enabling unrelated default tools. Explicit `allowed_tools`
+and `disabled_tools` restrictions still apply to the loader.
 
-1. At **top-level invocation** (detected by empty `request.OriginalQuery`) the executor stamps `request.OriginalQuery = request.Query` and — when `LlmServerSkillSelectionTopK > 0` — runs `SelectRelevantSkills` (see "Question-aware selection" below) to produce `request.SelectedSkillIds`.
-2. For any agent with `AgentPlannerTypeCustom`, the executor calls `LoadActiveAgentSkillContents(accountId, agentNames, restrictToIds)`. It returns:
-   - A rendered `<skills>...</skills>` block, each body wrapped in `<![CDATA[...]]>` so user-authored content that legitimately contains `</skill>` (e.g. a skill teaching XML) cannot break the framing.
-   - One `NBToolResponseReference{Type: "skill"}` per loaded body, appended to the final agent response for UI "Skills used" rendering.
-3. The result is stored on `request.SkillsContext`.
-4. Each custom-planner agent's `Execute()` reads `request.SkillsContext` and prepends it to the relevant LLM call:
-   - `agent_log_analysis.go`: prepended to `messageContent` and subtracted from the log-data token budget before truncation.
-   - `agent_log_default.go::generateFinalResponse`: prepended to `systemPrompt`.
-   - `agent_resource_search.go`: added as a system message.
-   - `agent_unified_search.go::synthesizeAnswer`: added as a system message.
-5. Delegators (`metrics`, `traces`, `logs`, `logs_default`) do **not** read `SkillsContext` themselves — they just propagate inheritance (see below). Their underlying provider sub-agents (Prometheus, Datadog, Clickhouse, query_generator, …) are ReAct agents and pick skills up via Path A.
+An `executor_type` of `custom` is reserved for code-backed `NBCustomAgent`
+implementations with their own `Execute()` method. It is not a generic external-agent
+transport. Those implementations must opt into `AgentKnowledgeAutoChunks` and place
+`KBPrestepContent` in their own LLM message.
 
-### Path C — `search_skills` (semantic search across all sources)
+Custom agents that only delegate should remain `AgentKnowledgeDisabled`. Metrics and traces follow this pattern: their provider ReAct subagents independently search using the original question plus the delegated task.
 
-`SearchSkillsTool` (`tools/skills.go`) is a standalone tool that searches across **all** skill sources — manual DB skills and external integration skills — by natural language query. It is registered but not wired to any agent yet (future use).
+`SkillsContext` is a legacy compatibility field. New custom-agent integrations should use `KBPrestepContent`; they must not eagerly concatenate all mapped KB bodies.
 
-1. **Manual search**: per-word tokenized `ILIKE` on `name` and `description` of `kb_type = 'manual'` skills (account-wide, no agent mapping required). Query is tokenized via `TokenizeForSkillSelection` (lowercased, stop words removed), each token must match name or description. Returns the first 500 chars as a snippet (LIMIT 5).
-2. **Integration search**: a single RAG call via `searchKBsViaRAG` with `module: "knowledge_base"`, which searches all KB collections for the account in one request. The RAG server's `/get_matching_doc` endpoint handles cross-collection search. An optional `metadata_filter` (e.g. `{"source": "confluence"}`) can narrow results by source.
-3. Both searches run in parallel goroutines with an overall 10-second timeout. Manual results include skill references; RAG results complement them (content-based, not name-based — no dedup needed since manual KBs are not searched via RAG).
+## Delegation
 
+Each ReAct or orchestrating subagent resolves the account policy and, when eligible,
+performs its own account-wide discovery. It does not yet reuse a parent agent's
+candidate list because the delegated task may need different documents.
+
+Mappings do not restrict what the subagent can discover, but mappings on that subagent receive the bounded supplemental retrieval described above. This preserves explicit specialist guidance without restoring eager injection or mapping-only visibility.
+
+The search query includes both:
+
+- the original user question, preserving investigative intent; and
+- the subagent's task, adding provider- or resource-specific detail.
+
+Dynamic delegates also use this executor path. Their explicit default-skills override ensures `load_skills` is available even though their other default tools are intentionally suppressed.
+
+## Prompt-size behavior
+
+The design avoids inserting every account KB or every mapped KB into prompts:
+
+- ReAct agents receive compact metadata only and load full content on demand.
+- Custom agents receive only reranked chunks under `LlmServerMaxSkillContentLength`.
+- Candidate cache entries retain bounded excerpts and exact document handles; large content is read selectively through the workspace when enabled.
+- ReAct knowledge menus are placed in the human message, leaving cacheable system
+  prompts stable. Custom chunk consumers currently vary: log-fetch/log-analysis
+  use human content; unified-search adds a system context message.
+
+## Configuration
+
+### Account knowledge policy
+
+Store `knowledge_policy` in `cloud_account_attrs` (`cloud_account_id`, `name`,
+`value`). A missing/empty value resolves to `auto`. There is no tenant fallback
+or `llm_agents_installation.config` override. This uses existing storage; no
+schema migration is required. Invalid values and lookup failures fail the
+invocation explicitly rather than accidentally bypassing a disabled policy.
+
+| Value | Automatic behavior | Dynamic tools |
+| --- | --- | --- |
+| `always` | Discover on every eligible nonempty invocation | Search/load available, subject to tool restrictions |
+| `auto` (default) | NudgeBee controls when to discover, skip, and eventually reuse | Search/load available, subject to tool restrictions |
+| `llm_only` | No automatic discovery or knowledge injection | LLM decides when to search/load |
+| `disabled` | No new discovery or knowledge injection; inherited dedicated knowledge fields cleared | Search/load denied |
+
+`always` does not mean inject entire KBs: ReAct/declarative agents receive a
+compact menu, while opted-in code-backed planners receive bounded chunks.
+The policy is resolved from the executing account on every invocation; it is
+not supplied by the model and does not change account authorization. Disabling
+knowledge does not erase knowledge already present in conversation history or
+user-authored prompts.
+
+The initial `auto` algorithm uses existing investigation/event signals and
+conservative exact-turn checks. Greetings/thanks skip discovery; exact requests
+to shorten or reformat an existing answer skip only when conversation context
+exists. Unknown questions, documentation requests, changed tasks, and ambiguous
+continuations still search. No extra LLM classification call is introduced.
+This is not yet semantic intent gating or cross-turn/parent-result reuse.
+
+Code-backed planners that opt into auto-chunks cannot execute search/load loops;
+`llm_only` therefore produces an explicit unsupported-policy error for them
+(also for the legacy code-analysis skill-forwarding consumer).
+They support `always`, `auto`, and `disabled`. Planners without any knowledge
+integration remain ineligible. No tools are automatically added to custom code
+that cannot execute them.
+
+### Retrieval limits
+
+| Setting | Default | Purpose |
+| --- | ---: | --- |
+| `llm_server_kb_prestep_timeout_seconds` | `3` | Shared RAG deadline for account-wide and mapped discovery. Completed results are retained; unfinished HTTP calls are cancelled. Mapping/attribution are outside this budget. |
+| `llm_server_max_skill_content_length` | `5000` | Caps each load_skills content page and relevant content supplied to an auto-chunk custom agent. |
+| `llm_server_skill_selection_top_k` | `0` | Legacy/code-analysis-specific mapped-skill selection. It no longer controls executor-wide discovery. |
+
+There is no separate integration-KB flag: manual and synchronized KBs follow
+the same account policy. Existing ENV timeout overrides remain effective.
+
+### Performance acceptance and remaining work
+
+The end-to-end target is p50 30 seconds. The initial automatic RAG budget is
+3 seconds, not a claim that the SLA is met. Earlier port-forwarded integration
+runs measured 14–17 seconds for combined KB/memory preparation with the former
+12-second RAG budget; those are not production percentiles or pure RAG timings.
+
+Before broad rollout, measure timeout/result-retention rate, mapping, RAG,
+attribution, and total preparation duration alongside end-to-end latency and
+knowledge adherence. ReAct agents retain dynamic search/load after timeouts;
+custom auto-chunk planners have no such fallback, so their retention rate needs
+separate validation. Do not claim a successful empty retrieval proves quality.
+
+Pending algorithm work: scope/access/freshness-safe parent and follow-up reuse
+(reissue message-scoped candidate IDs), richer intent signals on the existing
+classification path, a whole-preparation deadline, and explicit tool-loop support
+for code-backed planners. Do not reuse by KB name alone or infer that two tasks
+share an environment from their wording.
+
+## References and observability
+
+Loaded candidates retain their underlying KB/article reference ID and are emitted as `knowledge_base` references. Auto-chunk custom agents persist references for the documents actually retrieved. Reference persistence is de-duplicated by the conversation DAO.
+
+Useful log events include discovery query timing/result counts, candidate cache misses, and `load_skills` resolution paths.
+
+## Live skill lifecycle test
+
+With service credentials and `TEST_TENANT`, `TEST_USER`, and `TEST_ACCOUNT`
+exported, run from `llm/llm-server`:
+
+```bash
+RUN_KB_PRESTEP_E2E=true go test -tags=e2e -count=1 -v -timeout 15m \
+  -run '^TestKBPrestepE2E$' ./agents
 ```
-search_skills("kubernetes troubleshooting")
-  ├─ goroutine 1: DB ILIKE on manual KBs (per-word tokenized) → snippets
-  ├─ goroutine 2: single RAG call (module: "knowledge_base")
-  │    → searches all KB collections for the account
-  │    → optional metadata_filter narrows by source
-  └─ select { manualCh, ragCh, time.After(10s) }
-     → merged XML results
+
+This creates a uniquely named manual KB with a hidden canary, waits for indexing,
+maps it to the K8s orchestrator, and runs a real LLM conversation with only
+`search_skills`/`load_skills` allowed. It asserts candidate-menu traces, a successful
+loader response containing the canary, the exact KB reference, and the canary in the
+final answer. It deletes its KB/mapping in `t.Cleanup` and verifies DB deletion;
+conversation traces remain for inspection. Cleanup errors fail the test. The KB
+service requests vector deletion, but the test does not independently verify it.
+
+Set `TEST_SKILL_AGENT=<existing-custom-agent-name>` to test a declarative ReAct agent
+(leave `load_skills` out of its configured tools to exercise automatic injection).
+Set `TEST_SKILL_UNMAPPED=true` to test account-wide discovery without a mapping.
+No existing agent configuration is modified. An outer process timeout/SIGKILL can
+prevent cleanup; the exact created KB ID is logged for recovery. This test uses real
+LLM calls and tests natural skill selection, so a failure can reveal a discovery or
+adherence problem rather than just broken plumbing.
+
+### Delegated skill lifecycle
+
+```bash
+RUN_KB_PRESTEP_E2E=true go test -tags=e2e -count=1 -v -timeout 15m \
+  -run '^TestSkillDelegationE2E$' ./agents
 ```
 
-## Inheritance across delegation
+This variant uses the built-in K8s orchestrator and maps the temporary KB only
+to `delegate_agent`, the dynamic specialist's registered name. It ignores
+`TEST_SKILL_AGENT` and `TEST_SKILL_UNMAPPED`. The parent is asked to delegate
+exactly once, with only `search_skills` and `load_skills` available to the child;
+infrastructure tools are excluded by the invocation's capability allowlist.
 
-Several custom-planner agents are *delegators* — they accept a user request, decide which underlying provider to use, and invoke a sub-agent via `ExecuteAgentToolCall`. The sub-agent is a normal ReAct agent scoped to its own name (e.g. `prometheus`, not `metrics`), so without extra plumbing, skills the user mapped to `metrics` would be invisible to the sub-agent.
+The test requires a successful root delegation with a persisted child link.
+Candidate-menu traces, the canary-bearing load, and the fixture reference must
+all belong to that same child agent. It rejects parent-side fixture loading or
+the canary appearing in the delegated question, then checks the final answer
+and fixture cleanup. A parent-only answer cannot satisfy the test. Account-wide
+discovery remains enabled for both agents; mapping is not an access restriction.
 
-The `InheritSkillsFromAgents []string` field on `NBAgentRequest` and `NbToolContext` carries the chain of ancestor agent names down through delegation:
+## Improvement plan and verification status (2026-09-04)
 
-```
-User → metrics          InheritSkillsFromAgents = nil
-         Execute() sets  InheritSkillsFromAgents = ["metrics"]   on NbToolContext
-       → prometheus      executor unions prometheus's own KBs with KBs mapped to "metrics"
-                         → <skill-lists> contains both sets
-                         → lazy load_skills fetches bodies on demand
-```
+This section tracks planned work, not deployed guarantees. The discovery work is
+in PR #37206; collection scoping is separated into RAG PR #37649. Live results
+below were observed against the local skill-discovery worktree and configured
+services; they do not establish that the changes are deployed for customers.
+The consolidated post-PR tracker is [`skills-follow-up-plan.md`](skills-follow-up-plan.md).
 
-Longer chains accumulate:
+### Implemented and verified in the worktree
 
-```
-User → logs              []
-       → logs_default    ["logs"]
-         → query_generator ["logs", "logs_default"]  (ReAct planner, lazy path)
-         → resource_search ["logs", "logs_default"]  (custom planner, eager path)
-```
+- Account-wide, question-relevant candidate listing without requiring mappings;
+  bounded mapped retrieval preserves specialist guidance.
+- Compact candidate menus and exact, turn-scoped document loading instead of
+  eager full-KB injection. Unknown names no longer trigger substitute searches.
+- Shared discovery for declarative agents and delegates, with loader injection
+  respecting explicit tool restrictions; opted-in code-backed planners receive
+  bounded chunks in their own prompts.
+- Timeout handling retains completed individual searches. Document references
+  use `KB_UUID:document_hash`; the lifecycle assertion now accepts those IDs.
+- Live lifecycle tests passed for mapped K8s orchestration, unmapped discovery,
+  and the declarative `test_code_agent`: listing, loading, answer canary,
+  persisted reference, and fixture cleanup all verified.
+- Eleven live search/load integration tests and nine focused regression tests
+  passed without skips. These include delegation scope, custom-prompt knowledge
+  propagation, loader availability, exact-chunk loading, and partial timeouts.
 
-### `injectKBContext` filter semantics
+The RAG collection-scoping fix has separate unit coverage. Deployed verification
+must still show one collection per mapped search and measure discovery latency;
+retaining partial results does not itself remove the reranking bottleneck.
+The delegated lifecycle variant passed with child-scoped assertions: the child
+received a candidate menu, loaded the canary-bearing document, persisted its
+reference, and the parent returned the canary without loading it itself. A later
+policy/latency rerun also passed with both automatic RAG searches completing
+inside the 3-second deadline; the fixture was removed after each run.
 
-When `SelectedSkillIds` is non-nil, `injectKBContext` filters KBs fetched from **inherited** ancestor names against the selection set, but **always retains** KBs mapped directly to the sub-agent's own name. Rationale: a sub-agent's own-scope skills are authored for that agent's specific job and should not be hidden by an upstream parent's broad selection.
+### Planned improvements
 
-## Question-aware selection (BM25)
+Rebase update: main's #37653 fixes invalidation on KB edits/renames, creation,
+deletion, sync and status changes, including old names and mapped-agent menus.
+Namespace TTL handling is also included. This addresses stale cached content
+after a KB changes; it does **not** fix caching query-dependent integration
+search results under only a KB name. The second item below therefore remains
+open, with the invalidation/TTL work no longer part of its scope.
 
-### Why
+| Priority | Improvement | Acceptance evidence |
+| --- | --- | --- |
+| P1 | Preserve identity in legacy integration-KB name loading. The current enrichment path searches account-wide, applies the same content to every requested integration KB, and caches it by KB name. Scope retrieval to the resolved KB, or direct callers to document candidates; do not relabel unrelated results. | Two integration KBs with distinct canaries never return each other's content, including multi-name requests. Unavailable content is reported honestly. |
+| P1 | Correct cache scope for query-dependent integration content. Keep exact document content caching distinct from search-result caching; a previous question must not pin arbitrary content to a KB name. | Two different questions against the same integration KB retrieve the appropriate documents; repeating the first load does not contaminate the second. |
+| P1 | Distinguish knowledge retrieval from live investigation completion. Documentation may guide the query, but cannot satisfy a request for current metrics/logs. Keep knowledge loading separate from permission-controlled tool discovery/execution. | An operational request either invokes relevant live tools and reports their results, or explicitly reports the access/input blocker. A documentation-only request may finish without operational tools. Verify both ReAct3 and ReAct4. |
+| P1 | Preserve resource and environment intent across turns and delegation. Do not silently switch between jumphost health and application endpoint health, or infer Prod solely from a document title. Resolve actual host/environment identity and clarify material ambiguity. | A multi-turn Prod/PreProd fixture verifies the selected host, environment, index, and delegated task; no unsupported scope switch. |
+| P2 | Make evidence type and provenance explicit. A successful load means content was retrieved, not that a procedure ran or that a system is healthy. Retain KB/article identity and source, and distinguish documented guidance from observed measurements in answers. | Documentation-only responses contain no unsupported live-health claims; operational claims trace to matching tool results, target, and time window. |
+| P2 | Add operational and source-specific end-to-end assertions. Existing canary tests intentionally ask for a documented procedure, and older subagent smoke tests do not assert that the child loaded a skill. | A delegated agent loads a known relevant article, executes the prescribed read-only investigation, and cites the correct source. Include synced Confluence/ServiceNow articles, not only manual KB fixtures. |
+| P2 | Distinguish reference documents from procedures. Design an explicit author-declared type rather than inferring executable intent from arbitrary titles; existing untyped content remains reference knowledge unless explicitly classified. | Document lookup can answer reference questions without executing steps. A classified procedure exposes its applicability, prerequisites, ordered steps, and completion criteria. Classification alone grants no tools or permissions. |
+| P2 | Evaluate focused delegation for procedure execution. Give a specialist the selected procedure, resolved target/environment, permitted tools, and success criteria; keep progress, blockers, approvals, and step evidence in that scope while the parent owns the user request. | A multi-step procedure test proves required steps are followed or explicitly blocked, scope survives delegation, approval-required actions cannot bypass confirmation, and the parent reports evidence-backed completion rather than successful loading. Decide when delegation is warranted versus unnecessary overhead for a short procedure. |
 
-Eager loading every mapped skill body on every call is fine when users map 1–3 skills, but breaks down when a user maps 20+. Token cost and prompt dilution both hurt. The lazy path doesn't have this problem because bodies aren't loaded until the LLM asks.
+The procedure distinction and execution scope are design proposals, not current
+runtime guarantees. A reference article can still guide an investigation; a
+procedure is not automatically safe, executable, or applicable merely because
+it has been classified. Existing canary/delegation tests verify loading plumbing,
+not ordered procedure execution or operational completion.
 
-### How
+Customer evidence motivating these additions: conversation
+`9137b002-f32c-4a6b-b7cc-f0db044c1da6` (2026-09-02) used only knowledge/document
+tools in its first two root turns, and operational Elastic tools in later turns.
+The second answer supplied query/dashboard guidance rather than performing the
+requested search. Repeated PreProd loads and a later Prod-to-non-prod scope shift
+show inconsistent targeting; the initial user question did not specify an
+environment, so the trace alone does not prove Prod was the correct target.
 
-`tools/core/skill_selection.go` implements a pure-stdlib BM25 scorer (k1=1.5, b=0.75) over `name + " " + description`. Key design choices:
+Non-goals: making `load_skills` an executable workflow, automatically granting
+tools named inside documents, eagerly loading every mapped KB, or treating one
+successful canary run as proof of operational correctness.
 
-- **Candidate set = corpus.** IDF is computed over whatever is mapped to this agent chain, not a global corpus. This keeps the helper dependency-free and bounds memory to O(candidates).
-- **Tokenization** lowercases, splits on non-alphanumeric runes, drops stopwords (a tiny handful — over-aggressive stopword removal hurts short technical descriptions), and drops single-character tokens.
-- **Document frequency** is counted single-pass: build a `querySet` once, iterate each doc once, bump `df` at most once per `(term, doc)` via a per-doc seen set. O(N·L) rather than the naive O(Q·N·L), and correct even when the user query has duplicate tokens (`"error error panic"`).
-- **Zero-overlap docs are dropped** even if top-K isn't reached. With `topK=10` and only 2 docs actually matching any query term, the result is still 2 — never pads with irrelevant skills.
-- **`topK <= 0` disables selection.** The default is `0`.
+## Main implementation files
 
-### Triggering
+- `agents/core/executor.go` — selects the planner-aware knowledge mode and runs discovery.
+- `agents/core/kb_prestep.go` — builds the combined query, searches/reranks, and creates candidate menus.
+- `agents/core/interface.go` — knowledge modes and request fields.
+- `tools/core/knowledge_candidates.go` — turn-scoped candidate cache.
+- `tools/skills.go` — exact candidate/name loading, search candidate creation, and known integration-KB retrieval.
+- `agents/core/planner_callback_handler.go` — reference persistence for loaded knowledge.
 
-The executor runs selection only at top-level invocation (`request.OriginalQuery == ""`) and only when `config.Config.LlmServerSkillSelectionTopK > 0`. Sub-agents reached via `ExecuteAgentToolCall` inherit `OriginalQuery` and `SelectedSkillIds` unchanged — they must trust the parent's selection because a mechanical sub-agent command (e.g. `"fetch CPU for pod foo"`) would destroy the relevance signal if re-scored.
 
-### Config flag
+### Fetching correctness follow-up
 
-```go
-// config.Config
-LlmServerSkillSelectionTopK int `mapstructure:"llm_server_skill_selection_top_k"`
-```
+Manual vector hits resolve to active account KB IDs. Exact integration names
+search only their resolved collection; query-dependent results never enter the
+name cache. Discovery caches at most 4 KiB of text and exact document handles.
 
-Environment variable: `LLM_SERVER_SKILL_SELECTION_TOP_K`. Default `0` (disabled — legacy "show every mapped skill" behaviour). Set to `3` or `5` to enable.
+`LLM_SERVER_KNOWLEDGE_WORKSPACE_ENABLED` defaults to true. With this default,
+`load_skills` accepts one candidate/name and optional `keyword` or `start_line`.
+Small documents stay inline; large indexed documents are saved to the conversation
+workspace and read selectively through the same tool. No shell tool is required.
+Account access, source version and workspace integrity are rechecked on reads.
 
-### Behaviour table
+When disabled, legacy loads label partial content as an excerpt. They do not offer byte pagination of the source. Exact-name loads recheck live
+rows and integration retrieval. Candidate TTL is 30 minutes and large bodies
+are never retained as continuation snapshots.
 
-| LlmServerSkillSelectionTopK | ReAct path (`<skill-lists>`) | Custom-planner path (`SkillsContext`) |
-| :-- | :-- | :-- |
-| `0` (default) | Every active mapped KB shown as name+description | Full body of every active mapped KB inlined |
-| `>0` | Selected KBs shown; non-inherited own-scope KBs always retained | Full body of each selected KB inlined |
-
-## Custom-planner agents currently consuming `SkillsContext`
-
-| Agent | Planner | LLM call that reads `SkillsContext` |
-| :-- | :-- | :-- |
-| `loganalysis` | Custom | `Execute()` — prepended to `messageContent`, budgeted against `maxTokens` before log truncation |
-| `logs_default` | Custom | `generateFinalResponse()` — prepended to `systemPrompt` |
-| `resource_search` | Custom | `Execute()` — added as a system message before routing-tool selection |
-| `websearch` | Custom | `synthesizeAnswer()` — added as a system message before final synthesis |
-
-Custom-planner **delegators** (`metrics`, `traces`, `logs`, `logs_default`'s query_generator invocation) do not read `SkillsContext`. They propagate `InheritSkillsFromAgents` + `OriginalQuery` + `SelectedSkillIds` to their sub-agents and let the sub-agent's own executor entry load what it needs.
-
-## Response references
-
-Skills loaded via Path B produce `NBToolResponseReference` entries (`Type: "skill"`, `Text: kb.name`, `Url: kb.id`, `Description: kb.description`) that the executor appends to `agentResponse.References` at the end of `executeAgent`. The UI can render them alongside tool references as "Skills used".
-
-References are emitted **only** for skills the executor actually loaded at that invocation. With selection enabled, references reflect what was loaded for this question — a better signal for end users than "skills mapped to this agent".
-
-Duplicates in delegation chains are avoided by emitting references only at the boundary where the skill was actually loaded. The parent custom-planner agent loads and emits; sub-agents reached via delegation rebuild `SkillsContext` fresh at their own executor entry but emit their own references independently, so a parent skill and a sub-agent skill never collide.
-
-## Operational knobs
-
-| Knob | Default | What it does |
-| :-- | :-- | :-- |
-| `LlmServerSkillSelectionTopK` | `0` | Enables BM25 selection at top-level entry. `0` = disabled. |
-| `CacheNamespaceLlmKbMapping` | 5 min TTL | Caches `ListAgentKBs` results per `(account, agent)` key; invalidated on map/unmap. |
-| `CacheNamespaceLlmSkillContent` | — | Caches individual skill bodies fetched via `load_skills` (lazy path). Invalidated on KB update/delete. |
-
-## Things to watch out for
-
-1. **Unbounded skill size.** No per-skill or aggregate size cap exists today. A user mapping a 200KB runbook to `loganalysis` pays for it on every call. The BM25 selector narrows the *count* of skills inlined, not the *size* of each body. A future improvement is a per-skill byte cap with tail-truncation and an explicit `[truncated]` marker.
-2. **Selection runs against the original user query, not sub-agent commands.** This is deliberate. `OriginalQuery` is stamped once at top-level entry and propagated verbatim. Any refactor that "rewrites" `OriginalQuery` deeper in the call tree would silently degrade relevance.
-3. **Sub-agent own-scope skills bypass the selection filter.** `injectKBContext` intentionally retains them regardless of `SelectedSkillIds`. If you map a skill to `prometheus` specifically, it is always shown when `prometheus` runs, even if the user's question wouldn't have scored it highly against the aggregated parent-agent corpus.
-4. **The eager path does not use `load_skills` under the hood.** Custom-planner agents inline bodies directly from `llm_knowledgebases.data` via `LoadActiveAgentSkillContents`. The `CacheNamespaceLlmSkillContent` cache only helps the lazy path. If this becomes a bottleneck, the helper could be taught to consult the same cache.
-5. **Reference UI type is `"skill"`.** Existing UI may only know `"link" | "file" | "k8s_resource" | "citation"` (see the comment on `NBToolResponseReference.Type`). Verify `app/` renders `"skill"` gracefully.
-6. **Integration skill RAG latency.** `enrichIntegrationSkillsFromRAG` caps the RAG call at 10 seconds, but this adds latency on cache miss for integration-type skills. Typically ~100-200ms. Results are cached in `CacheNamespaceLlmSkillContent` so subsequent calls for the same skill are fast. When all integration skills share the same `kb_source`, a `metadata_filter` is applied automatically to narrow results.
-7. **KB indexing format.** Manual KB data is wrapped as a JSON array (`["content"]`) before sending to the RAG server, so it's indexed as a single Qdrant document. Very large KBs (50K+ chars) may exceed embedding model token limits — the tail would be ignored. A future improvement is paragraph/section-level chunking.
-
-## Test coverage
-
-### BM25 selection — `tools/core/skill_selection_test.go`
-
-- Empty inputs; `topK <= 0`; `len(candidates) <= topK`; empty query.
-- Query-overlap ranking; zero-overlap dropping; top-K capping.
-- Stopword filtering.
-- All-docs-empty-after-tokenization fallback.
-- **Regression: duplicate query tokens (`"error error panic"`) must not inflate document frequency for the repeated term.**
-- Tokenizer edge cases (punctuation, hyphens, digits, single-char drops).
-
-### Skills tools — `tools/skills_test.go`
-
-**Unit tests** (no external dependencies):
-- `TestLoadSkillsTool_ParseSkillNames` — comma splitting, dedup, whitespace trimming, empty segments.
-- `TestSkillData_IntegrationTypeRouting` — `kb_type`/`kb_source` routing logic: manual vs integration, empty/whitespace data detection.
-- `TestSearchSkillsTool_Metadata` — tool name, type, description, input schema validation.
-- `TestLoadSkillsTool_ArgumentParsing` — all input formats: standard args, unnamed args, command with colon/equals/quotes, slice args, filler phrase stripping.
-
-**Integration tests** (gated by `TEST_ACCOUNT` env var):
-- `TestLoadSkillsTool_Integration_EmptyName` — empty skill_name returns error.
-- `TestLoadSkillsTool_Integration_NonExistentSkill` — missing skill returns "not found".
-- `TestLoadSkillsTool_Integration_MultipleNonExistent` — multiple missing skills handled gracefully.
-- `TestSearchSkillsTool_Integration_EmptyQuery` — empty query returns error.
-- `TestSearchSkillsTool_Integration_NoResults` — nonsense query returns success without crash.
-- `TestSearchSkillsTool_Integration_BasicQuery` — real query hits DB + RAG without errors.
-- `TestSearchSkillsTool_Integration_CommandFallback` — `Command` field fallback when `Arguments` has no query.
-
-## Related files
-
-- `llm/llm-server/agents/core/executor.go` — top-level entry, selection gate, `injectKBContext` (manual + RAG preview injection), reference appending.
-- `llm/llm-server/agents/core/interface.go` — `NBAgentRequest.SkillsContext`, `InheritSkillsFromAgents`, `OriginalQuery`, `SelectedSkillIds`.
-- `llm/llm-server/agents/core/factory_agent.go` — `ExecuteAgentToolCall` propagation of all four skill-related fields.
-- `llm/llm-server/agents/core/utils.go` — `FilterAndInjectDefaultTools` (lazy `load_skills` auto-injection).
-- `llm/llm-server/tools/core/knowledgebase_service.go` — `ListAgentKBs`, `ListActiveAgentSkillCandidates`, `LoadActiveAgentSkillContents`, `MapKBToAgent`.
-- `llm/llm-server/tools/core/skill_selection.go` — BM25 scorer.
-- `llm/llm-server/tools/core/tool_context.go` — `NbToolContext` skill propagation fields.
-- `llm/llm-server/tools/skills.go` — `load_skills` and `search_skills` tool implementations, RAG enrichment for integration-type skills.
-- `llm/llm-server/tools/core/knowledgebase_sync.go` — background sync that creates integration KB entries for Confluence/ServiceNow with empty `data`.
-- `llm/llm-server/tools/core/rag_service.go` — `QueryRAG()` and `QueryRAGCollection()` clients for Qdrant-backed RAG server. Both accept an optional `metadataFilter` parameter for filtering results by metadata fields (e.g. `{"source": "confluence"}`).
-- `llm/llm-server/config/config.go` — `LlmServerSkillSelectionTopK`.
+See [knowledge-size-design.md](knowledge-size-design.md) for limits, rollout
+ordering, failure semantics and the distinction between indexed documents and
+complete upstream pages.

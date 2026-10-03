@@ -1319,7 +1319,7 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
             ) : null
           }
         />
-        <ListingLayout.Body>
+        <ListingLayout.Body padding={`0 ${ds.space[5]} ${ds.space[4]}`}>
           <KubernetesTable
             id={'auto-scaler'}
             headers={['Kind', 'Name', 'Time', 'CPU', 'Memory', 'Pods', '']}

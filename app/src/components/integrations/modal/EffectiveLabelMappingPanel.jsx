@@ -1,7 +1,8 @@
 /**
  * EffectiveLabelMappingPanel — read-only answer to "which provider field does each
- * canonical log field actually resolve to for this account, and which layer decided
- * that?".
+ * canonical field actually resolve to for this account, and which layer decided
+ * that?". Serves both signals: `providerType` selects the log or the trace resolver,
+ * which are mirrors of one another server-side.
  *
  * The mapping is merged from five layers that live in five different places (a Go
  * constant, Tenant Settings, the account tile, a provider's own column fields, and
@@ -63,7 +64,19 @@ const headCellSx = {
   whiteSpace: 'nowrap',
 };
 
-export default function EffectiveLabelMappingPanel({ accountId, provider, providerSource, draftMappings, unsaved, cardIdx }) {
+export default function EffectiveLabelMappingPanel({
+  accountId,
+  provider,
+  providerSource,
+  draftMappings,
+  unsaved,
+  cardIdx,
+  providerType = 'logs',
+  signalNoun = 'log',
+  testIdPrefix = 'effective-label',
+  conceptLabels,
+  conceptOrder,
+}) {
   const [state, setState] = useState({ loading: false, data: null, error: '' });
 
   // Serialised draft, so the effect re-runs on a real content change rather than on
@@ -86,7 +99,7 @@ export default function EffectiveLabelMappingPanel({ accountId, provider, provid
         account_id: accountId,
         provider,
         provider_source: providerSource || 'user',
-        provider_type: 'logs',
+        provider_type: providerType,
         draft_mappings: JSON.parse(draftKey),
         // Always true: the form is the authority on this tier while it is open, and
         // "the operator deleted every row" has to be expressible as an empty map.
@@ -98,7 +111,7 @@ export default function EffectiveLabelMappingPanel({ accountId, provider, provid
       if (seq !== seqRef.current) return;
       setState({ loading: false, data: null, error: err?.message || 'Could not resolve the effective mapping.' });
     }
-  }, [accountId, provider, providerSource, draftKey]);
+  }, [accountId, provider, providerSource, providerType, draftKey]);
 
   useEffect(() => {
     // Debounced: typing a field name should not fire a request per keystroke. The
@@ -115,7 +128,21 @@ export default function EffectiveLabelMappingPanel({ accountId, provider, provid
     );
   }
 
-  const fields = state.data?.fields || [];
+  const serverFields = state.data?.fields || [];
+
+  // `conceptOrder` opts a signal into human-readable rows: fields render in the order an
+  // operator meets them on the Settings mapper (the five most-retuned first) rather than
+  // alphabetically, each labelled "Service name" over its canonical name. Omit it — the
+  // log path — and this is the server's list, in the server's order, exactly as before.
+  const fields = conceptOrder?.length
+    ? [...serverFields].sort((a, b) => {
+        const ai = conceptOrder.indexOf(a.canonical);
+        const bi = conceptOrder.indexOf(b.canonical);
+        // Anything the order does not name sorts last, keeping its relative position,
+        // so an unexpected field is never dropped from view.
+        return (ai === -1 ? Number.MAX_SAFE_INTEGER : ai) - (bi === -1 ? Number.MAX_SAFE_INTEGER : bi);
+      })
+    : serverFields;
   // "Unsaved" is about the rows in this card, not about whether the integration exists.
   // Tying it to integration_saved labelled an in-progress edit on an already-saved
   // integration as if it were live — the opposite of what the panel is for.
@@ -130,7 +157,7 @@ export default function EffectiveLabelMappingPanel({ accountId, provider, provid
         backgroundColor: ds.background[100],
         overflow: 'hidden',
       }}
-      data-testid={`effective-label-mapping-${cardIdx}`}
+      data-testid={`${testIdPrefix}-mapping-${cardIdx}`}
     >
       <Box
         sx={{
@@ -155,7 +182,7 @@ export default function EffectiveLabelMappingPanel({ accountId, provider, provid
           Mapping in effect
         </Typography>
         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[600] }}>
-          Resolved by the server — the same mapping log queries use
+          Resolved by the server — the same mapping {signalNoun} queries use
         </Typography>
       </Box>
 
@@ -207,9 +234,23 @@ export default function EffectiveLabelMappingPanel({ accountId, provider, provid
                 {fields.map((field) => {
                   const overridden = Object.entries(field.contributions || {}).filter(([tier]) => tier !== field.winning_tier);
                   return (
-                    <tr key={field.canonical} data-testid={`effective-label-row-${field.canonical}`}>
-                      <Box component='td' sx={{ ...cellSx, ...monoSx, whiteSpace: 'nowrap', color: ds.gray[700] }}>
-                        {field.canonical}
+                    <tr key={field.canonical} data-testid={`${testIdPrefix}-row-${field.canonical}`}>
+                      <Box component='td' sx={{ ...cellSx, whiteSpace: 'nowrap' }}>
+                        {conceptLabels?.[field.canonical] ? (
+                          <>
+                            <Box sx={{ color: ds.gray[700] }}>{conceptLabels[field.canonical]}</Box>
+                            {/*
+                              The canonical name stays visible under the friendly one: it is
+                              the string you type into the mapping box and the string the
+                              query carries, so it cannot be replaced, only led.
+                            */}
+                            <Box sx={{ ...monoSx, color: ds.gray[500] }}>{field.canonical}</Box>
+                          </>
+                        ) : (
+                          <Box component='span' sx={{ ...monoSx, color: ds.gray[700] }}>
+                            {field.canonical}
+                          </Box>
+                        )}
                       </Box>
                       <Box component='td' sx={cellSx}>
                         {field.effective ? (
@@ -274,4 +315,17 @@ EffectiveLabelMappingPanel.propTypes = {
   // True when those rows differ from what is stored on the integration.
   unsaved: PropTypes.bool,
   cardIdx: PropTypes.number,
+  // Which resolver to ask. 'logs' | 'traces' — the server's GetLabelMapping facade
+  // dispatches on it, and the two return the same shape.
+  providerType: PropTypes.string,
+  // How the signal reads in the caption ("the same mapping trace queries use").
+  signalNoun: PropTypes.string,
+  // Defaults to the log testids, which app-e2e-tests already binds to. A second
+  // instance on the same form must pass its own prefix or the two collide.
+  testIdPrefix: PropTypes.string,
+  // canonical -> human name, e.g. { service_name: 'Service name' }. Absent for a
+  // canonical field, that row keeps the bare technical name.
+  conceptLabels: PropTypes.object,
+  // Canonical names in display order. Omit to keep the server's alphabetical order.
+  conceptOrder: PropTypes.array,
 };

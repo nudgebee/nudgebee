@@ -163,7 +163,7 @@ test.describe("Admin → Roles: assignment", () => {
     const id = await createRole(page, name, [{ module: "audits", class: "Read" }]);
 
     await registerWelcomeTourAutoDismiss(page);
-    await page.goto("/user-management#users", { waitUntil: "domcontentloaded" });
+    await page.goto("/user-management#access-users", { waitUntil: "domcontentloaded" });
     // Open the first user's edit modal via its row action. The row action is
     // rendered only after the users query resolves, so wait for it rather than
     // counting immediately — a bare count() here reports 0 on every run and
@@ -195,7 +195,7 @@ test.describe("Admin → Roles: assignment", () => {
     const id = await createRole(page, name, [{ module: "k8s", class: "Read" }]);
 
     await registerWelcomeTourAutoDismiss(page);
-    await page.goto("/user-management#groups", { waitUntil: "domcontentloaded" });
+    await page.goto("/user-management#access-users/groups", { waitUntil: "domcontentloaded" });
     const rowEdit = assign.editGroupBtn;
     // Probe, not an assertion: a tenant with no groups renders no Edit button,
     // which is the legitimate skip below rather than a failure.

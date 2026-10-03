@@ -1,4 +1,5 @@
 import apiAccount from '@api1/account';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import apiIntegrations from '@api1/integrations';
 import Text from '@shared/format/Text';
 import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
@@ -667,7 +668,7 @@ const MessagingIntegrationTile = ({
                 {displayName}
               </Typography>
               <Typography fontSize={ds.text.caption} color={ds.gray[600]}>
-                Connect your {displayName} user to Nudgebee. Use the &quot;Add to {displayName}&quot; button to install the app.
+                {`Connect your ${displayName} user to ${getBrandTitle()}. Use the "Add to ${displayName}" button to install the app.`}
               </Typography>
             </Box>
           </Stack>

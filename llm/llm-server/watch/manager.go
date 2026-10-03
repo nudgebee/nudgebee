@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/security"
 	"strings"
 	"time"
 
@@ -145,6 +146,10 @@ func (m *Manager) Create(ctx context.Context, in CreateInput) (*Watch, error) {
 		t := in.NotifyTemplate
 		w.NotifyTemplate = &t
 	}
+	if strings.TrimSpace(in.NotifySession) != "" {
+		s := in.NotifySession
+		w.NotifySession = &s
+	}
 
 	// INSERT … SELECT … WHERE (count) < cap folds the quota check into the
 	// insert statement so the COUNT and the write share one snapshot — this
@@ -159,7 +164,7 @@ INSERT INTO llm_watch_tasks (
   predicate_kind, predicate_expr, predicate_negate,
   notify_template, poll_interval_sec, max_duration_sec,
   status, next_poll_at, expires_at, created_at, updated_at,
-  parent_message_id
+  parent_message_id, notify_session
 )
 SELECT
   $1, $2, $3, $4, $5,
@@ -167,7 +172,7 @@ SELECT
   $8, $9, $10,
   $11, $12, $13,
   $14, $15, $16, $17, $18,
-  $19`
+  $19, $20`
 
 	args := []any{
 		w.ID, w.ConversationID, w.AccountID, w.TenantID, w.UserID,
@@ -175,16 +180,16 @@ SELECT
 		string(w.PredicateKind), w.PredicateExpr, w.PredicateNegate,
 		w.NotifyTemplate, w.PollIntervalSec, w.MaxDurationSec,
 		string(w.Status), w.NextPollAt, w.ExpiresAt, w.CreatedAt, w.UpdatedAt,
-		w.ParentMessageID,
+		w.ParentMessageID, w.NotifySession,
 	}
 	query := insertCols
 	if maxPerTenant > 0 {
-		// $4 is tenant_id (reused); $20 is the cap.
+		// $4 is tenant_id (reused); $21 is the cap.
 		query += `
 WHERE (
   SELECT COUNT(*) FROM llm_watch_tasks
   WHERE tenant_id = $4 AND status IN ('PENDING','ACTIVE')
-) < $20`
+) < $21`
 		args = append(args, maxPerTenant)
 	}
 
@@ -337,7 +342,7 @@ RETURNING id, conversation_id, account_id, tenant_id, user_id,
        notify_template, poll_interval_sec, max_duration_sec,
        status, poll_count, failure_count,
        next_poll_at, last_poll_at, last_poll_result, final_result, error,
-       expires_at, created_at, updated_at, parent_message_id`
+       expires_at, created_at, updated_at, parent_message_id, notify_session`
 	out := []Watch{}
 	if err := db.SelectContext(ctx, &out, q, limit, fetchDueClaimLeaseSec); err != nil {
 		return nil, fmt.Errorf("watch: fetch due failed: %w", err)
@@ -363,7 +368,7 @@ SELECT id, conversation_id, account_id, tenant_id, user_id,
        notify_template, poll_interval_sec, max_duration_sec,
        status, poll_count, failure_count,
        next_poll_at, last_poll_at, last_poll_result, final_result, error,
-       expires_at, created_at, updated_at, parent_message_id
+       expires_at, created_at, updated_at, parent_message_id, notify_session
 FROM llm_watch_tasks
 WHERE id = $1 AND tenant_id = $2`
 	w := &Watch{}
@@ -551,6 +556,21 @@ WHERE id = $2 AND tenant_id = $3 AND status IN ('PENDING','ACTIVE')`
 	return nil
 }
 
+// DeliverCancelled sends the terminal "cancelled" msg over both channels (web
+// append + chat webhook), since Cancel never runs terminate(). Best-effort.
+func (m *Manager) DeliverCancelled(rctx *security.RequestContext, w Watch) {
+	if err := m.AppendWatchUpdateToConversation(rctx.GetContext(), w, StatusCancelled, ""); err != nil {
+		rctx.GetLogger().Error("watch: append cancelled update to conversation failed",
+			"watch_id", w.ID.String(), "error", err)
+		recordResponderFailure(rctx.GetContext())
+	}
+	if err := (HTTPNotifier{}).Notify(rctx, w, StatusCancelled, ""); err != nil {
+		rctx.GetLogger().Error("watch: cancelled notify failed",
+			"watch_id", w.ID.String(), "error", err)
+		recordNotifierFailure(rctx.GetContext(), StatusCancelled)
+	}
+}
+
 // ListByConversation returns all watches owned by a conversation, oldest
 // first. Tenant-scoped — UUID v4 collisions across tenants are practically
 // impossible, but we still filter by tenant_id as defense-in-depth so a
@@ -570,7 +590,7 @@ SELECT id, conversation_id, account_id, tenant_id, user_id,
        notify_template, poll_interval_sec, max_duration_sec,
        status, poll_count, failure_count,
        next_poll_at, last_poll_at, last_poll_result, final_result, error,
-       expires_at, created_at, updated_at, parent_message_id
+       expires_at, created_at, updated_at, parent_message_id, notify_session
 FROM llm_watch_tasks
 WHERE conversation_id = $1 AND tenant_id = $2
 ORDER BY created_at ASC`

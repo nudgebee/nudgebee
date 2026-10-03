@@ -56,7 +56,7 @@ func (l ServiceDependencyGraphAgent) GetName() string {
 }
 
 func (l ServiceDependencyGraphAgent) GetNameAliases() []string {
-	return []string{"Service Dependency Graph", "Knowledge Graph", "KG"}
+	return []string{"Dependency Mapper", "Service Dependency Graph", "Knowledge Graph", "KG"}
 }
 
 func (l ServiceDependencyGraphAgent) GetDescription() string {

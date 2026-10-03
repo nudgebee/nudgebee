@@ -70,7 +70,7 @@ import {
   getPreviousTasksForNode,
   getSwitchDryRunEligibility,
 } from './utils/templateUtils';
-import { buildWorkflowFromAIResponse, type AIGenerateWorkflowResponse, sanitizeTaskId, buildFilterExpression } from './utils';
+import { buildWorkflowFromAIResponse, type AIGenerateWorkflowResponse, sanitizeTaskId, buildFilterExpression, resolveApprovalOptions } from './utils';
 import { parseConditionLabel, hasConditionalStyling } from './utils/conditionParser';
 
 // Custom imports
@@ -1547,11 +1547,13 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
         setNodes((prev) =>
           prev.map((node) => {
             if (node.type !== 'action' && node.type !== 'switch') return node;
-            const { executionStatus, executionDuration, lastExecutionTime, executionOutput, executionError, ...rest } = node.data || {};
+            const { executionStatus, executionDuration, lastExecutionTime, executionInput, executionOutput, executionError, ...rest } =
+              node.data || {};
             const hadAny =
               executionStatus !== undefined ||
               executionDuration !== undefined ||
               lastExecutionTime !== undefined ||
+              executionInput !== undefined ||
               executionOutput !== undefined ||
               executionError !== undefined;
             return hadAny ? { ...node, data: rest } : node;
@@ -2584,7 +2586,13 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
               ...node.data,
               taskConfig: needsIdSync ? { ...node.data.taskConfig, id: sanitizeTaskId(node.id) } : node.data.taskConfig,
               ...(needsStatusClear
-                ? { executionStatus: undefined, lastExecutionTime: undefined, executionOutput: undefined, executionError: undefined }
+                ? {
+                    executionStatus: undefined,
+                    lastExecutionTime: undefined,
+                    executionInput: undefined,
+                    executionOutput: undefined,
+                    executionError: undefined,
+                  }
                 : {}),
             },
           };
@@ -2738,6 +2746,21 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       }
     },
     [prepareDryRunRequest, startPollingDryRun]
+  );
+
+  // Trigger simulator: dry-run the automation against the payload the user
+  // assembled in the trigger sidebar. Skips the inputs modal — the simulator
+  // panel already is the inputs editor.
+  const handleSimulateTriggerRun = useCallback(
+    (inputs: Record<string, any>) => {
+      const validationError = validateBeforeExecution('dryrun');
+      if (validationError) {
+        snackbar.error(validationError);
+        return;
+      }
+      executeDryRun(inputs);
+    },
+    [validateBeforeExecution, executeDryRun]
   );
 
   // Handle trigger from modal: execute with user-provided inputs
@@ -3372,6 +3395,12 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
         status: task.status,
         startTime: task.start_time,
         endTime: task.end_time,
+        // The params as they were actually rendered for this run. Needed for
+        // anything whose canvas affordance depends on a templated value — e.g.
+        // core.approval's buttons, whose approval_options may be
+        // "{{ Tasks['x'].output.data }}" in the definition and only become a
+        // list here.
+        input: task.input,
         output: task.output,
         error: task.error,
       });
@@ -3391,6 +3420,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 ...node.data,
                 executionStatus: taskStatus.status,
                 lastExecutionTime: taskStatus.startTime || new Date().toISOString(),
+                executionInput: taskStatus.input,
                 executionOutput: taskStatus.output,
                 executionError: taskStatus.error,
               },
@@ -3712,7 +3742,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 '&:hover': {
                   backgroundColor: 'var(--ds-background-200)',
                 },
-                boxShadow: '2px 0 8px rgba(0, 0, 0, 0.1)',
+                boxShadow: `2px 0 8px ${ds.gray.alpha[300]}`,
               }}
             >
               {showNubiChat ? (
@@ -4210,12 +4240,10 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                               n.data.taskConfig?.type === 'core.approval' &&
                               String(n.data.executionStatus ?? '').toUpperCase() === 'SCHEDULED'
                           )
-                          .map((n) => {
-                            const opts = Array.isArray(n.data.taskConfig?.config?.approval_options)
-                              ? (n.data.taskConfig.config.approval_options as any[]).filter((o: any) => typeof o === 'string' && o.length > 0)
-                              : [];
-                            return { taskId: n.data.taskConfig.id || n.id, options: opts };
-                          })}
+                          .map((n) => ({
+                            taskId: n.data.taskConfig.id || n.id,
+                            options: resolveApprovalOptions(n.data.executionInput, n.data.taskConfig?.config),
+                          }))}
                         onApprove={handleCompleteApproval}
                         approvalLoading={approvalLoading}
                       />
@@ -4688,6 +4716,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                     }}
                     pendingConfig={pendingTriggerDiscard?.pendingConfig ?? null}
                     onPendingConfigConsumed={() => setPendingTriggerDiscard(null)}
+                    onSimulateRun={handleSimulateTriggerRun}
                   />
                 </Suspense>
               )}

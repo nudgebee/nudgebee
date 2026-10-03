@@ -158,6 +158,46 @@ existing `notification-server` `/llm/response` endpoint with `type: "final"`
 so completed watches show up as a normal in-thread message. Per-poll noise
 NEVER reaches the user's conversation.
 
+### Routing back to a chat thread
+
+`notifications-server` routes `/llm/response` by the **chat session key**
+(Slack `<channel>-<thread_ts>`, Teams `a:`/`19:` ids, Google Chat
+`spaces/…`), not by the internal conversation UUID — a UUID fails its
+`_parse_conversation` and 404s. The watch therefore stores the session it
+was registered from in `llm_watch_tasks.notify_session` (captured from the
+tool-call context at create time) and sends that as `conversation_id` /
+`session_id`. Legacy rows with a NULL column fall back to deriving it from
+`llm_conversations.session_id`. Web-originated watches keep the UUID and are
+delivered by the responder (in-thread DB append), not this webhook.
+
+The POST also carries `X-ACTION-TOKEN` when `NOTIFICATION_SERVER_TOKEN` is
+set — the endpoint is guarded by `verify_action_token`.
+
+### In-progress indicator (chat only)
+
+On registration, a chat-routable watch fires a `type: "watch_registered"`
+signal carrying `watch_id`. `notifications-server` claims the slot atomically
+(`SET NX`, keyed by `watch_id`, 25h TTL) but does **not** post yet — that
+callback fires mid-turn, ~20s before the agent's answer reaches the thread, so
+posting there would strand "🔭 Watching…" above the message it refers to. The
+turn's own `final` posts it, so it lands as the last word.
+
+The terminal `final` — which carries the same `watch_id` — posts the result as
+a **new** message and then deletes the placeholder. A `chat.update` fires no
+Slack notification, so editing in place would resolve silently in a thread the
+user had stopped reading; the delete happens only after the post lands, since
+delete-then-failed-post would leave them with nothing. A missing/`PENDING` ts
+just means there is no placeholder to retire.
+
+### Cancellation
+
+`Manager.Cancel` is a bare UPDATE and never runs `Executor.terminate`, so it
+delivers nothing on its own. Both cancel paths (the `watch_cancel` tool and
+`POST /v1/watches/cancel`) therefore call `Manager.DeliverCancelled` after a
+successful cancel, which runs the same responder + notifier pair with
+`StatusCancelled`. Without it a cancelled watch left its "🔭 Watching…"
+indicator in the thread promising a result that would never arrive.
+
 The watch row's `notify_template` (optional) is rendered with a single
 substitution: `{summary}` → predicate summary. When unset, a canonical
 default per status is used.
@@ -233,6 +273,8 @@ Notable choices:
   `uuid` to match `llm_conversations`.
 - `source_kind` + `source_config jsonb` instead of `tool_name` /
   `query` so new sources don't require a schema change.
+- `notify_session text` (V879) — the chat routing key captured at
+  registration. Nullable: legacy rows and web watches leave it NULL.
 - `conversation_id` has a `FK ... ON DELETE CASCADE` to
   `llm_conversations(id)` — deleting a conversation removes its
   watches.

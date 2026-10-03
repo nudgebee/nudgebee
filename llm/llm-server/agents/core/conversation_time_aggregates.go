@@ -13,6 +13,12 @@ import (
 // Mirrors the constant used by the frontend troubleshoot summary widget.
 const EventDetailsRetrievalTitle = "Event details retrieval by ID"
 
+// EventDetailsRetrievalTitlePrefix covers the same internal lookup under its
+// other title, which appends the event id and so can never match an exact
+// string. That id also makes the title UUID-bearing, so an EventScoped rollup
+// counted these lookups as investigations until this prefix was excluded.
+const EventDetailsRetrievalTitlePrefix = "Get the details of Event with id"
+
 type ConversationTimeAggregatesRequest struct {
 	// AccountId optionally narrows the rollup to one account. When empty the
 	// handler falls back to every account the caller's session is permitted
@@ -21,9 +27,9 @@ type ConversationTimeAggregatesRequest struct {
 	AccountId string `json:"account_id"`
 	UserId    string `json:"user_id"`
 
-	// StartDate / EndDate are inclusive bounds on llm_conversations.updated_at
-	// (RFC3339). The frontend supplies UTC ISO timestamps from the same
-	// rolling 24h window the legacy widget used.
+	// StartDate / EndDate are inclusive bounds on llm_conversations.created_at
+	// (RFC3339) — when the work started, not when the row was last touched.
+	// The frontend supplies UTC ISO timestamps for the window it is showing.
 	StartDate string `json:"start_date" validate:"required"`
 	EndDate   string `json:"end_date" validate:"required"`
 
@@ -90,12 +96,13 @@ func HandleConversationTimeAggregatesApi(ctx *security.RequestContext, request C
 	}
 
 	filter := ConversationTimeAggregatesFilter{
-		AccountIDs:     accountIDs,
-		StartDate:      startDate,
-		EndDate:        endDate,
-		Sources:        request.Sources,
-		ExcludedTitles: []string{EventDetailsRetrievalTitle},
-		EventScoped:    request.EventScoped,
+		AccountIDs:            accountIDs,
+		StartDate:             startDate,
+		EndDate:               endDate,
+		Sources:               request.Sources,
+		ExcludedTitles:        []string{EventDetailsRetrievalTitle},
+		ExcludedTitlePrefixes: []string{EventDetailsRetrievalTitlePrefix},
+		EventScoped:           request.EventScoped,
 	}
 
 	aggregates, err := GetConversationDao().GetConversationTimeAggregates(filter)

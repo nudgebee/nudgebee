@@ -137,7 +137,7 @@ func handleTriageAction(h *ActionRequest, c *gin.Context, tracer *trace.Tracer, 
 // handleEventGetDuplicates returns the duplicate chain for an event
 // handleEventGetTriage returns the triage picture for an event: its duplicate
 // chain, historical firing stats and hourly trend. The llm-server
-// get_triage_explanation tool is its only caller — it is not routed through
+// get_event_triage_explanation tool is its only caller — it is not routed through
 // app/src/lib/actions.yaml, so absence from that file is not evidence that this
 // handler is unused (see TestTriageActionsCoverLLMServerCallers).
 func handleEventGetTriage(h *ActionRequest, c *gin.Context, ctx *security.RequestContext) {

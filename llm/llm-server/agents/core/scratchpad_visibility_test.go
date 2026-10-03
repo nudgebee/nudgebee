@@ -301,7 +301,7 @@ func TestCompressionTracker_SetCompressionContext(t *testing.T) {
 	tracker.SetCompressionContext(false)
 	assert.False(t, tracker.windowPressureActive)
 
-	// nil receiver is a no-op — used by tests / ReWOO callers that pass nil.
+	// nil receiver is a no-op — used by tests and callers that pass nil.
 	var nilTracker *CompressionTracker
 	assert.NotPanics(t, func() { nilTracker.SetCompressionContext(true) })
 }

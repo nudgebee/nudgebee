@@ -364,6 +364,7 @@ export const KubernetesAnomalyTable = ({ accountId, filterData }: { accountId: s
   }, [router.query]);
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     setData([]);
 
@@ -378,6 +379,7 @@ export const KubernetesAnomalyTable = ({ accountId, filterData }: { accountId: s
     apiKubernetes1
       .listK8sAnomaliesData(query)
       .then((res) => {
+        if (cancelled) return;
         const anomaliesData = res?.data?.data?.anomalies_list_v2?.rows || [];
         const findingIds: any = [];
         const tableData = anomaliesData.map((item: any) => {
@@ -401,8 +403,11 @@ export const KubernetesAnomalyTable = ({ accountId, filterData }: { accountId: s
         setFindingIds(findingIds);
       })
       .finally(() => {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       });
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, currentPage, recordsPerPage]);
 
   useEffect(() => {

@@ -39,7 +39,9 @@ func NewDatadogTracesAgent(accountId string) core.NBAgent {
 func (d DatadogTracesAgent) GetName() string { return DatadogTracesAgentName }
 
 // GetNameAliases returns aliases for the agent name.
-func (d DatadogTracesAgent) GetNameAliases() []string { return []string{"Datadog Traces"} }
+func (d DatadogTracesAgent) GetNameAliases() []string {
+	return []string{"Datadog APM Trace Reader", "Datadog Traces"}
+}
 
 // GetDescription returns a description of the agent.
 func (d DatadogTracesAgent) GetDescription() string {

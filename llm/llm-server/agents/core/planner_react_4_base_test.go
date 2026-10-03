@@ -22,12 +22,13 @@ func renderReact4BaseWithModes(t *testing.T, notebookEnabled, hypothesisModeEnab
 
 	vars := []string{
 		"notebook_enabled", "hypothesis_mode_enabled", "is_top_level", "orchestrator_mode", "executor_mode",
-		"delegate_agent_enabled", "is_investigation",
+		"delegate_agent_enabled", "is_investigation", "grounding_enabled",
 		"context_management_rules", "time_handling_rules", "data_protection_rules",
 		"code_analysis_rules", "security_rules", "memory_consumption_rules", "async_completion_rules",
 	}
 	tmpl := prompts.NewPromptTemplate(base, vars)
 	out, err := tmpl.Format(map[string]any{
+		"grounding_enabled":        false,
 		"delegate_agent_enabled":   true,
 		"notebook_enabled":         notebookEnabled,
 		"hypothesis_mode_enabled":  hypothesisModeEnabled,
@@ -61,6 +62,7 @@ func renderReact4CustomBase(t *testing.T, notebookEnabled, isInvestigation bool)
 		"is_investigation", "notebook_enabled", "time_handling_rules", "security_rules",
 	})
 	out, err := tmpl.Format(map[string]any{
+		"grounding_enabled":   false,
 		"notebook_enabled":    notebookEnabled,
 		"is_investigation":    isInvestigation,
 		"time_handling_rules": "",
@@ -258,12 +260,13 @@ func TestReAct4Base_NoDelegationSectionWhenToolAbsent(t *testing.T) {
 	base := nbprompts.GetPrompt(context.Background(), nbprompts.PromptReact4Base, "")
 	tmpl := prompts.NewPromptTemplate(base, []string{
 		"notebook_enabled", "hypothesis_mode_enabled", "is_top_level", "orchestrator_mode", "executor_mode",
-		"delegate_agent_enabled", "is_investigation",
+		"delegate_agent_enabled", "is_investigation", "grounding_enabled",
 		"context_management_rules", "time_handling_rules", "data_protection_rules",
 		"code_analysis_rules", "security_rules", "memory_consumption_rules", "async_completion_rules",
 	})
 	out, err := tmpl.Format(map[string]any{
-		"notebook_enabled": true, "hypothesis_mode_enabled": true,
+		"grounding_enabled": false,
+		"notebook_enabled":  true, "hypothesis_mode_enabled": true,
 		"is_top_level":      true,
 		"orchestrator_mode": true, "executor_mode": false,
 		"is_investigation":         true,

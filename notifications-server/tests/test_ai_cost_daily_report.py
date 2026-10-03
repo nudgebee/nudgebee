@@ -185,7 +185,7 @@ def test_footer_link_pins_dashboard_to_this_digests_reference_date():
     msg = get_ai_cost_account_report_message_template(params)
     footer_url = _action_button_url(msg)
     assert "asOf=2026-08-07" in footer_url
-    assert footer_url.endswith("#cost-analyser/cost-report")
+    assert footer_url.endswith("#llm-analyser/cost-report")
 
 
 def test_action_buttons_follow_accounts_table_view_link_first():
@@ -212,7 +212,7 @@ def test_empty_accounts_still_renders_a_valid_message():
     assert msg["blocks"]
     assert not _table_blocks(msg), "no accounts means no table at all, not an empty one"
     # The "View in Cost Analyser" button still renders even with no accounts.
-    assert _action_button_url(msg).endswith("#cost-analyser/cost-report")
+    assert _action_button_url(msg).endswith("#llm-analyser/cost-report")
     assert "unfurl_links" in msg and msg["unfurl_links"] is False
 
 

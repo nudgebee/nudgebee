@@ -17,7 +17,7 @@ from qdrant_client.http.exceptions import ResponseHandlingException
 from config import setup_logger
 from controllers.document_controller import load_module_docs
 from rag.core.documents import collection as document_collection
-from rag.core.documents import module_retag_migration
+from rag.core.documents import embedding_migration, module_retag_migration
 from utils.shared import set_global_trace, release_lock
 
 # Load .env *before* any os.environ.get below, so local development can
@@ -105,6 +105,23 @@ def post_startup_task():
                 logger.info(f"Document loading result: {result}")
             else:
                 logger.info("Found existing collections - skipping document loading")
+
+            # Rebuild collections whose vectors came from a different embedding
+            # model. Started last and on a background thread: registering is
+            # cheap, but a full re-embed runs for hours and must not hold the
+            # service out of readiness. Collections still queued keep returning
+            # what they returned before their turn comes. Runs after the retag
+            # so it sees final collection names. Off by default; see
+            # rag/core/documents/embedding_migration.py.
+            if embedding_migration.is_enabled() and has_collections:
+                try:
+                    from rag.core.embeddings.generator import get_embeddings
+                    from rag.qdrant.client import get_qdrant_client
+
+                    embedding_migration.start_background(get_qdrant_client(), get_embeddings)
+                    logger.info("Embedding migration started in the background")
+                except Exception as emb_exc:  # defensive: migration must never block startup
+                    logger.exception(f"Could not start embedding migration (non-fatal): {emb_exc}")
         except (
             ConnectionError,
             ResponseHandlingException,

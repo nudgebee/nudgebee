@@ -36,14 +36,140 @@ STORAGE_RATES_PER_GB_MONTH = {
         "sc1": 0.015,
         "standard": 0.05,
     },
+    # Azure rates are the per-GiB fallback used when the disk size is
+    # unknown; sized disks in the tiered families resolve through
+    # AZURE_DISK_TIERS instead. premiumv2_lrs and ultrassd_lrs have no size
+    # bands -- Azure meters them per provisioned GiB, so these are their
+    # real rates (Provisioned Capacity, $/GiB/hour x 730).
     "azure": {
         "standard_lrs": 0.04,
         "standardssd_lrs": 0.075,
-        "premium_lrs": 0.12,
-        "premiumv2_lrs": 0.12,
-        "ultrassd_lrs": 0.15,
+        "standardssd_zrs": 0.1125,
+        "premium_lrs": 0.15,
+        "premium_zrs": 0.225,
+        "premiumv2_lrs": 0.08,
+        "ultrassd_lrs": 0.12,
     },
 }
+
+# Azure managed-disk provisioned size bands. Azure bills a fixed monthly
+# price per band and rounds every disk up into the next one, so a 100 GiB
+# Premium disk is billed as P10 (128 GiB) -- the reason a flat $/GB rate
+# understates Azure volume savings. eastus list prices from the retail
+# prices API (the whole-disk "<tier> <redundancy> Disk" meter, unit
+# 1/Month -- not the much cheaper "Disk Mount" shared-disk meter). Standard
+# HDD is LRS-only. Premium SSD v2 and Ultra are absent on purpose: Azure
+# bills those per provisioned GiB with no size bands.
+AZURE_DISK_TIERS = {
+    "standard_lrs": (
+        (32, 1.536, "S4"),
+        (64, 3.008, "S6"),
+        (128, 5.888, "S10"),
+        (256, 11.328, "S15"),
+        (512, 21.76, "S20"),
+        (1024, 40.96, "S30"),
+        (2048, 77.824, "S40"),
+        (4096, 143.36, "S50"),
+        (8192, 262.14, "S60"),
+        (16384, 491.52, "S70"),
+        (32767, 953.55, "S80"),
+    ),
+    "standardssd_lrs": (
+        (4, 0.3, "E1"),
+        (8, 0.6, "E2"),
+        (16, 1.2, "E3"),
+        (32, 2.4, "E4"),
+        (64, 4.8, "E6"),
+        (128, 9.6, "E10"),
+        (256, 19.2, "E15"),
+        (512, 38.4, "E20"),
+        (1024, 76.8, "E30"),
+        (2048, 153.6, "E40"),
+        (4096, 307.2, "E50"),
+        (8192, 614.4, "E60"),
+        (16384, 1228.8, "E70"),
+        (32767, 2457.6, "E80"),
+    ),
+    "standardssd_zrs": (
+        (4, 0.45, "E1"),
+        (8, 0.9, "E2"),
+        (16, 1.8, "E3"),
+        (32, 3.6, "E4"),
+        (64, 7.2, "E6"),
+        (128, 14.4, "E10"),
+        (256, 28.8, "E15"),
+        (512, 57.6, "E20"),
+        (1024, 115.2, "E30"),
+        (2048, 230.4, "E40"),
+        (4096, 460.8, "E50"),
+        (8192, 921.6, "E60"),
+        (16384, 1843.2, "E70"),
+        (32767, 3686.4, "E80"),
+    ),
+    "premium_lrs": (
+        (4, 0.6, "P1"),
+        (8, 1.2, "P2"),
+        (16, 2.4, "P3"),
+        (32, 5.2795, "P4"),
+        (64, 10.207, "P6"),
+        (128, 19.71, "P10"),
+        (256, 38.012142, "P15"),
+        (512, 73.22, "P20"),
+        (1024, 135.17, "P30"),
+        (2048, 259.0457, "P40"),
+        (4096, 495.5657, "P50"),
+        (8192, 946.08, "P60"),
+        (16384, 1802.06, "P70"),
+        (32767, 3604.11, "P80"),
+    ),
+    "premium_zrs": (
+        (4, 0.9, "P1"),
+        (8, 1.8, "P2"),
+        (16, 3.6, "P3"),
+        (32, 7.919, "P4"),
+        (64, 15.31, "P6"),
+        (128, 29.565, "P10"),
+        (256, 57.018, "P15"),
+        (512, 109.81, "P20"),
+        (1024, 202.73, "P30"),
+        (2048, 388.57, "P40"),
+        (4096, 743.35, "P50"),
+        (8192, 1419.12, "P60"),
+        (16384, 2703.09, "P70"),
+        (32767, 5406.16, "P80"),
+    ),
+}
+
+
+def azure_tier_monthly_cost(disk_type, size_gb):
+    """Monthly price Azure charges for a disk of size_gb, or None if the SKU
+    family is not tiered (or the size is unknown)."""
+    tiers = AZURE_DISK_TIERS.get(disk_type)
+    if not tiers or not size_gb or size_gb <= 0:
+        return None
+    for band_gb, monthly, name in tiers:
+        if size_gb <= band_gb:
+            return monthly, name
+    # Larger than Azure's biggest disk; bill it as the top band.
+    return tiers[-1][1], tiers[-1][2]
+
+
+def _apply_azure_tier_pricing(pricing: dict, size_gb: float) -> dict:
+    """Rewrite the flat per-GB rate into the effective rate for the band
+    Azure actually bills (tier price / requested size), so every caller's
+    existing `rate * size` arithmetic yields the real monthly cost. No-op
+    for non-Azure disks, untiered SKUs, or unknown size."""
+    if pricing.get("provider") != "azure":
+        return pricing
+    tier = azure_tier_monthly_cost(pricing.get("disk_type"), size_gb)
+    if tier is None:
+        return pricing
+    monthly, name = tier
+    pricing["price_per_gb"] = monthly / size_gb
+    pricing["tier"] = name
+    pricing["tier_monthly_usd"] = monthly
+    return pricing
+
 
 # The managed-K8s default storage class's disk type per provider.
 PROVIDER_DEFAULT_DISK_TYPE = {
@@ -129,7 +255,7 @@ def _provider_from_provisioner(s) -> str:
     return ""
 
 
-def resolve_storage_pricing(pv, storage_classes=None, provider="") -> dict:
+def resolve_storage_pricing(pv, storage_classes=None, provider="", size_gb=0.0) -> dict:
     """Resolve a PV's monthly $/GB rate.
 
     pv is the PV object (snake_case or camelCase keys both occur across agent
@@ -157,17 +283,26 @@ def resolve_storage_pricing(pv, storage_classes=None, provider="") -> dict:
         disk_type = (_get(params, "type", "skuName", "sku_name") or "").strip().lower()
         rate = STORAGE_RATES_PER_GB_MONTH.get(resolved, {}).get(disk_type)
         if rate is not None:
-            return {"price_per_gb": rate, "disk_type": disk_type, "provider": resolved, "source": "parameters"}
+            return _apply_azure_tier_pricing(
+                {"price_per_gb": rate, "disk_type": disk_type, "provider": resolved, "source": "parameters"},
+                size_gb,
+            )
 
     if resolved and class_name:
         disk_type = WELL_KNOWN_CLASS_DISK_TYPE.get(resolved, {}).get(class_name, "")
         rate = STORAGE_RATES_PER_GB_MONTH.get(resolved, {}).get(disk_type)
         if rate is not None:
-            return {"price_per_gb": rate, "disk_type": disk_type, "provider": resolved, "source": "class_name"}
+            return _apply_azure_tier_pricing(
+                {"price_per_gb": rate, "disk_type": disk_type, "provider": resolved, "source": "class_name"},
+                size_gb,
+            )
 
     default_type = PROVIDER_DEFAULT_DISK_TYPE.get(resolved, "")
     rate = STORAGE_RATES_PER_GB_MONTH.get(resolved, {}).get(default_type)
     if rate is not None:
-        return {"price_per_gb": rate, "disk_type": default_type, "provider": resolved, "source": "provider_default"}
+        return _apply_azure_tier_pricing(
+            {"price_per_gb": rate, "disk_type": default_type, "provider": resolved, "source": "provider_default"},
+            size_gb,
+        )
 
     return {"price_per_gb": FALLBACK_STORAGE_RATE_PER_GB_MONTH, "source": "fallback"}

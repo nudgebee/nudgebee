@@ -19,7 +19,7 @@ import (
 // running provider — they use fakeModel from egressfilter_test.go to assert the
 // egressfilter gates the call without altering payload semantics.
 
-// realisticConversation builds a representative ReWOO-style multi-turn message
+// realisticConversation builds a representative tool-calling multi-turn message
 // slice (system prompt + history + tool round-trip + new query).
 func realisticConversation(toolOutput string) []llms.MessageContent {
 	return []llms.MessageContent{

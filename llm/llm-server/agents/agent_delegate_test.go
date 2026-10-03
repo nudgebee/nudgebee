@@ -205,16 +205,16 @@ func TestParseDelegateInput_MaxIterationsBelowMinWithToolsAutoClamped(t *testing
 	// so the tool executes and findings are synthesized seamlessly.
 	input := toolcore.NBToolCallRequest{
 		Arguments: map[string]any{
-			"prompt":         "Call get_incident_assembly with event_id=4ede665d-2330-469e-b078-40c99c4a4899",
-			"tools":          []any{"get_incident_assembly"},
+			"prompt":         "Call get_event_incident_assembly with event_id=4ede665d-2330-469e-b078-40c99c4a4899",
+			"tools":          []any{"get_event_incident_assembly"},
 			"max_iterations": float64(1),
 		},
 	}
 
 	prompt, toolNames, maxIter, err := parseDelegateInput(input)
 	assert.NoError(t, err)
-	assert.Equal(t, "Call get_incident_assembly with event_id=4ede665d-2330-469e-b078-40c99c4a4899", prompt)
-	assert.Equal(t, []string{"get_incident_assembly"}, toolNames)
+	assert.Equal(t, "Call get_event_incident_assembly with event_id=4ede665d-2330-469e-b078-40c99c4a4899", prompt)
+	assert.Equal(t, []string{"get_event_incident_assembly"}, toolNames)
 	assert.Equal(t, minDelegateMaxIterations, maxIter)
 }
 

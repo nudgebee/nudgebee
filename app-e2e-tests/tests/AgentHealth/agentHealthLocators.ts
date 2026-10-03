@@ -9,16 +9,22 @@ export const AGENT_HEADERS = ["Status", "Agent Version", "Latest Version", "Last
 export const AGENT_FEATURES = ["Relay", "Prometheus", "Alert Manager", "Logs", "Traces", "OpenCost", "Node Agent"];
 
 // What a feature row is allowed to report. OpenCost has a third state ("Managed server-side")
-// because the spend sync can collect it outside the agent — see agentHealth.jsx.
-export const FEATURE_STATE = /Connected|Disconnected|Managed server-side/;
+// because the spend sync can collect it outside the agent, and logs/metrics/traces can read
+// "served by an integration" when a non-agent backend owns that signal — the Agent tab states
+// no status of its own for those, and the Observability tab reports them instead.
+export const FEATURE_STATE = /Connected|Disconnected|Managed server-side|served by an integration/;
 
 // The status the page renders when the agent has never reported in. agentHealth.jsx prints
 // `acc.status.replace('_', ' ')`, so the raw NOT_CONNECTED reaches the cell as "NOT CONNECTED".
 export const NOT_CONNECTED = "NOT CONNECTED";
 
+// Column contract of the Observability tab, copied from HEADERS_OBSERVABILITY.
+export const OBSERVABILITY_HEADERS = ["Signal", "Provider", "Source", "Status", "Last Checked", "Error"];
+
 export class AgentHealthLocators extends CommonLocators {
   readonly agentTab: Locator;
   readonly proxyAgentTab: Locator;
+  readonly observabilityTab: Locator;
 
   readonly agentCard: Locator;
   readonly agentTable: Locator;
@@ -29,6 +35,7 @@ export class AgentHealthLocators extends CommonLocators {
   readonly scheduledJobsCard: Locator;
 
   readonly proxyCard: Locator;
+  readonly observabilityCard: Locator;
   readonly proxyOnboarding: Locator;
   readonly proxyPanel: Locator;
 
@@ -41,6 +48,10 @@ export class AgentHealthLocators extends CommonLocators {
     // a prefix of "Proxy Agent", so the primary has to be exact.
     this.agentTab = page.getByRole("tab", { name: "Agent", exact: true }).or(page.locator("#tab-agent")).first();
     this.proxyAgentTab = page.getByRole("tab", { name: "Proxy Agent", exact: true }).or(page.locator("#tab-proxy-agent")).first();
+    this.observabilityTab = page
+      .getByRole("tab", { name: "Observability", exact: true })
+      .or(page.locator("#tab-observability"))
+      .first();
 
     // The three cards are ListingLayout ids and nothing else: ListingLayout renders a plain
     // Card <div> with no data-testid, no role and no accessible name, and the only text in
@@ -49,6 +60,7 @@ export class AgentHealthLocators extends CommonLocators {
     this.agentCard = page.locator("#agent-health");
     this.scheduledJobsCard = page.locator("#scheduled-jobs-table");
     this.proxyCard = page.locator("#proxy-agent-health");
+    this.observabilityCard = page.locator("#observability");
 
     // Scoped to its own card, so the CSS fallback cannot drift to another table.
     this.agentTable = this.agentCard.getByRole("table").or(this.agentCard.locator("table")).first();
@@ -98,6 +110,7 @@ export class AgentHealthLocators extends CommonLocators {
       .filter({ hasText: `${name} - ` })
       .first();
   }
+
 
   // Settles the card on its end state. Skeleton-gone is checked first and the outcome
   // second, because CustomTable renders the empty panel only once `loading` is false —

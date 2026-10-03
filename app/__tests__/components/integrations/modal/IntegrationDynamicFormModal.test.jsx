@@ -56,16 +56,46 @@ jest.mock('@ui/Switch', () => ({
 
 jest.mock('@ui/FilterDropdown', () => ({
   __esModule: true,
-  default: ({ label, options = [], value, onSelect }) => (
-    <select aria-label={label || 'dropdown'} value={value || ''} onChange={(e) => onSelect?.(e, { value: e.target.value, label: e.target.value })}>
-      <option value=''>Select</option>
-      {(options || []).map((o) => (
-        <option key={typeof o === 'string' ? o : o.value} value={typeof o === 'string' ? o : o.value}>
-          {typeof o === 'string' ? o : o.label}
-        </option>
-      ))}
-    </select>
-  ),
+  default: ({ label, options = [], value, onSelect }) => {
+    const opts = (Array.isArray(options) ? options : []).map((o) => (typeof o === 'string' ? { value: o, label: o } : o));
+    // freeSolo: the real control displays a value that is not in the option list —
+    // a saved filter column the backend probe did not return, which is exactly the
+    // state an edit form opens in. A <select> can only show what it has an option
+    // for, so give it one. Primitives only: this same component is used multi-select
+    // with an array value, and unshifting that would render an array as an <option>.
+    const isPrimitive = typeof value === 'string' || typeof value === 'number';
+    if (isPrimitive && value !== '' && !opts.some((o) => o.value === value)) {
+      opts.unshift({ value, label: value });
+    }
+    // Multi-select with saved values the option list doesn't carry yet (e.g.
+    // page IDs before the backend picker answers) — same reason as above.
+    const isMulti = Array.isArray(value);
+    if (isMulti) {
+      value.filter((v) => !opts.some((o) => o.value === v)).forEach((v) => opts.unshift({ value: v, label: v }));
+    }
+    return (
+      <select
+        aria-label={label || 'dropdown'}
+        multiple={isMulti}
+        value={isMulti ? value : value || ''}
+        onChange={(e) =>
+          isMulti
+            ? onSelect?.(
+                e,
+                Array.from(e.target.selectedOptions).map((o) => o.value)
+              )
+            : onSelect?.(e, { value: e.target.value, label: e.target.value })
+        }
+      >
+        <option value=''>Select</option>
+        {opts.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    );
+  },
 }));
 
 jest.mock('@shared/buttons/CopyButton', () => ({
@@ -107,9 +137,11 @@ const mockCreateTicketIntegration = jest.fn();
 const mockListTicketConfigurations = jest.fn();
 const mockGetAutogenOptions = jest.fn();
 
+const mockListIntegrations = jest.fn();
 jest.mock('@api1/integrations', () => ({
   __esModule: true,
   default: {
+    listIntegrations: (...args) => mockListIntegrations(...args),
     listIntegrationSchema: (...args) => mockListIntegrationSchema(...args),
     addIntegrations: (...args) => mockAddIntegrations(...args),
     createTicketIntegration: (...args) => mockCreateTicketIntegration(...args),
@@ -161,6 +193,9 @@ jest.mock('@hooks/useTenantBranding', () => ({
     relayUrl: 'https://relay.example.com',
     signingPublicKey: '',
   }),
+  // The modal white-labels its help text through this. The mock predates the export,
+  // and only started biting once a section the suite renders began calling it.
+  getBrandTitle: () => 'Nudgebee',
 }));
 
 const defaultSchemaResponse = {
@@ -352,6 +387,240 @@ describe('IntegrationDynamicFormModal', () => {
     const updateBtn = screen.queryByText('Update');
     expect(updateBtn).toBeTruthy();
   });
+
+  // ----- alert delivery for a directly connected Prometheus -------------------
+
+  const webhookRows = (rows) => ({ data: { data: { integrations_list: { rows } } } });
+  const directPrometheusEdit = {
+    id: 'prom-1',
+    name: 'grafana-cloud',
+    source: 'user',
+    integrations_cloud_accounts: [{ cloud_account_id: 'acc-1', cloud_account_name: 'acme-prod' }],
+    integration_config_values: { integration_config_name: 'grafana-cloud' },
+  };
+
+  // Without an agent in the cluster, alerts reach Nudgebee only through the public
+  // Alertmanager webhook. The receiver URL is the one thing the operator cannot
+  // work out from this form, so the edit view shows it — with the account name
+  // pinned as the cluster, the value an agent-delivered alert would carry.
+  test('shows the Alertmanager receiver URL for a directly connected Prometheus', async () => {
+    mockListIntegrations.mockResolvedValue(
+      webhookRows([
+        {
+          id: 'wh-1',
+          name: 'prod-alertmanager',
+          type: 'prometheus_alertmanager_webhook',
+          integrations_cloud_accounts: JSON.stringify([{ cloud_account_id: 'acc-1', cloud_account_name: 'acme-prod' }]),
+          integration_config_values: JSON.stringify([{ name: 'token', value: 'tok-123' }]),
+        },
+        {
+          id: 'wh-2',
+          name: 'other-account-webhook',
+          type: 'prometheus_alertmanager_webhook',
+          integrations_cloud_accounts: JSON.stringify([{ cloud_account_id: 'acc-9', cloud_account_name: 'other' }]),
+          integration_config_values: JSON.stringify([{ name: 'token', value: 'tok-999' }]),
+        },
+      ])
+    );
+
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'prometheus', title: 'Edit Prometheus', editData: directPrometheusEdit });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('prometheus-alert-delivery-url')).toBeInTheDocument();
+    });
+    expect(mockListIntegrations).toHaveBeenCalledWith(expect.objectContaining({ type: 'prometheus_alertmanager_webhook' }));
+    expect(screen.getAllByTestId('prometheus-alert-delivery-url')).toHaveLength(1);
+    expect(screen.getByTestId('prometheus-alert-delivery-url')).toHaveTextContent(
+      '/api/webhooks/prometheus-alertmanager?token=tok-123&cluster=acme-prod'
+    );
+  });
+
+  test('points at creating the webhook integration when none is linked to the account', async () => {
+    mockListIntegrations.mockResolvedValue(webhookRows([]));
+
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'prometheus', title: 'Edit Prometheus', editData: directPrometheusEdit });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('prometheus-alert-delivery-missing')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('prometheus-alert-delivery-url')).not.toBeInTheDocument();
+  });
+
+  // The agent-created prometheus row has a runner receiving Alertmanager in-cluster;
+  // the webhook URL would be wrong advice there.
+  test('does not show alert delivery for the agent-created Prometheus row', async () => {
+    await act(async () => {
+      renderModal({
+        openModal: true,
+        integrationName: 'prometheus',
+        title: 'Edit Prometheus',
+        editData: { ...directPrometheusEdit, source: 'agent' },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('modal')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('prometheus-alert-delivery')).not.toBeInTheDocument();
+    expect(mockListIntegrations).not.toHaveBeenCalled();
+  });
+
+  // Advanced Settings used to show Per-Account Index but NOT Default Log Filters for
+  // Elasticsearch, while every other log integration showed the filter editor. The
+  // backend applies a saved default_filters value provider-agnostically in FetchLogs,
+  // so an ES filter was enforced but uneditable. Both names the modal treats as the
+  // ES log integration are covered.
+  test.each(['ES', 'elasticsearch'])('shows Default Log Filters alongside Per-Account Index for %s', async (integrationName) => {
+    await act(async () => {
+      renderModal({ openModal: true, integrationName, title: 'Add ES Integration' });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('modal')).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('advanced-settings-toggle'));
+    });
+
+    expect(screen.getByText('Default Log Filters (Optional)')).toBeInTheDocument();
+    expect(screen.getByText('Per-Account Index (Optional)')).toBeInTheDocument();
+  });
+
+  test('hydrates a saved ES default_filters config into the filter editor', async () => {
+    const editData = {
+      id: 'es-1',
+      name: 'es-config',
+      source: 'user',
+      integration_config_values: {
+        integration_config_name: 'es-config',
+        default_filters: JSON.stringify([{ accountId: 'acc-1', filters: [{ key: 'cluster_id', op: '_eq', value: 'nudgebee' }] }]),
+      },
+    };
+
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'ES', editData });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('modal')).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('advanced-settings-toggle'));
+    });
+
+    expect(screen.getByDisplayValue('cluster_id')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('nudgebee')).toBeInTheDocument();
+  });
+
+  // --- Default Trace Filters (#37403) ---
+  // The trace card is a SEPARATE config value from the log one on purpose: datadog,
+  // dynatrace, chronosphere and ES are each one integration record serving both logs
+  // and traces, so a shared list would apply log filters to trace queries.
+  test('shows Default Trace Filters for a trace integration, alongside the log card', async () => {
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'datadog', title: 'Add Datadog Integration' });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('advanced-settings-toggle'));
+    });
+
+    expect(screen.getByText('Default Log Filters (Optional)')).toBeInTheDocument();
+    expect(screen.getByText('Default Trace Filters (Optional)')).toBeInTheDocument();
+  });
+
+  // signoz has no trace source in getTraceSource, so offering a trace filter there
+  // would save a config nothing ever reads.
+  test('hides Default Trace Filters for a log-only integration (signoz)', async () => {
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'signoz', title: 'Add Signoz Integration' });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('advanced-settings-toggle'));
+    });
+
+    expect(screen.getByText('Default Log Filters (Optional)')).toBeInTheDocument();
+    expect(screen.queryByText('Default Trace Filters (Optional)')).not.toBeInTheDocument();
+  });
+
+  // otel_clickhouse is trace-only — and is the agent trace provider, NOT the
+  // unrelated 'clickhouse' database integration.
+  test('shows only Default Trace Filters for otel_clickhouse', async () => {
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'otel_clickhouse', title: 'Add ClickHouse Traces' });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('advanced-settings-toggle'));
+    });
+
+    expect(screen.getByText('Default Trace Filters (Optional)')).toBeInTheDocument();
+    expect(screen.queryByText('Default Log Filters (Optional)')).not.toBeInTheDocument();
+  });
+
+  test('hydrates a saved default_trace_filters config into the trace editor', async () => {
+    const editData = {
+      id: 'dd-1',
+      name: 'dd-config',
+      source: 'user',
+      integration_config_values: {
+        integration_config_name: 'dd-config',
+        default_trace_filters: JSON.stringify([{ accountId: 'acc-1', filters: [{ key: 'workload_namespace', op: '_eq', value: 'production' }] }]),
+      },
+    };
+
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'datadog', editData });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('advanced-settings-toggle'));
+    });
+
+    expect(screen.getByDisplayValue('workload_namespace')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('production')).toBeInTheDocument();
+  });
+
+  // The two configs are independent: a record carrying only log filters must not
+  // spill them into the trace card, which is what a shared config name would do.
+  test('a saved default_filters value does not populate the trace card', async () => {
+    const editData = {
+      id: 'dd-2',
+      name: 'dd-config',
+      source: 'user',
+      integration_config_values: {
+        integration_config_name: 'dd-config',
+        default_filters: JSON.stringify([{ accountId: 'acc-1', filters: [{ key: 'cluster_id', op: '_eq', value: 'nudgebee' }] }]),
+      },
+    };
+
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'datadog', editData });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('advanced-settings-toggle'));
+    });
+
+    // The log card holds it...
+    expect(screen.getByDisplayValue('cluster_id')).toBeInTheDocument();
+    // ...and the trace card is untouched: exactly one blank card, no rows carried over.
+    expect(screen.getByTestId('default-trace-filter-card-0')).toBeInTheDocument();
+    expect(screen.queryByTestId('default-trace-filter-card-1')).not.toBeInTheDocument();
+    expect(screen.queryAllByDisplayValue('cluster_id')).toHaveLength(1);
+  });
 });
 
 // A schema property flagged `advanced` is rendered by the same picker branch as
@@ -437,6 +706,41 @@ describe('schema-driven advanced fields', () => {
     expect(payload.integration_id).toBe('conf-1');
     expect(payload.integration_config_values).toContainEqual({ name: 'page_trees', value: '100,200', is_encrypted: false });
   });
+
+  // The picker returns no suggestions here, which is what an edit form does
+  // when its secret was not re-typed. Removal must not depend on the dropdown
+  // being able to list the entry, or the only way out is clearing them all.
+  test('removes one saved entry without dropping the rest, even with no suggestions loaded', async () => {
+    const editData = {
+      id: 'conf-1',
+      name: 'conf',
+      source: 'user',
+      integration_config_values: { integration_config_name: 'conf', host: 'https://wiki.example.com', page_trees: '100,200' },
+    };
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'confluence', editData });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('modal')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('page_trees-remove-100')).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('page_trees-remove-100'));
+    });
+
+    expect(screen.queryByTestId('page_trees-remove-100')).not.toBeInTheDocument();
+    expect(screen.getByTestId('page_trees-remove-200')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Update'));
+    });
+    await waitFor(() => {
+      expect(mockAddIntegrations).toHaveBeenCalled();
+    });
+    const payload = mockAddIntegrations.mock.calls[0][0];
+    expect(payload.integration_config_values).toContainEqual({ name: 'page_trees', value: '200', is_encrypted: false });
+  });
 });
 
 // A schema property flagged `advanced` is rendered by the same picker branch as
@@ -521,5 +825,119 @@ describe('schema-driven advanced fields', () => {
     const payload = mockAddIntegrations.mock.calls[0][0];
     expect(payload.integration_id).toBe('conf-1');
     expect(payload.integration_config_values).toContainEqual({ name: 'page_trees', value: '100,200', is_encrypted: false });
+  });
+
+  // --- Default Trace Filters (#37403) ---
+  // The trace card is a SEPARATE config value from the log one on purpose: datadog,
+  // dynatrace, chronosphere and ES are each one integration record serving both logs
+  // and traces, so a shared list would apply log filters to trace queries.
+  test('shows Default Trace Filters for a trace integration, alongside the log card', async () => {
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'datadog', title: 'Add Datadog Integration' });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      // OSS renders the shared Advanced Settings toggle in more than one section;
+      // all of them drive the same collapse.
+      fireEvent.click(screen.getAllByTestId('advanced-settings-toggle')[0]);
+    });
+
+    expect(screen.getByText('Default Log Filters (Optional)')).toBeInTheDocument();
+    expect(screen.getByText('Default Trace Filters (Optional)')).toBeInTheDocument();
+  });
+
+  // signoz has no trace source in getTraceSource, so offering a trace filter there
+  // would save a config nothing ever reads.
+  test('hides Default Trace Filters for a log-only integration (signoz)', async () => {
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'signoz', title: 'Add Signoz Integration' });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      // OSS renders the shared Advanced Settings toggle in more than one section;
+      // all of them drive the same collapse.
+      fireEvent.click(screen.getAllByTestId('advanced-settings-toggle')[0]);
+    });
+
+    expect(screen.getByText('Default Log Filters (Optional)')).toBeInTheDocument();
+    expect(screen.queryByText('Default Trace Filters (Optional)')).not.toBeInTheDocument();
+  });
+
+  // otel_clickhouse is trace-only — and is the agent trace provider, NOT the
+  // unrelated 'clickhouse' database integration.
+  test('shows only Default Trace Filters for otel_clickhouse', async () => {
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'otel_clickhouse', title: 'Add ClickHouse Traces' });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      // OSS renders the shared Advanced Settings toggle in more than one section;
+      // all of them drive the same collapse.
+      fireEvent.click(screen.getAllByTestId('advanced-settings-toggle')[0]);
+    });
+
+    expect(screen.getByText('Default Trace Filters (Optional)')).toBeInTheDocument();
+    expect(screen.queryByText('Default Log Filters (Optional)')).not.toBeInTheDocument();
+  });
+
+  test('hydrates a saved default_trace_filters config into the trace editor', async () => {
+    const editData = {
+      id: 'dd-1',
+      name: 'dd-config',
+      source: 'user',
+      integration_config_values: {
+        integration_config_name: 'dd-config',
+        default_trace_filters: JSON.stringify([{ accountId: 'acc-1', filters: [{ key: 'workload_namespace', op: '_eq', value: 'production' }] }]),
+      },
+    };
+
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'datadog', editData });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      // OSS renders the shared Advanced Settings toggle in more than one section;
+      // all of them drive the same collapse.
+      fireEvent.click(screen.getAllByTestId('advanced-settings-toggle')[0]);
+    });
+
+    expect(screen.getByDisplayValue('workload_namespace')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('production')).toBeInTheDocument();
+  });
+
+  // The two configs are independent: a record carrying only log filters must not
+  // spill them into the trace card, which is what a shared config name would do.
+  test('a saved default_filters value does not populate the trace card', async () => {
+    const editData = {
+      id: 'dd-2',
+      name: 'dd-config',
+      source: 'user',
+      integration_config_values: {
+        integration_config_name: 'dd-config',
+        default_filters: JSON.stringify([{ accountId: 'acc-1', filters: [{ key: 'cluster_id', op: '_eq', value: 'nudgebee' }] }]),
+      },
+    };
+
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'datadog', editData });
+    });
+    await waitFor(() => expect(screen.getByTestId('modal')).toBeInTheDocument());
+
+    await act(async () => {
+      // OSS renders the shared Advanced Settings toggle in more than one section;
+      // all of them drive the same collapse.
+      fireEvent.click(screen.getAllByTestId('advanced-settings-toggle')[0]);
+    });
+
+    // The log card holds it...
+    expect(screen.getByDisplayValue('cluster_id')).toBeInTheDocument();
+    // ...and the trace card is untouched: exactly one blank card, no rows carried over.
+    expect(screen.getByTestId('default-trace-filter-card-0')).toBeInTheDocument();
+    expect(screen.queryByTestId('default-trace-filter-card-1')).not.toBeInTheDocument();
+    expect(screen.queryAllByDisplayValue('cluster_id')).toHaveLength(1);
   });
 });

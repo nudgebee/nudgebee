@@ -848,7 +848,15 @@ def _store_error(
             ),
             "duration_seconds": round(duration, 2),
             "setup_duration": setup_duration,
-            "error_message": error_msg[:500],
+            # 500 chars cut this off before the diagnostics tail
+            # (_get_pod_diagnostics' pod status + recent events) ever showed
+            # up — every stored setup_failed message was boilerplate (the
+            # truncated script + empty stdout/stderr) with the actually
+            # useful part (e.g. "0/17 nodes available: Insufficient
+            # memory...") silently dropped. error_message is a Text column,
+            # no DB-side limit; 4000 comfortably fits pod status + last 20
+            # events per namespace while still bounding pathological output.
+            "error_message": error_msg[:4000],
             "error_category": error_cat,
             "tags": test_case.get("tags", []),
         },

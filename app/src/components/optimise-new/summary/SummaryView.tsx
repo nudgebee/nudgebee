@@ -1,44 +1,44 @@
-import { useState, useCallback, useMemo, type ReactNode } from 'react';
+import { useState, useCallback, useMemo, type ReactNode, type ElementType } from 'react';
+import { useRouter } from 'next/router';
 import { Box, Typography } from '@mui/material';
 import SortOutlinedIcon from '@mui/icons-material/SortOutlined';
-import ViewListOutlinedIcon from '@mui/icons-material/ViewListOutlined';
-import ViewStreamOutlinedIcon from '@mui/icons-material/ViewStreamOutlined';
+import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
+import ChecklistOutlinedIcon from '@mui/icons-material/ChecklistOutlined';
+import ListAltOutlinedIcon from '@mui/icons-material/ListAltOutlined';
 import { ds } from 'src/utils/colors';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudProviderIcon';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 
 import { Card } from '@ui/Card';
-import { CostCallout } from '@ui/CostCallout';
 import { Skeleton } from '@ui/Skeleton';
 import { EmptyState } from '@ui/EmptyState';
-import { StatusIndicator } from '@ui/StatusIndicator';
 import { Chip } from '@ui/Chip';
 import { Button } from '@ui/Button';
+import Tooltip from '@ui/Tooltip';
 import FilterDropdown from '@ui/FilterDropdown';
-import { ToggleGroup } from '@ui/ToggleGroup';
 import { DropdownMenu } from '@ui/DropdownMenu';
 import { Label, type LabelTone } from '@ui/Label';
 import { toast as snackbar } from '@ui/Toast';
 
-import CategorySection from './InsightSection';
-import InsightCard from './InsightCard';
+import PriorityCard from './PriorityCard';
+import { resourceAnchorName } from './ResourceLabel';
 import AccountClusterPane from './AccountClusterPane';
+import SummaryInsightWidget from './SummaryInsightWidget';
 import {
-  COST_SUBCATEGORIES,
-  PERF_SUBCATEGORIES,
-  SEC_CONFIG_SUBCATEGORIES,
-  getTop3,
+  getTopRanked,
   getAccountSummaries,
   generateNubiBriefing,
-  formatDollars,
   sortInsights,
   secondaryLine,
+  subtotal,
+  type BriefingEmphasis,
   type InsightItem,
   type SortKey,
   type Provider,
   type MainCategory,
+  type Environment,
 } from './insights';
 import RecommendationDetailPanel from '../RecommendationDetailPanel';
 import ResolveModal from '../ResolveModal';
@@ -47,6 +47,7 @@ import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
 import { buildKubectlCommand, formatRuleName, getRecommendationBrief, getResourceDisplayName, safeParseJSON } from '../utils';
 import { useSummaryData } from './useSummaryData';
+import recommendationApi from '@api1/recommendation';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
@@ -57,11 +58,24 @@ const SORT_OPTIONS: { key: SortKey; label: string }[] = [
   { key: 'resource', label: 'Resource' },
 ];
 
+// How many findings the "Do this first" queue shows.
+const PRIORITY_COUNT = 5;
+
+// Filter chips for the "Top findings" table. Scoped to that section only —
+// "Do this first" is the curated master list and stays unfiltered by design.
 type CategoryChipMeta = { value: MainCategory; label: string; tone: 'savings' | 'warning' | 'critical' };
 const CATEGORY_CHIPS: CategoryChipMeta[] = [
   { value: 'cost', label: 'Cost', tone: 'savings' },
   { value: 'performance', label: 'Performance', tone: 'warning' },
   { value: 'security_config', label: 'Security & Config', tone: 'critical' },
+];
+
+// cloud_accounts.account_env is binary, so this facet has exactly two values —
+// it is not a prod/staging/dev tier list. Chips rather than a dropdown: two
+// options read faster inline and match the Category/Provider facets below.
+const ENV_CHIPS: { value: Environment; label: string }[] = [
+  { value: 'prod', label: 'Production' },
+  { value: 'non_prod', label: 'Non-production' },
 ];
 
 const PROVIDER_CHIPS: { value: Provider; label: string }[] = [
@@ -71,8 +85,38 @@ const PROVIDER_CHIPS: { value: Provider; label: string }[] = [
   { value: 'k8s', label: 'K8S' },
 ];
 
-// Severity → DS Label tone. Mirrors InsightCard's tonal mapping so the list view
-// and card view stay visually consistent (high folds into the critical tone).
+// A single labelled filter facet: caption label tightly coupled to its controls.
+const FilterFacet = ({ id, label, children }: { id?: string; label: string; children: ReactNode }) => (
+  <Box id={id} sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+    <Typography sx={{ fontSize: ds.text.caption, fontWeight: ds.weight.medium, color: ds.gray[500], whiteSpace: 'nowrap' }}>{label}</Typography>
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], flexWrap: 'wrap' }}>{children}</Box>
+  </Box>
+);
+
+const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
+// Light rounded-square icon chip for section headings — matches the "Quick
+// Links" pattern used on the home page (28px, radius-md), kept neutral gray
+// rather than per-section color.
+const SectionIcon = ({ icon: Icon }: { icon: ElementType }) => (
+  <Box
+    sx={{
+      width: 28,
+      height: 28,
+      borderRadius: ds.radius.md,
+      backgroundColor: ds.gray[100],
+      color: ds.gray[600],
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      flexShrink: 0,
+    }}
+  >
+    <Icon sx={{ fontSize: 16 }} />
+  </Box>
+);
+
+// Severity → DS Label tone for the findings table (high folds into the critical tone).
 const SEVERITY_TONE: Record<string, LabelTone> = {
   critical: 'critical',
   high: 'critical',
@@ -88,37 +132,50 @@ const severityLabel = (severity: string) => {
   );
 };
 
-// A single labelled filter facet: caption label tightly coupled to its controls.
-// Facets are separated from each other by whitespace, not divider rules.
-const FilterFacet = ({ id, label, children }: { id?: string; label: string; children: ReactNode }) => (
-  <Box id={id} sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
-    <Typography sx={{ fontSize: ds.text.caption, fontWeight: ds.weight.medium, color: ds.gray[500], whiteSpace: 'nowrap' }}>{label}</Typography>
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], flexWrap: 'wrap' }}>{children}</Box>
-  </Box>
-);
-
-// ─── Conversational summaries ──────────────────────────────────────────────
-
-const costConvoSummary = (items: InsightItem[], symbol: string) => {
-  const critCount = items.filter((i) => i.severity === 'critical').length;
-  const topDollars = [...items].sort((a, b) => b.dollarImpact - a.dollarImpact)[0]?.dollarImpact || 0;
-  if (critCount > 0) return `${critCount} critical anomalies — largest opportunity is ${formatDollars(topDollars, symbol)}/mo.`;
-  if (topDollars > 0) return `Right-sizing and cleanup dominate. Savings plans alone could recover ${formatDollars(topDollars, symbol)}/mo.`;
-  return `${items.length} cost optimization opportunities identified.`;
+// Category → DS Label tone for the findings table. Mirrors CATEGORY_CHIPS'
+// labels; tones map to the closest Label equivalent ('savings' has no Label tone).
+const CATEGORY_LABEL_META: Record<MainCategory, { label: string; tone: LabelTone }> = {
+  cost: { label: 'Cost', tone: 'success' },
+  performance: { label: 'Performance', tone: 'warning' },
+  security_config: { label: 'Security & Config', tone: 'critical' },
+};
+const categoryLabel = (category: MainCategory) => {
+  const meta = CATEGORY_LABEL_META[category];
+  return (
+    <Label size='sm' tone={meta?.tone ?? 'neutral'}>
+      {meta?.label ?? category}
+    </Label>
+  );
 };
 
-const perfConvoSummary = (items: InsightItem[]) => {
-  const critCount = items.filter((i) => i.severity === 'critical').length;
-  if (critCount > 0) return `${critCount} critical workloads at risk — fix before they page you.`;
-  if (items.length > 0) return `${items.length} performance findings to review.`;
-  return 'No active performance findings.';
-};
+// Nubi's avatar — tenant icon when branding provides one, initial-badge fallback.
+const NubiAvatar = ({ iconUrl, name }: { iconUrl?: string; name?: string }) =>
+  iconUrl ? (
+    <SafeIcon src={iconUrl} alt={name || 'Nubi'} width={24} height={24} />
+  ) : (
+    <Box
+      sx={{
+        width: ds.space[6],
+        height: ds.space[6],
+        borderRadius: ds.radius.pill,
+        backgroundColor: ds.blue[600],
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+      }}
+    >
+      <Typography sx={{ color: ds.background[100], fontSize: ds.text.caption, fontWeight: ds.weight.semibold }}>
+        {(name || 'N')[0].toUpperCase()}
+      </Typography>
+    </Box>
+  );
 
-const secConvoSummary = (items: InsightItem[]) => {
-  const critCount = items.filter((i) => i.severity === 'critical').length;
-  if (critCount >= 3) return `${critCount} critical vulnerabilities — public buckets and open ports are the immediate priority.`;
-  if (critCount > 0) return `${critCount} critical finding${critCount > 1 ? 's' : ''} need immediate attention.`;
-  return 'EOL versions and missing encryption are the long-tail risks worth planning around.';
+// Emphasis styling for the (still static) briefing sentence — bold + colour on
+// the two numbers that matter, plain weight everywhere else.
+const BRIEFING_EMPHASIS: Record<BriefingEmphasis, { color: string; fontWeight: string }> = {
+  money: { color: ds.green[600], fontWeight: ds.weight.semibold },
+  alert: { color: ds.red[600], fontWeight: ds.weight.semibold },
 };
 
 // ─── Loading skeleton ─────────────────────────────────────────────────────
@@ -133,40 +190,59 @@ const LoadingSkeleton = () => (
 
 // ─── Main component ────────────────────────────────────────────────────────
 
-const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
-
 const SummaryView = () => {
   const { nubiIconUrl, assistantName } = useTenantBranding();
+  const router = useRouter();
 
   // ── UI state ──
   const [detailOpen, setDetailOpen] = useState(false);
   const [selectedResourceId, setSelectedResourceId] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortKey>('savings');
+  const [accountFilter, setAccountFilter] = useState<string | null>(null);
+  const [envFilter, setEnvFilter] = useState<Environment | null>(null);
+  // Scoped to the "Top findings" table only — "Do this first" above is the
+  // curated master list and stays unfiltered by design.
   const [categoryFilter, setCategoryFilter] = useState<MainCategory | null>(null);
   const [providerFilter, setProviderFilter] = useState<Provider | null>(null);
-  const [accountFilter, setAccountFilter] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
 
   // ── Data (fetched via hook) ──
   const {
     accounts,
     insights,
+    totalFindingsCount,
     loading,
     lastUpdated,
     totalSavings,
-    savingsLoading,
+    categoryBreakdown,
+    worstAccount,
+    wipCount,
+    scopedAccountIds,
+    resolvedCount,
+    safeToApply,
     costByCurrency,
     accountCosts,
     costLoading,
     savingsCurrency,
     savingsSymbol,
-  } = useSummaryData(accountFilter);
+  } = useSummaryData(accountFilter, envFilter);
 
   // ── Action modal state ──
   const [resolveModalRec, setResolveModalRec] = useState<any>(null);
   const [ticketRec, setTicketRec] = useState<any>(null);
   // NuBi chat — opens the global drawer preloaded with the entry's context.
   const { openWithContext: openNubiChat } = useNubiGlobalChat();
+
+  // Account ids every cross-tab link carries, so a drill-down opens on the same
+  // slice this page is showing. A picked account is one id; an environment is
+  // the set of account ids in it — neither destination tab has an environment
+  // filter of its own, but both accept a repeated account param.
+  const scopeAccountIds = useMemo(
+    () => (Array.isArray(scopedAccountIds) ? scopedAccountIds : scopedAccountIds ? [scopedAccountIds] : []),
+    [scopedAccountIds]
+  );
+  // Recommendations reads `account`, Resolutions reads `accountId`. Built inside
+  // each handler rather than hoisted, so the callbacks' dependency lists stay
+  // honest instead of needing an exhaustive-deps exemption.
 
   // ── Handlers ──
   const handleOpenResource = useCallback((id: string) => {
@@ -184,9 +260,69 @@ const SummaryView = () => {
     },
     [insights]
   );
-  const handleResolve = useCallback((rec: any) => {
-    setResolveModalRec(rec);
+  // The summary projection omits the safety columns; the modal's readiness
+  // banner needs the full row, so refetch by id and fall back to the slim one.
+  // Without an id the query would be unscoped and return someone else's row,
+  // so only a row that answers to this id replaces the slim one.
+  const handleResolve = useCallback(async (rec: any) => {
+    if (!rec?.id) {
+      setResolveModalRec(rec);
+      return;
+    }
+    try {
+      const result: any = await recommendationApi.getK8sRecommendation({ recommendationId: rec.id, status: [], limit: 1 });
+      const full = result?.data?.recommendation?.[0];
+      setResolveModalRec(full?.id === rec.id ? full : rec);
+    } catch {
+      setResolveModalRec(rec);
+    }
   }, []);
+  // Deep-links into the Resolutions tab, carrying the same account scope this
+  // page is already narrowed to (if any) plus the InProgress status filter —
+  // ResolutionsView reads both off the URL on mount.
+  const handleViewWorkInProgress = useCallback(() => {
+    const scope = scopeAccountIds.length > 0 ? { accountId: scopeAccountIds } : {};
+    router.push({ pathname: '/optimise', query: { status: 'InProgress', ...scope }, hash: 'resolutions' });
+  }, [router, scopeAccountIds]);
+  // Same-page drill-downs: the "Top findings" table below already filters on the
+  // exact vocabulary these tiles use (MainCategory, age), so narrowing it in
+  // place is precise — where a cross-tab link would have to translate into
+  // OptimizeNewPage's differently-shaped filters and lose fidelity.
+  const scrollToTopFindings = () => document.getElementById('summary-top-findings')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const handleFocusCategory = useCallback((category: MainCategory) => {
+    setCategoryFilter(category);
+    scrollToTopFindings();
+  }, []);
+  const handleFocusAging = useCallback(() => {
+    setSortBy('age');
+    scrollToTopFindings();
+  }, []);
+  const handleFocusAllFindings = useCallback(() => {
+    setCategoryFilter(null);
+    setProviderFilter(null);
+    scrollToTopFindings();
+  }, []);
+  const handleSelectAccount = useCallback((id: string) => setAccountFilter(id), []);
+  // Blast-radius safety is a real facet on the Recommendations tab (`?safety=`),
+  // so this one is an accurate cross-tab link rather than a same-page narrow.
+  const handleViewSafeToApply = useCallback(() => {
+    const scope = scopeAccountIds.length > 0 ? { account: scopeAccountIds } : {};
+    router.push({ pathname: '/optimise', query: { safety: 'safe', ...scope }, hash: 'cost' });
+  }, [router, scopeAccountIds]);
+  const handleViewResolved = useCallback(() => {
+    const scope = scopeAccountIds.length > 0 ? { accountId: scopeAccountIds } : {};
+    router.push({ pathname: '/optimise', query: { status: 'Success', ...scope }, hash: 'resolutions' });
+  }, [router, scopeAccountIds]);
+  // Same account-scope pattern as above, into the recommendations list
+  // (OptimizeNewPage, the "Cost" tab) instead — its account query param is
+  // `account`, not `accountId`, and severity/last-seen are its own filter
+  // vocabulary. The fragment is `cost`: `recommendations` is a LEGACY alias that
+  // pages/optimise/index.jsx rewrites exactly once per mount (didAliasFragment),
+  // so pushing it from inside the page matches no tab and silently does nothing.
+  const handleViewCritical = useCallback(() => {
+    const scope = scopeAccountIds.length > 0 ? { account: scopeAccountIds } : {};
+    router.push({ pathname: '/optimise', query: { severity: 'Critical', ...scope }, hash: 'cost' });
+  }, [router, scopeAccountIds]);
   const handleCopyCli = useCallback((rec: any) => {
     const cmd = buildKubectlCommand(rec);
     navigator.clipboard.writeText(cmd);
@@ -228,27 +364,39 @@ const SummaryView = () => {
   );
 
   // ── Derived data ──
-  const filteredByCatProvider = useMemo(() => {
-    let items = insights;
-    if (categoryFilter) items = items.filter((i) => i.category === categoryFilter);
-    if (providerFilter) items = items.filter((i) => i.provider === providerFilter);
-    return items;
-  }, [insights, categoryFilter, providerFilter]);
-
+  // Account (picked from the right-hand rail or the "Top findings" toolbar,
+  // both drive this same state) narrows everything on the page, including
+  // "Do this first" and the headline metrics.
   const filtered = useMemo(() => {
-    if (!accountFilter) return filteredByCatProvider;
-    return filteredByCatProvider.filter((i) => i.accountId === accountFilter);
-  }, [filteredByCatProvider, accountFilter]);
+    let items = insights;
+    if (accountFilter) items = items.filter((i) => i.accountId === accountFilter);
+    if (envFilter) items = items.filter((i) => i.env === envFilter);
+    return items;
+  }, [insights, accountFilter, envFilter]);
 
   // Headline savings = total across ALL in-scope recommendations (the same aggregate
   // the Recommendations tab uses), so the two tabs always agree. It is intentionally
   // decoupled from the curated list below, which shows only the top urgent +
   // highest-impact recs rather than the full set the total is summed over.
-  const savingsTone: 'high-savings' | 'medium-savings' | 'low-savings' | 'neutral' =
-    totalSavings <= 0 ? 'neutral' : totalSavings > 10000 ? 'high-savings' : totalSavings > 1000 ? 'medium-savings' : 'low-savings';
+  const ranked = useMemo(() => getTopRanked(filtered, PRIORITY_COUNT), [filtered]);
+  const accountSummaries = useMemo(() => getAccountSummaries(insights), [insights]);
+  // The "of N total" framing is tenant-wide — only meaningful when nothing is
+  // narrowing `filtered` to a single account, otherwise it'd compare a
+  // one-account subset against an unfiltered tenant-wide count.
+  const nubiBriefing = useMemo(
+    () => generateNubiBriefing(filtered, totalSavings, savingsSymbol, accountFilter || envFilter ? undefined : totalFindingsCount),
+    [filtered, totalSavings, savingsSymbol, accountFilter, envFilter, totalFindingsCount]
+  );
 
-  const top3 = useMemo(() => getTop3(filtered), [filtered]);
-  const accountSummaries = useMemo(() => getAccountSummaries(filteredByCatProvider), [filteredByCatProvider]);
+  // "Top findings" table only — category/provider narrow just this list, not
+  // "Do this first" or the headline metrics above.
+  const allFindingsItems = useMemo(() => {
+    let items = filtered;
+    if (categoryFilter) items = items.filter((i) => i.category === categoryFilter);
+    if (providerFilter) items = items.filter((i) => i.provider === providerFilter);
+    return items;
+  }, [filtered, categoryFilter, providerFilter]);
+
   const accountOptions = useMemo(
     () =>
       Object.entries(accounts)
@@ -256,32 +404,35 @@ const SummaryView = () => {
         .sort((a, b) => a.label.localeCompare(b.label)),
     [accounts]
   );
-  const nubiBriefing = useMemo(() => generateNubiBriefing(filtered, totalSavings, savingsSymbol), [filtered, totalSavings, savingsSymbol]);
-
-  const costItems = useMemo(() => filtered.filter((i) => i.category === 'cost'), [filtered]);
-  const perfItems = useMemo(() => filtered.filter((i) => i.category === 'performance'), [filtered]);
-  const secItems = useMemo(() => filtered.filter((i) => i.category === 'security_config'), [filtered]);
-
-  const costOneLiner = `${costItems.length} findings`;
-  const perfOneLiner = `${perfItems.length} findings, ${perfItems.filter((i) => i.severity === 'critical').length} critical`;
-  const secOneLiner = `${secItems.filter((i) => i.severity === 'critical').length} critical vulnerabilities, ${secItems.length} total`;
 
   const lastScannedMinutes = lastUpdated ? Math.max(1, Math.floor((Date.now() - lastUpdated.getTime()) / 60000)) : null;
+
+  // Surfaced on hover over the refresh icon rather than as standing text.
+  const syncedLabel = loading ? 'Syncing…' : lastScannedMinutes != null ? `Last synced ${lastScannedMinutes}m ago` : 'Refresh';
+
+  // Total $ across the "Do this first" top-3 queue — feeds the insight widget's
+  // "Top 3 impact" tile below (moved down from the old headline metrics row).
+  const rankedDollars = useMemo(() => subtotal(ranked), [ranked]);
 
   const selectedRecommendation = useMemo(() => {
     if (!selectedResourceId) return null;
     return insights.find((i) => i.id === selectedResourceId)?._raw || null;
   }, [selectedResourceId, insights]);
 
-  const toggle = <T,>(current: T | null, value: T, setter: (v: T | null) => void) => {
+  const clearAll = () => {
+    setAccountFilter(null);
+    setEnvFilter(null);
+  };
+  const hasActiveFilter = !!accountFilter || !!envFilter;
+
+  const toggleFilterValue = <T,>(current: T | null, value: T, setter: (v: T | null) => void) => {
     setter(current === value ? null : value);
   };
-  const clearAll = () => {
+  const clearTableFilters = () => {
     setCategoryFilter(null);
     setProviderFilter(null);
-    setAccountFilter(null);
   };
-  const hasActiveFilter = !!(categoryFilter || providerFilter || accountFilter);
+  const hasTableFilter = !!(categoryFilter || providerFilter);
 
   // Sort menu items for DropdownMenu
   const sortMenuItems = SORT_OPTIONS.map((opt) => ({
@@ -295,107 +446,136 @@ const SummaryView = () => {
     <Box sx={{ display: 'flex', pb: ds.space[7], pt: ds.space[4], minHeight: 'calc(100vh - 120px)', gap: ds.space[5] }}>
       {/* ════════ LEFT COLUMN ════════ */}
       <Box sx={{ flex: 1, minWidth: 0 }}>
+        {/* Page-wide filters. Unlike the Category/Provider facets in the "Top
+            findings" toolbar, these narrow everything below them — the briefing,
+            the insight widget, "Do this first", the table and the account rail.
+            Account is the same state the rail's cards toggle, so selecting there
+            reflects here and vice versa. */}
+        <Box id='summary-global-filters' sx={{ display: 'flex', alignItems: 'center', gap: ds.space[5], flexWrap: 'wrap', mb: ds.space[3] }}>
+          <FilterDropdown
+            id='account-filter-select'
+            label='Account'
+            placeholder='All accounts'
+            sx={{ minWidth: 260 }}
+            grouped
+            groupIcon={renderAccountGroupIcon}
+            options={accountOptions}
+            value={accountOptions.find((opt) => opt.value === accountFilter) ?? null}
+            onSelect={(_: unknown, opt: { value: string } | null) => setAccountFilter(opt?.value || null)}
+          />
+
+          <FilterFacet id='summary-filter-env' label='Environment'>
+            <Chip size='sm' pressed={envFilter === null} onClick={() => setEnvFilter(null)}>
+              All
+            </Chip>
+            {ENV_CHIPS.map(({ value, label }) => (
+              <Chip key={value} size='sm' pressed={envFilter === value} onClick={() => toggleFilterValue(envFilter, value, setEnvFilter)}>
+                {label}
+              </Chip>
+            ))}
+          </FilterFacet>
+
+          {hasActiveFilter && (
+            <Chip size='sm' onDismiss={clearAll} onClick={clearAll}>
+              Clear filters
+            </Chip>
+          )}
+        </Box>
+
         {/* Headline bar — KPI focus */}
         <Card
           id='summary-savings-card'
+          variant='outlined'
           size='sm'
           sx={{
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: ds.space[4],
+            flexDirection: 'column',
             position: 'sticky',
             top: 0,
-            // Keep below the global tab bar (AnchorComponent is z-index 2) so the
-            // Auto Optimize tab's hover dropdown isn't covered by this sticky card.
             zIndex: 1,
+            // Squared off to butt directly against the insight widget below —
+            // no gap, no doubled border line.
+            borderBottomLeftRadius: 0,
+            borderBottomRightRadius: 0,
           }}
         >
-          {loading || savingsLoading ? (
-            <Skeleton shape='text' size='heading' width={140} />
-          ) : (
-            <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: ds.space[2] }}>
-              <CostCallout value={totalSavings} size='display' tone={savingsTone} period='/ mo' currency={savingsCurrency} locale='en-US' />
-              <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[500] }}>Potential savings</Typography>
+          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[3] }}>
+            <Box>
+              <NubiAvatar iconUrl={nubiIconUrl} name={assistantName} />
             </Box>
-          )}
-          <StatusIndicator
-            tone={loading ? 'pending' : filtered.length > 0 ? 'degraded' : 'healthy'}
-            size='sm'
-            label={loading ? 'Loading…' : `${filtered.length} findings${lastScannedMinutes != null ? ` · ${lastScannedMinutes}m ago` : ''}`}
-          />
+            {loading ? (
+              <Skeleton shape='text' size='text' width={460} />
+            ) : (
+              <Typography
+                sx={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontSize: ds.text.body,
+                  fontWeight: ds.weight.regular,
+                  lineHeight: 2,
+                  color: ds.gray[700],
+                }}
+              >
+                {nubiBriefing.map((seg, i) => (
+                  <Box key={`${i}-${seg.text}`} component='span' sx={seg.emphasis ? BRIEFING_EMPHASIS[seg.emphasis] : undefined}>
+                    {seg.text}
+                  </Box>
+                ))}
+              </Typography>
+            )}
+            {/* Visual affordance only for now — refetching the summary and
+                regenerating the briefing is not wired up yet. The last-synced
+                time lives in the tooltip rather than as standing text. */}
+            <Tooltip title={syncedLabel} placement='left'>
+              <Box component='span' sx={{ ml: 'auto', flexShrink: 0 }}>
+                <Button
+                  id='summary-refresh'
+                  tone='ghost'
+                  size='xs'
+                  composition='icon-only'
+                  icon={<RefreshOutlinedIcon />}
+                  aria-label={`Refresh findings — ${syncedLabel}`}
+                />
+              </Box>
+            </Tooltip>
+          </Box>
         </Card>
 
-        {/* Filter toolbar */}
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: ds.space[3],
-            px: ds.space[4],
-            py: ds.space[3],
-            flexWrap: 'wrap',
-          }}
-        >
-          {/* Filter facets */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[4], flexWrap: 'wrap' }}>
-            <FilterFacet id='summary-filter-category' label='Category'>
-              <Chip size='sm' tone='neutral' pressed={categoryFilter === null} onClick={() => setCategoryFilter(null)}>
-                All
-              </Chip>
-              {CATEGORY_CHIPS.map(({ value, label, tone }) => (
-                <Chip
-                  key={value}
-                  size='sm'
-                  tone={tone}
-                  pressed={categoryFilter === value}
-                  onClick={() => toggle(categoryFilter, value, setCategoryFilter)}
-                >
-                  {label}
-                </Chip>
-              ))}
-            </FilterFacet>
-
-            <FilterFacet id='summary-filter-provider' label='Provider'>
-              <Chip size='sm' tone='neutral' pressed={providerFilter === null} onClick={() => setProviderFilter(null)}>
-                All
-              </Chip>
-              {PROVIDER_CHIPS.map(({ value, label }) => (
-                <Chip
-                  key={value}
-                  size='sm'
-                  tone='neutral'
-                  pressed={providerFilter === value}
-                  icon={<CloudProviderIcon cloud_provider={value} width='14px' height='14px' />}
-                  onClick={() => toggle(providerFilter, value, setProviderFilter)}
-                >
-                  {label}
-                </Chip>
-              ))}
-            </FilterFacet>
-
-            <FilterDropdown
-              id='account-filter-select'
-              label='Account'
-              placeholder='All accounts'
-              grouped
-              groupIcon={renderAccountGroupIcon}
-              options={accountOptions}
-              value={accountOptions.find((opt) => opt.value === accountFilter) ?? null}
-              onSelect={(_: unknown, opt: { value: string } | null) => setAccountFilter(opt?.value || null)}
-            />
-
-            {hasActiveFilter && (
-              <Chip size='sm' tone='neutral' onDismiss={clearAll} onClick={clearAll}>
-                Clear all
-              </Chip>
-            )}
-          </Box>
-        </Box>
+        {/* Insight widget — butts directly against the Nubi briefing card
+            above (both cards square off the shared edge). Also carries the
+            old headline metrics row (Potential savings, Critical, Top 3
+            impact) now folded into "What Nubi found" below; account count
+            was dropped rather than relocated. Every figure is real: the
+            savings, category and safety columns are full-set aggregates, the
+            age-based callouts are derived from the curated `filtered` set and
+            labelled as such. */}
+        {!loading && filtered.length > 0 && (
+          <SummaryInsightWidget
+            items={filtered}
+            totalSavings={totalSavings}
+            totalFindingsCount={totalFindingsCount}
+            savingsSymbol={savingsSymbol}
+            savingsCurrency={savingsCurrency}
+            rankedDollars={rankedDollars}
+            categoryBreakdown={categoryBreakdown}
+            worstAccount={worstAccount}
+            wipCount={wipCount}
+            resolvedCount={resolvedCount}
+            safeToApply={safeToApply}
+            onViewWorkInProgress={handleViewWorkInProgress}
+            onViewResolved={handleViewResolved}
+            onFocusCategory={handleFocusCategory}
+            onFocusAging={handleFocusAging}
+            onFocusAllFindings={handleFocusAllFindings}
+            onSelectAccount={handleSelectAccount}
+            onViewSafeToApply={handleViewSafeToApply}
+            onViewCritical={handleViewCritical}
+            onOpenResource={handleOpenResource}
+          />
+        )}
 
         {/* Content area */}
-        <Box sx={{ px: ds.space[4] }}>
+        <Box sx={{ px: ds.space[0], pt: ds.space[6] }}>
           {loading && <LoadingSkeleton />}
           {!loading && filtered.length === 0 && (
             <EmptyState
@@ -418,163 +598,118 @@ const SummaryView = () => {
           )}
           {!loading && filtered.length > 0 && (
             <>
-              {/* Nubi briefing + Top 3 */}
+              {/* "Do this first" — the ranked queue. Replaces the old filter
+                  toolbar + "Top 3 by impact" box: the list is the master list,
+                  so there is nothing to filter it by. */}
+              <Box id='summary-do-this-first' sx={{ mb: ds.space[6] }}>
+                <Box
+                  sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[2], mb: ds.space[4], flexWrap: 'wrap' }}
+                >
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], justifyContent: 'center' }}>
+                    <SectionIcon icon={ChecklistOutlinedIcon} />
+                    <Typography sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, fontFamily: ds.font.display, color: ds.gray[700] }}>
+                      Do this first
+                    </Typography>
+                  </Box>
+                  <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>Ranked by severity, impact and age</Typography>
+                </Box>
+
+                <Card size='sm' variant='outlined' elevation='raised' sx={{ backgroundColor: ds.background[200] }}>
+                  {ranked.map((item, i) => (
+                    <PriorityCard
+                      key={item.id}
+                      item={item}
+                      onOpen={handleOpenResource}
+                      onAskNubi={handleAskNubiFromCard}
+                      assistantName={assistantName}
+                      showDivider={i < ranked.length - 1}
+                    />
+                  ))}
+                </Card>
+              </Box>
+
               <Box
-                sx={{
-                  mb: ds.space[3],
-                  backgroundColor: ds.gray[100],
-                  border: `1px solid ${ds.gray[200]}`,
-                  borderRadius: ds.radius.md,
-                  overflow: 'hidden',
-                  p: ds.space[5],
-                }}
+                id='summary-top-findings'
+                sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[2], mb: ds.space[3], flexWrap: 'wrap' }}
               >
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], px: ds.space[2], pb: ds.space[3] }}>
-                  {nubiIconUrl ? (
-                    <SafeIcon src={nubiIconUrl} alt={assistantName || 'Nubi'} width={24} height={24} />
-                  ) : (
-                    <Box
-                      sx={{
-                        width: ds.space[6],
-                        height: ds.space[6],
-                        borderRadius: ds.radius.pill,
-                        backgroundColor: ds.blue[600],
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        flexShrink: 0,
-                      }}
-                    >
-                      <Typography sx={{ color: ds.background[100], fontSize: ds.text.caption, fontWeight: ds.weight.semibold }}>
-                        {(assistantName || 'N')[0].toUpperCase()}
-                      </Typography>
-                    </Box>
-                  )}
-                  <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, lineHeight: 1.45, color: ds.gray[700] }}>
-                    {nubiBriefing}
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+                  <SectionIcon icon={ListAltOutlinedIcon} />
+                  <Typography sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, fontFamily: ds.font.display, color: ds.gray[700] }}>
+                    Top findings
                   </Typography>
                 </Box>
-                <Box
-                  sx={{
-                    borderRadius: ds.radius.md,
-                    overflow: 'hidden',
-                    backgroundColor: ds.background[100],
-                  }}
-                >
-                  {top3.map((item) => (
-                    <InsightCard key={item.id} item={item} onClickResource={handleOpenResource} onAskNubi={handleAskNubiFromCard} />
-                  ))}
-                </Box>
-                {filtered.length > top3.length && (
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      pt: ds.space[3],
-                      px: ds.space[2],
-                    }}
-                  >
-                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>
-                      <Box component='span' sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
-                        {filtered.length - top3.length}
-                      </Box>{' '}
-                      more issues this week
-                    </Typography>
-                    <Button tone='link' size='sm' href='/automation' id='top3-open-autopilot'>
-                      Open Autopilot queue →
-                    </Button>
-                  </Box>
+                {/* Same "tenant-wide, unfiltered by account" caveat as the Nubi
+                    briefing's totalCount — see its comment above. */}
+                {!accountFilter && !envFilter && totalFindingsCount > filtered.length && (
+                  <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>
+                    Top {filtered.length.toLocaleString()} of {totalFindingsCount.toLocaleString()}, by urgency + impact
+                  </Typography>
                 )}
               </Box>
 
-              {/* Sort + view live here, directly above the list they reorder.
-                  The briefing + Top-3 box above is sort-independent by design, so
-                  parking these in the top filter toolbar made Sort look inert (#32478). */}
+              {/* Filter toolbar — narrows only this table; "Do this first" above
+                  is the curated master list and stays unfiltered by design. Sort
+                  lives here too, directly above the list it reorders — parking it
+                  in the page-top toolbar made it look inert (#32478). */}
               <Box
-                sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: ds.space[2],
-                  mb: ds.space[3],
-                }}
+                sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[4], flexWrap: 'wrap', mb: ds.space[3] }}
               >
-                <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>All findings</Typography>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
-                  <DropdownMenu
-                    align='end'
-                    size='sm'
-                    trigger={
-                      <Button tone='secondary' size='xs' icon={<SortOutlinedIcon />} iconPlacement='start' id='sort-toggle'>
-                        {sortLabel}
-                      </Button>
-                    }
-                    items={sortMenuItems}
-                  />
-                  <ToggleGroup
-                    id='summary-view-toggle'
-                    selection='single'
-                    size='sm'
-                    value={viewMode}
-                    onChange={(v) => setViewMode(v)}
-                    ariaLabel='View mode'
-                    options={[
-                      { value: 'cards', icon: <ViewStreamOutlinedIcon sx={{ fontSize: 16 }} />, ariaLabel: 'Cards view', tooltip: 'Card view' },
-                      { value: 'list', icon: <ViewListOutlinedIcon sx={{ fontSize: 16 }} />, ariaLabel: 'List view', tooltip: 'List view' },
-                    ]}
-                  />
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[4], flexWrap: 'wrap' }}>
+                  <FilterFacet id='summary-filter-category' label='Category'>
+                    <Chip size='sm' pressed={categoryFilter === null} onClick={() => setCategoryFilter(null)}>
+                      All
+                    </Chip>
+                    {CATEGORY_CHIPS.map(({ value, label, tone }) => (
+                      <Chip
+                        key={value}
+                        size='sm'
+                        tone={tone}
+                        pressed={categoryFilter === value}
+                        onClick={() => toggleFilterValue(categoryFilter, value, setCategoryFilter)}
+                      >
+                        {label}
+                      </Chip>
+                    ))}
+                  </FilterFacet>
+
+                  <FilterFacet id='summary-filter-provider' label='Provider'>
+                    <Chip size='sm' pressed={providerFilter === null} onClick={() => setProviderFilter(null)}>
+                      All
+                    </Chip>
+                    {PROVIDER_CHIPS.map(({ value, label }) => (
+                      <Chip
+                        key={value}
+                        size='sm'
+                        pressed={providerFilter === value}
+                        icon={<CloudProviderIcon cloud_provider={value} width='14px' height='14px' />}
+                        onClick={() => toggleFilterValue(providerFilter, value, setProviderFilter)}
+                      >
+                        {label}
+                      </Chip>
+                    ))}
+                  </FilterFacet>
+
+                  {hasTableFilter && (
+                    <Chip size='sm' onDismiss={clearTableFilters} onClick={clearTableFilters}>
+                      Clear filters
+                    </Chip>
+                  )}
                 </Box>
+
+                <DropdownMenu
+                  align='end'
+                  size='sm'
+                  trigger={
+                    <Button tone='secondary' size='xs' icon={<SortOutlinedIcon />} iconPlacement='start' id='sort-toggle'>
+                      {sortLabel}
+                    </Button>
+                  }
+                  items={sortMenuItems}
+                />
               </Box>
 
-              {/* Category sections or list view */}
-              {viewMode === 'cards' ? (
-                <>
-                  {(!categoryFilter || categoryFilter === 'cost') && costItems.length > 0 && (
-                    <CategorySection
-                      category='cost'
-                      label='Cost'
-                      oneLiner={costOneLiner}
-                      conversationalSummary={costConvoSummary(costItems, savingsSymbol)}
-                      subCategories={COST_SUBCATEGORIES}
-                      items={costItems}
-                      sortBy={sortBy}
-                      currencySymbol={savingsSymbol}
-                      onClickResource={handleOpenResource}
-                      onAskNubi={handleAskNubiFromCard}
-                    />
-                  )}
-                  {(!categoryFilter || categoryFilter === 'performance') && perfItems.length > 0 && (
-                    <CategorySection
-                      category='performance'
-                      label='Performance'
-                      oneLiner={perfOneLiner}
-                      conversationalSummary={perfConvoSummary(perfItems)}
-                      subCategories={PERF_SUBCATEGORIES}
-                      items={perfItems}
-                      sortBy={sortBy}
-                      currencySymbol={savingsSymbol}
-                      onClickResource={handleOpenResource}
-                      onAskNubi={handleAskNubiFromCard}
-                    />
-                  )}
-                  {(!categoryFilter || categoryFilter === 'security_config') && secItems.length > 0 && (
-                    <CategorySection
-                      category='security_config'
-                      label='Security & Configuration'
-                      oneLiner={secOneLiner}
-                      conversationalSummary={secConvoSummary(secItems)}
-                      subCategories={SEC_CONFIG_SUBCATEGORIES}
-                      items={secItems}
-                      sortBy={sortBy}
-                      currencySymbol={savingsSymbol}
-                      onClickResource={handleOpenResource}
-                      onAskNubi={handleAskNubiFromCard}
-                    />
-                  )}
-                </>
-              ) : (
-                <CustomTable2
+              <Card variant='outlined' size='sm' sx={{ py: ds.space[2] }}>
+                <CustomTable
                   id='summary-findings-table'
                   // Fixed layout: respect the declared column widths and let long resource
                   // ARNs ellipsize, instead of auto-layout stretching the row past its
@@ -582,13 +717,13 @@ const SummaryView = () => {
                   sx={{ '& > table': { tableLayout: 'fixed' } }}
                   headers={[
                     { name: 'Severity', width: '8%' },
-                    { name: 'Finding', width: '30%' },
+                    { name: 'Finding', width: '28%' },
                     { name: 'Resource', width: '24%' },
-                    { name: 'Provider', width: '10%' },
+                    { name: 'Category', width: '12%' },
                     { name: 'Impact', width: '14%' },
                     { name: 'Action', width: '14%' },
                   ]}
-                  tableData={sortInsights(filtered, sortBy).map((item) => [
+                  tableData={sortInsights(allFindingsItems, sortBy).map((item) => [
                     {
                       component: severityLabel(item.severity),
                     },
@@ -625,27 +760,42 @@ const SummaryView = () => {
                     },
                     {
                       component: (
-                        <Typography
-                          sx={{
-                            fontSize: ds.text.caption,
-                            fontFamily: ds.font.mono,
-                            color: ds.gray[600],
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                          }}
-                        >
-                          {item.resourceId}
-                        </Typography>
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], minWidth: 0 }}>
+                          <Tooltip title={item.resourceId} placement='top'>
+                            <Typography
+                              sx={{
+                                fontSize: ds.text.caption,
+                                fontFamily: ds.font.mono,
+                                color: ds.gray[700],
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                              }}
+                            >
+                              {resourceAnchorName(item.resourceId)}
+                            </Typography>
+                          </Tooltip>
+                          {item.accountName && (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], minWidth: 0 }}>
+                              <CloudProviderIcon cloud_provider={item.provider} width='12px' height='12px' />
+                              <Typography
+                                sx={{
+                                  fontSize: ds.text.caption,
+                                  color: ds.gray[500],
+                                  whiteSpace: 'nowrap',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                }}
+                              >
+                                {item.accountName}
+                              </Typography>
+                            </Box>
+                          )}
+                        </Box>
                       ),
                     },
                     {
-                      component: (
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
-                          <CloudProviderIcon cloud_provider={item.provider} width='14px' height='14px' />
-                          <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[600] }}>{item.provider.toUpperCase()}</Typography>
-                        </Box>
-                      ),
+                      component: categoryLabel(item.category),
                     },
                     {
                       component: item.impactValue ? (
@@ -677,37 +827,16 @@ const SummaryView = () => {
                     },
                   ])}
                   rowsPerPage={10}
-                  onRowClick={(_row: unknown, index: number) => handleOpenResource(sortInsights(filtered, sortBy)[index].id)}
+                  onRowClick={(_row: unknown, index: number) => handleOpenResource(sortInsights(allFindingsItems, sortBy)[index].id)}
                 />
-              )}
-
-              <Box sx={{ mt: ds.space[5], pt: ds.space[4], borderTop: `1px solid ${ds.gray[200]}` }}>
-                <Button
-                  tone='link'
-                  size='sm'
-                  id='ask-nubi-footer'
-                  onClick={() => {
-                    const firstAccountId = Object.keys(accounts)[0] || '';
-                    const critCount = filtered.filter((i) => i.severity === 'critical').length;
-                    const prompt = `I have ${filtered.length} optimization findings across my infrastructure (${critCount} critical). Give me a prioritized action plan — what should I tackle first and why?`;
-                    openNubiChat({
-                      accountId: firstAccountId,
-                      sessionId: 'optimize_summary_overview',
-                      query: prompt,
-                      categorySource: 'Optimize',
-                    });
-                  }}
-                >
-                  Ask {assistantName || 'Nubi'} about any of this →
-                </Button>
-              </Box>
+              </Card>
             </>
           )}
         </Box>
       </Box>
 
       {/* ════════ RIGHT COLUMN ════════ */}
-      <Box sx={{ pl: ds.space[5], pr: ds.space[4], pt: ds.space[4] }}>
+      <Box sx={{ pl: ds.space[1] }}>
         <AccountClusterPane
           accounts={accountSummaries}
           costByCurrency={costByCurrency}

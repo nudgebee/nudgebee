@@ -14,16 +14,52 @@ dotenv.config({ path: path.resolve(__dirname, envFile) });
 
 const isDevEnv = process.env.E2E_ENVIRONMENT === "dev";
 
+// Suite wall time is dominated by how many browsers run at once, so the two
+// numbers that set it are env-tunable: a workflow_dispatch can trial a value
+// before anyone merges a config change.
+//
+// PW_WORKERS: the suite ran on a single worker while the ARC runner reserves
+// 6 vCPU (arc-v2-runner/values-nudgebee.yaml requests cpu: "6", one runner per
+// c4-standard-8 node), so five cores idled for 3.2h. Raised to 2 rather than
+// straight to 4: ~250 specs mutate one shared dev tenant under fixed fixture
+// names, and a cross-file collision would look like a new test failure, not
+// like a config change. Step it up once a couple of nightlies match the known
+// failure list.
+//
+// PW_EXPECT_TIMEOUT: every genuine failure pays this twice (retries: 1). The
+// median test finishes in 10s, so a shorter timeout only bites the failure
+// path -- but a passing assertion that legitimately needs >15s would turn into
+// a false failure, so the default is unchanged until a dispatch run proves a
+// lower value safe.
+
+// Blank, not just unset: the workflow always defines both vars and leaves them
+// empty on every event but a dispatch that filled them in, and `"" ?? 2` keeps
+// the empty string -- Number("") is 0, which would hand Playwright 0 workers.
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const parsed = Number(process.env[name]);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const workers = positiveIntFromEnv("PW_WORKERS", 2);
+const expectTimeout = positiveIntFromEnv("PW_EXPECT_TIMEOUT", 30000);
+
 export default defineConfig({
   testDir: "./tests",
   timeout: isDevEnv ? 120000 : 240000,
   expect: {
-    timeout: 30000,
+    timeout: expectTimeout,
   },
-  fullyParallel: true,
+  // false (the default) keeps a whole file, in declaration order, on one worker — only files
+  // are handed out across the worker pool. This flag was `true` since the suite's first commit
+  // but stayed a no-op while CI ran a single worker; #37745 raised CI to 2 workers for
+  // file-level parallelism and, as an unreviewed side effect, `true` here started letting
+  // Playwright split ONE file's tests across those 2 workers too — silently breaking every
+  // spec whose tests share state (a describe-scoped test.beforeAll, module-level state, an
+  // assumed run order), since the hook then fires once per worker instead of once per file.
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  workers: process.env.CI ? workers : undefined,
 
   // Log in once, reuse the session across every test (see global-setup.ts).
   globalSetup: require.resolve("./global-setup"),
@@ -47,7 +83,11 @@ export default defineConfig({
     navigationTimeout: isDevEnv ? 30000 : 60000,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
-    video: "retain-on-failure",
+    // Off, not "retain-on-failure": that setting records every test and then
+    // throws the file away for the ~88% that pass, paying encode CPU on each
+    // one and pushing the report artifact to 1.4GB. The trace above is what
+    // failures are actually debugged from, and it carries a screenshot per step.
+    video: "off",
     baseURL: process.env.BASE_URL,
     // Reuse the session captured by global-setup so tests start authenticated.
     // Only when the file is actually there: pointing storageState at a missing

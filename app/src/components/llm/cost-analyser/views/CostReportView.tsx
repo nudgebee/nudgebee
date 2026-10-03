@@ -14,6 +14,7 @@
 import * as React from 'react';
 import dayjs from 'dayjs';
 import { Box, IconButton, Tooltip } from '@mui/material';
+import { ds } from '@utils/colors';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import CustomTable2 from '@shared/tables/CustomTable';
 import CustomDateTimePicker from '@shared/widgets/CustomDateTimePicker';
@@ -99,11 +100,11 @@ const SORT_VALUE: Record<string, (r: AiCostAccountRow) => number | string> = {
 function DriverChips({ label, drivers }: { label: string; drivers: AiCostDriver[] }) {
   if (!drivers.length) return null;
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
       <Box component='span' sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', fontWeight: 'var(--ds-font-weight-medium)' }}>
         {label}
       </Box>
-      <Box sx={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+      <Box sx={{ display: 'flex', gap: ds.space[1], flexWrap: 'wrap' }}>
         {drivers.map((d) => (
           <Chip key={d.key} size='2xs' variant='tag' tone='subtle'>
             {d.key}

@@ -58,15 +58,19 @@ export function AgentLatencyBars({ profiles, thresholdSeconds, percentile, onSel
   // directly to this node's style, bypassing React's render cycle entirely.
   const overlayRef = React.useRef<HTMLDivElement>(null);
 
-  const labels = profiles.map((p) => p.agent_name || 'agent');
-  const datasets = SERIES.map((s) => ({
-    label: s.label,
-    data: profiles.map((p) => Number((p[s.key] ?? 0).toFixed(2))),
-    // Per-bar colour: a bar at/over the active pXX threshold turns red (severity).
-    backgroundColor: profiles.map((p) => (thresholdSeconds > 0 && (p[s.key] ?? 0) >= thresholdSeconds ? OVER_THRESHOLD : s.color)),
-    borderRadius: 3,
-    maxBarThickness: 14,
-  }));
+  const labels = React.useMemo(() => profiles.map((p) => p.agent_name || 'agent'), [profiles]);
+  const datasets = React.useMemo(
+    () =>
+      SERIES.map((s) => ({
+        label: s.label,
+        data: profiles.map((p) => Number((p[s.key] ?? 0).toFixed(2))),
+        // Per-bar colour: a bar at/over the active pXX threshold turns red (severity).
+        backgroundColor: profiles.map((p) => (thresholdSeconds > 0 && (p[s.key] ?? 0) >= thresholdSeconds ? OVER_THRESHOLD : s.color)),
+        borderRadius: 3,
+        maxBarThickness: 14,
+      })),
+    [profiles, thresholdSeconds]
+  );
 
   // Value labels at the end of each bar — read p50/p90/p99 without hovering.
   const valueLabels = React.useMemo(

@@ -1,13 +1,16 @@
 package cloud
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"io"
 	"log/slog"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
+	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 	"strings"
 	"sync"
@@ -313,15 +316,46 @@ type listNotificationTargetsApiResponse struct {
 	Data ListNotificationTargetsResponse `json:"data"`
 }
 
+// resolveResourceRegion returns the stored region of a cloud resource, so a
+// regional listing (AWS SNS topics) can be scoped from the resource id alone.
+func resolveResourceRegion(resourceId, accountId string) (string, error) {
+	if _, err := uuid.Parse(resourceId); err != nil {
+		return "", err
+	}
+	if _, err := uuid.Parse(accountId); err != nil {
+		return "", err
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return "", err
+	}
+	var region sql.NullString
+	err = dbms.Db.QueryRowx("SELECT region FROM cloud_resourses WHERE id = $1 AND account = $2", resourceId, accountId).Scan(&region)
+	if err != nil {
+		return "", err
+	}
+	return region.String, nil
+}
+
 func ListNotificationTargets(ctx *security.RequestContext, request ListNotificationTargetsRequest) (ListNotificationTargetsResponse, error) {
 	if request.AccountId == "" {
 		return ListNotificationTargetsResponse{}, errors.New("account_id is required")
 	}
 
+	region := request.Region
+	if region == "" && request.ResourceId != "" {
+		resolved, err := resolveResourceRegion(request.ResourceId, request.AccountId)
+		if err != nil {
+			ctx.GetLogger().Warn("could not resolve the resource's region for notification targets", "resourceId", request.ResourceId, "error", err)
+		} else {
+			region = resolved
+		}
+	}
+
 	resp, err := common.HttpPost(config.Config.CloudCollectorServerUrl+"/v1/cloud/list_notification_targets", common.HttpWithTimeout(15*time.Second), common.HttpWithJsonBody(map[string]any{
 		"account_id": request.AccountId,
 		"request": map[string]any{
-			"region": request.Region,
+			"region": region,
 		},
 	}), common.HttpWithHeaders(map[string]string{
 		config.Config.CloudCollectorServerTokenHeader: config.Config.CloudCollectorServerToken,

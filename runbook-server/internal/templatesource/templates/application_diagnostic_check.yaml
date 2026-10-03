@@ -1,0 +1,765 @@
+slug: application_diagnostic_check
+name: "Application Diagnostic Check"
+description: "First-level diagnostic for an application incident on EC2. Resolves the target from an application name or instance ID, then collects instance state and status checks, CloudWatch metrics and alarms, load balancer target health, CloudWatch application logs, host/service evidence over SSM, and dependency connectivity probes. Returns a structured verdict with per-check coverage, not a raw metric dump."
+category: "aws"
+icon: "analytics"
+status: ACTIVE
+tags:
+  labels:
+    - "diagnostic"
+    - "read-only"
+    - "triage"
+  event_sources:
+    - "AWS_CloudWatch_Alarm"
+    - "AWS_EventBridge"
+    - "cloudwatch"
+    - "aws"
+  alert_names:
+    - "StatusCheckFailed"
+    - "StatusCheckFailed_Instance"
+    - "StatusCheckFailed_System"
+    - "UnHealthyHostCount"
+    - "HTTPCode_Target_5XX_Count"
+  subject_types:
+    - "ec2"
+    - "instance"
+    - "application"
+    - "service"
+definition:
+  version: "v1"
+  llm_description: >-
+    Runs a deterministic first-level diagnostic for an application incident on AWS EC2 and
+    returns a structured result (overall status, ranked findings, per-check coverage, raw
+    evidence). Use it as the opening step of an EC2 or application incident — status check
+    failures, an application that is down or degraded, unhealthy load balancer targets — to
+    collect the instance, CloudWatch, load balancer, log, host and dependency evidence in one
+    pass before deciding on a remediation runbook.
+  inputs:
+    - id: "account_id"
+      type: "string"
+      description: "Cloud account ID"
+      required: true
+    - id: "region"
+      type: "string"
+      description: "AWS region (e.g. us-east-1)"
+      required: true
+    - id: "instance_id"
+      type: "string"
+      description: "EC2 instance ID. Leave empty to resolve the target from the application name."
+      required: false
+      default: ""
+    - id: "application"
+      type: "string"
+      description: "Application / service name, matched against the EC2 Name tag. Used to resolve the target when no instance ID is given, and to locate the systemd unit on the host."
+      required: false
+      default: ""
+    - id: "lookback"
+      type: "string"
+      description: "How far back to look for metrics, alarms and logs (Go duration, e.g. 30m, 1h, 6h)."
+      required: false
+      default: "1h"
+    - id: "log_group"
+      type: "string"
+      description: "CloudWatch Logs group holding the application logs. Leave empty to skip the log evidence check."
+      required: false
+      default: ""
+    - id: "log_filter"
+      type: "string"
+      description: "CloudWatch Logs filter pattern applied to the log group."
+      required: false
+      default: "ERROR"
+    - id: "dependency_endpoints"
+      type: "string"
+      description: "Comma-separated host:port list probed from the instance itself (e.g. db.internal:5432,cache.internal:6379). Leave empty to skip connectivity probes."
+      required: false
+      default: ""
+    - id: "collect_host_evidence"
+      type: "string"
+      description: "Run the on-host evidence script over AWS SSM. Requires the SSM agent and an instance profile with AmazonSSMManagedInstanceCore."
+      required: false
+      default: "true"
+    - id: "incident_context"
+      type: "string"
+      description: "Incident or event identifier, echoed into the diagnostic result for traceability."
+      required: false
+      default: ""
+  triggers:
+    - type: "manual"
+  tasks:
+    # Single source of truth for every time window below. The cloud-collector executes AWS
+    # CLI commands through ForkExec, not a shell, so `$(date ...)` would be passed through
+    # as a literal argument — timestamps have to be computed here instead.
+    - id: "time_window"
+      type: "data.transform"
+      params:
+        scriptType: "javascript"
+        inputType: "json"
+        outputType: "raw"
+        input: '{"lookback": "{{ Inputs.lookback }}"}'
+        expression: |
+          var m = String(data.lookback || '1h').match(/^(\d+)([smhd])$/);
+          if (!m) { throw new Error('lookback must look like 30m, 1h or 6h, got: ' + data.lookback); }
+          var unitMs = { s: 1000, m: 60000, h: 3600000, d: 86400000 }[m[2]];
+          var end = new Date();
+          var start = new Date(end.getTime() - (parseInt(m[1], 10) * unitMs));
+          function iso(d) { return d.toISOString().replace(/\.\d{3}Z$/, 'Z'); }
+          ({
+            start_iso: iso(start),
+            end_iso: iso(end),
+            start_ms: start.getTime(),
+            end_ms: end.getTime(),
+            lookback: data.lookback
+          })
+
+    # Resolves by instance ID when one is given, otherwise by the Name tag. Kept as one
+    # always-running task rather than two conditional ones, because a skipped dependency
+    # propagates the skip to everything downstream.
+    - id: "resolve_target"
+      type: "cloud.aws.cli"
+      params:
+        account_id: "{{ Inputs.account_id }}"
+        command: >-
+          aws ec2 describe-instances --region {{ Inputs.region }}
+          {% if Inputs.instance_id %}--instance-ids {{ Inputs.instance_id }}{% else %}--filters Name=tag:Name,Values="{{ Inputs.application }}"{% endif %}
+          --output json
+          --query "Reservations[].Instances[].{InstanceId:InstanceId,State:State.Name,StateReason:StateTransitionReason,Type:InstanceType,Az:Placement.AvailabilityZone,PrivateIp:PrivateIpAddress,PublicIp:PublicIpAddress,LaunchTime:LaunchTime,Name:Tags[?Key=='Name']|[0].Value}"
+
+    - id: "select_instance"
+      type: "data.transform"
+      depends_on:
+        - "resolve_target"
+      params:
+        scriptType: "javascript"
+        inputType: "json"
+        outputType: "raw"
+        input: |
+          {
+            "instances": {{ Tasks.resolve_target.output.data | default("") | to_json }},
+            "requested_instance_id": {{ Inputs.instance_id | to_json }},
+            "application": {{ Inputs.application | to_json }}
+          }
+        expression: |
+          var found = [];
+          try { found = JSON.parse(data.instances || '[]') || []; } catch (e) { found = []; }
+          if (!found.length) {
+            throw new Error('No EC2 instance matched instance_id="' + data.requested_instance_id +
+              '" application="' + data.application + '". Check the region, the instance ID, or the Name tag.');
+          }
+          found.sort(function (a, b) { return String(a.InstanceId).localeCompare(String(b.InstanceId)); });
+          var primary = found[0];
+          ({
+            instance_id: primary.InstanceId,
+            name: primary.Name || '',
+            state: primary.State || '',
+            state_reason: primary.StateReason || '',
+            instance_type: primary.Type || '',
+            availability_zone: primary.Az || '',
+            private_ip: primary.PrivateIp || '',
+            public_ip: primary.PublicIp || '',
+            launch_time: primary.LaunchTime || '',
+            matched_count: found.length,
+            matched: found
+          })
+
+    - id: "instance_status"
+      type: "cloud.aws.cli"
+      depends_on:
+        - "select_instance"
+      failure_policy:
+        action: "continue"
+      params:
+        account_id: "{{ Inputs.account_id }}"
+        command: >-
+          aws ec2 describe-instance-status --region {{ Inputs.region }}
+          --instance-ids {{ Tasks.select_instance.output.data.instance_id }}
+          --include-all-instances --output json
+          --query "InstanceStatuses[].{InstanceState:InstanceState.Name,SystemStatus:SystemStatus.Status,InstanceStatus:InstanceStatus.Status,Events:Events}"
+
+    - id: "cw_alarms"
+      type: "cloud.aws.cli"
+      depends_on:
+        - "select_instance"
+      failure_policy:
+        action: "continue"
+      params:
+        account_id: "{{ Inputs.account_id }}"
+        command: >-
+          aws cloudwatch describe-alarms --region {{ Inputs.region }}
+          --state-value ALARM --max-items 200 --output json
+          --query "MetricAlarms[].{Name:AlarmName,Metric:MetricName,Namespace:Namespace,Reason:StateReason,Updated:StateUpdatedTimestamp,Dimensions:Dimensions}"
+
+    - id: "cw_cpu"
+      type: "cloud.aws.cli"
+      depends_on:
+        - "select_instance"
+        - "time_window"
+      failure_policy:
+        action: "continue"
+      params:
+        account_id: "{{ Inputs.account_id }}"
+        command: >-
+          aws cloudwatch get-metric-statistics --region {{ Inputs.region }}
+          --namespace AWS/EC2 --metric-name CPUUtilization
+          --dimensions Name=InstanceId,Value={{ Tasks.select_instance.output.data.instance_id }}
+          --start-time {{ Tasks.time_window.output.data.start_iso }}
+          --end-time {{ Tasks.time_window.output.data.end_iso }}
+          --period 300 --statistics Average Maximum --output json
+
+    - id: "cw_status_check"
+      type: "cloud.aws.cli"
+      depends_on:
+        - "select_instance"
+        - "time_window"
+      failure_policy:
+        action: "continue"
+      params:
+        account_id: "{{ Inputs.account_id }}"
+        command: >-
+          aws cloudwatch get-metric-statistics --region {{ Inputs.region }}
+          --namespace AWS/EC2 --metric-name StatusCheckFailed
+          --dimensions Name=InstanceId,Value={{ Tasks.select_instance.output.data.instance_id }}
+          --start-time {{ Tasks.time_window.output.data.start_iso }}
+          --end-time {{ Tasks.time_window.output.data.end_iso }}
+          --period 300 --statistics Maximum Sum --output json
+
+    - id: "lb_target_groups"
+      type: "cloud.aws.cli"
+      depends_on:
+        - "select_instance"
+      failure_policy:
+        action: "continue"
+      params:
+        account_id: "{{ Inputs.account_id }}"
+        command: >-
+          aws elbv2 describe-target-groups --region {{ Inputs.region }} --output json
+          --query "TargetGroups[?TargetType=='instance'].{Arn:TargetGroupArn,Name:TargetGroupName,Port:Port,Protocol:Protocol}"
+
+    # describe-target-health is per target group, so the ARNs have to be fanned out. The
+    # scan is capped and the cap is reported in the result rather than silently applied.
+    - id: "lb_target_group_arns"
+      type: "data.transform"
+      depends_on:
+        - "lb_target_groups"
+      params:
+        scriptType: "javascript"
+        inputType: "json"
+        outputType: "json"
+        input: |
+          {"groups": {{ Tasks.lb_target_groups.output.data | default("") | to_json }}}
+        expression: |
+          var groups = [];
+          try { groups = JSON.parse(data.groups || '[]') || []; } catch (e) { groups = []; }
+          groups.sort(function (a, b) { return String(a.Arn).localeCompare(String(b.Arn)); });
+          groups.slice(0, 10).map(function (g) { return g.Arn; });
+
+    - id: "lb_target_health"
+      type: "core.foreach"
+      depends_on:
+        - "lb_target_group_arns"
+      failure_policy:
+        action: "continue"
+      params:
+        items: "{{ Tasks.lb_target_group_arns.output.data }}"
+        item: "arn"
+        concurrency: 4
+        tasks:
+          - id: "health"
+            type: "cloud.aws.cli"
+            failure_policy:
+              action: "continue"
+            params:
+              account_id: "{{ Inputs.account_id }}"
+              command: >-
+                aws elbv2 describe-target-health --region {{ Inputs.region }}
+                --target-group-arn {{ LoopItem.arn }} --output json
+                --query "TargetHealthDescriptions[].{Id:Target.Id,Port:Target.Port,State:TargetHealth.State,Reason:TargetHealth.Reason,Description:TargetHealth.Description}"
+        output:
+          arn: "{{ LoopItem.arn }}"
+          targets: "{{ Tasks.health.output.data | default('') }}"
+
+    - id: "app_logs"
+      type: "cloud.aws.cli"
+      if: "{{ Inputs.log_group != '' }}"
+      depends_on:
+        - "time_window"
+      failure_policy:
+        action: "continue"
+      params:
+        account_id: "{{ Inputs.account_id }}"
+        command: >-
+          aws logs filter-log-events --region {{ Inputs.region }}
+          --log-group-name "{{ Inputs.log_group }}"
+          --start-time {{ Tasks.time_window.output.data.start_ms }}
+          --end-time {{ Tasks.time_window.output.data.end_ms }}
+          --filter-pattern "{{ Inputs.log_filter }}"
+          --max-items 50 --output json
+          --query "events[].{Timestamp:timestamp,Stream:logStreamName,Message:message}"
+
+    # Section markers keep parsing robust: log lines contain quotes and newlines, so the
+    # script emits delimited text and the aggregator splits on the markers rather than
+    # asking bash to build valid JSON.
+    - id: "host_evidence"
+      type: "scripting.run_script"
+      if: "{{ Inputs.collect_host_evidence == 'true' }}"
+      depends_on:
+        - "select_instance"
+      failure_policy:
+        action: "continue"
+      timeout: "5m"
+      params:
+        account_id: "{{ Inputs.account_id }}"
+        executor_type: "aws_ssm"
+        os_type: "linux"
+        language: "bash"
+        region: "{{ Inputs.region }}"
+        target_id: "{{ Tasks.select_instance.output.data.instance_id }}"
+        env:
+          NB_APP: "{{ Inputs.application }}"
+        script: |
+          APP="${NB_APP:-}"
+          echo "===METRIC:failed_units==="
+          systemctl --failed --no-legend --plain 2>/dev/null | wc -l | tr -d ' '
+          echo "===METRIC:disk_max_pct==="
+          df -P -x tmpfs -x devtmpfs 2>/dev/null | awk 'NR>1 {gsub(/%/,"",$5); if ($5+0>m) m=$5+0} END {print m+0}'
+          echo "===METRIC:app_service_state==="
+          if [ -z "$APP" ]; then
+            echo "not_checked"
+          elif [ -z "$(systemctl list-unit-files --no-legend "$APP.service" 2>/dev/null)" ]; then
+            echo "no_such_unit"
+          else
+            systemctl is-active "$APP" 2>/dev/null | head -1
+          fi
+          echo "===SECTION:uptime_load==="
+          uptime 2>&1
+          echo "===SECTION:failed_units==="
+          systemctl --failed --no-pager 2>&1 | head -30
+          echo "===SECTION:app_service==="
+          if [ -n "$APP" ]; then systemctl status "$APP" --no-pager 2>&1 | head -30; else echo "no application name supplied"; fi
+          echo "===SECTION:disk==="
+          df -h -x tmpfs -x devtmpfs 2>&1
+          echo "===SECTION:memory==="
+          free -m 2>&1
+          echo "===SECTION:top_processes==="
+          ps -eo pcpu,pmem,pid,comm --sort=-pcpu 2>&1 | head -11
+          echo "===SECTION:listening_sockets==="
+          (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | head -30
+          echo "===SECTION:recent_errors==="
+          (journalctl -p err -n 100 --no-pager 2>/dev/null || tail -100 /var/log/messages 2>/dev/null || echo "no journal or syslog readable")
+          echo "===SECTION:app_journal==="
+          if [ -n "$APP" ]; then journalctl -u "$APP" -n 100 --no-pager 2>&1 || echo "no journal for unit $APP"; else echo "no application name supplied"; fi
+
+    # One line per endpoint: "<endpoint> <ok|fail> <detail>". Probed from the instance so
+    # the result reflects the application's own network path, not the control plane's.
+    - id: "dependency_probes"
+      type: "scripting.run_script"
+      if: "{{ Inputs.dependency_endpoints != '' }}"
+      depends_on:
+        - "select_instance"
+      failure_policy:
+        action: "continue"
+      timeout: "5m"
+      params:
+        account_id: "{{ Inputs.account_id }}"
+        executor_type: "aws_ssm"
+        os_type: "linux"
+        language: "bash"
+        region: "{{ Inputs.region }}"
+        target_id: "{{ Tasks.select_instance.output.data.instance_id }}"
+        env:
+          NB_ENDPOINTS: "{{ Inputs.dependency_endpoints }}"
+        script: |
+          ENDPOINTS="${NB_ENDPOINTS:-}"
+          echo "$ENDPOINTS" | tr ',' '\n' | while read -r ep; do
+            ep=$(echo "$ep" | tr -d '[:space:]')
+            [ -z "$ep" ] && continue
+            case "$ep" in
+              *:*) ;;
+              *) echo "$ep fail invalid_endpoint_format"; continue ;;
+            esac
+            host=${ep%:*}
+            port=${ep##*:}
+            case "$port" in
+              ''|*[!0-9]*) echo "$ep fail invalid_endpoint_format"; continue ;;
+            esac
+            if ! getent hosts "$host" >/dev/null 2>&1; then
+              echo "$ep fail dns_resolution_failed"
+              continue
+            fi
+            if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$host/$port" 2>/dev/null; then
+              echo "$ep ok tcp_connect_succeeded"
+            else
+              echo "$ep fail tcp_connect_failed_or_timed_out"
+            fi
+          done
+
+    # `if: "true"` is deliberate. A skipped dependency propagates the skip to any task that
+    # has no `if` of its own, and the optional collectors above are skipped by design — this
+    # aggregator has to run regardless so the result still reports their coverage gaps.
+    - id: "diagnostic_result"
+      type: "data.transform"
+      if: "true"
+      depends_on:
+        - "select_instance"
+        - "instance_status"
+        - "cw_alarms"
+        - "cw_cpu"
+        - "cw_status_check"
+        - "lb_target_health"
+        - "app_logs"
+        - "host_evidence"
+        - "dependency_probes"
+      params:
+        scriptType: "javascript"
+        inputType: "json"
+        outputType: "raw"
+        input: |
+          {
+            "incident_context": {{ Inputs.incident_context | to_json }},
+            "application": {{ Inputs.application | to_json }},
+            "region": {{ Inputs.region | to_json }},
+            "log_group": {{ Inputs.log_group | to_json }},
+            "dependency_endpoints": {{ Inputs.dependency_endpoints | to_json }},
+            "collect_host_evidence": {{ Inputs.collect_host_evidence | to_json }},
+            "window": {{ Tasks.time_window.output.data | default("") | to_json }},
+            "instance": {{ Tasks.select_instance.output.data | default("") | to_json }},
+            "target_groups": {{ Tasks.lb_target_groups.output.data | default("") | to_json }},
+            "instance_status_raw": {{ Tasks.instance_status.output.data | default("") | to_json }},
+            "alarms_raw": {{ Tasks.cw_alarms.output.data | default("") | to_json }},
+            "cpu_raw": {{ Tasks.cw_cpu.output.data | default("") | to_json }},
+            "status_check_raw": {{ Tasks.cw_status_check.output.data | default("") | to_json }},
+            "lb_health": {{ Tasks.lb_target_health.output | default("") | to_json }},
+            "app_logs_raw": {{ Tasks.app_logs.output.data | default("") | to_json }},
+            "host_raw": {{ Tasks.host_evidence.output.data | default("") | to_json }},
+            "deps_raw": {{ Tasks.dependency_probes.output.data | default("") | to_json }},
+            "instance_status_state": {{ Tasks.instance_status.status | default("skipped") | to_json }},
+            "alarms_state": {{ Tasks.cw_alarms.status | default("skipped") | to_json }},
+            "cpu_state": {{ Tasks.cw_cpu.status | default("skipped") | to_json }},
+            "status_check_state": {{ Tasks.cw_status_check.status | default("skipped") | to_json }},
+            "lb_state": {{ Tasks.lb_target_health.status | default("skipped") | to_json }},
+            "app_logs_state": {{ Tasks.app_logs.status | default("skipped") | to_json }},
+            "host_state": {{ Tasks.host_evidence.status | default("skipped") | to_json }},
+            "deps_state": {{ Tasks.dependency_probes.status | default("skipped") | to_json }}
+          }
+        expression: |
+          function parse(raw, fallback) {
+            if (raw === null || raw === undefined || String(raw).trim() === '') { return fallback; }
+            if (typeof raw === 'object') { return raw; }
+            try { return JSON.parse(raw); } catch (e) { return fallback; }
+          }
+          function ran(state) { return String(state).toLowerCase() === 'completed'; }
+
+          var instance = parse(data.instance, {});
+          var checks = [];
+          var findings = [];
+          function check(name, state, note) { checks.push({ check: name, status: state, note: note || '' }); }
+          function finding(severity, check_name, detail) { findings.push({ severity: severity, check: check_name, detail: detail }); }
+
+          // --- instance state -------------------------------------------------
+          var state = String(instance.state || 'unknown');
+          check('instance_state', state === 'running' ? 'ok' : 'problem', 'state=' + state);
+          if (state !== 'running') {
+            finding('critical', 'instance_state',
+              'EC2 instance ' + instance.instance_id + ' is ' + state +
+              (instance.state_reason ? ' (' + instance.state_reason + ')' : ''));
+          }
+
+          // --- EC2 status checks ----------------------------------------------
+          if (ran(data.instance_status_state)) {
+            var statuses = parse(data.instance_status_raw, []);
+            var s = statuses.length ? statuses[0] : null;
+            if (s) {
+              var sysOk = String(s.SystemStatus) === 'ok';
+              var instOk = String(s.InstanceStatus) === 'ok';
+              check('ec2_status_checks', sysOk && instOk ? 'ok' : 'problem',
+                'system=' + s.SystemStatus + ' instance=' + s.InstanceStatus);
+              if (!sysOk) { finding('critical', 'ec2_status_checks', 'System status check is ' + s.SystemStatus + ' (host/hypervisor level).'); }
+              if (!instOk) { finding('critical', 'ec2_status_checks', 'Instance status check is ' + s.InstanceStatus + ' (guest OS / network level).'); }
+              if (s.Events && s.Events.length) {
+                finding('warning', 'ec2_status_checks', 'AWS has ' + s.Events.length + ' scheduled event(s) for this instance.');
+              }
+            } else {
+              check('ec2_status_checks', 'unavailable', 'describe-instance-status returned no rows');
+            }
+          } else {
+            check('ec2_status_checks', 'unavailable', 'collector did not run (' + data.instance_status_state + ')');
+          }
+
+          // --- CloudWatch alarms ----------------------------------------------
+          if (ran(data.alarms_state)) {
+            var alarms = parse(data.alarms_raw, []);
+            var app = String(data.application || '');
+            var mine = alarms.filter(function (a) {
+              var hit = (a.Dimensions || []).some(function (d) { return String(d.Value) === String(instance.instance_id); });
+              if (!hit && app) { hit = String(a.Name || '').indexOf(app) !== -1; }
+              return hit;
+            });
+            check('cloudwatch_alarms', mine.length ? 'problem' : 'ok',
+              mine.length + ' of ' + alarms.length + ' region alarms in ALARM relate to this target');
+            mine.forEach(function (a) {
+              finding('critical', 'cloudwatch_alarms', 'Alarm "' + a.Name + '" is in ALARM: ' + a.Reason);
+            });
+          } else {
+            check('cloudwatch_alarms', 'unavailable', 'collector did not run (' + data.alarms_state + ')');
+          }
+
+          // --- CPU --------------------------------------------------------------
+          var cpuMax = null;
+          if (ran(data.cpu_state)) {
+            var cpu = parse(data.cpu_raw, {});
+            var pts = cpu.Datapoints || [];
+            if (pts.length) {
+              cpuMax = pts.reduce(function (m, p) { return Math.max(m, p.Maximum || 0); }, 0);
+              check('cpu_utilization', cpuMax >= 90 ? 'problem' : 'ok', 'max=' + cpuMax.toFixed(1) + '% over ' + pts.length + ' datapoints');
+              if (cpuMax >= 90) { finding('warning', 'cpu_utilization', 'CPU peaked at ' + cpuMax.toFixed(1) + '% in the lookback window.'); }
+            } else {
+              check('cpu_utilization', 'unavailable', 'no CloudWatch datapoints in the window');
+            }
+          } else {
+            check('cpu_utilization', 'unavailable', 'collector did not run (' + data.cpu_state + ')');
+          }
+
+          // --- StatusCheckFailed metric -----------------------------------------
+          if (ran(data.status_check_state)) {
+            var sc = parse(data.status_check_raw, {});
+            var scPts = sc.Datapoints || [];
+            var failed = scPts.reduce(function (n, p) { return n + (p.Sum || 0); }, 0);
+            if (scPts.length) {
+              check('status_check_metric', failed > 0 ? 'problem' : 'ok', failed + ' failed status-check periods');
+              if (failed > 0) { finding('critical', 'status_check_metric', 'StatusCheckFailed fired in ' + failed + ' period(s) during the window.'); }
+            } else {
+              check('status_check_metric', 'unavailable', 'no CloudWatch datapoints in the window');
+            }
+          } else {
+            check('status_check_metric', 'unavailable', 'collector did not run (' + data.status_check_state + ')');
+          }
+
+          // --- load balancer target health ---------------------------------------
+          var allGroups = parse(data.target_groups, []);
+          var lbRows = parse(data.lb_health, []);
+          var registered = [];
+          lbRows.forEach(function (row) {
+            if (!row) { return; }
+            var targets = parse(row.targets, []);
+            targets.forEach(function (t) {
+              if (String(t.Id) === String(instance.instance_id)) {
+                registered.push({ target_group: row.arn, port: t.Port, state: t.State, reason: t.Reason, description: t.Description });
+              }
+            });
+          });
+          if (!lbRows.length) {
+            check('lb_target_health', 'not_applicable', 'no instance-type target groups scanned');
+          } else if (!registered.length) {
+            check('lb_target_health', 'not_applicable', 'instance is not registered in any of the ' + lbRows.length + ' target group(s) scanned');
+          } else {
+            var unhealthy = registered.filter(function (r) { return String(r.state) !== 'healthy'; });
+            check('lb_target_health', unhealthy.length ? 'problem' : 'ok',
+              registered.length + ' registration(s), ' + unhealthy.length + ' not healthy');
+            unhealthy.forEach(function (r) {
+              finding('critical', 'lb_target_health',
+                'Target ' + instance.instance_id + ':' + r.port + ' in ' + r.target_group + ' is ' + r.state +
+                (r.reason ? ' (' + r.reason + (r.description ? ': ' + r.description : '') + ')' : ''));
+            });
+          }
+
+          // --- application logs ---------------------------------------------------
+          var logSamples = [];
+          if (!String(data.log_group || '')) {
+            check('application_logs', 'not_configured', 'no log_group supplied');
+          } else if (ran(data.app_logs_state)) {
+            logSamples = parse(data.app_logs_raw, []);
+            check('application_logs', logSamples.length ? 'problem' : 'ok',
+              logSamples.length + ' line(s) matching the filter in ' + data.log_group);
+            if (logSamples.length) {
+              finding('warning', 'application_logs',
+                logSamples.length + ' log line(s) matched "' + data.log_group + '" in the window. First: ' +
+                String(logSamples[0].Message || '').slice(0, 300));
+            }
+          } else {
+            check('application_logs', 'unavailable', 'collector did not run (' + data.app_logs_state + ')');
+          }
+
+          // --- host evidence -------------------------------------------------------
+          var host = { metrics: {}, sections: {} };
+          if (String(data.collect_host_evidence || '') !== 'true') {
+            check('host_evidence', 'not_configured', 'collect_host_evidence is off');
+          } else if (String(data.host_state).toLowerCase() !== 'completed') {
+            check('host_evidence', 'unavailable', 'SSM collector did not run (' + data.host_state + ')');
+          } else {
+            var text = String(data.host_raw || '');
+            text.split(/===(METRIC|SECTION):/).forEach(function (part, i, arr) {
+              if (part !== 'METRIC' && part !== 'SECTION') { return; }
+              var body = arr[i + 1] || '';
+              var nl = body.indexOf('\n');
+              if (nl === -1) { return; }
+              var key = body.slice(0, nl).replace(/===$/, '').trim();
+              var value = body.slice(nl + 1).trim();
+              if (part === 'METRIC') { host.metrics[key] = value; } else { host.sections[key] = value; }
+            });
+            var failedUnits = parseInt(host.metrics.failed_units || '0', 10);
+            var diskPct = parseInt(host.metrics.disk_max_pct || '0', 10);
+            var svc = host.metrics.app_service_state || 'not_checked';
+            // no_such_unit means the application is not packaged as a systemd unit named
+            // after itself, which is ordinary — reporting it as a down service would be a
+            // false critical on every instance that runs its app any other way.
+            var svcDown = svc !== 'active' && svc !== 'not_checked' && svc !== 'no_such_unit';
+            var hostProblem = failedUnits > 0 || diskPct >= 90 || svcDown;
+            check('host_evidence', hostProblem ? 'problem' : 'ok',
+              'failed_units=' + failedUnits + ' max_disk=' + diskPct + '% service=' + svc);
+            if (failedUnits > 0) { finding('warning', 'host_evidence', failedUnits + ' systemd unit(s) in a failed state.'); }
+            if (diskPct >= 90) { finding('warning', 'host_evidence', 'A filesystem is ' + diskPct + '% full.'); }
+            if (svcDown) {
+              finding('critical', 'host_evidence', 'Service "' + data.application + '" is ' + svc + ' on the instance.');
+            }
+          }
+
+          // --- dependency connectivity ----------------------------------------------
+          var deps = [];
+          if (!String(data.dependency_endpoints || '')) {
+            check('dependency_connectivity', 'not_configured', 'no dependency_endpoints supplied');
+          } else if (String(data.deps_state).toLowerCase() !== 'completed') {
+            check('dependency_connectivity', 'unavailable', 'SSM probe did not run (' + data.deps_state + ')');
+          } else {
+            String(data.deps_raw || '').split('\n').forEach(function (line) {
+              var parts = line.trim().split(/\s+/);
+              if (parts.length < 2) { return; }
+              deps.push({ endpoint: parts[0], status: parts[1], detail: parts.slice(2).join(' ') });
+            });
+            var malformed = deps.filter(function (d) { return d.detail === 'invalid_endpoint_format'; });
+            var down = deps.filter(function (d) { return d.status !== 'ok' && d.detail !== 'invalid_endpoint_format'; });
+            check('dependency_connectivity', down.length ? 'problem' : (malformed.length ? 'partial' : 'ok'),
+              deps.length + ' endpoint(s) supplied, ' + down.length + ' unreachable' +
+              (malformed.length ? ', ' + malformed.length + ' malformed' : ''));
+            down.forEach(function (d) {
+              finding('critical', 'dependency_connectivity', 'Dependency ' + d.endpoint + ' unreachable from the instance (' + d.detail + ').');
+            });
+            malformed.forEach(function (d) {
+              finding('warning', 'dependency_connectivity', 'Endpoint "' + d.endpoint + '" is not host:port, so it was not probed.');
+            });
+          }
+
+          // --- verdict ----------------------------------------------------------------
+          var rank = { critical: 0, warning: 1 };
+          findings.sort(function (a, b) { return rank[a.severity] - rank[b.severity]; });
+          var criticals = findings.filter(function (f) { return f.severity === 'critical'; }).length;
+          var warnings = findings.length - criticals;
+          var unavailable = checks.filter(function (c) { return c.status === 'unavailable'; }).length;
+          var status;
+          if (criticals > 0) { status = 'critical'; }
+          else if (warnings > 0) { status = 'degraded'; }
+          else if (unavailable > 0) { status = 'inconclusive'; }
+          else { status = 'healthy'; }
+
+          ({
+            status: status,
+            summary: status === 'healthy'
+              ? 'No problem signals found across ' + checks.length + ' checks.'
+              : criticals + ' critical and ' + warnings + ' warning finding(s) across ' + checks.length + ' checks' +
+                (unavailable ? '; ' + unavailable + ' check(s) could not be collected.' : '.'),
+            incident_context: data.incident_context,
+            target: {
+              instance_id: instance.instance_id,
+              name: instance.name,
+              application: data.application,
+              state: instance.state,
+              instance_type: instance.instance_type,
+              availability_zone: instance.availability_zone,
+              private_ip: instance.private_ip,
+              public_ip: instance.public_ip,
+              launch_time: instance.launch_time,
+              region: data.region,
+              matched_instances: instance.matched_count
+            },
+            window: parse(data.window, {}),
+            findings: findings,
+            checks: checks,
+            coverage: {
+              total: checks.length,
+              collected: checks.length - unavailable,
+              unavailable: unavailable,
+              target_groups_found: allGroups.length,
+              target_groups_scanned: lbRows.length,
+              target_groups_truncated: allGroups.length > lbRows.length
+            },
+            evidence: {
+              cpu_max_percent: cpuMax,
+              lb_registrations: registered,
+              log_samples: logSamples.slice(0, 10),
+              dependency_probes: deps,
+              host_metrics: host.metrics,
+              host_sections: host.sections
+            }
+          })
+  output:
+    status: "{{ Tasks.diagnostic_result.output.data.status }}"
+    summary: "{{ Tasks.diagnostic_result.output.data.summary }}"
+    target: "{{ Tasks.diagnostic_result.output.data.target }}"
+    window: "{{ Tasks.diagnostic_result.output.data.window }}"
+    findings: "{{ Tasks.diagnostic_result.output.data.findings }}"
+    checks: "{{ Tasks.diagnostic_result.output.data.checks }}"
+    coverage: "{{ Tasks.diagnostic_result.output.data.coverage }}"
+    evidence: "{{ Tasks.diagnostic_result.output.data.evidence }}"
+    incident_context: "{{ Tasks.diagnostic_result.output.data.incident_context }}"
+  set_execution_tags:
+    - "application:{{ Inputs.application }}"
+    - "instance:{{ Inputs.instance_id }}"
+  timeout: "15m"
+template_variables:
+  - id: "account_id"
+    input_ref: "account_id"
+    display_name: "Account"
+    required: true
+    type: "account_selector"
+  - id: "region"
+    input_ref: "region"
+    display_name: "AWS Region"
+    required: true
+    type: "string"
+    placeholder: "us-east-1"
+  - id: "instance_id"
+    input_ref: "instance_id"
+    display_name: "Instance ID"
+    required: false
+    type: "string"
+    placeholder: "i-0abc123def456"
+  - id: "application"
+    input_ref: "application"
+    display_name: "Application"
+    required: false
+    type: "string"
+    placeholder: "payments-api"
+  - id: "lookback"
+    input_ref: "lookback"
+    display_name: "Lookback Window"
+    required: false
+    type: "string"
+    placeholder: "1h"
+  - id: "log_group"
+    input_ref: "log_group"
+    display_name: "CloudWatch Log Group"
+    required: false
+    type: "string"
+    placeholder: "/aws/ec2/payments-api"
+  - id: "log_filter"
+    input_ref: "log_filter"
+    display_name: "Log Filter Pattern"
+    required: false
+    type: "string"
+    placeholder: "ERROR"
+  - id: "dependency_endpoints"
+    input_ref: "dependency_endpoints"
+    display_name: "Dependency Endpoints"
+    required: false
+    type: "string"
+    placeholder: "db.internal:5432,cache.internal:6379"
+  - id: "collect_host_evidence"
+    input_ref: "collect_host_evidence"
+    display_name: "Collect Host Evidence (SSM)"
+    required: false
+    type: "string"
+    placeholder: "true"
+  - id: "incident_context"
+    input_ref: "incident_context"
+    display_name: "Incident Context"
+    required: false
+    type: "string"
+    placeholder: "INC-1234"

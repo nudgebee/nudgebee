@@ -54,6 +54,10 @@ export interface ConversationV3Message {
   parent_agent_id: string | null;
   message_config: string | null;
   ack_message: string | null;
+  // Raw JSON string from the per-message `metadata` jsonb slot — namespace-keyed
+  // by subsystem (`egressfilter`, `confidence`, …). Consumers parse it and
+  // dispatch on the top-level keys they understand; null when the row has none.
+  metadata: string | null;
   attachments: ConversationAttachment[];
 }
 

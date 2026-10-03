@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"nudgebee/services/audit"
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/knowledge_graph/flow_sources"
@@ -42,6 +43,43 @@ func manualDepHandlerSetup(
 	}
 	repo := flow_sources.NewManualDependencyRepository(dbManager, ctx.GetLogger())
 	return ctx, repo, tenantID, nil
+}
+
+// auditManualDep records one manual-dependency write under the shared
+// Knowledge Graph audit category. Every declaration here creates or removes a
+// source='manual' edge, so the operator behind each change is worth keeping.
+// Fire-and-forget, matching every other audit.LogChange caller: an audit
+// failure must never fail the request that succeeded.
+//
+// Tenant-wide operations (CSV import, bulk re-resolve, delete-all) have no
+// single row to point at, so they target the tenant id — LogChange rejects an
+// empty TargetID.
+func auditManualDep(ctx *security.RequestContext, eventType audit.EventType, action audit.EventAction, targetID string, data map[string]any) {
+	audit.LogChange(ctx, audit.ChangeInput{
+		EventCategory: audit.EventCategoryKnowledgeGraph,
+		EventType:     eventType,
+		EventAction:   action,
+		TargetID:      targetID,
+		TableName:     "kg_manual_dependencies",
+		NewData:       data,
+	})
+}
+
+// manualDepSummary is the subset of a declaration worth storing in an audit
+// row: what was declared and how it resolved, without the full struct.
+func manualDepSummary(d *flow_sources.ManualDependency) map[string]any {
+	if d == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":                d.ID,
+		"source_name":       d.SourceName,
+		"source_node_type":  d.SourceNodeType,
+		"dest_name":         d.DestName,
+		"dest_node_type":    d.DestNodeType,
+		"relationship_type": d.RelationshipType,
+		"resolution_status": d.ResolutionStatus,
+	}
 }
 
 // handleKgListManualDependencies returns every active row for the tenant,
@@ -104,6 +142,8 @@ func handleKgCreateManualDependency(actionPayload *ActionRequest, c *gin.Context
 		c.JSON(400, common.ErrorActionBadRequest("Failed to create manual dependency: "+err.Error()))
 		return
 	}
+	auditManualDep(ctx, audit.EventTypeKGDependencyCreate, audit.EventActionCreate, fmt.Sprint(created.ID), manualDepSummary(created))
+
 	c.JSON(200, map[string]any{"data": created})
 }
 
@@ -140,6 +180,8 @@ func handleKgUpdateManualDependency(actionPayload *ActionRequest, c *gin.Context
 		c.JSON(400, common.ErrorActionBadRequest("Failed to update manual dependency: "+err.Error()))
 		return
 	}
+	auditManualDep(ctx, audit.EventTypeKGDependencyUpdate, audit.EventActionUpdate, fmt.Sprint(req.ID), manualDepSummary(updated))
+
 	c.JSON(200, map[string]any{"data": updated})
 }
 
@@ -175,6 +217,8 @@ func handleKgDeleteManualDependency(actionPayload *ActionRequest, c *gin.Context
 		c.JSON(500, common.ErrorActionInternal("Failed to delete manual dependency: "+err.Error()))
 		return
 	}
+	auditManualDep(ctx, audit.EventTypeKGDependencyDelete, audit.EventActionDelete, fmt.Sprint(req.ID), map[string]any{"id": req.ID})
+
 	c.JSON(200, map[string]any{"data": map[string]any{"id": req.ID, "deleted": true}})
 }
 
@@ -218,6 +262,11 @@ func handleKgImportManualDependencies(actionPayload *ActionRequest, c *gin.Conte
 		"tenant_id", tenantID,
 		"imported", len(result.Imported),
 		"rejected", len(result.Rejected))
+	auditManualDep(ctx, audit.EventTypeKGDependencyImport, audit.EventActionCreate, tenantID, map[string]any{
+		"imported": len(result.Imported),
+		"rejected": len(result.Rejected),
+	})
+
 	c.JSON(200, map[string]any{"data": result})
 }
 
@@ -260,6 +309,13 @@ func handleKgResolveManualDependency(actionPayload *ActionRequest, c *gin.Contex
 		c.JSON(400, common.ErrorActionBadRequest("Failed to resolve manual dependency: "+err.Error()))
 		return
 	}
+	auditManualDep(ctx, audit.EventTypeKGDependencyResolve, audit.EventActionUpdate, fmt.Sprint(req.ID), map[string]any{
+		"id":                  req.ID,
+		"source_node_id":      req.SourceNodeID,
+		"destination_node_id": req.DestinationNodeID,
+		"resolution_status":   updated.ResolutionStatus,
+	})
+
 	c.JSON(200, map[string]any{"data": updated})
 }
 
@@ -296,6 +352,8 @@ func handleKgReresolveManualDependency(actionPayload *ActionRequest, c *gin.Cont
 		c.JSON(400, common.ErrorActionBadRequest("Failed to re-resolve manual dependency: "+err.Error()))
 		return
 	}
+	auditManualDep(ctx, audit.EventTypeKGDependencyReresolve, audit.EventActionExecute, fmt.Sprint(req.ID), manualDepSummary(updated))
+
 	c.JSON(200, map[string]any{"data": updated})
 }
 
@@ -342,6 +400,11 @@ func handleKgReresolveManualDependencies(actionPayload *ActionRequest, c *gin.Co
 		c.JSON(500, common.ErrorActionInternal("Bulk re-resolve failed: "+err.Error()))
 		return
 	}
+	auditManualDep(ctx, audit.EventTypeKGDependencyReresolve, audit.EventActionExecute, tenantID, map[string]any{
+		"rows_reresolved": len(results),
+		"status_filter":   filter,
+	})
+
 	c.JSON(200, map[string]any{"data": results, "count": len(results)})
 }
 
@@ -365,6 +428,11 @@ func handleKgDeleteAllManualDependencies(actionPayload *ActionRequest, c *gin.Co
 		"tenant_id", tenantID,
 		"rows_deactivated", rowsDeactivated,
 		"edges_deleted", edgesDeleted)
+	auditManualDep(ctx, audit.EventTypeKGDependencyDeleteAll, audit.EventActionDelete, tenantID, map[string]any{
+		"rows_deactivated": rowsDeactivated,
+		"edges_deleted":    edgesDeleted,
+	})
+
 	c.JSON(200, map[string]any{
 		"data": map[string]any{
 			"rows_deactivated": rowsDeactivated,

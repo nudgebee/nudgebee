@@ -12,7 +12,15 @@
 //
 // Precedence for tone / verb: enforce > redact > detect.
 
-import { __egressfilterItemForTest as egressfilterItem, __piiScrubItemForTest as piiScrubItem } from '@components/llm/common/ResponseMetaRail';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+
+import ResponseMetaRail, {
+  __egressfilterItemForTest as egressfilterItem,
+  __piiScrubItemForTest as piiScrubItem,
+  __confidenceItemForTest as confidenceItem,
+  __formatDurationForTest as formatDuration,
+} from '@components/llm/common/ResponseMetaRail';
 
 // Reach into the returned React element to pull the Chip's count prop.
 // Structure is <Tooltip><Box><Chip count={N}>label</Chip></Box></Tooltip>.
@@ -236,5 +244,165 @@ describe('piiScrubItem', () => {
     // 'scrub-dup' appears exactly once (dedupe worked), 'scrub-other' also once.
     expect(title.match(/scrub-dup/g)?.length).toBe(1);
     expect(title.match(/scrub-other/g)?.length).toBe(1);
+  });
+});
+// Confidence chip — reads `metadata.confidence`, written by llm-server only for
+// investigation turns whose answer carried a parseable <confidence> block.
+// The predicate mirrors normalizeConfidenceLevel in
+// llm-server/agents/core/answer_confidence.go: a closed set of three levels,
+// and anything else renders nothing rather than a guessed badge.
+//
+// The tooltip body is JSX (heading + gloss + rationale + a bullet list of the
+// gaps), so these render it standalone rather than string-matching a `title`
+// prop. `aria-label` carries the flat-string equivalent for screen readers,
+// which never see a hover-only tooltip.
+describe('confidenceItem', () => {
+  const chipOf = (item) => item.node.props.children.props.children;
+  const renderTooltip = (item) => render(item.node.props.title);
+
+  it('returns null on missing / malformed input', () => {
+    expect(confidenceItem(undefined)).toBeNull();
+    expect(confidenceItem(null)).toBeNull();
+    expect(confidenceItem({})).toBeNull();
+    expect(confidenceItem({ level: null })).toBeNull();
+  });
+
+  it('returns null for a level outside the backend contract', () => {
+    // The backend never persists these, but a hand-edited row or a future
+    // backend level must not crash or render a badge with no tone.
+    expect(confidenceItem({ level: 'very high' })).toBeNull();
+    expect(confidenceItem({ level: '85%' })).toBeNull();
+  });
+
+  it('renders one chip per known level with the matching tone', () => {
+    expect(chipOf(confidenceItem({ level: 'high' })).props.tone).toBe('success');
+    expect(chipOf(confidenceItem({ level: 'medium' })).props.tone).toBe('warning');
+    expect(chipOf(confidenceItem({ level: 'low' })).props.tone).toBe('critical');
+  });
+
+  it('accepts a level in any casing', () => {
+    const item = confidenceItem({ level: 'HIGH' });
+    expect(item).not.toBeNull();
+    expect(chipOf(item).props.children).toBe('high confidence');
+  });
+
+  it('tooltip leads with the level and its plain-language meaning', () => {
+    const { getByText } = renderTooltip(confidenceItem({ level: 'medium' }));
+    expect(getByText('medium confidence')).toBeInTheDocument();
+    expect(getByText(/corroboration is partial/i)).toBeInTheDocument();
+  });
+
+  it('tooltip renders each unverified gap as its own list item', () => {
+    const item = confidenceItem({
+      level: 'medium',
+      rationale: 'OOMKilled events line up with the memory limit.',
+      limitations: ['Node metrics outside retention', 'CloudTrail lookup returned AccessDenied'],
+    });
+    const { getByText, getAllByRole } = renderTooltip(item);
+
+    expect(getByText('OOMKilled events line up with the memory limit.')).toBeInTheDocument();
+    expect(getByText('Could not verify')).toBeInTheDocument();
+
+    // A real <li> per gap — the point of the change. A single joined sentence
+    // buried the gaps, which are the part a reader most needs to scan.
+    const bullets = getAllByRole('listitem').map((li) => li.textContent);
+    expect(bullets).toEqual(['Node metrics outside retention', 'CloudTrail lookup returned AccessDenied']);
+  });
+
+  it('omits the gap list entirely when there is nothing unverified', () => {
+    const { queryByText, queryAllByRole } = renderTooltip(confidenceItem({ level: 'high', rationale: 'logs and metrics agree' }));
+    expect(queryByText('Could not verify')).not.toBeInTheDocument();
+    expect(queryAllByRole('listitem')).toHaveLength(0);
+  });
+
+  it('still renders the gloss when the model gave no rationale', () => {
+    const { getByText } = renderTooltip(confidenceItem({ level: 'low' }));
+    expect(getByText(/no specific root cause/i)).toBeInTheDocument();
+  });
+
+  it('ignores a non-array limitations value', () => {
+    // Defensive: the column is model-fed jsonb, so a scalar must not blow up
+    // the map and take the whole rail down with it.
+    const item = confidenceItem({ level: 'low', limitations: 'oops' });
+    expect(item).not.toBeNull();
+    expect(renderTooltip(item).queryAllByRole('listitem')).toHaveLength(0);
+  });
+
+  it('aria-label carries the same content as a flat string', () => {
+    // The tooltip is hover-only, so the chip itself must announce the level,
+    // the gloss, the rationale and the gaps.
+    const item = confidenceItem({
+      level: 'low',
+      rationale: 'Only pod events were available.',
+      limitations: ['Node metrics outside retention'],
+    });
+    const label = chipOf(item).props['aria-label'];
+    expect(label).toContain('low confidence.');
+    expect(label).toContain('No specific root cause');
+    expect(label).toContain('Only pod events were available.');
+    expect(label).toContain('Could not verify: Node metrics outside retention.');
+  });
+});
+
+// Regression coverage for the followup-wait duration chip (NB-37570).
+// formatDuration() alone can't catch the ref bug below — the tooltip
+// never mounts, so only a real component render exposes it.
+describe('formatDuration', () => {
+  const START = '2026-01-01T00:00:00.000Z';
+  const END = '2026-01-01T00:03:51.800Z'; // 231.8s later
+
+  it('subtracts the followup wait from the raw span', () => {
+    // 231.8s total, 89.17s wait -> 142.63s answer, rounds to 2m 23s.
+    expect(formatDuration(START, END, 89.17)).toEqual({ text: '2m 23s', waitText: '1m 29s' });
+  });
+
+  it('returns no waitText when there was no wait', () => {
+    expect(formatDuration(START, END, 0)).toEqual({ text: '3m 52s', waitText: null });
+    expect(formatDuration(START, END, undefined)).toEqual({ text: '3m 52s', waitText: null });
+  });
+
+  it('clamps a wait exceeding the span to "0s", not formatDurationInTrace(0)', () => {
+    // Not reachable with real data, but formatDurationInTrace returns '0ns'
+    // at exactly 0 — guard against that unit leaking through.
+    expect(formatDuration(START, END, 999)).toEqual({ text: '0s', waitText: expect.any(String) });
+  });
+
+  it('returns null when either timestamp is missing', () => {
+    expect(formatDuration(null, END, 10)).toBeNull();
+    expect(formatDuration(START, null, 10)).toBeNull();
+  });
+});
+
+describe('ResponseMetaRail duration tooltip', () => {
+  const START = '2026-01-01T00:00:00.000Z';
+  const END = '2026-01-01T00:03:51.800Z';
+
+  it('opens on hover and shows the Answer/Waited-for-approval breakdown', async () => {
+    const user = userEvent.setup();
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    render(<ResponseMetaRail createdAt={START} updatedAt={END} followupWaitSeconds={89.17} />);
+
+    const chip = screen.getByText('2m 23s');
+    await user.hover(chip);
+
+    // Regression: Chip.tsx has no forwardRef, so a bare Chip can't hold
+    // Tooltip's cloned ref — broken, this never mounts and React logs the
+    // ref warning below instead.
+    await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+    expect(screen.getByText('Answer')).toBeInTheDocument();
+    expect(screen.getByText('Waited for approval')).toBeInTheDocument();
+    expect(screen.getByText('1m 29s')).toBeInTheDocument();
+
+    const refWarning = consoleError.mock.calls.some((args) => String(args[0]).includes('Function components cannot be given refs'));
+    expect(refWarning).toBe(false);
+
+    consoleError.mockRestore();
+  });
+
+  it('renders the chip with no tooltip when there was no wait', () => {
+    render(<ResponseMetaRail createdAt={START} updatedAt={END} followupWaitSeconds={0} />);
+    expect(screen.getByText('3m 52s')).toBeInTheDocument();
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
   });
 });

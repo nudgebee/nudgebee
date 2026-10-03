@@ -23,16 +23,14 @@ export class AuditsLocators extends CommonLocators {
   constructor(page: Page) {
     super(page);
 
-    // AnchorComponent.jsx:507 renders id=`anchor-tab-${name}` and stamps
-    // data-tab-selected on the same element, which is what the tests assert on.
-    this.auditsTab = page
-      .locator('[id="anchor-tab-Audits"]')
-      .or(page.getByRole("link", { name: "Audits", exact: true }))
-      .first();
-    this.usersTab = page
-      .locator('[id="anchor-tab-Users"]')
-      .or(page.getByRole("link", { name: "Users", exact: true }))
-      .first();
+    // Audits and Users are both sub-tabs of Access & Users now (AnchorComponent's
+    // 2-level hash routing), rendered by the shared Tabs.jsx (a real MUI Tab, not
+    // AnchorComponent's own top-level anchor-tab-<name> button) — id comes from
+    // a11yProps(value, opt.id) where opt.id is "audit-log"/"users" (see
+    // user-management/index.jsx's Access & Users tabOptions). Selection is MUI's
+    // standard aria-selected, not the top-level strip's data-tab-selected.
+    this.auditsTab = page.locator("#audit-log").or(page.getByRole("tab", { name: "Audit Log", exact: true })).first();
+    this.usersTab = page.locator("#users").or(page.getByRole("tab", { name: "Users", exact: true })).first();
 
     // ListingLayout renders its `id` on the wrapping DS Card (ListingLayout.tsx:202),
     // so #audit is the whole listing: toolbar, table and footer. Deliberately

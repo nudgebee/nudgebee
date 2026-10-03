@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 )
 
 // manualOwner is the input for an upsert (keeps the arg count sane).
@@ -269,16 +270,17 @@ func loadCloudResourceMetas(d *sqlx.DB, tenantId string, ids []string) (map[stri
 	if len(ids) == 0 {
 		return out, nil
 	}
-	query, args, err := sqlx.In(`
+	// id = ANY($2::uuid[]) compares the uuid PK column directly, so the planner
+	// drives off cloud_resourses_pkey. The old id::text IN (...) cast the column,
+	// which is non-sargable: the PK was unusable and every is_active row of the
+	// 15GB table was read and filtered (#35821). Cast the array, not the column —
+	// the same uuid cast getCloudResourceMeta applies to its single id.
+	rows, err := d.Queryx(`
 		SELECT id::text AS id, account::text AS account, region, COALESCE(type,'') AS rtype,
 		       COALESCE(service_name,'') AS service, tags
 		FROM cloud_resourses
-		WHERE tenant = ?::uuid AND is_active IS NOT FALSE AND id::text IN (?)`, tenantId, ids)
-	if err != nil {
-		return out, err
-	}
-	query = d.Rebind(query)
-	rows, err := d.Queryx(query, args...)
+		WHERE tenant = $1::uuid AND is_active IS NOT FALSE AND id = ANY($2::uuid[])`,
+		tenantId, pq.Array(ids))
 	if err != nil {
 		return out, err
 	}

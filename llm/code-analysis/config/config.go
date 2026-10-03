@@ -77,6 +77,7 @@ type LLMConfig struct {
 	ApiVersion     string `mapstructure:"llm_provider_api_version"`
 	ApiType        string `mapstructure:"llm_provider_api_type"`
 	Region         string `mapstructure:"llm_provider_region"`
+	ExtraHeaders   string `mapstructure:"llm_extra_headers"`
 	MaxRetries     int    `mapstructure:"llm_provider_max_retries"`
 	EmbeddingModel string `mapstructure:"llm_provider_embedding_model"`
 	// AWS static credentials for Bedrock. Normally supplied per request by
@@ -276,6 +277,7 @@ func LoadConfig() (*Config, error) {
 	_ = viper.BindEnv("llm_provider_access_key", "LLM_PROVIDER_ACCESS_KEY")
 	_ = viper.BindEnv("llm_provider_secret_key", "LLM_PROVIDER_SECRET_KEY")
 	_ = viper.BindEnv("llm_provider_session_token", "LLM_PROVIDER_SESSION_TOKEN")
+	_ = viper.BindEnv("llm_extra_headers", "LLM_EXTRA_HEADERS")
 
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
@@ -288,13 +290,14 @@ func LoadConfig() (*Config, error) {
 // LLMOverride carries per-request LLM provider fields that override the startup
 // defaults. Only non-empty fields take effect.
 type LLMOverride struct {
-	Provider    string
-	Model       string
-	ApiKey      string
-	ApiEndpoint string
-	ApiVersion  string
-	ApiType     string
-	Region      string
+	Provider     string
+	Model        string
+	ApiKey       string
+	ApiEndpoint  string
+	ApiVersion   string
+	ApiType      string
+	Region       string
+	ExtraHeaders string
 	// AWS static credentials for Bedrock, applied as a unit — see
 	// CloneWithLLMOverride.
 	AccessKey    string
@@ -324,6 +327,7 @@ func (c *Config) CloneWithLLMOverride(o LLMOverride) *Config {
 		clone.LLM.ApiVersion = ""
 		clone.LLM.ApiType = ""
 		clone.LLM.Region = ""
+		clone.LLM.ExtraHeaders = ""
 		clone.LLM.AccessKey = ""
 		clone.LLM.SecretKey = ""
 		clone.LLM.SessionToken = ""
@@ -348,6 +352,9 @@ func (c *Config) CloneWithLLMOverride(o LLMOverride) *Config {
 	}
 	if o.Region != "" {
 		clone.LLM.Region = o.Region
+	}
+	if o.ExtraHeaders != "" {
+		clone.LLM.ExtraHeaders = o.ExtraHeaders
 	}
 	// The AWS credential triple is overlaid as a unit rather than field by
 	// field: mixing a forwarded access key with the startup secret key yields a

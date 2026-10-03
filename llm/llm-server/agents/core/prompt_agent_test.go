@@ -252,9 +252,9 @@ func TestGetPromptTemplateForReAct(t *testing.T) {
 	assert.Contains(t, promptString, "</examples>")
 }
 
-func TestGetPromptTemplateForReWoo(t *testing.T) {
+func TestGetPromptTemplateForOrchestrating(t *testing.T) {
 	mockReq := NBAgentRequest{
-		Query:          "Test query for ReWoo",
+		Query:          "Test query for orchestrating agent",
 		AccountId:      uuid.NewString(),
 		ConversationId: uuid.NewString(),
 		UserId:         uuid.NewString(),
@@ -262,7 +262,7 @@ func TestGetPromptTemplateForReWoo(t *testing.T) {
 	}
 
 	p := NBAgentPrompt{
-		Role: "Expert ReWoo Agent",
+		Role: "Expert Orchestrating Agent",
 		Instructions: []string{
 			"Instruction 1",
 		},
@@ -278,12 +278,12 @@ func TestGetPromptTemplateForReWoo(t *testing.T) {
 	promptString, err := promptTemplate.Format(map[string]any{"input": mockReq.Query})
 	assert.NoError(t, err)
 
-	// Verify sections are NOT wrapped in XML tags for ReWoo
+	// Verify sections are not wrapped in XML tags for orchestrating agents.
 	assert.NotContains(t, promptString, "<instructions>")
 	assert.Contains(t, promptString, "Instructions:")
 	assert.Contains(t, promptString, "- Instruction 1")
 
-	// Verify examples are NOT wrapped in XML tags for ReWoo
+	// Verify examples are not wrapped in XML tags for orchestrating agents.
 	assert.NotContains(t, promptString, "<examples>")
 	assert.Contains(t, promptString, "Examples:")
 	assert.Contains(t, promptString, "question: Question 1?")
@@ -293,7 +293,7 @@ func TestGetPromptTemplateForReWoo(t *testing.T) {
 	assert.NotContains(t, promptString, "Image Analysis Instructions")
 }
 
-func TestGetPromptTemplate_ImageInstructions_ReWoo(t *testing.T) {
+func TestGetPromptTemplate_ImageInstructions_Orchestrating(t *testing.T) {
 	mockReq := NBAgentRequest{
 		Query:          "What's wrong with this pod?",
 		AccountId:      uuid.NewString(),
@@ -314,7 +314,7 @@ func TestGetPromptTemplate_ImageInstructions_ReWoo(t *testing.T) {
 	promptString, err := promptTemplate.Format(map[string]any{"input": mockReq.Query})
 	assert.NoError(t, err)
 
-	// Should contain image analysis instructions (non-XML for ReWoo)
+	// Should contain image analysis instructions without XML wrappers.
 	assert.Contains(t, promptString, "Image Analysis Instructions:")
 	assert.Contains(t, promptString, "attached image(s)")
 	assert.Contains(t, promptString, "extract all visible technical details")

@@ -972,6 +972,21 @@ async def list_agent_tests(agent_name: str, tag_filter: Optional[str] = None):
     return {"agent": agent_name, "tests": tests, "total": len(tests)}
 
 
+@router.get("/config")
+async def get_frontend_config():
+    """Non-secret runtime config the dashboard JS needs at startup.
+
+    ``ask_nudgebee_base_url`` is the base URL for "open this conversation in
+    the app" links (Compare Reports per-query table + its Excel export).
+    Deliberately env-driven rather than a literal in index.html: the
+    internal staging hostname must never appear in committed source (see
+    .gitleaks-internal.toml's internal-pollux-hostname rule) — an operator
+    sets ASK_NUDGEBEE_BASE_URL per environment instead. Empty string when
+    unset; the frontend disables the links rather than building a broken URL.
+    """
+    return {"ask_nudgebee_base_url": os.environ.get("ASK_NUDGEBEE_BASE_URL", "")}
+
+
 @router.get("/agents")
 async def list_available_agents():
     """List all available benchmark agents with fixture counts and config types."""
@@ -2980,12 +2995,14 @@ async def compare_benchmark_runs(
         "baseline": {
             "run_id": request.baseline_run_id,
             "agent": b_meta.get("agent", ""),
+            "account_id": b_meta.get("account_id", ""),
             "total_queries": b_meta.get("total_queries", 0),
             "timestamp": b_meta.get("timestamp", ""),
         },
         "candidate": {
             "run_id": request.candidate_run_id,
             "agent": c_meta.get("agent", ""),
+            "account_id": c_meta.get("account_id", ""),
             "total_queries": c_meta.get("total_queries", 0),
             "timestamp": c_meta.get("timestamp", ""),
         },

@@ -182,12 +182,14 @@ func CreateIntegrationConfig(
 
 	integrationConfigSchema = injectSharedLogConfigProperties(integrationConfigSchema, integration.Category())
 
-	// Shape-validate log_label_mappings before it reaches the schema check below.
+	// Shape-validate the label-mapping blobs before they reach the schema check below.
 	// Deliberately lenient, mirroring the index_account_mapping contract: only the
 	// array shape and a non-empty accountId are enforced, because an unknown account
 	// or a blank field name simply contributes nothing at resolution time.
-	if err := validateLogLabelMappings(integrationConfigValues); err != nil {
-		return IntegrationDto{}, err
+	for _, name := range []string{LogLabelMappingsConfigName, TraceLabelMappingsConfigName} {
+		if err := validateLabelMappings(integrationConfigValues, name); err != nil {
+			return IntegrationDto{}, err
+		}
 	}
 
 	// Inject schema defaults that the frontend doesn't send (e.g. hidden
@@ -1984,6 +1986,41 @@ func TestIntegrationConnectionByConfig(
 // It fetches the integration config, decrypts encrypted values, and runs the
 // integration's ValidateConfig (for K8s mode) or proxy connectivity test (for vm_agent mode).
 func TestIntegrationConnection(ctx *security.RequestContext, integrationID string) error {
+	return testIntegrationConnection(ctx, integrationID, "", false)
+}
+
+// TestIntegrationConnectionForAccount tests a saved integration through one
+// exact linked account. The account is independently authorized here so callers
+// cannot accidentally fall back to a different linked account during an active
+// connection probe.
+func TestIntegrationConnectionForAccount(ctx *security.RequestContext, integrationID, accountID string) error {
+	if accountID == "" {
+		return errors.New("integrations: account_id is required")
+	}
+	if !ctx.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeRead) {
+		return errors.New("integrations: connection test is not permitted")
+	}
+	return testIntegrationConnection(ctx, integrationID, accountID, false)
+}
+
+// ErrConnectionTestNotSupported means structural configuration validation passed,
+// but the integration has no active provider or proxy connectivity probe.
+var ErrConnectionTestNotSupported = errors.New("integration connection test is not supported")
+
+// DiagnoseIntegrationConnectionForAccount requires an active connectivity probe.
+// Unlike the UI compatibility path above, validation alone is not reported as a
+// successful connection test.
+func DiagnoseIntegrationConnectionForAccount(ctx *security.RequestContext, integrationID, accountID string) error {
+	if accountID == "" {
+		return errors.New("integrations: account_id is required")
+	}
+	if !ctx.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeRead) {
+		return errors.New("integrations: connection test is not permitted")
+	}
+	return testIntegrationConnection(ctx, integrationID, accountID, true)
+}
+
+func testIntegrationConnection(ctx *security.RequestContext, integrationID, requestedAccountID string, requireActiveProbe bool) error {
 	if integrationID == "" {
 		return errors.New("integrations: integration_id is required")
 	}
@@ -2077,6 +2114,20 @@ func TestIntegrationConnection(ctx *security.RequestContext, integrationID strin
 	if len(accountIDs) == 0 {
 		return errors.New("no accounts associated with this integration")
 	}
+	testAccountID := accountIDs[0]
+	if requestedAccountID != "" {
+		linked := false
+		for _, accountID := range accountIDs {
+			if accountID == requestedAccountID {
+				linked = true
+				break
+			}
+		}
+		if !linked {
+			return errors.New("integrations: connection test is not permitted")
+		}
+		testAccountID = requestedAccountID
+	}
 
 	// Apply schema defaults so hidden fields like connection_mode are always present
 	configValues = applySchemaDefaults(integration, configValues)
@@ -2087,7 +2138,7 @@ func TestIntegrationConnection(ctx *security.RequestContext, integrationID strin
 		if buildErr != nil {
 			return fmt.Errorf("failed to build datasource config: %w", buildErr)
 		}
-		if testErr := relay.TestProxyDatasourceConfig(accountIDs[0], dsConfig); testErr != nil {
+		if testErr := relay.TestProxyDatasourceConfig(testAccountID, dsConfig); testErr != nil {
 			return fmt.Errorf("connection test failed: %w", testErr)
 		}
 		return nil
@@ -2098,15 +2149,19 @@ func TestIntegrationConnection(ctx *security.RequestContext, integrationID strin
 		slog.Warn("integrations: dual-mode type routed to K8s validation instead of proxy test",
 			"type", integrationType, "integration_id", integrationID)
 	}
-	validationErrors := integration.ValidateConfig(ctx.GetSecurityContext(), configValues, accountIDs[0])
+	validationErrors := integration.ValidateConfig(ctx.GetSecurityContext(), configValues, testAccountID)
 	if len(validationErrors) > 0 {
 		return validationErrors[0]
 	}
 
 	if testable, ok := integration.(TestableIntegration); ok {
-		if testErr := testable.TestConnection(ctx, configValues, accountIDs[0]); testErr != nil {
+		if testErr := testable.TestConnection(ctx, configValues, testAccountID); testErr != nil {
 			return testErr
 		}
+		return nil
+	}
+	if requireActiveProbe {
+		return ErrConnectionTestNotSupported
 	}
 
 	return nil
@@ -2297,6 +2352,127 @@ func ListActiveIntegrationsForAccount(
 	return integrations, nil
 }
 
+// cachedIntegrationByType reads the shared by-type cache, evicting an expired
+// entry as it goes. Both by-type lookups use it so InvalidateIntegrationCache
+// keeps clearing every variant after an integration is created or edited.
+func cachedIntegrationByType(cacheKey string) (*IntegrationDto, bool) {
+	integrationByTypeCache.RLock()
+	entry, ok := integrationByTypeCache.entries[cacheKey]
+	if ok && time.Now().Before(entry.expiresAt) {
+		integrationByTypeCache.RUnlock()
+		return entry.value, true
+	}
+	integrationByTypeCache.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	integrationByTypeCache.Lock()
+	if e, exists := integrationByTypeCache.entries[cacheKey]; exists && time.Now().After(e.expiresAt) {
+		delete(integrationByTypeCache.entries, cacheKey)
+	}
+	integrationByTypeCache.Unlock()
+	return nil, false
+}
+
+func storeIntegrationByType(cacheKey string, value *IntegrationDto) {
+	integrationByTypeCache.Lock()
+	integrationByTypeCache.entries[cacheKey] = integrationCacheEntry{
+		value:     value,
+		expiresAt: time.Now().Add(integrationCacheTTL),
+	}
+	integrationByTypeCache.Unlock()
+}
+
+// defaultProviderColumns are the integrations_cloud_accounts flags that record
+// which integration an account chose for each kind of telemetry. Only these
+// names may be interpolated into the ordering below.
+var defaultProviderColumns = map[string]bool{
+	"default_log_provider":     true,
+	"default_traces_provider":  true,
+	"default_metrics_provider": true,
+	"default_llm_provider":     true,
+}
+
+// GetIntegrationByTypePreferringDefault returns the account's integration of the
+// given type, preferring the one the account actually selected for this kind of
+// telemetry (defaultColumn, e.g. default_metrics_provider).
+//
+// An account can hold two integrations of one type: the k8s agent registers its
+// own Prometheus (and Chronosphere) row, carrying no URL or credentials, beside
+// a connection somebody added by hand. Picking between them by source alone
+// would override the operator's own choice, so the flag they set decides and
+// the hand-added row is only a tie-break for when nothing is flagged.
+//
+// Kept separate from GetIntegrationByType because that one is shared with
+// callers — dashboards resolving a datasource, for instance — that have no
+// notion of a default telemetry provider and must keep their existing order.
+func GetIntegrationByTypePreferringDefault(
+	context *security.RequestContext,
+	accountId string,
+	integrationType string,
+	defaultColumn string,
+) (*IntegrationDto, error) {
+	if !defaultProviderColumns[defaultColumn] {
+		// Nothing to prefer by — behave exactly like the shared lookup.
+		return GetIntegrationByType(context, accountId, integrationType)
+	}
+
+	// Same TTL cache as the shared lookup: the knowledge-graph sweep resolves a
+	// provider once per load balancer and per DNS record, so an uncached join
+	// here would be one query per resource. The column is part of the key, so
+	// this can never serve the differently-ordered row the shared lookup cached.
+	cacheKey := accountId + ":" + integrationType + ":" +
+		context.GetSecurityContext().GetTenantId() + ":default=" + defaultColumn
+	if value, ok := cachedIntegrationByType(cacheKey); ok {
+		return value, nil
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return nil, err
+	}
+
+	// BuildInClause for the values, as elsewhere in this file: parameterized
+	// queries here trigger lib/pq unnamed prepared statements that collide under
+	// concurrent goroutines. defaultColumn is allow-listed above, never a value.
+	rows, err := dbms.Db.Queryx(fmt.Sprintf(`
+        SELECT i.id, i.name, i.source, i.type
+        FROM integrations i
+        JOIN integrations_cloud_accounts ica
+            ON i.id = ica.integration_id
+        WHERE ica.cloud_account_id = %s
+        AND i.type = %s
+        AND i.tenant_id = %s
+        AND i.status != 'disabled'
+        ORDER BY (ica.%s = true) DESC,
+                 CASE WHEN i.source = 'user' THEN 0 ELSE 1 END
+        LIMIT 1
+    `, dbms.BuildInClause(accountId), dbms.BuildInClause(integrationType),
+		dbms.BuildInClause(context.GetSecurityContext().GetTenantId()), defaultColumn))
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			slog.Error("integrations: failed to close integration by type result", "error", cerr)
+		}
+	}()
+
+	var result *IntegrationDto
+	if rows.Next() {
+		var integration IntegrationDto
+		if err := rows.Scan(&integration.Id, &integration.Name, &integration.Source, &integration.Type); err != nil {
+			return nil, err
+		}
+		result = &integration
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	storeIntegrationByType(cacheKey, result)
+	return result, nil
+}
+
 func GetIntegrationByType(
 	context *security.RequestContext,
 	accountId string,
@@ -2373,6 +2549,44 @@ func GetIntegrationByType(
 	integrationByTypeCache.Unlock()
 
 	return result, nil
+}
+
+// HasAccountSourceIntegration reports whether an integration of the given type
+// and source is linked to the account at all, regardless of status or the
+// per-account default-provider flag.
+func HasAccountSourceIntegration(
+	context *security.RequestContext,
+	accountId string,
+	integrationType string,
+	source string,
+) (bool, error) {
+	if context == nil || context.GetSecurityContext() == nil {
+		return false, errors.New("integrations: request context and security context are required")
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return false, err
+	}
+
+	var exists bool
+	err = dbms.Db.Get(&exists, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM integrations i
+			JOIN integrations_cloud_accounts ica ON i.id = ica.integration_id
+			WHERE ica.cloud_account_id = $1
+			  AND i.tenant_id = $2
+			  AND i.type = $3
+			  AND i.source = $4
+		)
+	`, accountId, context.GetSecurityContext().GetTenantId(), integrationType, source)
+	if err != nil {
+		context.GetLogger().Error("integrations: failed to check account-source integration existence",
+			"account_id", accountId, "type", integrationType, "source", source, "error", err)
+		return false, err
+	}
+	return exists, nil
 }
 
 // GetIntegrationConfigValueByName returns the value of a single config entry

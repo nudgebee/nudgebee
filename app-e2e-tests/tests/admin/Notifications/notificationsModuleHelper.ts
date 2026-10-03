@@ -82,6 +82,18 @@ export async function createSuppressedRule(page: Page, locators: NotificationsMo
   await expect(locators.rowByName(ruleName)).toHaveCount(1, { timeout: 60000 });
 }
 
+// All GraphQL calls share one endpoint, so match the ListNotificationRules operation name; attach before the triggering action.
+export function waitForRulesQuery(page: Page, timeout = 60000) {
+  return page.waitForResponse((response) => response.request().postData()?.includes("ListNotificationRules") ?? false, { timeout });
+}
+
+// The dialog also closes on a failed delete; only a successful one triggers the list re-fetch, so that response is the signal.
+export async function confirmDeleteAndWaitForRelist(page: Page, locators: NotificationsModuleLocators): Promise<void> {
+  await Promise.all([waitForRulesQuery(page), locators.deleteConfirmBtn.click()]);
+  await expect(locators.deleteDialog).toBeHidden({ timeout: 30000 });
+  await waitForRulesListing(locators);
+}
+
 // Removes a rule this suite created. Tolerant of the rule already being gone so it is
 // safe to call from cleanup after a test that failed before creating anything.
 export async function deleteRuleByName(page: Page, locators: NotificationsModuleLocators, ruleName: string): Promise<void> {
@@ -97,7 +109,6 @@ export async function deleteRuleByName(page: Page, locators: NotificationsModule
 
   await locators.deleteBtnForRule(ruleName).click();
   await expect(locators.deleteDialog).toBeVisible({ timeout: 30000 });
-  await locators.deleteConfirmBtn.click();
-  await expect(locators.deleteDialog).toBeHidden({ timeout: 30000 });
+  await confirmDeleteAndWaitForRelist(page, locators);
   await expect(locators.rowByName(ruleName)).toHaveCount(0, { timeout: 60000 });
 }

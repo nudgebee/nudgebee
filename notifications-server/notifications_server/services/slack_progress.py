@@ -43,6 +43,17 @@ _TERMINAL_CONVERSATION_STATUSES = {
     "TERMINATED",
 }
 
+# Message-row statuses that mean the turn is still running. `conversation.status`
+# is one row shared across every turn of a reused session, so it can read a stale
+# terminal value mid-turn; the web UI re-derives from message rows for the same
+# reason (effectiveStatus in useLLMInvestigationControl.js).
+_ACTIVE_MESSAGE_STATUSES = {
+    "IN_PROGRESS",
+    "WAITING",
+    "WAITING_FOR_CLIENT",
+    "WAITING_FOR_CLIENT_TOOL",
+}
+
 _TOOL_STATUS_TO_TASK_STATUS = {
     "IN_PROGRESS": "in_progress",
     "WAITING": "in_progress",
@@ -204,6 +215,19 @@ def _flush_final_delta(common_service, entry, team_id, channel_id, stream_ts, si
         LOG.debug("thinking steps: final catch-up flush failed: %s", e)
 
 
+def _track_message_statuses(message_statuses, messages):
+    """Merge this delta's message-row statuses in. A delta only carries rows
+    touched since the last cursor, so the map has to accumulate across polls."""
+    for m in messages or []:
+        mid = m.get("id")
+        if mid and (m.get("message_type") or "") != "followup":
+            message_statuses[mid] = (m.get("status") or "").upper()
+
+
+def _turn_still_running(message_statuses):
+    return any(s in _ACTIVE_MESSAGE_STATUSES for s in message_statuses.values())
+
+
 def _run_poller(common_service, entry, thread_ts):
     global _active_pollers
     try:
@@ -322,6 +346,7 @@ def _stream_updates(common_service, cache, entry, thread_ts, token, stream_ts, s
     # 5-minute, 19-tool-call turn). A populated response is only ever written
     # once real generation has happened, which is what this guard needs.
     turn_activity_seen = False
+    message_statuses = {}  # message_id -> latest status, accumulated across polls
     deadline = time.monotonic() + settings.slack.thinking_steps_max_minutes * 60
 
     # Fetch-first (sleep at the bottom): the panel opens before the LLM request
@@ -351,6 +376,7 @@ def _stream_updates(common_service, cache, entry, thread_ts, token, stream_ts, s
             continue
         failures = 0
         since = delta.get("cursor") or since
+        _track_message_statuses(message_statuses, delta.get("messages"))
         if delta.get("tool_calls") or any((m.get("response") or "").strip() for m in delta.get("messages") or []):
             turn_activity_seen = True
 
@@ -393,6 +419,17 @@ def _stream_updates(common_service, cache, entry, thread_ts, token, stream_ts, s
             if not turn_activity_seen:
                 LOG.info(
                     "thinking steps: ignoring stale terminal status %s for %s (no turn activity observed yet)",
+                    status,
+                    thread_ts,
+                )
+            elif _turn_still_running(message_statuses):
+                # Stale terminal conversation.status while a message row is still
+                # active (reused session, or a finishing sub-agent) — keep going.
+                # Keyed on message rows, not the tool view: a tool row can sit at
+                # a never-settled "in_progress" if the turn ends without a final
+                # delta for it, whereas a message row's status always settles.
+                LOG.info(
+                    "thinking steps: terminal status %s for %s with a message row still active, keeping panel open",
                     status,
                     thread_ts,
                 )

@@ -150,14 +150,17 @@ func TestWalkGenericLeaves_RootSkipIsRootOnly(t *testing.T) {
 	labels := map[string]string{}
 	values := map[string]float64{}
 	walkGenericLeaves(map[string]any{
-		"event": map[string]any{"duration": 123.0}, // root metadata: dropped
-		"system": map[string]any{"event": map[string]any{ // nested "event": kept
+		"ecs":        map[string]any{"version": "8.0.0"}, // root metadata: dropped
+		"_doc_count": 9.0,                                // Elasticsearch internal: dropped
+		"system": map[string]any{"ecs": map[string]any{ // the same name nested: kept
 			"count": 7.0}},
 	}, "", labels, values)
 
-	_, hasRootEvent := values["event.duration"]
-	assert.False(t, hasRootEvent, "root metadata branches are dropped")
-	assert.InDelta(t, 7.0, values["system.event.count"], 1e-9, "the same name nested is a real measurement")
+	_, hasRootEcs := labels["ecs.version"]
+	assert.False(t, hasRootEcs, "root metadata branches are dropped")
+	_, hasDocCount := values["_doc_count"]
+	assert.False(t, hasDocCount, "underscore-prefixed root keys are Elasticsearch internals")
+	assert.InDelta(t, 7.0, values["system.ecs.count"], 1e-9, "the same name nested is a real measurement")
 }
 
 // esNumericArrayStats runs per array leaf per document. It computes in a single pass

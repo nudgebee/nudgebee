@@ -102,6 +102,28 @@ func (t *FilterTask) Execute(taskCtx types.TaskContext, params map[string]any) (
 	}, nil
 }
 
+// conditionHelp is the JSONata cheatsheet shown in the Condition field's help
+// tooltip. It leads with the splice (`$[...]`) because that is what makes the
+// syntax look unfamiliar: users are writing the inside of a predicate, not a
+// whole expression.
+const conditionHelp = "The condition is spliced into `$[<condition>]` and evaluated against each item in the list, " +
+	"so you write only the inside of the predicate.\n\n" +
+	"**Comparison:** `=`  `!=`  `<`  `<=`  `>`  `>=`\n\n" +
+	"**Combine:** `and`  `or`  `in`\n\n" +
+	"**Quote your strings.** `name = 23` compares against the number 23 and will not match the string `\"23\"` — " +
+	"write `name = \"23\"` for that.\n\n" +
+	"**Nested fields** use dots: `details.status = \"active\"`.\n\n" +
+	"**Lists of plain strings or numbers** have no field to name, so refer to the item itself as `$`: `$ = \"beta\"`.\n\n" +
+	"**Useful functions:** `$contains(name, \"prod\")`, `$number(x)`, `$string(x)`, `$count($)`.\n\n" +
+	"Full reference: https://docs.jsonata.org/predicate"
+
+// listHelp explains the one thing the type name "any" hides: the value has to
+// be a JSON array, and an object is the most common wrong answer.
+const listHelp = "Must be a JSON **array** — `[...]`, not `{...}`. JSON requires double quotes, " +
+	"so `[{\"name\": \"web\"}]` is valid and `[{'name': 'web'}]` is not.\n\n" +
+	"To filter the output of an earlier action, reference it instead of pasting a literal: " +
+	"`{{ Tasks['previous_task'].output.result }}`."
+
 func (t *FilterTask) InputSchema() *types.Schema {
 	return &types.Schema{
 		Properties: map[string]types.Property{
@@ -109,11 +131,64 @@ func (t *FilterTask) InputSchema() *types.Schema {
 				Type:        "any",
 				Description: "The list to filter. Can be a JSON string or an array.",
 				Required:    true,
+				Order:       1,
+				Help:        listHelp,
+				Examples: []types.PropertyExample{
+					{
+						Label: `[{"name": "checkout", "cpu": 91}, ...]`,
+						Value: `[{"name": "checkout", "cpu": 91}, {"name": "payments", "cpu": 40}]`,
+						Note:  "A list of objects — filter it on any field, e.g. `cpu > 80`.",
+					},
+					{
+						Label: `["alpha", "beta"]`,
+						Value: `["alpha", "beta"]`,
+						Note:  "A list of plain strings — filter it with `$`, e.g. `$ = \"beta\"`.",
+					},
+					{
+						Label: "Output of a previous action",
+						Value: "{{ Tasks['previous_task'].output.result }}",
+						Note:  "Replace `previous_task` with the id of the action whose output you want to filter.",
+					},
+				},
 			},
 			"condition": {
 				Type:        "string",
 				Description: "The condition to apply (JSONata predicate).",
 				Required:    true,
+				Order:       2,
+				Help:        conditionHelp,
+				Examples: []types.PropertyExample{
+					{
+						Label: `status = "active"`,
+						Value: `status = "active"`,
+						Note:  "Keep items whose `status` field equals the string `active`.",
+					},
+					{
+						Label: "cpu > 80",
+						Value: "cpu > 80",
+						Note:  "Numeric comparison — no quotes around the number.",
+					},
+					{
+						Label: `name = "23"`,
+						Value: `name = "23"`,
+						Note:  "Quotes matter: `name = 23` looks for the number 23 and will not match the string \"23\".",
+					},
+					{
+						Label: `details.status = "active"`,
+						Value: `details.status = "active"`,
+						Note:  "Reach into a nested field with a dot.",
+					},
+					{
+						Label: `$contains(name, "prod")`,
+						Value: `$contains(name, "prod")`,
+						Note:  "Substring match instead of an exact one.",
+					},
+					{
+						Label: `$ = "beta"`,
+						Value: `$ = "beta"`,
+						Note:  "For a list of plain strings or numbers, `$` is the item itself.",
+					},
+				},
 			},
 		},
 	}

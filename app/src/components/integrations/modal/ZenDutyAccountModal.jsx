@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Modal } from '@ui/Modal';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { Typography, Box } from '@mui/material';
 import { Input } from '@ui/Input';
 import { Checkbox } from '@ui/Checkbox';
@@ -17,6 +18,7 @@ import { ds } from 'src/utils/colors';
 const TOKEN_PLACEHOLDER = '••••••••';
 
 const ZenDutyAccountModal = ({ openModal, handleClose, editConfig = null }) => {
+  const { title: baseTitle } = useBrandingConfig();
   const isEdit = !!editConfig;
   const [zenDutyName, setZenDutyName] = useState('');
   const [zenDutyAccountName, setZenDutyAccountName] = useState('');
@@ -302,7 +304,7 @@ const ZenDutyAccountModal = ({ openModal, handleClose, editConfig = null }) => {
               onChange={(next) => setRcaWritebackEnabled(next)}
               disabled={isSubmitting}
               label='Post RCA analysis to ZenDuty incidents'
-              description='When enabled, NudgeBee posts its root-cause analysis as a note on the originating ZenDuty incident (HIGH severity).'
+              description={`When enabled, ${baseTitle} posts its root-cause analysis as a note on the originating ZenDuty incident (HIGH severity).`}
             />
           </Box>
         </Box>

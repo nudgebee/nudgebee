@@ -58,7 +58,7 @@ func (s *K8sSource) fetchK8sConfigMapsFromRelay(ctx context.Context, req *core.S
 
 	relayResponse, err := relay.Execute(relayRequest)
 	if err != nil {
-		s.logger.Error("failed to execute relay request for ConfigMaps", "error", err)
+		// Soft failure: BuildGraph logs this at WARN and continues without it.
 		return nil, fmt.Errorf("failed to execute relay request for ConfigMaps: %w", err)
 	}
 

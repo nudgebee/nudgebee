@@ -6,7 +6,7 @@
  * a dropped row silently reverts a mapping, and omitting a cleared value leaves the
  * old mapping in force.
  */
-import { parseLogLabelMappings, serializeLogLabelMappings } from '../LogLabelMappingCards';
+import { CANONICAL_LOG_FIELDS, LOG_CONCEPT_LABELS, LOG_CONCEPT_ORDER, parseLogLabelMappings, serializeLogLabelMappings } from '../LabelMappingCards';
 import { indexForAccount } from '../useLogFieldOptions';
 
 describe('parseLogLabelMappings', () => {
@@ -123,5 +123,46 @@ describe('indexForAccount', () => {
 
   it('trims, so a whitespace-only index is treated as unset', () => {
     expect(indexForAccount([{ accountId: 'acc-1', log_index: '   ' }], 'acc-1', 'logs-default-*')).toBe('logs-default-*');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Log concept descriptors
+//
+// The panel used to list raw canonical keys (app, container, content…) while the trace
+// panel read "Service name". These pin the list that closes that gap, and the fact that
+// it stays in step with the vocabulary the Concept dropdown offers.
+// ---------------------------------------------------------------------------
+
+// Compares two field lists as SETS. The copy is deliberate on both sides: .sort() mutates,
+// and comparing against CANONICAL_LOG_FIELDS directly would couple these assertions to it
+// being sorted at definition — a fact only the last test in this block owns. Drop the sort
+// from the export and exactly one test should go red, not three.
+const asSet = (fields: readonly string[]) => [...fields].sort();
+
+describe('canonical log concepts', () => {
+  it('labels every field the Concept dropdown offers', () => {
+    expect(asSet(Object.keys(LOG_CONCEPT_LABELS))).toEqual(asSet(CANONICAL_LOG_FIELDS));
+    Object.values(LOG_CONCEPT_LABELS).forEach((label) => expect(label).toBeTruthy());
+  });
+
+  it('mirrors knownCanonicalLogFields in observability/log_labels.go', () => {
+    // Hard copy of the Go slice. The panel advertises this vocabulary, so a drift here
+    // shows an operator a concept the backend does not resolve, or hides one it does.
+    expect(asSet(CANONICAL_LOG_FIELDS)).toEqual(['app', 'container', 'content', 'level', 'message', 'namespace', 'pod', 'timestamp', 'trace_id']);
+  });
+
+  it('orders the three fields the Settings mappers expose first', () => {
+    // Those are the ones an operator comes here to change; the server returns rows
+    // alphabetically and the panel reorders to this.
+    expect(LOG_CONCEPT_ORDER.slice(0, 3)).toEqual(['pod', 'namespace', 'app']);
+    expect(asSet(LOG_CONCEPT_ORDER)).toEqual(asSet(CANONICAL_LOG_FIELDS));
+  });
+
+  it('offers the dropdown options alphabetically, independently of panel order', () => {
+    // Written out rather than via asSet: this is the one assertion that is about ORDER,
+    // and it is the single place the sorted-at-definition contract is pinned.
+    expect(CANONICAL_LOG_FIELDS).toEqual([...CANONICAL_LOG_FIELDS].sort());
+    expect(CANONICAL_LOG_FIELDS).not.toEqual(LOG_CONCEPT_ORDER);
   });
 });

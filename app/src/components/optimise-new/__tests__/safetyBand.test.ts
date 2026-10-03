@@ -14,6 +14,15 @@ import {
   getChangeClass,
   changeClassLabel,
   changeClassTone,
+  deriveVerdict,
+  criticalityTone,
+  criticalityLabel,
+  businessCriticalCount,
+  observedAgeLabel,
+  presentBand,
+  presentRecommendation,
+  presentBandOnly,
+  coverageLabel,
 } from '../safetyBand';
 
 describe('safetyBand dependent categorization helpers', () => {
@@ -156,6 +165,37 @@ describe('changeClass presentation', () => {
   });
 });
 
+describe('deriveVerdict', () => {
+  it('headlines production dependents only when the band grades them dangerous', () => {
+    expect(deriveVerdict('risky', 10, 10, false, 'reductive')).toEqual({ tone: 'warning', title: '10 production dependents in the blast radius' });
+    expect(deriveVerdict('risky', 1, 1, false, 'reductive')).toEqual({ tone: 'warning', title: '1 production dependent in the blast radius' });
+  });
+
+  it('never contradicts a Review verdict on an additive change with production dependents', () => {
+    const v = deriveVerdict('review', 5, 5, false, 'additive');
+    expect(v.tone).toBe('success');
+    expect(v.title).toBe('Capacity increase — dependents unaffected');
+
+    // A partial summary (prod count without the total) must still name the case.
+    const partial = deriveVerdict('review', 5, undefined, false, 'additive');
+    expect(partial.tone).toBe('success');
+    expect(partial.title).toBe('Capacity increase — dependents unaffected');
+  });
+
+  it('keeps a visible caution on irreversible changes, even with an empty neighbourhood', () => {
+    expect(deriveVerdict('review', 0, 0, false, 'destructive')).toEqual({ tone: 'warning', title: 'Irreversible change' });
+    expect(deriveVerdict('risky', 0, 0, false, 'destructive')).toEqual({ tone: 'critical', title: 'Irreversible change' });
+  });
+
+  it('keeps the pre-existing verdicts for everything else', () => {
+    expect(deriveVerdict('risky', 0, 500, true, 'reductive')).toEqual({ tone: 'warning', title: 'Large blast radius' });
+    expect(deriveVerdict('unknown', 0, 0, false, null)).toEqual({ tone: 'warning', title: 'Not in the dependency graph yet' });
+    expect(deriveVerdict('safe', 0, 0, false, 'reductive')).toEqual({ tone: 'success', title: 'No known dependents' });
+    expect(deriveVerdict('review', 0, 3, false, 'reductive')).toEqual({ tone: 'success', title: 'Contained blast radius' });
+    expect(deriveVerdict(undefined, undefined, undefined, undefined, null).tone).toBe('success');
+  });
+});
+
 describe('impactSignalSources', () => {
   it('unions and prettifies sources across both dependency lists', () => {
     expect(
@@ -172,5 +212,123 @@ describe('impactSignalSources', () => {
   it('is empty for pre-attribution summaries', () => {
     expect(impactSignalSources({ dependents: [{ name: 'a' }] })).toEqual([]);
     expect(impactSignalSources(null)).toEqual([]);
+  });
+});
+
+describe('criticality presentation', () => {
+  it('labels only the exceptional tiers — medium is the unstored default', () => {
+    expect(criticalityLabel('critical')).toBe('Critical');
+    expect(criticalityLabel('high')).toBe('High');
+    expect(criticalityLabel('low')).toBe('Low');
+    expect(criticalityLabel('medium')).toBeNull();
+    expect(criticalityLabel(undefined)).toBeNull();
+  });
+
+  it('reuses the criticality manager tones so the two surfaces cannot drift', () => {
+    expect(criticalityTone('critical')).toBe('critical');
+    expect(criticalityTone('high')).toBe('warning');
+    expect(criticalityTone('low')).toBe('neutral');
+    expect(criticalityTone(undefined)).toBe('neutral');
+  });
+
+  it('falls back to neutral for a tier the UI does not recognise', () => {
+    // The tier crosses a JSONB boundary from a text column, so a value outside
+    // the union can reach here regardless of the declared type.
+    expect(criticalityTone('urgent' as any)).toBe('neutral');
+  });
+});
+
+describe('businessCriticalCount', () => {
+  it('counts only critical and high tiers', () => {
+    const deps = [
+      { name: 'pay', criticality: 'critical' as const },
+      { name: 'ingress', criticality: 'high' as const },
+      { name: 'cron', criticality: 'low' as const },
+      { name: 'plain' },
+    ];
+    expect(businessCriticalCount(deps)).toBe(2);
+  });
+
+  it('is zero when nothing is tiered, and tolerates absence', () => {
+    expect(businessCriticalCount([{ name: 'a' }, { name: 'b' }])).toBe(0);
+    expect(businessCriticalCount([])).toBe(0);
+    expect(businessCriticalCount(undefined)).toBe(0);
+  });
+});
+
+describe('observedAgeLabel', () => {
+  const day = 24 * 60 * 60 * 1000;
+  // A fresh snapshot: computed within the tombstone window relative to now.
+  const freshComputed = new Date(Date.now() - day).toISOString();
+
+  it('measures the age against the snapshot, in whole days, from two days up', () => {
+    const seen = new Date(Date.parse(freshComputed) - 5 * day).toISOString();
+    expect(observedAgeLabel({ name: 'a', last_observed_at: seen }, freshComputed)).toBe('Last seen 5d ago');
+  });
+
+  it('hides sub-two-day ages — hourly builds and the signal lookback make them meaningless', () => {
+    const seen = new Date(Date.parse(freshComputed) - 1.25 * day).toISOString();
+    expect(observedAgeLabel({ name: 'a', last_observed_at: seen }, freshComputed)).toBeNull();
+  });
+
+  it('hides the age entirely once the snapshot itself is older than the tombstone window', () => {
+    const staleComputed = new Date(Date.now() - 10 * day).toISOString();
+    const seen = new Date(Date.parse(staleComputed) - 5 * day).toISOString();
+    expect(observedAgeLabel({ name: 'a', last_observed_at: seen }, staleComputed)).toBeNull();
+  });
+
+  it('needs both an observation and an anchor', () => {
+    expect(observedAgeLabel({ name: 'a' }, freshComputed)).toBeNull();
+    expect(observedAgeLabel({ name: 'a', last_observed_at: freshComputed }, undefined)).toBeNull();
+    expect(observedAgeLabel({ name: 'a', last_observed_at: 'not-a-date' }, freshComputed)).toBeNull();
+  });
+});
+
+describe('band presentation', () => {
+  it('names the action, not the fear, and keeps the stored enum out of sight', () => {
+    expect(presentBandOnly('safe')).toMatchObject({ key: 'safe', label: 'Safe', tone: 'success' });
+    expect(presentBandOnly('review')).toMatchObject({ key: 'quick_check', label: 'Quick check', tone: 'info' });
+    expect(presentBandOnly('risky')).toMatchObject({ key: 'plan', label: 'Plan it', tone: 'warning' });
+    expect(presentBandOnly('unknown')).toMatchObject({ key: 'not_assessed', label: 'Not assessed', tone: 'neutral' });
+    expect(presentBand(null, null).key).toBe('not_assessed');
+    expect(presentBand('RISKY ', null).label).toBe('Plan it');
+  });
+
+  it('reserves red for an irreversible change the graph also grades risky; a dependent-free removal is amber', () => {
+    expect(presentBand('risky', 'destructive')).toMatchObject({ key: 'irreversible', label: 'Irreversible', tone: 'critical' });
+    expect(presentBand('review', 'destructive')).toMatchObject({ key: 'irreversible', label: 'Irreversible', tone: 'warning' });
+    expect(presentBand('safe', 'destructive')).toMatchObject({ key: 'irreversible', tone: 'warning' });
+    expect(presentBand('unknown', 'destructive').key).toBe('not_assessed');
+  });
+
+  it('never lets the chip argue with the banner beneath it', () => {
+    // Assessed bands only: an unassessed row keeps a neutral chip on purpose
+    // (a filter full of them must not read amber) while the panel banner
+    // beneath it explains "Not in the dependency graph yet" in warning tone.
+    expect(presentBandOnly('unknown').tone).toBe('neutral');
+    expect(deriveVerdict('unknown', 0, 0, false, null).tone).toBe('warning');
+    const bands = ['safe', 'review', 'risky'];
+    const classes = [null, 'additive', 'reductive', 'destructive'] as const;
+    for (const band of bands) {
+      for (const cls of classes) {
+        for (const prod of [0, 2]) {
+          const verdict = deriveVerdict(band, prod, prod + 1, false, cls);
+          if (verdict.tone === 'success') continue;
+          expect(presentBand(band, cls).tone).toBe(verdict.tone);
+        }
+      }
+    }
+  });
+
+  it('reads a recommendation row once, from band and change class together', () => {
+    const rec = { safety_band: 'review', finops_score_breakdown: { change_class: 'destructive' } };
+    expect(presentRecommendation(rec).label).toBe('Irreversible');
+    expect(presentRecommendation({ safety_band: 'risky' }).label).toBe('Plan it');
+    expect(presentRecommendation(undefined).key).toBe('not_assessed');
+  });
+
+  it('keeps coverage words out of the band vocabulary', () => {
+    expect(coverageLabel('observed')).toBe('Observed');
+    expect(coverageLabel(undefined)).toBe('');
   });
 });

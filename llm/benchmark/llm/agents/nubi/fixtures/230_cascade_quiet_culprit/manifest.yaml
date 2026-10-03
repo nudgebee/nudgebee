@@ -1,0 +1,176 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: namespace-230
+  labels: {app: api-gateway}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: api-gateway}}
+  template:
+    metadata:
+      labels: {app: api-gateway}
+    spec:
+      containers:
+      - name: api-gateway
+        image: python:3.11-slim
+        command: ["python"]
+        args: ["/scripts/generate_logs.py"]
+        env:
+        - {name: ROLE, value: "dependent"}
+        - {name: SERVICE_NAME, value: "api-gateway"}
+        volumeMounts:
+        - {name: script-volume, mountPath: /scripts}
+        resources:
+          requests: {memory: "48Mi", cpu: "10m"}
+          limits: {memory: "128Mi", cpu: "100m"}
+      volumes:
+      - name: script-volume
+        secret: {secretName: cascade-logs-script-230, defaultMode: 0755}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: namespace-230
+  labels: {app: order-service}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: order-service}}
+  template:
+    metadata:
+      labels: {app: order-service}
+    spec:
+      containers:
+      - name: order-service
+        image: python:3.11-slim
+        command: ["python"]
+        args: ["/scripts/generate_logs.py"]
+        env:
+        - {name: ROLE, value: "dependent"}
+        - {name: SERVICE_NAME, value: "order-service"}
+        volumeMounts:
+        - {name: script-volume, mountPath: /scripts}
+        resources:
+          requests: {memory: "48Mi", cpu: "10m"}
+          limits: {memory: "128Mi", cpu: "100m"}
+      volumes:
+      - name: script-volume
+        secret: {secretName: cascade-logs-script-230, defaultMode: 0755}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: namespace-230
+  labels: {app: payment-service}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: payment-service}}
+  template:
+    metadata:
+      labels: {app: payment-service}
+    spec:
+      containers:
+      - name: payment-service
+        image: python:3.11-slim
+        command: ["python"]
+        args: ["/scripts/generate_logs.py"]
+        env:
+        - {name: ROLE, value: "dependent"}
+        - {name: SERVICE_NAME, value: "payment-service"}
+        volumeMounts:
+        - {name: script-volume, mountPath: /scripts}
+        resources:
+          requests: {memory: "48Mi", cpu: "10m"}
+          limits: {memory: "128Mi", cpu: "100m"}
+      volumes:
+      - name: script-volume
+        secret: {secretName: cascade-logs-script-230, defaultMode: 0755}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search-service
+  namespace: namespace-230
+  labels: {app: search-service}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: search-service}}
+  template:
+    metadata:
+      labels: {app: search-service}
+    spec:
+      containers:
+      - name: search-service
+        image: python:3.11-slim
+        command: ["python"]
+        args: ["/scripts/generate_logs.py"]
+        env:
+        - {name: ROLE, value: "dependent"}
+        - {name: SERVICE_NAME, value: "search-service"}
+        volumeMounts:
+        - {name: script-volume, mountPath: /scripts}
+        resources:
+          requests: {memory: "48Mi", cpu: "10m"}
+          limits: {memory: "128Mi", cpu: "100m"}
+      volumes:
+      - name: script-volume
+        secret: {secretName: cascade-logs-script-230, defaultMode: 0755}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-cache
+  namespace: namespace-230
+  labels: {app: redis-cache}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: redis-cache}}
+  template:
+    metadata:
+      labels: {app: redis-cache}
+    spec:
+      containers:
+      - name: redis
+        image: python:3.11-slim
+        command: ["python"]
+        args: ["/scripts/generate_logs.py"]
+        env:
+        - {name: ROLE, value: "cache"}
+        - {name: SERVICE_NAME, value: "redis-cache"}
+        volumeMounts:
+        - {name: script-volume, mountPath: /scripts}
+        # Probes only check the process is alive, which it is. A full cache is
+        # still a running cache — this is why nothing alerts on it.
+        livenessProbe:
+          exec: {command: ["true"]}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          exec: {command: ["true"]}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests: {memory: "64Mi", cpu: "10m"}
+          limits: {memory: "192Mi", cpu: "200m"}
+      - name: metrics-exporter
+        image: python:3.11-slim
+        command: ["sh", "-c", "while true; do sleep 30; done"]
+        resources:
+          requests: {memory: "32Mi", cpu: "5m"}
+          limits: {memory: "64Mi", cpu: "50m"}
+      volumes:
+      - name: script-volume
+        secret: {secretName: cascade-logs-script-230, defaultMode: 0755}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cache
+  namespace: namespace-230
+spec:
+  selector: {app: redis-cache}
+  ports:
+  - {port: 6379, targetPort: 6379}

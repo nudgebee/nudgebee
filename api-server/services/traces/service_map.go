@@ -36,6 +36,97 @@ func applicationKindFor(namespace string) string {
 	return "Service"
 }
 
+// nsTracker counts the distinct namespaces observed for one service name and
+// keeps the sole one when there is exactly one. Only "how many" and "which one"
+// are ever needed, so this avoids allocating a nested set per name on a path
+// that runs for every span.
+type nsTracker struct {
+	sole  string
+	count int
+}
+
+func (t *nsTracker) observe(namespace string) {
+	if namespace == "" || namespace == t.sole {
+		return
+	}
+	if t.count == 0 {
+		t.sole = namespace
+	}
+	t.count++
+}
+
+// isSole reports whether exactly one distinct namespace was observed.
+func (t *nsTracker) isSole() bool { return t != nil && t.count == 1 }
+
+// namespacesByName indexes serviceStats by bare service name so callers can ask
+// "is this name unambiguous across namespaces?" in O(1) instead of scanning
+// every service for every dependency.
+func namespacesByName(serviceStats map[string]*serviceMetrics) map[string]*nsTracker {
+	idx := make(map[string]*nsTracker, len(serviceStats))
+	for _, stats := range serviceStats {
+		t, ok := idx[stats.ServiceName]
+		if !ok {
+			t = &nsTracker{}
+			idx[stats.ServiceName] = t
+		}
+		t.observe(stats.Namespace)
+	}
+	return idx
+}
+
+// serviceKey identifies a service by namespace and name. Service identity is
+// (namespace, name) and never name alone: two namespaces routinely run the same
+// service name, and keying on the name collapses them into a single application
+// whose namespace is whichever span happened to be observed first.
+func serviceKey(namespace, name string) string {
+	return namespace + "/" + name
+}
+
+// depKey identifies a dependency by both of its fully-qualified endpoints, so a
+// call from ns-a/checkout and one from ns-b/checkout to the same-named target
+// stay separate.
+func depKey(srcNamespace, source, dstNamespace, target string) string {
+	return serviceKey(srcNamespace, source) + "->" + serviceKey(dstNamespace, target)
+}
+
+// resolveSpanServiceIdentity derives the (name, namespace) pair identifying the
+// service a span belongs to. Name resolution follows service.name -> workload_name
+// -> destination_name, then normalizes a pod-level name up to its owning workload
+// via the k8s.* attributes so per-pod applications never reach the service map.
+//
+// Both the stats pass and the parent/child pass must go through this. Deriving
+// names differently in the two passes lets a dependency name an endpoint that has
+// no serviceStats entry at all, which then resolves as a phantom external service.
+func resolveSpanServiceIdentity(span TraceSpan, attrs *SpanAttributes, rawAttrs map[string]string) (name, namespace string, ok bool) {
+	name = attrs.ServiceName
+	if name == "" {
+		name = span.WorkloadName
+	}
+	if name == "" {
+		if span.DestinationName == "" {
+			return "", "", false
+		}
+		name = span.DestinationName
+	}
+
+	// Extract workload name from k8s attributes to avoid pod-level applications.
+	// Priority order: deployment > statefulset > daemonset > replicaset > pod name extraction
+	if deploymentName, exists := rawAttrs["k8s.deployment.name"]; exists && deploymentName != "" {
+		name = deploymentName
+	} else if statefulsetName, exists := rawAttrs["k8s.statefulset.name"]; exists && statefulsetName != "" {
+		name = statefulsetName
+	} else if daemonsetName, exists := rawAttrs["k8s.daemonset.name"]; exists && daemonsetName != "" {
+		name = daemonsetName
+	} else if replicasetName, exists := rawAttrs["k8s.replicaset.name"]; exists && replicasetName != "" {
+		name = replicasetName
+	} else if podName, exists := rawAttrs["k8s.pod.name"]; exists && podName != "" && podName == name {
+		// Fallback: extract workload from pod name using regex
+		name = extractWorkloadFromPodName(name)
+	}
+
+	return name, span.WorkloadNamespace, true
+}
+
 type TraceServiceMapBuilder struct {
 	spans          []TraceSpan
 	config         *ServiceMapConfig
@@ -125,6 +216,12 @@ type ParsedSpan struct {
 	Span        TraceSpan
 	ParsedTime  time.Time
 	ParsedAttrs ParsedSpanAttributes
+	// SvcName/SvcNamespace are the resolved service identity for this span,
+	// computed once by resolveSpanServiceIdentity so every pass agrees. SvcOK
+	// is false for a span carrying no identifiable service name.
+	SvcName      string
+	SvcNamespace string
+	SvcOK        bool
 }
 
 func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, queryEndTime time.Time) (*ServiceMap, error) {
@@ -173,10 +270,15 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 		// Parse attributes once (ignore error same as original behavior)
 		parsedAttrs, _ := t.parseSpanAttributes(s.SpanAttributes)
 
+		svcName, svcNamespace, svcOK := resolveSpanServiceIdentity(s, parsedAttrs.Structured, parsedAttrs.Raw)
+
 		ps := ParsedSpan{
-			Span:        s,
-			ParsedTime:  pt,
-			ParsedAttrs: *parsedAttrs,
+			Span:         s,
+			ParsedTime:   pt,
+			ParsedAttrs:  *parsedAttrs,
+			SvcName:      svcName,
+			SvcNamespace: svcNamespace,
+			SvcOK:        svcOK,
 		}
 
 		parsedSpans = append(parsedSpans, ps)
@@ -185,6 +287,39 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 		bySpanID[psp.Span.SpanID] = psp
 		byTrace[psp.Span.TraceID] = append(byTrace[psp.Span.TraceID], psp)
 		parentMap[psp.Span.ParentSpanID] = append(parentMap[psp.Span.ParentSpanID], psp)
+	}
+
+	// ---- Namespace backfill ----
+	// One service can emit some spans carrying workload_namespace and some without
+	// it (an exporter that drops the resource attribute, a sidecar-less pod). Now
+	// that identity is (namespace, name), those spans would split one service into
+	// two applications, so adopt the sole observed namespace for a name before any
+	// map is keyed. Deliberately conservative: when a name is genuinely seen in more
+	// than one namespace, an unlabelled span stays unlabelled rather than being
+	// guessed into the wrong one. Resolving here — before keying — rather than
+	// mutating serviceMetrics.Namespace afterwards is what keeps the result
+	// independent of span arrival order.
+	nsByName := make(map[string]*nsTracker)
+	for i := range parsedSpans {
+		p := &parsedSpans[i]
+		if !p.SvcOK || p.SvcNamespace == "" {
+			continue
+		}
+		t, ok := nsByName[p.SvcName]
+		if !ok {
+			t = &nsTracker{}
+			nsByName[p.SvcName] = t
+		}
+		t.observe(p.SvcNamespace)
+	}
+	for i := range parsedSpans {
+		p := &parsedSpans[i]
+		if !p.SvcOK || p.SvcNamespace != "" {
+			continue
+		}
+		if t := nsByName[p.SvcName]; t.isSole() {
+			p.SvcNamespace = t.sole
+		}
 	}
 
 	// If query window explicitly provided, use that instead of derived times
@@ -218,14 +353,19 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 	}
 
 	// Helper to get or create serviceMetrics fast
-	getOrCreateService := func(serviceName string, span TraceSpan, attrs *SpanAttributes) *serviceMetrics {
-		if s, ok := serviceStats[serviceName]; ok {
+	getOrCreateService := func(serviceName, namespace string, span TraceSpan, attrs *SpanAttributes) *serviceMetrics {
+		// Keyed by (namespace, name): the early return is now correct by
+		// construction, because a same-named service in another namespace is a
+		// different key rather than a hit that silently keeps the first-seen
+		// namespace.
+		key := serviceKey(namespace, serviceName)
+		if s, ok := serviceStats[key]; ok {
 			return s
 		}
 		telemetryLabels := t.extractTelemetryLabels(span, attrs)
 		s := &serviceMetrics{
 			ServiceName:      serviceName,
-			Namespace:        span.WorkloadNamespace,
+			Namespace:        namespace,
 			Environment:      attrs.DeploymentEnv,
 			CallCount:        0,
 			ErrorCount:       0,
@@ -242,7 +382,7 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 				MatchedValue: serviceName,
 			},
 		}
-		serviceStats[serviceName] = s
+		serviceStats[key] = s
 		return s
 	}
 
@@ -253,35 +393,14 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 		attrs := p.ParsedAttrs.Structured
 		rawAttrs := p.ParsedAttrs.Raw
 
-		// determine serviceName same as original logic
-		serviceName := attrs.ServiceName
-		if serviceName == "" {
-			serviceName = span.WorkloadName
+		// Identity was resolved once during preprocessing so that this pass and
+		// the parent/child pass below agree on both name and namespace.
+		if !p.SvcOK {
+			slog.Info("Skipping span with no identifiable service name", "span_id", span.SpanID, "trace_id", span.TraceID, "attributes", slog.AnyValue(rawAttrs), "workload_name", span.WorkloadName)
+			continue
 		}
-		if serviceName == "" {
-			if span.DestinationName != "" {
-				serviceName = span.DestinationName
-			} else {
-				// skip like original
-				slog.Info("Skipping span with no identifiable service name", "span_id", span.SpanID, "trace_id", span.TraceID, "attributes", slog.AnyValue(rawAttrs), "workload_name", span.WorkloadName)
-				continue
-			}
-		}
-
-		// Extract workload name from k8s attributes to avoid pod-level applications
-		// Priority order: deployment > statefulset > daemonset > replicaset > pod name extraction
-		if deploymentName, exists := rawAttrs["k8s.deployment.name"]; exists && deploymentName != "" {
-			serviceName = deploymentName
-		} else if statefulsetName, exists := rawAttrs["k8s.statefulset.name"]; exists && statefulsetName != "" {
-			serviceName = statefulsetName
-		} else if daemonsetName, exists := rawAttrs["k8s.daemonset.name"]; exists && daemonsetName != "" {
-			serviceName = daemonsetName
-		} else if replicasetName, exists := rawAttrs["k8s.replicaset.name"]; exists && replicasetName != "" {
-			serviceName = replicasetName
-		} else if podName, exists := rawAttrs["k8s.pod.name"]; exists && podName != "" && podName == serviceName {
-			// Fallback: extract workload from pod name using regex
-			serviceName = extractWorkloadFromPodName(serviceName)
-		}
+		serviceName := p.SvcName
+		serviceNamespace := p.SvcNamespace
 
 		duration := span.DurationNs
 		if duration == 0 {
@@ -290,7 +409,7 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 
 		isError := t.isErrorSpan(span, attrs)
 
-		stats := getOrCreateService(serviceName, span, attrs)
+		stats := getOrCreateService(serviceName, serviceNamespace, span, attrs)
 
 		// merge telemetry labels opportunistically (cheap check first)
 		if addLabels := t.extractTelemetryLabels(span, attrs); len(addLabels) > 0 {
@@ -334,13 +453,15 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 		if caller, found := t.detectDependencyFromCustomAttributes(span, attrs); found {
 			targetService := serviceName
 			if targetService != "" && caller != targetService {
-				depKey := caller + "->" + targetService
-				if dep, exists := dependencyMap[depKey]; exists {
+				// The caller is named by a bare attribute, so its namespace is
+				// unknown here and gets resolved once serviceStats is complete.
+				dKey := depKey("", caller, serviceNamespace, targetService)
+				if dep, exists := dependencyMap[dKey]; exists {
 					t.updateDependency(dep, span, attrs, duration, isError)
 				} else {
-					newDep := t.createNewDependency(caller, targetService, span, attrs, duration, isError)
+					newDep := t.createNewDependency(caller, "", targetService, serviceNamespace, span, attrs, duration, isError)
 					newDep.DependencyType = "custom_caller_attribute"
-					dependencyMap[depKey] = newDep
+					dependencyMap[dKey] = newDep
 					// Note: Don't track as external service - this is an explicit internal service call
 				}
 			}
@@ -351,23 +472,27 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 			// Check if this is a consumer operation (messaging system)
 			isConsumer := t.isConsumerOperation(span, attrs)
 
-			var source, target string
+			// Only the local service's namespace is known here; the destination is
+			// a bare name/host and is resolved after both passes complete. The
+			// consumer branch inverts the direction, so the known namespace moves
+			// to the target side with it.
+			var source, target, sourceNamespace, targetNamespace string
 			if isConsumer {
 				// For consumers: Topic → Service (topic triggers service)
-				source = span.DestinationName
-				target = serviceName
+				source, sourceNamespace = span.DestinationName, ""
+				target, targetNamespace = serviceName, serviceNamespace
 			} else {
 				// For producers: Service → Topic (service calls topic)
-				source = serviceName
-				target = span.DestinationName
+				source, sourceNamespace = serviceName, serviceNamespace
+				target, targetNamespace = span.DestinationName, ""
 			}
 
-			depKey := source + "->" + target
-			if dep, exists := dependencyMap[depKey]; exists {
+			dKey := depKey(sourceNamespace, source, targetNamespace, target)
+			if dep, exists := dependencyMap[dKey]; exists {
 				t.updateDependency(dep, span, attrs, duration, isError)
 			} else {
-				newDep := t.createNewDependency(source, target, span, attrs, duration, isError)
-				dependencyMap[depKey] = newDep
+				newDep := t.createNewDependency(source, sourceNamespace, target, targetNamespace, span, attrs, duration, isError)
+				dependencyMap[dKey] = newDep
 				t.trackExternalService(externalServices, newDep, span, attrs)
 			}
 		}
@@ -375,13 +500,13 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 		// handle HTTP client calls using http.host (for services that don't emit spans)
 		// http.host indicates the target service for HTTP client calls
 		if attrs.HTTPHost != "" && attrs.HTTPHost != serviceName && attrs.HTTPMethod != "" {
-			depKey := serviceName + "->" + attrs.HTTPHost
-			if dep, exists := dependencyMap[depKey]; exists {
+			dKey := depKey(serviceNamespace, serviceName, "", attrs.HTTPHost)
+			if dep, exists := dependencyMap[dKey]; exists {
 				t.updateDependency(dep, span, attrs, duration, isError)
 			} else {
-				newDep := t.createNewDependency(serviceName, attrs.HTTPHost, span, attrs, duration, isError)
+				newDep := t.createNewDependency(serviceName, serviceNamespace, attrs.HTTPHost, "", span, attrs, duration, isError)
 				newDep.DependencyType = "http_client"
-				dependencyMap[depKey] = newDep
+				dependencyMap[dKey] = newDep
 				t.trackExternalService(externalServices, newDep, span, attrs)
 			}
 		}
@@ -392,7 +517,6 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 	for i := range parsedSpans {
 		p := &parsedSpans[i]
 		span := p.Span
-		attrs := p.ParsedAttrs.Structured
 
 		// children of this span (i.e., spans where this span is parent)
 		children := parentMap[span.SpanID]
@@ -400,39 +524,74 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 			continue
 		}
 
-		// For each child, if child's service differs from parent's service, create/update dependency
-		// Use bySpanID to get child's parsed attrs quickly (already have children as ParsedSpan pointers)
-		parentService := attrs.ServiceName
-		if parentService == "" {
-			parentService = span.WorkloadName
+		// For each child, if child's service differs from parent's service, create/update dependency.
+		// Both endpoints reuse the identity resolved in preprocessing: this pass used to
+		// derive names as service.name || workload_name, skipping the k8s workload
+		// normalization pass 1 applies, so it could name an endpoint that has no
+		// serviceStats entry at all. Both spans carry their own namespace here, so this
+		// is the one dependency source where neither side has to be inferred later.
+		if !p.SvcOK {
+			continue
 		}
+		parentService := p.SvcName
+		parentNamespace := p.SvcNamespace
 		for _, childP := range children {
 			child := childP.Span
 			childAttrs := childP.ParsedAttrs.Structured
 
-			childService := childAttrs.ServiceName
-			if childService == "" {
-				childService = child.WorkloadName
+			if !childP.SvcOK {
+				continue
 			}
-			if childService == "" || parentService == "" || childService == parentService {
+			childService := childP.SvcName
+			childNamespace := childP.SvcNamespace
+			if childService == parentService && childNamespace == parentNamespace {
 				continue
 			}
 
-			depKey := parentService + "->" + childService
+			dKey := depKey(parentNamespace, parentService, childNamespace, childService)
 			duration := child.DurationNs
 			if duration == 0 {
 				duration = 0
 			}
 			isError := t.isErrorSpan(child, childAttrs)
 
-			if dep, exists := dependencyMap[depKey]; exists {
+			if dep, exists := dependencyMap[dKey]; exists {
 				t.updateDependency(dep, child, childAttrs, duration, isError)
 			} else {
-				newDep := t.createNewDependency(parentService, childService, child, childAttrs, duration, isError)
+				newDep := t.createNewDependency(parentService, parentNamespace, childService, childNamespace, child, childAttrs, duration, isError)
 				newDep.DependencyType = "trace_relationship"
-				dependencyMap[depKey] = newDep
+				dependencyMap[dKey] = newDep
 				t.trackExternalService(externalServices, newDep, child, childAttrs)
 			}
+		}
+	}
+
+	// ---- Resolve the endpoint namespaces that the passes above could not know ----
+	// A dependency derived from destination_name / http.host / a caller attribute
+	// names its peer with a bare string, so only the local side's namespace was
+	// known while the dep was being accumulated. Now that serviceStats is complete,
+	// fill in the other side. Deferring to here (rather than guessing mid-pass) is
+	// what makes the result independent of span arrival order.
+	//
+	// An empty namespace means "not determined yet" EXCEPT when the endpoint is
+	// itself an observed service that genuinely carries no namespace (a non-K8s
+	// workload, or a name the backfill above found too ambiguous to label). Those
+	// must be left alone: stamping the peer's namespace onto them would make the
+	// link disagree with the application's own id, which silently drops the
+	// matching downstream link in buildServiceLinks.
+	observedWithoutNamespace := func(name string) bool {
+		_, ok := serviceStats[serviceKey("", name)]
+		return ok
+	}
+	// Built once: resolveEndpointNamespace would otherwise rescan every service
+	// for every dependency, which is quadratic on a large cluster.
+	nsIndex := namespacesByName(serviceStats)
+	for _, dep := range dependencyMap {
+		if dep.TargetNamespace == "" && !observedWithoutNamespace(dep.Target) {
+			dep.TargetNamespace, _ = t.resolveEndpointNamespace(dep.Target, dep.SourceNamespace, dep.DependencyType, serviceStats, nsIndex, externalServices)
+		}
+		if dep.SourceNamespace == "" && !observedWithoutNamespace(dep.Source) {
+			dep.SourceNamespace, _ = t.resolveEndpointNamespace(dep.Source, dep.TargetNamespace, dep.DependencyType, serviceStats, nsIndex, externalServices)
 		}
 	}
 
@@ -813,7 +972,7 @@ func (t *TraceServiceMapBuilder) createExternalServiceApplications(dependencyMap
 				continue
 			}
 
-			if _, exists := serviceStats[dep.Target]; !exists { // Not an actual service
+			if _, exists := serviceStats[serviceKey(dep.TargetNamespace, dep.Target)]; !exists { // Not an actual service
 				if _, exists := externalServices[dep.Target]; !exists {
 					sampleTraceID := ""
 					if len(dep.TraceIds) > 0 {
@@ -836,7 +995,10 @@ func (t *TraceServiceMapBuilder) createExternalServiceApplications(dependencyMap
 				external := externalServices[dep.Target]
 				external.CallCount += dep.CallCount
 				external.ErrorCount += dep.ErrorCount
-				external.Applications[dep.Source] = true
+				// Keyed by (namespace, name): two same-named services in different
+				// namespaces both calling this external service are two callers,
+				// not one.
+				external.Applications[serviceKey(dep.SourceNamespace, dep.Source)] = true
 			}
 		}
 	}
@@ -915,10 +1077,10 @@ func (t *TraceServiceMapBuilder) createExternalServiceApplications(dependencyMap
 		var downstreams []DownstreamLink
 		dependencyStats := t.collectDependencyStatsForExternalService(dependencyMap, serviceName)
 
-		for dependentService := range info.Applications {
-			if stats, exists := serviceStats[dependentService]; exists {
+		for dependentKey := range info.Applications {
+			if stats, exists := serviceStats[dependentKey]; exists {
 				// Get actual metrics for this specific dependency
-				depStats := dependencyStats[dependentService]
+				depStats := dependencyStats[dependentKey]
 				if depStats == nil {
 					continue // Skip if no dependency found
 				}
@@ -936,7 +1098,9 @@ func (t *TraceServiceMapBuilder) createExternalServiceApplications(dependencyMap
 
 				downstream := DownstreamLink{
 					Id: ServiceApplicationId{
-						Name:      dependentService,
+						// From the resolved service, not the map key, which is
+						// namespace-qualified.
+						Name:      stats.ServiceName,
 						Kind:      applicationKindFor(stats.Namespace),
 						Namespace: stats.Namespace,
 					},
@@ -1108,11 +1272,13 @@ func (t *TraceServiceMapBuilder) collectDependencyStatsForExternalService(depend
 
 	for _, dep := range dependencyMap {
 		if dep.Target == externalServiceName && t.isExternalDependency(dep.DependencyType) {
-			if _, exists := stats[dep.Source]; !exists {
-				stats[dep.Source] = &dependencyMetrics{}
+			// Keyed to match ExternalServiceInfo.Applications and serviceStats.
+			key := serviceKey(dep.SourceNamespace, dep.Source)
+			if _, exists := stats[key]; !exists {
+				stats[key] = &dependencyMetrics{}
 			}
 
-			metrics := stats[dep.Source]
+			metrics := stats[key]
 			metrics.CallCount += dep.CallCount
 			metrics.ErrorCount += dep.ErrorCount
 			metrics.TotalDuration += dep.TotalDuration

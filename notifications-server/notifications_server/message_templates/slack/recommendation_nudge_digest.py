@@ -85,6 +85,19 @@ def format_savings(amount: float) -> str:
     return f"${amount:.2f}"
 
 
+def format_savings_clause(amount: float) -> str:
+    """The savings clause for one recommendation, worded for its direction.
+
+    A negative estimated_savings is a cost impact, not a saving: right-sizing an
+    under-provisioned workload up buys reliability and raises the bill. Rendering
+    it through format_savings alone produces "Savings: $-38.13/mo", so flip the
+    wording rather than the sign.
+    """
+    if amount < 0:
+        return f"Costs {format_savings(-amount)}/mo more"
+    return f"Savings: {format_savings(amount)}/mo"
+
+
 def format_rule_name(rule_name: str) -> str:
     return copy_library.display_name(rule_name)
 
@@ -391,7 +404,7 @@ def get_recommendation_nudge_digest_message_template(
     footer_url = f"{base_url}/optimise?utm=slack-digest"
     if params.digest_date:
         footer_url += f"&d={params.digest_date}"
-    footer_url += "#recommendations"
+    footer_url += "#cost"
     remaining = len(ranked) - MAX_ALERT_ITEMS
     attachments.append(
         neutral_footer_attachment(

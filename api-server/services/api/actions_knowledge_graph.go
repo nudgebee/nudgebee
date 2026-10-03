@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"nudgebee/services/audit"
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/knowledge_graph/core"
@@ -737,6 +738,28 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 		if removedFlowSources == nil {
 			removedFlowSources = []string{}
 		}
+
+		// Coverage edits deactivate nodes/edges on write and only reverse on the
+		// next rebuild, so record who narrowed it and to what. Stored as-is:
+		// an empty list is the "all" sentinel, and expanding it here would make
+		// a tenant-wide default look like an explicit per-account pin.
+		audit.LogChange(ctx, audit.ChangeInput{
+			EventCategory: audit.EventCategoryKnowledgeGraph,
+			EventType:     audit.EventTypeKGCoverageUpdate,
+			EventAction:   audit.EventActionUpdate,
+			TargetID:      result.FilterID.String(),
+			TableName:     "knowledge_graph_tenant_filters",
+			OldData: map[string]any{
+				"account_ids":  result.PreviousAccountIDs,
+				"flow_sources": result.PreviousFlowSources,
+			},
+			NewData: map[string]any{
+				"account_ids":          req.AccountIDs,
+				"flow_sources":         req.FlowSources,
+				"removed_accounts":     removedAccounts,
+				"removed_flow_sources": removedFlowSources,
+			},
+		})
 
 		c.JSON(200, map[string]any{
 			"id":                   result.FilterID.String(),

@@ -41,6 +41,13 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "nudgebee.secretName" . | quote }}
+        - name: redis-check
+          image: {{ .Values.initImages.redis }}
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'if [ "$CACHE_PROVIDER" != "redis" ] || [ -z "$REDIS_SERVER_HOST" ]; then echo "Redis not configured, skipping check."; exit 0; fi; until redis-cli -h "$REDIS_SERVER_HOST" -p "${REDIS_SERVER_PORT:-6379}" ${REDIS_USER_NAME:+--user "$REDIS_USER_NAME"} ${REDIS_USER_PASSWORD:+-a "$REDIS_USER_PASSWORD"} ping | grep -q PONG; do echo "waiting for redis..."; sleep 2; done;']
+          envFrom:
+            - secretRef:
+                name: {{ include "nudgebee.secretName" . | quote }}
       {{- end }}
       containers:
         - name: {{ .Chart.Name }}

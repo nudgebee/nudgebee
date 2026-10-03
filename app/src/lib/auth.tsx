@@ -322,8 +322,11 @@ export function missingPermissionMessage(permission: string): string {
 }
 
 // Modules backing the sections of the Admin page (/user-management): Users,
-// Groups, Audits, Notifications, Integrations, Ownership, and the EE Roles &
-// Permissions tab. Kept in sync with baseFilters in
+// Groups, Audits, Notifications, Integrations, Ownership, the EE Roles &
+// Permissions tab, Tenant Settings, and AI & Tools (Agents/Tools & MCP/
+// Functions/Budgets & Limits/Memory Policy/RCA Format share `ai`; Providers
+// reuses `integrations`; Gateway reuses `llm`; Egress Filter is
+// `egressfilter`). Kept in sync with baseFilters in
 // app/src/pages/user-management/index.jsx.
 // Cross-tenant super admin (full, not the read-only flavor). Kept distinct from
 // isTenantWideRole() because destructive / write gates must not accept
@@ -344,30 +347,39 @@ export function canManage(module: string, permissionClass: 'Read' | 'Write' | 'E
   return isTenantAdmin() || isSuperAdmin() || hasPermission(module, permissionClass);
 }
 
-// Tenant Settings (the avatar-menu modal) splits into two questions, because
-// seeing the tenant's configuration and changing it are different privileges.
-//
-// VIEW — any tenant-wide role (including the read-only flavors) or a
-// `tenants:Read` grant. The reads behind the modal (tenant_attributes_v2,
-// featureflags_list, features_list) are all classified `tenants:Read` and
-// actions.yaml already grants them to the read-only roles, so this mirrors the
-// backend rather than being stricter than it.
-export function canViewTenantSettings(): boolean {
-  return isTenantWideRole() || hasPermission('tenants', 'Read') || canEditTenantSettings();
-}
-
-// EDIT — mirrors CanManage("tenants","Write") in
-// api-server/services/tenant/service.go, which gates all four writes the modal
+// EDIT gate for the Tenant Settings Admin tab — mirrors CanManage("tenants","Write") in
+// api-server/services/tenant/service.go, which gates all four writes the tab
 // makes (tenant_attribute_upsert / _delete, tenant_update_name,
 // featureflag_upsert). Note a `tenants:Write` grant still cannot flip the
 // privileged keys carved out in tenant/privileged_config.go (entitlement_bypass,
 // RBAC_K8S, …) — those stay tenant-admin/super-admin only, and the backend
 // rejects them per-key rather than per-request.
+//
+// There's no separate canViewTenantSettings(): reachability is decided by
+// hasAdminSurfaceAccess() now that this is a page tab, not an avatar-menu
+// modal with its own independent view/edit split.
 export function canEditTenantSettings(): boolean {
   return canManage('tenants', 'Write');
 }
 
-const ADMIN_SURFACE_MODULES = ['users', 'usergroups', 'audits', 'notifications', 'integrations', 'ownership', 'customroles', 'roles'];
+// 'ai', 'llm' and 'egressfilter' cover Admin → AI & Tools (docs/ia-consolidation-plan.md,
+// PR 3) — the dynamic-RBAC modules its own sub-tabs gate on (see baseFilters
+// in pages/user-management/index.jsx). Keep this list in sync with those
+// `module` fields, same rule as every other Admin-page module here.
+const ADMIN_SURFACE_MODULES = [
+  'users',
+  'usergroups',
+  'audits',
+  'notifications',
+  'integrations',
+  'ownership',
+  'customroles',
+  'roles',
+  'tenants',
+  'ai',
+  'llm',
+  'egressfilter',
+];
 
 // Should the Admin sidebar tab / route be reachable for the current user?
 // True for tenant-wide admins (hasReadAccess) and for any custom-role holder

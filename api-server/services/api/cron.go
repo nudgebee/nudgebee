@@ -406,6 +406,29 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 				}
 			}()
 			c.JSON(200, gin.H{"status": "ok"})
+		case "Provider Status Check":
+			accountId := parseAccountIdPayload(actionPayload.Payload)
+			go func() {
+				// Unlike the neighbouring cases this one runs external HTTP probes against
+				// customer-controlled endpoints, so a panic here is a plausible way to take
+				// the process down; contain it the way the post-save path does.
+				defer func() {
+					if r := recover(); r != nil {
+						ctx.GetLogger().Error("cron: provider status check panicked", "panic", r)
+					}
+				}()
+				ctx.GetLogger().Info("cron: checking observability provider status")
+				// Detached cron context never cancels on its own; bound the run so a
+				// hung probe can't leak this goroutine indefinitely.
+				tctx, cancel := context.WithTimeout(ctx.GetContext(), 10*time.Minute)
+				defer cancel()
+				runCtx := security.NewRequestContext(tctx, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+				err := observability.RefreshProviderStatus(runCtx, accountId)
+				if err != nil {
+					ctx.GetLogger().Error("cron: error checking observability provider status", "error", err)
+				}
+			}()
+			c.JSON(200, gin.H{"status": "ok"})
 		case "Load Agent Playbook":
 			go func() {
 				ctx.GetLogger().Info("cron: Loading Agent Playbook")

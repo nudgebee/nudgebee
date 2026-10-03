@@ -1884,9 +1884,9 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
                         {discordChannelHint.inviteUrl && (
                           <>
                             {' '}
-                            <a href={discordChannelHint.inviteUrl} target='_blank' rel='noopener noreferrer'>
+                            <Link href={discordChannelHint.inviteUrl} openInNew>
                               Open invite page
-                            </a>
+                            </Link>
                           </>
                         )}
                       </FormHelperText>

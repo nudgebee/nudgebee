@@ -1,6 +1,8 @@
 package account
 
 import (
+	"errors"
+	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/security"
 	"os"
@@ -10,7 +12,36 @@ import (
 	_ "nudgebee/collector/cloud/providers/gcloud"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestStoreRecommendationsRecordsProviderFailure(t *testing.T) {
+	providerErr := errors.New("provider permission denied")
+	var recorded map[string]any
+	deps := storeRecommendationsDeps{
+		getDB: func(common.DatabaseManagerType) (*common.DatabaseManager, error) {
+			return &common.DatabaseManager{}, nil
+		},
+		fetch: func(*security.RequestContext, string, providers.ListRecommendationsRequest) (providers.ListRecommendationsResponse, providers.Account, error) {
+			return providers.ListRecommendationsResponse{}, providers.Account{AccountNumber: "123"}, providerErr
+		},
+		update: func(_ *security.RequestContext, accountID string, status AgentStatus, message string, synced bool, connectionStatus map[string]any) error {
+			assert.Equal(t, "acc-1", accountID)
+			assert.Equal(t, AgentStatusConnected, status)
+			assert.Equal(t, providerErr.Error(), message)
+			assert.True(t, synced)
+			recorded = connectionStatus
+			return nil
+		},
+	}
+
+	ctx := security.NewRequestContextForTenantAdmin("tenant-1")
+	_, err := storeRecommendations(ctx, "acc-1", providers.ListRecommendationsRequest{ServiceName: "AmazonEC2"}, deps)
+	require.ErrorIs(t, err, providerErr)
+	recommendations := recorded["recommendations"].(map[string]any)
+	assert.Equal(t, providerErr.Error(), recommendations["err"])
+	assert.NotEmpty(t, recommendations["updated_at"])
+}
 
 func TestStoreRecommendationsAwsRDS(t *testing.T) {
 	if os.Getenv("TEST_ACCOUNT") == "" {

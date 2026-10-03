@@ -4,7 +4,7 @@ import { LoginPage } from "../../pages/LoginPage";
 import { readGlobalClusterValue } from "../utils/helpers";
 import { AgentHealthLocators } from "./agentHealthLocators";
 
-export type AgentHealthTab = "agent" | "proxy-agent";
+export type AgentHealthTab = "agent" | "proxy-agent" | "observability";
 
 // Precondition for the whole area: the environment's selected account is a K8s cluster.
 // /agentHealth drops the Agent tab entirely for a self-hosted fleet (SELF_HOSTED in
@@ -84,7 +84,12 @@ export async function openAgentHealth(page: Page, fragment: AgentHealthTab = "ag
   await page.goto(`/agentHealth?accountId=${accountId}#${fragment}`);
 
   await expect(locators.agentTab, NO_TABS_HINT).toBeVisible({ timeout: 60000 });
-  await expectSelectedTab(fragment === "agent" ? locators.agentTab : locators.proxyAgentTab);
+  const tabFor = {
+    agent: locators.agentTab,
+    "proxy-agent": locators.proxyAgentTab,
+    "observability": locators.observabilityTab,
+  };
+  await expectSelectedTab(tabFor[fragment]);
 
   return locators;
 }

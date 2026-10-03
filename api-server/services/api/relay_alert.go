@@ -5,6 +5,8 @@ import (
 	"nudgebee/services/audit"
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule"
+	"nudgebee/services/observability"
+	"nudgebee/services/security"
 	"strings"
 	"time"
 
@@ -48,6 +50,7 @@ func handleEventRuleAction(actionPayload *ActionRequest, c *gin.Context, tracer 
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
+		stampMetricProvider(ctx, &relayAPIRequest)
 		response, err1 := eventrule.CreateEventRule(ctx, relayAPIRequest)
 		defer func() {
 			auditEvent.AccountId = relayAPIRequest.AccountID
@@ -222,5 +225,39 @@ func handleEventRuleAction(actionPayload *ActionRequest, c *gin.Context, tracer 
 	default:
 		c.JSON(400, common.ErrorActionBadRequest("invalid action name - "+actionPayload.Action.Name))
 		return
+	}
+}
+
+// stampMetricProvider fills metric_provider / metric_provider_source from the
+// account's default metrics provider when a CREATE request names none and that
+// provider is a direct (agentless) Prometheus. eventrule tells the ruler path apart
+// from the relay path by exactly that pair, and the Create Alert form has always
+// sent a bare `source: prometheus`, which on its own means the relay — so without
+// this an agentless account would push its rule at an agent it does not have.
+// Nothing else is touched: an account whose default provider is Datadog keeps the
+// Prometheus/nudgebee path its request asked for, as before. Updates are left
+// alone on purpose — they carry the source the rule was stored under, and an
+// agent-written rule must keep updating its PrometheusRule CR even on an account
+// that has since made a direct Prometheus its default. Resolved here rather than
+// in eventrule because eventrule cannot import observability (observability →
+// event → eventrule).
+func stampMetricProvider(ctx *security.RequestContext, req *eventrule.EventConfig) {
+	if req.MetricProvider != "" || (req.AlertType != "" && req.AlertType != "metric") {
+		return
+	}
+	switch req.Source {
+	case "", "nudgebee", "prometheus":
+	default:
+		return
+	}
+	provider, source, err := observability.GetLogsMetricsTracesProvider(ctx, req.AccountID, "", "metrics", "")
+	if err != nil {
+		ctx.GetLogger().Warn("alert rule: could not resolve the account's metrics provider; keeping the request's source",
+			"account_id", req.AccountID, "error", err)
+		return
+	}
+	if provider == "prometheus" && source == "user" {
+		req.MetricProvider = provider
+		req.MetricProviderSource = source
 	}
 }

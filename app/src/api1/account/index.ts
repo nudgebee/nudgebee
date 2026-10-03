@@ -31,6 +31,7 @@ query list_account {
       type
       status
       name
+      integrations_cloud_accounts
     }
   }
 }
@@ -691,6 +692,7 @@ const apiAccount = {
       query GetDefaultProvider {
         observability_get_default_provider(request: __WHERE__) {
           provider
+          integration_source
           default_index
           available_providers {
             provider
@@ -708,6 +710,8 @@ const apiAccount = {
             supports_trace_grouping
             supports_log_groups
             supports_service_map
+            supports_alert_rules
+            alert_rules_reason
             supported_operator_descriptors {
               token
               chip_label

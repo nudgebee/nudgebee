@@ -491,6 +491,56 @@ func updateMetadataConfigValues(integrationID string, metadata []map[string]inte
 	return nil
 }
 
+// listJiraProjects returns every project the credential can browse. Cloud
+// pages them through project/search; Server/Data Center returns the whole
+// list from project in one response and ignores paging parameters.
+func listJiraProjects(client *jira.Client) ([]models.Project, error) {
+	cloud, err := clients.IsJiraCloud(client)
+	if err != nil {
+		return nil, fmt.Errorf("detecting Jira deployment: %w", err)
+	}
+
+	var raw []jira.Project
+	if cloud {
+		const (
+			pageSize = 50
+			maxPages = 200
+		)
+		for startAt, page := 0, 0; page < maxPages; page++ {
+			req, err := client.NewRequest("GET", fmt.Sprintf("rest/api/2/project/search?startAt=%d&maxResults=%d", startAt, pageSize), nil)
+			if err != nil {
+				return nil, err
+			}
+			var result struct {
+				Values []jira.Project `json:"values"`
+				IsLast bool           `json:"isLast"`
+			}
+			if _, err := client.Do(req, &result); err != nil {
+				return nil, err
+			}
+			raw = append(raw, result.Values...)
+			if result.IsLast || len(result.Values) == 0 {
+				break
+			}
+			startAt += len(result.Values)
+		}
+	} else {
+		req, err := client.NewRequest("GET", "rest/api/2/project", nil)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := client.Do(req, &raw); err != nil {
+			return nil, err
+		}
+	}
+
+	projects := make([]models.Project, 0, len(raw))
+	for _, p := range raw {
+		projects = append(projects, models.Project{Name: p.Name, Key: p.Key})
+	}
+	return projects, nil
+}
+
 func validateJiraConfigurationAndReturnMetadata(_ context.Context, configuration models.TicketConfigurations) ([]map[string]interface{}, error) {
 	client, err := clients.CreateJiraClient(configuration.AuthType, configuration.Username, configuration.Password, configuration.URL)
 	if err != nil {
@@ -498,38 +548,10 @@ func validateJiraConfigurationAndReturnMetadata(_ context.Context, configuration
 		return nil, err
 	}
 
-	// Fetch all projects with pagination
-	projects := make([]models.Project, 0)
-	startAt := 0
-	maxResults := 50
-	for {
-		apiEndpoint := fmt.Sprintf("rest/api/2/project?startAt=%d&maxResults=%d", startAt, maxResults)
-		req, err := client.NewRequest("GET", apiEndpoint, nil)
-		if err != nil {
-			slog.Warn("Failed to create Jira request for projects", "error", err)
-			return nil, err
-		}
-
-		var projectPage []jira.Project
-		_, err = client.Do(req, &projectPage)
-		if err != nil {
-			slog.Warn("Failed to fetch Jira projects", "error", err)
-			return nil, err
-		}
-
-		if len(projectPage) == 0 {
-			break
-		}
-
-		for _, p := range projectPage {
-			projects = append(projects, models.Project{Name: p.Name, Key: p.Key})
-		}
-
-		if len(projectPage) < maxResults {
-			break
-		}
-
-		startAt += len(projectPage)
+	projects, err := listJiraProjects(client)
+	if err != nil {
+		slog.Warn("Failed to fetch Jira projects", "error", err)
+		return nil, err
 	}
 
 	priorities := make([]models.Priority, 0)

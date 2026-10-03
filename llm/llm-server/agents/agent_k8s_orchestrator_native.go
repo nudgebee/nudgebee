@@ -73,9 +73,9 @@ func (a *K8sNativeAgent) GetName() string { return a.name }
 // the customer shouldn't see there. Matches K8sLeanAgent's behaviour.
 func (a *K8sNativeAgent) GetNameAliases() []string {
 	if a.name == AgentK8sOrchestratorName {
-		return []string{"Debugger", "k8s_debug"}
+		return []string{"Kubernetes Troubleshooter", "Debugger", "k8s_debug"}
 	}
-	return []string{"Debugger (Native)", "k8s_debug_native"}
+	return []string{"Kubernetes Troubleshooter (Direct Mode)", "Debugger (Native)", "k8s_debug_native"}
 }
 
 func (a *K8sNativeAgent) GetDescription() string {

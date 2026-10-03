@@ -15,6 +15,14 @@ import { Link } from '@ui/Link';
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from '@ui/Modal';
 import Heading from '@components/common/Heading';
+import TenantAccountCommonSettings from '@shared/settings/TenantAccountCommonSettings';
+import {
+  EMPTY_TRACE_LABEL_SETTINGS,
+  TRACE_LABEL_ADVANCED_FIELDS,
+  TRACE_LABEL_FIELDS,
+  traceLabelsToSettings,
+  traceSettingsToLabelsValue,
+} from '@shared/settings/labelMapperFields';
 import { Divider } from '@ui/Divider';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import { ListingLayout } from '@ui/ListingLayout';
@@ -30,7 +38,7 @@ import { Checkbox } from '@ui/Checkbox';
 import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
 import apiUser from '@api1/user';
 import CopyButton from '@shared/buttons/CopyButton';
-import AccountEnvToggle, { ACCOUNT_ENV_TOOLTIP, DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
+import AccountEnvToggle, { accountEnvTooltip, DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 import AccountEnvText from '@shared/format/AccountEnvText';
 
 // Agents connect asynchronously minutes after an account is created, so the
@@ -61,7 +69,7 @@ const K8sIntegrationTile = () => {
   const [logNamespaceLabel, setLogNamespaceLabel] = useState('');
   const [logAppLabel, setLogAppLabel] = useState('');
   const [cloudAccountAttributes, setCloudAccountAttributes] = useState({});
-  const [logDefaultQuery, setLogDefaultQuery] = useState('');
+  const [traceSettings, setTraceSettings] = useState({ ...EMPTY_TRACE_LABEL_SETTINGS });
   const [certificateExpiry, setCertificateExpiry] = useState(0);
   const [networkThreshold, setNetworkThreshold] = useState(0);
   const [observationDays, setObservationDays] = useState(0);
@@ -292,6 +300,12 @@ const K8sIntegrationTile = () => {
 
   useEffect(() => {
     if (accountSettings) {
+      // Outside the attrs-present guard below, and assigned unconditionally: an account
+      // with no attributes at all must show an empty mapper rather than the previously
+      // selected account's values. safeJSONParse returns null for a missing attribute,
+      // so that path yields the all-empty shape.
+      const accountAttrs = cloudAccountAttributes[selectedAccountId] || [];
+      setTraceSettings(traceLabelsToSettings(safeJSONParse(accountAttrs.find((l) => l.name === 'trace_labels')?.value)));
       if (
         selectedAccountId in cloudAccountAttributes &&
         cloudAccountAttributes[selectedAccountId] &&
@@ -310,9 +324,6 @@ const K8sIntegrationTile = () => {
             }
             if (logLabelValues.namespace) {
               setLogNamespaceLabel(logLabelValues.namespace);
-            }
-            if (logLabelValues.defaultQuery) {
-              setLogDefaultQuery(logLabelValues.defaultQuery);
             }
           }
         }
@@ -361,7 +372,7 @@ const K8sIntegrationTile = () => {
     setLogAppLabel('');
     setLogNamespaceLabel('');
     setLogPodLabel('');
-    setLogDefaultQuery('');
+    setTraceSettings({ ...EMPTY_TRACE_LABEL_SETTINGS });
     setCertificateExpiry(0);
     setNetworkThreshold(0);
     setObservationDays(0);
@@ -436,8 +447,14 @@ const K8sIntegrationTile = () => {
           pod: logPodLabel,
           namespace: logNamespaceLabel,
           app: logAppLabel,
-          defaultQuery: logDefaultQuery,
         }),
+        cloud_account_id: selectedAccountId,
+      },
+      // Unconditional for the same reason as log_labels above: trace_labels has no
+      // non-empty defaults, and gating the write would make clearing an override a no-op.
+      {
+        name: 'trace_labels',
+        value: traceSettingsToLabelsValue(traceSettings),
         cloud_account_id: selectedAccountId,
       },
     ];
@@ -641,7 +658,7 @@ const K8sIntegrationTile = () => {
           <Box sx={{ mt: ds.space[4] }}>
             <Box sx={{ display: 'flex', alignItems: 'center' }}>
               <Heading value='Environment' borderWidth='md' />
-              <Tooltip title={ACCOUNT_ENV_TOOLTIP} placement='right'>
+              <Tooltip title={accountEnvTooltip()} placement='right'>
                 <IconButton id='k8s-account-env-info-btn' size='small' sx={{ p: 0.5 }}>
                   <InfoOutlinedIcon fontSize='small' />
                 </IconButton>
@@ -668,11 +685,29 @@ const K8sIntegrationTile = () => {
               <Typography sx={styles.label}>App</Typography>
               <Input value={logAppLabel} placeholder='Log App label' onChange={(value) => setLogAppLabel(value)} />
             </Box>
+          </Box>
+          {/* The removed "Default query" box wrote a key nothing ever read (#37402). The working
+              setting lives on the log integration, so point there instead of leaving a gap. */}
+          <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], mt: ds.space[3] }}>
+            Looking for filters applied to every log query? Those are configured on the log integration: Integrations &rarr; your log integration
+            &rarr; Advanced Settings &rarr; Default Log Filters.
+          </Typography>
+          <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
 
-            <Box display='flex' flexDirection='column'>
-              <Typography sx={styles.label}>Default query</Typography>
-              <Input value={logDefaultQuery} placeholder='Default Query' onChange={(value) => setLogDefaultQuery(value)} />
-            </Box>
+          {/* title={null} so this section carries the same accented <Heading> as the ones
+              either side of it, instead of the shared component's plain heading. */}
+          <Heading value='Trace Label Mapper' borderWidth='md' />
+          <Box sx={{ mt: ds.space[4] }}>
+            <TenantAccountCommonSettings
+              title={null}
+              idPrefix='trace-label'
+              fields={TRACE_LABEL_FIELDS}
+              advancedFields={TRACE_LABEL_ADVANCED_FIELDS}
+              advancedLabel='advanced trace fields'
+              settings={traceSettings}
+              setSettings={setTraceSettings}
+              disabled={!hasWriteAccess()}
+            />
           </Box>
           <Divider color={ds.background[200]} sx={{ marginTop: ds.space[5], marginBottom: ds.space[5] }} />
 

@@ -26,11 +26,12 @@ import FilterDropdown from '@ui/FilterDropdown';
 import { getPreviousTasksForNode, getSwitchChildNodeIds, getSwitchDryRunEligibility } from './utils/templateUtils';
 import {
   DBMS_OPTIONS,
-  FIELD_PLACEHOLDERS,
   formatFieldLabel,
   getCodeLanguage,
   getDropdownOptionsForField,
+  getExamplePlaceholder,
   isTemplateString,
+  parseJsonExample,
   resolveFieldType,
   type SchemaProperty,
 } from './utils/fieldTypeUtils';
@@ -39,6 +40,7 @@ import { parseDurationToSeconds, sanitizeTaskId } from './utils/taskUtils';
 import apiWorkflow from '@api1/workflow';
 import apiAccount from '@api1/account';
 import { isTenantAdmin } from '@lib/auth';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { isUrlFieldName, urlFieldStatus } from 'src/utils/url';
 import { DurationField, TemplateExpressionField, FailurePolicyField, HooksField, KeyValueField, MatrixField } from './components/advanced-config';
 import CollapsableCard from '@ui/CollapsableCard';
@@ -54,6 +56,7 @@ import {
   NestedSchemaEditor,
 } from './components/WorkflowFieldComponents';
 import { StableTextField, StableTextarea, StableNumberField } from './components/StableFormFields';
+import FieldGuidance from './components/FieldGuidance';
 
 // Built-in dynamic variables exposed to subject/body of the workflow email action.
 // Mirrors the keys added to the Gonja context in runbook-server templating.go so the
@@ -389,6 +392,9 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
   // Find the current task definition
   const currentTaskDefinition = taskDefinitions.find((def) => def.name === selectedActionType);
+  // Task descriptions come from runbook-server, which has no tenant branding
+  const { title: brandTitle } = useBrandingConfig();
+  const currentTaskDescription = currentTaskDefinition?.description?.replace(/\bNudgebee\b/g, () => brandTitle);
 
   // Use centralized hook for node config access
   const { selectedNode: hookSelectedNode, taskConfig } = useSelectedNodeConfig(nodes);
@@ -3582,7 +3588,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             label={fieldSchema.title || formatFieldLabel(fieldName)}
             isRequired={isRequired}
             description={fieldSchema.description || ''}
-            placeholder={FIELD_PLACEHOLDERS[fieldName] || fieldSchema.description || `Enter ${fieldName.replace(/_/g, ' ')}`}
+            placeholder={getExamplePlaceholder(fieldName, fieldSchema) || fieldSchema.description || `Enter ${fieldName.replace(/_/g, ' ')}`}
             disabled={isReadOnly || viewOnlyMode}
             error={validationErrors[fieldName] || ''}
             rows={8}
@@ -3718,7 +3724,19 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   {fieldSchema.description}
                 </Typography>
               )}
-              <JsonEditor value={fieldValue || {}} onChange={(value) => handleDataChange(fieldName, value)} error={validationErrors[fieldName]} />
+              <JsonEditor
+                value={fieldValue}
+                onChange={(value) => handleDataChange(fieldName, value)}
+                error={validationErrors[fieldName]}
+                placeholder={getExamplePlaceholder(fieldName, fieldSchema)}
+              />
+              <FieldGuidance
+                fieldName={fieldName}
+                help={fieldSchema.help}
+                examples={fieldSchema.examples}
+                disabled={isReadOnly || viewOnlyMode}
+                onApply={(value) => handleDataChange(fieldName, parseJsonExample(value))}
+              />
             </Box>
           </Box>
         );
@@ -3726,7 +3744,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
       if (fieldType === 'script') {
         const getScriptPlaceholder = () => {
-          return FIELD_PLACEHOLDERS[fieldName] || fieldSchema.description || `Enter ${fieldName.replace(/_/g, ' ')}`;
+          return getExamplePlaceholder(fieldName, fieldSchema) || fieldSchema.description || `Enter ${fieldName.replace(/_/g, ' ')}`;
         };
 
         const isScriptField = fieldName === 'script';
@@ -3762,6 +3780,13 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 disabled={isReadOnly || viewOnlyMode}
                 placeholder={getScriptPlaceholder()}
                 height={scriptHeight}
+              />
+              <FieldGuidance
+                fieldName={fieldName}
+                help={fieldSchema.help}
+                examples={fieldSchema.examples}
+                disabled={isReadOnly || viewOnlyMode}
+                onApply={(value) => handleDataChange(fieldName, value)}
               />
             </Box>
           </Box>
@@ -3879,6 +3904,13 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   validationStatus={isUrlFieldName(fieldName) ? urlFieldStatus(fieldValue) : undefined}
                   fullWidth={true}
                 />
+                <FieldGuidance
+                  fieldName={fieldName}
+                  help={fieldSchema.help}
+                  examples={fieldSchema.examples}
+                  disabled={isReadOnly || viewOnlyMode}
+                  onApply={(value) => handleDataChange(fieldName, value)}
+                />
               </Box>
             </Box>
           </Box>
@@ -3902,6 +3934,15 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
           onDrop={viewOnlyMode ? undefined : (e) => handleDrop(e, fieldName, fieldValue)}
           onDragOver={viewOnlyMode ? undefined : (e) => handleDragOver(e, fieldName)}
           onDragLeave={viewOnlyMode ? undefined : handleDragLeave}
+          guidance={
+            <FieldGuidance
+              fieldName={fieldName}
+              help={fieldSchema.help}
+              examples={fieldSchema.examples}
+              disabled={isReadOnly || viewOnlyMode}
+              onApply={(value) => handleDataChange(fieldName, value)}
+            />
+          }
         />
       );
     };
@@ -4737,7 +4778,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
   const renderWorkflowActionContent = () => {
     // Use currentTaskDefinition if available, otherwise create a minimal title/description from selectedActionType
-    const description = currentTaskDefinition?.description || `Configure ${selectedActionType} task parameters`;
+    const description = currentTaskDescription || `Configure ${selectedActionType} task parameters`;
 
     return renderDynamicForm(currentTaskDefinition, '', description);
   };
@@ -4763,9 +4804,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       >
         <Box>
           <Typography sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-foreground)' }}>
-            {`Action Details - ${
-              selectedNode?.data?.label || currentTaskDefinition?.display_name || currentTaskDefinition?.description || selectedActionType
-            }`}
+            {`Action Details - ${selectedNode?.data?.label || currentTaskDefinition?.display_name || currentTaskDescription || selectedActionType}`}
           </Typography>
           <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', mt: 0.25 }}>
             {'Configure and test this automation action'}

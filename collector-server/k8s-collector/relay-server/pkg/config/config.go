@@ -19,6 +19,17 @@ type Config struct {
 		WriteTimeout time.Duration `mapstructure:"write_timeout"`
 	} `mapstructure:"http"`
 
+	Health struct {
+		// ConsumeFailureRestartAfter is how long a tenant may have no consumer,
+		// while the broker is reachable, before /healthz/live starts failing and
+		// Kubernetes restarts the pod.
+		//
+		// Set to 0 to disable. That is the escape hatch: a false positive here
+		// restarts every replica in a loop, so the check must be switchable off
+		// without a rollback.
+		ConsumeFailureRestartAfter time.Duration `mapstructure:"consume_failure_restart_after"`
+	} `mapstructure:"health"`
+
 	Postgres struct {
 		// DSN is loaded from COLLECTOR_DB_URL if set, otherwise from file
 		DSN             string        `mapstructure:"dsn"`
@@ -173,6 +184,9 @@ func Load() (*Config, error) {
 	v.SetDefault("security.secret_key", "")
 
 	v.SetDefault("http.port", 8080)
+	// Generous on purpose: well past any transient reconnect, so only a
+	// genuinely stuck session trips it.
+	v.SetDefault("health.consume_failure_restart_after", "5m")
 	v.SetDefault("http.read_timeout", "180s")
 	v.SetDefault("http.write_timeout", "180s")
 
@@ -181,7 +195,11 @@ func Load() (*Config, error) {
 	v.SetDefault("postgres.conn_max_lifetime", "5m")
 	v.SetDefault("postgres.driver", "postgres")
 
-	v.SetDefault("rabbitmq.prefetch_count", 1)
+	// Per-agent-session prefetch: how many of a tenant's requests may be
+	// in flight to its agent at once. 10 was hardcoded at the consumer and
+	// production tenants pinned at it, after which the broker stopped
+	// delivering and queued requests aged out against the 1m queue TTL.
+	v.SetDefault("rabbitmq.prefetch_count", 32)
 	v.SetDefault("rabbitmq.retry_delay", "1s")
 	v.SetDefault("rabbitmq.exchange_name", "nudgebee-relay")
 	v.SetDefault("rabbitmq.request_queue", "nudgebee_relay_request")

@@ -883,6 +883,10 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 				// gp2 volumes, whose performance scales with size. When so, carry the gp3
 				// IOPS/throughput needed to match the gp2 so the upgrade is never a silent
 				// downgrade, and disclose that matching performance is billed separately.
+				// apply_impact tells the user what applying does, so the UI can highlight it
+				// before they click. EBS ModifyVolume is in-place and online: no downtime,
+				// data is preserved, and a failure leaves the volume usable on its current type.
+				applyImpact := "Converts this volume to gp3 in place — no downtime and no data loss. The change runs in the background and the volume cannot be modified again for about 6 hours; if it fails, the volume stays fully usable on its current type."
 				if match := gp2ToGp3Match(size); match.NeedsProvisioning {
 					if match.RecommendIOPS > 0 {
 						data["recommended_iops"] = match.RecommendIOPS
@@ -891,7 +895,9 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 						data["recommended_throughput"] = match.RecommendThroughput
 					}
 					data["note"] = "To preserve current performance, gp3 must be provisioned with the recommended IOPS/throughput (billed separately). The saving shown reflects storage cost only."
+					applyImpact += " gp3 will be provisioned with the recommended IOPS/throughput to match current performance, which is billed separately."
 				}
+				data["apply_impact"] = applyImpact
 
 				recommendation := providers.Recommendation{
 					CategoryName:        providers.RecommendationCategoryInfraUpgrade,

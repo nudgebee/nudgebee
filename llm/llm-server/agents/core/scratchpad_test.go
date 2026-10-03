@@ -472,7 +472,7 @@ func TestResolveMaxContextTokens_NilContext(t *testing.T) {
 	assert.Equal(t, 0, resolveMaxContextTokens(nil, "", "", ""))
 }
 
-// TestConstructScratchPad_EmptyResultIsNotFailureFraming pins the ReWOO-solver
+// TestConstructScratchPad_EmptyResultIsNotFailureFraming pins the orchestrator
 // half of the #29875 fix: a tool that exits 0 with empty stdout
 // (ToolStatusEmptyResult — e.g. `kubectl apply`, `gh run rerun`) must NOT make
 // the data_quality block tell the solver LLM that calls "FAILED" or to emit a

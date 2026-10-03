@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ type fakeStore struct {
 	fallback              string
 	prometheuClusterLabel string
 	err                   error
+	touched               atomic.Int64
 }
 
 func (f *fakeStore) IsWSEnabled(ctx context.Context, acct, agentType string) (bool, string, error) {
@@ -54,6 +56,11 @@ func (f *fakeStore) GetAgentStatus(ctx context.Context, accountID, agentType str
 
 func (f *fakeStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionStart time.Time) (bool, string, error) {
 	return false, "", f.err
+}
+
+func (f *fakeStore) TouchRelaySession(ctx context.Context, accountID, agentType string) error {
+	f.touched.Add(1)
+	return f.err
 }
 
 func (f *fakeStore) UpdateAgentVersion(ctx context.Context, accountID, agentType, version, commit, buildTime, protocolVersion string) error {
@@ -82,9 +89,10 @@ func (f *fakeStore) QueryProxyDatasources(ctx context.Context, accountID string)
 
 // fakeRPCClient implements the minimal Call signature.
 type fakeRPCClient struct {
-	resp  []byte
-	err   error
-	calls []rpcCall
+	resp         []byte
+	err          error
+	calls        []rpcCall
+	deliverLocal bool
 }
 
 type rpcCall struct {
@@ -103,6 +111,14 @@ func (f fakeRPCClient) Call(
 	f.calls = append(f.calls, rpcCall{exchange, routingKey, payload, requestID}) //nolint:staticcheck
 	return f.resp, f.err
 }
+
+func (f fakeRPCClient) InstanceID() string { return "fake-instance" }
+
+func (f fakeRPCClient) DeliverLocal(corrID string, body []byte) bool {
+	return f.deliverLocal
+}
+
+func (f fakeRPCClient) AbandonCh(corrID string) <-chan struct{} { return nil }
 
 func (f fakeRPCClient) Close() {
 }
@@ -196,6 +212,27 @@ func TestRequestHandler_StoreError(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	require.Equal(t, float64(500), body["errors"][0]["code"])
 	require.Equal(t, "internal server error", body["errors"][0]["message"])
+}
+
+func TestRequestHandler_AgentNotConnected(t *testing.T) {
+	store := &fakeStore{allowed: false}
+	rpc := fakeRPCClient{}
+	router := setupRouter(store, rpc)
+
+	input := models.ExternalActionRequest{
+		Body: models.ActionRequestBody{AccountID: "acct1"},
+	}
+	b, _ := json.Marshal(input)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/request", bytes.NewBuffer(b))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, 503, w.Code)
+	var body map[string][]map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Equal(t, float64(503), body["errors"][0]["code"])
+	require.Equal(t, "agent not connected", body["errors"][0]["message"])
 }
 
 func TestRequestHandler_RPCError(t *testing.T) {

@@ -2,9 +2,11 @@ import { Page, Locator } from "@playwright/test";
 import { CommonLocators } from "../GlobalLocators";
 
 // Global Optimize page (/optimise) — sub-tabs rendered by AnchorComponent as `#anchor-tab-<id>`.
+// Values are URL fragments; the Cost tab's fragment is `cost` while its anchor id stays
+// `recommendations` (RecommendationsTab locates it by the id).
 export const OptimizeTabs = {
     summary: "summary",
-    recommendations: "recommendations",
+    recommendations: "cost",
     resolutions: "resolutions",
     configuration: "configuration",
     autoOptimize: "auto-optimize",

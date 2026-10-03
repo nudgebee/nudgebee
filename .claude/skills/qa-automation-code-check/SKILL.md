@@ -95,9 +95,15 @@ FAIL when:
 - a dotted/templated id uses `#` CSS form — `#task-runner-task-k8s.cli-btn` is parsed as a class chain. Must be `page.locator('[id="task-runner-task-k8s.cli-btn"]')`;
 - the fallback is an index chain (`nth-child`, positional xpath). `.locator("xpath=..")` from a labelled anchor is fine;
 - a multi-candidate locator does not end in `.first()`;
-- MUI menu items use `getByRole("menuitem", { name })` — matches **zero** in this app (nested spans + `aria-hidden`). Must be `[role="menuitem"]#edit:visible` with a `hasText` fallback.
+- MUI menu items use `getByRole("menuitem", { name })` — matches **zero** in this app (nested spans + `aria-hidden`). Must be `[role="menuitem"]#edit:visible` with a `hasText` fallback;
+- **the same locator is built more than once** — the identical `getByTestId`/`getByRole`/`.locator()` call (same selector, same options) written out a second time anywhere in the target files, their sibling `*Locators.ts`, or `CommonLocators`, instead of being read off the one property/method that already builds it. Every duplicate is a second place that goes stale when the element changes.
 
 **No fallback is better than a wrong fallback.** A deliberate id-only locator with a one-line reason is a PASS.
+
+```bash
+# P1 — the same locator call written more than once; each hit is a candidate to consolidate
+grep -ohE '(getByTestId|getByRole|getByPlaceholder|getByText|getByLabel|locator)\([^)]*\)' $T | sort | uniq -cd
+```
 
 ### P2 — Comments: single-line only, only where needed
 
@@ -109,6 +115,7 @@ FAIL when:
 ### P3 — Secrets and environment data come from `.env`
 
 - **Hardcoded** credentials, tokens, webhook URLs, base URLs, tenant/cluster/account names, user emails, or project keys are a FAIL. `.env` / `.env.dev` are gitignored; a hardcoded secret leaks the moment the repo is shared — and this repo has an OSS path (P7).
+- **Any absolute URL** (a literal `https://...` or `http://...` with a scheme and host) is a FAIL, not only ones that look like secrets — it pins the file to one environment (dev vs test carry different hosts) and breaks the moment that host changes. `page.goto()` calls and locator hrefs use a **relative** path (`page.goto("/optimise#llm-analyser")`) so they resolve against `baseURL`, which `playwright.config.ts` already sets from `process.env.BASE_URL`. A relative path is not a violation.
 - Read via `process.env` and fail fast with a message that names the key:
 
 ```ts
@@ -199,7 +206,8 @@ Run by tag: `npx playwright test --grep "@sanity"` · exclude: `--grep-invert "@
 ### P5 — Structure and reuse
 
 - Locators → `*Locators.ts` (extend `CommonLocators`). Flows → `*Helper.ts`. Assertions → the spec.
-- A locator re-declared when `CommonLocators` or the sibling locators class already has it is a FAIL.
+- A locator re-declared when `CommonLocators` or the sibling locators class already has it is a FAIL — reuse the existing property instead of writing the selector again (see the P1 duplicate-locator check above).
+- **Simplicity.** Write the minimum code the test actually needs — no abstraction for a helper called once, no speculative options/parameters nothing in this file uses, no branching for a case the suite does not exercise. A wrapper function that just renames a single Playwright call, or a config object built for one caller, is a FAIL; inline it instead.
 - Test title states the action **and** the expected result — see **Test titles** below. A title failing that section is a P5 FAIL.
 - Every spec sets its own `test.setTimeout(...)`.
 - [`app-e2e-tests/README.md`](../../../app-e2e-tests/README.md) is updated when the change adds something a future contributor cannot infer from the specs: a new env variable, a new fixture or data-generation step, a new tag, or a new folder with its own conventions. A change that only adds cases to an existing pattern needs no README edit — say so rather than padding it.
@@ -243,6 +251,45 @@ async function rowAppears(row: Locator, timeoutMs: number): Promise<boolean> {
 ```
 
 Rules: every surviving `.catch` carries a `//` line saying **why absence is an expected outcome**; a swallowed `expect(...)` whose result is never read is a FAIL (either assert it or turn it into a boolean probe you act on); and `.catch` never wraps the assertion a test exists to make.
+
+#### Worker isolation: a file's tests must stay on one worker
+
+`playwright.config.ts` sets `fullyParallel: false` project-wide specifically so a whole spec
+file — in declaration order — is handed to a single worker; only *files* get split across the
+worker pool (`PW_WORKERS`, 2 in CI). That is load-bearing: ~250 specs mutate one shared dev
+tenant, and `test.beforeAll` / module-level state assumes it runs once per file, not once per
+worker. If `fullyParallel` were ever flipped back to `true` (globally, or via a local
+`test.describe.configure({ mode: "parallel" })`), Playwright is free to split one file's tests
+across 2 workers — a `test.beforeAll` then fires **once per worker that lands a test from that
+file**, silently doubling (and racing) whatever it does. This bit for real: `#37745` bumped CI
+to 2 workers without noticing `fullyParallel: true` (harmless at 1 worker, live at 2+) let this
+happen — see [`llmAnalyserHelper.ts`](../../../app-e2e-tests/tests/Optimize/LlmAnalyser/llmAnalyserHelper.ts)'s `ensureLlmAnalyserFeatureEnabled`, whose whole job is a once-per-file admin write.
+
+FAIL when:
+
+- a target file adds `fullyParallel: true` to `playwright.config.ts`, or a project override
+  for the file's directory — that is the global regression this check exists to catch;
+- a target file's describe block calls `test.describe.configure({ mode: "parallel" })` while
+  also using `test.beforeAll` / `test.afterAll` or module-level mutable state — parallel mode
+  opts that block back into cross-worker splitting even with the project default off;
+- a new `test.beforeAll` / `test.afterAll` is added and the PR does not confirm (in a `//` line
+  or the PR body) that it is safe to run once per file rather than once per test — a hook doing
+  an admin write, a login, or seeding shared fixture data needs that guarantee stated, not assumed.
+
+A file that genuinely wants intra-file parallelism (independent tests, no shared setup) may use
+`test.describe.configure({ mode: "parallel" })` deliberately — that is a PASS with a `//` line
+saying the tests share no state, not a violation.
+
+```bash
+# Confirm the project default hasn't regressed
+grep -n 'fullyParallel' app-e2e-tests/playwright.config.ts
+
+# Files with a beforeAll/afterAll — each one needs the reasoning above
+grep -rn 'test\.\(beforeAll\|afterAll\)' $T
+
+# A local override that re-enables cross-worker splitting for one file
+grep -n 'describe\.configure.*mode:\s*["'"'"']parallel' $T
+```
 
 #### Test titles
 
@@ -371,6 +418,14 @@ grep -n '/\*' $T
 
 # P1 — id locators with no .or() fallback on the same line
 grep -n 'locator("#' $T | grep -v '\.or('
+
+# P1 — the same locator call written more than once; consolidate into one property
+grep -ohE '(getByTestId|getByRole|getByPlaceholder|getByText|getByLabel|locator)\([^)]*\)' $T | sort | uniq -cd
+
+# P5 — worker isolation: config regression, and any beforeAll/afterAll needing the reasoning above
+grep -n 'fullyParallel' app-e2e-tests/playwright.config.ts
+grep -rn 'test\.\(beforeAll\|afterAll\)' $T
+grep -n 'describe\.configure.*mode:\s*["'"'"']parallel' $T
 
 # P4 — files where the test count and the tag count disagree
 for f in $T; do

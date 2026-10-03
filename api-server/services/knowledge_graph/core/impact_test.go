@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func newImpactTestNode(id string, nt NodeType, name, env, ns string) *DbNode {
 	qa := map[string]interface{}{}
@@ -33,7 +36,7 @@ func TestSummarizeImpact_CountsAppDependentsAndProd(t *testing.T) {
 		},
 	}
 
-	got := summarizeImpact(seedID, NodeTypeDatabase, nodes, edges, minDepth, map[string]string{})
+	got := summarizeImpact(seedID, NodeTypeDatabase, nodes, edges, minDepth, map[string]string{}, map[string]string{})
 
 	if got.DependentCount != 3 {
 		t.Errorf("DependentCount = %d, want 3 (2 services + 1 workload; namespace excluded)", got.DependentCount)
@@ -98,7 +101,7 @@ func TestSummarizeImpact_ResolvesEnvironmentFromAccountTiers(t *testing.T) {
 	}
 	minDepth := map[string]int{seedID: 0, "wl-labeled": 1, "wl-prod": 1, "wl-dev": 1, "wl-orphan": 1, "ext-1": 1, "node-1": 1}
 
-	got := summarizeImpact(seedID, NodeTypeDatabase, nodes, nil, minDepth, accountEnv)
+	got := summarizeImpact(seedID, NodeTypeDatabase, nodes, nil, minDepth, accountEnv, map[string]string{})
 
 	if got.ProductionDependents != 1 {
 		t.Errorf("ProductionDependents = %d, want 1 (only wl-prod via account tier)", got.ProductionDependents)
@@ -148,7 +151,7 @@ func TestSummarizeDownstream_NamesK8sService(t *testing.T) {
 		newImpactTestNode(seedID, NodeTypeLoadBalancer, "web-alb", "", ""),
 		newImpactTestNode("svc-1", NodeTypeK8sService, "frontend", "", "shop"),
 	}
-	got := summarizeDownstream(seedID, nodes, nil, map[string]int{seedID: 0, "svc-1": 1}, map[string]string{})
+	got := summarizeDownstream(seedID, nodes, nil, map[string]int{seedID: 0, "svc-1": 1}, map[string]string{}, map[string]string{})
 	if len(got) != 1 || got[0].NodeType != NodeTypeK8sService {
 		t.Errorf("K8sService must be named downstream, got %+v", got)
 	}
@@ -171,7 +174,7 @@ func TestSummarizeDownstream_ResolvesEnvironmentFromAccountTiers(t *testing.T) {
 		newImpactTestNode(seedID, NodeTypeWorkload, "checkout", "", "shop"),
 		withAccount(newImpactTestNode("db-1", NodeTypeDatabase, "orders-db", "", ""), "acc-prod"),
 	}
-	got := summarizeDownstream(seedID, nodes, nil, map[string]int{seedID: 0, "db-1": 1}, map[string]string{"acc-prod": "prod"})
+	got := summarizeDownstream(seedID, nodes, nil, map[string]int{seedID: 0, "db-1": 1}, map[string]string{"acc-prod": "prod"}, map[string]string{})
 	if len(got) != 1 || got[0].Environment != "prod" {
 		t.Errorf("downstream dependency should resolve via account tier, got %+v", got)
 	}
@@ -189,7 +192,7 @@ func TestSummarizeImpact_SingleSourceIsLowCoverage(t *testing.T) {
 			ContributingSources: []EdgeContributingSource{{Source: "k8s"}},
 		},
 	}
-	got := summarizeImpact(seedID, NodeTypeStorage, nodes, edges, map[string]int{seedID: 0, "wl-1": 1}, map[string]string{})
+	got := summarizeImpact(seedID, NodeTypeStorage, nodes, edges, map[string]int{seedID: 0, "wl-1": 1}, map[string]string{}, map[string]string{})
 	if got.CoverageConfidence != CoverageLow {
 		t.Errorf("CoverageConfidence = %q, want low", got.CoverageConfidence)
 	}
@@ -204,7 +207,7 @@ func TestSummarizeImpact_NoDependentsLowNotNone(t *testing.T) {
 	// decided by the caller before traversal.
 	seedID := "vol-orphan"
 	nodes := []*DbNode{newImpactTestNode(seedID, NodeTypeStorage, "orphan-vol", "", "")}
-	got := summarizeImpact(seedID, NodeTypeStorage, nodes, nil, map[string]int{seedID: 0}, map[string]string{})
+	got := summarizeImpact(seedID, NodeTypeStorage, nodes, nil, map[string]int{seedID: 0}, map[string]string{}, map[string]string{})
 	if got.DependentCount != 0 {
 		t.Errorf("DependentCount = %d, want 0", got.DependentCount)
 	}
@@ -277,7 +280,7 @@ func TestSummarizeDownstream(t *testing.T) {
 			ContributingSources: []EdgeContributingSource{{Source: "traces"}}},
 	}
 
-	got := summarizeDownstream(seedID, nodes, edges, depth, map[string]string{})
+	got := summarizeDownstream(seedID, nodes, edges, depth, map[string]string{}, map[string]string{})
 
 	if len(got) != 2 {
 		t.Fatalf("expected 2 downstream dependencies (namespace + seed excluded), got %d: %+v", len(got), got)
@@ -382,5 +385,120 @@ func TestFilterNodesByTenant(t *testing.T) {
 	ids := nodeIDsOf(got)
 	if len(ids) != 2 || ids[0] != "a" || ids[1] != "c" {
 		t.Errorf("filterNodesByTenant/nodeIDsOf = %v, want [a c] (drops other tenant + nil)", ids)
+	}
+}
+
+// withResource stamps the k8s workload identity the criticality tier is keyed
+// on (nb_resource_id == k8s_workloads.cloud_resource_id).
+func withResource(n *DbNode, accountID, resourceID string) *DbNode {
+	n.CloudAccountID = accountID
+	if n.QueryAttributes == nil {
+		n.QueryAttributes = map[string]interface{}{}
+	}
+	n.QueryAttributes["nb_resource_id"] = resourceID
+	return n
+}
+
+func TestResolveNodeCriticality(t *testing.T) {
+	tiers := map[string]string{
+		"acc-1|res-critical": "critical",
+		"acc-1|res-low":      "low",
+		"acc-2|res-critical": "high",
+	}
+	cases := []struct {
+		name string
+		node *DbNode
+		want string
+	}{
+		{"tiered workload", withResource(newImpactTestNode("a", NodeTypeWorkload, "pay", "", "shop"), "acc-1", "res-critical"), "critical"},
+		{"low tier", withResource(newImpactTestNode("b", NodeTypeWorkload, "cron", "", "shop"), "acc-1", "res-low"), "low"},
+		// Same resource id in another account is a different workload's tier.
+		{"account scopes the tier", withResource(newImpactTestNode("c", NodeTypeWorkload, "pay", "", "shop"), "acc-2", "res-critical"), "high"},
+		{"untiered workload has no tier", withResource(newImpactTestNode("d", NodeTypeWorkload, "web", "", "shop"), "acc-1", "res-none"), ""},
+		// Trace/eBPF-contributed callers carry no nb_resource_id and can never
+		// be tiered — absence here must not read as "ordinary".
+		{"node without the join key", newImpactTestNode("e", NodeTypeService, "orders", "", "shop"), ""},
+		{"nil node", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveNodeCriticality(tc.node, tiers); got != tc.want {
+				t.Errorf("resolveNodeCriticality() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSummarizeImpact_StampsCriticality(t *testing.T) {
+	seedID := "db-1"
+	tiers := map[string]string{"acc-1|res-pay": "critical"}
+	nodes := []*DbNode{
+		newImpactTestNode(seedID, NodeTypeDatabase, "orders-db", "", ""),
+		withResource(newImpactTestNode("wl-pay", NodeTypeWorkload, "payments", "", "shop"), "acc-1", "res-pay"),
+		withResource(newImpactTestNode("wl-plain", NodeTypeWorkload, "reporting", "", "shop"), "acc-1", "res-plain"),
+	}
+	minDepth := map[string]int{seedID: 0, "wl-pay": 1, "wl-plain": 1}
+
+	got := summarizeImpact(seedID, NodeTypeDatabase, nodes, nil, minDepth, map[string]string{}, tiers)
+
+	byID := map[string]string{}
+	for _, d := range got.Dependents {
+		byID[d.NodeID] = d.Criticality
+	}
+	if byID["wl-pay"] != "critical" {
+		t.Errorf("tiered dependent Criticality = %q, want critical", byID["wl-pay"])
+	}
+	if byID["wl-plain"] != "" {
+		t.Errorf("untiered dependent Criticality = %q, want empty", byID["wl-plain"])
+	}
+	// Criticality is informational: it must not move the counts or the coverage.
+	if got.DependentCount != 2 || got.ProductionDependents != 0 {
+		t.Errorf("criticality must not affect counts, got dependents=%d prod=%d", got.DependentCount, got.ProductionDependents)
+	}
+}
+
+// Recency comes from flow-source last_seen_at only, on direct dependents only:
+// a k8s re-assertion must not read as "traffic observed", and a hop-2 node's
+// connecting edge points at an intermediate, not the seed.
+func TestSummarizeImpact_LastObservedFromFlowSourcesOnDirectDependents(t *testing.T) {
+	seedID := "db-1"
+	old := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	fresh := time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC)
+	k8sNow := time.Date(2026, 9, 7, 9, 0, 0, 0, time.UTC)
+	nodes := []*DbNode{
+		newImpactTestNode(seedID, NodeTypeDatabase, "orders-db", "", ""),
+		newImpactTestNode("wl-direct", NodeTypeWorkload, "checkout", "", "shop"),
+		newImpactTestNode("wl-static", NodeTypeWorkload, "cron", "", "shop"),
+		newImpactTestNode("wl-far", NodeTypeWorkload, "reporting", "", "shop"),
+	}
+	minDepth := map[string]int{seedID: 0, "wl-direct": 1, "wl-static": 1, "wl-far": 2}
+	edges := []*DbEdge{
+		// Two parallel edges: the freshest FLOW timestamp wins; the newer k8s one is ignored.
+		{SourceNodeID: "wl-direct", DestinationNodeID: seedID, RelationshipType: RelationshipCalls,
+			ContributingSources: []EdgeContributingSource{{Source: "ebpf", LastSeenAt: old}, {Source: "k8s", LastSeenAt: k8sNow}}},
+		{SourceNodeID: "wl-direct", DestinationNodeID: seedID, RelationshipType: RelationshipMounts,
+			ContributingSources: []EdgeContributingSource{{Source: "traces", LastSeenAt: fresh}}},
+		// Static-only assertion → no observation.
+		{SourceNodeID: "wl-static", DestinationNodeID: seedID, RelationshipType: RelationshipCalls,
+			ContributingSources: []EdgeContributingSource{{Source: "k8s", LastSeenAt: k8sNow}}},
+		// Hop 2 with a flow source → still not stamped.
+		{SourceNodeID: "wl-far", DestinationNodeID: "wl-direct", RelationshipType: RelationshipCalls,
+			ContributingSources: []EdgeContributingSource{{Source: "ebpf", LastSeenAt: fresh}}},
+	}
+
+	got := summarizeImpact(seedID, NodeTypeDatabase, nodes, edges, minDepth, map[string]string{}, map[string]string{})
+
+	byID := map[string]time.Time{}
+	for _, d := range got.Dependents {
+		byID[d.NodeID] = d.LastObservedAt
+	}
+	if !byID["wl-direct"].Equal(fresh) {
+		t.Errorf("direct dependent LastObservedAt = %v, want freshest flow source %v", byID["wl-direct"], fresh)
+	}
+	if !byID["wl-static"].IsZero() {
+		t.Errorf("static-only dependent must carry no observation, got %v", byID["wl-static"])
+	}
+	if !byID["wl-far"].IsZero() {
+		t.Errorf("hop-2 dependent must carry no observation, got %v", byID["wl-far"])
 	}
 }

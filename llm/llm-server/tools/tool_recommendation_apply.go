@@ -57,6 +57,18 @@ func (m RecommendationApplyTool) InputSchema() core.ToolSchema {
 				Type:        core.ToolSchemaTypeObject,
 				Description: "Channel options, e.g. {\"in_place\": true} for in-place pod resize, {\"name\": \"<git integration name>\"} to pick a git integration.",
 			},
+			"safety_band": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "The recommendation's safety_band exactly as read from recommendation_view ('safe', 'review', 'risky', or 'unknown' when NULL). REQUIRED: the apply refuses when it is missing or no longer matches the stored verdict.",
+			},
+			"safety_reason": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "The recommendation's safety_reason from recommendation_view, shown on the approval card next to the band.",
+			},
+			"change_class": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "The recommendation's change_class from recommendation_view ('additive', 'reductive', 'destructive'); a destructive change is presented as Irreversible on the approval card.",
+			},
 		},
 		Required: []string{"recommendation_id"},
 	}
@@ -106,9 +118,49 @@ func applyDataValueLines(data map[string]any) string {
 	return strings.Join(lines, "\n")
 }
 
+// applySafetyLine renders the safety verdict for the approval card in the
+// product's words (the stored band names the action, not the fear): the
+// fact, then the safeguard that makes applying fine. The user is here to
+// save money, so the line informs — it never warns them off.
+func applySafetyLine(band, reason, provider, changeClass string) string {
+	reason = strings.TrimSuffix(strings.TrimSpace(reason), ".")
+	safeguard := "apply in a maintenance window, or give the owning team a heads-up first"
+	switch provider {
+	case "kubernetes", "git", "github", "gitlab":
+		safeguard = "use the no-restart (in-place) apply where the cluster supports it, or apply in a maintenance window"
+	}
+	if changeClass == "destructive" && (band == "safe" || band == "review" || band == "risky") {
+		if reason == "" {
+			reason = "this change removes the resource"
+		}
+		return "Safety: Irreversible — " + reason + ". Safeguard: confirm nothing still depends on it, and snapshot first where the resource supports it."
+	}
+	switch band {
+	case "safe":
+		if reason == "" {
+			reason = "no known dependents"
+		}
+		return "Safety: Safe — " + reason + "."
+	case "review":
+		if reason == "" {
+			reason = "dependents exist but none look production"
+		}
+		return "Safety: Quick check — " + reason + ". Safeguard: " + safeguard + "."
+	case "risky":
+		if reason == "" {
+			reason = "production callers are in the blast radius"
+		}
+		return "Safety: Plan it — " + reason + ". Safeguard: " + safeguard + "."
+	default:
+		return "Safety: Not assessed — this workload isn't in the dependency graph yet."
+	}
+}
+
 // ConfirmationQuestion renders the approval card in operator terms — the
-// concrete values being applied (from the data payload), the model's summary,
-// and the channel, not a raw recommendation id.
+// model's summary (savings first), the safety verdict as the agent read it,
+// the concrete values being applied (from the data payload), and the channel,
+// not a raw recommendation id. The band on the card is agent-reported; Call
+// re-checks it against the store before anything is applied.
 func (m RecommendationApplyTool) ConfirmationQuestion(toolInput string) string {
 	args := confirmationArgs(toolInput)
 	recommendationId, _ := args["recommendation_id"].(string)
@@ -129,6 +181,12 @@ func (m RecommendationApplyTool) ConfirmationQuestion(toolInput string) string {
 	if summary, _ := args["summary"].(string); strings.TrimSpace(summary) != "" {
 		sections = append(sections, strings.TrimSpace(summary))
 	}
+	if band, _ := args["safety_band"].(string); strings.TrimSpace(band) != "" {
+		reason, _ := args["safety_reason"].(string)
+		provider, _ := args["provider"].(string)
+		changeClass, _ := args["change_class"].(string)
+		sections = append(sections, applySafetyLine(strings.TrimSpace(band), reason, provider, strings.TrimSpace(changeClass)))
+	}
 	if data, ok := args["data"].(map[string]any); ok {
 		if valueLines := applyDataValueLines(data); valueLines != "" {
 			sections = append(sections, "Values to apply:\n"+valueLines)
@@ -146,6 +204,18 @@ func (m RecommendationApplyTool) Call(nbCtx core.NbToolContext, input core.NBToo
 	recommendationId := stringArg(input, "recommendation_id")
 	if recommendationId == "" {
 		return errNBLLMToolResponse(errRecommendationIdRequired), nil
+	}
+
+	// No write path without safety context: the band the agent showed the user
+	// must be the one in the store. A failed read refuses too — a retry is
+	// cheap, an apply against an unverified verdict is not.
+	safety, err := recommendationSafetyFacts(nbCtx, recommendationId)
+	if err != nil {
+		return errNBLLMToolResponse(fmt.Errorf("recommendation_apply: could not verify the recommendation's safety data (%w) — retry rather than applying without it", err)), nil
+	}
+	if claimed := stringArg(input, "safety_band"); claimed != safety.Band {
+		return errNBLLMToolResponse(fmt.Errorf("recommendation_apply refused: safety_band %q does not match the stored verdict %q (missing, or re-assessed since it was read) — present the current safety band, blast radius and savings to the user, then call again with safety_band=%q. Safety data: %s",
+			claimed, safety.Band, safety.Band, safety.Facts)), nil
 	}
 
 	data, _ := input.Arguments["data"].(map[string]any)

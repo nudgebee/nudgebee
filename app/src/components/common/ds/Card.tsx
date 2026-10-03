@@ -27,10 +27,13 @@
  *                             canonical "light-gray panel" look.
  *   size         = 'sm' | 'md' | 'lg'
  *                  Drives padding AND default shadow. md is today's WidgetCard.
- *   elevation    = 'raised' | 'flat'
+ *   elevation    = 'raised' | 'flat' | 'floating'
  *                  Default 'raised' (all sizes ship with a shadow).
  *                  Use 'flat' when nested inside Modal / Inspector / Drawer
  *                  where stacking shadows would compound visual weight.
+ *                  Use 'floating' for a `position: sticky`/fixed surface that
+ *                  needs to visually separate itself from content scrolling
+ *                  underneath it — a noticeably darker shadow than 'raised'.
  *                  Tinted variant is always flat (shadow on tinted bg looks heavy).
  *   tone         = 'neutral' | 'info' | 'success' | 'warning' | 'danger'
  *                  Meaningful when variant='accent' (left-border colour) OR
@@ -72,7 +75,7 @@ import { Box, SxProps, Theme } from '@mui/material';
 
 export type CardVariant = 'elevated' | 'outlined' | 'accent' | 'tinted';
 export type CardSize = 'sm' | 'md' | 'lg';
-export type CardElevation = 'raised' | 'flat';
+export type CardElevation = 'raised' | 'flat' | 'floating';
 export type CardTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
 
 export interface CardProps {
@@ -116,6 +119,15 @@ const SIZE_TOKENS: Record<CardSize, { padding: string; shadow: string }> = {
     padding: '28px var(--ds-space-6)', // 28px 32px
     shadow: '0 2px 16px rgba(0, 0, 0, 0.10)',
   },
+};
+
+// elevation='floating' shadow, keyed by size — same offset/blur ramp as the
+// 'raised' shadows above, roughly 2x the spread and opacity so a sticky/fixed
+// surface reads as clearly lifted above whatever scrolls beneath it.
+const FLOATING_SHADOW: Record<CardSize, string> = {
+  sm: '0 4px 14px rgba(0, 0, 0, 0.1)',
+  md: '0 6px 20px rgba(0, 0, 0, 0.12)',
+  lg: '0 8px 28px rgba(0, 0, 0, 0.14)',
 };
 
 const ACCENT_TONE_COLOR: Record<CardTone, string> = {
@@ -174,13 +186,14 @@ export const Card: React.FC<CardProps> = ({
     }
   }
 
-  const { padding, shadow } = SIZE_TOKENS[size];
+  const { padding, shadow: raisedShadow } = SIZE_TOKENS[size];
+  const shadow = elevation === 'floating' ? FLOATING_SHADOW[size] : raisedShadow;
 
   const isOutlined = variant === 'outlined';
   const isAccent = variant === 'accent';
   const isTinted = variant === 'tinted';
 
-  const showShadow = elevation === 'raised' && !isTinted;
+  const showShadow = (elevation === 'raised' || elevation === 'floating') && !isTinted;
 
   const borderWidth = selected ? 2 : isOutlined ? 1 : 1;
   const defaultBorderColor = selected ? 'var(--ds-blue-500)' : isTinted ? TINTED_BORDER[tone] : 'var(--ds-gray-200)';

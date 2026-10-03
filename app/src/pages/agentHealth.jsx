@@ -22,15 +22,64 @@ const HEADERS_K8S = ['Status', 'Agent Version', 'Latest Version', 'Last Connecte
 const HEADERS_CLOUD = ['Status', 'Last Connected', 'Cloud', 'Account'];
 const HEADERS_PROXY = ['Status', 'Last Connected'];
 const HEADERS_PROXY_DATASOURCES = ['Name', 'Type', 'Proxy Type', 'Status', 'Last Check', 'Error'];
+const HEADERS_OBSERVABILITY = ['Signal', 'Provider', 'Source', 'Status', 'Last Checked', 'Error'];
 const HEADERS_SCHEDULED_JOBS = ['Action Name', 'Job Status', 'Execution Count', 'Last Execution Time', 'Cron'];
 const HEADERS_CLOUD_FEATURES = ['Feature', 'Status', 'Last Sync', 'Next Sync', 'Error'];
 const LATEST_CF_TEMPLATE_VERSION = '2';
 
 const AGENT_TAB = { text: 'Agent', value: 0, fragment: 'agent', id: 'tab-agent' };
-const PROXY_AGENT_TAB = { text: 'Proxy Agent', value: 1, fragment: 'proxy-agent', id: 'tab-proxy-agent' };
+const OBSERVABILITY_TAB = { text: 'Observability', value: 1, fragment: 'observability', id: 'tab-observability' };
+const PROXY_AGENT_TAB = { text: 'Proxy Agent', value: 2, fragment: 'proxy-agent', id: 'tab-proxy-agent' };
+
+/** The signals the Observability tab reports on, in display order. */
+const OBSERVABILITY_SIGNALS = [
+  { key: 'logs', label: 'Logs' },
+  { key: 'metrics', label: 'Metrics' },
+  { key: 'traces', label: 'Traces' },
+];
 
 /** cloud_provider of a self-hosted VM fleet — reached only through a proxy agent. */
 const SELF_HOSTED = 'SelfHosted';
+
+/**
+ * The entry for a signal (logs / metrics / traces) whose provider is a NON-agent
+ * integration — a hosted Loki, Datadog, Elasticsearch — or null when the agent serves
+ * it. Stamped onto connection_status.providerStatus by the provider-status cron; an
+ * `integration_id` is the marker (see api-server observability/provider_status.go).
+ *
+ * The agent's own *Connection flag says nothing about such a backend, so wherever this
+ * returns an entry the page must report the entry's probe result instead of that flag.
+ */
+export const integrationServed = (providerStatus, signal) => {
+  const entry = providerStatus?.[signal];
+  return entry?.integration_id ? entry : null;
+};
+
+/**
+ * The services named in the red "… are disconnected" banner on the Agent tab. This banner
+ * speaks for the agent only: a signal an integration serves is omitted entirely, whether it
+ * is healthy or not, because the agent's flag says nothing about that backend and its real
+ * state belongs to the Telemetry Sources tab. Everything else keeps the agent's own flags.
+ */
+export const buildDisconnectedServices = (connectionStatus, providerStatus) => {
+  const disconnected = [];
+  if (!connectionStatus?.relayConnection) {
+    disconnected.push('Relay');
+  }
+  if (!integrationServed(providerStatus, 'metrics') && !connectionStatus?.prometheusConnection) {
+    disconnected.push('Prometheus');
+  }
+  if (!connectionStatus?.alertManagerConnection) {
+    disconnected.push('Alert Manager');
+  }
+  if (!integrationServed(providerStatus, 'logs') && !connectionStatus?.logsConnection) {
+    disconnected.push('Logs');
+  }
+  if (!connectionStatus?.nodeAgentConnection) {
+    disconnected.push('NodeAgent');
+  }
+  return disconnected;
+};
 
 const AgentHealth = () => {
   const { selectedCluster } = useData();
@@ -41,6 +90,10 @@ const AgentHealth = () => {
   const [agentHealthData, setAgentHealthData] = useState([]);
   const [agentType, setAgentType] = useState('k8s');
   const [data, setData] = useState([]);
+  // Which backend actually serves each signal, and its probe result — see
+  // integrationServed. Null for a cluster the provider-status cron has never stamped
+  // (i.e. everything is agent-served), which is the pre-existing behaviour.
+  const [providerStatus, setProviderStatus] = useState(null);
   const [agentFeatures, setAgentFeatures] = useState({
     isRelayConnected: false,
     isPrometheusConnected: false,
@@ -50,6 +103,7 @@ const AgentHealth = () => {
     logsProvider: '',
     logsProviderUrl: '',
     isTracesManagerConnected: false,
+    traceProvider: '',
     tracesUrl: '',
     isOpenCostConnected: false,
     isOpenCostServerSide: false,
@@ -130,11 +184,12 @@ const AgentHealth = () => {
       accountId: router.query.accountId,
       type: accountType,
     };
+    let cancelled = false;
     setLoading(true);
     k8sApi
       .getAgentHealth(query)
       .then((res) => {
-        if (res?.error) {
+        if (cancelled || res?.error) {
           return;
         }
         const rawData = Array.isArray(res?.data) ? res.data : [];
@@ -148,6 +203,10 @@ const AgentHealth = () => {
 
         for (let acc of result) {
           agentType = acc.type;
+          // Reset per account, outside the k8s branch: a cloud account carries no telemetry
+          // stamp, and leaving the previous k8s cluster's value in state would show one
+          // account's backends under another's name after switching.
+          setProviderStatus(acc.type === 'k8s' ? acc.connection_status?.providerStatus ?? null : null);
           isAgentActive = acc.status === 'CONNECTED';
           const latestVersionsData = latestVersionsRef.current;
 
@@ -168,21 +227,7 @@ const AgentHealth = () => {
             }
 
             const connectionStatus = result?.[0].connection_status;
-            if (!connectionStatus?.relayConnection) {
-              disconnectedService.push('Relay');
-            }
-            if (!connectionStatus?.prometheusConnection) {
-              disconnectedService.push('Prometheus');
-            }
-            if (!connectionStatus?.alertManagerConnection) {
-              disconnectedService.push('Alert Manager');
-            }
-            if (!connectionStatus?.logsConnection) {
-              disconnectedService.push('Logs');
-            }
-            if (!connectionStatus?.nodeAgentConnection) {
-              disconnectedService.push('NodeAgent');
-            }
+            disconnectedService.push(...buildDisconnectedServices(connectionStatus, connectionStatus?.providerStatus));
 
             setCfStack(null);
             setAgentFeatures({
@@ -192,6 +237,7 @@ const AgentHealth = () => {
               isAlertManagerConnected: (isAgentActive && acc.connection_status?.alertManagerConnection) ?? false,
               isLogsManagerConnected: (isAgentActive && acc.connection_status?.logsConnection) ?? false,
               isTracesManagerConnected: (isAgentActive && acc.connection_status?.tracesEnabled) ?? false,
+              traceProvider: acc.connection_status?.traceProvider ?? '',
               tracesUrl: acc.connection_status?.tracesUrl ?? '',
               logsProvider: acc.connection_status?.logsConnectionProvider ?? '',
               logsProviderUrl: acc.connection_status?.logProviderUrl ?? '',
@@ -273,26 +319,37 @@ const AgentHealth = () => {
         setDisconnectedService(disconnectedService);
       })
       .finally(() => {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       });
+    return () => {
+      cancelled = true;
+    };
   }, [router.query.accountId, selectedCluster]);
 
   // Fetch proxy agent data
   useEffect(() => {
     if (!router.query.accountId) return;
 
+    let cancelled = false;
     setProxyLoading(true);
     k8sApi
       .getAgentHealth({ accountId: router.query.accountId, type: 'proxy' })
       .then((res) => {
-        if (res?.error) {
+        if (cancelled || res?.error) {
           return;
         }
         setProxyData(Array.isArray(res?.data) ? res.data : []);
       })
       .finally(() => {
-        setProxyLoading(false);
+        if (!cancelled) {
+          setProxyLoading(false);
+        }
       });
+    return () => {
+      cancelled = true;
+    };
   }, [router.query.accountId]);
 
   // Build proxy table data — re-runs when proxyData changes
@@ -463,6 +520,75 @@ const AgentHealth = () => {
     ]);
   };
 
+  // One row per signal: which backend actually serves it, and — when that backend is an
+  // integration rather than the agent — whether it answered its last connection test.
+  // Agent-served rows carry no status here on purpose; the Agent tab owns that.
+  // What the agent itself last reported for a signal. The provider-status check only runs
+  // for clusters with a non-agent integration, so on an agent-served cluster there is no
+  // stamp to read — but this page already holds those fields (the Agent tab renders them),
+  // so the row is filled in from there rather than left blank waiting on a cron.
+  //
+  // traceProvider alone proves nothing — every agent reports "otel_clickhouse" whether or
+  // not traces are wired — so it counts only when the agent also enabled traces. Mirrors
+  // agentReportedProvider in the api-server's provider_status.go.
+  const agentReportedProvider = (signal) => {
+    const isChronosphere = (agentFeatures.prometheusUrl || '').includes('chronosphere');
+    if (signal === 'logs') return agentFeatures.logsProvider || '';
+    if (signal === 'metrics') return isChronosphere ? 'chronosphere' : agentFeatures.prometheusUrl ? 'prometheus' : '';
+    if (signal === 'traces' && agentFeatures.isTracesManagerConnected) {
+      return isChronosphere ? 'chronosphere' : agentFeatures.traceProvider || '';
+    }
+    return '';
+  };
+
+  // Whether the agent reports this signal as working. Same flags the Agent tab renders, so
+  // the two tabs cannot disagree — and already gated on the agent being live, so a
+  // disconnected agent reports Disconnected here too.
+  const agentSignalConnected = (signal) =>
+    ({
+      logs: agentFeatures.isLogsManagerConnected,
+      metrics: agentFeatures.isPrometheusConnected,
+      traces: agentFeatures.isTracesManagerConnected,
+    }[signal] ?? false);
+
+  const buildObservabilityTableData = () =>
+    OBSERVABILITY_SIGNALS.map(({ key, label }) => {
+      const entry = providerStatus?.[key];
+      const viaIntegration = integrationServed(providerStatus, key);
+      const connected = viaIntegration?.connected;
+      const provider = entry?.provider || agentReportedProvider(key);
+      return [
+        { text: label },
+        { text: provider || '-' },
+        { text: viaIntegration ? `Integration "${viaIntegration.integration_name}"` : provider ? 'Agent' : '-' },
+        {
+          // A probed integration reports its probe; an agent-served signal reports the
+          // agent's own flag for it. Both are a real Connected/Disconnected — the Source
+          // column is what says which of the two answered, and Last Checked is set only
+          // for the probed one.
+          component: !provider ? (
+            <Text value='Not configured' />
+          ) : (
+            <Typography
+              component='span'
+              variant='body2'
+              sx={{ color: (viaIntegration ? connected : agentSignalConnected(key)) ? ds.green[500] : ds.red[500] }}
+            >
+              {(viaIntegration ? connected : agentSignalConnected(key)) ? 'Connected' : 'Disconnected'}
+            </Typography>
+          ),
+        },
+        { component: providerStatus?.checkedAt && viaIntegration ? <Datetime value={providerStatus.checkedAt} /> : <Text value='-' /> },
+        {
+          component: (
+            <Typography component='span' variant='body2' color={entry?.error ? 'error' : undefined}>
+              {entry?.error || '-'}
+            </Typography>
+          ),
+        },
+      ];
+    });
+
   // Surface the agent's per-feature health-check failure reason next to a
   // "Disconnected" status. Renders nothing when connected or no reason reported.
   const renderReason = (disconnected, error) =>
@@ -474,9 +600,28 @@ const AgentHealth = () => {
       </li>
     ) : null;
 
+  // A signal this agent does not serve. The Agent tab deliberately reports no status for
+  // it — green or red would both be the agent's opinion about a backend it never touches —
+  // and points at the tab that owns the answer.
+  const renderDelegatedFeature = (label) => (
+    <li>
+      <b>{label} - </b>
+      <Typography component='span' variant='body2' sx={{ color: ds.gray[600] }}>
+        served by an integration (see Observability)
+      </Typography>
+    </li>
+  );
+
   const paginatedScheduledJobsData = scheduledJobsData.slice(currentPage * recordsPerPage, (currentPage + 1) * recordsPerPage);
 
-  const optionsToDisplay = useMemo(() => ({ tabOptions: isVmAccount ? [PROXY_AGENT_TAB] : [AGENT_TAB, PROXY_AGENT_TAB] }), [isVmAccount]);
+  // Observability describes a K8s cluster's log/metric/trace backends. A cloud account has
+  // none of that surface — the provider-status check only ever stamps K8s accounts — so it
+  // would render an all-empty table; it is left out rather than offered and disappointing.
+  const isK8sAccount = (selectedCluster?.cloud_provider || selectedCluster?.type || '').toLowerCase() === 'k8s';
+  const optionsToDisplay = useMemo(() => {
+    if (isVmAccount) return { tabOptions: [PROXY_AGENT_TAB] };
+    return { tabOptions: isK8sAccount ? [AGENT_TAB, OBSERVABILITY_TAB, PROXY_AGENT_TAB] : [AGENT_TAB, PROXY_AGENT_TAB] };
+  }, [isVmAccount, isK8sAccount]);
 
   // Sync tab from hash — runs on mount and on back/forward navigation
   useEffect(() => {
@@ -519,39 +664,51 @@ const AgentHealth = () => {
                       {agentFeatures.agentUrl}
                     </li>
                   )}
-                  <li>
-                    <b>Prometheus - </b>
-                    <ul>
-                      <li>Status - {agentFeatures.isPrometheusConnected ? 'Connected' : 'Disconnected'}</li>
-                      <li>Data Retention - {getPrometheusRetentionTime(agentFeatures.prometheusRetentionTime)}</li>
-                      <li>URL - {agentFeatures.prometheusUrl}</li>
-                      <li>Additional Labels - {agentFeatures.prometheusAdditionalLabels}</li>
-                      {renderReason(!agentFeatures.isPrometheusConnected, agentFeatures.prometheusError)}
-                    </ul>
-                  </li>
+                  {integrationServed(providerStatus, 'metrics') ? (
+                    renderDelegatedFeature('Prometheus')
+                  ) : (
+                    <li>
+                      <b>Prometheus - </b>
+                      <ul>
+                        <li>Status - {agentFeatures.isPrometheusConnected ? 'Connected' : 'Disconnected'}</li>
+                        <li>Data Retention - {getPrometheusRetentionTime(agentFeatures.prometheusRetentionTime)}</li>
+                        <li>URL - {agentFeatures.prometheusUrl}</li>
+                        <li>Additional Labels - {agentFeatures.prometheusAdditionalLabels}</li>
+                        {renderReason(!agentFeatures.isPrometheusConnected, agentFeatures.prometheusError)}
+                      </ul>
+                    </li>
+                  )}
                   <li>
                     <b>Alert Manager - </b> {agentFeatures.isAlertManagerConnected ? 'Connected' : 'Disconnected'}
                     {!agentFeatures.isAlertManagerConnected && agentFeatures.alertManagerError && (
                       <ul>{renderReason(true, agentFeatures.alertManagerError)}</ul>
                     )}
                   </li>
-                  <li>
-                    <b>Logs - </b>
-                    <ul>
-                      <li>Status - {agentFeatures.isLogsManagerConnected ? 'Connected' : 'Disconnected'}</li>
-                      <li>Provider - {agentFeatures.logsProvider}</li>
-                      <li>URL - {agentFeatures.logsProviderUrl}</li>
-                      {renderReason(!agentFeatures.isLogsManagerConnected, agentFeatures.logsError)}
-                    </ul>
-                  </li>
-                  <li>
-                    <b>Traces - </b>
-                    <ul>
-                      <li>Status - {agentFeatures.isTracesManagerConnected ? 'Connected' : 'Disconnected'}</li>
-                      <li>URL - {agentFeatures.tracesUrl}</li>
-                      {renderReason(!agentFeatures.isTracesManagerConnected, agentFeatures.tracesError)}
-                    </ul>
-                  </li>
+                  {integrationServed(providerStatus, 'logs') ? (
+                    renderDelegatedFeature('Logs')
+                  ) : (
+                    <li>
+                      <b>Logs - </b>
+                      <ul>
+                        <li>Status - {agentFeatures.isLogsManagerConnected ? 'Connected' : 'Disconnected'}</li>
+                        <li>Provider - {agentFeatures.logsProvider}</li>
+                        <li>URL - {agentFeatures.logsProviderUrl}</li>
+                        {renderReason(!agentFeatures.isLogsManagerConnected, agentFeatures.logsError)}
+                      </ul>
+                    </li>
+                  )}
+                  {integrationServed(providerStatus, 'traces') ? (
+                    renderDelegatedFeature('Traces')
+                  ) : (
+                    <li>
+                      <b>Traces - </b>
+                      <ul>
+                        <li>Status - {agentFeatures.isTracesManagerConnected ? 'Connected' : 'Disconnected'}</li>
+                        <li>URL - {agentFeatures.tracesUrl}</li>
+                        {renderReason(!agentFeatures.isTracesManagerConnected, agentFeatures.tracesError)}
+                      </ul>
+                    </li>
+                  )}
                   <li>
                     <b>OpenCost - </b>
                     <ul>
@@ -653,7 +810,7 @@ const AgentHealth = () => {
         </>
       )}
 
-      {activeTab === 1 && (
+      {activeTab === 2 && (
         <>
           {!proxyLoading && proxyAgentHealthData.length === 0 ? (
             <Box
@@ -825,6 +982,19 @@ const AgentHealth = () => {
             </>
           )}
         </>
+      )}
+
+      {activeTab === 1 && (
+        <ListingLayout id='observability' sx={{ mt: 3 }}>
+          <ListingLayout.Toolbar title='Observability' />
+          <ListingLayout.Body>
+            <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], mb: 2 }}>
+              Where this cluster&apos;s logs, metrics and traces actually come from. A signal served by an integration is checked directly against
+              that backend, so its status is independent of the agent.
+            </Typography>
+            <CustomTable headers={HEADERS_OBSERVABILITY} tableData={buildObservabilityTableData()} loading={loading} />
+          </ListingLayout.Body>
+        </ListingLayout>
       )}
     </Box>
   );

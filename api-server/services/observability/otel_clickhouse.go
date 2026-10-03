@@ -368,18 +368,100 @@ func (s *OtelClickhouseTraceSource) QueryGroupedTracesCount(ctx *security.Reques
 
 }
 
+// buildTraceSQL renders the SQL for a structured trace request. It is the single
+// definition of that translation: QueryTraces executes what it returns, and GetQuery
+// reports it. Keeping one implementation is what makes the query we show a reader —
+// the traces UI "show query" surface, and the `executed_query` stamped onto trace
+// evidence — the query that actually ran. It previously lived only inside QueryTraces,
+// so GetQuery omitted the time filter and the attribute-column augmentation and
+// reported a query no backend had ever seen.
+//
+// cloneTraceWhereBinary returns the clause with its Binary map — and the nested value maps
+// the spanattributes strip deletes from — copied, so a caller's clause is not rewritten as a
+// side effect of building SQL from it. Only Binary is cloned: the strip and the time filter
+// are the only mutations, and both touch top-level Binary entries, never the And/Or subtrees.
+func cloneTraceWhereBinary(where query.QueryWhereClause) query.QueryWhereClause {
+	cloned := make(query.BinaryWhereClause, len(where.Binary)+1)
+	for field, ops := range where.Binary {
+		opsCopy := make(map[query.BinaryWhereClauseType]any, len(ops))
+		for op, val := range ops {
+			if valueMap, ok := val.(map[string]any); ok {
+				valueMapCopy := make(map[string]any, len(valueMap))
+				for k, v := range valueMap {
+					valueMapCopy[k] = v
+				}
+				opsCopy[op] = valueMapCopy
+				continue
+			}
+			opsCopy[op] = val
+		}
+		cloned[field] = opsCopy
+	}
+	where.Binary = cloned
+	return where
+}
+
+// The normalisation below (the spanattributes strip, then the injected time filter) rewrites
+// the where clause, so it runs against a private copy. The request is passed by value, but
+// Where.Binary is a map shared with the caller — when this lived in QueryTraces it mutated
+// the caller's clause as a side effect. That is worth avoiding now that GetTraces calls this
+// twice per query (once executing, once to record what ran): sharing the map would make the
+// second call depend on what the first left behind.
+func (s *OtelClickhouseTraceSource) buildTraceSQL(ctx *security.RequestContext, req TracesV3Request) (string, error) {
+	req.QueryRequest.Where = cloneTraceWhereBinary(req.QueryRequest.Where)
+
+	// temp handling to be removed in future
+	spanAttri, ok := req.QueryRequest.Where.Binary["spanattributes"]
+	if ok {
+		// Iterate over operators for spanattributes to correctly handle modifications.
+		for op, val := range spanAttri {
+			valueMap, ok := val.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			if _, hasServiceName := valueMap["service.name"]; hasServiceName {
+				// This temporary logic removes `service.name` from the spanattributes filter.
+				// The intention is likely to handle it as a top-level `service_name` filter instead.
+				delete(valueMap, "service.name")
+
+				// If the attribute map for an operator becomes empty, remove the operator.
+				if len(valueMap) == 0 {
+					delete(spanAttri, op)
+				}
+			}
+		}
+
+		// If the spanattributes filter has no more operators, remove it entirely.
+		if len(spanAttri) == 0 {
+			delete(req.QueryRequest.Where.Binary, "spanattributes")
+		} else {
+			req.QueryRequest.Where.Binary["spanattributes"] = spanAttri
+		}
+	}
+
+	s.injectTimeFilter(&req)
+
+	tableDef := s.getTraceTableDef(ctx, req.AccountId)
+	// Make backend-discovered span/resource attributes (advertised to the agent
+	// via traces_list_labels) queryable as flat canonical fields: any where-clause
+	// field not in the curated schema resolves to the attribute maps. Only affects
+	// WHERE resolution; SELECT still uses the curated column set.
+	tableDef.Columns = augmentTraceColumnsForAttributes(tableDef.Columns, req.QueryRequest.Where)
+	queryRequest := getQueryRequest(ctx, req.QueryRequest, tableDef, "traces_v2")
+	return query.GenerateSqlQuery(ctx, req.AccountId, queryRequest, tableDef)
+}
+
 func (s *OtelClickhouseTraceSource) GetQuery(ctx *security.RequestContext, tracesRequest TracesV3Request) (string, error) {
 	hasAccess := s.CheckAccess(ctx, tracesRequest.AccountId)
 	if !hasAccess {
 		return "", errors.New("user does not have access")
 	}
-	tableDef := s.getTraceTableDef(ctx, tracesRequest.AccountId)
-	queryRequest := getQueryRequest(ctx, tracesRequest.QueryRequest, tableDef, "traces_v2")
-	sqlQuery, err := query.GenerateSqlQuery(ctx, tracesRequest.AccountId, queryRequest, tableDef)
-	if err != nil {
-		return "", err
+	// A free-form query runs verbatim, so report it verbatim.
+	if tracesRequest.Query != "" {
+		return tracesRequest.Query, nil
 	}
-	return sqlQuery, nil
+	return s.buildTraceSQL(ctx, tracesRequest)
 }
 
 // QueryLabels enumerates the span/resource attribute keys actually present in the
@@ -668,6 +750,13 @@ func MapGroupingRowToTraceGroupingValues(row map[string]interface{}) (TraceGroup
 	trace.P99Latency = clickhouseInt64(row["p99_latency"])
 	trace.P95Latency = clickhouseInt64(row["p95_latency"])
 	trace.MaxLatency = clickhouseInt64(row["max_latency"])
+	// workload_name is both selected and grouped on, but was never read off the
+	// row, so every ClickHouse grouped row carried an empty Workload while the
+	// namespace beside it was populated. Every other provider's grouping mapper
+	// sets it.
+	if v, ok := row["workload_name"].(string); ok {
+		trace.WorkloadName = v
+	}
 	if v, ok := row["workload_namespace"].(string); ok {
 		trace.WorkloadNamespace = v
 	}
@@ -1174,56 +1263,16 @@ func (s *OtelClickhouseTraceSource) getTraceGroupingTableDef(ctx *security.Reque
 
 func (s *OtelClickhouseTraceSource) QueryTraces(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) ([]common.OpenTelemetryTrace, error) {
 	hasAccess := s.CheckAccess(ctx, fetchTraceRequest.AccountId)
-
-	// temp handling to be removed in future
-	spanAttri, ok := fetchTraceRequest.QueryRequest.Where.Binary["spanattributes"]
-	if ok {
-		// Iterate over operators for spanattributes to correctly handle modifications.
-		for op, val := range spanAttri {
-			valueMap, ok := val.(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			if _, hasServiceName := valueMap["service.name"]; hasServiceName {
-				// This temporary logic removes `service.name` from the spanattributes filter.
-				// The intention is likely to handle it as a top-level `service_name` filter instead.
-				delete(valueMap, "service.name")
-
-				// If the attribute map for an operator becomes empty, remove the operator.
-				if len(valueMap) == 0 {
-					delete(spanAttri, op)
-				}
-			}
-		}
-
-		// If the spanattributes filter has no more operators, remove it entirely.
-		if len(spanAttri) == 0 {
-			delete(fetchTraceRequest.QueryRequest.Where.Binary, "spanattributes")
-		} else {
-			fetchTraceRequest.QueryRequest.Where.Binary["spanattributes"] = spanAttri
-		}
-	}
 	if !hasAccess {
 		return []common.OpenTelemetryTrace{}, errors.New("user does not have access")
 	}
-	s.injectTimeFilter(&fetchTraceRequest)
-	sqlQuery := ""
-	var err error
-	if fetchTraceRequest.Query == "" {
-		tableDef := s.getTraceTableDef(ctx, fetchTraceRequest.AccountId)
-		// Make backend-discovered span/resource attributes (advertised to the agent
-		// via traces_list_labels) queryable as flat canonical fields: any where-clause
-		// field not in the curated schema resolves to the attribute maps. Only affects
-		// WHERE resolution; SELECT still uses the curated column set.
-		tableDef.Columns = augmentTraceColumnsForAttributes(tableDef.Columns, fetchTraceRequest.QueryRequest.Where)
-		queryRequest := getQueryRequest(ctx, fetchTraceRequest.QueryRequest, tableDef, "traces_v2")
-		sqlQuery, err = query.GenerateSqlQuery(ctx, fetchTraceRequest.AccountId, queryRequest, tableDef)
-	} else {
-		sqlQuery = fetchTraceRequest.Query
-	}
-	if err != nil {
-		return []common.OpenTelemetryTrace{}, err
+	sqlQuery := fetchTraceRequest.Query
+	if sqlQuery == "" {
+		var err error
+		sqlQuery, err = s.buildTraceSQL(ctx, fetchTraceRequest)
+		if err != nil {
+			return []common.OpenTelemetryTrace{}, err
+		}
 	}
 	rows, err := s.executeClickhouseQuery(ctx.GetContext(), sqlQuery, fetchTraceRequest.AccountId)
 	if err != nil {

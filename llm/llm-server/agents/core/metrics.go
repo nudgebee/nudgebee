@@ -23,7 +23,9 @@ var (
 	metricsScratchpadSummarizationFallback metric.Int64Counter
 
 	// Answer critique decision metric.
-	metricsCritiqueDecision metric.Int64Counter
+	metricsCritiqueDecision           metric.Int64Counter
+	metricsClaimCritiqueShadow        metric.Int64Counter
+	metricsClaimCritiqueShadowLatency metric.Float64Histogram
 
 	initCoreMetricsOnce sync.Once
 )
@@ -98,6 +100,14 @@ func InitMetrics() {
 			slog.Error("metrics: failed to create nb_llm_scratchpad_summarization_fallback metric", "error", err)
 		}
 
+		metricsClaimCritiqueShadow, err = coreMeter.Int64Counter("nb_llm_claim_critique_shadow", metric.WithDescription("Shadow audit outcomes; never applied to planner decisions"))
+		if err != nil {
+			slog.Error("metrics: failed to create claim critique counter", "error", err)
+		}
+		metricsClaimCritiqueShadowLatency, err = coreMeter.Float64Histogram("nb_llm_claim_critique_shadow_latency", metric.WithUnit("s"))
+		if err != nil {
+			slog.Error("metrics: failed to create claim critique latency", "error", err)
+		}
 		metricsCritiqueDecision, err = coreMeter.Int64Counter(
 			"nb_llm_critique_decision",
 			metric.WithDescription("Number of ReAct3 answer-critique decisions, labeled by agent, decision, and refinement attempt"),
@@ -143,5 +153,17 @@ func MetricsCritiqueDecision(agentName, decision string, refinementAttempt int) 
 			attribute.String("decision", decision),
 			attribute.Int("attempt", refinementAttempt),
 		))
+	}
+}
+
+// MetricsClaimCritiqueShadow separates evaluator errors from accept/refine.
+func MetricsClaimCritiqueShadow(planner, baseline, decision, status string, seconds float64) {
+	InitMetrics()
+	attrs := metric.WithAttributes(attribute.String("planner", planner), attribute.String("baseline", baseline), attribute.String("decision", decision), attribute.String("status", status))
+	if metricsClaimCritiqueShadow != nil {
+		metricsClaimCritiqueShadow.Add(context.Background(), 1, attrs)
+	}
+	if metricsClaimCritiqueShadowLatency != nil {
+		metricsClaimCritiqueShadowLatency.Record(context.Background(), seconds, attrs)
 	}
 }

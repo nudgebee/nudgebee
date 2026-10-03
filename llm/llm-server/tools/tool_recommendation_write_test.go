@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -65,9 +67,28 @@ func newNoUserToolContext(accountId string) core.NbToolContext {
 	return nbCtx
 }
 
+const (
+	applyRecID     = "3f6b2a1e-5c4d-4e8f-9a0b-1c2d3e4f5a6b"
+	applyAccountID = "0b4c7d2e-8f1a-4b3c-9d5e-6f7a8b9c0d1e"
+)
+
+// stubSafetyRow serves the next recommendation_view lookup the apply
+// precondition makes, with the given stored band (nil = never assessed).
+func stubSafetyRow(mock sqlmock.Sqlmock, band any) {
+	mock.ExpectQuery("(?i)select").WillReturnRows(sqlmock.NewRows(
+		[]string{"rule_name", "status", "safety_band", "safety_reason", "dependent_count", "production_dependents", "estimated_saving"}).
+		AddRow("pod_right_sizing", "Open", band, "2 production dependent(s) in the blast radius", 3, 2, 41.0))
+}
+
 func TestRecommendationApplyTool(t *testing.T) {
+	// One mocked metastore for the whole test: the database manager is cached
+	// after its first use, so a per-subtest mock would hand later subtests a
+	// closed handle.
+	db, mock := mockMetastore(t)
+	defer func() { _ = db.Close() }()
+
 	t.Run("requires recommendation_id without calling the server", func(t *testing.T) {
-		resp, err := RecommendationApplyTool{}.Call(newTriageToolContext("acc-7"), core.NBToolCallRequest{Arguments: map[string]any{}})
+		resp, err := RecommendationApplyTool{}.Call(newTriageToolContext(applyAccountID), core.NBToolCallRequest{Arguments: map[string]any{}})
 		assert.NoError(t, err)
 		assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
 	})
@@ -79,12 +100,80 @@ func TestRecommendationApplyTool(t *testing.T) {
 		})
 		defer cleanup()
 
-		resp, err := RecommendationApplyTool{}.Call(newNoUserToolContext("acc-7"), core.NBToolCallRequest{
-			Arguments: map[string]any{"recommendation_id": "rec-1"},
+		stubSafetyRow(mock, "safe")
+
+		resp, err := RecommendationApplyTool{}.Call(newNoUserToolContext(applyAccountID), core.NBToolCallRequest{
+			Arguments: map[string]any{"recommendation_id": applyRecID, "safety_band": "safe"},
 		})
 		assert.NoError(t, err)
 		assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
 		assert.Contains(t, resp.Data, "requires a requesting user")
+	})
+
+	t.Run("refuses without a safety band and hands back the stored facts", func(t *testing.T) {
+		cleanup := startRPCStub(t, "/rpc/recommendation", func(string, map[string]any) (int, string) {
+			t.Error("an apply without safety context must never reach api-server")
+			return http.StatusOK, `{}`
+		})
+		defer cleanup()
+		stubSafetyRow(mock, "risky")
+
+		resp, err := RecommendationApplyTool{}.Call(newTriageToolContext(applyAccountID), core.NBToolCallRequest{
+			Arguments: map[string]any{"recommendation_id": applyRecID},
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+		// resp.Data is JSON-encoded, so match on the unquoted phrases.
+		assert.Contains(t, resp.Data, "call again with safety_band=")
+		assert.Contains(t, resp.Data, "risky")
+		assert.Contains(t, resp.Data, "production_dependents")
+	})
+
+	t.Run("refuses a band that no longer matches the store", func(t *testing.T) {
+		cleanup := startRPCStub(t, "/rpc/recommendation", func(string, map[string]any) (int, string) {
+			t.Error("a stale band must never reach api-server")
+			return http.StatusOK, `{}`
+		})
+		defer cleanup()
+		stubSafetyRow(mock, "safe")
+
+		resp, err := RecommendationApplyTool{}.Call(newTriageToolContext(applyAccountID), core.NBToolCallRequest{
+			Arguments: map[string]any{"recommendation_id": applyRecID, "safety_band": "risky"},
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+		assert.Contains(t, resp.Data, "does not match the stored verdict")
+		assert.Contains(t, resp.Data, "safe")
+	})
+
+	t.Run("refuses when the safety lookup itself fails", func(t *testing.T) {
+		cleanup := startRPCStub(t, "/rpc/recommendation", func(string, map[string]any) (int, string) {
+			t.Error("an unverified apply must never reach api-server")
+			return http.StatusOK, `{}`
+		})
+		defer cleanup()
+		mock.ExpectQuery("(?i)select").WillReturnError(errors.New("connection reset"))
+
+		resp, err := RecommendationApplyTool{}.Call(newTriageToolContext(applyAccountID), core.NBToolCallRequest{
+			Arguments: map[string]any{"recommendation_id": applyRecID, "safety_band": "safe"},
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+		assert.Contains(t, resp.Data, "could not verify")
+	})
+
+	t.Run("a never-assessed recommendation reads as unknown", func(t *testing.T) {
+		cleanup := startRPCStub(t, "/rpc/recommendation", func(string, map[string]any) (int, string) {
+			return http.StatusOK, `{"status":"InProgress"}`
+		})
+		defer cleanup()
+		stubSafetyRow(mock, nil)
+
+		resp, err := RecommendationApplyTool{}.Call(newTriageToolContext(applyAccountID), core.NBToolCallRequest{
+			Arguments: map[string]any{"recommendation_id": applyRecID, "safety_band": "unknown"},
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
 	})
 
 	t.Run("posts the apply envelope with NBLLM resolver", func(t *testing.T) {
@@ -97,9 +186,13 @@ func TestRecommendationApplyTool(t *testing.T) {
 		})
 		defer cleanup()
 
-		resp, err := RecommendationApplyTool{}.Call(newTriageToolContext("acc-7"), core.NBToolCallRequest{
+		stubSafetyRow(mock, "review")
+
+		resp, err := RecommendationApplyTool{}.Call(newTriageToolContext(applyAccountID), core.NBToolCallRequest{
 			Arguments: map[string]any{
-				"recommendation_id": "rec-1",
+				"recommendation_id": applyRecID,
+				"safety_band":       "review",
+				"safety_reason":     "3 dependent(s); none detected as production",
 				"provider":          "git",
 				"data":              map[string]any{"web": map[string]any{"memory": map[string]any{"request": "512Mi"}}},
 				"provider_config":   map[string]any{"name": "github-main"},
@@ -111,10 +204,13 @@ func TestRecommendationApplyTool(t *testing.T) {
 
 		object, ok := gotInput["object"].(map[string]any)
 		require.True(t, ok, "apply payload must be wrapped in input.object")
-		assert.Equal(t, "acc-7", object["account_id"])
-		assert.Equal(t, "rec-1", object["recommendation_id"])
+		assert.Equal(t, applyAccountID, object["account_id"])
+		assert.Equal(t, applyRecID, object["recommendation_id"])
 		assert.Equal(t, "git", object["provider"])
 		assert.Equal(t, "NBLLM", object["resolver_type"])
+		// The safety context gates the call; it is not part of the apply payload.
+		_, forwarded := object["safety_band"]
+		assert.False(t, forwarded)
 		_, hasData := object["data"].(map[string]any)
 		assert.True(t, hasData)
 		assert.Contains(t, resp.Data, "pr_action")
@@ -128,8 +224,10 @@ func TestRecommendationApplyTool(t *testing.T) {
 		})
 		defer cleanup()
 
-		_, err := RecommendationApplyTool{}.Call(newTriageToolContext("acc-7"), core.NBToolCallRequest{
-			Arguments: map[string]any{"recommendation_id": "rec-1"},
+		stubSafetyRow(mock, "safe")
+
+		_, err := RecommendationApplyTool{}.Call(newTriageToolContext(applyAccountID), core.NBToolCallRequest{
+			Arguments: map[string]any{"recommendation_id": applyRecID, "safety_band": "safe"},
 		})
 		assert.NoError(t, err)
 		object := gotInput["object"].(map[string]any)
@@ -144,8 +242,10 @@ func TestRecommendationApplyTool(t *testing.T) {
 		})
 		defer cleanup()
 
-		resp, err := RecommendationApplyTool{}.Call(newTriageToolContext("acc-7"), core.NBToolCallRequest{
-			Arguments: map[string]any{"recommendation_id": "rec-1"},
+		stubSafetyRow(mock, "safe")
+
+		resp, err := RecommendationApplyTool{}.Call(newTriageToolContext(applyAccountID), core.NBToolCallRequest{
+			Arguments: map[string]any{"recommendation_id": applyRecID, "safety_band": "safe"},
 		})
 		assert.NoError(t, err)
 		assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
@@ -287,6 +387,35 @@ func TestRecommendationWriteToolConfirmationQuestions(t *testing.T) {
 		// Sorted container order keeps the card (and the confirmation key's
 		// input) stable across renders.
 		assert.Less(t, strings.Index(q, "- sidecar"), strings.Index(q, "- web"))
+	})
+
+	t.Run("apply leads with the summary, then the safety line and its safeguard", func(t *testing.T) {
+		q := RecommendationApplyTool{}.ConfirmationQuestion(
+			`{"recommendation_id":"rec-1","provider":"kubernetes","summary":"Right-size checkout: CPU 500m → 250m (est. $41/mo)","safety_band":"risky","safety_reason":"2 production dependent(s) in the blast radius"}`)
+		assert.Contains(t, q, "Safety: Plan it — 2 production dependent(s) in the blast radius. Safeguard: use the no-restart (in-place) apply")
+		assert.NotContains(t, q, "Risky")
+		assert.Less(t, strings.Index(q, "est. $41/mo"), strings.Index(q, "Safety:"))
+		assert.NotContains(t, strings.ToLower(q), "are you sure")
+	})
+
+	t.Run("safety line adapts to the band and the channel", func(t *testing.T) {
+		safe := RecommendationApplyTool{}.ConfirmationQuestion(`{"recommendation_id":"rec-1","safety_band":"safe"}`)
+		assert.Contains(t, safe, "Safety: Safe — no known dependents.")
+		assert.NotContains(t, safe, "Safeguard")
+
+		cloud := RecommendationApplyTool{}.ConfirmationQuestion(`{"recommendation_id":"rec-1","provider":"aws","safety_band":"review","safety_reason":"4 dependent(s); none detected as production."}`)
+		assert.Contains(t, cloud, "Safety: Quick check — 4 dependent(s); none detected as production. Safeguard: apply in a maintenance window")
+		assert.NotContains(t, cloud, "no-restart")
+
+		unknown := RecommendationApplyTool{}.ConfirmationQuestion(`{"recommendation_id":"rec-1","safety_band":"unknown"}`)
+		assert.Contains(t, unknown, "Safety: Not assessed")
+
+		removal := RecommendationApplyTool{}.ConfirmationQuestion(`{"recommendation_id":"rec-1","provider":"aws","safety_band":"review","change_class":"destructive","safety_reason":"irreversible change; graph well-observed, no dependents"}`)
+		assert.Contains(t, removal, "Safety: Irreversible — irreversible change; graph well-observed, no dependents. Safeguard: confirm nothing still depends on it")
+		assert.NotContains(t, removal, "Quick check")
+		// The backend never grades a removal safe, but the card follows the
+		// change class if one ever arrives that way.
+		assert.Contains(t, RecommendationApplyTool{}.ConfirmationQuestion(`{"recommendation_id":"rec-1","safety_band":"safe","change_class":"destructive"}`), "Safety: Irreversible")
 	})
 
 	t.Run("apply falls back to default rendering on unparseable input", func(t *testing.T) {

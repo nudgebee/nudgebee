@@ -2,6 +2,7 @@ package observability
 
 import (
 	"errors"
+	"fmt"
 	"nudgebee/services/query"
 	"strconv"
 	"strings"
@@ -223,18 +224,41 @@ func TestValidateReferencedLabelValues_IndexAndTruncation(t *testing.T) {
 		assert.Nil(t, src.lastValuesReq.Request)
 	})
 
-	// A provider that truncates returns exactly its page size. Treating that as the whole
-	// value set would report a REAL value as unknown.
-	t.Run("fails open on a value set truncated at the cap", func(t *testing.T) {
+	// A provider that truncates returns exactly its page size, and the value the caller asked
+	// about may be one of the ones that did not fit. The page alone can never settle that —
+	// only the backend can.
+	t.Run("a truncated page never settles it on its own", func(t *testing.T) {
 		values := make([]string, maxLabelValuesToScan)
 		for i := range values {
 			values[i] = "ns-" + strconv.Itoa(i)
 		}
-		src := &fakeLabelSource{labelValues: map[string][]string{"namespace": values}}
 		req := FetchLogRequest{AccountId: "acct", StartTime: 1000, EndTime: 2000}
-		assert.NoError(t, validateReferencedLabelValues(ctx, src, req,
-			map[string][]whereFieldValue{"namespace": eqVals("a-real-value-past-the-page")}),
-			"a truncated page must not be treated as the complete value universe")
+		refs := map[string][]whereFieldValue{"namespace": eqVals("a-real-value-past-the-page")}
+
+		t.Run("value the backend holds is not blamed", func(t *testing.T) {
+			src := &fakeLabelSource{
+				labelValues: map[string][]string{"namespace": values},
+				probeLogs:   []OutputLog{{Message: "a line from that namespace"}},
+			}
+			assert.NoError(t, validateReferencedLabelValues(ctx, src, req, refs),
+				"a truncated page must not be treated as the complete value universe")
+		})
+
+		t.Run("value the backend lacks is diagnosed, without suggestions", func(t *testing.T) {
+			src := &fakeLabelSource{labelValues: map[string][]string{"namespace": values}}
+			err := validateReferencedLabelValues(ctx, src, req, refs)
+			require.Error(t, err, "a >1000-value label used to give the agent no hint at all")
+			assert.Contains(t, err.Error(), "verify the value")
+			assert.NotContains(t, err.Error(), "closest valid value",
+				"the nearest real value may be one of the ones that did not fit on the page")
+		})
+
+		t.Run("value present on the truncated page costs no probe", func(t *testing.T) {
+			src := &fakeLabelSource{labelValues: map[string][]string{"namespace": values}}
+			assert.NoError(t, validateReferencedLabelValues(ctx, src, req,
+				map[string][]whereFieldValue{"namespace": eqVals("ns-7")}))
+			assert.Zero(t, src.probeCalled)
+		})
 	})
 
 	t.Run("still diagnoses below the cap", func(t *testing.T) {
@@ -323,12 +347,287 @@ func TestValidateReferencedLabelValues_Patterns(t *testing.T) {
 		assert.Error(t, validateReferencedLabelValues(ctx, src("a-xx-c"), req, pattern("%a%b%", false, "a", "b")))
 	})
 
-	t.Run("a truncated value set fails open for patterns too", func(t *testing.T) {
+	t.Run("a truncated value set is settled by the backend for patterns too", func(t *testing.T) {
 		values := make([]string, maxLabelValuesToScan)
 		for i := range values {
 			values[i] = "app-" + strconv.Itoa(i)
 		}
-		assert.NoError(t, validateReferencedLabelValues(ctx, src(values...), req,
-			pattern("%definitely-absent%", true, "definitely-absent")))
+		pat := pattern("%definitely-absent%", true, "definitely-absent")
+
+		confirmed := src(values...)
+		confirmed.probeLogs = []OutputLog{{Message: "definitely-absent-svc started"}}
+		assert.NoError(t, validateReferencedLabelValues(ctx, confirmed, req, pat))
+
+		err := validateReferencedLabelValues(ctx, src(values...), req, pat)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "widen or remove this filter")
+		assert.NotContains(t, err.Error(), "closest valid value")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Traces — value validation. Mirrors the log cases above; the trace path differs in
+// that it only runs against a source declaring complete value enumeration.
+// ---------------------------------------------------------------------------
+
+// Real millisecond epochs (a one-hour window on 2023-11-26), not small mock numbers: the
+// validator widens StartTime back by 7 days, and a toy EndTime puts that widened start before
+// the epoch — a window no real request produces and one the clamp below would mask.
+func traceValuesReq() TracesV3Request {
+	return TracesV3Request{AccountId: "acct", ProviderType: "otel_clickhouse", StartTime: 1700996400000, EndTime: 1701000000000}
+}
+
+func traceRefValues(field string, values ...whereFieldValue) map[string][]whereFieldValue {
+	return map[string][]whereFieldValue{field: values}
+}
+
+func TestValidateReferencedTraceLabelValues(t *testing.T) {
+	ctx := mockRequestContext()
+
+	t.Run("wrong value is diagnosed with the closest match", func(t *testing.T) {
+		src := &completeFakeTraceSource{fakeTraceSource{
+			values: map[string][]string{"workload_name": {"services-server", "llm-server"}},
+		}}
+		err := validateReferencedTraceLabelValues(ctx, src, traceValuesReq(),
+			traceRefValues("workload_name", whereFieldValue{Raw: "services-serve"}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no traces matched")
+		assert.Contains(t, err.Error(), "services-serve")
+		assert.Contains(t, err.Error(), "services-server")
+	})
+
+	t.Run("value that exists passes", func(t *testing.T) {
+		src := &completeFakeTraceSource{fakeTraceSource{
+			values: map[string][]string{"workload_name": {"services-server"}},
+		}}
+		assert.NoError(t, validateReferencedTraceLabelValues(ctx, src, traceValuesReq(),
+			traceRefValues("workload_name", whereFieldValue{Raw: "services-server"})))
+	})
+
+	t.Run("no close match gives action-agnostic guidance", func(t *testing.T) {
+		src := &completeFakeTraceSource{fakeTraceSource{
+			values: map[string][]string{"workload_name": {"services-server"}},
+		}}
+		err := validateReferencedTraceLabelValues(ctx, src, traceValuesReq(),
+			traceRefValues("workload_name", whereFieldValue{Raw: "zzzzzzzz"}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "trace provider")
+		assert.Contains(t, err.Error(), "verify the value")
+	})
+
+	// The guard that keeps a sampling backend from calling a real value wrong.
+	t.Run("source that does not declare complete enumeration is skipped", func(t *testing.T) {
+		src := &fakeTraceSource{values: map[string][]string{"workload_name": {"services-server"}}}
+		assert.NoError(t, validateReferencedTraceLabelValues(ctx, src, traceValuesReq(),
+			traceRefValues("workload_name", whereFieldValue{Raw: "definitely-not-there"})))
+	})
+
+	t.Run("widens the lookup window by 7 real days", func(t *testing.T) {
+		src := &completeFakeTraceSource{fakeTraceSource{
+			values: map[string][]string{"workload_name": {"services-server"}},
+		}}
+		req := traceValuesReq()
+		require.NoError(t, validateReferencedTraceLabelValues(ctx, src, req,
+			traceRefValues("workload_name", whereFieldValue{Raw: "services-server"})))
+		assert.Equal(t, req.EndTime-valueValidationLookback*1000, src.lastValuesReq.StartTime)
+		assert.Equal(t, req.EndTime, src.lastValuesReq.EndTime)
+	})
+
+	t.Run("floors the widened window at the epoch", func(t *testing.T) {
+		// An EndTime inside the first 7 days of 1970 would widen to a NEGATIVE start.
+		// ClickHouse's DateTime is unsigned, so that wraps into the far future and returns
+		// no values — the validator would fail open and lose the diagnosis.
+		src := &completeFakeTraceSource{fakeTraceSource{
+			values: map[string][]string{"workload_name": {"services-server"}},
+		}}
+		req := traceValuesReq()
+		req.StartTime, req.EndTime = 1000, 5_000_000
+		require.NoError(t, validateReferencedTraceLabelValues(ctx, src, req,
+			traceRefValues("workload_name", whereFieldValue{Raw: "services-server"})))
+		assert.Zero(t, src.lastValuesReq.StartTime, "widened start must never precede the epoch")
+		assert.Equal(t, req.EndTime, src.lastValuesReq.EndTime)
+	})
+
+	t.Run("fails open on lookup error", func(t *testing.T) {
+		src := &completeFakeTraceSource{fakeTraceSource{valuesErr: errors.New("clickhouse down")}}
+		assert.NoError(t, validateReferencedTraceLabelValues(ctx, src, traceValuesReq(),
+			traceRefValues("workload_name", whereFieldValue{Raw: "anything"})))
+	})
+
+	t.Run("fails open on empty value set", func(t *testing.T) {
+		src := &completeFakeTraceSource{fakeTraceSource{values: map[string][]string{"workload_name": {}}}}
+		assert.NoError(t, validateReferencedTraceLabelValues(ctx, src, traceValuesReq(),
+			traceRefValues("workload_name", whereFieldValue{Raw: "anything"})))
+	})
+
+	t.Run("fails open with no referenced values", func(t *testing.T) {
+		src := &completeFakeTraceSource{}
+		assert.NoError(t, validateReferencedTraceLabelValues(ctx, src, traceValuesReq(), nil))
+	})
+
+	// A provider that truncates its own page returns exactly its page size; treating that as the
+	// complete universe would report a REAL value as unknown.
+	t.Run("fails open at exactly maxLabelValuesToScan, diagnoses at cap-1", func(t *testing.T) {
+		full := make([]string, maxLabelValuesToScan)
+		for i := range full {
+			full[i] = fmt.Sprintf("workload-%d", i)
+		}
+		truncated := &completeFakeTraceSource{fakeTraceSource{values: map[string][]string{"workload_name": full}}}
+		assert.NoError(t, validateReferencedTraceLabelValues(ctx, truncated, traceValuesReq(),
+			traceRefValues("workload_name", whereFieldValue{Raw: "not-in-the-page"})))
+
+		under := &completeFakeTraceSource{fakeTraceSource{values: map[string][]string{"workload_name": full[:maxLabelValuesToScan-1]}}}
+		assert.Error(t, validateReferencedTraceLabelValues(ctx, under, traceValuesReq(),
+			traceRefValues("workload_name", whereFieldValue{Raw: "not-in-the-page"})))
+	})
+
+	t.Run("unsatisfiable ilike pattern is diagnosed and a matching one passes", func(t *testing.T) {
+		src := &completeFakeTraceSource{fakeTraceSource{
+			values: map[string][]string{"endpoint": {"/rpc/query", "/rpc/logs"}},
+		}}
+		err := validateReferencedTraceLabelValues(ctx, src, traceValuesReq(),
+			traceRefValues("endpoint", whereFieldValue{Raw: "%checkout%", Segments: []string{"checkout"}, Fold: true}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "pattern")
+
+		assert.NoError(t, validateReferencedTraceLabelValues(ctx, src, traceValuesReq(),
+			traceRefValues("endpoint", whereFieldValue{Raw: "%RPC%", Segments: []string{"RPC"}, Fold: true})))
+	})
+}
+
+// Every log provider's value listing is a page (labelValuesPageSize) and, for Splunk,
+// Dynatrace, SolarWinds and Loggly, a sample of recent log lines — so a value's absence from
+// the listing is not evidence the backend lacks it. Before this, the SQL providers paged at
+// 100 and Dynatrace at 50 while the truncation guard sat at 1000, so a short page never
+// tripped it and a real value was reported to the agent as a typo. These tests pin the
+// confirmation step that makes the verdict independent of the page size.
+func TestValidateReferencedLabelValues_ConfirmsBeforeBlaming(t *testing.T) {
+	ctx := mockRequestContext()
+	req := FetchLogRequest{AccountId: "acct", StartTime: 1000, EndTime: 2000}
+	missing := map[string][]whereFieldValue{"namespace": eqVals("payments")}
+
+	t.Run("a value the backend holds is never blamed, however short the page", func(t *testing.T) {
+		// A 3-value page missing "payments" is exactly the shape a 50- or 100-value provider
+		// returns for a busy label.
+		src := &fakeLabelSource{
+			labelValues: map[string][]string{"namespace": {"prod", "staging", "dev"}},
+			probeLogs:   []OutputLog{{Message: "a log line from the payments namespace"}},
+		}
+		assert.NoError(t, validateReferencedLabelValues(ctx, src, req, missing),
+			"the probe found logs, so the page was simply truncated")
+		assert.Equal(t, 1, src.probeCalled, "the probe runs only for the value the page could not confirm")
+	})
+
+	t.Run("a value the backend really lacks is still diagnosed", func(t *testing.T) {
+		src := &fakeLabelSource{labelValues: map[string][]string{"namespace": {"prod", "payment"}}}
+		err := validateReferencedLabelValues(ctx, src, req, missing)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "payments")
+		assert.Contains(t, err.Error(), "payment", "a complete page is still good enough to suggest from")
+	})
+
+	t.Run("an unrunnable probe fails open", func(t *testing.T) {
+		src := &fakeLabelSource{
+			labelValues: map[string][]string{"namespace": {"prod"}},
+			probeErr:    errors.New("backend down"),
+		}
+		assert.NoError(t, validateReferencedLabelValues(ctx, src, req, missing),
+			"a value we could not confirm must never be blamed")
+	})
+
+	t.Run("a confirmed value costs nothing extra", func(t *testing.T) {
+		src := &fakeLabelSource{labelValues: map[string][]string{"namespace": {"prod"}}}
+		require.NoError(t, validateReferencedLabelValues(ctx, src, req,
+			map[string][]whereFieldValue{"namespace": eqVals("prod")}))
+		assert.Zero(t, src.probeCalled, "a value present in the page needs no confirmation query")
+	})
+
+	t.Run("the probe carries one filter, one row and the widened window", func(t *testing.T) {
+		const endTime = 1_000_000_000_000
+		narrow := FetchLogRequest{
+			AccountId: "acct", LogProvider: "pinot", LogProviderSource: "user",
+			StartTime: endTime - 5*60*1000, EndTime: endTime,
+			Request: map[string]any{"index": "logs-*", "query_type": "dsl"},
+		}
+		src := &fakeLabelSource{labelValues: map[string][]string{"namespace": {"prod"}}}
+		require.Error(t, validateReferencedLabelValues(ctx, src, narrow, missing))
+
+		require.Len(t, src.probeReqs, 1)
+		probe := src.probeReqs[0]
+		assert.Equal(t, 1, probe.Limit, "one row answers 'does anything match'")
+		assert.Equal(t, int64(endTime-valueValidationLookback*1000), probe.StartTime,
+			"the probe must see the same widened window the value listing did")
+		assert.Equal(t, map[string]any{"index": "logs-*"}, probe.Request,
+			"the index travels; other provider-specific keys must not")
+		assert.Equal(t, query.BinaryWhereClause{"namespace": {query.Eq: "payments"}}, probe.QueryRequest.Where.Binary,
+			"only the filter under suspicion — anything else could be the real reason for the empty result")
+		assert.Empty(t, probe.QueryRequest.Where.And)
+		assert.Empty(t, probe.QueryRequest.Where.Or)
+		assert.Nil(t, probe.QueryRequest.Where.Not)
+	})
+
+	t.Run("a pattern is probed as a pattern, not as a literal", func(t *testing.T) {
+		src := &fakeLabelSource{labelValues: map[string][]string{"app": {"prod"}}}
+		require.Error(t, validateReferencedLabelValues(ctx, src, req,
+			map[string][]whereFieldValue{"app": {{Raw: "%auth%", Segments: []string{"auth"}, Fold: true}}}))
+
+		require.Len(t, src.probeReqs, 1)
+		assert.Equal(t, query.BinaryWhereClause{"app": {query.ILike: "%auth%"}},
+			src.probeReqs[0].QueryRequest.Where.Binary,
+			"probing `%auth%` with _eq would look up the literal string and always come back empty")
+	})
+
+	t.Run("a pattern the backend can satisfy is never blamed", func(t *testing.T) {
+		src := &fakeLabelSource{
+			labelValues: map[string][]string{"app": {"prod", "dev"}},
+			probeLogs:   []OutputLog{{Message: "auth-service started"}},
+		}
+		assert.NoError(t, validateReferencedLabelValues(ctx, src, req,
+			map[string][]whereFieldValue{"app": {{Raw: "%auth%", Segments: []string{"auth"}, Fold: true}}}))
+	})
+}
+
+// The page size is the one number the truncation guard is built on, so it must stay a single
+// constant: the log providers drifting to 100 (Dynatrace 50) while the guard stayed at 1000 is
+// precisely why a truncated page was read as a complete value set.
+func TestLabelValuesPageSizeIsShared(t *testing.T) {
+	assert.Equal(t, labelValuesPageSize, maxLabelValuesToScan,
+		"the scan guard must equal the page every log provider asks for")
+	assert.Equal(t, labelValuesPageSize, esLabelValuesTermsSize,
+		"Elasticsearch's terms size must not drift from the shared page size")
+}
+
+// An ILIKE with no wildcards is case-insensitive EQUALITY, and its Fold flag has to survive
+// collection or the probe asks a case-sensitive question about a case-insensitive filter —
+// blaming `_ilike "payments"` against a backend that stores "Payments".
+func TestValidateReferencedLabelValues_AnchoredILikeKeepsItsFold(t *testing.T) {
+	ctx := mockRequestContext()
+	req := FetchLogRequest{AccountId: "acct", StartTime: 1000, EndTime: 2000}
+
+	t.Run("collection keeps Fold on an anchored ILIKE", func(t *testing.T) {
+		out := map[string][]whereFieldValue{}
+		collectWhereFieldValues(query.QueryWhereClause{
+			Binary: query.BinaryWhereClause{"namespace": {query.ILike: "payments"}},
+		}, out)
+		require.Len(t, out["namespace"], 1)
+		assert.Empty(t, out["namespace"][0].Segments, "no wildcards means the exact path applies")
+		assert.True(t, out["namespace"][0].Fold, "but it is still case-insensitive")
+	})
+
+	t.Run("the probe asks case-insensitively", func(t *testing.T) {
+		src := &fakeLabelSource{
+			labelValues: map[string][]string{"namespace": {"Payments", "prod"}},
+			probeLogs:   []OutputLog{{Message: "a line from Payments"}},
+		}
+		refs := map[string][]whereFieldValue{}
+		collectWhereFieldValues(query.QueryWhereClause{
+			Binary: query.BinaryWhereClause{"namespace": {query.ILike: "payments"}},
+		}, refs)
+
+		assert.NoError(t, validateReferencedLabelValues(ctx, src, req, refs),
+			"the value differs only in case, so the filter is correct and must not be blamed")
+		require.Len(t, src.probeReqs, 1)
+		assert.Equal(t, query.BinaryWhereClause{"namespace": {query.ILike: "payments"}},
+			src.probeReqs[0].QueryRequest.Where.Binary)
 	})
 }

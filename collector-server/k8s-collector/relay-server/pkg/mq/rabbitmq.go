@@ -71,11 +71,30 @@ func (cm *ConnectionManager) handleReconnect() {
 	}
 }
 
+// IsConnected reports whether the manager currently holds a usable connection.
+//
+// A closed connection is not cleared from cm.conn, so a nil check alone reports
+// a dead connection as live — callers that need to distinguish "broker
+// unreachable" from "broker fine" must ask this instead.
+func (cm *ConnectionManager) IsConnected() bool {
+	cm.connMu.RLock()
+	conn := cm.conn
+	cm.connMu.RUnlock()
+	return conn != nil && !conn.IsClosed()
+}
+
 func (cm *ConnectionManager) GetChannel(ctx context.Context) (*amqp.Channel, error) {
 	for {
 		cm.connMu.RLock()
 		conn := cm.conn
 		cm.connMu.RUnlock()
+
+		// A closed connection is still held here until handleReconnect swaps in
+		// a replacement, and opening a channel on it fails every time. Waiting
+		// alongside the nil case avoids hammering the dead one.
+		if conn != nil && conn.IsClosed() {
+			conn = nil
+		}
 
 		if conn == nil {
 			select {

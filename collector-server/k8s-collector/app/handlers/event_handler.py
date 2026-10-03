@@ -2454,9 +2454,12 @@ def handle_abandoned_pv(raw_content: dict, tenant: str, cloud_account_id: str, a
     provider = get_k8s_provider(cloud_account_id)
     for r in report["data"]:
         for pv in r["content"]:
-            # Deleting an unused disk saves its full monthly cost.
-            pricing = resolve_storage_pricing(pv, provider=provider)
-            saving = pricing["price_per_gb"] * parse_size_to_gb(pv["spec"]["capacity"]["storage"])
+            # Deleting an unused disk saves its full monthly cost. For
+            # tiered Azure SKUs price_per_gb is the effective rate for the
+            # billed size band, so this product is the disk's real price.
+            capacity_gb = parse_size_to_gb(pv["spec"]["capacity"]["storage"])
+            pricing = resolve_storage_pricing(pv, provider=provider, size_gb=capacity_gb)
+            saving = pricing["price_per_gb"] * capacity_gb
             pv["pricing"] = pricing
             recommendation = {
                 "cloud_account_id": cloud_account_id,
@@ -2495,8 +2498,9 @@ def handle_pv_rightsize(raw_content: dict, tenant: str, cloud_account_id: str, a
                 usage_["current"]["value"][1] if usage_.get("current", {}).get("value") else 0.0
             )
             last_30_days_usage_metric = float(usage_["7_days"]["value"][1]) if usage_.get("7_days") else None
-            capacity = parse_size_to_gb(pv["spec"]["capacity"]["storage"]) * 1024 * 1024 * 1024
-            pricing = resolve_storage_pricing(pv, provider=provider)
+            capacity_gb = parse_size_to_gb(pv["spec"]["capacity"]["storage"])
+            capacity = capacity_gb * 1024 * 1024 * 1024
+            pricing = resolve_storage_pricing(pv, provider=provider, size_gb=capacity_gb)
             price_per_gb = pricing["price_per_gb"]
             recommended_volume_size = 0
             if (current_usage_metric / capacity) > 0.9:
@@ -2518,6 +2522,9 @@ def handle_pv_rightsize(raw_content: dict, tenant: str, cloud_account_id: str, a
                 if recommended_volume_size <= 0:
                     continue
 
+                # For tiered Azure SKUs this is approximate: the exact saving is
+                # tier(current) - tier(recommended). Kept proportional so an
+                # in-band resize still surfaces instead of costing $0.
                 saving = price_per_gb * storage_size_save
             if recommended_volume_size:
                 pv["pricing"] = pricing

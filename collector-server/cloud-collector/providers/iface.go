@@ -732,6 +732,33 @@ type CloudProvider interface {
 	QueryDatabasePerformance(ctx CloudProviderContext, account Account, request DatabasePerformanceRequest) (DatabasePerformanceResponse, error)
 }
 
+// CliCredentialsRequest asks for credentials that authenticate a process as the
+// account. Duration is what the caller needs them for; a provider clamps it to
+// what its credential type allows.
+type CliCredentialsRequest struct {
+	Duration time.Duration
+}
+
+// CliCredentials is an environment that authenticates any CLI or SDK as the
+// account — the same shape the collector builds for its own CLI processes.
+type CliCredentials struct {
+	Env map[string]string
+	// ExpiresAt is nil for credentials that cannot expire: a stored access key
+	// or an Azure service principal. Callers surface that difference, because
+	// a credential handed to customer-authored code is very different when it
+	// cannot be revoked by waiting.
+	ExpiresAt *time.Time
+}
+
+// CliCredentialProvider is an optional capability for providers that can hand a
+// caller credentials for an account rather than running the command themselves.
+// It exists so credential resolution — assume-role chains, external ids, key
+// decryption, token minting — stays in this service and is not reimplemented by
+// every caller that needs to run something as an account.
+type CliCredentialProvider interface {
+	CliCredentials(ctx CloudProviderContext, account Account, request CliCredentialsRequest) (CliCredentials, error)
+}
+
 // NotificationTargetLister is an optional capability: providers whose alarms can
 // carry notification targets at creation time (AWS, GCP, Azure) implement it.
 // Kept off CloudProvider so providers without alarm support need no stub.

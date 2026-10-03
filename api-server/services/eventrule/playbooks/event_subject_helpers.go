@@ -145,9 +145,14 @@ func getResourceViaRelay(ctx PlaybookActionContext, params map[string]any) (any,
 // endsAt for firing alerts. An unclamped end puts the whole window past "now"
 // for short lookbacks, and Prometheus correctly returns zero series — this is
 // what kept the Noisy Neighbours card empty on every OOM event.
-func rangeQueryWindow(event PlaybookEvent, lookbackMinutes int, now time.Time) (time.Time, time.Time) {
+// RangeQueryWindow is exported for the observability actions that run their
+// PromQL through the metrics layer and need the same event-centred window.
+func RangeQueryWindow(event PlaybookEvent, lookbackMinutes int, now time.Time) (time.Time, time.Time) {
 	end := now
-	if t := event.EndedAt; t != nil && !t.IsZero() {
+	if t := event.IncidentAt; t != nil && !t.IsZero() {
+		// See PlaybookEvent.IncidentAt — the failure time, not the detection time.
+		end = t.UTC()
+	} else if t := event.EndedAt; t != nil && !t.IsZero() {
 		end = t.UTC()
 	} else if t := event.StartedAt; t != nil && !t.IsZero() {
 		end = t.UTC()
@@ -172,7 +177,7 @@ func PromRangeQueries(ctx PlaybookActionContext, queries []NamedQuery, lookbackM
 	if lookbackMinutes <= 0 {
 		lookbackMinutes = 60
 	}
-	start, end := rangeQueryWindow(ctx.GetEvent(), lookbackMinutes, time.Now().UTC())
+	start, end := RangeQueryWindow(ctx.GetEvent(), lookbackMinutes, time.Now().UTC())
 	rel := relay.RelayExecuteRequest{
 		Body: relay.ActionExecuteBody{
 			AccountID:  ctx.GetAccountId(),

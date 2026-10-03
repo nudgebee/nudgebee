@@ -16,17 +16,18 @@ import { NUDGEBEE_DEFAULT_TEMPLATE_ID, NAMED_RCA_FORMAT_TEMPLATES } from './rcaF
 // For simplicity and matching other components, assuming we have a code editor component
 import ReactCodeMirror from '@uiw/react-codemirror';
 import { markdown } from '@codemirror/lang-markdown';
-
-const DEFAULT_TEMPLATE_DESCRIPTION = 'The built-in Nudgebee template.';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 
 const RCAFormatTab = ({ accountId }) => {
+  const { title: brandTitle } = useBrandingConfig();
+  const defaultTemplateName = `${brandTitle} default`;
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [format, setFormat] = useState('');
   // Baseline of the last loaded/saved content; Save stays disabled until the user edits away from it.
   const [savedFormat, setSavedFormat] = useState('');
   // The built-in template text, served alongside the account's format so the
-  // "Nudgebee default" picker entry has a body without duplicating it here.
+  // "<brand> default" picker entry has a body without duplicating it here.
   const [defaultFormat, setDefaultFormat] = useState('');
   // Template awaiting an overwrite confirmation: { name, body } or null.
   const [pendingTemplate, setPendingTemplate] = useState(null);
@@ -89,11 +90,11 @@ const RCAFormatTab = ({ accountId }) => {
 
   const resolveTemplate = React.useCallback(
     (id) => {
-      if (id === NUDGEBEE_DEFAULT_TEMPLATE_ID) return { name: 'Nudgebee default', body: defaultFormat };
+      if (id === NUDGEBEE_DEFAULT_TEMPLATE_ID) return { name: defaultTemplateName, body: defaultFormat };
       const match = NAMED_RCA_FORMAT_TEMPLATES.find((t) => t.id === id);
       return match ? { name: match.name, body: match.body } : null;
     },
-    [defaultFormat]
+    [defaultFormat, defaultTemplateName]
   );
 
   // Load a template into the editor only. savedFormat is untouched, so isDirty
@@ -119,8 +120,8 @@ const RCAFormatTab = ({ accountId }) => {
   const templateItems = [
     {
       id: 'rca-template-nudgebee-default',
-      label: 'Nudgebee default',
-      description: DEFAULT_TEMPLATE_DESCRIPTION,
+      label: defaultTemplateName,
+      description: `The built-in ${brandTitle} template.`,
       onSelect: () => handlePickTemplate(NUDGEBEE_DEFAULT_TEMPLATE_ID),
     },
     ...NAMED_RCA_FORMAT_TEMPLATES.map((t) => ({

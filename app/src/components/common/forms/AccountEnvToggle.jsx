@@ -2,6 +2,7 @@ import PropTypes from 'prop-types';
 import { Box, Typography, IconButton, RadioGroup, FormControlLabel, Radio } from '@mui/material';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import Tooltip from '@ui/Tooltip';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 
 export const ACCOUNT_ENV_PROD = 'prod';
 export const ACCOUNT_ENV_NON_PROD = 'non_prod';
@@ -10,9 +11,12 @@ export const ACCOUNT_ENV_NON_PROD = 'non_prod';
 export const DEFAULT_ACCOUNT_ENV = ACCOUNT_ENV_NON_PROD;
 
 /** Tooltip copy for the environment picker — exported so a caller that renders
- *  its own section title (label='') can surface the same explanation itself. */
-export const ACCOUNT_ENV_TOOLTIP =
-  'Determines how NudgeBee prioritises alerts, recommendations and incidents for this account. Production accounts are scored at full weight, and workloads running in them count as production in blast-radius safety checks. You can change this anytime later.';
+ *  its own section title (label='') can surface the same explanation itself.
+ *  A function, not a constant: it names the product, which is tenant-branded and
+ *  only resolved once /api/public/app_config has landed. */
+export const accountEnvTooltip = () =>
+  `Determines how ${getBrandTitle()} prioritises alerts, recommendations and incidents for this account. Production accounts are scored at full weight, and workloads running in them count as production in blast-radius safety checks. You can change this anytime later.`;
+export const ACCOUNT_ENV_TOOLTIP = accountEnvTooltip();
 
 /**
  * Environment picker shared by every account onboarding flow (K8s and cloud).
@@ -29,7 +33,7 @@ export default function AccountEnvToggle({ value, onChange, disabled, id, label 
       {label && (
         <Box display='flex' alignItems='center'>
           <Typography variant='subtitle2'>{label}</Typography>
-          <Tooltip title={ACCOUNT_ENV_TOOLTIP} placement='right'>
+          <Tooltip title={accountEnvTooltip()} placement='right'>
             <IconButton id={`${id}-info-btn`} size='small' sx={{ p: 0.5 }}>
               <InfoOutlinedIcon fontSize='small' />
             </IconButton>

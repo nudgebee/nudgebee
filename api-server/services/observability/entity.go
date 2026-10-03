@@ -336,6 +336,13 @@ type ProviderCapabilities struct {
 	SupportsLogGroups              bool `json:"supports_log_groups"`
 	// Interface-derived at runtime (optional interface — not all providers implement it)
 	SupportsAutoQuery bool `json:"supports_auto_query"`
+	// Whether Create Alert can write a rule for this provider + account. Decided
+	// for the two Prometheus transports (the agent must be connected to land a
+	// PrometheusRule CR; a direct Prometheus must declare a ruler); every other
+	// provider answers true and fails, if at all, at its own API. AlertRulesReason
+	// carries the operator-facing explanation when false.
+	SupportsAlertRules bool   `json:"supports_alert_rules"`
+	AlertRulesReason   string `json:"alert_rules_reason,omitempty"`
 	// Runtime-detected from source. SupportedOperatorDescriptors carries the
 	// backend-authoritative display metadata (chip/line labels, kinds); the UI
 	// migrates from SupportedOperators to SupportedOperatorDescriptors and the
@@ -444,6 +451,12 @@ type TracesV3Request struct {
 	// the labels the trace provider exposes and fails with an actionable error if any
 	// are unknown. Off by default; opt-in callers (notably the LLM agent) enable it.
 	ValidateRequest bool `json:"validate_request" mapstructure:"validate_request"`
+	// IncludeExecutedQuery asks GetTraces to resolve the provider query it ran and return
+	// it on TracesResult, so the caller can record what was actually asked (the enrichers
+	// stamp it onto evidence as `executed_query`). Off by default because resolving it
+	// costs an extra GetQuery round trip on some providers, and the hot read paths — the
+	// traces UI listing and the service map — have no use for it.
+	IncludeExecutedQuery bool `json:"include_executed_query" mapstructure:"include_executed_query"`
 }
 
 // RawTraceResult carries an arbitrary ClickHouse result set with column order and types preserved.
@@ -468,6 +481,16 @@ type TracesQueryResult struct {
 type TracesResult struct {
 	Traces     []common.OpenTelemetryTrace `json:"traces"`
 	Suggestion string                      `json:"suggestion,omitempty"`
+	// Query is the provider query that produced Traces, resolved only when the caller sets
+	// IncludeExecutedQuery. It is the provider-native string when the source exposes one
+	// (ClickHouse SQL, KQL, NRQL, ES DSL); for sources that consume the where clause
+	// natively and emit no query string (Datadog, Jaeger, Chronosphere), it falls back to
+	// the canonical where-clause JSON — already in provider space, so it is what the source
+	// was handed. Mirrors FetchLogsResult.Query.
+	Query string `json:"query,omitempty"`
+	// Provider is the trace provider the query ran against, e.g. `clickhouse`. Resolved
+	// whenever provider resolution succeeded, including on the empty and error paths.
+	Provider string `json:"provider,omitempty"`
 }
 
 type TracesHeatMapRequest struct {

@@ -9,6 +9,7 @@ import (
 	"nudgebee/collector/cloud/providers"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	smithy "github.com/aws/smithy-go"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
@@ -257,5 +258,36 @@ func TestAssumeRoleSendsExternalId(t *testing.T) {
 		t.Fatal("providers.Account must carry ExternalId — without it the sync cannot satisfy " +
 			"a trust policy with an sts:ExternalId condition, and onboarding validation " +
 			"(which does send it) stops being representative of the sync")
+	}
+}
+
+// Regression test: the Cost & Usage Report API only exists in us-east-1.
+// getUsageBucketFromCostReport used to build its CUR client straight from
+// the account's own aws.Config, so an account operating in any other region
+// (e.g. eu-west-1) failed CUR discovery with a DNS lookup error against a
+// nonexistent regional endpoint (cur.eu-west-1.amazonaws.com — no such
+// host), even though the account's credentials and CUR report were fine.
+func TestCurServiceConfigForcesUsEast1(t *testing.T) {
+	cases := []struct {
+		name         string
+		inputRegion  string
+		expectRegion string
+	}{
+		{name: "non-us-east-1 account region gets overridden", inputRegion: "eu-west-1", expectRegion: "us-east-1"},
+		{name: "already us-east-1 stays us-east-1", inputRegion: "us-east-1", expectRegion: "us-east-1"},
+		{name: "empty region gets set to us-east-1", inputRegion: "", expectRegion: "us-east-1"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := aws.Config{Region: tc.inputRegion}
+			got := curServiceConfig(cfg)
+			if got.Region != tc.expectRegion {
+				t.Fatalf("curServiceConfig(region=%q).Region = %q, want %q", tc.inputRegion, got.Region, tc.expectRegion)
+			}
+			if cfg.Region != tc.inputRegion {
+				t.Fatalf("curServiceConfig mutated the input config's region: got %q, want unchanged %q", cfg.Region, tc.inputRegion)
+			}
+		})
 	}
 }

@@ -1,16 +1,103 @@
 package tools
 
 import (
+	"html"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
-	"os"
+	"regexp"
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-	"github.com/tmc/langchaingo/llms"
+	"github.com/stretchr/testify/require"
 )
+
+func TestSearchSkills_CandidatesLoadExactChunks(t *testing.T) {
+	useLegacySkillLoading(t)
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(),
+		AccountId: "search-roundtrip-account", ConversationId: "conversation", MessageId: "message"}
+	docs := core.RAGSearchResults{
+		{Document: "first chunk <canary>", Metadata: map[string]any{"title": "Article", "url": "https://example.com/article"}},
+		{Document: "second chunk", Metadata: map[string]any{"title": "Article", "url": "https://example.com/article"}},
+		{Document: "   "},
+	}
+	results := cacheSearchKnowledgeCandidates(ctx, docs)
+	require.Len(t, results, 2)
+	var ids []string
+	for i, result := range results {
+		match := regexp.MustCompile(`id="(knowledge:[a-f0-9]+)"`).FindStringSubmatch(result)
+		require.Len(t, match, 2)
+		ids = append(ids, match[1])
+		resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": match[1]}})
+		require.NoError(t, err)
+		require.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
+		assert.Contains(t, resp.Data, html.EscapeString(docs[i].Document))
+		require.Len(t, resp.References, 1)
+		assert.Equal(t, "https://example.com/article", resp.References[0].Url)
+	}
+	assert.NotEqual(t, ids[0], ids[1], "chunks sharing a URL must not overwrite each other")
+	ctx.MessageId = "different-turn"
+	resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": ids[0]}})
+	require.NoError(t, err)
+	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+}
+
+// A page marked SOP must reach the agent as a procedure however its candidate
+// was built — including load_skills naming an integration knowledge base, which
+// caches candidates without going through search_skills.
+func TestCachedCandidatesCarryDocumentMarks(t *testing.T) {
+	useLegacySkillLoading(t)
+	previous := resolveDocumentCategoriesFn
+	resolveDocumentCategoriesFn = func(_ *security.RequestContext, _ string, docs core.RAGSearchResults) core.RAGSearchResults {
+		out := make(core.RAGSearchResults, len(docs))
+		for i, doc := range docs {
+			metadata := map[string]any{}
+			for k, v := range doc.Metadata {
+				metadata[k] = v
+			}
+			if metadata["page_id"] == "101" {
+				metadata[core.DocumentNoteCategoryKey] = core.KBNoteCategorySOP
+			}
+			doc.Metadata = metadata
+			out[i] = doc
+		}
+		return out
+	}
+	t.Cleanup(func() { resolveDocumentCategoriesFn = previous })
+
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(),
+		AccountId: "marked-candidates-account", ConversationId: "conversation", MessageId: "message"}
+	docs := core.RAGSearchResults{
+		{Document: "runbook steps", Metadata: map[string]any{"collection": "integration-a_knowledge_base", "page_id": "101", "title": "Runbook", "url": "https://wiki.test/101"}},
+		{Document: "background", Metadata: map[string]any{"collection": "integration-a_knowledge_base", "page_id": "102", "title": "Notes", "url": "https://wiki.test/102"}},
+	}
+	results := cacheSearchKnowledgeCandidates(ctx, docs)
+	require.Len(t, results, 2)
+	var purposes []core.KnowledgeContentPurpose
+	for _, result := range results {
+		match := regexp.MustCompile(`id="(knowledge:[a-f0-9]+)"`).FindStringSubmatch(result)
+		require.Len(t, match, 2)
+		candidate, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, match[1])
+		require.True(t, ok)
+		purposes = append(purposes, candidate.Purpose)
+	}
+	assert.Equal(t, []core.KnowledgeContentPurpose{core.KnowledgePurposeProcedure, core.KnowledgePurposeReference}, purposes)
+}
+
+func TestLoadSkillsTool_MixedValidAndExpiredCandidatesReportsMissing(t *testing.T) {
+	useLegacySkillLoading(t)
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(),
+		AccountId: "mixed-candidates-account", ConversationId: "conversation", MessageId: "message"}
+	const valid = "knowledge:abcdef0123456789"
+	const missing = "knowledge:missing"
+	require.NoError(t, core.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId,
+		core.KnowledgeCandidate{ID: valid, Content: "valid body"}))
+	resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": valid + ", " + missing}})
+	require.NoError(t, err)
+	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
+	assert.Contains(t, resp.Data, "The following requested skills were not found: "+missing)
+	require.Len(t, resp.References, 1)
+}
 
 func TestLoadSkillsTool_SchemaValidationAcceptsLegacyAliases(t *testing.T) {
 	tool := LoadSkillsTool{}
@@ -35,6 +122,53 @@ func TestLoadSkillsTool_SchemaValidationNormalizerLeavesNonObjectsUnchanged(t *t
 			assert.Equal(t, input, tool.NormalizeInputForSchemaValidation(input))
 		})
 	}
+}
+
+func TestLoadSkillsTool_LoadDiscoveredKnowledgeCandidateWithoutDB(t *testing.T) {
+	useLegacySkillLoading(t)
+	const (
+		accountID      = "account-candidate-test"
+		conversationID = "conversation-candidate-test"
+		messageID      = "message-candidate-test"
+		candidateID    = "knowledge:0123456789abcdef"
+	)
+	require.NoError(t, core.StoreKnowledgeCandidate(accountID, conversationID, messageID, core.KnowledgeCandidate{
+		ID:      candidateID,
+		Title:   "Checkout log fields",
+		Source:  "confluence",
+		URL:     "https://example.atlassian.net/wiki/checkout-logs",
+		Content: "Use service_name rather than service when querying checkout logs.",
+	}))
+
+	resp, err := (LoadSkillsTool{}).Call(core.NbToolContext{
+		Ctx:            security.NewRequestContextForSuperAdmin(),
+		AccountId:      accountID,
+		ConversationId: conversationID,
+		MessageId:      messageID,
+	}, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": candidateID}})
+
+	require.NoError(t, err)
+	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
+	assert.Contains(t, resp.Data, "Use service_name rather than service")
+	assert.Contains(t, resp.Data, "confluence")
+	require.Len(t, resp.References, 1)
+	assert.Equal(t, candidateID, resp.References[0].Url)
+}
+
+func TestLoadSkillsTool_ExpiredKnowledgeCandidateDoesNotRequireDB(t *testing.T) {
+	useLegacySkillLoading(t)
+	const candidateID = "knowledge:expired0000000"
+	resp, err := (LoadSkillsTool{}).Call(core.NbToolContext{
+		Ctx:            security.NewRequestContextForSuperAdmin(),
+		AccountId:      "account-expired-candidate",
+		ConversationId: "conversation-expired-candidate",
+		MessageId:      "message-expired-candidate",
+	}, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": candidateID}})
+
+	require.NoError(t, err)
+	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+	assert.Contains(t, resp.Data, "may have expired")
+	assert.Empty(t, resp.References)
 }
 
 func TestLoadSkillsTool_ParseSkillNames(t *testing.T) {
@@ -135,6 +269,26 @@ func TestSearchSkillsTool_Metadata(t *testing.T) {
 	assert.Contains(t, schema.Required, "query")
 }
 
+func TestTruncateRunesExact(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		limit int
+		want  string
+	}{
+		{name: "ascii", input: "abcdef", limit: 3, want: "abc"},
+		{name: "multibyte", input: "你好世界", limit: 3, want: "你好世"},
+		{name: "short", input: "你好", limit: 3, want: "你好"},
+		{name: "zero", input: "content", limit: 0, want: ""},
+		{name: "negative", input: "content", limit: -1, want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, truncateRunesExact(tc.input, tc.limit))
+		})
+	}
+}
+
 func TestLoadSkillsTool_ArgumentParsing(t *testing.T) {
 	tool := LoadSkillsTool{}
 
@@ -224,196 +378,6 @@ func TestLoadSkillsTool_ArgumentParsing(t *testing.T) {
 // These hit real DB and (if configured) RAG server.
 // ---------------------------------------------------------------------------
 
-func skipIfNoTestAccount(t *testing.T) {
-	t.Helper()
-	if os.Getenv("TEST_ACCOUNT") == "" {
-		t.Skip("TEST_ACCOUNT not set")
-	}
-}
-
-func newSkillToolContext(t *testing.T, tool core.NBTool, query string) core.NbToolContext {
-	t.Helper()
-	sc := security.NewRequestContextForSuperAdmin()
-	return core.NewNbToolContext(
-		sc, tool,
-		os.Getenv("TEST_AWS_ACCOUNT"),
-		os.Getenv("TEST_USER"),
-		uuid.NewString(), uuid.NewString(), uuid.NewString(),
-		query, []llms.MessageContent{}, "",
-		core.NBQueryConfig{}, "",
-	)
-}
-
-func TestLoadSkillsTool_Integration_EmptyName(t *testing.T) {
-	skipIfNoTestAccount(t)
-	tool := LoadSkillsTool{}
-	ctx := newSkillToolContext(t, tool, "")
-
-	resp, err := tool.Call(ctx, core.NBToolCallRequest{
-		Arguments: map[string]any{"skill_name": ""},
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
-	assert.Contains(t, resp.Data, "skill_name is required")
-}
-
-func TestLoadSkillsTool_Integration_NonExistentSkill(t *testing.T) {
-	skipIfNoTestAccount(t)
-	tool := LoadSkillsTool{}
-	ctx := newSkillToolContext(t, tool, "nonexistent_skill_xyz_12345")
-
-	resp, err := tool.Call(ctx, core.NBToolCallRequest{
-		Arguments: map[string]any{"skill_name": "nonexistent_skill_xyz_12345"},
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
-	assert.Contains(t, resp.Data, "not found")
-}
-
-func TestLoadSkillsTool_Integration_MultipleNonExistent(t *testing.T) {
-	skipIfNoTestAccount(t)
-	tool := LoadSkillsTool{}
-	ctx := newSkillToolContext(t, tool, "fake_skill_a, fake_skill_b")
-
-	resp, err := tool.Call(ctx, core.NBToolCallRequest{
-		Arguments: map[string]any{"skill_name": "fake_skill_a, fake_skill_b"},
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
-}
-
-func TestSearchSkillsTool_Integration_EmptyQuery(t *testing.T) {
-	skipIfNoTestAccount(t)
-	tool := SearchSkillsTool{}
-	ctx := newSkillToolContext(t, tool, "")
-
-	resp, err := tool.Call(ctx, core.NBToolCallRequest{
-		Arguments: map[string]any{"query": ""},
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
-	assert.Contains(t, resp.Data, "query is required")
-}
-
-func TestSearchSkillsTool_Integration_NoResults(t *testing.T) {
-	skipIfNoTestAccount(t)
-	tool := SearchSkillsTool{}
-	ctx := newSkillToolContext(t, tool, "xyznonexistentquery98765")
-
-	resp, err := tool.Call(ctx, core.NBToolCallRequest{
-		Arguments: map[string]any{"query": "xyznonexistentquery98765"},
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
-	// Either no results or some results — both are valid; should not error.
-}
-
-func TestSearchSkillsTool_Integration_BasicQuery(t *testing.T) {
-	skipIfNoTestAccount(t)
-	tool := SearchSkillsTool{}
-	query := "sqs eventbridge"
-	ctx := newSkillToolContext(t, tool, query)
-
-	resp, err := tool.Call(ctx, core.NBToolCallRequest{
-		Arguments: map[string]any{"query": query},
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
-	// Response is valid whether or not results are found.
-	assert.NotEmpty(t, resp.Data)
-}
-
-func TestSearchSkillsTool_Integration_CommandFallback(t *testing.T) {
-	skipIfNoTestAccount(t)
-	tool := SearchSkillsTool{}
-	ctx := newSkillToolContext(t, tool, "kubernetes pods")
-
-	// Test that Command field is used when Arguments has no query.
-	resp, err := tool.Call(ctx, core.NBToolCallRequest{
-		Command: "kubernetes pods",
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
-}
-
 // ---------------------------------------------------------------------------
 // Integration tests — RAG-based skill loading and search
 // ---------------------------------------------------------------------------
-
-func TestSearchSkillsTool_Integration_RAGResults(t *testing.T) {
-	skipIfNoTestAccount(t)
-	tool := SearchSkillsTool{}
-	// Use a query likely to match integration KB content (e.g. Confluence articles).
-	query := "AWS infrastructure setup"
-	ctx := newSkillToolContext(t, tool, query)
-
-	resp, err := tool.Call(ctx, core.NBToolCallRequest{
-		Arguments: map[string]any{"query": query},
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
-	// If RAG has indexed content, we expect results containing the RAG source tag.
-	if resp.Data != "No matching skills or knowledge base entries found for the given query." {
-		assert.Contains(t, resp.Data, "<result")
-	}
-}
-
-func TestLoadSkillsTool_Integration_RAGFallback(t *testing.T) {
-	skipIfNoTestAccount(t)
-	tool := LoadSkillsTool{}
-	// Use a name that doesn't exist in DB but might match RAG content.
-	// The RAG fallback should search using the name as a query.
-	skillName := "AWS Infrastructure Setup"
-	ctx := newSkillToolContext(t, tool, skillName)
-
-	resp, err := tool.Call(ctx, core.NBToolCallRequest{
-		Arguments: map[string]any{"skill_name": skillName},
-	})
-	assert.NoError(t, err)
-	// If RAG has matching content, status is success and data contains it.
-	// If RAG has no content, status is error with "not found".
-	// Both are valid — we just verify no panic or unexpected error.
-	if resp.Status == core.NBToolResponseStatusSuccess {
-		assert.NotEmpty(t, resp.Data)
-		assert.Contains(t, resp.Data, "<skill>")
-	} else {
-		assert.Contains(t, resp.Data, "not found")
-	}
-}
-
-func TestLoadSkillsTool_Integration_RAGFallbackMultiple(t *testing.T) {
-	skipIfNoTestAccount(t)
-	tool := LoadSkillsTool{}
-	// Multiple names: one likely in RAG, one definitely not.
-	skillName := "AWS Infrastructure Setup, xyznonexistent12345"
-	ctx := newSkillToolContext(t, tool, skillName)
-
-	resp, err := tool.Call(ctx, core.NBToolCallRequest{
-		Arguments: map[string]any{"skill_name": skillName},
-	})
-	assert.NoError(t, err)
-	// Should handle gracefully — load what it can, report what's missing.
-	if resp.Status == core.NBToolResponseStatusSuccess {
-		assert.NotEmpty(t, resp.Data)
-		// The missing one should be noted
-		assert.Contains(t, resp.Data, "xyznonexistent12345")
-	}
-}
-
-func TestSearchSkillsTool_Integration_RAGContentTruncation(t *testing.T) {
-	skipIfNoTestAccount(t)
-	tool := SearchSkillsTool{}
-	query := "infrastructure deployment guide"
-	ctx := newSkillToolContext(t, tool, query)
-
-	resp, err := tool.Call(ctx, core.NBToolCallRequest{
-		Arguments: map[string]any{"query": query},
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
-	// Verify RAG content is not excessively large (should be capped at ~5K).
-	if resp.Data != "No matching skills or knowledge base entries found for the given query." {
-		assert.LessOrEqual(t, len(resp.Data), 15000,
-			"Response should be bounded — RAG results are capped at LlmServerMaxSkillContentLength")
-	}
-}

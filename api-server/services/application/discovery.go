@@ -5,7 +5,8 @@ import (
 	"log/slog"
 	"nudgebee/services/account"
 	"nudgebee/services/internal/database"
-	"nudgebee/services/relay"
+	"nudgebee/services/internal/database/models"
+	"nudgebee/services/observability"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"strings"
@@ -22,29 +23,37 @@ func Discover(ctx *security.RequestContext) {
 	}
 
 	for _, tenant := range tenants {
-		accounts, err := account.ListActiveAccountsWithConnectedAgents(ctx, tenant.Id)
+		accounts, err := discoverableAccounts(ctx, tenant.Id)
 		if err != nil {
 			ctx.GetLogger().Error("discovery: unable to list accounts", "error", err, "tenant", tenant.Id)
 			continue
 		}
+		// The metrics layer resolves each account's Prometheus through the
+		// tenant's integrations; the cron's super-admin context carries no
+		// tenant, so it would never find a user-connected one.
+		tenantCtx := security.NewRequestContextForTenantAdmin(tenant.Id, ctx.GetLogger(), nil, nil)
+		if tenantCtx.GetSecurityContext() == nil {
+			ctx.GetLogger().Error("discovery: unable to build tenant context", "tenant", tenant.Id)
+			continue
+		}
 
 		for _, account := range accounts {
-			err := discoverAndUpdateFrameworkAndDashboardAttributes(ctx, tenant.Id, account.Id)
+			err := discoverAndUpdateFrameworkAndDashboardAttributes(tenantCtx, tenant.Id, account.Id)
 			if err != nil {
 				ctx.GetLogger().Error("discovery: unable to identify framework and dashboard", "error", err, "tenant", tenant.Id, "account", account.Id)
 			}
 
-			err = discoverAndUpdateExternalApps(ctx, tenant.Id, account.Id)
+			err = discoverAndUpdateExternalApps(tenantCtx, tenant.Id, account.Id)
 			if err != nil {
 				ctx.GetLogger().Error("discovery: unable to identify external apps", "error", err, "tenant", tenant.Id, "account", account.Id)
 			}
 
-			err = discoverAndUpdateRelationships(ctx, tenant.Id, account.Id)
+			err = discoverAndUpdateRelationships(tenantCtx, tenant.Id, account.Id)
 			if err != nil {
 				ctx.GetLogger().Error("discovery: unable to identify relationships", "error", err, "tenant", tenant.Id, "account", account.Id)
 			}
 
-			err = discoverAndUpdateExternalVMs(ctx, tenant.Id, account.Id)
+			err = discoverAndUpdateExternalVMs(tenantCtx, tenant.Id, account.Id)
 			if err != nil {
 				ctx.GetLogger().Error("discovery: unable to identify hosts", "error", err, "tenant", tenant.Id, "account", account.Id)
 			}
@@ -54,40 +63,56 @@ func Discover(ctx *security.RequestContext) {
 
 }
 
+// discoverableAccounts lists the accounts discovery can read metrics from: those
+// with a connected agent, and those whose default metrics provider is a
+// Prometheus the user connected directly (#37536) — an agentless account has no
+// agent row for the first query to find, yet its metrics are reachable through
+// the relay's PromQL override.
+func discoverableAccounts(ctx *security.RequestContext, tenantId string) ([]models.Account, error) {
+	withAgents, err := account.ListActiveAccountsWithConnectedAgents(ctx, tenantId)
+	if err != nil {
+		return nil, err
+	}
+	withUserPrometheus, err := account.ListActiveAccountsWithUserPrometheusDefault(ctx, tenantId)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(withAgents))
+	accounts := make([]models.Account, 0, len(withAgents)+len(withUserPrometheus))
+	for _, list := range [][]models.Account{withAgents, withUserPrometheus} {
+		for _, a := range list {
+			if seen[a.Id] {
+				continue
+			}
+			seen[a.Id] = true
+			accounts = append(accounts, a)
+		}
+	}
+	return accounts, nil
+}
+
 func discoverAndUpdateExternalVMs(ctx *security.RequestContext, tenantId, accountId string) error {
 	endDate := time.Now().UTC()
 	startDate := endDate.Add(time.Minute * -30)
-	externalAppMap, err := relay.ExecutePrometheus(accountId, startDate, endDate, map[string]string{
-		"host": `sum by (host.name, host.ip) (system.memory.utilization{host.name!=""})`,
-	}, false)
+	output, err := observability.FetchMetricsQuery(ctx, observability.FetchMetricsRequest{
+		AccountId:      accountId,
+		MetricProvider: "prometheus",
+		Queries: map[string]string{
+			"host": `sum by (host.name, host.ip) (system.memory.utilization{host.name!=""})`,
+		},
+		StartTime: startDate.UnixMilli(),
+		EndTime:   endDate.UnixMilli(),
+	})
 	if err != nil {
 		return err
 	}
 	hostNameAndIp := map[string]string{}
-	for _, query := range externalAppMap {
-		seriesListResult := query.(map[string]any)["series_list_result"]
-		if seriesListResult != nil {
-			for _, seriesAny := range seriesListResult.([]any) {
-				series, ok := seriesAny.(map[string]any)
-				if !ok {
-					continue
-				}
-				metrixAny := series["metric"]
-				if metrixAny == nil {
-					continue
-				}
-				hostName := metrixAny.(map[string]any)["host.name"]
-				if hostName == nil {
-					continue
-				}
-				hostIp := metrixAny.(map[string]any)["host.ip"]
-				hostIpStr := ""
-				if hostIp != nil {
-					hostIpStr = hostIp.(string)
-				}
-				hostNameAndIp[hostName.(string)] = hostIpStr
-			}
+	for _, metric := range observability.PromQLLabels(output, "host") {
+		hostName := metric["host.name"]
+		if hostName == "" {
+			continue
 		}
+		hostNameAndIp[hostName] = metric["host.ip"]
 	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
@@ -209,45 +234,35 @@ func discoverAndUpdateExternalVMs(ctx *security.RequestContext, tenantId, accoun
 func discoverAndUpdateExternalApps(ctx *security.RequestContext, tenantId, accountId string) error {
 	endDate := time.Now().UTC()
 	startDate := endDate.Add(time.Minute * -30)
-	externalAppMap, err := relay.ExecutePrometheus(accountId, startDate, endDate, map[string]string{
-		"postgres":   `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_postgres_queries_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
-		"mysql":      `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_mysql_queries_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
-		"mongodb":    `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_mongo_queries_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
-		"clickhouse": `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_clickhouse_queries_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
-		"cassandra":  `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_cassandra_queries_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
-		"zookeeper":  `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_zookeeper_requests_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
-		"redis":      `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_redis_queries_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
-		"memcached":  `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_memcached_queries_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
-		"rabbitmq":   `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_rabbitmq_messages_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
-		"kafka":      `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_kafka_requests_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
-		"nats":       `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_nats_messages_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
-	}, false)
+	output, err := observability.FetchMetricsQuery(ctx, observability.FetchMetricsRequest{
+		AccountId:      accountId,
+		MetricProvider: "prometheus",
+		Queries: map[string]string{
+			"postgres":   `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_postgres_queries_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
+			"mysql":      `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_mysql_queries_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
+			"mongodb":    `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_mongo_queries_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
+			"clickhouse": `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_clickhouse_queries_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
+			"cassandra":  `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_cassandra_queries_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
+			"zookeeper":  `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_zookeeper_requests_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
+			"redis":      `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_redis_queries_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
+			"memcached":  `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_memcached_queries_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
+			"rabbitmq":   `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_rabbitmq_messages_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
+			"kafka":      `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_kafka_requests_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
+			"nats":       `group by (destination, actual_destination_workload_name, actual_destination_workload_namespace) ({ __CLUSTER__ __name__="container_nats_messages_total", actual_destination_workload_namespace="external", actual_destination_workload_kind="external"})`,
+		},
+		StartTime: startDate.UnixMilli(),
+		EndTime:   endDate.UnixMilli(),
+	})
 	if err != nil {
 		return err
 	}
 	exteralApps := map[string]string{}
-	for appType, query := range externalAppMap {
-		seriesListResult := query.(map[string]any)["series_list_result"]
-		if seriesListResult != nil {
-			for _, seriesAny := range seriesListResult.([]any) {
-				series, ok := seriesAny.(map[string]any)
-				if !ok {
-					continue
-				}
-				metrixAny := series["metric"]
-				if metrixAny == nil {
-					continue
-				}
-				destinationWorkloadName := metrixAny.(map[string]any)["actual_destination_workload_name"]
-				if destinationWorkloadName == nil {
-					continue
-				}
-				destination := metrixAny.(map[string]any)["destination"]
-				if destination == nil {
-					continue
-				}
-				exteralApps[destination.(string)] = appType
+	for _, result := range output.Results {
+		for _, series := range result.Payload {
+			if series.Metric["actual_destination_workload_name"] == "" || series.Metric["destination"] == "" {
+				continue
 			}
+			exteralApps[series.Metric["destination"]] = result.QueryKey
 		}
 	}
 
@@ -446,15 +461,20 @@ func isValidK8sHash(s string) bool {
 func discoverAndUpdateFrameworkAndDashboardAttributes(ctx *security.RequestContext, tenantId, accountId string) error {
 	endDate := time.Now().UTC()
 	startDate := endDate.Add(time.Minute * -30)
-	dataMap, err := relay.ExecutePrometheus(accountId, startDate, endDate, map[string]string{
-		"container_application_type": `group by (application_type, container_id) ({ __CLUSTER__  __name__="container_application_type"})`,
-		"jvm_dashboard_otel":         `group by (namespace, pod, container) ({ __CLUSTER__  __name__=~"process.runtime.jvm.memory.usage|process_runtime_jvm_memory_usage_bytes"})`,
-		"jvm_dashboard_nb":           `group by (container_id) ({ __CLUSTER__ __name__=~"container_jvm_heap_size_bytes"})`,
-		"python_dashboard_otel":      `group by (namespace, pod, container) ({ __CLUSTER__  __name__=~"process.runtime.cpython.memory|process_runtime_cpython_memory_bytes"})`,
-		"python_dashboard_nb":        `group by (container_id) ({ __CLUSTER__  __name__=~"container_python_thread_lock_wait_time_seconds"})`,
-		"go_dashboard_otel":          `group by (namespace, pod, container) ({ __CLUSTER__ __name__=~"process.runtime.go.mem.heap_sys|process_runtime_go_mem_heap_sys_bytes|go.memory.used|go_memory_used_bytes"})`,
-	}, false)
-
+	output, err := observability.FetchMetricsQuery(ctx, observability.FetchMetricsRequest{
+		AccountId:      accountId,
+		MetricProvider: "prometheus",
+		Queries: map[string]string{
+			"container_application_type": `group by (application_type, container_id) ({ __CLUSTER__  __name__="container_application_type"})`,
+			"jvm_dashboard_otel":         `group by (namespace, pod, container) ({ __CLUSTER__  __name__=~"process.runtime.jvm.memory.usage|process_runtime_jvm_memory_usage_bytes"})`,
+			"jvm_dashboard_nb":           `group by (container_id) ({ __CLUSTER__ __name__=~"container_jvm_heap_size_bytes"})`,
+			"python_dashboard_otel":      `group by (namespace, pod, container) ({ __CLUSTER__  __name__=~"process.runtime.cpython.memory|process_runtime_cpython_memory_bytes"})`,
+			"python_dashboard_nb":        `group by (container_id) ({ __CLUSTER__  __name__=~"container_python_thread_lock_wait_time_seconds"})`,
+			"go_dashboard_otel":          `group by (namespace, pod, container) ({ __CLUSTER__ __name__=~"process.runtime.go.mem.heap_sys|process_runtime_go_mem_heap_sys_bytes|go.memory.used|go_memory_used_bytes"})`,
+		},
+		StartTime: startDate.UnixMilli(),
+		EndTime:   endDate.UnixMilli(),
+	})
 	if err != nil {
 		ctx.GetLogger().Error("discovery: unable to unmarshal data", "error", err)
 		return err
@@ -495,316 +515,206 @@ func discoverAndUpdateFrameworkAndDashboardAttributes(ctx *security.RequestConte
 
 	appArnDataMap := map[string]frameworkDiscovery{}
 
-	if dataMap["container_application_type"] != nil {
-		seriesListResult := dataMap["container_application_type"].(map[string]any)["series_list_result"]
-		if seriesListResult != nil {
-			for _, seriesAny := range seriesListResult.([]any) {
-				series, ok := seriesAny.(map[string]any)
-				if !ok {
-					continue
-				}
-				metrixAny := series["metric"]
-				if metrixAny == nil {
-					continue
-				}
-				metrix, ok := metrixAny.(map[string]any)
-				if !ok {
-					continue
-				}
+	for _, metrix := range observability.PromQLLabels(output, "container_application_type") {
 
-				containerIdAny := metrix["container_id"]
-				if containerIdAny == nil {
-					continue
-				}
-
-				applicationType := metrix["application_type"]
-				if applicationType == nil {
-					continue
-				}
-
-				containerId := containerIdAny.(string)
-				containerIdSplits := strings.Split(containerId, "/")
-				if len(containerIdSplits) != 5 {
-					ctx.GetLogger().Error("discovery: invalid container id", "container_id", containerId)
-					continue
-				}
-
-				discovery := frameworkDiscovery{
-					namespace:       containerIdSplits[2],
-					application:     applicationNameFromPodName(containerIdSplits[2], containerIdSplits[3], podWorkloadMap),
-					container:       containerIdSplits[4],
-					applicationType: applicationType.(string),
-				}
-
-				switch applicationType {
-				case "nginx":
-					discovery.dashboards = []string{"nginx"}
-				case "rabbitmq":
-					discovery.dashboards = []string{"rabbitmq"}
-				case "redis":
-					discovery.dashboards = []string{"redis"}
-				case "kafka":
-					discovery.dashboards = []string{"kafka"}
-				case "elasticsearch":
-					discovery.dashboards = []string{"elasticsearch"}
-				case "mysql":
-					discovery.dashboards = []string{"mysql"}
-				case "postgresql":
-					discovery.dashboards = []string{"postgresql"}
-				case "mongodb":
-					discovery.dashboards = []string{"mongodb"}
-				case "cassandra":
-					discovery.dashboards = []string{"cassandra"}
-				case "memcached":
-					discovery.dashboards = []string{"memcached"}
-				case "zookeeper":
-					discovery.dashboards = []string{"zookeeper"}
-				case "etcd":
-					discovery.dashboards = []string{"etcd"}
-				case "clickhouse":
-					discovery.dashboards = []string{"clickhouse"}
-				case "nodejs":
-					discovery.dashboards = []string{"nodejs"}
-				}
-
-				appArnDataMap[containerIdAny.(string)] = discovery
-
-			}
-
+		containerId := metrix["container_id"]
+		if containerId == "" {
+			continue
 		}
+
+		applicationType := metrix["application_type"]
+		if applicationType == "" {
+			continue
+		}
+		containerIdSplits := strings.Split(containerId, "/")
+		if len(containerIdSplits) != 5 {
+			ctx.GetLogger().Error("discovery: invalid container id", "container_id", containerId)
+			continue
+		}
+
+		discovery := frameworkDiscovery{
+			namespace:       containerIdSplits[2],
+			application:     applicationNameFromPodName(containerIdSplits[2], containerIdSplits[3], podWorkloadMap),
+			container:       containerIdSplits[4],
+			applicationType: applicationType,
+		}
+
+		switch applicationType {
+		case "nginx":
+			discovery.dashboards = []string{"nginx"}
+		case "rabbitmq":
+			discovery.dashboards = []string{"rabbitmq"}
+		case "redis":
+			discovery.dashboards = []string{"redis"}
+		case "kafka":
+			discovery.dashboards = []string{"kafka"}
+		case "elasticsearch":
+			discovery.dashboards = []string{"elasticsearch"}
+		case "mysql":
+			discovery.dashboards = []string{"mysql"}
+		case "postgresql":
+			discovery.dashboards = []string{"postgresql"}
+		case "mongodb":
+			discovery.dashboards = []string{"mongodb"}
+		case "cassandra":
+			discovery.dashboards = []string{"cassandra"}
+		case "memcached":
+			discovery.dashboards = []string{"memcached"}
+		case "zookeeper":
+			discovery.dashboards = []string{"zookeeper"}
+		case "etcd":
+			discovery.dashboards = []string{"etcd"}
+		case "clickhouse":
+			discovery.dashboards = []string{"clickhouse"}
+		case "nodejs":
+			discovery.dashboards = []string{"nodejs"}
+		}
+
+		appArnDataMap[containerId] = discovery
 
 	}
-	if dataMap["jvm_dashboard_otel"] != nil {
-		series_list_result := dataMap["jvm_dashboard_otel"].(map[string]any)["series_list_result"]
-		if series_list_result != nil {
-			for _, seriesAny := range series_list_result.([]any) {
-				series, ok := seriesAny.(map[string]any)
-				if !ok {
-					continue
-				}
-				metrixAny := series["metric"]
-				if metrixAny == nil {
-					continue
-				}
-				metrix, ok := metrixAny.(map[string]any)
-				if !ok {
-					continue
-				}
+	for _, metrix := range observability.PromQLLabels(output, "jvm_dashboard_otel") {
 
-				container := metrix["container"]
-				if container == nil {
-					continue
-				}
+		container := metrix["container"]
+		if container == "" {
+			continue
+		}
 
-				namespace := metrix["namespace"]
-				if namespace == nil {
-					continue
-				}
+		namespace := metrix["namespace"]
+		if namespace == "" {
+			continue
+		}
 
-				pod := metrix["pod"]
-				if pod == nil {
-					continue
-				}
+		pod := metrix["pod"]
+		if pod == "" {
+			continue
+		}
 
-				arn := "/k8s/" + namespace.(string) + "/" + pod.(string) + "/" + container.(string)
+		arn := "/k8s/" + namespace + "/" + pod + "/" + container
 
-				discovery := appArnDataMap[arn]
-				if discovery.namespace == "" {
-					discovery = frameworkDiscovery{
-						namespace:       namespace.(string),
-						application:     applicationNameFromPodName(namespace.(string), pod.(string), podWorkloadMap),
-						container:       container.(string),
-						applicationType: "java",
-					}
-				}
-				discovery.dashboards = append(discovery.dashboards, "otel-jvm")
-				appArnDataMap[arn] = discovery
+		discovery := appArnDataMap[arn]
+		if discovery.namespace == "" {
+			discovery = frameworkDiscovery{
+				namespace:       namespace,
+				application:     applicationNameFromPodName(namespace, pod, podWorkloadMap),
+				container:       container,
+				applicationType: "java",
 			}
 		}
+		discovery.dashboards = append(discovery.dashboards, "otel-jvm")
+		appArnDataMap[arn] = discovery
 	}
-	if dataMap["jvm_dashboard_nb"] != nil {
-		series_list_result := dataMap["jvm_dashboard_nb"].(map[string]any)["series_list_result"]
-		if series_list_result != nil {
-			for _, seriesAny := range series_list_result.([]any) {
-				series, ok := seriesAny.(map[string]any)
-				if !ok {
-					continue
-				}
-				metrixAny := series["metric"]
-				if metrixAny == nil {
-					continue
-				}
-				metrix, ok := metrixAny.(map[string]any)
-				if !ok {
-					continue
-				}
+	for _, metrix := range observability.PromQLLabels(output, "jvm_dashboard_nb") {
 
-				containerIdAny := metrix["container_id"]
-				if containerIdAny == nil {
-					continue
-				}
+		containerId := metrix["container_id"]
+		if containerId == "" {
+			continue
+		}
+		containerIdSplits := strings.Split(containerId, "/")
+		if len(containerIdSplits) != 5 {
+			ctx.GetLogger().Error("discovery: invalid container id", "container_id", containerId)
+			continue
+		}
 
-				containerId := containerIdAny.(string)
-				containerIdSplits := strings.Split(containerId, "/")
-				if len(containerIdSplits) != 5 {
-					ctx.GetLogger().Error("discovery: invalid container id", "container_id", containerId)
-					continue
-				}
-
-				discovery := appArnDataMap[containerIdAny.(string)]
-				if discovery.namespace == "" {
-					discovery = frameworkDiscovery{
-						namespace:       containerIdSplits[2],
-						application:     applicationNameFromPodName(containerIdSplits[2], containerIdSplits[3], podWorkloadMap),
-						container:       containerIdSplits[4],
-						applicationType: "java",
-					}
-				}
-				discovery.dashboards = append(discovery.dashboards, "nb-jvm")
-				appArnDataMap[containerId] = discovery
+		discovery := appArnDataMap[containerId]
+		if discovery.namespace == "" {
+			discovery = frameworkDiscovery{
+				namespace:       containerIdSplits[2],
+				application:     applicationNameFromPodName(containerIdSplits[2], containerIdSplits[3], podWorkloadMap),
+				container:       containerIdSplits[4],
+				applicationType: "java",
 			}
 		}
+		discovery.dashboards = append(discovery.dashboards, "nb-jvm")
+		appArnDataMap[containerId] = discovery
 	}
 
-	if dataMap["python_dashboard_otel"] != nil {
-		series_list_result := dataMap["python_dashboard_otel"].(map[string]any)["series_list_result"]
-		if series_list_result != nil {
-			for _, seriesAny := range series_list_result.([]any) {
-				series, ok := seriesAny.(map[string]any)
-				if !ok {
-					continue
-				}
-				metrixAny := series["metric"]
-				if metrixAny == nil {
-					continue
-				}
-				metrix, ok := metrixAny.(map[string]any)
-				if !ok {
-					continue
-				}
+	for _, metrix := range observability.PromQLLabels(output, "python_dashboard_otel") {
 
-				container := metrix["container"]
-				if container == nil {
-					continue
-				}
+		container := metrix["container"]
+		if container == "" {
+			continue
+		}
 
-				namespace := metrix["namespace"]
-				if namespace == nil {
-					continue
-				}
+		namespace := metrix["namespace"]
+		if namespace == "" {
+			continue
+		}
 
-				pod := metrix["pod"]
-				if pod == nil {
-					continue
-				}
+		pod := metrix["pod"]
+		if pod == "" {
+			continue
+		}
 
-				arn := "/k8s/" + namespace.(string) + "/" + pod.(string) + "/" + container.(string)
+		arn := "/k8s/" + namespace + "/" + pod + "/" + container
 
-				discovery := appArnDataMap[arn]
-				if discovery.namespace == "" {
-					discovery = frameworkDiscovery{
-						namespace:       namespace.(string),
-						application:     applicationNameFromPodName(namespace.(string), pod.(string), podWorkloadMap),
-						container:       container.(string),
-						applicationType: "python",
-					}
-				}
-				discovery.dashboards = append(discovery.dashboards, "otel-python")
-				appArnDataMap[arn] = discovery
+		discovery := appArnDataMap[arn]
+		if discovery.namespace == "" {
+			discovery = frameworkDiscovery{
+				namespace:       namespace,
+				application:     applicationNameFromPodName(namespace, pod, podWorkloadMap),
+				container:       container,
+				applicationType: "python",
 			}
 		}
+		discovery.dashboards = append(discovery.dashboards, "otel-python")
+		appArnDataMap[arn] = discovery
 	}
-	if dataMap["python_dashboard_nb"] != nil {
-		series_list_result := dataMap["python_dashboard_nb"].(map[string]any)["series_list_result"]
-		if series_list_result != nil {
-			for _, seriesAny := range series_list_result.([]any) {
-				series, ok := seriesAny.(map[string]any)
-				if !ok {
-					continue
-				}
-				metrixAny := series["metric"]
-				if metrixAny == nil {
-					continue
-				}
-				metrix, ok := metrixAny.(map[string]any)
-				if !ok {
-					continue
-				}
+	for _, metrix := range observability.PromQLLabels(output, "python_dashboard_nb") {
 
-				containerIdAny := metrix["container_id"]
-				if containerIdAny == nil {
-					continue
-				}
+		containerId := metrix["container_id"]
+		if containerId == "" {
+			continue
+		}
+		containerIdSplits := strings.Split(containerId, "/")
+		if len(containerIdSplits) != 5 {
+			ctx.GetLogger().Error("discovery: invalid container id", "container_id", containerId)
+			continue
+		}
 
-				containerId := containerIdAny.(string)
-				containerIdSplits := strings.Split(containerId, "/")
-				if len(containerIdSplits) != 5 {
-					ctx.GetLogger().Error("discovery: invalid container id", "container_id", containerId)
-					continue
-				}
-
-				discovery := appArnDataMap[containerIdAny.(string)]
-				if discovery.namespace == "" {
-					discovery = frameworkDiscovery{
-						namespace:       containerIdSplits[2],
-						application:     applicationNameFromPodName(containerIdSplits[2], containerIdSplits[3], podWorkloadMap),
-						container:       containerIdSplits[4],
-						applicationType: "python",
-					}
-				}
-				discovery.dashboards = append(discovery.dashboards, "nb-python")
-				appArnDataMap[containerId] = discovery
+		discovery := appArnDataMap[containerId]
+		if discovery.namespace == "" {
+			discovery = frameworkDiscovery{
+				namespace:       containerIdSplits[2],
+				application:     applicationNameFromPodName(containerIdSplits[2], containerIdSplits[3], podWorkloadMap),
+				container:       containerIdSplits[4],
+				applicationType: "python",
 			}
 		}
+		discovery.dashboards = append(discovery.dashboards, "nb-python")
+		appArnDataMap[containerId] = discovery
 	}
 
-	if dataMap["go_dashboard_otel"] != nil {
-		series_list_result := dataMap["go_dashboard_otel"].(map[string]any)["series_list_result"]
-		if series_list_result != nil {
-			for _, seriesAny := range series_list_result.([]any) {
-				series, ok := seriesAny.(map[string]any)
-				if !ok {
-					continue
-				}
-				metrixAny := series["metric"]
-				if metrixAny == nil {
-					continue
-				}
-				metrix, ok := metrixAny.(map[string]any)
-				if !ok {
-					continue
-				}
+	for _, metrix := range observability.PromQLLabels(output, "go_dashboard_otel") {
 
-				container := metrix["container"]
-				if container == nil {
-					continue
-				}
+		container := metrix["container"]
+		if container == "" {
+			continue
+		}
 
-				namespace := metrix["namespace"]
-				if namespace == nil {
-					continue
-				}
+		namespace := metrix["namespace"]
+		if namespace == "" {
+			continue
+		}
 
-				pod := metrix["pod"]
-				if pod == nil {
-					continue
-				}
+		pod := metrix["pod"]
+		if pod == "" {
+			continue
+		}
 
-				arn := "/k8s/" + namespace.(string) + "/" + pod.(string) + "/" + container.(string)
+		arn := "/k8s/" + namespace + "/" + pod + "/" + container
 
-				discovery := appArnDataMap[arn]
-				if discovery.namespace == "" {
-					discovery = frameworkDiscovery{
-						namespace:       namespace.(string),
-						application:     applicationNameFromPodName(namespace.(string), pod.(string), podWorkloadMap),
-						container:       container.(string),
-						applicationType: "golang",
-					}
-				}
-				discovery.dashboards = append(discovery.dashboards, "otel-go")
-				appArnDataMap[arn] = discovery
+		discovery := appArnDataMap[arn]
+		if discovery.namespace == "" {
+			discovery = frameworkDiscovery{
+				namespace:       namespace,
+				application:     applicationNameFromPodName(namespace, pod, podWorkloadMap),
+				container:       container,
+				applicationType: "golang",
 			}
 		}
+		discovery.dashboards = append(discovery.dashboards, "otel-go")
+		appArnDataMap[arn] = discovery
 	}
 
 	workloadIdMap := map[string]string{}

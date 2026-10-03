@@ -15,6 +15,7 @@ import (
 	"nudgebee/services/event"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/ml"
+	"nudgebee/services/observability"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
@@ -1049,25 +1050,17 @@ func collectEvidences(anomaly *Anomaly) ([]any, error) {
 
 	var g errgroup.Group
 
-	// Workload metrics (memory, cpu, latency, cpu_throttling)
+	// Workload metrics (memory, cpu, latency, cpu_throttling), through the
+	// metrics layer so the account's own Prometheus answers — the cluster
+	// agent's or a user-connected one.
+	metricsCtx := security.NewRequestContextForTenantAdmin(anomaly.Tenant, slog.Default(), nil, nil)
 	for i, metricName := range metricNames {
 		i, metricName := i, metricName
 		g.Go(func() error {
-			ev, err := relay.WorkloadMetricsExecutor(
-				anomaly.AccountId,
-				anomaly.Name,
-				anomaly.Namespace,
-				metricName,
-				startTime,
-				endTime,
-			)
+			title := fmt.Sprintf("%s Metric", strings.ToTitle(strings.ReplaceAll(metricName, "_", " ")))
+			res, err := observability.WorkloadMetricEvidence(metricsCtx, anomaly.AccountId, anomaly.Name, anomaly.Namespace, metricName, title, startTime, endTime)
 			if err != nil {
 				slog.Error("anomaly: error getting workload ", "error", err, "metric", metricName, "workload", anomaly.Name, "namespace", anomaly.Namespace)
-				return nil
-			}
-			res, err := relay.FormatEvidenceResponseFromAgent(fmt.Sprintf("%s Metric", strings.ToTitle(strings.ReplaceAll(metricName, "_", " "))), ev)
-			if err != nil {
-				slog.Error("anomaly: error formatting evidence response", "metric", metricName, "error", err)
 				return nil
 			}
 			slots[1+i] = res

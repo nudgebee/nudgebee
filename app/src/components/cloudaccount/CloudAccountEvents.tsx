@@ -37,7 +37,7 @@ import PriorityPinControl from '@shared/widgets/PriorityPinControl';
 import WorkflowIcon from '@assets/WorkflowIcon';
 import Tooltip from '@ui/Tooltip';
 import TicketLink from '@shared/links/TicketLink';
-import { getTriageStatusTooltip } from '@api1/triage';
+import { TRIAGE_SCORE_INFO, getTriageStatusTooltip } from '@api1/triage';
 import SafeIcon from '@shared/icons/SafeIcon';
 
 const TABLE_COLUMNS = [
@@ -59,7 +59,7 @@ const TABLE_COLUMNS = [
   {
     name: 'Triage Score',
     width: '9%',
-    info: "Triage Score is NudgeBee's context-aware triage score/level, computed using multiple signals beyond raw thresholds such as service criticality, customer/user impact, recurrence frequency, dependency (upstream/downstream) blast radius, and the nature of the service/workload.",
+    info: TRIAGE_SCORE_INFO,
   },
   {
     name: 'Alert Status',
@@ -169,6 +169,7 @@ const CloudAccountEvents = (props: {
   const [selectedEventName, setSelectedEventName] = useState(() => getValidParam(router?.query?.eventAggregationKey));
   const [selectedSource, setSelectedSource] = useState<{ label: string; value: string }[]>([]);
   const [selectedStatus, setSelectedStatus] = useState(() => getValidParam(router?.query?.eventStatus));
+  const [selectedNbPriority, setSelectedNbPriority] = useState(() => getValidParam(router?.query?.eventNbPriority));
   // Free-text message search. Raw input vs the applied value that actually drives
   // the refetch (the listEvents dep), seeded from the URL so the filter survives
   // reload / share.
@@ -278,6 +279,12 @@ const CloudAccountEvents = (props: {
   const onStatusFilterChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSelectedStatus(e?.target?.value || '');
     applyFiltersOnRouter(router, { eventStatus: e?.target?.value });
+    setPage(0);
+  };
+
+  const onNbPriorityFilterChange = (value: string) => {
+    setSelectedNbPriority(value);
+    applyFiltersOnRouter(router, { eventNbPriority: value || undefined });
     setPage(0);
   };
 
@@ -502,7 +509,7 @@ const CloudAccountEvents = (props: {
     return rowData;
   };
 
-  const listCloudAccountEvents = () => {
+  const listCloudAccountEvents = (isCancelled: () => boolean = () => false) => {
     setLoading(true);
 
     apiCloudAccount
@@ -518,6 +525,7 @@ const CloudAccountEvents = (props: {
           priority: selectedSeverity,
           source: selectedSource.map((s) => s.value),
           status: selectedStatus,
+          nbPriority: selectedNbPriority || undefined,
           nbStatus: selectedNbStatus.length > 0 ? selectedNbStatus.map((s) => s?.value) : undefined,
           messageSearch: appliedSearchByMessage || undefined,
         },
@@ -525,6 +533,7 @@ const CloudAccountEvents = (props: {
         page * rowsPerPage
       )
       .then(async (res: any) => {
+        if (isCancelled()) return;
         const events = res.data?.events || [];
         const totalCount = res.data?.events_aggregate?.aggregate?.count ?? 0;
 
@@ -535,7 +544,14 @@ const CloudAccountEvents = (props: {
           return;
         }
 
-        // 1. Extract all unique fingerprints (Reference IDs)
+        // Render rows now; ticket badges are a non-blocking second pass below.
+        rawEventsRef.current = events;
+        ticketReferenceMapRef.current = new Map();
+        buildRowDataRef.current = (evts: any[], map: Map<string, any>) => evts.map((item: any) => mapEventToRow(item, map));
+        setEvents(events.map((item: any) => mapEventToRow(item, ticketReferenceMapRef.current)));
+        setEventsCount(totalCount);
+        setLoading(false);
+
         const uniqueReferenceIds = new Set();
         events.forEach((item: any) => {
           if (item.fingerprint) {
@@ -543,35 +559,24 @@ const CloudAccountEvents = (props: {
           }
         });
         const references: any = Array.from(uniqueReferenceIds);
+        if (references.length === 0) return;
 
         try {
-          // 2. Fetch Tickets for all events in one go
           const ticketRes: any = await ticketsApi.listTicketsSummary({ reference_id: references });
+          if (isCancelled()) return;
 
-          // 3. Create a Map for quick lookup
           const ticketReferenceMap = new Map();
           ticketRes?.data?.tickets?.forEach((element: any) => {
             ticketReferenceMap.set(element.reference_id, element);
           });
-
-          // 4. Map events to table rows
-          const ec2ResourceData = events.map((item: any) => mapEventToRow(item, ticketReferenceMap));
-
-          // 5. Update State
-          rawEventsRef.current = events;
           ticketReferenceMapRef.current = ticketReferenceMap;
-          buildRowDataRef.current = (evts: any[], map: Map<string, any>) => evts.map((item: any) => mapEventToRow(item, map));
-          setEvents(ec2ResourceData);
-          setEventsCount(totalCount);
+          setEvents(events.map((item: any) => mapEventToRow(item, ticketReferenceMap)));
         } catch (err) {
           console.error('Error fetching ticket summaries', err);
-          // Optional: handle partial failure (show events without tickets)
-        } finally {
-          setLoading(false);
         }
       })
       .catch(() => {
-        setLoading(false);
+        if (!isCancelled()) setLoading(false);
       });
   };
 
@@ -579,7 +584,11 @@ const CloudAccountEvents = (props: {
     if (!props?.accountId) {
       return;
     }
-    listCloudAccountEvents();
+    let cancelled = false;
+    listCloudAccountEvents(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
   }, [
     props?.accountId,
     page,
@@ -589,6 +598,7 @@ const CloudAccountEvents = (props: {
     selectedEventName,
     selectedSource,
     selectedStatus,
+    selectedNbPriority,
     selectedNbStatus,
     appliedSearchByMessage,
     props?.subjectName,
@@ -729,6 +739,18 @@ const CloudAccountEvents = (props: {
             options={(severityFilterType || []).map((s: string) => ({ label: s, value: s }))}
             value={selectedSeverity ? { label: selectedSeverity, value: selectedSeverity } : null}
             onSelect={(_e: any, item: any) => onSeverityFilterChange({ target: { value: item?.value || '' } } as any)}
+          />
+          <FilterDropdown
+            id={`${cloudAccountEventsTable}-filter-triage-priority`}
+            label='Triage Priority'
+            options={[
+              { label: 'P0', value: 'P0' },
+              { label: 'P1', value: 'P1' },
+              { label: 'P2', value: 'P2' },
+              { label: 'P3', value: 'P3' },
+            ]}
+            value={selectedNbPriority ? { label: selectedNbPriority, value: selectedNbPriority } : null}
+            onSelect={(_e: any, item: any) => onNbPriorityFilterChange(item?.value || '')}
           />
           <FilterDropdown
             id={`${cloudAccountEventsTable}-filter-source`}

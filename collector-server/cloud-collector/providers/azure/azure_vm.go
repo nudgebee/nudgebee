@@ -665,8 +665,8 @@ func (s *virtualMachineService) GetRecommendations(ctx providers.CloudProviderCo
 						var diskSizeGB float64
 						if size, err := toFloat64(osDisk["diskSizeGB"]); err == nil {
 							diskSizeGB = size
-							premiumCost := getDiskMonthlyCost(storageAccountType, diskSizeGB)
-							standardCost := getDiskMonthlyCost("StandardSSD_LRS", diskSizeGB)
+							premiumCost := getDiskMonthlyCost(storageAccountType, resource.Region, diskSizeGB)
+							standardCost := getDiskMonthlyCost("StandardSSD_LRS", resource.Region, diskSizeGB)
 							if premiumCost > 0 && standardCost > 0 {
 								savings = premiumCost - standardCost
 							}
@@ -1975,14 +1975,9 @@ func getVMCostFallback(vmSize string) float64 {
 	return 100.0 // Default for unknown
 }
 
-// getDiskMonthlyCost estimates the monthly cost of a managed disk using Azure Retail Prices API.
-// Falls back to hardcoded estimates if API is disabled or fails.
-func getDiskMonthlyCost(sku string, sizeGB float64) float64 {
-	return getDiskMonthlyCostWithRegion(sku, "eastus", sizeGB) // Default region
-}
-
-// getDiskMonthlyCostWithRegion gets disk cost for specific region using dynamic pricing
-func getDiskMonthlyCostWithRegion(sku, region string, sizeGB float64) float64 {
+// getDiskMonthlyCost estimates the monthly cost of a managed disk in the
+// given region using the Azure Retail Prices API.
+func getDiskMonthlyCost(sku, region string, sizeGB float64) float64 {
 	// Try dynamic pricing first if enabled
 	cache := GetPricingCache()
 	if cache.IsEnabled() {

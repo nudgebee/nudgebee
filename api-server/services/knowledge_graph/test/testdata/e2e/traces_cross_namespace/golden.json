@@ -1,0 +1,131 @@
+{
+  "nodes": [
+    {
+      "unique_key": "k8s:test-account-k8s-1:ns-prod:Workload::checkout",
+      "node_type": "Workload",
+      "specific_type": "",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "is_healthy": false,
+        "kind": "Deployment",
+        "name": "checkout",
+        "namespace": "ns-prod"
+      },
+      "labels": null,
+      "query_attributes": null,
+      "ontology_attributes": null
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1:ns-prod:Workload::notification-server",
+      "node_type": "Workload",
+      "specific_type": "",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "is_healthy": false,
+        "kind": "Deployment",
+        "name": "notification-server",
+        "namespace": "ns-prod"
+      },
+      "labels": null,
+      "query_attributes": null,
+      "ontology_attributes": null
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1:ns-staging:Workload::notification-server",
+      "node_type": "Workload",
+      "specific_type": "",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "is_healthy": false,
+        "kind": "Deployment",
+        "name": "notification-server",
+        "namespace": "ns-staging"
+      },
+      "labels": null,
+      "query_attributes": null,
+      "ontology_attributes": null
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1:ns-staging:Workload::probe",
+      "node_type": "Workload",
+      "specific_type": "",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "is_healthy": false,
+        "kind": "Deployment",
+        "name": "probe",
+        "namespace": "ns-staging"
+      },
+      "labels": null,
+      "query_attributes": null,
+      "ontology_attributes": null
+    }
+  ],
+  "edges": [
+    {
+      "src_key": "k8s:test-account-k8s-1:ns-prod:Workload::checkout",
+      "dst_key": "k8s:test-account-k8s-1:ns-prod:Workload::notification-server",
+      "relationship_type": "CALLS",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "traces",
+      "properties": {
+        "connection_type": "service",
+        "contributing_sources": [
+          "traces"
+        ],
+        "created_by_flow_source": "traces",
+        "dest_service": "notification-server",
+        "failure_count": 2,
+        "flow_source_category": "tracing",
+        "latency_ms": 14.5,
+        "protocol": "HTTP",
+        "request_count": 120,
+        "source_priority": 5,
+        "source_service": "checkout"
+      },
+      "contributing_sources": [
+        "traces"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1:ns-staging:Workload::probe",
+      "dst_key": "k8s:test-account-k8s-1:ns-staging:Workload::notification-server",
+      "relationship_type": "CALLS",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "traces",
+      "properties": {
+        "connection_type": "service",
+        "contributing_sources": [
+          "traces"
+        ],
+        "created_by_flow_source": "traces",
+        "dest_service": "notification-server",
+        "flow_source_category": "tracing",
+        "latency_ms": 3.25,
+        "protocol": "HTTP",
+        "request_count": 8,
+        "source_priority": 5,
+        "source_service": "probe"
+      },
+      "contributing_sources": [
+        "traces"
+      ]
+    }
+  ]
+}

@@ -243,6 +243,30 @@ cloud account), and the 5 superseded legacy tests.
 
 ---
 
+## Live namespace check (opt-in, writes nothing)
+
+`live_namespace_check_test.go` runs a **real** `BuildGraphs` against whatever environment
+`.env` points at and reports trace-derived `CALLS` edges that cross a namespace boundary.
+`SaveToDB` is `false`, so it exercises the whole pipeline without touching the shared graph.
+
+```bash
+cd api-server/services
+KG_LIVE_TENANT=<tenant-uuid> go test ./knowledge_graph/test/ \
+    -run TestLiveKGBuild_NoCrossNamespaceCalls -v -count=1 -timeout 30m
+```
+
+It skips without `KG_LIVE_TENANT`, so it never runs in CI. A full build takes ~5 minutes.
+
+- **It fails if the traces flow source produced no CALLS edges.** Zero trace edges would make
+  the namespace assertion vacuous, so that is treated as an inconclusive run, not a pass.
+- **`KG_LIVE_END_TIME`** (RFC3339) aims the check at a past period. The traces flow source
+  queries a hardcoded **2-hour window ending at `TimeRange.EndTime`** and ignores
+  `StartTime`, so reaching older data means moving the *end* time, not widening the range.
+  Note the trace backend's retention still applies — data that has aged out cannot be
+  rebuilt.
+- **Edge attribution comes from `properties["created_by_flow_source"]`**, not `KgEdge.Source`,
+  which is empty on the in-memory build response.
+
 ## Gotchas
 
 - **`APP_DATABASE_URL`, not `DATABASE_URL`.**

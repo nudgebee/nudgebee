@@ -79,7 +79,7 @@ func (f *metricsAgent) GetName() string {
 }
 
 func (f *metricsAgent) GetNameAliases() []string {
-	return []string{"Metrics"}
+	return []string{"Metrics Analyst", "Metrics"}
 }
 
 func (f *metricsAgent) GetDescription() string {

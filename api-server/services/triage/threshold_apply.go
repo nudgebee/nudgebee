@@ -20,9 +20,14 @@ import (
 const floatEpsilon = 1e-9
 
 // promQLSources are the suggestion sources whose rule body is a PromQL expression.
+// prometheus_alertmanager_webhook is the delivery path of a Prometheus connected
+// without an agent (its Alertmanager posts to the public webhook); prometheus_user
+// is the event_rules source such an account writes rules under.
 var promQLSources = map[string]bool{
-	"prometheus":        true,
-	"pagerduty_webhook": true,
+	"prometheus":                      true,
+	"pagerduty_webhook":               true,
+	"prometheus_alertmanager_webhook": true,
+	"prometheus_user":                 true,
 }
 
 // azureSources are the suggestion sources whose rule body is Azure criteria JSON.
@@ -163,6 +168,10 @@ func getSuggestionForApply(ctx context.Context, db *sqlx.DB, alertRuleKey, cloud
 	return out, nil
 }
 
+// The editable definition wins over its *_webhook twin: since V873 keyed
+// event_rules per source, an alert the webhook reports and the rule Nudgebee (or
+// the sync) holds for it are two rows, and applying against the webhook row would
+// only update the local cache while reporting success.
 // LoadSourceRule loads the event_rules row that backs a suggestion, by (alert, account_id).
 // alert is the cached alert_name (the AlarmName the engine extracted) which is what
 // event_rules keys on for every source (including GCP, where alert_name is the policy name).
@@ -189,7 +198,7 @@ func LoadSourceRule(ctx context.Context, db *sqlx.DB, accountID, alert string) (
 		       annotations, labels, enabled
 		FROM event_rules
 		WHERE alert = $1 AND account_id = $2
-		ORDER BY enabled DESC
+		ORDER BY (COALESCE(source, '') LIKE '%\_webhook') ASC, enabled DESC
 		LIMIT 1`, alert, accountID)
 	if err != nil {
 		return nil, err

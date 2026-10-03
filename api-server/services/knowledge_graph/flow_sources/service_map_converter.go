@@ -254,9 +254,9 @@ func ConvertServiceMapToGraph(
 
 		// Convert upstream links to edges (this service depends on upstream)
 		for _, upstream := range app.Upstreams {
-			// Parse upstream ID to get target service name and kind
-			// Format is ":Kind:Name"
-			targetName, targetKind := traces.ParseUpstreamId(upstream.Id)
+			// Parse upstream ID to get target service namespace, name and kind
+			// Format is "Namespace:Kind:Name"
+			targetNamespace, targetName, targetKind := traces.ParseUpstreamId(upstream.Id)
 			if targetName == "" {
 				continue
 			}
@@ -279,8 +279,11 @@ func ConvertServiceMapToGraph(
 				}
 			}
 
-			// Create or get the upstream node
-			upstreamNode := createOrGetNode(targetName, targetKind, "", environment, upstreamType, nil, true, "")
+			// Create or get the upstream node. The namespace comes from the
+			// upstream id rather than being hardcoded empty, so a target in a
+			// known namespace is not indistinguishable from a same-named one
+			// elsewhere.
+			upstreamNode := createOrGetNode(targetName, targetKind, targetNamespace, environment, upstreamType, nil, true, "")
 
 			edgeID := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(fmt.Sprintf("%v:%v:%v", sourceNode.UniqueKey, upstreamNode.UniqueKey, core.RelationshipCalls))).String() // UUIDv5 style
 			// Create edge: this service -> upstream service

@@ -1,14 +1,17 @@
 import { Box, Typography } from '@mui/material';
-import { type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import PersonOutlineOutlinedIcon from '@mui/icons-material/PersonOutlineOutlined';
 import { Card } from '@ui/Card';
 import { Banner } from '@ui/Banner';
 import { Label } from '@ui/Label';
 import { Link } from '@ui/Link';
+import { Button as DsButton } from '@ui/Button';
 import DsTooltip from '@ui/Tooltip';
 import { ds } from 'src/utils/colors';
 import OwnerBadge from '@components/ownership/OwnerBadge';
+import AssignOwnerModal from '@components/ownership/AssignOwnerModal';
 import useResourceOwner, { derivedText, type ChainLevel } from '@hooks/useResourceOwner';
+import { isTenantAdmin } from '@lib/auth';
 
 const OWNERSHIP_HELP =
   'Who is accountable for this resource. An owner can be set directly on it, matched by an ownership rule, or inherited from the namespace or cloud account above it.';
@@ -48,15 +51,21 @@ export function buildLevels(resourceId: string, accountId: string, namespace: st
 
 // OwnershipSection surfaces the effective owner of the resource a recommendation is
 // about, plus the chain it was derived from — so "whose is this?" is answerable
-// without leaving the drawer. Read-only: the header link routes to whichever surface
-// actually decides the owner (the rules admin for a rule match, the resource listing
-// otherwise). Renders nothing when the recommendation carries no resource id, or when
-// the resolve call fails — ownership is supplementary and must never break the drawer.
+// without leaving the drawer. Tenant admins can set the owner in place via the same
+// AssignOwnerModal the k8s drilldown uses (k8s and cloud resources alike); when a
+// rule decided the owner, a "Manage rules" link also points at the rules admin.
+// Renders nothing when the recommendation carries no resource id, or when the resolve
+// call fails — ownership is supplementary and must never break the drawer.
 const OwnershipSection = ({ rec }: { rec: any }) => {
   const resourceId = rec?.resource_id || rec?.cloud_resourse?.id || '';
   const accountId = rec?.account_id || '';
   const namespace = rec?.resource_k8s_namespace || '';
   const resourceName = rec?.resource_name || rec?.cloud_resourse?.name || '';
+
+  const [assignOpen, setAssignOpen] = useState(false);
+  // Bumped after a successful assign/remove so the resolve below re-runs and the
+  // card reflects the new owner without leaving the drawer.
+  const [reloadToken, setReloadToken] = useState(0);
 
   // Resolution lives in useResourceOwner, shared with the investigation sidebar.
   // buildLevels stays here because only this caller knows a recommendation's
@@ -67,24 +76,22 @@ const OwnershipSection = ({ rec }: { rec: any }) => {
     effective,
     loading,
     unresolvable: hidden,
-  } = useResourceOwner(resourceId ? buildLevels(resourceId, accountId, namespace) : []);
+  } = useResourceOwner(resourceId ? buildLevels(resourceId, accountId, namespace) : [], reloadToken);
 
   if (!resourceId || hidden) return null;
 
-  // Route to whatever actually decides the owner: the rules admin when a rule
-  // matched, the resource's own listing otherwise. The workload drilldown's
-  // Ownership tab isn't URL-addressable, so the k8s link lands on the workloads
-  // list filtered to this one workload.
+  // Set ownership in place, in a modal, rather than by navigating away — the same
+  // AssignOwnerModal the k8s workload drilldown uses, which also handles a cloud
+  // resource (resource_type 'cloud_resource'). Writing is tenant-admin only
+  // (mirrors the backend gate), so non-admins see the card read-only.
+  const canAssign = isTenantAdmin();
+  const assignResourceType = namespace ? 'workload' : 'cloud_resource';
+  // A direct manual owner on this very resource ⇒ "Change", otherwise "Assign".
+  const hasDirectManual = effIndex === 0 && effective?.source === 'manual';
+  const assignLabel = hasDirectManual ? 'Change owner' : 'Assign owner';
+  // A rule decided the owner (at any level): also offer a jump to the rules
+  // admin, which lists both k8s and cloud rules so this link fits either domain.
   const matchedByRule = effective?.source === 'rule';
-  let manageHref = '/user-management#ownership';
-  if (!matchedByRule && accountId) {
-    manageHref = namespace
-      ? `/kubernetes/details/${accountId}?namespace=${encodeURIComponent(namespace)}&workloadName=${encodeURIComponent(
-          resourceName
-        )}#kubernetes/applications`
-      : `/cloud-account/details/${accountId}#summary`;
-  }
-  const manageLabel = matchedByRule ? 'Manage rules' : 'Manage ownership';
 
   return (
     <Card
@@ -110,10 +117,10 @@ const OwnershipSection = ({ rec }: { rec: any }) => {
               </Typography>
             </DsTooltip>
           </Box>
-          {!loading && (
-            <Link href={manageHref} openInNew secondaryText>
-              {manageLabel}
-            </Link>
+          {!loading && canAssign && (
+            <DsButton tone='secondary' size='sm' onClick={() => setAssignOpen(true)} id='recommendation-ownership-assign'>
+              {assignLabel}
+            </DsButton>
           )}
         </Box>
       }
@@ -129,7 +136,14 @@ const OwnershipSection = ({ rec }: { rec: any }) => {
               <OwnerBadge owner={effective} />
             </OwnershipRow>
             <OwnershipRow label='How it was derived'>
-              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700] }}>{derivedText(levels, effIndex)}</Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], minWidth: 0, flexWrap: 'wrap' }}>
+                <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700] }}>{derivedText(levels, effIndex)}</Typography>
+                {matchedByRule && (
+                  <Link href='/user-management#access-users/ownership' openInNew secondaryText>
+                    Manage rules
+                  </Link>
+                )}
+              </Box>
             </OwnershipRow>
             {levels.length > 1 && (
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], mt: ds.space[1] }}>
@@ -155,6 +169,17 @@ const OwnershipSection = ({ rec }: { rec: any }) => {
             tone='info'
             title='No owner set yet'
             message='No ownership rule or assignment covers this resource yet. Add one to route findings like this to the right team.'
+          />
+        )}
+        {assignOpen && (
+          <AssignOwnerModal
+            open={assignOpen}
+            onClose={() => setAssignOpen(false)}
+            onChange={() => setReloadToken((t) => t + 1)}
+            resourceType={assignResourceType}
+            resourceKey={resourceId}
+            cloudAccountId={accountId}
+            resourceLabel={resourceName}
           />
         )}
       </Box>

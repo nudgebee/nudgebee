@@ -16,8 +16,7 @@ import { getAllowedNamespaces } from '@lib/auth';
 import { Box } from '@mui/material';
 import { Switch } from '@ui/Switch';
 import { Chip } from '@ui/Chip';
-import EmptyData from '@shared/EmptyData';
-import noDataImg from '@assets/Icon-no-data-available.svg';
+import { EmptyState } from '@ui/EmptyState';
 import { useData } from '@context/DataContext';
 import { action } from 'src/utils/actionStyles';
 import KubernetesTracesListing from './KubernetesTracesListing';
@@ -159,7 +158,11 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
 
   useEffect(() => {
     if (supportsFeature === false) return;
-    handleSubmit();
+    let cancelled = false;
+    handleSubmit(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, selectedNamespace, selectedDateRange.startDate, selectedDateRange.endDate, selectedWorkload, selectedIndex]);
 
   // Load the available Elasticsearch indices for the freeSolo Index picker.
@@ -297,7 +300,7 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
     });
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = (isCancelled: () => boolean = () => false) => {
     setGroupingLogLoading(true);
     setGroupingLogErrorMsg('');
     apiKubernetes1
@@ -312,7 +315,10 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
         },
       })
       .then((res) => {
-        const evidence = res?.data?.data?.log_group?.groups || [];
+        if (isCancelled()) {
+          return;
+        }
+        const evidence = Array.isArray(res?.data?.data?.log_group?.groups) ? res.data.data.log_group.groups : [];
         if (evidence.length > 0) {
           const uniqueReferenceIds = new Set<string>();
           evidence?.forEach((item: any) => {
@@ -320,8 +326,12 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
           });
           const references = Array.from(uniqueReferenceIds);
           return ticketsApi.listTicketsSummary({ reference_id: references }).then((res: any) => {
+            if (isCancelled()) {
+              return;
+            }
             const ticketReferenceMap = new Map<string, any>();
-            res?.data?.tickets?.forEach((element: any) => {
+            const tickets = Array.isArray(res?.data?.tickets) ? res.data.tickets : [];
+            tickets.forEach((element: any) => {
               ticketReferenceMap.set(element.reference_id, element);
             });
             let data = evidence;
@@ -344,7 +354,7 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
               items.map((item: any) => {
                 const logReferenceId = item.pattern_hash;
                 const existingTicket = ticketMap.get(logReferenceId);
-                const MENU_ITEMS: any = [{ icon: TicketsIcon, label: 'Create Ticket', id: 0, disabled: !!existingTicket }];
+                const MENU_ITEMS: any = [{ icon: TicketsIcon, label: 'Create Ticket', id: 'create-ticket', disabled: !!existingTicket }];
                 const { namespace: namespaceName, workload: app } = parseLogGroupItem(item);
                 const logQuery = `{"namespaceName": "${namespaceName}", "workloadName": "${app}"}`;
                 return [
@@ -427,11 +437,16 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
         }
       })
       .catch((_error) => {
+        if (isCancelled()) {
+          return;
+        }
         setGroupingLogData([]);
         setGroupingLogErrorMsg(`Failed to fetch the Log Group`);
       })
       .finally(() => {
-        setGroupingLogLoading(false);
+        if (!isCancelled()) {
+          setGroupingLogLoading(false);
+        }
       });
   };
 
@@ -481,13 +496,13 @@ const KubernetesLogsPattern: React.FC<KubernetesLogsPatternProps> = ({
           bgcolor: 'var(--ds-background-100)',
         }}
       >
-        <EmptyData
+        <EmptyState
           id='log-grouping-unsupported'
-          img={noDataImg}
-          heading='Log Grouping not supported'
-          subHeading='Neither your log provider nor your metrics provider supports log grouping.'
-          height='400px'
-          sx={{ flexDirection: 'column', gap: 'var(--ds-space-4)', textAlign: 'center' }}
+          size='page'
+          illustration='no-permissions'
+          title='Log Grouping not supported'
+          description='Neither your log provider nor your metrics provider supports log grouping.'
+          sx={{ minHeight: '400px' }}
         />
       </Box>
     );

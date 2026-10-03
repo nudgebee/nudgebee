@@ -1012,7 +1012,7 @@ export const ECSClusters = (props: {
     setPage(0);
   };
 
-  const listEcsClusters = () => {
+  const listEcsClusters = (isStale: () => boolean = () => false) => {
     if (!props?.accountId) {
       return;
     }
@@ -1032,6 +1032,11 @@ export const ECSClusters = (props: {
         page * rowsPerPage
       )
       .then((res: any) => {
+        // Ignore a response whose request was superseded (deps changed / unmount)
+        // so a stale page/filter can't overwrite the current rows.
+        if (isStale()) {
+          return;
+        }
         setLoading(false);
         const cloudResourceCount = res.data?.data?.cloud_resourses_aggregate?.aggregate?.count || 0;
         const cloudResourceData = (res.data?.data?.cloud_resourses || []).map((item: any) => {
@@ -1099,6 +1104,9 @@ export const ECSClusters = (props: {
         setEcsClustersCount(cloudResourceCount);
       })
       .catch((error) => {
+        if (isStale()) {
+          return;
+        }
         setLoading(false);
         snackbar.error(`Error fetching ECS clusters: ${error.message}`);
         console.error('Error fetching ECS clusters:', error);
@@ -1120,7 +1128,11 @@ export const ECSClusters = (props: {
   }, [props?.accountId, selectedTagKey]);
 
   useEffect(() => {
-    listEcsClusters();
+    let stale = false;
+    listEcsClusters(() => stale);
+    return () => {
+      stale = true;
+    };
   }, [props?.accountId, page, selectedTagKey, selectedTagValue, selectedState, appliedSearchFilter]);
 
   return (

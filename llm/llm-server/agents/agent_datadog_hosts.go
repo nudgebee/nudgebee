@@ -34,7 +34,7 @@ func (l DatadogHostsAgent) GetName() string {
 }
 
 func (l DatadogHostsAgent) GetNameAliases() []string {
-	return []string{"Datadog Hosts"}
+	return []string{"Datadog Host Inventory", "Datadog Hosts"}
 }
 
 func (l DatadogHostsAgent) GetDescription() string {

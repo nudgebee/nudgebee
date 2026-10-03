@@ -104,7 +104,7 @@ const TriggerNode = ({ id, data, isConnectable, selected, onTriggerRun, onAddFro
       return '3px solid var(--ds-red-500)'; // Red for connection errors
     }
     if (data.serverError) {
-      return '2px solid #dc2626'; // Solid red for server errors
+      return '2px solid var(--ds-red-600)'; // Solid red for server errors
     }
     if (data.trigger?.valid === false) {
       return '2px solid var(--ds-amber-400)'; // Yellow for validation errors
@@ -131,7 +131,7 @@ const TriggerNode = ({ id, data, isConnectable, selected, onTriggerRun, onAddFro
             height: '28px',
             borderRadius: 'var(--ds-radius-xl)',
             width: '28px',
-            backgroundColor: 'white',
+            backgroundColor: 'var(--ds-background-100)',
             padding: 'var(--ds-space-1)',
           }}
         >
@@ -157,8 +157,8 @@ const TriggerNode = ({ id, data, isConnectable, selected, onTriggerRun, onAddFro
             gap: 4,
             padding: 'var(--ds-space-1) var(--ds-space-2)',
             borderRadius: 999,
-            background: '#dc2626',
-            color: 'white',
+            background: 'var(--ds-red-600)',
+            color: 'var(--ds-background-100)',
             fontSize: 10,
             fontWeight: 'var(--ds-font-weight-semibold)',
             letterSpacing: 0.3,
@@ -173,7 +173,7 @@ const TriggerNode = ({ id, data, isConnectable, selected, onTriggerRun, onAddFro
       <BaseNode
         selected={selected}
         border={getBorderStyle()}
-        background={data.isDeleted ? 'var(--ds-background-200)' : 'white'}
+        background={data.isDeleted ? 'var(--ds-background-200)' : 'var(--ds-background-100)'}
         nodeStyle={data.isDeleted ? { opacity: 0.7 } : {}}
         onDelete={handleDeleteClick}
         content={{
@@ -223,7 +223,7 @@ const TriggerNode = ({ id, data, isConnectable, selected, onTriggerRun, onAddFro
           ),
           iconContainerStyle: {
             background: data.isDeleted ? 'var(--ds-gray-500)' : 'var(--ds-amber-500)',
-            color: 'white',
+            color: 'var(--ds-background-100)',
           },
           labelStyle: {
             color: data.isDeleted ? 'var(--ds-gray-500)' : 'var(--ds-brand-500)',

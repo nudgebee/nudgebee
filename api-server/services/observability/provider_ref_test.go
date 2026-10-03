@@ -20,6 +20,7 @@ var logSourceDispatchTable = []struct {
 	source   string
 }{
 	{"loki", "agent"},
+	{"loki", "user"},
 	{"signoz", "agent"},
 	{"signoz", "user"},
 	{"datadog", "user"},
@@ -83,5 +84,5 @@ func TestProviderRef_TableCoversEveryDispatch(t *testing.T) {
 	}
 	// The reverse direction is enforced by the compiler: a new source must implement
 	// ProviderRef to satisfy LogSource at all.
-	assert.Len(t, logSourceDispatchTable, 20, "update this table when getLogSource gains a provider")
+	assert.Len(t, logSourceDispatchTable, 21, "update this table when getLogSource gains a provider")
 }

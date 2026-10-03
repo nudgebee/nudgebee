@@ -40,7 +40,7 @@ func (a GitlabAgent) GetName() string {
 }
 
 func (a GitlabAgent) GetNameAliases() []string {
-	return []string{"Gitlab", "GitLab", "glab"}
+	return []string{"GitLab Operations", "Gitlab", "GitLab", "glab"}
 }
 
 func (a GitlabAgent) GetDescription() string {

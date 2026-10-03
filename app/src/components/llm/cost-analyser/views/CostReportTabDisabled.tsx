@@ -49,7 +49,7 @@ function InfoRow({ icon, label, children }: { icon: React.ReactNode; label: stri
       {/* Box, not Typography: the "Where it goes" row nests its own Typography/Chip
           (WhereItGoes) for the live channel-status line, and Typography-in-Typography
           renders a <p> inside a <p> — invalid HTML and a React DOM-nesting warning. */}
-      <Box sx={{ ...BODY_SX, mt: '4px' }}>{children}</Box>
+      <Box sx={{ ...BODY_SX, mt: ds.space[1] }}>{children}</Box>
     </Box>
   );
 }
@@ -153,7 +153,7 @@ export function CostReportTabDisabled() {
             surface='section'
             tone='info'
             title='How to enable it'
-            message='Open your profile menu → Tenant Settings → Features, enable “AI/LLM cost report”, then Save. Make sure a default Slack channel is mapped under Admin → Integrations so the daily digest has somewhere to post.'
+            message='Open Admin → Tenant Settings → Features, enable “AI/LLM cost report”, then Save. Make sure a default Slack channel is mapped under Admin → Integrations so the daily digest has somewhere to post.'
           />
         ) : (
           <Banner

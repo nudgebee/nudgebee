@@ -52,6 +52,8 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
       return;
     }
 
+    let cancelled = false;
+
     const fetchStartupMetrics = async () => {
       setIsLoading(true);
       setInfoMessage(null);
@@ -59,6 +61,7 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
       try {
         // Step 1: Fetch recent active pods for this workload
         const podsRes = await k8sApi.getK8sPods(MAX_PODS, 0, { accountId, namespaceName, workloadName, isActive: true }, false);
+        if (cancelled) return;
         const pods = podsRes?.data?.k8s_pods || [];
 
         if (pods.length === 0) {
@@ -96,6 +99,7 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
         });
 
         const results = await Promise.all(metricsPromises);
+        if (cancelled) return;
 
         // Filter to pods that returned data
         const podsWithData = results.filter((r) => r.data.length > 0);
@@ -281,14 +285,20 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
         setCpuDatasets(cpuDs);
         setMemDatasets(memDs);
       } catch (err) {
+        if (cancelled) return;
         console.error('Failed to fetch startup metrics:', err);
         setInfoMessage('Failed to load startup metrics.');
       } finally {
-        setIsLoading(false);
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
     };
 
     fetchStartupMetrics();
+    return () => {
+      cancelled = true;
+    };
   }, [accountId, workloadName, namespaceName, containerName, datasource, recc?.cpuRecc, recc?.memoryRecc, recc?.cpuRequest, recc?.cpuLimit]);
 
   const scaleOptions = {

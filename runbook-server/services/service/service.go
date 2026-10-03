@@ -1191,6 +1191,21 @@ func InvestigateEvent(tenantId string, events []Event) ([]string, error) {
 	return nil, errors.New("events: unable to process request")
 }
 
+// EvidenceSourceWorkflow identifies the automation run that produced an
+// evidence. It travels with the append so api-server can stamp it onto each
+// element server-side; the Investigate page reads the stamp to show which
+// automation a card came from, and RefreshInvestigation reads it to know the
+// evidence is not its own to regenerate.
+type EvidenceSourceWorkflow struct {
+	WorkflowID   string `json:"workflow_id"`
+	WorkflowName string `json:"workflow_name"`
+	ExecutionID  string `json:"execution_id"`
+	// TaskID scopes api-server's "replace my own previous output" rule to one
+	// task. Two tasks in the same workflow both attaching evidence is a real
+	// shape, and without this the later one deletes the earlier one's cards.
+	TaskID string `json:"task_id,omitempty"`
+}
+
 // AddEventEvidence appends evidences to an event that already exists, via the
 // `add_event_evidence` RPC action.
 //
@@ -1200,7 +1215,11 @@ func InvestigateEvent(tenantId string, events []Event) ([]string, error) {
 // it would silently lose the data. api-server performs the append as a single
 // atomic jsonb concatenation, because the playbook enricher pipeline writes the
 // same column concurrently.
-func AddEventEvidence(tenantId string, eventId string, evidences []any) error {
+//
+// `source` carries the run's identity. It is sent rather than injected here so
+// the stamp is applied once, server-side, where it cannot be omitted or forged
+// by a workflow author writing evidence objects by hand.
+func AddEventEvidence(tenantId string, eventId string, evidences []any, source EvidenceSourceWorkflow) error {
 	if eventId == "" {
 		return errors.New("event_id is required")
 	}
@@ -1208,14 +1227,66 @@ func AddEventEvidence(tenantId string, eventId string, evidences []any) error {
 		return errors.New("at least one evidence is required")
 	}
 
+	return postEventEvidence(tenantId, map[string]any{
+		"event_id":  eventId,
+		"evidences": evidences,
+	}, source)
+}
+
+// AuthoredEvidence is a card an automation author filled in by hand: the type
+// they picked plus the fields that type takes. api-server owns the envelope the
+// Investigate page reads, and rejects a type it cannot draw — which is the
+// point of sending the fields rather than a hand-built evidence object.
+type AuthoredEvidence struct {
+	Type     string   `json:"type"`
+	Title    string   `json:"title,omitempty"`
+	Summary  string   `json:"summary,omitempty"`
+	Severity string   `json:"severity,omitempty"`
+	Content  string   `json:"content,omitempty"`
+	JsonData string   `json:"json_data,omitempty"`
+	Headers  []string `json:"headers,omitempty"`
+	Rows     string   `json:"rows,omitempty"`
+}
+
+// AddAuthoredEventEvidence attaches one authored card to an existing event.
+func AddAuthoredEventEvidence(tenantId string, eventId string, evidence AuthoredEvidence, source EvidenceSourceWorkflow) error {
+	if eventId == "" {
+		return errors.New("event_id is required")
+	}
+	if evidence.Type == "" {
+		return errors.New("type is required")
+	}
+
+	return postEventEvidence(tenantId, map[string]any{
+		"event_id": eventId,
+		"evidence": evidence,
+	}, source)
+}
+
+func postEventEvidence(tenantId string, input map[string]any, source EvidenceSourceWorkflow) error {
+	// Omitted for a task running outside a workflow context (no id to attribute
+	// to); api-server then appends unstamped, exactly as before.
+	if source.WorkflowID != "" {
+		sourceWorkflow := map[string]any{
+			"workflow_id":   source.WorkflowID,
+			"workflow_name": source.WorkflowName,
+			"execution_id":  source.ExecutionID,
+		}
+		// Omitted rather than sent empty, matching the `omitempty` on TaskID.
+		// Absence is meaningful on the far side: api-server's replace filter
+		// treats an element with no task_id as a legacy one, so "unset" and
+		// "the empty task" must not arrive looking the same.
+		if source.TaskID != "" {
+			sourceWorkflow["task_id"] = source.TaskID
+		}
+		input["source_workflow"] = sourceWorkflow
+	}
+
 	serviceRequest := map[string]any{
 		"action": map[string]any{
 			"name": "add_event_evidence",
 		},
-		"input": map[string]any{
-			"event_id":  eventId,
-			"evidences": evidences,
-		},
+		"input": input,
 	}
 
 	resp, err := common.HttpPost(fmt.Sprintf("%s/rpc/event", config.Config.ServiceEndpoint), common.HttpWithHeaders(map[string]string{

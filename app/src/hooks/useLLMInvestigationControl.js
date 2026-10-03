@@ -551,6 +551,10 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           references: responseReferences,
           ack_message: conversationMessage.ack_message,
           status: conversationMessage.status,
+          // Seconds this turn spent parked on a followup waiting for a human
+          // answer — already inside [created_at, updated_at]. ResponseMetaRail
+          // subtracts it so the duration chip shows the model's own time.
+          followup_wait_seconds: conversationMessage.followup_wait_seconds || 0,
           // Carry the raw `metadata` jsonb through to the UI response object —
           // MessageItem parses it and threads the per-message egressfilter
           // (and future per-subsystem) events into ResponseMetaRail. Without

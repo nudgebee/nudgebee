@@ -14,6 +14,10 @@ class ShowingTableCard {
     this.enricherData = data;
     this.tableData = {};
     this.disabled = data?.additional_info?.status == 'skipped';
+    // Automation-written table evidence says so in its header, linking to the run
+    // when there was one. Enricher evidence carries neither and renders as before.
+    this.sourceWorkflow = data?.additional_info?.source_workflow;
+    this.authoredByAutomation = data?.additional_info?.actual_action_name === 'workflow_evidence';
   }
 
   canRenderContent = async () => {

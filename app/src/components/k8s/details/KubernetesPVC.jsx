@@ -351,7 +351,6 @@ function pvDetailsFn(accountId, drilldownQuery) {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -369,7 +368,6 @@ function pvDetailsFn(accountId, drilldownQuery) {
             flexDirection: 'row',
             flexWrap: 'wrap',
             gap: 'var(--ds-space-3)',
-            fontFamily: 'Roboto',
             fontSize: 'var(--ds-text-body-lg)',
             fontWeight: 'var(--ds-font-weight-medium)',
             lineHeight: '20px',
@@ -385,7 +383,6 @@ function pvDetailsFn(accountId, drilldownQuery) {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -402,7 +399,6 @@ function pvDetailsFn(accountId, drilldownQuery) {
             display: 'flex',
             flexDirection: 'row',
             flexWrap: 'wrap',
-            fontFamily: 'Roboto',
             gap: 'var(--ds-space-3)',
             fontSize: 'var(--ds-text-body-lg)',
             fontWeight: 'var(--ds-font-weight-medium)',
@@ -419,7 +415,6 @@ function pvDetailsFn(accountId, drilldownQuery) {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -436,7 +431,6 @@ function pvDetailsFn(accountId, drilldownQuery) {
             display: 'flex',
             flexDirection: 'row',
             flexWrap: 'wrap',
-            fontFamily: 'Roboto',
             gap: 'var(--ds-space-3)',
             fontSize: 'var(--ds-text-body-lg)',
             fontWeight: 'var(--ds-font-weight-medium)',
@@ -453,7 +447,6 @@ function pvDetailsFn(accountId, drilldownQuery) {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -470,7 +463,6 @@ function pvDetailsFn(accountId, drilldownQuery) {
             display: 'flex',
             flexDirection: 'row',
             flexWrap: 'wrap',
-            fontFamily: 'Roboto',
             gap: 'var(--ds-space-3)',
             fontSize: 'var(--ds-text-body-lg)',
             fontWeight: 'var(--ds-font-weight-medium)',
@@ -487,7 +479,6 @@ function pvDetailsFn(accountId, drilldownQuery) {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -504,7 +495,6 @@ function pvDetailsFn(accountId, drilldownQuery) {
             display: 'flex',
             flexDirection: 'row',
             flexWrap: 'wrap',
-            fontFamily: 'Roboto',
             gap: 'var(--ds-space-3)',
             fontSize: 'var(--ds-text-body-lg)',
             fontWeight: 'var(--ds-font-weight-medium)',

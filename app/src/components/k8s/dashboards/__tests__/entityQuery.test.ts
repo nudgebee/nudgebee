@@ -421,3 +421,31 @@ describe('renderEntityQuery', () => {
     expect(renderEntityQuery(bare, () => 'REPLACED')).toEqual(bare);
   });
 });
+
+// The tables hold `{brand}` rather than a literal product name so a white-label
+// tenant is not stuck with the house brand (see fillBrandTokens). Substitution
+// happens in the accessors, which means every user-facing field has to be listed
+// there: a field that is added to the copy but not to brandTable() ships the raw
+// placeholder to the user, which is worse than the name it replaced. `detail` was
+// exactly that miss.
+describe('brand placeholders', () => {
+  const BRAND_TOKEN = /\{brand\}|\{assistant\}/i;
+
+  it('leaves no placeholder in any field the accessors return', () => {
+    for (const source of ENTITY_TABLES) {
+      const table = findTable(source.value);
+      expect(table.label).not.toMatch(BRAND_TOKEN);
+      expect(table.description).not.toMatch(BRAND_TOKEN);
+      expect(table.detail).not.toMatch(BRAND_TOKEN);
+      for (const column of table.columns) {
+        expect(column.label).not.toMatch(BRAND_TOKEN);
+      }
+    }
+  });
+
+  it('substitutes through tablesFor as well as findTable', () => {
+    for (const table of tablesFor('nudgebee')) {
+      expect(`${table.description} ${table.detail}`).not.toMatch(BRAND_TOKEN);
+    }
+  });
+});

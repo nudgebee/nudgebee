@@ -2280,6 +2280,9 @@ def _assemble_report(db, run: BenchmarkRun) -> dict:
             "tags": r.tags or [],
             "error_message": r.error_message or "",
             "error_category": r.error_category or "",
+            # LLM session_id — same handle the run-detail page uses to build
+            # an "open this conversation" link (see _get_test_results_list).
+            "session_id": r.polling_conversation_id or "",
         }
         details.append(detail)
 
@@ -2455,6 +2458,7 @@ def _assemble_report(db, run: BenchmarkRun) -> dict:
             "run_id": run.run_id,
             "agent": run.agent,
             "run_name": run.run_name or "",
+            "account_id": run.account_id or "",
             "total_queries": n,
             "model_names": sorted(all_model_names),
             "model_providers": sorted(all_model_providers),

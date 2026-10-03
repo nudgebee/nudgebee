@@ -11,8 +11,7 @@ import { useData } from '@context/DataContext';
 import KubernetesTracesListing from './KubernetesTracesListing';
 import Text from '@shared/format/Text';
 import { Box } from '@mui/material';
-import EmptyData from '@shared/EmptyData';
-import noDataImg from '@assets/Icon-no-data-available.svg';
+import { EmptyState } from '@ui/EmptyState';
 import { ds } from '@utils/colors';
 import apiUser from '@api1/user';
 import observability from '@api1/observability';
@@ -411,13 +410,13 @@ const KubernetesTracesGroupListing: React.FC<KubernetesTracesGroupListingProps> 
   if (supportsFeature === false) {
     return (
       <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 'var(--ds-radius-lg)', bgcolor: ds.background[100] }}>
-        <EmptyData
+        <EmptyState
           id='trace-grouping-unsupported'
-          img={noDataImg}
-          heading='Trace Grouping not supported'
-          subHeading={`Your current trace provider ${tracesProviderName ? `(${tracesProviderName}) ` : ''}does not support trace grouping.`}
-          height='400px'
-          sx={{ flexDirection: 'column', gap: 'var(--ds-space-4)', textAlign: 'center' }}
+          size='page'
+          illustration='no-permissions'
+          title='Trace Grouping not supported'
+          description={`Your current trace provider ${tracesProviderName ? `(${tracesProviderName}) ` : ''}does not support trace grouping.`}
+          sx={{ minHeight: '400px' }}
         />
       </Box>
     );

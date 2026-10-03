@@ -63,7 +63,7 @@ func (s *K8sSource) fetchK8sPVCsFromRelay(ctx context.Context, req *core.SourceB
 
 	relayResponse, err := relay.Execute(relayRequest)
 	if err != nil {
-		s.logger.Error("failed to execute relay request for PVCs", "error", err)
+		// Soft failure: BuildGraph logs this at WARN and continues without it.
 		return nil, fmt.Errorf("failed to execute relay request for PVCs: %w", err)
 	}
 

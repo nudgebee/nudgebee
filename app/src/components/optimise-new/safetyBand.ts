@@ -1,4 +1,5 @@
 import { type LabelTone } from '@ui/Label';
+import { CRITICALITY_TONE, type Criticality } from '@api1/criticality';
 import { safeJSONParse } from 'src/utils/common';
 
 // Blast-radius safety band on a recommendation, computed by the knowledge-graph
@@ -22,6 +23,14 @@ export interface DependentRef {
   sources?: string[];
   // Hosted-workload rollup annotation: pods of this workload on the seed node.
   pod_count?: number;
+  // Curated business-criticality tier, when the workload carries one. Absent
+  // means no tier is stated — an ordinary workload, or one that cannot carry a
+  // tier at all (only k8s-sourced workloads can). Never read absence as "not
+  // important".
+  criticality?: Criticality;
+  // When an active traffic signal last saw this DIRECT dependency (RFC3339).
+  // Absent on indirect dependents and on edges only static sources assert.
+  last_observed_at?: string;
 }
 
 export interface ImpactSummary {
@@ -32,6 +41,14 @@ export interface ImpactSummary {
   // persisted before that existed lack the key — for those, a zero prod count
   // means "environment never resolved", not "verified no production impact".
   environment_resolved?: boolean;
+  // Marks that curated criticality tiers were read for this summary. Absent on
+  // summaries persisted before criticality existed, so no tier on a dependent
+  // there means "never looked up", not "ordinary".
+  criticality_resolved?: boolean;
+  // When this summary was computed. Ages derived from persisted timestamps are
+  // measured against this, never against now: non-Open recommendations are
+  // never recomputed, so their summaries freeze here.
+  computed_at?: string;
   coverage_confidence?: 'none' | 'low' | 'observed' | 'high';
   truncated?: boolean;
   safety_reason?: string;
@@ -50,20 +67,6 @@ export interface ImpactSummary {
   hosted_workload_count?: number;
   hosted_workloads?: DependentRef[];
 }
-
-const BAND_TONE: Record<SafetyBand, LabelTone> = {
-  safe: 'success',
-  review: 'warning',
-  risky: 'critical',
-  unknown: 'neutral',
-};
-
-// safetyBandTone maps a band to a DS status tone (safe→success, review→warning,
-// risky→critical, unknown/missing→neutral).
-export const safetyBandTone = (band?: string): LabelTone => BAND_TONE[(band || 'unknown') as SafetyBand] ?? 'neutral';
-
-// safetyBandLabel renders the band as a capitalised word ("Safe", "Risky", …).
-export const safetyBandLabel = (band?: string): string => (band ? band.charAt(0).toUpperCase() + band.slice(1) : '');
 
 // getImpactSummary pulls the blast-radius rollup out of a recommendation's
 // finops_score_breakdown, tolerating the JSONB arriving as a string or an object.
@@ -87,6 +90,62 @@ export const getChangeClass = (rec: any): ChangeClass | null => {
   return cls === 'additive' || cls === 'reductive' || cls === 'destructive' ? cls : null;
 };
 
+// ── Presentation ──────────────────────────────────────────────────────────
+// The stored band (safe/review/risky/unknown) is a contract — persisted,
+// queried, filtered on, and what the agent's tools take. What people see is
+// the action it calls for, not a judgement about applying: production callers
+// mean "plan it", not "risky". Red is kept for the one thing that can't be
+// planned around — an irreversible change — and only when the graph also
+// grades it risky; a dependent-free removal is amber, matching its banner
+// (the backend never grades a removal safe, but the chip follows the banner
+// even if one arrived that way).
+export interface SafetyPresentation {
+  key: 'safe' | 'quick_check' | 'plan' | 'irreversible' | 'not_assessed';
+  label: string;
+  tone: LabelTone;
+}
+
+export const presentBand = (band: string | null | undefined, changeClass: ChangeClass | null): SafetyPresentation => {
+  const b = (band || '').trim().toLowerCase();
+  if (changeClass === 'destructive' && (b === 'safe' || b === 'review' || b === 'risky')) {
+    return { key: 'irreversible', label: 'Irreversible', tone: b === 'risky' ? 'critical' : 'warning' };
+  }
+  switch (b) {
+    case 'safe':
+      return { key: 'safe', label: 'Safe', tone: 'success' };
+    case 'review':
+      return { key: 'quick_check', label: 'Quick check', tone: 'info' };
+    case 'risky':
+      return { key: 'plan', label: 'Plan it', tone: 'warning' };
+    default:
+      return { key: 'not_assessed', label: 'Not assessed', tone: 'neutral' };
+  }
+};
+
+// presentRecommendation is the one place a row's presentation is computed:
+// band and change class together, so an irreversible change can never render
+// as "Plan it" because a caller forgot the second half.
+export const presentRecommendation = (rec: any): SafetyPresentation => presentBand(rec?.safety_band, getChangeClass(rec));
+
+// presentBandOnly is for surfaces that have a band but no recommendation —
+// filter chips and the legend. An irreversible change is counted under the
+// band it was graded into, so these never say "Irreversible".
+export const presentBandOnly = (band: string): SafetyPresentation => presentBand(band, null);
+
+const TONE_DOT_COLOR: Record<LabelTone, string> = {
+  success: 'var(--ds-green-500)',
+  info: 'var(--ds-blue-500)',
+  warning: 'var(--ds-amber-500)',
+  critical: 'var(--ds-red-500)',
+  neutral: 'var(--ds-gray-400)',
+};
+
+// safetyDotColor pins a filter chip's dot to its tone even while pressed.
+export const safetyDotColor = (tone: LabelTone): string => TONE_DOT_COLOR[tone];
+
+// coverageLabel capitalises a coverage confidence ("high", "observed", …).
+export const coverageLabel = (cov?: string): string => (cov ? cov.charAt(0).toUpperCase() + cov.slice(1) : '');
+
 const CHANGE_CLASS_PRESENTATION: Record<ChangeClass, { label: string; tone: LabelTone }> = {
   additive: { label: 'Additive', tone: 'success' },
   reductive: { label: 'Reductive', tone: 'warning' },
@@ -96,12 +155,51 @@ const CHANGE_CLASS_PRESENTATION: Record<ChangeClass, { label: string; tone: Labe
 export const changeClassLabel = (cls?: ChangeClass | null): string | null => (cls ? CHANGE_CLASS_PRESENTATION[cls].label : null);
 export const changeClassTone = (cls?: ChangeClass | null): LabelTone => (cls ? CHANGE_CLASS_PRESENTATION[cls].tone : 'neutral');
 
+// deriveVerdict turns the band plus the impact counts into the one-line
+// headline above the safety card. The band is the verdict, so the headline
+// must never argue with it: production dependents lead the banner only when
+// the band actually grades them dangerous — an additive change is Review
+// *because* a larger allocation cannot starve them, and a red "N production
+// dependents affected" would contradict the reason line right beneath it.
+// A success tone means the card renders no banner at all, just the quiet
+// reason text.
+export const deriveVerdict = (
+  band?: string,
+  prod?: number,
+  depCount?: number,
+  truncated?: boolean,
+  changeClass?: ChangeClass | null
+): { tone: 'success' | 'warning' | 'critical'; title: string } => {
+  const prodCount = prod ?? 0;
+  // Risky reads as a fact to plan around, not an alarm: amber, and "in the
+  // blast radius" rather than "affected". Red is reserved for the one case
+  // that cannot be planned around — an irreversible change.
+  if (band === 'risky') {
+    if (changeClass === 'destructive') return { tone: 'critical', title: 'Irreversible change' };
+    if (prodCount > 0) return { tone: 'warning', title: `${prodCount} production dependent${prodCount === 1 ? '' : 's'} in the blast radius` };
+    if (truncated) return { tone: 'warning', title: 'Large blast radius' };
+    return { tone: 'warning', title: 'Dependents in the blast radius' };
+  }
+  if (band === 'unknown') return { tone: 'warning', title: 'Not in the dependency graph yet' };
+  // Removal is irreversible even when the neighbourhood looks empty, so it
+  // keeps a visible caution rather than a green "no known dependents".
+  if (changeClass === 'destructive') return { tone: 'warning', title: 'Irreversible change' };
+  // prodCount is checked alongside depCount because the two arrive from the
+  // same persisted summary and a partial one must still name the additive
+  // case rather than falling through to a generic headline.
+  if (changeClass === 'additive' && ((depCount ?? 0) > 0 || prodCount > 0)) {
+    return { tone: 'success', title: 'Capacity increase — dependents unaffected' };
+  }
+  if (depCount === 0 || band === 'safe') return { tone: 'success', title: 'No known dependents' };
+  return { tone: 'success', title: 'Contained blast radius' };
+};
+
 export const CHANGE_CLASS_HELP: Record<ChangeClass, string> = {
   additive:
-    'This change only adds capacity or commitments — dependents cannot be starved by it, so production callers cap the verdict at Review instead of Risky. The remaining risk is apply mechanics (e.g. a rolling restart).',
-  reductive: 'This change shrinks or reshapes something callers rely on. Production dependents make it Risky.',
+    'This change only adds capacity or commitments — dependents cannot be starved by it, so production callers cap the verdict at Quick check instead of Plan it. The remaining risk is apply mechanics (e.g. a rolling restart).',
+  reductive: 'This change shrinks or reshapes something callers rely on. Production dependents mean planning the apply.',
   destructive:
-    'This change removes the resource and cannot be undone. The verdict floors at Risky; a well-observed, dependent-free neighbourhood earns Review — never Safe.',
+    'This change removes the resource and cannot be undone. It always reads Irreversible; a well-observed, dependent-free neighbourhood needs one glance, never none.',
 };
 
 // Relationship → short role chip, from the row's point of view. Upstream rows
@@ -197,6 +295,54 @@ export const impactSignalSources = (impact?: ImpactSummary | null): string[] => 
     .map(formatSourceName)
     .sort((a, b) => a.localeCompare(b));
 };
+
+// criticalityTone maps a tier to its chip tone, reusing the one mapping the
+// criticality manager renders so the two surfaces cannot drift. The tier
+// arrives from persisted JSONB backed by a text column (validated in app code,
+// not a DB enum), so an unrecognised value is possible at runtime whatever the
+// type says: it falls back to neutral rather than rendering an undefined tone.
+export const criticalityTone = (tier?: Criticality): LabelTone => (tier && CRITICALITY_TONE[tier]) || 'neutral';
+
+// criticalityLabel — the chip text. 'medium' never appears (it is the unstored
+// default), so a chip marks only an exceptional tier.
+export const criticalityLabel = (tier?: Criticality): string | null => {
+  if (!tier || tier === 'medium') return null;
+  return tier.charAt(0).toUpperCase() + tier.slice(1);
+};
+
+// businessCriticalCount counts dependents carrying a critical/high tier. A
+// positive claim only: the denominator is deliberately not reported, because
+// dependents that cannot carry a tier are indistinguishable from untiered ones
+// and any "N of M" would overstate what was actually assessed.
+export const businessCriticalCount = (deps?: DependentRef[]): number =>
+  (deps || []).filter((d) => d.criticality === 'critical' || d.criticality === 'high').length;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Flow edges are tombstoned after this many days without traffic; a snapshot
+// older than that can no longer vouch for what it lists.
+const EDGE_STALE_DAYS = 7;
+
+// observedAgeLabel renders how long before the summary was computed a traffic
+// signal last saw a direct dependency — "Last seen 5d ago". Null when: no
+// observation, the age is under two days (hourly builds plus the signal's
+// lookback make finer precision meaningless), or the snapshot itself is older
+// than the tombstone window, at which point the listing may already be wrong.
+export const observedAgeLabel = (dep: DependentRef, computedAt?: string): string | null => {
+  if (!dep.last_observed_at || !computedAt) return null;
+  const seen = Date.parse(dep.last_observed_at);
+  const computed = Date.parse(computedAt);
+  if (Number.isNaN(seen) || Number.isNaN(computed)) return null;
+  if (Date.now() - computed > EDGE_STALE_DAYS * DAY_MS) return null;
+  const days = Math.floor((computed - seen) / DAY_MS);
+  if (days < 2) return null;
+  return `Last seen ${days}d ago`;
+};
+
+export const OBSERVED_AGE_HELP =
+  'How long before this assessment an active traffic signal (eBPF, traces or APM) last saw this dependency. A window, not an instant — dependencies stay listed for up to 7 days after traffic stops, so an old sighting may mean the dependency is already gone.';
+
+export const CRITICALITY_HELP =
+  'How business-critical this workload is, curated in Settings → Workload Criticality. Informational: it explains why a dependent matters, but it does not change the safety verdict.';
 
 // isProdEnvironment mirrors the backend's isProdEnv so prod dependents get the
 // critical treatment consistently.

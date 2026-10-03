@@ -122,6 +122,13 @@ spec:
         image: python:3.9-slim
         command: ["python", "/app/operator.py"]
         env:
+        # Python fully buffers stdout when it isn't a TTY (i.e. always, in a
+        # container), so without this the operator's print() output can sit
+        # unflushed for minutes — `kubectl logs` returns empty even once the
+        # pod is Running, breaking the assumption that rollout-ready implies
+        # log content exists.
+        - name: PYTHONUNBUFFERED
+          value: "1"
         - name: OPERATOR_NAMESPACE
           valueFrom:
             fieldRef:
@@ -141,25 +148,3 @@ spec:
         secret:
           secretName: whale-operator
           defaultMode: 0755
-
----
-apiVersion: ocean.io/v1
-kind: WhaleWatcher
-metadata:
-  name: blue-whale
-  namespace: app-96
-spec:
-  whaleType: "blue"
-  location: "Pacific Ocean"
-  depth: 200
-
----
-apiVersion: ocean.io/v1
-kind: WhaleWatcher
-metadata:
-  name: humpback-whale
-  namespace: app-96
-spec:
-  whaleType: "humpback"
-  location: "Atlantic Ocean"
-  depth: 150

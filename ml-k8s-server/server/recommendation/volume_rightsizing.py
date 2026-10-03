@@ -751,7 +751,12 @@ class VolumeRightsizingService:
                     pvc_object = volume.metadata.get("metadata") or {
                         "spec": {"storage_class_name": volume.storage_class}
                     }
-                    pricing = resolve_storage_pricing(pvc_object, storage_classes=storage_classes, provider=provider)
+                    pricing = resolve_storage_pricing(
+                        pvc_object,
+                        storage_classes=storage_classes,
+                        provider=provider,
+                        size_gb=volume.capacity_gb,
+                    )
                     recommendation = self._analyze_single_volume(volume, pricing)
                     if recommendation:
                         recommendations.append(recommendation)
@@ -881,6 +886,9 @@ class VolumeRightsizingService:
 
                 if 0 < recommended_size_gb < capacity_gb:
                     storage_save_gb = capacity_gb - recommended_size_gb
+                    # For tiered Azure SKUs this is approximate: the exact saving
+                    # is tier(current) - tier(recommended). Kept proportional so an
+                    # in-band resize still surfaces instead of costing $0.
                     savings = price_per_gb * storage_save_gb
                     logger.info(f"[{pvc_id}] Potential downsizing identified. Savings: ${savings:.2f}.")
 

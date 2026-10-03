@@ -7,6 +7,7 @@ import { CommonLocators } from "../GlobalLocators";
 export const TroubleshootTabs = {
     allEvents: { name: "All Events", fragment: "all-events" },
     investigations: { name: "Investigations", fragment: "investigations" },
+    eventResolutions: { name: "Event Resolutions", fragment: "event-resolutions" },
     knowledgeGraph: { name: "Knowledge Graph", fragment: "kg" },
 } as const;
 
@@ -16,12 +17,14 @@ export class TroubleshootLocators extends CommonLocators {
     // Anchor-strip tab locators.
     readonly AllEventsTab: Locator;
     readonly InvestigationsTab: Locator;
+    readonly EventResolutionsTab: Locator;
     readonly KnowledgeGraphTab: Locator;
 
     constructor(page: Page) {
         super(page);
         this.AllEventsTab = page.locator(`[id="anchor-tab-${TroubleshootTabs.allEvents.name}"]`);
         this.InvestigationsTab = page.locator(`[id="anchor-tab-${TroubleshootTabs.investigations.name}"]`);
+        this.EventResolutionsTab = page.locator(`[id="anchor-tab-${TroubleshootTabs.eventResolutions.name}"]`);
         this.KnowledgeGraphTab = page.locator(`[id="anchor-tab-${TroubleshootTabs.knowledgeGraph.name}"]`);
     }
 
@@ -29,6 +32,7 @@ export class TroubleshootLocators extends CommonLocators {
     private tabLocator(tab: TroubleshootTab): Locator {
         if (tab === TroubleshootTabs.allEvents) return this.AllEventsTab;
         if (tab === TroubleshootTabs.investigations) return this.InvestigationsTab;
+        if (tab === TroubleshootTabs.eventResolutions) return this.EventResolutionsTab;
         return this.KnowledgeGraphTab;
     }
 

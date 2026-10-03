@@ -18,7 +18,7 @@ import RunAutomationMenu from '@components/workflow/components/RunAutomationMenu
 import EventAutomationRunsList from '@components/workflow/components/EventAutomationRunsList';
 import apiWorkflow from '@api1/workflow';
 import { SparklesIconBG } from '@assets';
-import { getNubiIconUrl, useTenantBranding, DEFAULT_TITLE } from '@hooks/useTenantBranding';
+import { getNubiIconUrl, useTenantBranding, getBrandTitle, toAssistantLabel, DEFAULT_TITLE } from '@hooks/useTenantBranding';
 import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { Label } from '@ui/Label';
 import Datetime from '@shared/format/Datetime';
@@ -321,7 +321,7 @@ const Investigate = () => {
   // Assigned below, right after handleGenerateRCA is defined.
   const handleGenerateRCARef = useRef(null);
   const { selectedCluster, allCluster, setAllCluster } = useData();
-  const { assistantName } = useTenantBranding();
+  const { assistantName, baseTitle } = useTenantBranding();
   const { openWithContext: openNubiChat } = useNubiGlobalChat();
 
   // Track timeouts for cleanup
@@ -1228,9 +1228,12 @@ const Investigate = () => {
         const d = result[i];
         const actionType =
           d?.additional_info?.actual_action_name || d?.additional_info?.action_name || d?.additional_info?.type || d.type || d.source;
-        const isCritical = d.insight?.some((insight) => insight.severity === 'Critical');
-        const isHigh = d.insight?.some((insight) => insight.severity === 'High');
-        const isInfo = d.insight?.some((insight) => insight.severity === 'Info');
+        // Evidence an automation wrote carries its severity here, because it only
+        // emits an insight when the author wrote a highlight to go with it.
+        const authoredSeverity = d?.additional_info?.severity;
+        const isCritical = d.insight?.some((insight) => insight.severity === 'Critical') || authoredSeverity === 'Critical';
+        const isHigh = d.insight?.some((insight) => insight.severity === 'High') || authoredSeverity === 'High';
+        const isInfo = d.insight?.some((insight) => insight.severity === 'Info') || authoredSeverity === 'Info';
 
         // Helper to push card and track severity (for cloud sorting)
         const pushCard = (card) => {
@@ -1241,6 +1244,22 @@ const Investigate = () => {
             else if (isInfo) infoCards.push(card);
           }
         };
+
+        // Evidence an automation wrote (events.add_evidence). One dispatch key
+        // for every type it offers, switching on the element's own `type` from
+        // here — the author picks the type, and api-server refuses one this
+        // block cannot draw, so a saved card always appears.
+        if (actionType === 'workflow_evidence') {
+          let card;
+          if (d.type === 'json') {
+            card = new ShowingObjectCard(d, row, i);
+          } else if (d.type === 'table') {
+            card = new ShowingTableCard(d, i);
+          } else {
+            card = new TextEnricherDynamicCard(d, i);
+          }
+          if (await card.canRenderContent()) pushCard(card);
+        }
 
         // Shared action types
         if (actionType === 'text_enricher') {
@@ -1635,7 +1654,7 @@ const Investigate = () => {
         description = description + '\n' + '**' + option.text + ':** ' + highlights.map((f) => f.message).join(', ') + '\n';
       }
     }
-    description = description + '\n' + `For more details. Please visit [${DEFAULT_TITLE}](${window.location.href})`;
+    description = description + '\n' + `For more details. Please visit [${getBrandTitle() || DEFAULT_TITLE}](${window.location.href})`;
     return description;
   };
 
@@ -2910,7 +2929,11 @@ const Investigate = () => {
                                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], minWidth: 0 }}>
                                     <Text value='Create a ticket' sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.medium }} />
                                     <Text
-                                      value='Track this event outside Nudgebee. Does not change the system.'
+                                      value={
+                                        baseTitle
+                                          ? `Track this event outside ${baseTitle}. Does not change the system.`
+                                          : 'Track this event externally. Does not change the system.'
+                                      }
                                       sx={{ fontSize: ds.text.caption, color: ds.gray[600] }}
                                     />
                                   </Box>
@@ -2933,7 +2956,7 @@ const Investigate = () => {
                               // The gate was the only thing keeping cloud accounts off the feature.
                               return askAi && !askAi.errorMessage && askAi.isCompleted?.() ? (
                                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
-                                  <Text value='Suggested by Nubi' sx={remediationSectionSx} />
+                                  <Text value={`Suggested by ${toAssistantLabel(assistantName)}`} sx={remediationSectionSx} />
                                   <RemediationPanel
                                     key={`remediation-${remediationEventId}-${askAi?.refreshRenderId || 0}`}
                                     accountId={row?.cloud_account_id || router.query.accountId}
@@ -3037,6 +3060,8 @@ const Investigate = () => {
                                     newUI
                                     maxWidth='100%'
                                     eventResolution={isK8s ? getResolutionForCard(option?.id) : undefined}
+                                    sourceWorkflow={option?.sourceWorkflow}
+                                    authoredByAutomation={option?.authoredByAutomation}
                                   />
                                 </div>
                               ))}

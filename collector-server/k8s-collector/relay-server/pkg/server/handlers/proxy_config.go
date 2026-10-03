@@ -153,7 +153,7 @@ func NewProxyConfigTestHandler(
 			return
 		}
 		if !connected {
-			c.JSON(http.StatusBadRequest, utils.BuildError(400, "proxy agent not connected"))
+			c.JSON(http.StatusServiceUnavailable, utils.BuildError(http.StatusServiceUnavailable, "proxy agent not connected"))
 			return
 		}
 

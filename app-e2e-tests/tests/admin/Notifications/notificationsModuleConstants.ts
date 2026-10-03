@@ -64,31 +64,27 @@ export function configuredClusterName(): string {
   return requireEnv("CLUSTER_NAME", "CLUSTER");
 }
 
-// Selects `optionText` from a FilterDropdown and returns the label actually clicked.
-//
-// Types into the panel's search box rather than reading the option list straight off the
-// open panel, because on a `grouped` dropdown there is nothing to read: GroupedOptionsList
-// starts with `openGroups = {}` — every group collapsed — and only renders its role="option"
-// rows once a group is expanded or its `forceOpen={!!search.trim()}` is set. The cluster
-// filter is grouped by cloud provider, so an unsearched panel shows provider headers and
-// zero options. Proved in CI: waiting on role="option" straight after the click timed out
-// at 30s, on the first attempt and the retry.
-//
-// Searching is also the flow a person uses, and it is what the sibling notificationHelper
-// does. There is deliberately no "fall back to the first option": silently selecting a
-// different account than the one asked for would let a filter test pass while proving
-// nothing about the account it named.
+// Selects `optionText` from a FilterDropdown and returns the label clicked — always the named option, never a fallback to another.
 export async function pickFilterOption(page: Page, trigger: Locator, optionText: string): Promise<string> {
   await expect(trigger).toBeEnabled();
   await trigger.click();
 
-  // The panel is a body-level Popover, so it is not inside the dropdown's own container.
-  // Only one FilterDropdown panel is open at a time.
-  const search = page.locator('input[placeholder^="Search"]').first();
-  await expect(search).toBeVisible({ timeout: 30000 });
-  await search.fill(optionText);
+  // The panel mounts inline (FilterDropdown's disablePortal defaults to true) as a MUI Popover with no id, testid or role.
+  const panel = page.locator(".MuiPopover-paper:visible").last();
+  await expect(panel).toBeVisible({ timeout: 30000 });
+  await expect(panel.locator('[aria-busy="true"]')).toHaveCount(0, { timeout: 30000 });
 
-  const option = page.locator('[role="option"]').filter({ hasText: optionText }).first();
+  const search = panel.locator('input[placeholder^="Search"]');
+  const option = panel.locator('[role="option"]').filter({ hasText: optionText }).first();
+  // Options can arrive after the panel opens (this filter has no loading flag), so wait for a search box, group header or option.
+  await expect(search.or(panel.locator('[role="button"], [role="option"]')).first()).toBeVisible({ timeout: 30000 });
+  // FilterDropdown renders its search box only above 8 options; below that, grouped options sit in collapsed groups.
+  if (await search.isVisible()) {
+    await search.fill(optionText);
+  } else {
+    await openGroupsUntilVisible(panel, option);
+  }
+
   await expect(
     option,
     `No option matching "${optionText}" in the filter — check the value of CLUSTER_NAME / CLUSTER against the accounts this tenant holds.`
@@ -96,8 +92,18 @@ export async function pickFilterOption(page: Page, trigger: Locator, optionText:
 
   const label = ((await option.textContent()) ?? "").trim();
   await option.click();
-  // Single-select handleToggle calls setAnchorEl(null), so the panel closing is the signal
-  // the selection was committed rather than merely hovered.
-  await expect(search).toBeHidden({ timeout: 15000 });
+  // Single-select handleToggle calls setAnchorEl(null), so the panel closing is the signal the selection was committed.
+  await expect(panel).toBeHidden({ timeout: 15000 });
   return label;
+}
+
+// Every group starts collapsed with only its header (role="button", text = group name) rendered, so open each in turn.
+async function openGroupsUntilVisible(panel: Locator, option: Locator): Promise<void> {
+  const headers = panel.locator('[role="button"]');
+  const names = (await headers.allTextContents()).map((name) => name.trim()).filter(Boolean);
+  for (const name of names) {
+    if (await option.isVisible()) return;
+    const exact = new RegExp(`^\\s*${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`);
+    await headers.filter({ hasText: exact }).first().click();
+  }
 }

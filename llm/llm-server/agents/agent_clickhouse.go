@@ -34,7 +34,7 @@ func (l ClickhouseDebugAgent) GetName() string {
 }
 
 func (l ClickhouseDebugAgent) GetNameAliases() []string {
-	return []string{"ClickHouseDB", "ClickHouseSQL"}
+	return []string{"ClickHouse Diagnostics", "ClickHouseDB", "ClickHouseSQL"}
 }
 
 func (l ClickhouseDebugAgent) GetDescription() string {

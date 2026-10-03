@@ -189,9 +189,8 @@ class AuthTokenMiddleware(BaseController):
             if key is None or api_secret is None:
                 raise BadRequestError("Invalid cred format provided")
 
-            if cred_cache.check_key(key):
-                value = cred_cache.get_value(key)
-            else:
+            value = cred_cache.get_if_fresh(key)
+            if value is None:
                 value = self.get_secret_from_db(key)
                 cred_cache.save_value(key=key, value=value)
             if not value:

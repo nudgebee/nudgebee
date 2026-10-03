@@ -53,28 +53,72 @@ func NewK8sServiceIPResolver(existingNodes []*core.DbNode) *K8sServiceIPResolver
 	}
 }
 
-// Resolve returns a Service node for the given IP, scoped to callerCluster.
+// Resolve returns a Service node for the given IP, scoped to callerAccount and
+// callerCluster.
+//
+// callerAccount is the outer scope and the security-relevant one. Unlike the
+// pod resolver, this one is built ONCE per tenant (outside the per-account loop
+// in the flow sources), so its index spans every cloud account in the tenant.
+// Without an account filter the global-unique fallback below will happily hand
+// back a Service from a different account whenever an IP happens to be unique
+// tenant-wide — and ClusterIP ranges (10.x) are near-identical across clusters,
+// so "unique tenant-wide" is luck, not a guarantee.
 //
 // When callerCluster is non-empty, only a same-cluster Service can match. This
 // prevents wrong-cluster edges in multi-cluster tenants.
 //
 // When callerCluster is empty (e.g., the caller is a non-K8s service like an
 // EC2 host), the resolver returns the unique node iff exactly one Service has
-// this IP across all clusters. Ambiguous lookups return (nil, false) — better
-// to emit no edge than a wrong one.
-func (r *K8sServiceIPResolver) Resolve(callerCluster, ip string) (*core.DbNode, bool) {
+// this IP within the caller's account. Ambiguous lookups return (nil, false) —
+// better to emit no edge than a wrong one.
+//
+// An empty callerAccount disables the account check, preserving the previous
+// behaviour for callers that genuinely have no account context.
+func (r *K8sServiceIPResolver) Resolve(callerAccount, callerCluster, ip string) (*core.DbNode, bool) {
 	if r == nil || ip == "" {
 		return nil, false
 	}
 	if callerCluster != "" {
 		n, ok := r.byClusterIP[clusterIPKey{callerCluster, ip}]
-		return n, ok
+		if !ok || !nodeInAccount(n, callerAccount) {
+			return nil, false
+		}
+		return n, true
 	}
-	candidates := r.byIPAcrossClusters[ip]
+	candidates := filterNodesByAccount(r.byIPAcrossClusters[ip], callerAccount)
 	if len(candidates) == 1 {
 		return candidates[0], true
 	}
 	return nil, false
+}
+
+// nodeInAccount reports whether n belongs to callerAccount. An empty
+// callerAccount disables the check — some call sites legitimately have no
+// account context, and for those the cluster/global-unique guards are all the
+// scoping available.
+func nodeInAccount(n *core.DbNode, callerAccount string) bool {
+	if callerAccount == "" {
+		return true
+	}
+	return n != nil && n.CloudAccountID == callerAccount
+}
+
+// filterNodesByAccount narrows resolver candidates to a single cloud account
+// before the "exactly one candidate" uniqueness guard runs. Applying it first
+// matters: an IP that is ambiguous tenant-wide is often unambiguous within one
+// account, so filtering turns a refusal into a correct hit, and an IP unique
+// tenant-wide but owned by another account turns into a correct refusal.
+func filterNodesByAccount(nodes []*core.DbNode, callerAccount string) []*core.DbNode {
+	if callerAccount == "" {
+		return nodes
+	}
+	out := make([]*core.DbNode, 0, len(nodes))
+	for _, n := range nodes {
+		if nodeInAccount(n, callerAccount) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // stringProp reads a string property from a node, tolerating missing or
@@ -104,12 +148,13 @@ const (
 //
 // Owns: port stripping (handles "ip:port" and IPv6 "[::1]:port"), special-IP
 // skip list (loopback / link-local / unspecified / cloud metadata), and
-// delegation to K8sServiceIPResolver.Resolve with caller-cluster scope.
+// delegation to K8sServiceIPResolver.Resolve with caller-account and
+// caller-cluster scope.
 //
 // Returns (matchedNode, reason, ok). reason is IPResolutionReasonSameCluster
 // when callerCluster was non-empty and matched, IPResolutionReasonGlobalUnique
 // when the IP was globally unique across clusters, "" when ok=false.
-func ResolveIPToK8sService(name, callerCluster string, r *K8sServiceIPResolver) (*core.DbNode, string, bool) {
+func ResolveIPToK8sService(name, callerAccount, callerCluster string, r *K8sServiceIPResolver) (*core.DbNode, string, bool) {
 	if r == nil || name == "" {
 		return nil, "", false
 	}
@@ -121,7 +166,7 @@ func ResolveIPToK8sService(name, callerCluster string, r *K8sServiceIPResolver) 
 	if parsed == nil || isSpecialIP(parsed) {
 		return nil, "", false
 	}
-	node, ok := r.Resolve(callerCluster, ip)
+	node, ok := r.Resolve(callerAccount, callerCluster, ip)
 	if !ok {
 		return nil, "", false
 	}

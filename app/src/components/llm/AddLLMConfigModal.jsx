@@ -132,6 +132,13 @@ const INHERIT_SENTINEL = '__inherit__';
 const CUSTOM_DEPLOY_PROVIDERS = ['huggingface', 'sagemaker', 'vertexai', 'bedrock', 'custom'];
 const showsContextSize = (p) => CUSTOM_DEPLOY_PROVIDERS.includes(p);
 
+// Reasoning can only be switched off on providers that reach the model through
+// the OpenAI-compatible client, which is where llm-server serializes
+// chat_template_kwargs. Deliberately narrower than CUSTOM_DEPLOY_PROVIDERS:
+// bedrock and sagemaker use their own clients and would store a key nothing
+// reads, and managed providers control reasoning through their own APIs.
+const showsDisableThinking = (p) => p === 'custom';
+
 // Providers that can authenticate through an OAuth2 client-credentials
 // gateway — llm-server injects the bearer token only on the azure / openai /
 // custom client paths, so the selector is hidden for every other provider.
@@ -373,6 +380,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   // leave blank — surfacing them by default clutters the primary form. Kept
   // together under one toggle rather than two adjacent collapsibles.
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [disableThinking, setDisableThinking] = useState(false);
 
   // Load the cloud-account list once when the modal opens.
   useEffect(() => {
@@ -475,11 +483,18 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           // configured, so they shouldn't appear in the override dropdown.
           .filter((a) => a?.status === 'enabled')
           .map((a) => {
-            const key = a?.aliases?.[0] ?? a?.name;
+            // The key must be the agent's canonical registered name — it becomes
+            // the `llm_model_name_<key>` / `llm_provider_<key>` config suffix
+            // that llm-server's ResolveLLMConfig looks up by agentName (GetName()).
+            // aliases[0] is a human-readable display name (e.g. "Code Analyzer &
+            // Fixer") and was previously used as the key, which saved the
+            // override under a name the resolver never looks up — the per-agent
+            // model silently fell back to the global config.
+            const key = a?.name;
             if (!key) {
               return null;
             }
-            return { key, label: a?.name || key, description: a?.description || '' };
+            return { key, label: a?.aliases?.[0] || a?.name || key, description: a?.description || '' };
           })
           .filter(Boolean);
         if (!cancelled) {
@@ -559,7 +574,11 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       // headers are already saved — hiding them inside a collapsed section on
       // edit-mode load would make the values invisible until the user thinks
       // to click Advanced.
-      setShowAdvanced(!!cfg.llm_model_context_size || !!cfg.llm_extra_headers);
+      // Compared case-insensitively against the stored string: the column is
+      // citext, so a hand-edited row may carry "True".
+      const thinkingDisabled = String(cfg.llm_disable_thinking ?? '').toLowerCase() === 'true';
+      setDisableThinking(thinkingDisabled);
+      setShowAdvanced(!!cfg.llm_model_context_size || !!cfg.llm_extra_headers || thinkingDisabled);
       setAccessKey('');
       setSecretKey('');
       setApiType(cfg.llm_provider_api_type || '');
@@ -702,7 +721,10 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           // the stored rows so llm-server falls back to api_key.
           key === 'llm_auth_type' ||
           key.startsWith('llm_oauth_') ||
-          key === 'llm_extra_headers'
+          key === 'llm_extra_headers' ||
+          // Switching to a provider with no reasoning switch must clear the
+          // stored flag, or it silently keeps applying to the new model.
+          key === 'llm_disable_thinking'
         ) {
           seedKeys.add(key);
         }
@@ -1256,6 +1278,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     pushPlain(showsApiVersion, 'llm_provider_api_version', apiVersion);
     pushPlain(showsRegion, 'llm_provider_region', region);
     pushPlain(showsContextSize(provider), 'llm_model_context_size', contextSize);
+    pushPlain(showsDisableThinking(provider), 'llm_disable_thinking', disableThinking ? 'true' : '');
     pushSecret(showsBedrockKeys, 'llm_provider_access_key', accessKey);
     pushSecret(showsBedrockKeys, 'llm_provider_secret_key', secretKey);
     pushPlain(showsApiType, 'llm_provider_api_type', apiType);
@@ -1930,6 +1953,16 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               </Box>
               {showAdvanced && (
                 <Stack id='llm-advanced-options' spacing='var(--ds-space-2)' sx={{ mt: 'var(--ds-space-2)' }}>
+                  {showsDisableThinking(provider) && (
+                    <Checkbox
+                      id='llm-config-disable-thinking'
+                      size='sm'
+                      checked={disableThinking}
+                      onChange={setDisableThinking}
+                      label='Turn off model reasoning'
+                      description='For self-hosted reasoning models. Some models spend their whole response budget thinking and never answer, which shows up as a very slow or failed reply. Turning reasoning off makes responses faster and more predictable; it can reduce answer quality on complex questions. Ignored by servers that do not support the setting.'
+                    />
+                  )}
                   {canPrice && (
                     <>
                       <Input

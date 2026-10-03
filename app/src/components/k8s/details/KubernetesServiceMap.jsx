@@ -6,8 +6,7 @@ import ReactFlow, { ReactFlowProvider, Controls, Background, BackgroundVariant, 
 import 'reactflow/dist/style.css';
 import { Box, Typography } from '@mui/material';
 import { Switch } from '@ui/Switch';
-import EmptyData from '@shared/EmptyData';
-import noDataImg from '@assets/Icon-no-data-available.svg';
+import { EmptyState } from '@ui/EmptyState';
 import k8sApi from '@api1/kubernetes';
 import { useData } from '@context/DataContext';
 import { formatDate } from '@lib/formatter';
@@ -695,13 +694,13 @@ const KubernetesServiceMap = ({ accountId, appName, namespaceName, dateRange, sh
           bgcolor: 'var(--ds-background-100)',
         }}
       >
-        <EmptyData
+        <EmptyState
           id='service-map-unsupported'
-          img={noDataImg}
-          heading='Service Map not supported'
-          subHeading={`Your current trace provider ${tracesProviderName ? `(${tracesProviderName}) ` : ''}does not support the service map view.`}
-          height='400px'
-          sx={{ flexDirection: 'column', gap: 'var(--ds-space-4)', textAlign: 'center' }}
+          size='page'
+          illustration='no-permissions'
+          title='Service Map not supported'
+          description={`Your current trace provider ${tracesProviderName ? `(${tracesProviderName}) ` : ''}does not support the service map view.`}
+          sx={{ minHeight: '400px' }}
         />
       </Box>
     );

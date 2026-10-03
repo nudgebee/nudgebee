@@ -31,7 +31,9 @@ type AzureMetricsAgent struct {
 
 func (a AzureMetricsAgent) GetName() string { return AzureMetricsAgentName }
 
-func (a AzureMetricsAgent) GetNameAliases() []string { return []string{"AzureMetrics"} }
+func (a AzureMetricsAgent) GetNameAliases() []string {
+	return []string{"Azure Monitor Metrics Reader", "AzureMetrics"}
+}
 
 func (a AzureMetricsAgent) GetDescription() string {
 	return `Retrieves and analyzes Azure Monitor metrics (CPU, memory, disk, network, DTU, request latency/error rate, managed-service metrics) via the az CLI. Used as the metrics backend for Azure accounts without a Prometheus/Datadog/Elasticsearch provider. Handles its own metric-name and resource discovery.`
@@ -153,7 +155,7 @@ type AzureLogsAgent struct {
 
 func (a AzureLogsAgent) GetName() string { return AzureLogsAgentName }
 
-func (a AzureLogsAgent) GetNameAliases() []string { return []string{"AzureLogs"} }
+func (a AzureLogsAgent) GetNameAliases() []string { return []string{"Azure Logs Reader", "AzureLogs"} }
 
 func (a AzureLogsAgent) GetDescription() string {
 	return `Retrieves and analyzes Azure logs (Log Analytics / AKS container logs, App Service logs, VM diagnostics, Activity Log) via the az CLI. Used as the logs backend for Azure accounts without a Loki/Elasticsearch/Datadog provider. Discovers the log source (Log Analytics workspace or resource) before querying, and cites concrete log lines.`
@@ -267,7 +269,9 @@ type AzureTracesAgent struct {
 
 func (a AzureTracesAgent) GetName() string { return AzureTracesAgentName }
 
-func (a AzureTracesAgent) GetNameAliases() []string { return []string{"AzureTraces"} }
+func (a AzureTracesAgent) GetNameAliases() []string {
+	return []string{"Azure App Insights Trace Reader", "AzureTraces"}
+}
 
 func (a AzureTracesAgent) GetDescription() string {
 	return `Retrieves and analyzes Azure distributed traces via Application Insights (request/dependency latency, failures, end-to-end transactions) using the az CLI. Used as the traces backend for Azure accounts without a ClickHouse/Jaeger/Datadog provider. Only answers when Application Insights is configured for the workload.`

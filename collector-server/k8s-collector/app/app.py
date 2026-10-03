@@ -101,6 +101,11 @@ def create_app():
     register_extensions(flask_app)
     register_blueprints(flask_app)
 
+    @flask_app.route("/health")
+    def health():
+        """Shallow process health check for Kubernetes probes."""
+        return {"status": "ok"}
+
     # Add Prometheus metrics endpoint
     @flask_app.route("/metrics")
     def metrics():

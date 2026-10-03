@@ -19,7 +19,7 @@ func TestAgentEventsV2_ShouldSummarizeNow(t *testing.T) {
 	assert.False(t, agent.ShouldSummarizeNow("events_execute", fourEvents))
 
 	// get_event_by_id must never trigger direct summarization — it precedes
-	// get_triage_explanation in this agent's dominant example, and skipping
+	// get_event_triage_explanation in this agent's dominant example, and skipping
 	// straight to the summary tool would drop that second call.
 	assert.False(t, agent.ShouldSummarizeNow("get_event_by_id", threeEvents))
 

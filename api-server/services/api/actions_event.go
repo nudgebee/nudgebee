@@ -327,10 +327,34 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 			c.JSON(400, common.ErrorActionBadRequest("event_id is required"))
 			return
 		}
-		rawEvidences, ok := actionRequest["evidences"].([]any)
-		if !ok || len(rawEvidences) == 0 {
-			c.JSON(400, common.ErrorActionBadRequest("evidences must be a non-empty array"))
+		// Two request shapes. `evidence` — the type an author picked plus the
+		// fields that type takes — is what the builder sends now; the raw
+		// `evidences` array is what automations written before it sent, and keeps
+		// working untouched.
+		rawEvidences, hasRaw := actionRequest["evidences"].([]any)
+		hasRaw = hasRaw && len(rawEvidences) > 0
+		rawEvidence, hasAuthored := actionRequest["evidence"].(map[string]any)
+
+		if hasAuthored && hasRaw {
+			c.JSON(400, common.ErrorActionBadRequest("pass either evidence or evidences, not both"))
 			return
+		}
+		if !hasAuthored && !hasRaw {
+			c.JSON(400, common.ErrorActionBadRequest("evidence, or a non-empty evidences array, is required"))
+			return
+		}
+		if hasAuthored {
+			var authored event.AuthoredEvidence
+			if err := common.UnmarshalMapToStruct(rawEvidence, &authored); err != nil {
+				c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+				return
+			}
+			built, err := event.BuildAuthoredEvidence(authored)
+			if err != nil {
+				c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+				return
+			}
+			rawEvidences = []any{built}
 		}
 
 		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
@@ -339,7 +363,25 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 			return
 		}
 
-		if err := event.AddEvidence(ctx, eventId, rawEvidences); err != nil {
+		// Sent by the events.add_evidence task; absent for any other caller, which
+		// then appends unstamped exactly as before.
+		var source *models.EvidenceSourceWorkflow
+		if rawSource, ok := actionRequest["source_workflow"].(map[string]any); ok {
+			workflowId, _ := rawSource["workflow_id"].(string)
+			if workflowId != "" {
+				workflowName, _ := rawSource["workflow_name"].(string)
+				executionId, _ := rawSource["execution_id"].(string)
+				taskId, _ := rawSource["task_id"].(string)
+				source = &models.EvidenceSourceWorkflow{
+					WorkflowID:   workflowId,
+					WorkflowName: workflowName,
+					ExecutionID:  executionId,
+					TaskID:       taskId,
+				}
+			}
+		}
+
+		if err := event.AddEvidence(ctx, eventId, rawEvidences, source); err != nil {
 			slog.Error("add_event_evidence: failed", "event_id", eventId, "error", err)
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return

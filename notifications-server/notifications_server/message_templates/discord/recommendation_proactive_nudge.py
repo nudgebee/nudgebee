@@ -13,6 +13,7 @@ from notifications_server.message_templates.discord.embed_utils import clamp_emb
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
     format_rule_name,
     format_savings,
+    format_savings_clause,
 )
 from notifications_server.message_templates.slack.recommendation_proactive_nudge import (
     ProactiveNudgeParams,
@@ -43,7 +44,7 @@ def get_discord_recommendation_proactive_nudge_template(params: ProactiveNudgePa
         for rec in acc_data.recommendations[:5]:
             lines.append(f"{counter}. **{rec.resource_name}** — {format_rule_name(rec.rule_name)}")
             lines.append(
-                f"Savings: {format_savings(rec.estimated_savings)}/mo · "
+                f"{format_savings_clause(rec.estimated_savings)} · "
                 f"Severity: {rec.severity} · Category: {rec.category}"
             )
             counter += 1
@@ -61,7 +62,7 @@ def get_discord_recommendation_proactive_nudge_template(params: ProactiveNudgePa
         )
 
     links = (
-        f"[View All Recommendations]({base_url}/optimise?utm=discord#recommendations) · "
+        f"[View All Recommendations]({base_url}/optimise?utm=discord#cost) · "
         f"[Ask Nubi]({build_ask_nubi_url(params, base_url, 'discord')})"
     )
     last = embeds[-1]

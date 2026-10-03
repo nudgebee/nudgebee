@@ -73,6 +73,9 @@ data: [DONE]`,
 			if len(resp.Choices) == 0 {
 				t.Fatal("expected at least one choice")
 			}
+			if resp.Choices[0] == nil {
+				t.Fatal("expected choice to not be nil")
+			}
 			if got := resp.Choices[0].Message.Content; got != tc.expectedContent {
 				t.Errorf("content mismatch: got %q, want %q", got, tc.expectedContent)
 			}

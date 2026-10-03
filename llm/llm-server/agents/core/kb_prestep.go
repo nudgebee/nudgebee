@@ -38,6 +38,7 @@ const (
 )
 
 var resolveManualKnowledgeFn = toolcore.ResolveManualKnowledge
+var resolveDocumentCategoriesFn = toolcore.ResolveDocumentCategories
 
 var queryAccountKnowledgeFn = toolcore.QueryRAGRerankedContext
 var queryCollectionKnowledgeFn = toolcore.QueryRAGCollectionReranked
@@ -225,6 +226,11 @@ func retrieveRelevantKB(ctx *security.RequestContext, request NBAgentRequest, kb
 	// cosine scores cluster in a narrow high band (measured 0.839-0.852), so
 	// topScore*0.7 landed at ~0.60, below every candidate.
 	kept := resolveManualKnowledgeFn(ctx, request.AccountId, docs)
+
+	// Apply the per-document Fact/SOP marks before anything reads a hit's
+	// purpose: a marked page is a procedure even when its knowledge base is
+	// an integration, whose documents are otherwise reference material.
+	kept = resolveDocumentCategoriesFn(ctx, request.AccountId, kept)
 
 	// Collapse duplicate copies of the same page BEFORE the prompt budget is
 	// split: orphaned/sibling collections routinely return the same document

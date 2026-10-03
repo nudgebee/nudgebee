@@ -183,13 +183,22 @@ func readLogIntegrationConfigValue(ctx *security.RequestContext, accountId, logP
 //
 // Note it does NOT rely on the resolver's DTO to decide `found`: when the caller pins
 // both provider and source (as the integration form does), the resolver short-circuits
-// and returns a nil DTO even though the integration exists. The listing below is the
-// authority.
+// and returns a nil DTO even though the integration exists. The integration listing in
+// lookupIntegrationConfigs is the authority.
 func lookupLogIntegrationConfigs(ctx *security.RequestContext, accountId, logProvider, logProviderSource string) ([]core.IntegrationConfigValue, bool) {
+	return lookupIntegrationConfigs(ctx, accountId, logProvider, logProviderSource, "logs")
+}
+
+// lookupIntegrationConfigs is the signal-agnostic body of the lookup above. The only
+// thing that varies between logs and traces is the providerType passed to the
+// resolver, so it is a parameter rather than a second copy of the matching rules —
+// the "prefer the resolver's DTO, then the resolved source, then user" precedence is
+// subtle enough that two copies would drift.
+func lookupIntegrationConfigs(ctx *security.RequestContext, accountId, provider, integrationSource, providerType string) ([]core.IntegrationConfigValue, bool) {
 	if accountId == "" {
 		return nil, false
 	}
-	provider, source, dto, err := getLogsMetricsTracesProviderWithIntegration(ctx, accountId, logProvider, "logs", logProviderSource)
+	provider, source, dto, err := getLogsMetricsTracesProviderWithIntegration(ctx, accountId, provider, providerType, integrationSource)
 	if err != nil || provider == "" {
 		return nil, false
 	}

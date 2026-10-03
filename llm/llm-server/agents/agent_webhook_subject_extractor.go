@@ -54,7 +54,7 @@ type WebhookSubjectExtractorAgent struct {
 func (a *WebhookSubjectExtractorAgent) GetName() string { return WebhookSubjectExtractorAgentName }
 
 func (a *WebhookSubjectExtractorAgent) GetNameAliases() []string {
-	return []string{WebhookSubjectExtractorAgentName}
+	return []string{"Alert-to-Service Matcher", WebhookSubjectExtractorAgentName}
 }
 
 func (a *WebhookSubjectExtractorAgent) GetDescription() string {

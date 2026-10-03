@@ -6,6 +6,7 @@
 <title>Benchmarks — Nudgebee</title>
 <link rel="icon" href="https://app.nudgebee.com/favicon.ico">
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
 tailwind.config = {
   theme: {
@@ -659,6 +660,20 @@ function escAttr(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// Base URL for jumping straight into the live conversation a benchmark query
+// ran in ("accountId=...&session_id=..." appended). Fetched from the server
+// at startup (see init(), below) rather than hardcoded — the internal
+// staging hostname must not appear as a literal in this file. Empty until
+// that fetch resolves, and stays empty if the operator hasn't set
+// ASK_NUDGEBEE_BASE_URL, in which case bmSessionUrl() just returns ''.
+// Shared by the Compare Reports per-query links and the Excel export.
+let BM_ASK_NUDGEBEE_URL = '';
+function bmSessionUrl(accountId, sessionId) {
+  return (BM_ASK_NUDGEBEE_URL && accountId && sessionId)
+    ? `${BM_ASK_NUDGEBEE_URL}accountId=${encodeURIComponent(accountId)}&session_id=${encodeURIComponent(sessionId)}`
+    : '';
 }
 
 // formatAge: short human-readable duration since ``isoTs`` ("3m", "2h",
@@ -2987,6 +3002,81 @@ function downloadCompareReport() {
   win.document.close();
 }
 
+function downloadCompareExcel() {
+  const data = window._lastCompareData;
+  const ids = window._lastCompareIds || {};
+  if (!data) { toast('No comparison data', 'error'); return; }
+  try {
+    const b = data.baseline || {}, c = data.candidate || {};
+
+    const summaryRows = [
+      { Field: 'Baseline Run', Value: `${(b.agent||'').toUpperCase()} — ${b.run_id||''}` },
+      { Field: 'Baseline Tests', Value: b.total_queries || 0 },
+      { Field: 'Baseline Timestamp', Value: b.timestamp || '' },
+      { Field: 'Candidate Run', Value: `${(c.agent||'').toUpperCase()} — ${c.run_id||''}` },
+      { Field: 'Candidate Tests', Value: c.total_queries || 0 },
+      { Field: 'Candidate Timestamp', Value: c.timestamp || '' },
+    ];
+    for (const [key, val] of Object.entries(data.summary_delta || {})) {
+      if (!val || typeof val !== 'object') continue;
+      summaryRows.push({
+        Field: key.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase()),
+        Baseline: val.baseline, Candidate: val.candidate, Delta: val.delta, 'Delta %': val.delta_pct,
+      });
+    }
+
+    const perQueryRows = (data.per_query || []).map(q => {
+      const acc = q.accuracy || {}, lat = q.latency_seconds || {}, inTok = q.input_tokens || {},
+            outTok = q.output_tokens || {}, tc = q.tool_calls || {}, sid = q.session_id || {};
+      return {
+        Test: q.test_id || '',
+        Tags: (q.tags||[]).join(', '),
+        Status: q.status || '',
+        'Accuracy Baseline': acc.baseline || 0,
+        'Accuracy Candidate': acc.candidate || 0,
+        'Accuracy Delta': acc.delta || 0,
+        'Duration Baseline (s)': lat.baseline || 0,
+        'Duration Candidate (s)': lat.candidate || 0,
+        'Input Tokens Baseline': inTok.baseline || 0,
+        'Input Tokens Candidate': inTok.candidate || 0,
+        'Output Tokens Baseline': outTok.baseline || 0,
+        'Output Tokens Candidate': outTok.candidate || 0,
+        'Tool Calls Baseline (success/fail)': `${tc.baseline_successful||0}/${tc.baseline_failed||0}`,
+        'Tool Calls Candidate (success/fail)': `${tc.candidate_successful||0}/${tc.candidate_failed||0}`,
+        'Baseline Session URL': bmSessionUrl(b.account_id, sid.baseline),
+        'Candidate Session URL': bmSessionUrl(c.account_id, sid.candidate),
+      };
+    });
+
+    const changeRows = [
+      ...(data.regressions || []).map(r => ({
+        Type: 'Regression', Test: r.test_id, 'Accuracy Delta': r.accuracy_delta,
+        'Tool Calls Delta': r.changes?.tool_calls_delta || 0,
+        'Latency Delta (s)': r.changes?.latency_delta_seconds || 0,
+        Tags: (r.tags||[]).join(', '),
+      })),
+      ...(data.improvements || []).map(r => ({
+        Type: 'Improvement', Test: r.test_id, 'Accuracy Delta': r.accuracy_delta,
+        'Tool Calls Delta': r.changes?.tool_calls_delta || 0,
+        'Latency Delta (s)': r.changes?.latency_delta_seconds || 0,
+        Tags: (r.tags||[]).join(', '),
+      })),
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), 'Summary');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(perQueryRows), 'Per-Query');
+    if (changeRows.length) {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(changeRows), 'Regressions & Improvements');
+    }
+    XLSX.writeFile(wb, `benchmark-compare-${ids.base||'baseline'}-vs-${ids.cand||'candidate'}.xlsx`);
+    toast('Excel file downloaded', 'success');
+  } catch (e) {
+    console.error(e);
+    toast('Failed to build Excel file', 'error');
+  }
+}
+
 // ============================================================
 // Compare
 // ============================================================
@@ -3099,32 +3189,90 @@ async function compareRuns() {
 
   // Per-query details
   const perQuery = data.per_query || [];
+  const bmSessionLink = (url, label, colorCls) => url
+    ? `<a href="${escAttr(url)}" target="_blank" rel="noopener" class="${colorCls} font-semibold hover:underline" title="Open ${label === 'B' ? 'baseline' : 'candidate'} session in app">${label}</a>`
+    : `<span class="text-gray-300" title="No session recorded">${label}</span>`;
+  const bmPairFmt = (a, b, digits) => `${Number(a||0).toFixed(digits)} → ${Number(b||0).toFixed(digits)}`;
+  // Per-query winner color: green when the candidate beats the baseline on
+  // this metric, red when it's worse, gray on a tie. `lowerIsBetter` mirrors
+  // the Summary Delta table's convention (latency/tokens/tool-calls: lower
+  // wins; accuracy: higher wins).
+  const bmWinnerCls = (baseVal, candVal, lowerIsBetter) => {
+    if (candVal === baseVal) return 'text-gray-600';
+    const candWins = lowerIsBetter ? candVal < baseVal : candVal > baseVal;
+    return candWins ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold';
+  };
+  // Compact number display for token counts: 2000 -> "2k", 5400 -> "5.4k",
+  // 2233184 -> "2.2m". Raw counts stay in the Excel export (spreadsheets
+  // need real numbers to sort/sum) — this is display-only, for the table.
+  const bmCompactNumFmt = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
+  const bmFmtTokens = (n) => bmCompactNumFmt.format(Number(n) || 0).toLowerCase();
+  // Renders a "B → C" pair with each side colored on its own: the higher
+  // number red, the lower one green (used for lower-is-better metrics —
+  // duration, tokens — so a reader can spot which specific number is worse
+  // without reading both). Ties render neutral on both sides.
+  // `Number(missing) || 0` would render an absent value (a field an older
+  // cached report predates, e.g. input_tokens before this table added it)
+  // as "0" and color it green as if it beat the other side — misleading,
+  // since 0 here means "no data", not "used nothing". Missing renders as
+  // "—" in neutral gray instead, and only real numbers get compared.
+  const bmPairColored = (a, b, fmt) => {
+    const av = (a === null || a === undefined || a === '') ? NaN : Number(a);
+    const cv = (b === null || b === undefined || b === '') ? NaN : Number(b);
+    const hasA = !isNaN(av), hasC = !isNaN(cv);
+    let aCls = 'text-gray-600', cCls = 'text-gray-600';
+    if (hasA && hasC && av !== cv) {
+      aCls = av > cv ? 'text-red-600 font-semibold' : 'text-green-600 font-semibold';
+      cCls = cv > av ? 'text-red-600 font-semibold' : 'text-green-600 font-semibold';
+    }
+    return `<span class="${aCls}">${hasA ? fmt(av) : '—'}</span> → <span class="${cCls}">${hasC ? fmt(cv) : '—'}</span>`;
+  };
+  // Tool calls: fewer failures wins; a failure tie falls back to fewer total
+  // calls (fewer round-trips for the same outcome).
+  const bmToolCallsCls = (tc) => {
+    const bf = tc.baseline_failed || 0, cf = tc.candidate_failed || 0;
+    if (bf !== cf) return bmWinnerCls(bf, cf, true);
+    return bmWinnerCls(tc.baseline || 0, tc.candidate || 0, true);
+  };
+  const perQueryGridCols = 'grid-cols-[1.6fr_0.85fr_0.85fr_0.75fr_0.75fr_1fr_0.6fr_0.45fr_0.55fr]';
   let perQueryRows = '';
   if (perQuery.length) {
     perQueryRows = perQuery.map(q => {
-      const sim = q.similarity || {};
-      const rel = q.relevancy || {};
-      const d = sim.delta || 0;
-      const dCls = d > 0 ? 'text-green-600' : d < 0 ? 'text-red-600' : 'text-gray-500';
-      return `<div class="grid grid-cols-[2fr_0.6fr_0.6fr_0.6fr_0.6fr_0.5fr] gap-2 px-3 py-1.5 bg-white border border-gray-100 rounded-md items-center text-[11px]">
+      const acc = q.accuracy || {};
+      const lat = q.latency_seconds || {};
+      const inTok = q.input_tokens || {};
+      const outTok = q.output_tokens || {};
+      const tc = q.tool_calls || {};
+      const toolCallsStr = `${tc.baseline_successful||0}✓/${tc.baseline_failed||0}✗ → ${tc.candidate_successful||0}✓/${tc.candidate_failed||0}✗`;
+      const sid = q.session_id || {};
+      const bUrl = bmSessionUrl(bInfo.account_id, sid.baseline);
+      const cUrl = bmSessionUrl(cInfo.account_id, sid.candidate);
+      return `<div class="grid ${perQueryGridCols} gap-2 px-3 py-1.5 bg-white border border-gray-100 rounded-md items-center text-[11px]">
         <span class="text-gray-700 truncate" title="${esc(q.test_id||'')}">${esc(q.test_id||'')}</span>
-        <span class="text-gray-600 text-center">${(sim.baseline||0).toFixed(1)}</span>
-        <span class="text-gray-600 text-center">${(sim.candidate||0).toFixed(1)}</span>
-        <span class="font-semibold text-center ${dCls}">${d > 0 ? '▲' : d < 0 ? '▼' : ''} ${Math.abs(d).toFixed(1)}</span>
-        <span class="text-gray-500 text-center">${(q.tags||[]).join(', ')}</span>
+        <span class="text-center ${bmWinnerCls(acc.baseline||0, acc.candidate||0, false)}" title="Baseline → Candidate; green = candidate more accurate">${bmPairFmt(acc.baseline, acc.candidate, 1)}</span>
+        <span class="text-center" title="Baseline → Candidate; red = higher (slower), green = lower (faster)">${bmPairColored(lat.baseline, lat.candidate, v => v.toFixed(1))}</span>
+        <span class="text-center" title="Baseline → Candidate; red = higher, green = lower">${bmPairColored(inTok.baseline, inTok.candidate, bmFmtTokens)}</span>
+        <span class="text-center" title="Baseline → Candidate; red = higher, green = lower">${bmPairColored(outTok.baseline, outTok.candidate, bmFmtTokens)}</span>
+        <span class="text-center ${bmToolCallsCls(tc)}" title="Baseline → Candidate, successful✓/failed✗; green = candidate had fewer failures">${toolCallsStr}</span>
+        <span class="text-gray-500 text-center truncate">${(q.tags||[]).join(', ')}</span>
         <span class="text-gray-400 text-center">${q.status || ''}</span>
+        <span class="text-center">${bmSessionLink(bUrl, 'B', 'text-gray-500')} · ${bmSessionLink(cUrl, 'C', 'text-blue-500')}</span>
       </div>`;
     }).join('');
   }
 
   const perQueryHtml = perQuery.length ? `
     <div class="mt-4">
-      <div class="text-[12px] font-semibold text-gray-600 mb-1.5">Per-Query Comparison</div>
+      <div class="text-[12px] font-semibold text-gray-600 mb-1.5">Per-Query Comparison <span class="text-[10px] text-gray-400 font-normal">(Duration excludes followup wait time; B → C = Baseline → Candidate; green = candidate wins that metric, red = candidate loses)</span></div>
       <div class="bg-white border border-gray-100 rounded-xl shadow-sm overflow-hidden">
-        <div class="grid grid-cols-[2fr_0.6fr_0.6fr_0.6fr_0.6fr_0.5fr] gap-2 px-3 py-1.5 text-[9px] font-semibold text-gray-400 uppercase tracking-wide bg-gray-50 border-b border-gray-100">
-          <span>Test</span><span class="text-center">Base Sim</span><span class="text-center">Cand Sim</span><span class="text-center">Delta</span><span class="text-center">Tags</span><span class="text-center">Status</span>
+        <div class="overflow-x-auto">
+          <div class="min-w-[1150px]">
+            <div class="grid ${perQueryGridCols} gap-2 px-3 py-1.5 text-[9px] font-semibold text-gray-400 uppercase tracking-wide bg-gray-50 border-b border-gray-100">
+              <span>Test</span><span class="text-center">Accuracy (%)</span><span class="text-center">Duration (s)</span><span class="text-center">Input Tok</span><span class="text-center">Output Tok</span><span class="text-center">Tool Calls</span><span class="text-center">Tags</span><span class="text-center">Status</span><span class="text-center">Open</span>
+            </div>
+            <div class="flex flex-col gap-[1px] max-h-[400px] overflow-y-auto">${perQueryRows}</div>
+          </div>
         </div>
-        <div class="flex flex-col gap-[1px] max-h-[400px] overflow-y-auto">${perQueryRows}</div>
       </div>
     </div>` : '';
 
@@ -3133,7 +3281,8 @@ async function compareRuns() {
   window._lastCompareIds = { base, cand };
 
   $('compare-content').innerHTML = `
-    <div class="flex justify-end mb-2">
+    <div class="flex justify-end gap-2 mb-2">
+      <button onclick="downloadCompareExcel()" class="az-btn-secondary text-white px-3 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"><span class="material-icons-outlined text-[14px]">table_view</span> Download Excel</button>
       <button onclick="downloadCompareReport()" class="az-btn-secondary text-white px-3 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"><span class="material-icons-outlined text-[14px]">picture_as_pdf</span> Download PDF</button>
     </div>
     ${headerHtml}
@@ -3819,6 +3968,9 @@ async function clearCache() {
 
   const d = await api('GET', '/agent-benchmark/agents');
   if (d) agents = d.agents || [];
+
+  const cfg = await api('GET', '/agent-benchmark/config');
+  if (cfg?.ask_nudgebee_base_url) BM_ASK_NUDGEBEE_URL = cfg.ask_nudgebee_base_url;
 
   // Sidebar click handlers
   document.querySelectorAll('.nav-link').forEach(link => {

@@ -29,6 +29,8 @@ interface StableTextFieldProps {
   onDrop?: (e: React.DragEvent) => void;
   onDragOver?: (e: React.DragEvent) => void;
   onDragLeave?: () => void;
+  /** Optional guidance row (help tooltip / example chips) rendered below the input. */
+  guidance?: React.ReactNode;
 }
 
 /**
@@ -50,6 +52,7 @@ export const StableTextField = memo(function StableTextField({
   onDrop,
   onDragOver,
   onDragLeave,
+  guidance,
 }: StableTextFieldProps) {
   const [localValue, setLocalValue] = useState(value);
   const isUserTypingRef = useRef(false);
@@ -114,6 +117,7 @@ export const StableTextField = memo(function StableTextField({
             fieldType='textfield'
             required={isRequired}
           />
+          {guidance}
         </Box>
       </Box>
     </Box>

@@ -154,6 +154,9 @@ export const CategoryListing: string[] = [
   'NOTIFICATIONS_CHAT_ACTIONS',
   'AGENT_TOKEN',
   'INTEGRATIONS',
+  // Knowledge Graph coverage filter + manual dependency declarations
+  // (api-server audit.EventCategoryKnowledgeGraph).
+  'KNOWLEDGE_GRAPH',
   'AGENT',
   'TOOL',
   'CLOUD_COMMAND',

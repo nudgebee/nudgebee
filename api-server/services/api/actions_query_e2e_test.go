@@ -472,3 +472,30 @@ func TestE2E_GQLParsing_FlatFields(t *testing.T) {
 	names := lo.Map(cols, func(c query.QueryColumn, _ int) string { return c.Name })
 	assert.Equal(t, []string{"id", "metric", "value", "timestamp"}, names)
 }
+
+// A negative estimated_savings is a real cost impact — an under-provisioned
+// right-sizing costs money to apply — so the row keeps its sign for the Optimise
+// table and the "Cost increase (< $0)" filter. Only the savings roll-up drops it,
+// via GREATEST, so a reliability finding never subtracts from a tenant's headline.
+func TestE2E_SavingsRollupExcludesCostIncreases(t *testing.T) {
+	payload := parsePostmanJSON(t, `{
+		"action": {
+			"name": "recommendation_groupings_v2"
+		},
+		"input": {
+			"columns": ["account_id", "count", "sum_estimated_savings"],
+			"where": {
+				"tenant_id": { "_eq": "t1" }
+			}
+		},
+		"request_query": "query Q { recommendation_groupings_v2 { rows { account_id count sum_estimated_savings } } }"
+	}`)
+
+	req, sql := simulateQueryPipeline(t, payload)
+
+	assert.Equal(t, "recommendation_groupings_v2", req.Table)
+	assert.Contains(t, sql, "GREATEST(estimated_savings, 0)",
+		"savings roll-up must floor each row so cost increases do not reduce the total")
+	assert.NotContains(t, sql, "THEN estimated_savings ELSE 0 END",
+		"unfloored savings sum would let a cost increase subtract from the headline")
+}

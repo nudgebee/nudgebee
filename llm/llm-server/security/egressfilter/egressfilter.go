@@ -91,6 +91,29 @@ type Hit struct {
 	// region (rare; treated as "unknown" by consumers). See source.go.
 	Source Source `json:"source,omitempty"`
 
+	// Tool is the tool that produced the matching region, when Source is
+	// tool_result / tool_call_args (e.g. "kubectl_execute"). Empty otherwise.
+	Tool string `json:"tool,omitempty"`
+
+	// Origin marks a recognisable injected region the hit sat inside —
+	// currently only OriginKnowledgeBase for RAG content from the KB
+	// pre-step. DocURL carries that document's Source url when present.
+	Origin string `json:"origin,omitempty"`
+	DocURL string `json:"doc_url,omitempty"`
+
+	// Length is the RUNE count of the matched value, and Shape its
+	// character-class mask (see ValueShape). Recorded for every hit whose
+	// offsets are in range: they describe the match without reproducing it,
+	// which is what an operator triaging a false positive needs. omitempty
+	// so a zero-length or out-of-range hit stays absent rather than
+	// serialising a misleading 0.
+	Length int    `json:"length,omitempty"`
+	Shape  string `json:"shape,omitempty"`
+
+	// Value is the raw matched substring — a live credential for most rules.
+	// Populated ONLY under the testing-only reveal flag; see RevealValues.
+	Value string `json:"value,omitempty"`
+
 	// CustomRuleName is the tenant-defined pattern name for a custom-rule hit
 	// (RuleID == CustomRuleRuleID). Empty for built-in rules. Carried for the
 	// audit log / FilterEvent so operators can see WHICH custom pattern fired;

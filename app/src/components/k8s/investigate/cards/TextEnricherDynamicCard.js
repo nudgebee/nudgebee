@@ -11,6 +11,13 @@ class TextEnricherDynamicCard {
     this.resolveButton = false;
     this.enricherData = data;
     this.disabled = data?.additional_info?.status == 'skipped';
+    // Set only when an automation attached this evidence (events.add_evidence);
+    // the card header turns it into a link to that run. Undefined for enricher
+    // evidence, which renders exactly as before.
+    this.sourceWorkflow = data?.additional_info?.source_workflow;
+    // Running one step on its own leaves no run to link to, so the header falls
+    // back to saying an automation wrote this.
+    this.authoredByAutomation = data?.additional_info?.actual_action_name === 'workflow_evidence';
   }
 
   async canRenderContent() {

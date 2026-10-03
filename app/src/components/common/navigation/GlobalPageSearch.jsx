@@ -47,7 +47,9 @@ import AdminIconBlue from '@assets/header/AdminIconBlue.icon.svg';
 import OptimiseIconBlue from '@assets/header/OptimiseIconBlue.icon.svg';
 import TicketIconBlue from '@assets/header/TicketIconBlue.icon.svg';
 import TroubleshootIconBlue from '@assets/header/TroubleshootIconBlue.icon.svg';
-import { AutomateBlue, AgentIconBlue, dashboardIcon1, KubernetesClusterIcon, VmIcon } from '@assets';
+import WorkflowIconBlue from '@assets/workflow/workflow-icon-blue.icon.svg';
+import { checkConnections } from '@shared/widgets/ClusterStatusIndicator';
+import { AgentIconBlue, dashboardIcon1, KubernetesClusterIcon, VmIcon } from '@assets';
 import {
   navSearchPages,
   accountScopedSearchFragments,
@@ -73,7 +75,7 @@ const MAX_LIST_HEIGHT = 380;
 const POPOVER_WIDTH = ds.space.mul(0, 340);
 
 // Rows shown per category before its chevron is needed to reveal the rest.
-const MAX_SECTION_ROWS = 5;
+const MAX_SECTION_ROWS = 3;
 
 // Some sidebar icons are drawn white-on-dark (fills or strokes) and render
 // invisible on this light popover — repaint with a --ds-* token. Scoped to
@@ -102,7 +104,7 @@ const DashboardRowIcon = recoloredSidebarIcon(dashboardIcon1);
 const NAV_SEARCH_GROUP_ICON = {
   Dashboards: DashboardRowIcon,
   Troubleshoot: TroubleshootIconBlue,
-  Automation: AutomateBlue,
+  Automation: WorkflowIconBlue,
   'Agent Health': AgentIconBlue,
   Optimize: OptimiseIconBlue,
   Tickets: TicketIconBlue,
@@ -405,43 +407,10 @@ const MENTION_PROVIDER_ORDER = (provider) => {
   return 999;
 };
 
-const isConnectedUsingDate = (lastConnectedDateStr) => {
-  if (!lastConnectedDateStr) {
-    return false;
-  }
-  const lastConnectedDate = new Date(lastConnectedDateStr);
-  return new Date().getTime() - lastConnectedDate.getTime() < 2 * 24 * 3600 * 1000;
-};
-
-const checkAccountConnections = (account) => {
-  if (account.cloud_provider?.toLowerCase() != 'k8s') {
-    const connectionStatus = account.agent?.connection_status;
-    if (!connectionStatus) {
-      return account.agent?.status === 'CONNECTED';
-    }
-    const servicesStatus = {
-      events: isConnectedUsingDate(connectionStatus?.events?.end),
-      resources: isConnectedUsingDate(connectionStatus?.resources?.updated_at),
-      recommendations: isConnectedUsingDate(connectionStatus?.recommendations?.updated_at),
-      spends: isConnectedUsingDate(connectionStatus?.spends?.updated_at),
-    };
-    return Object.values(servicesStatus).every((status) => status === true);
-  }
-  const connectionStatus = account.agent?.connection_status;
-  if (!connectionStatus) {
-    return false;
-  }
-  const requiredProps = ['logsConnection', 'nodeAgentConnection', 'prometheusConnection', 'relayConnection'];
-  for (const prop of requiredProps) {
-    if (!connectionStatus[prop]) {
-      return false;
-    }
-  }
-  if (!connectionStatus.opencostConnection && !connectionStatus.opencostServerSide) {
-    return false;
-  }
-  return true;
-};
+// Ranking uses the same verdict the status dot renders. It lived here as a copy and drifted
+// — the copy never learned about opencostServerSide or self-hosted fleets, and would not
+// have learned about integration-served signals either.
+const checkAccountConnections = (account) => checkConnections(account);
 
 const getAccountConnectionPriority = (account) => {
   if (account.agent?.status === 'CONNECTED') {
@@ -1400,9 +1369,10 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
 
   // The full (unfiltered) option list for whichever mode is active — mirrors
   // ds/FilterDropdown.jsx's `options` prop. Five peer sections (opt.sectionLabel):
-  // Recents, Dashboards, Automations, Integrations, Suggested Pages — each
-  // renders only when it has rows. Dashboards/Automations/Integrations sit
-  // above Suggested Pages (~200 rows) so they aren't buried below it.
+  // Recents, Suggested Pages, Dashboards, Automations, Integrations — each
+  // renders only when it has rows. Suggested Pages sits right below Recents;
+  // its ~200 rows are capped to a MAX_SECTION_ROWS preview, so the sections
+  // below it stay reachable without being buried.
   //
   // Dashboards and Integrations stay out of the "@account" scoped list —
   // neither is tied to one connected account. Automations IS, so it's
@@ -1414,7 +1384,7 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
     if (scopedAccount) {
       return scopedSearchItems;
     }
-    return [...recentSearchOptions, ...dashboardSearchItems, ...workflowSearchItems, ...integrationSearchOptions, ...suggestedPageOptions];
+    return [...recentSearchOptions, ...suggestedPageOptions, ...dashboardSearchItems, ...workflowSearchItems, ...integrationSearchOptions];
   }, [
     mentionMode,
     accountMentionOptions,
@@ -1594,7 +1564,7 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
 
   // Arrow-key-navigable list: displayedOptions with a synthetic toggle entry
   // spliced in front of each collapsible section (only those — a section with
-  // 5 or fewer rows has nothing to reveal, so its caption stays un-navigable).
+  // MAX_SECTION_ROWS or fewer rows has nothing to reveal, so its caption stays un-navigable).
   // Enter on a toggle entry collapses/expands instead of selecting.
   const navigableItems = useMemo(() => {
     const result = [];

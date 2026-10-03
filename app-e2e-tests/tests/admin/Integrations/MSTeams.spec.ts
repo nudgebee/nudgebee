@@ -16,6 +16,7 @@ async function navigateToMSTeamsIntegration(page: Page): Promise<IntegrationLoca
 
 test(
   "API testing Admin -> Integrations -> Messaging -> MS Teams -> Verify Integration",
+  { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] },
   async ({ page }, testInfo) => {
     test.setTimeout(120000);
 
@@ -51,6 +52,7 @@ test(
 
 test(
   "API testing Admin -> Integrations -> Messaging -> MS Teams -> Test Notification",
+  { tag: ["@dev", "@test", "@oss", "@regression", "@functional"] },
   async ({ page }, testInfo) => {
     test.setTimeout(120000);
     test.skip(

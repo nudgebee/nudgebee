@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import PropTypes from 'prop-types';
-import { Box, Typography, Chip, IconButton, LinearProgress } from '@mui/material';
+import { Box, Typography, IconButton, LinearProgress } from '@mui/material';
+import Label from '@ui/Label';
 import Tooltip from '@ui/Tooltip';
 import CancelOutlinedIcon from '@mui/icons-material/CancelOutlined';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -14,36 +15,31 @@ import { useWatchFeatureEnabled } from '@hooks/useTenantBranding';
 // ideal but the existing service layer doesn't have a subscription helper, and
 // 5s polling is cheap for the tab-volume we expect).
 //
-// Status pill colors use explicit status hexes — green/red/blue/gray/orange to
-// match the rest of the app's tabular conventions.
+// Status pills are read-only Status-axis tags, so they use ds/Label tones
+// rather than per-status colours (design-system.md §3).
 
-const STATUS_STYLES = {
-  PENDING: { bg: '#FEF3C7', fg: '#B45309', border: '#F59E0B' },
-  ACTIVE: { bg: '#DBEAFE', fg: '#1D4ED8', border: '#3B82F6' },
-  COMPLETED: { bg: '#DCFCE7', fg: '#15803D', border: '#16A34A' },
-  EXPIRED: { bg: '#F3F4F6', fg: '#4B5563', border: '#9CA3AF' },
-  FAILED: { bg: '#FEE2E2', fg: '#B91C1C', border: '#EF4444' },
-  CANCELLED: { bg: '#F3F4F6', fg: '#4B5563', border: '#9CA3AF' },
+const STATUS_TONES = {
+  PENDING: 'warning',
+  ACTIVE: 'info',
+  COMPLETED: 'success',
+  EXPIRED: 'neutral',
+  FAILED: 'critical',
+  CANCELLED: 'neutral',
 };
 
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'EXPIRED', 'FAILED', 'CANCELLED']);
 
 function StatusPill({ status }) {
-  const s = STATUS_STYLES[status] || STATUS_STYLES.PENDING;
+  // `status` is declared required but comes straight from the API, so guard the
+  // string ops rather than trusting propTypes at runtime.
+  const safeStatus = typeof status === 'string' ? status : '';
+  // Label takes no data-testid, so the span carries the id the e2e suite binds to.
   return (
-    <Chip
-      label={status}
-      size='small'
-      sx={{
-        bgcolor: s.bg,
-        color: s.fg,
-        border: `1px solid ${s.border}`,
-        fontWeight: 600,
-        fontSize: 'var(--ds-text-caption)',
-        height: '22px',
-      }}
-      data-testid={`watch-status-${status.toLowerCase()}`}
-    />
+    <span data-testid={`watch-status-${safeStatus.toLowerCase()}`}>
+      <Label tone={STATUS_TONES[safeStatus] || STATUS_TONES.PENDING} size='md'>
+        {safeStatus}
+      </Label>
+    </span>
   );
 }
 
@@ -122,7 +118,7 @@ function WatchRow({ watch: w, onCancel }) {
               size='small'
               onClick={() => onCancel(w)}
               data-testid={`watch-cancel-btn-${w.id}`}
-              sx={{ color: 'var(--ds-gray-500)', '&:hover': { color: '#B91C1C' } }}
+              sx={{ color: 'var(--ds-gray-500)', '&:hover': { color: 'var(--ds-red-700)' } }}
             >
               <CancelOutlinedIcon sx={{ fontSize: 18 }} />
             </IconButton>
@@ -134,7 +130,7 @@ function WatchRow({ watch: w, onCancel }) {
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
         <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>
           <strong>{w.poll_count}</strong> polls
-          {w.failure_count > 0 && <span style={{ color: '#B91C1C', marginLeft: 6 }}>· {w.failure_count} failed</span>}
+          {w.failure_count > 0 && <span style={{ color: 'var(--ds-red-700)', marginLeft: 6 }}>· {w.failure_count} failed</span>}
         </Typography>
         <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>
           every <strong>{w.poll_interval_sec}s</strong>
@@ -298,7 +294,7 @@ export default function WatchesTab({ conversationId }) {
   if (error) {
     return (
       <Box sx={{ p: 3 }} data-testid='watches-tab-error'>
-        <Typography sx={{ color: '#B91C1C' }}>Could not load watches: {error}</Typography>
+        <Typography sx={{ color: 'var(--ds-red-700)' }}>Could not load watches: {error}</Typography>
       </Box>
     );
   }

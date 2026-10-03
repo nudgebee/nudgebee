@@ -12,7 +12,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/samber/lo"
-	"github.com/tmc/langchaingo/llms"
 
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -62,104 +61,6 @@ type FollowupRequest struct {
 	// per-tool behavior); tools implementing toolcore.ToolConfirmationScope get
 	// a per-action key here so each invocation is approved separately.
 	ConfirmationKey string `json:"confirmationKey,omitempty"`
-}
-
-const PROMPT_IDENTIFY_MISSING_INFORMATION = `
-Context:
---------------------------------
-	You are an assistant specialized in Kubernetes, helping users troubleshoot, analyze, and fetch data related to Kubernetes resources. 
-	Users may ask questions related to fetching logs, events, recommendations, metrics, or performing other investigative tasks on Kubernetes clusters. 
-	Their initial questions might sometimes lack necessary details, such as the specific resource name or namespace. 
-
-Task:
---------------------------------
-Given a user question related to Kubernetes:
-	- Identify missing information like Namespace, Workload etc
-	- Use json format as output, DO not include anything extra, stick to the format provided
-	
-Response Format (JSON):
---------------------------------
-	{
-		"followup_questions": Array of Questions Required To Answer,
-		"reason": Reason to ask above question
-	}
-
-Examples:
---------------------------------
-	History: Can you fetch the logs?
-    Question: xyz server,
-	Response: {
-		"followup_questions":": ["provide namespace name"],
-		"reason": "user wants to get the logs from server but namespace is missing"
-    }
-
-
-    Question: can you fetch me logs of pods xyz in namespace abc?,
-	Response: {
-		"followup_questions": [],
-		"reason": "question has all the information like pod, namespace to pull logs"
-    }
-
-
-History:
---------------------------------
- %v
-
-Current User Question:
---------------------------------
-%v
-
-`
-
-func FollowupRequestForMissingInformation(ctx *security.RequestContext, query NBAgentRequest, agent NBAgent) (FollowupRequest, error) {
-	refineUpPrompt := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf(PROMPT_IDENTIFY_MISSING_INFORMATION, "", query.Query)),
-	}
-	res, err := GenerateAndTrackLLMContent(ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId, "refine", true, refineUpPrompt, true, llms.WithTemperature(0.0), llms.WithJSONMode())
-	if err != nil {
-		ctx.GetLogger().Error("followup: unable to generate content", "error", err)
-		return FollowupRequest{}, nil
-	}
-	if len(res.Choices) == 0 {
-		return FollowupRequest{}, nil
-	}
-
-	// Regular expression to extract the JSON object
-	if res.Choices[0].Content == "" {
-		return FollowupRequest{}, nil
-	}
-
-	followupQuestions := map[string]any{}
-	err = common.UnmarshalJson([]byte(strings.Trim(res.Choices[0].Content, "`")), &followupQuestions)
-	if err != nil {
-		ctx.GetLogger().Error("followup: unable to unmarshal refine response", "error", err)
-		return FollowupRequest{}, err
-	}
-
-	if followupQuestions["followup_questions"] == nil {
-		return FollowupRequest{}, nil
-	}
-
-	followupQuestionsArray, ok := followupQuestions["followup_questions"].([]any)
-	if !ok {
-		return FollowupRequest{}, nil
-	}
-
-	for _, fq := range followupQuestionsArray {
-		return FollowupRequest{
-			Question:     fq.(string),
-			FollowupType: FollowupTypeText,
-			AgentName:    agent.GetName(),
-			AgentId: func() uuid.UUID {
-				if query.AgentId != "" {
-					return uuid.MustParse(query.AgentId)
-				}
-				return uuid.Nil
-			}(),
-		}, nil
-	}
-
-	return FollowupRequest{}, nil
 }
 
 func FollowupRequestForToolOperationConfirmation(ctx *security.RequestContext, query NBAgentRequest, agent NBAgent, action NBAgentPlannerToolAction, toolRequestType toolcore.ToolRequestType, confirmationKey string, questionOverride string) (FollowupRequest, error) {

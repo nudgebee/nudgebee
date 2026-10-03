@@ -97,6 +97,16 @@ def ensure_collection_exists(
     test_embedding = embedding_function.embed_query("probe for vector size")
     vector_size = len(test_embedding)
 
+    # Stamp the model that produced these vectors. Dimension alone cannot say
+    # whether stored vectors match the configured model -- different models
+    # routinely share one (bge-small-en-v1.5 and all-MiniLM-L6-v2 are both 384)
+    # -- so the migration compares this name to decide what needs rebuilding.
+    # Imported locally: this module is loaded early and the dependency only
+    # matters at collection-creation time.
+    from rag.core.documents.embedding_migration import MODEL_KEY, model_identity
+
+    collection_metadata = {**(collection_metadata or {}), MODEL_KEY: model_identity(embedding_function)}
+
     list_collections_optimized()
 
     cache = get_collection_list_cache()

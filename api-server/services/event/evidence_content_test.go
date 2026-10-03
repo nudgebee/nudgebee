@@ -11,6 +11,8 @@ import (
 const (
 	gzipEmpty    = `b'H4sIAAAAAAAA/wEAAP//AAAAAAAAAAA='`
 	gzipTwoLines = `b'H4sIAAAAAAAA/youSSwqycxL50pLLEnMsVJITszLyy9RSM7Py0tNLlEoyVdISeICBAAA//9rwZaxJQAAAA=='`
+	// "unable to retrieve container logs for containerd://9623098c4cfb…"
+	gzipRetrievalFailure = `b'H4sIAAAAAAAA/0TI0Q0DIQgA0FXY4BQtd3QbFGguMZpQ2/n72d/3mdKGwV4QtuO2r0Ffc8s9LWCs1xt8xZ/0eRxMWBJfvXZvuSKndhk6MtbzQeKqxBmdShI3KpnaadpJlLGQKPIvAAD//9qUtRpzAAAA'`
 )
 
 func logEvidence(action string, data any) map[string]any {
@@ -29,6 +31,12 @@ func TestEvidenceHasContent(t *testing.T) {
 	}{
 		{"agent gzip with log lines", logEvidence("k8s_pod_log_enricher", gzipTwoLines), true},
 		{"agent gzip of empty log", logEvidence("k8s_pod_log_enricher", gzipEmpty), false},
+		// A kubelet "no logs here" answer arrives on the success path and decodes
+		// to non-empty text, so it used to count as content: it rendered as the
+		// workload's output and, because k8s_pod_log_enricher is in
+		// eventrule.logActions, it also marked the log category collected so the
+		// configured log source was never queried.
+		{"agent gzip of kubelet retrieval failure", logEvidence("k8s_pod_log_enricher", gzipRetrievalFailure), false},
 		{"json wrapper with rows", logEvidence("logs", `{"data":[{"message":"boom"}]}`), true},
 		{"json wrapper with no rows", logEvidence("cloud_logs", `{"data":[]}`), false},
 		{"map wrapper with rows", logEvidence("logs", map[string]any{"data": []any{"x"}}), true},

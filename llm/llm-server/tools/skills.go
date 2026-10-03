@@ -421,9 +421,18 @@ func (m LoadSkillsTool) fetchSkillsBatch(ctx core.NbToolContext, dbms *common.Da
 // Shared RAG search
 // ---------------------------------------------------------------------------
 
+// resolveDocumentCategoriesFn is swapped out in tests.
+var resolveDocumentCategoriesFn = core.ResolveDocumentCategories
+
 // cacheSearchKnowledgeCandidates exposes exact, turn-scoped identities instead
 // of asking the loader to search again using a guessed article title.
+//
+// Every tool path that turns search hits into candidates comes through here
+// (search_skills, and load_skills naming an integration knowledge base), so
+// the per-document Fact/SOP marks are applied here rather than by each caller:
+// a candidate's purpose is fixed when it is cached.
 func cacheSearchKnowledgeCandidates(ctx core.NbToolContext, docs core.RAGSearchResults) []string {
+	docs = resolveDocumentCategoriesFn(ctx.Ctx, ctx.AccountId, docs)
 	var results []string
 	for _, doc := range docs {
 		content := strings.TrimSpace(doc.Document)

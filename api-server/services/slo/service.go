@@ -10,6 +10,7 @@ import (
 	"nudgebee/services/config"
 	"nudgebee/services/event"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/observability"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
 	"strconv"
@@ -828,23 +829,14 @@ func collectEvidences(slo DBSLOReport, sloConfig DBSLOConfig) ([]any, error) {
 	logStep("add SLO report/config evidence", t0)
 
 	// Step 2: Collect workload metrics (memory, cpu, latency, cpu_throttling)
+	// through the metrics layer, so the account's own Prometheus answers.
+	metricsCtx := security.NewRequestContextForTenantAdmin(sloConfig.TenantId, slog.Default(), nil, nil)
 	for _, metricName := range []string{"memory", "cpu", "latency", "cpu_throttling"} {
 		t := time.Now()
-		ev, err := relay.WorkloadMetricsExecutor(
-			sloConfig.CloudAccountId,
-			sloConfig.WorkloadName,
-			sloConfig.Namespace,
-			metricName,
-			startTime,
-			endTime,
-		)
+		title := fmt.Sprintf("%s Metric", strings.ToTitle(strings.ReplaceAll(metricName, "_", " ")))
+		res, err := observability.WorkloadMetricEvidence(metricsCtx, sloConfig.CloudAccountId, sloConfig.WorkloadName, sloConfig.Namespace, metricName, title, startTime, endTime)
 		if err != nil {
 			slog.Error("slo: error getting workload ", "error", err, "metric", metricName, "workload", sloConfig.WorkloadName, "namespace", sloConfig.Namespace)
-			continue
-		}
-		res, err := relay.FormatEvidenceResponseFromAgent(fmt.Sprintf("%s Metric", strings.ToTitle(strings.ReplaceAll(metricName, "_", " "))), ev)
-		if err != nil {
-			slog.Error("slo: error formatting evidence response", "metric", metricName, "error", err)
 			continue
 		}
 		evidences = append(evidences, res)

@@ -31,7 +31,9 @@ func NewSignozLogAgent(accountId string) SignozLogAgent {
 
 func (d SignozLogAgent) GetName() string { return SignozLogAgentName }
 
-func (d SignozLogAgent) GetNameAliases() []string { return []string{"Signoz Logs"} }
+func (d SignozLogAgent) GetNameAliases() []string {
+	return []string{"SigNoz Logs Reader", "Signoz Logs"}
+}
 
 func (d SignozLogAgent) GetDescription() string {
 	return `Uses Signoz to provide logs based on the given question.`

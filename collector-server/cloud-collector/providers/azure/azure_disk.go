@@ -258,7 +258,7 @@ func (s *diskService) GetRecommendations(ctx providers.CloudProviderContext, acc
 					diskSKU = name
 				}
 			}
-			monthlyCost := getDiskMonthlyCost(diskSKU, diskSizeGB)
+			monthlyCost := getDiskMonthlyCost(diskSKU, resource.Region, diskSizeGB)
 			resourceRecommendations["azure_disk_unattached_volume"] = providers.Recommendation{
 				CategoryName: providers.RecommendationCategoryRightSizing,
 				RuleName:     "azure_disk_unattached_volume",

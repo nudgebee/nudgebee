@@ -19,7 +19,7 @@ import { toast as snackbar } from '@ui/Toast';
 import { Modal } from '@ui/Modal';
 import { getUserSession, isTenantAdmin } from '@lib/auth';
 import { ds } from '@utils/colors';
-import { useTenantBranding } from '@hooks/useTenantBranding';
+import { useTenantBranding, toAssistantLabel } from '@hooks/useTenantBranding';
 import apiUser from '@api1/user';
 import WidgetCard from '@ui/WidgetCard';
 import { ProgressBar } from '@ui/ProgressBar';
@@ -867,7 +867,7 @@ const BudgetEditModal = ({ open, onClose, onSaved, config, maxCaps, systemDefaul
             options={[
               ...(isEdit ? [] : [{ value: 'both', label: 'Both Modules' }]),
               { value: 'investigation', label: 'Event Analysis (Automated)' },
-              { value: 'user_investigation', label: 'Nubi Chat (User)' },
+              { value: 'user_investigation', label: `${toAssistantLabel(assistantName)} Chat (User)` },
             ]}
             disabled={isEdit}
             size='sm'
@@ -1125,19 +1125,18 @@ ActiveConfigsCompact.propTypes = {
 
 // ─── main component ──────────────────────────────────────────────────────────
 
-const LLMConsumptionTab = ({ accountId }) => {
+const LLMConsumptionTab = ({ accountId, readOnly = false }) => {
   // Tenant-wide mode: when Settings is opened from the global sidebar
   // there's no current account. Budget status is per-account, so we skip
   // the KPI strip + Usage matrix entirely and show only the Active
   // Budgets (tenant scope) + Budgets for All Accounts (everything else)
   // sections that operators can still act on.
   const isTenantWide = !accountId;
-  const { assistantName } = useTenantBranding();
+  const { assistantName, baseTitle } = useTenantBranding();
   const [loading, setLoading] = useState(true);
   const [budgetData, setBudgetData] = useState(null);
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [accountName, setAccountName] = useState('');
 
   // Lifted budget-config state — top-level "Add Budget" button and the
   // collapsed list section both feed this single modal.
@@ -1157,7 +1156,12 @@ const LLMConsumptionTab = ({ accountId }) => {
 
   const session = getUserSession();
   const isSuperAdmin = !!session?.isSuperAdmin;
-  const isAdmin = isTenantAdmin() || isSuperAdmin;
+  // readOnly forces this false regardless of role — b-Cortex's My Usage
+  // (docs/ia-consolidation-plan.md, PR 4, Decision F) is a personal read
+  // view; editing budget configs is centralized at Admin → AI & Tools →
+  // Budgets & Limits (BudgetsAndLimitsAdminTab.jsx), which mounts this same
+  // component without the prop.
+  const isAdmin = !readOnly && (isTenantAdmin() || isSuperAdmin);
   const tenantName = session?.tenant?.name || 'Tenant';
 
   // Suppress setState / toast after unmount. Settings tab switching
@@ -1191,10 +1195,10 @@ const LLMConsumptionTab = ({ accountId }) => {
   // Derive the friendly account-name label from the cached accounts list.
   // Falls back to empty string until accounts have loaded; the budget-status
   // effect doesn't need to wait for accounts to finish before fetching.
-  useEffect(() => {
-    if (!accountId || accounts.length === 0) return;
+  const accountName = useMemo(() => {
+    if (!accountId || accounts.length === 0) return '';
     const acc = accounts.find((a) => a.id === accountId);
-    if (acc) setAccountName(`${acc.account_name} (${acc.cloud_provider})`);
+    return acc ? `${acc.account_name} (${acc.cloud_provider})` : '';
   }, [accountId, accounts]);
 
   useEffect(() => {
@@ -1449,7 +1453,7 @@ const LLMConsumptionTab = ({ accountId }) => {
           this banner. */}
       {kpi?.tenantExhausted && (
         <Alert severity='warning' sx={{ mb: ds.space[3], fontSize: 'var(--ds-text-small)' }}>
-          Tenant budget exhausted. Please contact Nudgebee support to enable {assistantName} and LLM-based Event Analysis.
+          {`Tenant budget exhausted. Please contact ${baseTitle} support to enable ${assistantName} and LLM-based Event Analysis.`}
         </Alert>
       )}
 
@@ -1708,6 +1712,11 @@ LLMConsumptionTab.propTypes = {
   // section collapses to Tenant only with all account configs flowing
   // into the bottom list.
   accountId: PropTypes.string,
+  // Forces isAdmin false regardless of role, hiding "Add Budget" and the
+  // Active Budgets/edit section — b-Cortex's My Usage mount (personal
+  // read view, Decision F) uses this; Admin's Budgets & Limits mount
+  // (canonical editing) doesn't pass it.
+  readOnly: PropTypes.bool,
 };
 
 export default LLMConsumptionTab;

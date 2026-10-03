@@ -31,7 +31,7 @@ func (a WorkflowAgent) GetName() string {
 }
 
 func (a WorkflowAgent) GetNameAliases() []string {
-	return []string{"Automation", "AutomationManager", "Workflow", "WorkflowManager", "workflow"}
+	return []string{"Automation Manager", "Automation", "AutomationManager", "Workflow", "WorkflowManager", "workflow"}
 }
 
 func (a WorkflowAgent) GetDescription() string {

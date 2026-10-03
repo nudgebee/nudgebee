@@ -25,6 +25,34 @@ func generateToolId(tool string, input string) string {
 	return fmt.Sprintf("%s-%s", strings.ToLower(tool), hash[:8])
 }
 
+// resolveToolInputMacros expands `[[Time:...]]` macros in a tool input before the
+// action is dispatched.
+//
+// It exists as a shared seam, rather than a call in each planner, because being
+// ReAct3-only is exactly what caused the incident it fixes (#39201). ReAct3 expanded
+// on every tool input; ReAct4 did not, and ReAct4 is the default engine
+// (llm_server_react4_enabled defaults true, and every provider we ship except
+// sagemaker/huggingface routes to it). So nothing expanded them: `[[Time:-24h]]`
+// reached tools verbatim, and in an Elasticsearch range filter it matches nothing
+// while still returning HTTP 200 — an empty result the caller reads as "no data in
+// this environment" rather than as a malformed query.
+//
+// The macro syntax is taught by a shared prompt fragment
+// (prompts/default/v1/_fragments/time_handling_rules.yaml) injected into many agents'
+// prompts, so any agent can emit one into any tool. That breadth is why this belongs
+// to the planners rather than to individual tools, and why a third planner must
+// inherit it by construction instead of by someone remembering.
+//
+// Callers must apply this to the execution-facing input ONLY.
+// NBAgentPlannerToolAction.NativeToolInput has to keep the provider's original bytes
+// for exact history replay (renderStepsToMessages); rewriting it would replay
+// arguments the model never emitted and can invalidate provider thought signatures.
+// Callers must also derive any dedup id from the PRE-expansion input, or a fresh
+// timestamp makes every repeat unique and silently disables dedup.
+func resolveToolInputMacros(input string) string {
+	return common.SubstituteDateMacros(input)
+}
+
 type NBAgentReActPlannerCritiqueSupport interface {
 	CritiqueEnabled() bool
 }

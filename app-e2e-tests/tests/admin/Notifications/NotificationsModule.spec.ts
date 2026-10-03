@@ -8,6 +8,8 @@ import {
   createSuppressedRule,
   deleteRuleByName,
   waitForRulesListing,
+  waitForRulesQuery,
+  confirmDeleteAndWaitForRelist,
 } from "./notificationsModuleHelper";
 import {
   RULE_COLUMNS,
@@ -115,10 +117,8 @@ test(
       });
 
       await test.step("Confirming removes the row from the re-fetched listing", async () => {
-        await noti.deleteConfirmBtn.click();
-        await expect(noti.deleteDialog).toBeHidden({ timeout: 30000 });
-        // The table is re-fetched by listNotificationRules() after a successful delete,
-        // so an absent row is the server's answer rather than a stale client filter.
+        // Waits for the post-delete re-fetch so the absence below is the server's answer, not the loading skeleton.
+        await confirmDeleteAndWaitForRelist(page, noti);
         await expect(noti.rowByName(ruleName)).toHaveCount(0, { timeout: 60000 });
       });
     } finally {
@@ -135,8 +135,14 @@ test(
     const noti = await openNotificationsTab(page);
 
     await openCreateRuleModal(noti);
+
+    // Daily Recap is one-per-tenant, so selecting it loads the existing rule's name; wait for that fetch, then clear it.
+    const rulesLoaded = waitForRulesQuery(page);
     await selectDailyRecapSource(noti);
+    await rulesLoaded;
+
     await disableDelivery(page, noti);
+    await noti.notificationNameInput.fill("");
 
     await test.step("Saving with no name is rejected by name, not by scope", async () => {
       await expect(noti.notificationNameInput).toHaveValue("");
@@ -249,15 +255,17 @@ test(
 );
 
 test(
-  "Notifications sanity - switch from Notifications to the Audits tab and back, verify the rules listing is restored",
+  "Notifications sanity - switch from Notifications to the Access & Users > Audit Log tab and back, verify the rules listing is restored",
   { tag: ["@dev", "@smoke", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const noti = await openNotificationsTab(page);
 
     await test.step("Audits replaces the notification listing", async () => {
-      await noti.auditsTab.click();
-      await expect(noti.auditsTab).toHaveAttribute("data-tab-selected", "true", { timeout: 30000 });
+      // Hovering Access & Users opens a modal dropdown whose backdrop swallows clicks on the sub-tab row, so use its Audit Log item.
+      await noti.accessUsersTab.hover();
+      await noti.auditLogMenuItem.click();
+      await expect(noti.auditsTab).toHaveAttribute("aria-selected", "true", { timeout: 30000 });
       // The tab body is swapped, not hidden — /user-management renders only the selected
       // section's Body, so the notifications toolbar leaves the DOM entirely.
       await expect(noti.notificationRuleBtn).toHaveCount(0, { timeout: 30000 });

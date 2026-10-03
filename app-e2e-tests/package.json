@@ -18,14 +18,24 @@
     "test:test:headed": "cross-env E2E_ENVIRONMENT=test npx playwright test --project=chromium --headed",
     "test:oss": "cross-env E2E_ENVIRONMENT=oss npx playwright test --project=chromium",
     "test:oss:ui": "cross-env E2E_ENVIRONMENT=oss npx playwright test --project=chromium --ui",
-    "test:oss:headed": "cross-env E2E_ENVIRONMENT=oss npx playwright test --project=chromium --headed"
+    "test:oss:headed": "cross-env E2E_ENVIRONMENT=oss npx playwright test --project=chromium --headed",
+    "test:dev:smoke": "cross-env E2E_ENVIRONMENT=dev npx playwright test --project=chromium --grep @smoke",
+    "test:dev:sanity": "cross-env E2E_ENVIRONMENT=dev npx playwright test --project=chromium --grep @sanity",
+    "test:dev:functional": "cross-env E2E_ENVIRONMENT=dev npx playwright test --project=chromium --grep @functional",
+    "test:dev:regression": "cross-env E2E_ENVIRONMENT=dev npx playwright test --project=chromium --grep @regression",
+    "test:dev:negative": "cross-env E2E_ENVIRONMENT=dev npx playwright test --project=chromium --grep @negative",
+    "test:test:smoke": "cross-env E2E_ENVIRONMENT=test npx playwright test --project=chromium --grep @smoke",
+    "test:test:sanity": "cross-env E2E_ENVIRONMENT=test npx playwright test --project=chromium --grep @sanity",
+    "test:test:functional": "cross-env E2E_ENVIRONMENT=test npx playwright test --project=chromium --grep @functional",
+    "test:test:regression": "cross-env E2E_ENVIRONMENT=test npx playwright test --project=chromium --grep @regression",
+    "test:test:negative": "cross-env E2E_ENVIRONMENT=test npx playwright test --project=chromium --grep @negative"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "@playwright/test": "^1.62.1",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "cross-env": "^10.1.0",
     "dotenv": "^16.6.1",
     "ts-node": "^10.9.2",
@@ -35,9 +45,9 @@
     "follow-redirects": "^1.16.0"
   },
   "dependencies": {
-    "@axe-core/playwright": "^4.12.1",
-    "axios": "^1.19.0",
-    "googleapis": "^174.0.1",
+    "@axe-core/playwright": "^4.13.0",
+    "axios": "^1.20.0",
+    "googleapis": "^176.0.0",
     "node-fetch": "^3.3.2"
   }
 }

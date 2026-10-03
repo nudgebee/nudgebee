@@ -66,7 +66,11 @@ export class RolesLocators {
     this.deleteConfirmBtn = page.getByRole("button", { name: "Delete", exact: true }).last();
   }
 
-  /** Admin → Roles, via the hash route the page itself uses. */
+  /**
+   * Admin → Roles, via the hash route the page itself uses. Roles is a
+   * sub-tab of Access & Users (AnchorComponent's 2-level hash routing), not
+   * its own top-level admin tab.
+   */
   async open(): Promise<void> {
     // These specs navigate straight in on the stored auth state rather than
     // going through doFullLogin(), so the first-login tour handler is not yet
@@ -76,7 +80,7 @@ export class RolesLocators {
     // waitUntil domcontentloaded: the default "load" waits on every dashboard
     // subresource and times out on a slow dev env. The New role button is the
     // real readiness signal, so wait on that instead.
-    await this.page.goto("/user-management#roles", { waitUntil: "domcontentloaded" });
+    await this.page.goto("/user-management#access-users/roles", { waitUntil: "domcontentloaded" });
     await this.newRoleBtn.waitFor({ state: "visible", timeout: 30000 });
   }
 

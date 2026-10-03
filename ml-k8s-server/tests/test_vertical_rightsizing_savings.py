@@ -88,21 +88,24 @@ def _row(savings):
     "name,savings,expected",
     [
         ("positive_total_preserved", 120.0, 120.0),
-        ("negative_total_clamped", -45.0, 0.0),
+        # A negative net is a real cost impact: applying the recommendation
+        # raises the bill. The row keeps the figure so the Optimise table can
+        # show it; savings roll-ups drop it at aggregation time instead.
+        ("negative_total_preserved", -45.0, -45.0),
         ("zero_stays_zero", 0.0, 0.0),
     ],
 )
-def test_finalize_floors_merged_savings_at_zero(name, savings, expected):
+def test_finalize_preserves_the_merged_savings_sign(name, savings, expected):
     rows = {"res-1": _row(savings)}
     # Priority 2 is OK rather than GOOD, so the row is rated, not dropped.
     finalize_workload_rows(rows, {"res-1": [2]})
     assert rows["res-1"]["estimated_savings"] == pytest.approx(expected)
 
 
-def test_clamp_does_not_disturb_the_no_change_drop():
+def test_cost_increase_rows_still_take_the_no_change_drop():
     rows = {"keep": _row(-10.0), "drop": _row(-10.0)}
     # GOOD priority on every container marks a workload as needing no change.
     dropped = finalize_workload_rows(rows, {"keep": [2], "drop": [1]})
     assert dropped == 1
     assert "drop" not in rows
-    assert rows["keep"]["estimated_savings"] == 0.0
+    assert rows["keep"]["estimated_savings"] == pytest.approx(-10.0)

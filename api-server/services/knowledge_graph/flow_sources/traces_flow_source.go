@@ -43,6 +43,35 @@ var knownK8sNamespaces = []string{
 	"cert-manager", "flux-system", "argocd", "prometheus",
 }
 
+// appLookupKey identifies an application by kind, namespace and name. It mirrors
+// mergeServiceMaps' dedup key exactly: if the two ever drift, applications that
+// survived the merge separately would collide here again.
+func appLookupKey(kind, namespace, name string) string {
+	return kind + ":" + namespace + ":" + name
+}
+
+// lookupApp resolves an observed link endpoint to the application it refers to.
+//
+// The namespace-qualified key is tried first. On a miss it falls back to a
+// name-only scan, but accepts a candidate ONLY when that candidate itself carries
+// no namespace — i.e. the producer could not determine one, so matching on name is
+// the best available answer and cannot be wrong about a namespace it never had.
+// A candidate in a *different, known* namespace is never accepted: that is exactly
+// the cross-namespace edge this lookup exists to prevent. Rejecting it here lets
+// the caller fall through to its create-or-drop path instead of guessing.
+func lookupApp(appLookup map[string]*traces.ServiceApplication, kind, namespace, name string) (*traces.ServiceApplication, bool) {
+	if app, exists := appLookup[appLookupKey(kind, namespace, name)]; exists {
+		return app, true
+	}
+	if namespace == "" {
+		return nil, false
+	}
+	if app, exists := appLookup[appLookupKey(kind, "", name)]; exists {
+		return app, true
+	}
+	return nil, false
+}
+
 func init() {
 	// Register the traces flow source factory in the global registry
 	RegisterFlowSourceFactory(
@@ -151,7 +180,7 @@ func (s *TracesFlowSource) BuildFlowRelationships(
 		// podIPResolver is built per-account because kube_pod_info is fetched from
 		// the per-account Prometheus relay. Mirrors the wiring in
 		// ebpf_flow_source.go's processK8sAccount.
-		podIPResolver := NewPodIPResolver(account.CloudAccountID, req.ExistingNodes, s.logger)
+		podIPResolver := NewPodIPResolver(reqCtx, account.CloudAccountID, req.ExistingNodes, s.logger)
 		accountEdges, accountNodes, err := s.processK8sAccount(ctx, reqCtx, req, account, queryStartTime, queryEndTime, ipResolver, podIPResolver, nodeIPResolver)
 		if err != nil {
 			s.logger.Error("failed to process K8s account",
@@ -348,6 +377,24 @@ func (s *TracesFlowSource) processK8sAccount(
 		"account_id", account.CloudAccountID)
 
 	// STEP 5: Process merged service map following ebpf pattern
+	edges, newNodes := s.BuildGraphFromServiceMap(mergedServiceMap, req, account, ipResolver, podIPResolver, nodeIPResolver)
+
+	return edges, newNodes, nil
+}
+
+// BuildGraphFromServiceMap turns a merged trace service map into flow nodes and
+// edges. Split out of processK8sAccount, which owns the I/O of fetching and
+// merging the service maps, so that this — the part that resolves each observed
+// link to a real graph node — can be exercised directly from a service map
+// fixture without a live trace backend.
+func (s *TracesFlowSource) BuildGraphFromServiceMap(
+	mergedServiceMap *traces.ServiceMap,
+	req *core.FlowSourceBuildRequest,
+	account core.K8sAccount,
+	ipResolver *K8sServiceIPResolver,
+	podIPResolver *PodIPResolver,
+	nodeIPResolver *K8sNodeIPResolver,
+) ([]*core.DbEdge, []*core.DbNode) {
 	edges := make([]*core.DbEdge, 0)
 	newNodes := make([]*core.DbNode, 0)
 	externalServiceNodes := make(map[string]*core.DbNode)
@@ -357,11 +404,15 @@ func (s *TracesFlowSource) processK8sAccount(
 	// CALLS edges via ResolveIPToK8sService (which owns port stripping and
 	// the special-IP skip list).
 
-	// Build lookup map for applications by name
+	// Build lookup map for applications, keyed by (kind, namespace, name) to match
+	// mergeServiceMaps' own dedup key. Keying on kind+name alone collapsed two
+	// same-named applications from different namespaces into one entry, so a caller
+	// resolved to whichever copy was written last — a coin flip over map iteration
+	// order that produced CALLS edges into the wrong namespace.
 	appLookup := make(map[string]*traces.ServiceApplication)
 	for i := range mergedServiceMap.Applications {
 		app := &mergedServiceMap.Applications[i]
-		appLookup[fmt.Sprintf("%s:%s", app.Id.Kind, app.Id.Name)] = app
+		appLookup[appLookupKey(app.Id.Kind, app.Id.Namespace, app.Id.Name)] = app
 	}
 
 	// Track unmatched services for analysis
@@ -397,7 +448,7 @@ func (s *TracesFlowSource) processK8sAccount(
 
 		// Process upstream connections (services this app calls)
 		for _, upstream := range app.Upstreams {
-			targetName, targetKind := traces.ParseUpstreamId(upstream.Id)
+			targetNamespace, targetName, targetKind := traces.ParseUpstreamId(upstream.Id)
 			if targetName == "" {
 				continue
 			}
@@ -405,8 +456,7 @@ func (s *TracesFlowSource) processK8sAccount(
 			var upstreamNode *core.DbNode
 
 			// Check if upstream exists in applications list
-			lookupKey := fmt.Sprintf("%s:%s", targetKind, targetName)
-			if upstreamApp, exists := appLookup[lookupKey]; exists {
+			if upstreamApp, exists := lookupApp(appLookup, targetKind, targetNamespace, targetName); exists {
 				// Try to match upstream application to existing node
 				var upstreamErr error
 				upstreamNode, upstreamErr = s.matchServiceApplicationToNode(upstreamApp, account.CloudAccountID)
@@ -436,7 +486,7 @@ func (s *TracesFlowSource) processK8sAccount(
 				// get dropped entirely (no useful topology signal). Provenance
 				// gets stamped on the edge below.
 				resolvedNode, resolvedFromIP, resolvedReason, resolutionSource, resolvedOK :=
-					resolveIPNamedExternalService(targetName, stringProp(sourceNode, "cluster"), ipResolver, podIPResolver, nodeIPResolver)
+					resolveIPNamedExternalService(targetName, account.CloudAccountID, stringProp(sourceNode, "cluster"), ipResolver, podIPResolver, nodeIPResolver)
 				switch {
 				case resolvedOK:
 					upstreamNode = resolvedNode
@@ -490,12 +540,12 @@ func (s *TracesFlowSource) processK8sAccount(
 		for _, downstream := range app.Downstreams {
 			downstreamName := downstream.Id.Name
 			downstreamKind := downstream.Id.Kind
+			downstreamNamespace := downstream.Id.Namespace
 
 			var downstreamNode *core.DbNode
 
 			// Check if downstream exists in applications list
-			lookupKey := fmt.Sprintf("%s:%s", downstreamKind, downstreamName)
-			if downstreamApp, exists := appLookup[lookupKey]; exists {
+			if downstreamApp, exists := lookupApp(appLookup, downstreamKind, downstreamNamespace, downstreamName); exists {
 				// Try to match downstream application to existing node
 				var downstreamErr error
 				downstreamNode, downstreamErr = s.matchServiceApplicationToNode(downstreamApp, account.CloudAccountID)
@@ -527,7 +577,7 @@ func (s *TracesFlowSource) processK8sAccount(
 				// service making the call into this app) — unknown at this point,
 				// so we pass "" and rely on the resolvers' global-unique fallback.
 				resolvedNode, resolvedFromIP, resolvedReason, resolutionSource, resolvedOK :=
-					resolveIPNamedExternalService(downstreamName, "", ipResolver, podIPResolver, nodeIPResolver)
+					resolveIPNamedExternalService(downstreamName, account.CloudAccountID, "", ipResolver, podIPResolver, nodeIPResolver)
 				switch {
 				case resolvedOK:
 					downstreamNode = resolvedNode
@@ -591,7 +641,7 @@ func (s *TracesFlowSource) processK8sAccount(
 		"edges", len(edges),
 		"external_services", len(externalServiceNodes))
 
-	return edges, newNodes, nil
+	return edges, newNodes
 }
 
 // ParsedK8sServiceDNS contains parsed components of a K8s service DNS name

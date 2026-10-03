@@ -6,6 +6,7 @@ import (
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/utils"
 	"nudgebee/llm/workspace"
+	"os"
 	"strings"
 )
 
@@ -102,17 +103,27 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 	// For GitHub App authentication, get installation token
 	githubToken := password
 	if authType == "application" {
-		installationID := int64(0)
-		if _, err := fmt.Sscanf(password, "%d", &installationID); err != nil {
-			return core.NBToolResponse{}, fmt.Errorf("invalid installation_id in password field: %w", err)
-		}
+		// Local-dev escape hatch: a local llm-server has no GitHub App
+		// credentials (GITHUB_APP_ID/GITHUB_PRIVATE_KEY) provisioned, so the
+		// installation-token exchange below always fails there even though
+		// the tenant's DB config is otherwise correct. GITHUB_TOKEN matches
+		// the existing local-testing fallback in agent_code2.go's
+		// resolveGitToken — reuse the same var instead of adding a new one.
+		if localToken := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); localToken != "" {
+			githubToken = localToken
+		} else {
+			installationID := int64(0)
+			if _, err := fmt.Sscanf(password, "%d", &installationID); err != nil {
+				return core.NBToolResponse{}, fmt.Errorf("invalid installation_id in password field: %w", err)
+			}
 
-		token, err := utils.GetGithubAppInstallationToken(nbRequestContext.Ctx.GetContext(), apiUrl, installationID)
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("github: unable to get installation token", "error", err.Error())
-			return core.NBToolResponse{}, fmt.Errorf("failed to get GitHub App installation token: %w", err)
+			token, err := utils.GetGithubAppInstallationToken(nbRequestContext.Ctx.GetContext(), apiUrl, installationID)
+			if err != nil {
+				nbRequestContext.Ctx.GetLogger().Error("github: unable to get installation token", "error", err.Error())
+				return core.NBToolResponse{}, fmt.Errorf("failed to get GitHub App installation token: %w", err)
+			}
+			githubToken = token
 		}
-		githubToken = token
 	}
 
 	command = strings.ReplaceAll(command, "\\n", "\n")

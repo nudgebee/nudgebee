@@ -17,7 +17,6 @@ import { timeFormatIn24Hours } from '@lib/datetime';
 import { toast as snackbar } from '@ui/Toast';
 import { Modal } from '@ui/Modal';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { DataNotAvailable } from '@assets';
 import { hasWriteAccess } from '@lib/auth';
 import AutoOptimizeHorizontalRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizeHorizontalRightSizingSingleConfiguration';
 import apiAccount from '@api1/account';
@@ -25,7 +24,7 @@ import { useData } from '@context/DataContext';
 import apiHome from '@api1/home';
 import { Link as CustomLink } from '@ui/Link';
 import useRecommendationExport from '@hooks/useRecommendationExport';
-import EmptyData from '@shared/EmptyData';
+import { EmptyState } from '@ui/EmptyState';
 import Link from 'next/link';
 import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import { buildNubiOptimizePrompt } from 'src/utils/nubiPromptBuilder';
@@ -407,32 +406,46 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
   const getChannelsListSlackMsTeams = async () => {
     const platforms = ['slack', 'ms_teams', 'google_chat'];
 
-    setIsMsTeamsLoading(true);
-    try {
-      const resMsTeams = await apiAccount.getNotificationChannelList(platforms[1]);
-      const teamOptionsMsTeams =
-        resMsTeams?.data?.data?.map((item) => ({
-          label: item.name,
-          value: item.id,
-          channels: item.channels,
-        })) || [];
-      setMsTeamsData(teamOptionsMsTeams);
-    } finally {
-      setIsMsTeamsLoading(false);
-    }
+    const fetchMsTeamsChannels = async () => {
+      setIsMsTeamsLoading(true);
+      try {
+        const resMsTeams = await apiAccount.getNotificationChannelList(platforms[1]);
+        const msTeamsRows = resMsTeams?.data?.data;
+        const teamOptionsMsTeams = Array.isArray(msTeamsRows)
+          ? msTeamsRows.map((item) => ({
+              label: item.name,
+              value: item.id,
+              channels: item.channels,
+            }))
+          : [];
+        setMsTeamsData(teamOptionsMsTeams);
+      } catch (error) {
+        console.error('Failed to fetch MS Teams channels:', error);
+      } finally {
+        setIsMsTeamsLoading(false);
+      }
+    };
 
-    setIsGoogleChannelsLoading(true);
-    try {
-      const resGoogle = await apiAccount.getNotificationChannelList(platforms[2]);
-      const googleOptions =
-        resGoogle?.data?.data?.map((item) => ({
-          label: item.name,
-          value: item.id,
-        })) || [];
-      setGoogleChannelList(googleOptions);
-    } finally {
-      setIsGoogleChannelsLoading(false);
-    }
+    const fetchGoogleChatChannels = async () => {
+      setIsGoogleChannelsLoading(true);
+      try {
+        const resGoogle = await apiAccount.getNotificationChannelList(platforms[2]);
+        const googleRows = resGoogle?.data?.data;
+        const googleOptions = Array.isArray(googleRows)
+          ? googleRows.map((item) => ({
+              label: item.name,
+              value: item.id,
+            }))
+          : [];
+        setGoogleChannelList(googleOptions);
+      } catch (error) {
+        console.error('Failed to fetch Google Chat channels:', error);
+      } finally {
+        setIsGoogleChannelsLoading(false);
+      }
+    };
+
+    await Promise.all([fetchMsTeamsChannels(), fetchGoogleChatChannels()]);
   };
 
   const addHorizontalAutoPilot = () => {
@@ -785,10 +798,10 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
   if (!isOptimisePage && !selectedCluster?.agent?.connection_status?.prometheusConnection) {
     return (
       <WidgetCard id='replica-rightsizing' sx={{ mt: 0, mb: 0, padding: ds.space[4] }}>
-        <EmptyData
-          img={DataNotAvailable}
-          heading='Agent Not Connected'
-          subHeading='Prometheus is not connected for this cluster. Connect an agent to start monitoring.'
+        <EmptyState
+          illustration='first-time'
+          title='Agent Not Connected'
+          description='Prometheus is not connected for this cluster. Connect an agent to start monitoring.'
         >
           <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], mt: 'var(--ds-space-2)' }}>
             Check the{' '}
@@ -797,7 +810,7 @@ const KubernetesReplicaRightSizing = ({ isOptimisePage, enabledSummary = true, e
             </Link>{' '}
             page for connection details.
           </Typography>
-        </EmptyData>
+        </EmptyState>
       </WidgetCard>
     );
   }

@@ -1,4 +1,5 @@
 import apiAccount from '@api1/account';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import apiIntegrations from '@api1/integrations';
 import { withAccountGuard } from '@shared/AccountGuard';
 import k8sApi from '@api1/kubernetes';
@@ -75,6 +76,8 @@ const integrationConnectionKey = {
   splunk_enterprise: 'splunk_url',
   chronosphere: 'chronosphere_url',
   signoz: 'signoz_url',
+  loki: 'loki_url',
+  prometheus: 'prometheus_url',
   openobserve: 'openobserve_url',
   cubeapm: 'cubeapm_url',
   observe: 'domain',
@@ -748,8 +751,8 @@ const ListIntegrations = ({ integrationName }) => {
               </ol>
             </Typography>
             <Typography variant='body2' sx={{ color: 'text.secondary' }}>
-              Enter the <strong>Data Center Region</strong> and <strong>API Access Token</strong> in the form above to connect Nudgebee to your
-              SolarWinds account.
+              Enter the <strong>Data Center Region</strong> and <strong>API Access Token</strong> in the form above to connect{' '}
+              {`${getBrandTitle()} to your SolarWinds account.`}
             </Typography>
           </Stack>
         </Modal>
@@ -796,8 +799,8 @@ const ListIntegrations = ({ integrationName }) => {
               </ol>
             </Typography>
             <Typography variant='body2' sx={{ color: 'text.secondary' }}>
-              Enter the <strong>Realm</strong> and <strong>Access Token</strong> in the form above to connect Nudgebee to your Splunk Observability
-              Cloud account.
+              Enter the <strong>Realm</strong> and <strong>Access Token</strong> in the form above to connect{' '}
+              {`${getBrandTitle()} to your Splunk Observability Cloud account.`}
             </Typography>
           </Stack>
         </Modal>
@@ -1045,10 +1048,10 @@ const ListIntegrations = ({ integrationName }) => {
             </Stack>
           }
           actions={
-            integrationName != 'loki' &&
-            integrationName != 'prometheus' &&
-            integrationName != 'otel_clickhouse' &&
-            canManage('integrations', 'Write') ? (
+            // otel_clickhouse is still agent-only: it has no user-configurable form,
+            // so there is nothing for an Add button to open. Loki and Prometheus have
+            // both left that list — each can now be connected directly.
+            integrationName != 'otel_clickhouse' && canManage('integrations', 'Write') ? (
               <DsButton
                 id={`add-${toKebabCase(integrationName)}-account-btn`}
                 tone='primary'

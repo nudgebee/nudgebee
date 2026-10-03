@@ -76,7 +76,7 @@ func fetchFiringIntervals(ctx context.Context, db *sqlx.DB, source, alertRuleKey
 		return nil
 	}
 	var whereCondition, sourceFilter, arg string
-	if (source == "prometheus" || source == "pagerduty_webhook") && fingerprint != "" {
+	if (source == "prometheus" || source == "prometheus_alertmanager_webhook" || source == "pagerduty_webhook") && fingerprint != "" {
 		whereCondition = "fingerprint = $1"
 		arg = fingerprint
 		sourceFilter = fmt.Sprintf("AND source = '%s'", source)

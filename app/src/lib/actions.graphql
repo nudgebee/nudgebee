@@ -346,6 +346,24 @@ type Query {
   ): GetKBLoadHistoryResponse
 }
 
+type Query {
+  ai_list_kb_documents(
+    request: ListKBDocumentsRequest!
+  ): ListKBDocumentsResponse
+}
+
+type Query {
+  ai_get_kb_document(
+    request: GetKBDocumentRequest!
+  ): GetKBDocumentResponse
+}
+
+type Mutation {
+  ai_upsert_kb_document_category(
+    request: UpsertKBDocumentCategoryRequest!
+  ): UpsertKBDocumentCategoryResponse
+}
+
 type Mutation {
   ai_sync_kb(
     request: RetriggerKBRequest!
@@ -812,6 +830,7 @@ type Mutation {
   cloud_list_notification_targets(
     account_id: String!
     region: String
+    resource_id: String
   ): CloudNotificationTargetsResponse
 }
 
@@ -2502,6 +2521,12 @@ type Mutation {
   workflow_check(
     request: WorkflowCreateRequest!
   ): WorkflowValidateResponse
+}
+
+type Query {
+  workflow_check_trigger_match(
+    request: WorkflowCheckTriggerMatchRequest!
+  ): WorkflowCheckTriggerMatchResponse
 }
 
 enum QuerySortOrderRequest {
@@ -4937,6 +4962,13 @@ input WorkflowDryrunRequest {
   name: String
 }
 
+input WorkflowCheckTriggerMatchRequest {
+  account_id: String!
+  trigger_type: String!
+  params: jsonb
+  payload: jsonb!
+}
+
 input WorkflowExecutionListRequest {
   account_id: String!
   id: String!
@@ -7355,6 +7387,7 @@ type RecommendationRowResponse {
   recommendation_action: String
   note: String
   severity: String
+  severity_weight: Int
   estimated_savings: Float
   status: String
   category: String
@@ -7379,7 +7412,6 @@ type RecommendationRowResponse {
   finops_band: String
   finops_score_breakdown: Json
   safety_band: String
-  severity_weight: Int
   vuln_id: String
   package_name: String
 }
@@ -7854,6 +7886,10 @@ type AiConversationMessage {
   # dispatches on whichever top-level keys it understands.
   metadata: String
   attachments: [AiMessageAttachment!]
+  # Seconds this turn spent parked on a followup waiting for a human answer —
+  # already inside [created_at, updated_at], not a separate span. 0 for a
+  # 'followup' row itself or a 'generation' row nobody was asked about.
+  followup_wait_seconds: Float!
 }
 
 type AiMessageAttachment {
@@ -8236,6 +8272,8 @@ type LinkDrillDown {
 
 type ProviderCapabilities {
   supports_log_groups: Boolean!
+  supports_alert_rules: Boolean
+  alert_rules_reason: String
   supports_auto_query: Boolean!
   supports_raw_query: Boolean!
   supports_heatmap: Boolean!
@@ -9378,6 +9416,62 @@ type GetKBLoadHistoryResponse {
   errors: [Error]
 }
 
+input ListKBDocumentsRequest {
+  account_id: String!
+  kb_id: String!
+  limit: Int
+  offset: String
+}
+
+input GetKBDocumentRequest {
+  account_id: String!
+  kb_id: String!
+  document_id: String!
+}
+
+type KBDocument {
+  id: String!
+  title: String!
+  url: String
+  document_key: String!
+  note_category: String
+  content: String
+}
+
+input UpsertKBDocumentCategoryRequest {
+  account_id: String!
+  kb_id: String!
+  document_key: String!
+  note_category: String
+}
+
+type UpsertKBDocumentCategoryResult {
+  status: String
+  kb_id: String
+  document_key: String
+  note_category: String
+}
+
+type UpsertKBDocumentCategoryResponse {
+  data: UpsertKBDocumentCategoryResult
+  errors: [Error]
+}
+
+type KBDocumentsPage {
+  items: [KBDocument!]!
+  next_offset: String
+}
+
+type ListKBDocumentsResponse {
+  data: KBDocumentsPage
+  errors: [Error]
+}
+
+type GetKBDocumentResponse {
+  data: KBDocument
+  errors: [Error]
+}
+
 type RetriggerKBResponse {
   data: jsonb
   errors: [Error]
@@ -9432,6 +9526,14 @@ type Error {
 
 type WorkflowValidateResponse {
   message: String
+}
+
+type WorkflowCheckTriggerMatchResponse {
+  matched: Boolean
+  gate: String
+  reason: String
+  error: String
+  filter: String
 }
 
 type WorkflowDryrunResponse {

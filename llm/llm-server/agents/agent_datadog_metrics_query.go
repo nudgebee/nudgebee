@@ -460,7 +460,9 @@ type DatadogMetricsQueryAgent struct{}
 
 func (d DatadogMetricsQueryAgent) GetName() string { return DatadogMetricsQueryAgentName }
 
-func (d DatadogMetricsQueryAgent) GetNameAliases() []string { return []string{"Datadog Metrics Query"} }
+func (d DatadogMetricsQueryAgent) GetNameAliases() []string {
+	return []string{"Datadog Metrics Query Writer", "Datadog Metrics Query"}
+}
 
 func (d DatadogMetricsQueryAgent) GetDescription() string {
 	return `Generate Datadog metrics query based on natural language question.`

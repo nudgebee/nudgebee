@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useRouter } from 'next/router';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import { Box, Stack, Typography, CircularProgress } from '@mui/material';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Button as DsButton } from '@ui/Button';
@@ -150,7 +151,7 @@ export default function GoogleChatSpacesPanel() {
       const gqlError = gqlErrorOf(response);
       if (gqlError) {
         if (gqlError.toLowerCase().includes('already exists')) {
-          snackbar.warning('This space is already bound to a Nudgebee organization.');
+          snackbar.warning(`This space is already bound to a ${getBrandTitle()} organization.`);
         } else {
           snackbar.error(gqlError);
         }
@@ -325,8 +326,7 @@ export default function GoogleChatSpacesPanel() {
                 Google Chat
               </Typography>
               <Typography fontSize={ds.text.caption} color={ds.gray[600]}>
-                Connects through the Nudgebee bot — no user sign-in. Add the bot to a space; when it posts the Connect card, a tenant admin binds the
-                space here. Pick a default for notifications that don&apos;t name a space.
+                {`Connects through the ${getBrandTitle()} bot — no user sign-in. Add the bot to a space; when it posts the Connect card, a tenant admin binds the space here. Pick a default for notifications that don’t name a space.`}
               </Typography>
             </Box>
           </Stack>

@@ -1,4 +1,4 @@
-import { parseUniqueKey, decodeFilterOptions, computeFilterOptionsClientSide } from '../kgFilterCascade';
+import { parseUniqueKey, formatTypeBadge, decodeFilterOptions, computeFilterOptionsClientSide } from '../kgFilterCascade';
 
 // A small v2 (columnar) payload. unique_key = {provider}:{account}:{location}:{NodeType}:{hierarchy}:{name}
 // NOTE n4's key segment is "clusterX" (a k8s cluster name) but its account is ACC-A — the account
@@ -64,6 +64,33 @@ describe('parseUniqueKey', () => {
   it('returns null for non-canonical keys', () => {
     expect(parseUniqueKey('legacy:flow:key')).toBeNull();
     expect(parseUniqueKey(undefined)).toBeNull();
+  });
+});
+
+describe('formatTypeBadge', () => {
+  it('drops the provider brand prefix when the row shows that provider icon', () => {
+    expect(formatTypeBadge('KubernetesConfigMap', 'k8s', true)).toBe('Config Map');
+    expect(formatTypeBadge('KubernetesServiceAccount', 'k8s', true)).toBe('Service Account');
+    expect(formatTypeBadge('AzureVirtualMachine', 'azure', true)).toBe('Virtual Machine');
+    expect(formatTypeBadge('PagerDutyUser', 'pagerduty', true)).toBe('User');
+  });
+  it('keeps the prefix when no icon names the provider', () => {
+    // Nudgebee's own identity nodes (provider "external") get no icon, so the
+    // brand is the only thing separating them from GitHub/PagerDuty identities.
+    expect(formatTypeBadge('NudgebeeUser', 'external', false)).toBe('Nudgebee User');
+    expect(formatTypeBadge('KubernetesConfigMap', 'k8s', false)).toBe('Kubernetes Config Map');
+  });
+  it('leaves types with no brand prefix alone', () => {
+    // AWS specific_types carry no "AWS" prefix; humanization is unchanged for them.
+    expect(formatTypeBadge('EC2Instance', 'aws', true)).toBe('EC2Instance');
+    expect(formatTypeBadge('RDSInstance', 'aws', true)).toBe('RDSInstance');
+    expect(formatTypeBadge('Workload', 'k8s', true)).toBe('Workload');
+  });
+  it('never strips down to an empty label, and only on a word boundary', () => {
+    expect(formatTypeBadge('Kubernetes', 'k8s', true)).toBe('Kubernetes');
+    expect(formatTypeBadge('GCPlatformThing', 'gcp', true)).toBe('GCPlatform Thing');
+    expect(formatTypeBadge('', 'k8s', true)).toBe('');
+    expect(formatTypeBadge(undefined, 'k8s', true)).toBe('');
   });
 });
 

@@ -243,6 +243,34 @@ export const validateTaskData = (actionType: string, data: any, validationRules:
           }
           break;
 
+        // Schema type "any" is how the backend spells "a JSON document, or a
+        // template that resolves to one". Every `any` field on an *input*
+        // schema wants JSON when handed a string — data.filter's `list`
+        // (filter_task.go json.Unmarshal into []any), core.foreach's `items`
+        // (foreach_task.go GetLoopConfig, same), and llm.a2a's `params`
+        // (JSON-RPC params). The `any` fields that legitimately hold a bare
+        // string — dns `answer`, http `body`, run_script `data` — are all on
+        // output schemas, which this validator never sees.
+        //
+        // JsonEditor stores the raw string whenever JSON.parse failed, so a
+        // non-template string arriving here is malformed JSON the user has no
+        // other way to see: without this case the mistake travels to the task
+        // executor and comes back as a Go parser error after Run (#34764).
+        case 'any':
+          if (typeof value === 'string' && !/\{\{|\{%/.test(value)) {
+            try {
+              JSON.parse(value);
+            } catch (parseError: any) {
+              errors[fieldName] = `${fieldName
+                .replace(/_/g, ' ')
+                .replace(/([A-Z])/g, ' $1')
+                .toLowerCase()
+                .trim()} must be valid JSON — ${parseError?.message || 'could not be parsed'}`;
+              isValid = false;
+            }
+          }
+          break;
+
         case 'string':
           if (typeof value !== 'string') {
             errors[fieldName] = `${fieldName

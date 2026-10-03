@@ -157,8 +157,10 @@ function SplitDiff({
   language: CodeEditorLanguage;
   tone: DiffViewerTone;
 }) {
-  const maxNo = rows.reduce((m, r) => Math.max(m, r.left?.lineNo ?? 0, r.right?.lineNo ?? 0), 0);
-  const numWidth = `${String(maxNo).length + 1}ch`;
+  const numWidth = React.useMemo(() => {
+    const maxNo = rows.reduce((m, r) => Math.max(m, r.left?.lineNo ?? 0, r.right?.lineNo ?? 0), 0);
+    return `${String(maxNo).length + 1}ch`;
+  }, [rows]);
   // Header lives INSIDE the scroll container (sticky) so it shares the body's width context — a
   // vertical scrollbar then shrinks header and body equally, keeping the two columns aligned.
   return (

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -269,6 +270,10 @@ func (d *DatabaseManager) PrepareInQuery(queryBase string, argSlice any) (string
 }
 
 func newPostgresDatabaseManager() (*DatabaseManager, error) {
+	// PGAPPNAME tags every pool conn in pg_stat_activity. DSN override wins.
+	if os.Getenv("PGAPPNAME") == "" {
+		_ = os.Setenv("PGAPPNAME", "runbook-server")
+	}
 	db, err := sqlx.Open("postgres", config.Config.RunbookServerDBUrl)
 	if err != nil {
 		slog.Error("dbms: error connecting to postgres", "error", err)
@@ -277,6 +282,8 @@ func newPostgresDatabaseManager() (*DatabaseManager, error) {
 	db.SetMaxOpenConns(config.Config.RunbookServerDBMaxConnection)
 	db.SetMaxIdleConns(config.Config.RunbookServerDBMinConnection)
 	db.SetConnMaxIdleTime(time.Duration(config.Config.RunbookServerDBIdleMinutes * int(time.Minute)))
+	// Cap conn age so a silently-degraded TCP path cannot serve traffic past 30m.
+	db.SetConnMaxLifetime(30 * time.Minute)
 
 	if err := db.Ping(); err != nil {
 		slog.Error("dbms: error pinging postgres", "error", err)

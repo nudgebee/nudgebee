@@ -2,27 +2,28 @@
 
 package agents
 
-// End-to-end test for the KB pre-step (LLM_SERVER_KB_PRESTEP_ENABLED).
+// TestKBPrestepE2E exercises create -> index -> discover -> load -> answer ->
+// delete against real DB/RAG/LLM services. The historical test name is retained.
 //
-// It exercises the full path: create a knowledge base article carrying a
-// unique canary token, wait for RAG indexing to finish, map the KB to the
-// k8s_debug agent, run a real conversation, then verify the canary reached
-// the planner prompt — and report whether it reached the final answer.
+// Run from llm-server with TEST_TENANT, TEST_USER, TEST_ACCOUNT and service
+// credentials exported:
+// RUN_KB_PRESTEP_E2E=true go test -tags=e2e -count=1 -v -timeout 15m \
+//   -run '^TestKBPrestepE2E$' ./agents
 //
-// This is a HEAVY integration test: it creates real DB rows, calls the
-// rag-server to index + retrieve, and makes real LLM calls. It self-skips
-// unless RUN_KB_PRESTEP_E2E=true and TEST_TENANT / TEST_USER / TEST_ACCOUNT
-// are set, so `make test` runs it as a no-op.
+// TEST_SKILL_AGENT optionally selects an existing declarative ReAct agent by
+// name. Otherwise the built-in K8s orchestrator is used. TEST_SKILL_UNMAPPED=true
+// skips mapping to exercise account-wide discovery. Only knowledge tools are
+// allowed during the invocation; no infrastructure tools can execute.
 //
-// Run:
-//   set -a && source .env && set +a
-//   RUN_KB_PRESTEP_E2E=true go test -v -run TestKBPrestepE2E -timeout 20m ./agents/...
-//
-// The created KB and its agent mapping are cleaned up on exit; conversation
-// rows are preserved for UI inspection.
+// Cleanup removes the test-owned KB/mapping. Conversations remain for inspection.
+// Like all t.Cleanup callbacks, cleanup cannot run after SIGKILL/process timeout;
+// the test logs the exact KB ID for recovery in that case.
 
 import (
+	"context"
+	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -38,141 +39,268 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// kbCanaryArticle is the canary KB article body. "ZEBRA-9931" is a marker token
-// the agent cannot produce on its own, so finding it downstream proves the KB
-// was genuinely retrieved (and, in the answer, followed).
-//
-// To verify by hand instead of via this test: create a KB in the Knowledge Base
-// tab with this body, map it to an agent (Settings -> Agents -> Add Knowledge
-// Base), run an investigation such as "investigate the high memory alert on
-// checkout-api", then run TestKBPrestepVerify against that conversation id.
-const kbCanaryArticle = `High Memory on checkout-api
-
-Description: The checkout-api deployment periodically shows elevated memory
-usage during the nightly batch-reconciliation window.
-
-Resolution (CRITICAL): This is expected behaviour. Do NOT restart or scale the
-deployment. Contact the service owner and quote reference code ZEBRA-9931.
-Await their explicit confirmation before acting.`
-
 func TestKBPrestepE2E(t *testing.T) {
-	if os.Getenv("RUN_KB_PRESTEP_E2E") != "true" {
-		t.Skip("set RUN_KB_PRESTEP_E2E=true to run the KB pre-step end-to-end test")
-	}
-	tenantID := os.Getenv("TEST_TENANT")
-	userID := os.Getenv("TEST_USER")
-	accountID := os.Getenv("TEST_ACCOUNT")
-	if tenantID == "" || userID == "" || accountID == "" {
-		t.Skip("TEST_TENANT / TEST_USER / TEST_ACCOUNT must be set")
-	}
-	if _, err := common.GetDatabaseManager(common.Metastore); err != nil {
-		t.Skipf("metastore unreachable: %v", err)
-	}
+	runSkillLifecycle(t, false)
+}
 
-	// Enable the pre-step and LLM tracing (tracing persists prompt_messages,
-	// which the verification reads). Restore on exit.
-	prevPrestep := config.Config.LlmServerKBPrestepEnabled
-	prevTrace := config.Config.LlmTraceEnabled
-	config.Config.LlmServerKBPrestepEnabled = true
-	config.Config.LlmTraceEnabled = true
-	defer func() {
-		config.Config.LlmServerKBPrestepEnabled = prevPrestep
-		config.Config.LlmTraceEnabled = prevTrace
-	}()
+func TestSkillDelegationE2E(t *testing.T) {
+	if os.Getenv("RUN_KB_PRESTEP_E2E") != "true" {
+		t.Skip("set RUN_KB_PRESTEP_E2E=true to run the live delegation lifecycle test")
+	}
+	runSkillLifecycle(t, true)
+}
+
+func runSkillLifecycle(t *testing.T, delegated bool) {
+	t.Helper()
+	tenantID, userID, accountID := os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), os.Getenv("TEST_ACCOUNT")
+	require.NotEmpty(t, tenantID, "TEST_TENANT is required")
+	require.NotEmpty(t, userID, "TEST_USER is required")
+	require.NotEmpty(t, accountID, "TEST_ACCOUNT is required")
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	require.NoError(t, err, "connect to metastore")
 
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	const canary = "ZEBRA-9931"
+	var agent core.NBAgent = newK8sOrchestratorAgent(accountID)
+	if name := os.Getenv("TEST_SKILL_AGENT"); name != "" && !delegated {
+		var found bool
+		agent, found = core.GetNBAgent(sc, name, accountID, core.AgentStatusEnabled)
+		require.True(t, found, "TEST_SKILL_AGENT must name an existing enabled agent")
+	}
+	require.Contains(t, []core.AgentPlannerType{core.AgentPlannerTypeReAct, core.AgentPlannerTypeOrchestrating},
+		agent.GetPlannerType(), "this test exercises tool-loop agents, not direct custom planner")
+	mappedAgent := agent.GetName()
+	if delegated {
+		mappedAgent = DelegateAgentToolName
+	}
 
-	// 1. Create the canary KB article from the kbCanaryArticle constant.
+	prevTrace := config.Config.LlmTraceEnabled
+	config.Config.LlmTraceEnabled = true
+	t.Cleanup(func() { config.Config.LlmTraceEnabled = prevTrace })
+
+	suffix := uuid.NewString()
+	service := "checkout-e2e-" + suffix[:8]
+	canary := "SKILL-CANARY-" + uuid.NewString()
+	// Keep the answer marker beyond candidate previews, so reading a menu alone
+	// cannot satisfy the answer assertion. The query never includes the marker.
+	body := fmt.Sprintf("High memory procedure for %s\n\n", service) +
+		strings.Repeat("This procedure documents expected elevated memory during the nightly reconciliation window. Consult the resolution section for the operator response and reference code.\n", 5) +
+		fmt.Sprintf("\nResolution: Do not restart or scale %s. Contact the service owner and quote reference code %s. Await explicit confirmation before acting.\n", service, canary)
+	if raw := os.Getenv("TEST_SKILL_LARGE_BYTES"); raw != "" {
+		size, err := strconv.Atoi(raw)
+		require.NoError(t, err)
+		require.Greater(t, size, 4096)
+		require.LessOrEqual(t, size, 1024*1024)
+		split := strings.Index(body, "\nResolution:")
+		require.Greater(t, split, 0)
+		body = body[:split] + strings.Repeat("Background reference only; see the Resolution section for the required response.\n", size/80) + body[split:]
+	}
 	kb, err := toolcore.CreateKnowledgebase(sc, accountID, toolcore.Knowledgebase{
-		Name:         "kb-prestep-e2e-" + uuid.NewString()[:8],
-		Description:  "E2E canary article for KB pre-step verification",
-		Data:         kbCanaryArticle,
-		DataFormat:   "text",
-		DataFilename: "kb_prestep_canary.txt",
+		Name: service + " memory procedure", Description: "Operator procedure and reference code for high memory on " + service,
+		Data: body, DataFormat: "text", DataFilename: "skill_lifecycle_canary.txt",
 	})
-	require.NoError(t, err, "create KB")
-	t.Logf("created KB %s (%s)", kb.Id, kb.Name)
-	defer func() {
-		if derr := toolcore.DeleteKnowledgebase(sc, accountID, kb.Id); derr != nil {
-			t.Logf("cleanup: delete KB failed: %v", derr)
+	require.NoError(t, err, "create test KB")
+	t.Logf("CREATED test KB id=%s name=%s mapped_agent=%s", kb.Id, kb.Name, mappedAgent)
+	mapped := false
+	t.Cleanup(func() {
+		if mapped {
+			assert.NoError(t, toolcore.UnmapKBFromAgent(sc, accountID, kb.Id, mappedAgent), "cleanup: unmap test KB %s", kb.Id)
 		}
-	}()
+		deleteErr := toolcore.DeleteKnowledgebase(sc, accountID, kb.Id)
+		assert.NoError(t, deleteErr, "cleanup: delete test KB %s", kb.Id)
+		var count int
+		checkErr := dbms.Db.Get(&count, "SELECT count(*) FROM llm_knowledgebases WHERE id = $1 AND account_id = $2", kb.Id, accountID)
+		assert.NoError(t, checkErr, "cleanup: verify KB deletion")
+		assert.Zero(t, count, "cleanup: test KB %s remains", kb.Id)
+		if deleteErr == nil && checkErr == nil && count == 0 {
+			t.Logf("CLEANED test KB id=%s (DB deletion verified; vector cleanup requested by service)", kb.Id)
+		}
+	})
 
-	// 2. Wait for RAG indexing — CreateKnowledgebase embeds asynchronously and
-	//    flips status from "processing" to "active" (or "error") when done.
-	deadline := time.Now().Add(3 * time.Minute)
 	var status string
-	for time.Now().Before(deadline) {
-		cur, gErr := toolcore.GetKnowledgebase(sc, accountID, kb.Id)
-		require.NoError(t, gErr, "get KB")
+	var indexingErr error
+	require.Eventually(t, func() bool {
+		cur, getErr := toolcore.GetKnowledgebase(sc, accountID, kb.Id)
+		indexingErr = getErr
+		if getErr != nil {
+			return true
+		}
 		status = cur.Status
-		if status == "active" {
-			break
-		}
-		if status == "error" {
-			t.Fatalf("KB indexing failed (status=error) — is rag-server reachable?")
-		}
-		time.Sleep(2 * time.Second)
+		return status == "active" || status == "error"
+	}, 3*time.Minute, 2*time.Second, "KB indexing did not finish")
+	require.NoError(t, indexingErr, "read indexing status")
+	require.Equal(t, "active", status, "KB indexing failed")
+	if delegated || os.Getenv("TEST_SKILL_UNMAPPED") != "true" {
+		_, err = toolcore.MapKBToAgent(sc, accountID, kb.Id, mappedAgent)
+		require.NoError(t, err, "map test KB")
+		mapped = true
 	}
-	require.Equal(t, "active", status, "KB did not finish indexing within the deadline")
-	// Small settle window: the vector collection can lag the status flip.
-	time.Sleep(3 * time.Second)
-	t.Logf("KB %s indexed (status=active)", kb.Id)
 
-	// 3. Map the KB to the k8s_debug agent so the pre-step picks it up.
-	if _, err = toolcore.MapKBToAgent(sc, accountID, kb.Id, AgentK8sOrchestratorName); err != nil {
-		t.Fatalf("map KB to agent: %v", err)
+	sessionID := "skill-lifecycle-" + suffix
+	// Bound the agent before the Go process timeout, leaving cleanup time.
+	runCtx, cancel := context.WithTimeout(sc.GetContext(), 6*time.Minute)
+	defer cancel()
+	invocation := security.NewRequestContext(runCtx, sc.GetSecurityContext(), sc.GetLogger(), sc.GetTracer(), sc.GetMeter())
+	query := fmt.Sprintf("According to the documented high-memory procedure for %s, what should the operator do and what reference code should they quote? Do not inspect or change infrastructure.", service)
+	allowedTools := []string{"load_skills", "search_skills"}
+	if !delegated && os.Getenv("TEST_SKILL_SHELL") == "true" {
+		allowedTools = append(allowedTools, "shell_execute")
 	}
-	defer func() {
-		if uerr := toolcore.UnmapKBFromAgent(sc, accountID, kb.Id, AgentK8sOrchestratorName); uerr != nil {
-			t.Logf("cleanup: unmap KB failed: %v", uerr)
-		}
-	}()
-
-	// 4. Run a real conversation whose question the canary article answers.
-	sessionID := "kb-prestep-e2e-" + uuid.NewString()[:8]
-	agent := newK8sOrchestratorAgent(accountID)
-	resp, err := core.HandleConversationSessionRequest(sc, agent, userID, accountID, sessionID,
-		"investigate the high memory alert on checkout-api")
-	require.NoError(t, err, "conversation turn")
-	require.NotEmpty(t, resp.Response, "conversation should produce an answer")
-
-	// 5. Verify against the captured planner prompt. scenarioLastMsgID and
-	//    scenarioPollPromptsForMsg are shared helpers from
-	//    agent_memory_e2e_scenarios_test.go (same package).
+	if delegated {
+		allowedTools = append(allowedTools, DelegateAgentToolName)
+		// Keep the actual question first: automatic discovery caps its query
+		// before the LLM sees these test-specific delegation instructions.
+		query += " Delegate exactly once via delegate_agent with tools [\"search_skills\", \"load_skills\"]. " +
+			"Have the specialist independently discover and load the document. " +
+			"Do not load it yourself or supply its contents. Summarize the specialist's answer."
+	}
+	resp, runErr := core.HandleConversationSessionRequest(invocation, agent, userID, accountID, sessionID,
+		query,
+		core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{LlmConfigSource: os.Getenv("TEST_SKILL_CONFIG_SOURCE")}),
+		core.ConversationSessionRequestWithCapabilities(toolcore.AgentCapabilities{
+			AllowedTools: allowedTools,
+		}))
+	t.Logf("INVOCATION session=%s", sessionID)
+	require.NoError(t, runErr, "agent invocation")
 	convID, msgID := scenarioLastMsgID(t, sessionID, userID)
-	prompts := scenarioPollPromptsForMsg(t, convID, msgID, 1)
-	require.NotEmpty(t, prompts, "no planner prompt captured — is LLM tracing enabled?")
-	joined := strings.Join(prompts, "\n")
+	t.Logf("INSPECT conversation=%s message=%s", convID, msgID)
 
-	// Stage 1 — the pre-step retrieved KB content and injected it. prompt_messages
-	// is stored JSON-serialized, so angle brackets are escaped; match the
-	// bracket-free tag name.
-	assert.Contains(t, joined, "retrieved_knowledge",
-		"STAGE 1 FAIL: no retrieved_knowledge block in the planner prompt")
-	// Stage 2 — the canary article specifically reached the planner prompt.
-	assert.Contains(t, joined, canary,
-		"STAGE 2 FAIL: canary token not found in the planner prompt")
-
-	// Stage 3 — adherence. Informational only: whether the agent FOLLOWS the
-	// KB is the separate adherence fix, not the pre-step's responsibility.
-	answer := strings.Join(resp.Response, "\n")
-	if strings.Contains(answer, canary) {
-		t.Logf("STAGE 3 PASS: canary present in the final answer — KB was followed")
-	} else {
-		t.Logf("STAGE 3 INFO: canary not in the final answer — adherence gap (separate fix), not a pre-step failure")
+	// Persistence is asynchronous. Poll for the exact fixture rather than
+	// returning after the first trace row (which can precede load_skills).
+	var menuCount, loadCount, refCount int
+	var childID string
+	var evidenceErr error
+	require.Eventually(t, func() bool {
+		if delegated {
+			var childIDs []string
+			evidenceErr = dbms.Db.Select(&childIDs, `
+				SELECT DISTINCT child.id::text
+				FROM llm_conversation_tool_calls call
+				JOIN llm_conversation_agent child ON child.id::text = call.child_agent_id::text
+				JOIN llm_conversation_agent parent ON parent.id::text = call.agent_id::text
+				WHERE call.conversation_id = $1 AND call.message_id = $2
+				  AND call.tool_name = 'delegate_agent' AND call.status = 'success'
+				  AND child.parent_agent_id::text = parent.id::text
+				  AND child.conversation_id::text = call.conversation_id::text AND child.message_id::text = call.message_id::text
+				  AND parent.parent_agent_id = '00000000-0000-0000-0000-000000000000'`, convID, msgID)
+			if evidenceErr != nil || len(childIDs) != 1 {
+				return false
+			}
+			childID = childIDs[0]
+		}
+		var traces []string
+		evidenceErr = dbms.Db.Select(&traces, `
+			SELECT prompt_messages::text FROM llm_conversation_token_usage
+			WHERE conversation_id = $1 AND message_id = $2
+			  AND ($3 = '' OR agent_id::text = $3)
+			  AND prompt_messages::text LIKE '%skill-lists%'`, convID, msgID, childID)
+		if evidenceErr != nil {
+			return false
+		}
+		menuCount = 0
+		for _, trace := range traces {
+			if skillLifecycleMenuContains(trace, service) {
+				menuCount++
+			}
+		}
+		evidenceErr = dbms.Db.Get(&loadCount, `
+			SELECT count(*) FROM llm_conversation_tool_calls
+			WHERE conversation_id = $1 AND message_id = $2
+			  AND ($4 = '' OR agent_id::text = $4)
+			  AND tool_name IN ('load_skills', 'shell_execute') AND status = 'success'
+			  AND response LIKE $3`, convID, msgID, "%"+canary+"%", childID)
+		if evidenceErr != nil {
+			return false
+		}
+		var referenceIDs []string
+		evidenceErr = dbms.Db.Select(&referenceIDs, `
+			SELECT reference_id FROM llm_conversation_references
+			WHERE conversation_id = $1 AND message_id = $2
+			  AND ($3 = '' OR agent_id::text = $3)
+			  AND reference_type IN ('knowledge_base', 'skill')`, convID, msgID, childID)
+		refCount = 0
+		for _, referenceID := range referenceIDs {
+			if skillLifecycleReferenceMatches(referenceID, kb.Id) {
+				refCount++
+			}
+		}
+		return evidenceErr == nil && menuCount > 0 && loadCount > 0 && refCount > 0
+	}, 90*time.Second, time.Second, "discovery/load/reference evidence missing")
+	require.NoError(t, evidenceErr, "query persisted evidence")
+	if delegated {
+		require.NotEmpty(t, childID, "DELEGATION: expected exactly one successful linked root-to-child invocation")
+		var leakedCanary int
+		require.NoError(t, dbms.Db.Get(&leakedCanary, `
+			SELECT count(*) FROM llm_conversation_tool_calls
+			WHERE conversation_id = $1 AND message_id = $2
+			  AND agent_id::text <> $3 AND tool_name = 'load_skills'
+			  AND status = 'success' AND response LIKE $4`, convID, msgID, childID, "%"+canary+"%"))
+		assert.Zero(t, leakedCanary, "DELEGATION: fixture must be loaded by the child, not the parent")
+		var childQuery string
+		require.NoError(t, dbms.Db.Get(&childQuery, "SELECT query FROM llm_conversation_agent WHERE id = $1", childID))
+		assert.NotContains(t, childQuery, canary, "DELEGATION: canary must not be supplied in the delegated question")
 	}
+	assert.Positive(t, menuCount, "DISCOVERY: fixture missing from candidate-menu traces")
+	assert.Positive(t, loadCount, "LOADING: no load_skills response contained the canary")
+	assert.Positive(t, refCount, "REFERENCES: fixture KB reference not persisted")
+	assert.Contains(t, strings.Join(resp.Response, "\n"), canary, "ADHERENCE: final answer did not use the loaded reference code")
+	t.Logf("RESULT mapped=%v delegated=%v child=%s menu_traces=%d matching_load_calls=%d references=%d", mapped, delegated, childID, menuCount, loadCount, refCount)
+}
 
-	// Stage 4 — the pre-step recorded knowledge_base references so the KB
-	// usage is visible in the UI's "Skills used" surface.
-	dbms, dbErr := common.GetDatabaseManager(common.Metastore)
-	require.NoError(t, dbErr, "get database manager")
-	var refCount int
-	require.NoError(t, dbms.Db.Get(&refCount,
-		`SELECT count(*) FROM llm_conversation_references
-		 WHERE conversation_id = $1 AND reference_type = 'knowledge_base'`, convID),
-		"query knowledge_base references")
-	assert.Greater(t, refCount, 0,
-		"STAGE 4 FAIL: no knowledge_base references saved — KB usage would be invisible in the UI")
+// Named loads use the KB UUID; discovered documents use KB_UUID:document_hash
+// to keep separate pages from the same KB distinct in Additional Contexts.
+func skillLifecycleReferenceMatches(referenceID, kbID string) bool {
+	if kbID == "" {
+		return false
+	}
+	owner, documentID, hasDocument := strings.Cut(referenceID, ":")
+	return owner == kbID && (!hasDocument || documentID != "")
+}
+
+func TestSkillLifecycleReferenceMatches(t *testing.T) {
+	for _, tc := range []struct {
+		referenceID string
+		want        bool
+	}{
+		{"fixture-kb", true},
+		{"fixture-kb:document-hash", true},
+		{"fixture-kb-other:document-hash", false},
+		{"other-kb:document-hash", false},
+		{"knowledge:document-hash", false},
+		{"fixture-kb:", false},
+		{"", false},
+	} {
+		t.Run(tc.referenceID, func(t *testing.T) {
+			assert.Equal(t, tc.want, skillLifecycleReferenceMatches(tc.referenceID, "fixture-kb"))
+		})
+	}
+	assert.False(t, skillLifecycleReferenceMatches("", ""))
+}
+
+// Only inspect candidate-menu content, never the user question (which always
+// names the fixture service). Trace JSON can escape angle brackets.
+func skillLifecycleMenuContains(trace, fixture string) bool {
+	trace = strings.NewReplacer(`\u003c`, "<", `\u003e`, ">", `\n`, "\n").Replace(trace)
+	const opening = "<skill-lists>\n"
+	for {
+		start := strings.Index(trace, opening)
+		if start < 0 {
+			return false
+		}
+		trace = trace[start+len(opening):]
+		end := strings.Index(trace, "</skill-lists>")
+		if end < 0 {
+			return false
+		}
+		if strings.Contains(trace[:end], fixture) {
+			return true
+		}
+		trace = trace[end+len("</skill-lists>"):]
+	}
+}
+
+func TestSkillLifecycleMenuContains(t *testing.T) {
+	assert.False(t, skillLifecycleMenuContains("<skill-lists>\nunrelated</skill-lists> question: checkout-canary", "checkout-canary"))
+	assert.False(t, skillLifecycleMenuContains("tool: ids shown in <skill-lists>. question: checkout-canary <skill-lists>\nunrelated</skill-lists>", "checkout-canary"))
+	assert.True(t, skillLifecycleMenuContains("<skill-lists>\ncheckout-canary</skill-lists>", "checkout-canary"))
+	assert.True(t, skillLifecycleMenuContains(`\u003cskill-lists\u003e\ncheckout-canary\u003c/skill-lists\u003e`, "checkout-canary"))
 }

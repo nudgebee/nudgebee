@@ -42,11 +42,11 @@ The server employs a sophisticated hierarchical agent architecture, allowing for
 
 *   **Hierarchical Structure:** Agents can be used as tools by other agents:
     1.  A top-level **Orchestrating agent** (e.g. `k8s_orchestrator`, `aws_orchestrator`) receives a user query.
-    2.  Its ReAct3 loop calls specialized **sub-agents** (also ReAct3) as tools.
+    2.  Its planner loop calls specialized **sub-agents** as tools (ReAct4 by default, with ReAct3 fallback).
     3.  Sub-agents execute primitive tools (shell commands, cloud APIs).
 
 *   **Accuracy & Reliability Features:**
-    *   **Notebook Discipline:** ReAct3 maintains a per-message notebook of hypotheses with resolved status (SUPPORTED / REFUTED / INCONCLUSIVE) and evidence chain. Drives hypothesis-first RCA over guess-first pattern-matching.
+    *   **Notebook Discipline:** The ReAct planners maintain a per-message notebook of hypotheses with resolved status (SUPPORTED / REFUTED / INCONCLUSIVE) and evidence chain. Drives hypothesis-first RCA over guess-first pattern-matching.
     *   **Answer Critique:** For top-level investigation queries, a critiquer LLM reviews the final answer before returning. Rejects shallow / status-only / manual-instruction responses. Sub-agents are exempt (avoid slowing them down).
     *   **Failure Reflection:** On tool failure the agent reflects on the error and picks a different approach, not a blind retry.
     *   **Dynamic Few-Shot Prompting:** RAG pulls relevant examples from a memory store to seed the planner.
@@ -56,12 +56,12 @@ The server employs a sophisticated hierarchical agent architecture, allowing for
 
 *   **Orchestrating Agents** (`AgentPlannerTypeOrchestrating`):
     *   Top-level coordinators — `k8s_orchestrator`, `aws_orchestrator`, `gcp_orchestrator`, `azure_orchestrator`, `datadog_orchestrator`.
-    *   Delegate to specialized sub-agents via ReAct3.
+    *   Delegate to specialized sub-agents via the ReAct4-default/ReAct3-fallback runtime.
     *   Persisted as `"orchestrating"` in `llm_agents.executor_type` (migration V777; V779 backfilled any stragglers and dropped the legacy `"rewoo"` value from the CHECK constraint).
 
 *   **ReAct Agents** (`AgentPlannerTypeReAct`):
     *   Task-focused executors — `prometheus`, `postgres`, `promql`, `traces`, `elastic`, etc.
-    *   Same ReAct3 runtime as Orchestrating agents.
+    *   Same ReAct4-default/ReAct3-fallback runtime as Orchestrating agents.
 
 *   **Tool Agents** (`AgentPlannerTypeTool`): single-shot tool-call agents; no iteration loop.
 
@@ -214,11 +214,11 @@ The LLM Server uses a modular design for APIs (`api/`), agents (`agents/`), tool
 
 ### Development Conventions
 - **Hierarchical Agent Architecture**:
-  1. **Orchestrating Agents**: Top-level coordinators (`k8s_orchestrator`, `aws_orchestrator`, etc.). Declare `AgentPlannerTypeOrchestrating`; run under ReAct3 at runtime.
-  2. **ReAct Agents**: Task-focused executors (`prometheus`, `postgres`, etc.). Declare `AgentPlannerTypeReAct`; also run under ReAct3.
-  A single planner (`planner_react_3.go`) drives both. The declared type expresses intent, not implementation.
+  1. **Orchestrating Agents**: Top-level coordinators (`k8s_orchestrator`, `aws_orchestrator`, etc.). Declare `AgentPlannerTypeOrchestrating`.
+  2. **ReAct Agents**: Task-focused executors (`prometheus`, `postgres`, etc.). Declare `AgentPlannerTypeReAct`.
+  Both use ReAct4 by default when the selected model supports native tools, with ReAct3 as the rollback/capability fallback. The declared type expresses intent, not implementation.
 - **Accuracy & Reliability Features**:
-  - **Notebook Discipline**: ReAct3 maintains a per-message hypothesis notebook with resolved status; drives hypothesis-first RCA.
+  - **Notebook Discipline**: The ReAct planners maintain a per-message hypothesis notebook with resolved status; drives hypothesis-first RCA.
   - **Answer Critique**: Top-level investigation queries get an LLM critique of the final answer before it's returned. Sub-agents and non-investigation queries are exempt.
   - **Failure Reflection**: Agents reflect on tool errors and try alternative approaches instead of blind retry.
   - **RAG-based Prompting**: Dynamically retrieves context-aware examples for planners.

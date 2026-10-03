@@ -44,17 +44,6 @@ func canonicalTraceFieldNames(labels []OutputTraceLabel) []string {
 	return out
 }
 
-// allCanonicalTraceFieldNames is the full vocabulary, sorted — what an undeclared
-// (passthrough) provider still advertises.
-func allCanonicalTraceFieldNames() []string {
-	out := make([]string, 0, len(canonicalTraceFields))
-	for _, f := range canonicalTraceFields {
-		out = append(out, f.name)
-	}
-	sort.Strings(out)
-	return out
-}
-
 // traceSourceCanonicalCases pins, per trace source, exactly which canonical fields it
 // advertises with no live discovery and no tenant/account override — i.e. from its
 // static label mapping alone.

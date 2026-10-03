@@ -17,6 +17,10 @@ func (s *LokiSource) ProviderRef() providerRef {
 	return providerRef{Provider: "loki", Source: "agent"}
 }
 
+func (s *LokiSaasSource) ProviderRef() providerRef {
+	return providerRef{Provider: "loki", Source: "user"}
+}
+
 func (s *SignozSource) ProviderRef() providerRef {
 	return providerRef{Provider: "signoz", Source: "agent"}
 }

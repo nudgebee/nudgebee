@@ -20,7 +20,7 @@ import (
 
 // End-to-end check for #34659: the full event-analysis pipeline runs with the
 // incident-assembly tool available, PERSISTS its results to event_log_analysis
-// (so the UI shows them), calls get_incident_assembly during the run, and the
+// (so the UI shows them), calls get_event_incident_assembly during the run, and the
 // persisted investigation and detailed response carry the required
 // '### Related Alerts Check' section.
 //
@@ -85,17 +85,17 @@ func TestEventAnalysis_AssemblyToolPersisted(t *testing.T) {
 
 	// The section must come from the tool, not from thin air: the run's
 	// conversation (deterministic session = prefix + fingerprint) must contain
-	// at least one get_incident_assembly call made during this test.
+	// at least one get_event_incident_assembly call made during this test.
 	var toolCalls int
 	err = dbManager.Db.QueryRow(`
 		SELECT count(*)
 		FROM llm_conversation_tool_calls tc
 		JOIN llm_conversations c ON c.id = tc.conversation_id
 		WHERE c.session_id = $1 AND tc.account_id = $2
-		  AND tc.tool_name = 'get_incident_assembly' AND tc.created_at >= $3`,
+		  AND tc.tool_name = 'get_event_incident_assembly' AND tc.created_at >= $3`,
 		events.SessionIdPrefixEvent+fingerprint, account, started).Scan(&toolCalls)
 	require.NoError(t, err)
-	assert.GreaterOrEqual(t, toolCalls, 1, "get_incident_assembly was never called during the analysis run")
+	assert.GreaterOrEqual(t, toolCalls, 1, "get_event_incident_assembly was never called during the analysis run")
 
 	if strings.TrimSpace(resp.DetailedResponse) == "" {
 		t.Log("note: detailed response empty in HTTP response (still persisted separately)")

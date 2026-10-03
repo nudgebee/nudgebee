@@ -153,16 +153,24 @@ def compute_per_query_delta(
         c_acc = get_overall_accuracy(cd)
         acc_delta = round(c_acc - b_acc, 2)
 
-        b_tc = bd.get("tool_calls_total", 0)
-        c_tc = cd.get("tool_calls_total", 0)
+        # `.get(key, default)` only falls back when the key is absent — a
+        # nullable DB column stored as an explicit `None` in an older cached
+        # report_json (or a fresher assembly that hasn't backfilled a field
+        # yet) would slip through as None and blow up the arithmetic below.
+        # `or default` catches both cases.
+        b_tc = bd.get("tool_calls_total") or 0
+        c_tc = cd.get("tool_calls_total") or 0
         tc_delta = c_tc - b_tc
 
-        b_lat = bd.get("duration_seconds", 0)
-        c_lat = cd.get("duration_seconds", 0)
+        b_tc_ok = bd.get("tool_calls_successful") or 0
+        c_tc_ok = cd.get("tool_calls_successful") or 0
+
+        b_lat = bd.get("duration_seconds") or 0
+        c_lat = cd.get("duration_seconds") or 0
         lat_delta = round(c_lat - b_lat, 2)
 
-        b_cost = bd.get("cost", 0.0)
-        c_cost = cd.get("cost", 0.0)
+        b_cost = bd.get("cost") or 0.0
+        c_cost = cd.get("cost") or 0.0
         cost_delta = round(c_cost - b_cost, 6)
 
         # Tool name diff
@@ -193,7 +201,15 @@ def compute_per_query_delta(
                 "candidate": round(c_lat, 2),
                 "delta": lat_delta,
             },
-            "tool_calls": {"baseline": b_tc, "candidate": c_tc, "delta": tc_delta},
+            "tool_calls": {
+                "baseline": b_tc,
+                "candidate": c_tc,
+                "delta": tc_delta,
+                "baseline_successful": b_tc_ok,
+                "baseline_failed": b_tc - b_tc_ok,
+                "candidate_successful": c_tc_ok,
+                "candidate_failed": c_tc - c_tc_ok,
+            },
             "tool_names": {
                 "baseline": sorted(b_tools),
                 "candidate": sorted(c_tools),
@@ -204,6 +220,18 @@ def compute_per_query_delta(
                 "baseline": round(b_cost, 6),
                 "candidate": round(c_cost, 6),
                 "delta": cost_delta,
+            },
+            "input_tokens": {
+                "baseline": bd.get("input_tokens") or 0,
+                "candidate": cd.get("input_tokens") or 0,
+            },
+            "output_tokens": {
+                "baseline": bd.get("output_tokens") or 0,
+                "candidate": cd.get("output_tokens") or 0,
+            },
+            "session_id": {
+                "baseline": bd.get("session_id") or "",
+                "candidate": cd.get("session_id") or "",
             },
         }
         per_query.append(entry)

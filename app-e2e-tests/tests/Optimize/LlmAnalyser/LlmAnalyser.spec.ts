@@ -2,6 +2,7 @@
 import { test, expect } from "@playwright/test";
 import { CONVERSATIONS_TABLE } from "./llmAnalyserLocators";
 import {
+  ensureLlmAnalyserFeatureEnabled,
   expectScreenNotSelected,
   expectScreenSelected,
   expectToggleChecked,
@@ -11,9 +12,9 @@ import {
   parkCursor,
 } from "./llmAnalyserHelper";
 
-// Optimize -> LLM Analyser: the AI cost and usage module at /optimise#cost-analyser
+// Optimize -> LLM Analyser: the AI cost and usage module at /optimise#llm-analyser
 // (app/src/components/llm/cost-analyser/CostAnalyser.tsx). Its own screens live on an inner
-// CustomTabs strip that writes #cost-analyser/<screen>, so every screen is deep-linkable.
+// CustomTabs strip that writes #llm-analyser/<screen>, so every screen is deep-linkable.
 //
 // The module is read-only analytics over what the tenant's assistants already spent — the
 // only write it offers is the Cost Report schedule modal, which is gated on both the
@@ -37,6 +38,16 @@ test.beforeEach(() => {
 });
 
 test.describe("LLM Analyser", () => {
+  // Runs once for the whole file, not per test: this only exists to turn LLM_ANALYSER on
+  // when a tenant has never opted in, so every test below fails on NO_TAB_HINT's own timeout
+  // instead of it being repeated per test. A generous timeout of its own — the flag-off path
+  // logs into Tenant Settings, saves, and reloads to verify, on top of the login this suite
+  // already pays per test.
+  test.beforeAll(async ({ browser, baseURL }) => {
+    test.setTimeout(300000);
+    await ensureLlmAnalyserFeatureEnabled(browser, baseURL);
+  });
+
   test(
     "LLM Analyser sanity - open Optimise on the LLM Analyser tab with no sub-fragment, verify the screen strip lists Overview, Conversations, Models, Agents, Tools and Users and opens on Overview",
     { tag: ["@dev", "@test", "@sanity", "@functional"] },
@@ -61,7 +72,7 @@ test.describe("LLM Analyser", () => {
         }
       });
 
-      await test.step("A bare #cost-analyser opens on Overview", async () => {
+      await test.step("A bare #llm-analyser opens on Overview", async () => {
         await expectScreenSelected(locators, "overview");
         await expectScreenNotSelected(locators, "conversations");
       });
@@ -97,7 +108,7 @@ test.describe("LLM Analyser", () => {
           // CustomTabs' behavior='router' mode renders each tab as a Next Link whose href
           // carries the parent and child fragments, so the URL is a real product contract
           // here (the Slack digest links into it), not incidental state.
-          await page.waitForURL(new RegExp(`#cost-analyser/${screen}`), { timeout: 30000 });
+          await page.waitForURL(new RegExp(`#llm-analyser/${screen}`), { timeout: 30000 });
         });
       }
 
@@ -244,7 +255,7 @@ test.describe("LLM Analyser", () => {
   );
 
   test(
-    "LLM Analyser - deep link straight to #cost-analyser/models, verify the Models screen opens without passing through Overview",
+    "LLM Analyser - deep link straight to #llm-analyser/models, verify the Models screen opens without passing through Overview",
     { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       const locators = await openAnalyser(page, "models");
@@ -260,7 +271,7 @@ test.describe("LLM Analyser", () => {
   );
 
   test(
-    `LLM Analyser - deep link to #cost-analyser/${UNKNOWN_SCREEN_FRAGMENT}, verify the unknown sub-fragment is rejected and the Overview screen opens instead of an empty body`,
+    `LLM Analyser - deep link to #llm-analyser/${UNKNOWN_SCREEN_FRAGMENT}, verify the unknown sub-fragment is rejected and the Overview screen opens instead of an empty body`,
     { tag: ["@dev", "@test", "@regression", "@negative"] },
     async ({ page }) => {
       const locators = await openAnalyserWithFragment(page, UNKNOWN_SCREEN_FRAGMENT);

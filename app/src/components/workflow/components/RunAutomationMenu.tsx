@@ -576,8 +576,9 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
         />
       </Box>
 
-      {selectedWorkflow && (
+      {selectedWorkflow && modalOpen && (
         <TriggerWorkflowModal
+          key={selectedWorkflow.id}
           open={modalOpen}
           onClose={handleModalClose}
           workflowName={selectedWorkflow.name}

@@ -1,4 +1,4 @@
-import { Popover, Box, Typography, List, ListItem, CircularProgress } from '@mui/material';
+import { Popover, Box, Typography, List, ListItem } from '@mui/material';
 import { Button } from '@ui/Button';
 import PropTypes from 'prop-types';
 import React, { useEffect, useRef, useCallback, useState } from 'react';
@@ -227,9 +227,9 @@ const ReferencesPopover = ({ anchorEl, open, onClose, references = [], accountId
                   <Button
                     tone='ghost'
                     size='sm'
-                    icon={downloadingUrl === ref.url ? <CircularProgress size={16} /> : <FileDownloadIcon fontSize='small' />}
+                    icon={<FileDownloadIcon fontSize='small' />}
+                    loading={downloadingUrl === ref.url}
                     onClick={(e) => handleDownloadFile(ref, e)}
-                    disabled={downloadingUrl === ref.url}
                     aria-label='Download file'
                   />
                 </Box>

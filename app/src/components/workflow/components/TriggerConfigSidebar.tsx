@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Typography } from '@mui/material';
 import { Button } from '@ui/Button';
+import { Link } from '@ui/Link';
 import CheckIcon from '@mui/icons-material/Check';
 import { FormCard, FormField } from '@shared/forms/FormComponents';
 import type { Node } from 'reactflow';
@@ -22,6 +23,8 @@ import {
   structuredFieldDescription,
 } from '../utils/eventFilter';
 import { useAccountOptions } from '../hooks/useAccountOptions';
+import { DEFAULT_LIFECYCLE_PHASE, eventAccountOverrides } from '../utils/triggerPayloadMock';
+import TriggerSimulatorPanel from './TriggerSimulatorPanel';
 import { DOCS_BASE_URL, docsUrl } from '@lib/externalUrls';
 import { validateCron } from '@utils/cron';
 import ScheduleBuilder from './ScheduleBuilder';
@@ -61,6 +64,9 @@ interface TriggerConfigSidebarProps {
   // open and then cleared by parent.
   pendingConfig?: { type: string; params: any } | null;
   onPendingConfigConsumed?: () => void;
+  // Runs the automation as a dry run against a payload the user assembled in the
+  // trigger simulator. Omitted when the host has no run surface.
+  onSimulateRun?: (inputs: Record<string, any>) => void;
 }
 
 // Migrate legacy params.event_type (scalar or array) into a Jinja filter clause
@@ -104,21 +110,6 @@ const PRIORITY_OPTIONS = [
   { label: 'INFO', value: 'INFO' },
   { label: 'DEBUG', value: 'DEBUG' },
 ];
-
-// Generic, source-agnostic example payload shown in the event-trigger helper.
-// Keep in sync with runbook-server/services/service/model_event.go (Event struct).
-const EVENT_PAYLOAD_SAMPLE = {
-  event_type: 'KubePodCrashLooping',
-  source: 'k8s-collector',
-  cluster: 'prod-us-east-1',
-  cloud_account_id: '4f1c2b7e-8a90-4c31-9f2d-1b6ac5e70d34',
-  // On cloud accounts subject_namespace carries the cloud service name (AmazonEC2, AWS_RDS).
-  subject_namespace: 'payments',
-  subject_name: 'checkout-api-7d9c',
-  priority: 'HIGH',
-  status: 'FIRING',
-  labels: { team: 'payments' },
-};
 
 const EVENT_FILTER_EXAMPLE = '{{ event.event_type == "KubePodCrashLooping" and event.cluster == "prod-us-east-1" }}';
 
@@ -223,6 +214,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   onRequestCloseWithUnsaved,
   pendingConfig,
   onPendingConfigConsumed,
+  onSimulateRun,
 }) => {
   const [cronExpression, setCronExpression] = useState('');
   const [cronError, setCronError] = useState('');
@@ -303,6 +295,11 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   // A legacy name-valued cluster filter resolves to nothing, so it falls back to the workflow.
   const filterAccountId = accountOptions.some((o) => o.value === filterCluster) ? filterCluster : workflowAccountId;
   const filterAccountProvider = providerOf(filterAccountId);
+
+  // Lifecycle phase this event trigger fires at. The builder doesn't set params.on
+  // yet, so UI-built triggers are all event.created; YAML-authored ones may declare
+  // another phase, and the simulated payload has to match whichever it is.
+  const lifecyclePhase: string = selectedNode?.data?.trigger?.params?.on || DEFAULT_LIFECYCLE_PHASE;
 
   const filterStateMap: Record<string, { value: string; setter: (v: string) => void }> = {
     event_type: { value: filterEventType, setter: setFilterEventType },
@@ -768,28 +765,8 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
           }}
         >
           The matched event is available as <strong>Inputs.event.*</strong> in your tasks and as <strong>event.*</strong> in filter expressions. A
-          trigger needs at least one Event Type selected, or a filter expression. Example payload:
+          trigger needs at least one Event Type selected, or a filter expression. See the simulator below for the full payload.
         </Typography>
-        <Box
-          component='pre'
-          sx={{
-            margin: 0,
-            mb: 1,
-            padding: 'var(--ds-space-2) var(--ds-space-3)',
-            backgroundColor: ds.background[100],
-            border: `1px solid ${ds.brand[200]}`,
-            borderRadius: 'var(--ds-radius-sm)',
-            fontSize: 'var(--ds-text-caption)',
-            lineHeight: 1.4,
-            fontFamily: 'monospace',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            overflowX: 'auto',
-            color: ds.gray[700],
-          }}
-        >
-          {JSON.stringify(EVENT_PAYLOAD_SAMPLE, null, 2)}
-        </Box>
         <Typography
           sx={{
             fontSize: 'var(--ds-text-small)',
@@ -960,25 +937,30 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     { label: 'Spot Instance', value: 'K8sSpotRecommendation' },
   ];
 
-  const updateOptimizationTrigger = (updates: Partial<{ categories: string[]; rule_names: string[]; clusters: string[] }>) => {
-    const newCategories = updates.categories ?? optimizationCategories;
-    const newRuleNames = updates.rule_names ?? optimizationRuleNames;
-    const newClusters = updates.clusters ?? optimizationClusters;
-
+  // Params as they are persisted on the trigger. Shared with the simulator, which
+  // has to check the payload against exactly what will be saved.
+  const buildOptimizationParams = (categories: string[], ruleNames: string[], clusters: string[]): Record<string, string[]> => {
     const params: Record<string, string[]> = {};
-    if (newCategories.length > 0) {
-      params.categories = newCategories;
+    if (categories.length > 0) {
+      params.categories = categories;
     }
-    if (newRuleNames.length > 0) {
-      params.rule_names = newRuleNames;
+    if (ruleNames.length > 0) {
+      params.rule_names = ruleNames;
     }
-    if (newClusters.length > 0) {
-      params.clusters = newClusters;
+    if (clusters.length > 0) {
+      params.clusters = clusters;
     }
+    return params;
+  };
 
+  const updateOptimizationTrigger = (updates: Partial<{ categories: string[]; rule_names: string[]; clusters: string[] }>) => {
     const triggerConfig = {
       type: 'optimization',
-      params,
+      params: buildOptimizationParams(
+        updates.categories ?? optimizationCategories,
+        updates.rule_names ?? optimizationRuleNames,
+        updates.clusters ?? optimizationClusters
+      ),
     };
     commitTriggerConfig(triggerConfig);
   };
@@ -1106,6 +1088,21 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
           <br />• Leave all filters empty to trigger on any recommendation
         </Typography>
       </Box>
+
+      <TriggerSimulatorPanel
+        // Remount per trigger node so an edited payload doesn't follow the user
+        // to a different trigger.
+        key={selectedNode?.id}
+        triggerType='optimization'
+        optimizationOverrides={{
+          category: optimizationCategories[0],
+          rule_name: optimizationRuleNames[0],
+          cloud_account_id: optimizationClusters[0],
+        }}
+        accountId={accountId}
+        triggerParams={buildOptimizationParams(optimizationCategories, optimizationRuleNames, optimizationClusters)}
+        onSimulateRun={onSimulateRun}
+      />
     </FormCard>
   );
 
@@ -1327,14 +1324,9 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
             >
               <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], lineHeight: 1.5 }}>
                 Need a new webhook? Create one in the{' '}
-                <a
-                  href={WORKFLOW_WEBHOOK_INTEGRATIONS_URL}
-                  target='_blank'
-                  rel='noopener noreferrer'
-                  style={{ color: ds.blue[500], fontWeight: 'var(--ds-font-weight-medium)', textDecoration: 'none' }}
-                >
-                  Integrations tab → Workflow Webhook ↗
-                </a>
+                <Link href={WORKFLOW_WEBHOOK_INTEGRATIONS_URL} openInNew>
+                  Integrations tab → Workflow Webhook
+                </Link>
               </Typography>
             </Box>
           </FormCard>
@@ -1510,6 +1502,31 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
             </Typography>
 
             {renderEventInfoSection()}
+
+            <TriggerSimulatorPanel
+              // Remount per trigger node so an edited payload doesn't follow the
+              // user to a different trigger.
+              key={selectedNode?.id}
+              triggerType='event'
+              lifecyclePhase={lifecyclePhase}
+              // Only structured values are trustworthy — parseFilterExpression recovers
+              // simple equality clauses only, so in advanced mode they can contradict
+              // what the user wrote. The match verdict covers that case instead.
+              eventOverrides={
+                isAdvancedFilter
+                  ? undefined
+                  : {
+                      event_type: filterEventType,
+                      ...eventAccountOverrides(filterCluster, accountOptions),
+                      subject_namespace: filterNamespace,
+                      source: filterSource,
+                      priority: filterPriority,
+                    }
+              }
+              accountId={accountId}
+              triggerParams={{ filter: eventFilter, on: lifecyclePhase, event_type: selectedNode?.data?.trigger?.params?.event_type }}
+              onSimulateRun={onSimulateRun}
+            />
           </FormCard>
         ) : triggerType === 'optimization' ? (
           renderOptimizationConfig()

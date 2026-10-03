@@ -97,7 +97,7 @@ def get_discord_recommendation_nudge_digest_template(params: RecommendationNudge
     footer_url = f"{base_url}/optimise?utm=discord-digest"
     if params.digest_date:
         footer_url += f"&d={params.digest_date}"
-    footer_url += "#recommendations"
+    footer_url += "#cost"
     last = embeds[-1]
     last["description"] = (last.get("description", "") + f"\n\n[View All Recommendations]({footer_url})").strip()
 

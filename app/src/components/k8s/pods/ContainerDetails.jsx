@@ -26,7 +26,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -37,7 +36,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -52,7 +50,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -63,7 +60,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -78,7 +74,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -92,15 +87,12 @@ const ContainerDetails = ({ containerItem }) => {
       </Box>
       <Divider sx={{ margin: 'var(--ds-space-4) 0px' }} />
       <Box>
-        <Typography sx={{ fontFamily: 'Roboto', fontWeight: 'var(--ds-font-weight-semibold)', fontSize: ds.text.small, color: 'var(--ds-gray-400)' }}>
-          PORTS
-        </Typography>
+        <Typography sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: ds.text.small, color: 'var(--ds-gray-400)' }}>PORTS</Typography>
         {containerItem?.ports && containerItem?.ports.length > 0 ? (
           <Box key={Date.now()} sx={{ display: 'flex', flex: 1, marginBottom: 'var(--ds-space-2)' }}>
             <Typography
               width={ds.space.mul(0, 75)}
               sx={{
-                fontFamily: 'Roboto',
                 fontSize: 'var(--ds-text-body-lg)',
                 fontWeight: 'var(--ds-font-weight-medium)',
                 lineHeight: '20px',
@@ -117,14 +109,11 @@ const ContainerDetails = ({ containerItem }) => {
       <Divider sx={{ margin: 'var(--ds-space-4) 0px' }} />
 
       <Box>
-        <Typography sx={{ fontFamily: 'Roboto', fontWeight: 'var(--ds-font-weight-semibold)', fontSize: ds.text.small, color: 'var(--ds-gray-400)' }}>
-          RESOURCES
-        </Typography>
+        <Typography sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: ds.text.small, color: 'var(--ds-gray-400)' }}>RESOURCES</Typography>
         <Box sx={{ display: 'flex', flex: 1, marginBottom: 'var(--ds-space-2)' }}>
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -136,7 +125,6 @@ const ContainerDetails = ({ containerItem }) => {
           {containerItem?.resources?.requests?.memory && (
             <Typography
               sx={{
-                fontFamily: 'Roboto',
                 fontSize: 'var(--ds-text-body-lg)',
                 fontWeight: 'var(--ds-font-weight-medium)',
                 lineHeight: '20px',
@@ -151,7 +139,6 @@ const ContainerDetails = ({ containerItem }) => {
           {containerItem?.resources?.requests?.cpu && (
             <Typography
               sx={{
-                fontFamily: 'Roboto',
                 fontSize: 'var(--ds-text-body-lg)',
                 fontWeight: 'var(--ds-font-weight-medium)',
                 lineHeight: '20px',
@@ -167,7 +154,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -179,7 +165,6 @@ const ContainerDetails = ({ containerItem }) => {
           {containerItem?.resources?.limits?.memory && (
             <Typography
               sx={{
-                fontFamily: 'Roboto',
                 fontSize: 'var(--ds-text-body-lg)',
                 fontWeight: 'var(--ds-font-weight-medium)',
                 lineHeight: '20px',
@@ -194,7 +179,6 @@ const ContainerDetails = ({ containerItem }) => {
           {containerItem?.resources?.limits?.cpu && (
             <Typography
               sx={{
-                fontFamily: 'Roboto',
                 fontSize: 'var(--ds-text-body-lg)',
                 fontWeight: 'var(--ds-font-weight-medium)',
                 lineHeight: '20px',
@@ -209,14 +193,11 @@ const ContainerDetails = ({ containerItem }) => {
       </Box>
       <Divider sx={{ margin: 'var(--ds-space-4) 0px' }} />
       <Box>
-        <Typography sx={{ fontFamily: 'Roboto', fontWeight: 'var(--ds-font-weight-semibold)', fontSize: ds.text.small, color: 'var(--ds-gray-400)' }}>
-          MOUNTS
-        </Typography>
+        <Typography sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: ds.text.small, color: 'var(--ds-gray-400)' }}>MOUNTS</Typography>
         <Box sx={{ display: 'flex', flex: 1, marginBottom: 'var(--ds-space-2)' }}>
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -227,7 +208,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -241,14 +221,13 @@ const ContainerDetails = ({ containerItem }) => {
       </Box>
       <Divider sx={{ margin: 'var(--ds-space-4) 0px' }} />
       <Box>
-        <Typography sx={{ fontFamily: 'Roboto', fontWeight: 'var(--ds-font-weight-semibold)', fontSize: ds.text.small, color: 'var(--ds-gray-400)' }}>
+        <Typography sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: ds.text.small, color: 'var(--ds-gray-400)' }}>
           LIVENESS PROBE
         </Typography>
         <Box sx={{ display: 'flex', flex: 1, marginBottom: 'var(--ds-space-2)' }}>
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -263,7 +242,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -274,7 +252,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -289,7 +266,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -300,7 +276,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -315,7 +290,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -326,7 +300,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -341,7 +314,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -352,7 +324,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -367,7 +338,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -378,7 +348,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -393,7 +362,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -404,7 +372,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -418,14 +385,13 @@ const ContainerDetails = ({ containerItem }) => {
       </Box>
       <Divider sx={{ margin: 'var(--ds-space-4) 0px' }} />
       <Box>
-        <Typography sx={{ fontFamily: 'Roboto', fontWeight: 'var(--ds-font-weight-semibold)', fontSize: ds.text.small, color: 'var(--ds-gray-400)' }}>
+        <Typography sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: ds.text.small, color: 'var(--ds-gray-400)' }}>
           READINESS PROBE
         </Typography>
         <Box sx={{ display: 'flex', flex: 1, marginBottom: 'var(--ds-space-2)' }}>
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -440,7 +406,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -451,7 +416,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -466,7 +430,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -477,7 +440,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -492,7 +454,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -503,7 +464,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -518,7 +478,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -529,7 +488,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -544,7 +502,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -555,7 +512,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -570,7 +526,6 @@ const ContainerDetails = ({ containerItem }) => {
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -581,7 +536,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -595,15 +549,12 @@ const ContainerDetails = ({ containerItem }) => {
       </Box>
       <Divider sx={{ margin: 'var(--ds-space-4) 0px' }} />
       <Box>
-        <Typography sx={{ fontFamily: 'Roboto', fontWeight: 'var(--ds-font-weight-semibold)', fontSize: ds.text.small, color: 'var(--ds-gray-400)' }}>
-          ARGUMENTS
-        </Typography>
+        <Typography sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: ds.text.small, color: 'var(--ds-gray-400)' }}>ARGUMENTS</Typography>
 
         <Box sx={{ display: 'flex', flex: 1, marginBottom: 'var(--ds-space-2)' }}>
           <Typography
             width={ds.space.mul(0, 75)}
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',
@@ -614,7 +565,6 @@ const ContainerDetails = ({ containerItem }) => {
           </Typography>
           <Typography
             sx={{
-              fontFamily: 'Roboto',
               fontSize: 'var(--ds-text-body-lg)',
               fontWeight: 'var(--ds-font-weight-medium)',
               lineHeight: '20px',

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/services/audit"
@@ -8,7 +9,6 @@ import (
 	"nudgebee/services/config"
 	"nudgebee/services/integrations"
 	"nudgebee/services/integrations/core"
-	"nudgebee/services/llm"
 	"nudgebee/services/observability"
 	"nudgebee/services/security"
 	"nudgebee/services/user"
@@ -44,6 +44,24 @@ type ValidationResponse struct {
 	Message string `json:"message"`
 	Error   string `json:"error,omitempty"`
 }
+
+type IntegrationDiagnosisResponse struct {
+	Success           bool      `json:"success"`
+	TestStatus        string    `json:"test_status"`
+	Health            string    `json:"health"`
+	Stage             string    `json:"stage"`
+	ReasonCode        string    `json:"reason_code"`
+	Summary           string    `json:"summary"`
+	RecommendedAction string    `json:"recommended_action"`
+	CheckedAt         time.Time `json:"checked_at"`
+}
+
+var (
+	listDiagnosisIntegrationAccountIDs = core.ListLinkedCloudAccountIDsByIntegrationID
+	testDiagnosisIntegrationConnection = core.DiagnoseIntegrationConnectionForAccount
+)
+
+var errIntegrationNotFound = errors.New("integration not found")
 
 // ESIndexesResponse is returned by integrations_list_es_indexes: the cluster's
 // queryable index targets (data-stream / index names) for the ES index picker.
@@ -106,6 +124,26 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			return
 		}
 
+		// Capture the accounts linked BEFORE the save. CreateIntegrationConfig doubles
+		// as the update path and unlinks every account absent from request.AccountIds,
+		// so those accounts' cached provider/tool state goes stale — and they are, by
+		// definition, the accounts the request does not name. Post-mutation their link
+		// rows are gone, so this has to run first. Looked up by id, not name, because
+		// the same call can rename the integration. Mirrors the pre-mutation lookup in
+		// integrations_delete_config.
+		var preSaveAccountIds []string
+		if ids, lerr := core.ListLinkedCloudAccountIDsByIntegrationID(ctx, request.IntegrationId); lerr != nil {
+			// Error level (not Warn): see integrations_delete_config rationale —
+			// silent staleness is the failure mode this lookup exists to prevent.
+			ctx.GetLogger().Error("integrations: failed to list linked accounts before save (best-effort, cache will stay stale until TTL)",
+				"error", lerr,
+				"tenant_id", ctx.GetSecurityContext().GetTenantId(),
+				"integration_id", request.IntegrationId,
+				"integration_name", request.IntegrationName)
+		} else {
+			preSaveAccountIds = ids
+		}
+
 		resp, err := core.CreateIntegrationConfig(ctx, request.IntegrationId, request.IntegrationName, request.IntegrationConfigName, request.IntegrationConfigValues, request.Tags, request.AccountIds, request.SkipValidation, request.Source)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -115,10 +153,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		c.JSON(200, resp)
 		// Audit is persisted by core.CreateIntegrationConfig (CreateAudit, DB) —
 		// no MQ publish here to avoid a duplicate write.
-		llm.InvalidateLLMServerCacheForAccounts(ctx, request.AccountIds)
-		for _, accId := range request.AccountIds {
-			observability.InvalidateDefaultLogFiltersCache(accId)
-		}
+		onIntegrationConfigChanged(ctx, mergeAccountIds(request.AccountIds, preSaveAccountIds))
 		// Only announce on a genuine new binding (create). A config update of an
 		// existing space (e.g. toggling is_default) carries an IntegrationId and
 		// must not re-post the "now connected" card into the space.
@@ -175,10 +210,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		c.JSON(200, map[string]string{"status": "success"})
 		// Audit is persisted by core.DeleteIntegrationConfig (CreateAudit, DB) —
 		// no MQ publish here to avoid a duplicate write.
-		llm.InvalidateLLMServerCacheForAccounts(ctx, affectedAccountIds)
-		for _, accId := range affectedAccountIds {
-			observability.InvalidateDefaultLogFiltersCache(accId)
-		}
+		onIntegrationConfigChanged(ctx, affectedAccountIds)
 		if request.IntegrationName == integrations.IntegrationGoogleChatSpace {
 			notifyGoogleChatBinding(ctx.GetSecurityContext().GetTenantId(), request.IntegrationConfigName, "unbound")
 		}
@@ -204,6 +236,14 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			c.JSON(400, common.ErrorActionBadRequest(err2.Error()))
 			return
 		}
+
+		// The form offers the Log Label Mapping editor iff the property survives here,
+		// so the decision lives in one place and the frontend needs no provider list of
+		// its own. Category alone is too coarse — jaeger and otel_clickhouse carry a log
+		// category but serve traces only, and an editor there would be dead config.
+		// Accepting the key stays broader than offering it (see CreateIntegrationConfig):
+		// an already-saved mapping must not become unsaveable.
+		resp = withLogLabelMappingOffer(resp, request["integration_name"], request["source"])
 
 		c.JSON(200, map[string]any{
 			"data": resp,
@@ -292,7 +332,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 				"integration_name", request.IntegrationName,
 				"integration_config_name", request.IntegrationConfigName)
 		} else {
-			llm.InvalidateLLMServerCacheForAccounts(ctx, ids)
+			onIntegrationConfigChanged(ctx, ids)
 		}
 		return
 
@@ -330,6 +370,36 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			Success: true,
 			Message: "Connection successful",
 		})
+		return
+
+	case "integrations_diagnose_connection":
+		request := map[string]string{}
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		if err := common.UnmarshalMapToStruct(requestInput, &request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		integrationID := strings.TrimSpace(request["integration_id"])
+		if integrationID == "" {
+			c.JSON(400, common.ErrorActionBadRequest("integration_id is required"))
+			return
+		}
+
+		diagnosis, diagnosisErr := diagnoseIntegrationConnection(ctx, integrationID)
+		if errors.Is(diagnosisErr, errIntegrationNotFound) {
+			c.JSON(404, common.ErrorActionBadRequest("integration not found"))
+			return
+		}
+		if diagnosisErr != nil {
+			ctx.GetLogger().Error("integrations: diagnosis failed", "integration_id", integrationID, "error", diagnosisErr)
+			c.JSON(500, common.ErrorActionInternal("integration diagnosis failed"))
+			return
+		}
+		c.JSON(200, diagnosis)
 		return
 
 	case "integrations_test_connection_config", "integrations_check_connection_config":
@@ -566,4 +636,104 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		c.JSON(400, common.ErrorActionBadRequest("invalid action name - "+actionPayload.Action.Name))
 		return
 	}
+}
+
+func diagnoseIntegrationConnection(ctx *security.RequestContext, integrationID string) (IntegrationDiagnosisResponse, error) {
+	accountIDs, err := listDiagnosisIntegrationAccountIDs(ctx, integrationID)
+	if err != nil {
+		return IntegrationDiagnosisResponse{}, err
+	}
+	securityContext := ctx.GetSecurityContext()
+	authorizedAccountID := ""
+	for _, accountID := range accountIDs {
+		if securityContext.HasAccountAccess(accountID, security.SecurityAccessTypeRead) {
+			authorizedAccountID = accountID
+			break
+		}
+	}
+	if authorizedAccountID == "" {
+		// Use the same response for missing, cross-tenant and inaccessible
+		// integrations so callers cannot enumerate integration identifiers.
+		return IntegrationDiagnosisResponse{}, errIntegrationNotFound
+	}
+
+	checkedAt := time.Now().UTC()
+	if testErr := testDiagnosisIntegrationConnection(ctx, integrationID, authorizedAccountID); testErr != nil {
+		if errors.Is(testErr, core.ErrConnectionTestNotSupported) {
+			return IntegrationDiagnosisResponse{
+				Success: false, TestStatus: "not_supported", Health: "unknown", Stage: "connection",
+				ReasonCode:        "CONNECTION_TEST_NOT_SUPPORTED",
+				Summary:           "This integration does not provide an active connection test.",
+				RecommendedAction: "Verify that expected data or events are arriving after the integration is enabled.", CheckedAt: checkedAt,
+			}, nil
+		}
+		stage, reasonCode, summary, recommendedAction := classifyIntegrationDiagnosisError(testErr)
+		ctx.GetLogger().Warn("integrations: connection diagnosis test failed",
+			"integration_id", integrationID,
+			"stage", stage,
+			"reason_code", reasonCode,
+		)
+		return IntegrationDiagnosisResponse{
+			Success: false, TestStatus: "failed", Health: "unhealthy", Stage: stage,
+			ReasonCode: reasonCode, Summary: summary,
+			RecommendedAction: recommendedAction, CheckedAt: checkedAt,
+		}, nil
+	}
+	return IntegrationDiagnosisResponse{
+		Success: true, TestStatus: "passed", Health: "healthy", Stage: "connection",
+		ReasonCode: "CONNECTION_SUCCEEDED", Summary: "The integration connection test succeeded.",
+		RecommendedAction: "No connection remediation is required.", CheckedAt: checkedAt,
+	}, nil
+}
+
+func classifyIntegrationDiagnosisError(err error) (stage, reasonCode, summary, recommendedAction string) {
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "no such host"), strings.Contains(message, "dns"):
+		return "dns", "DNS_RESOLUTION_FAILED", "The integration host could not be resolved.", "Verify the configured hostname and DNS resolution from the Nudgebee connection path."
+	case strings.Contains(message, "x509"), strings.Contains(message, "certificate"), strings.Contains(message, "tls"):
+		return "tls", "TLS_VALIDATION_FAILED", "The integration endpoint failed TLS certificate validation.", "Verify the endpoint certificate, hostname, validity period, and trusted certificate authority."
+	case strings.Contains(message, "401"), strings.Contains(message, "unauthorized"), strings.Contains(message, "authentication"), strings.Contains(message, "credential"):
+		return "authentication", "AUTHENTICATION_FAILED", "The integration endpoint rejected authentication.", "Update or re-authorize the integration credentials, then retry the connection test."
+	case strings.Contains(message, "403"), strings.Contains(message, "forbidden"), strings.Contains(message, "permission denied"):
+		return "authorization", "AUTHORIZATION_FAILED", "The configured identity is not authorized to access the integration endpoint.", "Grant the configured identity the required provider permissions, then retry."
+	case strings.Contains(message, "no accounts associated"), strings.Contains(message, "configuration"), strings.Contains(message, "url is required"), strings.Contains(message, "endpoint is required"):
+		return "configuration", "CONFIGURATION_INVALID", "The integration configuration is incomplete or invalid.", "Review the integration settings and linked accounts, then retry the connection test."
+	case strings.Contains(message, "deadline exceeded"), strings.Contains(message, "timed out"), strings.Contains(message, "timeout"):
+		return "connectivity", "CONNECTION_TIMEOUT", "The integration endpoint did not respond before the connection test timed out.", "Verify endpoint availability, routing, firewall rules, and proxy settings."
+	case strings.Contains(message, "connection refused"), strings.Contains(message, "network is unreachable"), strings.Contains(message, "no route to host"), strings.Contains(message, "dial tcp"):
+		return "connectivity", "ENDPOINT_UNREACHABLE", "The integration endpoint could not be reached.", "Verify the endpoint address, service availability, routing, and firewall rules."
+	default:
+		return "connection", "CONNECTION_FAILED", "The integration connection test failed.", "Review the integration configuration and provider availability, then retry."
+	}
+}
+
+// withLogLabelMappingOffer decides whether the integration form shows the Log Label
+// Mapping editor, by removing the auto-injected config property from the schema when
+// this provider has no log source. Lives in the api layer because it is the only one
+// that may import both the integration registry and the observability source registry.
+//
+// Returns the schema with a cloned Properties map — ConfigSchema() implementations
+// commonly hand back a shared/static map, and deleting a key in place would strip the
+// property from every later caller.
+func withLogLabelMappingOffer(schema core.IntegrationSchema, integrationName, source string) core.IntegrationSchema {
+	if _, offered := schema.Properties[core.LogLabelMappingsConfigName]; !offered {
+		return schema
+	}
+	if source == "" {
+		source = "user"
+	}
+	if observability.SupportsLogSource(integrationName, source) {
+		return schema
+	}
+
+	cloned := make(map[string]core.IntegrationSchemaProperty, len(schema.Properties))
+	for k, v := range schema.Properties {
+		if k == core.LogLabelMappingsConfigName {
+			continue
+		}
+		cloned[k] = v
+	}
+	schema.Properties = cloned
+	return schema
 }

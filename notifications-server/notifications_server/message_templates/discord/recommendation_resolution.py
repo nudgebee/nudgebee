@@ -12,7 +12,7 @@ from notifications_server.configs.settings import public_ip, settings
 from notifications_server.message_templates.discord.embed_utils import _v, clamp_embeds
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
     format_rule_name,
-    format_savings,
+    format_savings_clause,
 )
 from notifications_server.message_templates.slack.recommendation_resolution import (
     RecommendationResolutionParams,
@@ -26,11 +26,11 @@ def get_discord_recommendation_resolution_template(params: RecommendationResolut
     branding = settings.urls.branding_name
 
     cta_url = f"{base_url}/optimise?id={params.recommendation_id}#resolutions"
-    view_all_url = f"{base_url}/optimise?utm=discord#recommendations"
+    view_all_url = f"{base_url}/optimise?utm=discord#cost"
     description_lines = [
         f"**{params.resource_name}**",
         f"{format_rule_name(params.rule_name)} · {params.account_name}",
-        (f"{params.severity} priority · " f"Savings: {format_savings(params.estimated_savings)}/mo"),
+        (f"{params.severity} priority · " f"{format_savings_clause(params.estimated_savings)}"),
         "",
         f"[View Details]({cta_url}) · [View All Recommendations]({view_all_url})",
     ]

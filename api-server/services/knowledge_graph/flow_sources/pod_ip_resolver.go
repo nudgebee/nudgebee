@@ -5,7 +5,8 @@ import (
 	"net"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/knowledge_graph/core"
-	"nudgebee/services/relay"
+	"nudgebee/services/observability"
+	"nudgebee/services/security"
 	"time"
 )
 
@@ -22,6 +23,12 @@ import (
 // Mirrors K8sServiceIPResolver semantics — same-scope lookup preferred,
 // global-unique fallback when the caller scope is unknown, refuse-to-guess on
 // ambiguity.
+//
+// Unlike K8sServiceIPResolver and K8sNodeIPResolver, Resolve/ResolvePodName take
+// no callerAccount: this resolver is built per K8s account and its workload
+// index is filtered to that account at construction, so every node it can hand
+// back already belongs to the caller. The account scope is enforced once, at
+// index-build time, rather than on every lookup.
 type PodIPResolver struct {
 	byClusterIP        map[clusterIPKey]*core.DbNode
 	byIPAcrossClusters map[string][]*core.DbNode
@@ -49,7 +56,7 @@ type nsNameKey struct {
 // namespace the K8sSource filtered out) are silently skipped: emitting an
 // ExternalService is preferable to fabricating a synthetic Workload that
 // markInactiveNodes can't tombstone safely.
-func NewPodIPResolver(k8sAccountID string, existingNodes []*core.DbNode, logger *slog.Logger) *PodIPResolver {
+func NewPodIPResolver(reqCtx *security.RequestContext, k8sAccountID string, existingNodes []*core.DbNode, logger *slog.Logger) *PodIPResolver {
 	r := &PodIPResolver{
 		byClusterIP:        make(map[clusterIPKey]*core.DbNode),
 		byIPAcrossClusters: make(map[string][]*core.DbNode),
@@ -57,7 +64,10 @@ func NewPodIPResolver(k8sAccountID string, existingNodes []*core.DbNode, logger 
 		byNameGlobal:       make(map[string][]*core.DbNode),
 	}
 
-	workloadIdx := indexWorkloadsByOwner(existingNodes)
+	// Scoped to k8sAccountID: existingNodes spans the whole tenant, and every
+	// node this resolver hands back is looked up through this index, so scoping
+	// it here is what keeps the resolver's output inside the caller's account.
+	workloadIdx := indexWorkloadsByOwner(existingNodes, k8sAccountID)
 	if workloadIdx.empty() {
 		return r
 	}
@@ -67,30 +77,29 @@ func NewPodIPResolver(k8sAccountID string, existingNodes []*core.DbNode, logger 
 	// through to Source B (k8s_pods) so accounts without Prometheus still resolve
 	// pod names.
 	//
-	// .UTC() is defense in depth: relay/agent format the timestamp as UTC, so
-	// the value must be UTC too. The relay-side fix in relay.ExecutePrometheus
-	// already converts, but every caller should pass UTC directly to keep the
-	// contract local to this function (and survive future relay refactors).
 	endTime := time.Now().UTC()
 	startTime := endTime.Add(-5 * time.Minute)
-	resp, err := relay.ExecutePrometheus(
-		k8sAccountID, startTime, endTime,
-		map[string]string{"pod_info": `kube_pod_info`},
-		true,
-	)
+	resp, err := observability.FetchMetricsQuery(reqCtx, observability.FetchMetricsRequest{
+		AccountId:      k8sAccountID,
+		MetricProvider: "prometheus",
+		Queries:        map[string]string{"pod_info": `kube_pod_info`},
+		StartTime:      startTime.UnixMilli(),
+		EndTime:        endTime.UnixMilli(),
+		Instant:        true,
+	})
 	if err != nil {
 		if logger != nil {
 			logger.Warn("PodIPResolver: kube_pod_info query failed",
 				"k8s_account_id", k8sAccountID, "error", err)
 		}
 	} else {
-		for _, metric := range extractPodInfoMetrics(resp) {
-			podIP, _ := metric["pod_ip"].(string)
-			namespace, _ := metric["namespace"].(string)
-			cluster, _ := metric["k8s_cluster"].(string)
-			createdByKind, _ := metric["created_by_kind"].(string)
-			createdByName, _ := metric["created_by_name"].(string)
-			podName, _ := metric["pod"].(string)
+		for _, metric := range observability.PromQLLabels(resp, "pod_info") {
+			podIP := metric["pod_ip"]
+			namespace := metric["namespace"]
+			cluster := metric["k8s_cluster"]
+			createdByKind := metric["created_by_kind"]
+			createdByName := metric["created_by_name"]
+			podName := metric["pod"]
 			if namespace == "" || createdByName == "" {
 				continue
 			}
@@ -323,22 +332,30 @@ const (
 // cluster scoping prevents wrong-cluster edges in multi-cluster tenants where
 // the same IP belongs to different K8s objects in different clusters.
 //
+// callerAccount scopes the two tenant-wide resolvers (ClusterIP and Node) to a
+// single cloud account. It matters most precisely where callerCluster does not
+// help: two of this function's three call sites pass callerCluster="" and run
+// entirely on the global-unique fallback. podIPResolver needs no account
+// argument — it is constructed per account and its index is account-scoped at
+// build time (see indexWorkloadsByOwner), so everything it can return already
+// belongs to the caller's account.
+//
 // Returns (node, ip, reason, source, ok). `source` distinguishes which
 // resolver matched so the resulting edge's provenance is debuggable. ok=false
 // means the caller should fall back to creating an orphan ExternalService.
 func resolveIPNamedExternalService(
-	name, callerCluster string,
+	name, callerAccount, callerCluster string,
 	clusterIPResolver *K8sServiceIPResolver,
 	podIPResolver *PodIPResolver,
 	nodeIPResolver *K8sNodeIPResolver,
 ) (*core.DbNode, string, string, string, bool) {
-	if node, reason, ok := ResolveIPToK8sService(name, callerCluster, clusterIPResolver); ok {
+	if node, reason, ok := ResolveIPToK8sService(name, callerAccount, callerCluster, clusterIPResolver); ok {
 		return node, name, reason, IPResolutionSourceClusterIP, true
 	}
 	if node, reason, ok := ResolveIPToPodWorkload(name, callerCluster, podIPResolver); ok {
 		return node, name, reason, IPResolutionSourcePodIP, true
 	}
-	if node, reason, ok := ResolveIPToK8sNode(name, callerCluster, nodeIPResolver); ok {
+	if node, reason, ok := ResolveIPToK8sNode(name, callerAccount, callerCluster, nodeIPResolver); ok {
 		return node, name, reason, IPResolutionSourceNodeIP, true
 	}
 	return nil, "", "", "", false
@@ -390,7 +407,26 @@ func (idx workloadIndex) lookup(cluster, namespace, ownerKind, ownerName, podNam
 // indexWorkloadsByOwner builds an index of existing Workload and Pod nodes
 // keyed by their K8s identity. Used by NewPodIPResolver to map a
 // kube_pod_info row to the node K8sSource already emitted.
-func indexWorkloadsByOwner(nodes []*core.DbNode) workloadIndex {
+//
+// accountID scopes the index to a single cloud account. This is load-bearing,
+// not defensive: the resolver is built per K8s account but fed the *tenant-wide*
+// node set, and workloadOwnerKey has no account component. Two clusters in one
+// tenant running the same deployment name in the same namespace (e.g. a
+// prod-cluster and a dev-cluster both running nudgebee/ml-k8s-server) therefore
+// collapse onto one `withoutCluster` key, last-write-wins — and nodes arrive
+// created_at DESC, so the *oldest* cluster silently won. That handed pods from
+// one account the Workload node of another, producing cross-cluster CALLS edges.
+//
+// Filtering here rather than adding an account field to workloadOwnerKey keeps
+// lookup's signature and the cluster-less fallback intact — that fallback exists
+// because `cluster` is legitimately empty (missing kube_pod_info scrape label;
+// public.k8s_pods has no cluster column) and must keep working *within* an account.
+//
+// An empty accountID matches only nodes with an empty CloudAccountID. In
+// production every K8s node carries one (it is NOT NULL and part of NodeIDFor),
+// so a caller that passes "" gets an empty index and the resolver refuses to
+// resolve — failing closed rather than guessing across accounts.
+func indexWorkloadsByOwner(nodes []*core.DbNode, accountID string) workloadIndex {
 	idx := workloadIndex{
 		withCluster:    make(map[workloadOwnerKey]*core.DbNode),
 		withoutCluster: make(map[workloadOwnerKey]*core.DbNode),
@@ -401,6 +437,9 @@ func indexWorkloadsByOwner(nodes []*core.DbNode) workloadIndex {
 			continue
 		}
 		if n.NodeType != core.NodeTypeWorkload && n.NodeType != core.NodeTypePod {
+			continue
+		}
+		if n.CloudAccountID != accountID {
 			continue
 		}
 		name := stringProp(n, "name")
@@ -435,46 +474,4 @@ func resolveOwner(createdByKind, createdByName string) (string, string) {
 		return "Deployment", core.ExtractDeploymentFromReplicaSet(createdByName)
 	}
 	return createdByKind, createdByName
-}
-
-// extractPodInfoMetrics flattens the relay's varied Prometheus response shape
-// into a list of label maps. Tolerates the three shapes ip_mapper.go already
-// handles (top-level keyed list, top-level data list, nested data.pod_info.result).
-func extractPodInfoMetrics(resp map[string]interface{}) []map[string]interface{} {
-	raw := unwrapPodInfoResult(resp)
-	out := make([]map[string]interface{}, 0, len(raw))
-	for _, item := range raw {
-		pod, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		metric, ok := pod["metric"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		out = append(out, metric)
-	}
-	return out
-}
-
-// unwrapPodInfoResult peels the three possible relay response envelopes back
-// to the list of result entries. Split out from extractPodInfoMetrics to keep
-// each function within complexity budget.
-func unwrapPodInfoResult(resp map[string]interface{}) []interface{} {
-	if v, ok := resp["pod_info"].([]interface{}); ok {
-		return v
-	}
-	if data, ok := resp["data"].([]interface{}); ok {
-		return data
-	}
-	data, ok := resp["data"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	pod, ok := data["pod_info"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	result, _ := pod["result"].([]interface{})
-	return result
 }

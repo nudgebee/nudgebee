@@ -39,6 +39,7 @@ const (
 	PromptReact3CustomBase                   = "react_3_custom_base"
 	PromptReact4Base                         = "react_4_base"
 	PromptReact4CustomBase                   = "react_4_custom_base"
+	PromptReactClaimCritiquer                = "react_claim_critiquer"
 	PromptReactCritiquer                     = "react_critiquer"
 	PromptConfigAutoSelection                = "config_auto_selection"
 	PromptRemediationGenerate                = "remediation_generate"
@@ -65,6 +66,7 @@ const (
 	PromptMemorySessionExtractor             = "memory_session_extractor"
 	PromptMemorySoulConsolidate              = "memory_soul_consolidate"
 	PromptAgentLlm                           = "agent_llm"
+	PromptAnswerConfidence                   = "answer_confidence"
 	PromptResponseFormatter                  = "response_formatter"
 	PromptResponseFormatterSlack             = "response_formatter_slack"
 	PromptScratchpadContextSummarizer        = "scratchpad_context_summarizer"
@@ -85,6 +87,7 @@ var promptCategories = map[string]PromptCategory{
 	PromptMemoryConsumptionRules:             CategoryFragments,
 	PromptSecurityRules:                      CategoryFragments,
 	PromptTimeHandlingRules:                  CategoryFragments,
+	PromptAnswerConfidence:                   CategoryUtilities,
 	PromptVoteSubject:                        CategoryUtilities,
 	PromptUnifiedContextMemory:               CategoryFragments,
 	PromptAwsLean:                            CategoryAgents,
@@ -101,6 +104,7 @@ var promptCategories = map[string]PromptCategory{
 	PromptReact4Base:                         CategoryPlanners,
 	PromptReact4CustomBase:                   CategoryPlanners,
 	PromptReactCritiquer:                     CategoryPlanners,
+	PromptReactClaimCritiquer:                CategoryPlanners,
 	PromptConfigAutoSelection:                CategoryTools,
 	PromptRemediationGenerate:                CategoryTools,
 	PromptRemediationGenerateJson:            CategoryTools,

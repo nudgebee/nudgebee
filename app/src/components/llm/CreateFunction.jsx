@@ -1,7 +1,8 @@
 import { Box, Typography } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import PropTypes from 'prop-types';
+import { getBrandTitle } from '@hooks/useTenantBranding';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import { Button } from '@ui/Button';
 import { Input } from '@ui/Input';
@@ -292,13 +293,15 @@ const CreateFunction = ({
     snackbar.success('Copied to clipboard');
   };
 
-  const filteredAgents = agentList.filter(
-    (agent) => agent.name.toLowerCase().includes(searchAgent.toLowerCase()) || agent.description?.toLowerCase().includes(searchAgent.toLowerCase())
-  );
+  const filteredAgents = useMemo(() => {
+    const needle = searchAgent.toLowerCase();
+    return agentList.filter((agent) => agent.name.toLowerCase().includes(needle) || agent.description?.toLowerCase().includes(needle));
+  }, [agentList, searchAgent]);
 
-  const filteredFunctions = functionList.filter(
-    (func) => func.name.toLowerCase().includes(searchFunction.toLowerCase()) || func.description?.toLowerCase().includes(searchFunction.toLowerCase())
-  );
+  const filteredFunctions = useMemo(() => {
+    const needle = searchFunction.toLowerCase();
+    return functionList.filter((func) => func.name.toLowerCase().includes(needle) || func.description?.toLowerCase().includes(needle));
+  }, [functionList, searchFunction]);
 
   return (
     <Box>
@@ -439,7 +442,7 @@ const CreateFunction = ({
                   <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>
                     @AgentName
                   </Box>{' '}
-                  to reference NudgeBee Agents in your prompt.
+                  {`to reference ${getBrandTitle()} Agents in your prompt.`}
                 </Typography>
                 <Box sx={{ display: 'flex', gap: ds.space[4], mt: ds.space[2] }}>
                   <Button tone='secondary' size='xs' onClick={() => setShowAgentList(true)}>

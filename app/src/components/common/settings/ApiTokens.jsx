@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Typography } from '@mui/material';
 import { Modal } from '@ui/Modal';
+import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { Button } from '@ui/Button';
 import { Input } from '@ui/Input';
 import CustomTable from '@shared/tables/CustomTable';
@@ -15,6 +16,7 @@ import apiUser from '@api1/user/';
 import { getAppBaseUrl } from '@lib/externalUrls';
 
 const ApiTokens = ({ open, title, onClose }) => {
+  const { title: baseTitle } = useBrandingConfig();
   const [loading, setLoading] = useState(false);
   const [tokens, setTokens] = useState([]);
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -326,7 +328,7 @@ const ApiTokens = ({ open, title, onClose }) => {
       >
         <Box sx={{ color: ds.gray[500], fontSize: ds.text.bodyLg, lineHeight: '20px' }}>
           <Typography sx={{ mb: ds.space[3] }}>
-            API tokens allow you to authenticate with Nudgebee APIs programmatically. Follow this two-step process:
+            {`API tokens allow you to authenticate with ${baseTitle} APIs programmatically. Follow this two-step process:`}
           </Typography>
 
           <Typography sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
