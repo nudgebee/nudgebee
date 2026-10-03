@@ -372,6 +372,32 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 		return err
 	}
 
+	if currentTask.ExpectedOutput != nil {
+		if valResult, valErr := tasks.ValidateTaskOutput(result, currentTask.ExpectedOutput, currentTask.Type); valErr != nil {
+			logger.Error("Task output validation failed", "taskID", taskID, "error", valErr)
+			if currentTask.Hooks != nil && len(currentTask.Hooks.Failure) > 0 {
+				onFailureCtx := createActivityCtxForAction(ctx)
+				hookErr := executeSimpleActions(onFailureCtx, currentTask.Hooks.Failure, globalContext)
+				if hookErr != nil {
+					logger.Error("OnFailure hook failed", "taskID", taskID, "error", hookErr)
+					return hookErr
+				}
+			}
+
+			if currentTask.FailurePolicy != nil && currentTask.FailurePolicy.Action == "continue" {
+				logger.Warn("Task output validation failed but continue_on_error is set", "taskID", taskID, "error", valErr)
+				globalContext.Tasks[taskID] = map[string]any{
+					"status": model.TaskStatusFailed,
+					"error":  valErr.Error(),
+				}
+				return nil
+			}
+			return valErr.ToTemporalError()
+		} else {
+			result = valResult
+		}
+	}
+
 	logger.Info("Task completed", "taskID", taskID, "result", result) // ENABLED LOGGING
 	globalContext.Tasks[taskID] = map[string]any{
 		"status": string(model.TaskStatusCompleted),
@@ -1301,6 +1327,9 @@ func processTaskLoop(
 				paramMap[tasks.ParamWorkflowName] = wf.Name
 				if displayName := getUserDisplayName(wf); displayName != "" {
 					paramMap[tasks.ParamUserDisplayName] = displayName
+				}
+				if task.ExpectedOutput != nil {
+					paramMap[tasks.ParamExpectedOutput] = task.ExpectedOutput
 				}
 
 				// Check if task is an inline workflow (e.g. group, switch)

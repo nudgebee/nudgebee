@@ -540,6 +540,36 @@ Built-in task categories:
 
 Use `GET /tasks` to see the live list, parameter schemas, and descriptions.
 
+### Task Output Contracts (`expected_output`)
+
+Tasks can optionally declare an `expected_output` contract to validate results before Temporal marks the activity complete. This prevents silent failures (such as process exit code 0 with empty stdout, malformed JSON syntax, or missing required payload keys) from propagating downstream.
+
+```yaml
+tasks:
+  - id: fetch_cluster_metadata
+    type: scripting.run_script
+    params:
+      script: "kubectl get nodes -o json"
+    expected_output:
+      type: object             # Allowed: string | json | object | array
+      allow_empty: false       # Default: true. Set false to reject empty output.
+      required:                # Optional. Required top-level keys
+        - "items"
+        - "apiVersion"
+    failure_policy:
+      retry:
+        maximum_attempts: 3
+        initial_interval: "2s"
+      action: "fail"           # Or "continue"
+```
+
+- **Supported Types**: `string`, `json`, `object`, `array`. String-encoded JSON payloads are normalized into native structures for template consumption.
+- **Empty Output Handling**: By default (`allow_empty: true` or omitted), empty results are allowed to protect legitimate 0-row SQL queries, empty diffs, or empty collections.
+- **Temporal Retry Semantics**:
+  - `ERR_EMPTY_OUTPUT` is classified as potentially transient (e.g. process cold starts or async buffers) and triggers Temporal activity retries when a task retry policy is configured (`failure_policy.retry.maximum_attempts > 1`).
+  - Deterministic contract errors (`ERR_MALFORMED_OUTPUT`, `ERR_TYPE_MISMATCH`, `ERR_MISSING_REQUIRED_FIELD`) are marked non-retryable (`temporal.NewNonRetryableApplicationError`), failing immediately without retrying to conserve compute.
+  - *Side-effecting tasks*: In accordance with Nudgebee and Temporal conventions, tasks that mutate external state (e.g. resource creation or POST requests) should be idempotent if retries are configured with `allow_empty: false`. Tasks without an explicit `retry` policy default to `maximum_attempts: 1` and will not retry.
+
 ---
 
 ## Workers and background processes
