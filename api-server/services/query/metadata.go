@@ -6276,7 +6276,7 @@ var table_metadata = map[string]TableDefinition{
 		sr.workload_name,
 		sr.cloud_account_id,
 		sr.tenant_id,
-		MAX(sr.timestamp) AS timestamp,
+		sr.timestamp,
 		SUM(sr.good_events_count) AS total_good_events,
 		SUM(sr.bad_events_count) AS total_bad_events,
 		SUM(sr.events_count) AS total_events,
