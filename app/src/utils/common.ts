@@ -201,6 +201,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'RABBITMQ':
       label = 'RabbitMQ';
       break;
+    case 'KAFKA':
+      label = 'Kafka';
+      break;
     case 'MYSQL':
       label = 'MySql';
       break;

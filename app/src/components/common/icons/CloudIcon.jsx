@@ -23,6 +23,7 @@ import {
   PagerDutyIcon,
   ZenDutyIcon,
   RabbitmqIcon,
+  KafkaIcon,
   MySqlIcon,
   RedisLogoIcon,
   PrometheusIcon,
@@ -118,6 +119,8 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = ArgocdIcon;
   } else if (cloud_provider.toUpperCase() === 'RABBITMQ') {
     Icon = RabbitmqIcon;
+  } else if (cloud_provider.toUpperCase() === 'KAFKA') {
+    Icon = KafkaIcon;
   } else if (cloud_provider.toUpperCase() === 'MYSQL') {
     Icon = MySqlIcon;
   } else if (cloud_provider.toUpperCase() === 'REDIS') {
