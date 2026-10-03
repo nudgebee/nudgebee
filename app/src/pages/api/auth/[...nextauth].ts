@@ -275,7 +275,7 @@ export function GQLAdapter() {
         throw new Error('User Account is suspended');
       } else if (accountsData.user.status === 'inactive') {
         //first time login flow
-        console.log(`getUserByAccount: user ${accountsData.user.id} is inactive, first time login`);
+        console.log('getUserByAccount: user is inactive, first time login', { userId: accountsData.user.id });
         return null;
       }
       const transformedUser = await adapterUser(accountsData.user);
@@ -721,7 +721,7 @@ export async function ensureAllowedDomainsSet(email: string, tenantId?: string) 
         tenantId
       );
       await getTenantAttributes(true); // refresh cache
-      console.log(`Set allowed_domains for tenant ${tenantId}: [${domain}]`);
+      console.log('Set allowed_domains for tenant', { tenantId, domain });
     }
   } catch (e) {
     console.log('Failed to set allowed_domains for tenant', e);
@@ -1614,7 +1614,7 @@ export const authOptions: NextAuthOptions = {
                 return false;
               }
               user.id = newUser.data.id;
-              console.log(`Successfully onboarded and linked saas account for ${user.email}`);
+              console.log('Successfully onboarded and linked saas account', { email: user.email });
               return true; // Successfully onboarded and linked
             }
             console.error('Failed to get new user ID or account details after saas onboarding.');
@@ -1624,7 +1624,7 @@ export const authOptions: NextAuthOptions = {
             return false;
           }
         } else {
-          console.log(`User with email ${user.email} not found and no tenant routing matched. Self-onboarding via OAuth is disabled.`);
+          console.log('User not found and no tenant routing matched. Self-onboarding via OAuth is disabled.', { email: user.email });
           return false;
         }
       }

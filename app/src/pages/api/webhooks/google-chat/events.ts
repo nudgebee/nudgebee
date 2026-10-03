@@ -32,7 +32,7 @@ async function verifyGoogleChatJwt(token: string): Promise<boolean> {
 
     const certPem = certs[kid];
     if (!certPem) {
-      console.warn(`Google Chat JWT kid "${kid}" not found in fetched certificates`);
+      console.warn('Google Chat JWT kid not found in fetched certificates', { kid });
       return false;
     }
 
@@ -51,7 +51,7 @@ async function verifyGoogleChatJwt(token: string): Promise<boolean> {
 
 export default async function trigger(req: NextApiRequest, res: NextApiResponse) {
   try {
-    console.debug(`Incoming request to google chat events api - Method: ${req.method}`);
+    console.debug('Incoming request to google chat events api', { method: req.method });
 
     if (req.method !== 'POST') {
       return res.status(405).send('Method Not Allowed');
@@ -83,7 +83,7 @@ export default async function trigger(req: NextApiRequest, res: NextApiResponse)
       headers: { 'X-ACTION-TOKEN': process.env.ACTION_API_SERVER_TOKEN ?? '' },
       timeout: 5000,
     });
-    console.log(`Response from notification service - Status Code: ${response.status}`);
+    console.log('Response from notification service', { status: response.status });
 
     // Forward the notifications-server body verbatim. Google Chat treats the
     // sync HTTP body as the bot's reply payload — for CARD_CLICKED events a

@@ -178,7 +178,7 @@ export const Card: React.FC<CardProps> = ({
   if (process.env.NODE_ENV !== 'production') {
     if (tone !== 'neutral' && variant !== 'accent' && variant !== 'tinted') {
       // eslint-disable-next-line no-console
-      console.warn(`[Card] tone="${tone}" is only meaningful when variant="accent" or variant="tinted" (got variant="${variant}"). Ignoring tone.`);
+      console.warn('[Card] tone is only meaningful when variant="accent" or variant="tinted". Ignoring tone.', { tone, variant });
     }
     if (onClick && !interactive) {
       // eslint-disable-next-line no-console

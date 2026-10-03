@@ -166,7 +166,7 @@ export const buildStructuredQueryFromOperations = (operations: any[]): any[] =>
     .map((op) => {
       const backendOp = LINE_OPERATOR_MAP[op.op];
       if (!backendOp) {
-        console.warn(`Unsupported line operation operator: ${op.op}`);
+        console.warn('Unsupported line operation operator', { operator: op.op });
         return null;
       }
       return {

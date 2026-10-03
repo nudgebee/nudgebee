@@ -529,7 +529,7 @@ export const useOptionsSource = (currentTaskDefinition: any, formValues: Record<
               snackbar.error(err.message);
               return { fieldName: f.fieldName, options: [], loading: false, error: err.message };
             }
-            console.error(`Failed to fetch options for ${f.fieldName} (source: ${f.sourceType}):`, err);
+            console.error('Failed to fetch options', { fieldName: f.fieldName, sourceType: f.sourceType, err });
             return { fieldName: f.fieldName, options: [], loading: false };
           }
         })

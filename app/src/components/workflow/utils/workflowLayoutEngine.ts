@@ -47,7 +47,7 @@ export const calculateNodeLayers = (tasks: any[]): Map<string, number> => {
     // Circular dependency detection
     if (visiting.has(taskId)) {
       const cycle = [...path, taskId].join(' -> ');
-      console.error(`Circular dependency detected: ${cycle}`);
+      console.error('Circular dependency detected', { cycle });
       // Break the cycle by treating this as a root task
       layers.set(taskId, 0);
       visited.add(taskId);
@@ -58,7 +58,7 @@ export const calculateNodeLayers = (tasks: any[]): Map<string, number> => {
     const task = taskMap.get(taskId);
 
     if (!task) {
-      console.warn(`Task "${taskId}" not found in task map`);
+      console.warn('Task not found in task map', { taskId });
       layers.set(taskId, 0);
       visited.add(taskId);
       visiting.delete(taskId);
@@ -648,7 +648,7 @@ export const convertWorkflowToReactFlow = (definition: any, layoutConfig: Layout
           edges.push(edge);
         } else if (!sourceNodeId) {
           // Warn about missing dependency
-          console.warn(`convertWorkflowToReactFlow: Missing source node for dependency "${dependencyId}" in task "${task.id}"`);
+          console.warn('convertWorkflowToReactFlow: Missing source node for dependency', { dependencyId, taskId: task.id });
         }
       });
     }

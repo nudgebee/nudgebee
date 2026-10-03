@@ -527,7 +527,7 @@ describe('tryBypassGraphQL', () => {
     }
     expect(result.body.errors?.[0].message).toBe('Handler URL unresolved for llm_gateway_list_rate_limits');
     // The variable name is the whole point of the fix: it must reach the server log.
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('missingEnv=LLM_GATEWAY_URL'));
+    expect(errorSpy).toHaveBeenCalledWith('%s', expect.stringContaining('missingEnv=LLM_GATEWAY_URL'));
     errorSpy.mockRestore();
   });
 

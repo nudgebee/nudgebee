@@ -125,6 +125,7 @@ export function loadRpcRoutes(): Record<string, RpcRoute> {
   if (missingHeaders.length > 0) {
     // eslint-disable-next-line no-console
     console.warn(
+      '%s',
       `[rpcRoutes] ${missingHeaders.length} action(s) lack a 'headers:' block — ` +
         `requests will be sent without X-ACTION-TOKEN and may be rejected by ` +
         `strict-auth backends (services-server, cloud-collector-server). ` +

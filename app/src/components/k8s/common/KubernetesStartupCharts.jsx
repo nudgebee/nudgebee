@@ -20,7 +20,7 @@ function fetchPodMetrics(pod, query, groupBy, datasource) {
     .getK8sPodGroupings2(10, query, groupBy, datasource || 'prometheus')
     .then((res) => ({ pod, data: res?.data?.k8s_pod_groupings || [], promQueries: res?.data?.promQueries || {}, createdMs }))
     .catch((err) => {
-      console.error(`Failed to fetch startup metrics for pod ${pod.name}:`, err);
+      console.error('Failed to fetch startup metrics for pod', { pod: pod.name, err });
       return { pod, data: [], promQueries: {}, createdMs };
     });
 }

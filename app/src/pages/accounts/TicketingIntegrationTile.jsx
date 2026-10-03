@@ -106,7 +106,7 @@ const TicketingIntegrationTile = ({ tool, displayName, cloudProvider, AccountMod
         setTotalCount(res?.totalCount || 0);
       })
       .catch((err) => {
-        console.error(`Failed to fetch ${displayName} configurations`, err);
+        console.error('Failed to fetch ticketing configurations', { displayName, err });
       })
       .finally(() => setLoading(false));
   };

@@ -149,7 +149,7 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
               possible_values: generatedValues,
             };
           } catch (error) {
-            console.error(`Failed to generate values for ${key}:`, error);
+            console.error('Failed to generate values', { key, error });
           }
         }
       }

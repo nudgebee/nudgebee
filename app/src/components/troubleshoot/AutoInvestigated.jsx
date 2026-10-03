@@ -240,7 +240,10 @@ const AutoInvestigated = () => {
           .filter(Boolean);
 
         if (eventIds.length < response.length) {
-          console.warn(`[AutoInvestigated] UUID extraction failed for ${response.length - eventIds.length} of ${response.length} conversation(s)`);
+          console.warn('[AutoInvestigated] UUID extraction failed for some conversations', {
+            failed: response.length - eventIds.length,
+            total: response.length,
+          });
         }
 
         if (eventIds.length === 0) {

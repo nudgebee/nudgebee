@@ -437,7 +437,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
       })
       .catch((error) => {
         snackbar.error(`Failed to fetch ${cloudProvider} accounts.`);
-        console.error(`Failed to fetch ${cloudProvider} accounts:`, error);
+        console.error('Failed to fetch cloud accounts', { cloudProvider, error });
         setRawAccounts([]);
       })
       .finally(() => {

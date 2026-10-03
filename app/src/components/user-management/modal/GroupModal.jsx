@@ -434,7 +434,7 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
       handleSnackBarData({ message: successMessage, severity: 'success' });
       return true;
     } catch (error) {
-      console.error(`Error saving ${section}:`, error);
+      console.error('Error saving section', { section, error });
       handleSnackBarData({ message: error?.message || `Failed to update ${section}`, severity: 'error' });
       return false;
     } finally {

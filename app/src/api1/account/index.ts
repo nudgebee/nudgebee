@@ -300,7 +300,7 @@ const apiAccount = {
         data: response?.data?.data?.messagingplatforms_list?.data || [],
       };
     } catch (err) {
-      console.log(`Failed to fetch ${platform_type}- `, err);
+      console.log('Failed to fetch platform', { platform_type, err });
       return err;
     }
   },
@@ -323,7 +323,7 @@ const apiAccount = {
       const res: any = await apiIntegrations.listIntegrations({ type: platform_type, limit: 50 });
       rows = res?.data?.data?.integrations_list?.rows || [];
     } catch (err) {
-      console.log(`Failed to fetch ${platform_type} integrations- `, err);
+      console.log('Failed to fetch platform integrations', { platform_type, err });
     }
     if (rows.length === 0) {
       return { data: legacy };
@@ -372,7 +372,7 @@ const apiAccount = {
         data: response?.data?.data?.messagingplatforms_update,
       };
     } catch (err) {
-      console.log(`Failed to update messaging platform for id ${id}- `, err);
+      console.log('Failed to update messaging platform', { id, err });
       return err;
     }
   },

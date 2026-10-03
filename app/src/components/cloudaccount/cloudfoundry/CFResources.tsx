@@ -392,7 +392,7 @@ const CFResources = (props: any) => {
         setResourcesCount(count);
       })
       .catch((error: any) => {
-        console.error(`Failed to fetch CloudFoundry ${resourceType}:`, error);
+        console.error('Failed to fetch CloudFoundry resources', { resourceType, error });
         setLoading(false);
       });
   };

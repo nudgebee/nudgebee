@@ -205,9 +205,10 @@ const extractFirstCompleteJSON = (jsonString: string): string => {
         // Check if there's more content after this object (excluding whitespace)
         const remainingContent = jsonString.substring(i + 1).trim();
         if (remainingContent.length > 0 && remainingContent[0] === '{') {
-          console.warn(
-            `Multiple JSON objects detected. Extracted first object (${firstObject.length} chars). Remaining: ${remainingContent.length} chars`
-          );
+          console.warn('Multiple JSON objects detected. Extracted first object.', {
+            extractedChars: firstObject.length,
+            remainingChars: remainingContent.length,
+          });
         }
 
         return firstObject;

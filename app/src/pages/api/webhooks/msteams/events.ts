@@ -54,7 +54,7 @@ async function verifyBotFrameworkJwt(token: string, activityServiceUrl: unknown)
 
 export default async function trigger(req: NextApiRequest, res: NextApiResponse) {
   try {
-    console.debug(`Incoming request to ms teams events api - Method: ${req.method}`);
+    console.debug('Incoming request to ms teams events api', { method: req.method });
 
     if (req.method !== 'POST') {
       return res.status(405).send('Method Not Allowed');
@@ -91,7 +91,7 @@ export default async function trigger(req: NextApiRequest, res: NextApiResponse)
       headers: { 'X-ACTION-TOKEN': process.env.ACTION_API_SERVER_TOKEN ?? '' },
       timeout: 5000,
     });
-    console.log(`Response from notification service - Status Code: ${response.status}, Response Body: ${response.data}`);
+    console.log('Response from notification service', { status: response.status, body: response.data });
 
     return;
   } catch (err: any) {
