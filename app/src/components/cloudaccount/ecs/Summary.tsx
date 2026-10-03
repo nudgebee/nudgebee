@@ -133,7 +133,7 @@ const ECSSummaryView = ({ accountId = '', serviceName = 'AmazonECS', resourceId 
         if (!cancelled) setSummaryData(res || {});
       })
       .catch((err) => {
-        console.error(`Error fetching ECS summary for account ${accountId}:`, err);
+        console.error('Error fetching ECS summary', { accountId, err });
         if (cancelled) return;
         snackbar.error(`Failed to load ECS summary: ${err.message}`);
         setSummaryData({});
