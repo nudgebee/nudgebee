@@ -371,8 +371,11 @@ const connectClusterTour: TourDef = {
 /**
  * First-login "app overview" walkthrough of the left sidebar plus the header
  * cluster/cloud controls. Anchors to the sidebar nav button ids (set in
- * components/common/layout/index.jsx via `id={item.id}`) and two header ids set
- * in components/common/header/Header1.jsx:
+ * components/common/layout/index.jsx via `id={item.id}`) and three header ids
+ * set in components/common/header/Header1.jsx:
+ *   #auto-complete-global-page-search → the header search pill (GlobalPageSearch).
+ *        A single info step here — the standalone `globalSearchTour` below covers
+ *        the dropdown's contents step by step; this tour just points it out.
  *   #global-cluster-filter → the active cluster / cloud account picker
  *   #cluster-detail-view   → the "detail view" button
  * The sidebar is global; the header controls render on /home (where the tour
@@ -455,6 +458,15 @@ const appOverviewTour: TourDef = {
       // NubiBrainNav.jsx, which gates the button on the same check.
       optional: true,
       isAvailable: () => !isOSSDeploymentMode(),
+    },
+    {
+      element: '#auto-complete-global-page-search',
+      title: 'Search, from anywhere',
+      get description() {
+        return `Press Ctrl/⌘+K any time to jump straight to a page, scope your search to one cluster or cloud account, or hand the question straight to ${getAssistantName()}.`;
+      },
+      side: 'bottom',
+      align: 'start',
     },
     {
       element: '#global-cluster-filter',
