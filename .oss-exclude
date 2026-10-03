@@ -60,6 +60,11 @@ app/src/ee/
 # "no residual ee/ imports" assertion in build-oss-snapshot.sh.
 app/__tests__/ee/
 
+# Per-host branding test. It lives under __tests__/lib/ but requires the EE
+# provider @ee/branding/serverInit (stripped with app/src/ee/ above), so it
+# cannot resolve in the snapshot.
+app/__tests__/lib/hostBranding.test.ts
+
 # SAML-handling Next.js pages — entire flow is EE (Okta/Azure AD/Auth0
 # enterprise SSO). Can't live under app/src/ee/ because the pages-router
 # requires filesystem paths under app/src/pages/, so they're listed
