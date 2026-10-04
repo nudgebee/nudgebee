@@ -206,6 +206,15 @@ def combine_filters(
         raise ValueError(f"Invalid logic '{logic}'. Use 'must' (AND) or 'should' (OR)")
 
 
+STRUCTURED_FILTER_KEYS = ("must", "should", "must_not")
+
+
+def is_structured_filter(filter_dict: Optional[Dict[str, Any]]) -> bool:
+    """True when ``filter_dict`` uses explicit must/should/must_not clauses
+    rather than flat ``field: value`` pairs."""
+    return bool(filter_dict) and any(key in filter_dict for key in STRUCTURED_FILTER_KEYS)
+
+
 def build_filter_from_dict(filter_dict: Dict[str, Any]) -> Optional[Filter]:
     """
     Build a Qdrant Filter from a dictionary specification.
@@ -246,7 +255,9 @@ def build_filter_from_dict(filter_dict: Dict[str, Any]) -> Optional[Filter]:
         return None
 
     # Simple case: flat dictionary of field:value pairs
-    if "must" not in filter_dict and "should" not in filter_dict:
+    # A must_not-only filter is structured too; treating it as flat would
+    # search for a field literally named "must_not" and match nothing.
+    if not is_structured_filter(filter_dict):
         return build_metadata_filter(
             module=filter_dict.get("module"),
             account=filter_dict.get("account"),
@@ -254,25 +265,23 @@ def build_filter_from_dict(filter_dict: Dict[str, Any]) -> Optional[Filter]:
             custom_fields={k: v for k, v in filter_dict.items() if k not in ["module", "account", "source"]},
         )
 
-    # Complex case: explicit must/should conditions
-    must_conditions: List[Any] = []
-    should_conditions: List[Any] = []
+    # Complex case: explicit must/should/must_not clauses. Strict: a malformed
+    # clause raises rather than being dropped, because a dropped must_not would
+    # return exactly what the caller asked to exclude.
+    clauses: Dict[str, List[Any]] = {}
+    for clause in STRUCTURED_FILTER_KEYS:
+        conditions = filter_dict.get(clause) or []
+        if not isinstance(conditions, list):
+            raise ValueError(f"Filter clause '{clause}' must be a list of conditions: {conditions!r}")
+        clauses[clause] = [_build_condition_from_dict(condition) for condition in conditions]
+    must_conditions = clauses["must"]
+    should_conditions = clauses["should"]
+    must_not_conditions = clauses["must_not"]
 
-    for condition_dict in filter_dict.get("must", []):
-        cond = _build_condition_from_dict(condition_dict)
-        if cond:
-            must_conditions.append(cond)
-
-    for condition_dict in filter_dict.get("should", []):
-        cond = _build_condition_from_dict(condition_dict)
-        if cond:
-            should_conditions.append(cond)
-
-    must_not_conditions: List[Any] = []
-    for condition_dict in filter_dict.get("must_not", []):
-        cond = _build_condition_from_dict(condition_dict)
-        if cond:
-            must_not_conditions.append(cond)
+    # Flat field: value pairs alongside the clauses still apply, as "must".
+    for key, value in filter_dict.items():
+        if key not in STRUCTURED_FILTER_KEYS:
+            must_conditions.append(build_field_condition(key, value))
 
     return Filter(
         must=must_conditions or None,
@@ -281,16 +290,18 @@ def build_filter_from_dict(filter_dict: Dict[str, Any]) -> Optional[Filter]:
     )
 
 
-def _build_condition_from_dict(cond_dict: Dict[str, Any]) -> Optional[FieldCondition]:
+def _build_condition_from_dict(cond_dict: Dict[str, Any]) -> FieldCondition:
     """
     Build a single FieldCondition from dictionary.
 
-    Internal helper for build_filter_from_dict.
+    Internal helper for build_filter_from_dict. Raises ValueError for a
+    condition it cannot build.
     """
+    if not isinstance(cond_dict, dict):
+        raise ValueError(f"Filter condition must be a dict: {cond_dict!r}")
     field = cond_dict.get("field")
     if not field:
-        logger.warning(f"Filter condition missing 'field': {cond_dict}")
-        return None
+        raise ValueError(f"Filter condition missing 'field': {cond_dict}")
 
     # Add metadata. prefix if not present
     field_key = f"metadata.{field}" if not field.startswith("metadata.") else field
@@ -313,5 +324,4 @@ def _build_condition_from_dict(cond_dict: Dict[str, Any]) -> Optional[FieldCondi
         )
         return FieldCondition(key=field_key, range=range_obj)
 
-    logger.warning(f"Filter condition has no value/values/range: {cond_dict}")
-    return None
+    raise ValueError(f"Filter condition has no value/values/range: {cond_dict}")
