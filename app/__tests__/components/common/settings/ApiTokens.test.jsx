@@ -8,7 +8,8 @@ jest.mock('@utils/colors');
 
 jest.mock('@ui/Modal', () => ({
   __esModule: true,
-  Modal: ({ open, onClose, onConfirm, confirmText, title, children, actionButtons }) =>
+  // The standard footer mirrors ds/Modal: `loader` disables both buttons, `confirmDisabled` the confirm.
+  Modal: ({ open, onClose, onConfirm, confirmText, confirmDisabled, loader, title, children, actionButtons }) =>
     open ? (
       <div data-testid='modal'>
         <h2>{title}</h2>
@@ -16,10 +17,10 @@ jest.mock('@ui/Modal', () => ({
         {actionButtons}
         {!actionButtons && confirmText && (
           <>
-            <button onClick={onClose} data-testid='btn-Cancel'>
+            <button onClick={onClose} disabled={loader} data-testid='btn-Cancel'>
               Cancel
             </button>
-            <button onClick={onConfirm} data-testid={`btn-${confirmText}`}>
+            <button onClick={onConfirm} disabled={confirmDisabled || loader} data-testid={`btn-${confirmText}`}>
               {confirmText}
             </button>
           </>
@@ -52,17 +53,26 @@ jest.mock('@ui/Input', () => ({
 
 jest.mock('@ui/Select', () => ({
   __esModule: true,
-  Select: ({ label, value, onChange, options }) => (
-    <select aria-label={label} value={value ?? ''} onChange={(e) => onChange(e.target.value)} data-testid={`select-${label}`}>
-      {options.map((o) => {
-        const opt = typeof o === 'string' ? { value: o, label: o } : o;
-        return (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        );
-      })}
-    </select>
+  Select: ({ label, value, onChange, options, multiple, instructionText }) => (
+    <>
+      <select
+        aria-label={label}
+        multiple={multiple}
+        value={value ?? (multiple ? [] : '')}
+        onChange={(e) => onChange(multiple ? [...e.target.selectedOptions].map((o) => o.value) : e.target.value)}
+        data-testid={`select-${label}`}
+      >
+        {options.map((o) => {
+          const opt = typeof o === 'string' ? { value: o, label: o } : o;
+          return (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          );
+        })}
+      </select>
+      {instructionText && <span data-testid={`help-${label}`}>{instructionText}</span>}
+    </>
   ),
 }));
 
@@ -119,6 +129,7 @@ jest.mock('@lib/externalUrls', () => ({
 const mockListUserTokens = jest.fn().mockResolvedValue({ data: [] });
 const mockCreateUserToken = jest.fn().mockResolvedValue({ data: { token: 'new-token-value-xyz' } });
 const mockDeleteUserToken = jest.fn().mockResolvedValue({ data: {} });
+const mockUpdateUserToken = jest.fn().mockResolvedValue({ data: { status: 'updated' } });
 
 jest.mock('@api1/user/', () => ({
   __esModule: true,
@@ -126,7 +137,26 @@ jest.mock('@api1/user/', () => ({
     listUserTokens: (...args) => mockListUserTokens(...args),
     createUserToken: (...args) => mockCreateUserToken(...args),
     deleteUserToken: (...args) => mockDeleteUserToken(...args),
+    updateUserToken: (...args) => mockUpdateUserToken(...args),
   },
+}));
+
+jest.mock('@ui/CodeBlock', () => ({
+  __esModule: true,
+  CodeBlock: ({ code }) => <code>{code}</code>,
+}));
+
+const mockListGatewayModels = jest.fn();
+jest.mock('@api1/gateway-config', () => ({
+  GATEWAY_MATCH_PROVIDER_OPTIONS: [
+    { value: 'anthropic', label: 'anthropic' },
+    { value: 'openai', label: 'openai' },
+    { value: 'gemini', label: 'gemini' },
+    { value: 'vllm', label: 'custom / vertex-openai' },
+    { value: 'vertex', label: 'vertex' },
+    { value: 'bedrock', label: 'bedrock' },
+  ],
+  listGatewayModels: (...args) => mockListGatewayModels(...args),
 }));
 
 const mockGetTokenScopeCatalog = jest.fn();
@@ -157,6 +187,11 @@ describe('ApiTokens', () => {
     mockCreateUserToken.mockResolvedValue({ data: { token: 'new-token-value-xyz' } });
     mockDeleteUserToken.mockResolvedValue({ data: {} });
     mockGetTokenScopeCatalog.mockResolvedValue(SCOPE_CATALOG);
+    mockUpdateUserToken.mockResolvedValue({ data: { status: 'updated' } });
+    mockListGatewayModels.mockResolvedValue([
+      { id: 'openai/gpt-4o-mini', provider: 'openai' },
+      { id: 'anthropic/claude-haiku-4-5', provider: 'anthropic' },
+    ]);
   });
 
   it('renders modal when open is true', async () => {
@@ -257,7 +292,9 @@ describe('ApiTokens', () => {
     await userEvent.click(await screen.findByRole('button', { name: /create token/i }));
     expect(screen.getByRole('radio', { name: /ai gateway/i })).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByRole('button', { name: /add limit/i })).toBeInTheDocument();
-    expect(screen.queryByRole('radio', { name: /restricted/i })).not.toBeInTheDocument();
+    // A gateway key's access means models and endpoints, never the platform scope grid.
+    expect(screen.queryByTestId('token-scope-picker')).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /all models/i })).toHaveAttribute('aria-checked', 'true');
   });
 
   it('an all-access key create sends kind=all and carries limits', async () => {
@@ -424,9 +461,183 @@ describe('ApiTokens', () => {
     await userEvent.click(screen.getByRole('radio', { name: /restricted/i }));
     await userEvent.click(await screen.findByRole('checkbox', { name: /tickets — read/i }));
     await userEvent.click(screen.getByRole('radio', { name: /ai gateway/i }));
-    expect(screen.queryByRole('radio', { name: /restricted/i })).not.toBeInTheDocument();
+    // The platform Restricted choice does not carry over: the gateway key starts on All models.
+    expect(screen.queryByTestId('token-scope-picker')).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /all models/i })).toHaveAttribute('aria-checked', 'true');
     await userEvent.click(screen.getByRole('button', { name: /^create$/i }));
     expect(mockCreateUserToken).toHaveBeenCalledWith(expect.objectContaining({ kind: 'gateway', scopes: null }));
+  });
+
+  const openGatewayCreate = async (name) => {
+    render(<ApiTokens open title='API Tokens' onClose={() => {}} />);
+    await userEvent.click(await screen.findByRole('button', { name: /create token/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /ai gateway/i }));
+    await userEvent.type(screen.getByLabelText(/name/i), name);
+  };
+
+  it('an unrestricted gateway key sends no policy and never loads the model catalog', async () => {
+    await openGatewayCreate('laptop');
+    await userEvent.click(screen.getByRole('button', { name: /^create$/i }));
+    expect(mockCreateUserToken).toHaveBeenCalledWith(expect.objectContaining({ kind: 'gateway', gatewayPolicy: null }));
+    expect(mockListGatewayModels).not.toHaveBeenCalled();
+  });
+
+  it('a restricted gateway key sends the picked endpoints and models, leaving providers open', async () => {
+    await openGatewayCreate('ci');
+    await userEvent.click(screen.getByRole('radio', { name: /^restricted$/i }));
+    await userEvent.click(screen.getByRole('checkbox', { name: /^chat$/i }));
+    await waitFor(() => expect(screen.getByRole('option', { name: 'openai/gpt-4o-mini' })).toBeInTheDocument());
+    await userEvent.selectOptions(screen.getByLabelText(/^models$/i), 'openai/gpt-4o-mini');
+    await userEvent.click(screen.getByRole('button', { name: /^create$/i }));
+    expect(mockCreateUserToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'gateway',
+        gatewayPolicy: { providers: null, models: ['openai/gpt-4o-mini'], endpoints: ['chat'] },
+      })
+    );
+  });
+
+  it('keeps Create disabled for a restricted gateway key with nothing picked', async () => {
+    await openGatewayCreate('ci');
+    await userEvent.click(screen.getByRole('radio', { name: /^restricted$/i }));
+    expect(screen.getByRole('button', { name: /^create$/i })).toBeDisabled();
+    await userEvent.click(screen.getByRole('checkbox', { name: /^embeddings$/i }));
+    expect(screen.getByRole('button', { name: /^create$/i })).toBeEnabled();
+  });
+
+  it('a gateway restriction does not carry over when the type switches to all-access', async () => {
+    await openGatewayCreate('shared');
+    await userEvent.click(screen.getByRole('radio', { name: /^restricted$/i }));
+    await userEvent.click(screen.getByRole('checkbox', { name: /^chat$/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /all access/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^create$/i }));
+    expect(mockCreateUserToken).toHaveBeenCalledWith(expect.objectContaining({ kind: 'all', gatewayPolicy: null }));
+  });
+
+  it('shows each gateway key as all models or its restriction, and edits access in place', async () => {
+    const base = { status: 'active', created_at: '2026-09-01T00:00:00Z', accessed_at: null, expires_at: null, limits: [], kind: 'gateway' };
+    mockListUserTokens.mockResolvedValue({
+      data: [
+        { ...base, id: 'k1', name: 'laptop', gateway_policy: null },
+        { ...base, id: 'k2', name: 'ci', gateway_policy: { providers: null, models: ['openai/gpt-4o-mini'], endpoints: ['chat'] } },
+      ],
+    });
+    render(<ApiTokens open title='API Tokens' onClose={() => {}} />);
+    expect(await screen.findByText('All models')).toBeInTheDocument();
+    expect(screen.getByText('openai/gpt-4o-mini · chat')).toBeInTheDocument();
+
+    await userEvent.click(screen.getAllByRole('button', { name: /edit access/i })[1]);
+    expect(await screen.findByRole('heading', { name: 'Access for ci' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /^chat$/i })).toBeChecked();
+    await userEvent.click(screen.getByRole('radio', { name: /all models/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(mockUpdateUserToken).toHaveBeenCalledWith({ id: 'k2', gatewayPolicy: {} }));
+  });
+
+  it('endpoints start on All, the last endpoint cannot be unselected, and only All widens the key again', async () => {
+    await openGatewayCreate('ci');
+    await userEvent.click(screen.getByRole('radio', { name: /^restricted$/i }));
+    const endpoint = (name) => screen.getByRole('checkbox', { name });
+    expect(endpoint(/^all$/i)).toBeChecked();
+
+    await userEvent.click(endpoint(/^chat$/i));
+    expect(endpoint(/^chat$/i)).toBeChecked();
+    expect(endpoint(/^all$/i)).not.toBeChecked();
+
+    // Unselecting the only endpoint must not quietly open the key to every endpoint.
+    await userEvent.click(endpoint(/^chat$/i));
+    expect(endpoint(/^chat$/i)).toBeChecked();
+    expect(endpoint(/^all$/i)).not.toBeChecked();
+
+    await userEvent.click(endpoint(/^all$/i));
+    expect(endpoint(/^all$/i)).toBeChecked();
+    expect(endpoint(/^chat$/i)).not.toBeChecked();
+    // With every endpoint open and nothing else picked there is nothing to restrict.
+    expect(screen.getByRole('button', { name: /^create$/i })).toBeDisabled();
+  });
+
+  it('a restricted key with All endpoints sends no endpoint list', async () => {
+    await openGatewayCreate('ci');
+    await userEvent.click(screen.getByRole('radio', { name: /^restricted$/i }));
+    await userEvent.click(screen.getByRole('checkbox', { name: /^chat$/i }));
+    await userEvent.click(screen.getByRole('checkbox', { name: /^all$/i }));
+    await waitFor(() => expect(screen.getByRole('option', { name: 'openai/gpt-4o-mini' })).toBeInTheDocument());
+    await userEvent.selectOptions(screen.getByLabelText(/^models$/i), 'openai/gpt-4o-mini');
+    await userEvent.click(screen.getByRole('button', { name: /^create$/i }));
+    expect(mockCreateUserToken).toHaveBeenCalledWith(
+      expect.objectContaining({ gatewayPolicy: { providers: null, models: ['openai/gpt-4o-mini'], endpoints: null } })
+    );
+  });
+
+  it('says so when the model catalog fails to load, and still offers every provider lane', async () => {
+    mockListGatewayModels.mockRejectedValue(new Error('gateway unavailable'));
+    await openGatewayCreate('ci');
+    await userEvent.click(screen.getByRole('radio', { name: /^restricted$/i }));
+    expect(await screen.findByText(/couldn't load your model catalog/i)).toBeInTheDocument();
+    const providers = within(screen.getByLabelText(/^providers$/i))
+      .getAllByRole('option')
+      .map((o) => o.value);
+    expect(providers).toEqual(expect.arrayContaining(['anthropic', 'openai', 'gemini', 'vllm', 'vertex', 'bedrock']));
+  });
+
+  it('does not report a catalog failure for a request aborted by a remount', async () => {
+    // StrictMode mounts effects twice in dev: the first request is aborted, the second succeeds.
+    mockListGatewayModels.mockImplementation(
+      (signal) =>
+        new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted')));
+          setTimeout(() => resolve([{ id: 'openai/gpt-4o-mini', provider: 'openai' }]), 0);
+        })
+    );
+    render(
+      <React.StrictMode>
+        <ApiTokens open title='API Tokens' onClose={() => {}} />
+      </React.StrictMode>
+    );
+    await userEvent.click(await screen.findByRole('button', { name: /create token/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /ai gateway/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /^restricted$/i }));
+    expect(await screen.findByRole('option', { name: 'openai/gpt-4o-mini' })).toBeInTheDocument();
+    expect(screen.queryByText(/couldn't load your model catalog/i)).not.toBeInTheDocument();
+  });
+
+  it('disables Save and Cancel in the edit access dialog while the change is saving', async () => {
+    const base = { status: 'active', created_at: '2026-09-01T00:00:00Z', accessed_at: null, expires_at: null, limits: [], kind: 'gateway' };
+    mockListUserTokens.mockResolvedValue({
+      data: [{ ...base, id: 'k2', name: 'ci', gateway_policy: { providers: null, models: null, endpoints: ['chat'] } }],
+    });
+    let finishSave;
+    mockUpdateUserToken.mockReturnValue(
+      new Promise((resolve) => {
+        finishSave = resolve;
+      })
+    );
+    render(<ApiTokens open title='API Tokens' onClose={() => {}} />);
+    await userEvent.click(await screen.findByRole('button', { name: /edit access/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /all models/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+    const dialog = screen.getByRole('heading', { name: 'Access for ci' }).closest('[data-testid="modal"]');
+    expect(within(dialog).getByRole('button', { name: /^save$/i })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: /^cancel$/i })).toBeDisabled();
+    expect(mockUpdateUserToken).toHaveBeenCalledTimes(1);
+
+    finishSave({ data: { status: 'updated' } });
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Access for ci' })).not.toBeInTheDocument());
+  });
+
+  it('offers Edit access on AI Gateway keys only', async () => {
+    const base = { status: 'active', created_at: '2026-09-01T00:00:00Z', accessed_at: null, expires_at: null, limits: [] };
+    mockListUserTokens.mockResolvedValue({
+      data: [
+        { ...base, id: 'p1', name: 'nbctl', kind: 'platform' },
+        { ...base, id: 'a1', name: 'shared', kind: 'all' },
+        { ...base, id: 'g1', name: 'laptop', kind: 'gateway', gateway_policy: null },
+      ],
+    });
+    render(<ApiTokens open title='API Tokens' onClose={() => {}} />);
+    await screen.findByText('laptop');
+    expect(screen.getAllByRole('button', { name: /edit access/i })).toHaveLength(1);
   });
 
   it('revokes a key by id', async () => {

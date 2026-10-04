@@ -315,3 +315,22 @@ export async function listTenantUsers(signal?: AbortSignal): Promise<GatewayUser
   const response = await queryGraphQL(query, 'GatewayTenantUsers', {}, undefined, signal);
   return response?.data?.data?.users_list_by_tenant?.rows ?? [];
 }
+
+// ─── Model catalog (API-key restrictions) ─────────────────────────────────────
+
+export interface GatewayCatalogModel {
+  /** The name a key policy lists: a tenant mapping name or `provider/model`. */
+  id: string;
+  provider: string;
+}
+
+/** The model names an AI Gateway key can be restricted to (tier aliases excluded). */
+export async function listGatewayModels(signal?: AbortSignal): Promise<GatewayCatalogModel[]> {
+  const query = `mutation ListGatewayModels($request: json!) {
+    llm_gateway_list_models(request: $request) {
+      data
+    }
+  }`;
+  const response = await queryGraphQL(query, 'ListGatewayModels', { request: {} }, undefined, signal);
+  return unwrap<GatewayCatalogModel[]>(response, 'llm_gateway_list_models') ?? [];
+}

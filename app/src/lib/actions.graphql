@@ -4896,6 +4896,7 @@ input UserTokenCreateRequest {
   expires_at: String
   limits: [TokenLimitInput!]
   scopes: [String!]
+  gateway_policy: GatewayPolicyInput
 }
 
 input UserTokenDeleteRequest {
@@ -4907,6 +4908,18 @@ input UserTokenUpdateRequest {
   id: String!
   expires_at: String
   limits: [TokenLimitInput!]
+  """
+  AI Gateway keys only. Omit to keep the key's current restrictions. When sent, it replaces
+  all three lists together: a list left out is cleared (unrestricted), not kept, so send the
+  whole policy. {} clears every restriction.
+  """
+  gateway_policy: GatewayPolicyInput
+}
+
+input GatewayPolicyInput {
+  providers: [String!]
+  models: [String!]
+  endpoints: [String!]
 }
 
 input TokenLimitInput {
@@ -8546,6 +8559,13 @@ type UserTokenCreateResponse {
   kind: String
   expires_at: String
   scopes: [String]
+  gateway_policy: GatewayPolicy
+}
+
+type GatewayPolicy {
+  providers: [String]
+  models: [String]
+  endpoints: [String]
 }
 
 type UserTokenDeleteResponse {
@@ -8572,6 +8592,7 @@ type UserAuthToken {
   accessed_at: timestamp
   expires_at: timestamp
   scopes: [String]
+  gateway_policy: GatewayPolicy
   limits: [TokenLimit]
   usage: TokenUsage
 }

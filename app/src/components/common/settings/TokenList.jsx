@@ -1,12 +1,14 @@
 import React from 'react';
-import { Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { Button } from '@ui/Button';
 import { Chip } from '@ui/Chip';
 import { EmptyState } from '@ui/EmptyState';
 import Tooltip from '@ui/Tooltip';
 import CustomTable from '@shared/tables/CustomTable';
 import dayjs from 'dayjs';
+import { ds } from 'src/utils/colors';
 import { carriesGatewayTraffic, KIND_LABELS } from './keyKinds';
+import { describeGatewayPolicy } from './GatewayRestrictions';
 
 const formatDate = (date) => dayjs(date).format('MMM DD, YYYY HH:mm');
 
@@ -29,10 +31,34 @@ const AccessCell = ({ scopes }) => {
   );
 };
 
+// An AI Gateway key with no policy reaches every model; otherwise summarise what it may call.
+const GatewayAccessCell = ({ policy }) => {
+  const summary = describeGatewayPolicy(policy);
+  if (!summary) return <Typography variant='body2'>All models</Typography>;
+  const detail = [
+    policy.models?.length && `Models: ${policy.models.join(', ')}`,
+    policy.providers?.length && `Providers: ${policy.providers.join(', ')}`,
+    policy.endpoints?.length && `Endpoints: ${policy.endpoints.join(', ')}`,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  return (
+    <Tooltip title={detail}>
+      <Typography
+        variant='body2'
+        component='span'
+        sx={{ display: 'block', maxWidth: ds.space.mul(0, 90), overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+      >
+        {summary}
+      </Typography>
+    </Tooltip>
+  );
+};
+
 // Every key in one table, labelled by kind. A column that applies to some kinds only shows
-// '—' on the rest: a gateway key cannot call the app API, so it has no access to show, and
-// limits and spend meter gateway calls only.
-const TokenList = ({ tokens, onRevoke }) => {
+// '—' on the rest: limits and spend meter gateway calls only. Access means module scopes on a
+// key that reaches the app API, and model / endpoint restrictions on an AI Gateway key.
+const TokenList = ({ tokens, onRevoke, onEditAccess }) => {
   if (tokens.length === 0) {
     return <EmptyState title='No API tokens yet' size='section' />;
   }
@@ -56,15 +82,22 @@ const TokenList = ({ tokens, onRevoke }) => {
       { text: t.accessed_at ? formatDate(t.accessed_at) : '—' },
       { text: t.expires_at ? formatDate(t.expires_at) : 'never' },
       t.kind === 'gateway'
-        ? { text: '—' }
+        ? { text: describeGatewayPolicy(t.gateway_policy) || 'All models', component: <GatewayAccessCell policy={t.gateway_policy} /> }
         : { text: t.scopes?.length ? t.scopes.join(', ') : 'Full access', component: <AccessCell scopes={t.scopes} /> },
       { text: reachesGateway ? limitsText(t.limits) : '—' },
       { text: reachesGateway ? usageText(t.usage) : '—' },
       {
         component: (
-          <Button tone='danger' size='sm' onClick={() => onRevoke(t.id, t.name)}>
-            Revoke
-          </Button>
+          <Box sx={{ display: 'flex', gap: ds.space[2], justifyContent: 'flex-end', whiteSpace: 'nowrap' }}>
+            {t.kind === 'gateway' && onEditAccess && (
+              <Button tone='secondary' size='sm' onClick={() => onEditAccess(t)}>
+                Edit access
+              </Button>
+            )}
+            <Button tone='danger' size='sm' onClick={() => onRevoke(t.id, t.name)}>
+              Revoke
+            </Button>
+          </Box>
         ),
       },
     ];

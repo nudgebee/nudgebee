@@ -36,6 +36,17 @@ type UserTokenCreateRequest struct {
 	// Scopes restrict a platform key to `<module>:<Read|Write|Execute>` keys; empty means
 	// the owner's full access. 400 on any other kind.
 	Scopes []string `json:"scopes" mapstructure:"scopes"`
+	// GatewayPolicy restricts a gateway key's providers, models and endpoint families;
+	// nil means unrestricted. 400 on any other kind.
+	GatewayPolicy *GatewayPolicy `json:"gateway_policy" mapstructure:"gateway_policy"`
+}
+
+// GatewayPolicy narrows what an AI Gateway key may reach. A nil list leaves that
+// dimension unrestricted; an empty list is rejected, since it would allow nothing.
+type GatewayPolicy struct {
+	Providers []string `json:"providers" mapstructure:"providers"`
+	Models    []string `json:"models" mapstructure:"models"`
+	Endpoints []string `json:"endpoints" mapstructure:"endpoints"`
 }
 
 type UserTokenCreateResponse struct {
@@ -44,6 +55,8 @@ type UserTokenCreateResponse struct {
 	Kind      string   `json:"kind" mapstructure:"kind"`
 	ExpiresAt *string  `json:"expires_at" mapstructure:"expires_at"`
 	Scopes    []string `json:"scopes" mapstructure:"scopes"`
+	// GatewayPolicy echoes the stored policy; nil when the key is unrestricted.
+	GatewayPolicy *GatewayPolicy `json:"gateway_policy" mapstructure:"gateway_policy"`
 }
 
 type UserTokenDeleteRequest struct {
@@ -62,6 +75,9 @@ type UserTokenUpdateRequest struct {
 	Id        string       `json:"id" mapstructure:"id"`
 	ExpiresAt *string      `json:"expires_at" mapstructure:"expires_at"`
 	Limits    []TokenLimit `json:"limits" mapstructure:"limits"`
+	// Omitted (nil) leaves the policy alone; an object replaces it, and one with no lists
+	// makes the key unrestricted again.
+	GatewayPolicy *GatewayPolicy `json:"gateway_policy" mapstructure:"gateway_policy"`
 }
 
 type UserTokenUpdateResponse struct {
@@ -83,8 +99,10 @@ type UserAuthToken struct {
 	AccessedAt *string        `json:"accessed_at" db:"accessed_at"`
 	ExpiresAt  *string        `json:"expires_at" db:"expires_at"`
 	Scopes     pq.StringArray `json:"scopes" db:"scopes"`
-	Limits     []TokenLimit   `json:"limits"`
-	Usage      *TokenUsage    `json:"usage"`
+	// GatewayPolicy is folded from llm_gateway_access_policies; nil when unrestricted.
+	GatewayPolicy *GatewayPolicy `json:"gateway_policy"`
+	Limits        []TokenLimit   `json:"limits"`
+	Usage         *TokenUsage    `json:"usage"`
 }
 
 // TokenUsage is a gateway key's consumption in the current calendar month.

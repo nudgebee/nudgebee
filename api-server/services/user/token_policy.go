@@ -1,10 +1,15 @@
 package user
 
 import (
+	"database/sql"
 	"fmt"
 	"regexp"
+	"strings"
+	"unicode"
 
 	"nudgebee/services/common"
+
+	"github.com/jmoiron/sqlx"
 )
 
 // A platform key opens the app API, a gateway key the AI Gateway, an all key both.
@@ -114,6 +119,207 @@ func normalizeScopes(kind string, scopes []string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// gatewayEndpoints are the endpoint families the AI Gateway classifies
+// (llm/gateway/auth/policy.go). The gateway reads an unknown name as allowing nothing, but
+// rejecting it here tells the caller at save time instead of at the first 403.
+var gatewayEndpoints = map[string]bool{"chat": true, "responses": true, "embeddings": true, "conversations": true}
+
+var gatewayProviderPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+// maxPolicyEntries bounds each list; it only stops a runaway payload.
+const maxPolicyEntries = 200
+
+// normalizeGatewayPolicy validates a key's gateway policy and returns it with each list
+// deduplicated. nil, or a policy with no lists, means unrestricted. Only a gateway key may
+// be restricted: an all key also opens the platform API, where it could mint an
+// unrestricted key and step around its own policy.
+//
+// A key cannot be granted more than its owner here because there is no user or tenant
+// allowlist yet; tenant block rules are enforced by the gateway on every routed target.
+// Per-user policy (#38963) adds its ceiling check here.
+func normalizeGatewayPolicy(kind string, p *GatewayPolicy) (*GatewayPolicy, error) {
+	if p == nil || (p.Providers == nil && p.Models == nil && p.Endpoints == nil) {
+		return nil, nil
+	}
+	if kind != KindGateway {
+		return nil, common.ErrorBadRequest("model, provider and endpoint restrictions can only be set on an AI Gateway key (kind=gateway)")
+	}
+	providers, err := normalizePolicyList("providers", p.Providers, func(v string) error {
+		if !gatewayProviderPattern.MatchString(v) {
+			return fmt.Errorf("invalid provider %q", v)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	models, err := normalizePolicyList("models", p.Models, func(v string) error {
+		// Whitespace and control characters (NUL included, which Postgres text rejects)
+		// never appear in a model id.
+		if len(v) > 200 || strings.IndexFunc(v, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+			return fmt.Errorf("invalid model %q", v)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	endpoints, err := normalizePolicyList("endpoints", p.Endpoints, func(v string) error {
+		if !gatewayEndpoints[v] {
+			return fmt.Errorf("unknown endpoint %q (expected chat, responses, embeddings or conversations)", v)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &GatewayPolicy{Providers: providers, Models: models, Endpoints: endpoints}, nil
+}
+
+// normalizePolicyList keeps nil as nil (unrestricted), rejects an explicit empty list
+// rather than reading it as unrestricted, trims and deduplicates entries.
+func normalizePolicyList(field string, in []string, valid func(string) error) ([]string, error) {
+	if in == nil {
+		return nil, nil
+	}
+	if len(in) == 0 {
+		return nil, common.ErrorBadRequest(fmt.Sprintf("gateway_policy.%s is empty, which would allow nothing; omit it to leave %s unrestricted", field, field))
+	}
+	if len(in) > maxPolicyEntries {
+		return nil, common.ErrorBadRequest(fmt.Sprintf("too many gateway_policy.%s entries (max %d)", field, maxPolicyEntries))
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return nil, common.ErrorBadRequest(fmt.Sprintf("gateway_policy.%s has a blank entry", field))
+		}
+		if err := valid(v); err != nil {
+			return nil, common.ErrorBadRequest(err.Error())
+		}
+		if key := strings.ToLower(v); !seen[key] {
+			seen[key] = true
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+
+// policyEntry is one llm_gateway_access_policies row: one value a key may reach on one
+// dimension. A dimension with no rows is unrestricted.
+type policyEntry struct {
+	APIKeyID  string `db:"api_key_id"`
+	Dimension string `db:"dimension"`
+	Value     string `db:"value"`
+}
+
+// policyEntries flattens a policy into the rows that store it; a nil list writes none.
+func policyEntries(p *GatewayPolicy) []policyEntry {
+	if p == nil {
+		return nil
+	}
+	var out []policyEntry
+	for _, d := range []struct {
+		name   string
+		values []string
+	}{{"provider", p.Providers}, {"model", p.Models}, {"endpoint", p.Endpoints}} {
+		for _, v := range d.values {
+			out = append(out, policyEntry{Dimension: d.name, Value: v})
+		}
+	}
+	return out
+}
+
+// gatewayPoliciesByKey folds stored rows into one policy per key; a key with no rows is
+// unrestricted and gets no entry.
+func gatewayPoliciesByKey(rows []policyEntry) map[string]*GatewayPolicy {
+	out := map[string]*GatewayPolicy{}
+	for _, r := range rows {
+		p := out[r.APIKeyID]
+		if p == nil {
+			p = &GatewayPolicy{}
+			out[r.APIKeyID] = p
+		}
+		switch r.Dimension {
+		case "provider":
+			p.Providers = append(p.Providers, r.Value)
+		case "model":
+			p.Models = append(p.Models, r.Value)
+		case "endpoint":
+			p.Endpoints = append(p.Endpoints, r.Value)
+		}
+	}
+	return out
+}
+
+// keyScope is a key as user_auths stores it: its id, owner and current tenant, read back as
+// text. Policy rows are written from it, never from request input: Postgres matches an
+// uppercase or unhyphenated uuid, but the gateway matches rows on the canonical id::text.
+type keyScope struct {
+	KeyID, UserID, TenantID string
+}
+
+// keyScopeColumns reads a keyScope from user_auths, in Scan order.
+const keyScopeColumns = `id::text, "user"::text, tenant_id::text`
+
+func (k *keyScope) scanTargets() []any { return []any{&k.KeyID, &k.UserID, &k.TenantID} }
+
+// lockKeyForUpdate locks the caller's own token row for the rest of tx and returns its scope,
+// or sql.ErrNoRows. The policy and limits are replaced as delete-then-insert, so two edits of
+// one key running at once would otherwise both commit and leave the union of their rows.
+func lockKeyForUpdate(tx *sqlx.Tx, id, tenantID, userID string) (keyScope, error) {
+	var k keyScope
+	err := tx.QueryRowx(`SELECT `+keyScopeColumns+` FROM user_auths
+		WHERE id = $1 AND tenant_id = $2 AND "user" = $3 AND provider_type = 'credentials' AND provider = 'token'
+		FOR UPDATE`, id, tenantID, userID).Scan(k.scanTargets()...)
+	return k, err
+}
+
+// sqlExecer is the part of *sqlx.Tx the policy writes need.
+type sqlExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// replaceKeyGatewayPolicy makes p the key's stored policy: it deletes the key's rows, then
+// writes one row per allowed value; nil leaves the key unrestricted. Run it in the transaction
+// that created or deleted the key, or that locked it with lockKeyForUpdate. Rows are matched
+// by key and owner, as the gateway reads them, not by tenant: a key's user_auths.tenant_id
+// follows its owner's current tenant (UpdateUserAccessed). A blank id is refused, since a row
+// with an empty api_key_id applies to every key of the user (#38963).
+func replaceKeyGatewayPolicy(tx sqlExecer, k keyScope, p *GatewayPolicy) error {
+	if k.KeyID == "" || k.UserID == "" || k.TenantID == "" {
+		return fmt.Errorf("gateway policy write needs a key, user and tenant id")
+	}
+	if _, err := tx.Exec(`DELETE FROM llm_gateway_access_policies WHERE api_key_id = $1 AND user_id = $2`,
+		k.KeyID, k.UserID); err != nil {
+		return err
+	}
+	for _, e := range policyEntries(p) {
+		if _, err := tx.Exec(
+			`INSERT INTO llm_gateway_access_policies (tenant_id, user_id, api_key_id, dimension, value) VALUES ($1, $2, $3, $4, $5)`,
+			k.TenantID, k.UserID, k.KeyID, e.Dimension, e.Value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// loadKeyGatewayPolicies returns the stored policy of each of the user's keys in the tenant,
+// matched the way the gateway matches them; an unrestricted key has no entry.
+func loadKeyGatewayPolicies(q sqlx.Queryer, tenantID, userID string) (map[string]*GatewayPolicy, error) {
+	var rows []policyEntry
+	if err := sqlx.Select(q, &rows,
+		`SELECT p.api_key_id, p.dimension, p.value
+		   FROM user_auths ua
+		   JOIN llm_gateway_access_policies p ON p.api_key_id = ua.id::text AND p.user_id = ua."user"::text
+		  WHERE ua.tenant_id = $1 AND ua."user" = $2 AND ua.provider_type = 'credentials' AND ua.provider = 'token'
+		  ORDER BY p.value`, tenantID, userID); err != nil {
+		return nil, err
+	}
+	return gatewayPoliciesByKey(rows), nil
 }
 
 // validateDeleteRequest accepts either identifier, preferring the id.

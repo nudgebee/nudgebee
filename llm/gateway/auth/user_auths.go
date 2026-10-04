@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"nudgebee/llm-gateway/common"
+
+	"github.com/lib/pq"
 )
 
 // tokenHashColumn is the sha256-lookup column added to user_auths. Named to match
@@ -63,18 +65,33 @@ func (v *userAuthsValidator) Validate(raw string) (Identity, bool) {
 		UserID   string `db:"user"`
 		Name     string `db:"name"`
 		APIKeyID string `db:"api_key_id"`
+		// Read in the same lookup so a policy edit binds on the key's next request. NULL when
+		// the key has no rows for that dimension, which leaves it unrestricted.
+		Providers pq.StringArray `db:"providers"`
+		Models    pq.StringArray `db:"models"`
+		Endpoints pq.StringArray `db:"endpoints"`
 	}
 	// uuid columns cast to text so they scan into strings; "user" is a reserved word.
 	// kind excludes platform keys: an app-API credential must not authenticate LLM traffic.
+	// Only key-scope policy rows apply (user- and tenant-scope rows wait for #38963), matched by
+	// key and owner but not tenant: a key's tenant_id follows its owner's current tenant.
 	query := `
-		SELECT tenant_id::text AS tenant_id, "user"::text AS "user", name, id::text AS api_key_id
-		FROM user_auths
-		WHERE ` + tokenHashColumn + ` = $1
-		  AND provider_type = 'credentials'
-		  AND provider = 'token'
-		  AND kind IN ('gateway', 'all')
-		  AND status = 'active'
-		  AND (expires_at IS NULL OR expires_at > now())
+		SELECT ua.tenant_id::text AS tenant_id, ua."user"::text AS "user", ua.name, ua.id::text AS api_key_id,
+		       pol.providers, pol.models, pol.endpoints
+		FROM user_auths ua
+		LEFT JOIN LATERAL (
+			SELECT array_agg(p.value) FILTER (WHERE p.dimension = 'provider') AS providers,
+			       array_agg(p.value) FILTER (WHERE p.dimension = 'model') AS models,
+			       array_agg(p.value) FILTER (WHERE p.dimension = 'endpoint') AS endpoints
+			FROM llm_gateway_access_policies p
+			WHERE p.api_key_id = ua.id::text AND p.user_id = ua."user"::text
+		) pol ON true
+		WHERE ua.` + tokenHashColumn + ` = $1
+		  AND ua.provider_type = 'credentials'
+		  AND ua.provider = 'token'
+		  AND ua.kind IN ('gateway', 'all')
+		  AND ua.status = 'active'
+		  AND (ua.expires_at IS NULL OR ua.expires_at > now())
 		LIMIT 1`
 	if err := db.QueryRowAndScan(&row, query, hash); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -84,7 +101,10 @@ func (v *userAuthsValidator) Validate(raw string) (Identity, bool) {
 		return Identity{}, false
 	}
 	v.recordTokenAccess(db, hash)
-	return Identity{TenantID: row.TenantID, UserID: row.UserID, TokenID: row.Name, APIKeyID: row.APIKeyID}, true
+	return Identity{
+		TenantID: row.TenantID, UserID: row.UserID, TokenID: row.Name, APIKeyID: row.APIKeyID,
+		Policy: KeyPolicy{Providers: row.Providers, Models: row.Models, Endpoints: row.Endpoints},
+	}, true
 }
 
 func (v *userAuthsValidator) recordTokenAccess(db *common.DatabaseManager, hash string) {

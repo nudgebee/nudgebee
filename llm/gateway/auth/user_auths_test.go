@@ -52,6 +52,33 @@ func TestUserAuthsValidator_ValidToken(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// The key's policy is read in the same lookup that authenticates it, so a policy edit
+// binds on the next request. The query is pinned: each array to its own dimension, and the
+// rows to the key and its owner alone, since a tenant predicate would drop the policy once
+// the owner switches tenant. A dimension with no rows (a NULL aggregate) stays unrestricted;
+// TestUserAuthsValidator_KeyPolicy_DB runs the same lookup on Postgres.
+func TestUserAuthsValidator_ReadsKeyPolicy(t *testing.T) {
+	v, mock := mockValidator(t)
+	v.recordAccess = func(*common.DatabaseManager, string) {}
+	raw := "restricted-key"
+	mock.ExpectQuery(`array_agg\(p\.value\) FILTER \(WHERE p\.dimension = 'provider'\) AS providers,\s+` +
+		`array_agg\(p\.value\) FILTER \(WHERE p\.dimension = 'model'\) AS models,\s+` +
+		`array_agg\(p\.value\) FILTER \(WHERE p\.dimension = 'endpoint'\) AS endpoints\s+` +
+		`FROM llm_gateway_access_policies p\s+` +
+		`WHERE p\.api_key_id = ua\.id::text AND p\.user_id = ua\."user"::text\s+\) pol ON true`).
+		WithArgs(sha256hex(raw)).
+		WillReturnRows(sqlmock.NewRows([]string{"tenant_id", "user", "name", "api_key_id", "providers", "models", "endpoints"}).
+			AddRow("tenant-1", "user-1", "ci", "key-1", nil, "{gpt-4o-mini,anthropic/claude-haiku-4-5}", "{chat}"))
+
+	id, ok := v.Validate(raw)
+	require.True(t, ok)
+	assert.Nil(t, id.Policy.Providers)
+	assert.Equal(t, []string{"gpt-4o-mini", "anthropic/claude-haiku-4-5"}, id.Policy.Models)
+	assert.Equal(t, []string{"chat"}, id.Policy.Endpoints)
+	assert.True(t, id.Policy.Restricted())
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestUserAuthsValidator_RecordTokenAccessQuery(t *testing.T) {
 	v, mock := mockValidator(t)
 	raw := "token-for-access-check"

@@ -8,16 +8,20 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -66,6 +70,27 @@ func stripPath(fullPath, mount string) string {
 	return strings.TrimPrefix(fullPath, mount)
 }
 
+// cleanPath normalises a stripped provider path into the one the gateway forwards and
+// classifies. Bifrost's HTTP client resolves "." and ".." segments and repeated slashes when
+// it sends a request, so the gateway cleans them first: the endpoint a policy judges is then
+// the one the provider receives. ok is false for a path that would change meaning downstream
+// in a way cleaning cannot settle: a "%" (the client decodes the path once more), a "?" or "#"
+// (they arrive percent-encoded and would start a query or fragment), a backslash, a control
+// character, or no leading slash.
+func cleanPath(p string) (string, bool) {
+	if p == "" {
+		return p, true
+	}
+	if p[0] != '/' || strings.ContainsAny(p, `%?#\`) || strings.ContainsFunc(p, unicode.IsControl) {
+		return "", false
+	}
+	cleaned := path.Clean(p)
+	if strings.HasSuffix(p, "/") && cleaned != "/" {
+		cleaned += "/" // a provider may route on the trailing slash
+	}
+	return cleaned, true
+}
+
 // hopByHopResponseHeaders must not be copied from the provider response back to
 // the client; the edge sets streaming/transport headers explicitly.
 var hopByHopResponseHeaders = map[string]struct{}{
@@ -89,10 +114,11 @@ func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, 
 		pricer:  pricer,
 		router:  router,
 		// Request pipeline (control stages), run after auth and before passthrough.
-		// route → ratelimit → resolver → filter. Each stage is pluggable; an unset
-		// stage defaults to pass-through.
+		// route → policy → ratelimit → resolver → filter. Each stage is pluggable; an
+		// unset stage defaults to pass-through.
 		pipeline: NewPipeline(
 			routeStage{router: router},
+			policyStage{router: router},
 			ratelimitStage{limiter: limiter},
 			resolverStage{creds: creds},
 			filterStage{},
@@ -130,6 +156,13 @@ func (h *handler) handle(c *gin.Context) {
 		h.recordReject(auth.FromContext(c), "", "", c.Request.Method, c.Request.URL.Path, http.StatusNotFound, "unknown_provider", start)
 		return
 	}
+	path, ok := cleanPath(stripPath(c.Request.URL.Path, prefix)) // e.g. /v1/messages, or /models/x:generateContent
+	if !ok {
+		edgeerr.Write(c, string(provider), http.StatusBadRequest, "invalid_request", "malformed request path")
+		// Escaped, since a refused path can hold a NUL, which would fail the whole usage batch insert.
+		h.recordReject(auth.FromContext(c), provider, "", c.Request.Method, c.Request.URL.EscapedPath(), http.StatusBadRequest, "malformed_path", start)
+		return
+	}
 
 	body, err := readBody(c)
 	if err != nil {
@@ -148,16 +181,31 @@ func (h *handler) handle(c *gin.Context) {
 
 	logRequestProvenance(c, body)
 
-	path := stripPath(c.Request.URL.Path, prefix) // e.g. /v1/messages, or /models/x:generateContent
-	model, bodyStream := parseBody(body)
-	if model == "" {
-		model = modelFromPath(provider, path) // Gemini/GET carry the model in the path
+	identity := auth.FromContext(c)
+	endpoint, generative := classifyEndpoint(provider, c.Request.Method, path)
+	model, bodyStream, bodyOK := parseBody(body)
+	// A call the policy judges must name its model the way every provider reads it. Other
+	// paths keep the best-effort read: a raw upload (a JSONL file) is not a JSON object.
+	if !bodyOK && endpoint != "" {
+		edgeerr.Write(c, string(provider), http.StatusBadRequest, "invalid_request", unreadableBodyMessage)
+		h.recordReject(identity, provider, "", c.Request.Method, path, http.StatusBadRequest, "unreadable_body", start)
+		return
+	}
+	// Gemini serves the model named in the path (/models/{model}:method), so that is the one
+	// judged; the body is read only where the path names no model. A body naming another
+	// model is refused rather than guessing which of the two a provider honours.
+	if pathModel := modelFromPath(provider, path); pathModel != "" {
+		if model != "" && strings.TrimPrefix(model, "models/") != pathModel {
+			edgeerr.Write(c, string(provider), http.StatusBadRequest, "invalid_request",
+				fmt.Sprintf("the request body names model %q but the path names %q", model, pathModel))
+			h.recordReject(identity, provider, pathModel, c.Request.Method, path, http.StatusBadRequest, "model_mismatch", start)
+			return
+		}
+		model = pathModel
 	}
 	// Streaming is signalled either by a body flag (Anthropic/OpenAI: "stream":true)
 	// or by the path (Gemini: ...:streamGenerateContent).
 	streaming := bodyStream || strings.Contains(strings.ToLower(path), "stream")
-
-	identity := auth.FromContext(c)
 
 	// The Bifrost context carries per-request state; the resolver stage sets a
 	// per-tenant credential on it, so it must exist before the pipeline runs.
@@ -169,6 +217,7 @@ func (h *handler) handle(c *gin.Context) {
 		Gin: c, Ctx: c.Request.Context(), Bctx: bctx,
 		Identity: identity, Provider: provider,
 		Model: model, Path: path, Body: body, Streaming: streaming,
+		Endpoint: endpoint, Generative: generative,
 	}
 	if stop, err := h.pipeline.Run(rc); err != nil {
 		cancel()
@@ -582,6 +631,12 @@ func (h *handler) recordRejectPipeline(rc *RequestContext, status int, start tim
 	if rc.DLP != nil {
 		derived["dlp"] = rc.DLP // an enforce-mode secret block carries the rule ids
 	}
+	if rc.PolicyTarget != "" {
+		derived["policy_target"] = rc.PolicyTarget // the routed target a policy refused
+	}
+	if rc.Endpoint != "" {
+		derived["endpoint"] = rc.Endpoint
+	}
 	h.sink.Record(metering.NewEvent(metering.EventInput{
 		Provider: rc.Provider, Model: rc.Model,
 		Method: rc.Gin.Request.Method, Path: rc.Path,
@@ -644,19 +699,105 @@ func logRequestProvenance(c *gin.Context, body []byte) {
 	)
 }
 
-// parseBody extracts the model and stream flag from a provider-native JSON body.
-// Both are best-effort hints: model feeds key selection (bypassed when the plugin
-// injects a key) and stream selects the streaming path.
-func parseBody(body []byte) (model string, stream bool) {
-	if len(body) == 0 {
-		return "", false
+// unreadableBodyMessage tells the caller why parseBody refused its body.
+const unreadableBodyMessage = `the request body must be valid JSON that names the model once, under the exact key "model"`
+
+// parseBody extracts the model and stream flag from a provider-native JSON body. It reads the
+// exact top-level "model" and "stream" keys, the ones a provider reads; decoding into a struct
+// would also match "MODEL" or "Model" and keep the last. ok is false for a JSON object the
+// gateway cannot read the way every provider would: invalid JSON, which a lenient parser may
+// read past (Python's accepts NaN and takes the last duplicate), or one naming the model twice
+// or under a key differing from "model" only in case. Providers disagree on those, so the
+// gateway could judge one model while the provider serves another. Otherwise both values are
+// best-effort hints: model feeds routing, policy and key selection, and stream selects the
+// streaming path.
+func parseBody(body []byte) (model string, stream bool, ok bool) {
+	obj := bytes.TrimLeft(body, " \t\r\n")
+	if len(obj) == 0 || obj[0] != '{' {
+		return "", false, true // not a JSON object (empty, multipart, a raw upload)
 	}
-	var m struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
+	if !json.Valid(obj) {
+		return "", false, false
 	}
-	_ = json.Unmarshal(body, &m)
-	return m.Model, m.Stream
+	exact, variant := 0, false
+	eachMember(obj, func(key, value []byte) {
+		name := string(key[1 : len(key)-1])
+		if bytes.IndexByte(key, '\\') >= 0 {
+			_ = json.Unmarshal(key, &name) // "mod\u0065l" is "model" to a provider
+		}
+		switch {
+		case name == "model":
+			exact++
+			_ = json.Unmarshal(value, &model)
+		case strings.EqualFold(name, "model"):
+			variant = true // refused even alone: a provider decoding like encoding/json reads it
+		case name == "stream":
+			_ = json.Unmarshal(value, &stream)
+		}
+	})
+	return model, stream, exact <= 1 && !variant
+}
+
+// eachMember calls fn with the quoted key and the value of each member of obj, a JSON object
+// that json.Valid accepted, both as subslices of obj: a large body (base64 images) is scanned
+// in place, never copied.
+func eachMember(obj []byte, fn func(key, value []byte)) {
+	i := 1 // past the '{'
+	for {
+		i = skipJSONSpace(obj, i)
+		switch obj[i] {
+		case '}':
+			return
+		case ',':
+			i = skipJSONSpace(obj, i+1)
+		}
+		keyEnd := jsonValueEnd(obj, i)
+		start := skipJSONSpace(obj, skipJSONSpace(obj, keyEnd)+1) // past the ':'
+		end := jsonValueEnd(obj, start)
+		fn(obj[i:keyEnd], obj[start:end])
+		i = end
+	}
+}
+
+// jsonValueEnd returns the index just past the valid JSON value that starts at b[i].
+func jsonValueEnd(b []byte, i int) int {
+	switch b[i] {
+	case '"':
+		for i++; b[i] != '"'; i++ {
+			if b[i] == '\\' {
+				i++ // an escaped character never ends the string
+			}
+		}
+		return i + 1
+	case '{', '[':
+		for depth := 0; ; {
+			switch b[i] {
+			case '"':
+				i = jsonValueEnd(b, i)
+				continue
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+			}
+			i++
+			if depth == 0 {
+				return i
+			}
+		}
+	default: // a number, true, false or null
+		for i < len(b) && !strings.ContainsRune(",}] \t\r\n", rune(b[i])) {
+			i++
+		}
+		return i
+	}
+}
+
+func skipJSONSpace(b []byte, i int) int {
+	for i < len(b) && strings.ContainsRune(" \t\r\n", rune(b[i])) {
+		i++
+	}
+	return i
 }
 
 // safeHeaders copies client headers to forward, stripping auth, hop-by-hop, and

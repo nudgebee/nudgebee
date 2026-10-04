@@ -39,7 +39,7 @@ func (s routeStage) Handle(rc *RequestContext) (bool, error) {
 			msg = fmt.Sprintf("%s Use %q instead.", msg, alt)
 		}
 		rc.RejectReason = "blocked"
-		edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusForbidden, "model_not_allowed", msg)
+		edgeerr.Write(rc.Gin, rc.errorShape(), http.StatusForbidden, "model_not_allowed", msg)
 		return true, nil
 	}
 	// Cross-provider substitution: the translate path (in the handler) parses the
@@ -87,7 +87,7 @@ func (s ratelimitStage) Handle(rc *RequestContext) (bool, error) {
 		rc.Gin.Header("Retry-After", strconv.Itoa(secs))
 	}
 	rc.RejectReason = "rate_limited"
-	edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusTooManyRequests, "rate_limit_exceeded",
+	edgeerr.Write(rc.Gin, rc.errorShape(), http.StatusTooManyRequests, "rate_limit_exceeded",
 		fmt.Sprintf("%s limit exceeded for %s (%s window); resets at %s UTC",
 			ex.Metric, ex.Scope, ex.Period, reset.Format("2006-01-02 15:04")))
 	return true, nil
@@ -271,7 +271,7 @@ func (s filterStage) Handle(rc *RequestContext) (bool, error) {
 	switch mode {
 	case egressfilter.ModeEnforce:
 		rc.RejectReason = "secret_blocked"
-		edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusForbidden, "secret_detected",
+		edgeerr.Write(rc.Gin, rc.errorShape(), http.StatusForbidden, "secret_detected",
 			"request blocked: it contains a credential/secret ("+strings.Join(rules, ", ")+"). Remove it or ask an administrator about the egress policy.")
 		return true, nil
 	case egressfilter.ModeRedact:

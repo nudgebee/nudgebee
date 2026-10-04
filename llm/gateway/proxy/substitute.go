@@ -58,7 +58,7 @@ func (h *handler) substituteChat(c *gin.Context, bctx *schemas.BifrostContext, c
 		h.meter(context.WithoutCancel(c.Request.Context()), rm, http.StatusBadRequest, nil, nil, nil)
 		return
 	}
-	breq := oaiReq.ToBifrostChatRequest(bctx)
+	breq := engineChatRequest(bctx, &oaiReq)
 	breq.Provider = target
 	breq.Model = rm.model
 	// The Chat engine + OpenAI response shape is exactly the generic-endpoint path.
@@ -205,24 +205,28 @@ func (h *handler) streamResponses(c *gin.Context, bctx *schemas.BifrostContext, 
 	}
 }
 
-// parseToResponses unmarshals a client-native body into the unified Responses request.
+// parseToResponses unmarshals a client-native body into the unified Responses request. A
+// body "fallbacks" list is dropped, as engineChatRequest explains.
 func parseToResponses(client schemas.ModelProvider, body []byte, bctx *schemas.BifrostContext) (*schemas.BifrostResponsesRequest, bool) {
+	var breq *schemas.BifrostResponsesRequest
 	switch client {
 	case schemas.Anthropic:
 		var req anthropic.AnthropicMessageRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			return nil, false
 		}
-		return req.ToBifrostResponsesRequest(bctx), true
+		breq = req.ToBifrostResponsesRequest(bctx)
 	case schemas.Gemini:
 		var req gemini.GeminiGenerationRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			return nil, false
 		}
-		return req.ToBifrostResponsesRequest(bctx), true
+		breq = req.ToBifrostResponsesRequest(bctx)
 	default:
 		return nil, false
 	}
+	breq.Fallbacks = nil
+	return breq, true
 }
 
 // encodeResponsesUnary re-encodes a unified Responses response into the client's

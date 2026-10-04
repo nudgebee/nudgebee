@@ -3,8 +3,10 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -86,6 +88,110 @@ func TestHandleModels_IncludesTenantMappingsBeforeAdvisoryCatalog(t *testing.T) 
 		}
 	}
 	assert.Equal(t, 1, overlapCount)
+}
+
+// A restricted key's /v1/models lists only what its policy lets it call, judging each
+// "provider/model" catalog id the way the /v1 request for that id is judged.
+func TestHandleModels_RestrictedKeyListsOnlyAllowedModels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previous := modelCatalogResolverHook
+	RegisterModelCatalogResolver(func(string) []ModelCatalogEntry {
+		return []ModelCatalogEntry{
+			{ID: "google/gemma-3-27b-it-maas", Provider: schemas.VLLM},
+			{ID: "team-fast", Provider: schemas.VLLM},
+		}
+	})
+	t.Cleanup(func() { modelCatalogResolverHook = previous })
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest("GET", "/v1/models", nil)
+	c.Set("nb_identity", auth.Identity{TenantID: "tenant-1", Policy: auth.KeyPolicy{
+		Models: []string{"anthropic/claude-opus-4-8", "claude-haiku-4-5", "google/gemma-3-27b-it-maas"},
+	}})
+
+	(&handler{}).handleModels(c)
+
+	require.Equal(t, 200, rec.Code)
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	ids := make([]string, 0, len(body.Data))
+	for _, m := range body.Data {
+		ids = append(ids, m.ID)
+	}
+	assert.ElementsMatch(t, []string{"google/gemma-3-27b-it-maas", "anthropic/claude-opus-4-8", "anthropic/claude-haiku-4-5"}, ids)
+}
+
+// A "fallbacks" list in the body used to ride the request converters into the engine, which
+// tries it on any failure of the primary, past every policy check: a key limited to
+// gpt-4o-mini reached gpt-5 by sending it as a fallback. Only the routing decision's
+// fallbacks, which the policy prunes, may run.
+func TestV1_ClientFallbacksNeverReachTheEngine(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	prevBody, prevPrivate := config.Config.MaxRequestBodyBytes, config.Config.AllowPrivateEndpoints
+	config.Config.MaxRequestBodyBytes, config.Config.AllowPrivateEndpoints = 1<<20, true
+	t.Cleanup(func() {
+		config.Config.MaxRequestBodyBytes, config.Config.AllowPrivateEndpoints = prevBody, prevPrivate
+	})
+
+	var mu sync.Mutex
+	var served []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		served = append(served, body.Model)
+		mu.Unlock()
+		// The allowed primary fails, which is when the engine would turn to fallbacks.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"primary failed","type":"server_error"}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	eng, err := engine.New(context.Background(), []engine.ProviderCredsConfig{{Provider: "openai", APIKey: "sk-test", Endpoint: upstream.URL}})
+	require.NoError(t, err)
+	t.Cleanup(eng.Shutdown)
+	router := routing.NewEngine(nil)
+	h := &handler{client: eng.Client, sink: &metering.CapturingSink{}, router: router,
+		pipeline: NewPipeline(routeStage{router: router}, policyStage{router: router}, resolverStage{creds: noopCredResolver{}})}
+	policy := auth.KeyPolicy{Models: []string{"gpt-4o-mini", "text-embedding-3-small"}}
+
+	for _, tc := range []struct {
+		name, path, body string
+		serve            func(*gin.Context)
+		allowed          string
+	}{
+		{"chat", chatCompletionsPath, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"fallbacks":["openai/gpt-5"]}`, h.handleChat, "gpt-4o-mini"},
+		{"chat stream", chatCompletionsPath, `{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"hi"}],"fallbacks":["openai/gpt-5"]}`, h.handleChat, "gpt-4o-mini"},
+		{"embeddings", embeddingsPath, `{"model":"openai/text-embedding-3-small","input":"hi","fallbacks":["openai/text-embedding-3-large"]}`, h.handleEmbeddings, "text-embedding-3-small"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			served = nil
+			mu.Unlock()
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest("POST", tc.path, strings.NewReader(tc.body))
+			c.Set("nb_identity", auth.Identity{TenantID: "t", UserID: "u", APIKeyID: "key-1", Policy: policy})
+
+			tc.serve(c)
+
+			mu.Lock()
+			defer mu.Unlock()
+			require.NotEmpty(t, served, "the allowed primary is sent")
+			for _, m := range served {
+				assert.Equal(t, tc.allowed, m, "only the allowed model reaches the provider")
+			}
+			assert.NotEqual(t, http.StatusOK, rec.Code, "the primary's failure is returned, not a fallback's answer")
+		})
+	}
 }
 
 // TestHandleChat_CustomUpstreamBeatsProviderAlias locks the resolution precedence: a model

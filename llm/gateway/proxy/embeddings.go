@@ -51,7 +51,12 @@ func (h *handler) handleEmbeddings(c *gin.Context) {
 
 	identity := auth.FromContext(c)
 
-	requestedModel, _ := parseBody(body) // embeddings are never streamed
+	requestedModel, _, bodyOK := parseBody(body) // embeddings are never streamed
+	if !bodyOK {
+		edgeerr.Write(c, edgeerr.OpenAI, http.StatusBadRequest, "invalid_request", unreadableBodyMessage)
+		h.recordReject(identity, schemas.OpenAI, "", c.Request.Method, embeddingsPath, http.StatusBadRequest, "unreadable_body", start)
+		return
+	}
 	// A tenant's explicit model mapping selects its exact account before the built-in
 	// provider heuristic, matching the chat path. Tier aliases don't apply to embeddings.
 	var provider schemas.ModelProvider
@@ -87,6 +92,7 @@ func (h *handler) handleEmbeddings(c *gin.Context) {
 		Identity: identity, Provider: provider,
 		Model: model, Path: embeddingsPath, Body: body, Streaming: false,
 		DirectKey: mappedKey,
+		Endpoint:  auth.EndpointEmbeddings, Generative: true, Generic: true,
 	}
 	rc.MappedModel = mappedModel
 	if stop, err := h.pipeline.Run(rc); err != nil {
@@ -147,6 +153,7 @@ func (h *handler) unaryEmbedding(c *gin.Context, bctx *schemas.BifrostContext, r
 	breq := oaiReq.ToBifrostEmbeddingRequest(bctx)
 	breq.Provider = rc.Provider
 	breq.Model = rc.Model
+	breq.Fallbacks = nil // only routing-rule fallbacks, which the policy checked (see engineChatRequest)
 
 	resp, bErr := h.client.EmbeddingRequest(bctx, breq)
 	if bErr != nil {

@@ -238,6 +238,7 @@ query ListUserTokens {
       accessed_at
       expires_at
       scopes
+      gateway_policy { providers models endpoints }
       limits { metric period value model }
       usage { requests tokens cost_usd }
     }
@@ -246,13 +247,14 @@ query ListUserTokens {
 `;
 
 const CREATE_USER_TOKEN = `
-mutation CreateUserToken($name: String!, $kind: String, $expires_at: String, $limits: [TokenLimitInput!], $scopes: [String!]) {
-  users_create_token(user: {name: $name, kind: $kind, expires_at: $expires_at, limits: $limits, scopes: $scopes}) {
+mutation CreateUserToken($name: String!, $kind: String, $expires_at: String, $limits: [TokenLimitInput!], $scopes: [String!], $gateway_policy: GatewayPolicyInput) {
+  users_create_token(user: {name: $name, kind: $kind, expires_at: $expires_at, limits: $limits, scopes: $scopes, gateway_policy: $gateway_policy}) {
     token
     name
     kind
     expires_at
     scopes
+    gateway_policy { providers models endpoints }
   }
 }
 `;
@@ -266,8 +268,8 @@ mutation DeleteUserToken($id: String, $name: String) {
 `;
 
 const UPDATE_USER_TOKEN = `
-mutation UpdateUserToken($id: String!, $expires_at: String, $limits: [TokenLimitInput!]) {
-  users_update_token(user: {id: $id, expires_at: $expires_at, limits: $limits}) {
+mutation UpdateUserToken($id: String!, $expires_at: String, $limits: [TokenLimitInput!], $gateway_policy: GatewayPolicyInput) {
+  users_update_token(user: {id: $id, expires_at: $expires_at, limits: $limits, gateway_policy: $gateway_policy}) {
     id
     status
   }
@@ -787,7 +789,7 @@ const apiUser = {
       };
     }
   },
-  createUserToken: async function ({ name, kind, expiresAt = null, limits = [], scopes = null }) {
+  createUserToken: async function ({ name, kind, expiresAt = null, limits = [], scopes = null, gatewayPolicy = null }) {
     try {
       const response = await queryGraphQL(CREATE_USER_TOKEN, 'CreateUserToken', {
         name,
@@ -795,6 +797,7 @@ const apiUser = {
         expires_at: expiresAt,
         limits,
         scopes,
+        gateway_policy: gatewayPolicy,
       });
       return {
         data: response?.data?.data?.users_create_token,
@@ -816,12 +819,13 @@ const apiUser = {
     }
   },
   // Leave expiresAt/limits undefined to keep them; '' clears the expiry, [] clears the limits.
-  updateUserToken: async function ({ id, expiresAt, limits }) {
+  updateUserToken: async function ({ id, expiresAt, limits, gatewayPolicy }) {
     try {
       const response = await queryGraphQL(UPDATE_USER_TOKEN, 'UpdateUserToken', {
         id,
         expires_at: expiresAt,
         limits,
+        gateway_policy: gatewayPolicy,
       });
       return {
         data: response?.data?.data?.users_update_token,

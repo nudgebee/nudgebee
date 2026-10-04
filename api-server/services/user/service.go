@@ -346,6 +346,15 @@ func DeleteUser(context *security.RequestContext, userId string) (UserDeleteResp
 		return UserDeleteResponse{}, err
 	}
 
+	// The user's API keys take their AI Gateway access policies with them.
+	if _, err := tx.Exec("delete from llm_gateway_access_policies where user_id = $1::uuid::text", userId); err != nil {
+		context.GetLogger().Error("Error deleting llm_gateway_access_policies", "error", err)
+		if rbErr := tx.Rollback(); rbErr != nil {
+			context.GetLogger().Error("Error rolling back transaction", "error", rbErr)
+		}
+		return UserDeleteResponse{}, err
+	}
+
 	context.GetLogger().Info("Deleting user roles", "delete_user", userId)
 	_, err = tx.Exec("delete from user_roles ur where ur.user_id = $1", userId)
 	if err != nil {
@@ -525,6 +534,10 @@ func CreateUserAuthToken(context *security.RequestContext, tokenCreateRequest Us
 	if err != nil {
 		return UserTokenCreateResponse{}, err
 	}
+	gatewayPolicy, err := normalizeGatewayPolicy(kind, tokenCreateRequest.GatewayPolicy)
+	if err != nil {
+		return UserTokenCreateResponse{}, err
+	}
 
 	// if token with same name and kind exists return error. Scoped by kind (not just
 	// name/provider) because the unique index is (user, name, provider, kind) — a user
@@ -591,12 +604,15 @@ func CreateUserAuthToken(context *security.RequestContext, tokenCreateRequest Us
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var keyID string
+	var key keyScope
 	if err := tx.QueryRowx(
 		`INSERT INTO user_auths ("user", tenant_id, name, credential, token_sha256, provider_type, provider, status, kind, accessed_at, expires_at, scopes)
-		 VALUES ($1, $2, $3, $4, $5, 'credentials', 'token', 'active', $6, NULL, $7, $8) RETURNING id::text`,
+		 VALUES ($1, $2, $3, $4, $5, 'credentials', 'token', 'active', $6, NULL, $7, $8) RETURNING `+keyScopeColumns,
 		context.GetSecurityContext().GetUserId(), context.GetSecurityContext().GetTenantId(),
-		tokenCreateRequest.Name, hashedToken, tokenSha256, kind, expiresAt, scopesColumn(scopes)).Scan(&keyID); err != nil {
+		tokenCreateRequest.Name, hashedToken, tokenSha256, kind, expiresAt, scopesColumn(scopes)).Scan(key.scanTargets()...); err != nil {
+		return UserTokenCreateResponse{}, err
+	}
+	if err := replaceKeyGatewayPolicy(tx, key, gatewayPolicy); err != nil {
 		return UserTokenCreateResponse{}, err
 	}
 
@@ -605,7 +621,7 @@ func CreateUserAuthToken(context *security.RequestContext, tokenCreateRequest Us
 			`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, true)`,
 			context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId(),
-			keyID, l.Model, l.Metric, l.Period, l.Value); err != nil {
+			key.KeyID, l.Model, l.Metric, l.Period, l.Value); err != nil {
 			return UserTokenCreateResponse{}, err
 		}
 	}
@@ -622,16 +638,17 @@ func CreateUserAuthToken(context *security.RequestContext, tokenCreateRequest Us
 		TableName:     "user_auths",
 		NewData: map[string]any{"user": context.GetSecurityContext().GetUserId(), "name": tokenCreateRequest.Name,
 			"provider_type": "credentials", "provider": "token", "kind": kind, "expires_at": tokenCreateRequest.ExpiresAt,
-			"scopes": scopes},
+			"scopes": scopes, "gateway_policy": gatewayPolicy},
 	})
 
 	// return token
 	return UserTokenCreateResponse{
-		Token:     token,
-		Name:      tokenCreateRequest.Name,
-		Kind:      kind,
-		ExpiresAt: tokenCreateRequest.ExpiresAt,
-		Scopes:    scopes,
+		Token:         token,
+		Name:          tokenCreateRequest.Name,
+		Kind:          kind,
+		ExpiresAt:     tokenCreateRequest.ExpiresAt,
+		Scopes:        scopes,
+		GatewayPolicy: gatewayPolicy,
 	}, nil
 }
 
@@ -685,12 +702,12 @@ func DeleteUserAuthToken(context *security.RequestContext, tokenDeleteRequest Us
 		deleteID = resolvedID
 	}
 
-	var deletedID string
+	var deleted keyScope
 	err = tx.QueryRowx(
 		`DELETE FROM user_auths WHERE id = $1 AND tenant_id = $2 AND "user" = $3
-		   AND provider_type = 'credentials' AND provider = 'token' RETURNING id::text`,
+		   AND provider_type = 'credentials' AND provider = 'token' RETURNING `+keyScopeColumns,
 		deleteID, context.GetSecurityContext().GetTenantId(),
-		context.GetSecurityContext().GetUserId()).Scan(&deletedID)
+		context.GetSecurityContext().GetUserId()).Scan(deleted.scanTargets()...)
 	if err == sql.ErrNoRows {
 		return UserTokenDeleteResponse{}, common.ErrorBadRequest("token not found")
 	}
@@ -701,7 +718,10 @@ func DeleteUserAuthToken(context *security.RequestContext, tokenDeleteRequest Us
 	// A revoked key must not leave quota rows behind: they would apply to nothing and
 	// still be loaded by the gateway on every refresh.
 	if _, err := tx.Exec(`DELETE FROM llm_gateway_rate_limits WHERE api_key_id = $1 AND tenant_id = $2`,
-		deletedID, context.GetSecurityContext().GetTenantId()); err != nil {
+		deleted.KeyID, context.GetSecurityContext().GetTenantId()); err != nil {
+		return UserTokenDeleteResponse{}, err
+	}
+	if err := replaceKeyGatewayPolicy(tx, deleted, nil); err != nil {
 		return UserTokenDeleteResponse{}, err
 	}
 
@@ -750,6 +770,10 @@ func UpdateUserAuthToken(context *security.RequestContext, request UserTokenUpda
 	if err := validateLimitsForKind(kind, request.Limits); err != nil {
 		return UserTokenUpdateResponse{}, err
 	}
+	gatewayPolicy, err := normalizeGatewayPolicy(kind, request.GatewayPolicy)
+	if err != nil {
+		return UserTokenUpdateResponse{}, err
+	}
 	// An owner may only tighten what an admin configured — same ceiling rule as create,
 	// so a key cannot be widened past its ceiling by an update after the fact.
 	if len(request.Limits) > 0 {
@@ -781,16 +805,35 @@ func UpdateUserAuthToken(context *security.RequestContext, request UserTokenUpda
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Hold the key's row for the rest of the transaction, so a concurrent edit cannot merge
+	// its policy or limits with this one, and key the rows by the id as stored.
+	key, err := lockKeyForUpdate(tx, request.Id, context.GetSecurityContext().GetTenantId(),
+		context.GetSecurityContext().GetUserId())
+	if err == sql.ErrNoRows {
+		return UserTokenUpdateResponse{}, common.ErrorBadRequest("token not found")
+	}
+	if err != nil {
+		return UserTokenUpdateResponse{}, err
+	}
+
 	if request.ExpiresAt != nil {
 		if _, err := tx.Exec(`UPDATE user_auths SET expires_at = $1, updated_at = now() WHERE id = $2 AND tenant_id = $3 AND "user" = $4`,
-			expiresAt, request.Id, context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId()); err != nil {
+			expiresAt, key.KeyID, context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId()); err != nil {
+			return UserTokenUpdateResponse{}, err
+		}
+	}
+	// Omitted (nil) leaves the policy alone; a present one replaces all three lists, so a
+	// policy with no lists clears the key back to unrestricted. The gateway reads the rows on
+	// every request, so the change binds on the key's next call.
+	if request.GatewayPolicy != nil {
+		if err := replaceKeyGatewayPolicy(tx, key, gatewayPolicy); err != nil {
 			return UserTokenUpdateResponse{}, err
 		}
 	}
 	// Omitted (nil) leaves the limits alone; a present list, even [], replaces them all.
 	if request.Limits != nil {
 		if _, err := tx.Exec(`DELETE FROM llm_gateway_rate_limits WHERE api_key_id = $1 AND tenant_id = $2`,
-			request.Id, context.GetSecurityContext().GetTenantId()); err != nil {
+			key.KeyID, context.GetSecurityContext().GetTenantId()); err != nil {
 			return UserTokenUpdateResponse{}, err
 		}
 		for _, l := range request.Limits {
@@ -798,7 +841,7 @@ func UpdateUserAuthToken(context *security.RequestContext, request UserTokenUpda
 				`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled)
 				 VALUES ($1, $2, $3, $4, $5, $6, $7, true)`,
 				context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId(),
-				request.Id, l.Model, l.Metric, l.Period, l.Value); err != nil {
+				key.KeyID, l.Model, l.Metric, l.Period, l.Value); err != nil {
 				return UserTokenUpdateResponse{}, err
 			}
 		}
@@ -813,7 +856,8 @@ func UpdateUserAuthToken(context *security.RequestContext, request UserTokenUpda
 		EventAction:   audit.EventActionUpdate,
 		TargetID:      context.GetSecurityContext().GetUserId(),
 		TableName:     "user_auths",
-		NewData:       map[string]any{"id": request.Id, "expires_at": request.ExpiresAt, "limits": request.Limits},
+		NewData: map[string]any{"id": request.Id, "expires_at": request.ExpiresAt, "limits": request.Limits,
+			"gateway_policy": gatewayPolicy},
 	})
 
 	return UserTokenUpdateResponse{Id: request.Id, Status: "updated"}, nil
@@ -1090,6 +1134,15 @@ func ListUserAuthTokens(context *security.RequestContext) (UserAuthTokenResponse
 	}
 	for i := range tokens {
 		tokens[i].Limits = byKey[tokens[i].Id]
+	}
+
+	policies, err := loadKeyGatewayPolicies(databaseManager.Db,
+		context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId())
+	if err != nil {
+		return UserAuthTokenResponse{}, err
+	}
+	for i := range tokens {
+		tokens[i].GatewayPolicy = policies[tokens[i].Id]
 	}
 
 	// Calendar-month window, matching the limiter's month bucket, so the number the
@@ -1422,6 +1475,10 @@ func DeleteUserAuth(context *security.RequestContext, request UserDeleteAuthRequ
 
 	_, err = manager.Db.Exec(`DELETE FROM user_auths WHERE id = $1`, request.Id)
 	if err != nil {
+		return UserDeleteAuthResponse{}, err
+	}
+	// A deleted API key takes its AI Gateway access policy with it.
+	if _, err := manager.Db.Exec(`DELETE FROM llm_gateway_access_policies WHERE api_key_id = $1::uuid::text`, request.Id); err != nil {
 		return UserDeleteAuthResponse{}, err
 	}
 

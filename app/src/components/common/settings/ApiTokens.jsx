@@ -11,6 +11,7 @@ import apiUser from '@api1/user/';
 import { getAppBaseUrl } from '@lib/externalUrls';
 import TokenList from './TokenList';
 import CreateTokenDialog from './CreateTokenDialog';
+import { EditGatewayAccessDialog } from './GatewayRestrictions';
 
 // `defaultKind` is the type the Create form starts on. Pass a single-purpose kind, never
 // 'all': a key that opens both the app API and the gateway must only ever be picked on purpose.
@@ -23,6 +24,8 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
   const [createdTokenName, setCreatedTokenName] = useState(null);
   const [showInstructions, setShowInstructions] = useState(false);
   const [deleteDialog, setDeleteDialog] = useState({ open: false, token: null });
+  const [editAccessToken, setEditAccessToken] = useState(null);
+  const [savingAccess, setSavingAccess] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -50,7 +53,7 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
   };
 
   // Resolves true once the key exists, so the create form knows whether to clear itself.
-  const createToken = async ({ name, kind, expiresAt, limits, scopes }) => {
+  const createToken = async ({ name, kind, expiresAt, limits, scopes, gatewayPolicy }) => {
     if (!name) {
       snackbar.error('Token name is required');
       return false;
@@ -58,7 +61,7 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
 
     try {
       setLoading(true);
-      const response = await apiUser.createUserToken({ name, kind, expiresAt, limits, scopes });
+      const response = await apiUser.createUserToken({ name, kind, expiresAt, limits, scopes, gatewayPolicy });
 
       if (response.errors && response.errors.length > 0) {
         snackbar.error(`Failed to create API token - ${parseHttpResponseBodyMessage(response)}`);
@@ -78,6 +81,25 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
       setLoading(false);
     }
     return false;
+  };
+
+  // An empty policy object clears every restriction; the server stores that as NULL.
+  const saveGatewayAccess = async (token, gatewayPolicy) => {
+    try {
+      setSavingAccess(true);
+      const response = await apiUser.updateUserToken({ id: token.id, gatewayPolicy });
+      if (response.errors && response.errors.length > 0) {
+        snackbar.error(`Failed to update key access - ${parseHttpResponseBodyMessage(response)}`);
+        return;
+      }
+      setEditAccessToken(null);
+      fetchTokens();
+      snackbar.success(`Access updated for ${token.name}`);
+    } catch (error) {
+      snackbar.error(`Failed to update key access - ${parseHttpResponseBodyMessage(error)}`);
+    } finally {
+      setSavingAccess(false);
+    }
   };
 
   const revokeToken = (tokenId, tokenName) => {
@@ -202,7 +224,7 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
               </Button>
             </Box>
 
-            <TokenList tokens={tokens} onRevoke={revokeToken} />
+            <TokenList tokens={tokens} onRevoke={revokeToken} onEditAccess={setEditAccessToken} />
           </Box>
 
           {/* Action Buttons */}
@@ -234,6 +256,9 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
       </Modal>
 
       <CreateTokenDialog open={showCreateDialog} defaultKind={defaultKind} onClose={() => setShowCreateDialog(false)} onCreate={createToken} />
+      {editAccessToken && (
+        <EditGatewayAccessDialog token={editAccessToken} saving={savingAccess} onClose={() => setEditAccessToken(null)} onSave={saveGatewayAccess} />
+      )}
 
       {/* Instructions Modal */}
       <Modal
