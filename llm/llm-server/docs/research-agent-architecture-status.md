@@ -7,7 +7,7 @@
 
 ## Summary
 
-Of the 18 improvement areas identified in the original research, **14 are fully implemented**, **1 is partially done**, and **3 remain open gaps**.
+Of the 18 improvement areas identified in the original research, **14 are fully implemented**, **1 is partially done**, **1 is a minor gap** (delegate resume), and **2 are not applicable** to NB's conversation model.
 
 ---
 
@@ -96,16 +96,22 @@ Both legacy planners deleted entirely. Shared symbols extracted to `planner_reac
 
 ---
 
-## Open Gaps (3)
+## Not Applicable to NB Conversation Model (2)
 
 ### 16. On-Demand Conversation Compaction
-No user-triggered `/compact` equivalent exists. `applyPreflightContextWindowCap` trims largest messages before each LLM call automatically. `handleTokenLimitError` triggers summarization reactively on 4xx token-limit errors. Both are automatic — there's no way for a user or orchestrator to trigger mid-conversation compaction on demand (e.g., to reclaim context budget before a complex next step).
+NB's conversation architecture handles this differently: each new user message within a conversation already sends previous Q&A as a compressed message with a pointer to full conversation history. Single long-running messages use context-window-gated compression automatically. A dedicated `/compact` command isn't needed given this model.
 
-### 17. Delegate Agent Resume from Incomplete State
-`DelegateAgentTool` creates ephemeral `dynamicReActAgent` instances. If a delegate hits its iteration budget or times out, the partial investigation cannot be resumed — the sub-agent's scratchpad and intermediate steps are not reconstructable from persisted state. Contrast with the main planner's `Marshal`/`Unmarshal` for conversation resumption.
+### 17. Delta Hydrator for Conversation Context
+Same rationale — NB conversations already send compressed prior context with references to full history when a new message arrives. The rebuild-per-turn cost is bounded by the compression pipeline rather than requiring an incremental delta mechanism.
 
-### 18. Delta Hydrator for Conversation Context
-No incremental context update mechanism exists. Each turn rebuilds the full conversation context from scratch. A delta hydrator would let the system inject only changed context (new tool results, updated metrics, new events) rather than re-serializing the entire conversation history, reducing token waste on long conversations.
+## Minor Gap (1)
+
+### 18. Delegate Agent Stateful Resume
+`DelegateAgentTool`'s `dynamicReActAgent` is ephemeral — no `Marshal`/`Unmarshal`. When a delegate hits its iteration budget, it does **not lose work**: `summarizeConversation()` synthesizes all steps into a prose answer, `BuildSubAgentEvidenceForTool` creates a tool-call manifest (exempt from parent compression), and `AdditionalDetails` carries `budget_exhausted: true` with iteration/tool metadata. The parent gets a usable partial result.
+
+What's missing is true *resume* — reconstructing the delegate to continue from where it stopped. Code at `agent_delegate.go:255-257` explicitly acknowledges this: *"resume routing for delegated followups is a separate concern (needs the dynamic sub-agent to be reconstructable from persisted state); until that lands..."*
+
+This is a small gap in practice — the parent agent gets enough context to spawn a new delegate with refined focus if needed.
 
 ---
 
@@ -122,3 +128,6 @@ No incremental context update mechanism exists. Each turn rebuilds the full conv
 | Prompt system | `.txt` templates | **YAML** under `prompts/default/v1/` |
 | Orchestrator naming | `*_debug` | **`*_orchestrator`** with aliases |
 | ReWoo/ReAct2 | Existed as fallback | **Deleted entirely** |
+| Delegate budget exhaust | Assumed lost | **Summarized + evidence manifest** returned to parent |
+| On-demand compaction | Gap | **N/A** — NB conversation model handles differently |
+| Delta hydrator | Gap | **N/A** — compressed prior context already sent per turn |
