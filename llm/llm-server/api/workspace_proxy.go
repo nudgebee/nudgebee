@@ -212,10 +212,13 @@ func authorizeWorkspaceRequest(c *gin.Context, requestedAccountId string, tracer
 	}
 	if !isExecutionToken {
 		// The pod's own token (or one issued before audiences existed).
+		recordWorkspaceAuth(c.Request.Context(), c.FullPath(), workspace.AudienceWorkspacePod)
+		slog.Warn("workspace: request authenticated with the pod token", "route", c.FullPath(), "account_id", requestedAccountId)
 		c.Set("workspace_allowed_target", claims.AccountId)
 		c.Set(workspaceTokenAudienceKey, workspace.AudienceWorkspacePod)
 		return security.NewRequestContextForTenantAdmin(tenantId), nil
 	}
+	recordWorkspaceAuth(c.Request.Context(), c.FullPath(), workspace.AudienceWorkspaceExecute)
 	c.Set(workspaceTokenAudienceKey, workspace.AudienceWorkspaceExecute)
 	if claims.TenantId == "" {
 		return nil, fmt.Errorf("token does not match tenant")

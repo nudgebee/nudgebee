@@ -134,6 +134,11 @@ type AgenticAnalyzeRequest struct {
 	// It is returned with every model call made through llm-server, which
 	// records that call's usage against the run's conversation.
 	AgentRunID string `json:"agent_run_id,omitempty"`
+	// WorkspaceToken is the execution token llm-server issued for this
+	// analysis. Model calls through llm-server authenticate with it. It is
+	// kept on the request context only: never logged, never put in a child
+	// process's environment.
+	WorkspaceToken string `json:"workspace_token,omitempty"`
 	// AnalysisID is set internally by HandleAnalyze (the async entrypoint) to the
 	// progress-store key so the analysis can attach its tool tracker for live
 	// /status streaming. Not part of the wire contract — callers never send it.
@@ -741,6 +746,7 @@ func secureSessionWorkspace(path string) error {
 
 func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req AgenticAnalyzeRequest) (*AgenticAnalyzeResponse, error) {
 	ctx = llm.WithAgentRunID(ctx, req.AgentRunID)
+	ctx = llm.WithWorkspaceToken(ctx, req.WorkspaceToken)
 	if len(req.KnowledgeFiles) > 0 {
 		req.Skills += NewFileHandler(ah.config).renderKnowledgeFiles(ctx, req.KnowledgeFiles)
 	}

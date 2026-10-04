@@ -246,6 +246,29 @@ func resolveLLMConfigForDispatch(ctx *security.RequestContext, accountId, agentN
 	return llmCfg, nil
 }
 
+// codeAnalysisMaxPollDuration bounds how long llm-server waits on one
+// code-analysis run, analysis or followup.
+const codeAnalysisMaxPollDuration = 30 * time.Minute
+
+// codeAnalysisTokenGrace keeps an analysis's execution token valid past the
+// polling window. It covers the dispatch call, a lazy workspace (re)creation
+// and clock skew, so a run that uses its whole window never fails its last
+// model call on an expired token.
+const codeAnalysisTokenGrace = 10 * time.Minute
+
+// setAnalysisWorkspaceToken issues the execution token the workspace uses for
+// its model calls during one analysis, so they run as the requesting user (or
+// the system user, for background runs) instead of with the pod's own token.
+// The token travels only in the request body: never log it.
+func setAnalysisWorkspaceToken(ctx *security.RequestContext, accountId string, analyzeRequest map[string]any) error {
+	token, err := workspace.ExecutionToken(ctx, accountId, "", codeAnalysisMaxPollDuration+codeAnalysisTokenGrace)
+	if err != nil {
+		return fmt.Errorf("workspace token: %w", err)
+	}
+	analyzeRequest["workspace_token"] = token
+	return nil
+}
+
 // instead of launching a new pod per request.
 func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.NBAgentRequest, request CodeAgent2Request, creds []GitCredentials, provider string) (codeAnalysisResult, error) {
 	logger := ctx.GetLogger()
@@ -489,6 +512,10 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 
 	logger.Info("code: executing analysis via workspace", "account_id", agentRequest.AccountId, "repo", request.GitRepo, "target_branch", branch)
 
+	if err := setAnalysisWorkspaceToken(ctx, agentRequest.AccountId, analyzeRequest); err != nil {
+		return codeAnalysisResult{}, fmt.Errorf("code: %w", err)
+	}
+
 	// Step 1: POST /analyze — code-analysis returns 202 with analysis_id
 	respBytes, err := wm.CallAPIOrLazyCreate(ctx, agentRequest.AccountId, "POST", "/analyze", nil, analyzeRequest)
 	if err != nil {
@@ -532,9 +559,8 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	persistedStepStatus := map[string]string{}
 
 	const maxConsecutiveErrors = 12 // 12 * 5s = 60s of consecutive failures before giving up
-	const maxPollDuration = 30 * time.Minute
 	consecutiveErrors := 0
-	pollDeadline := time.Now().Add(maxPollDuration)
+	pollDeadline := time.Now().Add(codeAnalysisMaxPollDuration)
 
 	for {
 		select {
@@ -557,7 +583,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 
 		if time.Now().After(pollDeadline) {
 			cancelWorkspaceAnalysis(ctx, agentRequest.AccountId, analysisID)
-			return codeAnalysisResult{}, fmt.Errorf("analysis polling exceeded maximum duration of %v", maxPollDuration)
+			return codeAnalysisResult{}, fmt.Errorf("analysis polling exceeded maximum duration of %v", codeAnalysisMaxPollDuration)
 		}
 
 		statusBytes, err := pollWm.CallAPI(ctx, agentRequest.AccountId, "GET", statusEndpoint, nil, nil)
@@ -3260,6 +3286,10 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	wm := workspace.NewWorkspaceManagerWithTimeout(60 * time.Second)
 	logger.Info("code followup: executing via workspace", "account_id", query.AccountId, "pr_url", request.PRURL)
 
+	if err := setAnalysisWorkspaceToken(ctx, query.AccountId, analyzeRequest); err != nil {
+		return core.NBAgentResponse{}, fmt.Errorf("code followup: %w", err)
+	}
+
 	// POST /analyze — code-analysis returns 202 with analysis_id
 	followupStart := time.Now()
 	respBytes, err := wm.CallAPIOrLazyCreate(ctx, query.AccountId, "POST", "/analyze", nil, analyzeRequest)
@@ -3300,9 +3330,8 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	lastProgress := ""
 	persistedStepStatus := map[string]string{}
 	const maxConsecutiveErrors = 12
-	const maxPollDuration = 30 * time.Minute
 	consecutiveErrors := 0
-	pollDeadline := time.Now().Add(maxPollDuration)
+	pollDeadline := time.Now().Add(codeAnalysisMaxPollDuration)
 
 	for {
 		select {
@@ -3312,7 +3341,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		}
 
 		if time.Now().After(pollDeadline) {
-			return core.NBAgentResponse{}, fmt.Errorf("followup analysis polling exceeded maximum duration of %v", maxPollDuration)
+			return core.NBAgentResponse{}, fmt.Errorf("followup analysis polling exceeded maximum duration of %v", codeAnalysisMaxPollDuration)
 		}
 
 		statusBytes, err := pollWm.CallAPI(ctx, query.AccountId, "GET", statusEndpoint, nil, nil)
