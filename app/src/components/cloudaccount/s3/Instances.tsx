@@ -22,6 +22,14 @@ import ServiceRefreshButton from '@components/cloudaccount/ServiceRefreshButton'
 import { CustomText } from '@components/cloudaccount/common';
 import { ds } from '@utils/colors';
 
+export const resourceCreatedAt = (item: any): string | undefined => {
+  const cloudCreatedOn = item?.resourse_created_on;
+  if (cloudCreatedOn && new Date(cloudCreatedOn).getUTCFullYear() > 1970) {
+    return cloudCreatedOn;
+  }
+  return item?.meta?.CreationDate || item?.meta?.timeCreated || item?.created_at;
+};
+
 const INSTANCE_HEADER = [
   { name: 'Bucket Name', width: '28%' },
   { name: 'State', width: '10%' },
@@ -133,7 +141,7 @@ const InstancesView = (props: {
           });
           data.push({ component: <TagsCell tags={item.tags} /> });
           data.push({
-            component: <Datetime value={item.meta?.CreationDate || item.meta?.timeCreated || item.created_at} />,
+            component: <Datetime value={resourceCreatedAt(item)} />,
           });
           data.push({ component: <Currency value={item?.spends_aggregate?.aggregate?.sum?.amount} precison={1} /> });
           data.push({
