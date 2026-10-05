@@ -1098,7 +1098,9 @@ type appConfig struct {
 	MemoryInjectEnabled bool `mapstructure:"llm_memory_inject_enabled"`
 	// MemoryToolsEnabled turns on the filter-based memory_read and typed
 	// memory_write NBTools. When on, orchestrators expose them via
-	// appendMemoryToolName. See llm/llm-server/ee/memory/docs/memory-tools-plan.md.
+	// appendMemoryToolName. On a turn where memory_write saved something, the
+	// post-turn extractor skips that turn so the row is not saved twice.
+	// See llm/llm-server/ee/memory/docs/memory-tools-plan.md.
 	MemoryToolsEnabled           bool `mapstructure:"llm_memory_tools_enabled"`
 	MemoryRagProjectorBatchSize  int  `mapstructure:"llm_memory_rag_projector_batch_size"`
 	MemoryRagProjectorIntervalMs int  `mapstructure:"llm_memory_rag_projector_interval_ms"`

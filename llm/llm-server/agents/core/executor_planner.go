@@ -5082,8 +5082,9 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 		if worthRemembering {
 			ctx.GetLogger().Info("agentexecutor: triggering long-term memory extraction", "notebook_len", len(notebook), "has_notebook", notebook != "")
 
+			toolCallCount, wroteMemory := len(toolInvocations), memoryWriteSucceeded(toolInvocations)
 			err := conversationAsyncTaskWorkerPool.Submit(submissionCtx, func() {
-				_ = extractLongTermMemory(bgCtx, agent, request, response, notebook, len(toolInvocations))
+				_ = extractLongTermMemory(bgCtx, agent, request, response, notebook, toolCallCount, wroteMemory)
 			})
 			if err != nil {
 				ctx.GetLogger().Error("agentexecutor: failed to submit memory extraction task", "error", err)
