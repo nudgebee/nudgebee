@@ -183,6 +183,23 @@ export interface PanelThresholdOptions {
 }
 
 /**
+ * How a stat or gauge folds several accounts' figures into the one it shows.
+ *
+ * `sum` adds them — right for the `sum(...)` / `count(...)` a stat is usually
+ * written as. `avg` takes their mean — right for a ratio or a percentage, which
+ * is what a gauge's 0–100 dial reads, and which four clusters' figures added up
+ * would overshoot by roughly four times. Absent means the panel type's default:
+ * `avg` on a gauge, `sum` on a stat. A weighted average, when it comes, is a
+ * third value here rather than a new field.
+ */
+export type PanelCombine = 'sum' | 'avg';
+
+/** `options` on a `stat` or `gauge` panel: how its accounts are combined. */
+export interface PanelCombineOptions {
+  combine?: PanelCombine;
+}
+
+/**
  * `options` on a traces or `nudgebee` table panel: which columns its "Filter by
  * column" menu offers a viewer.
  */
@@ -240,7 +257,7 @@ export interface Panel {
   unit?: string;
   /** Backs the `text` panel type. */
   content?: string;
-  options?: PanelTableOptions & PanelThresholdOptions & PanelFilterOptions & Record<string, unknown>;
+  options?: PanelTableOptions & PanelThresholdOptions & PanelCombineOptions & PanelFilterOptions & Record<string, unknown>;
 }
 
 export interface DashboardDefinition {

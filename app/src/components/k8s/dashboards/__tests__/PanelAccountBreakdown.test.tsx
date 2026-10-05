@@ -13,8 +13,8 @@ jest.mock('next/router', () => ({
 // This records the one thing the card decides about it: how many rows it makes room for.
 jest.mock('../PanelGauge', () => ({
   __esModule: true,
-  default: (props: { rowsBelow?: number; caption?: string }) => (
-    <div data-testid='dial' data-rows-below={props.rowsBelow ?? 0}>
+  default: (props: { value?: number; rowsBelow?: number; caption?: string }) => (
+    <div data-testid='dial' data-rows-below={props.rowsBelow ?? 0} data-value={props.value}>
       {props.caption}
     </div>
   ),
@@ -142,7 +142,27 @@ describe('the breakdown on a stat or gauge card', () => {
     expect(within(gauge).queryByTestId('panel-breakdown-p1')).not.toBeInTheDocument();
     const dial = within(gauge).getByTestId('dial');
     expect(dial).toHaveAttribute('data-rows-below', '0');
-    expect(dial).toHaveTextContent('4 accounts');
+    // The count says the dial is a mean: 4 accounts at 90, 0, 10 and 5 would
+    // otherwise read 26 as if it were one cluster's figure, or their sum.
+    expect(dial).toHaveTextContent('Average of 4 accounts');
+  });
+
+  it("shows a gauge the accounts' average, and a stat their sum, from the same answers", () => {
+    mount('gauge', 8);
+    expect(within(screen.getByTestId('panel-gauge-p1')).getByTestId('dial')).toHaveAttribute('data-value', String(100 / 3));
+  });
+
+  it('adds a gauge up instead when the panel says so', () => {
+    const summing = { ...card('gauge', 8), options: { combine: 'sum' } } as unknown as Panel;
+    render(<DashboardPanel panel={summing} accounts={[]} variables={{}} startTime={0} endTime={1} sampleData={sampleData as never} />);
+    expect(within(screen.getByTestId('panel-gauge-p1')).getByTestId('dial')).toHaveAttribute('data-value', '100');
+  });
+
+  it('averages a stat instead when the panel says so', () => {
+    const averaging = { ...card('stat', 4), options: { combine: 'avg' } } as unknown as Panel;
+    render(<DashboardPanel panel={averaging} accounts={[]} variables={{}} startTime={0} endTime={1} sampleData={sampleData as never} />);
+    expect(within(screen.getByTestId('panel-stat-p1')).getByText('33.33')).toBeInTheDocument();
+    expect(screen.getByText('Average of 3 accounts')).toBeInTheDocument();
   });
 
   it("lists a short stat's accounts beside its number, where there is room for them", () => {

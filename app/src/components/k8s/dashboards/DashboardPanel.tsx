@@ -33,7 +33,7 @@ import { usePanelData, type ColumnKind, type PanelData, type PanelErrorKind, typ
 import { applyAccountFilter, describePanelScope, effectiveFilterAccount, panelQueryAccounts, resolvePanelAccounts } from './panelAccounts';
 import PanelColumnFilters, { PanelFilterMenu } from './PanelColumnFilters';
 import { appliedViewerFilters, loadViewerFilterValues, viewerFilterColumns, type ViewerFilter } from './panelViewerFilters';
-import { consolidatedSeries, lastValue, metricLabel, statTotal } from './panelSeries';
+import { combineOf, consolidatedSeries, lastValue, metricLabel, statTotal } from './panelSeries';
 import { downloadNodeAsPng, EXPORT_HIDE_ATTR, PANEL_PENDING_ATTR } from './panelImage';
 import { withPanelParam } from './panelLink';
 import type { VariableValues } from './templating';
@@ -405,7 +405,8 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
       data.series,
       (panel.targets || []).map((t) => t.ref_id || 'A'),
       data.failedAccounts || [],
-      data.emptyAccounts || []
+      data.emptyAccounts || [],
+      combineOf(panel)
     );
   }, [panel, data]);
 
@@ -541,8 +542,10 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           // Only when the accounts are not listed: a list already says how many
           // there are and which ones reported. Without one, this is what says the
           // number is a sum — "2 of 5 reporting" when some failed or came back
-          // empty — and that the hover has the parts.
-          const countCaption = stat.partial ? `${reporting} of ${stat.rows.length} reporting` : `${stat.rows.length} accounts`;
+          // empty — or an average, which a reader cannot tell from a sum without
+          // being told — and that the hover has the parts.
+          const count = stat.partial ? `${reporting} of ${stat.rows.length} reporting` : `${stat.rows.length} accounts`;
+          const countCaption = stat.combine === 'avg' ? `Average of ${count}` : count;
           const format = (value: number | undefined) => formatValue(value, panel.unit);
           const flagged = breaches.rows;
           // Accounts over a threshold first, each group in account order: the one
@@ -764,7 +767,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         {/* The dial's scale is a contract the panel cannot show on its own — the
             same affordance, in the same title-side spot, as the description icon. */}
         {panel.type === 'gauge' && (
-          <Tooltip title='The dial runs 0 to 100 — the value is read as a percentage, and anything outside that range pins to the ends.'>
+          <Tooltip title='The dial runs 0 to 100 — the value is read as a percentage, and anything outside that range pins to the ends. Over several accounts it shows their average unless the panel says otherwise.'>
             <Box
               component='span'
               sx={{ display: 'inline-flex', alignItems: 'center', color: ds.gray[400], cursor: 'help' }}

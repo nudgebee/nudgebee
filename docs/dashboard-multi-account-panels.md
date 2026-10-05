@@ -65,13 +65,18 @@ unit tests pass `[]` directly, so they exercise a branch the app never reaches.
 the second time, `stat` fanned out correctly while `timeseries` silently kept
 querying one account, because only the hook had been updated.
 
-### 2. Stat and gauge add up, and show their working
+### 2. Stat and gauge combine the accounts, and show their working
 
 A stat is one number, so a panel over four clusters has to either pick one —
-which reads as the total and is not — or add them. It adds them.
+which reads as the total and is not — or combine them. A **stat adds them up**;
+a **gauge averages them**, because its dial reads 0–100 as a percentage and
+three clusters at 90 %, 0 % and 10 % are not at 100 %. Either default can be
+overridden per panel in the editor's "Across accounts" field (stored as
+`options.combine: 'sum' | 'avg'`; absent means the type's default), which is
+also where a weighted average will go when there is a weight to use.
 
 ```
-Account A = 90, Account B = 0, Account C = 10   →   card shows 100
+Account A = 90, Account B = 0, Account C = 10   →   stat shows 100, gauge shows 33.33
 ```
 
 **Hovering the number breaks it down by account.** That is not a nicety; it is
@@ -85,7 +90,9 @@ Three rules hold the arithmetic honest:
   both the total and the breakdown.
 - **A failed account is never counted as zero.** It contributes nothing, is
   listed in the breakdown as "no answer", and the card's count reads
-  "2 of 3 accounts" instead of "3 accounts". The hover names the account. Stat
+  "2 of 3 accounts" instead of "3 accounts" — "Average of 2 of 3 reporting" on
+  an averaging panel, and the silent account is left out of the mean rather
+  than read as a zero. The hover names the account. Stat
   and gauge panels do not repeat it in the banner above the card (it first
   shipped as a bare asterisk, which nobody could read without hovering).
   A cluster that could not answer and a cluster that answered zero are the same
@@ -208,7 +215,7 @@ panel that quietly queries nothing.
 |---|---|
 | `panelAccounts.ts` | `effectiveFilterAccount` gains `allAccounts` — an unmade choice stays empty rather than defaulting to the first account. `singleCall` renamed `allAccounts` |
 | `usePanelData.ts` | metrics fans out to every scoped account; `PanelData` carries `failedAccounts`; per-account capping; "No **answer** from …" replaces "No **data** from …", which implied the account replied |
-| `panelSeries.ts` | `statTotal()` — the sum, the per-account rows behind it, and a `partial` flag. Series carry a structured `accountLabel` |
+| `panelSeries.ts` | `statTotal()` — the sum or average (`combineOf(panel)`), the per-account rows behind it, and a `partial` flag. Series carry a structured `accountLabel` |
 | `panelBounds.ts` | `capSeriesByAccount()` + `accountCappedWarning()` |
 | `DashboardPanel.tsx` | stat and gauge render one total with a hover breakdown and an on-card "n of N accounts" caveat; a timeseries draws `consolidatedSeries()` dashed beside the per-account lines |
 | `DashboardView.tsx`, `SortablePanel.tsx` | the dashboard-level Accounts filter, threaded to every panel as `dashboardAccountIds` |
@@ -254,9 +261,13 @@ in the wild. Hardcoding the behaviour keeps it reversible.
 **Summing assumes the parts add.** True of the `sum(...)` / `count(...)` an
 aggregate stat query is written as. **Not** true of an average, a percentile, or
 a ratio — `avg` across four clusters summed gives a meaningless number roughly
-four times too large. Nothing enforces this; the frontend has no PromQL parser,
-and ES, Datadog, CloudWatch and Dynatrace have no comparable "outer aggregation"
-to inspect. The breakdown makes it *visible* — the parts sit next to the total —
+four times too large. A gauge now averages by default and either type can be
+switched, but the choice is the author's: nothing checks it against the query,
+because the frontend has no PromQL parser, and ES, Datadog, CloudWatch and
+Dynatrace have no comparable "outer aggregation" to inspect. A plain mean is
+also only right when the clusters are comparable — a 10-node cluster at 90 %
+and a 500-node one at 10 % are not "at 50 %" — which is what a weighted average
+would fix. The breakdown makes it *visible* — the parts sit next to the total —
 but visible is not prevented.
 
 **The request bound no longer holds.** `panelQueue` caps 4 *panels*

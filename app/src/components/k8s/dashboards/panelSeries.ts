@@ -1,4 +1,5 @@
 import { convertNumberToTimestamp } from 'src/utils/common';
+import type { Panel, PanelCombine } from '@api1/dashboards';
 import type { PanelData, PanelSeries } from './usePanelData';
 
 /** Joins an account name onto a series label, for a panel that queried several. */
@@ -84,8 +85,10 @@ export interface StatRow {
 
 /** A stat panel's number, and where it came from. */
 export interface StatTotal {
-  /** The sum across every account that answered. `undefined` when none did. */
+  /** The accounts that answered, combined per `combine`. `undefined` when none did. */
   total: number | undefined;
+  /** How `total` was made from `rows`. */
+  combine: PanelCombine;
   rows: StatRow[];
   /** The single-account caption, per statCaption. '' whenever a breakdown is shown. */
   caption: string;
@@ -109,10 +112,18 @@ export interface StatTotal {
  *
  * Summing assumes the parts ADD — true of the `sum(...)` / `count(...)` an
  * aggregate stat query is written as, and NOT of an average or a percentile,
- * which have no meaningful sum across clusters. The breakdown is what makes that
- * visible: the parts are on screen next to the total.
+ * which have no meaningful sum across clusters. `combine: 'avg'` is for those:
+ * the mean of the accounts that answered, so a gauge over four clusters at
+ * 90 %, 0 % and 10 % reads 33 and not 100. Either way the breakdown is what
+ * makes the arithmetic visible: the parts are on screen next to the total.
  */
-export function statTotal(series: PanelSeries[], refIds: string[], failedAccounts: string[] = [], emptyAccounts: string[] = []): StatTotal {
+export function statTotal(
+  series: PanelSeries[],
+  refIds: string[],
+  failedAccounts: string[] = [],
+  emptyAccounts: string[] = [],
+  combine: PanelCombine = 'sum'
+): StatTotal {
   const order: string[] = [];
   const byAccount = new Map<string, number | undefined>();
 
@@ -136,16 +147,31 @@ export function statTotal(series: PanelSeries[], refIds: string[], failedAccount
   for (const account of failedAccounts) rows.push({ account, value: undefined, failed: true });
 
   const answered = rows.filter((r) => r.value !== undefined);
-  const total = answered.length === 0 ? undefined : answered.reduce((sum, r) => sum + (r.value as number), 0);
+  const sum = answered.reduce((acc, r) => acc + (r.value as number), 0);
+  // An account that did not answer is left out of the mean as it is out of the
+  // sum: dividing by every account would read a silent cluster as a zero.
+  const total = answered.length === 0 ? undefined : combine === 'avg' ? sum / answered.length : sum;
 
   // One account has nothing to break down, so it keeps the caption it always had.
   const single = rows.length <= 1;
   return {
     total,
+    combine,
     rows,
     caption: single ? statCaption(series[0]?.label, refIds) : '',
     partial: answered.length < rows.length,
   };
+}
+
+/**
+ * How a panel combines its accounts: what it was saved with, else the type's
+ * default. A gauge reads as a percentage, so it averages; a stat adds up. An
+ * unknown stored value falls back to the default rather than being read as one.
+ */
+export function combineOf(panel: Pick<Panel, 'type' | 'options'>): PanelCombine {
+  const stored = panel.options?.combine;
+  if (stored === 'sum' || stored === 'avg') return stored;
+  return panel.type === 'gauge' ? 'avg' : 'sum';
 }
 
 /**

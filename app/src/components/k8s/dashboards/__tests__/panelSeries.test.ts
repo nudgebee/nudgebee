@@ -1,5 +1,6 @@
 import {
   alignSeries,
+  combineOf,
   CONSOLIDATED_LABEL,
   consolidatedSeries,
   lastValue,
@@ -122,7 +123,46 @@ describe('statTotal', () => {
     // No accountLabel is set when the panel queried one account, and an
     // aggregate carries no labels — so statCaption drops the bare ref id.
     const stat = statTotal([{ label: 'A', values: [9] }], ['A']);
-    expect(stat).toEqual({ total: 9, rows: [{ account: '', value: 9, failed: false }], caption: '', partial: false });
+    expect(stat).toEqual({ total: 9, combine: 'sum', rows: [{ account: '', value: 9, failed: false }], caption: '', partial: false });
+  });
+
+  it('averages the accounts when asked, and still keeps the parts', () => {
+    // A gauge reads as a percentage: 90 %, 0 % and 10 % across three clusters is
+    // 33 %, not the 100 % their sum says.
+    const stat = statTotal(ACCOUNTS, ['A'], [], [], 'avg');
+    expect(stat.total).toBeCloseTo(100 / 3);
+    expect(stat.combine).toBe('avg');
+    expect(stat.rows.map((r) => r.value)).toEqual([90, 0, 10]);
+  });
+
+  it('averages over the accounts that answered, not over the ones asked', () => {
+    // A silent cluster is not a cluster at zero: it is left out of the mean as
+    // it is left out of the sum, and the stat says the answer is partial.
+    const stat = statTotal(ACCOUNTS, ['A'], ['sandbox'], ['staging'], 'avg');
+    expect(stat.total).toBeCloseTo(100 / 3);
+    expect(stat.partial).toBe(true);
+    expect(stat.rows).toHaveLength(5);
+  });
+
+  it('averages a real zero in', () => {
+    expect(statTotal(ACCOUNTS.slice(0, 2), ['A'], [], [], 'avg').total).toBe(45);
+  });
+
+  it('has no average of nothing', () => {
+    expect(statTotal([{ label: 'A', accountLabel: 'prod', values: [null] }], ['A'], [], [], 'avg').total).toBeUndefined();
+  });
+});
+
+describe('combineOf', () => {
+  it('averages a gauge and adds up a stat unless the panel says otherwise', () => {
+    expect(combineOf({ type: 'gauge' })).toBe('avg');
+    expect(combineOf({ type: 'stat' })).toBe('sum');
+    expect(combineOf({ type: 'gauge', options: { combine: 'sum' } })).toBe('sum');
+    expect(combineOf({ type: 'stat', options: { combine: 'avg' } })).toBe('avg');
+  });
+
+  it('reads a value it does not know as the default, not as either choice', () => {
+    expect(combineOf({ type: 'gauge', options: { combine: 'median' as never } })).toBe('avg');
   });
 });
 
