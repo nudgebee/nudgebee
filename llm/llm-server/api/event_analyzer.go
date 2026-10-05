@@ -2199,6 +2199,15 @@ func capInvestigationPrompt(ctx *security.RequestContext, prompt, eventId string
 	return truncated + fmt.Sprintf("\n\n[The investigation context above was condensed from %d bytes; the full context is in workspace file %s. If you need a detail truncated above, grep it, e.g. grep -in \"<keyword>\" %s | head -40.]", len(prompt), file, file)
 }
 
+// codeAlreadyThereRule is shared by both code-analysis blocks.
+//
+// 09-20 benchmark, clean-run failures R0159 / R0167 / R0219 and the three
+// llm-gateway runs: each prescribed a change that was already merged. The
+// investigation never asks whether what it is about to recommend exists. The
+// code stage does ask (codeOutcomeNoOp) but it runs afterwards, once the
+// recommendation is already written.
+const codeAlreadyThereRule = "- Before you recommend a code change, establish whether it is already there: ask `code_analyzer` for the BEHAVIOUR you are about to request — the retry, the guard, the readiness check — not only for the failing code.\n"
+
 // buildCodeCapabilityBlock is the guidance appended to the investigation prompt
 // (#37005): it tells the debug agent which repository / values file is reachable
 // for this workload, that it should localise a concluded change with
@@ -2218,12 +2227,7 @@ func buildCodeCapabilityBlock(caps *services_server.EventCodeCapabilities, names
 		}
 		b.WriteString(". `code_analyzer` is available.\n")
 		b.WriteString("- When incident-window evidence supports a code defect, call `code_analyzer` in **explore mode** with the resource, time window, observed failure, causal mechanism, and distinctive log strings (including any filename:lineno). Ask it to verify the mechanism against the deployed revision and identify the exact repo-relative file(s). A log-string match alone does not establish a defect. Keep optional hardening suggestions in prose; they do not justify an automated change plan.\n")
-		// 09-20 benchmark, clean-run failures R0159 / R0167 / R0219 and the three
-		// llm-gateway runs: each prescribed a change that was already merged. The
-		// investigation never asks whether what it is about to recommend exists.
-		// The code stage does ask (codeOutcomeNoOp) but it runs afterwards, once
-		// the recommendation is already written.
-		b.WriteString("- Before you recommend a code change, establish whether it is already there: ask `code_analyzer` for the BEHAVIOUR you are about to request — the retry, the guard, the readiness check — not only for the failing code.\n")
+		b.WriteString(codeAlreadyThereRule)
 		// Only ~2.5% of workloads carry a revision annotation today and they are
 		// almost all ours, so this bullet is absent for most workloads. Keep it
 		// to the fact and the disclosure: which branch *should* be deployed is
@@ -2247,6 +2251,47 @@ func buildCodeCapabilityBlock(caps *services_server.EventCodeCapabilities, names
 	return b.String()
 }
 
+// buildNamedRepoBlock is the code-analysis offer for an event that no workload
+// annotation maps to code but whose own labels name one of the account's
+// repositories — a CI failure, for one. Without it such an investigation is
+// never told code_analyzer can be used, and almost never reaches for it.
+//
+// It carries no <change_plan> contract: the repository is what the event says
+// it concerns, not a mapping to what is deployed, so the code-fix stage stays
+// behind the annotation-resolved capabilities. It makes no claim about a
+// deployed revision for the same reason.
+func buildNamedRepoBlock(repo string) string {
+	if repo == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## Code Analysis\n")
+	fmt.Fprintf(&b, "This event names the repository `%s`. `code_analyzer` is available.\n", repo)
+	b.WriteString("- When the evidence supports a code defect, call `code_analyzer` in **explore mode** with the observed failure, the causal mechanism, and distinctive log strings (including any filename:lineno). If the event names a branch or commit, pass it, so the code read is the code that failed. Ask it to verify the mechanism and identify the exact repo-relative file(s). A log-string match alone does not establish a defect.\n")
+	b.WriteString(codeAlreadyThereRule)
+	return b.String()
+}
+
+// eventLabelValues returns the string values among an event's labels, one level
+// of nesting included, for IntegrationRepoNamedBy. Label names are not
+// consulted: which label carries a repository differs per event source.
+func eventLabelValues(parsedLabels map[string]any) []string {
+	values := []string{}
+	for _, v := range parsedLabels {
+		switch typed := v.(type) {
+		case string:
+			values = append(values, typed)
+		case map[string]any:
+			for _, nested := range typed {
+				if s, ok := nested.(string); ok {
+					values = append(values, s)
+				}
+			}
+		}
+	}
+	return values
+}
+
 // eventKnowledgeHints names the kind of event for knowledge discovery. The
 // title is left out: it describes one occurrence, and the investigation
 // prompt already starts with it.
@@ -2262,7 +2307,7 @@ func eventKnowledgeHints(event events.Event) []string {
 
 // capNamespace / capWorkload are the event's resolved workload
 // (resolveEventWorkload); the caller resolves them once and reuses them.
-func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Event, request EventAnalysisRequest, response EventAnalysisResponse, parsedLabels map[string]any, anaylsisRepo *events.EventAnalysisRepository, pending map[string]string, window investigationWindow, hasWindow bool, capNamespace, capWorkload string) (string, string, bool, string, *tools.RunbookRef, *services_server.EventCodeCapabilities, error) {
+func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Event, request EventAnalysisRequest, response EventAnalysisResponse, parsedLabels map[string]any, anaylsisRepo *events.EventAnalysisRepository, pending map[string]string, window investigationWindow, hasWindow bool, capNamespace, capWorkload string) (string, string, bool, string, *tools.RunbookRef, *services_server.EventCodeCapabilities, string, error) {
 	// runbookRef holds the runbook resolved from the event's runbook_url label
 	// (if any), so the caller can cite it in the synthesized analysis.
 	var runbookRef *tools.RunbookRef
@@ -2297,6 +2342,7 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 	// pipeline gates on. Only appended when a git integration is configured — with
 	// no integration there is nothing to act on.
 	var codeCapabilities *services_server.EventCodeCapabilities
+	var namedRepo string
 	if isGitIntegrationConfigured(request.AccountId) {
 		if capNamespace != "" && capWorkload != "" {
 			if dbm, dbErr := common.GetDatabaseManager(common.Metastore); dbErr == nil {
@@ -2311,6 +2357,14 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 				}
 			}
 			eventAnalsysisPrompt = eventAnalsysisPrompt + buildCodeCapabilityBlock(codeCapabilities, capNamespace, capWorkload)
+		}
+		// No annotation maps this event to code, but its own labels may name the
+		// repository. That repository is offered for verifying a cause and is
+		// deliberately kept out of codeCapabilities, which is what the code-fix
+		// stage gates on.
+		if !codeCapabilities.HasAny() {
+			namedRepo = agents.IntegrationRepoNamedBy(ctx, request.AccountId, eventLabelValues(parsedLabels))
+			eventAnalsysisPrompt = eventAnalsysisPrompt + buildNamedRepoBlock(namedRepo)
 		}
 	}
 
@@ -2420,7 +2474,7 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 			eventAnalsysisPrompt = "## Troubleshooting Steps For Investigation (CRITICAL) -\n" + userPrompt + "\n\n" + eventAnalsysisPrompt
 		}
 	}
-	return capInvestigationPrompt(ctx, eventAnalsysisPrompt, request.EventId, pending), accountPrompt, debugAnalysisEnabled, debugAnalysisSkipReason, runbookRef, codeCapabilities, err
+	return capInvestigationPrompt(ctx, eventAnalsysisPrompt, request.EventId, pending), accountPrompt, debugAnalysisEnabled, debugAnalysisSkipReason, runbookRef, codeCapabilities, namedRepo, err
 }
 
 // saveEventRunbookReference persists the runbook resolved for this event as a
@@ -2772,7 +2826,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 	// recovered / re-polled investigations never touch the workspace.
 	pendingWorkspaceWrites := map[string]string{}
 	workloadNamespace, workloadName := resolveEventWorkload(ctx, eventData, parsedLabels)
-	eventAnalsysisPrompt, accountPrompt, debugAnalysisEnabled, debugSkipReason, runbookRef, codeCapabilities, err := generateEventAnalysisPrompt(ctx, eventData, request, response, parsedLabels, eventAnalysisRepo, pendingWorkspaceWrites, window, hasWindow, workloadNamespace, workloadName)
+	eventAnalsysisPrompt, accountPrompt, debugAnalysisEnabled, debugSkipReason, runbookRef, codeCapabilities, namedRepo, err := generateEventAnalysisPrompt(ctx, eventData, request, response, parsedLabels, eventAnalysisRepo, pendingWorkspaceWrites, window, hasWindow, workloadNamespace, workloadName)
 	if err != nil {
 		return EventAnalysisResponse{}, err
 	}
@@ -2870,9 +2924,10 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 				"code_capabilities_present", codeCapabilities.HasAny(),
 				"has_source_repo", codeCapabilities != nil && codeCapabilities.Source != nil,
 				"has_deployment_values", codeCapabilities != nil && codeCapabilities.Deployment != nil,
+				"named_repo", namedRepo,
 				"prompt_offers_code_analyzer", strings.Contains(eventAnalsysisPrompt, "`code_analyzer` is available"),
 				"prompt_bytes", len(eventAnalsysisPrompt))
-			rootcauseAnalysis, err := core.HandleConversationSessionRequest(ctx, rootcauseAgent, request.UserId, request.AccountId, parentConversationId, eventAnalsysisPrompt, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels, EventId: request.EventId, KnowledgeHints: eventKnowledgeHints(eventData), Namespace: workloadNamespace, Workload: workloadName}), core.ConversationSessionRequestWitAdditionalSystemPrompt(accountPrompt), core.ConversationSessionRequestWithEnableCritique(true), core.ConversationSessionRequestWithoutConversationHistory())
+			rootcauseAnalysis, err := core.HandleConversationSessionRequest(ctx, rootcauseAgent, request.UserId, request.AccountId, parentConversationId, eventAnalsysisPrompt, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels, EventId: request.EventId, KnowledgeHints: eventKnowledgeHints(eventData), Namespace: workloadNamespace, Workload: workloadName, GitRepo: namedRepo}), core.ConversationSessionRequestWitAdditionalSystemPrompt(accountPrompt), core.ConversationSessionRequestWithEnableCritique(true), core.ConversationSessionRequestWithoutConversationHistory())
 
 			if err != nil {
 				if errors.Is(err, core.ErrConversationInProgress) {

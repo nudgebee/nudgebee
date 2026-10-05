@@ -55,3 +55,34 @@ func TestBuildCodeCapabilityBlock(t *testing.T) {
 		assert.NotContains(t, b, "already there")
 	})
 }
+
+func TestBuildNamedRepoBlock(t *testing.T) {
+	t.Run("no repository named adds nothing", func(t *testing.T) {
+		assert.Empty(t, buildNamedRepoBlock(""))
+	})
+
+	t.Run("offers code analysis without the change-plan contract", func(t *testing.T) {
+		b := buildNamedRepoBlock("https://github.com/example-org/payments")
+		assert.Contains(t, b, "This event names the repository `https://github.com/example-org/payments`")
+		// The dispatch log keys on this sentence to record that the offer was made.
+		assert.Contains(t, b, "`code_analyzer` is available")
+		assert.Contains(t, b, "establish whether it is already there")
+		// The repository is what the event says it concerns, not a mapping to
+		// what is deployed: no fix-stage contract and no deployed-revision claim.
+		assert.NotContains(t, b, "<change_plan>")
+		assert.NotContains(t, b, "deployed revision")
+	})
+}
+
+func TestEventLabelValues(t *testing.T) {
+	values := eventLabelValues(map[string]any{
+		"repository":  "example-org/payments",
+		"run_attempt": 2,
+		"labels": map[string]any{
+			"branch": "main",
+			"series": []any{"ignored"},
+		},
+		"nothing": nil,
+	})
+	assert.ElementsMatch(t, []string{"example-org/payments", "main"}, values)
+}
