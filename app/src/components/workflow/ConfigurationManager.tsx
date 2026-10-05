@@ -145,6 +145,11 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountOpti
       snackbar.error('Key and value are required');
       return;
     }
+    // An empty account id is how the backend asks for tenant scope, so never send one here.
+    if (formScope === 'account' && !accountId) {
+      snackbar.error('Select an account for an account-scoped configuration');
+      return;
+    }
 
     // Check for duplicate key when creating a new config in the same scope.
     if (!selectedConfig) {
@@ -400,6 +405,7 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountOpti
     : [{ value: 'account', label: 'This Account' }];
 
   const metadataInvalid = !!formData.metadata && !validateJsonString(formData.metadata);
+  const accountMissing = formScope === 'account' && !accountId;
 
   return (
     <>
@@ -479,6 +485,24 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountOpti
             disabled={loading || !!selectedConfig || !canAccessTenantScope}
             size='sm'
           />
+
+          {formScope === 'account' && !selectedConfig && (
+            <Select
+              id='config-form-account-select'
+              label='Account'
+              placeholder='Select an account'
+              options={accountOptions}
+              grouped
+              groupIcon={renderAccountGroupIcon}
+              value={accountId || null}
+              onChange={(next) => setAccountId(next || '')}
+              required
+              searchable
+              disabled={loading}
+              size='sm'
+              error={accountMissing ? 'Account is required for an account-scoped configuration' : undefined}
+            />
+          )}
 
           <Input
             id='config-key'
@@ -562,7 +586,7 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountOpti
             size='md'
             onClick={handleSaveConfig}
             loading={loading}
-            disabled={loading || metadataInvalid || !formData.key || !formData.value}
+            disabled={loading || metadataInvalid || accountMissing || !formData.key || !formData.value}
           >
             {selectedConfig ? 'Update Configuration' : 'Save Configuration'}
           </Button>
