@@ -967,15 +967,17 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}
 		}
 
-		// Audit follow-up answers only, and only for web sources. Emit strictly
-		// when a follow-up is actually pending (the agent is 'waiting') — a normal
-		// send that merely carries agent_id/message_id has no pending follow-up and
-		// must not be logged as an answer. Gating on web source also lets non-web
-		// follow-ups skip the DB lookup entirely.
-		if !isNewConversation && (request.AgentId != "" || request.MessageId != "") && isWebChatSource(source) {
+		// Audit follow-up answers. Emit strictly when a follow-up is actually
+		// pending (the agent is 'waiting') — a normal send that merely carries
+		// agent_id/message_id has no pending follow-up and must not be logged as
+		// an answer. Clarification answers are audited for web sources only;
+		// write approvals for every source (alert conversations, Slack, automations),
+		// with the approving user, so every approved change has a record of who
+		// approved it.
+		if !isNewConversation && (request.AgentId != "" || request.MessageId != "") {
 			if info, perr := core.GetPendingFollowupInfo(request.AgentId, request.AccountId, request.ConversationId); perr != nil {
 				logger.Warn("chat audit: failed to load pending followup info", "error", perr, "agent_id", request.AgentId)
-			} else if info != nil {
+			} else if info != nil && (info.IsToolConfirmation || isWebChatSource(source)) {
 				// Consistent shape across follow-up events: query = originating user
 				// question, response = the user's answer, followup_type = the kind of
 				// follow-up (so credential/config selections stay filterable).
@@ -990,6 +992,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 					chatState["tool_name"] = info.ToolName
 					chatState["command"] = truncateQueryForAudit(info.Command)
 					chatState["decision"] = toolConfirmationDecision(request.Query)
+					// The signed-in identity that answered; request.UserId is
+					// rewritten to the system user for super admins above.
+					approverUserID := ""
+					if sc := agentContext.GetSecurityContext(); sc != nil {
+						approverUserID = sc.GetUserId()
+					}
+					chatState["approver_user_id"] = approverUserID
+					chatState["source"] = string(source)
 				}
 				emitChatActionAudit(agentContext, chatEventType, audit.EventActionUpdate, request.AccountId, request.UserId, request.ConversationId, request.SessionId, source, nil, chatState)
 			}

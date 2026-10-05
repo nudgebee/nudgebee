@@ -2549,6 +2549,18 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 							Status:      ToolStatusFailure,
 						}, nil, nil
 					}
+					// An approval counts only from a signed-in person: a request
+					// with no user (an unlinked Slack user, an API call without
+					// x-user-id, a background run picking up an earlier "yes")
+					// leaves no record of who approved the change.
+					if !approvedByPerson(e.ctx) {
+						e.ctx.GetLogger().Warn("plannerexecutor: approval refused, no signed-in person approved it", "tool", action.Tool, "toolId", action.ToolID, "confirmationKey", confirmationKey)
+						return NBAgentPlannerToolActionStep{
+							Action:      action,
+							Observation: "This action was approved without a signed-in user, so it was not executed. A person must approve it from their own Nudgebee login (link your chat account if you approved from Slack or Teams). Continue with other work or summarize.",
+							Status:      ToolStatusFailure,
+						}, nil, nil
+					}
 				}
 			}
 
@@ -3754,6 +3766,16 @@ func isToolConfigResolved(toolConfigs map[string]string, toolName string) bool {
 		return true
 	}
 	return false
+}
+
+// approvedByPerson reports whether the request answering a write approval
+// belongs to a person: a user id that is neither empty nor the system user.
+func approvedByPerson(ctx *security.RequestContext) bool {
+	if ctx == nil || ctx.GetSecurityContext() == nil {
+		return false
+	}
+	userId := strings.TrimSpace(ctx.GetSecurityContext().GetUserId())
+	return userId != "" && userId != security.GetSystemUserId()
 }
 
 // isToolConfirmationApproved reports whether a write-confirmation for toolName was
