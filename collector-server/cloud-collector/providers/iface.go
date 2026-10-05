@@ -544,6 +544,28 @@ type AsyncInitiatedError struct{ Message string }
 
 func (e *AsyncInitiatedError) Error() string { return e.Message }
 
+// ApplyStatus is where an apply that returned AsyncInitiatedError has got to.
+type ApplyStatus string
+
+const (
+	ApplyStatusInProgress ApplyStatus = "InProgress"
+	ApplyStatusSucceeded  ApplyStatus = "Succeeded"
+	ApplyStatusFailed     ApplyStatus = "Failed"
+)
+
+type ApplyStatusResult struct {
+	Status  ApplyStatus `json:"status"`
+	Message string      `json:"message"`
+}
+
+// ApplyStatusChecker is implemented by providers and services whose ApplyRecommendation
+// can return AsyncInitiatedError, so the outcome of the background operation can be
+// polled. It is optional: anything that does not implement it, or returns
+// errors.ErrUnsupported for a rule, has no asynchronous applies to report on.
+type ApplyStatusChecker interface {
+	GetApplyStatus(ctx CloudProviderContext, account Account, recommendation Recommendation) (ApplyStatusResult, error)
+}
+
 // QueryLogsRequest defines the input for querying logs.
 type QueryLogsRequest struct {
 	Region        string     `json:"region"`

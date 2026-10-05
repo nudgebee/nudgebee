@@ -489,6 +489,13 @@ func TestRecommendationWriteToolConfirmationQuestions(t *testing.T) {
 		assert.Contains(t, q, "Do you want to continue?")
 	})
 
+	t.Run("cloud apply names a cloud change, not an alarm", func(t *testing.T) {
+		q := RecommendationApplyTool{}.ConfirmationQuestion(
+			`{"recommendation_id":"rec-1","provider":"aws","summary":"Convert EBS volume vol-1 from gp2 to gp3"}`)
+		assert.Contains(t, q, "a change in your cloud account")
+		assert.NotContains(t, q, "alarm")
+	})
+
 	t.Run("apply without summary still names the action, not just raw JSON", func(t *testing.T) {
 		q := RecommendationApplyTool{}.ConfirmationQuestion(`{"recommendation_id":"rec-1"}`)
 		assert.Contains(t, q, "Apply recommendation rec-1")

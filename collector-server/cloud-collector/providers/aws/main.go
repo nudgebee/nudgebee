@@ -1288,6 +1288,18 @@ func (a *awsProvider) ApplyRecommendation(ctx providers.CloudProviderContext, ac
 	return service.ApplyRecommendation(ctx, account, recommendation)
 }
 
+func (a *awsProvider) GetApplyStatus(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) (providers.ApplyStatusResult, error) {
+	serviceKey := getServiceKeyFromServiceName(recommendation.ResourceServiceName)
+	if serviceKey == "" {
+		return providers.ApplyStatusResult{}, fmt.Errorf("unknown service name: %s", recommendation.ResourceServiceName)
+	}
+	checker, ok := awsServiceMap[serviceKey].(providers.ApplyStatusChecker)
+	if !ok {
+		return providers.ApplyStatusResult{}, errors.ErrUnsupported
+	}
+	return checker.GetApplyStatus(ctx, account, recommendation)
+}
+
 // getServiceKeyFromServiceName maps service names (e.g., "AWSELB") to service keys (e.g., "elb")
 // The mapping is initialized once at package load time in init()
 func getServiceKeyFromServiceName(serviceName string) string {

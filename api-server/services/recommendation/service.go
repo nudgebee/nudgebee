@@ -1225,6 +1225,9 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 			if adapter.PRStatusCheckExpired(resolution.LastPRCheckAt, time.Now().UTC()) {
 				status = models.RecommendationResolutionStatusFailed
 				statusMsg = adapter.PRStatusGaveUpMessage(resp.StatusMessage)
+				if resolution.Type == models.RecommendationResolutionTypeCloudResource {
+					statusMsg = adapter.CloudStatusGaveUpMessage(resp.StatusMessage)
+				}
 			} else {
 				lastCheck = "COALESCE(last_pr_check_at, (now() AT TIME ZONE 'UTC'))"
 			}
