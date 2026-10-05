@@ -195,12 +195,44 @@ func DeleteConversationByConversationId(context *security.RequestContext, delete
 		}
 	}
 
+	// LLM spend outlives the conversation: its token usage rows have no foreign
+	// key to it (V986), so they keep counting toward budgets. Stamp who the
+	// spend belongs to, clear the prompt, response and error text, which must
+	// go with the conversation, and unlink the rows. Runs just before the
+	// conversation row goes, while the rows are still linked to it. Mirrors
+	// llm-server's RetainConversationTokenUsage.
+	retainQuery := `UPDATE llm_conversation_token_usage t
+		SET tenant_id = COALESCE(t.tenant_id, c.tenant_id),
+			session_id = COALESCE(t.session_id, c.session_id),
+			prompt_messages = NULL,
+			response_content = NULL,
+			error_message = NULL,
+			conversation_id = NULL,
+			message_id = NULL
+		FROM llm_conversations c
+		WHERE c.id = t.conversation_id AND t.conversation_id = $1`
+	if _, err = dbms.Db.Exec(retainQuery, deleteConversationRequest.ConversationId); err != nil {
+		context.GetLogger().Error("Error retaining llm token usage", "error", err)
+		return data, err
+	}
+
 	// Finally delete the conversation itself
 	query := `DELETE FROM llm_conversations WHERE id = $1`
 	result, err := dbms.Db.Exec(query, deleteConversationRequest.ConversationId)
 	if err != nil {
 		context.GetLogger().Error("Error deleting llm_conversation", "error", err)
 		return data, err
+	}
+
+	// A call still finishing may have written a usage row after the retain step
+	// above. Clear and unlink it too; the conversation is already gone, so a
+	// failure here is logged, not returned.
+	lateQuery := `UPDATE llm_conversation_token_usage
+		SET prompt_messages = NULL, response_content = NULL, error_message = NULL,
+			conversation_id = NULL, message_id = NULL
+		WHERE conversation_id = $1`
+	if _, lateErr := dbms.Db.Exec(lateQuery, deleteConversationRequest.ConversationId); lateErr != nil {
+		context.GetLogger().Error("Error unlinking late llm token usage", "error", lateErr)
 	}
 
 	// Check if any rows were affected by the delete

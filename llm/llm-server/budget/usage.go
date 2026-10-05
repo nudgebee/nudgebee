@@ -254,16 +254,25 @@ func getEntityTokenUsageContext(ctx context.Context, dbManager *common.DatabaseM
 		return 0, fmt.Errorf("invalid module: %s", module)
 	}
 
-	var whereClause string
+	var whereClause, orphanWhereClause string
 	switch entityType {
 	case "tenant":
 		whereClause = "c.tenant_id = $1"
+		orphanWhereClause = "t.tenant_id = $1"
 	case "account":
 		whereClause = "c.account_id = $1"
+		orphanWhereClause = "t.account_id = $1"
 	default:
 		return 0.0, fmt.Errorf("invalid entity type: %s", entityType)
 	}
 
+	// Spend rows are the conversation's own rows, bucketed by when the
+	// conversation was created, plus rows whose conversation was deleted. Those
+	// are unlinked rather than deleted (V986) and keep counting: they carry the
+	// conversation's tenant and session, and are bucketed by when the call ran.
+	// The tenant_id IS NOT NULL guard keeps out calls that never had a
+	// conversation (system cost), which have no tenant.
+	//
 	// Per-call cost: compute on read using the redesigned formula. Tier
 	// (long_ctx) check is applied per row using the call's own prompt size,
 	// then aggregated. Storage cost lives in llm_cache_lifecycle, queried
@@ -287,14 +296,27 @@ func getEntityTokenUsageContext(ctx context.Context, dbManager *common.DatabaseM
 						+ (t.output_tokens + COALESCE(t.thinking_tokens, 0)) * p.cost_per_million_output_tokens
 				END / 1000000.0
 			) AS cost
-			FROM llm_conversation_token_usage t
-			INNER JOIN llm_conversations c ON c.id = t.conversation_id
+			FROM (
+				SELECT t.llm_model, t.llm_provider, t.input_tokens, t.output_tokens,
+					t.cached_input_tokens, t.cache_creation_tokens, t.thinking_tokens
+				FROM llm_conversation_token_usage t
+				INNER JOIN llm_conversations c ON c.id = t.conversation_id
+				WHERE %s
+				AND c.created_at >= DATE_TRUNC('%s', CURRENT_TIMESTAMP)
+				AND c.created_at < DATE_TRUNC('%s', CURRENT_TIMESTAMP) + INTERVAL '1 %s'
+				%s
+				UNION ALL
+				SELECT t.llm_model, t.llm_provider, t.input_tokens, t.output_tokens,
+					t.cached_input_tokens, t.cache_creation_tokens, t.thinking_tokens
+				FROM llm_conversation_token_usage t
+				WHERE t.conversation_id IS NULL AND t.tenant_id IS NOT NULL
+				AND %s
+				AND t.created_at >= DATE_TRUNC('%s', CURRENT_TIMESTAMP)
+				AND t.created_at < DATE_TRUNC('%s', CURRENT_TIMESTAMP) + INTERVAL '1 %s'
+				%s
+			) t
 			LEFT JOIN llm_model_pricing p
 			    ON p.model_name = t.llm_model AND p.provider_name = t.llm_provider AND p.tenant_id IS NULL
-			WHERE %s
-			AND c.created_at >= DATE_TRUNC('%s', CURRENT_TIMESTAMP)
-			AND c.created_at < DATE_TRUNC('%s', CURRENT_TIMESTAMP) + INTERVAL '1 %s'
-			%s
 		),
 		lifecycle_storage AS (
 			SELECT SUM(
@@ -317,6 +339,7 @@ func getEntityTokenUsageContext(ctx context.Context, dbManager *common.DatabaseM
 		  AS total_cost
 	`,
 		whereClause, period, period, period, filter,
+		orphanWhereClause, period, period, period, strings.ReplaceAll(filter, "c.session_id", "t.session_id"),
 		strings.ReplaceAll(whereClause, "c.", "cl."), period, period, period,
 	)
 

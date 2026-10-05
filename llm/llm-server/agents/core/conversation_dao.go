@@ -270,6 +270,8 @@ type IConversationDao interface {
 	DeleteConversationToolCalls(conversationId string) error
 	DeleteConversationAgents(conversationId string) error
 	DeleteConversationMessages(conversationId string) error
+	RetainConversationTokenUsage(conversationId string) error
+	UnlinkLateTokenUsage(conversationId string) error
 	DeleteConversationSaved(conversationId string) error
 	DeleteConversationReferences(conversationId string) error
 	DeleteConversationMemories(conversationId string) error
@@ -2802,6 +2804,49 @@ func (chat *ConversationDao) DeleteConversationToolCalls(conversationId string) 
 	return nil
 }
 
+// RetainConversationTokenUsage prepares a conversation's token usage rows to
+// outlive it. The rows have no foreign key to the conversation (V986), so the
+// delete leaves them alone; this stamps who the spend belongs to (rows written
+// before tenant_id/session_id existed have neither), clears the prompt,
+// response and error text, which must go with the conversation, and unlinks
+// them so budgets find them as deleted-conversation spend. Call it immediately before deleting the conversation row,
+// so a usage row written by a call still finishing is cleared too.
+func (chat *ConversationDao) RetainConversationTokenUsage(conversationId string) error {
+	query := `UPDATE llm_conversation_token_usage t
+		SET tenant_id = COALESCE(t.tenant_id, c.tenant_id),
+			session_id = COALESCE(t.session_id, c.session_id),
+			prompt_messages = NULL,
+			response_content = NULL,
+			error_message = NULL,
+			conversation_id = NULL,
+			message_id = NULL
+		FROM llm_conversations c
+		WHERE c.id = t.conversation_id AND t.conversation_id = $1`
+	if _, err := chat.dbManager.Db.Exec(query, conversationId); err != nil {
+		return fmt.Errorf("history: failed to retain token usage: %w", err)
+	}
+	return nil
+}
+
+// UnlinkLateTokenUsage clears the text of, and unlinks, usage rows written for
+// a conversation after RetainConversationTokenUsage ran, by a call that was
+// still finishing while the conversation was deleted. With no foreign key
+// (V986) such a row would otherwise keep its text and a dangling id. Call it
+// after deleting the conversation.
+func (chat *ConversationDao) UnlinkLateTokenUsage(conversationId string) error {
+	query := `UPDATE llm_conversation_token_usage
+		SET prompt_messages = NULL,
+			response_content = NULL,
+			error_message = NULL,
+			conversation_id = NULL,
+			message_id = NULL
+		WHERE conversation_id = $1`
+	if _, err := chat.dbManager.Db.Exec(query, conversationId); err != nil {
+		return fmt.Errorf("history: failed to unlink late token usage: %w", err)
+	}
+	return nil
+}
+
 func (chat *ConversationDao) DeleteConversationMessages(conversationId string) error {
 	query := `DELETE FROM llm_conversation_messages WHERE conversation_id = $1`
 	_, err := chat.dbManager.Db.Exec(query, conversationId)
@@ -2930,9 +2975,21 @@ func DeleteConversation(conversationId uuid.UUID) error {
 	if err := history.DeleteConversationMemories(conversationId.String()); err != nil {
 		slog.Error("history: failed to delete memories", "error", err, "conversation_id", conversationId)
 	}
+	// Spend outlives the conversation; its text does not. Runs last, just before
+	// the conversation row goes (the rows are still linked to it), and a failure
+	// stops the delete so no text is left behind on unlinked rows.
+	if err := history.RetainConversationTokenUsage(conversationId.String()); err != nil {
+		slog.Error("history: failed to retain token usage", "error", err, "conversation_id", conversationId)
+		return err
+	}
 	if err := history.DeleteConversation(conversationId.String()); err != nil {
 		slog.Error("history: failed to delete conversation", "error", err, "conversation_id", conversationId)
 		return err
+	}
+	// The conversation is gone either way; a failure here only leaves a late
+	// row's text behind, so it is logged rather than returned.
+	if err := history.UnlinkLateTokenUsage(conversationId.String()); err != nil {
+		slog.Error("history: failed to unlink late token usage", "error", err, "conversation_id", conversationId)
 	}
 	return nil
 }
@@ -4073,7 +4130,18 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 		return fmt.Errorf("token usage record is nil")
 	}
 
+	// conv looks the owning conversation up once. Its tenant and session are
+	// copied onto the row so the spend still counts toward budgets after the
+	// conversation is deleted. If a conversation id is given but that
+	// conversation is already gone (a call that finished after the delete), the
+	// row is stored unlinked and without its text, like the rows the delete
+	// cleared: there is no foreign key to reject it (V986).
 	query := `
+		WITH conv AS (
+			SELECT c.tenant_id, c.session_id FROM llm_conversations c WHERE c.id = $1::uuid
+		), live AS (
+			SELECT $1::uuid IS NULL OR EXISTS (SELECT 1 FROM conv) AS ok
+		)
 		INSERT INTO llm_conversation_token_usage (
 			conversation_id, message_id, agent_id, agent_name, account_id, user_id,
 			llm_provider, llm_model,
@@ -4087,21 +4155,27 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			ttft_ms, itl_ms_avg, tokens_per_second, was_streaming,
 			cost_usd,
 			model_tier, task_type,
-			llm_config_source, id
+			llm_config_source, id,
+			tenant_id, session_id
 		) VALUES (
-			$1, $2, $3, $4, $5, $6,
+			CASE WHEN (SELECT ok FROM live) THEN $1::uuid END,
+			CASE WHEN (SELECT ok FROM live) THEN $2::uuid END,
+			$3, $4, $5, $6,
 			$7, $8,
 			$9, $10, $11, $12,
 			$13, $14,
 			$15, $16, $17,
-			$18, $19, $20,
+			$18, $19, CASE WHEN (SELECT ok FROM live) THEN $20::text END,
 			$21, $22, $23,
-			$24, $25,
+			CASE WHEN (SELECT ok FROM live) THEN $24::text END,
+			CASE WHEN (SELECT ok FROM live) THEN $25::text END,
 			$26,
 			$27, $28, $29, $30,
 			$31,
 			$32, $33,
-			$34, COALESCE($35::uuid, gen_random_uuid())
+			$34, COALESCE($35::uuid, gen_random_uuid()),
+			(SELECT tenant_id FROM conv),
+			(SELECT session_id FROM conv)
 		)
 	`
 

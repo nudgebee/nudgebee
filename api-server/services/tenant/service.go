@@ -2456,6 +2456,13 @@ func DeleteTenant(ctx *security.RequestContext, request TenantDeleteRequest) (Te
 		{name: "knowledge_graph_tenant_filters"},
 		// llm
 		{name: "ai_cost_report_dispatch_log"},
+		// Token usage has no foreign key to its conversation (V986) and outlives
+		// it, so tenant removal deletes it explicitly: rows still linked to one
+		// of the tenant's conversations, then rows unlinked from a deleted
+		// conversation (served by idx_llm_token_usage_orphaned_spend). Two
+		// statements so each can use its index.
+		{name: "llm_conversation_token_usage", whereSubclause: "conversation_id IN (SELECT id FROM llm_conversations WHERE tenant_id = $1)"},
+		{name: "llm_conversation_token_usage", whereSubclause: "conversation_id IS NULL AND tenant_id IS NOT NULL AND tenant_id = $1"},
 		{name: "llm_conversations"},
 		{name: "llm_global_contexts"},
 		{name: "llm_knowledgebases"},
