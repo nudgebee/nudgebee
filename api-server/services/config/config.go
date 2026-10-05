@@ -304,6 +304,14 @@ type appConfig struct {
 	// always-open behavior is the bug.
 	FeatureEventPointInTimeCloseEnabled bool `mapstructure:"feature_event_point_in_time_close_enabled"`
 
+	// When true, each re-detection of a still-firing alert that a scheduled job
+	// raises (Kubernetes and spend anomalies, SLO breaches) re-runs matching
+	// event-trigger workflows, as often as the job runs (hourly for anomalies
+	// and SLOs). Default off: a webhook alert's repeat delivery never re-runs
+	// them, and these jobs never did either until #40181 fixed the event id
+	// their re-fire message carried.
+	FeatureScheduledAlertWorkflowRefireEnabled bool `mapstructure:"feature_scheduled_alert_workflow_refire_enabled"`
+
 	// When true, a Kubernetes anomaly that fires again after it had cleared is
 	// announced in the next anomaly digest, labelled "returned" (issue #40007).
 	// The producer reads the stored status before its upsert to tell a return
@@ -600,6 +608,7 @@ func init() {
 	viper.SetDefault("nb_anomaly_evaluation_hours", 1)
 
 	viper.SetDefault("feature_event_point_in_time_close_enabled", true)
+	viper.SetDefault("feature_scheduled_alert_workflow_refire_enabled", false)
 	// Off by default, but declared: Unmarshal skips a key with no default, so
 	// without this line the environment variable could never turn it on.
 	viper.SetDefault("feature_anomaly_returned_digest_enabled", false)

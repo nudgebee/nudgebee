@@ -2399,14 +2399,30 @@ func WithPublishContext(ctx context.Context) InsertOption {
 }
 
 // WithoutWorkflowRefire disables the event-trigger workflow re-fire that
-// InsertEvent otherwise enqueues when it UPDATES an existing FIRING event.
+// InsertEvent otherwise enqueues when it UPDATES an existing FIRING event, and
+// the resolved notification it enqueues when it updates one to RESOLVED.
 // Use it for callers that re-persist an event for a reason OTHER than a fresh
 // occurrence — e.g. UpdateEvent's user-facing metadata edits (urgency/subject) —
-// where re-running matched event-trigger workflows would be spurious. Genuine
-// occurrence/ingestion paths (alert webhooks, anomaly/SLO detection) must NOT
-// pass this, so repeat firings keep matching workflows (issue #25251).
+// where re-running matched event-trigger workflows would be spurious. A webhook
+// alert's repeat delivery never reaches the re-fire: InvestigateEvent updates
+// an existing row itself (repeatDeliveryUpdateSQL), so this branch serves the
+// scheduled jobs, which pass ScheduledDetection.
 func WithoutWorkflowRefire() InsertOption {
 	return func(c *insertConfig) { c.skipWorkflowRefire = true }
+}
+
+// ScheduledDetection is for alerts a scheduled job raises itself and stores
+// again on every run that still sees them (Kubernetes and spend anomalies,
+// SLO breaches). Each of those runs is a re-detection, not a new occurrence,
+// so it re-runs event-trigger workflows only when
+// FeatureScheduledAlertWorkflowRefireEnabled is on. Pass it only on a FIRING
+// write: it also suppresses the resolved notification of a RESOLVED one.
+func ScheduledDetection() InsertOption {
+	return func(c *insertConfig) {
+		if !config.Config.FeatureScheduledAlertWorkflowRefireEnabled {
+			c.skipWorkflowRefire = true
+		}
+	}
 }
 
 // WithDeferredPostProcess redirects the post-process enqueue that InsertEvent
@@ -2583,7 +2599,7 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 				, urgency = EXCLUDED.urgency
 				, subject_owner = EXCLUDED.subject_owner
 				, subject_owner_kind = EXCLUDED.subject_owner_kind
-			 RETURNING (xmax = 0) AS is_insert`
+			 RETURNING id, (xmax = 0) AS is_insert`
 
 	if id == "" {
 		id = common.GenerateUUID()
@@ -2626,12 +2642,17 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 		nbStatus = triage.NBStatusResolved
 	}
 
+	// The stored id, not the one passed or generated above: an update keeps the
+	// row's own id, and a caller that passed "" (the scheduled jobs) would
+	// otherwise be handed, and publish, an id that names no event (#40181).
+	var storedId string
 	var isInsert bool
-	err = dbms.Db.QueryRow(query, id, event.FindingId, event.Title, event.Description, event.Source, event.AggregationKey, event.Priority, event.SubjectType, event.SubjectName, event.SubjectNamespace, event.SubjectNode, event.ServiceKey, event.Fingerprint, evidences, event.Tenant, event.AccountId, event.Status, event.FindingType, event.Cluster, event.StartsAt, labels, time.Now().UTC(), event.EndsAt, nullableCloudResourceId, event.Category, event.CreatedAt, event.Urgency, event.SubjectOwner, event.SubjectOwnerKind, nbStatus).Scan(&isInsert)
+	err = dbms.Db.QueryRow(query, id, event.FindingId, event.Title, event.Description, event.Source, event.AggregationKey, event.Priority, event.SubjectType, event.SubjectName, event.SubjectNamespace, event.SubjectNode, event.ServiceKey, event.Fingerprint, evidences, event.Tenant, event.AccountId, event.Status, event.FindingType, event.Cluster, event.StartsAt, labels, time.Now().UTC(), event.EndsAt, nullableCloudResourceId, event.Category, event.CreatedAt, event.Urgency, event.SubjectOwner, event.SubjectOwnerKind, nbStatus).Scan(&storedId, &isInsert)
 	if err != nil {
 		slog.Error("event: failed to insert event", "error", err)
 		return id, err
 	}
+	id = storedId
 
 	// Publish new events for post-processing (replaces RPC new_event_notification trigger).
 	// Use background-retry: the row is already committed and the caller (webhook / cron /
@@ -4490,7 +4511,11 @@ func PostProcessEvent(ctx *security.RequestContext, newEvent map[string]any) {
 // PostProcessEvent it deliberately skips triage/llm/notification — those ran on
 // first insert and must not re-run on every re-fire — and only publishes for
 // workflow matching (event.created phase). Invoked by the post-process consumer
-// for workflow_only messages enqueued by InsertEvent on a FIRING re-fire.
+// for workflow_only messages enqueued by InsertEvent when it updates a stored
+// FIRING or point-in-time event and the caller did not skip the re-fire: a
+// scheduled job's re-detection only with FeatureScheduledAlertWorkflowRefireEnabled
+// (see ScheduledDetection), and a webhook insert that lost a race to its own
+// duplicate.
 func ReEmitForWorkflows(ctx *security.RequestContext, newEvent map[string]any) {
 	emitWorkflowOnly(ctx, lifecycle.PhaseEventCreated, newEvent)
 }

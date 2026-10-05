@@ -114,3 +114,17 @@ func TestSLOResolvedDigestDisabledByDefault(t *testing.T) {
 		t.Error("default feature_slo_resolved_digest_enabled = true, want false")
 	}
 }
+
+// Re-running workflows on a scheduled job's re-detection is opt-in, and the
+// switch has to be reachable from the environment.
+func TestScheduledAlertWorkflowRefireIsOffByDefaultAndReadFromTheEnvironment(t *testing.T) {
+	if !slices.Contains(viper.AllKeys(), "feature_scheduled_alert_workflow_refire_enabled") {
+		t.Error("feature_scheduled_alert_workflow_refire_enabled has no viper default, so FEATURE_SCHEDULED_ALERT_WORKFLOW_REFIRE_ENABLED is ignored")
+	}
+	if v, ok := os.LookupEnv("FEATURE_SCHEDULED_ALERT_WORKFLOW_REFIRE_ENABLED"); ok {
+		t.Skipf("FEATURE_SCHEDULED_ALERT_WORKFLOW_REFIRE_ENABLED=%q is set in the environment; the compiled-in default is not observable here", v)
+	}
+	if Config.FeatureScheduledAlertWorkflowRefireEnabled {
+		t.Error("default feature_scheduled_alert_workflow_refire_enabled = true, want false")
+	}
+}

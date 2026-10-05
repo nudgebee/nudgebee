@@ -819,7 +819,7 @@ func upsertAnomalyEvent(dbms *database.DatabaseManager, eventObj event.Event) er
 		returnedEventId = clearedAnomalyEventId(dbms, eventObj)
 	}
 
-	if _, err := event.InsertEvent(eventObj, ""); err != nil {
+	if _, err := event.InsertEvent(eventObj, "", event.ScheduledDetection()); err != nil {
 		return err
 	}
 
@@ -837,8 +837,8 @@ func upsertAnomalyEvent(dbms *database.DatabaseManager, eventObj event.Event) er
 // clearedAnomalyEventId returns the id of the event stored for this finding if
 // it is RESOLVED or CLOSED, and "" otherwise: no row (a first firing), a FIRING
 // row (re-detection of an open anomaly), or a failed lookup, which must not
-// cost the event its upsert. The id comes from the row because InsertEvent
-// returns the one it generated, which an update does not store.
+// cost the event its upsert. The read has to come before the upsert, which
+// overwrites the status; the id is taken from the same row.
 func clearedAnomalyEventId(dbms *database.DatabaseManager, eventObj event.Event) string {
 	var id, status string
 	err := dbms.Db.QueryRowx(

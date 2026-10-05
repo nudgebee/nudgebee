@@ -768,7 +768,7 @@ func GenerateSLOEvent(dbms *database.DatabaseManager, sloConfig DBSLOConfig, acc
 		Fingerprint:      fingerprint,
 		Cluster:          accountName,
 	}
-	_, err = event.InsertEvent(eventObj, "")
+	_, err = event.InsertEvent(eventObj, "", event.ScheduledDetection())
 	if err != nil {
 		slog.Error("slo: error inserting event", "error", err)
 		return err

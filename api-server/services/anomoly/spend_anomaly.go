@@ -500,7 +500,7 @@ func updateOpenAnomalyEvent(dbms *database.DatabaseManager, oa OpenSpendAnomaly,
 		Cluster:          accountName,
 	}
 
-	if _, err := event.InsertEvent(eventObj, ""); err != nil {
+	if _, err := event.InsertEvent(eventObj, "", event.ScheduledDetection()); err != nil {
 		slog.Error("spend-anomaly: failed to update event for open anomaly", "error", err, "name", oa.Name)
 	}
 }
@@ -996,7 +996,7 @@ func generateSpendAnomalyEvent(dbms *database.DatabaseManager, anomaly *Anomaly,
 		Labels:           spendStatLabels(anomaly, cfg.money),
 	}
 
-	_, err := event.InsertEvent(eventObj, "")
+	_, err := event.InsertEvent(eventObj, "", event.ScheduledDetection())
 	if err != nil {
 		slog.Error("spend-anomaly: error inserting event", "error", err,
 			"account", cloudAccountName, "name", anomaly.Name)
