@@ -552,25 +552,20 @@ func getRelayCommandResponseData(relayResponse map[string]any) (map[string]any, 
 func buildArgoCDFlags(configValues []integrations.IntegrationConfigValue) string {
 	var flags []string
 
-	insecure := true
+	// Certificates are verified unless the integration explicitly opts out,
+	// matching the integration's own default and its Test Connection.
+	insecure := false
 	grpcWeb := false
-	timeout := "30"
 	configFilePath := ""
 
 	// Parse configuration values
 	for _, cfg := range configValues {
 		switch cfg.Name {
 		case "insecure":
-			if strings.ToLower(cfg.Value) == "true" {
-				insecure = true
-			}
+			insecure = strings.EqualFold(cfg.Value, "true")
 		case "grpc_web":
 			if strings.ToLower(cfg.Value) == "true" {
 				grpcWeb = true
-			}
-		case "timeout":
-			if cfg.Value != "" {
-				timeout = cfg.Value
 			}
 		case "config_file_path":
 			if cfg.Value != "" {
@@ -592,10 +587,6 @@ func buildArgoCDFlags(configValues []integrations.IntegrationConfigValue) string
 
 	if grpcWeb {
 		flags = append(flags, "--grpc-web")
-	}
-
-	if timeout != "30" {
-		flags = append(flags, "--request-timeout", timeout+"s")
 	}
 
 	if configFilePath != "" {

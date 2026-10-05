@@ -178,15 +178,10 @@ func (m ArgoCDExecuteTool) ConfigSchema(ctx *security.RequestContext) core.ToolC
 				Description: "Key name for auth token in the secret (defaults to ARGOCD_AUTH_TOKEN)",
 				Default:     "ARGOCD_AUTH_TOKEN",
 			},
-			"timeout": {
-				Type:        core.ToolSchemaTypeString,
-				Description: "Command timeout in seconds (defaults to 30)",
-				Default:     "30",
-			},
 			"insecure": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Skip TLS certificate verification (true/false, defaults to false)",
-				Default:     "true",
+				Default:     "false",
 			},
 			"config_file_path": {
 				Type:        core.ToolSchemaTypeString,

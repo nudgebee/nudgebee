@@ -671,18 +671,13 @@ func buildArgoCDFlagsFromConfig(configValues []db.WorkspaceConfigValue) string {
 	var flags []string
 	flags = append(flags, "--server $ARGOCD_SERVER", "--auth-token $ARGOCD_AUTH_TOKEN")
 
-	insecure := true
-	if v := configVal(configValues, "insecure"); v != "" {
-		insecure = strings.ToLower(v) == "true"
-	}
-	if insecure {
+	// Certificates are verified unless the integration explicitly opts out,
+	// matching the integration's own default and its Test Connection.
+	if strings.EqualFold(configVal(configValues, "insecure"), "true") {
 		flags = append(flags, "--insecure")
 	}
 	if strings.ToLower(configVal(configValues, "grpc_web")) == "true" {
 		flags = append(flags, "--grpc-web")
-	}
-	if timeout := configVal(configValues, "timeout"); timeout != "" && timeout != "30" {
-		flags = append(flags, "--request-timeout", timeout+"s")
 	}
 	if cfgPath := configVal(configValues, "config_file_path"); cfgPath != "" {
 		flags = append(flags, "--config", cfgPath)
