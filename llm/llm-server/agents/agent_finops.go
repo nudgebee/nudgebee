@@ -251,8 +251,8 @@ type topServiceRow struct {
 //
 // It degrades gracefully: the cloud-footprint section (from the already-cached
 // AccountConfigSummary) is always present, while the spend / recommendation
-// sections are omitted silently if their queries fail — a partial context is
-// more useful to the agent than none.
+// sections are replaced by an "unavailable" note if their queries fail — a
+// partial context is more useful to the agent than none.
 func (a *FinOpsAgent) fetchFinOpsAccountContext(ctx *security.RequestContext) string {
 	cacheKey := finOpsContextKey(a.accountId)
 
@@ -416,9 +416,12 @@ func (a *FinOpsAgent) renderAccountContext(ctx *security.RequestContext, withSpe
 	}
 
 	// Spend baseline + recommendation summary — best-effort. Any failure leaves
-	// the cloud-footprint section intact and is logged, not surfaced.
+	// the cloud-footprint section intact and says what is missing, so the agent
+	// does not read an absent line as a zero.
 	if withSpend {
 		complete = a.appendSpendContext(ctx, &b)
+	} else {
+		b.WriteString(finOpsSpendBaselineMissingNote)
 	}
 
 	// Optimize-page deep-link base. Surfaced so the agent can render per-row
@@ -441,7 +444,7 @@ func (a *FinOpsAgent) renderAccountContext(ctx *security.RequestContext, withSpe
 
 // appendSpendContext writes the 30-day spend, top services, and open
 // recommendation lines. Each query is independent and best-effort: a failure
-// logs and skips only its own line.
+// logs and replaces only its own line with an "unavailable" note.
 //
 // It reports whether every query answered. An empty result is not a failure —
 // a new account legitimately has no top services and no open recommendations —
@@ -450,11 +453,13 @@ func (a *FinOpsAgent) appendSpendContext(ctx *security.RequestContext, b *string
 	tenantId, err := security.GetTenantIdFromAccountId(a.accountId)
 	if err != nil || tenantId == "" {
 		slog.Warn("finops: cannot resolve tenant for account context", "error", err, "account_id", a.accountId)
+		b.WriteString(finOpsSpendBaselineMissingNote)
 		return false
 	}
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
 		slog.Warn("finops: db manager unavailable for account context", "error", err)
+		b.WriteString(finOpsSpendBaselineMissingNote)
 		return false
 	}
 	complete := true
@@ -475,6 +480,7 @@ func (a *FinOpsAgent) appendSpendContext(ctx *security.RequestContext, b *string
 		 WHERE tenant = $1 AND cloud_account = $2 AND date >= $3 AND date < $4 AND exclude_aggregate = false`,
 		tenantId, a.accountId, windowStart, windowEnd); err != nil {
 		slog.Warn("finops: 30-day spend query failed for account context", "error", err, "account_id", a.accountId)
+		writeFinOpsLineUnavailable(b, "30-day spend", "spend_summary")
 		complete = false
 	} else {
 		fmt.Fprintf(b, "30-day spend: $%.2f\n", spend)
@@ -493,6 +499,7 @@ func (a *FinOpsAgent) appendSpendContext(ctx *security.RequestContext, b *string
 		 LIMIT 3`,
 		tenantId, a.accountId, windowStart, windowEnd); err != nil {
 		slog.Warn("finops: top services query failed for account context", "error", err, "account_id", a.accountId)
+		writeFinOpsLineUnavailable(b, "Top services", "spend_summary")
 		complete = false
 	} else if len(topServices) > 0 {
 		parts := make([]string, 0, len(topServices))
@@ -525,6 +532,7 @@ func (a *FinOpsAgent) appendSpendContext(ctx *security.RequestContext, b *string
 		 WHERE dedupe_rank = 1`,
 		a.accountId); err != nil {
 		slog.Warn("finops: open recommendation query failed for account context", "error", err, "account_id", a.accountId)
+		writeFinOpsLineUnavailable(b, "Open recommendations", "recommendation_execute")
 		complete = false
 	} else if rec.Count > 0 {
 		fmt.Fprintf(b, "Open recommendations: %d (savings quantified for %d, total $%.2f/month)\n",
@@ -532,6 +540,18 @@ func (a *FinOpsAgent) appendSpendContext(ctx *security.RequestContext, b *string
 	}
 
 	return complete
+}
+
+// finOpsSpendBaselineMissingNote replaces the spend section when it was not
+// loaded at all: a first build that overran its budget, or one that could not
+// reach the metastore.
+const finOpsSpendBaselineMissingNote = "Spend baseline: not loaded. This context has no 30-day spend, top services or open-recommendation totals; " +
+	"get them from spend_summary and recommendation_execute, and never read their absence as zero.\n"
+
+// writeFinOpsLineUnavailable stands in for one spend-section line whose query
+// failed.
+func writeFinOpsLineUnavailable(b *strings.Builder, line, tool string) {
+	fmt.Fprintf(b, "%s: unavailable (query failed); get it from %s before quoting a figure.\n", line, tool)
 }
 
 // sortedKeys returns the true-valued keys of a string-keyed bool set, sorted for

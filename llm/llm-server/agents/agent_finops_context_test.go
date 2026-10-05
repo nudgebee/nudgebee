@@ -143,6 +143,7 @@ func TestFinOpsAccountContext_DegradedRenderReportsIncomplete(t *testing.T) {
 	assert.True(t, strings.HasPrefix(rendered, "<account_context>"), "a degraded build still returns a usable block")
 	assert.False(t, complete, "a spend section that could not run must not be cached as complete")
 	assert.NotContains(t, rendered, "30-day spend:", "the spend baseline is absent, not zeroed")
+	assert.Contains(t, rendered, finOpsSpendBaselineMissingNote, "the agent is told the baseline is missing")
 	assert.Less(t, finOpsContextDegradedFreshFor, finOpsContextFreshFor,
 		"the degraded window must be shorter than the normal one, or the flag buys nothing")
 }
@@ -156,4 +157,12 @@ func TestFinOpsAccountContext_FootprintOnlyIsNotComplete(t *testing.T) {
 
 	assert.False(t, complete)
 	assert.Equal(t, rendered, agent.renderFootprintOnlyContext(ctx))
+	assert.Contains(t, rendered, finOpsSpendBaselineMissingNote, "a turn that could not wait for the build is told the baseline is missing")
+}
+
+func TestWriteFinOpsLineUnavailable(t *testing.T) {
+	var b strings.Builder
+	writeFinOpsLineUnavailable(&b, "30-day spend", "spend_summary")
+
+	assert.Equal(t, "30-day spend: unavailable (query failed); get it from spend_summary before quoting a figure.\n", b.String())
 }

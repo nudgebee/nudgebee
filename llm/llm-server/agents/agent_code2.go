@@ -319,7 +319,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		knowledgeCtx := security.NewRequestContext(prepCtx, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 		candidates := core.DiscoverKnowledgeCandidates(knowledgeCtx, agentRequest, CodeAgent2{})
 		topK := config.Config.LlmServerSkillSelectionTopK
-		if topK <= 0 || topK > defaultForwardedSkillTopK {
+		if topK <= 0 {
 			topK = defaultForwardedSkillTopK
 		}
 		for _, candidate := range candidates[:min(len(candidates), topK)] {

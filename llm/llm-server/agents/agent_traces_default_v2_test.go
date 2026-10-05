@@ -104,8 +104,8 @@ func TestFilterDiscoveredTraceAttributes(t *testing.T) {
 	t.Run("keeps dotted keys, drops snake_case and advertised", func(t *testing.T) {
 		labels := []string{"service_name", "status_code", "http.method", "db.system", "app.order.id"}
 		advertised := map[string]string{"http.method": "spanattributes['http.method']"}
-		got, capped := filterDiscoveredTraceAttributes(labels, advertised)
-		assert.False(t, capped)
+		got, total := filterDiscoveredTraceAttributes(labels, advertised)
+		assert.Equal(t, 2, total)
 		// snake_case (service_name/status_code) excluded; http.method advertised → excluded.
 		assert.Equal(t, []string{"app.order.id", "db.system"}, got)
 	})
@@ -115,16 +115,16 @@ func TestFilterDiscoveredTraceAttributes(t *testing.T) {
 		for i := maxDiscoveredTraceAttrs + 9; i >= 0; i-- { // reverse order to prove sorting
 			labels = append(labels, fmt.Sprintf("attr.%03d", i))
 		}
-		got, capped := filterDiscoveredTraceAttributes(labels, nil)
-		assert.True(t, capped)
+		got, total := filterDiscoveredTraceAttributes(labels, nil)
+		assert.Equal(t, maxDiscoveredTraceAttrs+10, total)
 		assert.Len(t, got, maxDiscoveredTraceAttrs)
 		assert.Equal(t, "attr.000", got[0]) // sorted ascending
 	})
 
 	t.Run("empty input", func(t *testing.T) {
-		got, capped := filterDiscoveredTraceAttributes(nil, nil)
+		got, total := filterDiscoveredTraceAttributes(nil, nil)
 		assert.Empty(t, got)
-		assert.False(t, capped)
+		assert.Zero(t, total)
 	})
 }
 

@@ -235,10 +235,6 @@ func (r RemediationExecuteTool) InputSchema() core.ToolSchema {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Kubernetes namespace for the command (optional, can be included in command with -n flag)",
 			},
-			"timeout_seconds": {
-				Type:        core.ToolSchemaTypeNumber,
-				Description: "Command execution timeout in seconds (default: 30)",
-			},
 		},
 		Required: []string{"command"},
 	}
