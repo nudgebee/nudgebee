@@ -892,7 +892,7 @@ def handle_active_resources_deletion(  # noqa: C901
                         "SET is_active = false, status = 'Inactive' "
                         "WHERE account = %s AND external_resource_id != ALL(%s) "
                         "AND is_active IS NOT FALSE "
-                        "AND type NOT IN ('Pod', 'node', 'Namespace', 'External') "
+                        "AND type NOT IN ('Pod', 'node', 'Namespace', 'External', 'Job', 'CronJob') "
                         "RETURNING id",
                         [cloud_account_id, external_ids],
                     )
@@ -903,6 +903,7 @@ def handle_active_resources_deletion(  # noqa: C901
                         "SET is_active = false "
                         "WHERE cloud_account_id = %s AND tenant_id = %s "
                         "AND cloud_resource_id != ALL(%s::uuid[]) AND is_active = true "
+                        "AND kind NOT IN ('Job', 'CronJob') "
                         "RETURNING cloud_resource_id, kind",
                         [cloud_account_id, tenant, external_ids],
                     )
@@ -914,17 +915,21 @@ def handle_active_resources_deletion(  # noqa: C901
                         "UPDATE cloud_resourses "
                         "SET is_active = false, status = 'Inactive' "
                         "WHERE account = %s AND external_resource_id != ALL(%s) "
-                        "AND is_active IS NOT FALSE AND type = 'Job' "
+                        "AND is_active IS NOT FALSE AND type IN ('Job', 'CronJob') "
                         "RETURNING id",
                         [cloud_account_id, external_ids],
                     )
                 ]
-                database.run_query(
-                    "UPDATE k8s_workloads "
-                    "SET is_active = false "
-                    "WHERE cloud_account_id = %s AND tenant_id = %s "
-                    "AND cloud_resource_id != ALL(%s::uuid[]) AND is_active = true AND kind = 'Job'",
-                    [cloud_account_id, tenant, external_ids],
+                record_deleted_workloads(
+                    database.run_query(
+                        "UPDATE k8s_workloads "
+                        "SET is_active = false "
+                        "WHERE cloud_account_id = %s AND tenant_id = %s "
+                        "AND cloud_resource_id != ALL(%s::uuid[]) AND is_active = true "
+                        "AND kind IN ('Job', 'CronJob') "
+                        "RETURNING cloud_resource_id, kind",
+                        [cloud_account_id, tenant, external_ids],
+                    )
                 )
             elif resource_type == "Namespace":
                 database.run_query(
@@ -1058,7 +1063,7 @@ def handle_active_resources_deletion(  # noqa: C901
                         "UPDATE cloud_resourses "
                         "SET is_active = false, status = 'Inactive' "
                         "WHERE account = %s AND is_active IS NOT FALSE "
-                        "AND type NOT IN ('Pod', 'node', 'Namespace', 'External') "
+                        "AND type NOT IN ('Pod', 'node', 'Namespace', 'External', 'Job', 'CronJob') "
                         "RETURNING id",
                         [cloud_account_id],
                     )
@@ -1068,6 +1073,7 @@ def handle_active_resources_deletion(  # noqa: C901
                         "UPDATE k8s_workloads "
                         "SET is_active = false "
                         "WHERE cloud_account_id = %s AND tenant_id = %s AND is_active = true "
+                        "AND kind NOT IN ('Job', 'CronJob') "
                         "RETURNING cloud_resource_id, kind",
                         [cloud_account_id, tenant],
                     )
@@ -1078,16 +1084,20 @@ def handle_active_resources_deletion(  # noqa: C901
                     for r in database.run_query(
                         "UPDATE cloud_resourses "
                         "SET is_active = false, status = 'Inactive' "
-                        "WHERE account = %s AND is_active IS NOT FALSE AND type = 'Job' "
+                        "WHERE account = %s AND is_active IS NOT FALSE AND type IN ('Job', 'CronJob') "
                         "RETURNING id",
                         [cloud_account_id],
                     )
                 ]
-                database.run_query(
-                    "UPDATE k8s_workloads "
-                    "SET is_active = false "
-                    "WHERE cloud_account_id = %s AND tenant_id = %s AND is_active = true AND kind = 'Job'",
-                    [cloud_account_id, tenant],
+                record_deleted_workloads(
+                    database.run_query(
+                        "UPDATE k8s_workloads "
+                        "SET is_active = false "
+                        "WHERE cloud_account_id = %s AND tenant_id = %s AND is_active = true "
+                        "AND kind IN ('Job', 'CronJob') "
+                        "RETURNING cloud_resource_id, kind",
+                        [cloud_account_id, tenant],
+                    )
                 )
             elif resource_type == "node":
                 deactivated_resource_ids = [
