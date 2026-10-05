@@ -7,6 +7,7 @@ import {
   getEndOfDay,
   getStartOfMonth,
   getEndOfMonth,
+  getStartOfLastMonth,
   getYesterday,
   formatDateTime,
 } from '@lib/datetime';
@@ -1062,8 +1063,9 @@ const yearlySavingInFlight = new Map<string, Promise<any>>();
 async function fetchK8sClusterYearlySaving(accountId: string) {
   try {
     const currentDate = new Date();
-    const lastMonthStart = new Date();
-    lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
+    // Pinned to the 1st: stepping back a month from the 29th–31st with setMonth
+    // overflows into the current month (Oct 31 -> "Sep 31" -> Oct 1).
+    const lastMonthStart = getStartOfLastMonth(currentDate);
     const response = await queryGraphQL(LIST_k8_CLUSTER_YEARLY_SAVING, 'listK8ClusterYearlySaving', {
       accountId1: accountId,
       startDate: getStartOfMonth(currentDate),
@@ -1075,7 +1077,7 @@ async function fetchK8sClusterYearlySaving(accountId: string) {
     });
     return {
       data: {
-        yearly_recommendation_saving: (response?.data?.data?.recommendation_aggregate?.rows?.[0].sum_estimated_savings || 0) * 12,
+        yearly_recommendation_saving: (response?.data?.data?.recommendation_aggregate?.rows?.[0]?.sum_estimated_savings || 0) * 12,
         current_year_projected_spend: getExpectedYearlyExpense(
           getBudgetExpectedMonthlyExpense(response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0),
           response?.data?.data?.yearly_spends_aggregate?.rows?.[0]?.spend_amount || 0
@@ -1317,9 +1319,6 @@ const apiKubernetes = {
   },
   async listk8ClusterData() {
     try {
-      const currentDate = new Date();
-      const lastMonthStart = new Date(currentDate);
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
       const accountGroups: Record<string, any> = {};
 
       const response = await queryGraphQL(LIST_k8_CLUSTER_DATA, 'listK8ClusterData', {});
@@ -1362,8 +1361,6 @@ const apiKubernetes = {
   async listk8ClusterEventsData(accountId: string) {
     if (accountId === 'demo') return null;
     try {
-      const lastMonthStart = new Date();
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
       const response = await queryGraphQL(GET_CLUSTER_EVENTS, 'getClusterEvents', {
         todayEnd: getEndOfDay(new Date()),
         yesterdayStart: getStartOfDay(getYesterday(new Date())),
@@ -1392,7 +1389,7 @@ const apiKubernetes = {
 
   async getk8ClusterData(accountId: string) {
     const currentDate = new Date();
-    const lastMonthStart = new Date();
+    const lastMonthStart = getStartOfLastMonth(currentDate);
     if (accountId == 'demo') {
       const dashboardDemo = await getMockData('k8s-dashboard');
       return {
@@ -1437,8 +1434,6 @@ const apiKubernetes = {
     }
 
     try {
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
-
       const [clusterRes, recommendationRes, spendRes, eventRes] = await Promise.all([
         queryGraphQL(GET_k8_CLUSTER_GROUPINGS, 'get_k8_cluster_groupings', {
           accountId1: accountId,
