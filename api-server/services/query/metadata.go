@@ -8803,10 +8803,29 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_nodes_v2": {
-		PermissionModule:    "k8s",
-		Type:                Normal,
-		Source:              database.Metastore,
-		Def:                 "k8s_nodes",
+		PermissionModule: "k8s",
+		Type:             Normal,
+		Source:           database.Metastore,
+		Def:              "k8s_nodes",
+		// pod_count is one grouped pass over the active pods, joined by node
+		// name. As a per-row subquery it re-read every active pod of the
+		// account for each node it counted (k8s_pods has no node_name index),
+		// so a page cost 10 such passes and sorting by pod_count one per node
+		// (#39743). The account and tenant filters reach the grouped pods
+		// through the join keys. Postgres cannot drop the join when nothing
+		// reads pod_count, so it is only added when the request does.
+		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
+			if !requestReferencesColumns(request, map[string]bool{"pod_count": true}) {
+				return "k8s_nodes", request, nil
+			}
+			return `(SELECT n.*, COALESCE(pc.pod_count, 0) AS pod_count
+			FROM k8s_nodes n
+			LEFT JOIN (SELECT cloud_account_id, tenant_id, node_name, COUNT(*) AS pod_count
+				FROM k8s_pods
+				WHERE is_active = true
+				GROUP BY cloud_account_id, tenant_id, node_name) pc
+				ON pc.cloud_account_id = n.cloud_account_id AND pc.tenant_id = n.tenant_id AND pc.node_name = n.name) AS k8s_nodes`, request, nil
+		},
 		Name:                "k8s_nodes_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
@@ -8835,10 +8854,7 @@ var table_metadata = map[string]TableDefinition{
 			"cost":               {Type: ColumnDefinitionTypeFloat},
 			"meta":               {Type: ColumnDefinitionTypeJson},
 			"tenant_id":          {Type: ColumnDefinitionTypeString},
-			"pod_count": {
-				Type: ColumnDefinitionTypeInt,
-				Def:  "(SELECT COUNT(*) FROM k8s_pods WHERE k8s_pods.cloud_account_id = k8s_nodes.cloud_account_id::uuid AND k8s_pods.tenant_id = k8s_nodes.tenant_id::uuid AND k8s_pods.node_name = k8s_nodes.name AND k8s_pods.is_active = true)",
-			},
+			"pod_count":          {Type: ColumnDefinitionTypeInt},
 		},
 	},
 	"k8s_nodes_groupings_v2": {
