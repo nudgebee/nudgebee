@@ -220,6 +220,9 @@ const SummaryView = () => {
     wipCount,
     scopedAccountIds,
     resolvedCount,
+    resolvedSavings,
+    aging,
+    longestStanding,
     safeToApply,
     costByCurrency,
     accountCosts,
@@ -417,10 +420,13 @@ const SummaryView = () => {
   // "Top 3 impact" tile below (moved down from the old headline metrics row).
   const rankedDollars = useMemo(() => subtotal(ranked), [ranked]);
 
+  // The longest-standing callout is fetched outside the curated list, so its row
+  // may not be in `insights` — fall back to it.
   const selectedRecommendation = useMemo(() => {
     if (!selectedResourceId) return null;
-    return insights.find((i) => i.id === selectedResourceId)?._raw || null;
-  }, [selectedResourceId, insights]);
+    const found = insights.find((i) => i.id === selectedResourceId) ?? (longestStanding?.id === selectedResourceId ? longestStanding : null);
+    return found?._raw || null;
+  }, [selectedResourceId, insights, longestStanding]);
 
   const clearAll = () => {
     setAccountFilter(null);
@@ -565,6 +571,9 @@ const SummaryView = () => {
             worstAccount={worstAccount}
             wipCount={wipCount}
             resolvedCount={resolvedCount}
+            resolvedSavings={resolvedSavings}
+            aging={aging}
+            longestStanding={longestStanding}
             safeToApply={safeToApply}
             onViewWorkInProgress={handleViewWorkInProgress}
             onViewResolved={handleViewResolved}

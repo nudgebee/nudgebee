@@ -7,7 +7,7 @@ import { getBudgetExpectedMonthlyExpense } from '@lib/budget';
 import { getCurrencySymbol } from '@shared/format/Currency';
 import { transformApiToInsight, mapCategoryAndSubCategory } from './transformRecommendation';
 import type { CurrencyCostSummary, AccountCost } from './AccountClusterPane';
-import type { MainCategory } from './insights';
+import { AGING_DAYS, type InsightItem, type MainCategory } from './insights';
 
 // One row per category — always all three, even at 0, so a category with no
 // monetised savings still shows up as a real (empty) bucket rather than
@@ -56,10 +56,18 @@ export function useSummaryData(accountId?: string | null, envFilter?: string | n
   // `accountId` narrows it) — from the same status-counts aggregate the
   // Resolutions tab's stat cards use, not derived from the curated list.
   const [wipCount, setWipCount] = useState(0);
-  // True count of resolutions that completed successfully, from the same
-  // status-counts aggregate as `wipCount`. There is no savings sum to pair with
-  // it: recommendation_resolution_groupings_v2 exposes `count` only.
+  // Resolutions that completed successfully, from the same status aggregate as
+  // `wipCount`, with the monthly savings of the recommendations they resolved
+  // (each recommendation counted once, however many resolutions it has).
   const [resolvedCount, setResolvedCount] = useState(0);
+  const [resolvedSavings, setResolvedSavings] = useState(0);
+  // Findings first raised more than AGING_DAYS ago, across the full in-scope set
+  // (same filters as `totalSavings`), keyed on created_at — not the curated list.
+  const [aging, setAging] = useState<{ count: number; dollars: number } | null>(null);
+  // The single oldest in-scope finding past AGING_DAYS, fetched on its own so it
+  // can sit outside the curated list. Raw row only — transformed in a memo below,
+  // like `insights`.
+  const [longestStandingRaw, setLongestStandingRaw] = useState<any>(null);
   // Findings whose blast-radius assessment came back `safe` — full-set counts
   // and savings from the same groupings table the Safety filter chips use.
   const [safeToApply, setSafeToApply] = useState<{ count: number; dollars: number } | null>(null);
@@ -273,17 +281,19 @@ export function useSummaryData(accountId?: string | null, envFilter?: string | n
     if (Array.isArray(scopedAccountIds) && scopedAccountIds.length === 0) {
       setWipCount(0);
       setResolvedCount(0);
+      setResolvedSavings(0);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const counts = await recommendationApi.getRecommendationResolutionStatusCounts({
+        const totals = await recommendationApi.getRecommendationResolutionStatusTotals({
           accountId: scopedAccountIds || undefined,
         });
         if (cancelled) return;
-        setWipCount(counts?.InProgress || 0);
-        setResolvedCount(counts?.Success || 0);
+        setWipCount(totals?.InProgress?.count || 0);
+        setResolvedCount(totals?.Success?.count || 0);
+        setResolvedSavings(totals?.Success?.savings || 0);
       } catch (err) {
         console.error('Failed to fetch work-in-progress count:', err);
       }
@@ -293,6 +303,61 @@ export function useSummaryData(accountId?: string | null, envFilter?: string | n
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey, scopeReady]);
+
+  // Age, for the insight widget's "Flagged" column: how many in-scope findings
+  // were first raised more than AGING_DAYS ago and what they are worth, plus the
+  // oldest one. Same scope and filters as the savings aggregate, so the share of
+  // `totalSavings` it reports can never exceed 100%.
+  useEffect(() => {
+    if (!scopeReady) return;
+    // An environment with no accounts: `_in: []` would match nothing anyway, so
+    // skip the two round trips.
+    if (Array.isArray(scopedAccountIds) && scopedAccountIds.length === 0) {
+      setAging({ count: 0, dollars: 0 });
+      setLongestStandingRaw(null);
+      return;
+    }
+    let cancelled = false;
+    const scope = {
+      accountId: scopedAccountIds,
+      category: NON_SECURITY_CATEGORIES as any,
+      excludeRuleName: UPGRADE_PLANNER_RULES,
+      status: DEFAULT_STATUS,
+      createdAtLt: new Date(Date.now() - AGING_DAYS * 24 * 60 * 60 * 1000).toISOString(),
+    };
+    (async () => {
+      try {
+        const [rows, oldestResp]: [any, any] = await Promise.all([
+          recommendationApi.getK8sRecommendationSummaryByRuleName(scope),
+          recommendationApi.getK8sRecommendation({ ...scope, orderBy: 'created_at', orderAsc: true, limit: 1 }),
+        ]);
+        if (cancelled) return;
+        // Both API calls resolve to an Error object rather than throwing, so a
+        // non-array means the fetch failed: leave the callouts hidden.
+        if (Array.isArray(rows)) {
+          setAging({
+            count: rows.reduce((sum: number, row: any) => sum + (row.count || 0), 0),
+            dollars: rows.reduce((sum: number, row: any) => sum + (row.sum_estimated_savings || 0), 0),
+          });
+        }
+        const oldest = oldestResp?.data?.recommendation?.[0];
+        setLongestStandingRaw(oldest || null);
+      } catch (err) {
+        console.error('Failed to fetch aging findings:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeKey, scopeReady]);
+
+  // An InsightItem (with `_raw`) so the detail panel can open it the same way it
+  // opens a curated row.
+  const longestStanding = useMemo(
+    (): InsightItem | null => (longestStandingRaw ? transformApiToInsight(longestStandingRaw, accounts) : null),
+    [longestStandingRaw, accounts]
+  );
 
   // Blast-radius safety, for the insight widget's "Flagged" column. Same scope and
   // status/category filters as the savings aggregate above, so its numbers sit
@@ -448,6 +513,9 @@ export function useSummaryData(accountId?: string | null, envFilter?: string | n
     // a drill-down lands on the same slice the reader was looking at.
     scopedAccountIds,
     resolvedCount,
+    resolvedSavings,
+    aging,
+    longestStanding,
     safeToApply,
     costByCurrency,
     accountCosts,

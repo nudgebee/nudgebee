@@ -4050,6 +4050,14 @@ var table_metadata = map[string]TableDefinition{
 				Type: ColumnDefinitionTypeDatetime,
 				Def:  "updated_at",
 			},
+			// When the finding was first raised. The only age a tenant-wide roll-up
+			// can use: updated_at (and "timestamp") is bumped on nearly every open
+			// row by the ~6h finops-score cron. Comes from r.* on every path, so it
+			// is in neither joinRequiringCols nor windowRequiringCols.
+			"created_at": {
+				Type: ColumnDefinitionTypeDatetime,
+				Def:  "created_at",
+			},
 			// Mirrors recommendations_v2: safety band is stamped into the finops
 			// breakdown JSONB, not a dedicated column.
 			"safety_band": {
@@ -9959,7 +9967,26 @@ var table_metadata = map[string]TableDefinition{
 		// as well as listed: the frontend sends one where clause to the listing and
 		// another to this aggregate, and a column missing here would leave
 		// pagination reporting totals for a filter it never applied.
-		Def:                 "(SELECT rr.*, r.tenant_id, r.cloud_account_id as account_id, r.severity as rec_severity FROM recommendation_resolution rr LEFT JOIN recommendation r ON r.id = rr.recommendation_id) as rr_agg",
+		//
+		// rec_savings_once carries the recommendation's savings on exactly one
+		// resolution row per (recommendation, status), 0 on the rest. Nothing stops
+		// one recommendation collecting several Success rows (a ticket and a pull
+		// request, or a retried pull request), and summing r.estimated_savings over
+		// all of them would count the same saving once per row. The lowest id wins;
+		// which row is picked does not matter, since every candidate joins the same
+		// recommendation. A correlated NOT EXISTS rather than ROW_NUMBER(): the
+		// window's partition would not include tenant_id, so it would rank every
+		// tenant's resolutions before the outer tenant filter applied, while this
+		// runs per surviving row on idx_rr_recommendation_id, and only when
+		// sum_rec_estimated_savings is selected (Postgres drops unused outputs).
+		// Caveat: a type/resolver_type filter can exclude the chosen row, and that
+		// recommendation then contributes 0 to a filtered sum.
+		Def: `(SELECT rr.*, r.tenant_id, r.cloud_account_id as account_id, r.severity as rec_severity,
+			CASE WHEN NOT EXISTS (
+				SELECT 1 FROM recommendation_resolution d
+				WHERE d.recommendation_id = rr.recommendation_id AND d.status = rr.status AND d.id < rr.id
+			) THEN GREATEST(COALESCE(r.estimated_savings, 0), 0) ELSE 0 END as rec_savings_once
+			FROM recommendation_resolution rr LEFT JOIN recommendation r ON r.id = rr.recommendation_id) as rr_agg`,
 		Name:                "recommendation_resolution_groupings_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
@@ -9967,6 +9994,17 @@ var table_metadata = map[string]TableDefinition{
 			"count": {
 				Type:         ColumnDefinitionTypeInt,
 				Def:          "count(*)",
+				IsAggregated: true,
+			},
+			// Monthly savings of the recommendations these resolutions resolved,
+			// each recommendation counted once (see rec_savings_once above). It is
+			// the recommendation's current estimate, the same figure the weekly
+			// digest's resolved_savings sums, not a value snapshotted at resolution.
+			// GREATEST matches recommendation_groupings_v2's sum_estimated_savings:
+			// a negative estimate is a cost increase, not a saving.
+			"sum_rec_estimated_savings": {
+				Type:         ColumnDefinitionTypeFloat,
+				Def:          "COALESCE(sum(rec_savings_once), 0)",
 				IsAggregated: true,
 			},
 			"resolver_type":     {Type: ColumnDefinitionTypeString},

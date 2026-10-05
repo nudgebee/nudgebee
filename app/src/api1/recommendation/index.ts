@@ -50,9 +50,16 @@ export interface RecommendationFacetFilters {
   savingsLt?: number;
   updatedAtGte?: string;
   updatedAtLt?: string;
+  /** First-raised bounds. Unlike updated_at, which the finops-score cron bumps
+   *  every ~6h, created_at is a finding's real age. */
+  createdAtGte?: string;
+  createdAtLt?: string;
 }
 
-export function applyFacetFilters(gqlQuery: any, { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt }: RecommendationFacetFilters) {
+export function applyFacetFilters(
+  gqlQuery: any,
+  { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt, createdAtGte, createdAtLt }: RecommendationFacetFilters
+) {
   if (safetyBand && safetyBand.length > 0) {
     if (safetyBand.includes('unknown')) {
       // Rows never assessed carry no safety_band key in the breakdown JSONB;
@@ -70,6 +77,10 @@ export function applyFacetFilters(gqlQuery: any, { safetyBand, savingsGte, savin
   if (updatedAtGte) updatedAt['_gte'] = updatedAtGte;
   if (updatedAtLt) updatedAt['_lt'] = updatedAtLt;
   if (Object.keys(updatedAt).length > 0) gqlQuery['updated_at'] = updatedAt;
+  const createdAt: any = {};
+  if (createdAtGte) createdAt['_gte'] = createdAtGte;
+  if (createdAtLt) createdAt['_lt'] = createdAtLt;
+  if (Object.keys(createdAt).length > 0) gqlQuery['created_at'] = createdAt;
 }
 
 export function invalidateOptimisationSummaryRecommendations() {
@@ -754,8 +765,10 @@ const apiRecommendations = {
     savingsLt,
     updatedAtGte,
     updatedAtLt,
+    createdAtGte,
+    createdAtLt,
   }: {
-    accountId?: string;
+    accountId?: string | string[];
     category?: string;
     ruleName?: string | string[];
     excludeRuleName?: string[];
@@ -880,7 +893,7 @@ const apiRecommendations = {
       if (resource_ids) {
         gqlQuery['resource_id'] = { _in: resource_ids };
       }
-      applyFacetFilters(gqlQuery, { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt });
+      applyFacetFilters(gqlQuery, { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt, createdAtGte, createdAtLt });
       let query = LIST_k8_RECOMMENDATIONS;
       if (typeof orderBy === 'string') {
         query = query.replaceAll('__ORDER_BY__', `{column: "${orderBy}", order: ${orderAsc ? 'asc' : 'desc_nulls_last'} }`);
@@ -1189,6 +1202,8 @@ const apiRecommendations = {
     savingsLt,
     updatedAtGte,
     updatedAtLt,
+    createdAtGte,
+    createdAtLt,
   }: {
     accountId: string | string[];
     accountObjectId?: string;
@@ -1290,7 +1305,7 @@ const apiRecommendations = {
           },
         ];
       }
-      applyFacetFilters(gqlQuery, { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt });
+      applyFacetFilters(gqlQuery, { safetyBand, savingsGte, savingsLt, updatedAtGte, updatedAtLt, createdAtGte, createdAtLt });
       const query = LIST_k8_RECOMMENDATION_SUMMARY_BY_RULENAME.replace('__WHERE__', gqlStringify(gqlQuery));
 
       const response = await queryGraphQL(query, 'k8s_recommendation_summary', {});
@@ -1363,6 +1378,8 @@ const apiRecommendations = {
     savingsLt,
     updatedAtGte,
     updatedAtLt,
+    createdAtGte,
+    createdAtLt,
   }: {
     accountId: string | string[];
     accountObjectId?: string;
@@ -1413,7 +1430,7 @@ const apiRecommendations = {
       if (status && status.length > 0) {
         gqlQuery['status'] = { _in: status };
       }
-      applyFacetFilters(gqlQuery, { savingsGte, savingsLt, updatedAtGte, updatedAtLt });
+      applyFacetFilters(gqlQuery, { savingsGte, savingsLt, updatedAtGte, updatedAtLt, createdAtGte, createdAtLt });
       const query = LIST_k8_RECOMMENDATION_SAFETY_GROUPS.replace('__WHERE__', gqlStringify(gqlQuery));
       const response = await queryGraphQL(query, 'k8s_recommendation_safety_groups', {});
       return response?.data?.data?.recommendation_aggregate?.rows || [];
@@ -2873,6 +2890,52 @@ const apiRecommendations = {
         counts[row.status] = (counts[row.status] || 0) + (Number(row.count) || 0);
       }
       return counts;
+    }, {});
+  },
+  /**
+   * Resolution counts per status, each paired with the monthly savings of the
+   * recommendations behind them, for the Optimise Summary's tiles. Kept apart
+   * from getRecommendationResolutionStatusCounts so the Resolutions tab doesn't
+   * pay for the savings roll-up it never shows. Same account scoping, including
+   * an empty array meaning every account, so callers wanting "none" must
+   * short-circuit first.
+   */
+  async getRecommendationResolutionStatusTotals({ accountId }: { accountId?: string | string[] } = {}): Promise<
+    Record<string, { count: number; savings: number }>
+  > {
+    if (accountId === 'demo') {
+      return {};
+    }
+    const query = `
+    query RecommendationResolutionStatusTotals($where: RecommendationResolutionGroupingsWhereRequest) {
+      recommendation_resolution: recommendation_resolution_groupings_v2(where: $where, group_by: ["status"]) {
+        rows {
+          status
+          count
+          sum_rec_estimated_savings
+        }
+      }
+    }
+    `;
+    const where: any = {};
+    if (Array.isArray(accountId)) {
+      if (accountId.length > 0) {
+        where.account_id = { _in: accountId };
+      }
+    } else if (accountId) {
+      where.account_id = { _eq: accountId };
+    }
+    const response = await queryGraphQL(query, 'RecommendationResolutionStatusTotals', { where });
+    const rows = response?.data?.data?.recommendation_resolution?.rows || [];
+    return rows.reduce((totals: Record<string, { count: number; savings: number }>, row: any) => {
+      if (row?.status) {
+        const prev = totals[row.status] || { count: 0, savings: 0 };
+        totals[row.status] = {
+          count: prev.count + (Number(row.count) || 0),
+          savings: prev.savings + (Number(row.sum_rec_estimated_savings) || 0),
+        };
+      }
+      return totals;
     }, {});
   },
   async getDistinctResolverTypes(filter = 'resolver_type') {

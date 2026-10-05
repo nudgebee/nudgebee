@@ -11927,6 +11927,7 @@ type RecommendationResolutionGroupingsResponse {
 
 type RecommendationResolutionGroupingsRowResponse {
   count: Int
+  sum_rec_estimated_savings: Float
   resolver_type: String
   type: String
   recommendation_id: String
