@@ -128,3 +128,19 @@ func TestScheduledAlertWorkflowRefireIsOffByDefaultAndReadFromTheEnvironment(t *
 		t.Error("default feature_scheduled_alert_workflow_refire_enabled = true, want false")
 	}
 }
+
+// Holding an anomaly's close is opt-in, and both settings have to be reachable
+// from the environment.
+func TestAnomalyStableCloseIsOffByDefaultAndReadFromTheEnvironment(t *testing.T) {
+	for _, key := range []string{"feature_anomaly_stable_close_enabled", "nb_anomaly_close_stable_hours"} {
+		if !slices.Contains(viper.AllKeys(), key) {
+			t.Errorf("%s has no viper default, so its environment variable is ignored", key)
+		}
+	}
+	if v, ok := os.LookupEnv("FEATURE_ANOMALY_STABLE_CLOSE_ENABLED"); ok {
+		t.Skipf("FEATURE_ANOMALY_STABLE_CLOSE_ENABLED=%q is set in the environment; the compiled-in default is not observable here", v)
+	}
+	if Config.FeatureAnomalyStableCloseEnabled {
+		t.Error("default feature_anomaly_stable_close_enabled = true, want false")
+	}
+}

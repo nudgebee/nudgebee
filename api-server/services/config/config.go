@@ -277,6 +277,13 @@ type appConfig struct {
 
 	NBAnomalyTrainingDays    int `mapstructure:"nb_anomaly_training_days"`
 	NBAnomalyEvaluationHours int `mapstructure:"nb_anomaly_evaluation_hours"`
+	// When true, a Kubernetes anomaly is resolved only once its latest
+	// anomalous detection is NBAnomalyCloseStableHours old and a later run
+	// found it clean, so one that flaps hour to hour stays open instead of
+	// resolving and reopening every hour. Default off: alerts then close at the
+	// first clean run, as before.
+	FeatureAnomalyStableCloseEnabled bool `mapstructure:"feature_anomaly_stable_close_enabled"`
+	NBAnomalyCloseStableHours        int  `mapstructure:"nb_anomaly_close_stable_hours"`
 
 	NBSpendAnomalyBaselineDays               int     `mapstructure:"nb_spend_anomaly_baseline_days"`
 	NBSpendAnomalyZScoreThreshold            float64 `mapstructure:"nb_spend_anomaly_zscore_threshold"`
@@ -606,6 +613,8 @@ func init() {
 
 	viper.SetDefault("nb_anomaly_training_days", 7)
 	viper.SetDefault("nb_anomaly_evaluation_hours", 1)
+	viper.SetDefault("feature_anomaly_stable_close_enabled", false)
+	viper.SetDefault("nb_anomaly_close_stable_hours", 3)
 
 	viper.SetDefault("feature_event_point_in_time_close_enabled", true)
 	viper.SetDefault("feature_scheduled_alert_workflow_refire_enabled", false)
