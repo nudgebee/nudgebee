@@ -60,13 +60,7 @@ const (
 	PromptEventSummary                       = "event_summary"
 	PromptLogAnalysisCodediffGenerateRequest = "log_analysis_codediff_generate_request"
 	PromptLogAnalysisFileExtractor           = "log_analysis_file_extractor"
-	PromptMemoryCollectiveConsolidate        = "memory_collective_consolidate"
-	PromptMemoryDecisionsSummarise           = "memory_decisions_summarise"
 	PromptMemoryExtractor                    = "memory_extractor"
-	PromptMemoryPatternsExtract              = "memory_patterns_extract"
-	PromptMemorySessionDistill               = "memory_session_distill"
-	PromptMemorySessionExtractor             = "memory_session_extractor"
-	PromptMemorySoulConsolidate              = "memory_soul_consolidate"
 	PromptAgentLlm                           = "agent_llm"
 	PromptAnswerConfidence                   = "answer_confidence"
 	PromptResponseFormatter                  = "response_formatter"
@@ -126,13 +120,7 @@ var promptCategories = map[string]PromptCategory{
 	PromptEventSummary:                       CategoryUtilities,
 	PromptLogAnalysisCodediffGenerateRequest: CategoryUtilities,
 	PromptLogAnalysisFileExtractor:           CategoryUtilities,
-	PromptMemoryCollectiveConsolidate:        CategoryUtilities,
-	PromptMemoryDecisionsSummarise:           CategoryUtilities,
 	PromptMemoryExtractor:                    CategoryUtilities,
-	PromptMemoryPatternsExtract:              CategoryUtilities,
-	PromptMemorySessionDistill:               CategoryUtilities,
-	PromptMemorySessionExtractor:             CategoryUtilities,
-	PromptMemorySoulConsolidate:              CategoryUtilities,
 	PromptAgentLlm:                           CategoryUtilities,
 	PromptResponseFormatter:                  CategoryUtilities,
 	PromptResponseFormatterSlack:             CategoryUtilities,
