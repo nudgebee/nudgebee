@@ -697,12 +697,32 @@ func builtInHealthFlags(providerType, provider string) []string {
 	return nil
 }
 
+// normalizeProviderName maps a caller-supplied provider name onto the spelling the
+// source switches and the integrations table use, so "Prometheus", "PROMETHEUS " and
+// "prometheus" all resolve the same provider. Every provider name is lower-case except
+// "ES", the stored type of the Elasticsearch integration. Whitespace-only becomes "",
+// which means "use the account's default", the same as leaving the field empty.
+func normalizeProviderName(provider string) string {
+	provider = strings.TrimSpace(provider)
+	if strings.EqualFold(provider, "ES") {
+		return "ES"
+	}
+	return strings.ToLower(provider)
+}
+
+// normalizeProviderSource does the same for the integration source ("agent" / "user").
+func normalizeProviderSource(source string) string {
+	return strings.ToLower(strings.TrimSpace(source))
+}
+
 func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, accountId, logProviderFromRequest, providerType string, logSourceFromRequest string) (string, string, *core.IntegrationDto, error) {
 	if ctx == nil || ctx.GetSecurityContext() == nil {
 		return "", "", nil, ErrNoTenantContext
 	}
-	defaultProvider := logProviderFromRequest
-	defaultSource := logSourceFromRequest
+	// Provider and source often arrive as typed free text (automation task fields,
+	// LLM tool calls), so match them regardless of letter case and surrounding spaces.
+	defaultProvider := normalizeProviderName(logProviderFromRequest)
+	defaultSource := normalizeProviderSource(logSourceFromRequest)
 	var matchedIntegration *core.IntegrationDto
 	valueProvider := ""
 	switch providerType {

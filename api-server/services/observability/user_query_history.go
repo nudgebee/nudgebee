@@ -174,7 +174,7 @@ func newUserHistoryRow(prefix, provider, accountId, data string, execErr error, 
 
 	return UserHistoryRequest{
 		AccountId: accountId,
-		Module:    prefix + strings.ToLower(provider),
+		Module:    prefix + strings.ToLower(strings.TrimSpace(provider)),
 		Data:      data,
 		Status:    status,
 		Duration:  elapsed.Milliseconds(),
