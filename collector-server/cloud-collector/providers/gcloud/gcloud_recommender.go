@@ -1,6 +1,7 @@
 package gcloud
 
 import (
+	"errors"
 	"fmt"
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
@@ -626,7 +627,7 @@ func isGCPPermissionOrNotFoundError(err error) bool {
 }
 
 func (s *gcloudRecommenderService) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
-	return nil
+	return errors.ErrUnsupported
 }
 
 func (s *gcloudRecommenderService) ApplyCommand(ctx providers.CloudProviderContext, account providers.Account, command providers.ApplyCommandRequest) (providers.ApplyCommandResponse, error) {
