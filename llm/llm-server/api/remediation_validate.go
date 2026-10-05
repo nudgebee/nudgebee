@@ -19,15 +19,9 @@ import (
 // Everything below is a pure function of the plan text. No environment lookup, no second model
 // call, so it adds no latency and cannot itself fail at runtime.
 
-// Confidence ceilings applied by the deterministic checks below. Both sit under
-// maxMitigationConfidence so a demoted action also sorts beneath a genuine mitigation.
-const (
-	// A command carrying a stand-in value cannot be run as-is, so it ranks last among mitigations.
-	placeholderMaxConfidence = Confidence(20)
-	// Cycling a workload whose cause survives a restart may still clear a wedged process, so it is
-	// worth offering — just not ahead of anything that touches the actual cause.
-	restartAgainstResistantCauseMaxConfidence = Confidence(25)
-)
+// placeholderMaxConfidence sits under maxMitigationConfidence: a command carrying a stand-in value
+// cannot be run as-is, so it ranks last among mitigations.
+const placeholderMaxConfidence = Confidence(20)
 
 // placeholderValue matches a stand-in the model was told to emit instead of a real secret, plus the
 // other shapes it reaches for when it does not know a value. The prompt's own advice ("use a clearly
@@ -347,82 +341,6 @@ var alarmStateVerify = regexp.MustCompile(`(?i)cloudwatch\s+describe-alarms|Metr
 // Undo button.
 var destructiveRollback = regexp.MustCompile(`(?i)\b(delete|destroy|terminate|purge|remove|rb|stop)\b|--replicas[= ]0\b`)
 
-// causeResistsRestart matches root causes that survive a restart or a pod delete untouched: the pod
-// comes back and fails on the same credential, the same denied permission, the same full disk. The
-// audit found five such commands, each offered against a cause the evidence had already named —
-// restart a pod whose IAM policy still denies it, delete a pod on a volume with 0 bytes free.
-//
-// Deliberately does NOT cover `rollout undo`: reverting configuration genuinely can fix a bad value,
-// and three plans used it correctly against a bad image tag.
-// ephemeralStorageCause marks the one disk-full case a restart genuinely does clear: storage that
-// lives and dies with the pod. Without this the rule demotes a correct mitigation — one plan
-// restarts a Redis whose emptyDir filled, and recreating the pod recreates an empty volume.
-var ephemeralStorageCause = regexp.MustCompile(`(?i)\b(emptydir|tmpfs|memory-backed|ephemeral (storage|volume))\b`)
-
-// The trailing boundary deliberately admits common inflections and an underscore.
-//
-// A plain `\b` here silently failed on the way these causes are actually written: "credentials
-// are invalid", "missing permissions", "disk space exhausted" and "AUTHENTICATION_FAILED" all
-// missed, because `\b` rejects a following `s`/`ed` and treats `_` as a word character. The stems
-// only ever appeared to work because a plan's concatenated cause text is long enough to usually
-// contain one singular form somewhere; a short cause carrying only the plural slipped straight
-// through the rule.
-//
-// Suffixes are enumerated rather than left open so a stem cannot swallow an unrelated word
-// ("secret" must not match "secretary"), and the leading `\b` is kept so "iam" cannot match
-// "Miami".
-var causeResistsRestart = regexp.MustCompile(`(?i)\b(credential|password|secret|token|unauthorized|forbidden|access[ _]?denied|permission|iam|rbac|signature|authentication|expired certificate|quota exceeded|no space left|disk (space )?(exhaust|full)|out of disk|no such host|nxdomain|dns resolution)(?:s|es|ed|ing)?(?:\b|_)`)
-
-// appLevelMemorySetting matches a cause whose memory ceiling lives inside the application, where a
-// container limit cannot reach it. Twice, five days apart, the audit saw Redis thrashing at
-// `maxmemory 1048MB` answered with `kubectl set resources --limits=memory=2Gi` labelled a fix:
-// the container gets more room and `maxmemory` — the thing doing the evicting — never changes.
-var appLevelMemorySetting = regexp.MustCompile(`(?i)\b(maxmemory|max-memory|GOMEMLIMIT|-Xmx|heap size|shared_buffers|work_mem|innodb_buffer_pool)\b`)
-
-// restartLikeCommand reports whether the command only cycles a workload rather than changing it.
-func restartLikeCommand(command string) bool {
-	c := strings.TrimSpace(command)
-	if strings.HasPrefix(c, "kubectl rollout restart") ||
-		strings.HasPrefix(c, "kubectl delete pod") || strings.HasPrefix(c, "kubectl delete po ") {
-		return true
-	}
-	// The same act on the other substrate. This rule is about what a restart can and cannot
-	// achieve, which has nothing to do with which CLI delivers it - but the implementation was
-	// kubectl-only, so every EC2-hosted remediation escaped it entirely. Rebooting an instance is
-	// the bluntest restart there is, and a service restart delivered over SSM is exactly the
-	// kubectl case wearing different clothes.
-	if instanceReboot.MatchString(c) {
-		return true
-	}
-	if strings.Contains(c, "ssm send-command") {
-		return hostServiceRestart(core.SSMPayload(c))
-	}
-	return false
-}
-
-var instanceReboot = regexp.MustCompile(`^aws\s+ec2\s+reboot-instances\b`)
-
-// hostServiceRestart reports whether an in-host payload restarts a service.
-//
-// `start` is deliberately excluded: on a stopped service that is the correct fix, not a blunt
-// cycle, and capping it would penalise the one scenario where it is the right answer.
-func hostServiceRestart(payload string) bool {
-	f := strings.Fields(payload)
-	if len(f) > 0 && f[0] == "sudo" {
-		f = f[1:]
-	}
-	if len(f) < 2 {
-		return false
-	}
-	switch f[0] {
-	case "systemctl":
-		return f[1] == "restart" || f[1] == "reload-or-restart"
-	case "service":
-		return len(f) > 2 && f[2] == "restart"
-	}
-	return false
-}
-
 // planValidationNote records one deterministic correction, for logging and for the replay harness.
 type planValidationNote struct {
 	Action string
@@ -441,11 +359,6 @@ func validatePlanCommands(plan *RemediationPlan) []planValidationNote {
 	note := func(action, rule, detail string) {
 		notes = append(notes, planValidationNote{Action: action, Rule: rule, Detail: detail})
 	}
-	causeText := plan.RootCause + " " + plan.Summary
-	for _, h := range plan.Hypotheses {
-		causeText += " " + h.Hypothesis + " " + strings.Join(h.Reasoning, " ")
-	}
-
 	// Names created by an action we had to block, so later actions that consume them can be demoted
 	// too. Actions arrive in the model's own order, which is the order the operator would run them.
 	blockedNames := []string{}
@@ -501,32 +414,6 @@ func validatePlanCommands(plan *RemediationPlan) []planValidationNote {
 			a.Kind = RemediationKindMitigation
 			if a.Confidence > placeholderMaxConfidence {
 				a.Confidence = placeholderMaxConfidence
-			}
-		}
-
-		// A cause that survives a restart is not addressed by one. The action stays — cycling a pod
-		// is still a reasonable thing to try — but it cannot claim to remove the cause.
-		if exec != "" && restartLikeCommand(exec) && causeResistsRestart.MatchString(causeText) && !ephemeralStorageCause.MatchString(causeText) {
-			if a.Kind == RemediationKindFix {
-				note(a.Action, "restart_cannot_fix_this_cause_demoted", exec)
-			} else if a.Confidence > restartAgainstResistantCauseMaxConfidence {
-				note(a.Action, "restart_cannot_fix_this_cause_capped", exec)
-			}
-			a.Kind = RemediationKindMitigation
-			if a.Confidence > restartAgainstResistantCauseMaxConfidence {
-				a.Confidence = restartAgainstResistantCauseMaxConfidence
-			}
-		}
-
-		// A container limit is not the application's own memory ceiling. Raising it gives headroom,
-		// which is worth doing, so the action stays — but it is a mitigation, not the fix.
-		if exec != "" && strings.HasPrefix(exec, "kubectl set resources") && appLevelMemorySetting.MatchString(causeText) {
-			if a.Kind == RemediationKindFix {
-				note(a.Action, "container_limit_is_not_the_app_setting_demoted", exec)
-			}
-			a.Kind = RemediationKindMitigation
-			if a.Confidence > maxMitigationConfidence {
-				a.Confidence = maxMitigationConfidence
 			}
 		}
 

@@ -163,41 +163,6 @@ func TestDestructiveRollbackIsCleared(t *testing.T) {
 	assert.Contains(t, ruleNames(notes), "destructive_rollback_cleared")
 }
 
-// TestRestartAgainstAResistantCauseCannotBeAFix: the pod comes back and fails on the same
-// credential, the same denied permission, the same full disk.
-func TestRestartAgainstAResistantCauseCannotBeAFix(t *testing.T) {
-	for _, cause := range []string{
-		"IAM user is blocked by an explicit deny in the EnforceMFA policy",
-		"the agent is misconfigured with an invalid authentication token",
-		"the persistent volume is completely out of disk space, 0 B free",
-		"lookup k8s-collector.qa.svc: no such host",
-	} {
-		p := planWith(cause, act(RemediationKindFix, 90, "kubectl rollout restart deployment api -n prod", "", ""))
-		validatePlanCommands(p)
-		assert.Equal(t, RemediationKindMitigation, p.Actions[0].Kind, "cause: %s", cause)
-		assert.LessOrEqual(t, int(p.Actions[0].Confidence), int(restartAgainstResistantCauseMaxConfidence))
-	}
-}
-
-// TestRestartIsKeptForEphemeralStorage: recreating a pod really does recreate a memory-backed
-// emptyDir, so the disk-full rule must not demote it.
-func TestRestartIsKeptForEphemeralStorage(t *testing.T) {
-	p := planWith("the cache-dumper sidecar filled the 32Mi memory-backed emptyDir at /data, no space left on device",
-		act(RemediationKindMitigation, 45, "kubectl rollout restart deployment cart-cache -n shop", "", ""))
-	validatePlanCommands(p)
-	assert.Equal(t, Confidence(45), p.Actions[0].Confidence, "a restart does clear an emptyDir")
-}
-
-// TestContainerLimitIsNotTheApplicationSetting: Redis thrashing at maxmemory is not fixed by giving
-// the container more room.
-func TestContainerLimitIsNotTheApplicationSetting(t *testing.T) {
-	p := planWith("redis-cache saturated its 1048 MB maxmemory ceiling, triggering eviction thrashing",
-		act(RemediationKindFix, 80, "kubectl set resources deployment redis-cache -n ns --limits=memory=2Gi", "", ""))
-	notes := validatePlanCommands(p)
-	assert.Equal(t, RemediationKindMitigation, p.Actions[0].Kind)
-	assert.Contains(t, ruleNames(notes), "container_limit_is_not_the_app_setting_demoted")
-}
-
 // TestGoodPlansAreLeftAlone guards against the checks eating correct output.
 func TestGoodPlansAreLeftAlone(t *testing.T) {
 	p := planWith("the report-worker container memory limit is 192Mi against a 220MB startup buffer",
@@ -433,81 +398,6 @@ func TestSettingsWrittenHandlesBooleanFlags(t *testing.T) {
 		settingsWritten("kubectl set resources deployment app -n ns --limits=memory=2Gi,cpu=1 --requests=memory=1Gi"))
 }
 
-func TestResistantCauseMatchesHowCausesAreActuallyWritten(t *testing.T) {
-	// The stems were only ever tested against tidy singular phrasing. A plain trailing `\b`
-	// rejects the plural and the past tense, and treats `_` as a word character — so the three
-	// most common real spellings of an auth failure all missed the rule.
-	for _, s := range []string{
-		"database credentials are invalid",
-		"AUTHENTICATION_FAILED returned by ClickHouse",
-		"ACCESS_DENIED from the registry",
-		"missing permissions for the service account",
-		"disk space exhausted",
-		"the auth token has expired",
-		"invalid credential supplied",
-		"no space left on device",
-	} {
-		assert.True(t, causeResistsRestart.MatchString(s), "should be recognised as restart-resistant: %q", s)
-	}
-	// Suffixes are enumerated and the leading boundary kept, so a stem cannot swallow a longer
-	// unrelated word.
-	for _, s := range []string{
-		"the secretary service was updated",
-		"flights to Miami were delayed",
-		"memory limit too low for the workload",
-		"connection slots exhausted by long-running queries",
-		"an external fast shutdown signal stopped the service",
-	} {
-		assert.False(t, causeResistsRestart.MatchString(s), "must not be treated as restart-resistant: %q", s)
-	}
-}
-
-func TestRestartRuleAppliesOnBothSubstrates(t *testing.T) {
-	// The rule is about what a restart can achieve, which does not depend on the CLI that delivers
-	// it. The implementation was kubectl-only, so the identical action expressed against EC2 —
-	// the substrate every host-based remediation and the whole live benchmark use — escaped it.
-	cause := "The service is failing because its database credentials are invalid (AUTHENTICATION_FAILED)."
-	for _, cmd := range []string{
-		"kubectl rollout restart deployment db-client -n prod",
-		`aws ssm send-command --instance-ids i-1 --document-name AWS-RunShellScript --parameters "commands=systemctl restart postgresql" --region us-east-1`,
-		`aws ssm send-command --instance-ids i-1 --document-name AWS-RunShellScript --parameters "commands=sudo service postgresql restart" --region us-east-1`,
-		"aws ec2 reboot-instances --instance-ids i-1 --region us-east-1",
-	} {
-		assert.True(t, restartLikeCommand(cmd), "should count as a restart: %s", cmd)
-		plan := RemediationPlan{RootCause: cause, Actions: []RemediationAction{{
-			Action: "cycle it", Kind: RemediationKindFix, Confidence: 90, ExecuteCommand: cmd,
-		}}}
-		notes := validatePlanCommands(&plan)
-		assert.Contains(t, ruleNames(notes), "restart_cannot_fix_this_cause_demoted", cmd)
-		assert.Equal(t, RemediationKindMitigation, plan.Actions[0].Kind, cmd)
-		assert.Equal(t, restartAgainstResistantCauseMaxConfidence, plan.Actions[0].Confidence, cmd)
-	}
-}
-
-func TestStartingAStoppedServiceIsNotARestart(t *testing.T) {
-	// `systemctl start` on a stopped service is the correct fix, not a blunt cycle. Folding it in
-	// would cap the one scenario where it is the right answer, so it stays out.
-	start := `aws ssm send-command --instance-ids i-1 --document-name AWS-RunShellScript --parameters "commands=systemctl start postgresql" --region us-east-1`
-	assert.False(t, restartLikeCommand(start))
-	// And a read-only probe over the same channel is not a restart either.
-	probe := `aws ssm send-command --instance-ids i-1 --document-name AWS-RunShellScript --parameters "commands=systemctl is-active postgresql" --region us-east-1`
-	assert.False(t, restartLikeCommand(probe))
-}
-
-func TestCloudRestartAgainstAnOrdinaryCauseIsUntouched(t *testing.T) {
-	// Widening the substrate must not demote restarts that are legitimate mitigations. A blocked
-	// database session pool is cleared by a restart, and the ground truth calls that acceptable.
-	plan := RemediationPlan{
-		RootCause: "30 concurrent blocking queries saturated PostgreSQL connection capacity.",
-		Actions: []RemediationAction{{
-			Action: "restart postgresql", Kind: RemediationKindMitigation, Confidence: 45,
-			ExecuteCommand: `aws ssm send-command --instance-ids i-1 --document-name AWS-RunShellScript --parameters "commands=systemctl restart postgresql" --region us-east-1`,
-		}}}
-	notes := validatePlanCommands(&plan)
-	assert.NotContains(t, ruleNames(notes), "restart_cannot_fix_this_cause_demoted")
-	assert.Equal(t, Confidence(45), plan.Actions[0].Confidence)
-}
-
 // The prompt asks for a second action that reprocesses work stranded while the fault lasted. The
 // validator has never seen one, so this guards the shape end to end: the recovery action must
 // survive validation intact, with its read-only verify kept and no rollback invented for something
@@ -560,4 +450,22 @@ func TestExecutorRejectedCommandsAreRemovedFromPlan(t *testing.T) {
 	assert.NotEmpty(t, remediationCommandRejection("kubectl get pods -n demo -o jsonpath={.items[*].metadata.name}"))
 	assert.Empty(t, remediationCommandRejection("kubectl get pods -n demo -o jsonpath='{.items[*].metadata.name}'"))
 	assert.Empty(t, remediationCommandRejection(`aws ec2 describe-instances --region us-east-1 --query "Reservations[].Instances[?State.Name=='running']"`))
+}
+
+// A restart that follows the change to its cause keeps the model's kind and confidence.
+func TestRestartThatCompletesAFixKeepsTheModelsKind(t *testing.T) {
+	plan := RemediationPlan{
+		RootCause: "The agent runner was configured with an invalid access key, so k8s-collector rejects its credentials with 401.",
+		Actions: []RemediationAction{
+			{Action: "Update agent runner auth secret", Kind: RemediationKindFix, Confidence: 95,
+				RequiredChange: &RequiredChange{Where: "dependency", Target: "Secret agent-auth", Change: "set a registered access key"}},
+			{Action: "Restart agent runner deployment", Kind: RemediationKindFix, Confidence: 95, After: "Update agent runner auth secret",
+				ExecuteCommand: "kubectl rollout restart deployment agent-runner -n nudgebee",
+				VerifyCommand:  "kubectl rollout status deployment agent-runner -n nudgebee"},
+		},
+	}
+	normalizePlan(&plan, nil, nil)
+	restart := plan.Actions[1]
+	require.Equal(t, RemediationKindFix, restart.Kind)
+	require.Equal(t, Confidence(95), restart.Confidence)
 }
