@@ -82,8 +82,14 @@ const SectionHeading = ({ id, title, count }) => (
  * existing per-cluster fan-out (each child component fetches its own slice);
  * the cloud and VM cards are fed by two batched queries in @api1/overview, so
  * adding providers here costs two requests, not two per account.
+ *
+ * `onSectionsChange` tells the page which sections are actually rendered so the
+ * anchor strip is built from the same data as the headings. Deriving the strip
+ * from the header's account list instead left a "Clusters" tab pointing at
+ * nothing whenever the cluster query failed, and no strip at all when the
+ * account list failed but clusters loaded.
  */
-const AccountOverview = () => {
+const AccountOverview = ({ onSectionsChange }) => {
   const router = useRouter();
   const { setSelectedCluster } = useData();
   const [k8sClusters, setK8sClusters] = useState([]);
@@ -142,23 +148,27 @@ const AccountOverview = () => {
         setVmAccounts(vms);
       } catch (error) {
         console.error(error);
+        if (!cancelled) snackbar.error('Failed to fetch cloud accounts');
       } finally {
         if (!cancelled) setLoadingAccountList(false);
       }
 
-      try {
-        const [cloudSummary, vmSummary] = await Promise.all([
-          apiOverview.listCloudAccountSummaries(cloud.map((account) => account.id)),
-          apiOverview.listVmAccountSummaries(vms.map((account) => account.id)),
-        ]);
-        if (cancelled) return;
-        setCloudSummaries(cloudSummary);
-        setVmSummaries(vmSummary);
-      } catch (error) {
-        console.error(error);
-      } finally {
-        if (!cancelled) setLoadingSummaries(false);
+      // Settled independently so a failed VM rollup does not blank the cloud
+      // cards (or vice versa). A failed side stays empty rather than zeroed: the
+      // cards render "-" for a missing summary, which a real zero never shows.
+      const [cloudResult, vmResult] = await Promise.allSettled([
+        apiOverview.listCloudAccountSummaries(cloud.map((account) => account.id)),
+        apiOverview.listVmAccountSummaries(vms.map((account) => account.id)),
+      ]);
+      if (cancelled) return;
+      if (cloudResult.status === 'fulfilled') setCloudSummaries(cloudResult.value);
+      else console.error(cloudResult.reason);
+      if (vmResult.status === 'fulfilled') setVmSummaries(vmResult.value);
+      else console.error(vmResult.reason);
+      if (cloudResult.status === 'rejected' || vmResult.status === 'rejected') {
+        snackbar.error('Failed to load account summaries');
       }
+      setLoadingSummaries(false);
     };
 
     getOtherAccountsData();
@@ -308,6 +318,10 @@ const AccountOverview = () => {
   // a tenant that has only an AWS account must see its card, not an onboarding
   // panel telling it to install a cluster agent.
   const hasNoAccounts = !loading && !loadingAccountList && !hasK8sClusters && !hasCloudAccounts && !hasVmAccounts;
+
+  useEffect(() => {
+    onSectionsChange?.({ k8s: hasK8sClusters, cloud: hasCloudAccounts, vm: hasVmAccounts });
+  }, [hasK8sClusters, hasCloudAccounts, hasVmAccounts, onSectionsChange]);
 
   return (
     <Box>

@@ -46,19 +46,26 @@ interface Props {
   loading?: boolean;
 }
 
-const CountBlock = ({ label, value, loading }: { label: string; value: number; loading?: boolean }) => (
+// Text renders a numeric 0 as its "-" default, so counts are passed as strings:
+// "0" is a real answer, "-" means the summary never arrived.
+const formatCount = (value?: number | null) => (value == null ? '-' : value.toLocaleString());
+
+const CountBlock = ({ label, value, loading }: { label: string; value?: number; loading?: boolean }) => (
   <Box>
     <Text value={label} sx={{ fontWeight: 'var(--ds-font-weight-medium)' }} />
     {loading ? (
       <Skeleton shape='rect' width='60%' height='24px' />
     ) : (
-      <Text value={value ?? 0} sx={{ fontSize: 'var(--ds-text-heading)', fontWeight: 'var(--ds-font-weight-semibold)' }} />
+      <Text value={formatCount(value)} sx={{ fontSize: 'var(--ds-text-heading)', fontWeight: 'var(--ds-font-weight-semibold)' }} />
     )}
   </Box>
 );
 
 const CloudAccountOverviewCard = ({ accountId, accountName, cloudProvider, summary, loading = false }: Props) => {
   const detailsHref = `/cloud-account/details/${accountId}#summary`;
+  // No summary after loading means the rollup query failed (every listed account
+  // otherwise gets a zeroed entry); show "-" rather than a convincing "$0".
+  const unavailable = !loading && !summary;
   const currency = (summary?.currency || 'USD').toUpperCase();
   const forecast = getBudgetExpectedMonthlyExpense(summary?.mtdSpend || 0);
   const lastMonth = summary?.lastMonthSpend || 0;
@@ -135,8 +142,8 @@ const CloudAccountOverviewCard = ({ accountId, accountName, cloudProvider, summa
             </Link>
             <Divider sx={{ stroke: 'var(--ds-brand-300)', width: '100%', height: '1px' }} />
             <Box sx={{ display: 'flex', gap: 'var(--ds-space-4)', justifyContent: 'space-between' }}>
-              <CountBlock label='Resources' value={summary?.resourceCount || 0} loading={loading} />
-              <CountBlock label='Recommendations' value={summary?.recommendationCount || 0} loading={loading} />
+              <CountBlock label='Resources' value={summary?.resourceCount} loading={loading} />
+              <CountBlock label='Recommendations' value={summary?.recommendationCount} loading={loading} />
             </Box>
             <Divider sx={{ stroke: 'var(--ds-brand-300)', width: '100%', height: '1px' }} />
             <Typography sx={{ color: 'var(--ds-gray-400)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }}>
@@ -158,6 +165,8 @@ const CloudAccountOverviewCard = ({ accountId, accountName, cloudProvider, summa
                   </Typography>
                   {loading ? (
                     <Skeleton shape='rect' width={ds.space.mul(0, 40)} height='24px' />
+                  ) : unavailable ? (
+                    <Text value='-' sx={{ fontSize: 'var(--ds-text-heading)', fontWeight: 'var(--ds-font-weight-semibold)' }} />
                   ) : (
                     <CostCallout
                       value={entry.value}
@@ -174,12 +183,12 @@ const CloudAccountOverviewCard = ({ accountId, accountName, cloudProvider, summa
         </Grid>
         <Grid item md={3} sm={4} xs={4}>
           <Box sx={{ ...PANEL_SX, background: 'var(--ds-pink-100)', border: '1px solid var(--ds-red-200)' }}>
-            <CountBlock label='Alerts (last 7 days)' value={summary?.alertCount || 0} loading={loading} />
+            <CountBlock label='Alerts (last 7 days)' value={summary?.alertCount} loading={loading} />
           </Box>
         </Grid>
         <Grid item md={2} sm={4} xs={4}>
           <ClusterPotentialSaving
-            savingPotentialSummary={{ yearly_recommendation_saving: (summary?.estimatedSavings || 0) * 12 }}
+            savingPotentialSummary={summary ? { yearly_recommendation_saving: summary.estimatedSavings * 12 } : {}}
             loading={loading}
           />
         </Grid>

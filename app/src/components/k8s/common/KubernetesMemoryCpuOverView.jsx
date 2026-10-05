@@ -642,7 +642,6 @@ const KubernetesMemoryCpuOverView = ({
               height: '100%',
               boxSizing: 'border-box',
               flexShrink: 0,
-              position: 'relative',
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'stretch',
