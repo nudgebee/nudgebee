@@ -59,6 +59,7 @@ import { ds } from 'src/utils/colors';
 
 // Extracted components (lightweight, always visible)
 import { TriggerWarningMessage, ExecutionStatusBar } from './components';
+import type { PendingApproval } from './components/ExecutionStatusBar';
 import Loader from '@shared/Loader';
 import { createWorkflowCreateRequest, createWorkflowUpdateRequest, prepareWorkflowForSave, workflowTagsToMap } from './utils/workflowApiUtils';
 import { convertWorkflowToReactFlow } from './utils/workflowLayoutEngine';
@@ -1419,6 +1420,8 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   const dryRunAwaitCancelsRef = useRef<Set<() => void>>(new Set());
   const dryRunIdRef = useRef<string | null>(null);
   const dryRunExecutionIdRef = useRef<string | null>(null);
+  // Dry runs don't paint the canvas, so their pending approvals come straight from the poll.
+  const [dryRunPendingApprovals, setDryRunPendingApprovals] = useState<PendingApproval[]>([]);
   const [dryRunResult, setDryRunResult] = useState<any>(null);
   const [showDryRunModal, setShowDryRunModal] = useState(false);
 
@@ -2673,6 +2676,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           }
           dryRunIdRef.current = null;
           dryRunExecutionIdRef.current = null;
+          setDryRunPendingApprovals([]);
           setIsDryRunning(false);
           snackbar.error('Dry run timed out');
           return;
@@ -2683,7 +2687,17 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           if (execution === null || execution === undefined) {
             return;
           }
+          const pending: PendingApproval[] = [];
+          (execution.tasks || []).forEach((t: any) => {
+            const taskConfig = nodesRef.current.find((n) => (n.data?.taskConfig?.id || n.id) === t.id)?.data?.taskConfig;
+            const isApproval = t.type === 'core.approval' || taskConfig?.type === 'core.approval';
+            if (isApproval && String(t.status ?? '').toUpperCase() === 'SCHEDULED') {
+              pending.push({ taskId: t.id, options: resolveApprovalOptions(t.input, taskConfig?.config) });
+            }
+          });
+          setDryRunPendingApprovals(pending);
           if (terminalStatuses.includes(execution.status)) {
+            setDryRunPendingApprovals([]);
             if (dryRunPollingRef.current !== null) {
               clearInterval(dryRunPollingRef.current);
               dryRunPollingRef.current = null;
@@ -3208,14 +3222,17 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   // Submit an approval decision for a pending core.approval task in the active run
   const handleCompleteApproval = useCallback(
     async (taskId: string, status: string, comments?: string) => {
-      const execId = currentExecutionIdRef.current;
-      if (!execId || !workflowId || !accountId || !taskId) return;
+      // A dry run is its own Temporal workflow, addressed by its dry-run id.
+      const isDryRun = !!dryRunExecutionIdRef.current;
+      const execId = isDryRun ? dryRunExecutionIdRef.current : currentExecutionIdRef.current;
+      const approvalWorkflowId = isDryRun ? dryRunIdRef.current : workflowId;
+      if (!execId || !approvalWorkflowId || !accountId || !taskId) return;
       const loadingKey = `${taskId}:${status}`;
       try {
         setApprovalLoading(loadingKey);
         const response: any = await apiWorkflow.completeApproval({
           account_id: accountId,
-          workflow_id: workflowId,
+          workflow_id: approvalWorkflowId,
           execution_id: execId,
           task_id: taskId,
           status,
@@ -4243,23 +4260,28 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
 
                       {/* Execution Status Bar - Show during manual run; surfaces approval prompt + buttons */}
                       <ExecutionStatusBar
-                        visible={isTestRunning}
+                        visible={isTestRunning || (isDryRunning && dryRunPendingApprovals.length > 0)}
+                        label={isDryRunning ? 'Dry run in progress...' : undefined}
                         completedTasks={
                           nodes.filter((n) => n.type === 'action' && (n.data.executionStatus === 'COMPLETED' || n.data.executionStatus === 'FAILED'))
                             .length
                         }
-                        totalTasks={nodes.filter((n) => n.type === 'action').length}
-                        pendingApprovals={nodes
-                          .filter(
-                            (n) =>
-                              n.type === 'action' &&
-                              n.data.taskConfig?.type === 'core.approval' &&
-                              String(n.data.executionStatus ?? '').toUpperCase() === 'SCHEDULED'
-                          )
-                          .map((n) => ({
-                            taskId: n.data.taskConfig.id || n.id,
-                            options: resolveApprovalOptions(n.data.executionInput, n.data.taskConfig?.config),
-                          }))}
+                        totalTasks={isDryRunning ? 0 : nodes.filter((n) => n.type === 'action').length}
+                        pendingApprovals={
+                          isDryRunning
+                            ? dryRunPendingApprovals
+                            : nodes
+                                .filter(
+                                  (n) =>
+                                    n.type === 'action' &&
+                                    n.data.taskConfig?.type === 'core.approval' &&
+                                    String(n.data.executionStatus ?? '').toUpperCase() === 'SCHEDULED'
+                                )
+                                .map((n) => ({
+                                  taskId: n.data.taskConfig.id || n.id,
+                                  options: resolveApprovalOptions(n.data.executionInput, n.data.taskConfig?.config),
+                                }))
+                        }
                         onApprove={handleCompleteApproval}
                         approvalLoading={approvalLoading}
                       />

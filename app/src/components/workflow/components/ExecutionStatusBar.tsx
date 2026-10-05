@@ -17,6 +17,7 @@ interface ExecutionStatusBarProps {
   onApprove?: (taskId: string, status: string, comments?: string) => Promise<void> | void;
   approvalLoading?: string | null; // value: `${taskId}:${status}`
   top?: number | string;
+  label?: string;
 }
 
 const ExecutionStatusBar: React.FC<ExecutionStatusBarProps> = ({
@@ -27,6 +28,7 @@ const ExecutionStatusBar: React.FC<ExecutionStatusBarProps> = ({
   onApprove,
   approvalLoading = null,
   top = 80,
+  label = 'Manual run in progress...',
 }) => {
   const [commentsByTask, setCommentsByTask] = useState<Record<string, string>>({});
 
@@ -70,7 +72,7 @@ const ExecutionStatusBar: React.FC<ExecutionStatusBarProps> = ({
           variant='body2'
           sx={{ fontWeight: 'var(--ds-font-weight-medium)', color: hasPendingApproval ? 'var(--ds-amber-400)' : 'var(--ds-blue-600)' }}
         >
-          Manual run in progress...
+          {label}
         </Typography>
         {totalTasks > 0 && (
           <Typography variant='caption' sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-caption)' }}>
