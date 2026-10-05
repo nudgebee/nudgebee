@@ -2532,7 +2532,7 @@ func (a *cloudAzureAlertRuleAction) AutoExecute(ctx playbooks.PlaybookActionCont
 
 	cmd := fmt.Sprintf("az resource show --ids '%s' --output json", alertRule)
 
-	resp, err := ExecuteCli(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), CloudExecuteCliCommandRequest{
+	resp, err := executeStaticConfigCli(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), CloudExecuteCliCommandRequest{
 		AccountID: accountId,
 		Command:   cmd,
 	})
@@ -3121,7 +3121,7 @@ func (a *cloudAzureDCRInfoAction) AutoExecute(ctx playbooks.PlaybookActionContex
 		targetResource,
 	)
 
-	assocResp, err := ExecuteCli(reqCtx, CloudExecuteCliCommandRequest{
+	assocResp, err := executeStaticConfigCli(reqCtx, CloudExecuteCliCommandRequest{
 		AccountID: accountId,
 		Command:   assocCmd,
 	})
@@ -3172,7 +3172,7 @@ func (a *cloudAzureDCRInfoAction) AutoExecute(ctx playbooks.PlaybookActionContex
 
 		// Fetch DCR details
 		dcrCmd := fmt.Sprintf("az rest --method get --url 'https://management.azure.com%s?api-version=2022-06-01' --output json", dcrID)
-		dcrResp, err := ExecuteCli(reqCtx, CloudExecuteCliCommandRequest{
+		dcrResp, err := executeStaticConfigCli(reqCtx, CloudExecuteCliCommandRequest{
 			AccountID: accountId,
 			Command:   dcrCmd,
 		})

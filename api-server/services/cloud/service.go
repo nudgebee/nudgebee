@@ -1,7 +1,9 @@
 package cloud
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -137,6 +139,77 @@ func ExecuteCliWithRetry(ctx *security.RequestContext, cloudCliRequest CloudExec
 
 	// This shouldn't be reached, but handle it just in case
 	return data, fmt.Errorf("ExecuteCli failed after %d attempts: %v", maxRetries+1, lastErr)
+}
+
+const (
+	staticConfigCliCacheNamespace = "cloud_static_config_cli"
+	// staticConfigCliTTL is how long a definition edited in the cloud can still
+	// show its previous version on new events.
+	staticConfigCliTTL = 30 * time.Minute
+	// staticConfigCliMaxBytes keeps one oversized output out of the in-memory
+	// store, whose size cap is shared by every namespace.
+	staticConfigCliMaxBytes = 64 * 1024
+)
+
+func init() {
+	common.CacheCreateNamespace(staticConfigCliCacheNamespace, common.CacheNamespaceWithExpiration(staticConfigCliTTL))
+}
+
+// Replaced in tests.
+var (
+	staticConfigCliNow  = time.Now
+	staticConfigCliExec = ExecuteCli
+)
+
+type staticConfigCliEntry struct {
+	FetchedAt time.Time `json:"fetched_at"`
+	Data      string    `json:"data"`
+}
+
+func staticConfigCliCacheKey(tenantId, accountId, command string) string {
+	sum := sha256.Sum256([]byte(tenantId + "\x00" + accountId + "\x00" + command))
+	return hex.EncodeToString(sum[:])
+}
+
+// executeStaticConfigCli is ExecuteCli for read-only commands that return a
+// definition rather than a state: an alert rule, a data collection rule. Alert
+// enrichment asks for these on every firing, and an alert that fires every few
+// minutes was fetching the same definition from the cloud each time. A recent
+// successful output for the same tenant, account and command is returned instead.
+//
+// Do not route a command here if its answer depends on when it runs (health,
+// currently firing alerts, anything with a time range). On a hit only the "data"
+// field of the response is returned.
+func executeStaticConfigCli(ctx *security.RequestContext, cloudCliRequest CloudExecuteCliCommandRequest) (map[string]any, error) {
+	key := staticConfigCliCacheKey(ctx.GetSecurityContext().GetTenantId(), cloudCliRequest.AccountID, cloudCliRequest.Command)
+
+	if raw, ok := common.CacheGet(staticConfigCliCacheNamespace, key); ok {
+		var entry staticConfigCliEntry
+		// The age is checked here rather than left to the store: the in-memory
+		// provider applies one life window to all namespaces, so it cannot be
+		// relied on to expire this one on time.
+		if err := common.UnmarshalJson(raw, &entry); err == nil && staticConfigCliNow().Sub(entry.FetchedAt) < staticConfigCliTTL {
+			return map[string]any{"data": entry.Data}, nil
+		}
+	}
+
+	resp, err := staticConfigCliExec(ctx, cloudCliRequest)
+	if err != nil {
+		return resp, err
+	}
+
+	data, ok := resp["data"].(string)
+	if !ok || strings.TrimSpace(data) == "" || len(data) > staticConfigCliMaxBytes {
+		return resp, nil
+	}
+	entry, err := common.MarshalJson(staticConfigCliEntry{FetchedAt: staticConfigCliNow(), Data: data})
+	if err != nil {
+		return resp, nil
+	}
+	if err := common.CacheSet(staticConfigCliCacheNamespace, key, entry); err != nil {
+		ctx.GetLogger().Warn("cloud: failed to cache static config cli output", "error", err)
+	}
+	return resp, nil
 }
 
 // truncateForLog returns s capped to maxLen runes for safe inclusion in log fields.
