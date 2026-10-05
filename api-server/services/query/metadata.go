@@ -11201,6 +11201,10 @@ var table_metadata = map[string]TableDefinition{
 		Name:                "cloud_resource_metrics_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
+		// cloud_account_id and tenant_id stay uuid: every caller filters on
+		// both plus a time window, and a text cast hides them from the
+		// (tenant_id, cloud_account_id, timestamp) index on a multi-GB table
+		// (#39743). The select list still returns them as text.
 		Def: `(
 			SELECT
 				crm.id::text as id,
@@ -11208,8 +11212,8 @@ var table_metadata = map[string]TableDefinition{
 				crm.value,
 				crm.timestamp,
 				crm.cloud_resource_id::text as cloud_resource_id,
-				crm.cloud_account_id::text as cloud_account_id,
-				crm.tenant_id::text as tenant_id,
+				crm.cloud_account_id,
+				crm.tenant_id,
 				cr.name as resource_name,
 				cr.resourse_id as resource_id,
 				cr.service_name as service_name
