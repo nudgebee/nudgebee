@@ -523,6 +523,23 @@ func handleCloudExecuteCommand(actionPayload *ActionRequest, c *gin.Context, ctx
 			c.JSON(403, []common.Error{{Message: "cannot execute commands on read-only account"}})
 			return
 		}
+
+		// The linked recommendation's status is updated by id below, so it must
+		// belong to the account the commands run on; otherwise a run on one
+		// account would mark another account's recommendation resolved.
+		if request.RecommendationId != "" {
+			var owned bool
+			dbErr = databaseManager.Db.Get(&owned, `SELECT EXISTS (SELECT 1 FROM recommendation WHERE id = $1 AND cloud_account_id = $2 AND tenant_id = $3)`, request.RecommendationId, request.AccountId, ctx.GetSecurityContext().GetTenantId())
+			if dbErr != nil {
+				slog.Error("cloud_execute_command: failed to check recommendation account", "error", dbErr)
+				c.JSON(500, []common.Error{{Message: "internal server error"}})
+				return
+			}
+			if !owned {
+				c.JSON(404, []common.Error{{Message: "recommendation not found in this account"}})
+				return
+			}
+		}
 	}
 
 	// Upsert an InProgress resolution record before executing, if a recommendation is linked.
