@@ -61,20 +61,20 @@ type eventFacts struct {
 var remediationNow = func() time.Time { return time.Now().UTC() }
 
 // buildRemediationFacts renders the structured facts as markdown sections appended to the
-// investigation. Returns "" when nothing could be read.
+// investigation, and the event facts they were built from. Returns "" when nothing could be read.
 // Facts only; reasoning from them is the prompt's job, so it generalises past any rule.
-func buildRemediationFacts(ctx *security.RequestContext, accountId, eventId string) string {
+func buildRemediationFacts(ctx *security.RequestContext, accountId, eventId string) (string, *eventFacts) {
 	if strings.TrimSpace(eventId) == "" || strings.TrimSpace(accountId) == "" {
-		return ""
+		return "", nil
 	}
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		return ""
+		return "", nil
 	}
 
 	ev := loadEventFacts(ctx, dbms, accountId, eventId)
 	if ev == nil {
-		return ""
+		return "", nil
 	}
 
 	now := remediationNow()
@@ -87,7 +87,7 @@ func buildRemediationFacts(ctx *security.RequestContext, accountId, eventId stri
 		config,
 		attemptsSection(ctx, dbms, accountId, eventId, ev.SubjectNS, now),
 	}
-	return withinBudget(nonEmpty(sections))
+	return withinBudget(nonEmpty(sections)), ev
 }
 
 // withinBudget fits the sections to factsBudget by trimming the configuration section, which is the

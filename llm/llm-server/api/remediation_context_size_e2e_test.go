@@ -40,7 +40,7 @@ func TestFactsBlockSizes(t *testing.T) {
 		if err := rows.Scan(&eventId, &accountId); err != nil {
 			continue
 		}
-		facts := buildRemediationFacts(ctx, accountId, eventId)
+		facts, _ := buildRemediationFacts(ctx, accountId, eventId)
 		if facts == "" {
 			empty++
 			continue

@@ -446,6 +446,8 @@ type RemediationPlan struct {
 	Actions    []RemediationAction     `json:"actions"`
 	// OptionalHardening lists improvements the incident does not require. Never ranked with actions.
 	OptionalHardening []HardeningItem `json:"optional_hardening,omitempty"`
+	// OutcomeCheck reads the incident's own signal after the last step (remediation_outcome.go).
+	OutcomeCheck *OutcomeCheck `json:"outcome_check,omitempty"`
 	// Dropped lists alert-rule actions the server removed and why. Not rendered.
 	Dropped []DroppedAction `json:"dropped,omitempty"`
 }
@@ -689,7 +691,8 @@ func generateRemediationPlan(ctx *security.RequestContext, request RemediationGe
 	// The rest of what a runnable, non-repeating plan needs and the prose does not carry: how long
 	// this has been going on, exactly what to act on, the target's current configuration, and what
 	// has already been tried. See remediation_context.go.
-	if facts := buildRemediationFacts(ctx, request.AccountId, request.EventId); facts != "" {
+	facts, ev := buildRemediationFacts(ctx, request.AccountId, request.EventId)
+	if facts != "" {
 		preamble = append(preamble, facts)
 	}
 	trace.HumanMessage = strings.Join(append(preamble, evidence), "\n\n")
@@ -711,6 +714,10 @@ func generateRemediationPlan(ctx *security.RequestContext, request RemediationGe
 	plan = repairAgainstTargetState(ctx, request, llm, systemPrompt, plan, &trace, artifacts)
 	for _, d := range plan.Dropped {
 		ctx.GetLogger().Info("remediation_generate: dropped alert-rule action", "action", d.Action, "reason", d.Reason)
+	}
+	// Last, so it describes the plan that is returned.
+	if len(plan.Actions) > 0 {
+		plan.OutcomeCheck = deriveOutcomeCheck(ev, tools.GetCloudProviderForAccount(request.AccountId))
 	}
 	return plan, trace, nil
 }
@@ -806,10 +813,14 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 
 // planCommandRejection returns why a command may not run, or "" when it is the stored plan's command for
 // its slot. A verify must name its own action's execute, so its result lands on the right attempt.
-func planCommandRejection(ctx *security.RequestContext, request RemediationExecuteRequest) string {
-	return planCommandRejectionFor(request, func() (RemediationPlan, bool) {
-		return loadSavedPlan(ctx, request.AccountId, request.EventId)
+// It also returns the plan it read, so the caller does not read it again.
+func planCommandRejection(ctx *security.RequestContext, request RemediationExecuteRequest) (plan RemediationPlan, reason string) {
+	reason = planCommandRejectionFor(request, func() (RemediationPlan, bool) {
+		var ok bool
+		plan, ok = loadSavedPlan(ctx, request.AccountId, request.EventId)
+		return plan, ok
 	})
+	return plan, reason
 }
 
 // planCommandRejectionFor is planCommandRejection with the stored-plan read passed in.
@@ -826,6 +837,12 @@ func planCommandRejectionFor(request RemediationExecuteRequest, loadPlan func() 
 			return ""
 		}
 		return "this step is not part of the event's remediation plan"
+	}
+	if isOutcomeSlot(request.Slot) {
+		if plan.OutcomeCheck != nil && strings.TrimSpace(plan.OutcomeCheck.Command) == strings.TrimSpace(request.Command) {
+			return ""
+		}
+		return "this is not the plan's outcome check"
 	}
 	if planHasCommand(plan, request.Slot, request.Command, request.ExecuteCommand) {
 		return ""
@@ -978,7 +995,8 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 
 	// Only a command from this event's stored plan runs. Generation is grounded server-side; accepting
 	// any command string here would let execution drift from what was generated and reviewed.
-	if reason := planCommandRejection(ctx, request); reason != "" {
+	plan, reason := planCommandRejection(ctx, request)
+	if reason != "" {
 		ctx.GetLogger().Warn("remediation_execute: command is not in the event's plan", "command", command, "reason", reason)
 		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: " + reason}}))
 		return
@@ -1122,6 +1140,14 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 
 	// Audit covers every command regardless of slot — that is the record of what was run.
 	writeRemediationAudit(ctx, request.AccountId, command, registeredToolName, response.Success, audit.EventActionCreate, "remediation-panel")
+	// The outcome check observes the incident; it is recorded on the latest attempt, not as one.
+	// planCommandRejection passed, so the plan has this outcome check.
+	if isOutcomeSlot(request.Slot) {
+		outcome := newOutcomeResult(plan.OutcomeCheck, response, exitCodeReported)
+		recordOutcome(ctx, request.EventId, outcome)
+		c.JSON(200, buildApiResponse(outcome, nil))
+		return
+	}
 	// A resolution says how the event was acted on, so only the state-changing execute command earns
 	// one. A verify observes and a rollback reverses; filing those as resolutions counted one
 	// remediation attempt three times and listed an undo as though it resolved the event.
@@ -1185,6 +1211,11 @@ func remediationCommandRejection(command string) string {
 // isVerifySlot reports whether this run is an action's verify command.
 func isVerifySlot(slot string) bool {
 	return strings.EqualFold(strings.TrimSpace(slot), RemediationSlotVerify)
+}
+
+// isOutcomeSlot reports whether this run is the plan's outcome check.
+func isOutcomeSlot(slot string) bool {
+	return strings.EqualFold(strings.TrimSpace(slot), RemediationSlotOutcome)
 }
 
 // verificationPassed decides what a verify run proved. Three-valued on purpose:

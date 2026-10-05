@@ -1,6 +1,17 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import apiKubernetes from '@api1/kubernetes';
-import { ActionCard, OptionalHardening, RequiredChangeDetails, afterOf, noActionsText, runnableActionCount } from '../RemediationPanel';
+import {
+  ActionCard,
+  OutcomeCheck,
+  latestOutcome,
+  OptionalHardening,
+  RequiredChangeDetails,
+  afterOf,
+  noActionsText,
+  runnableActionCount,
+} from '../RemediationPanel';
+
+jest.mock('@api1/kubernetes', () => ({ __esModule: true, default: { executeRemediationCommand: jest.fn() } }));
 
 // A fix no command applies (a chart value, a node pool) is shown as the change to make, not as the
 // event's code diff.
@@ -226,5 +237,76 @@ describe('ActionCard delivery', () => {
     );
     expect(screen.queryByTestId('remediation-mark-done-2')).toBeNull();
     expect(screen.getByText(/Applied/)).toBeInTheDocument();
+  });
+});
+
+describe('OutcomeCheck', () => {
+  const check = {
+    command: 'kubectl rollout status deployment/web -n demo --timeout=90s',
+    describes: 'deployment web in demo has all its pods updated and ready',
+  };
+
+  it('hands the fresh result up, and shows why a check could not run', async () => {
+    const onChecked = jest.fn();
+    const res = { passed: true, command: check.command, at: '2026-10-05T10:05:00Z' };
+    apiKubernetes.executeRemediationCommand
+      .mockResolvedValueOnce(res)
+      .mockRejectedValueOnce(new Error("remediation: this is not the plan's outcome check"));
+    render(<OutcomeCheck check={check} accountId='acc' eventId='evt' canRun lastOutcome={null} onChecked={onChecked} />);
+
+    fireEvent.click(screen.getByTestId('remediation-outcome-run'));
+    await waitFor(() => expect(onChecked).toHaveBeenCalledWith(res));
+    expect(apiKubernetes.executeRemediationCommand).toHaveBeenCalledWith('acc', check.command, 'evt', undefined, 'outcome');
+
+    fireEvent.click(screen.getByTestId('remediation-outcome-run'));
+    expect(await screen.findByText("remediation: this is not the plan's outcome check")).toBeInTheDocument();
+    expect(onChecked).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the last recorded outcome of this check, three-valued', () => {
+    const card = (outcome) => (
+      <OutcomeCheck check={check} accountId='acc' eventId='evt' canRun lastOutcome={{ command: check.command, ...outcome }} onChecked={() => {}} />
+    );
+    const { rerender } = render(card({ passed: false, at: '2026-10-05T10:00:00Z', output: 'x'.repeat(250) }));
+    expect(screen.getByText('Pods not ready')).toBeInTheDocument();
+    expect(screen.getByText(/x{200}\.\.\./)).toBeInTheDocument();
+    expect(screen.getByText(`Checks that ${check.describes}.`)).toBeInTheDocument();
+    rerender(card({ passed: true, at: '2026-10-05T10:05:00Z' }));
+    expect(screen.getByText('Pods ready')).toBeInTheDocument();
+    rerender(card({ passed: null, at: '2026-10-05T10:06:00Z' }));
+    expect(screen.getByText('Could not tell')).toBeInTheDocument();
+    rerender(card({ passed: true, at: '2026-10-05T10:07:00Z', command: 'kubectl rollout status deployment/old -n demo --timeout=90s' }));
+    expect(screen.queryByText('Pods ready')).not.toBeInTheDocument();
+    expect(screen.getByTestId('remediation-outcome-run')).toHaveTextContent('Check now');
+  });
+
+  it('labels an alarm check by the alarm state', () => {
+    const alarm = { command: 'aws cloudwatch describe-alarms --alarm-names a', expect: 'OK', describes: 'CloudWatch alarm a is back to OK' };
+    const card = (passed) => (
+      <OutcomeCheck
+        check={alarm}
+        accountId='acc'
+        eventId='evt'
+        canRun
+        lastOutcome={{ command: alarm.command, passed, at: '2026-10-05T10:00:00Z' }}
+        onChecked={() => {}}
+      />
+    );
+    const { rerender } = render(card(true));
+    expect(screen.getByText('Alarm OK')).toBeInTheDocument();
+    rerender(card(false));
+    expect(screen.getByText('Alarm firing')).toBeInTheDocument();
+    rerender(card(null));
+    expect(screen.getByText('Could not tell')).toBeInTheDocument();
+  });
+
+  it('restores the newest outcome across attempts', () => {
+    const rows = [
+      { type: 'CommandExecution', data: { outcome: { passed: false, at: '2026-10-05T10:00:00Z' } } },
+      { type: 'CommandExecution', data: { outcome: { passed: true, at: '2026-10-05T10:09:00Z' } } },
+      { type: 'PullRequest', data: { outcome: { passed: false, at: '2026-10-05T11:00:00Z' } } },
+    ];
+    expect(latestOutcome(rows)).toEqual({ passed: true, at: '2026-10-05T10:09:00Z' });
+    expect(latestOutcome([])).toBeNull();
   });
 });

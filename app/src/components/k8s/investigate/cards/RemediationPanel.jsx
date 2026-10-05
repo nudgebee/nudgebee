@@ -18,6 +18,7 @@ import { reportContainsInvestigation } from '@utils/investigationReport';
 import AlertRuleChangeAction from './AlertRuleChangeAction';
 import { buildAlertRuleContext, isAlertRuleChangeApplied } from './remediationAlertRule';
 import { formatClockCompact } from '@shared/format/Datetime';
+import { truncateText } from '@utils/common';
 
 const STATUS_META = {
   SUCCESS: { text: 'Success', tone: 'success' },
@@ -400,6 +401,110 @@ RequiredChangeDetails.propTypes = {
   change: PropTypes.shape({ where: PropTypes.string, target: PropTypes.string, change: PropTypes.string }).isRequired,
 };
 
+// Names what was checked, not "Resolved": ready pods or an OK alarm do not prove the incident is over.
+const outcomeMeta = (passed, isAlarm) =>
+  passed === true
+    ? { tone: 'success', text: isAlarm ? 'Alarm OK' : 'Pods ready' }
+    : passed === false
+    ? { tone: 'critical', text: isAlarm ? 'Alarm firing' : 'Pods not ready' }
+    : { tone: 'neutral', text: 'Could not tell' };
+
+// OutcomeCheck reads the incident's own signal (rollout, alarm state) after the fix. The parent owns the
+// outcome: a run hands its result up through onChecked.
+export function OutcomeCheck({ check, accountId, eventId, canRun, lastOutcome, onChecked }) {
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState('');
+  const command = trimmedString(check?.command);
+  if (!command) return null;
+  // A verdict from a check the plan no longer carries (regenerated since) says nothing about this one.
+  const outcome = lastOutcome && trimmedString(lastOutcome.command) === command ? lastOutcome : null;
+
+  const run = async () => {
+    setRunning(true);
+    setError('');
+    try {
+      const res = await apiKubernetes.executeRemediationCommand(accountId, command, eventId, undefined, 'outcome');
+      if (res && typeof res === 'object') onChecked(res);
+      else setError('No response from server.');
+    } catch (e) {
+      setError(e?.message || 'The check failed to run.');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const meta = outcome ? outcomeMeta(outcome.passed, Boolean(trimmedString(check?.expect))) : null;
+  return (
+    <Card
+      variant='outlined'
+      tone='neutral'
+      size='sm'
+      elevation='flat'
+      data-testid='remediation-outcome-check'
+      header={
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-2)' }}>
+          <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: 'var(--ds-text-small)' }}>
+            Did it work?
+          </Box>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+            {meta ? <Label tone={meta.tone} size='sm' text={meta.text} /> : null}
+            <Tooltip title={!canRun ? 'Requires write access' : 'Check the incident now'} placement='bottom'>
+              <span>
+                <Button
+                  tone='secondary'
+                  size='xs'
+                  onClick={run}
+                  loading={running}
+                  disabled={!canRun || running}
+                  data-testid='remediation-outcome-run'
+                >
+                  {outcome ? 'Check again' : 'Check now'}
+                </Button>
+              </span>
+            </Tooltip>
+          </Box>
+        </Box>
+      }
+    >
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+        <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>{`Checks that ${
+          trimmedString(check?.describes) || 'the incident has ended'
+        }.`}</Box>
+        <CodeBlock code={command} language='bash' tone='dark' wrap copyToast='Command copied' />
+        {outcome?.at ? (
+          <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>{`Last checked ${formatAppliedAt(outcome.at)}${
+            trimmedString(outcome.output) ? `: ${truncateText(trimmedString(outcome.output), 200)}` : ''
+          }`}</Box>
+        ) : null}
+        {error ? (
+          <Card variant='tinted' tone='danger' size='sm' elevation='flat'>
+            <Box sx={{ fontSize: 'var(--ds-text-small)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{error}</Box>
+          </Card>
+        ) : null}
+      </Box>
+    </Card>
+  );
+}
+
+OutcomeCheck.propTypes = {
+  check: PropTypes.shape({ command: PropTypes.string, expect: PropTypes.string, describes: PropTypes.string }),
+  accountId: PropTypes.string.isRequired,
+  eventId: PropTypes.string,
+  canRun: PropTypes.bool.isRequired,
+  lastOutcome: PropTypes.object,
+  onChecked: PropTypes.func.isRequired,
+};
+
+// latestOutcome is the most recent outcome recorded on any attempt.
+export function latestOutcome(rows) {
+  let best = null;
+  (rows || []).forEach((r) => {
+    const o = r?.type === 'CommandExecution' ? r?.data?.outcome : null;
+    if (o && o.at && (!best || o.at > best.at)) best = o;
+  });
+  return best;
+}
+
 // Improvements the incident does not need. Kept apart from the actions so they never read as its fix.
 export function OptionalHardening({ items }) {
   return (
@@ -772,6 +877,7 @@ const RemediationPanel = ({ accountId, eventId, nbStatus, savedPlan, savedPlanRe
   // Successfully-executed commands for this event, keyed by command → applied timestamp. Lets the panel
   // show "already applied" and turn Run into Re-run on reload.
   const [executedCommands, setExecutedCommands] = useState({});
+  const [lastOutcome, setLastOutcome] = useState(null);
   const [initializing, setInitializing] = useState(true);
   // The code fix behind a command-less fix action ({files, diff, prUrl}), taken from the log-analysis
   // record rather than the plan, so the diff shown is always the real one.
@@ -816,6 +922,7 @@ const RemediationPanel = ({ accountId, eventId, nbStatus, savedPlan, savedPlanRe
         }
       });
       setExecutedCommands(map);
+      setLastOutcome(latestOutcome(rows));
     } catch (err) {
       console.error('RemediationPanel: failed to load executions', err);
     }
@@ -1089,6 +1196,16 @@ const RemediationPanel = ({ accountId, eventId, nbStatus, savedPlan, savedPlanRe
         </>
       )}
 
+      {plan.outcome_check ? (
+        <OutcomeCheck
+          check={plan.outcome_check}
+          accountId={accountId}
+          eventId={eventId}
+          canRun={canRun}
+          lastOutcome={lastOutcome}
+          onChecked={setLastOutcome}
+        />
+      ) : null}
       {hardening.length ? <OptionalHardening items={hardening} /> : null}
     </Box>
   );
