@@ -1053,6 +1053,43 @@ function filterDemoEvents(events: any[], query: any): any[] {
   });
 }
 
+// The overview renders two tiles per cluster that both need this rollup
+// (ClusterViewCard for MTD / last month / forecast, KubernetesSaving for the
+// savings potential). Share one request per account while it is pending so the
+// page sends N calls for N clusters, not 2N. Nothing is cached past settle.
+const yearlySavingInFlight = new Map<string, Promise<any>>();
+
+async function fetchK8sClusterYearlySaving(accountId: string) {
+  try {
+    const currentDate = new Date();
+    const lastMonthStart = new Date();
+    lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
+    const response = await queryGraphQL(LIST_k8_CLUSTER_YEARLY_SAVING, 'listK8ClusterYearlySaving', {
+      accountId1: accountId,
+      startDate: getStartOfMonth(currentDate),
+      endDate: getEndOfMonth(currentDate),
+      yearStartDate: getStartOfYear(currentDate),
+      yearEndDate: getEndOfYear(currentDate),
+      lmStartDate: getStartOfMonth(lastMonthStart),
+      lmEndDate: getEndOfMonth(lastMonthStart),
+    });
+    return {
+      data: {
+        yearly_recommendation_saving: (response?.data?.data?.recommendation_aggregate?.rows?.[0].sum_estimated_savings || 0) * 12,
+        current_year_projected_spend: getExpectedYearlyExpense(
+          getBudgetExpectedMonthlyExpense(response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0),
+          response?.data?.data?.yearly_spends_aggregate?.rows?.[0]?.spend_amount || 0
+        ),
+        current_month_projected_spend: getBudgetExpectedMonthlyExpense(response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0),
+        previous_cost: response?.data?.data?.lm_spends_aggregate?.rows?.[0]?.spend_amount || 0,
+        mtd_cost: response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0,
+      },
+    };
+  } catch (error) {
+    return error;
+  }
+}
+
 const apiKubernetes = {
   async getLatestVersions() {
     try {
@@ -1345,35 +1382,12 @@ const apiKubernetes = {
   },
   async listk8ClustersYearlySaving(accountId: string) {
     if (accountId === 'demo') return null;
-    try {
-      const currentDate = new Date();
-      const lastMonthStart = new Date();
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
-      const response = await queryGraphQL(LIST_k8_CLUSTER_YEARLY_SAVING, 'listK8ClusterYearlySaving', {
-        accountId1: accountId,
-        startDate: getStartOfMonth(currentDate),
-        endDate: getEndOfMonth(currentDate),
-        yearStartDate: getStartOfYear(currentDate),
-        yearEndDate: getEndOfYear(currentDate),
-        lmStartDate: getStartOfMonth(lastMonthStart),
-        lmEndDate: getEndOfMonth(lastMonthStart),
-      });
-      return {
-        data: {
-          yearly_recommendation_saving: (response?.data?.data?.recommendation_aggregate?.rows?.[0].sum_estimated_savings || 0) * 12,
-          current_year_projected_spend: getExpectedYearlyExpense(
-            getBudgetExpectedMonthlyExpense(response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0),
-            response?.data?.data?.yearly_spends_aggregate?.rows?.[0]?.spend_amount || 0
-          ),
-          current_month_projected_spend: getBudgetExpectedMonthlyExpense(response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0),
-          previous_cost: response?.data?.data?.lm_spends_aggregate?.rows?.[0]?.spend_amount || 0,
-          mtd_cost: response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0,
-        },
-      };
-    } catch (error) {
-      console.log('Your Error is', error);
-      return error;
+    let pending = yearlySavingInFlight.get(accountId);
+    if (!pending) {
+      pending = fetchK8sClusterYearlySaving(accountId).finally(() => yearlySavingInFlight.delete(accountId));
+      yearlySavingInFlight.set(accountId, pending);
     }
+    return pending;
   },
 
   async getk8ClusterData(accountId: string) {
