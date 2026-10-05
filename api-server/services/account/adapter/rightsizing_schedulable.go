@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"fmt"
+	"math"
 	"nudgebee/services/internal/database"
 )
 
@@ -188,6 +189,14 @@ func humanBytes(b float64) string {
 	return fmt.Sprintf("%v", applyMemoryUnit(b))
 }
 
+// wholeMi rounds a byte count down to whole Mi. A refusal quotes the most that
+// would fit in this unit — the one both forms take — so the figure itself is a
+// value that passes. humanBytes rounds to the nearest tenth of a Gi and can read
+// slightly high, which is fine for describing a node and wrong for a ceiling.
+func wholeMi(b float64) int64 {
+	return int64(math.Floor(b / MiB))
+}
+
 // validateSchedulableMemory refuses an apply whose memory request fits on no
 // node in the cluster.
 //
@@ -314,15 +323,28 @@ func checkMemoryHeadroom(
 		// set; this keeps the function total rather than relying on that.
 		return nil, false
 	}
+	// What the containers being changed may ask for: the roomiest node's free
+	// block less what the pod's unchanged containers take out of it.
+	changed := 0.0
+	for _, next := range newRequests {
+		changed += next
+	}
+	advice := "Add capacity"
+	if fits := wholeMi(bestFree - (newTotal - changed)); fits >= 1 {
+		advice = fmt.Sprintf("Lower the request to %dMi or less, or add capacity", fits)
+		if len(newRequests) > 1 {
+			advice = fmt.Sprintf("Lower the requests to %dMi or less in total, or add capacity", fits)
+		}
+	}
 	return fmt.Errorf(
-		"%s needs %s of memory but no node in this cluster has room for it — the largest free block is %s on %s (%s allocatable, %s already reserved by other pods). Lower the request to %s or less, or add capacity",
+		"%s needs %s of memory but no node in this cluster has room for it — the largest free block is %s on %s (%s allocatable, %s already reserved by other pods). %s",
 		target,
 		humanBytes(newTotal),
 		humanBytes(bestFree),
 		best,
 		humanBytes(bestNode.allocatable),
 		humanBytes(bestNode.committed-ownByNode[best]),
-		humanBytes(bestFree),
+		advice,
 	), true
 }
 
@@ -360,11 +382,19 @@ func checkLargestNode(nodes map[string]*nodeMemory, workload string, newRequests
 	if largest == nil || requested <= largest.allocatable {
 		return nil, false
 	}
+	// Stated as a requirement, not as a value that will schedule: below this we
+	// have only ruled out that no node is large enough, not that one has the
+	// room free.
+	advice := fmt.Sprintf("The request has to be %dMi or less to fit a node here; lower it, or add a larger node", wholeMi(largest.allocatable))
+	if len(newRequests) > 1 {
+		advice = fmt.Sprintf("Together the requests have to be %dMi or less to fit a node here; lower them, or add a larger node", wholeMi(largest.allocatable))
+	}
 	return fmt.Errorf(
-		"%s needs %s of memory but no node in this cluster is that large — the largest is %s, with %s allocatable. Lower the request, or add a larger node",
+		"%s needs %s of memory but no node in this cluster is that large — the largest is %s, with %s allocatable. %s",
 		resizeTarget(workload, newRequests),
 		humanBytes(requested),
 		largest.name,
 		humanBytes(largest.allocatable),
+		advice,
 	), true
 }

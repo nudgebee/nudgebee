@@ -1282,6 +1282,16 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 		}
 	}
 
+	// A refusal the adapter can see coming is returned before the attempt is
+	// recorded. Stored as Failed it would be offered for a retry that replays the
+	// same values and is refused again, and it would count as a failed apply. It
+	// is still audited: someone tried to change the cluster and was refused.
+	if err := adapter.PrecheckApply(ctx, adptr, recommendationRequest); err != nil {
+		ctx.GetLogger().Info("event resolution refused before an attempt was recorded", "error", err, "event_id", r.Id)
+		auditEventResolutionApply(ctx, r, recommendationRequest, err)
+		return EventRecommendationApplyResponse{}, err
+	}
+
 	if !found {
 		_, err = dbms.Db.Exec(`INSERT INTO event_resolution (id, created_at, updated_at, event_id, type, data, status, type_reference_id, resolver_type, resolver_id, status_message) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 			resolution.Id, resolutionCreatedAt.Format(time.RFC3339), resolutionCreatedAt.Format(time.RFC3339), resolution.EventId, resolution.Type, resolution.Data, resolution.Status, resolution.TypeReferenceId, resolution.ResolverType, resolution.ResolverId, resolution.StatusMessage)

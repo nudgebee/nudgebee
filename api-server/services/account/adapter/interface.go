@@ -59,6 +59,24 @@ type AccountAdapterContext interface {
 	GetSecurityContext() *security.SecurityContext
 }
 
+// ApplyPrechecker is an adapter that can tell, before anything is recorded or
+// queued, that an apply is certain to be refused.
+type ApplyPrechecker interface {
+	PrecheckApply(ctx AccountAdapterContext, request ApplyRecommendationRequest) error
+}
+
+// PrecheckApply returns the refusal adptr can see coming for request, if it
+// looks for any. Callers run it before they record an attempt: a refusal stored
+// as a failed attempt is offered for a retry that can never succeed, and counts
+// as a failed apply. The adapter still makes the same checks when it applies, so
+// a caller that skips this is refused all the same.
+func PrecheckApply(ctx AccountAdapterContext, adptr AccountAdapter, request ApplyRecommendationRequest) error {
+	if p, ok := adptr.(ApplyPrechecker); ok {
+		return p.PrecheckApply(ctx, request)
+	}
+	return nil
+}
+
 type AccountAdapter interface {
 	ApplyRecommendation(ctx AccountAdapterContext, recommendation ApplyRecommendationRequest, existingRecommendations []models.RecommendationResolution, recommendResolutionId string) (ApplyRecommendationResponse, error)
 	GetRecommendationResolutionStatus(ctx AccountAdapterContext, Recommendation models.Recommendation, resolutionReferenceId string, applyRequestPayload models.Json, resolutionStatusMessage string) (GetRecommendationResolutionStatusResponse, error)
