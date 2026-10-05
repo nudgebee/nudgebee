@@ -221,6 +221,10 @@ const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, ac
   }, [ruleType]);
 
   const handleSubmit = async () => {
+    if (!name.trim()) {
+      snackbar.error('Rule name is required');
+      return;
+    }
     if (!accountId) {
       snackbar.error('Account ID is required to save rules');
       return;
@@ -235,7 +239,6 @@ const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, ac
       snackbar.error('Please specify at least one match criterion');
       return;
     }
-
     setSubmitting(true);
     try {
       // Coerce transient string state ('', '-') back to numbers at submit time.
@@ -291,8 +294,11 @@ const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, ac
         snackbar.error(result?.error || 'Failed to save rule');
       }
     } catch (error) {
-      console.error('Failed to save rule:', error);
-      snackbar.error('Failed to save rule');
+      // Log the message, not the Error object — Next's dev overlay promotes any
+      // console.error(Error) to a blocking runtime-error screen, even though this
+      // is an expected, already-handled validation/save failure (shown below via toast).
+      console.error('Failed to save rule:', error instanceof Error ? error.message : error);
+      snackbar.error(error instanceof Error && error.message ? error.message : 'Failed to save rule');
     } finally {
       setSubmitting(false);
     }
@@ -455,7 +461,7 @@ const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, ac
       <Box p={ds.space[5]} sx={{ maxHeight: '70vh', overflowY: 'auto' }}>
         <BlockWithHeading number={1} heading='Basic Information' isExpandable={false}>
           <Box display='flex' flexDirection='column' gap={ds.space[4]}>
-            <Input label='Rule Name' value={name} onChange={setName} size='sm' placeholder='e.g., Suppress maintenance alerts' />
+            <Input label='Rule Name' value={name} onChange={setName} size='sm' placeholder='e.g., Suppress maintenance alerts' required />
             <Input label='Description' value={description} onChange={setDescription} type='textarea' rows={2} size='sm' />
             <Input
               type='number'

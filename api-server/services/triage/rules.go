@@ -965,13 +965,47 @@ func validateJSONBField(value *string, fieldName string) error {
 	return nil
 }
 
+// validateRegexField checks that a string pointer, if set, compiles as a regex.
+// Matched against matchesRegex at match time — an invalid pattern there silently
+// never matches rather than erroring, so this is the only point an invalid
+// pattern is ever reported back to the caller.
+func validateRegexField(value *string, fieldName string) error {
+	if value == nil || *value == "" {
+		return nil
+	}
+	if _, err := regexp.Compile(*value); err != nil {
+		return &ValidationError{Message: fmt.Sprintf("%s must be a valid regular expression: %s", fieldName, err.Error())}
+	}
+	return nil
+}
+
+// validateNameField checks that a rule name is present and non-blank. The API
+// handler already enforces this for its own entry point, but entry points that
+// call CreateTriageRule/UpdateTriageRule directly (background jobs, migrations,
+// tests) go through neither handler, so it's enforced here too.
+func validateNameField(value *string) error {
+	if value == nil || strings.TrimSpace(*value) == "" {
+		return &ValidationError{Message: "name is required"}
+	}
+	return nil
+}
+
 // CreateTriageRule creates a new triage rule
 func CreateTriageRule(ctx context.Context, db *sqlx.DB, req CreateTriageRuleRequest, cloudAccountID, tenantID, userID string) (*TriageRule, error) {
+	if err := validateNameField(req.Name); err != nil {
+		return nil, err
+	}
 	// Validate JSONB fields before insertion
 	if err := validateJSONBField(req.MatchLabels, "match_labels"); err != nil {
 		return nil, err
 	}
 	if err := validateJSONBField(req.ActionValue, "action_value"); err != nil {
+		return nil, err
+	}
+	if err := validateRegexField(req.MatchAlertname, "match_alertname"); err != nil {
+		return nil, err
+	}
+	if err := validateRegexField(req.MatchService, "match_service"); err != nil {
 		return nil, err
 	}
 
@@ -1616,11 +1650,20 @@ func applyPriorityPinToExistingEvents(ctx context.Context, db *sqlx.DB, rule *Tr
 
 // UpdateTriageRule updates an existing triage rule
 func UpdateTriageRule(ctx context.Context, db *sqlx.DB, req UpdateTriageRuleRequest, cloudAccountID, tenantID, userID string) (*TriageRule, error) {
+	if err := validateNameField(req.Name); err != nil {
+		return nil, err
+	}
 	// Validate JSONB fields before update
 	if err := validateJSONBField(req.MatchLabels, "match_labels"); err != nil {
 		return nil, err
 	}
 	if err := validateJSONBField(req.ActionValue, "action_value"); err != nil {
+		return nil, err
+	}
+	if err := validateRegexField(req.MatchAlertname, "match_alertname"); err != nil {
+		return nil, err
+	}
+	if err := validateRegexField(req.MatchService, "match_service"); err != nil {
 		return nil, err
 	}
 

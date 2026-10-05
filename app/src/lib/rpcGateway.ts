@@ -852,18 +852,20 @@ function genericMessageForStatus(status: number): string {
   return 'Request failed. Please retry.';
 }
 
-// Handles `{message}`, `{errors:[{message}]}`, and `[{message}]` (api-server's
-// common.Error shape) envelopes our Go services emit; degenerate JSON
-// (`{}` / `[]` / `null`) is treated as no-detail so the caller falls through
-// to a per-status generic.
+// Handles `{message}`, `{error}`, `{errors:[{message}]}`, and `[{message}]`
+// (api-server's common.Error shape, plus the `{error}` shape some handlers
+// use for structured success/error responses) envelopes our Go services
+// emit; degenerate JSON (`{}` / `[]` / `null`) is treated as no-detail so
+// the caller falls through to a per-status generic.
 function extractUpstreamErrorDetail(payload: unknown): string {
   if (Array.isArray(payload) && payload.length > 0) {
     const first = (payload[0] as { message?: unknown } | undefined)?.message;
     if (typeof first === 'string' && first.length > 0) return first;
   }
   if (payload && typeof payload === 'object') {
-    const obj = payload as { message?: unknown; errors?: Array<{ message?: unknown } | undefined> };
+    const obj = payload as { message?: unknown; error?: unknown; errors?: Array<{ message?: unknown } | undefined> };
     if (typeof obj.message === 'string' && obj.message.length > 0) return obj.message;
+    if (typeof obj.error === 'string' && obj.error.length > 0) return obj.error;
     if (Array.isArray(obj.errors) && obj.errors.length > 0) {
       const first = obj.errors[0]?.message;
       if (typeof first === 'string' && first.length > 0) return first;

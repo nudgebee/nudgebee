@@ -1,4 +1,4 @@
-import { queryGraphQL } from '@lib/HttpService';
+import { queryGraphQL, unwrapGraphQL } from '@lib/HttpService';
 
 // -------------------- GraphQL Mutations --------------------
 
@@ -1047,9 +1047,12 @@ const apiTriage = {
         description: data.description,
         apply_to_existing: data.apply_to_existing,
       });
-      return response?.data?.data?.event_create_triage_rule;
+      return unwrapGraphQL(response, 'Failed to create triage rule')?.event_create_triage_rule;
     } catch (error) {
-      console.error('Failed to create triage rule:', error);
+      // Log the message, not the Error object — Next's dev overlay promotes any
+      // console.error(Error) to a blocking runtime-error screen, even for an
+      // expected validation failure the caller already handles and displays.
+      console.error('Failed to create triage rule:', error instanceof Error ? error.message : error);
       throw error;
     }
   },
@@ -1157,9 +1160,12 @@ const apiTriage = {
         description: data.description,
         apply_to_existing: data.apply_to_existing,
       });
-      return response?.data?.data?.event_update_triage_rule;
+      return unwrapGraphQL(response, 'Failed to update triage rule')?.event_update_triage_rule;
     } catch (error) {
-      console.error('Failed to update triage rule:', error);
+      // See the matching comment in createTriageRule: log the message, not the
+      // Error object, to avoid Next's dev overlay treating a handled validation
+      // failure as a runtime crash.
+      console.error('Failed to update triage rule:', error instanceof Error ? error.message : error);
       throw error;
     }
   },

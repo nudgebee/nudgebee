@@ -821,6 +821,12 @@ func handleEventCreateTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 		return
 	}
 
+	name, ok := h.Input["name"].(string)
+	if !ok || strings.TrimSpace(name) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Rule name is required"})
+		return
+	}
+
 	if !requireTriageAccountAccess(c, ctx, cloudAccountID, "events", security.SecurityAccessTypeUpdate) {
 		return
 	}
@@ -1145,6 +1151,12 @@ func handleEventUpdateTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 	action, ok := h.Input["action"].(string)
 	if !ok || action == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "action is required"})
+		return
+	}
+
+	name, ok := h.Input["name"].(string)
+	if !ok || strings.TrimSpace(name) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Rule name is required"})
 		return
 	}
 
