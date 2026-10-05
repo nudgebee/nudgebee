@@ -28,6 +28,8 @@ import TicketLink from '@shared/links/TicketLink';
 import { formatMemory } from '@lib/formatter';
 import ResolveModal from './ResolveModal';
 import K8sActionModal from './K8sActionModal';
+import CloudActionModal from './CloudActionModal';
+import { cloudActionFor } from './cloudActions';
 import { k8sActionFor } from './k8sActions';
 import CliCommandModal from './CliCommandModal';
 import { Card } from '@ui/Card';
@@ -2030,7 +2032,10 @@ const OptimizeNewPage = ({ lockedCategory }: OptimizeNewPageProps = {}) => {
           onSuccess={fetchTableData}
         />
       )}
-      {resolveModalRec && !k8sActionFor(resolveModalRec) && (
+      {resolveModalRec && cloudActionFor(resolveModalRec) && (
+        <CloudActionModal open onClose={() => setResolveModalRec(null)} recommendation={resolveModalRec} onSuccess={fetchTableData} />
+      )}
+      {resolveModalRec && !k8sActionFor(resolveModalRec) && !cloudActionFor(resolveModalRec) && (
         <ResolveModal
           open={!!resolveModalRec}
           onClose={() => setResolveModalRec(null)}

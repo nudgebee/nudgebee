@@ -27,6 +27,7 @@ query list_k8_recommendation_summary($limit:Int, $offset:Int) {
       severity
       category
       rule_name
+      status
       recommendation
       estimated_savings
       finops_score

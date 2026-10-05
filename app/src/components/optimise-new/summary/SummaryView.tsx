@@ -43,6 +43,8 @@ import {
 import RecommendationDetailPanel from '../RecommendationDetailPanel';
 import ResolveModal from '../ResolveModal';
 import K8sActionModal from '../K8sActionModal';
+import CloudActionModal from '../CloudActionModal';
+import { cloudActionFor } from '../cloudActions';
 import { k8sActionFor } from '../k8sActions';
 import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
@@ -885,7 +887,10 @@ const SummaryView = () => {
           agentConnected={accounts[resolveModalRec.account_id]?.agent_connected}
         />
       )}
-      {resolveModalRec && !k8sActionFor(resolveModalRec) && (
+      {resolveModalRec && cloudActionFor(resolveModalRec) && (
+        <CloudActionModal open onClose={() => setResolveModalRec(null)} recommendation={resolveModalRec} />
+      )}
+      {resolveModalRec && !k8sActionFor(resolveModalRec) && !cloudActionFor(resolveModalRec) && (
         <ResolveModal
           open={!!resolveModalRec}
           onClose={() => setResolveModalRec(null)}

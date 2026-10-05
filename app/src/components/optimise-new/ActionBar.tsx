@@ -16,6 +16,7 @@ import { hasCliCommand } from './cliCommands';
 import { hasWriteAccess, hasPermission, missingPermissionMessage } from '@lib/auth';
 import { safeParseJSON, panelActionBarSx } from './utils';
 import { k8sActionFor } from './k8sActions';
+import { canStartCloudAction, cloudActionFor } from './cloudActions';
 
 interface ActionBarProps {
   fullRecommendation: any;
@@ -54,6 +55,7 @@ const ActionBar = ({
   // button is disabled, not hidden, while the cluster's agent is down: the
   // reader still sees the action exists and why it is not available.
   const k8sAction = k8sActionFor(rec);
+  const cloudAction = cloudActionFor(rec);
   const agentDown = agentConnected === false;
   const recData = safeParseJSON(rec.recommendation);
   const hasAlarmConfig = recData?.alarm_config != null;
@@ -99,6 +101,18 @@ const ActionBar = ({
               tooltip={agentDown ? 'Agent not connected — reconnect the cluster agent to apply from here' : undefined}
             >
               {k8sAction.label}
+            </Button>
+          )}
+          {cloudAction && canStartCloudAction(rec) && canWrite && (
+            <Button
+              tone='primary'
+              size='sm'
+              icon={<AutoFixHighOutlinedIcon sx={{ color: ds.yellow[400] }} />}
+              iconPlacement='start'
+              onClick={() => onResolve?.(rec)}
+              id='action-bar-cloud-action'
+            >
+              {cloudAction.label}
             </Button>
           )}
           <Button
