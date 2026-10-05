@@ -1611,6 +1611,9 @@ func (o *NBReActPlanner4) renderObservation(step *NBAgentPlannerToolActionStep, 
 	if step.Action.Tool == "es_metrics_query" && step.Action.NativeToolInput != "" && step.Action.NativeToolInput != step.Action.ToolInput {
 		obs = "Execution note: the metrics tool used these arguments instead of the model's function call: " + TruncateMiddle(step.Action.ToolInput, 2048, 512) + "\nResult: " + obs
 	}
+	if note := truncationNote(step.Metadata); note != "" {
+		obs += "\n[" + note + "]"
+	}
 	if ev := strings.TrimSpace(step.SubAgentEvidence); ev != "" {
 		obs = obs + "\n\n" + ev
 	}

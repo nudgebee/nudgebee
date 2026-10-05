@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/config"
+	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/tmc/langchaingo/llms"
@@ -74,4 +75,24 @@ func TestReAct4_Compression_InactiveKeepsAllFull(t *testing.T) {
 	for i := 1; i < len(msgs); i += 2 {
 		assert.Equal(t, obs, msgs[i].Parts[0].(llms.ToolCallResponse).Content)
 	}
+}
+
+func TestReAct4_RenderObservation_SurfacesTruncationNote(t *testing.T) {
+	o := &NBReActPlanner4{}
+	step := func(meta *toolcore.NBToolResponseMetadata) []NBAgentPlannerToolActionStep {
+		return []NBAgentPlannerToolActionStep{{
+			Action:      NBAgentPlannerToolAction{Tool: "prometheus_execute", ToolInput: "{}", ToolID: "c0"},
+			Observation: "partial output",
+			Metadata:    meta,
+		}}
+	}
+	content := func(steps []NBAgentPlannerToolActionStep) string {
+		return o.renderStepsToMessages(steps)[1].Parts[0].(llms.ToolCallResponse).Content
+	}
+
+	truncated := content(step(&toolcore.NBToolResponseMetadata{Truncated: true, OriginalLen: 200000}))
+	assert.Equal(t, "partial output\n[truncated: output cut from 200000 bytes, narrow the query for full detail]", truncated)
+
+	assert.Equal(t, "partial output", content(step(&toolcore.NBToolResponseMetadata{})), "untruncated output is rendered unchanged")
+	assert.Equal(t, "partial output", content(step(nil)), "nil metadata is rendered unchanged")
 }

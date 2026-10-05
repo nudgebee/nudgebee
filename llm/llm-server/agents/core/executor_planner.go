@@ -1959,6 +1959,10 @@ func stepIsStuck(step *NBAgentPlannerToolActionStep, threshold int) bool {
 // column the UI reads remains byte-for-byte what the tool produced.
 // Nil metadata returns "" so steps without telemetry (legacy rows, terminal
 // payloads, waiting prompts) render unchanged.
+// When Metadata.Truncated is set (truncateToolResponse cut the output before
+// persistence), the footer says so and gives the pre-truncation byte length —
+// previously this was computed and stored but never surfaced, so the planner
+// had no way to know it was reasoning from a partial tool response.
 func formatToolMetadataFooter(metadata *toolcore.NBToolResponseMetadata) string {
 	if metadata == nil {
 		return ""
@@ -1967,7 +1971,20 @@ func formatToolMetadataFooter(metadata *toolcore.NBToolResponseMetadata) string 
 	if ms < 0 {
 		ms = 0
 	}
-	return fmt.Sprintf("\n[exitStatus: %d | executionDuration: %dms]", metadata.ExitStatus, ms)
+	footer := fmt.Sprintf("\n[exitStatus: %d | executionDuration: %dms", metadata.ExitStatus, ms)
+	if note := truncationNote(metadata); note != "" {
+		footer += " | " + note
+	}
+	return footer + "]"
+}
+
+// truncationNote is the planner-visible marker for an output cut by
+// truncateToolResponse; "" when the output was not truncated.
+func truncationNote(metadata *toolcore.NBToolResponseMetadata) string {
+	if metadata == nil || !metadata.Truncated {
+		return ""
+	}
+	return fmt.Sprintf("truncated: output cut from %d bytes, narrow the query for full detail", metadata.OriginalLen)
 }
 
 // renderObservationWithMetadata is the single entry point the prompt-assembly

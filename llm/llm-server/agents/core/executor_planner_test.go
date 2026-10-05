@@ -1358,6 +1358,16 @@ func TestFormatToolMetadataFooter(t *testing.T) {
 		{"formatter renders arbitrary exit code faithfully", &toolcore.NBToolResponseMetadata{ExitStatus: 2, ExecutionDurationMs: 8}, "\n[exitStatus: 2 | executionDuration: 8ms]"},
 		{"negative duration clamps to 0", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: -1}, "\n[exitStatus: 0 | executionDuration: 0ms]"},
 		{"multi-second renders as ms", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 3200}, "\n[exitStatus: 0 | executionDuration: 3200ms]"},
+		{
+			"truncated response notes the original length",
+			&toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 50, Truncated: true, OriginalLen: 65445},
+			"\n[exitStatus: 0 | executionDuration: 50ms | truncated: output cut from 65445 bytes, narrow the query for full detail]",
+		},
+		{
+			"untruncated response omits the truncation note even with OriginalLen set",
+			&toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 50, Truncated: false, OriginalLen: 65445},
+			"\n[exitStatus: 0 | executionDuration: 50ms]",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1374,6 +1384,11 @@ func TestRenderObservationWithMetadata(t *testing.T) {
 		md := &toolcore.NBToolResponseMetadata{ExitStatus: 1, ExecutionDurationMs: 42}
 		got := renderObservationWithMetadata("raw output", md)
 		assert.Equal(t, "raw output\n[exitStatus: 1 | executionDuration: 42ms]", got)
+	})
+	t.Run("truncated metadata tells the planner it is missing data", func(t *testing.T) {
+		md := &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 42, Truncated: true, OriginalLen: 200000}
+		got := renderObservationWithMetadata("partial output", md)
+		assert.Equal(t, "partial output\n[exitStatus: 0 | executionDuration: 42ms | truncated: output cut from 200000 bytes, narrow the query for full detail]", got)
 	})
 }
 
