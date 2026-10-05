@@ -85,15 +85,7 @@ func redactToolOutput(ctx context.Context, tool, text string) string {
 		return text
 	}
 
-	var sb strings.Builder
-	sb.Grow(len(text))
-	last := 0
-	for _, h := range hits {
-		sb.WriteString(text[last:h.Start])
-		sb.WriteString(toolOutputPlaceholder(h.RuleID))
-		last = h.End
-	}
-	sb.WriteString(text[last:])
+	redacted := replaceHits(text, hits)
 
 	result := Result{Hits: hits}
 	auditID := newAuditID()
@@ -122,6 +114,28 @@ func redactToolOutput(ctx context.Context, tool, text string) string {
 		}
 		fn(event)
 	}
+	return redacted
+}
+
+// RedactSecrets applies the tool-output rules to text whatever the tenant's
+// settings: no switches, allowlist or disabled_rules, and no metrics or event.
+// For output that must never carry a credential on, such as the live state a
+// remediation plan is checked against.
+func RedactSecrets(text string) string {
+	return replaceHits(text, toolOutputHits(text))
+}
+
+// replaceHits replaces each hit, in order and not overlapping, with its placeholder.
+func replaceHits(text string, hits []Hit) string {
+	var sb strings.Builder
+	sb.Grow(len(text))
+	last := 0
+	for _, h := range hits {
+		sb.WriteString(text[last:h.Start])
+		sb.WriteString(toolOutputPlaceholder(h.RuleID))
+		last = h.End
+	}
+	sb.WriteString(text[last:])
 	return sb.String()
 }
 

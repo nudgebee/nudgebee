@@ -643,6 +643,16 @@ type RemediationTrace struct {
 	ModelPlan      *RemediationPlan     `json:"model_plan,omitempty"`
 	Validation     []planValidationNote `json:"validation"`
 	GeneratedAt    time.Time            `json:"generated_at"`
+	// The read-and-repair pass (remediation_targets.go): what was read, how long it took, and, when
+	// the plan was rewritten against it, the draft it replaced and the repair's own output and notes.
+	TargetReads      []targetRead         `json:"target_reads,omitempty"`
+	TargetReadMillis int64                `json:"target_read_ms,omitempty"`
+	DraftPlan        *RemediationPlan     `json:"draft_plan,omitempty"`
+	RepairRawOutput  string               `json:"repair_raw_output,omitempty"`
+	RepairValidation []planValidationNote `json:"repair_validation,omitempty"`
+	// StateReadRequests are the reads the draft asked for (TargetReads says what each returned,
+	// including those refused).
+	StateReadRequests []stateReadRequest `json:"state_read_requests,omitempty"`
 }
 
 // generateRemediationPlan turns this event's investigation into a validated plan. llm is the model
@@ -698,6 +708,7 @@ func generateRemediationPlan(ctx *security.RequestContext, request RemediationGe
 	trace.ModelPlan = &modelPlan
 
 	trace.Validation = normalizePlan(&plan, artifacts, request.AlertRule)
+	plan = repairAgainstTargetState(ctx, request, llm, systemPrompt, plan, &trace, artifacts)
 	for _, d := range plan.Dropped {
 		ctx.GetLogger().Info("remediation_generate: dropped alert-rule action", "action", d.Action, "reason", d.Reason)
 	}
@@ -1110,7 +1121,7 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	}
 
 	// Audit covers every command regardless of slot — that is the record of what was run.
-	writeRemediationAudit(ctx, request.AccountId, command, registeredToolName, response.Success)
+	writeRemediationAudit(ctx, request.AccountId, command, registeredToolName, response.Success, audit.EventActionCreate, "remediation-panel")
 	// A resolution says how the event was acted on, so only the state-changing execute command earns
 	// one. A verify observes and a rollback reverses; filing those as resolutions counted one
 	// remediation attempt three times and listed an undo as though it resolved the event.
@@ -1335,7 +1346,7 @@ func parseRelayExecResult(raw string) (stdout, stderr string, exitCode int, pars
 // writeRemediationAudit records who ran which command against the account's cluster. This RPC is
 // browser-reachable and runs write commands, so — like handleWorkspaceExecute — every call is
 // audited. Fired in the background so auditing never blocks the response.
-func writeRemediationAudit(ctx *security.RequestContext, accountId, command, tool string, success bool) {
+func writeRemediationAudit(ctx *security.RequestContext, accountId, command, tool string, success bool, action audit.EventAction, source string) {
 	var tenantId, userId string
 	if sc := ctx.GetSecurityContext(); sc != nil {
 		tenantId = sc.GetTenantId()
@@ -1355,14 +1366,14 @@ func writeRemediationAudit(ctx *security.RequestContext, accountId, command, too
 				EventCategory: audit.EventCategoryK8sRelay,
 				EventType:     audit.EventTypeK8sRelayTask,
 				EventActor:    audit.EventActorK8sAgent,
-				EventAction:   audit.EventActionCreate,
+				EventAction:   action,
 				EventTarget:   tool,
 				EventStatus:   status,
 				EventState:    map[string]any{"command": command},
 				EventAttr: map[string]any{
 					"command": command,
 					"tool":    tool,
-					"source":  "remediation-panel",
+					"source":  source,
 				},
 			},
 		},

@@ -270,6 +270,10 @@ var shellMetacharNormalizer = strings.NewReplacer(
 	"$", " ",
 )
 
+// KubectlBlockedKind is kubectlBlockedKind for callers outside the tool: the credential-bearing kind
+// a kubectl command names, or "".
+func KubectlBlockedKind(command string) string { return kubectlBlockedKind(command) }
+
 // kubectlBlockedKind walks a kubectl command and returns the first blocked
 // resource kind found (or "" if none). Mirrors the tokenizer rules in
 // kubectlResourceKind: positional after a known verb, scan-don't-break on

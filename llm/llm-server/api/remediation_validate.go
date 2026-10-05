@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"github.com/google/shlex"
 	"nudgebee/llm/tools/core"
 	"regexp"
 	"strings"
@@ -43,7 +44,63 @@ var readOnlyKubectlVerbs = map[string]bool{
 	"explain": true, "version": true, "api-resources": true, "cluster-info": true,
 }
 
-var readOnlyCloudVerb = regexp.MustCompile(`(?i)\b(describe|list|get|show)[-\s]`)
+// cloudReadOperation judges the operation token, never flag values (a whole-string regex read
+// `aws ec2 terminate-instances --query "list "` as a read); outside aws the first known verb decides.
+func cloudReadOperation(argv []string) bool {
+	// Leading global flags are skipped ("aws --region r ec2 ..."); unknown ones are taken as boolean.
+	rest := argv[1:]
+	for len(rest) > 0 && strings.HasPrefix(rest[0], "-") {
+		if !strings.Contains(rest[0], "=") && cloudGlobalValueFlags[argv[0]][rest[0]] && len(rest) > 1 {
+			rest = rest[1:]
+		}
+		rest = rest[1:]
+	}
+	var words []string
+	for _, a := range rest {
+		if strings.HasPrefix(a, "-") {
+			break
+		}
+		words = append(words, strings.ToLower(a))
+	}
+	isRead := func(w string) bool {
+		return w == "describe" || w == "list" || w == "show" || w == "ls" || w == "stat" ||
+			strings.HasPrefix(w, "describe-") || strings.HasPrefix(w, "list-") || strings.HasPrefix(w, "get-") || strings.HasPrefix(w, "show-")
+	}
+	if argv[0] == "aws" {
+		return len(words) >= 2 && words[1] != "ls" && words[1] != "stat" && isRead(words[1])
+	}
+	for _, w := range words {
+		if isRead(w) {
+			return true
+		}
+		if cloudWriteVerb(w) {
+			return false
+		}
+	}
+	return false
+}
+
+var cloudGlobalValueFlags = map[string]map[string]bool{
+	"aws": {"--region": true, "--profile": true, "--output": true, "--query": true, "--endpoint-url": true, "--color": true,
+		"--cli-read-timeout": true, "--cli-connect-timeout": true, "--ca-bundle": true},
+	"gcloud": {"--project": true, "--account": true, "--configuration": true, "--format": true, "--verbosity": true,
+		"--impersonate-service-account": true, "--billing-project": true, "--zone": true, "--region": true, "--flags-file": true},
+	"az": {"--subscription": true, "--output": true, "-o": true, "--query": true},
+}
+
+// cloudWriteVerb matches the verbs gcloud, az and gsutil use for changes, so a read verb used as a
+// resource name after one ("instances delete list") does not make the command a read.
+func cloudWriteVerb(w string) bool {
+	// Bare "run" is not here: it is gcloud's Cloud Run group ("gcloud run services describe").
+	for _, p := range []string{"create", "delete", "update", "set", "add", "remove", "deploy", "start", "stop", "restart", "reset",
+		"patch", "replace", "apply", "import", "export", "resize", "ssh", "scp", "cp", "mv", "rm", "rsync", "attach", "detach",
+		"enable", "disable", "invoke", "execute", "run-command", "send", "put", "upload", "download", "rotate", "purge", "move", "rename", "assign", "grant", "revoke", "login", "logout", "configure"} {
+		if w == p || strings.HasPrefix(w, p+"-") {
+			return true
+		}
+	}
+	return false
+}
 
 // isReadOnlyCommand reports whether the command only observes state. Used two ways: an action whose
 // execute command is read-only is not a remediation at all (the audit found `kubectl get pods -l
@@ -66,7 +123,8 @@ func isReadOnlyCommand(command string) bool {
 		if strings.Contains(command, "ssm send-command") {
 			return core.SSMPayloadIsReadOnly(command)
 		}
-		return readOnlyCloudVerb.MatchString(command)
+		argv, err := shlex.Split(command)
+		return err == nil && len(argv) > 1 && cloudReadOperation(argv)
 	case "helm":
 		return fields[1] == "list" || fields[1] == "status" || fields[1] == "get" || fields[1] == "history"
 	}
