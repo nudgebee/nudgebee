@@ -782,8 +782,10 @@ temporal:
       history.enableHostLevelEventsCache:
         - value: true
           constraints: {}
+      # Budget counts serialized bytes; in-memory is ~5x. At 180Mi it sat full while
+      # dev's heap hit ~1.75GB against a 2Gi limit (2026-10-05), so 64Mi.
       history.eventsHostLevelCacheMaxSizeBytes:
-        - value: 188743680 # 180Mi
+        - value: 67108864 # 64Mi
           constraints: {}
       frontend.validSearchAttributes:
         - value:
