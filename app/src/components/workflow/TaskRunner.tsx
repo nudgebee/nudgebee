@@ -110,6 +110,13 @@ const TaskRunner: React.FC = () => {
     return filtered;
   }, [categories, search]);
 
+  // Same label the task list (and the builder's node) shows, e.g. "DNS".
+  const selectedTaskLabel = useMemo(() => {
+    if (!selectedTaskType) return undefined;
+    const category = Object.values(categories).find((c: any) => c.subcategories?.[selectedTaskType]) as any;
+    return category?.subcategories[selectedTaskType].label as string | undefined;
+  }, [categories, selectedTaskType]);
+
   const handleSelectTask = (taskType: string) => {
     setTaskData({});
     setSelectedTaskType(taskType);
@@ -289,6 +296,7 @@ const TaskRunner: React.FC = () => {
                 viewOnlyMode={false}
                 accountId={accountId}
                 onRunTask={handleRunTask}
+                actionLabel={selectedTaskLabel}
               />
             ) : (
               <Box

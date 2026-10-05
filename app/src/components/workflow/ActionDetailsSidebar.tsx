@@ -187,6 +187,8 @@ interface ActionDetailsSidebarProps {
   onRunPreviousSteps?: (taskId: string) => Promise<Record<string, any>>;
   onDryRunToTask?: (taskId: string, unsavedConfig?: any) => Promise<any>;
   onRunTask?: (taskType: string, params: any) => Promise<RunTaskOutcome>;
+  // Title label when there is no canvas node (Task Runner); mirrors the builder's node label.
+  actionLabel?: string;
   workflowInputs?: Array<{ id: string; type: string; description?: string; default?: any }>;
   workflowTimeout?: string;
   onToggleDisable?: (disable: boolean) => void;
@@ -296,6 +298,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
   onRunPreviousSteps: _onRunPreviousSteps,
   onDryRunToTask,
   onRunTask,
+  actionLabel,
   workflowInputs = [],
   workflowTimeout,
   onToggleDisable,
@@ -4961,7 +4964,9 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
       >
         <Box>
           <Typography sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-foreground)' }}>
-            {`Action Details - ${selectedNode?.data?.label || currentTaskDefinition?.display_name || currentTaskDescription || selectedActionType}`}
+            {`Action Details - ${
+              selectedNode?.data?.label || actionLabel || currentTaskDefinition?.display_name || currentTaskDescription || selectedActionType
+            }`}
           </Typography>
           <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', mt: ds.space[0] }}>
             {'Configure and test this automation action'}
