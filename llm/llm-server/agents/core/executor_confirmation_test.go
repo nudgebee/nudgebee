@@ -8,6 +8,7 @@ import (
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -233,4 +234,20 @@ func TestConfirmationQuestionForAction_UsesRepairedInput(t *testing.T) {
 
 	// Tools without a custom question keep the default rendering.
 	assert.Empty(t, confirmationQuestionForAction(confirmStubTool{name: "plain_tool"}, asString))
+}
+
+// Running an automation is not "creating cluster resources": both tools that
+// run one supply their own card, so the default sentence, the internal tool
+// name and the raw arguments never reach the user.
+func TestConfirmationQuestionForAction_AutomationRunIsNotTheGenericCard(t *testing.T) {
+	action := NBAgentPlannerToolAction{Tool: tools.ToolWorkflowTrigger, ToolInput: `{"id":"wf-1"}`}
+	override := confirmationQuestionForAction(tools.WorkflowTriggerTool{}, action)
+	require.NotEmpty(t, override)
+
+	fr, err := FollowupRequestForToolOperationConfirmation(llmOverrideContext(),
+		NBAgentRequest{AgentId: uuid.New().String()}, LLMAgent{}, action, toolcore.ToolRequestTypeCreate, action.Tool, override)
+	require.NoError(t, err)
+	assert.Equal(t, "Run the automation with ID wf-1?", fr.Question)
+	assert.Equal(t, []string{"yes", "no"}, fr.FollowupOptions, "the card keeps its yes / no buttons")
+	assert.Equal(t, FollowupTypeToolConfirmation, fr.FollowupType)
 }

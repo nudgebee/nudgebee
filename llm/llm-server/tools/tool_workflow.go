@@ -27,7 +27,7 @@ func init() {
 		return WorkflowGetTool{}, nil
 	})
 	core.RegisterNBToolFactory(ToolWorkflowTrigger, func(accountId string) (core.NBTool, error) {
-		return WorkflowTriggerTool{}, nil
+		return WorkflowTriggerTool{accountId: accountId}, nil
 	})
 	core.RegisterNBToolFactory(ToolWorkflowCreate, func(accountId string) (core.NBTool, error) {
 		return WorkflowCreateTool{}, nil
@@ -537,9 +537,29 @@ func compactWorkflowResponse(resp []byte, link string) string {
 
 // --- Workflow Trigger Tool ---
 
-type WorkflowTriggerTool struct{}
+type WorkflowTriggerTool struct {
+	// accountId is only for naming the automation on the approval card; Call
+	// runs against the account in its context.
+	accountId string
+}
 
 func (t WorkflowTriggerTool) Name() string { return ToolWorkflowTrigger }
+
+// ConfirmationQuestion names the automation behind the id on the approval
+// card. An id that is not among the account's AI-invocable automations (or
+// whose list could not be loaded) is shown as the id, in the same plain words.
+func (t WorkflowTriggerTool) ConfirmationQuestion(toolInput string) string {
+	args := confirmationArgs(toolInput)
+	id, _ := args["id"].(string)
+	if id = strings.TrimSpace(id); id == "" {
+		return ""
+	}
+	inputs, _ := args["inputs"].(map[string]any)
+	if automation, ok := automationForConfirmation(t.accountId, id); ok {
+		return automationRunQuestion(automation.name, id, automation.description, inputs, "")
+	}
+	return automationRunQuestion("", id, "", inputs, "")
+}
 
 // InferToolRequestType classifies triggering a live run as create so the executor
 // gates it behind user confirmation + RBAC (it has real effects).
