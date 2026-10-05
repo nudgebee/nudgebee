@@ -20,15 +20,8 @@ import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import ServiceRefreshButton from '@components/cloudaccount/ServiceRefreshButton';
 import { CustomText } from '@components/cloudaccount/common';
+import { resourceCreatedAt } from '@components/cloudaccount/resourceCreatedAt';
 import { ds } from '@utils/colors';
-
-export const resourceCreatedAt = (item: any): string | undefined => {
-  const cloudCreatedOn = item?.resourse_created_on;
-  if (cloudCreatedOn && new Date(cloudCreatedOn).getUTCFullYear() > 1970) {
-    return cloudCreatedOn;
-  }
-  return item?.meta?.CreationDate || item?.meta?.timeCreated || item?.created_at;
-};
 
 const INSTANCE_HEADER = [
   { name: 'Bucket Name', width: '28%' },
