@@ -29,6 +29,27 @@ func waitStateWithin(t *testing.T, queue string, want MqConsumerState, within ti
 	}, within, 50*time.Millisecond, "queue %s never reached state %s", queue, want)
 }
 
+// waitConsuming waits until the broker itself reports a consumer on queue. MqConsumerRunning is
+// set before the library declares and binds the queue, so a publish right after it can still be
+// dropped as unroutable; a consumer on the queue means the binding is in place.
+func waitConsuming(t *testing.T, queue string, within time.Duration) {
+	t.Helper()
+	conn, err := amqp.Dial(brokerURL())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	require.Eventually(t, func() bool {
+		// A passive declare of a queue that does not exist yet closes the channel, so use a
+		// fresh one per attempt.
+		ch, err := conn.Channel()
+		if err != nil {
+			return false
+		}
+		defer func() { _ = ch.Close() }()
+		q, err := ch.QueueDeclarePassive(queue, false, false, false, false, nil)
+		return err == nil && q.Consumers > 0
+	}, within, 50*time.Millisecond, "broker never reported a consumer on queue %s", queue)
+}
+
 func brokerURL() string {
 	return fmt.Sprintf("amqp://%s:%s@%s:%d", config.Config.RabbitMqUsername, config.Config.RabbitMqPassword, config.Config.RabbitMqHost, config.Config.RabbitMqPort)
 }
@@ -49,6 +70,7 @@ func TestBroker_ClosedPublisherChannelInHandler_ConsumerKeepsConsuming(t *testin
 		return nil
 	}))
 	waitStateWithin(t, inQueue, MqConsumerRunning, 15*time.Second)
+	waitConsuming(t, inQueue, 15*time.Second)
 
 	require.NoError(t, MqPublish(outExchange, "rk", "warm"))
 	outKey := outExchange + ":rk"
@@ -122,6 +144,7 @@ func TestBroker_ConsumerAttachesAfterBrokerBecomesReachable(t *testing.T) {
 
 	reachable.Store(true)
 	waitStateWithin(t, queue, MqConsumerRunning, 30*time.Second)
+	waitConsuming(t, queue, 30*time.Second)
 	require.NoError(t, MqPublish(exchange, queue, "hello"))
 	select {
 	case <-got:
