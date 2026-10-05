@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 
@@ -99,6 +101,10 @@ func (policyStage) Name() string { return "policy" }
 
 func (s policyStage) Handle(rc *RequestContext) (bool, error) {
 	p := rc.Identity.Policy
+	// A provider's own model list is unfiltered, so a restricted key reads the filtered /v1/models.
+	if p.Restricted() && rc.Endpoint == endpointMeta && rc.Gin.Request.Method == http.MethodGet {
+		return s.deny(rc, "endpoint_not_allowed", "", "This API key is restricted; list the models it may use at /v1/models.")
+	}
 	if p.Restricted() && rc.Endpoint != endpointMeta {
 		if rc.Endpoint == "" {
 			return s.deny(rc, "endpoint_not_allowed", "", fmt.Sprintf(
@@ -232,11 +238,50 @@ func (s policyStage) pruneFallbacks(rc *RequestContext, p auth.KeyPolicy) {
 func (s policyStage) deny(rc *RequestContext, code, target, message string) (bool, error) {
 	rc.RejectReason = "key_policy"
 	rc.PolicyTarget = target
+	if !keyRefusals.allow(rc.Identity.APIKeyID) {
+		rc.RefusalSuppressed = true
+		edgeerr.Write(rc.Gin, rc.errorShape(), http.StatusForbidden, code, message)
+		return true, nil
+	}
 	slog.Info("policy: request denied by key policy",
 		"api_key_id", rc.Identity.APIKeyID, "tenant_id", rc.Identity.TenantID, "code", code,
 		"endpoint", rc.Endpoint, "requested_model", rc.Decision.RequestedModel, "resolved_target", target)
 	edgeerr.Write(rc.Gin, rc.errorShape(), http.StatusForbidden, code, message)
 	return true, nil
+}
+
+// keyRefusals caps key-policy refusals at 10 rows and log lines per key per minute. The policy
+// stage runs before the rate limiter, so a leaked key could otherwise write without bound.
+var keyRefusals = newRefusalCap(10, time.Minute)
+
+// refusalCap counts refusals per key in a fixed window shared by all keys, allowing the first
+// max of each key; the window that ends logs one line per key that went over.
+type refusalCap struct {
+	mu     sync.Mutex
+	max    int
+	window time.Duration
+	now    func() time.Time
+	start  time.Time
+	counts map[string]int
+}
+
+func newRefusalCap(max int, window time.Duration) *refusalCap {
+	return &refusalCap{max: max, window: window, now: time.Now, counts: map[string]int{}}
+}
+
+func (c *refusalCap) allow(key string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if now := c.now(); now.Sub(c.start) >= c.window {
+		for k, n := range c.counts {
+			if n > c.max {
+				slog.Warn("policy: key-policy refusals suppressed", "api_key_id", k, "suppressed", n-c.max, "window", c.window.String())
+			}
+		}
+		c.start, c.counts = now, map[string]int{}
+	}
+	c.counts[key]++
+	return c.counts[key] <= c.max
 }
 
 // keyModelMessage names the requested model and, when routing changed it, the target

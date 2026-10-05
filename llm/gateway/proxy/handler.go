@@ -626,6 +626,9 @@ func (h *handler) recordReject(id auth.Identity, provider schemas.ModelProvider,
 // recordRejectPipeline records a rejection from a control stage (rate limit, missing
 // credential, block), carrying the routing decision plus the stage's reject reason.
 func (h *handler) recordRejectPipeline(rc *RequestContext, status int, start time.Time) {
+	if rc.RefusalSuppressed {
+		return // over the key's refusal cap; see keyRefusals
+	}
 	d := rc.Decision
 	derived := map[string]any{"reject_reason": rc.RejectReason}
 	if rc.DLP != nil {

@@ -1,6 +1,8 @@
 package metering
 
 import (
+	"encoding/json"
+	"errors"
 	"regexp"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -176,4 +179,62 @@ func TestNewEvent_CarriesAPIKeyID(t *testing.T) {
 
 func TestUsageColumnsIncludeAPIKeyID(t *testing.T) {
 	assert.Contains(t, usageColumns, "api_key_id")
+}
+
+// Ticket #40089: a NUL in one event made Postgres refuse the whole batch insert.
+func TestSanitize_StripsWhatPostgresRefuses(t *testing.T) {
+	ev := sampleEvent()
+	ev.Model = "gpt\x00x"
+	ev.Path = "/v1/\xffmessages"
+	ev.Attributes = `{"derived":{"reject_reason":"a\u0000b"}}`
+
+	got := sanitize(ev)
+
+	assert.Equal(t, "gptx", got.Model)
+	assert.Equal(t, "/v1/�messages", got.Path)
+	assert.JSONEq(t, `{"derived":{"reject_reason":"ab"}}`, got.Attributes)
+}
+
+// Review of #40089: a client can send the literal text \u0000 (no NUL). Stripping it from the
+// marshalled JSON used to eat the escaped backslash before it and leave invalid JSON.
+func TestSanitize_KeepsEscapedBackslashBeforeU0000Text(t *testing.T) {
+	ev := sampleEvent()
+	ev.Attributes = marshalAttributes(&Attributes{Actual: map[string]any{
+		"tools": []string{`get_weather\u0000`, "nul\x00here"},
+	}})
+
+	got := sanitize(ev)
+
+	require.True(t, json.Valid([]byte(got.Attributes)), got.Attributes)
+	assert.JSONEq(t, `{"actual":{"tools":["get_weather\\u0000","nulhere"]}}`, got.Attributes)
+}
+
+// A batch Postgres refuses is retried row by row, so only the bad row is lost.
+func TestDBSink_RefusedBatchRetriesRowByRow(t *testing.T) {
+	s, mock := newMockSink(t)
+	insert := regexp.QuoteMeta("INSERT INTO llm_gateway_usage")
+	refused := &pq.Error{Code: "22P05", Message: "unsupported Unicode escape sequence"}
+	mock.ExpectExec(insert).WillReturnError(refused)
+	mock.ExpectExec(insert).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(insert).WillReturnError(refused)
+	mock.ExpectExec(insert).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	for range 3 {
+		s.Record(sampleEvent())
+	}
+	require.NoError(t, s.Close())
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// An error that is not Postgres refusing a row (DB unreachable) is not retried per row.
+func TestDBSink_UnreachableDBDoesNotRetryPerRow(t *testing.T) {
+	s, mock := newMockSink(t)
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO llm_gateway_usage")).
+		WillReturnError(errors.New("dial tcp: connection refused"))
+
+	for range 3 {
+		s.Record(sampleEvent())
+	}
+	require.NoError(t, s.Close())
+	assert.NoError(t, mock.ExpectationsWereMet())
 }

@@ -70,6 +70,9 @@ type RequestContext struct {
 	// may differ from the model the client asked for. Recorded on the rejection row.
 	PolicyTarget string
 
+	// RefusalSuppressed marks a key-policy refusal over its key's cap: answered, not recorded.
+	RefusalSuppressed bool
+
 	// DLP is set by the egress-filter stage when a secret is detected: the mode taken
 	// and the rule ids that fired. Recorded on the usage row and signalled to the client.
 	DLP map[string]any

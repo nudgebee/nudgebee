@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -245,18 +246,41 @@ func TestPolicyStage_UnrestrictedKeyPassesEverything(t *testing.T) {
 	}
 }
 
-func TestPolicyStage_MetaCallsAlwaysAllowed(t *testing.T) {
+func TestPolicyStage_TokenCountersAlwaysAllowed(t *testing.T) {
 	router := routing.NewEngine(nil)
 	strict := auth.KeyPolicy{Providers: []string{"openai"}, Models: []string{"gpt-4o-mini"}, Endpoints: []string{auth.EndpointEmbeddings}}
 	for _, tc := range []struct {
 		p            schemas.ModelProvider
 		method, path string
 	}{
-		{schemas.OpenAI, "GET", "/v1/models"},
 		{schemas.Anthropic, "POST", "/v1/messages/count_tokens"},
 		{schemas.Gemini, "POST", "/models/gemini-2.5-flash:countTokens"},
 	} {
 		rc, _ := newPolicyTestContext(tc.p, tc.method, tc.path, "", strict)
+		assert.False(t, runRouteAndPolicy(t, router, rc), tc.path)
+	}
+}
+
+// Ticket #40087: a provider's model list is unfiltered, so a restricted key is refused there
+// and reads the filtered /v1/models instead. An unrestricted key still reads it.
+func TestPolicyStage_RestrictedKeyCannotReadProviderModelCatalog(t *testing.T) {
+	router := routing.NewEngine(nil)
+	for _, tc := range []struct {
+		p    schemas.ModelProvider
+		path string
+	}{
+		{schemas.OpenAI, "/v1/models"},
+		{schemas.OpenAI, "/v1/models/ft:gpt-4o-mini:acme::abc123"},
+		{schemas.Anthropic, "/v1/models"},
+		{schemas.Gemini, "/models"},
+		{schemas.Gemini, "/models/gemini-2.5-pro"},
+	} {
+		rc, rec := newPolicyTestContext(tc.p, "GET", tc.path, "", chatOnlyMini)
+		require.True(t, runRouteAndPolicy(t, router, rc), tc.path)
+		assert.Equal(t, http.StatusForbidden, rec.Code, tc.path)
+		assert.Contains(t, rec.Body.String(), "/v1/models", tc.path)
+
+		rc, _ = newPolicyTestContext(tc.p, "GET", tc.path, "", auth.KeyPolicy{})
 		assert.False(t, runRouteAndPolicy(t, router, rc), tc.path)
 	}
 }
@@ -343,6 +367,9 @@ func TestHandle_RefusesPolicyBypasses(t *testing.T) {
 	t.Cleanup(func() { config.Config.MaxRequestBodyBytes = prev })
 	router := routing.NewEngine(nil)
 	h := &handler{sink: &metering.CapturingSink{}, pipeline: NewPipeline(routeStage{router: router}, policyStage{router: router})}
+	prevCap := keyRefusals
+	keyRefusals = newRefusalCap(100, time.Minute)
+	t.Cleanup(func() { keyRefusals = prevCap })
 
 	responsesOnly := auth.KeyPolicy{Endpoints: []string{auth.EndpointResponses}}
 	flashOnly := auth.KeyPolicy{Models: []string{"gemini-2.5-flash"}}
@@ -410,4 +437,38 @@ func TestPolicyStage_GenericSurfaceUsesOpenAIShape(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.Equal(t, "model_not_allowed", body.Error.Code)
 	assert.NotContains(t, rec.Body.String(), `"type":"error"`)
+}
+
+// #40090: a key's refusals past the cap in one window are answered but not recorded, other
+// keys keep their own allowance, and a new window starts the count again.
+func TestRefusalCap_PerKeyPerWindow(t *testing.T) {
+	now := time.Unix(0, 0)
+	c := newRefusalCap(2, time.Minute)
+	c.now = func() time.Time { return now }
+
+	assert.True(t, c.allow("a"))
+	assert.True(t, c.allow("a"))
+	assert.False(t, c.allow("a"))
+	assert.True(t, c.allow("b"))
+
+	now = now.Add(time.Minute)
+	assert.True(t, c.allow("a"))
+}
+
+// Refusals over the cap still get their 403 but write no usage row.
+func TestHandle_KeyPolicyRefusalsCappedPerKey(t *testing.T) {
+	prevCap := keyRefusals
+	keyRefusals = newRefusalCap(2, time.Minute)
+	t.Cleanup(func() { keyRefusals = prevCap })
+	router := routing.NewEngine(nil)
+	sink := &metering.CapturingSink{}
+	h := &handler{sink: sink, pipeline: NewPipeline(routeStage{router: router}, policyStage{router: router})}
+
+	for range 5 {
+		c, rec := newHandleTestContext("POST", "/openai/v1/chat/completions", `{"model":"gpt-5"}`, chatOnlyMini)
+		h.handle(c)
+		assert.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	}
+	require.Len(t, sink.Events(), 2)
+	assert.Contains(t, sink.Events()[0].Attributes, `"reject_reason":"key_policy"`)
 }
