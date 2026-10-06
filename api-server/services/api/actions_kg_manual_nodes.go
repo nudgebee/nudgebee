@@ -77,11 +77,11 @@ func manualNodeSummary(n *flow_sources.ManualNode) map[string]any {
 	}
 }
 
-// manualNodeAuthorizer answers whether the caller may write a declaration in
-// an account. One outside any connected account belongs to the tenant as a
-// whole, so it takes tenant-wide access; an account admin's reach stops at
-// their own accounts.
-func manualNodeAuthorizer(sc *security.SecurityContext, access security.SecurityAccessType) flow_sources.ManualNodeAuthorizer {
+// manualAccountAuthorizer answers whether the caller may write a manual node
+// or dependency in an account. Anything outside a connected account belongs
+// to the tenant as a whole, so it takes tenant-wide access; an account admin's
+// reach stops at their own accounts.
+func manualAccountAuthorizer(sc *security.SecurityContext, access security.SecurityAccessType) flow_sources.ManualAccountAuthorizer {
 	return func(cloudAccountID string) bool {
 		if cloudAccountID == "" {
 			return sc.HasTenantAccess(access)
@@ -102,7 +102,7 @@ func authorizeManualNodeWrite(c *gin.Context, ctx *security.RequestContext, repo
 		c.JSON(500, common.ErrorActionInternal("Failed to load manual node: "+err.Error()))
 		return false
 	}
-	if !manualNodeAuthorizer(ctx.GetSecurityContext(), access)(n.CloudAccountID) {
+	if !manualAccountAuthorizer(ctx.GetSecurityContext(), access)(n.CloudAccountID) {
 		c.JSON(403, common.ErrorActionForbidden(flow_sources.ErrManualNodeForbidden.Error()))
 		return false
 	}
@@ -191,7 +191,7 @@ func handleKgCreateManualNode(actionPayload *ActionRequest, c *gin.Context, trac
 	}
 	req.TenantID = tenantID
 	req.DeclaredByUserID = ctx.GetSecurityContext().GetUserId()
-	req.Authorize = manualNodeAuthorizer(ctx.GetSecurityContext(), security.SecurityAccessTypeCreate)
+	req.Authorize = manualAccountAuthorizer(ctx.GetSecurityContext(), security.SecurityAccessTypeCreate)
 
 	created, err := repo.Create(ctx.GetContext(), kg, req)
 	if err != nil {
@@ -352,7 +352,7 @@ func handleKgImportManualNodes(actionPayload *ActionRequest, c *gin.Context, tra
 		return
 	}
 	// Each row is checked against its own account; a refused row is rejected.
-	authorize := manualNodeAuthorizer(ctx.GetSecurityContext(), security.SecurityAccessTypeCreate)
+	authorize := manualAccountAuthorizer(ctx.GetSecurityContext(), security.SecurityAccessTypeCreate)
 	result, err := repo.ImportCSV(ctx.GetContext(), kg, tenantID, ctx.GetSecurityContext().GetUserId(), authorize, bytes.NewBufferString(req.CSV))
 	if err != nil {
 		ctx.GetLogger().Warn("manual node csv import failed", "error", err)

@@ -56,10 +56,10 @@ var (
 	ErrManualNodeForbidden = errors.New("you do not have write access to this account")
 )
 
-// ManualNodeAuthorizer reports whether the caller may write a declaration in
-// cloudAccountID; "" is a declaration outside any connected account, which
-// belongs to the tenant as a whole.
-type ManualNodeAuthorizer func(cloudAccountID string) bool
+// ManualAccountAuthorizer reports whether the caller may write a manual node
+// or dependency in cloudAccountID; "" is something outside any connected
+// account (a tenant-scoped node), which belongs to the tenant as a whole.
+type ManualAccountAuthorizer func(cloudAccountID string) bool
 
 // ManualNodeExistsError is returned when the resource is already in the graph
 // as a collected node: the user should point dependencies at that node.

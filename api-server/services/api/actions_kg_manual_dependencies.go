@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -43,6 +44,26 @@ func manualDepHandlerSetup(
 	}
 	repo := flow_sources.NewManualDependencyRepository(dbManager, ctx.GetLogger())
 	return ctx, repo, tenantID, nil
+}
+
+// manualDepWriter is the repository a write handler uses: every row it writes
+// is checked against the accounts the dependency touches (see
+// ManualDependencyRepository.WithAccountAuthorizer).
+func manualDepWriter(ctx *security.RequestContext, repo *flow_sources.ManualDependencyRepository, access security.SecurityAccessType) *flow_sources.ManualDependencyRepository {
+	return repo.WithAccountAuthorizer(manualAccountAuthorizer(ctx.GetSecurityContext(), access))
+}
+
+// manualDepWriteStatus maps a repository error to an HTTP status.
+func manualDepWriteStatus(err error, fallback int) int {
+	switch {
+	case errors.Is(err, flow_sources.ErrManualDependencyForbidden):
+		return 403
+	case errors.Is(err, sql.ErrNoRows):
+		return 404
+	case errors.Is(err, flow_sources.ErrManualDependencyNodeNotFound):
+		return 400
+	}
+	return fallback
 }
 
 // auditManualDep records one manual-dependency write under the shared
@@ -136,10 +157,10 @@ func handleKgCreateManualDependency(actionPayload *ActionRequest, c *gin.Context
 	dep.TenantID = tenantID
 	dep.DeclaredByUserID = ctx.GetSecurityContext().GetUserId()
 
-	created, err := repo.Create(ctx.GetContext(), dep)
+	created, err := manualDepWriter(ctx, repo, security.SecurityAccessTypeCreate).Create(ctx.GetContext(), dep)
 	if err != nil {
 		ctx.GetLogger().Error("create manual dependency failed", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("Failed to create manual dependency: "+err.Error()))
+		c.JSON(manualDepWriteStatus(err, 400), common.ErrorActionBadRequest("Failed to create manual dependency: "+err.Error()))
 		return
 	}
 	auditManualDep(ctx, audit.EventTypeKGDependencyCreate, audit.EventActionCreate, fmt.Sprint(created.ID), manualDepSummary(created))
@@ -174,10 +195,10 @@ func handleKgUpdateManualDependency(actionPayload *ActionRequest, c *gin.Context
 		return
 	}
 
-	updated, err := repo.Update(ctx.GetContext(), tenantID, req.ID, req.Dependency)
+	updated, err := manualDepWriter(ctx, repo, security.SecurityAccessTypeUpdate).Update(ctx.GetContext(), tenantID, req.ID, req.Dependency)
 	if err != nil {
 		ctx.GetLogger().Error("update manual dependency failed", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("Failed to update manual dependency: "+err.Error()))
+		c.JSON(manualDepWriteStatus(err, 400), common.ErrorActionBadRequest("Failed to update manual dependency: "+err.Error()))
 		return
 	}
 	auditManualDep(ctx, audit.EventTypeKGDependencyUpdate, audit.EventActionUpdate, fmt.Sprint(req.ID), manualDepSummary(updated))
@@ -212,9 +233,9 @@ func handleKgDeleteManualDependency(actionPayload *ActionRequest, c *gin.Context
 		return
 	}
 
-	if err := repo.SoftDelete(ctx.GetContext(), tenantID, req.ID); err != nil {
+	if err := manualDepWriter(ctx, repo, security.SecurityAccessTypeDelete).SoftDelete(ctx.GetContext(), tenantID, req.ID); err != nil {
 		ctx.GetLogger().Error("delete manual dependency failed", "error", err)
-		c.JSON(500, common.ErrorActionInternal("Failed to delete manual dependency: "+err.Error()))
+		c.JSON(manualDepWriteStatus(err, 500), common.ErrorActionInternal("Failed to delete manual dependency: "+err.Error()))
 		return
 	}
 	auditManualDep(ctx, audit.EventTypeKGDependencyDelete, audit.EventActionDelete, fmt.Sprint(req.ID), map[string]any{"id": req.ID})
@@ -251,7 +272,8 @@ func handleKgImportManualDependencies(actionPayload *ActionRequest, c *gin.Conte
 	}
 	userID := ctx.GetSecurityContext().GetUserId()
 
-	result, err := repo.ImportCSV(ctx.GetContext(), tenantID, userID, bytes.NewBufferString(req.CSV))
+	// Each row is checked against the accounts it touches; a refused row is rejected.
+	result, err := manualDepWriter(ctx, repo, security.SecurityAccessTypeCreate).ImportCSV(ctx.GetContext(), tenantID, userID, bytes.NewBufferString(req.CSV))
 	if err != nil {
 		ctx.GetLogger().Error("csv import failed", "error", err)
 		c.JSON(400, common.ErrorActionBadRequest("CSV import failed: "+err.Error()))
@@ -303,10 +325,10 @@ func handleKgResolveManualDependency(actionPayload *ActionRequest, c *gin.Contex
 		return
 	}
 
-	updated, err := repo.SetResolvedNodes(ctx.GetContext(), tenantID, req.ID, req.SourceNodeID, req.DestinationNodeID)
+	updated, err := manualDepWriter(ctx, repo, security.SecurityAccessTypeUpdate).SetResolvedNodes(ctx.GetContext(), tenantID, req.ID, req.SourceNodeID, req.DestinationNodeID)
 	if err != nil {
 		ctx.GetLogger().Error("resolve manual dependency failed", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("Failed to resolve manual dependency: "+err.Error()))
+		c.JSON(manualDepWriteStatus(err, 400), common.ErrorActionBadRequest("Failed to resolve manual dependency: "+err.Error()))
 		return
 	}
 	auditManualDep(ctx, audit.EventTypeKGDependencyResolve, audit.EventActionUpdate, fmt.Sprint(req.ID), map[string]any{
@@ -346,6 +368,10 @@ func handleKgReresolveManualDependency(actionPayload *ActionRequest, c *gin.Cont
 		return
 	}
 
+	if err := manualDepWriter(ctx, repo, security.SecurityAccessTypeUpdate).CheckExistingWrite(ctx.GetContext(), tenantID, req.ID); err != nil {
+		c.JSON(manualDepWriteStatus(err, 400), common.ErrorActionBadRequest("Failed to re-resolve manual dependency: "+err.Error()))
+		return
+	}
 	updated, err := repo.ResolveAndPersist(ctx.GetContext(), tenantID, req.ID)
 	if err != nil {
 		ctx.GetLogger().Error("re-resolve manual dependency failed", "error", err)
@@ -394,6 +420,8 @@ func handleKgReresolveManualDependencies(actionPayload *ActionRequest, c *gin.Co
 		}
 	}
 
+	// Not account-checked: it re-runs the stored declarations through the
+	// resolver, which every KG build already does; it changes no declaration.
 	results, err := repo.ReresolveAll(ctx.GetContext(), tenantID, filter)
 	if err != nil {
 		ctx.GetLogger().Error("bulk re-resolve failed", "error", err)
@@ -417,6 +445,11 @@ func handleKgDeleteAllManualDependencies(actionPayload *ActionRequest, c *gin.Co
 		return
 	}
 
+	// Withdraws every account's dependencies, so it takes tenant-wide access.
+	if !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeDelete) {
+		c.JSON(403, common.ErrorActionForbidden("deleting all manual dependencies needs tenant admin access"))
+		return
+	}
 	rowsDeactivated, edgesDeleted, err := repo.SoftDeleteAll(ctx.GetContext(), tenantID)
 	if err != nil {
 		ctx.GetLogger().Error("delete-all manual dependencies failed", "error", err)

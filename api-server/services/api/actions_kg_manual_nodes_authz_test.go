@@ -10,7 +10,7 @@ import (
 
 // An account admin writes declarations only in their own accounts; one outside
 // any account belongs to the tenant, so it needs tenant-wide access.
-func TestManualNodeAuthorizer(t *testing.T) {
+func TestManualAccountAuthorizer(t *testing.T) {
 	ctxFor := func(role string, scoped []string) *security.SecurityContext {
 		t.Helper()
 		raw := fmt.Sprintf(`{"TenantId":"t1","UserId":"u1","Roles":[%q],"AccountIds":["acctA","acctB"],"ScopedEntityIds":{%q:%s}}`,
@@ -38,7 +38,7 @@ func TestManualNodeAuthorizer(t *testing.T) {
 		{"tenant admin, account not in the tenant", ctxFor(security.AUTH_TENANT_ADMIN_ROLE, nil), security.SecurityAccessTypeCreate, "acctZ", false},
 	}
 	for _, tc := range cases {
-		if got := manualNodeAuthorizer(tc.sc, tc.access)(tc.account); got != tc.want {
+		if got := manualAccountAuthorizer(tc.sc, tc.access)(tc.account); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 		}
 	}

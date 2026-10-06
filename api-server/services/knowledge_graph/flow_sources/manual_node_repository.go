@@ -62,7 +62,7 @@ type ManualNodeCreate struct {
 	DeclaredByUserID string `json:"-"`
 	// Authorize, when set, is asked about the resolved account before
 	// anything is read or written for it.
-	Authorize ManualNodeAuthorizer `json:"-"`
+	Authorize ManualAccountAuthorizer `json:"-"`
 }
 
 // ManualNodeSchemaAccount is one place a node can be declared, with the types
@@ -769,7 +769,7 @@ type ManualNodeCSVResult struct {
 // ImportCSV declares one node per row. A row names its account by id or by
 // provider account number (blank = outside any connected account), its
 // network by resource id or name, and its labels as k=v;k=v.
-func (r *ManualNodeRepository) ImportCSV(ctx context.Context, graph ManualNodeGraphWriter, tenantID, userID string, authorize ManualNodeAuthorizer, body io.Reader) (*ManualNodeCSVResult, error) {
+func (r *ManualNodeRepository) ImportCSV(ctx context.Context, graph ManualNodeGraphWriter, tenantID, userID string, authorize ManualAccountAuthorizer, body io.Reader) (*ManualNodeCSVResult, error) {
 	if tenantID == "" {
 		return nil, ErrTenantIDRequired
 	}
