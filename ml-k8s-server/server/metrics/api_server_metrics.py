@@ -18,7 +18,7 @@ it did before, and only the transport changes.
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from urllib3 import Retry
 
@@ -339,6 +339,7 @@ def query_utilisation_via_api_server(
     metric_provider: str = "",
     metric_provider_source: str = "",
     timeout: Optional[int] = None,
+    on_key_error: Callable[[str, str], None] = lambda key, error: None,
 ) -> Dict[str, List[dict]]:
     """Ask api-server for metric KEYS, and let it decide which provider answers.
 
@@ -362,7 +363,9 @@ def query_utilisation_via_api_server(
     Returns ``{query_key: [series]}`` in the relay's ``series_list_result`` shape, with
     one entry per key that came back with data. A key the provider cannot answer is
     absent and its reason is logged, so "unsupported" cannot be read as "measured
-    zero".
+    zero". ``on_key_error`` also receives each ``(key, error)`` the provider rejected,
+    for a caller that can do something about the reason -- the other keys' answers
+    are still returned, which raising would lose.
 
     Raises the same three error classes as ``query_metrics_via_api_server``.
     """
@@ -445,6 +448,7 @@ def query_utilisation_via_api_server(
                 # answers, and the caller decides whether it can proceed without this
                 # one. Raising here would lose them.
                 logger.warning(f"utilisation key '{key}' failed: {error}")
+                on_key_error(key, str(error))
                 continue
             note = result.get("note")
             if note:
