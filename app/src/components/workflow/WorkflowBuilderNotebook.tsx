@@ -64,6 +64,7 @@ import { validateWorkflowForSave, wouldCreateCycle } from './utils/workflowValid
 import { parseDurationToSeconds } from './utils/taskUtils';
 import { extractTriggersFromNodes, extractTasksFromWorkflowNodes, getPreviousNodesOutputSchemas } from './utils/workflowTaskExtraction';
 import { disableTask, enableTask } from './utils/toggleTaskDisable';
+import { defaultVersionStatus, VERSION_STATUS_HELP, type VersionStatus } from './utils/versionStatus';
 import {
   cleanupSwitchReferencesAfterDelete,
   findExecutionTaskForNode,
@@ -125,7 +126,6 @@ const TriggerWorkflowModal = lazy(() => import('./components/TriggerWorkflowModa
 // The three statuses a version (and, once promoted, the workflow) can be in.
 // Shared by the live row's status control and the Make-live dialog, so it lives
 // at module scope rather than being re-allocated per version row.
-type VersionStatus = 'ACTIVE' | 'PAUSED' | 'INACTIVE';
 const VERSION_STATUS_ITEMS: { value: VersionStatus; label: string; tone: LabelTone; dotColor: string }[] = [
   { value: 'ACTIVE', label: 'Active', tone: 'success', dotColor: 'var(--ds-green-600)' },
   { value: 'PAUSED', label: 'Paused', tone: 'warning', dotColor: 'var(--ds-amber-600)' },
@@ -545,17 +545,14 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   const [publishDescription, setPublishDescription] = useState('');
   const [publishSetLive, setPublishSetLive] = useState(true);
   // Initial status the published version (and the workflow row, when
-  // setLive=true) lands in. Default PAUSED matches the backend default so the
-  // user must opt in to ACTIVE — V746 contract. The live row's dropdown in the
-  // version drawer is the long-term knob, but offering the initial value here
-  // saves a round-trip when the user already knows what they want.
-  const [publishStatus, setPublishStatus] = useState<'ACTIVE' | 'PAUSED' | 'INACTIVE'>('PAUSED');
+  // setLive=true) lands in. Seeded from the live version each time the dialog opens.
+  const [publishStatus, setPublishStatus] = useState<VersionStatus>('PAUSED');
   const [publishing, setPublishing] = useState(false);
   const [confirmLiveVersion, setConfirmLiveVersion] = useState<WorkflowVersionEntry | null>(null);
   // Status the promoted version lands in. Asked for at promotion time because
   // that is the only moment a version's status starts having runtime effect —
   // non-live versions no longer expose a status control at all.
-  const [makeLiveStatus, setMakeLiveStatus] = useState<VersionStatus>('ACTIVE');
+  const [makeLiveStatus, setMakeLiveStatus] = useState<VersionStatus>('PAUSED');
   const [settingLive, setSettingLive] = useState(false);
   const [confirmDeleteVersion, setConfirmDeleteVersion] = useState<WorkflowVersionEntry | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -2133,8 +2130,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     setPublishName('');
     setPublishDescription('');
     setPublishSetLive(true);
-    // Reset to PAUSED each open so the safer default always wins.
-    setPublishStatus('PAUSED');
+    setPublishStatus(defaultVersionStatus(workflowDataRef.current?.live_version_status));
     setPublishDialogOpen(true);
   }, []);
 
@@ -4951,7 +4947,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                                   tone='secondary'
                                   size='sm'
                                   onClick={() => {
-                                    setMakeLiveStatus('ACTIVE');
+                                    setMakeLiveStatus(defaultVersionStatus(workflowData?.live_version_status));
                                     setConfirmLiveVersion(v);
                                   }}
                                   disabled={anyInFlight}
@@ -5181,9 +5177,9 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                   minRows={2}
                 />
               </Box>
-              {/* Per-version status (V746). Default PAUSED so the user has to
-                  actively choose ACTIVE — matches the backend default and
-                  prevents surprise auto-fires on publish. When setLive is on,
+              {/* Per-version status (V746). Defaults to the live version's
+                  status (PAUSED when none) so publishing never flips triggers
+                  the user didn't touch — same default as Make live. When setLive is on,
                   the chosen status also mirrors onto workflows.status via
                   DAO.SetLiveVersion in a single tx. After the fact it can be
                   changed from the live row's status control in the version
@@ -5192,7 +5188,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 <Select
                   size='sm'
                   label='Version status'
-                  help="Active = all triggers fire. Paused = manual only. Inactive = blocked. Change later from the live version's status control, or when you promote another version."
+                  help={VERSION_STATUS_HELP}
                   value={publishStatus}
                   onChange={(next) => setPublishStatus(next as VersionStatus)}
                   disabled={publishing}
@@ -5246,14 +5242,13 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 live pointer does not modify what you&apos;re editing.
               </Typography>
               {/* Promotion is the moment a version's status starts mattering, so
-                  it is chosen here rather than on the archived row. Default
-                  ACTIVE: the user is explicitly putting this version into
-                  service, so "running" is the expected landing state. */}
+                  it is chosen here rather than on the archived row. Defaults to
+                  the live version's status, same as the Publish dialog. */}
               <Box data-testid='workflow-make-live-status-select' sx={{ mt: 2 }}>
                 <Select
                   size='sm'
                   label='Version status'
-                  help='Active = all triggers fire. Paused = manual runs only. Inactive = blocked.'
+                  help={VERSION_STATUS_HELP}
                   value={makeLiveStatus}
                   onChange={(next) => setMakeLiveStatus(next as VersionStatus)}
                   disabled={settingLive}
