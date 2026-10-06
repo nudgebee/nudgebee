@@ -1,7 +1,11 @@
 import {
   breachedStep,
+  breachingLinePreference,
   hasThresholds,
+  holdLabel,
   isCompleteStep,
+  lineBreaches,
+  linePreferenceKey,
   panelBreach,
   panelBreaches,
   panelThresholdsOf,
@@ -12,6 +16,7 @@ import {
 } from '../panelThresholds';
 import type { Panel, PanelThresholdStep } from '@api1/dashboards';
 import type { StatTotal } from '../panelSeries';
+import type { PanelSeries } from '../usePanelData';
 
 const panelWith = (options: unknown, type = 'stat'): Panel =>
   ({ id: 1, title: 'CPU', type, datasource: 'metrics', grid_pos: { x: 0, y: 0, w: 4, h: 4 }, options } as unknown as Panel);
@@ -108,19 +113,26 @@ describe('which step a value lands in', () => {
 });
 
 describe('which panels evaluate thresholds', () => {
-  it('is the two that show one number', () => {
+  it('is the two that show one number, and the chart that judges each line', () => {
     expect(hasThresholds('stat')).toBe(true);
     expect(hasThresholds('gauge')).toBe(true);
-    for (const type of ['timeseries', 'bar', 'table', 'text'] as const) expect(hasThresholds(type)).toBe(false);
+    expect(hasThresholds('timeseries')).toBe(true);
+    for (const type of ['bar', 'table', 'text'] as const) expect(hasThresholds(type)).toBe(false);
   });
 
   /*
-   * The editor drops thresholds when the visualisation changes, but a panel
-   * saved before that, or imported, can still carry them — and a chart has a
-   * value per series, so there is no one number the tint could be about.
+   * A chart has a value per series, so there is no one number the shown-number
+   * path could be about: its steps go through lineBreaches, never panelBreach.
    */
-  it('leaves a chart plain even when it carries steps', () => {
+  it('never judges a chart by one number', () => {
     expect(panelBreach(panelWith({ thresholds: steps([80, 'red']) }, 'timeseries'), 95)).toBeUndefined();
+    expect(
+      panelBreaches(
+        panelWith({ thresholds: steps([80, 'red']) }, 'timeseries'),
+        { total: 95, rows: [], caption: '', partial: false, combine: 'sum' },
+        []
+      ).frame
+    ).toBeUndefined();
     expect(panelBreach(panelWith({ thresholds: steps([80, 'red']) }, 'stat'), 95)).toEqual({ value: 80, color: 'red' });
   });
 
@@ -376,5 +388,232 @@ describe('which overlapping steps the editor spells out', () => {
         { value: 99, color: 'green', op: 'lte', applies_to: 'account', account_id: 'acc-9' },
       ])
     ).toEqual([]);
+  });
+});
+
+/*
+ * A chart judges every drawn line on the samples it is showing. These fixtures
+ * are a one-account chart sampled every 30s for 10 minutes, ending at t=600s.
+ */
+describe('a chart’s thresholds, line by line', () => {
+  const STEP = 30_000;
+  const axis = Array.from({ length: 21 }, (_, i) => i * STEP);
+  const chart = (thresholds: PanelThresholdStep[]) => panelWith({ thresholds }, 'timeseries');
+  const line = (label: string, values: (number | null)[], extra: Partial<PanelSeries> = {}): PanelSeries => ({ label, values, ...extra });
+  const accounts = [{ value: 'acc-1', label: 'prod-eu' }];
+  const flat = (v: number) => axis.map(() => v);
+
+  it('fires a step with no hold on a line’s latest sample, and names the line', () => {
+    const out = lineBreaches(chart(steps([80, 'red'])), [line('api', flat(90)), line('web', flat(10))], axis, accounts);
+    expect(out.frame?.line).toBe('api');
+    expect(out.all).toHaveLength(1);
+    expect(out.spans).toEqual([]);
+  });
+
+  it('holds a step only once every sample inside the hold is past the line', () => {
+    const hold: PanelThresholdStep = { value: 70, color: 'red', for: 300 };
+    // Above 70 for the last 6 minutes: 12 samples, more than the 10 the hold needs.
+    const sustained = axis.map((t) => (t >= 240_000 ? 85 : 20));
+    // A spike: above 70 for the last 90 seconds only.
+    const spike = axis.map((t) => (t >= 510_000 ? 85 : 20));
+    const out = lineBreaches(chart([hold]), [line('sustained', sustained), line('spike', spike)], axis, accounts);
+    expect(out.all.map((b) => b.line)).toEqual(['sustained']);
+    expect(out.frame?.from).toBe(240_000);
+    expect(out.frame?.to).toBe(600_000);
+    // The band covers the whole run, which started before the hold did.
+    expect(out.spans).toEqual([{ series: 0, step: hold, from: 8, to: 20 }]);
+  });
+
+  it('resets the hold on a gap longer than the line’s own spacing, but not on the shared axis’s nulls', () => {
+    const hold: PanelThresholdStep = { value: 70, color: 'red', for: 300 };
+    // A coarser line, sampled every 60s on a 30s axis: every other instant is null, which is not a gap.
+    const coarse = axis.map((t, i) => (i % 2 === 0 ? 85 : null));
+    // A line that went quiet for two minutes inside the hold.
+    const quiet = axis.map((t) => (t >= 420_000 && t < 540_000 ? null : 85));
+    const out = lineBreaches(chart([hold]), [line('coarse', coarse), line('quiet', quiet)], axis, accounts);
+    expect(out.all.map((b) => b.line)).toEqual(['coarse']);
+  });
+
+  it('does not extend the band back across a gap', () => {
+    const hold: PanelThresholdStep = { value: 70, color: 'red', for: 300 };
+    // Above the line at the start, then quiet for three and a half minutes, then above it for the last six.
+    const values = axis.map((t) => (t < 60_000 ? 90 : t < 240_000 ? null : 90));
+    const out = lineBreaches(chart([hold]), [line('api', values)], axis, accounts);
+    expect(out.frame?.from).toBe(240_000);
+    expect(out.spans[0]).toMatchObject({ from: 8, to: 20 });
+  });
+
+  it('ignores a line that ended well before the chart did', () => {
+    // Six minutes before the end: past the five-minute allowance for a late provider.
+    const dead = axis.map((t) => (t <= 240_000 ? 95 : null));
+    const out = lineBreaches(chart(steps([80, 'red'])), [line('dead', dead)], axis, accounts);
+    expect(out.frame).toBeUndefined();
+  });
+
+  it('draws the consolidated total but never judges it', () => {
+    const out = lineBreaches(
+      chart(steps([80, 'red'])),
+      [
+        line('a · cpu', flat(10), { accountLabel: 'a' }),
+        line('b · cpu', flat(10), { accountLabel: 'b' }),
+        line('All accounts', flat(90), { consolidated: true }),
+      ],
+      axis,
+      [
+        { value: 'a', label: 'a' },
+        { value: 'b', label: 'b' },
+      ]
+    );
+    expect(out.frame).toBeUndefined();
+  });
+
+  it('reports a hold the sampling is too coarse to judge instead of firing or ignoring it', () => {
+    // Sampled every 10 minutes: a 5-minute hold has at most one sample in it.
+    const coarseAxis = Array.from({ length: 7 }, (_, i) => i * 600_000);
+    const hold: PanelThresholdStep = { value: 70, color: 'red', for: 300 };
+    const out = lineBreaches(
+      chart([hold, { value: 95, color: 'amber' }]),
+      [
+        line(
+          'api',
+          coarseAxis.map(() => 99)
+        ),
+      ],
+      coarseAxis,
+      accounts
+    );
+    expect(out.tooCoarse).toEqual([hold]);
+    // The step without a hold still fires.
+    expect(out.frame?.step.value).toBe(95);
+  });
+
+  it('points an account step at that account’s lines only', () => {
+    const out = lineBreaches(
+      chart([{ value: 80, color: 'red', applies_to: 'account', account_id: 'b' }]),
+      [line('a · cpu', flat(90), { accountLabel: 'a' }), line('b · cpu', flat(90), { accountLabel: 'b' })],
+      axis,
+      [
+        { value: 'a', label: 'a' },
+        { value: 'b', label: 'b' },
+      ]
+    );
+    expect(out.all.map((b) => b.line)).toEqual(['b · cpu']);
+  });
+
+  it('frames the panel for the most severe line and lists the rest', () => {
+    const out = lineBreaches(chart(steps([80, 'red'], [50, 'amber'])), [line('warm', flat(60)), line('hot', flat(90))], axis, accounts);
+    expect(out.frame?.line).toBe('hot');
+    expect(out.all.map((b) => b.line)).toEqual(['hot', 'warm']);
+  });
+
+  it('rejects a hold outside two minutes to an hour', () => {
+    expect(isCompleteStep({ value: 80, color: 'red', for: 60 })).toBe(false);
+    expect(isCompleteStep({ value: 80, color: 'red', for: 120 })).toBe(true);
+    expect(isCompleteStep({ value: 80, color: 'red', for: 3600 })).toBe(true);
+    expect(isCompleteStep({ value: 80, color: 'red', for: 3601 })).toBe(false);
+    expect(isCompleteStep({ value: 80, color: 'red', for: 150.5 })).toBe(false);
+  });
+
+  it('writes a hold the way the badge does', () => {
+    expect(holdLabel(300)).toBe('5m');
+    expect(holdLabel(3600)).toBe('1h');
+    expect(holdLabel(5400)).toBe('90m');
+  });
+});
+
+/*
+ * Regressions found by re-testing #40268 with worst-case inputs: each of these
+ * failed on the first version of the line evaluator.
+ */
+describe('a chart’s holds, worst cases', () => {
+  const STEP = 30_000;
+  const axis = Array.from({ length: 121 }, (_, i) => i * STEP); // an hour at 30s
+  const END = axis[axis.length - 1];
+  const range = { start: 0, end: END };
+  const chart = (thresholds: PanelThresholdStep[], type = 'timeseries') => panelWith({ thresholds }, type);
+  const line = (label: string, values: (number | null)[], extra: Partial<PanelSeries> = {}): PanelSeries => ({ label, values, ...extra });
+  const accounts = [{ value: 'acc-1', label: 'prod-eu' }];
+  const hold5m: PanelThresholdStep = { value: 80, color: 'red', for: 300 };
+
+  it('does not fire for a line younger than the hold', () => {
+    // A pod that appeared four minutes ago, already hot.
+    const young = axis.map((t) => (t >= END - 240_000 ? 90 : null));
+    expect(lineBreaches(chart([hold5m]), [line('young', young)], axis, accounts, range).frame).toBeUndefined();
+  });
+
+  it('fires once the run of crossing samples spans the hold exactly', () => {
+    const exact = axis.map((t) => (t >= END - 300_000 ? 90 : 10));
+    const out = lineBreaches(chart([hold5m]), [line('exact', exact)], axis, accounts, range);
+    expect(out.frame?.from).toBe(END - 300_000);
+  });
+
+  it('judges currency against the requested end, so a panel whose every line went quiet stays plain', () => {
+    // The only line stopped forty minutes ago at 95; the axis ends with it.
+    const stale = axis.slice(0, 41);
+    const out = lineBreaches(
+      chart([hold5m]),
+      [
+        line(
+          'stale',
+          stale.map(() => 95)
+        ),
+      ],
+      stale,
+      accounts,
+      range
+    );
+    expect(out.frame).toBeUndefined();
+  });
+
+  it('still counts a line a late provider has not caught up on', () => {
+    // Three minutes behind the end: inside the five-minute allowance.
+    const late = axis.map((t) => (t <= END - 180_000 ? 95 : null));
+    expect(lineBreaches(chart([hold5m]), [line('late', late)], axis, accounts, range).frame?.line).toBe('late');
+  });
+
+  it('reports a hold longer than the time range instead of skipping it silently', () => {
+    const fifteen = axis.slice(0, 31); // fifteen minutes
+    const hold30: PanelThresholdStep = { value: 80, color: 'red', for: 1800 };
+    const out = lineBreaches(
+      chart([hold30]),
+      [
+        line(
+          'hot',
+          fifteen.map(() => 90)
+        ),
+      ],
+      fifteen,
+      accounts,
+      { start: 0, end: fifteen[30] }
+    );
+    expect(out.frame).toBeUndefined();
+    expect(out.tooLong).toEqual([hold30]);
+  });
+
+  it('takes holds in whole minutes only, so the badge never rounds one', () => {
+    expect(isCompleteStep({ value: 80, color: 'red', for: 150 })).toBe(false);
+    expect(isCompleteStep({ value: 80, color: 'red', for: 180 })).toBe(true);
+  });
+
+  it('leaves a stat or gauge step that carries a hold undrawn, rather than claiming a hold it cannot judge', () => {
+    const stat = chart([hold5m, { value: 50, color: 'amber' }], 'stat');
+    expect(panelThresholdsOf(stat)).toEqual([{ value: 50, color: 'amber' }]);
+    expect(panelBreach(stat, 90)).toEqual({ value: 50, color: 'amber' });
+  });
+
+  it('keeps a quiet breaching line through the cap only for the account its step names', () => {
+    const scoped = chart([{ value: 1, color: 'red', op: 'lte', applies_to: 'account', account_id: 'acc-1' }]);
+    const accountOf = (s: { accountLabel?: string }) => (s.accountLabel === 'prod-eu' ? 'acc-1' : 'acc-2');
+    const prefer = breachingLinePreference(scoped, accountOf)!;
+    expect(prefer({ label: 'eu', accountLabel: 'prod-eu', timestamps: [0], values: [0] })).toBe(true);
+    expect(prefer({ label: 'us', accountLabel: 'prod-us', timestamps: [0], values: [0] })).toBe(false);
+    expect(breachingLinePreference(chart([]), accountOf)).toBeUndefined();
+  });
+
+  it('keys the cap preference on what decides it, and only for charts', () => {
+    expect(linePreferenceKey(chart([hold5m]))).not.toBe('');
+    expect(linePreferenceKey(chart([hold5m], 'stat'))).toBe('');
+    // The colour and the hold do not change which lines cross.
+    expect(linePreferenceKey(chart([{ ...hold5m, color: 'amber', for: 600 }]))).toBe(linePreferenceKey(chart([hold5m])));
   });
 });

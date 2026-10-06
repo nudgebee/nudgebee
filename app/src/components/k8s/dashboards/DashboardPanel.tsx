@@ -27,7 +27,23 @@ import type { AccountOption, Panel } from '@api1/dashboards';
 import { addedColumns, columnSettings, panelColumnsOf, renderRowUrl } from './panelColumns';
 import PanelAccountBreakdown, { BreakdownRows, breachedPlacement, breakdownPlacement } from './PanelAccountBreakdown';
 import PanelGauge from './PanelGauge';
-import { hasThresholds, OP_PHRASE, OP_SYMBOL, opOf, panelBreaches, thresholdTone, type Breach } from './panelThresholds';
+import {
+  forOf,
+  holdLabel,
+  isLinePanel,
+  lineBreaches,
+  OP_PHRASE,
+  OP_SYMBOL,
+  opOf,
+  panelBreaches,
+  panelThresholdsOf,
+  showsOneNumber,
+  thresholdTone,
+  type Breach,
+  type LineBreaches,
+  type PanelBreaches,
+} from './panelThresholds';
+import { thresholdChartPlugin, type ThresholdDrawing } from './panelThresholdChart';
 import PanelState, { type PanelStateTone } from './PanelState';
 import { usePanelData, type ColumnKind, type PanelData, type PanelErrorKind, type PanelSeries } from './usePanelData';
 import { applyAccountFilter, describePanelScope, effectiveFilterAccount, panelQueryAccounts, resolvePanelAccounts } from './panelAccounts';
@@ -149,14 +165,49 @@ function formatValue(value: number | null | undefined, unit?: string): string {
   return unit ? `${rounded} ${unit}` : rounded;
 }
 
-/** The badge's text: the crossed line, and whose number crossed it when that is not the one on the card. */
+/** A series label short enough for a badge; the hover carries the whole thing. */
+const BADGE_LABEL_CHARS = 28;
+function shortLabel(label: string): string {
+  return label.length > BADGE_LABEL_CHARS ? `${label.slice(0, BADGE_LABEL_CHARS - 1)}…` : label;
+}
+
+/** "10:42" — the local clock time of an epoch-ms instant, for the hover's "to 10:42". */
+function clockTime(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** "≥ 70", or "≥ 70 for 5m" for a step with a hold. */
+function stepLabel(b: Breach): string {
+  const hold = forOf(b.step);
+  return `${OP_SYMBOL[opOf(b.step)]} ${b.step.value}${hold !== undefined ? ` for ${holdLabel(hold)}` : ''}`;
+}
+
+/**
+ * The badge's text: the crossed line, and whose number crossed it when that is
+ * not the one on the card — an account's figure on a stat, a series on a chart.
+ */
 function breachLabel(b: Breach): string {
-  const line = `${OP_SYMBOL[opOf(b.step)]} ${b.step.value}`;
+  const line = stepLabel(b);
+  if (b.line) return `${shortLabel(b.line)} ${line}`;
   return b.account ? `${b.account} ${line}` : line;
 }
 
-/** The badge's hover: the same breach as a sentence, with the number that crossed. */
+/**
+ * The badge's hover: the same breach as a sentence, with the number that crossed.
+ * A hold says which samples it rests on — the chart evaluates once, at the end
+ * of the range it was opened on, so "for the 5 minutes to 10:42" is what is true.
+ */
 function breachSentence(b: Breach, unit?: string): string {
+  const hold = forOf(b.step);
+  if (b.line) {
+    if (hold !== undefined && b.from !== undefined && b.to !== undefined) {
+      return `${b.line}: every sample from ${clockTime(b.from)} to ${clockTime(b.to)} was ${OP_PHRASE[opOf(b.step)]} ${b.step.value} — ${holdLabel(
+        hold
+      )} or longer. Latest ${formatValue(b.value, unit)}.`;
+    }
+    return `${b.line} is at ${formatValue(b.value, unit)}, ${OP_PHRASE[opOf(b.step)]} the ${b.step.value} threshold.`;
+  }
   const phrase = `${OP_PHRASE[opOf(b.step)]} the ${b.step.value} threshold.`;
   return b.account ? `${b.account} is at ${formatValue(b.value, unit)}, ${phrase}` : `${formatValue(b.value, unit)} is ${phrase}`;
 }
@@ -400,7 +451,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
    * comes back as rows whatever the panel type says.
    */
   const stat = React.useMemo(() => {
-    if (!data || data.table || !hasThresholds(panel.type) || data.series.length === 0) return null;
+    if (!data || data.table || !showsOneNumber(panel.type) || data.series.length === 0) return null;
     return statTotal(
       data.series,
       (panel.targets || []).map((t) => t.ref_id || 'A'),
@@ -416,7 +467,23 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
    * thresholds, which is every panel authored before them, resolves to nothing
    * and keeps its plain frame.
    */
-  const breaches = React.useMemo(() => panelBreaches(panel, stat, shownAccounts), [panel, stat, shownAccounts]);
+  const breaches = React.useMemo<PanelBreaches | LineBreaches>(
+    () =>
+      isLinePanel(panel.type)
+        ? lineBreaches(panel, data?.series || [], data?.timestamps, shownAccounts, { start: startTime, end: endTime })
+        : panelBreaches(panel, stat, shownAccounts),
+    [panel, data, stat, shownAccounts, startTime, endTime]
+  );
+  /** A chart's thresholds have more to say than a stat's: where the holds were met, and what could not be judged. */
+  const lineVerdict = 'spans' in breaches ? breaches : undefined;
+  /**
+   * What the chart plugin draws. A ref, read at draw time: chart.js receives its
+   * plugins once, at creation, so a plugin built per render would keep drawing
+   * the first render's steps after an edit in the preview.
+   */
+  const thresholdDrawing = React.useRef<ThresholdDrawing>({ steps: [], spans: [] });
+  thresholdDrawing.current = { steps: isLinePanel(panel.type) ? panelThresholdsOf(panel) : [], spans: lineVerdict?.spans || [] };
+  const thresholdPlugin = React.useMemo(() => thresholdChartPlugin(() => thresholdDrawing.current), []);
   const breach = breaches.frame?.step;
   const tone = breach ? thresholdTone(breach.color) : undefined;
 
@@ -661,6 +728,8 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           // parts it sums. Its colour is left to the chart, as every line's is:
           // naming one colour would switch off the automatic palette for the rest.
           const drawn = [...data.series, ...consolidatedSeries(data.series)];
+          // The threshold lines and hold bands; a no-op on a panel without steps.
+          // Spans index `data.series`, which `drawn` starts with, so they line up.
           // Chart.Line = @shared/charts/LineCharts (chart.js).
           return (
             <Chart.Line
@@ -671,12 +740,13 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
               minHeight={chartHeight}
               dynamicHeight={false}
               legendOptions={{ renderer: 'html', unit: panel.unit }}
+              customPlugins={[thresholdPlugin]}
             />
           );
         }
       }
     },
-    [panel, data, stat, breaches, filtering]
+    [panel, data, stat, breaches, thresholdPlugin, filtering]
   );
   const drawing = React.useMemo(() => renderDrawing(CHART_HEIGHT), [renderDrawing]);
   // Built only while the modal is open, so a closed one costs no second chart.
@@ -784,21 +854,52 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
         {breaches.frame && tone && (
           <Tooltip
             title={
-              breaches.all.length === 1 ? (
-                breachSentence(breaches.frame, panel.unit)
-              ) : (
-                <Box sx={{ display: 'grid', gap: ds.space[0] }}>
-                  {breaches.all.map((b, i) => (
-                    // Positional: the list is derived fresh from the data and never reordered in place.
-                    <span key={i}>{breachSentence(b, panel.unit)}</span>
-                  ))}
-                </Box>
-              )
+              <Box sx={{ display: 'grid', gap: ds.space[0] }}>
+                {breaches.all.map((b, i) => (
+                  // Positional: the list is derived fresh from the data and never reordered in place.
+                  <span key={i}>{breachSentence(b, panel.unit)}</span>
+                ))}
+                {/* A line the chart never drew is a line it never judged. */}
+                {lineVerdict && data?.capped && (
+                  <span>
+                    Judged on the {data.capped.shown} lines shown, of {data.capped.total}.
+                  </span>
+                )}
+              </Box>
             }
           >
             <Box component='span' data-testid={`panel-threshold-${panel.id}`} sx={{ display: 'inline-flex', cursor: 'help' }}>
               <Chip size='2xs' tone={tone.chip}>
                 {breachLabel(breaches.frame)}
+                {breaches.all.length > 1 ? ` +${breaches.all.length - 1}` : ''}
+              </Chip>
+            </Box>
+          </Tooltip>
+        )}
+        {/* A hold the chart cannot judge at this range is said, not skipped: a
+            plain frame would read as "nothing crossed" when nothing was checked. */}
+        {lineVerdict && lineVerdict.tooCoarse.length > 0 && (
+          <Tooltip
+            title={`At this range the chart has fewer than two samples inside a ${holdLabel(
+              Math.min(...lineVerdict.tooCoarse.map((step) => forOf(step) || 0))
+            )} hold, so that threshold cannot be judged. Pick a shorter time range.`}
+          >
+            <Box component='span' data-testid={`panel-threshold-coarse-${panel.id}`} sx={{ display: 'inline-flex', cursor: 'help' }}>
+              <Chip size='2xs' tone='subtle'>
+                Zoom in to judge {holdLabel(Math.min(...lineVerdict.tooCoarse.map((step) => forOf(step) || 0)))} hold
+              </Chip>
+            </Box>
+          </Tooltip>
+        )}
+        {lineVerdict && lineVerdict.tooCoarse.length === 0 && lineVerdict.tooLong.length > 0 && (
+          <Tooltip
+            title={`This time range is too short to contain a whole ${holdLabel(
+              Math.max(...lineVerdict.tooLong.map((step) => forOf(step) || 0))
+            )} hold, so that threshold cannot be judged. Pick a longer time range.`}
+          >
+            <Box component='span' data-testid={`panel-threshold-short-${panel.id}`} sx={{ display: 'inline-flex', cursor: 'help' }}>
+              <Chip size='2xs' tone='subtle'>
+                Widen range to judge {holdLabel(Math.max(...lineVerdict.tooLong.map((step) => forOf(step) || 0)))} hold
               </Chip>
             </Box>
           </Tooltip>

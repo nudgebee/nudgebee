@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import PanelEditorModal from '../PanelEditorModal';
 import type { AccountOption, Panel, PanelThresholdStep } from '@api1/dashboards';
 
@@ -68,9 +68,63 @@ describe('PanelEditorModal — thresholds', () => {
     expect(screen.getByText('Thresholds')).toBeInTheDocument();
   });
 
-  it('is not offered on a chart, which has a value per series', () => {
+  it('is offered on a chart too, with a hold per step, and not on a table', () => {
     renderEditor(panel('timeseries'));
+    expect(screen.getByText('Thresholds')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Add threshold'));
+    expect(screen.getByTestId('threshold-for-0')).toBeInTheDocument();
+    cleanup();
+    renderEditor(panel('table'));
     expect(screen.queryByText('Thresholds')).toBeNull();
+  });
+
+  it('stores the hold in seconds and holds Save for one outside two minutes to an hour', async () => {
+    const onSave = renderEditor(panel('timeseries', [{ value: 80, color: 'red' }]));
+    fireEvent.change(screen.getByTestId('threshold-for-0'), { target: { value: '1' } });
+    expect(screen.getByTestId('threshold-bad-hold')).toBeInTheDocument();
+    await save();
+    expect(onSave).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByTestId('threshold-for-0'), { target: { value: '5' } });
+    expect(screen.queryByTestId('threshold-bad-hold')).toBeNull();
+    await save();
+    expect(saved(onSave).options?.thresholds).toEqual([{ value: 80, color: 'red', for: 300 }]);
+  });
+
+  it('takes a hold in whole minutes', async () => {
+    const onSave = renderEditor(panel('timeseries', [{ value: 80, color: 'red' }]));
+    fireEvent.change(screen.getByTestId('threshold-for-0'), { target: { value: '2.5' } });
+    expect(screen.getByTestId('threshold-bad-hold')).toHaveTextContent('whole number of minutes');
+    await save();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('clears an imported hold it cannot read, in one click', async () => {
+    const onSave = renderEditor(panel('timeseries', [{ value: 80, color: 'red', for: '300' as unknown as number }]));
+    expect(screen.getByTestId('threshold-bad-hold')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Clear this hold'));
+    expect(screen.queryByTestId('threshold-bad-hold')).toBeNull();
+    await save();
+    expect(saved(onSave).options?.thresholds).toEqual([{ value: 80, color: 'red' }]);
+  });
+
+  /*
+   * A stat has no hold field, but JSON edit and import can still put one on a
+   * step. It must neither block Save nor stay invisible.
+   */
+  it('flags a hold on a stat, saves anyway, and removes it on request', async () => {
+    const onSave = renderEditor(panel('stat', [{ value: 80, color: 'red', for: 59 }]));
+    expect(screen.getByTestId('threshold-ignored-hold')).toBeInTheDocument();
+    expect(screen.queryByTestId('threshold-bad-hold')).toBeNull();
+    fireEvent.click(screen.getByText('Remove hold'));
+    expect(screen.queryByTestId('threshold-ignored-hold')).toBeNull();
+    await save();
+    expect(saved(onSave).options?.thresholds).toEqual([{ value: 80, color: 'red' }]);
+  });
+
+  it('has no hold field on a stat, which judges one number', () => {
+    renderEditor(panel('stat', [{ value: 80, color: 'red' }]));
+    expect(screen.queryByTestId('threshold-for-0')).toBeNull();
   });
 
   it('holds Save until a new step has a number, then stores it', async () => {
@@ -125,9 +179,20 @@ describe('PanelEditorModal — thresholds', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Stat/ }));
     fireEvent.click(await screen.findByText('Time series'));
 
-    expect(screen.queryByText('Thresholds')).toBeNull();
+    // A chart offers thresholds, but a stat's rule about one total is not a rule
+    // about twenty lines, so the step does not carry across.
+    expect(screen.getByText('Thresholds')).toBeInTheDocument();
+    expect(screen.getByText('No thresholds — the panel always draws plain.')).toBeInTheDocument();
     await save();
     expect(saved(onSave).options).not.toHaveProperty('thresholds');
+  });
+
+  it('keeps the steps between a stat and a gauge, which judge the same number', async () => {
+    const onSave = renderEditor(panel('stat', [{ value: 80, color: 'red' }]));
+    fireEvent.click(screen.getByRole('button', { name: /^Stat/ }));
+    fireEvent.click(await screen.findByText('Gauge'));
+    await save();
+    expect(saved(onSave).options?.thresholds).toEqual([{ value: 80, color: 'red' }]);
   });
 
   /*

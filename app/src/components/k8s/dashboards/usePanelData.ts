@@ -8,6 +8,7 @@ import { AWS_METRICS_PROVIDER, ES_PROVIDER, isAwsAccount } from './panelProvider
 import { accountPrefixed, alignSeries, toRawSeries, type RawSeries } from './panelSeries';
 import { acquirePanelSlot } from './panelQueue';
 import { accountCappedWarning, capSeriesByAccount, MAX_CHART_SERIES, MAX_TABLE_SERIES, PANEL_TIMEOUT_MS, panelStep } from './panelBounds';
+import { breachingLinePreference, linePreferenceKey } from './panelThresholds';
 import { convertNumberToTimestamp } from 'src/utils/common';
 import { renderTemplate, type VariableValues } from './templating';
 import { appliedViewerFilters, withViewerFilters, type ViewerFilter } from './panelViewerFilters';
@@ -76,6 +77,12 @@ export interface PanelData {
    * and a cluster reporting nothing is often the one worth looking at.
    */
   emptyAccounts?: string[];
+  /**
+   * How many series the chart is drawing out of how many the query returned,
+   * when the cap in panelBounds trimmed it. A chart judging its thresholds says
+   * so in the hover, since a line it never drew is a line it never judged.
+   */
+  capped?: { shown: number; total: number };
 }
 
 interface Options {
@@ -119,6 +126,13 @@ export function usePanelData({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<PanelError | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  /**
+   * The last metrics answer, before the series cap — kept so that editing a
+   * chart's thresholds can re-rank the lines it keeps without refetching. See
+   * shapeMetrics.
+   */
+  const lastMetrics = useRef<MetricsAnswer | null>(null);
+  const preferKey = linePreferenceKey(panel);
 
   const scoped = resolvePanelAccounts(panel, accounts);
   // `nudgebee` panels reach the query engine, which takes every account in one
@@ -224,6 +238,8 @@ export function usePanelData({
     if (!enabled || !(admitted || immediate)) return;
     const targets = (panel.targets || []).filter((t) => !t.hide);
     setWarning(null);
+    // A new request: the kept answer belongs to the query being replaced.
+    lastMetrics.current = null;
     // Nothing to resolve a provider from. Say so rather than rendering an empty
     // chart that reads as "these accounts have no data".
     if (resolved.length === 0) {
@@ -574,30 +590,11 @@ export function usePanelData({
           setData(null);
           return;
         }
-        // Bounded before anything is aligned or drawn: Chart.js makes a dataset
-        // of every series and the legend a chip of each, and a per-pod query
-        // over a day of ephemeral pods answered with 4,798 of them. The viewer
-        // is told what was left out rather than shown a chart missing lines.
-        // Per account, not overall: one loud cluster would otherwise take every
-        // slot and the quiet ones would vanish with nothing saying they were asked.
-        const { kept, perAccount } = capSeriesByAccount(raw, panel.type === 'table' ? MAX_TABLE_SERIES : MAX_CHART_SERIES);
-        const notes: string[] = [];
-        // "No answer", not "no data": these accounts were asked and did not reply,
-        // which is a different fact from replying with nothing — and the one that
-        // matters when the panel adds the replies up.
-        // A stat or gauge carries this on the card — "2 of 3 accounts", with the
-        // account named on hover — so the banner would say it twice.
-        if (failed.length > 0 && panel.type !== 'stat' && panel.type !== 'gauge') {
-          notes.push(`No answer from ${failed.join(', ')} — showing the rest.`);
-        }
-        const capped = accountCappedWarning(perAccount);
-        if (capped) notes.push(capped);
-        if (notes.length > 0) setWarning(notes.join(' '));
-        // Aligned across ALL accounts at once, so a series that only one account
-        // reports still sits at the right point on the shared axis.
-        // The step the accounts were asked for is also what reconciles their
-        // answers — see snapToStep, which no-ops on a single-account panel.
-        setData({ ...alignSeries(kept, step), failedAccounts: failed, emptyAccounts: empty });
+        const answer: MetricsAnswer = { raw, failed, empty, step, accounts: resolved };
+        lastMetrics.current = answer;
+        const shaped = shapeMetrics(answer, panel);
+        if (shaped.warning) setWarning(shaped.warning);
+        setData(shaped.data);
       })
       .finally(settle);
 
@@ -623,7 +620,77 @@ export function usePanelData({
     immediate,
   ]);
 
+  // Thresholds are judged on the fetched data, not part of the fetch — but on a
+  // capped chart they decide which lines are kept. A changed step re-ranks the
+  // answer already in hand rather than asking the provider again.
+  useEffect(() => {
+    const answer = lastMetrics.current;
+    if (!answer || !preferKey) return;
+    const shaped = shapeMetrics(answer, panel);
+    if (!shaped.data.capped) return;
+    setWarning(shaped.warning);
+    setData(shaped.data);
+    // Only the preference matters here; the fetch effect owns everything else.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preferKey]);
+
   return { data, loading, error, warning };
+}
+
+/** A metrics answer as fetched: every series, before the cap. */
+interface MetricsAnswer {
+  raw: RawSeries[];
+  failed: string[];
+  empty: string[];
+  step: number;
+  /** The accounts asked, so a series' account label can be turned back into an id. */
+  accounts: { value: string; label: string }[];
+}
+
+/**
+ * Caps, aligns and annotates a metrics answer for drawing.
+ *
+ * Bounded before anything is aligned or drawn: Chart.js makes a dataset of every
+ * series and the legend a chip of each, and a per-pod query over a day of
+ * ephemeral pods answered with 4,798 of them. The viewer is told what was left
+ * out rather than shown a chart missing lines. Per account, not overall: one
+ * loud cluster would otherwise take every slot and the quiet ones would vanish
+ * with nothing saying they were asked. A chart with thresholds keeps the lines
+ * that have crossed one ahead of the busiest — see breachingLinePreference.
+ */
+function shapeMetrics(answer: MetricsAnswer, panel: Panel): { data: PanelData; warning: string | null } {
+  const { raw, failed, empty, step, accounts } = answer;
+  const idByLabel = new Map(accounts.map((a) => [a.label, a.value]));
+  const prefer = breachingLinePreference(panel, (s) =>
+    s.accountLabel ? idByLabel.get(s.accountLabel) : accounts.length === 1 ? accounts[0].value : undefined
+  );
+  const { kept, perAccount } = capSeriesByAccount(raw, panel.type === 'table' ? MAX_TABLE_SERIES : MAX_CHART_SERIES, prefer);
+  const shownCount = perAccount.reduce((n, a) => n + a.kept, 0);
+  const totalCount = perAccount.reduce((n, a) => n + a.total, 0);
+  const notes: string[] = [];
+  // "No answer", not "no data": these accounts were asked and did not reply,
+  // which is a different fact from replying with nothing — and the one that
+  // matters when the panel adds the replies up.
+  // A stat or gauge carries this on the card — "2 of 3 accounts", with the
+  // account named on hover — so the banner would say it twice.
+  if (failed.length > 0 && panel.type !== 'stat' && panel.type !== 'gauge') {
+    notes.push(`No answer from ${failed.join(', ')} — showing the rest.`);
+  }
+  const capped = accountCappedWarning(perAccount);
+  if (capped) notes.push(capped);
+  return {
+    // Aligned across ALL accounts at once, so a series that only one account
+    // reports still sits at the right point on the shared axis.
+    // The step the accounts were asked for is also what reconciles their
+    // answers — see snapToStep, which no-ops on a single-account panel.
+    data: {
+      ...alignSeries(kept, step),
+      failedAccounts: failed,
+      emptyAccounts: empty,
+      ...(totalCount > shownCount ? { capped: { shown: shownCount, total: totalCount } } : {}),
+    },
+    warning: notes.length > 0 ? notes.join(' ') : null,
+  };
 }
 
 /** Relabels an entity result with the builder's column labels, and marks which columns are timestamps. */

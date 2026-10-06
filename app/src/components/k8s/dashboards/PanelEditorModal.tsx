@@ -40,12 +40,17 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import PanelProviderRow from './PanelProviderRow';
 import {
   appliesToOf,
+  FOR_MAX_SECONDS,
+  FOR_MIN_SECONDS,
   hasThresholds,
   isCompleteStep,
+  isLinePanel,
+  isValidFor,
   OP_PHRASE,
   OP_SYMBOL,
   opOf,
   panelThresholdStepsOf,
+  showsOneNumber,
   THRESHOLD_COLORS,
   THRESHOLD_OPS,
   thresholdOverlaps,
@@ -187,6 +192,50 @@ const ThresholdValue: React.FC<{ value: number; index: number; onChange: (next: 
       }}
       placeholder='80'
       data-testid={`threshold-value-${index}`}
+    />
+  );
+};
+
+/** A hold as typed, in minutes. Empty is "no hold" — the step fires on the latest sample. */
+const parseHold = (text: string): number | undefined => {
+  if (text.trim() === '') return undefined;
+  const minutes = Number(text);
+  // Stored in seconds; a non-number is kept as NaN so the step reads as unfinished rather than silently instant.
+  return Number.isFinite(minutes) ? Math.round(minutes * 60) : Number.NaN;
+};
+
+/**
+ * The step's hold field, in minutes. Same text-first design as ThresholdValue:
+ * the field holds what the author typed and reports the seconds it parses to.
+ */
+const ThresholdHold: React.FC<{ seconds: number | undefined; index: number; onChange: (next: number | undefined) => void }> = ({
+  seconds,
+  index,
+  onChange,
+}) => {
+  const asText = (value: number | undefined) => (value !== undefined && Number.isFinite(value) ? String(value / 60) : '');
+  const [text, setText] = useState(() => asText(seconds));
+
+  useEffect(() => {
+    setText((current) => {
+      const parsed = parseHold(current);
+      const same =
+        (parsed === undefined && seconds === undefined) || (Number.isNaN(parsed as number) && Number.isNaN(seconds as number)) || parsed === seconds;
+      return same ? current : asText(seconds);
+    });
+  }, [seconds]);
+
+  return (
+    <Input
+      type='number'
+      value={text}
+      onChange={(next: string) => {
+        setText(next);
+        onChange(parseHold(next));
+      }}
+      placeholder='for (min)'
+      id={`threshold-for-${index}`}
+      data-testid={`threshold-for-${index}`}
     />
   );
 };
@@ -424,19 +473,23 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
     });
 
   /**
-   * Only a stat or a gauge evaluates thresholds, or combines its accounts into
-   * one number, so switching to any other visualisation drops both. Carrying
-   * them would leave the panel storing config nothing renders — and silently
-   * colouring itself, or summing where it would average, if it were ever
-   * switched back, long after whoever set them had forgotten.
+   * Thresholds are kept only across visualisations that evaluate them the same
+   * way: stat and gauge judge the one shown number, a chart judges every line.
+   * How a panel combines its accounts into one number belongs to stat and gauge
+   * alone. Anything else is dropped on a switch: carrying it would leave the
+   * panel storing config nothing renders — or, stat to chart, silently turn one
+   * rule about a total into a rule across twenty pods, or sum where it would
+   * average, long after whoever set it had forgotten.
    */
   const changeType = (next: PanelType) =>
     setDraft((prev) => {
       if (!prev) return prev;
-      if (hasThresholds(next) || (!prev.options?.thresholds && prev.options?.combine === undefined)) return { ...prev, type: next };
+      const keepThresholds = hasThresholds(next) && isLinePanel(next) === isLinePanel(prev.type);
+      const keepCombine = showsOneNumber(next);
+      if ((keepThresholds || !prev.options?.thresholds) && (keepCombine || prev.options?.combine === undefined)) return { ...prev, type: next };
       const options = { ...prev.options };
-      delete options.thresholds;
-      delete options.combine;
+      if (!keepThresholds) delete options.thresholds;
+      if (!keepCombine) delete options.combine;
       return { ...prev, type: next, options };
     });
 
@@ -567,8 +620,29 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
    * row out from under the author mid-keystroke.
    */
   const thresholds = panelThresholdStepsOf(draft);
-  /** A step that could not be drawn. Blocks Save, and says so rather than greying the button out. */
-  const unfinishedThresholds = thresholds.filter((step) => !isCompleteStep(step));
+  /** Whether this panel's thresholds are about lines on a chart rather than the one shown number. */
+  const lineThresholds = isLinePanel(draft.type);
+  /** A step whose hold is outside what the renderer honours. Blocks Save with its own message. */
+  const badHolds = lineThresholds ? thresholds.filter((step) => step.for !== undefined && !isValidFor(step.for)) : [];
+  /**
+   * Holds on a stat or gauge, which judges one sample and so cannot honour
+   * them: such a step is left undrawn (panelThresholdsOf). They only arrive by
+   * JSON edit or import — this editor has no hold field there — so they are
+   * flagged with a way to remove them rather than blocking Save.
+   */
+  const ignoredHolds = lineThresholds ? [] : thresholds.filter((step) => step.for !== undefined);
+  /** Drops the hold from every step `which` names, leaving the step itself. */
+  const clearHolds = (which: PanelThresholdStep[]) =>
+    patchThresholds(
+      thresholds.map((step) => {
+        if (!which.includes(step)) return step;
+        const { for: _hold, ...rest } = step;
+        return rest;
+      })
+    );
+  /** A step that could not be drawn for any other reason. Blocks Save, and says so rather than greying the button out. */
+  // The hold is judged above, on its own terms; a step is unfinished only for the rest.
+  const unfinishedThresholds = thresholds.filter((step) => !isCompleteStep({ ...step, for: undefined }));
   /**
    * A step naming an account the panel no longer covers — the account was
    * removed from the scope, deleted, or the panel was imported from another
@@ -582,12 +656,18 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
    * would be a choice with no consequence — unless a step already names one,
    * which has to stay fixable.
    */
-  const showAppliesTo = providerAccounts.length > 1 || thresholds.some((step) => appliesToOf(step) !== 'shown');
-  /** Steps that apply to the same value with an outcome worth spelling out — a hint, never a Save blocker. */
-  const thresholdConflicts = thresholdOverlaps(thresholds, providerAccounts);
+  const showAppliesTo = providerAccounts.length > 1 || thresholds.some((step) => appliesToOf(step) === 'account');
+  /** Steps that apply to the same value with an outcome worth spelling out — a hint, never a Save blocker. Lines are judged one by one, so there is nothing to overlap. */
+  const thresholdConflicts = lineThresholds ? [] : thresholdOverlaps(thresholds, providerAccounts);
+  // A chart has no single shown number, so "shown" and "every" are the same
+  // choice there and only one is offered.
   const appliesToOptions = [
-    { label: 'Shown number', value: 'shown' },
-    { label: 'Every account', value: 'every' },
+    ...(lineThresholds
+      ? [{ label: 'Every line', value: 'every' }]
+      : [
+          { label: 'Shown number', value: 'shown' },
+          { label: 'Every account', value: 'every' },
+        ]),
     ...providerAccounts.map((a) => ({ label: a.label, value: `${ACCOUNT_SUBJECT}${a.value}` })),
     // One option per missing account, however many steps still name it.
     ...[...new Set(danglingThresholds.map((step) => step.account_id || ''))].map((id) => ({
@@ -634,7 +714,8 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
     columns.every(isCompleteColumn) &&
     // Not a server rule — `options` is opaque to it — but a step with no number
     // is a row the author is still filling in, and it would save as inert config.
-    unfinishedThresholds.length === 0;
+    unfinishedThresholds.length === 0 &&
+    badHolds.length === 0;
 
   /** The draft as it would be stored — the preview runs this and the save sends it. */
   const resolvedDraft: Panel = {
@@ -1017,7 +1098,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                       a percentage; a stat adds up. Offered where there are accounts to
                       combine, or where a saved choice has to stay changeable. */}
                   {draft.datasource === 'metrics' &&
-                    hasThresholds(draft.type) &&
+                    showsOneNumber(draft.type) &&
                     (providerAccounts.length > 1 || draft.options?.combine !== undefined) && (
                       <Form.Field
                         label='Across accounts'
@@ -1040,7 +1121,11 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                   header={
                     <GroupHeader
                       title='Thresholds'
-                      description='Colour the panel when a number crosses a line — the border and the title band take the step’s colour, and the header names the threshold that was crossed, and the account when it was one account’s.'
+                      description={
+                        lineThresholds
+                          ? 'Draw a line on the chart and colour the panel when a series crosses it — the border and the title band take the step’s colour, and the header names the series. Give a step a hold, in minutes, to colour only once a series has stayed past the line that long.'
+                          : 'Colour the panel when a number crosses a line — the border and the title band take the step’s colour, and the header names the threshold that was crossed, and the account when it was one account’s.'
+                      }
                     />
                   }
                 >
@@ -1090,7 +1175,13 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                                 {showAppliesTo && (
                                   <Box sx={{ flex: 1.4, minWidth: 0 }}>
                                     <Select
-                                      value={appliesToOf(step) === 'account' ? `${ACCOUNT_SUBJECT}${step.account_id || ''}` : appliesToOf(step)}
+                                      value={
+                                        appliesToOf(step) === 'account'
+                                          ? `${ACCOUNT_SUBJECT}${step.account_id || ''}`
+                                          : lineThresholds
+                                          ? 'every'
+                                          : appliesToOf(step)
+                                      }
                                       options={appliesToOptions}
                                       onChange={(v: string) =>
                                         v.startsWith(ACCOUNT_SUBJECT)
@@ -1115,6 +1206,11 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                                 <Box sx={{ flex: 1 }}>
                                   <ThresholdValue value={step.value} index={i} onChange={(next) => patchStep({ value: next })} />
                                 </Box>
+                                {lineThresholds && (
+                                  <Box sx={{ flex: 0.9 }}>
+                                    <ThresholdHold seconds={step.for} index={i} onChange={(next) => patchStep({ for: next })} />
+                                  </Box>
+                                )}
                                 <Box sx={{ flex: 1 }}>
                                   <Select
                                     value={step.color}
@@ -1139,11 +1235,62 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
 
                       {thresholds.length > 0 && (
                         <Typography variant='caption' sx={{ display: 'block', mt: ds.space[2], color: ds.gray[500] }}>
-                          A value past a step’s line takes its colour. Past several, the furthest wins — the highest of the ≥ and &gt; steps, the
-                          lowest of the ≤ and &lt; steps — and when one of each applies, the more severe colour. Past none, the panel draws plain.
+                          {lineThresholds
+                            ? 'Each line on the chart is judged on its own, on the samples the chart is showing. A step with a hold colours the panel only once every sample inside the hold was past the line, and the chart shades that stretch. A hold is 2 to 60 minutes and needs at least two of the chart’s samples, so a long time range may be too coarse to judge it — the panel says so.'
+                            : 'A value past a step’s line takes its colour.'}{' '}
+                          Past several, the furthest wins — the highest of the ≥ and &gt; steps, the lowest of the ≤ and &lt; steps — and when one of
+                          each applies, the more severe colour. Past none, the panel draws plain.
                           {showAppliesTo &&
+                            !lineThresholds &&
                             ' “Shown number” compares the number on the panel: the accounts’ sum or average, or one account’s when the view is narrowed to it. “Every account” checks each account on its own, and names the one that crossed.'}
                         </Typography>
+                      )}
+
+                      {badHolds.length > 0 && (
+                        <Box
+                          data-testid='threshold-bad-hold'
+                          sx={{
+                            mt: ds.space[2],
+                            p: ds.space[3],
+                            border: `1px solid ${ds.amber[300]}`,
+                            background: ds.amber[100],
+                            borderRadius: ds.radius.md,
+                          }}
+                        >
+                          <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+                            A hold is a whole number of minutes, from {FOR_MIN_SECONDS / 60} to {FOR_MAX_SECONDS / 60}. Change it, or clear it so the
+                            step fires on the latest sample.
+                          </Typography>
+                          <Box sx={{ mt: ds.space[2] }}>
+                            <Button tone='secondary' size='sm' onClick={() => clearHolds(badHolds)} id='threshold-clear-bad-holds'>
+                              Clear {badHolds.length === 1 ? 'this hold' : 'these holds'}
+                            </Button>
+                          </Box>
+                        </Box>
+                      )}
+
+                      {ignoredHolds.length > 0 && (
+                        <Box
+                          data-testid='threshold-ignored-hold'
+                          sx={{
+                            mt: ds.space[2],
+                            p: ds.space[3],
+                            border: `1px solid ${ds.amber[300]}`,
+                            background: ds.amber[100],
+                            borderRadius: ds.radius.md,
+                          }}
+                        >
+                          <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+                            {ignoredHolds.length === 1 ? 'A threshold has' : `${ignoredHolds.length} thresholds have`} a hold, which only a
+                            time-series panel can judge, so {ignoredHolds.length === 1 ? 'it is' : 'they are'} not drawn here. Remove the hold to have
+                            the step fire on the number shown.
+                          </Typography>
+                          <Box sx={{ mt: ds.space[2] }}>
+                            <Button tone='secondary' size='sm' onClick={() => clearHolds(ignoredHolds)} id='threshold-remove-ignored-holds'>
+                              Remove {ignoredHolds.length === 1 ? 'hold' : 'holds'}
+                            </Button>
+                          </Box>
+                        </Box>
                       )}
 
                       {unfinishedThresholds.length > 0 && (

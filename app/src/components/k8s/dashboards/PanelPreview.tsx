@@ -100,7 +100,7 @@ const PanelPreview: React.FC<Props> = ({ panel, accountOptions, variables, start
       description: panel.description,
       content: panel.content,
       unit: panel.unit,
-      // Thresholds and how the accounts combine are judged on the fetched data, not part of the fetch.
+      // Thresholds are judged on the fetched data, not part of the fetch.
       options: panel.options,
     }),
     [settled, panel.title, panel.description, panel.content, panel.unit, panel.options]

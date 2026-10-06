@@ -172,3 +172,32 @@ describe('usePanelData gives up on a request that never answers', () => {
     expect(result.current.data).toBeNull();
   });
 });
+
+/*
+ * On a capped chart the thresholds decide which lines are kept. Editing a step
+ * must re-rank the lines already fetched — without asking the provider again.
+ */
+describe('usePanelData keeps the lines a chart’s thresholds need', () => {
+  beforeEach(() => metricsQuery.mockReset());
+  afterEach(cleanup);
+
+  it('re-ranks the fetched lines when a step changes, without refetching', async () => {
+    const count = MAX_CHART_SERIES + 5;
+    // pod-0 is the quietest line, so a peak ranking drops it first.
+    const QUIET = '{pod="pod-0"}';
+    metricsQuery.mockResolvedValue(answerWith(count));
+    const plain = metricsPanel('timeseries');
+    const { result, rerender } = renderHook(
+      ({ panel }: { panel: Panel }) => usePanelData({ panel, accounts, variables: {}, startTime: 0, endTime: HOUR, immediate: true }),
+      { initialProps: { panel: plain } }
+    );
+    await waitFor(() => expect(result.current.data?.series.length).toBe(MAX_CHART_SERIES));
+    expect(result.current.data?.series.map((s) => s.label)).not.toContain(QUIET);
+
+    const withStep = { ...plain, options: { thresholds: [{ value: 1, color: 'red', op: 'lt' }] } } as Panel;
+    await act(async () => rerender({ panel: withStep }));
+    await waitFor(() => expect(result.current.data?.series.map((s) => s.label)).toContain(QUIET));
+    expect(metricsQuery).toHaveBeenCalledTimes(1);
+    expect(result.current.data?.capped).toEqual({ shown: MAX_CHART_SERIES, total: count });
+  });
+});

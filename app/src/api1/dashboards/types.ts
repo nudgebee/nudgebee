@@ -171,11 +171,20 @@ export interface PanelThresholdStep {
   applies_to?: PanelThresholdAppliesTo;
   /** The account an `account` step is about. Ignored for the other two. */
   account_id?: string;
+  /**
+   * How long the value must STAY past the line, in seconds, before the step
+   * fires — "≥ 70 for 5 minutes". A whole number of minutes, two to sixty.
+   * Absent means the step fires on the latest sample alone, which is what every
+   * step written before this field did. Judged only on a time-series panel; a
+   * stat or gauge judges one sample, so a step carrying a hold is not drawn
+   * there and the editor offers to remove the hold.
+   */
+  for?: number;
 }
 
 /**
- * `options` on a panel that evaluates thresholds — `stat` and `gauge`, the two
- * that show ONE number and so have something unambiguous to compare.
+ * `options` on a panel that evaluates thresholds — `stat` and `gauge`, which
+ * show ONE number, and `timeseries`, which judges every drawn line on its own.
  */
 export interface PanelThresholdOptions {
   /** Stored in whatever order they were authored; the renderer sorts. */
