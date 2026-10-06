@@ -999,6 +999,11 @@ type appConfig struct {
 	// TERMINATED so the Waiting list stays an inbox instead of accumulating dead
 	// approvals forever (0 = disabled).
 	WaitingExpireDays int `mapstructure:"llm_server_waiting_expire_days"`
+	// WaitingExpireUnattendedHours: alert and automation conversations
+	// (Investigation, InstantNotification, Automation sources) expire after this
+	// many hours instead, since nobody answers their approvals and a WAITING one
+	// blocks re-analysis of the alert (0 = use WaitingExpireDays only).
+	WaitingExpireUnattendedHours int `mapstructure:"llm_server_waiting_expire_unattended_hours"`
 
 	// LlmCircuitBreakerCooldownSeconds defines how long a model is placed in cooldown after hitting rate limits.
 	LlmCircuitBreakerCooldownSeconds int `mapstructure:"llm_server_circuit_breaker_cooldown_seconds"`
@@ -1642,6 +1647,7 @@ func init() {
 	viper.SetDefault("llm_memory_ttl_stale_days", 180)
 	viper.SetDefault("llm_memory_ttl_cleanup_interval_hours", 24)
 	viper.SetDefault("llm_server_waiting_expire_days", 14)
+	viper.SetDefault("llm_server_waiting_expire_unattended_hours", 12)
 
 	viper.SetDefault("llm_server_productivity_metrics_enabled", false)
 
