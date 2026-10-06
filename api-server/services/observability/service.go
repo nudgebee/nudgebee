@@ -1891,17 +1891,27 @@ func FetchLogLabels(ctx *security.RequestContext, fetchLogRequest FetchLogLabelR
 	if err != nil {
 		return nil, err
 	}
-	labels, err := source.QueryLabels(ctx, fetchLogRequest)
+	// Discovery failure still propagates. Serving the canonical vocabulary on a broken
+	// integration would turn "your ES config is wrong" into a successful response with
+	// a short field list, hiding the misconfiguration from the caller — and
+	// TestFetchLogLabels_WithoutOverrideDoesNotUseProbeValues pins that contract.
+	discovered, err := source.QueryLabels(ctx, fetchLogRequest)
 	if err != nil {
 		return nil, err
 	}
 	// Normalize each provider's own type vocabulary (Pinot "INT", Signoz "int64",
 	// Hive "bigint", ES "long", …) into DataType here, at the one place every
 	// provider's labels pass through, so no provider has to implement anything.
-	for i := range labels {
-		labels[i].DataType = normalizeLabelDataType(labels[i].Attributes)
+	for i := range discovered {
+		discovered[i].DataType = normalizeLabelDataType(discovered[i].Attributes)
 	}
-	return labels, nil
+
+	// Union the canonical vocabulary in, so a caller is told what it may filter on
+	// rather than only what this backend happens to report. Raw QueryLabels omits the
+	// canonical names on every provider — Loki reports stream labels, SigNoz reports
+	// attributes — which is why llm-server had to invent its own `_body` token.
+	merged := getMergedLabelMapping(ctx, fetchLogRequest.AccountId, source)
+	return buildLogLabels(resolvableCanonicalLogFields(source, merged), merged, discovered), nil
 }
 
 func FetchLogLabelValues(ctx *security.RequestContext, fetchLogRequest FetchLogLabelValuesRequest) ([]OutputLogLabelValue, error) {
@@ -2378,7 +2388,13 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 			// when accountId is empty: with no account the lookup can only return the
 			// provider defaults, so there's nothing to merge.
 			if accountId != "" {
-				caps.LabelMappings = getMergedLabelMapping(ctx, accountId, source)
+				merged := getMergedLabelMapping(ctx, accountId, source)
+				caps.LabelMappings = merged
+				caps.CanonicalFields = canonicalLogFieldNamesFor(source, merged)
+			} else {
+				// No account: the merge can only return provider defaults, but the
+				// vocabulary does not depend on the account, so it is still honest.
+				caps.CanonicalFields = canonicalLogFieldNamesFor(source, source.GetLabelMapping())
 			}
 		} else {
 			slog.Warn("getProviderCapabilities: failed to get log source", "provider", provider, "error", err)

@@ -410,6 +410,15 @@ type ProviderCapabilities struct {
 	// static+tenant+account+dynamic merge. Traces: provider static map. Metrics:
 	// not populated (metric sources have no label mapping). Omitted when empty.
 	LabelMappings map[string]string `json:"label_mappings,omitempty"`
+	// CanonicalFields is the provider-independent log vocabulary a caller may filter
+	// on, minus anything this source declares it cannot resolve. Logs only today.
+	//
+	// Deliberately separate from LabelMappings rather than folded into it: that map is
+	// rendered to the query generator as `canonical_name -> backend_field`, and a field
+	// the backend consumes under its own name has no meaningful right-hand side. It is
+	// also the list the prompt treats as authoritative, so a name belongs here exactly
+	// when a caller may use it — see #39573.
+	CanonicalFields []string `json:"canonical_fields,omitempty"`
 	// DefaultIndex is the account's resolved default index for this provider+type
 	// (ES per-account Advanced Settings mapping → top-level {trace,log,metrics}_index),
 	// mirroring DefaultProviderResponse.DefaultIndex. Only populated by the
