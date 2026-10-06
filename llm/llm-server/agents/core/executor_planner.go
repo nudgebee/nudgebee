@@ -452,6 +452,10 @@ type plannerExecutor struct {
 	// maps. doIterationParallel runs several actions against this one executor, and
 	// every one of them resolves its tool's config through the same maps.
 	configMu sync.Mutex
+	// readOnlyRefusals counts writes refused in a read-only run; parallel
+	// actions refuse concurrently, hence the lock.
+	readOnlyMu       sync.Mutex
+	readOnlyRefusals int
 }
 
 func (e *plannerExecutor) GetInputKeys() []string {
@@ -2564,6 +2568,20 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				}
 			}
 
+			// No person can answer an approval in a read-only run (an automatic
+			// alert investigation): refuse the write now rather than wait on a
+			// prompt nobody sees, and tell the model how to carry on. An answer
+			// already recorded above is used as before.
+			if !isFollowupFound && IsReadOnlyRun(e.ctx) {
+				refusals := e.countReadOnlyRefusal()
+				e.ctx.GetLogger().Info("plannerexecutor: write refused in read-only run", "tool", action.Tool, "toolId", action.ToolID, logRequestType, requestType, "refusals", refusals)
+				common.MetricsToolOperationsTotal(toolcore.ImplTypeFor(tool), tool.Name(), "read_only_refused", e.agentRequest.AccountId)
+				return NBAgentPlannerToolActionStep{
+					Action:      action,
+					Observation: readOnlyRefusal(*requestType, refusals),
+					Status:      ToolStatusFailure,
+				}, nil, nil
+			}
 			if !isFollowupFound {
 				e.ctx.GetLogger().Info("plannerexecutor: generating followup for confirmation", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool)
 				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType, confirmationKey, confirmationQuestion, destination.followupTarget(), target != nil)
@@ -3776,6 +3794,15 @@ func approvedByPerson(ctx *security.RequestContext) bool {
 	}
 	userId := strings.TrimSpace(ctx.GetSecurityContext().GetUserId())
 	return userId != "" && userId != security.GetSystemUserId()
+}
+
+// countReadOnlyRefusal records one more write refused in this read-only run
+// and returns the total so far.
+func (e *plannerExecutor) countReadOnlyRefusal() int {
+	e.readOnlyMu.Lock()
+	defer e.readOnlyMu.Unlock()
+	e.readOnlyRefusals++
+	return e.readOnlyRefusals
 }
 
 // isToolConfirmationApproved reports whether a write-confirmation for toolName was
