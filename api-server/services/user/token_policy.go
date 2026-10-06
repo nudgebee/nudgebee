@@ -91,9 +91,9 @@ const maxScopes = 500
 // normalizeScopes validates a key's scopes and returns them deduplicated. Omitted (nil)
 // means the owner's full access. An explicit empty list is rejected rather than read as
 // full access: a caller sending [] most plausibly means "nothing", and widening that
-// silently is the wrong way to fail. Only a platform key may carry scopes: the AI Gateway
-// never reads them, so on a gateway or all key they would read as protection that is not
-// applied (the same reasoning as limits on a platform key, D8).
+// silently is the wrong way to fail. A gateway key may not carry scopes: the AI Gateway
+// never reads them, so they would read as protection that is not applied (the same
+// reasoning as limits on a platform key, D8). On an all key they bind its app-API side.
 func normalizeScopes(kind string, scopes []string) ([]string, error) {
 	if scopes == nil {
 		return nil, nil
@@ -101,8 +101,8 @@ func normalizeScopes(kind string, scopes []string) ([]string, error) {
 	if len(scopes) == 0 {
 		return nil, common.ErrorBadRequest("scopes is empty, which would allow nothing; omit scopes for a full-access key")
 	}
-	if kind != KindPlatform {
-		return nil, common.ErrorBadRequest("scopes can only be set on a platform key (kind=platform); the AI Gateway does not enforce them")
+	if kind == KindGateway {
+		return nil, common.ErrorBadRequest("scopes cannot be set on an AI Gateway key (kind=gateway); the AI Gateway does not enforce them")
 	}
 	if len(scopes) > maxScopes {
 		return nil, common.ErrorBadRequest(fmt.Sprintf("too many scopes (max %d)", maxScopes))
@@ -132,19 +132,22 @@ var gatewayProviderPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 const maxPolicyEntries = 200
 
 // normalizeGatewayPolicy validates a key's gateway policy and returns it with each list
-// deduplicated. nil, or a policy with no lists, means unrestricted. Only a gateway key may
-// be restricted: an all key also opens the platform API, where it could mint an
-// unrestricted key and step around its own policy.
+// deduplicated. nil, or a policy with no lists, means unrestricted. An all key may be
+// restricted only when it is also scoped: unscoped, its platform side could mint an
+// unrestricted key and step around its own policy; scoped keys cannot mint keys.
 //
 // A key cannot be granted more than its owner here because there is no user or tenant
 // allowlist yet; tenant block rules are enforced by the gateway on every routed target.
 // Per-user policy (#38963) adds its ceiling check here.
-func normalizeGatewayPolicy(kind string, p *GatewayPolicy) (*GatewayPolicy, error) {
+func normalizeGatewayPolicy(kind string, scoped bool, p *GatewayPolicy) (*GatewayPolicy, error) {
 	if p == nil || (p.Providers == nil && p.Models == nil && p.Endpoints == nil) {
 		return nil, nil
 	}
-	if kind != KindGateway {
-		return nil, common.ErrorBadRequest("model, provider and endpoint restrictions can only be set on an AI Gateway key (kind=gateway)")
+	if !carriesGatewayTraffic(kind) {
+		return nil, common.ErrorBadRequest("model, provider and endpoint restrictions can only be set on a key that reaches the AI Gateway (kind=gateway or kind=all)")
+	}
+	if kind == KindAll && !scoped {
+		return nil, common.ErrorBadRequest("an all-access key with model, provider or endpoint restrictions must also restrict its app API access (scopes); otherwise it could mint an unrestricted key")
 	}
 	providers, err := normalizePolicyList("providers", p.Providers, func(v string) error {
 		if !gatewayProviderPattern.MatchString(v) {

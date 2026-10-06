@@ -9,7 +9,7 @@ import { Callout } from '@ui/Callout';
 import { ds } from 'src/utils/colors';
 import dayjs from 'dayjs';
 import { getTokenScopeCatalog } from '@api1/roles';
-import { carriesGatewayTraffic, KIND_LABELS } from './keyKinds';
+import { carriesGatewayTraffic, carriesPlatformTraffic, KIND_LABELS } from './keyKinds';
 import { permKey, PermissionMatrix, ScopeTabs } from './PermissionMatrix';
 import { EMPTY_RESTRICTIONS, GATEWAY_ACCESS_OPTIONS, GatewayRestrictionPicker, hasRestrictions, toGatewayPolicy } from './GatewayRestrictions';
 
@@ -132,11 +132,11 @@ const KIND_OPTIONS = ['platform', 'gateway', 'all'].map((value) => ({ value, lab
 const KIND_HINTS = {
   platform: 'Calls the app API, with your full access or only the modules you pick.',
   gateway: 'Calls the AI Gateway only. Can carry its own request, token and cost limits.',
-  all: 'Opens both the app API and the AI Gateway. Limits below meter AI Gateway calls only — app API calls are not metered and pass freely. To restrict models or endpoints, pick AI Gateway.',
+  all: 'Opens both the app API and the AI Gateway. Narrow each side below; limits meter AI Gateway calls only.',
 };
 
-// The type picked first decides the fields that follow: a platform key carries optional
-// scopes, a gateway-reaching key carries limits. The server 400s on limits it cannot meter,
+// The type picked first decides the fields that follow: an app-API key carries optional
+// scopes, a gateway-reaching key carries limits and an optional model/endpoint policy. The server 400s on limits it cannot meter,
 // so unusable rows are dropped here rather than sent to be rejected. `defaultKind` has a
 // default of its own because the server mints an all-access key when `kind` is omitted.
 const CreateTokenDialog = ({ open, defaultKind = 'platform', onClose, onCreate }) => {
@@ -190,7 +190,7 @@ const CreateTokenDialog = ({ open, defaultKind = 'platform', onClose, onCreate }
     // the API takes a number.
     const usable = limits.filter((l) => Number(l.value) > 0).map((l) => ({ ...l, value: Number(l.value) }));
     // Omitted, not empty, for full access: the server stores no scopes as NULL.
-    const restricted = kind === 'platform' && access === 'restricted';
+    const restricted = carriesPlatformTraffic(kind) && access === 'restricted';
     setSubmitting(true);
     const created = await onCreate({
       name: name.trim(),
@@ -198,16 +198,20 @@ const CreateTokenDialog = ({ open, defaultKind = 'platform', onClose, onCreate }
       expiresAt,
       limits: carriesGatewayTraffic(kind) ? usable : [],
       scopes: restricted ? [...scopes].sort() : null,
-      gatewayPolicy: kind === 'gateway' && gatewayAccess === 'restricted' ? toGatewayPolicy(restrictions) : null,
+      gatewayPolicy: carriesGatewayTraffic(kind) && gatewayAccess === 'restricted' ? toGatewayPolicy(restrictions) : null,
     });
     setSubmitting(false);
     if (created) reset();
   };
 
   const restrictedEmpty =
-    (kind === 'platform' && access === 'restricted' && scopes.size === 0) ||
-    (kind === 'gateway' && gatewayAccess === 'restricted' && !hasRestrictions(restrictions));
-  const createDisabled = !name.trim() || (expiryDays === 'custom' && !customValid) || restrictedEmpty;
+    (carriesPlatformTraffic(kind) && access === 'restricted' && scopes.size === 0) ||
+    (carriesGatewayTraffic(kind) && gatewayAccess === 'restricted' && !hasRestrictions(restrictions));
+  // An unscoped all key could mint an unrestricted key and step around its gateway policy;
+  // the server 400s on it (normalizeGatewayPolicy).
+  const gatewayNeedsScopes = kind === 'all' && gatewayAccess === 'restricted' && access !== 'restricted';
+  const createDisabled = !name.trim() || (expiryDays === 'custom' && !customValid) || restrictedEmpty || gatewayNeedsScopes;
+  const both = kind === 'all';
 
   return (
     <Modal
@@ -253,9 +257,9 @@ const CreateTokenDialog = ({ open, defaultKind = 'platform', onClose, onCreate }
             </Typography>
           </Box>
         )}
-        {kind === 'gateway' && (
+        {carriesGatewayTraffic(kind) && (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
-            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700] }}>Access</Typography>
+            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700] }}>{both ? 'AI Gateway access' : 'Access'}</Typography>
             <ToggleGroup
               selection='single'
               size='sm'
@@ -266,12 +270,17 @@ const CreateTokenDialog = ({ open, defaultKind = 'platform', onClose, onCreate }
               id='gateway-access-toggle'
             />
             {gatewayAccess === 'restricted' && <GatewayRestrictionPicker value={restrictions} onChange={setRestrictions} />}
+            {gatewayNeedsScopes && (
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>
+                Restrict app API access below too — with full app API access this key could create an unrestricted one.
+              </Typography>
+            )}
           </Box>
         )}
         {carriesGatewayTraffic(kind) && <LimitEditor limits={limits} onChange={setLimits} />}
-        {kind === 'platform' && (
+        {carriesPlatformTraffic(kind) && (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
-            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700] }}>Access</Typography>
+            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700] }}>{both ? 'App API access' : 'Access'}</Typography>
             <ToggleGroup
               selection='single'
               size='sm'

@@ -55,9 +55,33 @@ const GatewayAccessCell = ({ policy }) => {
   );
 };
 
+const scopesText = (t) => (t.scopes?.length ? t.scopes.join(', ') : 'Full access');
+const policyText = (t) => describeGatewayPolicy(t.gateway_policy) || 'All models';
+
+const accessColumn = (t) => {
+  if (t.kind === 'gateway') return { text: policyText(t), component: <GatewayAccessCell policy={t.gateway_policy} /> };
+  if (t.kind === 'all') {
+    return {
+      text: `${scopesText(t)} · ${policyText(t)}`,
+      component: (
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
+          <AccessCell scopes={t.scopes} />
+          <GatewayAccessCell policy={t.gateway_policy} />
+        </Box>
+      ),
+    };
+  }
+  return { text: scopesText(t), component: <AccessCell scopes={t.scopes} /> };
+};
+
+// An unscoped all key cannot take a gateway policy: it could mint an unrestricted key
+// (normalizeGatewayPolicy in token_policy.go).
+const canEditGatewayAccess = (t) => t.kind === 'gateway' || (t.kind === 'all' && t.scopes?.length > 0);
+
 // Every key in one table, labelled by kind. A column that applies to some kinds only shows
 // '—' on the rest: limits and spend meter gateway calls only. Access means module scopes on a
-// key that reaches the app API, and model / endpoint restrictions on an AI Gateway key.
+// key that reaches the app API, and model / endpoint restrictions on one that reaches the
+// AI Gateway — both on an all key.
 const TokenList = ({ tokens, onRevoke, onEditAccess }) => {
   if (tokens.length === 0) {
     return <EmptyState title='No API tokens yet' size='section' />;
@@ -81,15 +105,13 @@ const TokenList = ({ tokens, onRevoke, onEditAccess }) => {
       { text: formatDate(t.created_at) },
       { text: t.accessed_at ? formatDate(t.accessed_at) : '—' },
       { text: t.expires_at ? formatDate(t.expires_at) : 'never' },
-      t.kind === 'gateway'
-        ? { text: describeGatewayPolicy(t.gateway_policy) || 'All models', component: <GatewayAccessCell policy={t.gateway_policy} /> }
-        : { text: t.scopes?.length ? t.scopes.join(', ') : 'Full access', component: <AccessCell scopes={t.scopes} /> },
+      accessColumn(t),
       { text: reachesGateway ? limitsText(t.limits) : '—' },
       { text: reachesGateway ? usageText(t.usage) : '—' },
       {
         component: (
           <Box sx={{ display: 'flex', gap: ds.space[2], justifyContent: 'flex-end', whiteSpace: 'nowrap' }}>
-            {t.kind === 'gateway' && onEditAccess && (
+            {canEditGatewayAccess(t) && onEditAccess && (
               <Button tone='secondary' size='sm' onClick={() => onEditAccess(t)}>
                 Edit access
               </Button>

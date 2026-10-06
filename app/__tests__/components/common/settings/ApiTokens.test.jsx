@@ -505,13 +505,24 @@ describe('ApiTokens', () => {
     expect(screen.getByRole('button', { name: /^create$/i })).toBeEnabled();
   });
 
-  it('a gateway restriction does not carry over when the type switches to all-access', async () => {
+  it('an all-access key with a gateway restriction must also restrict its app API access', async () => {
     await openGatewayCreate('shared');
     await userEvent.click(screen.getByRole('radio', { name: /^restricted$/i }));
     await userEvent.click(screen.getByRole('checkbox', { name: /^chat$/i }));
     await userEvent.click(screen.getByRole('radio', { name: /all access/i }));
+    // Unscoped, the key could mint an unrestricted one, so Create waits for scopes.
+    expect(screen.getByRole('button', { name: /^create$/i })).toBeDisabled();
+    // Gateway toggle renders first, app API toggle second.
+    await userEvent.click(screen.getAllByRole('radio', { name: /^restricted$/i })[1]);
+    await userEvent.click(await screen.findByRole('checkbox', { name: /tickets — read/i }));
     await userEvent.click(screen.getByRole('button', { name: /^create$/i }));
-    expect(mockCreateUserToken).toHaveBeenCalledWith(expect.objectContaining({ kind: 'all', gatewayPolicy: null }));
+    expect(mockCreateUserToken).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'all',
+        scopes: ['tickets:Read'],
+        gatewayPolicy: { providers: null, models: null, endpoints: ['chat'] },
+      })
+    );
   });
 
   it('shows each gateway key as all models or its restriction, and edits access in place', async () => {
@@ -626,18 +637,20 @@ describe('ApiTokens', () => {
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Access for ci' })).not.toBeInTheDocument());
   });
 
-  it('offers Edit access on AI Gateway keys only', async () => {
+  it('offers Edit access on AI Gateway keys and scoped all-access keys only', async () => {
     const base = { status: 'active', created_at: '2026-09-01T00:00:00Z', accessed_at: null, expires_at: null, limits: [] };
     mockListUserTokens.mockResolvedValue({
       data: [
         { ...base, id: 'p1', name: 'nbctl', kind: 'platform' },
         { ...base, id: 'a1', name: 'shared', kind: 'all' },
+        { ...base, id: 'a2', name: 'scoped', kind: 'all', scopes: ['tickets:Read'], gateway_policy: null },
         { ...base, id: 'g1', name: 'laptop', kind: 'gateway', gateway_policy: null },
       ],
     });
     render(<ApiTokens open title='API Tokens' onClose={() => {}} />);
     await screen.findByText('laptop');
-    expect(screen.getAllByRole('button', { name: /edit access/i })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /edit access/i })).toHaveLength(2);
+    expect(within(screen.getByText('scoped').closest('tr')).getByText('1 scope')).toBeInTheDocument();
   });
 
   it('revokes a key by id', async () => {

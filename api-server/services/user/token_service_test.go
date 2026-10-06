@@ -81,7 +81,7 @@ func TestCreateUserAuthToken_StoresThePolicyUnderTheStoredKey(t *testing.T) {
 // rather than leaving the union of both lists.
 func TestUpdateUserAuthToken_LocksTheKeyBeforeReplacingItsPolicy(t *testing.T) {
 	mock := mockMetastore(t)
-	mock.ExpectQuery(`SELECT kind FROM user_auths`).WillReturnRows(sqlmock.NewRows([]string{"kind"}).AddRow(KindGateway))
+	mock.ExpectQuery(`SELECT kind, scopes FROM user_auths`).WillReturnRows(sqlmock.NewRows([]string{"kind", "scopes"}).AddRow(KindGateway, nil))
 	mock.ExpectBegin()
 	mock.ExpectQuery(`SELECT id::text, "user"::text, tenant_id::text FROM user_auths[\s\S]*FOR UPDATE`).
 		WithArgs(strings.ToUpper(storedKey), strings.ToUpper(storedTenant), strings.ToUpper(storedUser)).
@@ -93,6 +93,34 @@ func TestUpdateUserAuthToken_LocksTheKeyBeforeReplacingItsPolicy(t *testing.T) {
 
 	_, err := UpdateUserAuthToken(keyOwner(t), UserTokenUpdateRequest{
 		Id: strings.ToUpper(storedKey), GatewayPolicy: &GatewayPolicy{Endpoints: []string{"chat"}},
+	})
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// An unscoped all key cannot take a gateway policy by edit: its platform side could mint an
+// unrestricted key. Scoped, it can.
+func TestUpdateUserAuthToken_AllKeyPolicyNeedsScopes(t *testing.T) {
+	mock := mockMetastore(t)
+	mock.ExpectQuery(`SELECT kind, scopes FROM user_auths`).WillReturnRows(sqlmock.NewRows([]string{"kind", "scopes"}).AddRow(KindAll, nil))
+
+	_, err := UpdateUserAuthToken(keyOwner(t), UserTokenUpdateRequest{
+		Id: storedKey, GatewayPolicy: &GatewayPolicy{Models: []string{"gpt-4o-mini"}},
+	})
+	require.Error(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+
+	mock = mockMetastore(t)
+	mock.ExpectQuery(`SELECT kind, scopes FROM user_auths`).WillReturnRows(sqlmock.NewRows([]string{"kind", "scopes"}).AddRow(KindAll, "{tickets:Read}"))
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT id::text, "user"::text, tenant_id::text FROM user_auths[\s\S]*FOR UPDATE`).WillReturnRows(storedKeyRow())
+	mock.ExpectExec(deleteKeyPolicy).WithArgs(storedKey, storedUser).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(insertKeyPolicy).WithArgs(storedTenant, storedUser, storedKey, "model", "gpt-4o-mini").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	_, err = UpdateUserAuthToken(keyOwner(t), UserTokenUpdateRequest{
+		Id: storedKey, GatewayPolicy: &GatewayPolicy{Models: []string{"gpt-4o-mini"}},
 	})
 	require.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())

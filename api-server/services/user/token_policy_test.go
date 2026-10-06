@@ -169,13 +169,14 @@ func TestNormalizeScopes(t *testing.T) {
 	assert.Equal(t, []string{"tickets:Read", "workflows:Write", "ai_tools:Execute"}, s)
 }
 
-func TestNormalizeScopesRejectsNonPlatformKinds(t *testing.T) {
-	// The AI Gateway never reads scopes, so on a key that reaches it they would read as a
-	// restriction that is not applied.
-	for _, kind := range []string{KindGateway, KindAll} {
-		_, err := normalizeScopes(kind, []string{"tickets:Read"})
-		assert.NotNil(t, err, kind)
-	}
+func TestNormalizeScopesKinds(t *testing.T) {
+	// The AI Gateway never reads scopes, so on a gateway key they would read as a
+	// restriction that is not applied. On an all key they bind its app-API side.
+	_, err := normalizeScopes(KindGateway, []string{"tickets:Read"})
+	assert.NotNil(t, err)
+	s, err := normalizeScopes(KindAll, []string{"tickets:Read"})
+	assert.Nil(t, err)
+	assert.Equal(t, []string{"tickets:Read"}, s)
 }
 
 func TestNormalizeScopesRejectsMalformed(t *testing.T) {
@@ -201,15 +202,15 @@ func TestScopesColumn(t *testing.T) {
 func TestNormalizeGatewayPolicy(t *testing.T) {
 	// Omitted, or present with no lists, is unrestricted on any kind: the columns stay NULL.
 	for _, kind := range []string{KindGateway, KindAll, KindPlatform} {
-		p, err := normalizeGatewayPolicy(kind, nil)
+		p, err := normalizeGatewayPolicy(kind, false, nil)
 		assert.Nil(t, err)
 		assert.Nil(t, p)
-		p, err = normalizeGatewayPolicy(kind, &GatewayPolicy{})
+		p, err = normalizeGatewayPolicy(kind, false, &GatewayPolicy{})
 		assert.Nil(t, err, kind)
 		assert.Nil(t, p, kind)
 	}
 
-	p, err := normalizeGatewayPolicy(KindGateway, &GatewayPolicy{
+	p, err := normalizeGatewayPolicy(KindGateway, false, &GatewayPolicy{
 		Models:    []string{" gpt-4o-mini ", "anthropic/claude-haiku-4-5", "GPT-4o-mini"},
 		Endpoints: []string{"chat", "chat"},
 	})
@@ -219,12 +220,16 @@ func TestNormalizeGatewayPolicy(t *testing.T) {
 	assert.Equal(t, []string{"chat"}, p.Endpoints)
 }
 
-func TestNormalizeGatewayPolicyGatewayKindOnly(t *testing.T) {
-	// An all key also opens the platform API, where it could mint an unrestricted key.
-	for _, kind := range []string{KindAll, KindPlatform} {
-		_, err := normalizeGatewayPolicy(kind, &GatewayPolicy{Models: []string{"gpt-4o-mini"}})
-		assert.NotNil(t, err, kind)
-	}
+func TestNormalizeGatewayPolicyKinds(t *testing.T) {
+	policy := &GatewayPolicy{Models: []string{"gpt-4o-mini"}}
+	_, err := normalizeGatewayPolicy(KindPlatform, true, policy)
+	assert.NotNil(t, err, "a platform key never reaches the gateway")
+	// Unscoped, an all key's platform side could mint an unrestricted key.
+	_, err = normalizeGatewayPolicy(KindAll, false, policy)
+	assert.NotNil(t, err)
+	p, err := normalizeGatewayPolicy(KindAll, true, policy)
+	assert.Nil(t, err)
+	assert.Equal(t, []string{"gpt-4o-mini"}, p.Models)
 }
 
 func TestNormalizeGatewayPolicyRejectsMalformed(t *testing.T) {
@@ -241,14 +246,14 @@ func TestNormalizeGatewayPolicyRejectsMalformed(t *testing.T) {
 		{Models: []string{"gpt-4\u00a0o"}},
 	}
 	for _, p := range bad {
-		_, err := normalizeGatewayPolicy(KindGateway, &p)
+		_, err := normalizeGatewayPolicy(KindGateway, false, &p)
 		assert.NotNil(t, err, "%+v", p)
 	}
 	tooMany := make([]string, maxPolicyEntries+1)
 	for i := range tooMany {
 		tooMany[i] = "m"
 	}
-	_, err := normalizeGatewayPolicy(KindGateway, &GatewayPolicy{Models: tooMany})
+	_, err := normalizeGatewayPolicy(KindGateway, false, &GatewayPolicy{Models: tooMany})
 	assert.NotNil(t, err)
 }
 

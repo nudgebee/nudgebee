@@ -33,11 +33,11 @@ type UserTokenCreateRequest struct {
 	ExpiresAt *string `json:"expires_at" mapstructure:"expires_at"`
 	// Limits need a gateway-reaching key; 400 on a platform key.
 	Limits []TokenLimit `json:"limits" mapstructure:"limits"`
-	// Scopes restrict a platform key to `<module>:<Read|Write|Execute>` keys; empty means
-	// the owner's full access. 400 on any other kind.
+	// Scopes restrict a platform or all key's app-API calls to `<module>:<Read|Write|Execute>`
+	// keys; empty means the owner's full access. 400 on a gateway key.
 	Scopes []string `json:"scopes" mapstructure:"scopes"`
-	// GatewayPolicy restricts a gateway key's providers, models and endpoint families;
-	// nil means unrestricted. 400 on any other kind.
+	// GatewayPolicy restricts a gateway or scoped all key's providers, models and endpoint
+	// families; nil means unrestricted. 400 on a platform or unscoped all key.
 	GatewayPolicy *GatewayPolicy `json:"gateway_policy" mapstructure:"gateway_policy"`
 }
 

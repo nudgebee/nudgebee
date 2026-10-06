@@ -534,7 +534,7 @@ func CreateUserAuthToken(context *security.RequestContext, tokenCreateRequest Us
 	if err != nil {
 		return UserTokenCreateResponse{}, err
 	}
-	gatewayPolicy, err := normalizeGatewayPolicy(kind, tokenCreateRequest.GatewayPolicy)
+	gatewayPolicy, err := normalizeGatewayPolicy(kind, scopes != nil, tokenCreateRequest.GatewayPolicy)
 	if err != nil {
 		return UserTokenCreateResponse{}, err
 	}
@@ -757,11 +757,12 @@ func UpdateUserAuthToken(context *security.RequestContext, request UserTokenUpda
 	}
 
 	var kind string
+	var scopes pq.StringArray
 	if err := databaseManager.Db.QueryRowx(
-		`SELECT kind FROM user_auths WHERE id = $1 AND tenant_id = $2 AND "user" = $3
+		`SELECT kind, scopes FROM user_auths WHERE id = $1 AND tenant_id = $2 AND "user" = $3
 		   AND provider_type = 'credentials' AND provider = 'token'`,
 		request.Id, context.GetSecurityContext().GetTenantId(),
-		context.GetSecurityContext().GetUserId()).Scan(&kind); err != nil {
+		context.GetSecurityContext().GetUserId()).Scan(&kind, &scopes); err != nil {
 		if err == sql.ErrNoRows {
 			return UserTokenUpdateResponse{}, common.ErrorBadRequest("token not found")
 		}
@@ -770,7 +771,7 @@ func UpdateUserAuthToken(context *security.RequestContext, request UserTokenUpda
 	if err := validateLimitsForKind(kind, request.Limits); err != nil {
 		return UserTokenUpdateResponse{}, err
 	}
-	gatewayPolicy, err := normalizeGatewayPolicy(kind, request.GatewayPolicy)
+	gatewayPolicy, err := normalizeGatewayPolicy(kind, len(scopes) > 0, request.GatewayPolicy)
 	if err != nil {
 		return UserTokenUpdateResponse{}, err
 	}
