@@ -17,6 +17,7 @@ import {
   KUBERNETES_ACCOUNT_KIND,
   type AccountOption,
   type Panel,
+  type PanelCombine,
   type PanelColumn,
   type PanelDatasource,
   type PanelTarget,
@@ -49,6 +50,7 @@ import {
   thresholdOverlaps,
   thresholdTone,
 } from './panelThresholds';
+import { combineOf } from './panelSeries';
 import { referencedVariables, type VariableValues } from './templating';
 import { fillBrandTokens, useBrandingConfig } from '@hooks/useTenantBranding';
 
@@ -71,6 +73,12 @@ interface Props {
    */
   onSave: (panel: Panel) => unknown | Promise<unknown>;
 }
+
+/** How a stat or gauge folds its accounts into one number. */
+const COMBINE_OPTIONS: { label: string; value: PanelCombine }[] = [
+  { label: 'Sum', value: 'sum' },
+  { label: 'Average', value: 'avg' },
+];
 
 const PANEL_TYPES: { label: string; value: PanelType }[] = [
   { label: 'Time series', value: 'timeseries' },
@@ -415,17 +423,19 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
     });
 
   /**
-   * Only a stat or a gauge evaluates thresholds, so switching to any other
-   * visualisation drops them. Carrying them would leave the panel storing config
-   * nothing renders — and silently colouring itself again if it were ever
-   * switched back, long after whoever set the numbers had forgotten them.
+   * Only a stat or a gauge evaluates thresholds, or combines its accounts into
+   * one number, so switching to any other visualisation drops both. Carrying
+   * them would leave the panel storing config nothing renders — and silently
+   * colouring itself, or summing where it would average, if it were ever
+   * switched back, long after whoever set them had forgotten.
    */
   const changeType = (next: PanelType) =>
     setDraft((prev) => {
       if (!prev) return prev;
-      if (hasThresholds(next) || !prev.options?.thresholds) return { ...prev, type: next };
+      if (hasThresholds(next) || (!prev.options?.thresholds && prev.options?.combine === undefined)) return { ...prev, type: next };
       const options = { ...prev.options };
       delete options.thresholds;
+      delete options.combine;
       return { ...prev, type: next, options };
     });
 
@@ -999,6 +1009,27 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                       <Input value={draft.unit || ''} onChange={(v) => patch({ unit: v })} placeholder='None' id='panel-unit-input' />
                     </Form.Field>
                   )}
+
+                  {/* Whether the one number is the accounts' sum or their mean is a fact
+                      the card cannot show — 100 and 33 are both plausible readings of
+                      90, 0 and 10. A gauge averages by default, since its dial reads as
+                      a percentage; a stat adds up. Offered where there are accounts to
+                      combine, or where a saved choice has to stay changeable. */}
+                  {draft.datasource === 'metrics' &&
+                    hasThresholds(draft.type) &&
+                    (providerAccounts.length > 1 || draft.options?.combine !== undefined) && (
+                      <Form.Field
+                        label='Across accounts'
+                        description='How the accounts’ figures become the one number shown: added up, or averaged. A gauge averages unless told otherwise; a stat adds up.'
+                      >
+                        <Select
+                          value={combineOf(draft)}
+                          options={COMBINE_OPTIONS}
+                          onChange={(v: string) => patch({ options: { ...(draft.options || {}), combine: v as PanelCombine } })}
+                          id='panel-combine-select'
+                        />
+                      </Form.Field>
+                    )}
                 </Form.Section>
               </Card>
 
@@ -1110,7 +1141,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                           A value past a step’s line takes its colour. Past several, the furthest wins — the highest of the ≥ and &gt; steps, the
                           lowest of the ≤ and &lt; steps — and when one of each applies, the more severe colour. Past none, the panel draws plain.
                           {showAppliesTo &&
-                            ' “Shown number” compares the number on the panel: the accounts’ total, or one account’s when the view is narrowed to it. “Every account” checks each account on its own, and names the one that crossed.'}
+                            ' “Shown number” compares the number on the panel: the accounts’ sum or average, or one account’s when the view is narrowed to it. “Every account” checks each account on its own, and names the one that crossed.'}
                         </Typography>
                       )}
 

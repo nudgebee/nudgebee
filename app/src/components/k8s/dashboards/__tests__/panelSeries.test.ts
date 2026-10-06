@@ -1,5 +1,6 @@
 import {
   alignSeries,
+  combineOf,
   CONSOLIDATED_LABEL,
   consolidatedSeries,
   lastValue,
@@ -122,7 +123,121 @@ describe('statTotal', () => {
     // No accountLabel is set when the panel queried one account, and an
     // aggregate carries no labels — so statCaption drops the bare ref id.
     const stat = statTotal([{ label: 'A', values: [9] }], ['A']);
-    expect(stat).toEqual({ total: 9, rows: [{ account: '', value: 9, failed: false }], caption: '', partial: false });
+    expect(stat).toEqual({ total: 9, combine: 'sum', rows: [{ account: '', value: 9, failed: false }], caption: '', partial: false });
+  });
+
+  it('averages the accounts when asked, and still keeps the parts', () => {
+    // A gauge reads as a percentage: 90 %, 0 % and 10 % across three clusters is
+    // 33 %, not the 100 % their sum says.
+    const stat = statTotal(ACCOUNTS, ['A'], [], [], 'avg');
+    expect(stat.total).toBeCloseTo(100 / 3);
+    expect(stat.combine).toBe('avg');
+    expect(stat.rows.map((r) => r.value)).toEqual([90, 0, 10]);
+  });
+
+  it('averages over the accounts that answered, not over the ones asked', () => {
+    // A silent cluster is not a cluster at zero: it is left out of the mean as
+    // it is left out of the sum, and the stat says the answer is partial.
+    const stat = statTotal(ACCOUNTS, ['A'], ['sandbox'], ['staging'], 'avg');
+    expect(stat.total).toBeCloseTo(100 / 3);
+    expect(stat.partial).toBe(true);
+    expect(stat.rows).toHaveLength(5);
+  });
+
+  it('averages a real zero in', () => {
+    expect(statTotal(ACCOUNTS.slice(0, 2), ['A'], [], [], 'avg').total).toBe(45);
+  });
+
+  it('leaves an account whose newest sample is absent out of neither the row nor the mean', () => {
+    // As it arrives off the wire: one account ends on a null, one reports only a
+    // null. The first still has a value to show; the second answered with nothing
+    // and must not be averaged in as a zero.
+    const wire = (account: string, values: unknown[]) =>
+      toRawSeries([{ query_key: 'A', payload: [{ metric: {}, timestamps: values.map((_, i) => i + 1), values }] }], {}).map((s) => ({
+        ...s,
+        accountLabel: account,
+      }));
+    const stat = statTotal([...wire('prod', [12.5]), ...wire('staging', [7, null]), ...wire('dev', [null])], ['A'], [], [], 'avg');
+    expect(stat.rows.map((r) => r.value)).toEqual([12.5, 7, undefined]);
+    expect(stat.total).toBe(9.75);
+    expect(stat.partial).toBe(true);
+  });
+
+  /*
+   * #40342: a gauge over a per-node query added each account's nodes up before
+   * averaging the accounts, so nodes at 50, 60 and 70 % read 180 and the dial
+   * pinned at 100.
+   */
+  it('averages an account’s own series too, so a per-node gauge reads as their mean', () => {
+    const perNode = [
+      { label: 'prod-eu · n1', accountLabel: 'prod-eu', values: [50] },
+      { label: 'prod-eu · n2', accountLabel: 'prod-eu', values: [60] },
+      { label: 'prod-eu · n3', accountLabel: 'prod-eu', values: [70] },
+      { label: 'prod-us · m1', accountLabel: 'prod-us', values: [40] },
+    ];
+    const stat = statTotal(perNode, ['A'], [], [], 'avg');
+    expect(stat.rows.map((r) => r.value)).toEqual([60, 40]);
+    expect(stat.total).toBe(50);
+  });
+
+  it('averages one account’s per-node series on a single-account gauge, and says so', () => {
+    const nodes = [50, 60, 70].map((v, i) => ({ label: `n${i}`, values: [v] }));
+    const stat = statTotal(nodes, ['A'], [], [], 'avg');
+    expect(stat.total).toBe(60);
+    // Not "n0": the number is all three nodes, not the first one.
+    expect(stat.caption).toBe('Average of 3 series');
+    expect(statTotal(nodes, ['A']).caption).toBe('Sum of 3 series');
+  });
+
+  it('leaves a series with no newest sample out of its account’s mean', () => {
+    const stat = statTotal(
+      [
+        { label: 'n1', accountLabel: 'prod', values: [50] },
+        { label: 'n2', accountLabel: 'prod', values: [null] },
+      ],
+      ['A'],
+      [],
+      [],
+      'avg'
+    );
+    expect(stat.rows.map((r) => r.value)).toEqual([50]);
+  });
+
+  it('captions a single account with the series that reported, when only one did', () => {
+    const stat = statTotal(
+      [
+        { label: 'n1', values: [null] },
+        { label: 'n2', values: [55] },
+      ],
+      ['A'],
+      [],
+      [],
+      'avg'
+    );
+    expect(stat.total).toBe(55);
+    expect(stat.caption).toBe('n2');
+  });
+
+  it('still adds an account’s series up when the panel sums', () => {
+    const nodes = [50, 60, 70].map((v, i) => ({ label: `n${i}`, accountLabel: 'prod', values: [v] }));
+    expect(statTotal([...nodes, { label: 'm', accountLabel: 'dev', values: [40] }], ['A']).rows.map((r) => r.value)).toEqual([180, 40]);
+  });
+
+  it('has no average of nothing', () => {
+    expect(statTotal([{ label: 'A', accountLabel: 'prod', values: [null] }], ['A'], [], [], 'avg').total).toBeUndefined();
+  });
+});
+
+describe('combineOf', () => {
+  it('averages a gauge and adds up a stat unless the panel says otherwise', () => {
+    expect(combineOf({ type: 'gauge' })).toBe('avg');
+    expect(combineOf({ type: 'stat' })).toBe('sum');
+    expect(combineOf({ type: 'gauge', options: { combine: 'sum' } })).toBe('sum');
+    expect(combineOf({ type: 'stat', options: { combine: 'avg' } })).toBe('avg');
+  });
+
+  it('reads a value it does not know as the default, not as either choice', () => {
+    expect(combineOf({ type: 'gauge', options: { combine: 'median' as never } })).toBe('avg');
   });
 });
 
@@ -178,6 +293,18 @@ describe('toRawSeries', () => {
     // the chart.
     const results = [{ query_key: 'A', payload: [{ metric: {}, timestamps: [1, 2], values: ['2.5', 'NaN'] }] }];
     expect(toRawSeries(results, {})[0].values).toEqual([2.5, null]);
+  });
+
+  it('reads an absent value as a gap, never as zero', () => {
+    // The server sends a non-finite sample as JSON null, and Number(null) is 0 —
+    // which would put a cluster that reported nothing on the chart at zero.
+    const results = [{ query_key: 'A', payload: [{ metric: {}, timestamps: [1, 2, 3, 4, 5], values: [7, null, '', '  ', undefined] }] }];
+    expect(toRawSeries(results, {})[0].values).toEqual([7, null, null, null, null]);
+  });
+
+  it('keeps a reported zero a zero', () => {
+    const results = [{ query_key: 'A', payload: [{ metric: {}, timestamps: [1, 2], values: [0, '0'] }] }];
+    expect(toRawSeries(results, {})[0].values).toEqual([0, 0]);
   });
 
   it('folds millisecond timestamps down to seconds', () => {

@@ -189,6 +189,7 @@ describe('which number a step is about', () => {
   // 90 + 2 + 10 = 102.
   const fleet: StatTotal = {
     total: 102,
+    combine: 'sum',
     rows: [
       { account: 'prod-eu', value: 90, failed: false },
       { account: 'prod-us', value: 2, failed: false },
@@ -243,7 +244,7 @@ describe('which number a step is about', () => {
   });
 
   it('does not name the account on a single-account panel, where there is one number', () => {
-    const single: StatTotal = { total: 90, rows: [{ account: '', value: 90, failed: false }], caption: '', partial: false };
+    const single: StatTotal = { total: 90, combine: 'sum', rows: [{ account: '', value: 90, failed: false }], caption: '', partial: false };
     expect(on([{ value: 50, color: 'red', applies_to: 'every' }], single, accounts.slice(0, 1)).frame).toMatchObject({ account: null, value: 90 });
     expect(on([{ value: 50, color: 'red', applies_to: 'account', account_id: 'acc-1' }], single, accounts.slice(0, 1)).frame).toBeDefined();
   });
@@ -257,7 +258,7 @@ describe('which number a step is about', () => {
 
   it('counts two steps drawing the same line on the same number once', () => {
     // A single-account panel: the shown number and "every account" are one number.
-    const single: StatTotal = { total: 50, rows: [{ account: '', value: 50, failed: false }], caption: '', partial: false };
+    const single: StatTotal = { total: 50, combine: 'sum', rows: [{ account: '', value: 50, failed: false }], caption: '', partial: false };
     const { all } = on(
       [
         { value: 50, color: 'red' },

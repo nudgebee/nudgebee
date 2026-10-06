@@ -1,4 +1,5 @@
 import { convertNumberToTimestamp } from 'src/utils/common';
+import type { Panel, PanelCombine } from '@api1/dashboards';
 import type { PanelData, PanelSeries } from './usePanelData';
 
 /** Joins an account name onto a series label, for a panel that queried several. */
@@ -84,8 +85,10 @@ export interface StatRow {
 
 /** A stat panel's number, and where it came from. */
 export interface StatTotal {
-  /** The sum across every account that answered. `undefined` when none did. */
+  /** The accounts that answered, combined per `combine`. `undefined` when none did. */
   total: number | undefined;
+  /** How `total` was made from `rows`. */
+  combine: PanelCombine;
   rows: StatRow[];
   /** The single-account caption, per statCaption. '' whenever a breakdown is shown. */
   caption: string;
@@ -109,43 +112,83 @@ export interface StatTotal {
  *
  * Summing assumes the parts ADD — true of the `sum(...)` / `count(...)` an
  * aggregate stat query is written as, and NOT of an average or a percentile,
- * which have no meaningful sum across clusters. The breakdown is what makes that
- * visible: the parts are on screen next to the total.
+ * which have no meaningful sum across clusters. `combine: 'avg'` is for those:
+ * the mean of the accounts that answered, so a gauge over four clusters at
+ * 90 %, 0 % and 10 % reads 33 and not 100. Averaging applies within an account
+ * too: an account answering with one series per node shows their mean, so the
+ * total is always the mean of the rows on screen. Either way the breakdown is what
+ * makes the arithmetic visible: the parts are on screen next to the total.
  */
-export function statTotal(series: PanelSeries[], refIds: string[], failedAccounts: string[] = [], emptyAccounts: string[] = []): StatTotal {
+export function statTotal(
+  series: PanelSeries[],
+  refIds: string[],
+  failedAccounts: string[] = [],
+  emptyAccounts: string[] = [],
+  combine: PanelCombine = 'sum'
+): StatTotal {
   const order: string[] = [];
-  const byAccount = new Map<string, number | undefined>();
+  const byAccount = new Map<string, { sum: number; count: number }>();
 
   for (const s of series) {
     const key = s.accountLabel || '';
     if (!byAccount.has(key)) {
-      byAccount.set(key, undefined);
+      byAccount.set(key, { sum: 0, count: 0 });
       order.push(key);
     }
     const value = lastValue(s.values);
     if (value === undefined) continue;
-    // An account answering with several series contributes all of them: the
-    // total is what the panel matched, not what its first series matched.
-    byAccount.set(key, (byAccount.get(key) ?? 0) + value);
+    const acc = byAccount.get(key)!;
+    acc.sum += value;
+    acc.count += 1;
   }
 
-  const rows: StatRow[] = order.map((account) => ({ account, value: byAccount.get(account), failed: false }));
+  // An account answering with several series contributes all of them: the
+  // figure is what the panel matched, not what its first series matched. They
+  // combine the way the accounts do. Summed, the series are parts of one count.
+  // Averaged, they are readings of the same thing — a per-node CPU gauge's
+  // nodes at 50, 60 and 70 % are an account at 60 %, not at 180.
+  const accountValue = ({ sum, count }: { sum: number; count: number }) => (count === 0 ? undefined : combine === 'avg' ? sum / count : sum);
+  const rows: StatRow[] = order.map((account) => ({ account, value: accountValue(byAccount.get(account)!), failed: false }));
   // Asked and answered with nothing: a row of its own, so every account the
   // panel is scoped to is accounted for — not just the ones with data.
   for (const account of emptyAccounts) rows.push({ account, value: undefined, failed: false });
   for (const account of failedAccounts) rows.push({ account, value: undefined, failed: true });
 
   const answered = rows.filter((r) => r.value !== undefined);
-  const total = answered.length === 0 ? undefined : answered.reduce((sum, r) => sum + (r.value as number), 0);
+  const sum = answered.reduce((acc, r) => acc + (r.value as number), 0);
+  // An account that did not answer is left out of the mean as it is out of the
+  // sum: dividing by every account would read a silent cluster as a zero.
+  const total = answered.length === 0 ? undefined : combine === 'avg' ? sum / answered.length : sum;
 
-  // One account has nothing to break down, so it keeps the caption it always had.
+  // One account has nothing to break down, so it keeps the caption it always had —
+  // unless it answered with several series. Then the first one's name would
+  // caption a number that is all of them combined.
+  const singleCaption = () => {
+    const only = order.length === 1 ? byAccount.get(order[0])! : undefined;
+    if (only && only.count > 1) return `${combine === 'avg' ? 'Average' : 'Sum'} of ${only.count} series`;
+    // The series the number came from: the first one that reported, not merely the first one.
+    const reported = series.find((s) => lastValue(s.values) !== undefined) ?? series[0];
+    return statCaption(reported?.label, refIds);
+  };
   const single = rows.length <= 1;
   return {
     total,
+    combine,
     rows,
-    caption: single ? statCaption(series[0]?.label, refIds) : '',
+    caption: single ? singleCaption() : '',
     partial: answered.length < rows.length,
   };
+}
+
+/**
+ * How a panel combines its accounts: what it was saved with, else the type's
+ * default. A gauge reads as a percentage, so it averages; a stat adds up. An
+ * unknown stored value falls back to the default rather than being read as one.
+ */
+export function combineOf(panel: Pick<Panel, 'type' | 'options'>): PanelCombine {
+  const stored = panel.options?.combine;
+  if (stored === 'sum' || stored === 'avg') return stored;
+  return panel.type === 'gauge' ? 'avg' : 'sum';
 }
 
 /**
@@ -322,8 +365,18 @@ function toEpochSeconds(value: unknown): number {
   return n > 1e11 ? Math.round(n / 1000) : n;
 }
 
-/** Providers send values as strings as often as numbers; unparseable is a gap. */
+/**
+ * Providers send values as strings as often as numbers; unparseable is a gap.
+ *
+ * So is an ABSENT one. The server sends every non-finite sample — a NaN, a ±Inf,
+ * a provider's own "no data in this interval" — as JSON `null`, and `Number(null)`
+ * is 0: read that way, a cluster that reported nothing is a cluster at zero. A
+ * sum never noticed, because it adds nothing; an average counts it as an answer
+ * and is dragged down by it. An empty string is the same trap, so only a number
+ * or a string with something in it is parsed at all.
+ */
 function toFinite(v: unknown): number | null {
+  if (typeof v !== 'number' && (typeof v !== 'string' || v.trim() === '')) return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
