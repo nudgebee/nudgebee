@@ -724,24 +724,45 @@ func configuredFallback(ctx *security.RequestContext, accountId string, res *LLM
 		dbConfig, tier = res.dbConfig, res.Tier
 	}
 	cfg, err := getLLMIntegrationConfig(ctx, accountId, dbConfig)
-	if err != nil || cfg == nil {
+	if err != nil {
 		return nil, err
 	}
+	// cfg may be nil — an env-configured deployment has no integration row. The
+	// reference form below still applies in that case; only the owned slot is
+	// DB-exclusive.
 	scope := ModelTier("")
-	if tier != "" && fallbackConfigured(cfg, tier) {
+	if cfg != nil && tier != "" && fallbackConfigured(cfg, tier) {
 		scope = tier
 	}
 
-	if src := strings.TrimSpace(cfg[fallbackKey(llmFallbackRefSourceKey, scope)]); src != "" {
-		model := strings.TrimSpace(cfg[fallbackKey(llmFallbackRefModelKey, scope)])
-		fbRes, err := resolveFallbackRef(ctx, src, model, accountId, tier)
+	// Reference form. ENV first, then DB on top — the same order every other
+	// resolver in this file uses, where the later layer overwrites and so DB
+	// always beats ENV. ENV is global-only on purpose: a reference names a slot
+	// that already exists, so per-tier env variants would add surface without
+	// adding reach.
+	//
+	// L1 ENV-global
+	src := strings.TrimSpace(config.Config.LlmFallbackRefSource)
+	refModel := strings.TrimSpace(config.Config.LlmFallbackRefModel)
+
+	// L2 DB (tier scope if the tier configures one, else the integration's)
+	if cfg != nil {
+		if v := strings.TrimSpace(cfg[fallbackKey(llmFallbackRefSourceKey, scope)]); v != "" {
+			src = v
+			refModel = strings.TrimSpace(cfg[fallbackKey(llmFallbackRefModelKey, scope)])
+		}
+	}
+	if src != "" {
+		fbRes, err := resolveFallbackRef(ctx, src, refModel, accountId, tier)
 		if err != nil {
-			return nil, fmt.Errorf("configured fallback %q (%s) is unavailable: %w", model, src, err)
+			return nil, fmt.Errorf("configured fallback %q (%s) is unavailable: %w", refModel, src, err)
 		}
 		return &FallbackModel{Model: fbRes.Model, Provider: fbRes.Provider, Resolution: fbRes}, nil
 	}
 
-	if strings.TrimSpace(cfg[fallbackKey(llmFallbackProviderKey, scope)]) == "" {
+	// Owned slot: DB only. Restating a whole provider config in environment
+	// variables is the shape the reference form exists to avoid.
+	if cfg == nil || strings.TrimSpace(cfg[fallbackKey(llmFallbackProviderKey, scope)]) == "" {
 		return nil, nil
 	}
 	label := strings.TrimSuffix("db-fallback:"+string(scope), ":")
@@ -1099,14 +1120,25 @@ func getLLMDisableThinking(accountId string, resolution *LLMConfigResolution) bo
 	if resolution != nil {
 		dbConfig = resolution.dbConfig
 	}
+
+	// ENV first, then DB on top. DB always beats ENV — the same order every
+	// other resolver in this file follows. Until this layer existed an
+	// env-configured deployment could not disable thinking at all: the only
+	// source was an integration row, which such a deployment has none of.
+	disabled := config.Config.LlmDisableThinking
+
 	if accountId == "" {
-		return false
+		return disabled
 	}
 	cfg, err := getLLMIntegrationConfig(nil, accountId, dbConfig)
 	if err != nil || cfg == nil {
-		return false
+		return disabled
 	}
-	return strings.EqualFold(strings.TrimSpace(cfg["llm_disable_thinking"]), "true")
+	// Only an explicit DB value overrides ENV; a blank key leaves ENV standing.
+	if v := strings.TrimSpace(cfg["llm_disable_thinking"]); v != "" {
+		return strings.EqualFold(v, "true")
+	}
+	return disabled
 }
 
 func getLLMApiType(accountId, provider, agentName string, appendAgentName bool, resolution ...*LLMConfigResolution) string {
@@ -3819,15 +3851,27 @@ func resolveLLMDeploymentName(accountId string, res *LLMConfigResolution) string
 			dbConfig = cfg
 		}
 	}
-	if dbConfig == nil {
-		return ""
+	// ENV first, then DB on top — later layers overwrite, so DB always beats
+	// ENV, the same order the credential resolvers use. Reading a nil map is
+	// safe in Go, so the no-integration case needs no special branch.
+	//
+	// L1 ENV-global: an env-configured Azure deployment previously had no way
+	// to name a deployment that differs from the model.
+	deployment := strings.TrimSpace(config.Config.LlmProviderDeploymentName)
+
+	// L2 DB-global
+	if v := strings.TrimSpace(dbConfig[llmDeploymentNameKey]); v != "" {
+		deployment = v
 	}
+
+	// L3 DB-tier — last, so a tier still overrides the integration's global
+	// value as it did when this read tier-first and returned early.
 	if tier != "" {
 		if v := strings.TrimSpace(dbConfig["llm_tier_deployment_name_"+string(tier)]); v != "" {
-			return v
+			deployment = v
 		}
 	}
-	return strings.TrimSpace(dbConfig[llmDeploymentNameKey])
+	return deployment
 }
 
 // deploymentBodyModelTransport rewrites the JSON body's "model" field on chat
