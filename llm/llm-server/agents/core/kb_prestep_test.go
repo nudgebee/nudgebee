@@ -2,7 +2,10 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -217,24 +220,34 @@ func TestRetrieveKnowledgeDocsSearchesByEventKind(t *testing.T) {
 	previousAccount := queryAccountKnowledgeFn
 	t.Cleanup(func() { queryAccountKnowledgeFn = previousAccount })
 	var mu sync.Mutex
-	var queries []string
+	previousEventKind := queryEventKindKnowledgeFn
+	t.Cleanup(func() { queryEventKindKnowledgeFn = previousEventKind })
+	var queries, eventKindQueries []string
 	queryAccountKnowledgeFn = func(_ context.Context, _, _, q, _ string, _ int, _, _, _ string, _ bool) toolcore.RAGSearchResults {
 		mu.Lock()
 		queries = append(queries, q)
 		mu.Unlock()
 		return toolcore.RAGSearchResults{{Document: q}}
 	}
+	queryEventKindKnowledgeFn = func(_ context.Context, _, _, q, _ string, _ int, _, _, _ string, _ bool) toolcore.RAGSearchResults {
+		mu.Lock()
+		eventKindQueries = append(eventKindQueries, q)
+		mu.Unlock()
+		return toolcore.RAGSearchResults{{Document: q}}
+	}
 
 	event := NBAgentRequest{QueryConfig: toolcore.NBQueryConfig{KnowledgeHints: []string{"ci", "github_workflow_job", "github_ci_failure"}}}
 	docs, traceIDs := retrieveKnowledgeDocs(context.Background(), event, "Identify RootCause of the event", nil)
-	assert.ElementsMatch(t, []string{"Identify RootCause of the event", "ci github_workflow_job github_ci_failure"}, queries)
+	assert.Equal(t, []string{"Identify RootCause of the event"}, queries, "the question search keeps product docs")
+	assert.Equal(t, []string{"ci github_workflow_job github_ci_failure"}, eventKindQueries, "the event-kind search is the filtered one")
 	require.Len(t, docs, 2)
 	assert.Equal(t, "ci github_workflow_job github_ci_failure", docs[0].Document, "event-kind results lead the question's")
 	assert.Len(t, traceIDs, 2)
 
-	queries = nil
+	queries, eventKindQueries = nil, nil
 	docs, _ = retrieveKnowledgeDocs(context.Background(), NBAgentRequest{}, "why is checkout failing", nil)
 	assert.Equal(t, []string{"why is checkout failing"}, queries, "no event, no extra search")
+	assert.Empty(t, eventKindQueries)
 	assert.Len(t, docs, 1)
 }
 
@@ -789,13 +802,14 @@ func TestRetrieveRelevantKBAppliesTheJudgeOnce(t *testing.T) {
 }
 
 func TestRetrieveRelevantKBJudgesEventResultsAgainstEventKind(t *testing.T) {
-	previousAccountQuery, previousJudge, previousResolver := queryAccountKnowledgeFn, judgeKBResultsFn, resolveManualKnowledgeFn
+	previousAccountQuery, previousEventKind, previousJudge, previousResolver := queryAccountKnowledgeFn, queryEventKindKnowledgeFn, judgeKBResultsFn, resolveManualKnowledgeFn
 	t.Cleanup(func() {
-		queryAccountKnowledgeFn, judgeKBResultsFn, resolveManualKnowledgeFn = previousAccountQuery, previousJudge, previousResolver
+		queryAccountKnowledgeFn, queryEventKindKnowledgeFn, judgeKBResultsFn, resolveManualKnowledgeFn = previousAccountQuery, previousEventKind, previousJudge, previousResolver
 	})
 	queryAccountKnowledgeFn = func(_ context.Context, _, _, _, _ string, _ int, _, _, _ string, _ bool) toolcore.RAGSearchResults {
 		return toolcore.RAGSearchResults{{Document: "CI failure procedure", Metadata: map[string]any{"collection": "global_docs"}}}
 	}
+	queryEventKindKnowledgeFn = queryAccountKnowledgeFn
 	resolveManualKnowledgeFn = func(_ *security.RequestContext, _ string, docs toolcore.RAGSearchResults) toolcore.RAGSearchResults {
 		return docs
 	}
@@ -815,4 +829,26 @@ func TestRetrieveRelevantKBJudgesEventResultsAgainstEventKind(t *testing.T) {
 	request.QueryConfig.KnowledgeHints = nil
 	retrieveRelevantKB(security.NewRequestContextForSuperAdmin(), request, nil)
 	assert.Equal(t, request.OriginalQuery, judgedQuery, "ordinary questions are judged as before")
+}
+
+func TestEventKindSearchExcludesProductDocs(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// FailNow must run on the test goroutine, so the handler only reports.
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+	previousURL := config.Config.RAGServerUrl
+	config.Config.RAGServerUrl = server.URL
+	t.Cleanup(func() { config.Config.RAGServerUrl = previousURL })
+
+	queryEventKindKnowledgeFn(context.Background(), "user", "account", "ci github_ci_failure", "knowledge_base", 8, "", "", "", false)
+	require.NotEmpty(t, body)
+	assert.Equal(t, map[string]any{"must_not": []any{map[string]any{"field": "source", "value": "nudgebee_docs"}}}, body["metadata_filter"])
+	assert.Equal(t, true, body["use_reranking"])
 }

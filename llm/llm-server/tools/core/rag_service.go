@@ -257,6 +257,14 @@ func QueryRAGReranked(userId, accountId, query, module string, numberOfResults i
 
 // QueryRAGRerankedContext cancels the HTTP request when automatic discovery expires.
 func QueryRAGRerankedContext(ctx context.Context, userId, accountId, query, module string, numberOfResults int, conversationID string, messageId string, agentId string, trackTokenUsage bool) RAGSearchResults {
+	return QueryRAGRerankedFilteredContext(ctx, userId, accountId, query, module, numberOfResults, conversationID, messageId, agentId, trackTokenUsage, nil)
+}
+
+// QueryRAGRerankedFilteredContext is QueryRAGRerankedContext with a
+// metadata_filter. Exclusions use rag-server's structured form, e.g.
+// {"must_not": [{"field": "source", "value": "nudgebee_docs"}]}; a rag-server
+// without structured-filter support returns no documents for that form.
+func QueryRAGRerankedFilteredContext(ctx context.Context, userId, accountId, query, module string, numberOfResults int, conversationID string, messageId string, agentId string, trackTokenUsage bool, metadataFilter map[string]any) RAGSearchResults {
 	yes := true
 	payload := ragQueryRequest{
 		AccountID:       accountId,
@@ -269,6 +277,7 @@ func QueryRAGRerankedContext(ctx context.Context, userId, accountId, query, modu
 		TrackTokenUsage: &trackTokenUsage,
 		UserID:          userId,
 		UseReranking:    &yes,
+		MetadataFilter:  metadataFilter,
 	}
 	response, err := executeRAGCall(ctx, payload)
 	if err != nil {
