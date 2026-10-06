@@ -201,6 +201,12 @@ type AwsMetricsAgent struct {
 	accountId string
 }
 
+// AwsMetricsAgent runs its aws CLI on the account it is handed, and only on a
+// aws account (core.ProviderBoundAgent).
+func (AwsMetricsAgent) AcceptsExecutionTarget() {}
+
+func (AwsMetricsAgent) TargetProvider() string { return "aws" }
+
 func (a AwsMetricsAgent) GetName() string { return AwsMetricsAgentName }
 
 func (a AwsMetricsAgent) GetNameAliases() []string {
@@ -322,6 +328,12 @@ func NewAwsLogsAgent(accountId string) core.NBAgent {
 type AwsLogsAgent struct {
 	accountId string
 }
+
+// AwsLogsAgent runs its aws CLI on the account it is handed, and only on a
+// aws account (core.ProviderBoundAgent).
+func (AwsLogsAgent) AcceptsExecutionTarget() {}
+
+func (AwsLogsAgent) TargetProvider() string { return "aws" }
 
 func (a AwsLogsAgent) GetName() string { return AwsLogsAgentName }
 
@@ -445,6 +457,12 @@ func NewAwsTracesAgent(accountId string) core.NBAgent {
 type AwsTracesAgent struct {
 	accountId string
 }
+
+// AwsTracesAgent runs its aws CLI on the account it is handed, and only on a
+// aws account (core.ProviderBoundAgent).
+func (AwsTracesAgent) AcceptsExecutionTarget() {}
+
+func (AwsTracesAgent) TargetProvider() string { return "aws" }
 
 func (a AwsTracesAgent) GetName() string { return AwsTracesAgentName }
 

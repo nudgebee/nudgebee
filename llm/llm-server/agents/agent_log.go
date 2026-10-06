@@ -38,7 +38,7 @@ func init() {
 	toolInput := "Provide a log question in natural language, preserving the user's wording verbatim: investigation wording (why/root cause/diagnose/troubleshoot), enumeration wording (list/summarize errors), or routine wording (recent/tail logs) — the agent's mode classifier routes off this wording."
 	toolOutput := "Markdown answer with cited log evidence (timestamps, error signatures). Investigations include a 5-Why causality chain and a time-window callout when errors cluster."
 
-	core.RegisterTargetAwareNBAgentFactoryAndTool(LogsAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetRoutedNBAgentFactoryAndTool(LogsAgentName, func(accountId string) (core.NBAgent, error) {
 		return getLogAgent(security.NewRequestContextForSuperAdmin(), accountId)
 	}, toolDescription, toolInput, toolOutput)
 	toolcore.RegisterNBToolFactory(FetchLogsDirectToolName, func(accountId string) (toolcore.NBTool, error) {
