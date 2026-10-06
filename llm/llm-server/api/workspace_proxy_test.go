@@ -862,6 +862,14 @@ func TestWorkspaceExecuteReply(t *testing.T) {
 	assert.Equal(t, http.StatusOK, status, "a refusal must stay 200 so the shim prints the agent's reason")
 	assert.Equal(t, refusal, body["result"])
 	assert.Contains(t, body["error"], refusal)
+
+	// A cluster whose agent is not connected fails the command with an
+	// actionable reason instead of the shim's "Server returned 500" wrapper.
+	status, body = workspaceExecuteReply(nil, errors.New("agent not connected"))
+	assert.Equal(t, http.StatusOK, status, "agent not connected must stay 200 so the shim prints the reason")
+	assert.Equal(t, "agent not connected", body["error"])
+	assert.Contains(t, body["result"], "agent not connected")
+	assert.Contains(t, body["result"], "Do not switch to another cluster, account, or integration")
 }
 
 // The workspace's per-account config list only holds its own cluster, so a

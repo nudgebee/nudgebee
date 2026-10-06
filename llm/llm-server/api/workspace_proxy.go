@@ -806,6 +806,12 @@ func trailingNewline(values []string) string {
 	return "\n"
 }
 
+// workspaceAgentNotConnectedReply serves every agent type the relay gates on
+// (Kubernetes cluster, VM and database proxies), so it names the target, not a cluster.
+const workspaceAgentNotConnectedReply = "agent not connected: the Nudgebee agent that serves this target is not connected, so no command can run on it. " +
+	"Report that this target is unavailable for inspection. " +
+	"Do not switch to another cluster, account, or integration unless the user asked about it.\n"
+
 // workspaceExecuteReply maps a relay execution result to the shim's HTTP reply.
 // The shim prints `result`, then exits 1 when `error` is set; a non-200 makes it
 // print the raw body instead of the output.
@@ -818,6 +824,10 @@ func trailingNewline(values []string) string {
 // would reach the model inside the shim's "Server returned 500" wrapper, which
 // reads as an infrastructure fault; the agent's own reason (a read-only
 // allowlist, an unregistered action) is what it needs to see.
+//
+// A cluster whose agent is not connected is answered the same way. Read as an
+// infrastructure fault, the bare relay error led investigations to retry on
+// every other cluster the workspace could reach (#37223).
 func workspaceExecuteReply(result any, err error) (int, gin.H) {
 	var exitErr *tools.RelayCommandExitError
 	if errors.As(err, &exitErr) {
@@ -826,6 +836,9 @@ func workspaceExecuteReply(result any, err error) (int, gin.H) {
 	var refusedErr *tools.RelayCommandRefusedError
 	if errors.As(err, &refusedErr) {
 		return http.StatusOK, gin.H{"result": result, "error": refusedErr.Error()}
+	}
+	if err != nil && strings.Contains(err.Error(), "agent not connected") {
+		return http.StatusOK, gin.H{"result": workspaceAgentNotConnectedReply, "error": err.Error()}
 	}
 	if err != nil {
 		return http.StatusInternalServerError, gin.H{"error": err.Error(), "result": result}
