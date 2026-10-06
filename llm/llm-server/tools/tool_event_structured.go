@@ -274,7 +274,13 @@ func (t GetEventByIdTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 	if _, err := uuid.Parse(eventID); err != nil {
 		return structuredEventsErrorResponse(fmt.Errorf("event_id must be a valid UUID: %w", err)), nil
 	}
+	return onEventAccount(nbCtx, eventID, func(c core.NbToolContext) (core.NBToolResponse, error) {
+		return t.byID(c, eventID)
+	})
+}
 
+// byID reads one event, on the account onEventAccount picked.
+func (t GetEventByIdTool) byID(nbCtx core.NbToolContext, eventID string) (core.NBToolResponse, error) {
 	query := fmt.Sprintf(
 		"SELECT id, title, description, starts_at, updated_at, ends_at, status, priority, source, "+
 			"aggregation_key, finding_type, subject_type, subject_name, subject_namespace, subject_node, "+

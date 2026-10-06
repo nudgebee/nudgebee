@@ -1096,10 +1096,20 @@ func (l AgentEvents) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlanne
 			return toolResponse
 		}
 
+		// The reducer keeps known columns only; carry the note saying the
+		// event is on another account (tools.EventAccountNoteKey).
+		var rawRows []map[string]any
+		_ = common.UnmarshalJson([]byte(toolResponse), &rawRows)
+
 		finalResponse := []map[string]any{}
 
-		for _, event := range eventsData {
+		for i, event := range eventsData {
 			eventData := reduceEventData(event)
+			if i < len(rawRows) {
+				if note, ok := rawRows[i][tools.EventAccountNoteKey]; ok {
+					eventData[tools.EventAccountNoteKey] = note
+				}
+			}
 			finalResponse = append(finalResponse, eventData)
 		}
 

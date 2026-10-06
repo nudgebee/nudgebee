@@ -139,6 +139,13 @@ func (t GetEventEvidenceTool) Call(nbRequestContext core.NbToolContext, input co
 			Status: core.NBToolResponseStatusError,
 		}, nil
 	}
+	return onEventAccount(nbRequestContext, eventId, func(c core.NbToolContext) (core.NBToolResponse, error) {
+		return t.evidence(c, input, eventId, envelopeFields)
+	})
+}
+
+// evidence reads one event's evidence, on the account onEventAccount picked.
+func (t GetEventEvidenceTool) evidence(nbRequestContext core.NbToolContext, input core.NBToolCallRequest, eventId string, envelopeFields map[string]any) (core.NBToolResponse, error) {
 
 	// argString reads a string arg first from input.Arguments and falls back
 	// to the JSON envelope when the planner packed every field into the

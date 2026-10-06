@@ -342,3 +342,35 @@ func assertNoTargetRefusal(t *testing.T, conversationId string) {
 		AND response::text ILIKE '%does not support a delegated execution target%'`, conversationId).Scan(&refused))
 	assert.Zero(t, refused, "a sub-agent refused the target")
 }
+
+// TestCrossAccountScenario_EventIDFromAnotherAccount replays a dev
+// conversation (2026-10-06): "Get the details of Event with id …" asked on
+// k8s-dev about an event on k8s-prod answered "No event found". An event id
+// is unique: Nubi finds it on the account it belongs to, says which, and
+// reads it there.
+func TestCrossAccountScenario_EventIDFromAnotherAccount(t *testing.T) {
+	requireDelegateE2EEnv(t)
+	sc := tenantWideE2EContext()
+	accountId, userId := os.Getenv("TEST_ACCOUNT"), os.Getenv("TEST_USER")
+	prod := delegateE2ETarget("TEST_DELEGATE_K8S_TARGET", "k8s-prod")
+	dbm, err := common.GetDatabaseManager(common.Metastore)
+	require.NoError(t, err)
+	var eventID string
+	require.NoError(t, dbm.Db.QueryRow(`SELECT id::text FROM events WHERE cloud_account_id::text = $1 ORDER BY starts_at DESC LIMIT 1`,
+		scenarioAccountID(t, prod)).Scan(&eventID), "an event on %s", prod)
+
+	sessionId := fmt.Sprintf("event-id-other-account-%d", time.Now().UnixNano())
+	resp, err := core.HandleConversationSessionRequest(sc, newK8sOrchestratorAgent(accountId), userId, accountId, sessionId,
+		"Get the details of Event with id - "+eventID)
+	require.NoError(t, err)
+	t.Logf("Preserved sessionId=%s conversationId=%s status=%s", sessionId, resp.ConversationId, resp.Status)
+	foundThere := false
+	for _, c := range scenarioCalls(t, resp.ConversationId) {
+		if c.Status == "success" && c.RanOn == prod && strings.Contains(c.Params, eventID) {
+			foundThere = true
+		}
+	}
+	assert.True(t, foundThere, "no lookup of the event ran on %s", prod)
+	answer := strings.ToLower(strings.Join(resp.Response, "\n"))
+	assert.Contains(t, answer, strings.ToLower(prod), "the answer must say the event is from %s", prod)
+}
