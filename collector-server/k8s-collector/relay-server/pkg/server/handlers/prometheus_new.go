@@ -74,6 +74,22 @@ func NewPrometheusHandler(
 			return
 		}
 
+		// An account whose agent never registered has no request queue, so a
+		// publish would be unroutable: the broker drops it and fires the
+		// RabbitMQ unroutable-messages alert. Fail fast like the other relay
+		// handlers instead of waiting out the RPC timeout.
+		connected, err := store.IsAgentConnected(c.Request.Context(), acct, agentType)
+		if err != nil {
+			logger.Error("failed to check agent connection", "account_id", acct, "err", err)
+			c.JSON(http.StatusInternalServerError, utils.BuildError(500, "internal server error"))
+			return
+		}
+		if !connected {
+			logger.Info("agent not connected", "account", acct)
+			c.JSON(http.StatusServiceUnavailable, utils.BuildError(http.StatusServiceUnavailable, "agent not connected"))
+			return
+		}
+
 		// topology should already exist from register call
 
 		// 5) Build and publish RPC payload
