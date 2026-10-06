@@ -1122,7 +1122,7 @@ func TestCloudResourceMatchesTerms(t *testing.T) {
 	})
 }
 
-// normalizeK8sType must collapse both cloud_resourses Kind names ("Pod") and
+// NormalizeK8sType must collapse both cloud_resourses Kind names ("Pod") and
 // kubectl short/plural forms ("pods", "po") to the same canonical singular,
 // since searchDbForResources now returns Kind-cased types from cloud_resourses.
 func TestNormalizeK8sType(t *testing.T) {
@@ -1148,7 +1148,7 @@ func TestNormalizeK8sType(t *testing.T) {
 		"CustomResourceDefinition": "customresourcedefinition", "customresourcedefinitions": "customresourcedefinition", "crd": "customresourcedefinition", "crds": "customresourcedefinition",
 	}
 	for in, want := range cases {
-		assert.Equalf(t, want, normalizeK8sType(in), "normalizeK8sType(%q)", in)
+		assert.Equalf(t, want, NormalizeK8sType(in), "NormalizeK8sType(%q)", in)
 	}
 }
 
@@ -1167,7 +1167,7 @@ func TestFilterResourcesByType_CrossSourceNaming(t *testing.T) {
 	pods := tool.filterResourcesByType(resources, "pods")
 	assert.Len(t, pods, 2, "both Kind-cased 'Pod' and kubectl 'pods' must match a pods request")
 	for _, r := range pods {
-		assert.Equal(t, "pod", normalizeK8sType(r.Type))
+		assert.Equal(t, "pod", NormalizeK8sType(r.Type))
 	}
 
 	deploys := tool.filterResourcesByType(resources, "deployment")

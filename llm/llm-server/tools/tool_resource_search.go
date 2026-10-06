@@ -764,20 +764,20 @@ func (r K8sResourceSearchTool) isSpecificResourceType(resourceType string) bool 
 // "Deployment", "node") while kubectl output uses plural/short forms ("pods",
 // "no"). Both collapse to a canonical singular before comparison.
 func (r K8sResourceSearchTool) filterResourcesByType(resources []K8sResourceInfo, resourceType string) []K8sResourceInfo {
-	want := normalizeK8sType(resourceType)
+	want := NormalizeK8sType(resourceType)
 	var filtered []K8sResourceInfo
 	for _, res := range resources {
-		if normalizeK8sType(res.Type) == want {
+		if NormalizeK8sType(res.Type) == want {
 			filtered = append(filtered, res)
 		}
 	}
 	return filtered
 }
 
-// normalizeK8sType collapses a resource type/kind to a canonical lowercase
+// NormalizeK8sType collapses a resource type/kind to a canonical lowercase
 // singular so values from cloud_resourses ("Pod", "ReplicaSet") and kubectl
 // ("pods", "rs") compare equal.
-func normalizeK8sType(t string) string {
+func NormalizeK8sType(t string) string {
 	switch strings.ToLower(strings.TrimSpace(t)) {
 	case "po", "pod", "pods":
 		return "pod"

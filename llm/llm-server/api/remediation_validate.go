@@ -1,8 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/google/shlex"
+	"nudgebee/llm/tools"
 	"nudgebee/llm/tools/core"
 	"regexp"
 	"strings"
@@ -233,11 +235,13 @@ func settingsWritten(command string) []string {
 
 var resourceFlag = regexp.MustCompile(`--(limits|requests)=(\S+)`)
 
-// flagTakesValue lists the `kubectl set env` flags whose value is a separate token. The `--flag=x`
-// form needs no entry: it is one token and is skipped as a flag.
+// flagTakesValue lists the kubectl flags whose value is a separate token. The `--flag=x` form needs
+// no entry: it is one token and is skipped as a flag.
 var flagTakesValue = map[string]bool{
 	"-c": true, "--containers": true, "-n": true, "--namespace": true,
 	"-f": true, "--filename": true, "--from": true, "--keys": true, "-o": true, "--output": true,
+	"-l": true, "--selector": true, "-p": true, "--patch": true, "--type": true, "--replicas": true,
+	"--context": true, "--grace-period": true, "--timeout": true,
 }
 
 // deriveRollback builds the complete inverse of a `kubectl set` that the plan's own rollback failed
@@ -622,3 +626,104 @@ func referencesAny(command string, names []string) bool {
 // independent, narrower copy. See core.ReadOnlyRemoteCommands's doc comment for why entries there
 // must be safe under "runs with no human confirmation," a stricter bar than this file's own
 // confidence-scoring use.
+
+// destructiveEffect says what a kubectl execute command takes away, judged on its verb and target,
+// never on the cause text: a delete (a pod delete is a restart), a scale to zero, a suspend, a drain
+// or cordon. "" otherwise.
+func destructiveEffect(a *RemediationAction) string {
+	argv := a.ExecuteArgv
+	if len(argv) == 0 {
+		argv, _ = shlex.Split(a.ExecuteCommand)
+	}
+	if len(argv) < 2 || argv[0] != "kubectl" {
+		return ""
+	}
+	pos := positionals(argv)
+	if len(pos) == 0 {
+		return ""
+	}
+	target := strings.Join(pos[1:], " ")
+	switch pos[0] {
+	case "delete":
+		if f := flagValue(argv, "-f", "--filename"); f != "" {
+			return "deletes the objects in " + f
+		}
+		if len(pos) < 2 {
+			return ""
+		}
+		if kind, _, _ := strings.Cut(pos[1], "/"); tools.NormalizeK8sType(kind) == "pod" {
+			return ""
+		}
+		return "deletes " + target
+	case "scale":
+		if flagValue(argv, "--replicas") == "0" {
+			return "scales " + target + " to zero"
+		}
+	case "patch":
+		var p struct {
+			Spec struct {
+				Suspend bool `json:"suspend"`
+			} `json:"spec"`
+		}
+		if json.Unmarshal([]byte(flagValue(argv, "-p", "--patch")), &p) == nil && p.Spec.Suspend {
+			return "suspends " + target
+		}
+	case "drain", "cordon":
+		return "takes node " + target + " out of service"
+	}
+	return ""
+}
+
+// positionals returns argv's words after the program, skipping flags and the values they take.
+func positionals(argv []string) []string {
+	var out []string
+	for i := 1; i < len(argv); i++ {
+		a := argv[i]
+		if strings.HasPrefix(a, "-") {
+			if flagTakesValue[a] {
+				i++
+			}
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// flagValue returns the value given to any of names ("--x v" or "--x=v"), "" when absent.
+func flagValue(argv []string, names ...string) string {
+	for i, a := range argv {
+		for _, n := range names {
+			if a == n && i+1 < len(argv) {
+				return strings.Trim(argv[i+1], `'"`)
+			}
+			if strings.HasPrefix(a, n+"=") {
+				return strings.Trim(strings.TrimPrefix(a, n+"="), `'"`)
+			}
+		}
+	}
+	return ""
+}
+
+// markScaleFromZero states, from inventory rather than the model's words, that a step scales a workload
+// up from the zero replicas it is recorded at: zero is often deliberate, and the operator must see that
+// the step reverses it. replicas returns the recorded desired count, "" when unknown.
+func markScaleFromZero(plan *RemediationPlan, replicas func(kind, name, ns string) string) {
+	for i := range plan.Actions {
+		a := &plan.Actions[i]
+		cmd := a.ExecuteCommand
+		if len(a.ExecuteArgv) > 0 {
+			cmd = strings.Join(a.ExecuteArgv, " ")
+		}
+		verb, kind, name, ns, ok := kubectlSetTarget(cmd)
+		to := flagValue(strings.Fields(cmd), "--replicas")
+		if !ok || verb != "scale" || ns == "" || to == "" || to == "0" || replicas(kind, name, ns) != "0" {
+			continue
+		}
+		what := fmt.Sprintf("scales %s/%s up from the 0 running pods inventory records; if that zero is deliberate, this reverses it", kind, name)
+		if t := strings.TrimSpace(a.TradeOff); t != "" {
+			what += "; " + t
+		}
+		a.TradeOff = what
+	}
+}

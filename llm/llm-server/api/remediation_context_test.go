@@ -431,3 +431,21 @@ func TestManualAttemptsReadAsTheOperators(t *testing.T) {
 	require.Contains(t, renderAttempt(manual("change:Update auth secret")), `the operator made the change "Update auth secret" outside NudgeBee`)
 	require.NotContains(t, renderAttempt(manual("change:Update auth secret")), "ran change:")
 }
+
+// A same-named row of another kind is not the workload being scaled.
+func TestRecordedReplicasMatchesTheKind(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	dbms := &common.DatabaseManager{Db: sqlx.NewDb(db, "sqlmock")}
+	row := func(typ string) *sqlmock.Rows {
+		return sqlmock.NewRows([]string{"name", "type", "arn", "last_seen", "meta"}).AddRow("redis", typ, "", nil, []byte(`{"total_pods":0}`))
+	}
+	mock.ExpectQuery(`FROM cloud_resourses`).WithArgs("acc-1", "redis", "", "statefulset", "oss").WillReturnRows(row("StatefulSet"))
+	mock.ExpectQuery(`FROM cloud_resourses`).WithArgs("acc-1", "redis", "", "statefulset", "oss").WillReturnRows(row("Service"))
+
+	require.Equal(t, "0", recordedReplicas(dbms, "acc-1", "sts", "redis", "oss"))
+	require.Empty(t, recordedReplicas(dbms, "acc-1", "sts", "redis", "oss"))
+	require.Empty(t, recordedReplicas(dbms, "acc-1", "sts", "redis", ""), "no namespace, no lookup")
+	require.NoError(t, mock.ExpectationsWereMet())
+}

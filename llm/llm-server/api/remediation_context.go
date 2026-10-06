@@ -946,3 +946,28 @@ func humanDuration(d time.Duration) string {
 	}
 	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }
+
+// inventoryReplicas is the replica lookup finalizePlan uses for this account, nil without a database.
+func inventoryReplicas(accountId string) func(kind, name, ns string) string {
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil
+	}
+	return func(kind, name, ns string) string { return recordedReplicas(dbms, accountId, kind, name, ns) }
+}
+
+// recordedReplicas is a workload's replica count as inventory last recorded it, "" when unknown. A zero
+// count is omitted from status_info (Kubernetes drops zero-valued status), so total_pods stands in.
+func recordedReplicas(dbms *common.DatabaseManager, accountId, kind, name, ns string) string {
+	if ns == "" {
+		return "" // an unscoped name can match another workload
+	}
+	// The kind only orders the lookup, so pass its full name: "sts" would lose to a same-named Service.
+	kind = tools.NormalizeK8sType(kind)
+	res := loadResource(dbms, accountId, name, "", kind, ns)
+	if res == nil || tools.NormalizeK8sType(res.Type) != kind {
+		return ""
+	}
+	statusInfo, _ := res.Meta["status_info"].(map[string]any)
+	return firstNonEmpty(scalarString(statusInfo["replicas"]), scalarString(res.Meta["total_pods"]))
+}

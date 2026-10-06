@@ -310,3 +310,58 @@ describe('OutcomeCheck', () => {
     expect(latestOutcome([])).toBeNull();
   });
 });
+
+// A mitigation that gives something up states its cost and carries no likely-to-resolve score.
+describe('ActionCard trade-off', () => {
+  const base = { index: 0, accountId: 'acc', eventId: 'evt', canRun: true };
+
+  it('shows what the step gives up instead of a score', () => {
+    render(
+      <ActionCard
+        {...base}
+        action={{
+          action: 'Scale redis-replicas to 1',
+          kind: 'mitigation',
+          confidence: 45,
+          trade_off: 'reverses a StatefulSet scaled to zero on purpose',
+          execute_command: 'kubectl scale statefulset redis-replicas -n oss --replicas=1',
+        }}
+      />
+    );
+    expect(screen.getByTestId('remediation-trade-off-1')).toHaveTextContent('Before you run: reverses a StatefulSet scaled to zero on purpose');
+    expect(screen.queryByText(/likely to resolve/)).toBeNull();
+  });
+
+  it('keeps the score on a fix that states a trade-off', () => {
+    render(
+      <ActionCard
+        {...base}
+        action={{
+          action: 'Scale redis',
+          kind: 'fix',
+          confidence: 80,
+          trade_off: 'scales statefulset/redis up from 0',
+          execute_command: 'kubectl scale statefulset redis -n oss --replicas=1',
+        }}
+      />
+    );
+    expect(screen.getByTestId('remediation-trade-off-1')).toHaveTextContent('Before you run: scales statefulset/redis up from 0');
+    expect(screen.getByText('80% likely to resolve')).toBeInTheDocument();
+  });
+
+  it('keeps the score for a step that gives nothing up', () => {
+    render(
+      <ActionCard
+        {...base}
+        action={{
+          action: 'Raise limit',
+          kind: 'fix',
+          confidence: 90,
+          execute_command: 'kubectl set resources deployment api -n shop --limits=memory=1Gi',
+        }}
+      />
+    );
+    expect(screen.getByText('90% likely to resolve')).toBeInTheDocument();
+    expect(screen.queryByTestId('remediation-trade-off-1')).toBeNull();
+  });
+});

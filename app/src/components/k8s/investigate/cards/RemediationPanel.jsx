@@ -555,8 +555,12 @@ export function ActionCard({
   const verifyRef = useRef(null);
   const appliedLabel = appliedAt ? formatAppliedAt(appliedAt) : '';
 
-  const confidence = formatConfidence(action?.confidence);
-  const kindMeta = KIND_META[trimmedString(action?.kind).toLowerCase()] || null;
+  // A mitigation that gives something up (stops, deletes, reverses a person's change) does not resolve
+  // the incident, so it states its cost instead of a likely-to-resolve score. A fix keeps its score.
+  const tradeOff = trimmedString(action?.trade_off);
+  const kind = trimmedString(action?.kind).toLowerCase();
+  const confidence = tradeOff && kind !== 'fix' ? null : formatConfidence(action?.confidence);
+  const kindMeta = KIND_META[kind] || null;
   const execCmd = trimmedString(action?.execute_command);
   const verifyCmd = trimmedString(action?.verify_command);
   const rollbackCmd = trimmedString(action?.rollback_command);
@@ -696,6 +700,16 @@ export function ActionCard({
     >
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
         {action?.title ? <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>{action.title}</Box> : null}
+        {tradeOff ? (
+          <Card variant='tinted' tone='warning' size='sm' elevation='flat' data-testid={`remediation-trade-off-${index + 1}`}>
+            <Box sx={{ fontSize: 'var(--ds-text-small)' }}>
+              <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-semibold)' }}>
+                Before you run:{' '}
+              </Box>
+              {tradeOff}
+            </Box>
+          </Card>
+        ) : null}
         {operatorStep ? (
           <Card variant='tinted' tone='warning' size='sm' elevation='flat' data-testid={`remediation-operator-step-${index + 1}`}>
             <Box sx={{ fontSize: 'var(--ds-text-small)' }}>

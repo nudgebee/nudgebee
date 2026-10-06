@@ -186,6 +186,9 @@ type RemediationAction struct {
 	// order (a restart after the config it reloads, a redrive after the permission it needs). Actions
 	// without it are alternative strategies.
 	After string `json:"after,omitempty"`
+	// TradeOff names what the action gives up: what it stops, deletes, suspends, scales away or re-creates,
+	// or the deliberate change by a person it reverses. Shown on the card; such a step is a mitigation.
+	TradeOff string `json:"trade_off,omitempty"`
 }
 
 // HardeningItem is an improvement the incident does not require; kept apart from actions so it never reads as the fix.
@@ -250,6 +253,23 @@ func normalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule
 	for i := range plan.Actions {
 		notes = append(notes, applyArgv(&plan.Actions[i])...)
 	}
+	// A step another step needs ("delete the job, then re-create it fixed") is part of a fix, not a
+	// trade-off. Only an after naming another action in the plan links two steps.
+	key := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+	names := map[string]bool{}
+	for _, a := range plan.Actions {
+		names[key(a.Action)] = true
+	}
+	linksTo := func(a RemediationAction) bool {
+		after := key(a.After)
+		return after != "" && after != key(a.Action) && names[after]
+	}
+	dependedOn := map[string]bool{}
+	for _, a := range plan.Actions {
+		if linksTo(a) {
+			dependedOn[key(a.After)] = true
+		}
+	}
 	kept := plan.Actions[:0]
 	for i := range plan.Actions {
 		a := &plan.Actions[i]
@@ -257,6 +277,19 @@ func normalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule
 		// must be set before the mitigation cap below reads it.
 		if a.AlertRuleChange != nil {
 			a.Kind = alertRuleActionKind(strings.ToLower(strings.TrimSpace(a.AlertRuleChange.Operation)))
+		}
+		// A step in a chain, needed by another or needing one, keeps its kind but still states its cost.
+		chained := dependedOn[key(a.Action)] || linksTo(*a)
+		if a.AlertRuleChange == nil {
+			if what := destructiveEffect(a); what != "" && strings.TrimSpace(a.TradeOff) == "" {
+				a.TradeOff = what
+				notes = append(notes, planValidationNote{Action: a.Action, Rule: "trade_off_from_command", Detail: what})
+			}
+		}
+		if strings.TrimSpace(a.TradeOff) != "" && !chained && strings.EqualFold(strings.TrimSpace(a.Kind), RemediationKindFix) {
+			// Giving something up to quiet the incident is not removing its cause.
+			notes = append(notes, planValidationNote{Action: a.Action, Rule: "trade_off_is_a_mitigation", Detail: a.TradeOff})
+			a.Kind = RemediationKindMitigation
 		}
 		if strings.EqualFold(strings.TrimSpace(a.Kind), RemediationKindFix) {
 			a.Kind = RemediationKindFix
@@ -319,9 +352,22 @@ func normalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule
 		if iFix != jFix {
 			return iFix
 		}
+		// A step that gives something up comes after every one that doesn't.
+		if iCost, jCost := plan.Actions[i].TradeOff != "", plan.Actions[j].TradeOff != ""; iCost != jCost {
+			return jCost
+		}
 		return plan.Actions[i].Confidence > plan.Actions[j].Confidence
 	})
 	return append(notes, keepDependentsAfter(plan)...)
+}
+
+// finalizePlan runs the inventory checks and then normalizePlan; use it for any plan the model wrote or
+// rewrote, so no path skips a check. replicas may be nil when inventory is unavailable.
+func finalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule *RemediationAlertRule, replicas func(kind, name, ns string) string) []planValidationNote {
+	if replicas != nil {
+		markScaleFromZero(plan, replicas)
+	}
+	return normalizePlan(plan, availableArtifacts, alertRule)
 }
 
 // keepDependentsAfter places each action directly after the one its After names, so ranking never
@@ -710,7 +756,7 @@ func generateRemediationPlan(ctx *security.RequestContext, request RemediationGe
 	modelPlan.Actions = append([]RemediationAction(nil), plan.Actions...)
 	trace.ModelPlan = &modelPlan
 
-	trace.Validation = normalizePlan(&plan, artifacts, request.AlertRule)
+	trace.Validation = finalizePlan(&plan, artifacts, request.AlertRule, inventoryReplicas(request.AccountId))
 	plan = repairAgainstTargetState(ctx, request, llm, systemPrompt, plan, &trace, artifacts)
 	for _, d := range plan.Dropped {
 		ctx.GetLogger().Info("remediation_generate: dropped alert-rule action", "action", d.Action, "reason", d.Reason)

@@ -469,3 +469,99 @@ func TestRestartThatCompletesAFixKeepsTheModelsKind(t *testing.T) {
 	require.Equal(t, RemediationKindFix, restart.Kind)
 	require.Equal(t, Confidence(95), restart.Confidence)
 }
+
+// A step that takes something away states it and is never ranked as a fix, judged on the command's
+// verb and the declared trade_off, never on the cause text.
+func TestTradeOffStepsAreMitigationsThatSayWhatTheyGiveUp(t *testing.T) {
+	effect := func(cmd string) string { return destructiveEffect(&RemediationAction{ExecuteCommand: cmd}) }
+	require.Equal(t, "deletes job postgres-migration-job", effect("kubectl delete job postgres-migration-job -n nudgebee"))
+	require.Equal(t, "suspends cronjob nightly-report", effect(`kubectl patch cronjob nightly-report -n bench -p '{"spec":{"suspend":true}}'`))
+	require.Empty(t, effect(`kubectl patch cronjob nightly-report -n bench -p '{"spec":{"suspend":false}}'`))
+	require.Equal(t, "scales statefulset redis to zero", effect("kubectl scale statefulset redis -n x --replicas=0"))
+	require.Equal(t, "scales deploy/web to zero", effect("kubectl scale --replicas=0 deploy/web"))
+	require.Equal(t, "deletes job foo", effect("kubectl -n shop delete job foo"))
+	require.Equal(t, "deletes the objects in job.yaml", effect("kubectl delete -f job.yaml"))
+	require.Equal(t, "takes node n1 out of service", effect("kubectl drain n1 --ignore-daemonsets"))
+	require.Empty(t, effect("kubectl delete pod web-0 -n shop"), "a pod delete is a restart")
+	require.Empty(t, effect("kubectl delete --force pod x"))
+	require.Empty(t, effect("kubectl scale statefulset redis -n x --replicas=1"))
+	require.Empty(t, effect("aws ec2 terminate-instances --instance-ids i-1"), "only kubectl commands are judged")
+
+	plan := RemediationPlan{Actions: []RemediationAction{
+		{Action: "Suspend nightly-report", Kind: RemediationKindFix, Confidence: 90, ExecuteCommand: `kubectl patch cronjob nightly-report -n bench -p '{"spec":{"suspend":true}}'`},
+		{Action: "Scale redis to 1", Kind: RemediationKindFix, Confidence: 80, ExecuteCommand: "kubectl scale statefulset redis -n oss --replicas=1", TradeOff: "reverses a scale to zero made on purpose"},
+		{Action: "Restart web", Kind: RemediationKindMitigation, Confidence: 30, ExecuteCommand: "kubectl rollout restart deployment web -n bench"},
+		{Action: "Delete failed job", Kind: RemediationKindFix, Confidence: 90, ExecuteCommand: "kubectl delete job migrate -n db"},
+		{Action: "Re-create job fixed", Kind: RemediationKindFix, Confidence: 90, After: "Delete failed job", ExecuteCommand: "kubectl create job migrate --from=cronjob/migrate -n db"},
+	}}
+	notes := normalizePlan(&plan, nil, nil)
+	byName := map[string]RemediationAction{}
+	rank := map[string]int{}
+	for i, a := range plan.Actions {
+		byName[a.Action] = a
+		rank[a.Action] = i
+	}
+	require.Equal(t, RemediationKindMitigation, byName["Suspend nightly-report"].Kind)
+	require.Equal(t, "suspends cronjob nightly-report", byName["Suspend nightly-report"].TradeOff)
+	require.Equal(t, RemediationKindMitigation, byName["Scale redis to 1"].Kind, "a declared reversal is not a fix")
+	require.Equal(t, RemediationKindFix, byName["Delete failed job"].Kind, "a step another step needs is part of the fix")
+	require.Equal(t, "deletes job migrate", byName["Delete failed job"].TradeOff, "a chained step still states its cost")
+	require.Less(t, rank["Restart web"], rank["Suspend nightly-report"], "steps that give something up rank after the rest")
+	require.Less(t, rank["Restart web"], rank["Scale redis to 1"], "steps that give something up rank after the rest")
+	require.NotEmpty(t, notes)
+
+	// An after naming no action in the plan, or the step itself, does not make a chain.
+	dangling := RemediationPlan{Actions: []RemediationAction{
+		{Action: "Delete job", Kind: RemediationKindFix, Confidence: 90, After: "nonexistent", ExecuteCommand: "kubectl delete job migrate -n db"},
+		{Action: "Delete pvc", Kind: RemediationKindFix, Confidence: 90, After: " delete PVC ", ExecuteCommand: "kubectl delete pvc data-redis-0 -n db"},
+	}}
+	normalizePlan(&dangling, nil, nil)
+	for _, a := range dangling.Actions {
+		require.Equal(t, RemediationKindMitigation, a.Kind, a.Action)
+		require.NotEmpty(t, a.TradeOff, a.Action)
+	}
+
+	// A chart fix followed by a delete: the delete stays a fix and states what it deletes.
+	chart := RemediationPlan{Actions: []RemediationAction{
+		{Action: "Fix chart value", Kind: RemediationKindFix, Confidence: 85, RequiredChange: &RequiredChange{Where: "chart", Target: "redis values", Change: "set persistence.size"}},
+		{Action: "Delete redis pvc", Kind: RemediationKindFix, Confidence: 85, After: "fix chart value", ExecuteCommand: "kubectl delete pvc data-redis-0 -n oss"},
+	}}
+	normalizePlan(&chart, nil, nil)
+	require.Equal(t, RemediationKindFix, chart.Actions[1].Kind)
+	require.Equal(t, "deletes pvc data-redis-0", chart.Actions[1].TradeOff)
+}
+
+// Scaling a workload up from the zero replicas inventory records is stated as a reversal, whatever the
+// model wrote, so the card never presents it as resolving the incident.
+func TestScaleFromRecordedZeroIsStatedAsAReversal(t *testing.T) {
+	inv := func(kind, name, ns string) string {
+		if kind == "statefulset" && name == "redis-replicas" && ns == "oss" {
+			return "0"
+		}
+		return "3"
+	}
+	plan := RemediationPlan{Actions: []RemediationAction{
+		{Action: "Scale redis", Kind: RemediationKindMitigation, Confidence: 45, ExecuteArgv: []string{"kubectl", "scale", "statefulset", "redis-replicas", "-n", "oss", "--replicas=1"}, TradeOff: "uses more memory"},
+		{Action: "Scale web", Kind: RemediationKindMitigation, Confidence: 30, ExecuteCommand: "kubectl scale deployment/web -n oss --replicas 5"},
+	}}
+	finalizePlan(&plan, nil, nil, inv)
+	require.Equal(t, "scales statefulset/redis-replicas up from the 0 running pods inventory records; if that zero is deliberate, this reverses it; uses more memory", actionByName(t, plan, "Scale redis").TradeOff)
+	require.Empty(t, actionByName(t, plan, "Scale web").TradeOff, "a workload not at zero is not reversed")
+	require.Equal(t, "Scale web", plan.Actions[0].Action, "the reversal ranks last")
+
+	// A step that completes a fix through "after" stays a fix; the reversal is still stated.
+	chained := RemediationPlan{Actions: []RemediationAction{
+		{Action: "Raise memory", Kind: RemediationKindFix, Confidence: 80, ExecuteCommand: "kubectl set resources statefulset redis-replicas -n oss --limits=memory=1Gi"},
+		{Action: "Scale redis", Kind: RemediationKindFix, Confidence: 80, After: "Raise memory", ExecuteArgv: []string{"kubectl", "scale", "statefulset", "redis-replicas", "-n", "oss", "--replicas=1"}},
+	}}
+	finalizePlan(&chained, nil, nil, inv)
+	for _, a := range chained.Actions {
+		if a.Action == "Scale redis" {
+			require.Contains(t, a.TradeOff, "0 running pods")
+			require.Equal(t, RemediationKindFix, a.Kind)
+		}
+	}
+	empty := RemediationPlan{Actions: []RemediationAction{{Action: "Scale web", ExecuteCommand: "kubectl scale deploy web --replicas=2"}}}
+	markScaleFromZero(&empty, func(string, string, string) string { return "0" })
+	require.Empty(t, empty.Actions[0].TradeOff, "no namespace, no lookup")
+}

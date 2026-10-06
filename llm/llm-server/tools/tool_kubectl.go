@@ -629,7 +629,7 @@ func KubectlTargetKind(command string) string {
 	kind := strings.SplitN(positional[idx], "/", 2)[0]
 	kind = strings.SplitN(kind, ",", 2)[0]
 	kind = strings.SplitN(kind, ".", 2)[0]
-	return normalizeK8sType(kind)
+	return NormalizeK8sType(kind)
 }
 
 // kubectlValueFlags are the common kubectl flags whose value is a separate token.
