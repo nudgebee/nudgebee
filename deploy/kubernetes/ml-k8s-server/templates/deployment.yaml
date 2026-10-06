@@ -66,12 +66,15 @@ spec:
             - name: health
               containerPort: 8081
               protocol: TCP
+          # /health is served by the gunicorn that also runs the queue consumer, so a probe can
+          # wait behind a scan holding the GIL; hence 5s rather than the 1s default.
           livenessProbe:
             httpGet:
               path: /health
               port: 8081
             initialDelaySeconds: 20
             periodSeconds: 20
+            timeoutSeconds: 5
             failureThreshold: 5
           readinessProbe:
             httpGet:
@@ -79,6 +82,7 @@ spec:
               port: 8081
             initialDelaySeconds: 20
             periodSeconds: 20
+            timeoutSeconds: 5
             failureThreshold: 5
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

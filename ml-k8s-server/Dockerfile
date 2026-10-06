@@ -40,7 +40,6 @@ ENV PATH=/opt/conda/envs/myenv/bin:$PATH
 WORKDIR /app
 
 # Copy only the application code
-COPY gunicorn.conf.py ./
 COPY server ./server
 
 # Runtime configuration
@@ -52,4 +51,7 @@ EXPOSE 9999
 EXPOSE 8081
 
 # Use sh -c to allow environment variable expansion in exec form
-CMD ["sh", "-c", "conda run --no-capture-output -n myenv gunicorn --config gunicorn.conf.py --workers ${GUNICORN_WORKERS} --timeout=900 --bind=0.0.0.0:9999 server.app:app & conda run --no-capture-output -n myenv gunicorn --workers 1 --timeout=60 --bind=0.0.0.0:8081 server.app:health_app & wait"]
+# The :8081 gunicorn also runs the queue consumer (server/worker.py). Keep it at --workers 1:
+# each worker would be another consumer, and another scan in memory at once. Its --timeout
+# matches :9999 because a scan holding the GIL delays the worker's heartbeat.
+CMD ["sh", "-c", "conda run --no-capture-output -n myenv gunicorn --workers ${GUNICORN_WORKERS} --timeout=900 --bind=0.0.0.0:9999 server.app:app & conda run --no-capture-output -n myenv gunicorn --workers 1 --timeout=900 --bind=0.0.0.0:8081 server.worker:health_app & wait"]

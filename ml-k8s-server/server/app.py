@@ -25,9 +25,8 @@ except ValueError:
     logger.error(f"Invalid ML_PORT environment variable: {os.environ.get('ML_PORT')}. " "Defaulting to 9999.")
     ML_SERVER_PORT = 9999
 
-# RabbitMQ consumer is started via gunicorn.conf.py post_fork hook
-# so only one Gunicorn worker runs the consumer (isolating TF-heavy
-# recommendation work from other HTTP-serving workers).
+# The RabbitMQ consumer runs in the :8081 gunicorn (server/worker.py), one per
+# pod, so recommendation work stays out of the HTTP-serving workers.
 
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
@@ -81,7 +80,7 @@ def run_health_server():
 if __name__ == "__main__":
     try:
         # Start RabbitMQ consumer for local dev
-        # (in production, gunicorn.conf.py handles this)
+        # (in production, server/worker.py handles this)
         from server.message import ml_server_message_handler
         from server.utils.rabbitmq import consume_message
 
