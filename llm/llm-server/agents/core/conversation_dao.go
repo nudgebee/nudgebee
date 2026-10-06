@@ -2815,6 +2815,7 @@ func (chat *ConversationDao) RetainConversationTokenUsage(conversationId string)
 	query := `UPDATE llm_conversation_token_usage t
 		SET tenant_id = COALESCE(t.tenant_id, c.tenant_id),
 			session_id = COALESCE(t.session_id, c.session_id),
+			conversation_account_id = COALESCE(t.conversation_account_id, c.account_id),
 			prompt_messages = NULL,
 			response_content = NULL,
 			error_message = NULL,
@@ -4130,15 +4131,15 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 		return fmt.Errorf("token usage record is nil")
 	}
 
-	// conv looks the owning conversation up once. Its tenant and session are
-	// copied onto the row so the spend still counts toward budgets after the
-	// conversation is deleted. If a conversation id is given but that
+	// conv looks the owning conversation up once. Its tenant, session and
+	// account are copied onto the row so the spend still counts toward budgets
+	// after the conversation is deleted. If a conversation id is given but that
 	// conversation is already gone (a call that finished after the delete), the
 	// row is stored unlinked and without its text, like the rows the delete
 	// cleared: there is no foreign key to reject it (V986).
 	query := `
 		WITH conv AS (
-			SELECT c.tenant_id, c.session_id FROM llm_conversations c WHERE c.id = $1::uuid
+			SELECT c.tenant_id, c.session_id, c.account_id FROM llm_conversations c WHERE c.id = $1::uuid
 		), live AS (
 			SELECT $1::uuid IS NULL OR EXISTS (SELECT 1 FROM conv) AS ok
 		)
@@ -4156,7 +4157,7 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			cost_usd,
 			model_tier, task_type,
 			llm_config_source, id,
-			tenant_id, session_id
+			tenant_id, session_id, conversation_account_id
 		) VALUES (
 			CASE WHEN (SELECT ok FROM live) THEN $1::uuid END,
 			CASE WHEN (SELECT ok FROM live) THEN $2::uuid END,
@@ -4175,7 +4176,8 @@ func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
 			$32, $33,
 			$34, COALESCE($35::uuid, gen_random_uuid()),
 			(SELECT tenant_id FROM conv),
-			(SELECT session_id FROM conv)
+			(SELECT session_id FROM conv),
+			(SELECT account_id FROM conv)
 		)
 	`
 

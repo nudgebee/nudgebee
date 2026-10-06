@@ -975,6 +975,10 @@ type appConfig struct {
 	// looks up the agent's correct message_id from DB instead of trusting
 	// the request's message_id. Falls back to legacy path when disabled.
 	FollowupResumeV2Enabled bool `mapstructure:"llm_server_followup_resume_v2_enabled"`
+	// BudgetUsageRollupEnabled makes budget checks read token spend from the
+	// llm_usage_daily rollup (V990), kept current by a leader-elected job, and
+	// runs that job. Off, budgets read llm_conversation_token_usage directly.
+	BudgetUsageRollupEnabled bool `mapstructure:"llm_server_budget_usage_rollup_enabled"`
 
 	// AgentIntegrationPrecheckEnabled gates a fail-fast check that runs only
 	// when a user invokes an agent via @<name>. If every tool the agent
@@ -1632,6 +1636,7 @@ func init() {
 	viper.SetDefault("llm_max_daily_count_limit", 500)
 	viper.SetDefault("max_memory_facts_per_conversation", 30)
 	viper.SetDefault("llm_server_queued_messages_enabled", true)
+	viper.SetDefault("llm_server_budget_usage_rollup_enabled", true)
 	viper.SetDefault("llm_server_max_queued_messages_per_conversation", 5)
 	viper.SetDefault("llm_memory_ttl_never_used_days", 90)
 	viper.SetDefault("llm_memory_ttl_stale_days", 180)

@@ -42,13 +42,13 @@ def persist_llm_token_usage(
         agent_name = "rag_" + agent_name
         with engine.connect() as connection:
             with connection.begin():
-                # conv looks the owning conversation up once: its tenant and session
+                # conv looks the owning conversation up once: its tenant, session and account
                 # are copied so the spend still counts toward budgets after the
                 # conversation is deleted. If the conversation is already gone, the
                 # row is stored unlinked and without its error text.
                 insert_query = text("""
                     WITH conv AS (
-                        SELECT c.tenant_id, c.session_id FROM llm_conversations c
+                        SELECT c.tenant_id, c.session_id, c.account_id FROM llm_conversations c
                         WHERE c.id = CAST(:conversation_id AS uuid)
                     ), live AS (
                         SELECT CAST(:conversation_id AS uuid) IS NULL OR EXISTS (SELECT 1 FROM conv) AS ok
@@ -61,7 +61,7 @@ def persist_llm_token_usage(
                         retry_attempt, fallback_from_model, fallback_chain,
                         latency_seconds, request_status, error_message,
                         content_length, stop_reason,
-                        tenant_id, session_id
+                        tenant_id, session_id, conversation_account_id
                     )
                     VALUES (
                         CASE WHEN (SELECT ok FROM live) THEN CAST(:conversation_id AS uuid) END,
@@ -75,7 +75,8 @@ def persist_llm_token_usage(
                         CASE WHEN (SELECT ok FROM live) THEN CAST(:error_message AS text) END,
                         :content_length, :stop_reason,
                         (SELECT tenant_id FROM conv),
-                        (SELECT session_id FROM conv)
+                        (SELECT session_id FROM conv),
+                        (SELECT account_id FROM conv)
                     );
                     """)
                 connection.execute(

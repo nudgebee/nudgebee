@@ -204,6 +204,7 @@ func DeleteConversationByConversationId(context *security.RequestContext, delete
 	retainQuery := `UPDATE llm_conversation_token_usage t
 		SET tenant_id = COALESCE(t.tenant_id, c.tenant_id),
 			session_id = COALESCE(t.session_id, c.session_id),
+			conversation_account_id = COALESCE(t.conversation_account_id, c.account_id),
 			prompt_messages = NULL,
 			response_content = NULL,
 			error_message = NULL,

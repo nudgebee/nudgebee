@@ -2463,6 +2463,8 @@ func DeleteTenant(ctx *security.RequestContext, request TenantDeleteRequest) (Te
 		// statements so each can use its index.
 		{name: "llm_conversation_token_usage", whereSubclause: "conversation_id IN (SELECT id FROM llm_conversations WHERE tenant_id = $1)"},
 		{name: "llm_conversation_token_usage", whereSubclause: "conversation_id IS NULL AND tenant_id IS NOT NULL AND tenant_id = $1"},
+		// Daily usage rollup built from those rows (V990).
+		{name: "llm_usage_daily"},
 		{name: "llm_conversations"},
 		{name: "llm_global_contexts"},
 		{name: "llm_knowledgebases"},

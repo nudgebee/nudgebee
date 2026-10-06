@@ -18,6 +18,7 @@ import (
 	"nudgebee/llm/agents"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/api"
+	"nudgebee/llm/budget"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/prompts"
@@ -321,6 +322,12 @@ func main() {
 	// whichever (account, week) slots have no row, so a missed tick self-heals.
 	if err := api.RegisterEventAnalysisDigestJob(); err != nil {
 		slog.Warn("main: failed to register event analysis digest job", "error", err)
+	}
+
+	// Daily LLM usage rollup that budget checks read (#40241). Convergent +
+	// leader-elected: rebuilds yesterday, today and any day not yet built.
+	if err := budget.RegisterUsageRollupJob(); err != nil {
+		slog.Warn("main: failed to register usage rollup job", "error", err)
 	}
 
 	// Periodically delete never-used and stale long-term memories.
