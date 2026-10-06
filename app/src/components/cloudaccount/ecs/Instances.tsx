@@ -295,8 +295,9 @@ export const ECSTasks = (props: {
           value={selectedTagKey}
           options={availableTagKeys}
           onSelect={(e: any) => {
-            setSelectedTagKey(e.target.value || null);
-            if (!e.target.value) {
+            const nextKey = e.target.value || null;
+            if (nextKey !== selectedTagKey) {
+              setSelectedTagKey(nextKey);
               setSelectedTagValue(null);
             }
           }}
@@ -570,8 +571,9 @@ export const ECSServices = (props: {
           value={selectedTagKey}
           options={availableTagKeys}
           onSelect={(e: any) => {
-            setSelectedTagKey(e.target.value || null);
-            if (!e.target.value) {
+            const nextKey = e.target.value || null;
+            if (nextKey !== selectedTagKey) {
+              setSelectedTagKey(nextKey);
               setSelectedTagValue(null);
             }
           }}
@@ -1201,8 +1203,9 @@ export const ECSClusters = (props: {
           value={selectedTagKey}
           options={availableTagKeys}
           onSelect={(e: any) => {
-            setSelectedTagKey(e.target.value || null);
-            if (!e.target.value) {
+            const nextKey = e.target.value || null;
+            if (nextKey !== selectedTagKey) {
+              setSelectedTagKey(nextKey);
               setSelectedTagValue(null);
             }
           }}

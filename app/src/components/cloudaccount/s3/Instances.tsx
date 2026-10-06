@@ -258,9 +258,10 @@ const InstancesView = (props: {
           value={selectedTagKey}
           options={availableTagKeys}
           onSelect={(e: any) => {
-            setPage(0);
-            setSelectedTagKey(e.target.value || null);
-            if (!e.target.value) {
+            const nextKey = e.target.value || null;
+            if (nextKey !== selectedTagKey) {
+              setPage(0);
+              setSelectedTagKey(nextKey);
               setSelectedTagValue(null);
             }
           }}
