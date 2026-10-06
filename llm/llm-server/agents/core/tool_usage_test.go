@@ -137,6 +137,20 @@ func TestListToolUsage_UserFilter(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestUsageMetricsFilter_BuildToolWhere_CallTime: the Tools tab counts tool
+// calls that ran in the window, in conversations with LLM calls in the window
+// for the account — the call-time scope every other analyser screen uses
+// (#40241) — not conversations that started in the window.
+func TestUsageMetricsFilter_BuildToolWhere_CallTime(t *testing.T) {
+	f := UsageMetricsFilter{AccountIDs: []string{"acc-1"}, StartDate: time.Now(), EndDate: time.Now()}
+	where, args := f.buildToolWhere()
+
+	assert.Contains(t, where, "tu.conversation_account_id = ANY($1::uuid[]) AND tu.created_at >= $2 AND tu.created_at <= $3")
+	assert.Contains(t, where, "tc.created_at >= $2 AND tc.created_at <= $3")
+	assert.NotRegexp(t, `(^|[^a-z])c\.created_at`, where)
+	assert.Len(t, args, 3)
+}
+
 // TestListToolUsage_ScansRunConcurrently: the operational and downstream-cost scans
 // are independent, so the tab should wait for the slower one, not for both (#39745).
 func TestListToolUsage_ScansRunConcurrently(t *testing.T) {

@@ -103,17 +103,23 @@ type UsageMetricsFilter struct {
 	UserID     string
 }
 
+// usageScopeWhere is the account + window scope every analyser screen and the
+// cost report share: calls that RAN in the window (t.created_at), for the
+// account their spend belongs to (t.conversation_account_id, the
+// conversation's account, copied onto each row) — the same attribution and
+// time base as budgets (#40241). idx_llm_token_usage_conv_account_created_at
+// (V992) serves it; scoping through llm_conversations instead would probe
+// every conversation the account ever had. Older rows get the column from the
+// usage-account backfill job (budget/account_backfill.go).
+const usageScopeWhere = "t.conversation_account_id = ANY($1::uuid[]) AND t.created_at >= $2 AND t.created_at <= $3"
+
 // buildWhere renders the WHERE condition (without the WHERE keyword) and the
 // positional args. account_id is cast to uuid[] on the param side so the
-// existing idx_llm_conversations_account_created_at index serves the scan.
+// index serves the scan.
 func (f UsageMetricsFilter) buildWhere() (string, []any) {
 	args := []any{pq.Array(f.AccountIDs), f.StartDate, f.EndDate}
 	n := 4
-	clauses := []string{
-		"c.account_id = ANY($1::uuid[])",
-		"c.created_at >= $2",
-		"c.created_at <= $3",
-	}
+	clauses := []string{usageScopeWhere}
 	addArray := func(col string, vals []string) {
 		if len(vals) > 0 {
 			clauses = append(clauses, fmt.Sprintf("%s = ANY($%d)", col, n))
@@ -150,8 +156,7 @@ func (f UsageMetricsFilter) buildWhere() (string, []any) {
 // filters). Used by the filters endpoint so dropdowns list every value present
 // in the window, independent of which other filters are currently selected.
 func (f UsageMetricsFilter) buildScopeWhere() (string, []any) {
-	return "c.account_id = ANY($1::uuid[]) AND c.created_at >= $2 AND c.created_at <= $3",
-		[]any{pq.Array(f.AccountIDs), f.StartDate, f.EndDate}
+	return usageScopeWhere, []any{pq.Array(f.AccountIDs), f.StartDate, f.EndDate}
 }
 
 // buildToolWhere renders the WHERE for the tool-usage aggregation (alias tc on
@@ -159,15 +164,19 @@ func (f UsageMetricsFilter) buildScopeWhere() (string, []any) {
 // model / provider / request_status columns, so only the dimensions it can reach —
 // account + date + source — are honoured here; the bar's model/provider/status
 // filters do NOT apply to tools (mirrors buildCacheStorageWhere ignoring the
-// dimensions the cache table lacks). Date scopes on c.created_at so the Tools tab
-// covers the same conversations as every other analyser screen.
+// dimensions the cache table lacks). Tool calls that ran in the window
+// (tc.created_at), in conversations with LLM calls in the window for the
+// account — the same call-time scope as every other analyser screen, found
+// through the usage index rather than every conversation the account had.
 func (f UsageMetricsFilter) buildToolWhere() (string, []any) {
 	args := []any{pq.Array(f.AccountIDs), f.StartDate, f.EndDate}
 	n := 4
 	clauses := []string{
-		"c.account_id = ANY($1::uuid[])",
-		"c.created_at >= $2",
-		"c.created_at <= $3",
+		`c.id IN (SELECT tu.conversation_id FROM llm_conversation_token_usage tu
+			WHERE tu.conversation_account_id = ANY($1::uuid[]) AND tu.created_at >= $2 AND tu.created_at <= $3
+				AND tu.conversation_id IS NOT NULL)`,
+		"tc.created_at >= $2",
+		"tc.created_at <= $3",
 	}
 	if len(f.Sources) > 0 {
 		clauses = append(clauses, fmt.Sprintf("c.source = ANY($%d)", n))
@@ -625,8 +634,8 @@ func (chat *ConversationDao) breakdownForDimension(dim, where string, args []any
 			where, args, limit)
 	case "account":
 		return chat.runUsageBreakdown(
-			"COALESCE(ca.account_name, c.account_id::text)",
-			"LEFT JOIN cloud_accounts ca ON ca.id = c.account_id",
+			"COALESCE(ca.account_name, t.conversation_account_id::text)",
+			"LEFT JOIN cloud_accounts ca ON ca.id = t.conversation_account_id",
 			"", where, args, limit)
 	default:
 		return nil, fmt.Errorf("breakdownForDimension: invalid dimension %q", dim)
@@ -769,15 +778,15 @@ type tsScan struct {
 }
 
 // runUsageTimeSeries buckets cost + request count by date_trunc(granularity,
-// c.created_at) crossed with EACH stackable dimension (model/source/agent) in a
+// t.created_at) crossed with EACH stackable dimension (model/source/agent) in a
 // SINGLE scan via GROUP BY GROUPING SETS — the time analogue of
 // runGroupedUsageSets. granularity is interpolated only after the
 // usageGranularities whitelist check (a fixed date_trunc unit), never raw input;
-// every other value comes from the shared where/args. Bucketed on c.created_at
-// (conversation start) so the series reconciles with the KPI totals, which
+// every other value comes from the shared where/args. Bucketed on t.created_at
+// (when the call ran) so the series reconciles with the KPI totals, which
 // filter on the same column.
 func (chat *ConversationDao) runUsageTimeSeries(where string, args []any, granularity string) (*UsageTimeSeries, error) {
-	bucketExpr := fmt.Sprintf("date_trunc('%s', c.created_at)", granularity)
+	bucketExpr := fmt.Sprintf("date_trunc('%s', t.created_at)", granularity)
 	query := fmt.Sprintf(`
 		SELECT
 			%s                                      AS bucket,
@@ -1057,9 +1066,9 @@ func (chat *ConversationDao) GetUsageFilters(filter UsageMetricsFilter, readable
 		WHERE ca.id = ANY($1::uuid[]) AND ca.status = 'active'
 			AND (ca.id = ANY($4::uuid[]) OR EXISTS (
 				SELECT 1
-				FROM llm_conversations c
-				INNER JOIN llm_conversation_token_usage t ON t.conversation_id = c.id
-				WHERE c.account_id = ca.id AND c.created_at >= $2 AND c.created_at <= $3))
+				FROM llm_conversation_token_usage t
+				INNER JOIN llm_conversations c ON c.id = t.conversation_id
+				WHERE t.conversation_account_id = ca.id AND t.created_at >= $2 AND t.created_at <= $3))
 		ORDER BY name`
 	accounts := []UsageFilterOption{}
 	if err = chat.dbManager.Db.Select(&accounts, accountQuery,

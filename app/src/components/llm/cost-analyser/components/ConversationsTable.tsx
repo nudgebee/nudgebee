@@ -362,13 +362,19 @@ export function ConversationsTable({
 
   const H = {
     conversation: <HeaderLabel label='Conversation' info='The conversation / run. The chip shows its source (what triggered it).' />,
-    models: <HeaderLabel label='Models' secondary='(calls · cost)' info='Models used in this conversation, with per-model calls · cost.' />,
+    models: (
+      <HeaderLabel
+        label='Models'
+        secondary='(calls · cost)'
+        info='Models this conversation used in the selected period, with per-model calls · cost.'
+      />
+    ),
     start: <HeaderLabel label='Start time' info='When the conversation started.' />,
     duration: <HeaderLabel label='Duration' info='Wall-clock time from start to end.' />,
     latency: <HeaderLabel label='Avg latency' info='Average model response time per call (total model time ÷ calls).' />,
-    calls: <HeaderLabel label='Calls' info='Total model (LLM) API calls in the conversation.' />,
-    cost: <HeaderLabel label='Cost' info='Total cost of the conversation.' />,
-    tokens: <HeaderLabel label='Tokens' secondary='(in/out)' info='Input / output tokens across the conversation.' />,
+    calls: <HeaderLabel label='Calls' info='Model (LLM) API calls this conversation made in the selected period.' />,
+    cost: <HeaderLabel label='Cost' info='Cost of the calls this conversation made in the selected period. Open it for the lifetime total.' />,
+    tokens: <HeaderLabel label='Tokens' secondary='(in/out)' info='Input / output tokens this conversation used in the selected period.' />,
     status: <HeaderLabel label='Status' info='Final state of the conversation.' />,
   };
   const headers = compact

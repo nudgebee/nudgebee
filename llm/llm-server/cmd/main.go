@@ -329,6 +329,11 @@ func main() {
 	if err := budget.RegisterUsageRollupJob(); err != nil {
 		slog.Warn("main: failed to register usage rollup job", "error", err)
 	}
+	// Fills conversation_account_id on older usage rows, which the AI Cost
+	// Analyser filters on (#40241).
+	if err := budget.RegisterUsageAccountBackfillJob(); err != nil {
+		slog.Warn("main: failed to register usage account backfill job", "error", err)
+	}
 
 	// Periodically delete never-used and stale long-term memories.
 	go core.StartMemoryTTLCleanup(syncCtx)
