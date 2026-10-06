@@ -739,3 +739,19 @@ func TestKubectlBlockMessageGivesTheAgentARepairPath(t *testing.T) {
 		require.Contains(t, err.Error(), "exactly one kubectl command", tc.command)
 	}
 }
+
+func TestKubectlTargetKind(t *testing.T) {
+	cases := map[string]string{
+		"kubectl patch deployment api -n shop -p {}":         "deployment",
+		"kubectl patch -n shop deploy/api -p {}":             "deployment",
+		"kubectl set resources deployments.apps api -n shop": "deployment",
+		"kubectl rollout restart sts/db -n shop":             "statefulset",
+		"kubectl patch resourcequota q -n shop":              "resourcequota",
+		"kubectl exec -c app my-pod -n shop -- ls":           "pod",
+		"kubectl apply -f deploy.yaml -n shop":               "",
+		"kubectl":                                            "",
+	}
+	for cmd, want := range cases {
+		require.Equal(t, want, KubectlTargetKind(cmd), cmd)
+	}
+}

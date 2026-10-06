@@ -1,4 +1,4 @@
-import { queryGraphQL, gqlStringify, hitRelayServer } from '@lib/HttpService';
+import { queryGraphQL, gqlStringify, hitRelayServer, unwrapGraphQL } from '@lib/HttpService';
 
 import {
   getStartOfYear,
@@ -741,8 +741,8 @@ query AiRemediationGet($accountId: String!, $eventId: String) {
 `;
 
 export const AI_REMEDIATION_EXECUTE = `
-mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String, $executeCommand: String) {
-  ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot, execute_command: $executeCommand) {
+mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String, $executeCommand: String, $action: String) {
+  ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot, execute_command: $executeCommand, action: $action) {
     data
   }
 }
@@ -3591,7 +3591,9 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     slot?: string,
     // The action's execute command, sent on a verify run so the server can attach the result to the
     // attempt it checked rather than filing it as an attempt of its own.
-    executeCommand?: string
+    executeCommand?: string,
+    // The plan action, sent with slot "manual" to record a step the operator did outside NudgeBee.
+    action?: string
   ) {
     if (accountId === 'demo') return null;
     const response = await queryGraphQL(AI_REMEDIATION_EXECUTE, 'AiRemediationExecute', {
@@ -3601,8 +3603,10 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       configName: configName || null,
       slot: slot || null,
       executeCommand: executeCommand || null,
+      action: action || null,
     });
-    return response?.data?.data?.ai_remediation_execute?.data;
+    // Throws with the server's reason on a rejected request (a 400), so the panel can show it.
+    return unwrapGraphQL(response, 'Remediation request failed.')?.ai_remediation_execute?.data;
   },
   async scanImage({ accountId, namespace, workloadName }: { accountId: string; namespace: string; workloadName: string }) {
     if (accountId === 'demo') return null;

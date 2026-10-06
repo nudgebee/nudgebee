@@ -288,9 +288,12 @@ func TestAttemptsSectionReportsRecordedFiringsAfterEachAttempt(t *testing.T) {
 		WithArgs("evt", "acc", 4*maxAttempts, now).
 		WillReturnRows(sqlmock.NewRows([]string{"type", "ref", "status", "lifecycle", "branch", "data", "created_at", "same_event", "n", "last"}).
 			AddRow("CommandExecution", "kubectl set resources deployment app -n web --limits=memory=512Mi", "Success", "", "", []byte(`{}`), now.Add(-time.Hour), true, 3, now.Add(-10*time.Minute)).
+			AddRow("CommandExecution", "kubectl set env deployment app -n web MODE=ok", "Failed", "", "", []byte(`{"error":"kubectl: verb \"set\" not in read-only allowlist"}`), now.Add(-90*time.Minute), true, 0, nil).
 			AddRow("CommandExecution", "kubectl set resources deployment cart -n demo --limits=memory=1Gi", "Success", "", "", []byte(`{}`), now.Add(-2*time.Hour), false, 0, nil))
 	out := attemptsSection(security.NewRequestContextForSuperAdmin(), dbms, "acc", "evt", "web", now)
 	require.Contains(t, out, "a firing of this alert was recorded after it (3 recorded)")
+	require.Contains(t, out, `MODE=ok -> failed, refused by NudgeBee's permissions`)
+	require.Contains(t, out, "does not show the command was wrong")
 	require.NotContains(t, out, "cart", "an attempt in another namespace is out of scope")
 	require.NoError(t, mock.ExpectationsWereMet())
 }

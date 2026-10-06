@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nudgebee/llm/common"
+	"nudgebee/llm/security"
 )
 
 // meta mirrors how a stored config blob actually arrives: decoded from JSON, so every number is a
@@ -395,4 +396,38 @@ func TestLoadResourceDoesNotFallBackAcrossNamespaces(t *testing.T) {
 
 	require.Nil(t, loadResource(dbms, "acc-1", "llm-server", "", "deployment", "gone"))
 	require.NoError(t, mock.ExpectationsWereMet(), "exactly one query: no unscoped retry")
+}
+
+// The planner is told why a run failed, so a refused fix is kept and a guessed value is not swapped in
+// for a failure nobody recorded the reason of.
+func TestFailedRunsCarryTheirReasonToThePlanner(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	run := func(status, data string) attempt {
+		return attempt{Kind: "CommandExecution", Ref: "gcloud run services update api --update-env-vars MODE=ok", Status: status, Data: []byte(data), At: time.Now()}
+	}
+
+	refused := run("Failed", `{"error":"exit status 1\nERROR: (gcloud.run.services.update) PERMISSION_DENIED: Permission 'run.services.update' denied"}`)
+	refused.Reason = failedRunReason(ctx, refused)
+	require.Contains(t, refused.Reason, "refused by NudgeBee's permissions")
+	require.Contains(t, refused.Reason, "PERMISSION_DENIED")
+	require.Contains(t, renderAttempt(refused), "-> failed, refused by NudgeBee's permissions")
+
+	broken := run("Failed", `{"error":"ERROR: (gcloud.run.services.update) Revision 'api-00007' is not ready: container failed to start\nmore"}`)
+	require.Equal(t, `error: "ERROR: (gcloud.run.services.update) Revision 'api-00007' is not ready: container failed to start"`, failedRunReason(ctx, broken))
+
+	banner := run("failed", `{"error":"[account: dev-aws]\n\nAn error occurred (ValidationException) when calling the UpdateFunctionConfiguration operation: Invalid memory\nexit status 254"}`)
+	require.Contains(t, failedRunReason(ctx, banner), "ValidationException", "the cloud CLI's account banner is not the error")
+	require.Equal(t, "reason not recorded", failedRunReason(ctx, run("Failed", `{"exit_code":1}`)), "runs recorded before the error was kept")
+	require.Empty(t, failedRunReason(ctx, run("Success", `{}`)))
+	require.Empty(t, failedRunReason(ctx, attempt{Kind: "PullRequest", Status: "Failed"}))
+}
+
+// A step the operator marked done is not presented to the planner as a NudgeBee run.
+func TestManualAttemptsReadAsTheOperators(t *testing.T) {
+	manual := func(ref string) attempt {
+		return attempt{Kind: "CommandExecution", Ref: ref, Status: "Success", Data: []byte(`{"manual":true}`), At: time.Now(), SameEvent: true}
+	}
+	require.Contains(t, renderAttempt(manual("kubectl rollout restart deployment runner -n x")), "this incident: the operator ran kubectl rollout restart deployment runner -n x outside NudgeBee")
+	require.Contains(t, renderAttempt(manual("change:Update auth secret")), `the operator made the change "Update auth secret" outside NudgeBee`)
+	require.NotContains(t, renderAttempt(manual("change:Update auth secret")), "ran change:")
 }

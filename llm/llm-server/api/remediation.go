@@ -175,6 +175,13 @@ type RemediationAction struct {
 	// RequiredChange, when set, is a fix no command applies durably - a code, chart-values,
 	// infrastructure, dependency or process change - stated so the operator can make it.
 	RequiredChange *RequiredChange `json:"required_change,omitempty"`
+	// Delivery is how this action reaches the system (run / operator / source), set by the server from
+	// the account's executor each time the plan is returned; DeliveryReason says why when it is not run.
+	Delivery       string `json:"delivery,omitempty"`
+	DeliveryReason string `json:"delivery_reason,omitempty"`
+	// DeliveryRetry marks an operator step that comes from a past permission refusal: permissions can be
+	// granted since, so NudgeBee may run it after all, and a successful run clears the refusal.
+	DeliveryRetry bool `json:"delivery_retry,omitempty"`
 	// After names the action that must be applied before this one, when the change only works in that
 	// order (a restart after the config it reloads, a redrive after the permission it needs). Actions
 	// without it are alternative strategies.
@@ -459,6 +466,9 @@ type RemediationExecuteRequest struct {
 	// correlation key back to the attempt being verified: the execute run stored it as the
 	// resolution's type_reference_id. Without it a verify result has no attempt to attach to.
 	ExecuteCommand string `json:"execute_command"`
+	// Action names the plan action an operator marked done (slot "manual"); it identifies a
+	// command-less source change, which has no command to match.
+	Action string `json:"action"`
 }
 
 // Command slots within one action.
@@ -466,6 +476,8 @@ const (
 	RemediationSlotExecute  = "execute"
 	RemediationSlotVerify   = "verify"
 	RemediationSlotRollback = "rollback"
+	// RemediationSlotManual records that the operator carried out an action outside NudgeBee; nothing runs.
+	RemediationSlotManual = "manual"
 )
 
 // processRemediationGenerate turns the completed investigation into a structured remediation plan
@@ -516,6 +528,7 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 		return
 	}
 
+	assignDelivery(ctx, request.AccountId, &plan)
 	respondWithStoredPlan(c, ctx.GetLogger(), plan, func() error {
 		return persistRemediationPlan(ctx, request.AccountId, request.EventId, plan, trace)
 	})
@@ -775,6 +788,8 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 		ctx.GetLogger().Warn("remediation_get: failed to parse saved plan", "error", err)
 		plan = RemediationPlan{}
 	}
+	// Delivery describes the executor now, not when the plan was saved.
+	assignDelivery(ctx, request.AccountId, &plan)
 	c.JSON(200, buildApiResponse(plan, nil))
 }
 
@@ -794,6 +809,12 @@ func planCommandRejectionFor(request RemediationExecuteRequest, loadPlan func() 
 	plan, ok := loadPlan()
 	if !ok {
 		return "this event has no remediation plan to run commands from"
+	}
+	if strings.EqualFold(strings.TrimSpace(request.Slot), RemediationSlotManual) {
+		if planOperatorStep(plan, request.Command, request.Action) {
+			return ""
+		}
+		return "this step is not part of the event's remediation plan"
 	}
 	if planHasCommand(plan, request.Slot, request.Command, request.ExecuteCommand) {
 		return ""
@@ -917,11 +938,12 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	}
 
 	command := strings.TrimSpace(request.Command)
-	if command == "" {
+	manual := strings.EqualFold(strings.TrimSpace(request.Slot), RemediationSlotManual)
+	if command == "" && !manual {
 		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "command is required"}}))
 		return
 	}
-	if reason := remediationCommandRejection(command); reason != "" {
+	if reason := remediationCommandRejection(command); reason != "" && !manual {
 		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: reason}}))
 		return
 	}
@@ -948,6 +970,11 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	if reason := planCommandRejection(ctx, request); reason != "" {
 		ctx.GetLogger().Warn("remediation_execute: command is not in the event's plan", "command", command, "reason", reason)
 		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: " + reason}}))
+		return
+	}
+	if manual {
+		recordOperatorStep(ctx, request, sc.GetUserId())
+		c.JSON(200, buildApiResponse(tools.RemediationExecutionResult{Command: command, ExecutedAt: time.Now().UTC().Format(time.RFC3339), Success: true}, nil))
 		return
 	}
 
@@ -1093,7 +1120,7 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	// that worked, so "nothing was tried here" and "three things were tried and all failed" looked
 	// identical. The operator needs the second one most.
 	if shouldPersistRemediationResolution(request.EventId, request.Slot) {
-		persistRemediationExecution(ctx, request.EventId, sc.GetUserId(), command, response.ExitCode, response.Success, exitCodeReported)
+		persistRemediationExecution(ctx, request.EventId, sc.GetUserId(), command, response.ExitCode, response.Success, exitCodeReported, failureText(response))
 	} else if isVerifySlot(request.Slot) && request.EventId != "" && request.ExecuteCommand != "" {
 		// A verify does not earn its own resolution — that was the triple-counting bug. It annotates
 		// the attempt it checked, so "it ran" and "the check confirmed it" are one record.
@@ -1228,7 +1255,7 @@ func shouldPersistRemediationResolution(eventId, slot string) bool {
 // persistRemediationExecution records a command run as an event_resolution row so the UI can mark the
 // action already-applied, or show that it was tried and failed. Best-effort: a DB failure must not
 // fail the (already-run) command.
-func persistRemediationExecution(ctx *security.RequestContext, eventId, userId, command string, exitCode int, success, exitCodeReported bool) {
+func persistRemediationExecution(ctx *security.RequestContext, eventId, userId, command string, exitCode int, success, exitCodeReported bool, errText string) {
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
 		ctx.GetLogger().Warn("remediation: database unavailable, execution not persisted", "error", err)
@@ -1240,6 +1267,9 @@ func persistRemediationExecution(ctx *security.RequestContext, eventId, userId, 
 		"exit_code":          exitCode,
 		"success":            success,
 		"exit_code_reported": exitCodeReported,
+		// The executor's own words on a failure. A permission refusal here is how the next plan knows
+		// to give this verb to the operator (remediation_delivery.go).
+		"error": truncateForRecord(errText),
 	})
 	if err != nil {
 		return

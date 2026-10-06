@@ -196,7 +196,7 @@ HypothesisBlock.propTypes = {
 // and enforces write RBAC + the safety blocklist, so the click here is the human approval. Exposes an
 // imperative run() (returning success) so the action block can sequence execute → verify.
 const CommandRow = forwardRef(function CommandRow(
-  { label, tone, command, accountId, eventId, canRun, disabled, onExecuted, slot, executeCommand },
+  { label, tone, command, accountId, eventId, canRun, disabled, onExecuted, slot, executeCommand, runnable = true },
   ref
 ) {
   const [status, setStatus] = useState('IDLE');
@@ -246,23 +246,25 @@ const CommandRow = forwardRef(function CommandRow(
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <CodeBlock code={command} language='bash' tone='dark' wrap copyToast='Command copied' />
         </Box>
-        <Tooltip
-          title={!canRun ? 'Requires write access' : status === 'RUNNING' ? 'Running…' : `Run ${label.toLowerCase()} command`}
-          placement='bottom'
-        >
-          <span>
-            <IconButton
-              size='small'
-              onClick={run}
-              disabled={isDisabled}
-              aria-label={`run-${label.toLowerCase()}-command`}
-              data-testid={`remediation-run-${label.toLowerCase()}`}
-              sx={{ color: 'var(--ds-green-600)', mt: 'var(--ds-space-1)' }}
-            >
-              {status === 'RUNNING' ? <CircularProgress size={16} thickness={5} /> : <PlayArrowRoundedIcon fontSize='small' />}
-            </IconButton>
-          </span>
-        </Tooltip>
+        {runnable ? (
+          <Tooltip
+            title={!canRun ? 'Requires write access' : status === 'RUNNING' ? 'Running…' : `Run ${label.toLowerCase()} command`}
+            placement='bottom'
+          >
+            <span>
+              <IconButton
+                size='small'
+                onClick={run}
+                disabled={isDisabled}
+                aria-label={`run-${label.toLowerCase()}-command`}
+                data-testid={`remediation-run-${label.toLowerCase()}`}
+                sx={{ color: 'var(--ds-green-600)', mt: 'var(--ds-space-1)' }}
+              >
+                {status === 'RUNNING' ? <CircularProgress size={16} thickness={5} /> : <PlayArrowRoundedIcon fontSize='small' />}
+              </IconButton>
+            </span>
+          </Tooltip>
+        ) : null}
       </Box>
       {result && (typeof result.exit_code === 'number' || result.duration) ? (
         <Box sx={{ display: 'flex', gap: 'var(--ds-space-3)', fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>
@@ -327,6 +329,8 @@ CommandRow.propTypes = {
   disabled: PropTypes.bool,
   onExecuted: PropTypes.func,
   slot: PropTypes.oneOf(['execute', 'verify', 'rollback']).isRequired,
+  // False when NudgeBee cannot run this command (the action is the operator's to run): no ▶ button.
+  runnable: PropTypes.bool,
   // Only sent for the verify slot; identifies the attempt whose result this checks.
   executeCommand: PropTypes.string,
 };
@@ -425,7 +429,7 @@ OptionalHardening.propTypes = {
 // confidence, shown inline — there is no separate hypotheses box), and its command rows. A per-block
 // "Run" button runs this action's execute → verify one-by-one, stopping on the first failure.
 // A code-fix action carries no command, so it renders the diff instead of command rows.
-function ActionCard({
+export function ActionCard({
   index,
   action,
   hypothesis,
@@ -440,6 +444,8 @@ function ActionCard({
   after,
 }) {
   const [running, setRunning] = useState(false);
+  const [marking, setMarking] = useState(false);
+  const [markError, setMarkError] = useState('');
   const execRef = useRef(null);
   const verifyRef = useRef(null);
   const appliedLabel = appliedAt ? formatAppliedAt(appliedAt) : '';
@@ -461,6 +467,38 @@ function ActionCard({
   // is not the code fix either: attaching the event's diff to it showed an unrelated change.
   const requiredChange = action?.required_change && trimmedString(action.required_change.change) ? action.required_change : null;
   const showCodeFix = !execCmd && !ruleChange && !requiredChange && trimmedString(action?.kind).toLowerCase() === 'fix' && !!codeFix;
+  // How the step reaches the system, decided by the server from the account's executor. Plans saved
+  // before delivery existed carry none and keep today's behaviour.
+  const delivery = trimmedString(action?.delivery) || 'run';
+  const operatorStep = delivery === 'operator';
+  // A refused step stays runnable: write permission may have been granted since, and a successful run
+  // clears the refusal. The executor enforces permissions either way.
+  const runnableHere = !operatorStep || action?.delivery_retry === true;
+  const sourceStep = delivery === 'source' && (requiredChange || showCodeFix);
+  const deliveryReason = trimmedString(action?.delivery_reason);
+
+  // Record that the operator carried the step out themselves, so its order and history are kept.
+  const markDone = async () => {
+    setMarking(true);
+    setMarkError('');
+    try {
+      const res = await apiKubernetes.executeRemediationCommand(
+        accountId,
+        execCmd,
+        eventId,
+        undefined,
+        'manual',
+        undefined,
+        trimmedString(action?.action)
+      );
+      if (!res) throw new Error('No response from server.');
+      if (onExecuted) await onExecuted();
+    } catch (err) {
+      setMarkError(err?.message || 'Could not record the step as done.');
+    } finally {
+      setMarking(false);
+    }
+  };
 
   // Run the action's execute command, then (only if it succeeded) its verify command. Rollback is
   // never auto-run. Each row shows its own output live as it runs.
@@ -506,7 +544,23 @@ function ActionCard({
                 sx={{ color: 'var(--ds-gray-500)', fontSize: 'var(--ds-text-small)', whiteSpace: 'nowrap' }}
               >{`${confidence}% likely to resolve`}</Box>
             ) : null}
-            {execCmd ? (
+            {(operatorStep || sourceStep) && !appliedAt ? (
+              <Tooltip title={!canRun ? 'Requires write access' : 'Record that you made this change outside NudgeBee'} placement='bottom'>
+                <span>
+                  <Button
+                    tone='secondary'
+                    size='xs'
+                    onClick={markDone}
+                    loading={marking}
+                    disabled={!canRun || marking}
+                    data-testid={`remediation-mark-done-${index + 1}`}
+                  >
+                    {operatorStep ? 'I ran this' : 'I made this change'}
+                  </Button>
+                </span>
+              </Tooltip>
+            ) : null}
+            {execCmd && runnableHere ? (
               <Tooltip
                 title={
                   !canRun
@@ -537,6 +591,24 @@ function ActionCard({
     >
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
         {action?.title ? <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>{action.title}</Box> : null}
+        {operatorStep ? (
+          <Card variant='tinted' tone='warning' size='sm' elevation='flat' data-testid={`remediation-operator-step-${index + 1}`}>
+            <Box sx={{ fontSize: 'var(--ds-text-small)' }}>
+              <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-semibold)' }}>
+                Run this in your terminal.{' '}
+              </Box>
+              {deliveryReason || 'NudgeBee cannot run this command on this account.'}
+              {action?.delivery_retry === true ? (
+                <Box sx={{ marginTop: 'var(--ds-space-1)' }}>If NudgeBee has been granted that permission since, run it here.</Box>
+              ) : null}
+            </Box>
+          </Card>
+        ) : null}
+        {markError ? (
+          <Card variant='tinted' tone='danger' size='sm' elevation='flat' data-testid={`remediation-mark-done-error-${index + 1}`}>
+            <Box sx={{ fontSize: 'var(--ds-text-small)' }}>{markError}</Box>
+          </Card>
+        ) : null}
         {hypText ? (
           // A reference, not a restatement — the cause and its evidence are listed once above, so the
           // card only needs to say which one it addresses.
@@ -572,6 +644,7 @@ function ActionCard({
             canRun={canRun}
             disabled={running}
             onExecuted={onExecuted}
+            runnable={runnableHere}
           />
         ) : null}
         {verifyCmd ? (
@@ -588,6 +661,7 @@ function ActionCard({
             canRun={canRun}
             disabled={running}
             onExecuted={onExecuted}
+            runnable={runnableHere}
           />
         ) : null}
         {rollbackCmd ? (
@@ -610,6 +684,7 @@ function ActionCard({
               canRun={canRun}
               disabled={running}
               onExecuted={onExecuted}
+              runnable={runnableHere}
             />
           </Card>
         ) : null}
@@ -641,8 +716,10 @@ export function afterOf(action, actions, executedCommands) {
   if (!name) return null;
   const prior = (actions || []).find((a) => trimmedString(a?.action) === name);
   if (!prior) return null;
-  const cmd = trimmedString(prior.execute_command);
-  return { name, applied: cmd ? !!executedCommands?.[cmd] : false };
+  // A step done outside NudgeBee is recorded under its command, or under "change:<action>" when it is
+  // a source change with no command (see "I made this change").
+  const cmd = trimmedString(prior.execute_command) || `change:${name}`;
+  return { name, applied: !!executedCommands?.[cmd] };
 }
 
 // noActionsText is the sentence shown in place of the action list when the plan has none. The
@@ -659,11 +736,12 @@ export function isRemediationPlan(value) {
 }
 
 // runnableActionCount is how many of the plan's actions the operator can carry out from the panel:
-// those with a command to run, or a change to the alert rule to apply. A fix stated as a change to
-// make elsewhere (chart values, application code) is listed but is not something to run here.
+// those with a command NudgeBee can run, or a change to the alert rule to apply. A fix stated as a
+// change to make elsewhere, or a command only the operator can run, is listed but not counted.
 export function runnableActionCount(plan) {
   if (!isRemediationPlan(plan)) return 0;
-  return plan.actions.filter((a) => trimmedString(a?.execute_command) || a?.alert_rule_change).length;
+  const runnable = (a) => trimmedString(a?.execute_command) && (a?.delivery !== 'operator' || a?.delivery_retry === true);
+  return plan.actions.filter((a) => runnable(a) || a?.alert_rule_change).length;
 }
 
 // RemediationPanel renders below the investigation analysis. "Generate Remediation" reuses the
@@ -1000,7 +1078,7 @@ const RemediationPanel = ({ accountId, eventId, nbStatus, savedPlan, savedPlanRe
               accountId={accountId}
               eventId={eventId}
               canRun={canRun}
-              appliedAt={executedCommands[trimmedString(action?.execute_command)] || ''}
+              appliedAt={executedCommands[trimmedString(action?.execute_command) || `change:${trimmedString(action?.action)}`] || ''}
               onExecuted={loadExecutions}
               codeFix={codeFix}
               alertControls={alertControls}

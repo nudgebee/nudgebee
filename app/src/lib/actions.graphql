@@ -369,6 +369,8 @@ type Mutation {
     command: String!
     config_name: String
     slot: String
+    execute_command: String
+    action: String
   ): AIResponse
 }
 
