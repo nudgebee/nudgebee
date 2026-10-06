@@ -227,11 +227,10 @@ test.describe("Dashboards", () => {
     await test.step("Cancel closes the modal and imports nothing", async () => {
       await locators.importCancelBtn.click();
       await expect(locators.importJsonEditor).toHaveCount(0);
-      // A successful import toasts "Imported N panels" and navigates straight
-      // into the new dashboard — asserting neither happened is what makes this
-      // a no-side-effect cancel, and it stays true no matter what other specs
-      // are doing to the shared tenant's row count.
-      await expect(page.getByText(/^Imported \d+ panels?$/)).toHaveCount(0);
+      // A successful import replaces the listing with the editor — still seeing
+      // the listing, on no dashboard URL, is what makes this a no-side-effect
+      // cancel, and it stays true no matter what other specs are doing to the
+      // shared tenant's row count.
       await expect(page).not.toHaveURL(/[?&]dashboard=/);
       await locators.waitForListSettled();
       await expect(locators.listingRoot).toBeVisible();

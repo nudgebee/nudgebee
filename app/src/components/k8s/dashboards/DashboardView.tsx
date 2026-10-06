@@ -295,6 +295,9 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
           ...(change.settings ? { time_from: change.settings.time_from, refresh: change.settings.refresh } : {}),
           panels: change.panels ?? savedPanels,
         },
+        // The server writes whatever arrives, an absent list as empty, and this
+        // screen has no tag control — so pass them through or a save erases them.
+        tags: dashboard.tags,
       });
 
       // The gateway reports handler failures in `errors`, not by throwing, so a

@@ -607,13 +607,12 @@ const CustomDashboards: React.FC = () => {
         open={importOpen}
         accountOptions={accountOptions}
         onClose={() => setImportOpen(false)}
-        // Straight into edit mode: an import lands panels the author has never
-        onImported={(saved) => {
+        // Same draft path as a template: nothing exists until the editor's Save,
+        // so backing out and discarding leaves no dashboard behind.
+        onDraft={(draft) => {
           setImportOpen(false);
-          setSelected({ dashboard: saved, bindings: [] });
-          setOpenEditing(true);
-          setMode({ name: 'view', id: saved.id });
-          setRouteId(saved.id);
+          setDraftDashboard(draft);
+          setMode({ name: 'create' });
         }}
       />
 
