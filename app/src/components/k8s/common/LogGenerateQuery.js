@@ -1,4 +1,16 @@
-export const generateQuery = (logProvider, chips, operations, metricName = '', aggregator, aggregatorBy, providerType = '') => {
+// `logTextField` is the field line filters target. Resolved per provider from the
+// backend's advertised vocabulary and threaded down from KubernetesLogs (#39573);
+// defaults to the legacy 'content' so the other callers of this helper are unchanged.
+export const generateQuery = (
+  logProvider,
+  chips,
+  operations,
+  metricName = '',
+  aggregator,
+  aggregatorBy,
+  providerType = '',
+  logTextField = 'content'
+) => {
   const isLogsProvider =
     logProvider === 'loggly' ||
     logProvider === 'observe' ||
@@ -323,7 +335,7 @@ export const generateQuery = (logProvider, chips, operations, metricName = '', a
           if (apiOperator) {
             whereClauses.push({
               _binary: {
-                content: {
+                [logTextField]: {
                   [apiOperator]: op.value,
                 },
               },

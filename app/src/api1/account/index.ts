@@ -731,6 +731,7 @@ const apiAccount = {
             supports_service_map
             supports_alert_rules
             alert_rules_reason
+            canonical_fields
             supported_operator_descriptors {
               token
               chip_label

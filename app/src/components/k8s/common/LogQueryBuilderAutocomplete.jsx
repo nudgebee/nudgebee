@@ -414,6 +414,10 @@ const LogQueryBuilderAutocomplete = ({
   logProvider,
   providerOverride,
   operatorDescriptors,
+  // The field line filters target, threaded from KubernetesLogs via QueryModeSwitcher
+  // (#39573). Defaults to the legacy spelling, so the Knowledge Graph and Service Map
+  // renderers of this component are unchanged.
+  logTextField = 'content',
   params,
   queryOperations = [],
   onQueryItemsChange,
@@ -1288,7 +1292,8 @@ const LogQueryBuilderAutocomplete = ({
           block.selectedMetric,
           block.aggregator,
           block.aggregatorBy,
-          providerType
+          providerType,
+          logTextField
         );
 
         // Handle array-based queries

@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
-import KubernetesLogs, { buildStructuredQueryFromOperations } from '@components/k8s/details/KubernetesLogs';
+import KubernetesLogs, { buildStructuredQueryFromOperations, resolveLogTextField } from '@components/k8s/details/KubernetesLogs';
 import { useData } from '@context/DataContext';
 import apiAccount from '@api1/account';
 import observability from '@api1/observability';
@@ -237,7 +237,12 @@ describe('KubernetesLogs ES', () => {
 
 // Builder-mode "Operations" (line filters) were dropped from the submitted
 // query_request — only label chips were sent. These lock in the conversion into
-// `content` pseudo-field clauses the log sources map to line filters.
+// log-text pseudo-field clauses that the provider maps to a line filter.
+//
+// The field name is a PARAMETER, not a constant. The cases below omit it and so pin
+// the fallback (`content`), which is what an api-server predating #39573 serves. This
+// comment used to call `content` "the key the log sources map to line filters" — it is
+// a key on Loki and nowhere else, which is the bug #39573 fixes.
 describe('buildStructuredQueryFromOperations', () => {
   it('converts a backend-token operation into a content clause', () => {
     expect(buildStructuredQueryFromOperations([{ id: 1, op: '_contains', value: 'raman' }])).toEqual([
@@ -271,5 +276,35 @@ describe('buildStructuredQueryFromOperations', () => {
   it('returns an empty array for no operations', () => {
     expect(buildStructuredQueryFromOperations([])).toEqual([]);
     expect(buildStructuredQueryFromOperations(undefined)).toEqual([]);
+  });
+
+  // The fix: the emitted key follows the vocabulary the backend advertises.
+  it('emits the supplied log-text field instead of the legacy one', () => {
+    expect(buildStructuredQueryFromOperations([{ id: 1, op: '_contains', value: 'raman' }], 'message')).toEqual([
+      { _binary: { message: { _contains: 'raman' } } },
+    ]);
+  });
+});
+
+// resolveLogTextField decides which spelling all three emitters use. `canonical_fields`
+// is absent on an api-server predating #39573, on a provider-cache entry written before
+// it, and in the several suites that mock getDefaultProvider as `{data:{data:null}}` —
+// so every absence case must land on the legacy spelling rather than throw.
+describe('resolveLogTextField', () => {
+  it('uses `message` when the backend advertises it', () => {
+    expect(resolveLogTextField(['app', 'message', 'namespace', 'pod'])).toBe('message');
+  });
+
+  it('falls back to `content` when the advertised vocabulary omits it', () => {
+    expect(resolveLogTextField(['app', 'namespace', 'pod'])).toBe('content');
+  });
+
+  it.each([
+    ['undefined', undefined],
+    ['null', null],
+    ['an empty list', []],
+    ['a non-array', 'message'],
+  ])('falls back to `content` for %s', (_label, input) => {
+    expect(resolveLogTextField(input)).toBe('content');
   });
 });

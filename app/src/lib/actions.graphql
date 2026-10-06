@@ -8731,6 +8731,9 @@ type ProviderCapabilities {
   supported_operators: [String]
   supported_operator_descriptors: [OperatorDescriptor!]
   label_mappings: jsonb
+  # The provider-independent log vocabulary a caller may filter on, minus anything
+  # this provider cannot resolve. Logs only. See #39573.
+  canonical_fields: [String]
   default_index: String
 }
 
