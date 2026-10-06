@@ -148,6 +148,21 @@ describe('statTotal', () => {
     expect(statTotal(ACCOUNTS.slice(0, 2), ['A'], [], [], 'avg').total).toBe(45);
   });
 
+  it('leaves an account whose newest sample is absent out of neither the row nor the mean', () => {
+    // As it arrives off the wire: one account ends on a null, one reports only a
+    // null. The first still has a value to show; the second answered with nothing
+    // and must not be averaged in as a zero.
+    const wire = (account: string, values: unknown[]) =>
+      toRawSeries([{ query_key: 'A', payload: [{ metric: {}, timestamps: values.map((_, i) => i + 1), values }] }], {}).map((s) => ({
+        ...s,
+        accountLabel: account,
+      }));
+    const stat = statTotal([...wire('prod', [12.5]), ...wire('staging', [7, null]), ...wire('dev', [null])], ['A'], [], [], 'avg');
+    expect(stat.rows.map((r) => r.value)).toEqual([12.5, 7, undefined]);
+    expect(stat.total).toBe(9.75);
+    expect(stat.partial).toBe(true);
+  });
+
   it('has no average of nothing', () => {
     expect(statTotal([{ label: 'A', accountLabel: 'prod', values: [null] }], ['A'], [], [], 'avg').total).toBeUndefined();
   });
@@ -218,6 +233,18 @@ describe('toRawSeries', () => {
     // the chart.
     const results = [{ query_key: 'A', payload: [{ metric: {}, timestamps: [1, 2], values: ['2.5', 'NaN'] }] }];
     expect(toRawSeries(results, {})[0].values).toEqual([2.5, null]);
+  });
+
+  it('reads an absent value as a gap, never as zero', () => {
+    // The server sends a non-finite sample as JSON null, and Number(null) is 0 —
+    // which would put a cluster that reported nothing on the chart at zero.
+    const results = [{ query_key: 'A', payload: [{ metric: {}, timestamps: [1, 2, 3, 4, 5], values: [7, null, '', '  ', undefined] }] }];
+    expect(toRawSeries(results, {})[0].values).toEqual([7, null, null, null, null]);
+  });
+
+  it('keeps a reported zero a zero', () => {
+    const results = [{ query_key: 'A', payload: [{ metric: {}, timestamps: [1, 2], values: [0, '0'] }] }];
+    expect(toRawSeries(results, {})[0].values).toEqual([0, 0]);
   });
 
   it('folds millisecond timestamps down to seconds', () => {

@@ -97,6 +97,11 @@ Three rules hold the arithmetic honest:
   shipped as a bare asterisk, which nobody could read without hovering).
   A cluster that could not answer and a cluster that answered zero are the same
   arithmetic and completely different facts.
+- **An absent sample is a gap, not a zero.** The server sends a NaN, a ±Inf or a
+  provider's "no data in this interval" as JSON `null`; the series parser used to
+  read that as `0`. A sum never noticed, but a mean counted the silent account as
+  a cluster at zero. An account whose only samples are absent is listed as
+  "no data" and left out of the mean.
 - **Several series from one account are summed**, not reduced to the first.
 
 `gauge` shares this path — the dial is a stat with a bounded scale.

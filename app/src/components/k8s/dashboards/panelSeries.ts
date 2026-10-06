@@ -348,8 +348,18 @@ function toEpochSeconds(value: unknown): number {
   return n > 1e11 ? Math.round(n / 1000) : n;
 }
 
-/** Providers send values as strings as often as numbers; unparseable is a gap. */
+/**
+ * Providers send values as strings as often as numbers; unparseable is a gap.
+ *
+ * So is an ABSENT one. The server sends every non-finite sample — a NaN, a ±Inf,
+ * a provider's own "no data in this interval" — as JSON `null`, and `Number(null)`
+ * is 0: read that way, a cluster that reported nothing is a cluster at zero. A
+ * sum never noticed, because it adds nothing; an average counts it as an answer
+ * and is dragged down by it. An empty string is the same trap, so only a number
+ * or a string with something in it is parsed at all.
+ */
 function toFinite(v: unknown): number | null {
+  if (typeof v !== 'number' && (typeof v !== 'string' || v.trim() === '')) return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }

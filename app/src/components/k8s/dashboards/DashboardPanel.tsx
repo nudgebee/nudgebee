@@ -545,7 +545,8 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           // empty — or an average, which a reader cannot tell from a sum without
           // being told — and that the hover has the parts.
           const count = stat.partial ? `${reporting} of ${stat.rows.length} reporting` : `${stat.rows.length} accounts`;
-          const countCaption = stat.combine === 'avg' ? `Average of ${count}` : count;
+          // Nothing reported is nothing averaged: "Average of 0 of 5 reporting" names a number that is not there.
+          const countCaption = stat.combine === 'avg' && reporting > 0 ? `Average of ${count}` : count;
           const format = (value: number | undefined) => formatValue(value, panel.unit);
           const flagged = breaches.rows;
           // Accounts over a threshold first, each group in account order: the one

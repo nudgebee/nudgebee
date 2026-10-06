@@ -147,6 +147,17 @@ describe('the breakdown on a stat or gauge card', () => {
     expect(dial).toHaveTextContent('Average of 4 accounts');
   });
 
+  it('does not call it an average when no account reported anything', () => {
+    const silent = {
+      ...sampleData,
+      series: ['prod-eu', 'prod-us', 'dev', 'staging'].map((a) => ({ label: a, accountLabel: a, values: [null] })),
+    };
+    mount('gauge', 8, silent);
+    const dial = within(screen.getByTestId('panel-gauge-p1')).getByTestId('dial');
+    expect(dial).toHaveTextContent('0 of 4 reporting');
+    expect(dial).not.toHaveTextContent('Average');
+  });
+
   it("shows a gauge the accounts' average, and a stat their sum, from the same answers", () => {
     mount('gauge', 8);
     expect(within(screen.getByTestId('panel-gauge-p1')).getByTestId('dial')).toHaveAttribute('data-value', String(100 / 3));
