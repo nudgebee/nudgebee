@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"nudgebee/llm/security"
 	"nudgebee/llm/workspace"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -112,10 +113,13 @@ func TestVMAgentWorkspaceUnwrap(t *testing.T) {
 
 func mintWorkspaceToken(t *testing.T, secret, accountID, tenantID string) string {
 	t.Helper()
+	// An execution token: llm-server refuses a pod's own token.
 	claims := workspace.WorkspaceTokenClaims{
 		AccountId: accountID,
 		TenantId:  tenantID,
+		Grants:    &security.WorkspaceGrants{UserId: "integration-test", Roles: []string{security.AUTH_TENANT_ADMIN_ROLE}, AccountIds: []string{accountID}},
 		RegisteredClaims: jwt.RegisteredClaims{
+			Audience:  jwt.ClaimStrings{workspace.AudienceWorkspaceExecute},
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(10 * time.Minute)),
 		},
 	}

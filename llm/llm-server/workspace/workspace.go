@@ -43,8 +43,6 @@ const workspaceSpecVersion = "workspace-readonly-rootfs-v3"
 
 const workspaceSpecUpgradeBatchSize = 5
 
-const CacheNamespaceWorkspaceTokens = "workspace_tokens"
-
 // ErrWorkspaceRunLost marks a workspace API failure that CONFIRMS — not merely
 // suspects — that whatever the caller previously dispatched against this pod
 // (an async analysis, a followup run) is gone: either the pod is in a terminal
@@ -62,12 +60,6 @@ const ENV_NB_TOOL_CONFIG_NAME = "NB_TOOL_CONFIG_NAME"
 const ENV_NB_WORKSPACE_TOKEN = "NB_WORKSPACE_TOKEN"
 const ENV_NB_RELAY_SERVER_ENDPOINT = "RELAY_SERVER_ENDPOINT"
 
-const workspaceTokenLifetime = 365 * 24 * time.Hour
-
-func init() {
-	common.CacheCreateNamespace(CacheNamespaceWorkspaceTokens, common.CacheNamespaceWithExpiration(workspaceTokenLifetime))
-}
-
 type WorkspaceTokenClaims struct {
 	AccountId       string `json:"account_id"`
 	TenantId        string `json:"tenant_id"`
@@ -77,6 +69,12 @@ type WorkspaceTokenClaims struct {
 	Grants *security.WorkspaceGrants `json:"grants,omitempty"`
 	jwt.RegisteredClaims
 }
+
+// workspaceTokenLifetime bounds the token of a Docker workspace, which reuses
+// its container's token while it stays valid. llm-server refuses this audience
+// on every route, so the token only proves to the container that a call comes
+// from llm-server.
+const workspaceTokenLifetime = 365 * 24 * time.Hour
 
 func signWorkspaceToken(accountID, tenantID string) (string, error) {
 	claims := WorkspaceTokenClaims{
@@ -452,16 +450,14 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 		return fmt.Errorf("failed to check existing workspace pod: %w", err)
 	}
 
-	tenantId := ""
-	if ctx.GetSecurityContext() != nil {
-		tenantId = ctx.GetSecurityContext().GetTenantId()
-	}
-
-	// Generate JWT workspace token
-	workspaceToken, err := signWorkspaceToken(accountId, tenantId)
+	// The pod's token only proves to the pod that a call comes from
+	// llm-server. It is random, not a JWT: llm-server accepts no credential
+	// from the pod, so a copy read inside the pod grants nothing elsewhere,
+	// and it dies with the pod.
+	workspaceToken, err := newPodToken()
 	if err != nil {
-		logger.Error("workspace: failed to sign workspace token", "error", err)
-		return fmt.Errorf("failed to sign workspace token: %w", err)
+		logger.Error("workspace: failed to generate workspace token", "error", err)
+		return fmt.Errorf("failed to generate workspace token: %w", err)
 	}
 
 	// Command to start server (no arguments usually starts server, based on main.go)
@@ -911,11 +907,6 @@ func (w *workspaceManager) TerminateWorkspace(ctx *security.RequestContext, acco
 		if err := validateDockerWorkspaceOwnership(container, accountId); err != nil {
 			return err
 		}
-		if token := dockerEnvValue(container.Config.Env, ENV_NB_WORKSPACE_TOKEN); token != "" {
-			if err := common.CacheSet(CacheNamespaceWorkspaceTokens, token, []byte("revoked"), common.CacheSetWithExpiration(workspaceTokenLifetime)); err != nil {
-				ctx.GetLogger().Warn("workspace: failed to revoke token", "error", err)
-			}
-		}
 		return runtime.delete(ctx.GetContext(), accountId)
 	}
 
@@ -926,20 +917,6 @@ func (w *workspaceManager) TerminateWorkspace(ctx *security.RequestContext, acco
 
 	namespace := config.Config.LlmServerCodeAgentNamespace
 	podName := fmt.Sprintf("workspace-%s", strings.ToLower(accountId))
-
-	// Try to find the pod to get the token for revocation
-	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx.GetContext(), podName, metav1.GetOptions{})
-	if err == nil {
-		for _, env := range pod.Spec.Containers[0].Env {
-			if env.Name == ENV_NB_WORKSPACE_TOKEN {
-				// Revoke token by adding to blacklist cache
-				if err := common.CacheSet(CacheNamespaceWorkspaceTokens, env.Value, []byte("revoked"), common.CacheSetWithExpiration(workspaceTokenLifetime)); err != nil {
-					ctx.GetLogger().Warn("workspace: failed to revoke token", "error", err)
-				}
-				break
-			}
-		}
-	}
 
 	gracePeriod := int64(0)
 	err = clientset.CoreV1().Pods(namespace).Delete(ctx.GetContext(), podName, metav1.DeleteOptions{

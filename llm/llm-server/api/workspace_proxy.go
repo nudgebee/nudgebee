@@ -196,8 +196,14 @@ func authorizeWorkspaceRequest(c *gin.Context, requestedAccountId string, tracer
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid token claims")
 	}
-	if _, found := common.CacheGet(workspace.CacheNamespaceWorkspaceTokens, tokenString); found {
-		return nil, fmt.Errorf("token has been revoked")
+	if !slices.Contains(claims.Audience, workspace.AudienceWorkspaceExecute) {
+		// A pod's own token (a JWT on pods created before it became random
+		// bytes). It never authorizes anything here: requests must carry the
+		// execution token issued for the user's command or analysis. Checked
+		// before the account match so every use of it is counted.
+		recordWorkspaceAuth(c.Request.Context(), c.FullPath(), workspace.AudienceWorkspacePod)
+		slog.Warn("workspace: refused the pod token", "route", c.FullPath(), "account_id", requestedAccountId)
+		return nil, fmt.Errorf("workspace pod tokens are not accepted; use the execution token issued for this command")
 	}
 	if claims.AccountId != requestedAccountId {
 		return nil, fmt.Errorf("token does not match account")
@@ -206,20 +212,10 @@ func authorizeWorkspaceRequest(c *gin.Context, requestedAccountId string, tracer
 		return nil, fmt.Errorf("token does not match tenant")
 	}
 
-	isExecutionToken := slices.Contains(claims.Audience, workspace.AudienceWorkspaceExecute)
-	if isExecutionToken != (claims.Grants != nil) {
+	if claims.Grants == nil {
 		return nil, fmt.Errorf("invalid token claims")
 	}
-	if !isExecutionToken {
-		// The pod's own token (or one issued before audiences existed).
-		recordWorkspaceAuth(c.Request.Context(), c.FullPath(), workspace.AudienceWorkspacePod)
-		slog.Warn("workspace: request authenticated with the pod token", "route", c.FullPath(), "account_id", requestedAccountId)
-		c.Set("workspace_allowed_target", claims.AccountId)
-		c.Set(workspaceTokenAudienceKey, workspace.AudienceWorkspacePod)
-		return security.NewRequestContextForTenantAdmin(tenantId), nil
-	}
 	recordWorkspaceAuth(c.Request.Context(), c.FullPath(), workspace.AudienceWorkspaceExecute)
-	c.Set(workspaceTokenAudienceKey, workspace.AudienceWorkspaceExecute)
 	if claims.TenantId == "" {
 		return nil, fmt.Errorf("token does not match tenant")
 	}
@@ -234,34 +230,6 @@ func authorizeWorkspaceRequest(c *gin.Context, requestedAccountId string, tracer
 		c.Set("workspace_allowed_target", claims.TargetAccountId)
 	}
 	return security.NewRequestContext(c.Request.Context(), sc, slog.Default(), tracer, meter), nil
-}
-
-// workspaceTokenAudienceKey records which kind of workspace token
-// authenticated the request (set only on the workspace-token path).
-const workspaceTokenAudienceKey = "workspace_token_audience"
-
-// requireExecutionToken enforces, and counts, that tool execution through the
-// workspace token path uses a per-command execution token rather than the
-// pod's own token. Requests authenticated another way (action gateway, global
-// token) carry no workspace token and are not affected. It reports whether the
-// request may continue.
-func requireExecutionToken(c *gin.Context, ctx *security.RequestContext, accountId string) bool {
-	value, viaWorkspaceToken := c.Get(workspaceTokenAudienceKey)
-	if !viaWorkspaceToken {
-		return true
-	}
-	audience, _ := value.(string)
-	enforced := config.Config.LlmServerWorkspaceExecuteRequireScopedToken
-	allowed := audience == workspace.AudienceWorkspaceExecute || !enforced
-	recordWorkspaceExecuteAuth(c.Request.Context(), audience, enforced, allowed)
-	if audience == workspace.AudienceWorkspaceExecute {
-		return true
-	}
-	ctx.GetLogger().Warn("workspace: execute called with the pod token", "account_id", accountId, "enforced", enforced)
-	if !allowed {
-		c.JSON(http.StatusUnauthorized, common.ErrorActionBadRequest("workspace execution requires a per-command execution token; run the command through a Nudgebee tool"))
-	}
-	return allowed
 }
 
 func handleWorkspaceListFilesWithPayload(c *gin.Context, payload map[string]any, ctx *security.RequestContext) {
@@ -399,9 +367,6 @@ func handleWorkspaceExecute(c *gin.Context, tracer trace.Tracer, meter metric.Me
 
 	var req WorkspaceExecuteRequest
 	_ = common.DecodeMapToStruct(payload, &req)
-	if !requireExecutionToken(c, ctx, req.AccountId) {
-		return
-	}
 
 	var relayJob tools.RelayJob
 	var registeredToolName string

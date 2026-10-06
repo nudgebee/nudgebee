@@ -55,12 +55,15 @@ func TestAuthorizeWorkspaceRequest(t *testing.T) {
 			expectedError:      "invalid or expired token",
 		},
 		{
-			name: "Valid Token",
+			// A pod's own token, as issued before it became random bytes:
+			// valid signature, right account, but never accepted.
+			name: "Pod Token Refused",
 			setupToken: func() string {
 				claims := workspace.WorkspaceTokenClaims{
 					AccountId: "acc1",
 					TenantId:  "tenant1",
 					RegisteredClaims: jwt.RegisteredClaims{
+						Audience:  jwt.ClaimStrings{workspace.AudienceWorkspacePod},
 						ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
 					},
 				}
@@ -69,7 +72,13 @@ func TestAuthorizeWorkspaceRequest(t *testing.T) {
 				return s
 			},
 			requestedAccountId: "acc1",
-			expectedError:      "",
+			expectedError:      "workspace pod tokens are not accepted",
+		},
+		{
+			name:               "Random Pod Token",
+			token:              "6f1c2a9d0b7e4c3f8a5d2e1b0c9f8e7d6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d",
+			requestedAccountId: "acc1",
+			expectedError:      "invalid or expired token",
 		},
 		{
 			name: "Wrong Account ID",
@@ -77,7 +86,9 @@ func TestAuthorizeWorkspaceRequest(t *testing.T) {
 				claims := workspace.WorkspaceTokenClaims{
 					AccountId: "acc2", // Different account
 					TenantId:  "tenant1",
+					Grants:    &security.WorkspaceGrants{UserId: "u1", Roles: []string{security.AUTH_TENANT_ADMIN_ROLE}},
 					RegisteredClaims: jwt.RegisteredClaims{
+						Audience:  jwt.ClaimStrings{workspace.AudienceWorkspaceExecute},
 						ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
 					},
 				}
@@ -94,7 +105,9 @@ func TestAuthorizeWorkspaceRequest(t *testing.T) {
 				claims := workspace.WorkspaceTokenClaims{
 					AccountId: "acc1",
 					TenantId:  "wrong-tenant",
+					Grants:    &security.WorkspaceGrants{UserId: "u1", Roles: []string{security.AUTH_TENANT_ADMIN_ROLE}},
 					RegisteredClaims: jwt.RegisteredClaims{
+						Audience:  jwt.ClaimStrings{workspace.AudienceWorkspaceExecute},
 						ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
 					},
 				}
@@ -524,19 +537,6 @@ func TestWorkspaceExecutionTokenWithoutTargetUsesSignedUserGrants(t *testing.T) 
 	require.True(t, ctx.GetSecurityContext().HasAccountAccess("grant-target", security.SecurityAccessTypeRead))
 }
 
-func TestWorkspaceExecutionTokenRevocation(t *testing.T) {
-	config.Config.LlmServerJwtSecret = "test-secret"
-	security.SetTenantIdCacheForTest("revoked-workspace", "revoked-tenant")
-	stubTenantAccounts(t, "revoked-workspace")
-	token, err := workspace.ExecutionToken(security.NewRequestContextForTenantAccountAdmin("revoked-tenant", "user", []string{"revoked-workspace"}), "revoked-workspace", "", time.Minute)
-	require.NoError(t, err)
-	require.NoError(t, common.CacheSet(workspace.CacheNamespaceWorkspaceTokens, token, []byte("revoked"), common.CacheSetWithExpiration(time.Minute)))
-	t.Cleanup(func() { _ = common.CacheDelete(workspace.CacheNamespaceWorkspaceTokens, token) })
-
-	_, err = authorizeWorkspaceRequest(workspaceTokenRequest(token), "revoked-workspace", nil, nil)
-	require.ErrorContains(t, err, "token has been revoked")
-}
-
 func TestWorkspaceExecutionTokensKeepConcurrentUsersIsolated(t *testing.T) {
 	const workspaceAccount = "isolation-workspace"
 	config.Config.LlmServerJwtSecret = "test-secret"
@@ -593,8 +593,6 @@ func TestExecutionTokenAuthorizesAsTheUser(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "u1", ctx.GetSecurityContext().GetUserId())
 	assert.False(t, ctx.GetSecurityContext().IsTenantAdmin())
-	audience, _ := c.Get(workspaceTokenAudienceKey)
-	assert.Equal(t, workspace.AudienceWorkspaceExecute, audience)
 
 	toolCtx := core.NbToolContext{Ctx: ctx, AccountId: "ws-acct"}
 	target, err := workspaceRelayTarget(toolCtx, tools.RelayJobKubectl, "", "kubectl get pods")
@@ -836,34 +834,6 @@ func TestNormalizeHelmProxyRequestExtractsConcreteContext(t *testing.T) {
 		require.Equal(t, tc.wantCmd, req.Command)
 		require.Equal(t, tc.wantTarget, req.TargetName)
 	}
-}
-
-func TestRequireExecutionToken(t *testing.T) {
-	orig := config.Config.LlmServerWorkspaceExecuteRequireScopedToken
-	t.Cleanup(func() { config.Config.LlmServerWorkspaceExecuteRequireScopedToken = orig })
-	ctx := security.NewRequestContextForSuperAdmin()
-	request := func(audience string) (*gin.Context, *httptest.ResponseRecorder) {
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/workspace/execute", nil)
-		if audience != "" {
-			c.Set(workspaceTokenAudienceKey, audience)
-		}
-		return c, w
-	}
-
-	config.Config.LlmServerWorkspaceExecuteRequireScopedToken = false
-	c, _ := request(workspace.AudienceWorkspacePod)
-	assert.True(t, requireExecutionToken(c, ctx, "ws-acct"), "pod token is still accepted while the flag is off")
-
-	config.Config.LlmServerWorkspaceExecuteRequireScopedToken = true
-	c, w := request(workspace.AudienceWorkspacePod)
-	assert.False(t, requireExecutionToken(c, ctx, "ws-acct"))
-	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	c, _ = request(workspace.AudienceWorkspaceExecute)
-	assert.True(t, requireExecutionToken(c, ctx, "ws-acct"))
-	c, _ = request("")
-	assert.True(t, requireExecutionToken(c, ctx, "ws-acct"), "gateway-authenticated calls carry no workspace token")
 }
 
 // The shim prints `result` and exits 1 only when `error` is set; a non-200 makes

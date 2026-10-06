@@ -1,6 +1,8 @@
 package workspace
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"maps"
 	"nudgebee/llm/config"
@@ -11,8 +13,9 @@ import (
 )
 
 const (
-	// AudienceWorkspacePod marks the pod's own long-lived token. It authenticates
-	// the pod (file and LLM calls) and must not authorize tool execution.
+	// AudienceWorkspacePod labels a pod's own token when it is presented to
+	// llm-server, which refuses it. Pods created before the token became
+	// random bytes still carry a JWT with this audience.
 	AudienceWorkspacePod = "workspace-pod"
 	// AudienceWorkspaceExecute marks a per-command execution token. The shim
 	// sends it to /api/v1/workspace/execute, which authorizes the call as the
@@ -88,4 +91,14 @@ func (w *workspaceManager) commandEnv(ctx *security.RequestContext, accountId st
 	}
 	out[ENV_NB_WORKSPACE_TOKEN] = token
 	return out, nil
+}
+
+// newPodToken returns the secret a workspace pod uses to check that calls
+// come from llm-server: 32 random bytes, hex encoded.
+func newPodToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("pod token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
