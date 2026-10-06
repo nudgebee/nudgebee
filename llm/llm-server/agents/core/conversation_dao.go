@@ -2021,7 +2021,7 @@ func (chat *ConversationDao) ClaimNextQueuedMessage(ctx context.Context, convers
 }
 
 func (chat *ConversationDao) ClaimQueuedMessageById(ctx *security.RequestContext, accountID, conversationID, messageID, userID string, isAdmin bool) (*ConversationMessage, error) {
-	return chat.terminateConversation(ctx, accountID, conversationID, messageID, userID, isAdmin)
+	return chat.terminateConversation(ctx, accountID, conversationID, messageID, userID, isAdmin, terminatedByUser)
 }
 
 func (chat *ConversationDao) DeleteQueuedMessage(id string, accountID string, userID string, isAdmin bool) error {
@@ -2158,12 +2158,37 @@ func (chat *ConversationDao) UpdateMessageCompactResponse(context *security.Requ
 	return nil
 }
 
+// termination says what an ended conversation shows and when it may be ended.
+type termination struct {
+	messageText   string // written to the ended messages
+	stepText      string // written to the ended agent and tool-call rows
+	onlyIfWaiting bool   // end it only if it is still WAITING when the row is locked
+}
+
+var terminatedByUser = termination{messageText: "Conversation terminated by user", stepText: "Terminated by user"}
+
+// errConversationNotWaiting means an expiry found the conversation no longer
+// WAITING (someone answered it) and left it alone.
+var errConversationNotWaiting = errors.New("conversation is no longer waiting")
+
 func (chat *ConversationDao) TerminateConversation(ctx *security.RequestContext, accountId, conversationId string) error {
-	_, err := chat.terminateConversation(ctx, accountId, conversationId, "", "", false)
+	_, err := chat.terminateConversation(ctx, accountId, conversationId, "", "", false, terminatedByUser)
 	return err
 }
 
-func (chat *ConversationDao) terminateConversation(ctx *security.RequestContext, accountId, conversationId, messageID, userID string, isAdmin bool) (*ConversationMessage, error) {
+// ExpireWaitingConversation ends a conversation that is still WAITING, the same
+// way Stop does, with note shown in place of the unanswered prompt. It returns
+// false, and changes nothing, when the conversation is no longer WAITING.
+func (chat *ConversationDao) ExpireWaitingConversation(ctx *security.RequestContext, accountId, conversationId, note string) (bool, error) {
+	_, err := chat.terminateConversation(ctx, accountId, conversationId, "", "", false,
+		termination{messageText: note, stepText: note, onlyIfWaiting: true})
+	if errors.Is(err, errConversationNotWaiting) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (chat *ConversationDao) terminateConversation(ctx *security.RequestContext, accountId, conversationId, messageID, userID string, isAdmin bool, how termination) (*ConversationMessage, error) {
 	tx, err := chat.dbManager.Db.Beginx()
 	if err != nil {
 		return nil, fmt.Errorf("history: failed to begin transaction: %w", err)
@@ -2172,6 +2197,9 @@ func (chat *ConversationDao) terminateConversation(ctx *security.RequestContext,
 	var conversationStatus ConversationStatus
 	if err = tx.Get(&conversationStatus, `SELECT status FROM llm_conversations WHERE id = $1 AND account_id = $2 FOR UPDATE`, conversationId, accountId); err != nil {
 		return nil, err
+	}
+	if how.onlyIfWaiting && conversationStatus != ConversationStatusWaiting {
+		return nil, errConversationNotWaiting
 	}
 	var claimed *ConversationMessage
 	if messageID != "" {
@@ -2191,7 +2219,7 @@ func (chat *ConversationDao) terminateConversation(ctx *security.RequestContext,
 	// Update the message status to TERMINATED and capture affected message IDs so
 	// we can invalidate their termination cache entries after commit.
 	messageQuery := `UPDATE llm_conversation_messages SET updated_at = now(), status = $2, response = $4 WHERE conversation_id = $1 AND account_id = $3 AND status in ('IN_PROGRESS', 'WAITING', 'WAITING_FOR_CLIENT_TOOL', 'PENDING') RETURNING id`
-	rows, err := tx.Queryx(messageQuery, conversationId, string(ConversationStatusTerminated), accountId, "Conversation terminated by user")
+	rows, err := tx.Queryx(messageQuery, conversationId, string(ConversationStatusTerminated), accountId, how.messageText)
 	if err != nil {
 		return nil, fmt.Errorf("history: failed to terminate message: %w", err)
 	}
@@ -2223,7 +2251,7 @@ func (chat *ConversationDao) terminateConversation(ctx *security.RequestContext,
 	// matches the late-write override in SaveConversationToolCall /
 	// UpdateConversationAgentResponse — keeping the bulk and late-write paths in
 	// sync.
-	const terminatedResponse = "Terminated by user"
+	terminatedResponse := how.stepText
 	agentQuery := `UPDATE llm_conversation_agent SET status = $2, response = $5, updated_at = now() WHERE conversation_id = $1 AND account_id = $6 AND status IN ($3, $4)`
 	_, err = tx.Exec(agentQuery, conversationId,
 		string(AgentExecutionStatusTerminated),

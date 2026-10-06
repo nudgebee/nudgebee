@@ -419,7 +419,7 @@ func syncStuckEventAnalyses() error {
 				"event_id", a.EventId, "session", parentSessionId, "conv_status", conv.Status,
 				"updated_at", a.UpdatedAt, "age", time.Since(a.UpdatedAt).Round(time.Minute))
 			failCtx := security.NewRequestContextForTenantAccountAdmin(tenantId, security.GetSystemUserId(), []string{a.AccountId})
-			failResp, terminal, failErr := failAbandonedEventAnalysis(failCtx, a, dbManager)
+			failResp, terminal, failErr := failAbandonedEventAnalysis(failCtx, a, dbManager, abandonReason(conv.Status))
 			if failErr != nil {
 				slog.Error("sync: failed to mark stale analysis as failed", "error", failErr, "event_id", a.EventId)
 			} else if terminal {
@@ -489,11 +489,25 @@ func syncStuckEventAnalyses() error {
 	return nil
 }
 
+const (
+	abandonReasonStuck   = "recovery abandoned: analysis stuck for over 24 hours"
+	abandonReasonStopped = "stopped before it finished: the investigation was ended (an approval or question went unanswered, or someone stopped it)"
+)
+
+// abandonReason says why an abandoned analysis failed. A TERMINATED
+// conversation was ended on purpose (Stop, or the waiting-expiry job), not
+// stuck, so the event page should not report it as stuck.
+func abandonReason(convStatus core.ConversationStatus) string {
+	if convStatus == core.ConversationStatusTerminated {
+		return abandonReasonStopped
+	}
+	return abandonReasonStuck
+}
+
 // failAbandonedEventAnalysis persists abandonment before checking the normal pipeline.
 // RCA uses a separate conversation and must never drain normal investigation tokens.
-func failAbandonedEventAnalysis(ctx *security.RequestContext, analysis events.InProgressAnalysis, dbManager *common.DatabaseManager) (EventAnalysisResponse, bool, error) {
+func failAbandonedEventAnalysis(ctx *security.RequestContext, analysis events.InProgressAnalysis, dbManager *common.DatabaseManager, reason string) (EventAnalysisResponse, bool, error) {
 	repo := events.NewEventAnalysisRepositoryForAccount(ctx, dbManager, analysis.AccountId)
-	const reason = "recovery abandoned: analysis stuck for over 24 hours"
 	switch analysis.AnalysisType {
 	case events.AnalysisTypeRCAAttempt:
 		return EventAnalysisResponse{}, false, repo.UpdateRCAAttemptStatus(ctx, analysis.ID, analysis.EventId, analysis.AccountId, string(events.AnalysisStatusFailed), reason)
