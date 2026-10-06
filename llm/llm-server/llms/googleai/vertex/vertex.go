@@ -26,6 +26,9 @@ var (
 	ErrUnknownPartInResponse = errors.New("unknown part type in generation response")
 	ErrInvalidMimeType       = errors.New("invalid mime type on content")
 	ErrorNilIterator         = errors.New("iterator is nil")
+	// ErrStreamIncomplete: the stream ended without a finish reason, so it was
+	// cut off; see the googleai package for the full rationale.
+	ErrStreamIncomplete = errors.New("streaming error: stream ended without a finish reason (response incomplete)")
 )
 
 const (
@@ -348,6 +351,8 @@ func convertAndStreamFromIterator(
 	candidate := &genai.Candidate{
 		Content: &genai.Content{},
 	}
+	// stoppedEarly: blocked prompt or caller stop — not a cut-off stream.
+	stoppedEarly := false
 DoStream:
 	for {
 		resp, err := iter.Next()
@@ -360,29 +365,36 @@ DoStream:
 
 		if len(resp.Candidates) == 0 {
 			// No candidates - likely blocked by safety filter, break gracefully
+			stoppedEarly = true
 			break DoStream
 		}
 		if len(resp.Candidates) != 1 {
 			return nil, fmt.Errorf("expect single candidate in stream mode; got %v", len(resp.Candidates))
 		}
 		respCandidate := resp.Candidates[0]
+		if respCandidate.FinishReason != genai.FinishReasonUnspecified {
+			candidate.FinishReason = respCandidate.FinishReason
+		}
 
 		if respCandidate.Content == nil {
 			break DoStream
 		}
 		candidate.Content.Parts = append(candidate.Content.Parts, respCandidate.Content.Parts...)
 		candidate.Content.Role = respCandidate.Content.Role
-		candidate.FinishReason = respCandidate.FinishReason
 		candidate.SafetyRatings = respCandidate.SafetyRatings
 		candidate.CitationMetadata = respCandidate.CitationMetadata
 
 		for _, part := range respCandidate.Content.Parts {
 			if text, ok := part.(genai.Text); ok {
 				if opts.StreamingFunc(ctx, []byte(text)) != nil {
+					stoppedEarly = true
 					break DoStream
 				}
 			}
 		}
+	}
+	if !stoppedEarly && candidate.FinishReason == genai.FinishReasonUnspecified {
+		return nil, ErrStreamIncomplete
 	}
 	mresp := iter.MergedResponse()
 	if mresp == nil {

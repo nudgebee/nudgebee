@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"log/slog"
 	"strings"
 	"time"
@@ -21,6 +22,12 @@ var (
 	ErrUnknownPartInResponse = errors.New("unknown part type in generation response")
 	ErrInvalidMimeType       = errors.New("invalid mime type on content")
 	ErrorNilIterator         = errors.New("iterator is nil")
+	// ErrStreamIncomplete marks a stream that ended before the model said it was
+	// done. Gemini sets a finish reason on its last chunk, so a stream that
+	// closes without one was cut off (seen during provider 503s), and its text
+	// is a fragment, not an answer. The message contains "streaming error" so
+	// the caller's transient-error check retries it and then falls back.
+	ErrStreamIncomplete = errors.New("streaming error: stream ended without a finish reason (response incomplete)")
 )
 
 const (
@@ -607,25 +614,43 @@ func streamFromContents(
 	cfg *genai.GenerateContentConfig,
 	opts *llms.CallOptions,
 ) (*llms.ContentResponse, error) {
+	return accumulateStream(ctx, modelName, client.Models.GenerateContentStream(ctx, modelName, contents, cfg), opts)
+}
+
+// accumulateStream folds stream chunks into one response, passing text to the
+// caller's streaming function as it arrives.
+func accumulateStream(
+	ctx context.Context,
+	modelName string,
+	stream iter.Seq2[*genai.GenerateContentResponse, error],
+	opts *llms.CallOptions,
+) (*llms.ContentResponse, error) {
 	// Accumulate parts and usage from stream chunks
 	accCandidate := &genai.Candidate{
 		Content: &genai.Content{},
 	}
 	var lastUsage *genai.GenerateContentResponseUsageMetadata
+	// stoppedEarly: the stream did not run to its own end — the prompt was
+	// blocked (no candidates) or the caller asked to stop. Neither is a cut-off.
+	stoppedEarly := false
 
-	for resp, err := range client.Models.GenerateContentStream(ctx, modelName, contents, cfg) {
+	for resp, err := range stream {
 		if err != nil {
 			return nil, fmt.Errorf("error in stream mode: %w", err)
 		}
 
 		if len(resp.Candidates) == 0 {
 			// No candidates – likely blocked by safety filter; break gracefully.
+			stoppedEarly = true
 			break
 		}
 		if len(resp.Candidates) != 1 {
 			return nil, fmt.Errorf("expect single candidate in stream mode; got %v", len(resp.Candidates))
 		}
 		respCandidate := resp.Candidates[0]
+		if respCandidate.FinishReason != "" && respCandidate.FinishReason != genai.FinishReasonUnspecified {
+			accCandidate.FinishReason = respCandidate.FinishReason
+		}
 
 		if respCandidate.Content == nil {
 			break
@@ -633,7 +658,6 @@ func streamFromContents(
 
 		accCandidate.Content.Parts = append(accCandidate.Content.Parts, respCandidate.Content.Parts...)
 		accCandidate.Content.Role = respCandidate.Content.Role
-		accCandidate.FinishReason = respCandidate.FinishReason
 		accCandidate.SafetyRatings = respCandidate.SafetyRatings
 		accCandidate.CitationMetadata = respCandidate.CitationMetadata
 		accCandidate.TokenCount += respCandidate.TokenCount
@@ -649,12 +673,16 @@ func streamFromContents(
 			}
 			if part.Text != "" {
 				if opts.StreamingFunc(ctx, []byte(part.Text)) != nil {
+					stoppedEarly = true
 					goto done
 				}
 			}
 		}
 	}
 done:
+	if !stoppedEarly && (accCandidate.FinishReason == "" || accCandidate.FinishReason == genai.FinishReasonUnspecified) {
+		return nil, ErrStreamIncomplete
+	}
 	return convertCandidates(modelName, []*genai.Candidate{accCandidate}, lastUsage)
 }
 
