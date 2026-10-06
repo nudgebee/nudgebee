@@ -4,6 +4,7 @@ import PropTypes from 'prop-types';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { Box } from '@mui/material';
 import { FiArrowRight } from 'react-icons/fi';
+import { MdOutlineCategory } from 'react-icons/md';
 
 // DS V2 primitives
 import ListingLayout from '@ui/ListingLayout';
@@ -60,7 +61,7 @@ import { useEventCloudFilter } from '@hooks/useCloudFilters';
 
 // Assets
 import TicketsIcon from '@assets/sidebar-icon/tickets-icon.svg';
-import { dashboardIcon1 as ClassifyIcon, infoIcon } from '@assets';
+import { infoIcon } from '@assets';
 import { TRIAGE_SCORE_INFO, getTriageStatusTooltip } from '@api1/triage';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
 import { readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
@@ -966,10 +967,9 @@ const KubernetesEventsTable = ({
           iconBlack: true,
         },
         {
-          icon: ClassifyIcon,
+          reactIcon: <MdOutlineCategory color={ds.gray[600]} size={18} />,
           label: 'Classify',
           id: 'classify',
-          iconBlack: true,
         },
         {
           icon: WorkflowIcon,
