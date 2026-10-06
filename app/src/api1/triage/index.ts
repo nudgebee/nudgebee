@@ -546,6 +546,9 @@ mutation EventListThresholdSuggestions(
       applied_by
       applied_threshold
       previous_threshold
+      pr_url
+      resolution_status
+      resolution_message
     }
     total
   }
@@ -1447,6 +1450,9 @@ export interface ThresholdSuggestionItem {
   applied_by?: string;
   applied_threshold?: number;
   previous_threshold?: number;
+  pr_url?: string | null;
+  resolution_status?: string | null;
+  resolution_message?: string | null;
 }
 
 export interface ThresholdApplyOption {

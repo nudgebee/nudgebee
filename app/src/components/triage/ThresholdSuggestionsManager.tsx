@@ -11,6 +11,7 @@ import EmptyData from '@shared/EmptyData';
 import { DataNotAvailable } from '@assets';
 import Text from '@shared/format/Text';
 import { Label } from '@ui/Label';
+import PRLink from '@shared/links/PRLink';
 import apiUser from '@api1/user';
 import apiTriage, { type ThresholdSuggestionItem } from '@api1/triage';
 import { ds } from 'src/utils/colors';
@@ -219,11 +220,19 @@ const ThresholdSuggestionsManager: React.FC<ThresholdSuggestionsManagerProps> = 
           component: (
             <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
               <Label text={recStyle.label} variant={recStyle.variant} dot />
-              {item.apply_status && (
-                <Label
-                  text={APPLY_STATUS_LABELS[item.apply_status]?.label || item.apply_status}
-                  variant={APPLY_STATUS_LABELS[item.apply_status]?.variant || 'grey'}
+              {item.apply_status === 'pending' && (item.pr_url || item.resolution_status) ? (
+                <PRLink
+                  prURL={item.pr_url || undefined}
+                  status={item.resolution_status || undefined}
+                  statusMessage={item.resolution_message || undefined}
                 />
+              ) : (
+                item.apply_status && (
+                  <Label
+                    text={APPLY_STATUS_LABELS[item.apply_status]?.label || item.apply_status}
+                    variant={APPLY_STATUS_LABELS[item.apply_status]?.variant || 'grey'}
+                  />
+                )
               )}
               {!item.apply_status && riskLevel !== 'safe' && (
                 <Text

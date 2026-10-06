@@ -753,34 +753,39 @@ func upsertQualityOnlySuggestion(ctx context.Context, db *sqlx.DB, na noisyAlert
 
 // ThresholdSuggestionListItem represents a row in the listing view.
 type ThresholdSuggestionListItem struct {
-	ID                  string          `json:"id" db:"-"`
-	AlertRuleKey        string          `json:"alert_rule_key" db:"alert_rule_key"`
-	Fingerprint         string          `json:"fingerprint" db:"fingerprint"`
-	CloudAccountID      string          `json:"cloud_account_id" db:"cloud_account_id"`
-	Source              string          `json:"source" db:"source"`
-	AlertName           *string         `json:"alert_name" db:"alert_name"`
-	MetricName          *string         `json:"metric_name" db:"metric_name"`
-	MetricNamespace     *string         `json:"metric_namespace" db:"metric_namespace"`
-	CurrentThreshold    *float64        `json:"current_threshold" db:"current_threshold"`
-	Operator            *string         `json:"operator" db:"operator"`
-	SuggestedThreshold  *float64        `json:"suggested_threshold" db:"suggested_threshold"`
-	Reason              *string         `json:"reason" db:"reason"`
-	Confidence          *string         `json:"confidence" db:"confidence"`
-	EstimatedReduction  *float64        `json:"estimated_reduction" db:"estimated_reduction"`
-	Method              *string         `json:"method" db:"method"`
-	RecommendationType  *string         `json:"recommendation_type" db:"-"`
-	ComputedAt          *string         `json:"computed_at" db:"computed_at"`
-	EventAggregationKey *string         `json:"event_aggregation_key" db:"event_aggregation_key"`
-	ApplyStatus         *string         `json:"apply_status" db:"apply_status"`
-	ApplyMethod         *string         `json:"apply_method" db:"apply_method"`
-	AppliedAt           *string         `json:"applied_at" db:"applied_at"`
-	AppliedBy           *string         `json:"applied_by" db:"applied_by"`
-	AppliedThreshold    *float64        `json:"applied_threshold" db:"applied_threshold"`
-	PreviousThreshold   *float64        `json:"previous_threshold" db:"previous_threshold"`
-	FiringAnalysis      json.RawMessage `json:"firing_analysis,omitempty" db:"firing_analysis"`
-	AlertQuality        json.RawMessage `json:"alert_quality,omitempty" db:"alert_quality"`
-	MetricStats         json.RawMessage `json:"metric_stats,omitempty" db:"metric_stats"`
-	QueryMetadata       json.RawMessage `json:"query_metadata,omitempty" db:"query_metadata"`
+	ID                  string   `json:"id" db:"-"`
+	AlertRuleKey        string   `json:"alert_rule_key" db:"alert_rule_key"`
+	Fingerprint         string   `json:"fingerprint" db:"fingerprint"`
+	CloudAccountID      string   `json:"cloud_account_id" db:"cloud_account_id"`
+	Source              string   `json:"source" db:"source"`
+	AlertName           *string  `json:"alert_name" db:"alert_name"`
+	MetricName          *string  `json:"metric_name" db:"metric_name"`
+	MetricNamespace     *string  `json:"metric_namespace" db:"metric_namespace"`
+	CurrentThreshold    *float64 `json:"current_threshold" db:"current_threshold"`
+	Operator            *string  `json:"operator" db:"operator"`
+	SuggestedThreshold  *float64 `json:"suggested_threshold" db:"suggested_threshold"`
+	Reason              *string  `json:"reason" db:"reason"`
+	Confidence          *string  `json:"confidence" db:"confidence"`
+	EstimatedReduction  *float64 `json:"estimated_reduction" db:"estimated_reduction"`
+	Method              *string  `json:"method" db:"method"`
+	RecommendationType  *string  `json:"recommendation_type" db:"-"`
+	ComputedAt          *string  `json:"computed_at" db:"computed_at"`
+	EventAggregationKey *string  `json:"event_aggregation_key" db:"event_aggregation_key"`
+	ApplyStatus         *string  `json:"apply_status" db:"apply_status"`
+	ApplyMethod         *string  `json:"apply_method" db:"apply_method"`
+	AppliedAt           *string  `json:"applied_at" db:"applied_at"`
+	AppliedBy           *string  `json:"applied_by" db:"applied_by"`
+	AppliedThreshold    *float64 `json:"applied_threshold" db:"applied_threshold"`
+	PreviousThreshold   *float64 `json:"previous_threshold" db:"previous_threshold"`
+	// PR-path outcome, read from the linked event_resolution row. The code agent finishes
+	// the PR asynchronously, so apply_status stays "pending" and these carry the real state.
+	PRURL             *string         `json:"pr_url" db:"pr_url"`
+	ResolutionStatus  *string         `json:"resolution_status" db:"resolution_status"`
+	ResolutionMessage *string         `json:"resolution_message" db:"resolution_message"`
+	FiringAnalysis    json.RawMessage `json:"firing_analysis,omitempty" db:"firing_analysis"`
+	AlertQuality      json.RawMessage `json:"alert_quality,omitempty" db:"alert_quality"`
+	MetricStats       json.RawMessage `json:"metric_stats,omitempty" db:"metric_stats"`
+	QueryMetadata     json.RawMessage `json:"query_metadata,omitempty" db:"query_metadata"`
 }
 
 // ThresholdSuggestionListResponse is the response for the list action.
@@ -841,11 +846,17 @@ func ListThresholdSuggestions(ctx context.Context, db *sqlx.DB, tenantID string,
 		       estimated_reduction, method, computed_at, event_aggregation_key,
 		       apply_status, apply_method, applied_at, applied_by,
 		       applied_threshold, previous_threshold,
+		       r.pr_url, r.resolution_status, r.resolution_message,
 		       COALESCE(firing_analysis, 'null') AS firing_analysis,
 		       COALESCE(alert_quality, 'null') AS alert_quality,
 		       COALESCE(metric_stats, 'null') AS metric_stats,
 		       COALESCE(query_metadata, 'null') AS query_metadata
 		FROM event_threshold_suggestions
+		LEFT JOIN (
+			SELECT id AS resolution_row_id, NULLIF(type_reference_id, '') AS pr_url,
+			       status AS resolution_status, status_message AS resolution_message
+			FROM event_resolution
+		) r ON r.resolution_row_id = event_threshold_suggestions.resolution_id
 		%s
 		ORDER BY
 			-- Priority: high confidence first, then medium, then low
