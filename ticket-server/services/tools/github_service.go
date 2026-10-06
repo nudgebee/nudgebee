@@ -1,15 +1,21 @@
 package tools
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
+	"io"
 	"log/slog"
 	"net/http"
 	"nudgebee/tickets-server/clients"
+	"nudgebee/tickets-server/common"
 	"nudgebee/tickets-server/models"
 	"nudgebee/tickets-server/services/ticket"
 	"nudgebee/tickets-server/utils"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +46,151 @@ func (s *GitHubService) AddComment(ctx *gin.Context, config models.TicketConfigu
 
 func (s *GitHubService) GetComments(ctx *gin.Context, config models.TicketConfigurations, ticketID string) ([]models.Comments, error) {
 	return FetchGithubComments(ctx, config, ticketID)
+}
+
+// GetAttachment is unimplemented: GitHub comment bodies already embed a full,
+// directly-fetchable image URL (markdown ![alt](url)) - no separate attachment
+// fetch is needed, the frontend renders the markdown body as-is.
+// GetAttachment resolves a github.com/user-attachments/ asset ID (captured by
+// extractGithubUserAttachments) to real bytes. The REST API never exposes a
+// fetchable URL for these - only GraphQL's bodyHTML field does, by resolving
+// the asset into a short-lived signed URL at query time (verified directly:
+// fetching that resolved URL immediately returns the real image, 200 OK).
+func (s *GitHubService) GetAttachment(ctx *gin.Context, config models.TicketConfigurations, ticketID, attachmentID string) (string, io.ReadCloser, error) {
+	if len(config.Projects) == 0 {
+		return "", nil, errors.New("no projects configured")
+	}
+	parts := strings.Split(config.Projects[0].Key, "/")
+	if len(parts) != 2 {
+		return "", nil, fmt.Errorf("invalid github project key %q: expected format 'owner/repo'", config.Projects[0].Key)
+	}
+	owner, repo := parts[0], parts[1]
+
+	issueNumber, err := strconv.Atoi(ticketID)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid ticket ID %q for GitHub issue number: %w", ticketID, err)
+	}
+
+	token, err := githubBearerToken(ctx, config)
+	if err != nil {
+		return "", nil, err
+	}
+
+	resolvedURL, err := resolveGithubUserAttachmentURL(ctx, token, owner, repo, issueNumber, attachmentID)
+	if err != nil {
+		return "", nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolvedURL, nil)
+	if err != nil {
+		return "", nil, fmt.Errorf("github get attachment: build request: %w", err)
+	}
+	resp, err := common.HttpClient().Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("github get attachment: request failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		return "", nil, fmt.Errorf("github get attachment: returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	return resp.Header.Get("Content-Type"), resp.Body, nil
+}
+
+// githubBearerToken returns the raw bearer token for either auth mode, for
+// callers (GetAttachment) that need to hit the REST/GraphQL APIs directly
+// rather than through a *github.Client.
+func githubBearerToken(ctx context.Context, config models.TicketConfigurations) (string, error) {
+	if config.AuthType != "application" {
+		return config.Password, nil
+	}
+	installationID, err := strconv.ParseInt(config.Password, 10, 64)
+	if err != nil {
+		return "", fmt.Errorf("invalid installation ID: %w", err)
+	}
+	return clients.GetGithubAppInstallationToken(ctx, installationID)
+}
+
+type githubBodyHTMLResponse struct {
+	Data struct {
+		Repository struct {
+			Issue struct {
+				Comments struct {
+					Nodes []struct {
+						BodyHTML string `json:"bodyHTML"`
+					} `json:"nodes"`
+				} `json:"comments"`
+			} `json:"issue"`
+		} `json:"repository"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+// resolveGithubUserAttachmentURL re-renders the issue's comments via GraphQL
+// (bodyHTML resolves GitHub's internal asset shorthand into a fresh signed
+// URL) and returns the one matching assetID. Re-fetches all comments rather
+// than a single targeted one because the REST comment ID isn't threaded
+// through CommentAttachment.ID - the asset UUID alone is enough to find it
+// and is globally unique, so this never matches the wrong image.
+func resolveGithubUserAttachmentURL(ctx context.Context, token, owner, repo string, issueNumber int, assetID string) (string, error) {
+	const query = `query($owner: String!, $name: String!, $number: Int!) {
+		repository(owner: $owner, name: $name) {
+			issue(number: $number) {
+				comments(last: 100) { nodes { bodyHTML } }
+			}
+		}
+	}`
+	payload, err := json.Marshal(map[string]any{
+		"query":     query,
+		"variables": map[string]any{"owner": owner, "name": repo, "number": issueNumber},
+	})
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.github.com/graphql", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := common.HttpClient().Do(req)
+	if err != nil {
+		return "", fmt.Errorf("github graphql request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("github graphql returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var parsed githubBodyHTMLResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("github graphql: unmarshal: %w", err)
+	}
+	if len(parsed.Errors) > 0 {
+		return "", fmt.Errorf("github graphql error: %s", parsed.Errors[0].Message)
+	}
+
+	for _, node := range parsed.Data.Repository.Issue.Comments.Nodes {
+		for _, srcMatch := range githubImgSrcRe.FindAllStringSubmatch(node.BodyHTML, -1) {
+			if strings.Contains(srcMatch[1], assetID) {
+				// bodyHTML is HTML, so its src attribute is HTML-escaped - a
+				// signed URL's multiple query params ("&...") come through as
+				// "&amp;..." and must be unescaped before use as a real URL.
+				return html.UnescapeString(srcMatch[1]), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("attachment %s not found on issue %d", assetID, issueNumber)
 }
 
 func (s *GitHubService) Get(ctx *gin.Context, config models.TicketConfigurations, ticketID string) (*models.Ticket, error) {
@@ -434,6 +585,138 @@ func listValidAssigneeLogins(ctx *gin.Context, githubClient *github.Client, owne
 // FetchGithubComments lists comments on a GitHub issue. The ticketID must be the issue
 // number; owner/repo is taken from the first configured project, matching the behavior
 // of GitHubService.Get.
+var (
+	githubImgTagRe      = regexp.MustCompile(`<img\b[^>]*>`)
+	githubImgSrcRe      = regexp.MustCompile(`src="([^"]+)"`)
+	githubImgAltRe      = regexp.MustCompile(`alt="([^"]*)"`)
+	githubMarkdownImgRe = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
+)
+
+// githubUnembeddableImageHosts: private-user-images URLs are JWT-signed with a
+// 5-minute TTL, so a URL pasted verbatim by a user is effectively always
+// expired by the time Nudgebee reads the comment. (user-attachments/ used to
+// be in this list too, but GetAttachment now resolves those via GraphQL
+// bodyHTML - see extractGithubUserAttachments.)
+var githubUnembeddableImageHosts = []string{
+	"private-user-images.githubusercontent.com",
+}
+
+var githubUserAttachmentIDRe = regexp.MustCompile(`user-attachments/assets/([0-9a-fA-F-]+)`)
+
+// extractGithubUserAttachments pulls github.com/user-attachments/ image
+// references (the <img> or markdown ![]() form) out of the comment body into
+// real CommentAttachments, stripping them from the returned text so they
+// aren't also left behind as a dead inline image. GetAttachment resolves the
+// stored asset ID back to real bytes via GraphQL at render time.
+
+func extractGithubUserAttachments(body string) (string, []models.CommentAttachment) {
+	var attachments []models.CommentAttachment
+	extract := func(src, alt string) string {
+		m := githubUserAttachmentIDRe.FindStringSubmatch(src)
+		if m == nil {
+			return ""
+		}
+		label := alt
+		if label == "" {
+			label = "attached image"
+		}
+		attachments = append(attachments, models.CommentAttachment{ID: m[1], Name: label, ContentType: "image/*"})
+		return attachmentMarker(m[1])
+	}
+
+	body = githubImgTagRe.ReplaceAllStringFunc(body, func(tag string) string {
+		srcMatch := githubImgSrcRe.FindStringSubmatch(tag)
+		if len(srcMatch) < 2 {
+			return tag
+		}
+		alt := ""
+		if altMatch := githubImgAltRe.FindStringSubmatch(tag); len(altMatch) >= 2 {
+			alt = altMatch[1]
+		}
+		if marker := extract(srcMatch[1], alt); marker != "" {
+			return marker
+		}
+		return tag
+	})
+
+	body = githubMarkdownImgRe.ReplaceAllStringFunc(body, func(tag string) string {
+		m := githubMarkdownImgRe.FindStringSubmatch(tag)
+		if marker := extract(m[2], m[1]); marker != "" {
+			return marker
+		}
+		return tag
+	})
+
+	return body, attachments
+}
+
+func isUnembeddableGithubImageURL(url string) bool {
+	for _, host := range githubUnembeddableImageHosts {
+		if strings.Contains(url, host) {
+			return true
+		}
+	}
+	return false
+}
+
+// rewriteUnembeddableGithubImages turns an unembeddable image - as a raw <img>
+// tag or markdown ![]() - into a plain link. Other hosts pass through untouched.
+func rewriteUnembeddableGithubImages(body string) string {
+	body = githubImgTagRe.ReplaceAllStringFunc(body, func(tag string) string {
+		srcMatch := githubImgSrcRe.FindStringSubmatch(tag)
+		if len(srcMatch) < 2 || !isUnembeddableGithubImageURL(srcMatch[1]) {
+			return tag
+		}
+		label := "attached image"
+		if altMatch := githubImgAltRe.FindStringSubmatch(tag); len(altMatch) >= 2 && altMatch[1] != "" {
+			label = altMatch[1]
+		}
+		return fmt.Sprintf("[\U0001F4CE %s (view on GitHub)](%s)", label, srcMatch[1])
+	})
+
+	body = githubMarkdownImgRe.ReplaceAllStringFunc(body, func(tag string) string {
+		m := githubMarkdownImgRe.FindStringSubmatch(tag)
+		alt, url := m[1], m[2]
+		if !isUnembeddableGithubImageURL(url) {
+			return tag
+		}
+		label := "attached image"
+		if alt != "" {
+			label = alt
+		}
+		return fmt.Sprintf("[\U0001F4CE %s (view on GitHub)](%s)", label, url)
+	})
+
+	return body
+}
+
+// Unlike <img>, <video> is a container element - GitHub emits
+// <video src="...">...</video>, so the closing tag must be matched too or
+// it's left behind as stray text after the opening tag is replaced.
+var githubVideoTagRe = regexp.MustCompile(`<video\b[^>]*>[^<]*</video>`)
+
+// rewriteGithubVideoTags converts a <video> tag (GitHub's markup for a
+// dragged/pasted video, on either unembeddable CDN) into a plain link.
+// Unlike images, video isn't resolved into a real inline player - that would
+// need range-request-aware proxying for seeking/buffering, a much bigger lift
+// than a one-shot image fetch - so every video becomes a link. Clicking it
+// still works even though embedding doesn't: a clicked link is a top-level
+// navigation, which (unlike an auto-fetched <video src>) carries the viewer's
+// own GitHub session cookie past SameSite=Lax.
+func rewriteGithubVideoTags(body string) string {
+	return githubVideoTagRe.ReplaceAllStringFunc(body, func(tag string) string {
+		srcMatch := githubImgSrcRe.FindStringSubmatch(tag)
+		if len(srcMatch) < 2 {
+			return tag
+		}
+		src := srcMatch[1]
+		if !githubUserAttachmentIDRe.MatchString(src) && !strings.Contains(src, "private-user-images.githubusercontent.com") {
+			return tag
+		}
+		return fmt.Sprintf("[\U0001F3AC attached video (view on GitHub)](%s)", src)
+	})
+}
+
 func FetchGithubComments(ctx *gin.Context, config models.TicketConfigurations, ticketID string) ([]models.Comments, error) {
 	if err := utils.ValidateGitHubIssueID(ticketID); err != nil {
 		return nil, fmt.Errorf("invalid ticket ID: %w", err)
@@ -486,11 +769,15 @@ func FetchGithubComments(ctx *gin.Context, config models.TicketConfigurations, t
 			if c.User != nil {
 				author = c.User.GetLogin()
 			}
+			cleanedBody, attachments := extractGithubUserAttachments(c.GetBody())
+			cleanedBody = rewriteUnembeddableGithubImages(cleanedBody)
+			cleanedBody = rewriteGithubVideoTags(cleanedBody)
 			all = append(all, models.Comments{
-				Author:  author,
-				Comment: c.GetBody(),
-				Created: c.GetCreatedAt().Format(time.RFC3339),
-				Updated: c.GetUpdatedAt().Format(time.RFC3339),
+				Author:      author,
+				Comment:     cleanedBody,
+				Created:     c.GetCreatedAt().Format(time.RFC3339),
+				Updated:     c.GetUpdatedAt().Format(time.RFC3339),
+				Attachments: attachments,
 			})
 		}
 		if resp == nil || resp.NextPage == 0 {

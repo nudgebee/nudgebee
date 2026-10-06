@@ -2800,6 +2800,7 @@ input tickets_insert_one_input {
   status: String
   ticket_id: String
   assignee: String
+  reporter: String
   project_key: String
   title: String
   description: String
@@ -8464,6 +8465,17 @@ type Comment {
   comment: String!
   created_at: String!
   updated_at: String
+  attachments: [CommentAttachment]
+}
+
+# Exactly one of id or url is set: id is an opaque token the backend resolves to
+# bytes via ticket_get_attachment (ServiceNow, Jira - their files need the stored
+# platform credentials to fetch); url is already directly fetchable (Freshdesk).
+type CommentAttachment {
+  id: String
+  name: String!
+  content_type: String
+  url: String
 }
 
 type CreateAgentRagOutput {

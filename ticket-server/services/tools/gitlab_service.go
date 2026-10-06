@@ -3,13 +3,16 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"nudgebee/tickets-server/clients"
 	"nudgebee/tickets-server/models"
 	"nudgebee/tickets-server/services/ticket"
 	"nudgebee/tickets-server/utils"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -37,7 +40,141 @@ func (s *GitLabService) AddComment(ctx *gin.Context, config models.TicketConfigu
 }
 
 func (s *GitLabService) GetComments(ctx *gin.Context, config models.TicketConfigurations, ticketID string) ([]models.Comments, error) {
-	return nil, ticket.ErrNotSupported
+	gitlabClient, err := clients.CreateGitLabClient(config.Password, config.URL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GitLab client: %w", err)
+	}
+
+	issueIID, err := strconv.ParseInt(ticketID, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid issue IID: %w", err)
+	}
+
+	if len(config.Projects) == 0 {
+		return nil, errors.New("no projects configured")
+	}
+	projectKey := config.Projects[0].Key
+
+	return fetchCommentsFromGitLab(gitlabClient, config.URL, projectKey, issueIID)
+}
+
+// GetAttachment is unimplemented: every gitlab.com upload-serving route we
+// found (the namespaced /-/uploads/ path, and this one) is behind Cloudflare
+// bot protection that blocks requests from Go's net/http client specifically
+// - confirmed directly, including with a valid PRIVATE-TOKEN (as a header and
+// as a query param) and a spoofed browser User-Agent: still 403. A plain curl
+// to the same URL passes through, so this is TLS/client fingerprinting, not
+// anything we can satisfy with headers. rewriteGitLabUploadImages links out
+// instead, same as GitHub's unembeddable-image fallback.
+func (s *GitLabService) GetAttachment(ctx *gin.Context, config models.TicketConfigurations, ticketID, attachmentID string) (string, io.ReadCloser, error) {
+	return "", nil, ticket.ErrNotSupported
+}
+
+// gitlabUploadImageRef matches GitLab's markdown image syntax for a
+// project-relative upload, e.g. "![image.png](/uploads/<secret>/<filename>)",
+// optionally followed by GitLab's own (non-standard-markdown) sizing
+// extension "{width=720 height=218}".
+var gitlabUploadImageRef = regexp.MustCompile(`!\[([^\]]*)\]\((/uploads/[^)]+)\)(?:\{[^}]*\})?`)
+
+// rewriteGitLabUploadImages turns a project-relative /uploads/ image
+// reference into a clickable link in place - a direct text substitution, so
+// (unlike an extracted attachment) it naturally stays wherever it was in the
+// comment, no position-marker needed. See GitLabService.GetAttachment for why
+// this can't be embedded.
+//
+// The link uses GitLab's global /-/project/<numeric id>/uploads/... form, not
+// the namespaced <group>/<project>/-/uploads/... form a naive read of the
+// markdown would suggest - confirmed against a real pasted-image comment by
+// inspecting the actual rendered <img> src on the issue page; the namespaced
+// form 404s even when authenticated.
+func rewriteGitLabUploadImages(body, baseURL string, projectID int64) string {
+	return gitlabUploadImageRef.ReplaceAllStringFunc(body, func(ref string) string {
+		m := gitlabUploadImageRef.FindStringSubmatch(ref)
+		label := m[1]
+		if label == "" {
+			label = "attached image"
+		}
+		url := fmt.Sprintf("%s/-/project/%d%s", strings.TrimRight(baseURL, "/"), projectID, m[2])
+		return fmt.Sprintf("[\U0001F4CE %s (view on GitLab)](%s)", label, url)
+	})
+}
+
+// fetchCommentsFromGitLab lists an issue's notes and maps the user-authored ones
+// to comments. GitLab's notes endpoint also returns system notes (label changes,
+// status transitions, etc.) interleaved with real comments - those are filtered
+// out via Note.System, same as the activity feed GitLab's own UI shows under "Comments only".
+func fetchCommentsFromGitLab(gitlabClient *gitlab.Client, baseURL, projectKey string, issueIID int64) ([]models.Comments, error) {
+	var all []models.Comments
+	opts := &gitlab.ListIssueNotesOptions{
+		ListOptions: gitlab.ListOptions{PerPage: 100},
+		// GitLab's default for this endpoint is sort=desc (newest first) -
+		// every other provider's comment order is oldest-first, so this has to
+		// be requested explicitly to match.
+		OrderBy: gitlab.Ptr("created_at"),
+		Sort:    gitlab.Ptr("asc"),
+	}
+
+	// Resolved lazily (and at most once) only if some comment actually
+	// references an upload - most issues have none, and this is an extra API
+	// call to turn the project path into the numeric ID the link needs.
+	var projectID int64
+	var projectIDResolved bool
+	var projectIDErr error
+	resolveProjectID := func() (int64, error) {
+		if !projectIDResolved {
+			projectIDResolved = true
+			proj, _, err := gitlabClient.Projects.GetProject(projectKey, nil)
+			if err != nil {
+				projectIDErr = fmt.Errorf("failed to resolve numeric project id for %s: %w", projectKey, err)
+			} else {
+				projectID = proj.ID
+			}
+		}
+		return projectID, projectIDErr
+	}
+
+	for {
+		notes, resp, err := gitlabClient.Notes.ListIssueNotes(projectKey, issueIID, opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list GitLab issue notes for %s#%d: %w", projectKey, issueIID, err)
+		}
+
+		for _, n := range notes {
+			if n.System {
+				continue
+			}
+			var created, updated string
+			if n.CreatedAt != nil {
+				created = n.CreatedAt.Format(time.RFC3339)
+			}
+			if n.UpdatedAt != nil {
+				updated = n.UpdatedAt.Format(time.RFC3339)
+			}
+			body := n.Body
+			if gitlabUploadImageRef.MatchString(body) {
+				if id, err := resolveProjectID(); err != nil {
+					// Leave the raw markdown in place rather than fail the whole
+					// comment fetch over an unresolvable link.
+					slog.Error("gitlab: failed to resolve project id for upload link, leaving raw markdown", "projectKey", projectKey, "error", err)
+				} else {
+					body = rewriteGitLabUploadImages(body, baseURL, id)
+				}
+			}
+			all = append(all, models.Comments{
+				Author:  n.Author.Username,
+				Comment: body,
+				Created: created,
+				Updated: updated,
+			})
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return all, nil
 }
 
 func (s *GitLabService) Get(ctx *gin.Context, config models.TicketConfigurations, ticketID string) (*models.Ticket, error) {

@@ -425,6 +425,10 @@ func TestServiceNowService_GetComments_ReadsJournal(t *testing.T) {
 			  {"value":"customer reply","sys_created_by":"bob","sys_created_on":"2026-05-04 19:00:00"}]}`))
 			return
 		}
+		if strings.Contains(r.URL.Path, "sys_attachment") {
+			_, _ = w.Write([]byte(`{"result":[]}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"result":[{"sys_id":"abc123","number":"ACME0001234"}]}`))
 	}))
 	defer stub.Close()

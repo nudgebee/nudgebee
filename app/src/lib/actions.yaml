@@ -5290,6 +5290,20 @@ actions:
       - role: account_admin_readonly
       - role: tenant_admin
       - role: tenant_admin_readonly
+  - name: ticket_get_attachment
+    comment: Fetch a comment attachment's bytes for a ticket (ServiceNow/Jira only - requires platform credentials the browser doesn't have)
+    definition:
+      kind: "synchronous"
+      handler: '{{TICKET_SERVICE_URL}}/tickets/rpc/get-attachment'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: account_admin_readonly
+      - role: tenant_admin
+      - role: tenant_admin_readonly
   - name: ticket_groupings_v2
     comment: Aggregate tickets grouped by status and account
     definition:

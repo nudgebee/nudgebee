@@ -16,7 +16,7 @@ const isHttpUrl = (url) => typeof url === 'string' && /^https?:\/\//i.test(url);
 // removed from additional_fields so a duplicate can't shadow the typed slot
 // upstream. Returns { missingRequired } when required dynamic fields are empty.
 export const buildCreateTicketPayload = (ticketState, { reference = {}, ticketData = {} } = {}) => {
-  const { selectedConfig, selectedProject, selectedIssueType, ticketDetails, formData, selectedIssueTypeTicketMetadata } = ticketState;
+  const { selectedConfig, selectedProject, selectedIssueType, ticketDetails, formData, selectedIssueTypeTicketMetadata, reporter } = ticketState;
   const fields = selectedIssueTypeTicketMetadata?.[0]?.fields ?? {};
 
   const isEmpty = (v) => v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
@@ -55,6 +55,7 @@ export const buildCreateTicketPayload = (ticketState, { reference = {}, ticketDa
       ticket_type: selectedIssueType,
       integration_id: selectedConfig?.id,
       assignee: formData?.assignee,
+      reporter,
       project_key: selectedProject?.key,
       title: ticketDetails?.subject,
       description: ticketDetails?.description,

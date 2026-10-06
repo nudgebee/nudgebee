@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -227,6 +228,14 @@ type ZenDutyIncidentNote struct {
 	Note      string `json:"note"`
 	CreatedAt string `json:"creation_date"`
 	User      string `json:"user"`
+	UserName  string `json:"user_name"`
+}
+
+// zenDutyNotesPage is the paginated envelope the incident-notes endpoint returns
+// (unlike most other ZenDuty list endpoints, which return a bare array).
+type zenDutyNotesPage struct {
+	Next    *string               `json:"next"`
+	Results []ZenDutyIncidentNote `json:"results"`
 }
 
 // CreateIncidentRequest represents the request body for creating an incident.
@@ -400,12 +409,28 @@ func (c *ZenDutyClient) AddIncidentNote(ctx context.Context, incidentID, note st
 
 // GetIncidentNotes fetches all notes for an incident from ZenDuty.
 func (c *ZenDutyClient) GetIncidentNotes(ctx context.Context, incidentID string) ([]ZenDutyIncidentNote, error) {
-	var notes []ZenDutyIncidentNote
+	var all []ZenDutyIncidentNote
 	endpoint := fmt.Sprintf("/incidents/%s/note/", incidentID)
-	if err := c.getJSON(ctx, endpoint, &notes); err != nil {
-		return nil, fmt.Errorf("failed to get incident notes: %w", err)
+	for endpoint != "" {
+		var page zenDutyNotesPage
+		if err := c.getJSON(ctx, endpoint, &page); err != nil {
+			return nil, fmt.Errorf("failed to get incident notes: %w", err)
+		}
+		all = append(all, page.Results...)
+
+		if page.Next == nil {
+			break
+		}
+		// "next" is an absolute URL; getJSON/doRequest expect a path relative to
+		// ZenDutyBaseURL. If it doesn't share that prefix (unexpected host),
+		// stop here rather than mis-request - what's accumulated so far stands.
+		next, ok := strings.CutPrefix(*page.Next, ZenDutyBaseURL)
+		if !ok {
+			break
+		}
+		endpoint = next
 	}
-	return notes, nil
+	return all, nil
 }
 
 // AcknowledgeIncident acknowledges an incident in ZenDuty.

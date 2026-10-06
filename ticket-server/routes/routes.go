@@ -21,6 +21,7 @@ func InitializeRoutes(router *gin.Engine) {
 		ticketsGroup.POST("/sync-tickets", controllers.SyncTickets)
 		ticketsGroup.POST("/sync-configurations", controllers.SyncConfigurations)
 		ticketsGroup.POST("/rpc/get-comments", controllers.GetTicketComments)
+		ticketsGroup.POST("/rpc/get-attachment", controllers.GetTicketAttachment)
 		ticketsGroup.POST("/rpc/add-comment", controllers.AddTicketComment)
 		ticketsGroup.POST("/rpc/get-ticket", controllers.GetTicketByID)
 		ticketsGroup.POST("/rpc/acknowledge", controllers.AcknowledgeTicket)

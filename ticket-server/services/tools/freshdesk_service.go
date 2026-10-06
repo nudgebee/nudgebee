@@ -423,17 +423,41 @@ func (s *FreshdeskService) GetComments(ctx *gin.Context, config models.TicketCon
 		return nil, err
 	}
 
-	body, statusCode, err := freshdeskRequest(ctx, config, http.MethodGet, fmt.Sprintf("/tickets/%s/conversations?per_page=%d", ticketID, freshdeskListPageSize), nil)
-	if err != nil {
-		return nil, err
-	}
-	if statusCode != http.StatusOK {
-		return nil, freshdeskStatusError("get comments", statusCode, body)
-	}
-
+	// The conversations endpoint doesn't return a total count, so a short page
+	// (fewer than per_page entries) is the only signal that there's no more to
+	// fetch. freshdeskMaxConversationPages bounds the loop in case Freshdesk
+	// ever returns a full page forever.
+	const freshdeskMaxConversationPages = 100
 	var convs []freshdeskConversation
-	if err := json.Unmarshal(body, &convs); err != nil {
-		return nil, fmt.Errorf("freshdesk: unmarshal conversations: %w", err)
+	for page := 1; page <= freshdeskMaxConversationPages; page++ {
+		body, statusCode, err := freshdeskRequest(ctx, config, http.MethodGet,
+			fmt.Sprintf("/tickets/%s/conversations?per_page=%d&page=%d", ticketID, freshdeskListPageSize, page), nil)
+		// A failure fetching page 2+ shouldn't hide the conversations that did
+		// load (e.g. Freshdesk's undocumented deep-pagination cap on some list
+		// endpoints) - surface what we have instead of failing the whole thread.
+		if err != nil {
+			if page > 1 {
+				slog.Error("freshdesk: failed to fetch comments page, returning partial result", "ticketID", ticketID, "page", page, "error", err)
+				break
+			}
+			return nil, err
+		}
+		if statusCode != http.StatusOK {
+			if page > 1 {
+				slog.Error("freshdesk: comments page returned non-200, returning partial result", "ticketID", ticketID, "page", page, "statusCode", statusCode)
+				break
+			}
+			return nil, freshdeskStatusError("get comments", statusCode, body)
+		}
+
+		var pageConvs []freshdeskConversation
+		if err := json.Unmarshal(body, &pageConvs); err != nil {
+			return nil, fmt.Errorf("freshdesk: unmarshal conversations: %w", err)
+		}
+		convs = append(convs, pageConvs...)
+		if len(pageConvs) < freshdeskListPageSize {
+			break
+		}
 	}
 
 	comments := make([]models.Comments, 0, len(convs))
@@ -449,14 +473,29 @@ func (s *FreshdeskService) GetComments(ctx *gin.Context, config models.TicketCon
 		if c.Private {
 			text = "[private note] " + text
 		}
+		var attachments []models.CommentAttachment
+		for _, a := range c.Attachments {
+			attachments = append(attachments, models.CommentAttachment{
+				Name:        a.Name,
+				ContentType: a.ContentType,
+				URL:         a.AttachmentURL,
+			})
+		}
 		comments = append(comments, models.Comments{
-			Author:  author,
-			Comment: text,
-			Created: c.CreatedAt,
-			Updated: c.UpdatedAt,
+			Author:      author,
+			Comment:     text,
+			Created:     c.CreatedAt,
+			Updated:     c.UpdatedAt,
+			Attachments: attachments,
 		})
 	}
 	return comments, nil
+}
+
+// GetAttachment is unimplemented: Freshdesk conversation attachments already carry
+// a direct, pre-signed AttachmentURL (see GetComments) - no proxy fetch is needed.
+func (s *FreshdeskService) GetAttachment(ctx *gin.Context, config models.TicketConfigurations, ticketID, attachmentID string) (string, io.ReadCloser, error) {
+	return "", nil, ticket.ErrNotSupported
 }
 
 // Create opens a new Freshdesk ticket. Freshdesk requires a requester (email or

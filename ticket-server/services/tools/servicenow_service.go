@@ -14,6 +14,7 @@ import (
 	"nudgebee/tickets-server/services/ticket"
 	"nudgebee/tickets-server/utils"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -275,7 +276,120 @@ func fetchServiceNowIncidentComments(ctx context.Context, config models.TicketCo
 			Updated: r.CreatedOn,
 		})
 	}
+
+	attachments, err := fetchServiceNowIncidentAttachments(ctx, config, base, sysID)
+	if err != nil {
+		// An attachment-listing failure shouldn't hide the comments that did
+		// load - surface what we have rather than failing the whole thread.
+		slog.Error("snow attachments: failed to list, returning comments only", "ticketID", ticketID, "error", err)
+		return comments, nil
+	}
+	comments = append(comments, attachments...)
+
+	// ServiceNow's sys_created_on ("yyyy-MM-dd HH:mm:ss") sorts correctly as a
+	// plain string, same as the ORDERBYsys_created_on the journal query already
+	// relies on - needed here because attachments are a second, separately
+	// fetched source merged into the same oldest-first timeline.
+	sort.SliceStable(comments, func(i, j int) bool { return comments[i].Created < comments[j].Created })
+
 	return comments, nil
+}
+
+// fetchServiceNowIncidentAttachments lists files uploaded to the incident's
+// activity stream. Unlike comments/work_notes, ServiceNow stores these in a
+// separate sys_attachment table with no reference back to any journal entry, so
+// each becomes its own timeline entry (Comment == "") rather than being attached
+// to a particular comment.
+func fetchServiceNowIncidentAttachments(ctx context.Context, config models.TicketConfigurations, base, sysID string) ([]models.Comments, error) {
+	q := url.Values{}
+	q.Set("sysparm_query", "table_name=incident^table_sys_id="+sysID)
+	q.Set("sysparm_fields", "sys_id,file_name,content_type,sys_created_by,sys_created_on")
+	endpoint := fmt.Sprintf("%s/api/now/table/sys_attachment?%s", base, q.Encode())
+
+	httpCtx, cancel := context.WithTimeout(ctx, servicenowGetTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(httpCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("snow attachments: build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.SetBasicAuth(config.Username, config.Password)
+
+	resp, err := common.HttpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("snow attachments: request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, servicenowGetMaxBody))
+	if err != nil {
+		return nil, fmt.Errorf("snow attachments: read body: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("snow attachments: returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var envelope struct {
+		Result []struct {
+			SysID       string `json:"sys_id"`
+			FileName    string `json:"file_name"`
+			ContentType string `json:"content_type"`
+			CreatedBy   string `json:"sys_created_by"`
+			CreatedOn   string `json:"sys_created_on"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, fmt.Errorf("snow attachments: unmarshal: %w", err)
+	}
+
+	entries := make([]models.Comments, 0, len(envelope.Result))
+	for _, r := range envelope.Result {
+		entries = append(entries, models.Comments{
+			Author:  r.CreatedBy,
+			Created: r.CreatedOn,
+			Updated: r.CreatedOn,
+			Attachments: []models.CommentAttachment{{
+				ID:          r.SysID,
+				Name:        r.FileName,
+				ContentType: r.ContentType,
+			}},
+		})
+	}
+	return entries, nil
+}
+
+// GetAttachment streams a ServiceNow incident attachment's bytes. The browser
+// cannot fetch ServiceNow's attachment URL directly - it requires the same
+// instance credentials this request authenticates with, which only ticket-server
+// holds - so callers must proxy through this rather than linking the file URL.
+func (s *ServiceNowService) GetAttachment(ctx *gin.Context, config models.TicketConfigurations, ticketID, attachmentID string) (string, io.ReadCloser, error) {
+	base := strings.TrimRight(config.URL, "/")
+	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+		base = "https://" + base
+	}
+	endpoint := fmt.Sprintf("%s/api/now/attachment/%s/file", base, url.PathEscape(attachmentID))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", nil, fmt.Errorf("snow get attachment: build request: %w", err)
+	}
+	req.SetBasicAuth(config.Username, config.Password)
+
+	resp, err := common.HttpClient().Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("snow get attachment: request failed: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, servicenowGetMaxBody))
+		return "", nil, fmt.Errorf("snow get attachment: returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	// ServiceNow appends a `;charset=UTF-8` to binary attachment Content-Types
+	// (nonsensical for an image, but what it returns) - strip to the bare MIME
+	// type so the browser's <img> handling isn't given a malformed hint.
+	contentType, _, _ := strings.Cut(resp.Header.Get("Content-Type"), ";")
+	return strings.TrimSpace(contentType), resp.Body, nil
 }
 
 // getRecordStringValue extracts a string value from a TableRecord field.
