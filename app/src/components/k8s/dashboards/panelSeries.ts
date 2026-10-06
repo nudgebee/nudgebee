@@ -114,7 +114,9 @@ export interface StatTotal {
  * aggregate stat query is written as, and NOT of an average or a percentile,
  * which have no meaningful sum across clusters. `combine: 'avg'` is for those:
  * the mean of the accounts that answered, so a gauge over four clusters at
- * 90 %, 0 % and 10 % reads 33 and not 100. Either way the breakdown is what
+ * 90 %, 0 % and 10 % reads 33 and not 100. Averaging applies within an account
+ * too: an account answering with one series per node shows their mean, so the
+ * total is always the mean of the rows on screen. Either way the breakdown is what
  * makes the arithmetic visible: the parts are on screen next to the total.
  */
 export function statTotal(
@@ -125,22 +127,28 @@ export function statTotal(
   combine: PanelCombine = 'sum'
 ): StatTotal {
   const order: string[] = [];
-  const byAccount = new Map<string, number | undefined>();
+  const byAccount = new Map<string, { sum: number; count: number }>();
 
   for (const s of series) {
     const key = s.accountLabel || '';
     if (!byAccount.has(key)) {
-      byAccount.set(key, undefined);
+      byAccount.set(key, { sum: 0, count: 0 });
       order.push(key);
     }
     const value = lastValue(s.values);
     if (value === undefined) continue;
-    // An account answering with several series contributes all of them: the
-    // total is what the panel matched, not what its first series matched.
-    byAccount.set(key, (byAccount.get(key) ?? 0) + value);
+    const acc = byAccount.get(key)!;
+    acc.sum += value;
+    acc.count += 1;
   }
 
-  const rows: StatRow[] = order.map((account) => ({ account, value: byAccount.get(account), failed: false }));
+  // An account answering with several series contributes all of them: the
+  // figure is what the panel matched, not what its first series matched. They
+  // combine the way the accounts do. Summed, the series are parts of one count.
+  // Averaged, they are readings of the same thing — a per-node CPU gauge's
+  // nodes at 50, 60 and 70 % are an account at 60 %, not at 180.
+  const accountValue = ({ sum, count }: { sum: number; count: number }) => (count === 0 ? undefined : combine === 'avg' ? sum / count : sum);
+  const rows: StatRow[] = order.map((account) => ({ account, value: accountValue(byAccount.get(account)!), failed: false }));
   // Asked and answered with nothing: a row of its own, so every account the
   // panel is scoped to is accounted for — not just the ones with data.
   for (const account of emptyAccounts) rows.push({ account, value: undefined, failed: false });
@@ -152,13 +160,22 @@ export function statTotal(
   // sum: dividing by every account would read a silent cluster as a zero.
   const total = answered.length === 0 ? undefined : combine === 'avg' ? sum / answered.length : sum;
 
-  // One account has nothing to break down, so it keeps the caption it always had.
+  // One account has nothing to break down, so it keeps the caption it always had —
+  // unless it answered with several series. Then the first one's name would
+  // caption a number that is all of them combined.
+  const singleCaption = () => {
+    const only = order.length === 1 ? byAccount.get(order[0])! : undefined;
+    if (only && only.count > 1) return `${combine === 'avg' ? 'Average' : 'Sum'} of ${only.count} series`;
+    // The series the number came from: the first one that reported, not merely the first one.
+    const reported = series.find((s) => lastValue(s.values) !== undefined) ?? series[0];
+    return statCaption(reported?.label, refIds);
+  };
   const single = rows.length <= 1;
   return {
     total,
     combine,
     rows,
-    caption: single ? statCaption(series[0]?.label, refIds) : '',
+    caption: single ? singleCaption() : '',
     partial: answered.length < rows.length,
   };
 }

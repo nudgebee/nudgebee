@@ -163,6 +163,66 @@ describe('statTotal', () => {
     expect(stat.partial).toBe(true);
   });
 
+  /*
+   * #40342: a gauge over a per-node query added each account's nodes up before
+   * averaging the accounts, so nodes at 50, 60 and 70 % read 180 and the dial
+   * pinned at 100.
+   */
+  it('averages an account’s own series too, so a per-node gauge reads as their mean', () => {
+    const perNode = [
+      { label: 'prod-eu · n1', accountLabel: 'prod-eu', values: [50] },
+      { label: 'prod-eu · n2', accountLabel: 'prod-eu', values: [60] },
+      { label: 'prod-eu · n3', accountLabel: 'prod-eu', values: [70] },
+      { label: 'prod-us · m1', accountLabel: 'prod-us', values: [40] },
+    ];
+    const stat = statTotal(perNode, ['A'], [], [], 'avg');
+    expect(stat.rows.map((r) => r.value)).toEqual([60, 40]);
+    expect(stat.total).toBe(50);
+  });
+
+  it('averages one account’s per-node series on a single-account gauge, and says so', () => {
+    const nodes = [50, 60, 70].map((v, i) => ({ label: `n${i}`, values: [v] }));
+    const stat = statTotal(nodes, ['A'], [], [], 'avg');
+    expect(stat.total).toBe(60);
+    // Not "n0": the number is all three nodes, not the first one.
+    expect(stat.caption).toBe('Average of 3 series');
+    expect(statTotal(nodes, ['A']).caption).toBe('Sum of 3 series');
+  });
+
+  it('leaves a series with no newest sample out of its account’s mean', () => {
+    const stat = statTotal(
+      [
+        { label: 'n1', accountLabel: 'prod', values: [50] },
+        { label: 'n2', accountLabel: 'prod', values: [null] },
+      ],
+      ['A'],
+      [],
+      [],
+      'avg'
+    );
+    expect(stat.rows.map((r) => r.value)).toEqual([50]);
+  });
+
+  it('captions a single account with the series that reported, when only one did', () => {
+    const stat = statTotal(
+      [
+        { label: 'n1', values: [null] },
+        { label: 'n2', values: [55] },
+      ],
+      ['A'],
+      [],
+      [],
+      'avg'
+    );
+    expect(stat.total).toBe(55);
+    expect(stat.caption).toBe('n2');
+  });
+
+  it('still adds an account’s series up when the panel sums', () => {
+    const nodes = [50, 60, 70].map((v, i) => ({ label: `n${i}`, accountLabel: 'prod', values: [v] }));
+    expect(statTotal([...nodes, { label: 'm', accountLabel: 'dev', values: [40] }], ['A']).rows.map((r) => r.value)).toEqual([180, 40]);
+  });
+
   it('has no average of nothing', () => {
     expect(statTotal([{ label: 'A', accountLabel: 'prod', values: [null] }], ['A'], [], [], 'avg').total).toBeUndefined();
   });

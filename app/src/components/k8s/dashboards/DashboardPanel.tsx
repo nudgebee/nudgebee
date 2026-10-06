@@ -392,7 +392,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
 
   /**
    * The one number a stat or gauge panel shows: every account that answered,
-   * added up. Computed here rather than inside `drawing` because the threshold
+   * added up or averaged (see combineOf / statTotal). Computed here rather than inside `drawing` because the threshold
    * tint colours the FRAME — the border and the header band, both outside the
    * body `drawing` returns.
    *
