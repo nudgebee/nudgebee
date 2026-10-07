@@ -161,7 +161,7 @@ func (m EventsExecuteTool) GetType() core.NBToolType {
 }
 
 func (m EventsExecuteTool) Description() string {
-	return "Run a read-only SQL SELECT against the `events` table (columns: id, title, priority, computed_priority, urgency, subject_name/type/namespace, status, starts_at, evidences, …). Only SELECT/WITH/DESC/SHOW allowed; results limited to the last 30 days unless filtering by id."
+	return "Run a read-only SQL SELECT against the `events` table (columns: id, title, priority, computed_priority, urgency, subject_name/type/namespace, status, starts_at, evidences, …). Only a single SELECT on events (no joins, subqueries or CTEs); results limited to the last 30 days unless filtering by id."
 }
 
 func (m EventsExecuteTool) InputSchema() core.ToolSchema {
@@ -918,7 +918,7 @@ func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 
 	if !isValidSQL(input.Command) {
 		return core.NBToolResponse{
-			Data:   "Error: Invalid SQL query. Please provide a valid SQL SELECT statement. Example: 'SELECT * FROM events WHERE priority = 'high'' or 'DESC events'",
+			Data:   "Error: Invalid SQL query. Please provide a valid SQL SELECT statement. Example: 'SELECT * FROM events WHERE priority = 'high''",
 			Status: core.NBToolResponseStatusError,
 		}, nil
 	}

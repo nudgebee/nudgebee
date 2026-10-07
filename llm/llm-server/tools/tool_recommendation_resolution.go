@@ -34,7 +34,17 @@ const recommendationResolutionView = `
 			r.category,
 			r.severity,
 			r.status AS recommendation_status,
-			cr.name AS resource_name
+			cr.name AS resource_name,
+			(
+				CASE
+					WHEN cr.meta ->> 'namespace' IS NOT NULL THEN cr.meta ->> 'namespace'
+					WHEN cr.meta -> 'config' ->> 'namespace' IS NOT NULL THEN cr.meta -> 'config' ->> 'namespace'
+					WHEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace'
+					WHEN r.recommendation -> 'metadata' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'metadata' ->> 'namespace'
+					ELSE r.recommendation ->> 'namespace'
+				END
+			) AS namespace,
+			COALESCE(cr.service_name, r.recommendation ->> 'service_name') AS service
 		FROM recommendation_resolution rr
 		JOIN recommendation r ON rr.recommendation_id = r.id
 		LEFT JOIN cloud_resourses cr ON r.resource_id = cr.id
@@ -47,7 +57,7 @@ func (m RecommendationResolutionExecuteTool) ToolPrompt() []string {
 	return []string{
 		"Use recommendation_resolution_execute for resolution history — what was attempted or done about a recommendation: pull requests, tickets, deployment changes, workflow runs, their outcomes and references. Read-only SELECTs against recommendation_resolution_view; filter by recommendation_id, resource_name, rule_name, type, resolver_type, or status.",
 		"**recommendation_resolution_view:** One row per resolution attempt on a recommendation (how it is being, or was, resolved). Queried via the 'recommendation_resolution_execute' tool.",
-		"- recommendation_id (STRING): The recommendation the attempt belongs to (join key with recommendation_view id)",
+		"- recommendation_id (STRING): The recommendation the attempt belongs to (same as recommendation_view id; this view already carries the recommendation's resource, namespace, service, rule and status, so query it alone — joins and subqueries on other tables are refused)",
 		"- type (ENUM): Artifact created - PullRequest, Ticket, DeploymentChange, CloudResource, WorkflowExecution, EventResolution",
 		"- type_reference_id (STRING): Reference to that artifact - PR URL, ticket id, change id",
 		"- resolver_type (ENUM): Who initiated it - User, AutoOptimize, AutoRunbook, NBLLM (the AI agent)",
@@ -55,7 +65,7 @@ func (m RecommendationResolutionExecuteTool) ToolPrompt() []string {
 		"- status_message (STRING): Human-readable outcome detail (failure reason, close note)",
 		"- pr_lifecycle_state (STRING): For PullRequest attempts, the PR's lifecycle state if tracked",
 		"- recommendation_status (ENUM): Current status of the parent recommendation",
-		"- resource_name, rule_name, category, severity (STRING/ENUM): Context from the parent recommendation",
+		"- resource_name, namespace, service, rule_name, category, severity (STRING/ENUM): Context from the parent recommendation",
 		"- created_at, updated_at (TIMESTAMP): When the attempt was registered and last updated",
 	}
 }
@@ -74,7 +84,7 @@ func (m RecommendationResolutionExecuteTool) GetType() core.NBToolType {
 }
 
 func (m RecommendationResolutionExecuteTool) Description() string {
-	return "Executes a SQL query for recommendation_resolution_view — the history of resolution attempts (pull requests, tickets, deployment changes, workflow runs) per recommendation. Columns: id, recommendation_id, cloud_account_id, account, type, type_reference_id, resolver_type, status, status_message, pr_lifecycle_state, created_at, updated_at, rule_name, category, severity, recommendation_status, resource_name."
+	return "Executes a SQL query for recommendation_resolution_view — the history of resolution attempts (pull requests, tickets, deployment changes, workflow runs) per recommendation. Columns: id, recommendation_id, cloud_account_id, account, type, type_reference_id, resolver_type, status, status_message, pr_lifecycle_state, created_at, updated_at, rule_name, category, severity, recommendation_status, resource_name, namespace, service."
 }
 
 func (m RecommendationResolutionExecuteTool) InputSchema() core.ToolSchema {
