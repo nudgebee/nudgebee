@@ -616,8 +616,52 @@ type Task struct {
 	// toggleTaskDisable.ts` (`unpackStash`) is the canonical reader that
 	// normalizes both. Do not narrow the type here without first converging
 	// the frontend on a single canonical shape and migrating saved workflows.
-	PrevEdges any                 `yaml:"_prev_edges,omitempty" json:"_prev_edges,omitempty"`
-	Layout    *WorkflowTaskLayout `yaml:"layout,omitempty" json:"layout,omitempty"`
+	PrevEdges      any                 `yaml:"_prev_edges,omitempty" json:"_prev_edges,omitempty"`
+	Layout         *WorkflowTaskLayout `yaml:"layout,omitempty" json:"layout,omitempty"`
+	ExpectedOutput *TaskExpectedOutput `yaml:"expected_output,omitempty" json:"expected_output,omitempty"`
+}
+
+// TaskExpectedOutput declares the deterministic output contract for a task.
+// When configured, TaskWrapper validates the produced output before reporting
+// success to Temporal, ensuring silent failures (e.g. 0-byte stdout, malformed JSON,
+// missing required keys) trigger retries or fail safely rather than cascading downstream.
+type TaskExpectedOutput struct {
+	Type       string   `yaml:"type,omitempty" json:"type,omitempty"`
+	Required   []string `yaml:"required,omitempty" json:"required,omitempty"`
+	AllowEmpty *bool    `yaml:"allow_empty,omitempty" json:"allow_empty,omitempty"`
+}
+
+// IsAllowEmpty reports whether empty outputs are acceptable.
+// Defaults to true when unspecified to preserve legitimate empty business results (e.g. 0-row SQL queries).
+func (e *TaskExpectedOutput) IsAllowEmpty() bool {
+	if e == nil || e.AllowEmpty == nil {
+		return true
+	}
+	return *e.AllowEmpty
+}
+
+// ParseTaskExpectedOutput parses an untyped map into a TaskExpectedOutput struct.
+func ParseTaskExpectedOutput(m map[string]any) *TaskExpectedOutput {
+	if len(m) == 0 {
+		return nil
+	}
+	out := &TaskExpectedOutput{}
+	if t, ok := m["type"].(string); ok {
+		out.Type = strings.ToLower(strings.TrimSpace(t))
+	}
+	if req, ok := m["required"].([]any); ok {
+		for _, item := range req {
+			if s, ok := item.(string); ok && s != "" {
+				out.Required = append(out.Required, s)
+			}
+		}
+	} else if reqStr, ok := m["required"].([]string); ok {
+		out.Required = reqStr
+	}
+	if ae, ok := m["allow_empty"].(bool); ok {
+		out.AllowEmpty = &ae
+	}
+	return out
 }
 
 // SetVarConfig is a helper struct for validating the polymorphic set_vars field.

@@ -203,6 +203,16 @@ func validateWorkflowDefinitionStructLevel(sl validator.StructLevel) {
 		} else {
 			idSet[t.ID] = struct{}{}
 		}
+
+		if t.ExpectedOutput != nil && t.ExpectedOutput.Type != "" {
+			switch strings.ToLower(strings.TrimSpace(t.ExpectedOutput.Type)) {
+			case "json", "object", "array", "string":
+				// valid type
+			default:
+				sl.ReportError(t.ExpectedOutput.Type, "tasks["+strconv.Itoa(i)+"].expected_output.type", "ExpectedOutput", "expected_output_invalid_type", t.ExpectedOutput.Type)
+			}
+		}
+
 		// Check dependencies
 		for _, dep := range t.DependsOn {
 			if dep == t.ID {
