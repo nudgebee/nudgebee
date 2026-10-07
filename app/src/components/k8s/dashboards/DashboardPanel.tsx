@@ -284,11 +284,13 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
   // Nothing picked yet means the first account, not "no account": a panel that waits for a choice shows an
   // empty box, and one account costs the same single request whether it was chosen or defaulted to. A pick
   // the panel has since been re-scoped away from falls back to that same default — see the rule for why.
-  // Metrics is the exception: those panels answer for every account at once — a chart merges the accounts'
-  // series, a stat adds their numbers up — so an unmade choice means ALL of them and the picker stays empty
-  // until the viewer narrows it. Unless "all of them" is ONE account — the panel's scope, or what the dashboard
-  // filter left of it — in which case the picker shows that account as the selection it effectively is.
-  const effectiveAccountId = effectiveFilterAccount(accountId, panelAccounts, panel.datasource === 'metrics' && panelAccounts.length !== 1);
+  // Metrics and `nudgebee` panels are the exception: they answer for every account at once — a chart merges
+  // the accounts' series, a stat adds their numbers up, the query engine takes the whole list in one call — so
+  // an unmade choice means ALL of them and the picker stays empty until the viewer narrows it. Unless "all of
+  // them" is ONE account — the panel's scope, or what the dashboard filter left of it — in which case the
+  // picker shows that account as the selection it effectively is.
+  const answersEveryAccount = panel.datasource === 'metrics' || panel.datasource === 'nudgebee';
+  const effectiveAccountId = effectiveFilterAccount(accountId, panelAccounts, answersEveryAccount && panelAccounts.length !== 1);
   const selectedOption = filterOptions.find((o) => o.value === effectiveAccountId) || null;
   // The hook takes a list so a panel scoped to one account still works without a
   // selection; the picker just never supplies more than one. With no pick, the
