@@ -768,6 +768,7 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           <PanelState
             tone={ERROR_TONE[error.kind]}
             title={error.message}
+            description={error.detail}
             icon={error.kind === 'filter' ? <FilterAltOutlinedIcon sx={{ fontSize: 18 }} /> : undefined}
             action={errorAction(error.kind)}
           />

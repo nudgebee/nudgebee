@@ -48,11 +48,13 @@ export type PanelErrorKind = 'config' | 'blocked' | 'filter' | 'failed';
 export interface PanelError {
   kind: PanelErrorKind;
   message: string;
+  /** The provider's own reason, when it gave one — a PromQL syntax error, an unreachable endpoint. */
+  detail?: string;
 }
 
 /** The common case: something downstream broke. */
-function failure(message: string): PanelError {
-  return { kind: 'failed', message };
+function failure(message: string, detail?: string): PanelError {
+  return detail ? { kind: 'failed', message, detail } : { kind: 'failed', message };
 }
 
 export interface PanelData {
@@ -567,6 +569,8 @@ export function usePanelData({
         const raw: RawSeries[] = [];
         const failed: string[] = [];
         const empty: string[] = [];
+        const failedKeys: FailedKey[] = [];
+        const reasons: string[] = [];
 
         settled.forEach((outcome, i) => {
           const account = resolved[i];
@@ -575,10 +579,23 @@ export function usePanelData({
           const gqlErrors = outcome.status === 'fulfilled' ? (outcome.value as any)?.data?.errors : null;
           if (outcome.status === 'rejected' || gqlErrors?.length) {
             failed.push(account.label);
+            // A deadline or an unmount never gets here — `cancelled` returned above — so a rejection is the
+            // request itself failing, and its message is the reason.
+            const reason = outcome.status === 'rejected' ? String(outcome.reason?.message || '') : gatewayMessage(gqlErrors);
+            if (reason) reasons.push(reason);
             return;
           }
-          const results = (outcome.value as any)?.data?.data?.metrics_list?.results || [];
+          const results: any[] = (outcome.value as any)?.data?.data?.metrics_list?.results || [];
+          // A query that failed comes back as an empty key carrying `error`, not as a failed request.
+          // Read as an empty answer, a broken query or an unreachable provider "matched nothing".
+          const keyErrors = results.filter((r) => r?.error);
           const answered = toRawSeries(results, legendByKey);
+          if (keyErrors.length > 0 && answered.length === 0) {
+            failed.push(account.label);
+            reasons.push(String(keyErrors[0].error));
+            return;
+          }
+          for (const r of keyErrors) failedKeys.push({ key: String(r.query_key), account: account.label });
           if (answered.length === 0) empty.push(account.label);
           for (const s of answered) {
             raw.push(prefixWithAccount ? { ...s, label: accountPrefixed(account.label, s.label), accountLabel: account.label } : s);
@@ -586,11 +603,11 @@ export function usePanelData({
         });
 
         if (failed.length === resolved.length) {
-          setError(failure(`Could not load data for ${failed.join(', ')}.`));
+          setError(failure(`Could not load data for ${failed.join(', ')}.`, reasons[0]));
           setData(null);
           return;
         }
-        const answer: MetricsAnswer = { raw, failed, empty, step, accounts: resolved };
+        const answer: MetricsAnswer = { raw, failed, empty, failedKeys, step, accounts: resolved };
         lastMetrics.current = answer;
         const shaped = shapeMetrics(answer, panel);
         if (shaped.warning) setWarning(shaped.warning);
@@ -637,11 +654,18 @@ export function usePanelData({
   return { data, loading, error, warning };
 }
 
+/** One query of a panel that failed on an account where its other queries answered. */
+interface FailedKey {
+  key: string;
+  account: string;
+}
+
 /** A metrics answer as fetched: every series, before the cap. */
 interface MetricsAnswer {
   raw: RawSeries[];
   failed: string[];
   empty: string[];
+  failedKeys: FailedKey[];
   step: number;
   /** The accounts asked, so a series' account label can be turned back into an id. */
   accounts: { value: string; label: string }[];
@@ -659,7 +683,7 @@ interface MetricsAnswer {
  * that have crossed one ahead of the busiest — see breachingLinePreference.
  */
 function shapeMetrics(answer: MetricsAnswer, panel: Panel): { data: PanelData; warning: string | null } {
-  const { raw, failed, empty, step, accounts } = answer;
+  const { raw, failed, empty, failedKeys, step, accounts } = answer;
   const idByLabel = new Map(accounts.map((a) => [a.label, a.value]));
   const prefer = breachingLinePreference(panel, (s) =>
     s.accountLabel ? idByLabel.get(s.accountLabel) : accounts.length === 1 ? accounts[0].value : undefined
@@ -675,6 +699,12 @@ function shapeMetrics(answer: MetricsAnswer, panel: Panel): { data: PanelData; w
   // account named on hover — so the banner would say it twice.
   if (failed.length > 0 && panel.type !== 'stat' && panel.type !== 'gauge') {
     notes.push(`No answer from ${failed.join(', ')} — showing the rest.`);
+  }
+  // Said on every panel type: a stat would otherwise add up query A alone and show it as the whole answer.
+  if (failedKeys.length > 0) {
+    const keys = [...new Set(failedKeys.map((f) => f.key))];
+    const where = accounts.length > 1 ? ` on ${[...new Set(failedKeys.map((f) => f.account))].join(', ')}` : '';
+    notes.push(`Query ${keys.join(', ')} failed${where} — showing the rest.`);
   }
   const capped = accountCappedWarning(perAccount);
   if (capped) notes.push(capped);
