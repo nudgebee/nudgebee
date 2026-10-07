@@ -2335,10 +2335,11 @@ var allProviderCaps = map[string]providerStaticCaps{
 		TraceSource:           "otel",
 	},
 	// Traces only. Grouping is computed by Tempo itself (TraceQL metrics, ≤24h); the
-	// waterfall is trace-by-id. ServiceMap stays false for v1: edges would need a TraceQL
-	// structural query, deferred (spec §1).
+	// waterfall is trace-by-id. ServiceMap is true because the map links each span to its
+	// parent and every Tempo span carries its own service, namespace and parent id — so,
+	// unlike Splunk Enterprise, both ends of an edge have a namespace.
 	"grafana_tempo": {
-		SupportsServiceMap:    false,
+		SupportsServiceMap:    true,
 		SupportsTraceGrouping: true,
 		SupportsHeatmap:       true,
 		SupportsRawQuery:      true,

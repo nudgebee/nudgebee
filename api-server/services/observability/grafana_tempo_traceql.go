@@ -148,6 +148,52 @@ func tempoStatusCondition(op query.BinaryWhereClauseType, values []string) (stri
 	return tempoJoin(parts, sep), nil
 }
 
+// tempoAttrKeyPattern is a plain dotted OTel attribute key, as the service map's label
+// filter sends it (http.method, k8s.namespace.name).
+var tempoAttrKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.\-]*$`)
+
+// tempoSpanAttributeConditions renders the service map's label filter, which arrives as
+// "spanattributes": {operator: {attribute: value}}. A key without a scope becomes the
+// unscoped ".key", which Tempo matches on either the span or the resource, so a label works
+// without knowing where the exporter put it; an already-scoped key is kept as is.
+func tempoSpanAttributeConditions(byOp map[query.BinaryWhereClauseType]any) ([]string, error) {
+	ops := make([]string, 0, len(byOp))
+	for op := range byOp {
+		ops = append(ops, string(op))
+	}
+	sort.Strings(ops)
+	var conds []string
+	for _, opName := range ops {
+		op := query.BinaryWhereClauseType(opName)
+		attrs, ok := byOp[op].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("grafana tempo: spanattributes %q filter must map attribute names to values", op)
+		}
+		keys := make([]string, 0, len(attrs))
+		for key := range attrs {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			attr := key
+			if !tempoAttrPattern.MatchString(key) {
+				if !tempoAttrKeyPattern.MatchString(key) {
+					return nil, fmt.Errorf("grafana tempo: unsupported span attribute name %q", key)
+				}
+				attr = "." + key
+			}
+			cond, err := tempoCondition(attr, op, attrs[key])
+			if err != nil {
+				return nil, err
+			}
+			if cond != "" {
+				conds = append(conds, cond)
+			}
+		}
+	}
+	return conds, nil
+}
+
 func tempoCondition(attr string, op query.BinaryWhereClauseType, raw any) (string, error) {
 	values := cubeAPMFilterValues(raw)
 	if len(values) == 0 {
@@ -212,6 +258,14 @@ func tempoWhereExpr(w query.QueryWhereClause) (string, error) {
 	sort.Strings(labels)
 	for _, label := range labels {
 		if tempoTraceUnsupportedFields[label] {
+			continue
+		}
+		if label == "spanattributes" {
+			conds, err := tempoSpanAttributeConditions(w.Binary[label])
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, conds...)
 			continue
 		}
 		attr, err := tempoAttrFor(label)

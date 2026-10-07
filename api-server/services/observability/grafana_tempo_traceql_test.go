@@ -223,3 +223,22 @@ func TestTempoAttrFor_AcceptsEveryMappingValue(t *testing.T) {
 		assert.Equal(t, mapped, attr)
 	}
 }
+
+// The service map's label filter sends span/resource attributes under one "spanattributes"
+// key as {operator: {attribute: value}}. Tempo matches an unscoped ".attr" in either scope,
+// so a plain OTel key works whether it is a span or a resource attribute.
+func TestTempoWhere_SpanAttributesFilter(t *testing.T) {
+	sel, err := tempoSelector(query.QueryWhereClause{Binary: query.BinaryWhereClause{
+		"spanattributes": {
+			query.Eq: map[string]any{"http.method": "GET", "k8s.namespace.name": "demo"},
+			query.Nq: map[string]any{"span.http.target": "/health"},
+		},
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, `{ .http.method = "GET" && .k8s.namespace.name = "demo" && span.http.target != "/health" }`, sel)
+
+	_, err = tempoSelector(query.QueryWhereClause{Binary: query.BinaryWhereClause{
+		"spanattributes": {query.Eq: map[string]any{`bad" || true`: "x"}},
+	}})
+	require.Error(t, err, "an attribute name that is not a plain dotted key must not reach TraceQL")
+}
