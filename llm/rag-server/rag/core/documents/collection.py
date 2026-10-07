@@ -234,6 +234,37 @@ def _forget_classification(collection_name: str) -> None:
     delete_kb_capabilities(collection_name)
 
 
+def set_collection_scope(collection_name: str, account_id: str | None, tenant_id: str | None) -> bool:
+    """Re-scope a knowledge-base collection in place: to one account, or to a tenant.
+
+    Only the collection's metadata changes, so nothing is re-embedded. Search
+    admits a collection by its ``account`` or ``tenant_id`` metadata; the other
+    key is removed (Qdrant deletes a metadata key set to None). Both caches that
+    hold collection metadata are cleared so search sees the new scope at once.
+
+    Returns False, changing nothing, when the collection does not exist: a
+    knowledge base whose upload failed or has not run has no collection, and
+    its next upload creates one with the scope of its row.
+    """
+    if bool(account_id) == bool(tenant_id):
+        raise ValueError("exactly one of account_id or tenant_id is required")
+    client = get_qdrant_client()
+    if not client.collection_exists(collection_name):
+        logger.info(f"Collection {collection_name} does not exist; nothing to re-scope")
+        return False
+    metadata = {"account": account_id, "tenant_id": None} if account_id else {"account": None, "tenant_id": tenant_id}
+    client.update_collection(collection_name, metadata=metadata)
+    scope = f"account {account_id}" if account_id else f"tenant {tenant_id}"
+    logger.info(f"Re-scoped collection {collection_name} to {scope}")
+
+    from rag.core.cache import get_collection_list_cache
+    from rag.core.metadata_cache import get_metadata_cache
+
+    get_collection_list_cache().invalidate()
+    get_metadata_cache().invalidate(collection_name)
+    return True
+
+
 def delete_collection(collection_name: str):
     logger.info(f"Deleting collection {collection_name}")
     gone = False

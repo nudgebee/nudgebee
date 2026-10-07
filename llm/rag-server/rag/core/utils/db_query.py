@@ -405,6 +405,10 @@ def get_first_active_account_for_tenant(tenant_id):
                 "INNER JOIN agent a ON ca.id = a.cloud_account_id "
                 "WHERE ca.status = 'active' AND a.status = 'CONNECTED' "
                 "AND ca.tenant = :tenant_id "
+                # Deterministic choice: the account picked here sets the embedding
+                # model of tenant-scoped collections. It still changes if this account
+                # disconnects (tracked in #40313: record the model per collection).
+                "ORDER BY ca.id "
                 "LIMIT 1"
             )
             row = connection.execute(query, {"tenant_id": tenant_id}).fetchone()
@@ -436,6 +440,23 @@ def _kb_collection_name(row):
     return f"kb_{row.id}"
 
 
+def _org_kb_visible(row, own_names):
+    """Whether an organisation knowledge base (no ``account_id``) reaches this account.
+
+    ``organisation`` reaches every account in the tenant unless the account
+    switched it off; ``selected_accounts`` reaches only accounts switched on.
+    ``row.override_enabled`` is this account's switch (None when it has none).
+    The account's own manual knowledge base of the same name wins over it.
+    """
+    if not row.enabled or (row.name and row.name.lower() in own_names):
+        return False
+    if row.visibility == "organisation":
+        return row.override_enabled is not False
+    if row.visibility == "selected_accounts":
+        return row.override_enabled is True
+    return False
+
+
 def _live_kb_names_from_rows(rows, account_uuid):
     """Collapse ``llm_knowledgebases`` rows into the searchable collection names.
 
@@ -448,11 +469,39 @@ def _live_kb_names_from_rows(rows, account_uuid):
     subtraction, "account A turned this Confluence KB off" would be silently
     undone by account B leaving its own row on. A disabled row in another
     account never subtracts — it has no say over what this account searches.
+
+    Organisation knowledge bases (no ``account_id``) follow ``_org_kb_visible``.
+    Another account's manual knowledge base never counts here: its collection is
+    already hidden by its ``account`` metadata, and leaving it out keeps this
+    gate equal to llm-server's visibility rule for an account query (shared
+    fixture ``tests/fixtures/kb_visibility_cases.json``). A tenant-only query
+    (no account) keeps account rows and hides ``selected_accounts`` ones;
+    collection metadata still decides what such a query can reach.
     """
+    rows = list(rows)
+    own_names = {
+        row.name.lower()
+        for row in rows
+        if account_uuid
+        and row.account_id is not None
+        and not row.integration_id
+        and str(row.account_id) == account_uuid
+        and row.name
+    }
     names, disabled_here = set(), set()
     for row in rows:
         name = _kb_collection_name(row)
-        if row.enabled:
+        if (
+            account_uuid
+            and row.account_id is not None
+            and not row.integration_id
+            and str(row.account_id) != account_uuid
+        ):
+            continue
+        if row.account_id is None:
+            if _org_kb_visible(row, own_names):
+                names.add(name)
+        elif row.enabled:
             names.add(name)
         elif account_uuid and str(row.account_id) == account_uuid:
             disabled_here.add(name)
@@ -490,6 +539,12 @@ def get_live_kb_collection_names(account_id, tenant_id):
     account disabling its row would be overruled by another account that left
     the same integration on. See ``_live_kb_names_from_rows``.
 
+    Organisation knowledge bases (``account_id`` NULL) are found through the
+    tenant clause; restriction, switch-off and the name clash with the
+    account's own knowledge bases are applied in ``_org_kb_visible``. Their
+    collections carry ``tenant_id`` metadata, so this gate is what keeps a
+    restricted one away from the other accounts of the tenant.
+
     Returns ``None`` when the scope can't be resolved (neither identifier is a
     UUID) or the query fails. Search excludes KB-backed collections in that case;
     exact document reads reject access rather than assuming eligibility.
@@ -503,9 +558,11 @@ def get_live_kb_collection_names(account_id, tenant_id):
             # kb.enabled is NOT filtered in SQL: the disabled rows are needed
             # below to subtract this account's own switched-off collections.
             query = text("""
-                SELECT kb.id, kb.integration_id, kb.account_id, kb.enabled
+                SELECT kb.id, kb.integration_id, kb.account_id, kb.enabled, kb.name, kb.visibility,
+                       o.enabled AS override_enabled
                 FROM llm_knowledgebases kb
                 LEFT JOIN integrations i ON kb.integration_id = i.id
+                LEFT JOIN llm_kb_account_overrides o ON o.kb_id = kb.id AND o.account_id = :account_id
                 WHERE kb.status != 'archived'
                   AND (kb.account_id = :account_id OR kb.tenant_id = :tenant_id)
                   AND (kb.integration_id IS NULL OR i.status = 'enabled')

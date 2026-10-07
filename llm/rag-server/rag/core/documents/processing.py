@@ -1061,11 +1061,11 @@ def _setup_collection(account_id, module, collection_name, source=None, tenant_i
             if metadata:
                 # Always make a static copy to avoid iteration errors.
                 #
-                # NOTE: source and tenant_id are set only at collection
-                # creation time (see vector_store._create_collection). Qdrant
-                # exposes no update_collection(metadata=...) API, so
-                # pre-existing collections cannot be retro-tagged without a
-                # drop-and-recreate. Search still reaches legacy collections
+                # NOTE: source and tenant_id are set at collection creation
+                # time (see vector_store._create_collection). A knowledge
+                # base's scope is changed later through
+                # collection.set_collection_scope (update_collection with
+                # metadata), not here. Search still reaches legacy collections
                 # via the ``account`` metadata path in ``rag.py``.
                 collection_meta = dict(metadata)
                 if "embeddings_generated_at" in collection_meta:
@@ -1130,6 +1130,7 @@ def process_documents(
     warning=None,
     run_id=None,
     source_document_count=None,
+    classify_account_id=None,
 ):
     """
     Process multiple documents asynchronously with batch embedding.
@@ -1201,8 +1202,14 @@ def process_documents(
     # knowledgebase_id, and it is one document however its loader split it
     # (lines, records, PDF chunks); everything else is a list of independent
     # documents.
+    # An organisation knowledge base has no account_id; the caller names the
+    # account whose LLM settings classify it (classify_account_id).
     stored_labels = _classify_kb_source_documents(
-        documents, module, account_id, collection_name, whole_call_is_one_document=bool(knowledgebase_id)
+        documents,
+        module,
+        classify_account_id or account_id,
+        collection_name,
+        whole_call_is_one_document=bool(knowledgebase_id),
     )
     # Chunk ids hash page_content only, so the labels stamped above cannot
     # change them.

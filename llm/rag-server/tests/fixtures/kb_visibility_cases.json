@@ -1,0 +1,421 @@
+{
+  "description": "Which knowledge-base collections one account may search. 'rows' are the llm_knowledgebases rows a query returns before this rule runs: not archived, integration enabled, and either owned by the querying account or in its tenant (kb.tenant_id = the account's tenant). A row with account_id null is an organisation knowledge base; override_enabled is the querying account's switch for it (null = none). Rules: another account's manual KB is never visible; the account's own manual KB shadows an organisation KB whose non-empty name matches after lowercasing (Python str.lower / Go strings.ToLower, not Unicode case folding) (even while switched off); integration KBs keep their per-account switch. 'account': null is a tenant-only query (no account resolved). Collections: kb_<id> for manual rows, <integration_id>_knowledge_base for integration rows.",
+  "accounts": {
+    "A": "aaaaaaaa-0000-0000-0000-000000000001",
+    "B": "aaaaaaaa-0000-0000-0000-000000000002"
+  },
+  "cases": [
+    {
+      "name": "own account KB is visible",
+      "account": "A",
+      "rows": [
+        {
+          "id": "k1",
+          "account_id": "A",
+          "integration_id": null,
+          "enabled": true,
+          "name": "Runbook",
+          "visibility": "account",
+          "override_enabled": null
+        }
+      ],
+      "expected": [
+        "kb_k1"
+      ]
+    },
+    {
+      "name": "own disabled account KB is hidden",
+      "account": "A",
+      "rows": [
+        {
+          "id": "k1",
+          "account_id": "A",
+          "integration_id": null,
+          "enabled": false,
+          "name": "Runbook",
+          "visibility": "account",
+          "override_enabled": null
+        }
+      ],
+      "expected": []
+    },
+    {
+      "name": "organisation KB reaches every account by default",
+      "account": "A",
+      "rows": [
+        {
+          "id": "o1",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": true,
+          "name": "DB failover",
+          "visibility": "organisation",
+          "override_enabled": null
+        }
+      ],
+      "expected": [
+        "kb_o1"
+      ]
+    },
+    {
+      "name": "organisation KB switched off by this account is hidden",
+      "account": "A",
+      "rows": [
+        {
+          "id": "o1",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": true,
+          "name": "DB failover",
+          "visibility": "organisation",
+          "override_enabled": false
+        }
+      ],
+      "expected": []
+    },
+    {
+      "name": "organisation KB with an explicit on switch is visible",
+      "account": "A",
+      "rows": [
+        {
+          "id": "o1",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": true,
+          "name": "DB failover",
+          "visibility": "organisation",
+          "override_enabled": true
+        }
+      ],
+      "expected": [
+        "kb_o1"
+      ]
+    },
+    {
+      "name": "selected-accounts KB without a switch is hidden",
+      "account": "A",
+      "rows": [
+        {
+          "id": "o1",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": true,
+          "name": "DB failover",
+          "visibility": "selected_accounts",
+          "override_enabled": null
+        }
+      ],
+      "expected": []
+    },
+    {
+      "name": "selected-accounts KB switched on for this account is visible",
+      "account": "A",
+      "rows": [
+        {
+          "id": "o1",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": true,
+          "name": "DB failover",
+          "visibility": "selected_accounts",
+          "override_enabled": true
+        }
+      ],
+      "expected": [
+        "kb_o1"
+      ]
+    },
+    {
+      "name": "selected-accounts KB switched off for this account is hidden",
+      "account": "A",
+      "rows": [
+        {
+          "id": "o1",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": true,
+          "name": "DB failover",
+          "visibility": "selected_accounts",
+          "override_enabled": false
+        }
+      ],
+      "expected": []
+    },
+    {
+      "name": "organisation KB turned off by the tenant admin is hidden everywhere",
+      "account": "A",
+      "rows": [
+        {
+          "id": "o1",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": false,
+          "name": "DB failover",
+          "visibility": "organisation",
+          "override_enabled": null
+        }
+      ],
+      "expected": []
+    },
+    {
+      "name": "the account's own KB of the same name wins (case-insensitive)",
+      "account": "A",
+      "rows": [
+        {
+          "id": "k1",
+          "account_id": "A",
+          "integration_id": null,
+          "enabled": true,
+          "name": "DB Failover",
+          "visibility": "account",
+          "override_enabled": null
+        },
+        {
+          "id": "o1",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": true,
+          "name": "db failover",
+          "visibility": "organisation",
+          "override_enabled": null
+        }
+      ],
+      "expected": [
+        "kb_k1"
+      ]
+    },
+    {
+      "name": "a disabled own KB of the same name still shadows the organisation KB",
+      "account": "A",
+      "rows": [
+        {
+          "id": "k1",
+          "account_id": "A",
+          "integration_id": null,
+          "enabled": false,
+          "name": "DB failover",
+          "visibility": "account",
+          "override_enabled": null
+        },
+        {
+          "id": "o1",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": true,
+          "name": "DB failover",
+          "visibility": "organisation",
+          "override_enabled": null
+        }
+      ],
+      "expected": []
+    },
+    {
+      "name": "another account's KB of the same name neither shows nor shadows",
+      "account": "A",
+      "rows": [
+        {
+          "id": "k2",
+          "account_id": "B",
+          "integration_id": null,
+          "enabled": true,
+          "name": "DB failover",
+          "visibility": "account",
+          "override_enabled": null
+        },
+        {
+          "id": "o1",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": true,
+          "name": "DB failover",
+          "visibility": "organisation",
+          "override_enabled": null
+        }
+      ],
+      "expected": [
+        "kb_o1"
+      ]
+    },
+    {
+      "name": "tenant-only scope sees organisation KBs but not selected-accounts ones",
+      "account": null,
+      "rows": [
+        {
+          "id": "o1",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": true,
+          "name": "DB failover",
+          "visibility": "organisation",
+          "override_enabled": null
+        },
+        {
+          "id": "o2",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": true,
+          "name": "Payments",
+          "visibility": "selected_accounts",
+          "override_enabled": null
+        }
+      ],
+      "expected": [
+        "kb_o1"
+      ]
+    },
+    {
+      "name": "integration KB switched off by this account stays off though a sibling left it on",
+      "account": "A",
+      "rows": [
+        {
+          "id": "i-b",
+          "account_id": "B",
+          "integration_id": "int1",
+          "enabled": true,
+          "name": "Confluence",
+          "visibility": "account",
+          "override_enabled": null
+        },
+        {
+          "id": "i-a",
+          "account_id": "A",
+          "integration_id": "int1",
+          "enabled": false,
+          "name": "Confluence",
+          "visibility": "account",
+          "override_enabled": null
+        }
+      ],
+      "expected": []
+    },
+    {
+      "name": "the account's own integration KB of the same name does not shadow",
+      "account": "A",
+      "rows": [
+        {
+          "id": "i-a",
+          "account_id": "A",
+          "integration_id": "int1",
+          "enabled": true,
+          "name": "Confluence",
+          "visibility": "account",
+          "override_enabled": null
+        },
+        {
+          "id": "o1",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": true,
+          "name": "Confluence",
+          "visibility": "organisation",
+          "override_enabled": null
+        }
+      ],
+      "expected": [
+        "int1_knowledge_base",
+        "kb_o1"
+      ]
+    },
+    {
+      "name": "another account's enabled integration KB row still makes the shared collection visible",
+      "account": "A",
+      "rows": [
+        {
+          "id": "i-b",
+          "account_id": "B",
+          "integration_id": "int1",
+          "enabled": true,
+          "name": "Confluence",
+          "visibility": "account",
+          "override_enabled": null
+        }
+      ],
+      "expected": [
+        "int1_knowledge_base"
+      ]
+    },
+    {
+      "name": "an organisation KB with no name is not shadowed",
+      "account": "A",
+      "rows": [
+        {
+          "id": "k1",
+          "account_id": "A",
+          "integration_id": null,
+          "enabled": true,
+          "name": "Runbook",
+          "visibility": "account",
+          "override_enabled": null
+        },
+        {
+          "id": "o1",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": true,
+          "name": null,
+          "visibility": "organisation",
+          "override_enabled": null
+        }
+      ],
+      "expected": [
+        "kb_k1",
+        "kb_o1"
+      ]
+    },
+    {
+      "name": "tenant-only scope keeps enabled account KBs",
+      "account": null,
+      "rows": [
+        {
+          "id": "k1",
+          "account_id": "A",
+          "integration_id": null,
+          "enabled": true,
+          "name": "Runbook",
+          "visibility": "account",
+          "override_enabled": null
+        },
+        {
+          "id": "k2",
+          "account_id": "B",
+          "integration_id": null,
+          "enabled": false,
+          "name": "Runbook",
+          "visibility": "account",
+          "override_enabled": null
+        }
+      ],
+      "expected": [
+        "kb_k1"
+      ]
+    },
+    {
+      "name": "an own KB with an empty name does not shadow a nameless organisation KB",
+      "account": "A",
+      "rows": [
+        {
+          "id": "k1",
+          "account_id": "A",
+          "integration_id": null,
+          "enabled": true,
+          "name": "",
+          "visibility": "account",
+          "override_enabled": null
+        },
+        {
+          "id": "o1",
+          "account_id": null,
+          "integration_id": null,
+          "enabled": true,
+          "name": null,
+          "visibility": "organisation",
+          "override_enabled": null
+        }
+      ],
+      "expected": [
+        "kb_k1",
+        "kb_o1"
+      ]
+    }
+  ]
+}

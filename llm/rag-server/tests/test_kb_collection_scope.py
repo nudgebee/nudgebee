@@ -182,7 +182,15 @@ def test_non_uuid_scope_short_circuits_before_the_query(account_id, tenant_id):
 
 
 def _row(kb_id=None, integration_id=None, account_id=ACCOUNT, enabled=True):
-    return SimpleNamespace(id=kb_id, integration_id=integration_id, account_id=account_id, enabled=enabled)
+    return SimpleNamespace(
+        id=kb_id,
+        integration_id=integration_id,
+        account_id=account_id,
+        enabled=enabled,
+        name=f"kb {kb_id or integration_id}",
+        visibility="account",
+        override_enabled=None,
+    )
 
 
 def test_disabled_manual_kb_contributes_no_collection():

@@ -55,19 +55,20 @@ Unchanged. An account admin can map any organisation KB visible to their account
 **One rule decides what an account sees:**
 - its own KBs; plus
 - the organisation KBs of its tenant that pass the switches above;
-- minus organisation KBs shadowed by an own KB with the same name.
+- minus organisation KBs shadowed by an own manual KB with the same name. Names compare case-insensitively, and an own KB shadows even while switched off.
 
 **The rule is implemented twice, and a shared fixture keeps the two copies identical:**
 - **llm-server (Go): one helper used by every read.** That covers KB lists and gets, skill search and fetch, `load_skills` resolution, documents and PDF reads, marks, mappings, and the knowledge pre-step (including reference attribution). Writes are owner-scoped: account KBs need account access, organisation KBs need `tenant_admin` of the KB's tenant.
 - **rag-server (Python): the live-KB gate.** It applies the same rule to every search and exact document read, and shows nothing when the lookup fails. Organisation KB collections are indexed with the tenant as their scope, so the tenant boundary stays in rag-server.
 - **The fixture:** one JSON file of cases (tenants, accounts, KBs, switches, expected visible KBs), run by both the Go and the Python test suites.
 
-**Embeddings and usage:** organisation KBs use the RAG server's embedding model, as integration KBs do. Embedding usage is recorded against the tenant.
+**Embeddings, labels and usage:** organisation KBs are embedded and Fact/SOP-classified with the LLM settings of an active account in the tenant, as integration KBs are. Their embedding usage is recorded in the shared (global) usage bucket, like the tenant's integration KBs.
 
 **Changing a KB's scope updates its search collection's metadata in place.** No re-embedding is needed.
 - **Widening to the organisation:** `account` is removed and `tenant_id` is set.
 - **Changing it back to an account KB:** the reverse.
-- **Cache:** rag-server's collection-metadata cache entry is refreshed in the same step, so search sees the new scope immediately.
+- **Order:** the KB row is updated first, then the collection is re-scoped. Narrowing is enforced by the live-KB gate from the row alone.
+- **Cache:** rag-server's collection caches are cleared in the same step. Other rag-server replicas may keep the old scope until their collection cache expires, so a widened KB can take up to that long to appear for other accounts there.
 - **Restricting and switch-off** need no metadata change: they are enforced by the live-KB gate.
 
 ## Cache freshness
@@ -98,4 +99,5 @@ There is no feature flag: once organisation KBs exist the change cannot be rever
 ## Known limits
 
 - **If the cache-invalidation channel is down,** cached skill bodies and mappings expire normally after 15–30 minutes. Search and document reads are unaffected, because rag-server's gate is not cached.
+- **Widening on a multi-replica rag-server** can take up to one collection-cache TTL to show on every replica (see Visibility). Narrowing is immediate, because the gate reads the database.
 - **A conversation that already loaded an SOP** into its workspace keeps that copy until it ends.
