@@ -3,6 +3,7 @@ package core
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -365,9 +366,14 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		apiTimePtr = mergedApiTime
 		// Calculate percentages if we have agent active time
 		if timeBreakdown.AgentActiveTimeSeconds > 0 {
-			apiPct := (*mergedApiTime / timeBreakdown.AgentActiveTimeSeconds) * 100
+			// Active time is the sum of top-level agent row durations while API and
+			// tool time are measured from model-call / tool-call timestamps, so the
+			// parts can exceed it. Use the larger of the two as the denominator so
+			// the split never goes past 100%.
+			denom := math.Max(timeBreakdown.AgentActiveTimeSeconds, *mergedApiTime+timeBreakdown.ToolTimeSeconds)
+			apiPct := (*mergedApiTime / denom) * 100
 			apiTimePercentagePtr = &apiPct
-			toolPct := (timeBreakdown.ToolTimeSeconds / timeBreakdown.AgentActiveTimeSeconds) * 100
+			toolPct := (timeBreakdown.ToolTimeSeconds / denom) * 100
 			toolTimePercentagePtr = &toolPct
 		}
 	}

@@ -63,7 +63,10 @@ function toModelRow(r: UsageGroupRow): ModelRow {
   };
 }
 
+const GRANULARITY_NOUN: Record<string, string> = { day: 'day', week: 'week', month: 'month' };
+
 export function ModelsView({ metrics, filters }: ModelsViewProps) {
+  const period = GRANULARITY_NOUN[filters.granularity] ?? 'day';
   const [sort, setSort] = React.useState<{ name: string; order: 'asc' | 'desc' }>({ name: 'Total cost', order: 'desc' });
 
   const rows = React.useMemo(() => (metrics?.breakdowns?.model ?? []).map(toModelRow), [metrics]);
@@ -150,6 +153,10 @@ export function ModelsView({ metrics, filters }: ModelsViewProps) {
       />
 
       <Card>
+        <SectionHeader
+          title='Models'
+          subtitle='Totals for the selected date range. The Day / Week / Month toggle only changes how the charts below are bucketed.'
+        />
         <CustomTable2
           id='models-table'
           headers={headers}
@@ -164,7 +171,7 @@ export function ModelsView({ metrics, filters }: ModelsViewProps) {
           <SectionHeader
             title='Calls per model over time'
             icon={<TimelineOutlinedIcon />}
-            subtitle='Number of model calls in each period, by model'
+            subtitle={`Number of model calls in each ${period}, by model`}
           />
           <Chart.TimeSeries
             {...bucketsToSeries(calls.buckets, calls.keys)}
@@ -177,7 +184,7 @@ export function ModelsView({ metrics, filters }: ModelsViewProps) {
         </Card>
 
         <Card sx={{ flex: '1 1 360px', minWidth: 0 }}>
-          <SectionHeader title='Model cost-share over time' icon={<ShowChartIcon />} />
+          <SectionHeader title='Model cost-share over time' icon={<ShowChartIcon />} subtitle={`Cost in each ${period}, by model`} />
           <Chart.TimeSeries
             {...bucketsToSeries(share.buckets, share.keys)}
             shape='bar'

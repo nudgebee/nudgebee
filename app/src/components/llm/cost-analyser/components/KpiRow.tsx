@@ -128,7 +128,7 @@ export function KpiRow({ current, previous, storageCost = 0, hasIncompatibleFilt
       </Card>
 
       <Card sx={cardSx}>
-        <Stat label='Runs' value={current.runs} delta={pctDeltaProps(runsDelta, 'neutral')} deltaPlacement='inline' />
+        <Stat label='Runs' value={current.runs.toLocaleString()} delta={pctDeltaProps(runsDelta, 'neutral')} deltaPlacement='inline' />
       </Card>
 
       <Card sx={cardSx}>

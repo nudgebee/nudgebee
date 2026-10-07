@@ -225,3 +225,20 @@ func TestListToolCalls_NoToolName(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, out.Rows)
 }
+
+func TestSortToolRows_ErrorsRanksByRateThenCount(t *testing.T) {
+	rows := []ToolUsageRow{
+		{ToolName: "kubectl_execute", Calls: 465, ErrorCount: 107, ErrorRatePct: 23},
+		{ToolName: "shell_execute", Calls: 896, ErrorCount: 76, ErrorRatePct: 8},
+		{ToolName: "gcloud_execute", Calls: 55, ErrorCount: 17, ErrorRatePct: 31},
+		{ToolName: "helm_execute", Calls: 100, ErrorCount: 23, ErrorRatePct: 23},
+	}
+	sortToolRows(rows, "errors")
+	got := []string{rows[0].ToolName, rows[1].ToolName, rows[2].ToolName, rows[3].ToolName}
+	want := []string{"gcloud_execute", "kubectl_execute", "helm_execute", "shell_execute"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
+}

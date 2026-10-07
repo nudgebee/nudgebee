@@ -234,12 +234,15 @@ func (chat *ConversationDao) ListToolUsage(filter UsageMetricsFilter, sortBy str
 }
 
 // sortToolRows ranks the leaderboard by the chosen metric (desc), tie-broken by
-// call count then tool name so the order is stable across requests.
+// (for "errors") error count, then call count then tool name so the order is stable across requests.
 func sortToolRows(rows []ToolUsageRow, sortBy string) {
 	metric := func(r ToolUsageRow) float64 {
 		switch sortBy {
 		case "errors":
-			return float64(r.ErrorCount)
+			// Rank by error RATE so the least reliable tool surfaces first; a
+			// high-volume tool with a modest rate no longer buries it. Error
+			// count is the secondary key below.
+			return r.ErrorRatePct
 		case "duration":
 			return r.P90DurationSeconds
 		case "cost":
@@ -252,6 +255,9 @@ func sortToolRows(rows []ToolUsageRow, sortBy string) {
 		mi, mj := metric(rows[i]), metric(rows[j])
 		if mi != mj {
 			return mi > mj
+		}
+		if sortBy == "errors" && rows[i].ErrorCount != rows[j].ErrorCount {
+			return rows[i].ErrorCount > rows[j].ErrorCount
 		}
 		if rows[i].Calls != rows[j].Calls {
 			return rows[i].Calls > rows[j].Calls

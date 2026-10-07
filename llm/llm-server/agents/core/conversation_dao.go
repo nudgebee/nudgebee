@@ -3937,11 +3937,23 @@ func (chat *ConversationDao) GetConversationTimeBreakdown(conversationId, accoun
 		WITH conversation_ids AS (
 			SELECT id FROM llm_conversations WHERE session_id = $1 AND account_id = $2::uuid
 		),
+		-- Span of actual message activity per conversation, not the row's
+		-- (updated_at - created_at): updated_at is re-stamped by anything that
+		-- touches the row later, which inflated wall time to days against minutes
+		-- of active work. Same definition the conversation list uses. Falls back to
+		-- the row timestamps only when a conversation has no messages.
 		wall_time AS (
-			SELECT
-				COALESCE(SUM(EXTRACT(EPOCH FROM (updated_at - created_at))), 0) as seconds
-			FROM llm_conversations
-			WHERE session_id = $1 AND account_id = $2::uuid
+			SELECT COALESCE(SUM(secs), 0) as seconds
+			FROM (
+				SELECT COALESCE(
+					EXTRACT(EPOCH FROM (MAX(COALESCE(m.responded_at, m.updated_at)) - MIN(m.created_at))),
+					EXTRACT(EPOCH FROM (c.updated_at - c.created_at))
+				) as secs
+				FROM llm_conversations c
+				LEFT JOIN llm_conversation_messages m ON m.conversation_id = c.id
+				WHERE c.session_id = $1 AND c.account_id = $2::uuid
+				GROUP BY c.id
+			) per_conversation
 		),
 		agent_time AS (
 			SELECT
