@@ -1264,31 +1264,44 @@ func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountI
 		return "", fmt.Errorf("failed to execute command via proxy: %w", err)
 	}
 
+	return handleProxyResult(resultRaw, logger, podName)
+}
+
+// handleProxyResult decodes & classifies a k8s-proxy /execute payload; split
+// out so tests can feed raw bytes (the proxy RESTClient can't target httptest).
+func handleProxyResult(resultRaw []byte, logger *slog.Logger, podName string) (string, error) {
 	var result executeResponse
 	if err := json.Unmarshal(resultRaw, &result); err != nil {
 		return string(resultRaw), fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	if cmdErr := classifyExecuteResponse(result); cmdErr != nil {
-		// Info for routine failures (LLM typos), Warn only for agent
-		// contract violations. result.Response is intentionally not logged
-		// — it can carry creds / log lines / SELECT rows; tool layer scrubs.
-		logFn := logger.Info
-		msg := "workspace: command reported failure via proxy"
-		if isAgentContractViolation(result) {
-			logFn = logger.Warn
-			msg = "workspace: command reported success but with error via proxy (agent contract violation)"
-		}
-		logFn(msg,
-			"pod_name", podName,
-			"command_status", result.CommandStatus,
-			"command_error", result.Error,
-		)
-		return result.Response, cmdErr
+	resp, err := classifyAndLogResult(result, logger, podName, "proxy")
+	if err == nil {
+		logger.Info("workspace: command execution successful via proxy", "pod_name", podName)
 	}
+	return resp, err
+}
 
-	logger.Info("workspace: command execution successful via proxy", "pod_name", podName)
-	return result.Response, nil
+// classifyAndLogResult is the post-decode step shared by direct IP & proxy.
+// Info for routine failures, Warn only on agent contract violations.
+// result.Response is never logged: may carry creds / SELECT rows; tool layer scrubs.
+func classifyAndLogResult(result executeResponse, logger *slog.Logger, podName string, route string) (string, error) {
+	cmdErr := classifyExecuteResponse(result)
+	if cmdErr == nil {
+		return result.Response, nil
+	}
+	logFn := logger.Info
+	msg := "workspace: command reported failure via " + route
+	if isAgentContractViolation(result) {
+		logFn = logger.Warn
+		msg = "workspace: command reported success but with error via " + route + " (agent contract violation)"
+	}
+	logFn(msg,
+		"pod_name", podName,
+		"command_status", result.CommandStatus,
+		"command_error", result.Error,
+	)
+	return result.Response, cmdErr
 }
 
 func (w *workspaceManager) callWorkspaceAPI(ctx *security.RequestContext, accountId string, method string, endpoint string, queryParams map[string]string, body any) ([]byte, error) {
@@ -1888,24 +1901,7 @@ func (w *workspaceManager) executeDirect(ctx *security.RequestContext, url strin
 		return "", err
 	}
 
-	if cmdErr := classifyExecuteResponse(result); cmdErr != nil {
-		// Info for routine failures, Warn only for contract violations
-		// — see proxy-path counterpart for the full reasoning.
-		logFn := ctx.GetLogger().Info
-		msg := "workspace: command reported failure via direct IP"
-		if isAgentContractViolation(result) {
-			logFn = ctx.GetLogger().Warn
-			msg = "workspace: command reported success but with error via direct IP (agent contract violation)"
-		}
-		logFn(msg,
-			"pod_name", podName,
-			"command_status", result.CommandStatus,
-			"command_error", result.Error,
-		)
-		return result.Response, cmdErr
-	}
-
-	return result.Response, nil
+	return classifyAndLogResult(result, ctx.GetLogger(), podName, "direct IP")
 }
 
 // Helpers
