@@ -2,6 +2,7 @@ package agents
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -887,7 +888,7 @@ func TestBuildWorkflowSummary_CreateMode(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Contains(t, summary, "**`pod-health-monitor`**")
 	assert.Contains(t, summary, "built and saved")
-	assert.NotContains(t, summary, "not yet saved")
+	assert.NotContains(t, summary, "could not be saved")
 	assert.Contains(t, summary, "**Trigger:** schedule")
 	assert.Contains(t, summary, "1. **get-pods** — `k8s.cli`")
 	assert.Contains(t, summary, "2. **check-health** — `data.transform`")
@@ -909,8 +910,31 @@ func TestBuildWorkflowSummary_CreateMode_NotSaved(t *testing.T) {
 	summary, err := buildWorkflowSummary(workflowJSON, "", false, "")
 	assert.Nil(t, err)
 	assert.Contains(t, summary, "**`pod-health-monitor`**")
-	assert.Contains(t, summary, "not yet saved")
+	assert.Contains(t, summary, "was built but could not be saved")
 	assert.NotContains(t, summary, "built and saved")
+}
+
+// The reason a save failed sits right under the headline, ahead of the task list: at the end of
+// a fifteen-task summary it was below the visible part of the result window.
+func TestWithSaveFailure_ReasonFollowsHeadline(t *testing.T) {
+	workflowJSON := `{
+		"name": "pod-health-monitor",
+		"definition": {
+			"triggers": [{"type": "manual"}],
+			"tasks": [{"id": "t1", "type": "core.print"}, {"id": "t2", "type": "core.print"}]
+		}
+	}`
+	summary, err := buildWorkflowSummary(workflowJSON, "", false, "")
+	assert.Nil(t, err)
+
+	got := withSaveFailure(summary, errors.New("workflow_builder: an automation named \"pod-health-monitor\" already exists in this account"))
+
+	headline, rest, _ := strings.Cut(got, "\n\n")
+	assert.Contains(t, headline, "was built but could not be saved")
+	assert.True(t, strings.HasPrefix(rest, "**Reason:** an automation named \"pod-health-monitor\" already exists in this account"), rest)
+	assert.Contains(t, rest, "**Tasks:**")
+	assert.Less(t, strings.Index(got, "**Reason:**"), strings.Index(got, "**Tasks:**"))
+	assert.NotContains(t, got, "workflow_builder:", "the package prefix is for logs, not for the reader")
 }
 
 func TestBuildWorkflowSummary_FixMode(t *testing.T) {
@@ -928,7 +952,7 @@ func TestBuildWorkflowSummary_FixMode(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Contains(t, summary, "updated")
 	assert.NotContains(t, summary, "built and saved")
-	assert.NotContains(t, summary, "not yet saved")
+	assert.NotContains(t, summary, "could not be saved")
 }
 
 // TestBuildWorkflowSummary_ChangeSummary verifies the agent-authored change summary is
@@ -986,7 +1010,7 @@ func TestBuildWorkflowSummary_FixMode_NotSaved(t *testing.T) {
 	summary, err := buildWorkflowSummary(workflowJSON, "fix", false, "")
 	assert.Nil(t, err)
 	assert.Contains(t, summary, "**`daily-report`**")
-	assert.Contains(t, summary, "not yet saved")
+	assert.Contains(t, summary, "could not be saved")
 	assert.NotContains(t, summary, "has been updated")
 }
 
@@ -1098,9 +1122,9 @@ func TestSummaryHeadline(t *testing.T) {
 		expects string
 	}{
 		{"", true, "built and saved"},
-		{"", false, "not yet saved"},
+		{"", false, "was built but could not be saved"},
 		{"fix", true, "has been updated"},
-		{"fix", false, "not yet saved"},
+		{"fix", false, "could not be saved"},
 	}
 	for _, tc := range cases {
 		got := summaryHeadline("demo", tc.mode, tc.saved)

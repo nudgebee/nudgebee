@@ -112,6 +112,33 @@ func sanitizeQuestionOptions(options []string) []string {
 
 const readOnlyToolStreakThreshold = 6
 
+// Step budget of the agentic tool loop. The loop makes one tool call per step, so a fixed budget
+// is a ceiling on the size of automation it can handle: a build spends a step per task it adds,
+// and an edit spends a step per task it has to read. A flat 20 ended every build past about
+// thirteen tasks, and edits of larger automations, before they reached finalize.
+//
+// toolLoopBaseSteps covers the work that does not grow with the automation (schema lookups,
+// validate, finalize, corrections) and is the whole budget of a turn that only answers a
+// question. toolLoopStepsPerTask lets a build or an edit read each task once and change it once.
+// toolLoopMaxSteps bounds what a loop that never converges can cost, whatever the size.
+const (
+	toolLoopBaseSteps    = 20
+	toolLoopStepsPerTask = 2
+	toolLoopMaxSteps     = 80
+)
+
+// toolLoopStepBudget returns how many steps a loop that builds or edits the given automation may
+// take. Callers re-read it every step, so a build's budget grows as it adds tasks.
+func toolLoopStepBudget(workflow map[string]interface{}) int {
+	tasks := 0
+	if definition, ok := workflow["definition"].(map[string]interface{}); ok {
+		if list, ok := definition["tasks"].([]interface{}); ok {
+			walkTaskMaps(list, func(map[string]interface{}) { tasks++ })
+		}
+	}
+	return min(toolLoopBaseSteps+toolLoopStepsPerTask*tasks, toolLoopMaxSteps)
+}
+
 // isRawWorkflowJSON checks whether content is valid JSON with both "name" and "definition"
 // top-level keys — the two required fields for a workflow definition. This is stricter than
 // the previous HasPrefix("{") && Contains("definition") check which could match garbage.
@@ -419,6 +446,10 @@ type WorkflowBuilderAgent struct {
 	// correction of a raw-JSON answer so a model that will not fix its shape fails loudly instead
 	// of spending every remaining iteration on it. Transient per-loop: reset in runToolLoop.
 	triggerShapeRejections int
+
+	// toolLoopModel, when set, answers the tool loop's model calls in place of the LLM. Tests set
+	// it to script a loop turn by turn; it is nil everywhere else.
+	toolLoopModel func(messages []llms.MessageContent) (*llms.ContentResponse, error)
 }
 
 func newWorkflowBuilderAgent(accountId string) *WorkflowBuilderAgent {
@@ -808,7 +839,7 @@ func (a *WorkflowBuilderAgent) handleReadOnly(ctx *security.RequestContext, requ
 		}
 	}
 
-	answer, err := a.runToolLoop(ctx, request, buildReadOnlyPrompt(request.Query, definitionContext), fmt.Sprintf("Answer the user's question: %s", request.Query))
+	answer, err := a.runToolLoop(ctx, request, buildReadOnlyPrompt(request.Query, definitionContext), fmt.Sprintf("Answer the user's question: %s", request.Query), fixedStepBudget)
 	if err != nil {
 		return core.NBAgentResponse{}, fmt.Errorf("read-only answer failed: %w", err)
 	}
@@ -1609,7 +1640,7 @@ func (a *WorkflowBuilderAgent) buildAndValidate(ctx *security.RequestContext, re
 	systemPrompt := getBuildSystemPrompt(intent, plan, schema) + a.toolLoopEnvironment(ctx)
 
 	before := a.workflowSnapshot()
-	answer, err := a.runToolLoop(ctx, request, systemPrompt, fmt.Sprintf("Build the automation now based on the plan. Original request: %s", request.Query))
+	answer, err := a.runToolLoop(ctx, request, systemPrompt, fmt.Sprintf("Build the automation now based on the plan. Original request: %s", request.Query), a.sizedStepBudget)
 	if err != nil {
 		finalized, ok := a.finalizedAfterFailure(before)
 		if !ok {
@@ -2119,7 +2150,7 @@ func (a *WorkflowBuilderAgent) finalizeWithAutoSave(ctx *security.RequestContext
 			}}
 		}
 	default:
-		summary += fmt.Sprintf("\n\n*Auto-save failed — %s*", truncateSaveError(saveErr))
+		summary = withSaveFailure(summary, saveErr)
 	}
 
 	if len(missingConfigs) > 0 {
@@ -2156,6 +2187,20 @@ func (a *WorkflowBuilderAgent) buildWorkflowEditorLink(request core.NBAgentReque
 	return toolcore.BuildAutomationURL(accountId, workflowId, q, "editor")
 }
 
+// withSaveFailure puts the reason a save failed directly under the summary's headline. Appended
+// after the task list, where it used to go, it is the one line a reader of a long automation
+// never reaches, and on a failed save it is the line that matters.
+func withSaveFailure(summary string, saveErr error) string {
+	headline, rest, _ := strings.Cut(summary, "\n\n")
+	// The reason is read by the person who asked for the automation, so it drops the prefix that
+	// names this package in logs.
+	note := "**Reason:** " + strings.TrimPrefix(truncateSaveError(saveErr), "workflow_builder: ")
+	if rest == "" {
+		return headline + "\n\n" + note
+	}
+	return headline + "\n\n" + note + "\n\n" + rest
+}
+
 // truncateSaveError returns a short, user-facing rendition of the save error.
 // The full error is already in logs; the UI just needs enough to act on.
 // Truncates by runes (not bytes) so multi-byte UTF-8 characters are not split.
@@ -2175,16 +2220,19 @@ func truncateSaveError(err error) string {
 // summaryHeadline produces the first line of the workflow summary, varying the
 // verb based on whether the change was persisted (saved) and whether it is a
 // new build or a fix. Callers append the per-attempt save status separately.
+//
+// saved is false only after a save was tried and refused, so the headline says that. The old
+// "not yet saved" read as if a save was still to come; none is.
 func summaryHeadline(name, mode string, saved bool) string {
 	switch {
 	case mode == "fix" && saved:
 		return fmt.Sprintf("The automation **`%s`** has been updated.", name)
 	case mode == "fix":
-		return fmt.Sprintf("The automation **`%s`** changes are ready (not yet saved).", name)
+		return fmt.Sprintf("The changes to **`%s`** could not be saved.", name)
 	case saved:
 		return fmt.Sprintf("The automation **`%s`** has been built and saved.", name)
 	default:
-		return fmt.Sprintf("The automation **`%s`** has been built (not yet saved).", name)
+		return fmt.Sprintf("The automation **`%s`** was built but could not be saved.", name)
 	}
 }
 
@@ -2316,7 +2364,7 @@ func (a *WorkflowBuilderAgent) autoSaveWorkflow(ctx *security.RequestContext, wo
 				}
 				ctx.GetLogger().Warn("workflow_builder: idempotent update after create-conflict failed", "workflow_id", existingId, "error", putErr)
 			}
-			return "", fmt.Errorf("workflow_builder: an automation named %q already exists for this account; rename it or open the existing one to edit", workflowDefinitionName(definition))
+			return "", fmt.Errorf("workflow_builder: an automation named %q already exists in this account; ask again with a different name, or open the existing one to edit it", workflowDefinitionName(definition))
 		}
 		return "", fmt.Errorf("workflow_builder: auto-create failed: %w", err)
 	}
@@ -4799,9 +4847,35 @@ func trimStaleObservations(messages []llms.MessageContent, observations []loopOb
 	}
 }
 
+// toolLoopTurn asks the model for the tool loop's next step.
+func (a *WorkflowBuilderAgent) toolLoopTurn(ctx *security.RequestContext, request core.NBAgentRequest, messages []llms.MessageContent) (*llms.ContentResponse, error) {
+	if a.toolLoopModel != nil {
+		return a.toolLoopModel(messages)
+	}
+	// Use </thought_action> and </final_answer> as stop words so the LLM stops
+	// after producing exactly one tool call or one final answer. The previous stop
+	// word "<observation>" was never generated by the LLM (it's injected by code),
+	// causing the model to repeat the same tool call hundreds of times until hitting
+	// the max output token limit.
+	// Cap max tokens at 8192 — a single tool call or final answer never needs more.
+	return core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messages, false, llms.WithTemperature(0.0), llms.WithStopWords([]string{"</thought_action>", "</final_answer>"}), llms.WithMaxTokens(8192))
+}
+
+// sizedStepBudget is the step budget of a loop that builds or edits the working automation.
+func (a *WorkflowBuilderAgent) sizedStepBudget() int {
+	return toolLoopStepBudget(a.state.WorkingWorkflow)
+}
+
+// fixedStepBudget is the step budget of a loop that only answers a question: the definition is
+// already in its prompt, so the work does not grow with the automation.
+func fixedStepBudget() int {
+	return toolLoopBaseSteps
+}
+
 // runToolLoop runs an agentic tool-calling loop where the LLM reasons step-by-step
 // and calls workflow manipulation tools. This follows the same XML format as the ReAct planner.
-func (a *WorkflowBuilderAgent) runToolLoop(ctx *security.RequestContext, request core.NBAgentRequest, systemPrompt string, userMessage string) (string, error) {
+// stepBudget is read again on every step — see toolLoopStepBudget.
+func (a *WorkflowBuilderAgent) runToolLoop(ctx *security.RequestContext, request core.NBAgentRequest, systemPrompt string, userMessage string, stepBudget func() int) (string, error) {
 	// Fresh commit marker for this loop — set only by a finalize tool call.
 	a.loopFinalized = false
 	a.finalizedSnapshot = ""
@@ -4857,15 +4931,9 @@ RULES:
 	// Observation history, oldest first — see trimStaleObservations.
 	var observations []loopObservation
 
-	const maxIterations = 20
-	for i := 0; i < maxIterations; i++ {
-		// Use </thought_action> and </final_answer> as stop words so the LLM stops
-		// after producing exactly one tool call or one final answer. The previous stop
-		// word "<observation>" was never generated by the LLM (it's injected by code),
-		// causing the model to repeat the same tool call hundreds of times until hitting
-		// the max output token limit.
-		// Cap max tokens at 8192 — a single tool call or final answer never needs more.
-		result, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messages, false, llms.WithTemperature(0.0), llms.WithStopWords([]string{"</thought_action>", "</final_answer>"}), llms.WithMaxTokens(8192))
+	i := 0
+	for ; i < stepBudget(); i++ {
+		result, err := a.toolLoopTurn(ctx, request, messages)
 		if err != nil {
 			return "", fmt.Errorf("tool loop LLM call failed (iteration %d): %w", i+1, err)
 		}
@@ -4980,15 +5048,13 @@ RULES:
 		trimStaleObservations(messages, observations)
 	}
 
-	// If we exhausted iterations, try to finalize whatever we have
-	if a.state.WorkingWorkflow != nil {
-		finalJSON := a.toolFinalize()
-		if strings.HasPrefix(strings.TrimSpace(finalJSON), "{") {
-			return finalJSON, nil
-		}
-	}
-
-	return "", fmt.Errorf("agentic tool loop exceeded %d iterations without completing", maxIterations)
+	// Out of steps. The working automation is NOT returned here, however complete it looks:
+	// finalize is the loop's commit point, and returning unfinalized state had the callers save
+	// half-applied edits and unvalidated builds and report them as done. The callers keep a
+	// definition this loop finalized (finalizedAfterFailure) and otherwise surface this error,
+	// which is the user's reply — so it says what happened and what to do.
+	ctx.GetLogger().Warn("workflow_builder: tool loop ran out of steps", "steps", i, "finalized", a.loopFinalized, "mode", a.state.Mode)
+	return "", fmt.Errorf("the builder used all %d of its steps without finishing, so nothing was changed or saved; try a smaller request, or split it into parts", i)
 }
 
 // ==================== EDIT MODE (AGENTIC) ====================
@@ -5104,7 +5170,7 @@ func (a *WorkflowBuilderAgent) runEditToolLoop(ctx *security.RequestContext, req
 	}
 
 	before := a.workflowSnapshot()
-	answer, err := a.runToolLoop(ctx, request, systemPrompt, userMessage)
+	answer, err := a.runToolLoop(ctx, request, systemPrompt, userMessage, a.sizedStepBudget)
 	if err != nil {
 		finalized, ok := a.finalizedAfterFailure(before)
 		if !ok {

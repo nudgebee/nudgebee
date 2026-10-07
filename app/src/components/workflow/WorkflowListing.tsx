@@ -1176,8 +1176,16 @@ const WorkflowListing: React.FC = () => {
       };
     }
 
+    // What the builder has done so far. The modal shows it while a build runs and uses it to tell
+    // a run that is moving from one that is stuck.
+    const toolCalls = messages.flatMap((m: any) => m.llm_conversation_agents || []).flatMap((a: any) => a.llm_conversation_tool_calls || []);
+    const progress = {
+      steps: toolCalls.length,
+      tasksAdded: toolCalls.filter((tc: any) => tc.tool_name === 'add_task' && tc.status === 'success').length,
+    };
+
     if (status !== 'WAITING') {
-      return null;
+      return { status, progress };
     }
 
     // WAITING: could be plan approval or config approval. The followup question
@@ -1231,6 +1239,7 @@ const WorkflowListing: React.FC = () => {
 
     return {
       status: 'WAITING',
+      progress,
       planText,
       planOptions,
       followupType,
@@ -1239,6 +1248,27 @@ const WorkflowListing: React.FC = () => {
       messageId: lastFollowupMsg?.id,
       agentId,
     };
+  };
+
+  // The automation a builder session saved, located by its chat-session lineage
+  // (created_from_session_id). The list is newest first, so a just-saved automation is on the
+  // first page. Returns null when the session saved nothing, undefined when that could not be
+  // checked (the list call failed).
+  const findWorkflowSavedBySession = async (sessionId: string): Promise<{ id: string } | null | undefined> => {
+    if (!createAccountId || !sessionId) {
+      return undefined;
+    }
+    try {
+      const res: any = await apiWorkflow.listWorkflows([createAccountId], undefined, undefined, undefined, 50, '', '', undefined, undefined);
+      const workflows = res?.data?.workflow_list?.workflows;
+      if (!Array.isArray(workflows)) {
+        return undefined;
+      }
+      return workflows.find((w: any) => w.created_from_session_id === sessionId) ?? null;
+    } catch (error) {
+      console.error('Failed to locate the saved automation by session:', error);
+      return undefined;
+    }
   };
 
   const handlePollWorkflowConversation = async (sessionId: string) => {
@@ -1251,7 +1281,16 @@ const WorkflowListing: React.FC = () => {
       if (!conversation) {
         return null;
       }
-      return parseConversationPollResult(conversation);
+      const result = parseConversationPollResult(conversation);
+      if (result?.status !== 'COMPLETED') {
+        return result;
+      }
+      // Whether the build produced an automation is decided by the saved automation, not by the
+      // tool calls the conversation recorded: the builder can save without a finalize call, and a
+      // finalize call does not mean the save went through. `saved` stays unset when the check
+      // itself failed, and the modal then falls back to the conversation's own signal.
+      const savedWorkflow = await findWorkflowSavedBySession(sessionId);
+      return savedWorkflow === undefined ? result : { ...result, saved: savedWorkflow !== null };
     } catch (error) {
       console.error('Error polling workflow conversation:', error);
       return null;
@@ -1273,16 +1312,10 @@ const WorkflowListing: React.FC = () => {
     if (!createAccountId) {
       return;
     }
-    try {
-      const res: any = await apiWorkflow.listWorkflows([createAccountId], undefined, undefined, undefined, 50, '', '', undefined, undefined);
-      const workflows = res?.data?.workflow_list?.workflows || [];
-      const match = sessionId ? workflows.find((w: any) => w.created_from_session_id === sessionId) : undefined;
-      if (match?.id) {
-        router.push(`/automation/${match.id}?accountId=${createAccountId}`);
-        return;
-      }
-    } catch (error) {
-      console.error('Failed to locate the saved automation by session:', error);
+    const match = await findWorkflowSavedBySession(sessionId);
+    if (match?.id) {
+      router.push(`/automation/${match.id}?accountId=${createAccountId}`);
+      return;
     }
     // Fallback: stay on the listing and refresh so the new automation is at least visible.
     snackbar.success('Automation created and saved.');
