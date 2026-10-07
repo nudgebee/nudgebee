@@ -23,7 +23,7 @@ import Text from '@shared/format/Text';
 import { toast as snackbar } from '@ui/Toast';
 import { hasWriteAccess } from '@lib/auth';
 import apiUser from '@api1/user';
-import apiTriage, { type TriageRule } from '@api1/triage';
+import apiTriage, { type TriageRule, type UpdateTriageRuleInput } from '@api1/triage';
 import TriageRuleModal from './TriageRuleModal';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
 
@@ -124,6 +124,10 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [ruleToDelete, setRuleToDelete] = useState<TriageRule | null>(null);
 
+  // Disable confirmation state
+  const [disableDialogOpen, setDisableDialogOpen] = useState(false);
+  const [ruleToDisable, setRuleToDisable] = useState<TriageRule | null>(null);
+
   // Build query object for the triage rule drilldown using the new indexed API
   const buildDrilldownQuery = (rule: TriageRule): Record<string, any> => {
     const query: Record<string, any> = {};
@@ -190,7 +194,12 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
       setIsRuleModalOpen(true);
     } else if (menuItem.id === 2) {
       // Enable/Disable
-      handleToggleRule(data);
+      if (data.enabled) {
+        setRuleToDisable(data);
+        setDisableDialogOpen(true);
+      } else {
+        handleEnableRule(data);
+      }
     } else if (menuItem.id === 3) {
       // Delete
       setRuleToDelete(data);
@@ -413,20 +422,21 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
     return option?.label || ruleType;
   };
 
-  const handleToggleRule = async (rule: TriageRule) => {
+  const handleDisableRule = async () => {
+    if (!ruleToDisable) {
+      return;
+    }
+    const rule = ruleToDisable;
     const ruleAccountId = rule.account_id;
+    setDisableDialogOpen(false);
+    setRuleToDisable(null);
+
     if (!ruleAccountId) {
       snackbar.error('Cannot modify rule without account ID');
       return;
     }
-    if (!rule.enabled) {
-      // Re-enabling would require a separate API endpoint
-      snackbar.info('To re-enable a rule, please create a new one');
-      return;
-    }
 
-    // For now, we use delete with hard_delete=false to disable
-    // A proper enable/disable endpoint would be better
+    // Disable is implemented as a soft delete (hard_delete=false).
     patchRule(rule.id, { enabled: false }); // optimistic update
 
     try {
@@ -439,9 +449,70 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
         snackbar.error(result?.error || 'Failed to update rule');
       }
     } catch (error) {
-      console.error('Failed to toggle rule:', error);
+      console.error('Failed to disable rule:', error);
       patchRule(rule.id, { enabled: true }); // revert
       snackbar.error('Failed to update rule');
+    }
+  };
+
+  const handleCloseDisableDialog = () => {
+    setDisableDialogOpen(false);
+    setRuleToDisable(null);
+  };
+
+  const handleEnableRule = async (rule: TriageRule) => {
+    const ruleAccountId = rule.account_id;
+    if (!ruleAccountId) {
+      snackbar.error('Cannot modify rule without account ID');
+      return;
+    }
+
+    // The live matcher excludes rows with a past effective_until even when enabled
+    // (rules.go: GetTriageRules). Flipping the status without touching an expired
+    // date would show "Enabled" on a rule that still matches nothing.
+    if (rule.effective_until && new Date(rule.effective_until).getTime() <= Date.now()) {
+      snackbar.error('This rule expired. Edit it to extend or clear the expiry before enabling.');
+      return;
+    }
+
+    patchRule(rule.id, { enabled: true }); // optimistic update
+
+    try {
+      const payload: UpdateTriageRuleInput = {
+        cloud_account_id: ruleAccountId,
+        rule_id: rule.id,
+        rule_type: rule.rule_type as UpdateTriageRuleInput['rule_type'],
+        action: rule.action,
+        match_source: rule.match_source,
+        match_alertname: rule.match_alertname,
+        match_namespace: rule.match_namespace,
+        match_service: rule.match_service,
+        match_fingerprint: rule.match_fingerprint,
+        match_labels: rule.match_labels,
+        match_priority: rule.match_priority,
+        match_finding_type: rule.match_finding_type,
+        action_value: rule.action_value,
+        priority: rule.priority,
+        effective_until: rule.effective_until,
+        name: rule.name,
+        description: rule.description,
+        apply_to_existing: false,
+        enabled: true,
+      };
+      const result = await apiTriage.updateTriageRule(payload);
+      if (result?.success) {
+        if (result.rule) {
+          patchRule(rule.id, result.rule);
+        }
+        console.log(`Rule "${rule.name || 'Unnamed'}" enabled`);
+      } else {
+        patchRule(rule.id, { enabled: false }); // revert
+        snackbar.error(result?.error || 'Failed to enable rule');
+      }
+    } catch (error) {
+      console.error('Failed to enable rule:', error);
+      patchRule(rule.id, { enabled: false }); // revert
+      snackbar.error('Failed to enable rule');
     }
   };
 
@@ -529,6 +600,18 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
         width='md'
       >
         This action cannot be undone. The rule will be permanently deleted.
+      </Modal>
+
+      <Modal
+        confirmText='Disable'
+        confirmTone='primary'
+        handleClose={handleCloseDisableDialog}
+        title={`Disable rule "${ruleToDisable?.name || 'Unnamed'}"`}
+        onConfirm={handleDisableRule}
+        open={disableDialogOpen}
+        width='md'
+      >
+        The rule will stop matching new events immediately. You can enable it again from the row menu.
       </Modal>
 
       <TriageRuleModal

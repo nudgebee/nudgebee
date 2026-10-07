@@ -1370,6 +1370,7 @@ type Mutation {
     name: String
     description: String
     apply_to_existing: Boolean
+    enabled: Boolean
   ): UpdateTriageRuleResponse
 }
 

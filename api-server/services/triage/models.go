@@ -472,6 +472,10 @@ type UpdateTriageRuleRequest struct {
 	Name             *string `json:"name,omitempty"`
 	Description      *string `json:"description,omitempty"`
 	ApplyToExisting  bool    `json:"apply_to_existing"`
+	// Enabled re-enables a rule the soft-delete path (DeleteTriageRule with
+	// hard_delete=false) disabled. Nil leaves the current enabled state untouched,
+	// so the rule-edit form can keep omitting it (#40111).
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // UpdateTriageRuleResponse is the response after updating a rule

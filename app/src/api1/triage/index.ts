@@ -180,6 +180,7 @@ mutation EventUpdateTriageRule(
   $name: String
   $description: String
   $apply_to_existing: Boolean
+  $enabled: Boolean
 ) {
   event_update_triage_rule(
     cloud_account_id: $cloud_account_id
@@ -200,6 +201,7 @@ mutation EventUpdateTriageRule(
     name: $name
     description: $description
     apply_to_existing: $apply_to_existing
+    enabled: $enabled
   ) {
     success
     rule {
@@ -731,6 +733,7 @@ export interface UpdateTriageRuleInput {
   name?: string;
   description?: string;
   apply_to_existing?: boolean;
+  enabled?: boolean;
 }
 
 export interface UpdateNBStatusInput {
@@ -1162,6 +1165,7 @@ const apiTriage = {
         name: data.name,
         description: data.description,
         apply_to_existing: data.apply_to_existing,
+        enabled: data.enabled,
       });
       return unwrapGraphQL(response, 'Failed to update triage rule')?.event_update_triage_rule;
     } catch (error) {

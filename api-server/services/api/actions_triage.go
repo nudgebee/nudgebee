@@ -1214,6 +1214,9 @@ func handleEventUpdateTriageRule(h *ActionRequest, c *gin.Context, ctx *security
 	if v, ok := h.Input["apply_to_existing"].(bool); ok {
 		req.ApplyToExisting = v
 	}
+	if v, ok := h.Input["enabled"].(bool); ok {
+		req.Enabled = &v
+	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {

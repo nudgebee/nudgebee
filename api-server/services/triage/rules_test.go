@@ -331,6 +331,11 @@ func TestCreateAndDeleteTriageRule(t *testing.T) {
 		assert.False(t, enabled, "Rule should be disabled after soft delete")
 	})
 
+	// Re-enabling a disabled rule, and whether a plain edit preserves it, are
+	// covered by TestUpdateTriageRuleEnabledField_DB — this test's rule depends
+	// on the account lookup above finding real seeded data, so it isn't a
+	// hermetic place for that coverage (#40111).
+
 	// Cleanup - hard delete
 	t.Cleanup(func() {
 		if createdRuleID != "" {

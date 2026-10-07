@@ -1708,8 +1708,9 @@ func UpdateTriageRule(ctx context.Context, db *sqlx.DB, req UpdateTriageRuleRequ
 		    description = $15,
 		    updated_by = $16,
 		    apply_to_existing = $17,
+		    enabled = COALESCE($18, enabled),
 		    updated_at = NOW()
-		WHERE id = $18 AND account_id = $19 AND is_editable = TRUE
+		WHERE id = $19 AND account_id = $20 AND is_editable = TRUE
 		RETURNING id, tenant_id, account_id, rule_type,
 			match_source, match_alertname, match_namespace, match_service,
 			match_fingerprint, match_labels, match_priority, match_finding_type,
@@ -1749,6 +1750,7 @@ func UpdateTriageRule(ctx context.Context, db *sqlx.DB, req UpdateTriageRuleRequ
 		req.Description,
 		userID,
 		req.ApplyToExisting,
+		req.Enabled,
 		req.RuleID,
 		cloudAccountID,
 	)
