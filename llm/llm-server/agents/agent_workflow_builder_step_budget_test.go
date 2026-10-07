@@ -119,7 +119,7 @@ func TestRunToolLoop_BuildLargerThanOldLimitFinishes(t *testing.T) {
 	agent.state.WorkingWorkflow = map[string]interface{}{}
 	before := agent.workflowSnapshot()
 
-	answer, err := agent.runToolLoop(stepBudgetTestContext(), core.NBAgentRequest{}, "system", "build it", agent.sizedStepBudget)
+	answer, err := agent.runToolLoop(stepBudgetTestContext(), core.NBAgentRequest{}, "system", "build it", toolLoopOptions{stepBudget: agent.sizedStepBudget})
 
 	require.NoError(t, err)
 	assert.Equal(t, tasks+3, *steps)
@@ -140,7 +140,7 @@ func TestRunToolLoop_OutOfStepsReturnsNoDefinition(t *testing.T) {
 	agent.state.WorkingWorkflow = map[string]interface{}{}
 	before := agent.workflowSnapshot()
 
-	answer, err := agent.runToolLoop(stepBudgetTestContext(), core.NBAgentRequest{}, "system", "build it", agent.sizedStepBudget)
+	answer, err := agent.runToolLoop(stepBudgetTestContext(), core.NBAgentRequest{}, "system", "build it", toolLoopOptions{stepBudget: agent.sizedStepBudget})
 
 	require.Error(t, err)
 	assert.Empty(t, answer)
@@ -168,7 +168,7 @@ func TestRunToolLoop_OutOfStepsKeepsOnlyWhatWasFinalized(t *testing.T) {
 	agent.state.WorkingWorkflow = map[string]interface{}{}
 	before := agent.workflowSnapshot()
 
-	_, err := agent.runToolLoop(stepBudgetTestContext(), core.NBAgentRequest{}, "system", "build it", func() int { return 6 })
+	_, err := agent.runToolLoop(stepBudgetTestContext(), core.NBAgentRequest{}, "system", "build it", toolLoopOptions{stepBudget: func() int { return 6 }})
 
 	require.Error(t, err)
 	finalized, kept := agent.finalizedAfterFailure(before)
@@ -189,7 +189,7 @@ func TestRunToolLoop_QuestionTurnKeepsFixedBudget(t *testing.T) {
 	})
 	agent.state.WorkingWorkflow = map[string]interface{}{"name": "big", "definition": map[string]interface{}{"tasks": existing}}
 
-	answer, err := agent.runToolLoop(stepBudgetTestContext(), core.NBAgentRequest{}, "system", "what does it do?", fixedStepBudget)
+	answer, err := agent.runToolLoop(stepBudgetTestContext(), core.NBAgentRequest{}, "system", "what does it do?", toolLoopOptions{stepBudget: fixedStepBudget})
 
 	require.Error(t, err)
 	assert.Empty(t, answer, "the automation's JSON is not an answer to a question")
