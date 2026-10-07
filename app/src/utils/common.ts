@@ -925,6 +925,47 @@ export const snakeToTitleCase = (str: string) => {
     .join(' ');
 };
 
+// --- Cloud filter display labels (#40334) --------------------------------
+// Alert Manager category and Optimize service-name filters store raw internal
+// values. These render readable labels for display only; callers keep the raw
+// value as the option `value`, so the rows a selection filters are unchanged.
+
+// camelCase categories snakeToTitleCase can't split. Acronyms (ci -> CI) and
+// lowercase words (issue -> Issue) fall through to snakeToTitleCase.
+const CLOUD_CATEGORY_LABELS: Record<string, string> = {
+  CostAnomaly: 'Cost Anomaly',
+};
+
+export const cloudCategoryLabel = (category?: string | null): string => {
+  if (!category) return '';
+  return CLOUD_CATEGORY_LABELS[category] ?? snakeToTitleCase(category);
+};
+
+// GCP resource_cloud_service values arrive as "<service>.googleapis.com/<Type>".
+// Map the API host to its product name, keeping the resource type in parens:
+// "compute.googleapis.com/Disk" -> "Compute Engine (Disk)". Non-GCP values
+// (e.g. AWS "AmazonRDS") are returned unchanged.
+const GCP_SERVICE_LABELS: Record<string, string> = {
+  'compute.googleapis.com': 'Compute Engine',
+  'storage.googleapis.com': 'Cloud Storage',
+  'sqladmin.googleapis.com': 'Cloud SQL',
+  'cloudsql.googleapis.com': 'Cloud SQL',
+  'bigquery.googleapis.com': 'BigQuery',
+  'container.googleapis.com': 'Kubernetes Engine',
+  'pubsub.googleapis.com': 'Pub/Sub',
+  'cloudfunctions.googleapis.com': 'Cloud Functions',
+  'iam.googleapis.com': 'IAM',
+};
+
+export const cloudServiceLabel = (service?: string | null): string => {
+  if (!service) return '';
+  const match = /^([a-z0-9-]+\.googleapis\.com)\/(.+)$/.exec(service);
+  if (!match) return service;
+  const [, host, resource] = match;
+  const friendly = GCP_SERVICE_LABELS[host] ?? convertStringCase(host.replace('.googleapis.com', ''));
+  return `${friendly} (${convertStringCase(resource)})`;
+};
+
 export const toKebabCase = (str: string) => {
   return str
     .trim()

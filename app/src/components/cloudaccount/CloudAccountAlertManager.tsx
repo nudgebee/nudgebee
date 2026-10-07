@@ -26,6 +26,7 @@ import KubernetesCreateAlert from '@components/k8s/details/KubernetesCreateAlert
 import { hasWriteAccess } from '@lib/auth';
 import NDialog from '@shared/modal/NDialog';
 import { titleCase } from '@lib/formatter';
+import { cloudCategoryLabel } from '@utils/common';
 import { action } from 'src/utils/actionStyles';
 import Text from '@shared/format/Text';
 import apiUser from '@api1/user';
@@ -118,7 +119,12 @@ const CloudAccountAlertManager: React.FC<CloudAccountAlertManagerProps> = ({ acc
       .getDistinctData(accountId)
       .then((res: any) => {
         if (res?.data?.distinct_category) {
-          setCategoryList(res?.data?.distinct_category.map((c: any) => c.category));
+          setCategoryList(
+            res?.data?.distinct_category.map((c: any) => ({
+              label: cloudCategoryLabel(c.category),
+              value: c.category,
+            }))
+          );
         }
         if (res?.data?.distinct_source) {
           setSourceList(
@@ -210,8 +216,8 @@ const CloudAccountAlertManager: React.FC<CloudAccountAlertManagerProps> = ({ acc
           alertNames.push(item.alert);
           return [
             { component: <Text value={item.alert} />, drilldownQuery: { name: item.alert } },
-            { component: <Text value={item.category} /> },
-            { component: <Text value={item?.source || '-'} /> },
+            { component: <Text value={cloudCategoryLabel(item.category)} /> },
+            { component: <Text value={item?.source ? titleCase(item.source) : '-'} /> },
             { component: <SeverityIcon level={toDsSeverityLevel(item?.severity)} />, data: item?.severity },
             statusCell(item),
             {

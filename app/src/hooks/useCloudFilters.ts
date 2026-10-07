@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import apiRecommendations, { RECOMMENDATION_SERVERITY } from '@api1/recommendation';
 import k8sApi from '@api1/kubernetes';
-import { snakeToTitleCase } from 'src/utils/common';
+import { snakeToTitleCase, cloudServiceLabel } from 'src/utils/common';
 import apiResources from '@api1/resources';
 
 const useCloudFilter = (accountId: string) => {
@@ -225,7 +225,7 @@ const useRecommendationCloudFilter = (accountId: string, data: any = {}) => {
           setServiceNamesFilter(
             res?.data?.data?.recommendation
               ?.filter((g: any) => g.resource_cloud_service)
-              .map((e: any) => ({ label: e.resource_cloud_service, value: e.resource_cloud_service })) || []
+              .map((e: any) => ({ label: cloudServiceLabel(e.resource_cloud_service), value: e.resource_cloud_service })) || []
           );
         })
         .finally(() => {
