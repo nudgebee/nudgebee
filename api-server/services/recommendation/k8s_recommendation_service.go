@@ -643,6 +643,42 @@ func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, 
 	return nil
 }
 
+// healthCheckWorkloadsQuery returns one row per active workload with its recent
+// probe-failure count. Events are grouped by name and namespace only, the keys
+// the join uses: grouping by anything more returns a workload once per extra
+// value, and two rows for one workload abort the batch upsert with
+// "ON CONFLICT DO UPDATE command cannot affect row a second time".
+func healthCheckWorkloadsQuery(eventsTable, workloadsTable string) string {
+	return fmt.Sprintf(`
+WITH workload_events AS (
+    SELECT
+        e.subject_name,
+        e.subject_namespace,
+        COUNT(*) FILTER (WHERE e.finding_type IN ('Unhealthy', 'CrashLoopBackOff', 'LivenessProbeFailure', 'ReadinessProbeFailure')) AS unhealthy_events
+    FROM %[1]s e
+    WHERE e.cloud_account_id = $1
+      AND e.starts_at >= NOW() - INTERVAL '7 days'
+    GROUP BY e.subject_name, e.subject_namespace
+)
+SELECT
+    ksw.tenant_id::varchar,
+    ksw.cloud_resource_id::varchar,
+    ksw.cloud_account_id::varchar,
+    ksw.name,
+    ksw.namespace,
+    ksw.kind,
+    ksw.meta,
+    ksw.labels,
+    we.unhealthy_events
+FROM %[2]s ksw
+LEFT JOIN workload_events we
+ON ksw.name = we.subject_name AND ksw.namespace = we.subject_namespace
+WHERE ksw.is_active IS TRUE
+  AND ksw.cloud_account_id = $1
+  AND ksw.namespace NOT IN ('kube-system', 'nudgebee-agent')
+`, eventsTable, workloadsTable)
+}
+
 func processHealthCheckRecommendations(ctx *security.RequestContext, accountId string, dbms *database.DatabaseManager) error {
 	runningAccountJobsKey := fmt.Sprintf("healthcheck:%s", accountId)
 	if !tryStartAccountJob(runningAccountJobsKey, "healthcheck") {
@@ -665,36 +701,7 @@ func processHealthCheckRecommendations(ctx *security.RequestContext, accountId s
 		return err
 	}
 
-	query := `
-WITH workload_events AS (
-    SELECT
-        e.subject_name,
-        e.subject_namespace,
-        e.cluster,
-        COUNT(*) FILTER (WHERE e.finding_type IN ('Unhealthy', 'CrashLoopBackOff', 'LivenessProbeFailure', 'ReadinessProbeFailure')) AS unhealthy_events
-    FROM events e
-    WHERE e.cloud_account_id = $1
-      AND e.starts_at >= NOW() - INTERVAL '7 days'
-    GROUP BY e.subject_name, e.subject_namespace, e.cluster
-)
-SELECT
-    ksw.tenant_id::varchar,
-    ksw.cloud_resource_id::varchar,
-    ksw.cloud_account_id::varchar,
-    ksw.name,
-    ksw.namespace,
-    ksw.kind,
-    ksw.meta,
-    ksw.labels,
-    we.unhealthy_events
-FROM k8s_workloads ksw
-LEFT JOIN workload_events we
-ON ksw.name = we.subject_name AND ksw.namespace = we.subject_namespace
-WHERE ksw.is_active IS TRUE
-  AND ksw.cloud_account_id = $1
-  AND ksw.namespace NOT IN ('kube-system', 'nudgebee-agent')
-`
-	rows, err := dbms.Db.Queryx(query, accountId)
+	rows, err := dbms.Db.Queryx(healthCheckWorkloadsQuery("events", "k8s_workloads"), accountId)
 	if err != nil {
 		ctx.GetLogger().Error("error querying workloads for health check recommendations", "error", err)
 		return err
