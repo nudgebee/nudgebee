@@ -269,11 +269,23 @@ func setAnalysisWorkspaceToken(ctx *security.RequestContext, accountId string, a
 	return nil
 }
 
-// instead of launching a new pod per request.
-func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.NBAgentRequest, request CodeAgent2Request, creds []GitCredentials, provider string) (codeAnalysisResult, error) {
-	logger := ctx.GetLogger()
+// codeAgentMode is the mode a request runs in: the explicit mode when it is
+// one of the two known values, otherwise fix when a PR was asked for and
+// explore when it was not.
+func codeAgentMode(request CodeAgent2Request) string {
+	switch request.Mode {
+	case codeAgentModeExplore, codeAgentModeFix:
+		return request.Mode
+	}
+	if request.RaisePr {
+		return codeAgentModeFix
+	}
+	return codeAgentModeExplore
+}
 
-	gitToken := resolveGitToken(ctx, creds, request.GitRepo, provider)
+// instead of launching a new pod per request.
+func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.NBAgentRequest, request CodeAgent2Request, gitToken string, provider string) (codeAnalysisResult, error) {
+	logger := ctx.GetLogger()
 
 	// Build the request body matching the code-analysis server's AgenticAnalyzeRequest
 	tenantId := ""
@@ -323,15 +335,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	//   - Otherwise fall back to the entrypoint signal (RaisePr): callers that
 	//     want a fix+PR set raise_pr=true (recommendation-apply, event auto-raise);
 	//     chat mentions don't, and stay in explore mode.
-	mode := codeAgentModeExplore
-	switch request.Mode {
-	case codeAgentModeExplore, codeAgentModeFix:
-		mode = request.Mode
-	default:
-		if request.RaisePr {
-			mode = codeAgentModeFix
-		}
-	}
+	mode := codeAgentMode(request)
 
 	// Reuse account-wide discovery and exact loading. Keep large documents out
 	// of every analysis prompt; the workspace resolves the reference manifest.
@@ -1479,6 +1483,22 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 	// pure exploration question ("what is the default Postgres connection
 	// limit?") got promoted to fix-mode and produced a spurious PR.
 
+	// What the caller itself named, kept so a refusal can say whether the
+	// repository came from the request or from the detection below.
+	callerRepo := codeAgentRequest.GitRepo
+
+	// A planner that was never told which repository holds a service writes one
+	// from the words of its brief. When the git host does not know that
+	// repository, the server's own detection below is the better answer, so the
+	// caller's value steps aside for it — with the commit and branch that came
+	// with it, which belong to a repository that is not there.
+	repoSetAside := l.callerRepoGivesWay(ctx, query, codeAgentRequest)
+	if repoSetAside {
+		ctx.GetLogger().Info("code: the repository the caller named is unknown to the git host; resolving one for the request instead",
+			"caller_repo", callerRepo)
+		codeAgentRequest.GitRepo, codeAgentRequest.GitCommit, codeAgentRequest.TargetBranch = "", "", ""
+	}
+
 	// Reuse the repo the conversation already settled on (a followup selection, or
 	// the one stored on the message config) before auto-detecting one.
 	if codeAgentRequest.GitRepo == "" {
@@ -1688,6 +1708,15 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 		return core.NBAgentResponse{}, errors.New("git credentials are required but none were found for github or gitlab")
 	}
 
+	// Nothing took the place of the repository that was set aside — the detection
+	// found none, or came back with the very same one from the text of the
+	// request. The git host has already said it does not know it, so it is turned
+	// down by name here, and no user is asked to pick a repository on behalf of
+	// an invented one.
+	if repoSetAside && (codeAgentRequest.GitRepo == "" || sameRepository(codeAgentRequest.GitRepo, callerRepo)) {
+		return core.NBAgentResponse{}, repoRefusal(ctx, query, callerRepo, true, true, provider)
+	}
+
 	// If repo is still unknown, check if there are multiple projects to ask the user
 	if codeAgentRequest.GitRepo == "" {
 		var allProjectURLs []string
@@ -1751,6 +1780,13 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 
 	ctx.GetLogger().Info("code: using git provider", "provider", provider, "repo", repoUrl)
 
+	// Resolved once and used for both the check and the clone, so the check
+	// answers for exactly the credential the workspace will present.
+	gitToken := resolveGitToken(ctx, creds, codeAgentRequest.GitRepo, provider)
+	if err := refuseUnreadableRepo(ctx, query, codeAgentRequest.GitRepo, callerRepo, provider, gitToken); err != nil {
+		return core.NBAgentResponse{}, err
+	}
+
 	rememberConversationRepo(ctx, query.MessageId, codeAgentRequest.GitRepo)
 
 	// A second fix request in the same conversation is a retry, not a new bug.
@@ -1772,7 +1808,7 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 
 	// execute via workspace /analyze endpoint
 	startTime := time.Now()
-	wsResult, err := evaluateCodeUsingWorkspace(ctx, query, codeAgentRequest, creds, provider)
+	wsResult, err := evaluateCodeUsingWorkspace(ctx, query, codeAgentRequest, gitToken, provider)
 	latency := time.Since(startTime).Seconds()
 	if err != nil {
 		ctx.GetLogger().Error("code: failed to execute via workspace", "error", err.Error())
@@ -1811,14 +1847,28 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 	// workspace path returns agent_response directly — parse and enrich
 	var actualResponse map[string]any
 	if err := json.Unmarshal([]byte(wsResult.AgentResponse), &actualResponse); err != nil {
+		rawResponse := wsResult.AgentResponse
+		if repoSetAside {
+			rawResponse = repoSetAsideNote(callerRepo, codeAgentRequest.GitRepo) + "\n\n" + rawResponse
+		}
 		return core.NBAgentResponse{
-			Response: []string{wsResult.AgentResponse},
+			Response: []string{rawResponse},
 		}, nil
 	}
-	actualResponse["source_details"] = map[string]any{
+	// A JSON null decodes without error and leaves the map nil; the writes below
+	// need a map to write to.
+	if actualResponse == nil {
+		actualResponse = map[string]any{}
+	}
+	sourceDetails := map[string]any{
 		"workloads.nudgebee.com/git.hash": codeAgentRequest.GitCommit,
 		"workloads.nudgebee.com/git.repo": codeAgentRequest.GitRepo,
 	}
+	if repoSetAside {
+		sourceDetails["requested_repo"] = callerRepo
+		actualResponse[repositoryNoteKey] = repoSetAsideNote(callerRepo, codeAgentRequest.GitRepo)
+	}
+	actualResponse["source_details"] = sourceDetails
 	addCompanionIssueGuidance(actualResponse)
 	jsonResponse, err := json.Marshal(actualResponse)
 	if err != nil {
