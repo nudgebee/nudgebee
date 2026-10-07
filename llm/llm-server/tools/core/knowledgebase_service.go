@@ -448,7 +448,7 @@ func CreateKnowledgebase(sc *security.RequestContext, accountId string, kb Knowl
 		// Fetch the created KB with usernames
 		var createdKB Knowledgebase
 		err = tx.Get(&createdKB, `
-			SELECT kb.id, kb.tenant_id, kb.account_id, kb.name,
+			SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.name,
 			       COALESCE(kb.description, '') as description,
 			       kb.data, kb.data_format, kb.data_filename,
 			       COALESCE(kb.data_size_bytes, 0) as data_size_bytes,
@@ -518,6 +518,12 @@ func CreateKnowledgebase(sc *security.RequestContext, accountId string, kb Knowl
 
 // GetKnowledgebase retrieves a single knowledge base by ID
 func GetKnowledgebase(sc *security.RequestContext, accountId, kbId string) (Knowledgebase, error) {
+	return GetKnowledgebaseScoped(sc, accountId, kbId, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
+}
+
+// GetKnowledgebaseScoped is GetKnowledgebase with the account's visible
+// organisation KB ids already resolved, for callers that read several KBs.
+func GetKnowledgebaseScoped(sc *security.RequestContext, accountId, kbId string, orgIDs []string) (Knowledgebase, error) {
 	if accountId == "" {
 		return Knowledgebase{}, errors.New(errKBAccountIDRequired)
 	}
@@ -536,9 +542,10 @@ func GetKnowledgebase(sc *security.RequestContext, accountId, kbId string) (Know
 		return Knowledgebase{}, err
 	}
 
+	scope, scopeArgs := KBAccountScope("kb", 2, 3, orgIDs)
 	var kb Knowledgebase
 	err = dbms.Db.Get(&kb, `
-		SELECT kb.id, kb.tenant_id, kb.account_id, kb.name,
+		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.name,
 		       COALESCE(kb.description, '') as description,
 		       kb.data, kb.data_format, kb.data_filename,
 		       COALESCE(kb.data_size_bytes, 0) as data_size_bytes,
@@ -552,7 +559,7 @@ func GetKnowledgebase(sc *security.RequestContext, accountId, kbId string) (Know
 		FROM llm_knowledgebases kb
 		LEFT JOIN users cu ON kb.created_by = cu.id
 		LEFT JOIN users uu ON kb.updated_by = uu.id
-		WHERE kb.id = $1 AND kb.account_id = $2`, kbId, accountId)
+		WHERE kb.id = $1 AND `+scope, append([]any{kbId, accountId}, scopeArgs...)...)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return Knowledgebase{}, errors.New(errKBNotFound)
@@ -605,7 +612,7 @@ func ListKnowledgebasesForTenant(sc *security.RequestContext) ([]Knowledgebase, 
 	// the struct, so the per-account path (which doesn't JOIN) stays
 	// wire-compatible — clients that don't read account_name see nothing.
 	baseSelect := `
-		SELECT kb.id, kb.tenant_id, kb.account_id, kb.name,
+		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.name,
 		       COALESCE(kb.description, '') as description,
 		       kb.data_format, kb.data_filename,
 		       COALESCE(kb.data_size_bytes, 0) as data_size_bytes, kb.status, kb.enabled,
@@ -665,9 +672,10 @@ func ListKnowledgebases(sc *security.RequestContext, accountId string) ([]Knowle
 		return nil, err
 	}
 
+	scope, scopeArgs := KBAccountScope("kb", 1, 2, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
 	var kbs []Knowledgebase
 	err = dbms.Db.Select(&kbs, `
-		SELECT kb.id, kb.tenant_id, kb.account_id, kb.name,
+		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.name,
 		       COALESCE(kb.description, '') as description,
 		       kb.data_format, kb.data_filename,
 		       COALESCE(kb.data_size_bytes, 0) as data_size_bytes, kb.status, kb.enabled,
@@ -681,8 +689,8 @@ func ListKnowledgebases(sc *security.RequestContext, accountId string) ([]Knowle
 		FROM llm_knowledgebases kb
 		LEFT JOIN users cu ON kb.created_by = cu.id
 		LEFT JOIN users uu ON kb.updated_by = uu.id
-		WHERE kb.account_id = $1
-		ORDER BY kb.created_at DESC`, accountId)
+		WHERE `+scope+`
+		ORDER BY kb.created_at DESC`, append([]any{accountId}, scopeArgs...)...)
 	if err != nil {
 		slog.Error(logKBFailedQuery, "error", err, "account_id", accountId)
 		return nil, err
@@ -715,7 +723,7 @@ func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, up
 	// Check if KB exists
 	var existingKB Knowledgebase
 	err = dbms.Db.Get(&existingKB, `
-		SELECT kb.id, kb.tenant_id, kb.account_id, kb.name,
+		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.name,
 		       COALESCE(kb.description, '') as description,
 		       kb.data, kb.data_format, kb.data_filename,
 		       COALESCE(kb.data_size_bytes, 0) as data_size_bytes,
@@ -1268,7 +1276,8 @@ func GetKBLoadHistory(sc *security.RequestContext, accountId, kbId string) ([]KB
 		KBType        string  `db:"kb_type"`
 		IntegrationID *string `db:"integration_id"`
 	}
-	err = dbms.Db.Get(&kbMeta, "SELECT kb_type, integration_id FROM llm_knowledgebases WHERE id = $1 AND account_id = $2", kbId, accountId)
+	scope, scopeArgs := KBAccountScope("", 2, 3, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
+	err = dbms.Db.Get(&kbMeta, "SELECT kb_type, integration_id FROM llm_knowledgebases WHERE id = $1 AND "+scope, append([]any{kbId, accountId}, scopeArgs...)...)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, errors.New(errKBNotFound)
@@ -1802,7 +1811,7 @@ func ListAgentKBs(sc *security.RequestContext, accountId, agentId string) ([]Kno
 	// Join with mapping table to get KBs for this agent
 	// Note: Excluding data field for performance
 	err = dbms.Db.Select(&kbs, `
-		SELECT kb.id, kb.tenant_id, kb.account_id, kb.name,
+		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.name,
 		       COALESCE(kb.description, '') as description, kb.context_tags,
 		       kb.data_format,
 		       kb.data_filename, COALESCE(kb.data_size_bytes, 0) as data_size_bytes, kb.status, kb.enabled,
@@ -1986,6 +1995,7 @@ func LoadAgentSkillContentsByIDs(sc *security.RequestContext, accountId string, 
 	if err != nil {
 		return "", nil, fmt.Errorf("LoadAgentSkillContentsByIDs: failed to get database manager: %w", err)
 	}
+	scope, scopeArgs := KBAccountScope("kb", 1, 3, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
 	var rows []agentSkillRow
 	// account_id scoping is defense-in-depth: ids already come from an
 	// account+agent-mapping-scoped candidate query, but filtering here too means a
@@ -1999,11 +2009,11 @@ func LoadAgentSkillContentsByIDs(sc *security.RequestContext, accountId string, 
 		       COALESCE(kb.data_format, '') as data_format,
 		       COALESCE(kb.kb_type, 'manual') as kb_type, COALESCE(kb.note_category, '') as note_category
 		FROM llm_knowledgebases kb
-		WHERE kb.account_id = $1
+		WHERE `+scope+`
 		  AND kb.id = ANY($2::uuid[])
 		  AND kb.status = 'active'
 		  AND kb.enabled
-		ORDER BY kb.id, kb.name ASC`, accountId, pq.Array(ids))
+		ORDER BY kb.id, kb.name ASC`, append([]any{accountId, pq.Array(ids)}, scopeArgs...)...)
 	if err != nil {
 		return "", nil, fmt.Errorf("LoadAgentSkillContentsByIDs: query failed: %w", err)
 	}
@@ -2440,10 +2450,11 @@ func ListKBAgents(sc *security.RequestContext, accountId, kbId string) ([]string
 		return nil, err
 	}
 
-	// First verify the KB exists and belongs to this account
+	// First verify the KB exists and this account may read it
+	scope, scopeArgs := KBAccountScope("", 2, 3, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
 	var kbExists bool
 	err = dbms.Db.Get(&kbExists, `
-		SELECT EXISTS(SELECT 1 FROM llm_knowledgebases WHERE id = $1 AND account_id = $2)`, kbId, accountId)
+		SELECT EXISTS(SELECT 1 FROM llm_knowledgebases WHERE id = $1 AND `+scope+`)`, append([]any{kbId, accountId}, scopeArgs...)...)
 	if err != nil {
 		slog.Error("kb: failed to check KB existence", "error", err)
 		return nil, err

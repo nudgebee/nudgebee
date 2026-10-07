@@ -24,7 +24,8 @@ func ResolveKnowledgeSelection(ctx *security.RequestContext, accountID, name, id
 	var c KnowledgeCandidate
 	var kbType, category, format string
 	var integration *string
-	err = db.Db.QueryRowContext(ctx.GetContext(), `SELECT id, name, COALESCE(kb_type,'manual'), integration_id, md5(COALESCE(data,'')), octet_length(COALESCE(data,'')), COALESCE(note_category,''), COALESCE(data_format,'') FROM llm_knowledgebases WHERE account_id=$1 AND status='active' AND enabled AND (($2 <> '' AND id::text=$2) OR ($2='' AND LOWER(BTRIM(name))=LOWER(BTRIM($3)))) ORDER BY id LIMIT 1`, accountID, id, name).Scan(&c.KBID, &c.Title, &kbType, &integration, &c.Version, &c.Bytes, &category, &format)
+	scope, scopeArgs := KBAccountScope("", 1, 4, VisibleOrgKnowledgebaseIDs(ctx.GetContext(), accountID))
+	err = db.Db.QueryRowContext(ctx.GetContext(), `SELECT id, name, COALESCE(kb_type,'manual'), integration_id, md5(COALESCE(data,'')), octet_length(COALESCE(data,'')), COALESCE(note_category,''), COALESCE(data_format,'') FROM llm_knowledgebases WHERE `+scope+` AND status='active' AND enabled AND (($2 <> '' AND id::text=$2) OR ($2='' AND LOWER(BTRIM(name))=LOWER(BTRIM($3)))) ORDER BY id LIMIT 1`, append([]any{accountID, id, name}, scopeArgs...)...).Scan(&c.KBID, &c.Title, &kbType, &integration, &c.Version, &c.Bytes, &category, &format)
 	if err != nil {
 		return c, "", fmt.Errorf("knowledge is unavailable: %w", err)
 	}
@@ -57,9 +58,10 @@ func WriteManualKnowledge(ctx *security.RequestContext, accountID string, c Know
 	// version predicate prevents mixing edits between chunks.
 	var written int64
 	const chunkChars = 256 * 1024
+	scope, scopeArgs := KBAccountScope("", 1, 6, VisibleOrgKnowledgebaseIDs(ctx.GetContext(), accountID))
 	for offset := 1; ; offset += chunkChars {
 		var chunk string
-		err := db.Db.QueryRowContext(ctx.GetContext(), `SELECT substring(data FROM $3::integer FOR $4::integer) FROM llm_knowledgebases WHERE account_id=$1 AND id::text=$2 AND status='active' AND enabled AND COALESCE(kb_type,'manual')='manual' AND COALESCE(data_format,'') <> 'pdf' AND md5(data)=$5`, accountID, c.KBID, offset, chunkChars, c.Version).Scan(&chunk)
+		err := db.Db.QueryRowContext(ctx.GetContext(), `SELECT substring(data FROM $3::integer FOR $4::integer) FROM llm_knowledgebases WHERE `+scope+` AND id::text=$2 AND status='active' AND enabled AND COALESCE(kb_type,'manual')='manual' AND COALESCE(data_format,'') <> 'pdf' AND md5(data)=$5`, append([]any{accountID, c.KBID, offset, chunkChars, c.Version}, scopeArgs...)...).Scan(&chunk)
 		if err != nil {
 			return fmt.Errorf("knowledge changed or became unavailable: %w", err)
 		}

@@ -928,11 +928,13 @@ func fetchKBData(ctx *security.RequestContext, accountId string, docs toolcore.R
 	if !needsLegacyFallback {
 		return out
 	}
+	// Resolved once: the KBs come from one list, so one visibility lookup covers them.
+	orgIDs := toolcore.VisibleOrgKnowledgebaseIDs(ctx.GetContext(), accountId)
 	for _, kb := range kbs {
 		if kb.Id == "" || !kb.UsableForAgents() || kb.KBType == "integration" {
 			continue
 		}
-		full, err := toolcore.GetKnowledgebase(ctx, accountId, kb.Id)
+		full, err := toolcore.GetKnowledgebaseScoped(ctx, accountId, kb.Id, orgIDs)
 		if err != nil {
 			ctx.GetLogger().Debug("kb_prestep: could not load KB data for attribution", "error", err, "kb_id", kb.Id)
 			continue

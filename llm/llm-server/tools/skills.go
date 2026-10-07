@@ -382,18 +382,20 @@ func (m LoadSkillsTool) fetchSkillsBatch(ctx core.NbToolContext, dbms *common.Da
 		return results, nil
 	}
 
-	// Resolve the requested names in one account-scoped batch query.
+	// Resolve the requested names in one batch query over the KBs this account
+	// may read (its own and the visible organisation ones).
+	scope, scopeArgs := core.KBAccountScope("kb", 1, 3, core.VisibleOrgKnowledgebaseIDs(ctx.Ctx.GetContext(), ctx.AccountId))
 	query := `
 		SELECT kb.id, kb.name, CASE WHEN kb.data_format = 'pdf' THEN '' ELSE LEFT(kb.data, 4097) END, COALESCE(kb.description, ''),
 		       COALESCE(kb.kb_type, 'manual'), kb.kb_source, kb.integration_id, COALESCE(kb.note_category, ''),
 		       COALESCE(kb.data_format, '')
 		FROM llm_knowledgebases kb
-		WHERE kb.account_id = $1
+		WHERE ` + scope + `
 		  AND LOWER(BTRIM(kb.name)) = ANY($2::text[])
 		  AND kb.status = 'active'
 		  AND kb.enabled`
 
-	rows, err := dbms.Db.Query(query, ctx.AccountId, pq.Array(queryLower))
+	rows, err := dbms.Db.Query(query, append([]any{ctx.AccountId, pq.Array(queryLower)}, scopeArgs...)...)
 	if err != nil {
 		ctx.Ctx.GetLogger().Error("tool: load_skills batch query error", "error", err)
 		return results, queryNames
@@ -745,16 +747,18 @@ func (s SearchSkillsTool) searchManualKBs(ctx core.NbToolContext, dbms *common.D
 		args = append(args, "%"+word+"%")
 	}
 
+	scope, scopeArgs := core.KBAccountScope("kb", 1, len(args)+1, core.VisibleOrgKnowledgebaseIDs(ctx.Ctx.GetContext(), ctx.AccountId))
+	args = append(args, scopeArgs...)
 	sqlQuery := fmt.Sprintf(`
 		SELECT kb.id, kb.name, COALESCE(kb.description, ''),
 		       CASE WHEN kb.data_format = 'pdf' THEN '' ELSE LEFT(kb.data, 500) END, COALESCE(kb.note_category, '')
 		FROM llm_knowledgebases kb
-		WHERE kb.account_id = $1
+		WHERE %s
 		  AND kb.status = 'active'
 		  AND kb.enabled
 		  AND COALESCE(kb.kb_type, 'manual') = 'manual'
 		  AND %s
-		LIMIT 5`, strings.Join(conditions, " AND "))
+		LIMIT 5`, scope, strings.Join(conditions, " AND "))
 
 	rows, err := dbms.Db.Query(sqlQuery, args...)
 	if err != nil {

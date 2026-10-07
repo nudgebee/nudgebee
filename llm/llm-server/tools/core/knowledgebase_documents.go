@@ -90,7 +90,8 @@ func kbDocumentsCollection(sc *security.RequestContext, accountId, kbId string) 
 		KBType        string  `db:"kb_type"`
 		IntegrationID *string `db:"integration_id"`
 	}
-	err = dbms.Db.GetContext(sc.GetContext(), &kbMeta, "SELECT name, kb_type, integration_id FROM llm_knowledgebases WHERE id = $1 AND account_id = $2", kbId, accountId)
+	scope, scopeArgs := KBAccountScope("", 2, 3, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
+	err = dbms.Db.GetContext(sc.GetContext(), &kbMeta, "SELECT name, kb_type, integration_id FROM llm_knowledgebases WHERE id = $1 AND "+scope, append([]any{kbId, accountId}, scopeArgs...)...)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", "", errors.New(errKBNotFound)
@@ -129,6 +130,7 @@ func kbManualKB(ctx context.Context, accountId, kbId string, withContent bool) (
 	if withContent {
 		dataColumn = `data`
 	}
+	scope, scopeArgs := KBAccountScope("", 2, 3, VisibleOrgKnowledgebaseIDs(ctx, accountId))
 	err = dbms.Db.GetContext(
 		ctx,
 		&row,
@@ -136,8 +138,8 @@ func kbManualKB(ctx context.Context, accountId, kbId string, withContent bool) (
 		        COALESCE(data_format, 'text') AS data_format,
 		        COALESCE(data_filename, '') AS data_filename
 		   FROM llm_knowledgebases
-		  WHERE id = $1 AND account_id = $2 AND kb_type = 'manual'`, dataColumn),
-		kbId, accountId,
+		  WHERE id = $1 AND %s AND kb_type = 'manual'`, dataColumn, scope),
+		append([]any{kbId, accountId}, scopeArgs...)...,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -389,11 +391,12 @@ func uploadedKBSource(sc *security.RequestContext, accountId, kbId string) (*KBD
 		Data      string `db:"data"`
 		UpdatedAt string `db:"updated_at"`
 	}
+	scope, scopeArgs := KBAccountScope("", 2, 3, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
 	err = dbms.Db.GetContext(sc.GetContext(), &row, `SELECT name, COALESCE(data_filename, '') AS data_filename,
 	                                COALESCE(data_format, '') AS data_format, COALESCE(data, '') AS data,
 	                                COALESCE(updated_at::text, '') AS updated_at
 	                         FROM llm_knowledgebases
-	                         WHERE id = $1 AND account_id = $2 AND enabled`, kbId, accountId)
+	                         WHERE id = $1 AND `+scope+` AND enabled`, append([]any{kbId, accountId}, scopeArgs...)...)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errors.New(errKBDocumentNotFound)

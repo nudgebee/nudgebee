@@ -11,9 +11,10 @@ Tracking issue: #40313. Decision record: `docs/architecture-decisions.md` ("Orga
 3. **Restriction:** an account list. Labels never grant or hide access.
 4. **Switch-off:** each account can switch an organisation KB off for itself.
 5. **Name clash:** the account's own KB wins over the organisation KB.
-6. **Existing KBs:** they stay account-owned. A tenant admin can widen one to the organisation.
+6. **Existing KBs:** they stay account-owned. A tenant admin can widen one to the organisation, and turn an organisation KB back into an account KB by choosing the account.
 7. **Timing:** restrict and switch-off apply to new searches and loads immediately.
 8. **Tenant boundary:** a KB is never visible outside its tenant.
+9. **Account admins:** they see the organisation KBs visible to their account read-only, marked "Organisation", and can switch one off for their account.
 
 **Scope:** manual knowledge bases. Integration knowledge bases (Confluence, ServiceNow) keep one row per account with their existing per-account switch, and search honours both mechanisms.
 
@@ -42,9 +43,8 @@ Tracking issue: #40313. Decision record: `docs/architecture-decisions.md` ("Orga
 
 ### Fact/SOP marks: `llm_kb_capability_entries`
 
-- **Tenant-level marks:** a mark on an organisation KB document is set once for the tenant (`account_id` NULL), unique per `(tenant_id, document_key)`.
-- **Account-level marks:** an account-level mark on the same document overrides the tenant mark for that account.
-- **Account deletion** removes that account's marks.
+- **Organisation KBs are manual:** their Fact/SOP category is on the KB row (`note_category`) and stays with it when the KB is widened or moved back to an account.
+- **Per-document marks** apply to integration KBs (Confluence, ServiceNow pages), which stay account-owned until integration KBs move to the organisation. Tenant-level marks (`account_id` NULL, unique per `(tenant_id, document_key)`) are reserved for that step; an account-level mark will override the tenant mark for that account.
 
 ### Agent mappings
 
@@ -58,7 +58,7 @@ Unchanged. An account admin can map any organisation KB visible to their account
 - minus organisation KBs shadowed by an own manual KB with the same name. Names compare case-insensitively, and an own KB shadows even while switched off.
 
 **The rule is implemented twice, and a shared fixture keeps the two copies identical:**
-- **llm-server (Go): one helper used by every read.** That covers KB lists and gets, skill search and fetch, `load_skills` resolution, documents and PDF reads, marks, mappings, and the knowledge pre-step (including reference attribution). Writes are owner-scoped: account KBs need account access, organisation KBs need `tenant_admin` of the KB's tenant.
+- **llm-server (Go): one helper used by every read.** That covers KB lists and gets, skill search and fetch, `load_skills` resolution, documents and PDF reads, the agents a KB is mapped to, and the knowledge pre-step (including reference attribution). Reads driven by agent mappings stay account-scoped until an organisation KB can be mapped to an agent; they apply the rule from then on. Full KB rows return `account_id` as an empty string for organisation KBs. Writes are owner-scoped: account KBs need account access, organisation KBs need `tenant_admin` of the KB's tenant.
 - **rag-server (Python): the live-KB gate.** It applies the same rule to every search and exact document read, and shows nothing when the lookup fails. Organisation KB collections are indexed with the tenant as their scope, so the tenant boundary stays in rag-server.
 - **The fixture:** one JSON file of cases (tenants, accounts, KBs, switches, expected visible KBs), run by both the Go and the Python test suites.
 
@@ -81,7 +81,7 @@ Unchanged. An account admin can map any organisation KB visible to their account
 | Action | Who |
 |---|---|
 | Read | Users with access to the account; visibility as above |
-| Create, edit, delete, widen or restrict an organisation KB, or set its tenant-level marks | `tenant_admin` of the KB's tenant |
+| Create, edit, delete, widen, restrict or move back to an account an organisation KB | `tenant_admin` of the KB's tenant |
 | Switch an organisation KB off or on for one account | `account_admin` of that account |
 | Read-only roles | Read only |
 

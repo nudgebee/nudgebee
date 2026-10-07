@@ -101,9 +101,10 @@ func resolveKBIngestPayload(
 	}
 	// Scoped by account as well as id: every other read of this table is, and an
 	// unscoped lookup would return another tenant's filename to whoever knows a uuid.
+	scope, scopeArgs := KBAccountScope("", 2, 3, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
 	if nameErr := dbms.Db.Get(&filename,
-		`SELECT COALESCE(data_filename, '') FROM llm_knowledgebases WHERE id = $1 AND account_id = $2`,
-		kbId, accountId); nameErr != nil {
+		`SELECT COALESCE(data_filename, '') FROM llm_knowledgebases WHERE id = $1 AND `+scope,
+		append([]any{kbId, accountId}, scopeArgs...)...); nameErr != nil {
 		// Only affects the title on each chunk, so it is not worth failing over.
 		slog.Warn("kb: failed to read PDF filename", "error", nameErr, "kb_id", kbId)
 	}
