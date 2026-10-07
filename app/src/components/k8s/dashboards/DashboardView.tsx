@@ -80,7 +80,7 @@ const HIGHLIGHT_MS = 2000;
  * `edit` is the toolbar's own Discard — it leaves edit mode without leaving the
  * screen; the other two leave the screen entirely.
  */
-type Exit = { to: 'edit' } | { to: 'back' } | { to: 'route'; url: string };
+type Exit = { to: 'edit' } | { to: 'back' } | { to: 'route'; url: string; hashOnly?: boolean };
 
 /** The definition's settings beside its panels. */
 type DashboardSettings = Pick<DashboardDefinition, 'time_from' | 'refresh'>;
@@ -395,6 +395,9 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     // means leaving the screen.
     if (exit.to === 'route' || exit.to === 'back' || isNew) {
       allowNavigation.current = true;
+      // A hash change leaves the draft mounted unless the hash names another
+      // screen, so the draft is dropped here as Back would drop it.
+      if (exit.to === 'route' && exit.hashOnly) onBack?.();
       if (exit.to === 'route') router.push(exit.url);
       else onBack?.();
       return;
@@ -489,7 +492,10 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   useEffect(() => {
     if (!unsavedWork) return undefined;
 
-    const handleRouteChangeStart = (url: string) => {
+    // A never-saved draft sits at /dashboards with no ?dashboard=, so the nav's
+    // /dashboards#groups is only a hash change: Next emits hashChangeStart, not
+    // routeChangeStart, and the page swaps this screen out all the same.
+    const holdNavigation = (hashOnly: boolean) => (url: string) => {
       if (allowNavigation.current) {
         allowNavigation.current = false;
         return;
@@ -500,12 +506,16 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
       if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== here) {
         window.history.pushState(null, '', here);
       }
-      setPendingExit({ to: 'route', url });
+      setPendingExit({ to: 'route', url, hashOnly });
       // Next's own way of cancelling a transition from routeChangeStart: emit
       // the error event the router listens for, then unwind out of the handler.
-      router.events.emit('routeChangeError');
+      // A hash change has no such event; throwing before Next writes the new
+      // hash is what stops it.
+      if (!hashOnly) router.events.emit('routeChangeError');
       throw 'Route change aborted — the dashboard has unsaved changes. This is not an error.';
     };
+    const handleRouteChangeStart = holdNavigation(false);
+    const handleHashChangeStart = holdNavigation(true);
 
     // The tab closing or reloading is the browser's to warn about; it renders
     // its own dialog and ignores any wording we pass.
@@ -517,9 +527,11 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     };
 
     router.events.on('routeChangeStart', handleRouteChangeStart);
+    router.events.on('hashChangeStart', handleHashChangeStart);
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => {
       router.events.off('routeChangeStart', handleRouteChangeStart);
+      router.events.off('hashChangeStart', handleHashChangeStart);
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [unsavedWork, router]);
