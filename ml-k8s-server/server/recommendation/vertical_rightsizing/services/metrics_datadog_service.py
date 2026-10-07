@@ -15,6 +15,7 @@ from server.recommendation.vertical_rightsizing.models.config import Config
 from server.recommendation.vertical_rightsizing.models.objects import K8sObjectData, PodData
 from server.recommendation.vertical_rightsizing.strategy.strategies import BaseStrategy
 from server.recommendation.vertical_rightsizing.models.result import PodsTimeData
+from server.utils.utils import safe_get
 from server.recommendation.vertical_rightsizing.services.metric_base_service import MetricsService
 
 logger = logging.getLogger("rightsizing")
@@ -55,7 +56,7 @@ def pods_from_series(entries: List[dict], live_cutoff: float) -> list[PodData]:
     """
     last_seen: Dict[str, float] = {}
     for series in entries or []:
-        pod_name = (series.get("metric") or {}).get("pod_name", "")
+        pod_name = safe_get(series, ["metric", "pod_name"], "")
         if not pod_name:
             continue
         for ts in series.get("timestamps") or []:
@@ -234,9 +235,8 @@ class DatadogMetricsService(MetricsService):
         """
         result: Dict[str, Dict[str, list]] = {}
         for series in entries or []:
-            tag_map = series.get("metric") or {}
-            pod_name = tag_map.get("pod_name", "")
-            container_name = tag_map.get("kube_container_name", "")
+            pod_name = safe_get(series, ["metric", "pod_name"], "")
+            container_name = safe_get(series, ["metric", "kube_container_name"], "")
             if not pod_name or not container_name:
                 continue
 

@@ -34,6 +34,20 @@ def handle_df_for_nan(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def safe_get(d: Any, path: str | list[str], default: Any = None) -> Any:
+    """Safely get a nested value from a dictionary, returning default if any key is missing or None."""
+    if isinstance(path, str):
+        path = [path]
+    curr = d
+    for key in path:
+        if not isinstance(curr, dict):
+            return default
+        curr = curr.get(key)
+        if curr is None:
+            return default
+    return curr
+
+
 def get_model_name(account_id: str, tenant_id: str, namespace: str, deployment_name: str, model_type: str) -> str:
     return f"{tenant_id}_{account_id}_{namespace}_{deployment_name}_{model_type}.keras"
 

@@ -26,6 +26,7 @@ from server.utils.utils import (
     get_prediction_time_range,
     get_trace,
     resolve_tenant_id,
+    safe_get,
 )
 
 from opentelemetry import context
@@ -424,12 +425,14 @@ class Prometheus(Metrics):
             start_time = datetime.now(UTC) - timedelta(days=14)
         response = self.query_metrics(query, start_time, end_time, "", True, raw=True)
         if len(response) > 0:
+            # A series without a metric or a value is skipped rather than returned as a [None, None] row.
             return [
                 {
-                    "metric": r["metric"],
-                    "value": [r["value"]["timestamp"], r["value"]["value"]],
+                    "metric": safe_get(r, "metric", {}),
+                    "value": [safe_get(r, ["value", "timestamp"]), safe_get(r, ["value", "value"])],
                 }
                 for r in response
+                if safe_get(r, ["value", "timestamp"]) is not None and safe_get(r, ["value", "value"]) is not None
             ]
         return response
 
