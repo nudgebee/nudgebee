@@ -1030,7 +1030,10 @@ func (a *awsProvider) DescribeECSTasks(ctx providers.CloudProviderContext, accou
 }
 
 func (a *awsProvider) GetUsageReport(ctx providers.CloudProviderContext, account providers.Account, month time.Month, year int) (providers.GetUsageReportResponse, error) {
-	return getAwsUsageReport(ctx, account, month, year)
+	resp, err := getAwsUsageReport(ctx, account, month, year)
+	// The spend sync is the only one that sets the account's connection status,
+	// and it shows this error as the reason.
+	return resp, explainAssumeRoleRefusal(account, err)
 }
 
 func (a *awsProvider) StreamUsageReport(ctx providers.CloudProviderContext, account providers.Account, month time.Month, year int, emit func([]providers.UsageReportItem) error) error {

@@ -19,7 +19,9 @@ jest.mock('@api1/kubernetes', () => ({
   default: { getAgentHealth: jest.fn(), getLatestVersions: jest.fn(), triggerCloudSync: jest.fn() },
 }));
 
-jest.mock('@context/DataContext', () => ({ useData: () => ({ selectedCluster: { cloud_provider: 'K8S', type: 'k8s' } }) }));
+const K8S_CLUSTER = { cloud_provider: 'K8S', type: 'k8s' };
+const mockCluster = { current: K8S_CLUSTER };
+jest.mock('@context/DataContext', () => ({ useData: () => ({ selectedCluster: mockCluster.current }) }));
 jest.mock('@lib/auth', () => ({ hasWriteAccess: () => true }));
 jest.mock('@utils/colors');
 jest.mock('@shared/AccountGuard', () => ({ withAccountGuard: (Component) => Component }));
@@ -55,7 +57,14 @@ jest.mock('@shared/navigation/Tabs', () => ({ __esModule: true, default: () => n
 jest.mock('@ui/Toast', () => ({ toast: { error: jest.fn(), success: jest.fn() } }));
 jest.mock('@ui/ListingLayout', () => {
   const ListingLayout = ({ children }) => <div>{children}</div>;
+  ListingLayout.Header = ({ title, children }) => (
+    <div>
+      {title}
+      {children}
+    </div>
+  );
   ListingLayout.Toolbar = ({ title }) => <div>{title}</div>;
+  ListingLayout.ToolbarSpacer = () => null;
   ListingLayout.Body = ({ children }) => <div>{children}</div>;
   return { __esModule: true, ListingLayout };
 });
@@ -139,6 +148,47 @@ describe('agentHealth Features block', () => {
     expect(featureItem('Logs')).toHaveTextContent('Provider - loki');
     expect(screen.queryByText(/served by an integration/)).not.toBeInTheDocument();
     expect(screen.queryByText(/services are disconnected/)).not.toBeInTheDocument();
+  });
+});
+
+describe('cloud account connection banner', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+    mockCluster.current = K8S_CLUSTER;
+  });
+
+  const renderCloudAccount = async (agent) => {
+    mockCluster.current = { cloud_provider: 'AWS', type: 'AWS' };
+    k8sApi.getLatestVersions.mockResolvedValue({ data: { nudgebee_list_versions: {} } });
+    // The page asks for the proxy agent separately; a cloud account has none.
+    k8sApi.getAgentHealth.mockImplementation(({ type }) =>
+      Promise.resolve({ data: type === 'proxy' ? [] : [{ type: 'AWS', connection_status: { account_number: '111122223333' }, ...agent }] })
+    );
+    render(<AgentHealth />);
+    await waitFor(() => expect(screen.getByText('Features')).toBeInTheDocument());
+  };
+
+  it('says why the account is not connected, so the reader knows what to fix', async () => {
+    const reason =
+      'AWS refused the request to assume the IAM role arn:aws:iam::111122223333:role/Example, so nothing can be collected from this account. ' +
+      'Check that the role still exists, that its trust policy still trusts the caller named below, and that the external ID matches.';
+    await renderCloudAccount({ status: 'NOT_CONNECTED', status_message: reason });
+
+    expect(screen.getByText('The Agent is not connected')).toBeInTheDocument();
+    expect(screen.getByText(reason)).toBeInTheDocument();
+  });
+
+  it('still says not connected when no reason was recorded', async () => {
+    await renderCloudAccount({ status: 'NOT_CONNECTED', status_message: null });
+
+    expect(screen.getByText('The Agent is not connected')).toBeInTheDocument();
+  });
+
+  it('shows no banner for a connected account, even one carrying an old message', async () => {
+    await renderCloudAccount({ status: 'CONNECTED', status_message: 'cost reporting is not configured for this account' });
+
+    expect(screen.queryByText('The Agent is not connected')).not.toBeInTheDocument();
+    expect(screen.queryByText(/cost reporting is not configured/)).not.toBeInTheDocument();
   });
 });
 

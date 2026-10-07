@@ -1086,7 +1086,17 @@ const AgentHealth = () => {
             <ListingLayout id='agent-health' sx={{ mt: 3 }}>
               <ListingLayout.Toolbar title='Agent Health' />
               <ListingLayout.Body>
-                {data[0]?.status === 'NOT_CONNECTED' && <Typography color='red'>The Agent is not connected</Typography>}
+                {/* The reason is the spend sync's own error (the only sync that sets a cloud
+                    account's status), so it says what to fix. A new account has none yet. */}
+                {data[0]?.status === 'NOT_CONNECTED' && (
+                  <Banner
+                    surface='section'
+                    tone='critical'
+                    id='cloud-agent-disconnected-banner'
+                    title={data[0].status_message ? 'The Agent is not connected' : undefined}
+                    message={data[0].status_message || 'The Agent is not connected'}
+                  />
+                )}
                 <CustomTable headers={HEADERS_CLOUD} tableData={agentHealthData} loading={loading} />
 
                 <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mt: 2, mb: 1 }}>Features</Typography>
