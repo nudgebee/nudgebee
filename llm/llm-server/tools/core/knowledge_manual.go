@@ -81,7 +81,20 @@ func ResolveManualKnowledge(ctx *security.RequestContext, accountID string, docs
 			}
 			seen[id] = true
 			doc.Document = row.Data
-			doc.Metadata = map[string]any{"collection": collection, "kb_id": id, "kb_name": row.Name, "title": row.Name, "source": "manual", "note_category": row.Category}
+			// Overlay onto the existing metadata rather than replacing it outright:
+			// Overlay, not replace: the Qdrant payload's kind/capabilities must
+			// survive for consumers such as KnowledgeDocumentPurpose.
+			metadata := make(map[string]any, len(doc.Metadata)+6)
+			for k, v := range doc.Metadata {
+				metadata[k] = v
+			}
+			metadata["collection"] = collection
+			metadata["kb_id"] = id
+			metadata["kb_name"] = row.Name
+			metadata["title"] = row.Name
+			metadata["source"] = "manual"
+			metadata["note_category"] = row.Category
+			doc.Metadata = metadata
 		}
 		out = append(out, doc)
 	}

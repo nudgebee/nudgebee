@@ -32,6 +32,17 @@ type skillData struct {
 }
 
 const ragSkillTopK = 5
+
+// ragSkillFetchSize is how many RAG hits search_skills asks for. The LLM judge
+// picks one result from whatever it is given, so it gets a wider pool; without
+// it, extra hits would only be read and dropped, so the default stays at five.
+func ragSkillFetchSize() int {
+	if config.Config.KBRerankEnabled {
+		return 3 * ragSkillTopK
+	}
+	return ragSkillTopK
+}
+
 const ragSkillTimeout = 10 * time.Second
 
 func init() {
@@ -643,7 +654,7 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 		var out searchOutput
 		searchCtx, traceID := core.WithRetrievalTraceID(ctx.Ctx.GetContext())
 		docs := core.QueryRAGCollection(searchCtx, ctx.UserId, ctx.AccountId, "", query, ragKBModule, "",
-			ragSkillTopK, ctx.ConversationId, ctx.MessageId, "", false)
+			ragSkillFetchSize(), ctx.ConversationId, ctx.MessageId, "", false)
 		out.docs = core.JudgeKBResults(ctx.Ctx, ctx.AccountId, ctx.UserId, ctx.ConversationId, ctx.MessageId, query, docs, traceID)
 		ragCh <- out
 	}()

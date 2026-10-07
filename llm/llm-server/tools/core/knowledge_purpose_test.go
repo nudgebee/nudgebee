@@ -32,3 +32,21 @@ func TestMappedSkillPurpose(t *testing.T) {
 		require.Contains(t, block, "<guidance>"+KnowledgePurposeGuidance(KnowledgePurpose(kind, "sop"))+"</guidance>")
 	}
 }
+
+func TestIntegrationDocumentPurposeFollowsClassifierKind(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		metadata map[string]any
+		want     KnowledgeContentPurpose
+	}{
+		{"classifier says sop", map[string]any{"kind": "sop"}, KnowledgePurposeProcedure},
+		{"classifier says knowledge", map[string]any{"kind": "knowledge"}, KnowledgePurposeReference},
+		{"no classification", map[string]any{}, KnowledgePurposeReference},
+		{"human fact mark beats classifier sop", map[string]any{"kind": "sop", DocumentNoteCategoryKey: KBNoteCategoryFact}, KnowledgePurposeReference},
+		{"human sop mark beats classifier knowledge", map[string]any{"kind": "knowledge", DocumentNoteCategoryKey: KBNoteCategorySOP}, KnowledgePurposeProcedure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, KnowledgeDocumentPurpose(RAGSearchResult{Metadata: tc.metadata}))
+		})
+	}
+}

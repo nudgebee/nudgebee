@@ -50,9 +50,17 @@ def discovery_document(text: str, metadata: dict, limit: int) -> tuple[str, dict
     # so no mark ever matched in this search mode.
     safe: dict[str, Any] = {
         key: str(metadata[key])[:1024]
-        for key in ("title", "url", "source", "collection", "retrieval_id", "kb_id", "kb_name", *SOURCE_ID_KEYS)
+        for key in ("title", "url", "source", "collection", "retrieval_id", "kb_id", "kb_name", "kind", *SOURCE_ID_KEYS)
         if metadata.get(key) is not None
     }
+    # capabilities (#38623's classifier output) is a list, not a scalar — the
+    # str() above would turn it into a Python repr string that llm-server's Go
+    # client cannot parse back into a list, silently discarding it. Kept as a
+    # real list; bounded defensively even though the catalog-grounding at
+    # classification time already keeps it short.
+    capabilities = metadata.get("capabilities")
+    if isinstance(capabilities, list):
+        safe["capabilities"] = [str(c)[:256] for c in capabilities[:32]]
     safe.update(content_sha256=version, content_bytes=size, completeness="indexed_document")
     return excerpt, safe
 

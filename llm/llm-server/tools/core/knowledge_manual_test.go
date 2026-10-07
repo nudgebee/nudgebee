@@ -39,6 +39,34 @@ func TestResolveManualKnowledgeCanonicalIdentity(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// A manual-KB hit's classification metadata (kind/capabilities, #38623) must
+// survive the canonical-body swap: KnowledgeDocumentPurpose reads it straight
+// off this function's output.
+func TestResolveManualKnowledgeKeepsClassificationMetadata(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	oldDatabase := knowledgeDatabase
+	knowledgeDatabase = func(common.DatabaseManagerType) (*common.DatabaseManager, error) {
+		return &common.DatabaseManager{Db: sqlx.NewDb(db, "postgresql")}, nil
+	}
+	t.Cleanup(func() { knowledgeDatabase = oldDatabase })
+
+	mock.ExpectQuery(`SELECT id, name, .*LEFT.* FROM llm_knowledgebases WHERE account_id = \$1.*status = 'active' AND enabled`).WithArgs("account-a", sqlmock.AnyArg()).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "data", "note_category"}).AddRow("manual-a", "Runbook", "FULL-CONTENT-TAIL", ""))
+	docs := RAGSearchResults{
+		{Document: "chunk", Metadata: map[string]any{"collection": "kb_manual-a", "kind": "sop", "capabilities": []any{"k8s.workload_restart"}}},
+	}
+	got := ResolveManualKnowledge(security.NewRequestContextForSuperAdmin(), "account-a", docs)
+	require.Len(t, got, 1)
+	assert.Equal(t, "sop", got[0].Metadata["kind"])
+	assert.Equal(t, []any{"k8s.workload_restart"}, got[0].Metadata["capabilities"])
+	// The canonical fields this function exists to set must still win over
+	// whatever the Qdrant payload carried.
+	assert.Equal(t, "manual-a", got[0].Metadata["kb_id"])
+	assert.Equal(t, "Runbook", got[0].Metadata["title"])
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestResolveManualKnowledgeKeepsPDFChunks(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)

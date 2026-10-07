@@ -30,6 +30,41 @@ def test_discovery_keeps_the_scrapers_document_id():
     assert servicenow["sys_id"] == "abc123"
 
 
+def test_discovery_keeps_classification_metadata():
+    # #38623's classifier stamps kind/capabilities on every chunk; llm-server's
+    # KnowledgeDocumentPurpose reads them straight off this response. Caught
+    # live, not by a unit test, when a real HTTP round trip through this
+    # exact code path showed classification metadata vanishing.
+    _, metadata = kd.discovery_document(
+        "steps", {"kind": "sop", "capabilities": ["k8s.workload_restart"], "collection": "c"}, 4096
+    )
+    assert metadata["kind"] == "sop"
+    assert metadata["capabilities"] == ["k8s.workload_restart"]
+
+
+def test_discovery_omits_absent_classification_metadata():
+    _, metadata = kd.discovery_document("steps", {"collection": "c"}, 4096)
+    assert "kind" not in metadata
+    assert "capabilities" not in metadata
+
+
+def test_discovery_ignores_non_list_capabilities():
+    # Defensive: capabilities is always a list from the classifier, but a
+    # malformed/legacy payload should not crash discovery or leak a
+    # non-list value the Go client's []any type assertion would reject anyway.
+    _, metadata = kd.discovery_document("steps", {"capabilities": "not-a-list", "collection": "c"}, 4096)
+    assert "capabilities" not in metadata
+
+
+def test_discovery_bounds_capabilities_list():
+    many_caps = [f"cap.{i}" for i in range(50)]
+    _, metadata = kd.discovery_document("steps", {"capabilities": many_caps, "collection": "c"}, 4096)
+    assert len(metadata["capabilities"]) == 32
+    long_cap = "x" * 5000
+    _, metadata = kd.discovery_document("steps", {"capabilities": [long_cap], "collection": "c"}, 4096)
+    assert len(metadata["capabilities"][0]) == 256
+
+
 @pytest.fixture
 def endpoint(monkeypatch):
     state = {"body": "reference\n" * 200000 + "FINAL-CANARY", "live": {"kb_123"}, "account": "account"}
