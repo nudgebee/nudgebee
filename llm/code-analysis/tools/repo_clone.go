@@ -29,6 +29,10 @@ type RepoCloneTool struct {
 	// opened against `test` would diff the entire main↔test delta.
 	defaultBranch string
 	defaultCommit string
+	// commitFromRequestOnly is set for a run that writes a code change. Such a
+	// run works on the revision the request names — a pinned commit, otherwise
+	// the branch tip — so a `commit` the model passes on its own is not used.
+	commitFromRequestOnly bool
 }
 
 type RepoCloneInput struct {
@@ -65,6 +69,48 @@ func (t *RepoCloneTool) SetDefaultCommit(commit string) {
 // DefaultCommit returns the commit used when an invocation omits `commit`.
 func (t *RepoCloneTool) DefaultCommit() string {
 	return t.defaultCommit
+}
+
+// SetCommitFromRequestOnly makes the tool ignore a `commit` passed in the call
+// unless it is the request's own (see resolveCommit). Seeded per request.
+func (t *RepoCloneTool) SetCommitFromRequestOnly(only bool) {
+	t.commitFromRequestOnly = only
+}
+
+// CommitFromRequestOnly reports whether a `commit` passed in the call is ignored.
+func (t *RepoCloneTool) CommitFromRequestOnly() bool {
+	return t.commitFromRequestOnly
+}
+
+// resolveCommit returns the commit to check out for a call that asked for
+// `asked`, and the asked commit when it was not used.
+//
+// An analysis may be pinned by the model: "what did the code look like at X" is
+// a fair question. A code change may not. The revision it is written against
+// decides what the pull request contains, and the request has already settled
+// that — llm-server sends no commit when a PR is wanted, so the change is made
+// at the branch tip. A model that reads a deployed commit out of its prompt and
+// pins the clone to it undoes that: the change lands on old code, sometimes on
+// a commit that is not on the base branch at all, and the PR is refused.
+func (t *RepoCloneTool) resolveCommit(asked string) (commit, ignored string) {
+	if asked != "" && !t.commitFromRequestOnly {
+		return asked, ""
+	}
+	if asked != "" && !sameCommit(asked, t.defaultCommit) {
+		ignored = asked
+	}
+	return t.defaultCommit, ignored
+}
+
+// sameCommit reports whether two SHAs name one commit, allowing either to be
+// an abbreviation of the other. Anything that is not a commit reference by the
+// clone's own rule — too short to be unambiguous, a ref name — is the same as
+// nothing.
+func sameCommit(a, b string) bool {
+	if git.ValidateCommitSHA(a) != nil || git.ValidateCommitSHA(b) != nil {
+		return false
+	}
+	return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
 }
 
 // SetDefaultBranch seeds the branch used when an invocation omits `branch`.
@@ -160,9 +206,8 @@ func (t *RepoCloneTool) Execute(ctx context.Context, input map[string]any) core.
 	if params.Branch == "" && t.defaultBranch != "" {
 		params.Branch = t.defaultBranch
 	}
-	if params.Commit == "" && t.defaultCommit != "" {
-		params.Commit = t.defaultCommit
-	}
+	var ignoredCommit string
+	params.Commit, ignoredCommit = t.resolveCommit(params.Commit)
 
 	// Handle local repository path
 	if params.LocalPath != "" {
@@ -298,6 +343,9 @@ func (t *RepoCloneTool) Execute(ctx context.Context, input map[string]any) core.
 	if params.Commit != "" {
 		observation += "\n\n" + pinnedCheckoutNote(cloneResult.CommitHash, cloneResult.DefaultBranch)
 	}
+	if ignoredCommit != "" {
+		observation += "\n\n" + ignoredCommitNote(ignoredCommit, cloneResult.CommitHash, params.Commit != "")
+	}
 
 	// Append repository index if available
 	if idx, err := IndexRepository(cloneResult.LocalPath); err == nil {
@@ -322,6 +370,17 @@ func pinnedCheckoutNote(commit, defaultBranch string) string {
 		note += fmt.Sprintf(" To check whether something has since changed on the default branch, compare against origin/%s (e.g. `git diff %s origin/%s -- <path>`).", defaultBranch, commit, defaultBranch)
 	}
 	return note
+}
+
+// ignoredCommitNote tells the model its `commit` argument was not used, and
+// what is checked out instead, so it does not reason as if it were on that
+// commit.
+func ignoredCommitNote(ignored, head string, pinnedByRequest bool) string {
+	target := "the branch tip"
+	if pinnedByRequest {
+		target = "the commit this request is pinned to"
+	}
+	return fmt.Sprintf("The `commit` argument (%s) was not used: this run writes a code change, and a change is written against the revision the request names, which is %s. HEAD is %s.", ignored, target, head)
 }
 
 // handleLocalRepository processes a request to use an existing local repository

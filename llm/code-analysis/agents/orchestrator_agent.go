@@ -3159,26 +3159,39 @@ func looksLikeGitSHA(s string) bool {
 }
 
 // refusePRFromPinnedRevision blocks opening a PR whose changes were written
-// against a revision that is not the tip of the base branch.
+// against a revision a PR must not be cut from.
 //
 // A pinned analysis reads the code as it was — the commit a workload was
 // running when an incident fired. That is the right thing to READ and the wrong
-// thing to BASE A PR ON: the diff is cut from a tree that may be hundreds of
-// commits behind, so the PR either fails to apply or, worse, applies and quietly
-// reverts everything merged since. Failing here is strictly better than opening
-// that PR, because a green PR that reverts history is not visibly wrong.
+// thing to BASE A PR ON: the fix was worked out and verified against code that
+// may be hundreds of commits old, and a deployed commit need not be on the base
+// branch at all, in which case the PR carries every commit of the branch it
+// came from.
 //
-// Two independent checks, because a revision can be pinned two ways and each
-// check covers a hole in the other:
+// Two independent checks:
 //
-//  1. The request pinned it (git_repository.commit). Deterministic, needs no
-//     remote ref, and works on the single-branch clones these runs use.
-//  2. The agent pinned it by passing `commit` to repo_clone off prompt text, so
-//     nothing upstream knows. Caught by comparing the branch point to the base
-//     tip — but only when that ref is actually present locally.
+//  1. The request pinned a commit (git_repository.commit). Deterministic, needs
+//     no remote ref, and refused whatever that commit is: the request asked for
+//     the code as deployed, and a PR is written at the branch tip.
+//  2. The fix branch is cut from a commit that is not on the base branch. Only
+//     meaningful when the base ref resolves locally.
 //
-// When neither can be established the PR proceeds: this guards a known-bad
-// combination, it is not a general "is this diff still applicable" check.
+// A branch point that is on the base branch but behind its tip is NOT refused.
+// A branch cut from an ancestor merges like any other pull request — it cannot
+// undo what was merged after it — and it is the ordinary state of a run on a
+// busy repository: origin/<base> lives in the bare clone that every
+// conversation on the repository shares, so it moves whenever any of them
+// fetches, including while this run was working. Requiring the branch point to
+// equal the tip refused those runs too.
+//
+// How far behind the branch point can be is bounded where the checkout is made,
+// not here: a run that writes a change gets the fetched branch tip from
+// repo_clone (RepoCloneTool.resolveCommit, CloneOrReuseRepositoryAtCommit).
+// Known gap: a model that moves HEAD by hand to an older commit of the base
+// branch (`git checkout <sha>` through the shell tool) passes this check.
+//
+// When neither can be established the PR proceeds: this guards known-bad
+// combinations, it is not a general "is this diff still applicable" check.
 func (a *OrchestratorAgent) refusePRFromPinnedRevision(ctx context.Context, sessionCtx *session.SessionContext, repoDir, baseBranch, branchPointSHA string) error {
 	pinned := ""
 	if sessionCtx != nil && sessionCtx.RepoContext != nil {
@@ -3187,15 +3200,13 @@ func (a *OrchestratorAgent) refusePRFromPinnedRevision(ctx context.Context, sess
 	if pinned != "" {
 		return fmt.Errorf(
 			"refusing to open a PR from a pinned revision: the analysis ran against commit %s, "+
-				"so a fix branch cut from it would revert everything merged into %s since. "+
+				"not the tip of %s, and a PR is written against the branch tip. "+
 				"Use raise_pr=false to get the diff, or omit the commit to fix at the branch tip",
 			pinned, baseBranch)
 	}
 
-	// The agent may have pinned via repo_clone without the request saying so.
-	// Only meaningful when the base tip is resolvable locally; single-branch
-	// clones often will not have it, and an unresolvable ref is not evidence
-	// of anything.
+	// Only meaningful when the base tip is resolvable locally; an unresolvable
+	// ref is not evidence of anything.
 	if branchPointSHA == "" || baseBranch == "" {
 		return nil
 	}
@@ -3207,11 +3218,16 @@ func (a *OrchestratorAgent) refusePRFromPinnedRevision(ctx context.Context, sess
 	if baseTip == "" || baseTip == branchPointSHA {
 		return nil
 	}
+	// Exit 0 means the branch point is on the base branch. Anything else — not
+	// an ancestor, or git could not tell — refuses.
+	if _, err := a.runGit(ctx, repoDir, "merge-base", "--is-ancestor", branchPointSHA, baseTip); err == nil {
+		return nil
+	}
 	return fmt.Errorf(
-		"refusing to open a PR from a stale revision: the fix was written against %s but "+
-			"origin/%s is now at %s, so the PR would revert intervening commits. "+
-			"Use raise_pr=false to get the diff, or re-run against the branch tip",
-		branchPointSHA, baseBranch, baseTip)
+		"refusing to open a PR from a revision that is not on %s: the fix was written against %s, "+
+			"which git does not find on origin/%s (now at %s), so the PR would carry commits from "+
+			"another branch. Use raise_pr=false to get the diff, or re-run against the branch tip",
+		baseBranch, branchPointSHA, baseBranch, baseTip)
 }
 
 // seedRepoCloneBranch tells the repo_clone tool which branch to check out when an
@@ -3248,6 +3264,11 @@ func seedRepoCloneBranch(tool *tools.RepoCloneTool, sessionCtx *session.SessionC
 		commit = sessionCtx.RepoContext.Commit
 	}
 	tool.SetDefaultCommit(commit)
+
+	// A run that writes a code change works on the revision the request names,
+	// not one the model picks during the run. Set on every request for the same
+	// no-leak reason as the two values above.
+	tool.SetCommitFromRequestOnly(sessionCtx != nil && sessionCtx.Mode == ModeFix)
 }
 
 // instructionsRequireWrite reports whether any entry in

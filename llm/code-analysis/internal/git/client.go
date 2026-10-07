@@ -669,6 +669,41 @@ func baseCanCheckout(ctx context.Context, baseDir string) bool {
 	return err == nil && strings.TrimSpace(string(out)) != ""
 }
 
+// remoteDefaultBranch asks the remote which branch its HEAD points at and what
+// commit that branch is on now. Both are empty when the remote cannot be
+// reached, has no commits, or has a detached HEAD.
+//
+// The base repo's own HEAD is not a substitute: it names whichever branch the
+// base was first cloned for, which is the default branch only if that first
+// call happened to ask for it.
+func (gc *GitClient) remoteDefaultBranch(ctx context.Context, repoURL string) (branch, tip string) {
+	lsCtx, cancel := context.WithTimeout(ctx, gc.timeout)
+	defer cancel()
+	cmd := exec.CommandContext(lsCtx, "git", "ls-remote", "--symref", repoURL, "HEAD")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", ""
+	}
+	// ref: refs/heads/main\tHEAD
+	// 8aeb28345088b0820b6873685268b491f5269b47\tHEAD
+	for _, line := range strings.Split(string(out), "\n") {
+		value, name, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		if !ok || name != "HEAD" {
+			continue
+		}
+		if ref, isSymref := strings.CutPrefix(value, "ref: refs/heads/"); isSymref {
+			branch = ref
+		} else {
+			tip = value
+		}
+	}
+	if branch == "" || tip == "" || ValidateBranchName(branch) != nil {
+		return "", ""
+	}
+	return branch, tip
+}
+
 // ensureRemoteTracking makes each named branch resolvable as origin/<branch> in a bare
 // base repo, by adding it to the remote's fetch refspec and fetching it.
 //
@@ -891,6 +926,31 @@ func (gc *GitClient) CloneOrReuseRepositoryAtCommit(ctx context.Context, repoURL
 		return nil, ctx.Err()
 	}
 
+	// Build authenticated URL for HTTPS repos
+	authURL := repoURL
+	if creds != nil && creds.Token != "" {
+		authenticated, err := gc.transformRepoURLWithToken(repoURL, creds.Token)
+		if err != nil {
+			return nil, fmt.Errorf("refusing to clone an invalid repository URL: %w", err)
+		}
+		authURL = authenticated
+	}
+
+	// No branch and no commit means "the default branch as it is now". Ask the
+	// remote which branch that is and where it stands, and from here on treat
+	// it as the requested branch. Left unnamed, the checkout came from the bare
+	// repo's own local branch, which no later fetch moves (they write
+	// refs/remotes/origin/*): every such checkout was the commit this pod first
+	// cloned, however far the remote had moved since, and an existing worktree
+	// was reused wherever an earlier call had left it — including detached at a
+	// commit a previous analysis was pinned to. A fix written there was then
+	// refused at PR time as stale. When the remote does not answer, nothing is
+	// inferred and the call behaves as it did before.
+	defaultBranchTip := ""
+	if branch == "" && commit == "" {
+		branch, defaultBranchTip = gc.remoteDefaultBranch(ctx, authURL)
+	}
+
 	// Reuse an already-checked-out worktree verbatim when this exact directory
 	// was left behind by an earlier call — e.g. a followup turn in the same
 	// conversation/event investigation reusing its persistent workspace (see
@@ -918,6 +978,11 @@ func (gc *GitClient) CloneOrReuseRepositoryAtCommit(ctx context.Context, repoURL
 			switch {
 			case commit != "":
 				refMatches = headHash == commit
+			case defaultBranchTip != "":
+				// The remote just said where the default branch is; compare
+				// with that rather than fetch again through the base's stored
+				// remote URL, whose token may have expired since it was set.
+				refMatches = headHash == defaultBranchTip
 			case branch != "":
 				if _, fetchErr := exec.CommandContext(ctx, "git", "-C", worktreeDir, "fetch", "origin", branch).CombinedOutput(); fetchErr == nil {
 					if tipOut, tipErr := exec.CommandContext(ctx, "git", "-C", worktreeDir, "rev-parse", "FETCH_HEAD").Output(); tipErr == nil {
@@ -925,11 +990,10 @@ func (gc *GitClient) CloneOrReuseRepositoryAtCommit(ctx context.Context, repoURL
 					}
 				}
 			default:
-				// No specific branch or commit requested ("clone the default
-				// branch") — nothing to detect drift against without extra
-				// bookkeeping of which branch this worktree was created for, so
-				// reuse as-is rather than treating this narrower case as fresh
-				// every time.
+				// No commit requested and the remote did not say what its
+				// default branch is (see above) — nothing to detect drift
+				// against, so reuse as-is rather than treating this narrower
+				// case as fresh every time.
 				refMatches = true
 			}
 
@@ -965,16 +1029,6 @@ func (gc *GitClient) CloneOrReuseRepositoryAtCommit(ctx context.Context, repoURL
 		"worktree_dir": worktreeDir,
 		"branch":       branch,
 	})
-
-	// Build authenticated URL for HTTPS repos
-	authURL := repoURL
-	if creds != nil && creds.Token != "" {
-		authenticated, err := gc.transformRepoURLWithToken(repoURL, creds.Token)
-		if err != nil {
-			return nil, fmt.Errorf("refusing to clone an invalid repository URL: %w", err)
-		}
-		authURL = authenticated
-	}
 
 	// The bare clone is single-branch by construction and grows on demand —
 	// only branches that have actually been requested by an analysis are

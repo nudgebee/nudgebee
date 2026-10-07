@@ -79,3 +79,27 @@ func TestSeedRepoCloneBranch_NoLeakAcrossRequests(t *testing.T) {
 		})
 	}
 }
+
+// TestSeedRepoCloneBranch_CommitFromRequestOnly: a run that writes a code change
+// takes its revision from the request, so the tool is told to ignore a commit
+// the model passes. An analysis is not, and the setting must not survive from a
+// change run into the analysis that reuses the tool after it.
+func TestSeedRepoCloneBranch_CommitFromRequestOnly(t *testing.T) {
+	tool := tools.NewRepoCloneTool("/tmp/ws", nil)
+
+	seedRepoCloneBranch(tool, &session.SessionContext{Mode: ModeFix})
+	if !tool.CommitFromRequestOnly() {
+		t.Fatal("a fix run must take its commit from the request only")
+	}
+
+	seedRepoCloneBranch(tool, &session.SessionContext{Mode: ModeExplore})
+	if tool.CommitFromRequestOnly() {
+		t.Fatal("an explore run must keep honouring a commit the model passes")
+	}
+
+	seedRepoCloneBranch(tool, &session.SessionContext{Mode: ModeFix})
+	seedRepoCloneBranch(tool, nil)
+	if tool.CommitFromRequestOnly() {
+		t.Fatal("the fix-run setting leaked into a request with no session")
+	}
+}
