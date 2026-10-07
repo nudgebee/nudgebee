@@ -1892,6 +1892,12 @@ const Home = () => {
 
   // Memoize category filters — insightData only changes on API response, not on
   // unrelated state updates elsewhere on the page.
+  // Ops-category insights split by source. Event-source Ops are live issues
+  // (e.g. FIRING CloudWatch alarms → #events/events) and belong on Troubleshoot;
+  // Recommendation-source Ops are configuration findings (missing backups/alarms/
+  // HA → #optimize/configuration) and belong on Optimize. Routing them by source
+  // keeps each card consistent with where its View Details link lands. Only cloud
+  // (non-K8s) accounts surface Ops on these two cards. See #40336.
   const troubleshootItems = useMemo(
     () =>
       insightData.filter(
@@ -1899,7 +1905,7 @@ const Home = () => {
           o.type == 'Troubleshooting' ||
           o.rule?.category == 'Troubleshooting' ||
           o.type == 'Performance' ||
-          (selectedCluster?.cloud_provider != 'K8s' && o.type == 'Ops')
+          (selectedCluster?.cloud_provider && selectedCluster.cloud_provider != 'K8s' && o.type == 'Ops' && o.rule?.source == 'Event')
       ),
     [insightData, selectedCluster?.cloud_provider]
   );
@@ -1912,9 +1918,10 @@ const Home = () => {
           g.type == 'Cost' ||
           g.type == 'InfraUpgrade' ||
           g.type == 'Security' ||
-          g.type == 'Configuration'
+          g.type == 'Configuration' ||
+          (selectedCluster?.cloud_provider && selectedCluster.cloud_provider != 'K8s' && g.type == 'Ops' && g.rule?.source != 'Event')
       ),
-    [insightData]
+    [insightData, selectedCluster?.cloud_provider]
   );
   const opsItems = useMemo(() => insightData.filter((g) => g.type == 'Ops' || g.rule?.category == 'Ops'), [insightData]);
 
