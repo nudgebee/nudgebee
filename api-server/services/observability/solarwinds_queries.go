@@ -209,7 +209,8 @@ func swPodNamesClause(pods []string) string {
 //     attr: [val1,val2]   — SWO multi-value exact-match bracket syntax.
 //   - When any cleaned value still contains a glob wildcard "*" (e.g. caller passed
 //     "prefix*" without the leading dot), each value is emitted as a separate
-//     "attr:val*" clause joined by spaces (implicit OR in SWO filter syntax).
+//     "attr:val*" term inside one "(… OR …)" group. Wildcards match nothing inside a
+//     bracket list, and SWO reads terms joined by a space as AND, not OR.
 //
 // Returns "" when pipeJoinedValues is empty or all tokens are blank.
 func swBuildMultiValueFilter(attribute, pipeJoinedValues string) string {
@@ -233,12 +234,14 @@ func swBuildMultiValueFilter(attribute, pipeJoinedValues string) string {
 	}
 	if hasWildcard {
 		// SWO measurements filter supports glob wildcards only outside brackets.
-		// Space-join individual "attr:val*" clauses (implicit OR in SWO filter syntax).
 		parts := make([]string, len(cleaned))
 		for i, v := range cleaned {
 			parts[i] = fmt.Sprintf("%s:%s", attribute, v)
 		}
-		return strings.Join(parts, " ")
+		if len(parts) == 1 {
+			return parts[0]
+		}
+		return "(" + strings.Join(parts, " OR ") + ")"
 	}
 	// All exact values: use multi-value bracket syntax.
 	return fmt.Sprintf("%s: [%s]", attribute, strings.Join(cleaned, ","))

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,30 +26,114 @@ import (
 // solarwinds_logs.go — they are reused here without duplication.
 //
 // Query format:
-//   - req.Queries is map[queryKey → SWO metric name]
+//   - req.Queries is map[queryKey → SWO metric name], or the text GetQuery renders
+//     ("<metric> | filter: … | groupBy: … | aggregateBy: …"), so a query shown in the
+//     Code tab runs as written
 //   - aggregateBy / groupBy / filter are read from req.Request (optional)
+//   - req.LabelMatchers and req.Labels are translated into filter terms; a matcher
+//     SWO cannot express fails the request instead of being dropped
 //
-// Label discovery limitation:
-//
-//	SWO measurements return non-empty attributes[] only when groupBy is specified.
-//	FetchMetricsLabels therefore requires a "groupBy" hint in req.Request to return
-//	any keys — without it the response attributes are always empty and an empty list
-//	is returned. FetchMetricLabelValues requires "metric" in req.Request.
+// FetchMetricLabelValues requires "metric" in req.Request.
 type SolarWindsMetricSource struct{}
 
-// GetSupportedOperators returns an empty slice: SolarWinds metrics do not
-// consume the structured Where clause at all. FetchMetricsQuery reads only a
-// raw "filter" string from req.Request (see line 100) and ignores req.Where,
-// so advertising any operator in the UI would be misleading — the filter
-// builder would never translate it into the SWO request. The UI falls back
-// to its minimal built-in descriptor set when this list is empty. See issue
-// #29227 and the Gemini review pointer on #29233.
+// GetSupportedOperators returns an empty slice. FetchMetricsQuery and GetQuery now
+// translate _eq, _neq, _in and _not_in label matchers (swMetricMatchersFilter), but the
+// UI builder still renders SolarWinds metric chips into a filter string itself and only
+// for `=`, so advertising more operators would let the builder offer chips it drops.
+// The UI falls back to its minimal built-in descriptor set when this list is empty.
+// See issue #29227 and the Gemini review pointer on #29233.
 func (s *SolarWindsMetricSource) GetSupportedOperators() []string {
 	return []string{}
 }
 
-func (s *SolarWindsMetricSource) GetQuery(_ *security.RequestContext, _ FetchMetricsRequest) (string, error) {
-	return "", nil
+// GetQuery renders the request SWO would be sent, since SWO has no query language to
+// show: the metric name, then the filter, groupBy and aggregateBy parameters. The text
+// round-trips — FetchMetricsQuery accepts it in place of a bare metric name — so a
+// query copied from the Code tab runs exactly as displayed.
+func (s *SolarWindsMetricSource) GetQuery(_ *security.RequestContext, req FetchMetricsRequest) (string, error) {
+	keys := make([]string, 0, len(req.Queries))
+	for k := range req.Queries {
+		keys = append(keys, k)
+	}
+	if len(keys) == 0 {
+		return "", nil
+	}
+	// The lowest-sorted key is the representative one when a request carries several.
+	sort.Strings(keys)
+
+	matcherFilter, err := swMetricMatchersFilter(req.LabelMatchers, req.Labels)
+	if err != nil {
+		return "", err
+	}
+	name, q, err := swApplyQueryText(req.Queries[keys[0]], swMeasurementQueryFromRequest(req.Request, "", ""))
+	if err != nil {
+		return "", err
+	}
+	q.filter = swJoinFilters(q.filter, matcherFilter)
+	return swRenderQueryText(name, swInferEntity(name, q)), nil
+}
+
+// WrapAggregate implements MetricAggregateWrapper. The default PromQL wrap turned the
+// rendered text into `sum(<metric> | …)`, which nothing can run; the aggregate is SWO's
+// aggregateBy parameter instead.
+func (s *SolarWindsMetricSource) WrapAggregate(expr string, aggregateOperator string) (string, error) {
+	if aggregateOperator == "" {
+		return expr, nil
+	}
+	agg := strings.ToUpper(aggregateOperator)
+	switch agg {
+	case "SUM", "AVG", "MIN", "MAX", "COUNT":
+	default:
+		return "", fmt.Errorf("aggregate_operator %q is not supported for SolarWinds metrics; use sum, avg, min, max or count", aggregateOperator)
+	}
+	name, q, err := swApplyQueryText(expr, swMeasurementQuery{aggregateBy: "AVG"})
+	if err != nil {
+		return "", err
+	}
+	q.aggregateBy = agg
+	return swRenderQueryText(name, swInferEntity(name, q)), nil
+}
+
+// swFamilyEntities maps a SWO Kubernetes metric family to the entity it is reported
+// per -- the same mapping nubi's SolarWinds metrics tool uses. Longest prefix first.
+var swFamilyEntities = []struct{ prefix, entity string }{
+	{"k8s.container.", "k8s.pod.name,k8s.container.name"},
+	{"k8s.pod.", "k8s.pod.name"},
+	{"k8s.node.", "k8s.node.name"},
+}
+
+// swInferEntity names the entity for a SUM or COUNT that did not, when the metric's
+// family says what it is reported per. Without one SWO adds every raw sample in a
+// bucket, so a SUM scales with the bucket width: the UI builder's "sum" read a
+// namespace's pod CPU 5x high at 6h and 25x at 24h. This is the metric's own shape,
+// not a guess about the caller. Any other family is left as sent.
+func swInferEntity(metric string, q swMeasurementQuery) swMeasurementQuery {
+	if q.preGroupBy != "" || (q.aggregateBy != "SUM" && q.aggregateBy != "COUNT") {
+		return q
+	}
+	for _, f := range swFamilyEntities {
+		if strings.HasPrefix(metric, f.prefix) {
+			q.preGroupBy, q.preGroupByMethod = f.entity, "AVG"
+			return q
+		}
+	}
+	return q
+}
+
+// swSumInflationNote is the caveat for a SUM or COUNT across entities that names none
+// and whose family gives none, over a window long enough for buckets to hold several
+// samples.
+func swSumInflationNote(q swMeasurementQuery) string {
+	if q.preGroupBy != "" || (q.aggregateBy != "SUM" && q.aggregateBy != "COUNT") {
+		return ""
+	}
+	from, ferr := time.Parse(time.RFC3339, q.from)
+	to, terr := time.Parse(time.RFC3339, q.to)
+	if ferr != nil || terr != nil || to.Sub(from) <= time.Hour {
+		return ""
+	}
+	return "SolarWinds " + q.aggregateBy + " adds every sample in a bucket, so totals over windows longer than an hour read high; " +
+		"name the entity being added up in preGroupBy for a true total."
 }
 
 const swMetricConfigsErrFmt = "failed to get SolarWinds configs: %w"
@@ -97,8 +182,9 @@ type swMeasurementQuery struct {
 //
 // A SUM across entities is only a true total when the caller names the entity in
 // preGroupBy. Without it SWO adds every raw sample in a bucket, so the answer scales
-// with the bucket width. The source does not guess the entity for a free-form caller --
-// it cannot know what is being summed -- so such a request is sent exactly as asked.
+// with the bucket width. When the caller names none, the entity comes from the metric
+// family (swInferEntity: k8s.pod.*, k8s.container.*, k8s.node.*); any other family is
+// sent as asked, with a Note on windows over an hour.
 //
 // SUM with preGroupBy and preGroupByMethod AVG is answered as a time-weighted total
 // (swTimeWeightedSum): SWO's own pre-grouped average counts an entity that lived
@@ -119,11 +205,34 @@ func (s *SolarWindsMetricSource) FetchMetricsQuery(ctx *security.RequestContext,
 	baseURL := integrations.SolarWindsAPIBaseURL(dataCenter)
 	from, to := swTraceTimeRange(req.StartTime, req.EndTime)
 
-	q := swMeasurementQueryFromRequest(req.Request, from, to)
+	// Matchers apply to every query. Checked before anything is fetched, so a matcher SWO
+	// cannot express fails the request rather than coming back as an unfiltered answer.
+	matcherFilter, err := swMetricMatchersFilter(req.LabelMatchers, req.Labels)
+	if err != nil {
+		return OutputMetricQuery{}, err
+	}
+	base := swMeasurementQueryFromRequest(req.Request, from, to)
+
+	type swPlannedQuery struct {
+		key, metric string
+		q           swMeasurementQuery
+	}
+	planned := make([]swPlannedQuery, 0, len(req.Queries))
+	for queryKey, text := range req.Queries {
+		metricName, q, err := swApplyQueryText(text, base)
+		if err != nil {
+			return OutputMetricQuery{}, fmt.Errorf("query %q: %w", queryKey, err)
+		}
+		q.filter = swJoinFilters(q.filter, matcherFilter)
+		planned = append(planned, swPlannedQuery{key: queryKey, metric: metricName, q: swInferEntity(metricName, q)})
+	}
 
 	results := OutputMetricQuery{Results: []QueryResult{}}
-	for queryKey, metricName := range req.Queries {
-		qr := s.fetchOneMetricQuery(ctx, apiToken, baseURL, queryKey, metricName, q, req.Instant)
+	for _, p := range planned {
+		qr := s.fetchOneMetricQuery(ctx, apiToken, baseURL, p.key, p.metric, p.q, req.Instant)
+		if note := swSumInflationNote(p.q); note != "" && qr.Note == "" {
+			qr.Note = note
+		}
 		results.Results = append(results.Results, qr)
 	}
 	return results, nil
@@ -145,6 +254,207 @@ func swMeasurementQueryFromRequest(r map[string]any, from, to string) swMeasurem
 		q.preGroupByMethod = strings.ToUpper(swStringFromRequest(r, "preGroupByMethod", "AVG"))
 	}
 	return q
+}
+
+// swQueryTextSeparator splits the parameters in the text GetQuery renders. A "|"
+// inside a value is written as "\|" (swEscapeQueryTextValue), so the separator is
+// never ambiguous and any value round-trips.
+const swQueryTextSeparator = " | "
+
+// swRenderQueryText is the text GetQuery shows: the metric, then each parameter set.
+func swRenderQueryText(metric string, q swMeasurementQuery) string {
+	parts := []string{swEscapeQueryTextValue(metric)}
+	add := func(name, value string) {
+		if value != "" {
+			parts = append(parts, name+": "+swEscapeQueryTextValue(value))
+		}
+	}
+	add("filter", q.filter)
+	add("groupBy", q.groupBy)
+	add("preGroupBy", q.preGroupBy)
+	if q.preGroupBy != "" {
+		add("preGroupByMethod", q.preGroupByMethod)
+	}
+	add("aggregateBy", q.aggregateBy)
+	return strings.Join(parts, swQueryTextSeparator)
+}
+
+// swEscapeQueryTextValue writes each "|" as "\|". Nothing else is escaped, so a
+// backslash in a filter reads as typed.
+func swEscapeQueryTextValue(v string) string {
+	return strings.ReplaceAll(v, "|", `\|`)
+}
+
+// swSplitQueryText splits on every "|" not written as "\|", unescaping as it goes.
+func swSplitQueryText(text string) []string {
+	var parts []string
+	var cur strings.Builder
+	for i := 0; i < len(text); i++ {
+		switch {
+		case text[i] == '\\' && i+1 < len(text) && text[i+1] == '|':
+			cur.WriteByte('|')
+			i++
+		case text[i] == '|':
+			parts = append(parts, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(text[i])
+		}
+	}
+	return append(parts, cur.String())
+}
+
+// swApplyQueryText reads a query as rendered by swRenderQueryText. A bare metric name
+// keeps base unchanged; each parameter the text names replaces base's. An unknown
+// parameter is an error -- ignoring it would run a different query than the one shown.
+func swApplyQueryText(text string, base swMeasurementQuery) (string, swMeasurementQuery, error) {
+	parts := swSplitQueryText(text)
+	metric := strings.TrimSpace(parts[0])
+	q := base
+	for _, part := range parts[1:] {
+		key, value, ok := strings.Cut(part, ":")
+		value = strings.TrimSpace(value)
+		if !ok || value == "" {
+			return "", base, fmt.Errorf("SolarWinds query parameter %q must read \"name: value\"", strings.TrimSpace(part))
+		}
+		switch strings.TrimSpace(key) {
+		case "filter":
+			q.filter = value
+		case "groupBy":
+			q.groupBy = value
+		case "preGroupBy":
+			q.preGroupBy = value
+		case "preGroupByMethod":
+			q.preGroupByMethod = strings.ToUpper(value)
+		case "aggregateBy":
+			q.aggregateBy = strings.ToUpper(value)
+		default:
+			return "", base, fmt.Errorf("SolarWinds query parameter %q is not supported; use filter, groupBy, preGroupBy, preGroupByMethod or aggregateBy", strings.TrimSpace(key))
+		}
+	}
+	if q.preGroupBy != "" && q.preGroupByMethod == "" {
+		q.preGroupByMethod = "AVG"
+	}
+	if q.preGroupBy == "" {
+		q.preGroupByMethod = ""
+	}
+	return metric, q, nil
+}
+
+// swJoinFilters ANDs filter expressions. SWO reads a space between terms as AND.
+func swJoinFilters(filters ...string) string {
+	parts := make([]string, 0, len(filters))
+	for _, f := range filters {
+		if f = strings.TrimSpace(f); f != "" {
+			parts = append(parts, f)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// swMetricMatchersFilter renders label matchers, and the legacy eq-only Labels map, as
+// SWO metric filter terms ANDed together. Labels are used as given: SWO keys
+// (k8s.namespace.name) and its plain cAdvisor-style keys (namespace) both exist, so
+// mapping one onto the other would change which series match.
+//
+// What SWO's metric filter accepts, measured against the live API:
+//   - attr:v is EXACT and attr:[a,b] is an OR of exact values;
+//   - a trailing or interior * is a wildcard, but not inside a bracket list (0 rows),
+//     and a leading * is refused (HTTP 400) -- several wildcards need (a OR b);
+//   - NOT attr:v negates one term; NOT attr:[a,b], NOT (…) and -attr:v are all refused,
+//     and NOT attr:v* is accepted but matches everything, so it is refused here.
+//
+// Anything else is an error naming the operator, never a dropped term.
+func swMetricMatchersFilter(matchers []LabelMatcher, labels map[string]string) (string, error) {
+	terms := make([]string, 0, len(matchers)+len(labels))
+	for _, label := range sortedKeys(labels) {
+		term, err := swMetricMatcherTerm(LabelMatcher{Label: label, Operator: "_eq", Value: labels[label]})
+		if err != nil {
+			return "", err
+		}
+		terms = append(terms, term)
+	}
+	for _, m := range matchers {
+		term, err := swMetricMatcherTerm(m)
+		if err != nil {
+			return "", err
+		}
+		terms = append(terms, term)
+	}
+	return strings.Join(terms, " "), nil
+}
+
+func swMetricMatcherTerm(m LabelMatcher) (string, error) {
+	label := strings.TrimSpace(m.Label)
+	if label == "" || strings.ContainsAny(label, " \t:\"()[]") {
+		return "", fmt.Errorf("SolarWinds metric filter: label %q is not a valid attribute name", m.Label)
+	}
+	values := []string{strings.TrimSpace(m.Value)}
+	if m.Operator == "_in" || m.Operator == "_not_in" {
+		values = splitMatcherList(m.Value)
+	}
+	if len(values) == 0 || values[0] == "" {
+		return "", fmt.Errorf("SolarWinds metric filter: %s %s needs a value", label, m.Operator)
+	}
+	wildcard := false
+	for _, v := range values {
+		if strings.HasPrefix(v, "*") {
+			return "", fmt.Errorf("SolarWinds metric filter: %s:%s starts with a wildcard, which SolarWinds refuses; anchor the start of the value", label, v)
+		}
+		if strings.Contains(v, "*") {
+			wildcard = true
+		}
+	}
+
+	switch m.Operator {
+	case "_eq", "_in":
+		return swOrTerms(label, values, wildcard), nil
+	case "_neq", "_not_in":
+		if wildcard {
+			return "", fmt.Errorf("SolarWinds metric filter: %s %s with a wildcard is not supported; SolarWinds ignores a negated wildcard and would return every series", label, m.Operator)
+		}
+		terms := make([]string, len(values))
+		for i, v := range values {
+			terms[i] = "NOT " + label + ":" + swEscapeValue(v)
+		}
+		return strings.Join(terms, " "), nil
+	default:
+		return "", fmt.Errorf("SolarWinds metric filter: operator %q is not supported; use _eq, _neq, _in or _not_in", m.Operator)
+	}
+}
+
+// swOrTerms matches any of values: a bracket list when every value is a plain exact
+// one, otherwise an OR group (wildcards and quoted values do not work inside brackets).
+func swOrTerms(label string, values []string, wildcard bool) string {
+	plain := !wildcard
+	for _, v := range values {
+		if swEscapeValue(v) != v || strings.Contains(v, ",") {
+			plain = false
+		}
+	}
+	if len(values) == 1 {
+		return label + ":" + swEscapeValue(values[0])
+	}
+	if plain {
+		return label + ":[" + strings.Join(values, ",") + "]"
+	}
+	terms := make([]string, len(values))
+	for i, v := range values {
+		terms[i] = label + ":" + swEscapeValue(v)
+	}
+	return "(" + strings.Join(terms, " OR ") + ")"
+}
+
+// splitMatcherList splits an _in / _not_in value on commas, trimming and dropping
+// blanks -- the shape the UI's set-membership chips send.
+func splitMatcherList(raw string) []string {
+	out := []string{}
+	for _, v := range strings.Split(raw, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // fetchOneMetricQuery fetches measurements for a single metric name and wraps
@@ -453,6 +763,10 @@ func (s *SolarWindsMetricSource) FetchMetricList(ctx *security.RequestContext, r
 //
 // If "metric" is absent, an empty slice is returned — the SWO attributes endpoint
 // is per-metric and cannot enumerate values without a metric context.
+//
+// The values are those seen in the request's window (the last hour when none is
+// given): without one SWO answers for its whole retention, which listed 222 nodes on a
+// cluster that had 87 in the last hour.
 func (s *SolarWindsMetricSource) FetchMetricLabelValues(ctx *security.RequestContext, req FetchMetricsLabelValueRequest) ([]OutputMetricsLabelValues, error) {
 	if req.Label == "" {
 		return nil, fmt.Errorf("label name is required")
@@ -468,43 +782,106 @@ func (s *SolarWindsMetricSource) FetchMetricLabelValues(ctx *security.RequestCon
 	}
 	baseURL := integrations.SolarWindsAPIBaseURL(dataCenter)
 
-	path := fmt.Sprintf("/v1/metrics/%s/attributes/%s",
-		url.PathEscape(metricName), url.PathEscape(req.Label))
-	body, statusCode, err := integrations.DoSolarWindsGET(apiToken, baseURL, path, map[string]string{})
+	from, to := swTraceTimeRange(req.StartTime, req.EndTime)
+	values, err := swFetchMetricAttributeValues(apiToken, baseURL, metricName, req.Label, from, to)
 	if err != nil {
-		return nil, fmt.Errorf("SolarWinds label values request failed: %w", err)
+		return nil, err
 	}
-	if statusCode != http.StatusOK {
-		return nil, fmt.Errorf("SolarWinds label values API returned HTTP %d: %s", statusCode, string(body))
-	}
-
-	var resp struct {
-		Name   string   `json:"name"`
-		Values []string `json:"values"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("failed to parse SolarWinds label values response: %w", err)
-	}
-
-	out := make([]OutputMetricsLabelValues, 0, len(resp.Values))
-	for _, v := range resp.Values {
-		if v != "" {
-			out = append(out, OutputMetricsLabelValues{Value: v, Attributes: map[string]any{}})
-		}
+	out := make([]OutputMetricsLabelValues, 0, len(values))
+	for _, v := range values {
+		out = append(out, OutputMetricsLabelValues{Value: v, Attributes: map[string]any{}})
 	}
 	return out, nil
 }
 
-// FetchMetricsLabels returns the attribute (label) keys observable for req.MetricName.
+// swFetchMetricAttributeValues pages GET /v1/metrics/{name}/attributes/{attr} for the
+// window and returns the non-empty values.
+func swFetchMetricAttributeValues(apiToken, baseURL, metricName, label, from, to string) ([]string, error) {
+	path := fmt.Sprintf("/v1/metrics/%s/attributes/%s", url.PathEscape(metricName), url.PathEscape(label))
+	var out []string
+	err := swPageAttributes(apiToken, baseURL, path, from, to, func(body []byte) (*swPageInfo, error) {
+		var resp struct {
+			Values   []string    `json:"values"`
+			PageInfo *swPageInfo `json:"pageInfo"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("failed to parse SolarWinds label values response: %w", err)
+		}
+		for _, v := range resp.Values {
+			if v != "" {
+				out = append(out, v)
+			}
+		}
+		return resp.PageInfo, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("SolarWinds label values: %w", err)
+	}
+	return out, nil
+}
+
+// swFetchMetricAttributeNames pages GET /v1/metrics/{name}/attributes for the window.
+func swFetchMetricAttributeNames(apiToken, baseURL, metricName, from, to string) ([]string, error) {
+	path := fmt.Sprintf("/v1/metrics/%s/attributes", url.PathEscape(metricName))
+	var out []string
+	err := swPageAttributes(apiToken, baseURL, path, from, to, func(body []byte) (*swPageInfo, error) {
+		var resp struct {
+			Names    []string    `json:"names"`
+			PageInfo *swPageInfo `json:"pageInfo"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("failed to parse SolarWinds attribute names response: %w", err)
+		}
+		for _, n := range resp.Names {
+			if n != "" {
+				out = append(out, n)
+			}
+		}
+		return resp.PageInfo, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("SolarWinds labels: %w", err)
+	}
+	return out, nil
+}
+
+// swPageAttributes follows skipToken over one of the attributes endpoints, capped at
+// swMaxPages, handing each page's body to read.
+func swPageAttributes(apiToken, baseURL, path, from, to string, read func([]byte) (*swPageInfo, error)) error {
+	params := map[string]string{}
+	if from != "" {
+		params["startTime"] = from
+	}
+	if to != "" {
+		params["endTime"] = to
+	}
+	for page := 0; page < swMaxPages; page++ {
+		body, statusCode, err := solarWindsDoGET(apiToken, baseURL, path, params)
+		if err != nil {
+			return fmt.Errorf("request failed: %w", err)
+		}
+		if statusCode != http.StatusOK {
+			return fmt.Errorf("HTTP %d: %s", statusCode, string(body))
+		}
+		pageInfo, err := read(body)
+		if err != nil {
+			return err
+		}
+		next := swNextSkipToken(pageInfo)
+		if next == "" {
+			return nil
+		}
+		params["skipToken"] = next
+	}
+	return nil
+}
+
+// FetchMetricsLabels returns the attribute (label) keys SWO has recorded for
+// req.MetricName in the request's window (the last hour when none is given).
 //
-// SWO has no "list all attributes" endpoint. This method samples one page of
-// measurements over the last hour and extracts the attribute keys from the groupings.
-//
-// Requirement: req.Request["groupBy"] must be provided. SWO only populates
-// attributes[] in the response when groupBy is specified — without it every
-// grouping has an empty attributes[] and this method returns an empty list.
-// When groupBy is provided, the keys specified there are echoed back in the
-// response and returned as the available labels for the metric.
+// It reads /v1/metrics/{name}/attributes. It used to sample measurements grouped by a
+// fixed list of keys and read the keys back from the groupings, which could only ever
+// return the keys it had asked for.
 func (s *SolarWindsMetricSource) FetchMetricsLabels(ctx *security.RequestContext, req FetchMetricLabelsRequest) ([]OutputMetricLabels, error) {
 	if req.MetricName == "" {
 		return []OutputMetricLabels{}, nil
@@ -516,45 +893,14 @@ func (s *SolarWindsMetricSource) FetchMetricsLabels(ctx *security.RequestContext
 	}
 	baseURL := integrations.SolarWindsAPIBaseURL(dataCenter)
 
-	// Default groupBy covers the most common k8s label dimensions. SWO only
-	// populates attributes[] when groupBy is specified; without it every grouping
-	// returns attributes:null and FetchMetricsLabels returns an empty list.
-	const swDefaultGroupBy = "k8s.namespace.name,k8s.pod.name,k8s.container.name,k8s.node.name,k8s.deployment.name,sw.k8s.cluster.uid"
-
-	now := time.Now().UTC()
-	q := swMeasurementQuery{
-		aggregateBy: "AVG",
-		groupBy:     swStringFromRequest(req.Request, "groupBy", swDefaultGroupBy),
-		from:        now.Add(-1 * time.Hour).Format(time.RFC3339),
-		to:          now.Format(time.RFC3339),
-	}
-
-	path := fmt.Sprintf("/v1/metrics/%s/measurements", url.PathEscape(req.MetricName))
-	params := swBuildMeasurementParams(q)
-	params["pageSize"] = "5" // only a few groupings needed to discover attribute keys
-
-	body, statusCode, err := integrations.DoSolarWindsGET(apiToken, baseURL, path, params)
+	from, to := swTraceTimeRange(req.StartTime, req.EndTime)
+	names, err := swFetchMetricAttributeNames(apiToken, baseURL, req.MetricName, from, to)
 	if err != nil {
-		return nil, fmt.Errorf("SolarWinds labels sample request failed: %w", err)
+		return nil, err
 	}
-	if statusCode != http.StatusOK {
-		return nil, fmt.Errorf("SolarWinds labels sample API returned HTTP %d: %s", statusCode, string(body))
-	}
-
-	var resp swMeasurementsResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("failed to parse SolarWinds measurements response: %w", err)
-	}
-
-	seen := make(map[string]bool)
-	var labels []OutputMetricLabels
-	for _, g := range resp.Groupings {
-		for _, a := range g.Attributes {
-			if a.Key != "" && !seen[a.Key] {
-				seen[a.Key] = true
-				labels = append(labels, OutputMetricLabels{Label: a.Key, Attributes: map[string]any{}})
-			}
-		}
+	labels := make([]OutputMetricLabels, 0, len(names))
+	for _, n := range names {
+		labels = append(labels, OutputMetricLabels{Label: n, Attributes: map[string]any{}})
 	}
 	return labels, nil
 }
@@ -598,11 +944,20 @@ type swMetricMeasurementsResponse struct {
 	BucketSizeInSeconds int64 `json:"bucketSizeInSeconds"`
 }
 
+// Page sizes for the measurements API. SWO refuses a page whose body is too big
+// ("Response payload too large", HTTP 500) -- many groups over a long window -- so the
+// fetch restarts at half the page size, down to the floor.
+const (
+	swMeasurementsPageSize      = 100
+	swMeasurementsPageSizeFloor = 10
+)
+
 // fetchAllMeasurements paginates GET /v1/metrics/{path} and returns all groupings
 // and the bucket width SWO reported (0 when absent), capped at swMaxPages for safety.
 func fetchAllMeasurements(apiToken, baseURL, path string, q swMeasurementQuery) ([]swMeasurementGrouping, int64, error) {
 	params := swBuildMeasurementParams(q)
-	params["pageSize"] = "100"
+	pageSize := swMeasurementsPageSize
+	params["pageSize"] = strconv.Itoa(pageSize)
 
 	var all []swMeasurementGrouping
 	var bucketSeconds int64
@@ -610,6 +965,20 @@ func fetchAllMeasurements(apiToken, baseURL, path string, q swMeasurementQuery) 
 		body, statusCode, err := solarWindsDoGET(apiToken, baseURL, path, params)
 		if err != nil {
 			return nil, 0, fmt.Errorf("request failed: %w", err)
+		}
+		if statusCode != http.StatusOK && swPayloadTooLarge(body) {
+			if pageSize == swMeasurementsPageSizeFloor {
+				return nil, 0, fmt.Errorf("SolarWinds refused the response as too large even at %d groups per page; "+
+					"ask for a narrower window, filter to fewer series, or group by fewer attributes", pageSize)
+			}
+			// Start over from the first page at the smaller size. Nothing says a skipToken
+			// issued for one page size addresses the same position at another, so the
+			// groupings collected so far are discarded rather than risk gaps or repeats.
+			pageSize = max(pageSize/2, swMeasurementsPageSizeFloor)
+			params["pageSize"] = strconv.Itoa(pageSize)
+			delete(params, "skipToken")
+			all, bucketSeconds, page = nil, 0, -1
+			continue
 		}
 		if statusCode != http.StatusOK {
 			return nil, 0, fmt.Errorf("HTTP %d: %s", statusCode, string(body))
@@ -690,6 +1059,11 @@ func swInferBucketSeconds(groupings []swMeasurementGrouping) int64 {
 	return smallest
 }
 
+// swPayloadTooLarge reports whether SWO refused a page for its size.
+func swPayloadTooLarge(body []byte) bool {
+	return strings.Contains(strings.ToLower(string(body)), "payload too large")
+}
+
 // swBuildMeasurementParams converts a swMeasurementQuery into the HTTP query-param
 // map expected by DoSolarWindsGET, omitting empty optional fields.
 func swBuildMeasurementParams(q swMeasurementQuery) map[string]string {
@@ -744,7 +1118,9 @@ var swAttrToLabel = map[string]string{
 
 // swGroupingsToQueryResult converts SWO measurement groupings into a QueryResult.
 //
-// Each grouping becomes one Result series. Sparse (nil) bucket values are dropped;
+// Each grouping with at least one value becomes one Result series; a grouping with none
+// is dropped, so a filter that matches nothing returns zero series. Sparse (nil) bucket
+// values are dropped;
 // their corresponding timestamps are also omitted so the two slices stay aligned.
 // Timestamps are in Unix seconds.
 //
@@ -765,6 +1141,12 @@ func swGroupingsToQueryResult(groupings []swMeasurementGrouping, queryKey, metri
 	}
 
 	for _, g := range groupings {
+		if len(swLastMeasurement(g.Measurements)) == 0 {
+			// No data at all. SWO answers a filter that matches nothing with one such
+			// grouping; passing it on returned one empty {} series, which reads as a
+			// matching series that happened to be idle.
+			continue
+		}
 		metric := make(map[string]string, len(g.Attributes))
 		for _, a := range g.Attributes {
 			if a.Key == "" {
@@ -773,6 +1155,11 @@ func swGroupingsToQueryResult(groupings []swMeasurementGrouping, queryKey, metri
 			labelKey := a.Key
 			if canonical, ok := swAttrToLabel[a.Key]; ok {
 				labelKey = canonical
+				// Deployment, statefulset and daemonset all map to workload, and a series
+				// carries the two it is not as empty strings: the first non-empty wins.
+				if metric[labelKey] != "" {
+					continue
+				}
 			}
 			metric[labelKey] = a.Value
 		}

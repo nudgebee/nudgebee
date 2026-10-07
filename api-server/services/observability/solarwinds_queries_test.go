@@ -77,10 +77,18 @@ func TestSWBuildMultiValueFilter(t *testing.T) {
 			expected: "k8s.node.name: [gke-cluster-node1,gke-cluster-node2]",
 		},
 		{
-			name:     "mixed wildcards fall back to attr:val format",
+			// Space-joined clauses are an AND in SWO, so two wildcards joined by a space
+			// matched nothing. Wildcards inside a bracket list match nothing either.
+			name:     "several wildcards become one OR group",
 			attr:     "k8s.node.name",
 			input:    "gke-cluster-node1*|gke-cluster-node2*",
-			expected: "k8s.node.name:gke-cluster-node1* k8s.node.name:gke-cluster-node2*",
+			expected: "(k8s.node.name:gke-cluster-node1* OR k8s.node.name:gke-cluster-node2*)",
+		},
+		{
+			name:     "exact value beside a wildcard joins the OR group",
+			attr:     "k8s.node.name",
+			input:    "gke-cluster-node1|gke-cluster-node2*",
+			expected: "(k8s.node.name:gke-cluster-node1 OR k8s.node.name:gke-cluster-node2*)",
 		},
 	}
 	for _, tc := range cases {
