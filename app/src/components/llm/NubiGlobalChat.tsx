@@ -5,6 +5,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import FullscreenExitIcon from '@mui/icons-material/FullscreenExit';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import { createPortal } from 'react-dom';
 import CustomDrawer from '@shared/CustomDrawer';
@@ -14,13 +15,24 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import FilterDropdown from '@ui/FilterDropdown';
 import { Button } from '@ui/Button';
 import Tooltip from '@ui/Tooltip';
-import KubernetesLLMResponseGenerator from '@components/llm/KubernetesLLMResponseGeneratorV2';
+import Loader from '@shared/Loader';
 import { useTenantBranding, useBrandingConfig } from '@hooks/useTenantBranding';
 import { useData } from '@context/DataContext';
 import { useUpdateAllClusterOption } from '@shared/layout/UpdateDataContext';
 import { useNubiGlobalChat, NUBI_GLOBAL_CHAT_SHORTCUT_LABEL, isNubiFullPageRoute, isNubiLauncherHiddenRoute } from '@context/NubiGlobalChatContext';
 import { buildNubiWelcomeTemplates } from '@components/llm/NubiWelcome';
 import { ds } from '@utils/colors';
+
+// The chat engine renders only inside the open drawer (MUI unmounts a closed
+// drawer's contents), but this component is mounted by _app on every page, so a
+// static import shipped the engine's whole tree — CodeMirror, chart.js, date
+// pickers, reactflow, markdown — in the first-load bundle of every route. Fetch
+// it on first open instead.
+// Typed loosely: the generator is untyped JSX, and its call site below already casts its props.
+const KubernetesLLMResponseGenerator = dynamic<any>(() => import('@components/llm/KubernetesLLMResponseGeneratorV2'), {
+  ssr: false,
+  loading: () => <Loader style={{ position: 'static', height: '100%', width: '100%' }} />,
+});
 
 const LAUNCHER_SIZE = 56;
 
