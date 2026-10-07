@@ -1828,48 +1828,40 @@ func TestWorkflowBuilder_CatchupWindowGuidanceAccurate(t *testing.T) {
 	}
 }
 
-// TestClarificationPrompt_DoesNotAskAboutSlackChannel guards the clarification
-// prompt against two regressions:
+// TestClarificationPrompt_AsksForTheSlackChannelWithoutNamingAny guards the clarification prompt
+// against the two ways this has gone wrong:
 //
-//  1. **No hardcoded channel names.** A prior revision shipped an example with
-//     literal "#alerts" / "#engineering" / "#incidents" — and because the LLM
-//     had no real channel data to draw from, it copied those names verbatim
-//     into the FollowupOptions rendered to the user. The fix moves channel
-//     selection out of the clarification flow entirely.
+//  1. **Hardcoded channel names.** An early revision shipped an example with literal "#alerts" /
+//     "#engineering" / "#incidents". The LLM has no channel data, so it copied those names
+//     verbatim into the options shown to the user.
 //
-//  2. **No clarification question about Slack channels.** Channel selection
-//     belongs to {{ Configs.slack_channel }} (filled via Configs UI) or to
-//     workflow Inputs at runtime — not to a single-select picker at planning
-//     time. The prompt must explicitly forbid the LLM from emitting such a
-//     question.
+//  2. **Not asking at all.** The next revision forbade the question and deferred to
+//     {{ Configs.slack_channel }}. On an account without that config the automation was saved
+//     INACTIVE and never ran.
 //
-// If anyone reintroduces hardcoded channel names or removes the "do not ask
-// about Slack channels" rule, this test fails.
-
-func TestClarificationPrompt_DoesNotAskAboutSlackChannel(t *testing.T) {
+// The prompt now asks, as a "chat_channel" question that carries no options: the user types the
+// channel and code checks it against the workspace (see resolveChatChannelAnswer).
+func TestClarificationPrompt_AsksForTheSlackChannelWithoutNamingAny(t *testing.T) {
 	prompt := getClarificationSystemPrompt(
 		"\nACCOUNT ENVIRONMENT:\nIntegrations: slack: my-workspace",
 		"\nAVAILABLE CONFIGS:\n[]",
 		"send an alert to slack when a pod crashes",
 	)
 
-	// (1) No hardcoded channel names — they were the original bug. The LLM
-	// copied these from the example into real user-facing options.
+	// (1) No channel names anywhere in the prompt, hardcoded or as an example.
 	for _, banned := range []string{"#alerts", "#engineering", "#incidents", "#ops", "internal-team"} {
 		assert.NotContains(t, prompt, banned,
 			"clarification prompt must not contain hardcoded Slack channel example %q — it was getting copied verbatim into user-facing options", banned)
 	}
+	assert.NotRegexp(t, `#[a-z][a-z0-9_-]+`, prompt, "clarification prompt must not name any Slack channel")
 
-	// (2) The prompt must explicitly forbid asking the user which Slack
-	// channel to use. We accept either phrasing of the rule.
-	assert.Regexp(t, `(?i)do not ask which slack channel|channel selection is not a clarification question`, prompt,
-		"clarification prompt must explicitly forbid asking the user which Slack channel to use — defer to Configs/Inputs instead")
+	// (2) The question is asked, typed so that code settles the answer, and without options.
+	assert.Contains(t, prompt, `"kind": "chat_channel"`)
+	assert.Regexp(t, `(?i)never propose channel names`, prompt)
+	assert.NotRegexp(t, `(?i)do not ask which slack channel`, prompt)
 
-	// (3) The prompt must point the LLM at the Configs placeholder so the
-	// workflow still gets built — without this, the LLM might omit the
-	// channel param entirely and produce an invalid notifications.im task.
-	assert.Contains(t, prompt, "{{ Configs.slack_channel }}",
-		"clarification prompt must reference {{ Configs.slack_channel }} so the LLM knows where the channel value comes from")
+	// (3) The placeholder survives only as what happens when the user skips the question.
+	assert.Regexp(t, `(?i)if the user skips, the workflow uses \{\{ Configs\.slack_channel \}\}`, prompt)
 }
 
 // TestParseClarifyingQuestionsJSON covers the shared post-processing used by both the create- and

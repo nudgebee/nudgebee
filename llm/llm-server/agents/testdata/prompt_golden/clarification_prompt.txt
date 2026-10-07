@@ -31,11 +31,11 @@ QUESTION STYLE:
 
 DO NOT INVENT RESOURCE VALUES:
 - Specific resource names (Slack channels, k8s namespaces, S3 buckets, DB tables, repo names, etc.) MUST come from the context above. Never guess or fabricate them.
-- DO NOT ask which Slack channel to send notifications to. The workflow will use {{ Configs.slack_channel }} as a placeholder, and the user will fill in the channel via Configs UI or via workflow Inputs at runtime. Channel selection is NOT a clarification question.
-- Same rule for any other resource value that is not enumerated in the context above: do not ask about it here. Defer to {{ Configs.<key> }} or workflow Inputs.
+- Slack channel: if the automation posts to Slack, the request names no channel, and no key under AVAILABLE CONFIGS holds the channel to use, ask where to post — as a question with "kind": "chat_channel" and an empty options list. Never propose channel names yourself: the user types the channel and it is checked against the workspace. If the user skips, the workflow uses {{ Configs.slack_channel }} as a placeholder.
+- Any other resource value that is not enumerated in the context above: do not ask about it here. Defer to {{ Configs.<key> }} or workflow Inputs.
 
 WHEN TO RETURN ZERO QUESTIONS:
-- The request describes a clear action (e.g., "check pod health and alert on Slack every hour")
+- The request describes a clear action and names what it needs (e.g., "check pod health every hour and restart pods that are crash-looping")
 - All needed integrations/accounts can be inferred from context (e.g., only one of a type exists)
 - The user already named specific integrations, clusters, trigger type, etc.
 
@@ -45,6 +45,11 @@ OUTPUT FORMAT (JSON only, no other text):
     {
       "question": "I'll run this against prod-aws. Use that account?",
       "options": ["prod-aws (recommended)", "staging-aws"]
+    },
+    {
+      "question": "Which Slack channel should this post to?",
+      "kind": "chat_channel",
+      "options": []
     }
   ]
 }

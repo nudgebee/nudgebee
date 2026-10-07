@@ -376,6 +376,8 @@ func safePlanContent(completion *llms.ContentResponse) (string, error) {
 type ClarifyingQuestion struct {
 	Question string   `json:"question"`
 	Options  []string `json:"options"`
+	// Kind marks a question whose answer is settled in code. See clarifyKindChatChannel.
+	Kind string `json:"kind,omitempty"`
 }
 
 type WorkflowBuilderState struct {
@@ -399,6 +401,12 @@ type WorkflowBuilderState struct {
 	ClarifyingQuestions []ClarifyingQuestion `json:"clarifying_questions,omitempty"`
 	ClarifyingAnswers   []string             `json:"clarifying_answers,omitempty"`
 	ClarifyingIndex     int                  `json:"clarifying_index"`
+	// ChatChannels maps each Slack channel the user named in a clarifying answer, in normalised
+	// form, to its id. The build writes the name; rewriteChatChannels swaps in the id.
+	ChatChannels map[string]string `json:"chat_channels,omitempty"`
+	// ChatChannelRetriedAt is the position, counted from 1, of the channel question that has
+	// already been asked a second time; 0 when none has.
+	ChatChannelRetriedAt int `json:"chat_channel_retried_at,omitempty"`
 }
 
 func init() {
@@ -451,6 +459,10 @@ type WorkflowBuilderAgent struct {
 	// toolLoopModel, when set, answers the tool loop's model calls in place of the LLM. Tests set
 	// it to script a loop turn by turn; it is nil everywhere else.
 	toolLoopModel func(messages []llms.MessageContent) (*llms.ContentResponse, error)
+
+	// chatChannelLister, when set, lists the Slack channels in place of the notification service.
+	// Tests set it; it is nil everywhere else.
+	chatChannelLister func(ctx *security.RequestContext) ([]chatChannel, bool)
 
 	// validatedSnapshot is the definition as it stood when validate last passed, empty when the
 	// last validate failed or none has run. A build ends at finalize only for this definition.
@@ -1162,11 +1174,11 @@ QUESTION STYLE:
 
 DO NOT INVENT RESOURCE VALUES:
 - Specific resource names (Slack channels, k8s namespaces, S3 buckets, DB tables, repo names, etc.) MUST come from the context above. Never guess or fabricate them.
-- DO NOT ask which Slack channel to send notifications to. The workflow will use {{ Configs.slack_channel }} as a placeholder, and the user will fill in the channel via Configs UI or via workflow Inputs at runtime. Channel selection is NOT a clarification question.
-- Same rule for any other resource value that is not enumerated in the context above: do not ask about it here. Defer to {{ Configs.<key> }} or workflow Inputs.
+- Slack channel: if the automation posts to Slack, the request names no channel, and no key under AVAILABLE CONFIGS holds the channel to use, ask where to post — as a question with "kind": "chat_channel" and an empty options list. Never propose channel names yourself: the user types the channel and it is checked against the workspace. If the user skips, the workflow uses {{ Configs.slack_channel }} as a placeholder.
+- Any other resource value that is not enumerated in the context above: do not ask about it here. Defer to {{ Configs.<key> }} or workflow Inputs.
 
 WHEN TO RETURN ZERO QUESTIONS:
-- The request describes a clear action (e.g., "check pod health and alert on Slack every hour")
+- The request describes a clear action and names what it needs (e.g., "check pod health every hour and restart pods that are crash-looping")
 - All needed integrations/accounts can be inferred from context (e.g., only one of a type exists)
 - The user already named specific integrations, clusters, trigger type, etc.
 
@@ -1176,6 +1188,11 @@ OUTPUT FORMAT (JSON only, no other text):
     {
       "question": "I'll run this against prod-aws. Use that account?",
       "options": ["prod-aws (recommended)", "staging-aws"]
+    },
+    {
+      "question": "Which Slack channel should this post to?",
+      "kind": "chat_channel",
+      "options": []
     }
   ]
 }
@@ -1247,9 +1264,15 @@ func parseClarifyingQuestionsJSON(content string, maxQuestions int) ([]Clarifyin
 		return nil, err
 	}
 
-	if len(result.Questions) > maxQuestions {
-		result.Questions = result.Questions[:maxQuestions]
+	// A chat-channel question carries no options from the model: it has no channel data, so any
+	// name it offered would be invented. The user types the channel and code checks it.
+	for i := range result.Questions {
+		result.Questions[i].Kind = normalizeQuestionKind(result.Questions[i].Kind)
+		if result.Questions[i].Kind == clarifyKindChatChannel {
+			result.Questions[i].Options = nil
+		}
 	}
+	result.Questions = keepChatChannelQuestions(result.Questions, maxQuestions)
 
 	// Strip internal identifiers (provider annotations, id=<uuid>, bare UUIDs) that the LLM copies
 	// from the ACCOUNT ENVIRONMENT context into user-facing option labels (#30885, #31141).
@@ -1362,6 +1385,17 @@ func (a *WorkflowBuilderAgent) generateEditClarifyingQuestions(ctx *security.Req
 func (a *WorkflowBuilderAgent) handleClarificationResponse(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
 	answer := strings.TrimSpace(request.Query)
 	idx := a.state.ClarifyingIndex
+
+	// A channel answer is checked against the workspace before it is recorded, and asked about
+	// again when the workspace has no such channel.
+	if idx < len(a.state.ClarifyingQuestions) && a.state.ClarifyingQuestions[idx].Kind == clarifyKindChatChannel &&
+		answer != "" && !strings.EqualFold(answer, "Skip") {
+		resolved, askAgain := a.resolveChatChannelAnswer(ctx, request, answer)
+		if askAgain != nil {
+			return *askAgain, nil
+		}
+		answer = resolved
+	}
 
 	// Store the answer (unless skipped)
 	if idx < len(a.state.ClarifyingAnswers) && !strings.EqualFold(answer, "Skip") {
@@ -2053,7 +2087,7 @@ func (a *WorkflowBuilderAgent) checkMissingConfigs(ctx *security.RequestContext,
 			IsTerminal: true,
 		}, nil
 	}
-	workflowJSON = resolvedJSON
+	workflowJSON = rewriteChatChannelsJSON(resolvedJSON, a.state.ChatChannels)
 
 	refs := extractConfigReferences(workflowJSON)
 	if len(refs) == 0 {
@@ -4490,6 +4524,9 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 	if resolveErr := a.resolveAccountIdsInWorkingWorkflow(ctx); resolveErr != nil {
 		return fmt.Sprintf("Validation FAILED: %s\n\nFix the `account_id` on the named task(s) with modify_task, then call validate again.", resolveErr.Error())
 	}
+
+	// A channel the user named in a clarifying answer is written by name; put its id in place.
+	rewriteChatChannels(a.state.WorkingWorkflow, a.state.ChatChannels)
 
 	// Local account lint: a cloud-CLI task with no resolvable account saves as an automation
 	// that looks live and runs against nothing. The server accepts both shapes (#35391).
