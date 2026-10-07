@@ -131,7 +131,7 @@ func TestResolveKBIngestPayloadScopesFilenameByAccount(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"coalesce"}).AddRow("runbook.pdf"))
 
 	_, _, filename, err := resolveKBIngestPayload(
-		security.NewRequestContextForSuperAdmin(), "account-a", "kb-1", "ZGF0YQ==", string(KBFormatPDF))
+		security.NewRequestContextForSuperAdmin(), kbOwner{AccountId: "account-a"}, "kb-1", "ZGF0YQ==", string(KBFormatPDF))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

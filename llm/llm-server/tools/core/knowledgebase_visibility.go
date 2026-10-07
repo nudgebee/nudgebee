@@ -116,6 +116,51 @@ var VisibleOrgKnowledgebaseIDs = loadVisibleOrgKnowledgebaseIDs
 // returns no ids: organisation KBs are hidden rather than shown to the wrong
 // account, and the account's own KBs are unaffected.
 func loadVisibleOrgKnowledgebaseIDs(ctx context.Context, accountId string) []string {
+	rows := loadOrgKBVisibilityRows(ctx, accountId)
+	visible := visibleKBCollections(rows, accountId)
+	var ids []string
+	for _, r := range rows {
+		if r.AccountId == nil && visible[r.collectionName()] {
+			ids = append(ids, r.Id)
+		}
+	}
+	return ids
+}
+
+// SwitchedOffOrgKnowledgebaseIDs returns the organisation knowledge bases
+// accountId would see had it not switched them off. Only the KB list shows
+// them (read-only, so the account can switch them back on); every other read
+// keeps using VisibleOrgKnowledgebaseIDs.
+var SwitchedOffOrgKnowledgebaseIDs = loadSwitchedOffOrgKnowledgebaseIDs
+
+func loadSwitchedOffOrgKnowledgebaseIDs(ctx context.Context, accountId string) []string {
+	return switchedOffOrgKBIDs(loadOrgKBVisibilityRows(ctx, accountId), accountId)
+}
+
+// switchedOffOrgKBIDs keeps the organisation-wide KBs that the visibility
+// rule would show accountId if its switch-off row were removed.
+func switchedOffOrgKBIDs(rows []kbVisibilityRow, accountId string) []string {
+	var ids []string
+	for _, r := range rows {
+		if r.AccountId != nil || r.Visibility != "organisation" || r.OverrideEnabled == nil || *r.OverrideEnabled {
+			continue
+		}
+		withoutSwitch := r
+		withoutSwitch.OverrideEnabled = nil
+		probe := make([]kbVisibilityRow, 0, len(rows))
+		for _, other := range rows {
+			if other.Id != r.Id {
+				probe = append(probe, other)
+			}
+		}
+		if visibleKBCollections(append(probe, withoutSwitch), accountId)[r.collectionName()] {
+			ids = append(ids, r.Id)
+		}
+	}
+	return ids
+}
+
+func loadOrgKBVisibilityRows(ctx context.Context, accountId string) []kbVisibilityRow {
 	if accountId == "" {
 		return nil
 	}
@@ -140,14 +185,7 @@ func loadVisibleOrgKnowledgebaseIDs(ctx context.Context, accountId string) []str
 		slog.Warn("kb: organisation visibility query failed", "error", err, "account_id", accountId)
 		return nil
 	}
-	visible := visibleKBCollections(rows, accountId)
-	var ids []string
-	for _, r := range rows {
-		if r.AccountId == nil && visible[r.collectionName()] {
-			ids = append(ids, r.Id)
-		}
-	}
-	return ids
+	return rows
 }
 
 // KBAccountScope returns the WHERE predicate that limits table alias `alias`

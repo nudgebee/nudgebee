@@ -58,7 +58,7 @@ Unchanged. An account admin can map any organisation KB visible to their account
 - minus organisation KBs shadowed by an own manual KB with the same name. Names compare case-insensitively, and an own KB shadows even while switched off.
 
 **The rule is implemented twice, and a shared fixture keeps the two copies identical:**
-- **llm-server (Go): one helper used by every read.** That covers KB lists and gets, skill search and fetch, `load_skills` resolution, documents and PDF reads, the agents a KB is mapped to, and the knowledge pre-step (including reference attribution). Reads driven by agent mappings stay account-scoped until an organisation KB can be mapped to an agent; they apply the rule from then on. Full KB rows return `account_id` as an empty string for organisation KBs. Writes are owner-scoped: account KBs need account access, organisation KBs need `tenant_admin` of the KB's tenant.
+- **llm-server (Go): one helper used by every read.** That covers KB lists and gets, skill search and fetch, `load_skills` resolution, documents and PDF reads, the agents a KB is mapped to, and the knowledge pre-step (including reference attribution). Reads driven by agent mappings apply the rule too, so an organisation KB mapped to an agent drops out once it is restricted or switched off for that account. Full KB rows return `account_id` as an empty string for organisation KBs. Writes are owner-scoped: account KBs need account access, organisation KBs need `tenant_admin` of the KB's tenant.
 - **rag-server (Python): the live-KB gate.** It applies the same rule to every search and exact document read, and shows nothing when the lookup fails. Organisation KB collections are indexed with the tenant as their scope, so the tenant boundary stays in rag-server.
 - **The fixture:** one JSON file of cases (tenants, accounts, KBs, switches, expected visible KBs), run by both the Go and the Python test suites.
 
@@ -82,14 +82,20 @@ Unchanged. An account admin can map any organisation KB visible to their account
 |---|---|
 | Read | Users with access to the account; visibility as above |
 | Create, edit, delete, widen, restrict or move back to an account an organisation KB | `tenant_admin` of the KB's tenant |
-| Switch an organisation KB off or on for one account | `account_admin` of that account |
+| Switch an organisation-wide KB off or on for one account | `account_admin` of that account |
+| Add an account to, or remove it from, a selected-accounts KB | `tenant_admin` of the KB's tenant |
 | Read-only roles | Read only |
 
 ## API and UI
 
 - **API:**
-  - Create and update accept `visibility` and the account list.
-  - The overrides are listed and updated through `ai_list_kb_account_overrides` and `ai_update_kb_account_override`.
+  - `ai_create_kb` accepts `visibility` (default `account`) and, for selected accounts, `account_ids`. An organisation KB is created without an `account_id`.
+  - `ai_update_kb`, `ai_update_kb_enabled`, `ai_retrigger_kb` and `ai_delete_kb` act on an organisation KB when a tenant admin sends an empty `account_id`.
+  - `ai_update_kb_visibility` changes scope: widen to the organisation, switch between organisation-wide and selected accounts (with `account_ids`), or move back to one account (with `target_account_id`).
+  - `ai_update_kb_account_override` switches an organisation KB off or on for one account; `ai_list_kb_account_overrides` lists the switches of one KB.
+  - `ai_list_kb` also returns the organisation KBs the account switched off, marked `switched_off`, so they can be switched back on. No other read returns them.
+  - `ai_create_kb_mapping` accepts any organisation KB visible to the account.
+  - KB names are trimmed. An organisation KB's name must be unique in its tenant, ignoring case.
 - **UI:**
   - The KB form offers "Organisation / This account" to tenant admins, with an account picker for "Selected accounts".
   - The KB list shows an "Organisation" badge on inherited KBs and a per-account on/off switch.

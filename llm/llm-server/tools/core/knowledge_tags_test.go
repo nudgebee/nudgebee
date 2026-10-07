@@ -42,6 +42,7 @@ func TestKnowledgeUpdateOmittedTagsPreservesStoredLabels(t *testing.T) {
 	old := config.Config.ServiceEndpoint
 	config.Config.ServiceEndpoint = endpoint.URL
 	t.Cleanup(func() { config.Config.ServiceEndpoint = old })
+	mock.ExpectQuery(`SELECT COALESCE\(account_id::text, ''\) AS account_id, tenant_id::text AS tenant_id FROM llm_knowledgebases WHERE id = \$1`).WithArgs("kb").WillReturnRows(sqlmock.NewRows([]string{"account_id", "tenant_id"}).AddRow("account", "tenant"))
 	mock.ExpectQuery(`SELECT kb.id, kb.tenant_id.*kb.context_tags`).WithArgs("kb", "account").WillReturnRows(sqlmock.NewRows([]string{"id", "name", "data", "data_format", "status", "enabled", "context_tags"}).AddRow("kb", "runbook", "original body", "text", "active", true, `{"payments"}`))
 	mock.ExpectBegin()
 	mock.ExpectExec(`UPDATE llm_knowledgebases.*context_tags = \$9`).WithArgs("runbook", sqlmock.AnyArg(), "original body", "text", "", int64(0), sqlmock.AnyArg(), sqlmock.AnyArg(), `{"payments"}`, "kb", "account").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -57,6 +58,7 @@ func TestKnowledgeTagOnlyUpdateRetainsBodyAndRequestsReindex(t *testing.T) {
 			mock := registerMockMetastore(t)
 			common.ResetDatabaseManager(common.Metastore)
 			t.Cleanup(func() { common.ResetDatabaseManager(common.Metastore) })
+			mock.ExpectQuery(`SELECT COALESCE\(account_id::text, ''\) AS account_id, tenant_id::text AS tenant_id FROM llm_knowledgebases WHERE id = \$1`).WithArgs("kb").WillReturnRows(sqlmock.NewRows([]string{"account_id", "tenant_id"}).AddRow("account", "tenant"))
 			mock.ExpectQuery(`SELECT kb.id, kb.tenant_id.*kb.context_tags`).WithArgs("kb", "account").WillReturnRows(sqlmock.NewRows([]string{"id", "name", "data", "data_format", "data_filename", "data_size_bytes", "status", "enabled", "context_tags"}).AddRow("kb", "runbook", "original body", "text", "original.txt", 13, "active", true, `{"payments"}`))
 			mock.ExpectBegin()
 			// Stop at the transaction boundary: assert the persisted values and the
@@ -91,7 +93,7 @@ func TestKnowledgeIndexRequestCarriesTagsWithoutChangingSource(t *testing.T) {
 	}))
 	defer server.Close()
 	config.Config.RAGServerUrl = server.URL
-	n, err := createKBVectorCollection("account", "kb", "unaltered source", "text", "", "tester", "user_update", []string{"service: checkout", "payments"})
+	n, err := createKBVectorCollection(kbOwner{AccountId: "account"}, "kb", "unaltered source", "text", "", "tester", "user_update", []string{"service: checkout", "payments"})
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 }

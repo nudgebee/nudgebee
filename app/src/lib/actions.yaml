@@ -1484,6 +1484,18 @@ actions:
       - role: tenant_admin_readonly
       - role: tenant_admin
     comment: List all knowledge bases for an account
+  - name: ai_list_kb_account_overrides
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: List the per-account switches of an organisation knowledge base
   - name: ai_get_kb_load_history
     definition:
       kind: "synchronous"
@@ -2010,6 +2022,29 @@ actions:
       - role: account_admin
       - role: tenant_admin
     comment: Turn a knowledge base on or off without changing its content
+  - name: ai_update_kb_visibility
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Move a knowledge base between account and organisation scope, or change which accounts an organisation knowledge base reaches
+  - name: ai_update_kb_account_override
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: tenant_admin
+    comment: Switch an organisation knowledge base on or off for one account
   - name: ai_update_tool
     comment: Update a custom agent tool
     definition:

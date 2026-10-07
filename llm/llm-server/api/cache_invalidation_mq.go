@@ -18,6 +18,20 @@ import (
 type cacheInvalidationMessage struct {
 	AccountId  string   `json:"account_id"`
 	AccountIds []string `json:"account_ids"`
+	// KnowledgeBases marks a change to a tenant's organisation knowledge
+	// bases (published by llm-server). Its caches are keyed per account, so
+	// every replica clears them for all accounts; no integration work runs.
+	KnowledgeBases bool   `json:"knowledge_bases,omitempty"`
+	TenantId       string `json:"tenant_id,omitempty"`
+}
+
+// publishOrgKnowledgeInvalidation tells every replica (this one included)
+// that a tenant's organisation knowledge bases changed.
+func publishOrgKnowledgeInvalidation(tenantId string) {
+	msg := cacheInvalidationMessage{KnowledgeBases: true, TenantId: tenantId}
+	if err := common.MqPublish(config.Config.RabbitMqLLMCacheInvalidationExchange, "", msg); err != nil {
+		slog.Error("cache-invalidation: unable to publish knowledge base invalidation", "error", err, "tenant_id", tenantId)
+	}
 }
 
 func init() {
@@ -27,6 +41,8 @@ func init() {
 	if testing.Testing() {
 		return
 	}
+
+	core.OrgKnowledgeCacheInvalidator = publishOrgKnowledgeInvalidation
 
 	// Refuse to start the consumer if ServerName is unset. The fanout
 	// queue name is "<exchange>_<ServerName>", so an empty ServerName
@@ -67,6 +83,14 @@ func processCacheInvalidationMessage(_ context.Context, data []byte) error {
 	if err := common.UnmarshalJson(data, &msg); err != nil {
 		slog.Error("cache-invalidation: unable to decode message — dropping",
 			"error", err, "data", string(data))
+		return nil
+	}
+
+	if msg.KnowledgeBases {
+		// Not an integration change: do not run the per-account integration
+		// refresh and KB sync below.
+		core.ClearKnowledgeBaseCaches()
+		slog.Info("cache-invalidation: knowledge base caches cleared", "tenant_id", msg.TenantId)
 		return nil
 	}
 

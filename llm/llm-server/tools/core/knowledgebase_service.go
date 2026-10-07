@@ -127,6 +127,7 @@ func kbMappedAgentIds(dbms *common.DatabaseManager, accountId, kbId string) ([]s
 // each supplied name, and the skill menu of every agent it is mapped to.
 func invalidateKBCaches(dbms *common.DatabaseManager, accountId, kbId string, names ...string) {
 	invalidateSkillContentCache(accountId, names...)
+	invalidateIfOrgKBNameClash(dbms, accountId, names...)
 	if kbId == "" {
 		return
 	}
@@ -152,9 +153,13 @@ func init() {
 
 // Knowledgebase represents an account-scoped knowledge base
 type Knowledgebase struct {
-	Id            string `json:"id" db:"id"`
-	TenantId      string `json:"tenant_id" db:"tenant_id"`
-	AccountId     string `json:"account_id" db:"account_id"`
+	Id        string `json:"id" db:"id"`
+	TenantId  string `json:"tenant_id" db:"tenant_id"`
+	AccountId string `json:"account_id" db:"account_id"`
+	// Visibility is account (owned by AccountId), organisation or
+	// selected_accounts; the last two are organisation KBs with an empty
+	// AccountId. Empty when the query did not select it.
+	Visibility    string `json:"visibility,omitempty" db:"visibility"`
 	Name          string `json:"name" db:"name"`
 	Description   string `json:"description,omitempty" db:"description"`
 	Data          string `json:"data,omitempty" db:"data"` // Omit in list responses
@@ -197,6 +202,10 @@ type Knowledgebase struct {
 	// column when no single account is in scope; per-account list calls
 	// leave it empty (the page already knows which account it's on).
 	AccountName string `json:"account_name,omitempty" db:"account_name"`
+	// SwitchedOff marks an organisation KB the queried account switched off.
+	// Only ListKnowledgebases sets it; such a KB is listed so the account can
+	// switch it back on, and no other read returns it.
+	SwitchedOff bool `json:"switched_off,omitempty" db:"-"`
 	// Merged in by attachCapabilitySummaries after the main query, not by
 	// StructScan.
 	Kinds        []string `json:"kinds,omitempty"`
@@ -328,11 +337,44 @@ func ValidateKBFormat(format string) error {
 
 // CreateKnowledgebase creates a new knowledge base with vector embeddings
 func CreateKnowledgebase(sc *security.RequestContext, accountId string, kb Knowledgebase) (Knowledgebase, error) {
-	// Validation
 	if accountId == "" {
 		return Knowledgebase{}, errors.New(errKBAccountIDRequired)
 	}
+	// Check access
+	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
+		slog.Error("kb: failed to get account access")
+		return Knowledgebase{}, errors.New(errKBUnauthorized)
+	}
+	return createKnowledgebase(sc, kbOwner{AccountId: accountId}, kb, KBVisibilityAccount, nil)
+}
 
+// CreateOrganisationKnowledgebase creates a knowledge base owned by the
+// caller's organisation: visible to every account (visibility organisation)
+// or only to accountIds (selected_accounts). Tenant admins only.
+func CreateOrganisationKnowledgebase(sc *security.RequestContext, kb Knowledgebase, visibility string, accountIds []string) (Knowledgebase, error) {
+	if visibility != KBVisibilityOrganisation && visibility != KBVisibilitySelectedAccounts {
+		return Knowledgebase{}, fmt.Errorf("invalid visibility %q", visibility)
+	}
+	tenantId := sc.GetSecurityContext().GetTenantId()
+	if tenantId == "" {
+		return Knowledgebase{}, errors.New("auth: tenantId is required")
+	}
+	if !canManageOrgKBs(sc, tenantId, security.SecurityAccessTypeCreate) {
+		return Knowledgebase{}, errors.New(errKBOrgAdminOnly)
+	}
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return Knowledgebase{}, fmt.Errorf("kb: failed to get database manager: %w", err)
+	}
+	selected, err := orgKBAccounts(dbms, tenantId, visibility, accountIds)
+	if err != nil {
+		return Knowledgebase{}, err
+	}
+	return createKnowledgebase(sc, kbOwner{TenantId: tenantId}, kb, visibility, selected)
+}
+
+func createKnowledgebase(sc *security.RequestContext, owner kbOwner, kb Knowledgebase, visibility string, selected []string) (Knowledgebase, error) {
+	accountId := owner.AccountId
 	kb.Name = strings.TrimSpace(kb.Name)
 	if kb.Name == "" {
 		return Knowledgebase{}, errors.New(errKBNameRequired)
@@ -368,12 +410,7 @@ func CreateKnowledgebase(sc *security.RequestContext, accountId string, kb Knowl
 	if tenantId == "" {
 		return Knowledgebase{}, errors.New("auth: tenantId is required")
 	}
-
-	// Check access
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeCreate) {
-		slog.Error("kb: failed to get account access")
-		return Knowledgebase{}, errors.New(errKBUnauthorized)
-	}
+	owner.TenantId = tenantId
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -381,9 +418,15 @@ func CreateKnowledgebase(sc *security.RequestContext, accountId string, kb Knowl
 		return Knowledgebase{}, err
 	}
 
-	// Check if KB with same name already exists
+	// Check if KB with same name already exists. Organisation names compare
+	// trimmed and case-insensitively, as name lookups and the account-wins
+	// rule do.
 	var exists bool
-	err = dbms.Db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM llm_knowledgebases WHERE account_id = $1 AND name = $2)", accountId, kb.Name)
+	if owner.isOrg() {
+		exists, err = kbNameTaken(dbms, owner, kb.Name, "")
+	} else {
+		err = dbms.Db.Get(&exists, "SELECT EXISTS(SELECT 1 FROM llm_knowledgebases WHERE account_id = $1 AND name = $2)", accountId, kb.Name)
+	}
 	if err != nil {
 		slog.Error("kb: failed to check existence", "error", err)
 		return Knowledgebase{}, err
@@ -436,19 +479,24 @@ func CreateKnowledgebase(sc *security.RequestContext, accountId string, kb Knowl
 	kbAny, err := dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
 		_, err = tx.Exec(`
 			INSERT INTO llm_knowledgebases
-			(id, tenant_id, account_id, name, description, data, data_format, data_filename, data_size_bytes, status, kb_type, kb_source, note_category, context_tags, created_by, updated_by, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW())`,
+			(id, tenant_id, account_id, name, description, data, data_format, data_filename, data_size_bytes, status, kb_type, kb_source, note_category, context_tags, created_by, updated_by, created_at, updated_at, visibility)
+			VALUES ($1, $2, NULLIF($3, '')::uuid, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW(), $17)`,
 			kb.Id, kb.TenantId, kb.AccountId, kb.Name, nullableDescription, kb.Data,
-			kb.DataFormat, kb.DataFilename, kb.DataSizeBytes, kb.Status, "manual", nil, nullableNoteCategory, pq.StringArray(contextTags), nullableCreatedBy, nullableUpdatedBy)
+			kb.DataFormat, kb.DataFilename, kb.DataSizeBytes, kb.Status, "manual", nil, nullableNoteCategory, pq.StringArray(contextTags), nullableCreatedBy, nullableUpdatedBy, visibility)
 		if err != nil {
 			slog.Error("kb: failed to insert", "error", err)
 			return Knowledgebase{}, err
+		}
+		if visibility == KBVisibilitySelectedAccounts {
+			if err := replaceSelectedAccounts(tx, kb.Id, tenantId, kb.CreatedBy, selected); err != nil {
+				return Knowledgebase{}, err
+			}
 		}
 
 		// Fetch the created KB with usernames
 		var createdKB Knowledgebase
 		err = tx.Get(&createdKB, `
-			SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.name,
+			SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.visibility, kb.name,
 			       COALESCE(kb.description, '') as description,
 			       kb.data, kb.data_format, kb.data_filename,
 			       COALESCE(kb.data_size_bytes, 0) as data_size_bytes,
@@ -479,12 +527,16 @@ func CreateKnowledgebase(sc *security.RequestContext, accountId string, kb Knowl
 	submissionCtx, cancel := context.WithTimeout(context.Background(), time.Duration(config.Config.AsyncOperationTimeoutSeconds)*time.Second)
 	defer cancel()
 	_ = kbEmbeddingWorkerPool.Submit(submissionCtx, func() {
-		processKBEmbeddingsAsync(sc, accountId, createdKB.Id, kb.Data, kb.DataFormat, contextTags)
+		processKBEmbeddingsAsync(sc, owner, createdKB.Id, kb.Data, kb.DataFormat, contextTags)
 	})
 
 	// A KB recreated under a name that existed before would otherwise be served
 	// from the previous KB's cached body.
-	invalidateKBCaches(dbms, accountId, createdKB.Id, createdKB.Name)
+	if owner.isOrg() {
+		invalidateOrgKnowledgeCaches(tenantId)
+	} else {
+		invalidateKBCaches(dbms, accountId, createdKB.Id, createdKB.Name)
+	}
 
 	// Create audit entry
 	auditReq := &audit.AuditRequest{
@@ -545,7 +597,7 @@ func GetKnowledgebaseScoped(sc *security.RequestContext, accountId, kbId string,
 	scope, scopeArgs := KBAccountScope("kb", 2, 3, orgIDs)
 	var kb Knowledgebase
 	err = dbms.Db.Get(&kb, `
-		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.name,
+		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.visibility, kb.name,
 		       COALESCE(kb.description, '') as description,
 		       kb.data, kb.data_format, kb.data_filename,
 		       COALESCE(kb.data_size_bytes, 0) as data_size_bytes,
@@ -612,7 +664,7 @@ func ListKnowledgebasesForTenant(sc *security.RequestContext) ([]Knowledgebase, 
 	// the struct, so the per-account path (which doesn't JOIN) stays
 	// wire-compatible — clients that don't read account_name see nothing.
 	baseSelect := `
-		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.name,
+		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.visibility, kb.name,
 		       COALESCE(kb.description, '') as description,
 		       kb.data_format, kb.data_filename,
 		       COALESCE(kb.data_size_bytes, 0) as data_size_bytes, kb.status, kb.enabled,
@@ -672,10 +724,12 @@ func ListKnowledgebases(sc *security.RequestContext, accountId string) ([]Knowle
 		return nil, err
 	}
 
-	scope, scopeArgs := KBAccountScope("kb", 1, 2, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
+	switchedOff := SwitchedOffOrgKnowledgebaseIDs(sc.GetContext(), accountId)
+	listed := append(VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId), switchedOff...)
+	scope, scopeArgs := KBAccountScope("kb", 1, 2, listed)
 	var kbs []Knowledgebase
 	err = dbms.Db.Select(&kbs, `
-		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.name,
+		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.visibility, kb.name,
 		       COALESCE(kb.description, '') as description,
 		       kb.data_format, kb.data_filename,
 		       COALESCE(kb.data_size_bytes, 0) as data_size_bytes, kb.status, kb.enabled,
@@ -695,6 +749,9 @@ func ListKnowledgebases(sc *security.RequestContext, accountId string) ([]Knowle
 		slog.Error(logKBFailedQuery, "error", err, "account_id", accountId)
 		return nil, err
 	}
+	for i := range kbs {
+		kbs[i].SwitchedOff = slices.Contains(switchedOff, kbs[i].Id)
+	}
 
 	attachCapabilitySummaries(sc.GetContext(), dbms, kbs)
 	return kbs, nil
@@ -702,16 +759,8 @@ func ListKnowledgebases(sc *security.RequestContext, accountId string) ([]Knowle
 
 // UpdateKnowledgebase updates an existing knowledge base
 func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, updates Knowledgebase) error {
-	if accountId == "" {
-		return errors.New(errKBAccountIDRequired)
-	}
 	if kbId == "" {
 		return errors.New(errKBIDRequired)
-	}
-
-	// Check access
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
-		return errors.New(errKBUnauthorized)
 	}
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
@@ -720,10 +769,19 @@ func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, up
 		return err
 	}
 
+	// An account KB is changed under its account; an organisation KB by a
+	// tenant admin of its tenant (accountId may then be empty).
+	owner, err := resolveKBForWrite(sc, dbms, accountId, kbId, security.SecurityAccessTypeUpdate)
+	if err != nil {
+		return err
+	}
+	accountId = owner.AccountId
+	ownerPredicate, ownerArg := owner.predicate(2)
+
 	// Check if KB exists
 	var existingKB Knowledgebase
 	err = dbms.Db.Get(&existingKB, `
-		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.name,
+		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.visibility, kb.name,
 		       COALESCE(kb.description, '') as description,
 		       kb.data, kb.data_format, kb.data_filename,
 		       COALESCE(kb.data_size_bytes, 0) as data_size_bytes,
@@ -735,7 +793,7 @@ func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, up
 		FROM llm_knowledgebases kb
 		LEFT JOIN users cu ON kb.created_by = cu.id
 		LEFT JOIN users uu ON kb.updated_by = uu.id
-		WHERE kb.id = $1 AND kb.account_id = $2`, kbId, accountId)
+		WHERE kb.id = $1 AND kb.`+ownerPredicate, kbId, ownerArg)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return errors.New(errKBNotFound)
@@ -751,7 +809,11 @@ func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, up
 		}
 
 		var nameExists bool
-		err = dbms.Db.Get(&nameExists, "SELECT EXISTS(SELECT 1 FROM llm_knowledgebases WHERE account_id = $1 AND name = $2 AND id != $3)", accountId, updates.Name, kbId)
+		if owner.isOrg() {
+			nameExists, err = kbNameTaken(dbms, owner, updates.Name, kbId)
+		} else {
+			err = dbms.Db.Get(&nameExists, "SELECT EXISTS(SELECT 1 FROM llm_knowledgebases WHERE account_id = $1 AND name = $2 AND id != $3)", accountId, updates.Name, kbId)
+		}
 		if err != nil {
 			return err
 		}
@@ -831,11 +893,13 @@ func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, up
 		// Only update status when reindexing. Re-processing clears any prior
 		// error_message so a recovered KB stops showing a stale reason.
 		if reindex {
-			query += `, status = $10, error_message = NULL WHERE id = $11 AND account_id = $12`
-			args = append(args, nullableStatus, kbId, accountId)
+			pred, arg := owner.predicate(12)
+			query += `, status = $10, error_message = NULL WHERE id = $11 AND ` + pred
+			args = append(args, nullableStatus, kbId, arg)
 		} else {
-			query += ` WHERE id = $10 AND account_id = $11`
-			args = append(args, kbId, accountId)
+			pred, arg := owner.predicate(11)
+			query += ` WHERE id = $10 AND ` + pred
+			args = append(args, kbId, arg)
 		}
 
 		_, err = tx.Exec(query, args...)
@@ -855,14 +919,18 @@ func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, up
 		submissionCtx, cancel := context.WithTimeout(context.Background(), time.Duration(config.Config.AsyncOperationTimeoutSeconds)*time.Second)
 		defer cancel()
 		_ = kbEmbeddingWorkerPool.Submit(submissionCtx, func() {
-			processKBUpdateEmbeddingsAsync(sc, accountId, kbId, updates.Data, updates.DataFormat, "user_update", contextTags)
+			processKBUpdateEmbeddingsAsync(sc, owner, kbId, updates.Data, updates.DataFormat, "user_update", contextTags)
 		})
 	}
 
 	// Invalidate on every update, not only when the data changed: a name-only
 	// edit is exactly the case that left load_skills serving the previous body
 	// under the previous name, and the agent's skill menu advertising it.
-	invalidateKBCaches(dbms, accountId, kbId, existingKB.Name, updates.Name)
+	if owner.isOrg() {
+		invalidateOrgKnowledgeCaches(owner.TenantId)
+	} else {
+		invalidateKBCaches(dbms, accountId, kbId, existingKB.Name, updates.Name)
+	}
 
 	// Create audit entry
 	auditReq := &audit.AuditRequest{
@@ -903,14 +971,8 @@ func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, up
 // UpdateKnowledgebase: that path rewrites name/description/data and would
 // clobber an integration KB's sync-owned fields.
 func SetKnowledgebaseEnabled(sc *security.RequestContext, accountId, kbId string, enabled bool) error {
-	if accountId == "" {
-		return errors.New(errKBAccountIDRequired)
-	}
 	if kbId == "" {
 		return errors.New(errKBIDRequired)
-	}
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
-		return errors.New(errKBUnauthorized)
 	}
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
@@ -919,6 +981,15 @@ func SetKnowledgebaseEnabled(sc *security.RequestContext, accountId, kbId string
 		return err
 	}
 
+	// Turning an organisation KB off is the tenant admin's switch for every
+	// account; an account switches it off for itself with SetKBAccountOverride.
+	owner, err := resolveKBForWrite(sc, dbms, accountId, kbId, security.SecurityAccessTypeUpdate)
+	if err != nil {
+		return err
+	}
+	accountId = owner.AccountId
+	ownerPredicate, ownerArg := owner.predicate(2)
+
 	// Name is needed to invalidate the skill-content cache, which is keyed by
 	// lowercased KB name rather than id.
 	var existing struct {
@@ -926,7 +997,7 @@ func SetKnowledgebaseEnabled(sc *security.RequestContext, accountId, kbId string
 		Enabled bool   `db:"enabled"`
 	}
 	err = dbms.Db.Get(&existing,
-		"SELECT name, enabled FROM llm_knowledgebases WHERE id = $1 AND account_id = $2", kbId, accountId)
+		"SELECT name, enabled FROM llm_knowledgebases WHERE id = $1 AND "+ownerPredicate, kbId, ownerArg)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return errors.New(errKBNotFound)
@@ -937,10 +1008,11 @@ func SetKnowledgebaseEnabled(sc *security.RequestContext, accountId, kbId string
 
 	updatedBy := sc.GetSecurityContext().GetUserId()
 	nullableUpdatedBy := sql.NullString{String: updatedBy, Valid: updatedBy != ""}
+	updatePredicate, _ := owner.predicate(4)
 	_, err = dbms.Db.Exec(`
 		UPDATE llm_knowledgebases
 		SET enabled = $1, updated_by = $2, updated_at = NOW()
-		WHERE id = $3 AND account_id = $4`, enabled, nullableUpdatedBy, kbId, accountId)
+		WHERE id = $3 AND `+updatePredicate, enabled, nullableUpdatedBy, kbId, ownerArg)
 	if err != nil {
 		slog.Error("kb: failed to set enabled", "error", err, "kb_id", kbId, "enabled", enabled)
 		return err
@@ -953,7 +1025,11 @@ func SetKnowledgebaseEnabled(sc *security.RequestContext, accountId, kbId string
 	// The mapping cache goes through invalidateKBCaches (#37653): it is keyed
 	// per (account, agent), and that helper reads the KB's mappings and drops
 	// exactly those keys rather than emptying the namespace for every account.
-	invalidateKBCaches(dbms, accountId, kbId, existing.Name)
+	if owner.isOrg() {
+		invalidateOrgKnowledgeCaches(owner.TenantId)
+	} else {
+		invalidateKBCaches(dbms, accountId, kbId, existing.Name)
+	}
 
 	// The skill-content cache, however, must go by NAMESPACE. It is keyed by the
 	// name the CALLER asked for, not the KB's own name: load_skills' fuzzy path
@@ -984,6 +1060,7 @@ func SetKnowledgebaseEnabled(sc *security.RequestContext, accountId, kbId string
 				EventAction:   audit.EventActionUpdate,
 				EventStatus:   audit.EventStatusSuccess,
 				TransactionId: sc.GetTraceId(),
+				EventState:    map[string]any{"enabled": enabled},
 				EventAttr: map[string]any{
 					"kb_id": kbId, "kb_name": existing.Name,
 					"enabled": enabled, "previous_enabled": existing.Enabled,
@@ -1002,16 +1079,8 @@ func SetKnowledgebaseEnabled(sc *security.RequestContext, accountId, kbId string
 
 // DeleteKnowledgebase deletes a knowledge base and its vector collection
 func DeleteKnowledgebase(sc *security.RequestContext, accountId, kbId string) error {
-	if accountId == "" {
-		return errors.New(errKBAccountIDRequired)
-	}
 	if kbId == "" {
 		return errors.New(errKBIDRequired)
-	}
-
-	// Check access
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeDelete) {
-		return errors.New(errKBUnauthorized)
 	}
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
@@ -1020,9 +1089,16 @@ func DeleteKnowledgebase(sc *security.RequestContext, accountId, kbId string) er
 		return err
 	}
 
+	owner, err := resolveKBForWrite(sc, dbms, accountId, kbId, security.SecurityAccessTypeDelete)
+	if err != nil {
+		return err
+	}
+	accountId = owner.AccountId
+	ownerPredicate, ownerArg := owner.predicate(2)
+
 	// Get KB details for audit before deletion
 	var kb Knowledgebase
-	err = dbms.Db.Get(&kb, "SELECT id, name, account_id, tenant_id, kb_type, status, enabled, integration_id FROM llm_knowledgebases WHERE id = $1 AND account_id = $2", kbId, accountId)
+	err = dbms.Db.Get(&kb, "SELECT id, name, COALESCE(account_id::text, '') AS account_id, tenant_id, kb_type, status, enabled, integration_id FROM llm_knowledgebases WHERE id = $1 AND "+ownerPredicate, kbId, ownerArg)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return errors.New(errKBNotFound)
@@ -1066,13 +1142,13 @@ func DeleteKnowledgebase(sc *security.RequestContext, accountId, kbId string) er
 			slog.Info("kb: keeping shared integration collection still referenced by other KB rows",
 				"kb_id", kbId, "siblings", siblings)
 		}
-	} else if err := deleteKBVectorCollection(accountId, kbId); err != nil {
+	} else if err := deleteKBVectorCollection(owner.label(), kbId); err != nil {
 		slog.Error("kb: failed to delete vector collection", "error", err, "kb_id", kbId)
 	}
 
 	// Delete from database
 	_, err = dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
-		result, err := tx.Exec("DELETE FROM llm_knowledgebases WHERE id = $1 AND account_id = $2", kbId, accountId)
+		result, err := tx.Exec("DELETE FROM llm_knowledgebases WHERE id = $1 AND "+ownerPredicate, kbId, ownerArg)
 		if err != nil {
 			slog.Error("kb: failed to delete", "error", err, "kb_id", kbId)
 			return nil, err
@@ -1089,6 +1165,11 @@ func DeleteKnowledgebase(sc *security.RequestContext, accountId, kbId string) er
 	}
 
 	// Invalidate caches
+	if owner.isOrg() {
+		invalidateOrgKnowledgeCaches(owner.TenantId)
+	} else {
+		invalidateIfOrgKBNameClash(dbms, accountId, kb.Name)
+	}
 	invalidateSkillContentCache(accountId, kb.Name)
 	if mappedAgentsOk {
 		invalidateKBMappingCache(accountId, mappedAgentIds...)
@@ -1315,20 +1396,21 @@ func GetKBLoadHistory(sc *security.RequestContext, accountId, kbId string) ([]KB
 
 // RetriggerKnowledgebase re-triggers embedding generation for a KB.
 func RetriggerKnowledgebase(sc *security.RequestContext, accountId, kbId string) error {
-	if accountId == "" {
-		return errors.New(errKBAccountIDRequired)
-	}
 	if kbId == "" {
 		return errors.New(errKBIDRequired)
-	}
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
-		return errors.New(errKBUnauthorized)
 	}
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
 		return fmt.Errorf("kb: failed to get database manager: %w", err)
 	}
+
+	owner, err := resolveKBForWrite(sc, dbms, accountId, kbId, security.SecurityAccessTypeUpdate)
+	if err != nil {
+		return err
+	}
+	accountId = owner.AccountId
+	ownerPredicate, ownerArg := owner.predicate(2)
 
 	// Fetch existing KB
 	var existingKB struct {
@@ -1341,7 +1423,7 @@ func RetriggerKnowledgebase(sc *security.RequestContext, accountId, kbId string)
 		KBSource      *string        `db:"kb_source"`
 		IntegrationID *string        `db:"integration_id"`
 	}
-	err = dbms.Db.Get(&existingKB, "SELECT data, data_format, status, enabled, kb_type, kb_source, integration_id, context_tags FROM llm_knowledgebases WHERE id = $1 AND account_id = $2", kbId, accountId)
+	err = dbms.Db.Get(&existingKB, "SELECT data, data_format, status, enabled, kb_type, kb_source, integration_id, context_tags FROM llm_knowledgebases WHERE id = $1 AND "+ownerPredicate, kbId, ownerArg)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return errors.New(errKBNotFound)
@@ -1385,7 +1467,7 @@ func RetriggerKnowledgebase(sc *security.RequestContext, accountId, kbId string)
 		submissionCtx, cancel := context.WithTimeout(context.Background(), time.Duration(config.Config.AsyncOperationTimeoutSeconds)*time.Second)
 		defer cancel()
 		if err := kbEmbeddingWorkerPool.Submit(submissionCtx, func() {
-			processKBUpdateEmbeddingsAsync(sc, accountId, kbId, existingKB.Data, existingKB.DataFormat, "user_retrigger", existingKB.ContextTags)
+			processKBUpdateEmbeddingsAsync(sc, owner, kbId, existingKB.Data, existingKB.DataFormat, "user_retrigger", existingKB.ContextTags)
 		}); err != nil {
 			_ = updateKBStatusError(dbms, kbId, fmt.Sprintf("failed to submit retrigger task: %v", err))
 			return fmt.Errorf("kb: failed to submit retrigger task: %w", err)
@@ -1417,7 +1499,8 @@ func RetriggerKnowledgebase(sc *security.RequestContext, accountId, kbId string)
 }
 
 // processKBEmbeddingsAsync handles embedding generation asynchronously
-func processKBEmbeddingsAsync(sc *security.RequestContext, accountId, kbId, data, format string, contextTags []string) {
+func processKBEmbeddingsAsync(sc *security.RequestContext, owner kbOwner, kbId, data, format string, contextTags []string) {
+	accountId := owner.AccountId
 	slog.Info("kb: starting async embedding generation", "kb_id", kbId, "account_id", accountId)
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
@@ -1429,7 +1512,7 @@ func processKBEmbeddingsAsync(sc *security.RequestContext, accountId, kbId, data
 	// Convert the stored payload into what the rag-server should index. For a
 	// PDF this is where the document is read and its figures are described;
 	// every other format passes straight through.
-	ragData, ragFormat, filename, err := resolveKBIngestPayload(sc, accountId, kbId, data, format)
+	ragData, ragFormat, filename, err := resolveKBIngestPayload(sc, owner, kbId, data, format)
 	if err != nil {
 		slog.Error("kb: async - failed to prepare content for indexing", "error", err, "kb_id", kbId)
 		recordKBIngestFailure(sc, dbms, accountId, kbId, "KB_EMBEDDING_ERROR", err)
@@ -1438,7 +1521,7 @@ func processKBEmbeddingsAsync(sc *security.RequestContext, accountId, kbId, data
 
 	// Call RAG server to create vector embeddings
 	triggeredBy := sc.GetSecurityContext().GetUserId()
-	docCount, err := createKBVectorCollection(accountId, kbId, ragData, ragFormat, filename, triggeredBy, "user_create", contextTags)
+	docCount, err := createKBVectorCollection(owner, kbId, ragData, ragFormat, filename, triggeredBy, "user_create", contextTags)
 	if err != nil {
 		slog.Error("kb: async - failed to create vector collection", "error", err, "kb_id", kbId)
 		// Update status to error, capturing the reason for the UI.
@@ -1495,7 +1578,8 @@ func processKBEmbeddingsAsync(sc *security.RequestContext, accountId, kbId, data
 }
 
 // processKBUpdateEmbeddingsAsync handles embedding update asynchronously
-func processKBUpdateEmbeddingsAsync(sc *security.RequestContext, accountId, kbId, data, format, triggerType string, contextTags []string) {
+func processKBUpdateEmbeddingsAsync(sc *security.RequestContext, owner kbOwner, kbId, data, format, triggerType string, contextTags []string) {
+	accountId := owner.AccountId
 	slog.Info("kb: starting async embedding update", "kb_id", kbId, "account_id", accountId)
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
@@ -1504,7 +1588,7 @@ func processKBUpdateEmbeddingsAsync(sc *security.RequestContext, accountId, kbId
 		return
 	}
 
-	ragData, ragFormat, filename, err := resolveKBIngestPayload(sc, accountId, kbId, data, format)
+	ragData, ragFormat, filename, err := resolveKBIngestPayload(sc, owner, kbId, data, format)
 	if err != nil {
 		slog.Error("kb: async update - failed to prepare content for indexing", "error", err, "kb_id", kbId)
 		recordKBIngestFailure(sc, dbms, accountId, kbId, "KB_EMBEDDING_UPDATE_ERROR", err)
@@ -1512,7 +1596,7 @@ func processKBUpdateEmbeddingsAsync(sc *security.RequestContext, accountId, kbId
 	}
 
 	// Delete old vector collection first
-	err = deleteKBVectorCollection(accountId, kbId)
+	err = deleteKBVectorCollection(owner.label(), kbId)
 	if err != nil {
 		slog.Error("kb: async update - failed to delete old vector collection", "error", err, "kb_id", kbId)
 		// Continue with creation even if deletion fails
@@ -1520,7 +1604,7 @@ func processKBUpdateEmbeddingsAsync(sc *security.RequestContext, accountId, kbId
 
 	// Create new vector collection
 	triggeredBy := sc.GetSecurityContext().GetUserId()
-	docCount, err := createKBVectorCollection(accountId, kbId, ragData, ragFormat, filename, triggeredBy, triggerType, contextTags)
+	docCount, err := createKBVectorCollection(owner, kbId, ragData, ragFormat, filename, triggeredBy, triggerType, contextTags)
 	if err != nil {
 		slog.Error("kb: async update - failed to create vector collection", "error", err, "kb_id", kbId)
 		_ = updateKBStatusError(dbms, kbId, fmt.Sprintf("failed to create embeddings: %v", err))
@@ -1573,7 +1657,7 @@ func processKBUpdateEmbeddingsAsync(sc *security.RequestContext, accountId, kbId
 }
 
 // Helper function to create vector collection via RAG server
-func createKBVectorCollection(accountId, kbId, data, format, filename, triggeredBy, triggerType string, contextTags []string) (int, error) {
+func createKBVectorCollection(owner kbOwner, kbId, data, format, filename, triggeredBy, triggerType string, contextTags []string) (int, error) {
 	if contextTags == nil {
 		contextTags = []string{}
 	}
@@ -1606,7 +1690,6 @@ func createKBVectorCollection(accountId, kbId, data, format, filename, triggered
 	}
 
 	payload := map[string]any{
-		"account_id":   accountId,
 		"kb_id":        kbId,
 		"data":         ragData,
 		"format":       ragFormat,
@@ -1614,6 +1697,13 @@ func createKBVectorCollection(accountId, kbId, data, format, filename, triggered
 		"triggered_by": triggeredBy,
 		"trigger_type": triggerType,
 		"context_tags": contextTags,
+	}
+	// An organisation KB is indexed for its tenant: its collection carries
+	// tenant_id and no account.
+	if owner.isOrg() {
+		payload["tenant_id"] = owner.TenantId
+	} else {
+		payload["account_id"] = owner.AccountId
 	}
 
 	payloadBytes, err := common.MarshalJson(payload)
@@ -1810,8 +1900,9 @@ func ListAgentKBs(sc *security.RequestContext, accountId, agentId string) ([]Kno
 	var kbs []Knowledgebase
 	// Join with mapping table to get KBs for this agent
 	// Note: Excluding data field for performance
+	mappedScope, mappedArgs := KBAccountScope("kb", 1, 3, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
 	err = dbms.Db.Select(&kbs, `
-		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.name,
+		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.visibility, kb.name,
 		       COALESCE(kb.description, '') as description, kb.context_tags,
 		       kb.data_format,
 		       kb.data_filename, COALESCE(kb.data_size_bytes, 0) as data_size_bytes, kb.status, kb.enabled,
@@ -1825,8 +1916,8 @@ func ListAgentKBs(sc *security.RequestContext, accountId, agentId string) ([]Kno
 		INNER JOIN llm_kb_agent_mappings m ON kb.id = m.kb_id
 		LEFT JOIN users cu ON kb.created_by = cu.id
 		LEFT JOIN users uu ON kb.updated_by = uu.id
-		WHERE m.account_id = $1 AND m.agent_id = $2
-		ORDER BY kb.created_at DESC`, accountId, agentId)
+		WHERE m.account_id = $1 AND m.agent_id = $2 AND `+mappedScope+`
+		ORDER BY kb.created_at DESC`, append([]any{accountId, agentId}, mappedArgs...)...)
 
 	if err != nil {
 		slog.Error("kb: failed to list agent KBs", "error", err, "account_id", accountId, "agent_id", agentId)
@@ -1858,6 +1949,7 @@ func ListActiveAgentSkillCandidates(sc *security.RequestContext, accountId strin
 	if err != nil {
 		return nil, fmt.Errorf("ListActiveAgentSkillCandidates: failed to get database manager: %w", err)
 	}
+	mappedScope, mappedArgs := KBAccountScope("kb", 1, 3, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
 	var out []SkillCandidate
 	err = dbms.Db.Select(&out, `
 		SELECT DISTINCT ON (kb.id)
@@ -1870,7 +1962,8 @@ func ListActiveAgentSkillCandidates(sc *security.RequestContext, accountId strin
 		  AND m.agent_id = ANY($2::text[])
 		  AND kb.status = 'active'
 		  AND kb.enabled
-		ORDER BY kb.id, kb.name ASC`, accountId, pq.Array(agentNames))
+		  AND `+mappedScope+`
+		ORDER BY kb.id, kb.name ASC`, append([]any{accountId, pq.Array(agentNames)}, mappedArgs...)...)
 	if err != nil {
 		return nil, fmt.Errorf("ListActiveAgentSkillCandidates: query failed: %w", err)
 	}
@@ -2044,6 +2137,11 @@ func LoadActiveAgentSkillContents(sc *security.RequestContext, accountId string,
 
 	selectionActive := restrictToIds != nil
 
+	// Mapping rows are per account; an organisation KB mapped earlier must
+	// still be visible to the account now.
+	orgIDs := VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId)
+	mappedScope3, mappedArgs := KBAccountScope("kb", 1, 3, orgIDs)
+	mappedScope5, _ := KBAccountScope("kb", 1, 5, orgIDs)
 	var rows []agentSkillRow
 	switch {
 	case !selectionActive:
@@ -2062,7 +2160,8 @@ func LoadActiveAgentSkillContents(sc *security.RequestContext, accountId string,
 			  AND m.agent_id = ANY($2::text[])
 			  AND kb.status = 'active'
 			  AND kb.enabled
-			ORDER BY kb.id, kb.name ASC`, accountId, pq.Array(agentNames))
+			  AND `+mappedScope3+`
+			ORDER BY kb.id, kb.name ASC`, append([]any{accountId, pq.Array(agentNames)}, mappedArgs...)...)
 
 	case len(inheritedNames) == 0:
 		// Selection active but no inheritance — own-name skills are always loaded.
@@ -2083,7 +2182,8 @@ func LoadActiveAgentSkillContents(sc *security.RequestContext, accountId string,
 			  AND m.agent_id = $2
 			  AND kb.status = 'active'
 			  AND kb.enabled
-			ORDER BY kb.id, kb.name ASC`, accountId, ownName)
+			  AND `+mappedScope3+`
+			ORDER BY kb.id, kb.name ASC`, append([]any{accountId, ownName}, mappedArgs...)...)
 
 	case len(restrictToIds) == 0:
 		// Selection ran but chose nothing. Sub-agent's own-name skills must still
@@ -2102,7 +2202,8 @@ func LoadActiveAgentSkillContents(sc *security.RequestContext, accountId string,
 			  AND m.agent_id = $2
 			  AND kb.status = 'active'
 			  AND kb.enabled
-			ORDER BY kb.id, kb.name ASC`, accountId, ownName)
+			  AND `+mappedScope3+`
+			ORDER BY kb.id, kb.name ASC`, append([]any{accountId, ownName}, mappedArgs...)...)
 
 	default:
 		// Selection active with both an own name and inherited names. Union via a
@@ -2121,11 +2222,12 @@ func LoadActiveAgentSkillContents(sc *security.RequestContext, accountId string,
 			WHERE m.account_id = $1
 			  AND kb.status = 'active'
 			  AND kb.enabled
+			  AND `+mappedScope5+`
 			  AND (
 			      m.agent_id = $2
 			      OR (m.agent_id = ANY($3::text[]) AND kb.id = ANY($4::text[]))
 			  )
-			ORDER BY kb.id, kb.name ASC`, accountId, ownName, pq.Array(inheritedNames), pq.Array(restrictToIds))
+			ORDER BY kb.id, kb.name ASC`, append([]any{accountId, ownName, pq.Array(inheritedNames), pq.Array(restrictToIds)}, mappedArgs...)...)
 	}
 	if err != nil {
 		return "", nil, fmt.Errorf("LoadActiveAgentSkillContents: query failed: %w", err)
@@ -2167,8 +2269,10 @@ func MapKBToAgent(sc *security.RequestContext, accountId, kbId, agentId string) 
 
 	// First verify the KB exists and belongs to this account
 	var kbExists bool
+	// An account may map its own KBs and the organisation KBs it can see.
+	mapScope, mapScopeArgs := KBAccountScope("", 2, 3, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
 	err = dbms.Db.Get(&kbExists, `
-		SELECT EXISTS(SELECT 1 FROM llm_knowledgebases WHERE id = $1 AND account_id = $2)`, kbId, accountId)
+		SELECT EXISTS(SELECT 1 FROM llm_knowledgebases WHERE id = $1 AND `+mapScope+`)`, append([]any{kbId, accountId}, mapScopeArgs...)...)
 	if err != nil {
 		slog.Error("kb: failed to check KB existence", "error", err)
 		return nil, err
