@@ -115,6 +115,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import RemediationPanel, { isRemediationPlan, runnableActionCount } from '@components/k8s/investigate/cards/RemediationPanel';
 import { podDetailsFromEvidence } from '@components/k8s/investigate/podFacts';
 import { uniqueInsightLines } from '@components/k8s/investigate/insightLines';
+import { placeByFinding } from '@components/k8s/investigate/cardOrder';
 import EventAlertControlsSection from '@components/k8s/investigate/EventAlertControlsSection';
 // Cloud-specific card imports
 import CloudTrailEventCard from '@components/cloudaccount/investigate/cards/CloudTrailEventCard';
@@ -1517,7 +1518,9 @@ const Investigate = () => {
             safeSetState(setMatchedOptions, (old) => {
               const cardExists = old.some((existingCard) => existingCard.id === card.id);
               if (cardExists) return old;
-              return [...old, card];
+              // Kubernetes cards go in by the strength of their own finding; cloud cards are
+              // ordered before this loop.
+              return isK8s ? placeByFinding(old, card) : [...old, card];
             });
             // Dynamic cards are id'd per evidence index ('TracesCard_3'), so the
             // equality check this replaces never matched and CorrespondingEvents — the
