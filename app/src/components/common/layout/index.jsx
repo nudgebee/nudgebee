@@ -59,6 +59,7 @@ import {
 } from '@assets';
 import Header1 from '@shared/header/Header1';
 import ErrorBoundary from '@shared/ErrorBoundary';
+import Loader from '@shared/Loader';
 import SafeIcon from '@shared/icons/SafeIcon';
 import FirstLoginTour from '@components/onboarding/FirstLoginTour';
 import PendingAgentInstallBanner, { PendingAgentInstallBannerHostContext } from '@components/integrations/PendingAgentInstallBanner';
@@ -325,7 +326,7 @@ const PageLayout = ({ children }) => {
   // A tenant with no cloud accounts is held on the Setup Center — see
   // SetupGateContext. Dimming the rail is the visible half; the redirect in
   // that provider is what actually enforces it.
-  const { locked: navLocked } = useSetupGate();
+  const { locked: navLocked, loading: gateLoading } = useSetupGate();
 
   // State
   const [anchorElUser, setAnchorElUser] = useState(null);
@@ -986,27 +987,53 @@ const PageLayout = ({ children }) => {
                 }}
               >
                 <Container maxWidth={false} sx={{ maxWidth: ds.space.mul(0, 900) }} style={{ paddingInline: 0 }}>
-                  {/* Reminder for a Kubernetes account whose install command was never
-                      run. Lives here, not on one page: the add-cluster modal is reachable
-                      from the header everywhere, so the reminder has to follow the user.
-                      Suppressed on /setup specifically — not on `navLocked`, which is not
-                      the same condition. The K8s wizard's own account-create callback
-                      (`refreshReadiness` in SetupCenter) re-reads the gate the instant step
-                      1 submits, so `navLocked` flips false while the user is still on
-                      /setup watching step 2 (the install command, waiting for the agent).
-                      Gating on navLocked would let this banner render at exactly that
-                      moment, stacked on the card's own "waiting for agent" state for the
-                      same account. The route is the one thing that stays true for as long
-                      as the duplicate would.
-                      A page with a tab strip claims it and renders it below the tabs. */}
-                  {bannerClaims === 0 && router.pathname !== SETUP_ROUTE && (
-                    <ErrorBoundary resetKey={router.asPath}>
-                      <PendingAgentInstallBanner />
-                    </ErrorBoundary>
+                  {gateLoading && router.pathname !== SETUP_ROUTE ? (
+                    // Until the gate's account lookup resolves, we don't yet know whether this
+                    // tenant is locked — so don't paint the real page at all. Reported live: a
+                    // locked tenant saw a genuine, live Home page (right after login, or after
+                    // the hard reload a tenant switch does) for however long that lookup took,
+                    // because nothing told Home to hold back while it was still in flight; only
+                    // once it resolved did the redirect below ever fire. Same reasoning
+                    // AccountGuard's `hideContent` mode already uses for the same class of
+                    // problem (`@ee/components/AccountGuard.tsx`): don't mount — and don't let
+                    // it start fetching — content a guard might immediately redirect away from.
+                    <Loader />
+                  ) : (
+                    <Box
+                      sx={navLocked && router.pathname !== SETUP_ROUTE ? { pointerEvents: 'none', opacity: 0.35, filter: 'grayscale(1)' } : undefined}
+                    >
+                      {/* Once loaded, the rail dims on navLocked (above) — this region has to
+                          match, since a page's own content has no idea the gate exists.
+                          Reported live: the rail read as locked while the page underneath it
+                          kept rendering and responding to clicks normally. Same treatment, same
+                          condition, one level up. Excluded on /setup for the same reason
+                          PendingAgentInstallBanner already is below: that page's own content is
+                          what the gate is sending people to interact with. */}
+                      {/* Reminder for a Kubernetes account whose install command was never
+                          run. Lives here, not on one page: the add-cluster modal is reachable
+                          from the header everywhere, so the reminder has to follow the user.
+
+                          Suppressed on /setup specifically — not on `navLocked`, which is not
+                          the same condition. The K8s wizard's own account-create callback
+                          (`refreshReadiness` in SetupCenter) re-reads the gate the instant step
+                          1 submits, so `navLocked` flips false while the user is still on
+                          /setup watching step 2 (the install command, waiting for the agent).
+                          Gating on navLocked would let this banner render at exactly that
+                          moment, stacked on the card's own "waiting for agent" state for the
+                          same account. The route is the one thing that stays true for as long
+                          as the duplicate would.
+
+                          A page with a tab strip claims it and renders it below the tabs. */}
+                      {bannerClaims === 0 && router.pathname !== SETUP_ROUTE && (
+                        <ErrorBoundary resetKey={router.asPath}>
+                          <PendingAgentInstallBanner />
+                        </ErrorBoundary>
+                      )}
+                      <PendingAgentInstallBannerHostContext.Provider value={bannerHost}>
+                        <ErrorBoundary resetKey={router.asPath}>{children}</ErrorBoundary>
+                      </PendingAgentInstallBannerHostContext.Provider>
+                    </Box>
                   )}
-                  <PendingAgentInstallBannerHostContext.Provider value={bannerHost}>
-                    <ErrorBoundary resetKey={router.asPath}>{children}</ErrorBoundary>
-                  </PendingAgentInstallBannerHostContext.Provider>
                 </Container>
               </Box>
             </Box>

@@ -991,6 +991,18 @@ const Header1 = ({ showBorder = false }) => {
                       showPadding={true}
                       showAutoEllipsis={true}
                       isDisabled={Boolean(anchorActiveTab.disableDropdown)}
+                      // ClusterDropdown's own init effect pushes `accountId` onto
+                      // the URL for whatever account it picks (the demo one, on a
+                      // zero-account tenant) — with no idea the gate exists or is
+                      // mid-redirect. That push and SetupGateContext's own
+                      // `router.replace(SETUP_ROUTE)` race the same router; when
+                      // this one wins, the user is left back on /home with
+                      // ?accountId=demo in the URL and the redirect silently lost
+                      // (reported live, URL bar showing exactly that). Reusing the
+                      // prop this component already has for "don't touch the
+                      // router" — same fix class as the other things on this page
+                      // that already stand down while setupLocked.
+                      disableRouteChanges={setupLocked}
                     />
                   </Box>
                 )}
