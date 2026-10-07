@@ -730,6 +730,16 @@ func applyVersionRefs(
 	}
 }
 
+// FindAccountID resolves a workflow id to its account, for links that carry no account.
+func (s *WorkflowDao) FindAccountID(ctx context.Context, tenantID, id string) (string, error) {
+	var accountID string
+	err := s.db.QueryRowContext(ctx, "SELECT account_id FROM workflows WHERE tenant_id = $1 AND id = $2", tenantID, id).Scan(&accountID)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve workflow account: %w", err)
+	}
+	return accountID, nil
+}
+
 func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name string) (*model.Workflow, error) {
 	var id string
 	var wfName string

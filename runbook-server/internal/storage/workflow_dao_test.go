@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"regexp"
 	"testing"
 
@@ -163,4 +164,24 @@ func TestWorkflowDaoList_BindsTagKeyAsParameter(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// #40216: a link without ?accountId= resolves the account by id, scoped to the caller's tenant.
+func TestWorkflowDaoFindAccountID(t *testing.T) {
+	mockDB, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	defer func() { _ = mockDB.Close() }()
+	dao := &WorkflowDao{db: sqlx.NewDb(mockDB, "sqlmock")}
+	query := regexp.QuoteMeta("SELECT account_id FROM workflows WHERE tenant_id = $1 AND id = $2")
+
+	mock.ExpectQuery(query).WithArgs("t1", "wf-1").WillReturnRows(sqlmock.NewRows([]string{"account_id"}).AddRow("acc-1"))
+	accountID, err := dao.FindAccountID(context.Background(), "t1", "wf-1")
+	require.NoError(t, err)
+	assert.Equal(t, "acc-1", accountID)
+
+	mock.ExpectQuery(query).WithArgs("t1", "wf-missing").WillReturnError(sql.ErrNoRows)
+	_, err = dao.FindAccountID(context.Background(), "t1", "wf-missing")
+	assert.ErrorIs(t, err, sql.ErrNoRows)
+
+	require.NoError(t, mock.ExpectationsWereMet())
 }

@@ -53,6 +53,7 @@ type WorkflowService interface {
 	ListWorkflows(ctx *security.RequestContext, accountIds []string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error)
 	SearchAIInvocableWorkflows(ctx *security.RequestContext, accountId, query string, limit int) (model.AIWorkflowSearchResponse, error)
 	GetWorkflow(ctx *security.RequestContext, accountId, id string) (*model.Workflow, error)
+	GetWorkflowAccount(ctx *security.RequestContext, id string) (string, error)
 	UpdateWorkflow(ctx *security.RequestContext, accountId, id string, workflow model.Workflow) (model.Workflow, error)
 	DeleteWorkflow(ctx *security.RequestContext, accountId, id string) error
 	ListWorkflowCallers(ctx *security.RequestContext, accountId, id string) (model.ListWorkflowCallersResponse, error)
@@ -2140,6 +2141,27 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, workflo
 			}
 		}()
 	}
+}
+
+// GetWorkflowAccount resolves a workflow id to its account for a link that carries
+// none. A workflow the caller cannot read is reported as sql.ErrNoRows, like a missing one.
+func (s *Service) GetWorkflowAccount(ctx *security.RequestContext, id string) (string, error) {
+	if id == "" {
+		return "", fmt.Errorf("id is required")
+	}
+	// Same account set the Automations list uses, so the link and the list agree.
+	scope, err := ResolveAccountScope(ctx, nil)
+	if err != nil {
+		return "", sql.ErrNoRows
+	}
+	accountID, err := s.store.FindAccountID(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), id)
+	if err != nil {
+		return "", err
+	}
+	if !scope.TenantWide && !slices.Contains(scope.AccountIDs, accountID) {
+		return "", sql.ErrNoRows
+	}
+	return accountID, nil
 }
 
 func (s *Service) GetWorkflow(ctx *security.RequestContext, accountId, id string) (*model.Workflow, error) {

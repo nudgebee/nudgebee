@@ -1,8 +1,11 @@
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Box, CircularProgress, Typography } from '@mui/material';
 import { hasWriteAccess, hasPermission } from '@lib/auth';
+import AccountPickerModal from '@components/common/AccountPickerModal';
+import { EmptyState } from '@ui/EmptyState';
+import apiWorkflow from '@api1/workflow';
 
 const WorkflowBuilderNoteBook = dynamic(() => import('@components/workflow/WorkflowBuilderNotebook'), {
   ssr: false,
@@ -31,6 +34,10 @@ const WorkflowPage = () => {
 
   const isNewWorkflow = workflowId === 'new';
   const accountIdStr = typeof accountId === 'string' ? accountId : undefined;
+  // A link without ?accountId= left the builder loading forever: look the account up,
+  // and fall back to asking only when that lookup itself fails.
+  const needsAccount = router.isReady && !isNewWorkflow && !accountIdStr;
+  const [resolveState, setResolveState] = useState<'resolving' | 'notFound' | 'failed'>('resolving');
   // Same union WorkflowBuilderNotebook uses for its own `canEdit`: a pure custom-role
   // holder (workflows:Write) has no built-in account role, so hasWriteAccess alone
   // bounced them off /automation/new even though the create is authorized end to end.
@@ -43,8 +50,65 @@ const WorkflowPage = () => {
     }
   }, [router.isReady, isNewWorkflow, canEdit, accountIdStr, router]);
 
+  // Keep the rest of the link (executionId, #executions) so it lands where it pointed.
+  const openInAccount = (picked: string) =>
+    router.replace({ pathname: router.pathname, query: { ...router.query, accountId: picked }, hash: window.location.hash.replace(/^#/, '') });
+
+  useEffect(() => {
+    if (!needsAccount || typeof workflowId !== 'string') return undefined;
+    let cancelled = false;
+    setResolveState('resolving');
+    apiWorkflow.getWorkflowAccount(workflowId).then((res: any) => {
+      if (cancelled) return;
+      const resolved = res?.data?.workflow_get_account?.account_id;
+      if (resolved) {
+        openInAccount(resolved);
+      } else {
+        // 404 = missing or not readable; picking an account cannot help then.
+        const notFound = res?.errors?.some((e: any) => e?.extensions?.upstream?.status === 404);
+        setResolveState(notFound ? 'notFound' : 'failed');
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsAccount, workflowId]);
+
   if (isNewWorkflow && !canEdit) {
     return null;
+  }
+
+  if (needsAccount && resolveState === 'resolving') {
+    return (
+      <Box sx={{ width: '100%', height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+        <CircularProgress size={32} />
+      </Box>
+    );
+  }
+
+  if (needsAccount && resolveState === 'notFound') {
+    return (
+      <EmptyState
+        size='page'
+        illustration='no-results'
+        title='Automation not found'
+        description='It may have been deleted, or it belongs to an account you cannot access.'
+        action={{ label: 'Go to Automations', onClick: () => router.replace('/automation'), id: 'automation-not-found-back' }}
+      />
+    );
+  }
+
+  if (needsAccount) {
+    return (
+      <AccountPickerModal
+        open
+        onSelect={openInAccount}
+        onCancel={() => router.replace('/automation')}
+        title='Select an account to open this automation'
+        description='This link does not say which account the automation belongs to. Pick its account to open it.'
+        testIdPrefix='automation-account-picker'
+      />
+    );
   }
 
   return <WorkflowBuilderNoteBook mode={isNewWorkflow ? 'create' : 'edit'} />;

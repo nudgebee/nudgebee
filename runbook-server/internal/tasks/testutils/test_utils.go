@@ -131,6 +131,9 @@ func (m *MockWorkflowStore) List(ctx context.Context, tenantID string, accountID
 func (m *MockWorkflowStore) Find(ctx context.Context, tenantID, accountID, id string) (*model.Workflow, error) {
 	return nil, nil
 }
+func (m *MockWorkflowStore) FindAccountID(ctx context.Context, tenantID, id string) (string, error) {
+	return "", nil
+}
 func (m *MockWorkflowStore) FindByName(ctx context.Context, tenantID, accountID, name string) (*model.Workflow, error) {
 	// Simulate finding a workflow by name
 	if name == "test-child-workflow" {

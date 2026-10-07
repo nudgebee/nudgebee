@@ -51,6 +51,8 @@ func (s *Server) handleAction(c *gin.Context) {
 		s.handleListWorkflows(c, sc, args)
 	case "workflow_get":
 		s.handleGetWorkflow(c, sc, args)
+	case "workflow_get_account":
+		s.handleGetWorkflowAccount(c, sc, args)
 	case "workflow_update":
 		s.handleUpdateWorkflow(c, sc, args)
 	case "workflow_delete":
@@ -343,6 +345,29 @@ func (s *Server) handleGetWorkflow(c *gin.Context, sc *security.RequestContext, 
 	}
 
 	c.JSON(http.StatusOK, wf)
+}
+
+// handleGetWorkflowAccount answers which account a workflow belongs to, for a link
+// with no account. Missing and not-readable both return 404 so ids don't leak across accounts.
+func (s *Server) handleGetWorkflowAccount(c *gin.Context, sc *security.RequestContext, args map[string]any) {
+	workflowID, ok := args["id"].(string)
+	if !ok || workflowID == "" {
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("workflow id is required")}))
+		return
+	}
+
+	accountID, err := s.workflowService.GetWorkflowAccount(sc, workflowID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, buildApiResponse(nil, []error{errors.New("workflow not found")}))
+		} else {
+			s.logger.Error("failed to resolve workflow account via RPC", "workflowID", workflowID, "error", err)
+			c.JSON(http.StatusBadRequest, common.ErrorActionInternal("failed to get workflow"))
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"id": workflowID, "account_id": accountID})
 }
 
 func (s *Server) handleUpdateWorkflow(c *gin.Context, sc *security.RequestContext, args map[string]any) {

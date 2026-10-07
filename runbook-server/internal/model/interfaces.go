@@ -21,6 +21,8 @@ type WorkflowStore interface {
 	CreateWorkflowWithInitialVersion(ctx context.Context, tenantID, accountID string, wf Workflow) (workflowID string, version *WorkflowVersion, err error)
 	List(ctx context.Context, tenantID string, accountIDs []string, request ListWorkflowRequest) ([]Workflow, int, error)
 	Find(ctx context.Context, tenantID, accountID, id string) (*Workflow, error)
+	// FindAccountID returns the account a workflow belongs to (sql.ErrNoRows when absent).
+	FindAccountID(ctx context.Context, tenantID, id string) (string, error)
 	FindByName(ctx context.Context, tenantID, accountID, name string) (*Workflow, error)
 	FindByIntegrationName(ctx context.Context, tenantID, accountID, integrationName string) (*Workflow, error)
 	// ListByIntegrationName returns every Active workflow whose definition.triggers

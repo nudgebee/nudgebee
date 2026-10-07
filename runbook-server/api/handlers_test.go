@@ -56,6 +56,11 @@ func (m *MockWorkflowService) GetWorkflow(ctx *security.RequestContext, accountI
 	return args.Get(0).(*model.Workflow), args.Error(1)
 }
 
+func (m *MockWorkflowService) GetWorkflowAccount(ctx *security.RequestContext, id string) (string, error) {
+	args := m.Called(ctx, id)
+	return args.String(0), args.Error(1)
+}
+
 func (m *MockWorkflowService) GetWorkflowState(ctx *security.RequestContext, accountId, id string) ([]model.WorkflowStateItem, error) {
 	args := m.Called(ctx, accountId, id)
 	return args.Get(0).([]model.WorkflowStateItem), args.Error(1)

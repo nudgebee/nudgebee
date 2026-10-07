@@ -660,6 +660,11 @@ func (m *MockWorkflowStore) Find(ctx context.Context, tenantID, accountID, id st
 	return args.Get(0).(*model.Workflow), args.Error(1)
 }
 
+func (m *MockWorkflowStore) FindAccountID(ctx context.Context, tenantID, id string) (string, error) {
+	args := m.Called(ctx, tenantID, id)
+	return args.String(0), args.Error(1)
+}
+
 func (m *MockWorkflowStore) FindByName(ctx context.Context, tenantID, accountID, name string) (*model.Workflow, error) {
 	args := m.Called(ctx, tenantID, accountID, name)
 	if args.Get(0) == nil {

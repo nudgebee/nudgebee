@@ -772,7 +772,29 @@ query ListWorkflowTemplates($request: WorkflowListTemplateRequest!) {
 }
 `;
 
+const GET_WORKFLOW_ACCOUNT = `
+query GetWorkflowAccount($workflowId:String!) {
+  workflow_get_account(request: {id: $workflowId}) {
+    id
+    account_id
+  }
+}
+`;
+
 const apiWorkflow = {
+  /** Resolves the account of a workflow, for a link that has no ?accountId=. */
+  async getWorkflowAccount(workflowId: string) {
+    try {
+      const response = await queryGraphQL(GET_WORKFLOW_ACCOUNT, 'GetWorkflowAccount', { workflowId });
+      return {
+        data: response?.data?.data,
+        errors: response?.data?.errors,
+        status: response?.status,
+      };
+    } catch (error) {
+      return { data: null, errors: [error], status: undefined };
+    }
+  },
   async getWorkflowById(accountId: string, workflowId: string) {
     if (accountId === 'demo') return { data: null, errors: null };
     try {

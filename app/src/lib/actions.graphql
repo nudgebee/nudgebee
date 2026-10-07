@@ -2624,6 +2624,12 @@ type Query {
 }
 
 type Query {
+  workflow_get_account(
+    request: WorkflowGetAccountRequest!
+  ): WorkflowGetAccountResponse
+}
+
+type Query {
   workflows_count(
     request: WorkflowCountRequest!
   ): WorkflowCountResponse
@@ -5254,6 +5260,10 @@ input WorkflowListRequest {
 
 input WorkflowGetRequest {
   account_id: String!
+  id: String!
+}
+
+input WorkflowGetAccountRequest {
   id: String!
 }
 
@@ -9482,6 +9492,11 @@ type FetchMetricQueryOutput {
 
 type WorkflowDeleteResponse {
   message: String!
+}
+
+type WorkflowGetAccountResponse {
+  id: String!
+  account_id: String!
 }
 
 type WorkflowListCallersResponse {
