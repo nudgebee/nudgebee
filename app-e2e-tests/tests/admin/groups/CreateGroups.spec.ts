@@ -177,7 +177,7 @@ test.describe("Groups - CRUD & edge cases", () => {
       // A row expands when non-interactive cell chrome is clicked, so the plain-text name cell is a safe target.
       await row.getByText(FIXTURE_GROUPS.read).click();
 
-      await expect(page.getByRole("tab", { name: "Users" })).toBeVisible();
+      await expect(locators.rowUsersTab).toBeVisible();
     }
   );
 
@@ -448,6 +448,9 @@ test.describe("Groups - CRUD & edge cases", () => {
       await locators.membersPicker.click();
       const options = page.locator('[role="option"]');
       await options.first().waitFor({ state: "visible", timeout: 15000 });
+
+      // The ds Select renders its search box only above 8 options, and a tenant with few users stays under that.
+      test.skip((await options.count()) <= 8, "member picker has 8 or fewer options, so it renders no search box");
 
       await locators.searchInMemberPicker(knownUser.email.slice(0, 4));
       await expect(locators.memberOption(knownUser.email)).toBeVisible();

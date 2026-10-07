@@ -88,6 +88,8 @@ export class GroupLocators extends CommonLocators {
   readonly groupSearchInput!: Locator;
   readonly membersPicker!: Locator;
   readonly selectedUsersTable!: Locator;
+  readonly rowUsersTab!: Locator;
+  readonly dropdownOption!: Locator;
   readonly tenantRoleSelect!: Locator;
   readonly toastRegion!: Locator;
   readonly saveGroupInfoBtn!: Locator;
@@ -137,6 +139,9 @@ export class GroupLocators extends CommonLocators {
     this.membersPicker = page.locator("#all-users-for-group").or(page.getByPlaceholder("Add active user")).first();
     // No accessible name and no unique text of its own, so the id is the only stable handle.
     this.selectedUsersTable = page.locator("#selected-users");
+    // The page's own Access & Users sub-tab is also named "Users" but is a link, so a wider match here would pick the wrong element.
+    this.rowUsersTab = page.locator('button[role="tab"]').filter({ hasText: /^Users$/ });
+    this.dropdownOption = page.locator('[role="option"]');
     this.tenantRoleSelect = page.locator("#group-tenant-role").or(page.getByPlaceholder("Select role(s)")).first();
     this.toastRegion = page.getByRole("region", { name: "Notifications" });
 
@@ -248,6 +253,21 @@ export class GroupLocators extends CommonLocators {
   // Member status filter, matched exactly because "Active" is a substring of "Inactive".
   async selectMemberFilter(status: "Active" | "Inactive" | "Suspended"): Promise<void> {
     await this.page.getByRole("radio", { name: status, exact: true }).click();
+    await this.showAllMemberRows();
+  }
+
+  // The members table pages at 10 rows, so on a fixture with more members a row a test adds lands on page 2 and every row locator misses it.
+  // The pagination of the open modal is the last one in the DOM, because the modal is portalled after the page behind it.
+  async showAllMemberRows(): Promise<void> {
+    // The members arrive after the modal opens, so wait for the table's own result line before looking for its page-size control.
+    // A group with no members renders no pagination, which is why a miss here is not an error.
+    // Scoped to the modal: the Groups list behind it prints the same "Showing x-y of n results" line.
+    const modal = this.page.locator(".MuiModal-root").last();
+    const resultLine = modal.getByText(/Showing \d+-\d+ of \d+ results/).last();
+    if (!(await resultLine.waitFor({ state: "visible", timeout: 10000 }).then(() => true).catch(() => false))) return;
+    const rowsPerPage = modal.getByRole("button", { name: /^\d+$/ }).last();
+    await rowsPerPage.click();
+    await this.dropdownOption.filter({ hasText: /^100$/ }).first().click();
   }
 
   // Applies the edit and clicks the section Save as one retried unit; the modal can re-fill its fields between the two and re-disable Save.
@@ -329,6 +349,7 @@ export class GroupLocators extends CommonLocators {
     await this.nameInput.waitFor({ state: "visible", timeout: 15000 });
     // The modal re-populates Group name and Description when its accounts fetch lands, so let that settle before typing.
     await this.page.waitForLoadState("networkidle").catch(() => {});
+    await this.showAllMemberRows();
   }
 
   // Fills a field and confirms the value stuck; losing it also clears the section dirty flag and re-disables Save.
@@ -412,6 +433,11 @@ export async function ensureUserActive(page: Page, account: MemberAccount): Prom
     await page.goto("/user-management");
     await page.waitForURL("**/user-management**", { timeout: 20000 });
   });
+  // Admin now defaults to the Overview tab; the Users controls live under Access & Users, so land there and wait for them.
+  await page.goto("/user-management#access-users");
+  // A hash change inside /user-management does not move the sub-tab, so a page that last showed Groups stays on Groups.
+  await page.locator("#users").or(page.getByRole("tab", { name: "Users", exact: true })).first().click();
+  await users.statusButton.waitFor({ state: "visible", timeout: 20000 });
 
   for (const status of ["Active", "Inactive", "Suspended"] as const) {
     await users.selectStatusFilter(status);
