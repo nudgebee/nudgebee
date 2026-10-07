@@ -123,11 +123,13 @@ func truncatedToolOutputFilename(toolName, full string) string {
 	if name == "" {
 		name = "output"
 	}
+	// One conversion for both checks: full can be up to 16 MiB.
+	fullBytes := []byte(full)
 	ext := "txt"
-	if json.Valid([]byte(full)) {
+	if json.Valid(fullBytes) {
 		ext = "json"
 	}
-	sum := sha256.Sum256([]byte(full))
+	sum := sha256.Sum256(fullBytes)
 	return fmt.Sprintf("tool_%s_%s.%s", name, hex.EncodeToString(sum[:6]), ext)
 }
 

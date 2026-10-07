@@ -359,3 +359,20 @@ func TestRestoreStepMetadata(t *testing.T) {
 	assert.Equal(t, "n", got.SavedOutputNote)
 	assert.Equal(t, 5, got.OriginalLen)
 }
+
+// When the cut output was saved, the truncation marker points at the file
+// instead of telling the model to re-query; otherwise it keeps "narrow the query".
+func TestTruncationNotePointsAtSavedFile(t *testing.T) {
+	saved := &toolcore.NBToolResponseMetadata{Truncated: true, OriginalLen: 200000, SavedOutputNote: `[workspace file "tool_x_1.txt" holds the full output of this cut output (200000 bytes); read it with shell_execute (grep, jq, python) instead of re-running this tool]`}
+	notSaved := &toolcore.NBToolResponseMetadata{Truncated: true, OriginalLen: 200000, SavedOutputNote: "[output cut from 200000 bytes and could not be saved to the workspace; narrow the query to see the part that was cut]"}
+	noNote := &toolcore.NBToolResponseMetadata{Truncated: true, OriginalLen: 200000}
+
+	assert.Equal(t, "truncated: output cut from 200000 bytes, full output in the workspace file named above", truncationNote(saved))
+	assert.Equal(t, "truncated: output cut from 200000 bytes, narrow the query for full detail", truncationNote(notSaved))
+	assert.Equal(t, "truncated: output cut from 200000 bytes, narrow the query for full detail", truncationNote(noNote))
+
+	o := &NBReActPlanner4{}
+	got := o.renderObservation(&NBAgentPlannerToolActionStep{Action: NBAgentPlannerToolAction{Tool: "shell_execute"}, Observation: "partial output", Metadata: saved}, 0, 1, false, 4096)
+	assert.Equal(t, saved.SavedOutputNote+"\npartial output\n[truncated: output cut from 200000 bytes, full output in the workspace file named above]", got)
+	assert.NotContains(t, renderObservationWithMetadata("partial output", saved), "narrow the query")
+}

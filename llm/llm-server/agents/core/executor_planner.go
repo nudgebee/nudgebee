@@ -1984,6 +1984,11 @@ func truncationNote(metadata *toolcore.NBToolResponseMetadata) string {
 	if metadata == nil || !metadata.Truncated {
 		return ""
 	}
+	if strings.HasPrefix(metadata.SavedOutputNote, "[workspace file ") {
+		// The full output was saved: point at the file named before the
+		// observation instead of telling the model to re-query.
+		return fmt.Sprintf("truncated: output cut from %d bytes, full output in the workspace file named above", metadata.OriginalLen)
+	}
 	return fmt.Sprintf("truncated: output cut from %d bytes, narrow the query for full detail", metadata.OriginalLen)
 }
 
