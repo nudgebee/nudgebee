@@ -156,14 +156,17 @@ func (m PostgresExecuteTool) Call(nbRequestContext core.NbToolContext, input cor
 		"PGDATABASE": database,
 	}))
 
-	if explainQuery {
-		response = fmt.Sprintf(`[{"plan": %s}]`, response)
-	} else {
-		response = convertCsvToJsonString(nbRequestContext, response, rune(','))
-	}
-
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("postgres: unable to execute shell script", "error", err.Error(), "command", query)
+	}
+	return postgresToolResponse(nbRequestContext, response, explainQuery, err)
+}
+
+// postgresToolResponse turns a workspace result into the tool response. The
+// output is shaped as rows (or a plan) only on success: on failure it is the
+// error text psql printed, which the CSV conversion would mangle.
+func postgresToolResponse(nbRequestContext core.NbToolContext, response string, explainQuery bool, err error) (core.NBToolResponse, error) {
+	if err != nil {
 		if response == "" {
 			response = err.Error()
 		}
@@ -173,6 +176,11 @@ func (m PostgresExecuteTool) Call(nbRequestContext core.NbToolContext, input cor
 		}, err
 	}
 
+	if explainQuery {
+		response = fmt.Sprintf(`[{"plan": %s}]`, response)
+	} else {
+		response = convertCsvToJsonString(nbRequestContext, response, rune(','))
+	}
 	return core.NBToolResponse{
 		Data:   response,
 		Type:   core.NBToolResponseTypeText,
