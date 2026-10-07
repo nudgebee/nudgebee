@@ -791,7 +791,12 @@ func (o *NBReActPlanner3) getToolResponse(step *NBAgentPlannerToolActionStep, is
 		}
 		return toolResponse
 	}
-	return SummarizeObservation(o.ctx, step, o.request, toolResponse)
+	// The summary may leave out the saved-output note; put it back first.
+	summary := SummarizeObservation(o.ctx, step, o.request, toolResponse)
+	if step.Metadata != nil && step.Metadata.SavedOutputNote != "" && !strings.Contains(summary, step.Metadata.SavedOutputNote) {
+		summary = withSavedOutputNote(summary, step.Metadata)
+	}
+	return summary
 }
 
 // prewarmSummaries fires LLM summarizations in parallel for all non-recent steps

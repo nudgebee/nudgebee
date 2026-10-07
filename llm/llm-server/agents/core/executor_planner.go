@@ -1992,7 +1992,7 @@ func truncationNote(metadata *toolcore.NBToolResponseMetadata) string {
 // materialize the planner-visible observation text. Centralizing it keeps the
 // sites from drifting on footer format.
 func renderObservationWithMetadata(observation string, metadata *toolcore.NBToolResponseMetadata) string {
-	return observation + formatToolMetadataFooter(metadata)
+	return withSavedOutputNote(observation, metadata) + formatToolMetadataFooter(metadata)
 }
 
 // truncateToolResponse caps a tool's observation at a configured byte budget
@@ -2776,7 +2776,21 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		observation.Status != toolcore.NBToolResponseStatusWaiting &&
 		observation.Status != toolcore.NBToolResponseStatusWaitingForClient {
 		var originalLen int
+		full := observation.Data
 		observation.Data, originalLen = truncateToolResponse(e.ctx, observation.Data, status, toolName)
+		// Decided before the note below is appended: a cut output just over the
+		// cap plus the note can be longer than the original.
+		truncated := len(observation.Data) < originalLen
+		var savedOutputNote string
+		if status == ToolStatusSuccess && truncated {
+			_, canReadFiles := nameToTool[strings.ToUpper(toolcore.ToolExecuteShellCommand)] // getNameToTool keys are upper-cased
+			note, ref := saveTruncatedToolOutput(e.ctx, e.agentRequest.AccountId, e.agentRequest.ConversationId, toolName, full, observation.References, canReadFiles)
+			savedOutputNote = note
+			if ref != nil {
+				// Clip: never write into spare capacity of a slice the tool may share.
+				observation.References = append(slices.Clip(observation.References), *ref)
+			}
+		}
 		// Populate Metadata for the prompt-assembly seam (footer is rendered
 		// from this at scratchpad-build time, not appended to Data here).
 		// Preserve any tool-set fields like Metadata.Stderr (kubectl).
@@ -2789,9 +2803,10 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			ms = 0
 		}
 		observation.Metadata.ExecutionDurationMs = ms
-		if len(observation.Data) < originalLen {
+		if truncated {
 			observation.Metadata.Truncated = true
 			observation.Metadata.OriginalLen = originalLen
+			observation.Metadata.SavedOutputNote = savedOutputNote
 		}
 	}
 
@@ -4196,6 +4211,7 @@ func (e *plannerExecutor) Unmarshal(previousState []byte) error {
 				IsTerminal:  isTerminal,
 				References:  references,
 				Followup:    restoredFollowup,
+				Metadata:    restoreStepMetadata(getVal(stepMap, "metadata")),
 			}
 			e.steps = append(e.steps, step)
 		}

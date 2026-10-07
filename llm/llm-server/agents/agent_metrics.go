@@ -545,7 +545,7 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 				Data:              metricData,
 				Type:              toolcore.NBToolResponseTypeText,
 				Status:            toolcore.NBToolResponseStatusSuccess,
-				References:        references,
+				References:        append(references, core.FileReferences(resp.References)...),
 				SubAgentEvidence:  subAgentEvidence,
 				AdditionalDetails: additionalDetails,
 			}, nil
@@ -562,7 +562,7 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 				Data:              content,
 				Type:              respType,
 				Status:            status,
-				References:        references,
+				References:        append(references, core.FileReferences(resp.References)...),
 				SubAgentEvidence:  subAgentEvidence,
 				AdditionalDetails: additionalDetails,
 			}, nil
@@ -571,7 +571,7 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 			Data:              metricData,
 			Type:              toolcore.NBToolResponseTypeText,
 			Status:            toolcore.NBToolResponseStatusSuccess,
-			References:        references,
+			References:        append(references, core.FileReferences(resp.References)...),
 			SubAgentEvidence:  subAgentEvidence,
 			AdditionalDetails: additionalDetails,
 		}, nil

@@ -274,6 +274,11 @@ type NBToolResponseMetadata struct {
 	// callers can tell the planner how much was dropped.
 	Truncated   bool `json:"truncated,omitempty"`
 	OriginalLen int  `json:"original_len,omitempty"`
+	// SavedOutputNote names the workspace file that holds a cut output in full
+	// (or says why none was saved). It is added to the observation only when
+	// the prompt is built, so Data, the stored response and the UI keep the
+	// tool's own output shape.
+	SavedOutputNote string `json:"saved_output_note,omitempty"`
 	// DBQueries/DBMs and RelayCalls/RelayMs split a tool's wall-clock time by
 	// where it went. ExecutionDurationMs alone can't answer the question that
 	// actually matters for resource lookups — "did this hit the inventory DB or

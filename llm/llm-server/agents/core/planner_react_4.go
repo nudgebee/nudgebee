@@ -1617,7 +1617,7 @@ func (o *NBReActPlanner4) renderObservation(step *NBAgentPlannerToolActionStep, 
 	if ev := strings.TrimSpace(step.SubAgentEvidence); ev != "" {
 		obs = obs + "\n\n" + ev
 	}
-	return obs
+	return withSavedOutputNote(obs, step.Metadata)
 }
 
 // Replayed results for successful update_notebook calls (see renderObservation).

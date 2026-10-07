@@ -495,6 +495,11 @@ type appConfig struct {
 	// LlmServerMaxToolErrorOutputLen caps a failed tool response at the source.
 	// Errors use a lower cap since stack traces tend to be repetitive. 0 disables.
 	LlmServerMaxToolErrorOutputLen int `mapstructure:"llm_server_max_tool_error_output_len"`
+	// LlmServerSaveTruncatedToolOutput saves a successful tool response that
+	// LlmServerMaxToolOutputLen cuts to a file in the conversation's workspace,
+	// and names that file in the response, so the cut-out data can still be
+	// read. Default true; false restores the plain cut.
+	LlmServerSaveTruncatedToolOutput bool `mapstructure:"llm_server_save_truncated_tool_output"`
 
 	// Image attachment support
 	LlmServerImageMaxPerMessage int     `mapstructure:"llm_server_image_max_per_message"`
@@ -1313,6 +1318,7 @@ func init() {
 	viper.SetDefault("llm_server_tool_schema_validation_tools", "think")
 	viper.SetDefault("llm_server_max_tool_output_len", 65536)
 	viper.SetDefault("llm_server_max_tool_error_output_len", 16384)
+	viper.SetDefault("llm_server_save_truncated_tool_output", true)
 
 	viper.SetDefault("llm_provider", "bedrock")
 	// openai | aws_bedrock | sagemaker | azure | ollama | huggingface
