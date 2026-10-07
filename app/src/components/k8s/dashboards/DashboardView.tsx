@@ -45,6 +45,7 @@ import PanelLibraryModal from './PanelLibraryModal';
 import { blankPanel, panelSpan } from './panelDefaults';
 import { resolvePanelAccounts } from './panelAccounts';
 import { PANEL_PARAM, withPanelParam } from './panelLink';
+import { refreshedRange } from './dashboardRange';
 import type { VariableValues } from './templating';
 
 interface Props {
@@ -127,12 +128,9 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     }
   };
 
-  /**
-   * Refreshes every panel. A relative range ("Last 1 Hour") has to be re-evaluated against now —
-   * refetching the same fixed window would return the same data and read as a broken button.
-   */
+  /** Refreshes every panel, moving the range to now only where the range is meant to move — see refreshedRange. */
   const refreshAll = () => {
-    setRange((prev) => (prev.shortcutClickTime > 0 ? { ...prev, startDate: Date.now() - prev.shortcutClickTime, endDate: Date.now() } : prev));
+    setRange((prev) => refreshedRange(prev, Date.now()));
     setRefreshToken((n) => n + 1);
   };
 

@@ -24,21 +24,8 @@ import { TIME_PICK_SHORTCUTS } from '@data/constants';
 import SafeIcon from '@shared/icons/SafeIcon';
 import CustomTooltip from '@shared/CustomTooltip';
 import { Button as DsButton } from '@ui/Button';
-
-// Shortcut → window-size in ms. Hoisted to module scope so it isn't reallocated
-// on every shortcut click.
-const TIME_ADJUSTMENTS = {
-  'Last 24 Hours': 24 * 60 * 60 * 1000,
-  'Last 1 Hour': 1 * 60 * 60 * 1000,
-  'Last 3 Hours': 3 * 60 * 60 * 1000,
-  'Last 6 Hours': 6 * 60 * 60 * 1000,
-  'Last 12 Hours': 12 * 60 * 60 * 1000,
-  'Last 5 Minutes': 5 * 60 * 1000,
-  'Last 10 Minutes': 10 * 60 * 1000,
-  'Last 15 Minutes': 15 * 60 * 1000,
-  'Last 30 Minutes': 30 * 60 * 1000,
-  'Current Week': 7 * 24 * 60 * 60 * 1000,
-};
+// Shortcut → window-size in ms. Shared so a consumer refreshing a range can tell a rolling window from a calendar one.
+import { TIME_ADJUSTMENTS } from './dateRangeShortcuts';
 
 CustomDateTimeRangePicker.propTypes = {
   passedSelectedDateTime: PropTypes.shape({
