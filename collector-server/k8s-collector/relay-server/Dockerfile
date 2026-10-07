@@ -25,6 +25,15 @@ CMD [ "./nudgebee-relay-server" ]
 
 
 FROM ghcr.io/nudgebee/alpine:3.22 AS release-stage
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-relay-server" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee relay server" \
+      description="Relays traffic between Nudgebee agents and the Nudgebee platform."
 ARG OS_PKG_EPOCH=2026-W44
 RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     && apk upgrade --no-cache \

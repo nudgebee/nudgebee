@@ -60,6 +60,15 @@ RUN apk add --no-cache curl \
 # needless attack surface. A plain alpine base carries only what the service
 # actually needs at runtime.
 FROM ghcr.io/nudgebee/alpine:3.22
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-runbook-server" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee runbook server" \
+      description="Executes runbooks and automation workflows for the Nudgebee platform."
 
 # Install runtime dependencies:
 # - iputils: Provides standard 'ping'

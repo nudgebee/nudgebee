@@ -68,6 +68,15 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 # Final stage
 FROM ghcr.io/nudgebee/alpine:3.23
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-code-analysis" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee code analysis agent" \
+      description="Code analysis agent used by Nudgebee to investigate and fix issues in source repositories."
 
 
 WORKDIR /app

@@ -32,6 +32,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     conda clean --yes --all
 
 FROM uv-base AS production
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-ml-k8s-server" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee ML Kubernetes server" \
+      description="Machine learning server for Kubernetes analytics in the Nudgebee platform."
 
 # Copy conda environment from builder
 COPY --from=uv-base /opt/conda /opt/conda
