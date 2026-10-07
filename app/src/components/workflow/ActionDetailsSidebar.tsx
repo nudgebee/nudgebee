@@ -3462,6 +3462,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 error={validationErrors[fieldName]}
                 disabled={isReadOnly || viewOnlyMode}
                 title={formatFieldLabel(fieldName)}
+                flat={selectedActionType === 'events.store'}
                 cloudAccounts={cloudAccounts}
                 ticketConfigurations={ticketConfigurations}
               />
