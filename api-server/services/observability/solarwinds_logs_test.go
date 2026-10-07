@@ -16,10 +16,9 @@ import (
 const (
 	swTestBaseURL    = "https://api.ap-01.cloud.solarwinds.com"
 	swTestSeverityEq = "severity:INFO"
-	swTestHostEmpty  = "hostname IS NOT EMPTY"
-	swTestMsgError   = "message:*error*"
+	swTestMsgError   = "message:error"
 	swTestPodABC     = "pod-abc"
-	swTestHostPodX   = "hostname:pod-x"
+	swTestHostPodX   = "host:pod-x"
 	swTestISO2023    = "2023-01-01T00:00:00Z"
 	swTestEntitiesP  = "/v1/entities"
 )
@@ -59,26 +58,17 @@ func TestSWEscapeValue(t *testing.T) {
 // ============================================================================
 
 func TestSWMatch(t *testing.T) {
-	assert.Equal(t, "hostname:pod-1", swMatch("hostname", "pod-1"))
+	// The log response names the pod "hostname", but the search syntax only
+	// matches it as "host" — "hostname:<pod>" silently matches nothing.
+	assert.Equal(t, "host:pod-1", swMatch("hostname", "pod-1"))
 	assert.Equal(t, `program:"my app"`, swMatch("program", "my app"))
 	assert.Equal(t, swTestSeverityEq, swMatch("severity", "INFO"))
+	assert.Equal(t, "k8s.namespace.name:demo", swMatch("k8s.namespace.name", "demo"))
 }
 
 func TestSWNegate(t *testing.T) {
-	assert.Equal(t, "-(hostname:pod-1)", swNegate("hostname:pod-1"))
+	assert.Equal(t, "-(host:pod-1)", swNegate("host:pod-1"))
 	assert.Equal(t, `-(program:"my app")`, swNegate(`program:"my app"`))
-}
-
-// ============================================================================
-// swIsNullClause
-// ============================================================================
-
-func TestSWIsNullClause(t *testing.T) {
-	assert.Equal(t, "hostname IS EMPTY", swIsNullClause("hostname", true))
-	assert.Equal(t, swTestHostEmpty, swIsNullClause("hostname", false))
-	// Non-bool value → IS NOT EMPTY
-	assert.Equal(t, swTestHostEmpty, swIsNullClause("hostname", nil))
-	assert.Equal(t, swTestHostEmpty, swIsNullClause("hostname", "true"))
 }
 
 // ============================================================================
@@ -92,6 +82,9 @@ func TestSWMapField(t *testing.T) {
 		{"level", "severity"},
 		{"timestamp", "time"},
 		{"body", "message"},
+		{"namespace", "k8s.namespace.name"},
+		{"app", "k8s.deployment.name"},
+		{"workload", "k8s.deployment.name"},
 		// passthrough — not in mapping
 		{"hostname", "hostname"},
 		{"severity", "severity"},
@@ -151,8 +144,8 @@ func TestBuildSWBinaryClause_EqualityOperators(t *testing.T) {
 		op       query.BinaryWhereClauseType
 		expected string
 	}{
-		{"Eq", query.Eq, "hostname:my-pod"},
-		{"EqF", query.EqF, "hostname:my-pod"},
+		{"Eq", query.Eq, "host:my-pod"},
+		{"EqF", query.EqF, "host:my-pod"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,7 +168,7 @@ func TestBuildSWBinaryClause_NotEqualOperators(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			result, err := buildSWBinaryClause("hostname", tc.op, "my-pod")
 			assert.NoError(t, err)
-			assert.Equal(t, "-(hostname:my-pod)", result)
+			assert.Equal(t, "-(host:my-pod)", result)
 		})
 	}
 }
@@ -188,7 +181,9 @@ func TestBuildSWBinaryClause_ContainsOperators(t *testing.T) {
 	}{
 		{"Contains", query.Contains, swTestMsgError},
 		{"IContains", query.IContains, swTestMsgError},
-		{"NIContains", query.NIContains, "-(message:*error*)"},
+		// SolarWinds search has no wildcards: "message:*error*" matches nothing,
+		// while "message:error" is already a case-insensitive substring match.
+		{"NIContains", query.NIContains, "-(message:error)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -209,7 +204,7 @@ func TestBuildSWBinaryClause_LikeOperators(t *testing.T) {
 		{"ILike", query.ILike, swTestMsgError},
 		{"LikeF", query.LikeF, swTestMsgError},
 		{"ILikeF", query.ILikeF, swTestMsgError},
-		{"NLike", query.NLike, "-(message:*error*)"},
+		{"NLike", query.NLike, "-(message:error)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -218,6 +213,22 @@ func TestBuildSWBinaryClause_LikeOperators(t *testing.T) {
 			assert.Equal(t, tc.expected, result)
 		})
 	}
+}
+
+func TestBuildSWBinaryClause_LikeInteriorWildcardSplitsIntoTerms(t *testing.T) {
+	result, err := buildSWBinaryClause("message", query.ILike, "%invalid%customer%")
+	assert.NoError(t, err)
+	assert.Equal(t, "(message:invalid AND message:customer)", result)
+
+	result, err = buildSWBinaryClause("message", query.NLike, "invalid*customer")
+	assert.NoError(t, err)
+	assert.Equal(t, "-(message:invalid AND message:customer)", result)
+}
+
+func TestBuildSWBinaryClause_LikeOnlyWildcardsMatchesEverything(t *testing.T) {
+	result, err := buildSWBinaryClause("message", query.Like, "%")
+	assert.NoError(t, err)
+	assert.Equal(t, "", result)
 }
 
 func TestBuildSWBinaryClause_ComparisonOperators(t *testing.T) {
@@ -244,23 +255,31 @@ func TestBuildSWBinaryClause_ComparisonOperators(t *testing.T) {
 	}
 }
 
+// SolarWinds search has no IN operator ("program IN (a, b)" matches nothing),
+// so a value list becomes an OR group.
 func TestBuildSWBinaryClause_InOperator(t *testing.T) {
 	t.Run("[]any values", func(t *testing.T) {
 		result, err := buildSWBinaryClause("program", query.In, []any{"nginx", "envoy"})
 		assert.NoError(t, err)
-		assert.Equal(t, "program IN (nginx, envoy)", result)
+		assert.Equal(t, "(program:nginx OR program:envoy)", result)
 	})
 
 	t.Run("[]string values", func(t *testing.T) {
 		result, err := buildSWBinaryClause("program", query.In, []string{"nginx", "envoy"})
 		assert.NoError(t, err)
-		assert.Equal(t, "program IN (nginx, envoy)", result)
+		assert.Equal(t, "(program:nginx OR program:envoy)", result)
 	})
 
 	t.Run("single string fallback", func(t *testing.T) {
 		result, err := buildSWBinaryClause("program", query.In, "nginx")
 		assert.NoError(t, err)
-		assert.Equal(t, "program IN (nginx)", result)
+		assert.Equal(t, "program:nginx", result)
+	})
+
+	t.Run("pod field searched as host", func(t *testing.T) {
+		result, err := buildSWBinaryClause("hostname", query.In, []any{"pod-a", "pod-b"})
+		assert.NoError(t, err)
+		assert.Equal(t, "(host:pod-a OR host:pod-b)", result)
 	})
 
 	t.Run("empty slice", func(t *testing.T) {
@@ -272,28 +291,26 @@ func TestBuildSWBinaryClause_InOperator(t *testing.T) {
 	t.Run("value with space escaped", func(t *testing.T) {
 		result, err := buildSWBinaryClause("program", query.In, []any{"my app"})
 		assert.NoError(t, err)
-		assert.Equal(t, `program IN ("my app")`, result)
+		assert.Equal(t, `program:"my app"`, result)
 	})
 }
 
 func TestBuildSWBinaryClause_NotInOperator(t *testing.T) {
 	result, err := buildSWBinaryClause("program", query.NotIn, []any{"nginx", "envoy"})
 	assert.NoError(t, err)
-	assert.Equal(t, "-(program IN (nginx, envoy))", result)
+	assert.Equal(t, "-(program:nginx OR program:envoy)", result)
 }
 
-func TestBuildSWBinaryClause_IsNullOperator(t *testing.T) {
-	t.Run("is null true → IS EMPTY", func(t *testing.T) {
-		result, err := buildSWBinaryClause("hostname", query.IsNull, true)
-		assert.NoError(t, err)
-		assert.Equal(t, "hostname IS EMPTY", result)
-	})
-
-	t.Run("is null false → IS NOT EMPTY", func(t *testing.T) {
-		result, err := buildSWBinaryClause("hostname", query.IsNull, false)
-		assert.NoError(t, err)
-		assert.Equal(t, swTestHostEmpty, result)
-	})
+// SolarWinds search cannot test whether a field is empty ("IS EMPTY" / "IS NOT
+// EMPTY" match nothing), so the operator is refused rather than silently
+// returning no logs.
+func TestBuildSWBinaryClause_IsNullOperatorUnsupported(t *testing.T) {
+	for _, val := range []any{true, false} {
+		result, err := buildSWBinaryClause("hostname", query.IsNull, val)
+		assert.Error(t, err)
+		assert.Empty(t, result)
+	}
+	assert.NotContains(t, (&SolarWindsLogSource{}).GetSupportedOperators(), "_is_null")
 }
 
 func TestBuildSWBinaryClause_SeverityUppercased(t *testing.T) {
@@ -306,13 +323,13 @@ func TestBuildSWBinaryClause_SeverityUppercased(t *testing.T) {
 	t.Run("In on severity uppercases all items", func(t *testing.T) {
 		result, err := buildSWBinaryClause("severity", query.In, []any{"warn", "error"})
 		assert.NoError(t, err)
-		assert.Equal(t, "severity IN (WARN, ERROR)", result)
+		assert.Equal(t, "(severity:WARN OR severity:ERROR)", result)
 	})
 
 	t.Run("Contains on severity uppercases value", func(t *testing.T) {
 		result, err := buildSWBinaryClause("severity", query.Contains, "err")
 		assert.NoError(t, err)
-		assert.Equal(t, "severity:*ERR*", result)
+		assert.Equal(t, "severity:ERR", result)
 	})
 }
 
@@ -341,7 +358,7 @@ func TestBuildSWFilterClause_SingleBinary(t *testing.T) {
 	}
 	result, err := buildSWFilterClause(where)
 	assert.NoError(t, err)
-	assert.Equal(t, "hostname:pod-abc", result)
+	assert.Equal(t, "host:pod-abc", result)
 }
 
 func TestBuildSWFilterClause_AndSubClauses(t *testing.T) {
@@ -353,7 +370,7 @@ func TestBuildSWFilterClause_AndSubClauses(t *testing.T) {
 	}
 	result, err := buildSWFilterClause(where)
 	assert.NoError(t, err)
-	assert.Equal(t, "(hostname:pod-a AND severity:ERROR)", result)
+	assert.Equal(t, "(host:pod-a AND severity:ERROR)", result)
 }
 
 func TestBuildSWFilterClause_OrSubClauses(t *testing.T) {
@@ -365,7 +382,7 @@ func TestBuildSWFilterClause_OrSubClauses(t *testing.T) {
 	}
 	result, err := buildSWFilterClause(where)
 	assert.NoError(t, err)
-	assert.Equal(t, "(hostname:pod-a OR hostname:pod-b)", result)
+	assert.Equal(t, "(host:pod-a OR host:pod-b)", result)
 }
 
 func TestBuildSWFilterClause_NotClause(t *testing.T) {
@@ -411,28 +428,29 @@ func TestBuildSWSubClauses_AllEmpty(t *testing.T) {
 // buildLabelValuesFilter
 // ============================================================================
 
+// The sampling filter carries only the cascading filters: SolarWinds cannot
+// express "<field> IS NOT EMPTY", which made every sample come back empty.
 func TestBuildLabelValuesFilter_NoCurrentFilters(t *testing.T) {
-	result := buildLabelValuesFilter("hostname", nil)
-	assert.Equal(t, swTestHostEmpty, result)
+	assert.Equal(t, "", buildLabelValuesFilter(nil))
 }
 
 func TestBuildLabelValuesFilter_WithCurrentFilters(t *testing.T) {
-	result := buildLabelValuesFilter("hostname", map[string]string{
+	result := buildLabelValuesFilter(map[string]string{
 		"severity": "INFO",
+		"pod":      "pod-a",
 	})
-	// Must contain the IS NOT EMPTY base and the cascading filter
-	assert.Contains(t, result, swTestHostEmpty)
 	assert.Contains(t, result, swTestSeverityEq)
+	assert.Contains(t, result, "host:pod-a")
 	assert.Contains(t, result, " AND ")
+	assert.NotContains(t, result, "EMPTY")
 }
 
 func TestBuildLabelValuesFilter_CanonicalNameMapped(t *testing.T) {
 	// "level" in CurrentFilters → mapped to "severity" before applying
-	result := buildLabelValuesFilter("program", map[string]string{
+	result := buildLabelValuesFilter(map[string]string{
 		"level": "error",
 	})
-	assert.Contains(t, result, "program IS NOT EMPTY")
-	assert.Contains(t, result, "severity:error")
+	assert.Equal(t, "severity:error", result)
 }
 
 // ============================================================================
@@ -644,10 +662,13 @@ func TestSolarWindsSource_QueryLabels(t *testing.T) {
 	ctx := mockRequestContext()
 	out, err := src.QueryLabels(ctx, FetchLogLabelRequest{AccountId: "acc-1"})
 	assert.NoError(t, err)
-	require.Len(t, out, 3)
-	labels := []string{out[0].Label, out[1].Label, out[2].Label}
+	require.Len(t, out, 5)
+	labels := make([]string, 0, len(out))
+	for _, l := range out {
+		labels = append(labels, l.Label)
+	}
 	sort.Strings(labels)
-	assert.Equal(t, []string{"hostname", "program", "severity"}, labels)
+	assert.Equal(t, []string{"hostname", "k8s.deployment.name", "k8s.namespace.name", "program", "severity"}, labels)
 }
 
 // ============================================================================
@@ -884,13 +905,51 @@ func TestSolarWindsSource_QueryLabelValues_ProgramViaCanonicalAlias(t *testing.T
 	assert.Len(t, out, 1)
 }
 
+func TestSolarWindsSource_QueryLabelValues_NamespaceFromEntities(t *testing.T) {
+	defer stubSWConfigs()()
+	origGET := solarWindsDoGET
+	defer func() { solarWindsDoGET = origGET }()
+	solarWindsDoGET = func(apiToken, baseURL, path string, params map[string]string) ([]byte, int, error) {
+		assert.Equal(t, swTestEntitiesP, path)
+		assert.Equal(t, "KubernetesNamespace", params["type"])
+		return []byte(`{"entities":[{"name":"demo"},{"name":"kube-system"}]}`), http.StatusOK, nil
+	}
+
+	src := &SolarWindsLogSource{}
+	ctx := mockRequestContext()
+	// canonical "namespace" → "k8s.namespace.name" via swMapField
+	out, err := src.QueryLabelValues(ctx, FetchLogLabelValuesRequest{AccountId: "acc-1", LabelName: "namespace"})
+	assert.NoError(t, err)
+	require.Len(t, out, 2)
+	assert.ElementsMatch(t, []string{"demo", "kube-system"}, []string{out[0].Value, out[1].Value})
+}
+
+func TestSolarWindsSource_QueryLabelValues_WorkloadFromEntities(t *testing.T) {
+	defer stubSWConfigs()()
+	origGET := solarWindsDoGET
+	defer func() { solarWindsDoGET = origGET }()
+	solarWindsDoGET = func(apiToken, baseURL, path string, params map[string]string) ([]byte, int, error) {
+		assert.Equal(t, swTestEntitiesP, path)
+		assert.Equal(t, "KubernetesDeployment", params["type"])
+		return []byte(`{"entities":[{"name":"hotrod"}]}`), http.StatusOK, nil
+	}
+
+	src := &SolarWindsLogSource{}
+	ctx := mockRequestContext()
+	// canonical "app" → "k8s.deployment.name" via swMapField
+	out, err := src.QueryLabelValues(ctx, FetchLogLabelValuesRequest{AccountId: "acc-1", LabelName: "app"})
+	assert.NoError(t, err)
+	require.Len(t, out, 1)
+	assert.Equal(t, "hotrod", out[0].Value)
+}
+
 func TestSolarWindsSource_QueryLabelValues_UnknownFieldUsesLogSampling(t *testing.T) {
 	defer stubSWConfigs()()
 	origGET := solarWindsDoGET
 	defer func() { solarWindsDoGET = origGET }()
 	solarWindsDoGET = func(apiToken, baseURL, path string, params map[string]string) ([]byte, int, error) {
 		assert.Equal(t, "/v1/logs", path)
-		assert.Contains(t, params["filter"], "custom_field IS NOT EMPTY")
+		assert.NotContains(t, params, "filter")
 		return []byte(`{"logs":[{"custom_field":"val1"},{"custom_field":"val2"}]}`), http.StatusOK, nil
 	}
 
@@ -1046,7 +1105,7 @@ func TestGroupSWLogsByPattern_GroupsByPattern(t *testing.T) {
 }
 
 // ============================================================================
-// QueryLogGroup — workload filter passes wildcard inside escape
+// QueryLogGroup — workload filter is a host prefix match
 // ============================================================================
 
 func TestQueryLogGroup_WorkloadFilterUsesPrefix(t *testing.T) {
@@ -1071,6 +1130,9 @@ func TestQueryLogGroup_WorkloadFilterUsesPrefix(t *testing.T) {
 		Request:   map[string]any{"selectedWorkload": "my-service"},
 	})
 	assert.NoError(t, err)
-	// Wildcard must directly follow the workload name (no intervening quote boundary).
-	assert.Contains(t, capturedFilter, "hostname:my-service*")
+	// "host:<workload>" already matches every pod name that starts with it; a
+	// trailing "*" or the response field name "hostname" matches nothing.
+	assert.Contains(t, capturedFilter, "AND host:my-service")
+	assert.NotContains(t, capturedFilter, "*")
+	assert.NotContains(t, capturedFilter, "hostname:")
 }

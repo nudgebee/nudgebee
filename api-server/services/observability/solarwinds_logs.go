@@ -16,16 +16,20 @@ import (
 // SolarWindsLogSource implements the LogSource interface for SolarWinds Observability.
 type SolarWindsLogSource struct{}
 
-// solarWindsLogLabelMapping maps canonical/alias field names to SolarWinds syslog field names.
-// SolarWinds Observability ingests logs in syslog format. The log event schema has exactly
-// 6 fields: id, time, message, hostname, severity, program.
+// solarWindsLogLabelMapping maps canonical/alias field names to SolarWinds log field names.
+// A /v1/logs response event has exactly 6 fields: id, time, message, hostname, severity, program.
 //   - hostname = pod name (for k8s workload logs) or node hostname (for node-level logs)
 //   - program  = container / service name within the pod
 //
-// There is no k8s namespace field in the SolarWinds log schema.
+// The search filter also matches the Kubernetes resource attributes the collector attaches
+// (k8s.namespace.name, k8s.pod.name, ...) even though the response does not echo them.
+// Search names "hostname" as "host"; swSearchField applies that rename when building terms.
 //
-// IMPORTANT: each SW syslog field (right-hand value) appears exactly once so that
-// normalizeOutputLogLabels(), which inverts this map, produces deterministic output aliases.
+// IMPORTANT: each SW field that a response event carries (right-hand value) appears exactly
+// once so that normalizeOutputLogLabels(), which inverts this map, produces deterministic
+// output aliases. Search-only attributes may be shared: no event carries them to invert.
+// "app"/"workload" → k8s.deployment.name matches the Splunk, OpenObserve and CubeAPM sources;
+// StatefulSet and DaemonSet workloads are not covered by it.
 // Fields not listed here (e.g. "hostname", "program", "severity") are passed through
 // unchanged by convertWhereClauseWithMApping.
 // No `message` entry, deliberately: SolarWinds' own schema is
@@ -34,23 +38,30 @@ type SolarWindsLogSource struct{}
 // column. Mapping it to itself would be a no-op. `body` is mapped because OTel
 // callers spell it that way and SolarWinds does not.
 var solarWindsLogLabelMapping = map[string]string{
-	"timestamp": "time",     // OTEL canonical → SW time
-	"body":      "message",  // OTEL canonical → SW message
-	"pod":       "hostname", // k8s pod name → SW hostname
-	"container": "program",  // k8s container name → SW program
-	"level":     "severity", // OTEL log level → SW severity
+	"timestamp": "time",                // OTEL canonical → SW time
+	"body":      "message",             // OTEL canonical → SW message
+	"pod":       "hostname",            // k8s pod name → SW hostname
+	"container": "program",             // k8s container name → SW program
+	"level":     "severity",            // OTEL log level → SW severity
+	"namespace": "k8s.namespace.name",  // k8s namespace → SW resource attribute (search only)
+	"app":       "k8s.deployment.name", // k8s workload → SW resource attribute (search only)
+	"workload":  "k8s.deployment.name",
 }
-
-const (
-	swFilterIsNotEmpty = " IS NOT EMPTY"
-	swFilterIsEmpty    = " IS EMPTY"
-)
 
 // solarWindsKnownLabels are the queryable fields in the SolarWinds /v1/logs API.
 var solarWindsKnownLabels = []string{
 	"hostname",
 	"severity",
 	"program",
+	"k8s.namespace.name",
+	"k8s.deployment.name",
+}
+
+// solarWindsEntityTypeForField names the /v1/entities type that lists the values of a
+// search-only field. Log events do not echo these fields, so sampling could never find them.
+var solarWindsEntityTypeForField = map[string]string{
+	"k8s.namespace.name":  "KubernetesNamespace",
+	"k8s.deployment.name": "KubernetesDeployment",
 }
 
 // swLogResponse is the JSON envelope returned by GET /v1/logs.
@@ -237,13 +248,22 @@ func (s *SolarWindsLogSource) QueryLabelValues(ctx *security.RequestContext, req
 			return stringsToLabelValues(names), nil
 		}
 		// Empty result: non-k8s deployment or no entities discovered yet — fall through to log sampling.
+
+	case "k8s.namespace.name", "k8s.deployment.name":
+		names, err := querySWEntityNames(apiToken, baseURL, solarWindsEntityTypeForField[fieldName])
+		if err != nil {
+			return nil, fmt.Errorf("SolarWinds %s lookup failed: %w", fieldName, err)
+		}
+		return stringsToLabelValues(names), nil
 	}
 
 	// Fallback: sample recent logs and extract distinct values for the field.
 	// Applies CurrentFilters for cascading accuracy when filters are active.
 	params := map[string]string{
-		"filter":   buildLabelValuesFilter(fieldName, req.CurrentFilters),
 		"pageSize": "200",
+	}
+	if filter := buildLabelValuesFilter(req.CurrentFilters); filter != "" {
+		params["filter"] = filter
 	}
 	if req.StartTime > 0 {
 		params["startTime"] = swMsToISO8601(req.StartTime)
@@ -283,11 +303,13 @@ func swMapField(name string) string {
 	return name
 }
 
-// buildLabelValuesFilter builds a SolarWinds filter string for label value sampling.
-// It combines "<field> IS NOT EMPTY" with any active CurrentFilters using AND so that
-// cascading label pickers only return values relevant to the current selection.
-func buildLabelValuesFilter(fieldName string, currentFilters map[string]string) string {
-	parts := []string{fieldName + swFilterIsNotEmpty}
+// buildLabelValuesFilter builds a SolarWinds filter string for label value sampling from the
+// active CurrentFilters, joined with AND, so cascading label pickers only return values
+// relevant to the current selection. Returns "" when there are none. SolarWinds search cannot
+// express "<field> IS NOT EMPTY"; events missing the field are skipped by
+// extractDistinctFieldValues instead.
+func buildLabelValuesFilter(currentFilters map[string]string) string {
+	parts := make([]string, 0, len(currentFilters))
 	for k, v := range currentFilters {
 		parts = append(parts, swMatch(swMapField(k), v))
 	}
@@ -332,13 +354,13 @@ func (s *SolarWindsLogSource) GetLabelMapping() map[string]string {
 // are not silently dropped. The internal `_*_f` float-field variants remain
 // accepted on input (legacy saved queries) but are not advertised because they
 // rendered as raw `_eq_f`/`_like_f` chips in the dropdown. See issue #29227.
+// `_is_null` is not offered: SolarWinds search cannot test for an empty field.
 func (s *SolarWindsLogSource) GetSupportedOperators() []string {
 	return []string{
 		"_eq", "_neq",
 		"_contains", "_icontains", "_nicontains",
 		"_like", "_ilike", "_nlike",
 		"_gt", "_gte", "_lt", "_lte",
-		"_is_null",
 	}
 }
 
@@ -460,6 +482,10 @@ func buildSWSubClauses(clauses []query.QueryWhereClause, op string) (string, err
 
 // buildSWBinaryClause converts a single binary condition to SolarWinds filter syntax.
 // For the severity field, values are uppercased to match SolarWinds conventions (INFO, ERROR, WARN…).
+//
+// SolarWinds search has no wildcards, IN operator or emptiness test — each of those matches
+// nothing. "field:value" is already a case-insensitive substring match, so contains and like
+// patterns drop their wildcards, and a value list becomes an OR group.
 func buildSWBinaryClause(field string, op query.BinaryWhereClauseType, val any) (string, error) {
 	strVal := fmt.Sprintf("%v", val)
 	if field == "severity" {
@@ -471,20 +497,16 @@ func buildSWBinaryClause(field string, op query.BinaryWhereClauseType, val any) 
 		return swMatch(field, strVal), nil
 	case query.Nq, query.NqF:
 		return swNegate(swMatch(field, strVal)), nil
-	case query.Contains, query.IContains:
-		return swMatch(field, "*"+strVal+"*"), nil
-	case query.NIContains:
-		return swNegate(swMatch(field, "*"+strVal+"*")), nil
-	case query.Like, query.LikeF, query.ILike, query.ILikeF:
-		return swMatch(field, strings.ReplaceAll(strVal, "%", "*")), nil
-	case query.NLike:
-		return swNegate(swMatch(field, strings.ReplaceAll(strVal, "%", "*"))), nil
+	case query.Contains, query.IContains, query.Like, query.LikeF, query.ILike, query.ILikeF:
+		return swLikeClause(field, strVal, false), nil
+	case query.NIContains, query.NLike:
+		return swLikeClause(field, strVal, true), nil
 	case query.In:
 		return buildSWInClause(field, val, false, field == "severity")
 	case query.NotIn:
 		return buildSWInClause(field, val, true, field == "severity")
 	case query.IsNull:
-		return swIsNullClause(field, val), nil
+		return "", fmt.Errorf("SolarWinds log search cannot filter on whether %q is empty", field)
 	case query.Gt, query.GtF:
 		return field + ":>" + strVal, nil
 	case query.Gte, query.GteF:
@@ -498,17 +520,18 @@ func buildSWBinaryClause(field string, op query.BinaryWhereClauseType, val any) 
 	}
 }
 
-// swIsNullClause returns the IS EMPTY / IS NOT EMPTY filter for a field.
-func swIsNullClause(field string, val any) string {
-	if isNull, ok := val.(bool); ok && isNull {
-		return field + swFilterIsEmpty
+// swSearchField returns the name SolarWinds search uses for a log field. The response calls
+// the pod "hostname" but search only matches it as "host"; "hostname:<pod>" matches nothing.
+func swSearchField(field string) string {
+	if field == "hostname" {
+		return "host"
 	}
-	return field + swFilterIsNotEmpty
+	return field
 }
 
 // swMatch produces a SolarWinds field:value filter term.
 func swMatch(field, val string) string {
-	return fmt.Sprintf("%s:%s", field, swEscapeValue(val))
+	return fmt.Sprintf("%s:%s", swSearchField(field), swEscapeValue(val))
 }
 
 // swNegate wraps a filter term with SolarWinds negation syntax.
@@ -516,7 +539,31 @@ func swNegate(term string) string {
 	return "-(" + term + ")"
 }
 
-// buildSWInClause builds a SolarWinds IN / NOT IN filter expression.
+// swLikeClause turns a contains/like pattern into SolarWinds terms. Search has no wildcards,
+// but each "field:value" term already matches value as a substring, so the pattern is split
+// on its % and * wildcards and the fragments are ANDed: "%invalid%customer%" becomes
+// "(message:invalid AND message:customer)". A pattern of only wildcards returns "" (no
+// constraint), negated or not.
+func swLikeClause(field, pattern string, negate bool) string {
+	fragments := strings.FieldsFunc(pattern, func(r rune) bool { return r == '%' || r == '*' })
+	terms := make([]string, 0, len(fragments))
+	for _, f := range fragments {
+		terms = append(terms, swMatch(field, f))
+	}
+	clause := strings.Join(terms, " AND ")
+	switch {
+	case clause == "":
+		return ""
+	case negate:
+		return swNegate(clause)
+	case len(terms) > 1:
+		return "(" + clause + ")"
+	default:
+		return clause
+	}
+}
+
+// buildSWInClause builds a SolarWinds IN / NOT IN filter as an OR group of field:value terms.
 // When uppercase is true (e.g. for the severity field), each item value is uppercased.
 func buildSWInClause(field string, val any, negate bool, uppercase bool) (string, error) {
 	normalize := func(s string) string {
@@ -525,27 +572,35 @@ func buildSWInClause(field string, val any, negate bool, uppercase bool) (string
 		}
 		return s
 	}
-	var items []string
+	var values []string
 	switch v := val.(type) {
 	case []any:
 		for _, item := range v {
-			items = append(items, swEscapeValue(normalize(fmt.Sprintf("%v", item))))
+			values = append(values, normalize(fmt.Sprintf("%v", item)))
 		}
 	case []string:
 		for _, item := range v {
-			items = append(items, swEscapeValue(normalize(item)))
+			values = append(values, normalize(item))
 		}
 	default:
-		items = []string{swEscapeValue(normalize(fmt.Sprintf("%v", val)))}
+		values = []string{normalize(fmt.Sprintf("%v", val))}
 	}
-	if len(items) == 0 {
+	if len(values) == 0 {
 		return "", nil
 	}
-	clause := fmt.Sprintf("%s IN (%s)", field, strings.Join(items, ", "))
-	if negate {
-		return "-(" + clause + ")", nil
+	terms := make([]string, 0, len(values))
+	for _, v := range values {
+		terms = append(terms, swMatch(field, v))
 	}
-	return clause, nil
+	clause := strings.Join(terms, " OR ")
+	switch {
+	case negate:
+		return swNegate(clause), nil
+	case len(terms) > 1:
+		return "(" + clause + ")", nil
+	default:
+		return clause, nil
+	}
 }
 
 // swEscapeValue wraps a value in double-quotes if it contains spaces or filter-syntax characters.
@@ -662,9 +717,10 @@ func (s *SolarWindsLogSource) QueryLogGroup(ctx *security.RequestContext, req Fe
 	selectedWorkload := common.GetString(req.Request, "selectedWorkload")
 	selectedNamespace := common.GetString(req.Request, "selectedNamespace")
 	if selectedWorkload != "" {
-		// SolarWinds uses hostname = pod name, so match by prefix.
-		// Append * before escaping so the wildcard stays inside any quoted value.
-		filter = fmt.Sprintf("%s AND hostname:%s", errorFilter, swEscapeValue(selectedWorkload+"*"))
+		// Pods are named after their workload, and a host term matches as a substring, so
+		// "host:<workload>" narrows to the workload's pods (groupSWLogsByPattern then keeps
+		// exact workload matches). Search has no wildcards: "host:<workload>*" matched nothing.
+		filter = fmt.Sprintf("%s AND %s", errorFilter, swMatch("hostname", selectedWorkload))
 	} else {
 		filter = errorFilter
 	}
