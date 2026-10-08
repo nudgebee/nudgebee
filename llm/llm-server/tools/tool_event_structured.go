@@ -194,27 +194,6 @@ func buildManifestOnlyEvidence(data []map[string]any) {
 	}
 }
 
-func mergeEvidenceManifests(data, evidenceData []map[string]any) {
-	manifestsByID := make(map[string]any, len(evidenceData))
-	for _, row := range evidenceData {
-		id, ok := row["id"].(string)
-		if !ok || row["evidences"] == nil {
-			continue
-		}
-		manifestsByID[id] = row["evidences"]
-	}
-
-	for _, row := range data {
-		id, ok := row["id"].(string)
-		if !ok {
-			continue
-		}
-		if manifest, found := manifestsByID[id]; found {
-			row["evidences"] = manifest
-		}
-	}
-}
-
 func eventReferences(nbCtx core.NbToolContext, dataAccountID string, data []map[string]any) []core.NBToolResponseReference {
 	references := []core.NBToolResponseReference{}
 	for _, e := range data {
@@ -658,8 +637,10 @@ func (t ListEventsTool) Name() string             { return ToolListEvents }
 func (t ListEventsTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (t ListEventsTool) Description() string {
-	return "List/search events with typed filters: subject_name, subject_namespace, subject_type, " +
-		"finding_type (issue/configuration_change/SLO/Anomaly), aggregation_key, priority, and a time " +
+	return "List/search events with typed filters: subject_name, subject_namespace, subject_type, subject_owner, " +
+		"subject_node, cluster, finding_type (issue/configuration_change/SLO/Anomaly), aggregation_key, priority, " +
+		"source (alert source, e.g. datadog, pagerduty, prometheus), status (FIRING/RESOLVED/CLOSED), nb_status " +
+		"(OPEN/RESOLVED/SUPPRESSED/DUPLICATE), fingerprint, text (search in title and description), and a time " +
 		"range (start_time/end_time ISO8601, or relative_range like '24h'/'7d'). Returns a compact " +
 		"evidence manifest per event (available evidence types + key insights), not full raw evidence — " +
 		"use get_event_by_id or get_event_evidence to drill into a specific event afterward. Use this for " +
@@ -667,33 +648,137 @@ func (t ListEventsTool) Description() string {
 }
 
 func (t ListEventsTool) InputSchema() core.ToolSchema {
-	return core.ToolSchema{
-		Type: core.ToolSchemaTypeObject,
-		Properties: map[string]core.ToolSchemaProperty{
-			"subject_name": {Type: core.ToolSchemaTypeString, Description: "ILIKE (substring) match on subject_name."},
-			"subject_namespace": {
-				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
-				Description: "One or more exact namespace values, e.g. a question spanning several namespaces at once.",
-			},
-			"subject_type": {Type: core.ToolSchemaTypeString, Description: "ILIKE match on subject_type (pod, deployment, node, etc. — not a fixed set)."},
-			"finding_type": {
-				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
-				Description: "One or more of: issue, configuration_change, SLO, Anomaly.",
-			},
-			"aggregation_key": {
-				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
-				Description: "One or more exact aggregation_key values — e.g. an 'OOM or restart' question needs both pod_oom_killer_enricher and report_crash_loop. Values drift as new alert types are added, don't assume a fixed set.",
-			},
-			"priority": {
-				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
-				Description: "One or more of: DEBUG, INFO, LOW, MEDIUM, HIGH.",
-			},
-			"start_time":     {Type: core.ToolSchemaTypeString, Description: "ISO8601. Alternative to relative_range."},
-			"end_time":       {Type: core.ToolSchemaTypeString, Description: "ISO8601. Defaults to now."},
-			"relative_range": {Type: core.ToolSchemaTypeString, Description: "Shorthand duration, e.g. '24h', '7d'. Alternative to start_time."},
-			"limit":          {Type: core.ToolSchemaTypeInteger, Default: 10, Description: "Max rows, default 10."},
+	props := eventFilterSchema()
+	props["limit"] = core.ToolSchemaProperty{Type: core.ToolSchemaTypeInteger, Default: 10, Description: "Max rows, default 10."}
+	return core.ToolSchema{Type: core.ToolSchemaTypeObject, Properties: props}
+}
+
+// eventFilterSchema is the filter set list_events and aggregate_events share,
+// so a filter added for one is there for the other.
+func eventFilterSchema() map[string]core.ToolSchemaProperty {
+	return map[string]core.ToolSchemaProperty{
+		"subject_name": {Type: core.ToolSchemaTypeString, Description: "ILIKE (substring) match on subject_name."},
+		"subject_namespace": {
+			Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+			Description: "One or more exact namespace values, e.g. a question spanning several namespaces at once.",
 		},
+		"subject_type":  {Type: core.ToolSchemaTypeString, Description: "ILIKE match on subject_type (pod, deployment, node, etc. — not a fixed set)."},
+		"subject_owner": {Type: core.ToolSchemaTypeString, Description: "ILIKE (substring) match on subject_owner, the owning workload (e.g. a Deployment's name)."},
+		"subject_node":  {Type: core.ToolSchemaTypeString, Description: "ILIKE (substring) match on subject_node, the node the subject ran on."},
+		"cluster":       {Type: core.ToolSchemaTypeString, Description: "ILIKE (substring) match on cluster."},
+		"finding_type": {
+			Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+			Description: "One or more of: issue, configuration_change, SLO, Anomaly.",
+		},
+		"aggregation_key": {
+			Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+			Description: "One or more exact aggregation_key values — e.g. an 'OOM or restart' question needs both pod_oom_killer_enricher and report_crash_loop. Values drift as new alert types are added, don't assume a fixed set.",
+		},
+		"priority": {
+			Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+			Description: "One or more of: DEBUG, INFO, LOW, MEDIUM, HIGH.",
+		},
+		"source": {
+			Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+			Description: "One or more alert sources, each a case-insensitive substring of the stored source (e.g. datadog, pagerduty, prometheus, elasticsearch, kubernetes_api_server, AWS, GCP, Azure, anomaly, slo, automation).",
+		},
+		"status": {
+			Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+			Description: "Alert state from the source, one or more of: FIRING, RESOLVED, CLOSED.",
+		},
+		"nb_status": {
+			Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
+			Description: "Nudgebee triage state, one or more of: OPEN, RESOLVED, SUPPRESSED, DUPLICATE.",
+		},
+		"fingerprint": {Type: core.ToolSchemaTypeString, Description: "Exact fingerprint: every occurrence of one recurring alert."},
+		"text": {
+			Type:        core.ToolSchemaTypeString,
+			Description: fmt.Sprintf("Case-insensitive substring searched in title and description (max %d chars), e.g. 'timeout'.", maxEventTextFilterChars),
+		},
+		"start_time":     {Type: core.ToolSchemaTypeString, Description: "ISO8601. Alternative to relative_range."},
+		"end_time":       {Type: core.ToolSchemaTypeString, Description: "ISO8601. Defaults to now."},
+		"relative_range": {Type: core.ToolSchemaTypeString, Description: "Shorthand duration, e.g. '24h', '7d'. Alternative to start_time."},
 	}
+}
+
+// maxEventTextFilterChars bounds the text filter: it is an unindexed ILIKE
+// over title and description, so it stays a short search term.
+const maxEventTextFilterChars = 200
+
+// eventFilterClauses turns the shared filter arguments into WHERE clauses,
+// including the time range (and the 30-day default when no start is given).
+// Every value is quoted with pq.QuoteLiteral; no argument names a column.
+func eventFilterClauses(input core.NBToolCallRequest, now time.Time) ([]string, error) {
+	var where []string
+	ilike := func(column, v string) string {
+		return fmt.Sprintf("%s ILIKE %s", column, pq.QuoteLiteral("%"+v+"%"))
+	}
+	for _, f := range []struct{ arg, column string }{
+		{"subject_name", "subject_name"},
+		{"subject_owner", "subject_owner"},
+		{"subject_node", "subject_node"},
+		{"cluster", "cluster"},
+	} {
+		if v := stringArg(input, f.arg); v != "" {
+			where = append(where, ilike(f.column, v))
+		}
+	}
+	if v := stringArg(input, "subject_type"); v != "" {
+		where = append(where, fmt.Sprintf("subject_type ILIKE %s", pq.QuoteLiteral(v)))
+	}
+	for _, f := range []struct {
+		arg   string
+		upper bool
+	}{
+		{"subject_namespace", false},
+		{"finding_type", false},
+		{"aggregation_key", false},
+		{"priority", false},
+		// Stored upper-case; the model often writes them lower-case.
+		{"status", true},
+		{"nb_status", true},
+	} {
+		vs := stringArrayArg(input, f.arg)
+		if len(vs) == 0 {
+			continue
+		}
+		if f.upper {
+			for i := range vs {
+				vs[i] = strings.ToUpper(vs[i])
+			}
+		}
+		where = append(where, f.arg+" IN ("+quotedList(vs)+")")
+	}
+	// Stored sources mix case and suffixes (datadog_webhook, AWS_EventBridge),
+	// so each value is a case-insensitive substring.
+	if vs := stringArrayArg(input, "source"); len(vs) > 0 {
+		ors := make([]string, len(vs))
+		for i, v := range vs {
+			ors[i] = ilike("source", v)
+		}
+		where = append(where, "("+strings.Join(ors, " OR ")+")")
+	}
+	if v := stringArg(input, "fingerprint"); v != "" {
+		where = append(where, "fingerprint = "+pq.QuoteLiteral(v))
+	}
+	if v := strings.TrimSpace(stringArg(input, "text")); v != "" {
+		if utf8.RuneCountInString(v) > maxEventTextFilterChars {
+			return nil, fmt.Errorf("text must be at most %d characters; search for a shorter phrase", maxEventTextFilterChars)
+		}
+		where = append(where, "("+ilike("title", v)+" OR "+ilike("description", v)+")")
+	}
+
+	startTime, endTime, err := resolveTimeRange(input)
+	if err != nil {
+		return nil, err
+	}
+	if startTime != "" {
+		where = append(where, fmt.Sprintf("starts_at >= %s", pq.QuoteLiteral(startTime)))
+	}
+	if endTime != "" {
+		where = append(where, fmt.Sprintf("starts_at <= %s", pq.QuoteLiteral(endTime)))
+	}
+	return appendDefaultEventStart(where, startTime, now), nil
 }
 
 func (t ListEventsTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
@@ -701,38 +786,10 @@ func (t ListEventsTool) InferToolRequestType(_ *security.RequestContext, _, _ st
 }
 
 func (t ListEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-	var whereClauses []string
-
-	if v := stringArg(input, "subject_name"); v != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("subject_name ILIKE %s", pq.QuoteLiteral("%"+v+"%")))
-	}
-	if vs := stringArrayArg(input, "subject_namespace"); len(vs) > 0 {
-		whereClauses = append(whereClauses, "subject_namespace IN ("+quotedList(vs)+")")
-	}
-	if v := stringArg(input, "subject_type"); v != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("subject_type ILIKE %s", pq.QuoteLiteral(v)))
-	}
-	if vs := stringArrayArg(input, "finding_type"); len(vs) > 0 {
-		whereClauses = append(whereClauses, "finding_type IN ("+quotedList(vs)+")")
-	}
-	if vs := stringArrayArg(input, "aggregation_key"); len(vs) > 0 {
-		whereClauses = append(whereClauses, "aggregation_key IN ("+quotedList(vs)+")")
-	}
-	if vs := stringArrayArg(input, "priority"); len(vs) > 0 {
-		whereClauses = append(whereClauses, "priority IN ("+quotedList(vs)+")")
-	}
-
-	startTime, endTime, err := resolveTimeRange(input)
+	whereClauses, err := eventFilterClauses(input, time.Now())
 	if err != nil {
 		return structuredEventsErrorResponse(err), nil
 	}
-	if startTime != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("starts_at >= %s", pq.QuoteLiteral(startTime)))
-	}
-	if endTime != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("starts_at <= %s", pq.QuoteLiteral(endTime)))
-	}
-	whereClauses = appendDefaultEventStart(whereClauses, startTime, time.Now())
 
 	limit := intArg(input, "limit", 10)
 
@@ -740,27 +797,15 @@ func (t ListEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequ
 	// conversation's workspace.
 	dataCtx := nbCtx.ForTarget()
 	dataAccountID := dataCtx.AccountId
-	metadataView := buildListEventsMetadataView(dataAccountID, whereClauses)
-	metadataQuery := "SELECT id, title, starts_at, priority, source, aggregation_key, finding_type, subject_type, " +
-		"subject_name, subject_namespace, nb_status, computed_priority, computed_score, event_count " +
+	view := buildListEventsView(dataAccountID, whereClauses, limit)
+	query := "SELECT id, title, starts_at, priority, source, aggregation_key, finding_type, subject_type, " +
+		"subject_name, subject_namespace, nb_status, computed_priority, computed_score, event_count, evidences " +
 		"FROM events ORDER BY starts_at DESC"
-	resp, data, err := sqlToolCall(dataCtx, metadataQuery, "events", metadataView, limit, nil)
+	resp, data, err := sqlToolCall(dataCtx, query, "events", view, limit, nil)
 	if err != nil {
 		return resp, err
 	}
-
-	if len(data) > 0 {
-		evidenceView := buildListEventsEvidenceView(dataAccountID, data)
-		if evidenceView != "" {
-			evidenceQuery := "SELECT id, evidences FROM events"
-			_, evidenceData, evidenceErr := sqlToolCall(dataCtx, evidenceQuery, "events", evidenceView, len(data), nil)
-			if evidenceErr != nil {
-				return core.NBToolResponse{}, evidenceErr
-			}
-			buildManifestOnlyEvidence(evidenceData)
-			mergeEvidenceManifests(data, evidenceData)
-		}
-	}
+	buildManifestOnlyEvidence(data)
 
 	bytesData, marshalErr := common.MarshalJson(data)
 	if marshalErr != nil {
@@ -771,37 +816,58 @@ func (t ListEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequ
 	return resp, nil
 }
 
-func buildListEventsMetadataView(accountID string, whereClauses []string) string {
-	where := append([]string{
+// buildListEventsView returns the newest event of each recurring alert
+// (same aggregation_key, subject and fingerprint) with how many times it
+// occurred, newest first, at most limit of them.
+//
+// The groups are found with a hash aggregate over the matching rows, and
+// only the limit rows returned are then read in full. Ranking every row with
+// a window instead sorted all of them first: 0.73s against 0.19s for the
+// largest dev account's 68k events in 30 days.
+//
+// evidences is cut down in SQL to the fields buildEvidenceManifest reads.
+// Evidence is most of the table's size (median 29 KB, p99 2 MB per event),
+// and loading it whole for a 10-row list moved up to 28 MB per call. Items
+// that are not objects are dropped: Go cannot decode them as an Evidence, and
+// one used to lose the whole event's manifest.
+func buildListEventsView(accountID string, whereClauses []string, limit int) string {
+	where := strings.Join(append([]string{
 		fmt.Sprintf("cloud_account_id = %s::uuid", pq.QuoteLiteral(accountID)),
-	}, whereClauses...)
+	}, whereClauses...), " AND ")
+	groupKey := []string{"aggregation_key", "subject_name", "subject_type", "subject_namespace", "fingerprint"}
+	sameGroup := make([]string, len(groupKey))
+	for i, k := range groupKey {
+		sameGroup[i] = fmt.Sprintf("e.%[1]s IS NOT DISTINCT FROM g.%[1]s", k)
+	}
+	keys := strings.Join(groupKey, ", ")
 
-	return `SELECT id::text, title, starts_at, priority, source, aggregation_key, finding_type, ` +
-		`subject_type, subject_name, subject_namespace, nb_status, computed_priority, computed_score, event_count ` +
-		`FROM (` +
-		`SELECT id, title, starts_at, priority, source, aggregation_key, finding_type, subject_type, ` +
-		`subject_name, subject_namespace, nb_status, computed_priority, computed_score, ` +
-		`COUNT(*) OVER (PARTITION BY aggregation_key, subject_name, subject_type, subject_namespace, fingerprint) AS event_count, ` +
-		`ROW_NUMBER() OVER (PARTITION BY aggregation_key, subject_name, subject_type, subject_namespace, fingerprint ORDER BY starts_at DESC) AS rn ` +
-		`FROM events WHERE ` + strings.Join(where, " AND ") +
-		`) ranked_events WHERE rn = 1`
+	// The filters are repeated in the LATERAL so the row it picks matches
+	// them too; their unqualified columns resolve to e, the nearest scope.
+	return `WITH g AS (` +
+		`SELECT ` + keys + `, max(starts_at) AS last_starts_at, count(*) AS event_count ` +
+		`FROM events WHERE ` + where + ` GROUP BY ` + keys + ` ORDER BY last_starts_at DESC LIMIT ` + strconv.Itoa(limit) +
+		`) SELECT r.id, r.title, r.starts_at, r.priority, r.source, r.aggregation_key, r.finding_type, ` +
+		`r.subject_type, r.subject_name, r.subject_namespace, r.nb_status, r.computed_priority, r.computed_score, ` +
+		`g.event_count, r.evidences FROM g CROSS JOIN LATERAL (` +
+		`SELECT e.id::text AS id, e.title, e.starts_at, e.priority, e.source, e.aggregation_key, e.finding_type, ` +
+		`e.subject_type, e.subject_name, e.subject_namespace, e.nb_status, e.computed_priority, e.computed_score, ` +
+		manifestEvidenceExpr + ` AS evidences FROM events e WHERE ` + where +
+		` AND e.starts_at = g.last_starts_at AND ` + strings.Join(sameGroup, " AND ") +
+		` LIMIT 1) r`
 }
 
-func buildListEventsEvidenceView(accountID string, data []map[string]any) string {
-	ids := make([]string, 0, len(data))
-	for _, row := range data {
-		if id, ok := row["id"].(string); ok {
-			if _, err := uuid.Parse(id); err == nil {
-				ids = append(ids, pq.QuoteLiteral(id)+"::uuid")
-			}
-		}
-	}
-	if len(ids) == 0 {
-		return ""
-	}
-	return "SELECT id::text, evidences::text FROM events WHERE cloud_account_id = " +
-		pq.QuoteLiteral(accountID) + "::uuid AND id IN (" + strings.Join(ids, ", ") + ")"
-}
+// manifestEvidenceExpr projects e.evidences down to what
+// buildEvidenceManifest reads: type, insight, filename, additional_info's
+// action_name and title, a table's table_name, and the data of a log-pattern
+// breakdown card (isLogPatternBreakdownCard decodes it).
+var manifestEvidenceExpr = `COALESCE((SELECT jsonb_agg(jsonb_strip_nulls(jsonb_build_object(` +
+	`'type', ev->'type', 'insight', ev->'insight', 'filename', ev->'filename', ` +
+	`'additional_info', CASE WHEN jsonb_typeof(ev->'additional_info') = 'object' THEN ` +
+	`jsonb_build_object('action_name', ev->'additional_info'->'action_name', 'title', ev->'additional_info'->'title') END, ` +
+	`'data', CASE WHEN ev->>'type' = 'table' AND jsonb_typeof(ev->'data') = 'object' THEN jsonb_build_object('table_name', ev->'data'->'table_name') ` +
+	`WHEN ev->'additional_info'->>'action_name' = ` + pq.QuoteLiteral(events.LogPatternBreakdownAction) + ` THEN ev->'data' END))) ` +
+	`FROM jsonb_array_elements(CASE WHEN jsonb_typeof(e.evidences) = 'array' THEN e.evidences ELSE '[]'::jsonb END) ev ` +
+	`WHERE jsonb_typeof(ev) = 'object'), '[]'::jsonb)::text`
 
 // ---------------------------------------------------------------------------
 // aggregate_events — covers GROUP BY/COUNT traffic (~4-5% of real
@@ -811,7 +877,12 @@ func buildListEventsEvidenceView(accountID string, data []map[string]any) string
 
 var allowedGroupByColumns = []string{
 	"aggregation_key", "subject_namespace", "subject_type", "finding_type", "priority", "source", "nb_status",
+	"status", "title", "subject_name", "subject_owner", "cluster",
 }
+
+// maxAggregateGroupByColumns bounds group_by: real queries group by up to
+// four columns, and more than three makes one row per event.
+const maxAggregateGroupByColumns = 3
 
 func isAllowedGroupByColumn(col string) bool {
 	for _, c := range allowedGroupByColumns {
@@ -828,88 +899,51 @@ func (t AggregateEventsTool) Name() string             { return ToolAggregateEve
 func (t AggregateEventsTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (t AggregateEventsTool) Description() string {
-	return "Count or group events by a single column (aggregation_key, subject_namespace, subject_type, " +
-		"finding_type, priority, source, or nb_status), optionally scoped by subject_namespace/finding_type/priority/" +
-		"time range. Set count_distinct_fingerprint=true to count unique event patterns (dedup) instead of " +
-		"raw occurrences. Use this for 'how many X' / 'top N by Y' / alert-noise questions instead of " +
-		"writing raw SQL with GROUP BY/COUNT."
+	return "Count or group events by up to three columns (aggregation_key, subject_namespace, subject_type, " +
+		"finding_type, priority, source, nb_status, status, title, subject_name, subject_owner, cluster), with the same " +
+		"filters as list_events. Each row also carries first_seen, last_seen and total_event_groups (the number of groups before " +
+		"limit; when it exceeds the rows returned, say 'top N of total_event_groups'). Set count_distinct_fingerprint=true " +
+		"to count unique event patterns (dedup) instead of raw occurrences. Use this for 'how many X' / 'top N by Y' / " +
+		"'when did X start' / alert-noise questions instead of writing raw SQL with GROUP BY/COUNT."
 }
 
 func (t AggregateEventsTool) InputSchema() core.ToolSchema {
-	return core.ToolSchema{
-		Type: core.ToolSchemaTypeObject,
-		Properties: map[string]core.ToolSchemaProperty{
-			"group_by": {
-				Type:        core.ToolSchemaTypeString,
-				Enum:        []any{"aggregation_key", "subject_namespace", "subject_type", "finding_type", "priority", "source", "nb_status"},
-				Description: "Column to group by.",
-			},
-			"count_distinct_fingerprint": {Type: core.ToolSchemaTypeBoolean, Description: "Count unique event patterns (dedup) instead of raw occurrences."},
-			"subject_namespace": {
-				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
-				Description: "Optional: scope to one or more namespaces.",
-			},
-			"finding_type": {
-				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
-				Description: "Optional: one or more of issue, configuration_change, SLO, Anomaly.",
-			},
-			"priority": {
-				Type: core.ToolSchemaTypeArray, Items: map[string]any{"type": "string"},
-				Description: "Optional: one or more of DEBUG, INFO, LOW, MEDIUM, HIGH.",
-			},
-			"start_time":     {Type: core.ToolSchemaTypeString, Description: "ISO8601. Alternative to relative_range."},
-			"end_time":       {Type: core.ToolSchemaTypeString, Description: "ISO8601. Defaults to now."},
-			"relative_range": {Type: core.ToolSchemaTypeString, Description: "Shorthand duration, e.g. '24h', '7d'. Alternative to start_time."},
-		},
-		Required: []string{"group_by"},
+	props := eventFilterSchema()
+	groupBy := make([]any, len(allowedGroupByColumns))
+	for i, c := range allowedGroupByColumns {
+		groupBy[i] = c
 	}
+	props["group_by"] = core.ToolSchemaProperty{
+		Type:        core.ToolSchemaTypeArray,
+		Items:       map[string]any{"type": "string", "enum": groupBy},
+		Description: fmt.Sprintf("One to %d columns to group by, e.g. [\"aggregation_key\"] or [\"subject_namespace\", \"priority\"].", maxAggregateGroupByColumns),
+	}
+	props["count_distinct_fingerprint"] = core.ToolSchemaProperty{Type: core.ToolSchemaTypeBoolean, Description: "Count unique event patterns (dedup) instead of raw occurrences."}
+	props["limit"] = core.ToolSchemaProperty{Type: core.ToolSchemaTypeInteger, Default: 50, Description: fmt.Sprintf("Max groups, largest first; default 50, at most %d.", maxAggregateEventsRows)}
+	return core.ToolSchema{Type: core.ToolSchemaTypeObject, Properties: props, Required: []string{"group_by"}}
 }
+
+// maxAggregateEventsRows caps the groups returned: grouping by title or
+// subject_name can make thousands.
+const maxAggregateEventsRows = 200
 
 func (t AggregateEventsTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
 	return core.ToolRequestTypeRead, nil
 }
 
 func (t AggregateEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-	groupBy := stringArg(input, "group_by")
-	if !isAllowedGroupByColumn(groupBy) {
-		return structuredEventsErrorResponse(fmt.Errorf("group_by must be one of: %s", strings.Join(allowedGroupByColumns, ", "))), nil
-	}
-
-	countExpr := "count(*)"
-	if boolArg(input, "count_distinct_fingerprint") {
-		countExpr = "count(DISTINCT fingerprint)"
-	}
-
-	var whereClauses []string
-	if vs := stringArrayArg(input, "subject_namespace"); len(vs) > 0 {
-		whereClauses = append(whereClauses, "subject_namespace IN ("+quotedList(vs)+")")
-	}
-	if vs := stringArrayArg(input, "finding_type"); len(vs) > 0 {
-		whereClauses = append(whereClauses, "finding_type IN ("+quotedList(vs)+")")
-	}
-	if vs := stringArrayArg(input, "priority"); len(vs) > 0 {
-		whereClauses = append(whereClauses, "priority IN ("+quotedList(vs)+")")
-	}
-	startTime, endTime, err := resolveTimeRange(input)
+	// stringArrayArg also takes a bare string, the shape group_by had before
+	// it became a list.
+	groupBy := stringArrayArg(input, "group_by")
+	whereClauses, err := eventFilterClauses(input, time.Now())
 	if err != nil {
 		return structuredEventsErrorResponse(err), nil
 	}
-	if startTime != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("starts_at >= %s", pq.QuoteLiteral(startTime)))
+	limit := min(intArg(input, "limit", 50), maxAggregateEventsRows)
+	query, err := buildAggregateEventsQuery(groupBy, boolArg(input, "count_distinct_fingerprint"), whereClauses, limit)
+	if err != nil {
+		return structuredEventsErrorResponse(err), nil
 	}
-	if endTime != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("starts_at <= %s", pq.QuoteLiteral(endTime)))
-	}
-	whereClauses = appendDefaultEventStart(whereClauses, startTime, time.Now())
-
-	// group_by is enum-validated above against a fixed allowlist, so it's safe
-	// to interpolate directly — this is the one column name these tools let
-	// caller input drive, and it can only ever be one of those seven values.
-	query := fmt.Sprintf("SELECT %s, %s AS count FROM events", groupBy, countExpr)
-	if len(whereClauses) > 0 {
-		query += " WHERE " + strings.Join(whereClauses, " AND ")
-	}
-	query += fmt.Sprintf(" GROUP BY %s ORDER BY count DESC", groupBy)
 
 	// The typed time predicates above are authoritative. Do not reapply the
 	// legacy view's fixed 30-day lower bound: explicit older ranges must remain
@@ -919,11 +953,44 @@ func (t AggregateEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCal
 	dataCtx := nbCtx.ForTarget()
 	dataAccountID := dataCtx.AccountId
 	view := resolveEventsViewPlaceholders(eventsViewWithId, dataAccountID, true)
-	resp, _, err := sqlToolCall(dataCtx, query, "events", view, 0, nil)
+	resp, _, err := sqlToolCall(dataCtx, query, "events", view, limit, nil)
 	if err != nil {
 		return resp, err
 	}
 	return resp, nil
+}
+
+// buildAggregateEventsQuery builds the GROUP BY query. Column names come only
+// from allowedGroupByColumns; filter values are already quoted. The LIMIT is
+// written here: buildLimitedQuery skips its own when it sees the word LIMIT
+// anywhere, a filter value like 'rate limit' included.
+func buildAggregateEventsQuery(groupBy []string, distinctFingerprint bool, whereClauses []string, limit int) (string, error) {
+	if len(groupBy) == 0 || len(groupBy) > maxAggregateGroupByColumns {
+		return "", fmt.Errorf("group_by must list 1 to %d of: %s", maxAggregateGroupByColumns, strings.Join(allowedGroupByColumns, ", "))
+	}
+	seen := map[string]bool{}
+	for _, col := range groupBy {
+		if !isAllowedGroupByColumn(col) {
+			return "", fmt.Errorf("group_by must list 1 to %d of: %s", maxAggregateGroupByColumns, strings.Join(allowedGroupByColumns, ", "))
+		}
+		if seen[col] {
+			return "", fmt.Errorf("group_by lists %s twice", col)
+		}
+		seen[col] = true
+	}
+	cols := strings.Join(groupBy, ", ")
+
+	countExpr := "count(*)"
+	if distinctFingerprint {
+		countExpr = "count(DISTINCT fingerprint)"
+	}
+	// total_event_groups is counted before the LIMIT, so a cut list says how many
+	// groups there were.
+	query := fmt.Sprintf("SELECT %s, %s AS count, min(starts_at) AS first_seen, max(starts_at) AS last_seen, count(*) OVER () AS total_event_groups FROM events", cols, countExpr)
+	if len(whereClauses) > 0 {
+		query += " WHERE " + strings.Join(whereClauses, " AND ")
+	}
+	return query + fmt.Sprintf(" GROUP BY %s ORDER BY count DESC LIMIT %d", cols, limit), nil
 }
 
 const (

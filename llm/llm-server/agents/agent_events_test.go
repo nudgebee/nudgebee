@@ -371,3 +371,14 @@ func TestReduceEventData_KeepsLogSpikeEvidence(t *testing.T) {
 	assert.NotContains(t, bare, "log_pattern_breakdown")
 	assert.NotContains(t, bare, "log_coverage_note")
 }
+
+// Every events-table example is expressible with the typed tools, so none
+// may teach the model to write SQL against events (#39979).
+func TestAgentEventsExamplesUseTypedEventTools(t *testing.T) {
+	prompt := AgentEvents{}.GetSystemPrompt(security.NewRequestContextForSuperAdmin(), core.NBAgentRequest{})
+	for _, ex := range prompt.Examples {
+		for _, step := range ex.AnswerSteps {
+			assert.NotEqual(t, tools.ToolEventExecuteSql, step.Tool, ex.Question)
+		}
+	}
+}

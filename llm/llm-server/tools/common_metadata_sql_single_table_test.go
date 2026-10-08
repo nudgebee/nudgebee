@@ -84,9 +84,8 @@ func TestSqlCheckSingleTable_AllowsOneTableQueries(t *testing.T) {
 		"within group":          "select percentile_cont(0.9) within group (order by computed_score) from events",
 		"math functions":        "select round(power(computed_score, 2)::numeric, 2), mod(event_count, 7) from events",
 		"get_event_by_id":       "SELECT id, title, evidences FROM events WHERE id = '951f56df-479b-431e-905d-4b8e95214cc1'",
-		"list_events":           "SELECT id, title, starts_at, priority, source, aggregation_key, finding_type, subject_type, subject_name, subject_namespace, nb_status, computed_priority, computed_score, event_count FROM events ORDER BY starts_at DESC",
-		"list evidence":         "SELECT id, evidences FROM events",
-		"aggregate_events":      "SELECT subject_type, count(DISTINCT fingerprint) AS count FROM events GROUP BY subject_type ORDER BY count DESC",
+		"list_events":           "SELECT id, title, starts_at, priority, source, aggregation_key, finding_type, subject_type, subject_name, subject_namespace, nb_status, computed_priority, computed_score, event_count, evidences FROM events ORDER BY starts_at DESC",
+		"aggregate_events":      "SELECT subject_type, source, count(DISTINCT fingerprint) AS count, min(starts_at) AS first_seen, max(starts_at) AS last_seen FROM events WHERE (title ILIKE '%x%' OR description ILIKE '%x%') GROUP BY subject_type, source ORDER BY count DESC",
 	}
 	for name, q := range cases {
 		t.Run(name, func(t *testing.T) {

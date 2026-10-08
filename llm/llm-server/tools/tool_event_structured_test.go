@@ -268,19 +268,98 @@ func TestAggregateEventsToolSchemaIncludesPriorityFilter(t *testing.T) {
 	assert.Equal(t, core.ToolSchemaTypeArray, priority.Type)
 }
 
-func TestBuildListEventsMetadataViewFiltersBeforeDedupWithoutEvidence(t *testing.T) {
-	view := buildListEventsMetadataView("a2a30b02-0f67-42e5-a2ab-c658230fd798", []string{
+func TestEventToolsShareTheFilterSchema(t *testing.T) {
+	list := (ListEventsTool{}).InputSchema().Properties
+	agg := (AggregateEventsTool{}).InputSchema().Properties
+	for name := range eventFilterSchema() {
+		assert.Contains(t, list, name)
+		assert.Contains(t, agg, name)
+	}
+	for _, name := range []string{"source", "status", "nb_status", "text", "subject_owner", "subject_node", "cluster", "fingerprint"} {
+		assert.Contains(t, list, name)
+	}
+}
+
+func TestEventFilterClauses(t *testing.T) {
+	now := time.Date(2026, time.October, 8, 12, 0, 0, 0, time.UTC)
+	where, err := eventFilterClauses(core.NBToolCallRequest{Arguments: map[string]any{
+		"subject_owner": "checkout",
+		"subject_node":  "ip-10-0-1-2",
+		"cluster":       "prod",
+		"source":        []any{"datadog", "PagerDuty"},
+		"status":        []any{"firing"},
+		"nb_status":     "open", // a bare string, not a list
+		"fingerprint":   "abc",
+		"text":          "it's a timeout",
+		"priority":      []any{"HIGH"},
+	}}, now)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"subject_owner ILIKE '%checkout%'",
+		"subject_node ILIKE '%ip-10-0-1-2%'",
+		"cluster ILIKE '%prod%'",
+		"priority IN ('HIGH')",
+		"status IN ('FIRING')",
+		"nb_status IN ('OPEN')",
+		"(source ILIKE '%datadog%' OR source ILIKE '%PagerDuty%')",
+		"fingerprint = 'abc'",
+		"(title ILIKE '%it''s a timeout%' OR description ILIKE '%it''s a timeout%')",
+		"starts_at >= '2026-09-08T12:00:00Z'",
+	}, where)
+}
+
+func TestEventFilterClausesRejectsLongText(t *testing.T) {
+	_, err := eventFilterClauses(core.NBToolCallRequest{Arguments: map[string]any{
+		"text": strings.Repeat("a", maxEventTextFilterChars+1),
+	}}, time.Now())
+	assert.Error(t, err)
+}
+
+func TestBuildAggregateEventsQuery(t *testing.T) {
+	where := []string{"status IN ('FIRING')", "(title ILIKE '%oom%' OR description ILIKE '%oom%')"}
+	q, err := buildAggregateEventsQuery([]string{"source", "subject_namespace"}, true, where, 50)
+	require.NoError(t, err)
+	assert.Equal(t, "SELECT source, subject_namespace, count(DISTINCT fingerprint) AS count, min(starts_at) AS first_seen, max(starts_at) AS last_seen, count(*) OVER () AS total_event_groups "+
+		"FROM events WHERE status IN ('FIRING') AND (title ILIKE '%oom%' OR description ILIKE '%oom%') "+
+		"GROUP BY source, subject_namespace ORDER BY count DESC LIMIT 50", q)
+	// The query still goes through the metastore SQL check; it must pass it.
+	assert.NoError(t, sqlValidateReadOnly(q, "events"))
+
+	for _, bad := range [][]string{nil, {"id"}, {"title", "title"}, {"source", "status", "title", "cluster"}, {"source; drop table x"}} {
+		_, err := buildAggregateEventsQuery(bad, false, nil, 50)
+		assert.Error(t, err, "%v", bad)
+	}
+}
+
+// The cap holds even when a filter value contains the word "limit", which
+// makes buildLimitedQuery skip its own LIMIT.
+func TestBuildAggregateEventsQueryKeepsItsLimit(t *testing.T) {
+	q, err := buildAggregateEventsQuery([]string{"title"}, false, []string{"(title ILIKE '%rate limit%' OR description ILIKE '%rate limit%')"}, 200)
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(q, " LIMIT 200"))
+	assert.Equal(t, q+";", buildLimitedQuery(q, 200), "no second wrapper is needed")
+}
+
+func TestBuildManifestOnlyEvidenceDropsEmptyEvidence(t *testing.T) {
+	data := []map[string]any{{"id": "a", "evidences": "[]"}}
+	buildManifestOnlyEvidence(data)
+	assert.NotContains(t, data[0], "evidences")
+}
+
+func TestBuildListEventsView(t *testing.T) {
+	view := buildListEventsView("a2a30b02-0f67-42e5-a2ab-c658230fd798", []string{
 		"priority IN ('HIGH')",
 		"starts_at >= '2026-07-01T00:00:00Z'",
-	})
+	}, 10)
 
-	assert.Contains(t, view, "cloud_account_id = 'a2a30b02-0f67-42e5-a2ab-c658230fd798'::uuid")
-	assert.Contains(t, view, "priority IN ('HIGH')")
-	assert.Contains(t, view, "starts_at >= '2026-07-01T00:00:00Z'")
-	assert.Contains(t, view, "COUNT(*) OVER")
-	assert.Contains(t, view, "ROW_NUMBER() OVER")
-	assert.NotContains(t, view, "evidences")
-	assert.Less(t, strings.Index(view, "priority IN ('HIGH')"), strings.Index(view, ") ranked_events"))
+	assert.Contains(t, view, "cloud_account_id = 'a2a30b02-0f67-42e5-a2ab-c658230fd798'::uuid AND priority IN ('HIGH') AND starts_at >= '2026-07-01T00:00:00Z'")
+	// Filters apply to the groups and again to the row picked from each.
+	assert.Equal(t, 2, strings.Count(view, "priority IN ('HIGH')"))
+	assert.Contains(t, view, "GROUP BY aggregation_key, subject_name, subject_type, subject_namespace, fingerprint ORDER BY last_starts_at DESC LIMIT 10")
+	assert.Contains(t, view, "e.fingerprint IS NOT DISTINCT FROM g.fingerprint")
+	// Never the whole evidence blob.
+	assert.NotContains(t, view, "e.evidences::text")
+	assert.NotContains(t, view, "r.evidences::text")
 }
 
 func TestAppendDefaultEventStartOnlyWhenNoExplicitStart(t *testing.T) {
@@ -291,42 +370,6 @@ func TestAppendDefaultEventStartOnlyWhenNoExplicitStart(t *testing.T) {
 
 	explicit := []string{"starts_at >= '2026-01-01T00:00:00Z'"}
 	assert.Equal(t, explicit, appendDefaultEventStart(explicit, "2026-01-01T00:00:00Z", now))
-}
-
-func TestBuildListEventsEvidenceViewUsesOnlySelectedUUIDs(t *testing.T) {
-	view := buildListEventsEvidenceView("550e8400-e29b-41d4-a716-446655440000", []map[string]any{
-		{"id": "fca7480a-496b-4654-8453-63058aa6c21e"},
-		{"id": "99dffbb0-0a79-4427-ac74-e4e919adbbf7"},
-		{"id": "not-a-uuid"},
-	})
-
-	assert.Equal(t, "SELECT id::text, evidences::text FROM events WHERE cloud_account_id = "+
-		"'550e8400-e29b-41d4-a716-446655440000'::uuid AND id IN ("+
-		"'fca7480a-496b-4654-8453-63058aa6c21e'::uuid, '99dffbb0-0a79-4427-ac74-e4e919adbbf7'::uuid)", view)
-	assert.NotContains(t, view, "not-a-uuid")
-	assert.Empty(t, buildListEventsEvidenceView("550e8400-e29b-41d4-a716-446655440000", []map[string]any{{"title": "missing id"}}))
-}
-
-func TestMergeEvidenceManifestsPreservesMetadataOrderAndMissingEvidence(t *testing.T) {
-	firstManifest := map[string]any{"has_logs": true}
-	secondManifest := map[string]any{"has_metrics": true}
-	data := []map[string]any{
-		{"id": "event-2", "title": "second"},
-		{"id": "event-1", "title": "first"},
-		{"id": "event-missing", "title": "missing"},
-	}
-	evidenceData := []map[string]any{
-		{"id": "event-1", "evidences": firstManifest},
-		{"id": "event-2", "evidences": secondManifest},
-	}
-
-	mergeEvidenceManifests(data, evidenceData)
-
-	assert.Equal(t, "event-2", data[0]["id"])
-	assert.Equal(t, secondManifest, data[0]["evidences"])
-	assert.Equal(t, "event-1", data[1]["id"])
-	assert.Equal(t, firstManifest, data[1]["evidences"])
-	assert.NotContains(t, data[2], "evidences")
 }
 
 // metricSeriesJSON builds a valid JSON metric document, larger than

@@ -131,7 +131,7 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 	}
 
 	constraints := []string{
-		"You MUST query event data before answering. Prefer get_event_by_id, list_events, or aggregate_events when they can express the request; use events_execute only for unsupported events-table queries and anomaly_execute for anomaly-table queries.",
+		"You MUST query event data before answering. Use get_event_by_id, list_events, or aggregate_events for events: they filter on subject, owner, node, cluster, namespace, type, finding type, aggregation key, priority, source, status, nb_status, fingerprint, title/description text and time range, and group by up to three columns. Use events_execute only when no argument of those tools expresses the request (e.g. reading inside labels or evidence JSON), and anomaly_execute for anomaly-table queries.",
 		"CRITICAL: When using 'events_execute' or 'anomaly_execute' tool, you MUST provide actual SQL queries, NOT descriptions or explanations.",
 		"WRONG: 'The user is asking for event details, I need to query...'",
 		"CORRECT for events: 'SELECT * FROM events WHERE id = \"event-id\"'",
@@ -148,15 +148,15 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			"Input: event_id (required).",
 		},
 		tools.ToolListEvents: {
-			"Use for recent or filtered event lists. Returns compact evidence manifests rather than full evidence.",
-			"Input: optional subject_name, subject_namespace, subject_type, finding_type, aggregation_key, priority, time range, and limit filters.",
+			"Use for recent or filtered event lists. Returns the newest occurrence of each recurring alert with its event_count, and compact evidence manifests rather than full evidence.",
+			"Input: optional subject_name, subject_namespace, subject_type, subject_owner, subject_node, cluster, finding_type, aggregation_key, priority, source, status, nb_status, fingerprint, text (searches title and description), time range, and limit.",
 		},
 		tools.ToolAggregateEvents: {
-			"Use for event counts and supported groupings.",
-			"Input: group_by plus optional namespace, finding type, priority, time range, and distinct-fingerprint filters.",
+			"Use for event counts, top-N and 'when did it start' questions. Each group carries count, first_seen, last_seen and total_event_groups; when total_event_groups exceeds the rows returned, report 'top N of total_event_groups', not the rows as the whole set.",
+			"Input: group_by (one to three columns) plus the same filters as list_events, and count_distinct_fingerprint.",
 		},
 		tools.ToolEventExecuteSql: {
-			"Raw-SQL fallback for events-table requests that the structured tools cannot express.",
+			"Raw-SQL fallback, only for events-table requests that no list_events/aggregate_events argument can express.",
 			"Input: MUST be a valid SQL query (e.g., 'SELECT * FROM events WHERE id = \"event-id\"')",
 			"Output: the data returned by the sql query.",
 			"CRITICAL: Input must be actual SQL, not descriptions or explanations",
@@ -362,21 +362,41 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Explanation: "The resource type and absolute time range are supported by list_events.",
 		},
 		{
+			Question: "Show firing alerts from Datadog with 'timeout' in the title in the last hour",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolListEvents,
+					Input: `{"source":["datadog"],"status":["FIRING"],"text":"timeout","relative_range":"1h","limit":10}`,
+				},
+			},
+			Explanation: "source, status and text are list_events filters; no SQL needed.",
+		},
+		{
+			Question: "When did the CrashLoopBackOff alerts for the checkout deployment start, and how often did they fire?",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolAggregateEvents,
+					Input: `{"group_by":["title","subject_name"],"subject_owner":"checkout","aggregation_key":["report_crash_loop"],"relative_range":"7d"}`,
+				},
+			},
+			Explanation: "aggregate_events returns count, first_seen and last_seen per group.",
+		},
+		{
 			Question: "How many events are there for nodes within a specific time range?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT count(*) AS event_count FROM events WHERE ((starts_at >= '2024-05-07T09:19:21.743Z') AND (starts_at <= '2024-05-14T09:19:21.743Z') AND (subject_type IN ('node'))",
+					Tool:  tools.ToolAggregateEvents,
+					Input: `{"group_by":["subject_type"],"subject_type":"node","start_time":"2024-05-07T09:19:21.743Z","end_time":"2024-05-14T09:19:21.743Z"}`,
 				},
 			},
-			Explanation: "We are filtering using `starts_at` and `subject_type`. Limit/Order is not required as this is only count",
+			Explanation: "A count is a single-group aggregate_events call.",
 		},
 		{
 			Question: "How many events are thre for each aggregation key within a specific time range?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:  tools.ToolAggregateEvents,
-					Input: `{"group_by":"aggregation_key","start_time":"2024-05-07T09:19:21.743Z","end_time":"2024-05-14T09:19:21.743Z"}`,
+					Input: `{"group_by":["aggregation_key"],"start_time":"2024-05-07T09:19:21.743Z","end_time":"2024-05-14T09:19:21.743Z"}`,
 				},
 			},
 			Explanation: "This is a supported grouped count, so use aggregate_events instead of generating SQL.",
@@ -387,17 +407,17 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:  tools.ToolAggregateEvents,
-					Input: `{"group_by":"subject_namespace","count_distinct_fingerprint":true,"relative_range":"24h"}`,
+					Input: `{"group_by":["subject_namespace"],"count_distinct_fingerprint":true,"relative_range":"24h"}`,
 				},
 			},
 		},
 		{
 			Question:    "What fields are retrieved from the events table for a specific subject name, cloud account ID, and finding type within a specific time range?",
-			Explanation: "We are filtering using `starts_at`, `finding_type` and `subject_name`, limited to 3",
+			Explanation: "Time range, finding_type and subject_name are list_events filters.",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events WHERE ((starts_at >= '2024-04-30T18:30:00.000Z') AND (starts_at <= '2024-05-31T18:29:59.999Z') AND (finding_type = 'issue') AND (subject_name = 'ip-172-31-93-121.ec2.internal') ORDER BY starts_at DESC LIMIT 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"subject_name":"ip-172-31-93-121.ec2.internal","finding_type":["issue"],"start_time":"2024-04-30T18:30:00.000Z","end_time":"2024-05-31T18:29:59.999Z","limit":3}`,
 				},
 			},
 		},
@@ -405,8 +425,8 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Question: "What are the latest anomalies?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events WHERE finding_type = 'Anomaly' ORDER BY starts_at DESC LIMIT 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"finding_type":["Anomaly"],"limit":3}`,
 				},
 			},
 			Explanation: "We are retrieving the latest anomalies based on the 'starts_at' time, limited to 3.",
@@ -415,8 +435,8 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Question: "What are the latest anomalies for nudgebee namespace?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events WHERE finding_type = 'Anomaly' AND subject_namespace = 'nudgebee' ORDER BY starts_at DESC LIMIT 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"finding_type":["Anomaly"],"subject_namespace":["nudgebee"],"limit":3}`,
 				},
 			},
 			Explanation: "We are retrieving the latest anomalies for the 'nudgebee' namespace based on the 'starts_at' time, limited to 3.",
@@ -425,8 +445,8 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Question: "What are the latest SLO violations?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events WHERE finding_type = 'SLO' ORDER BY starts_at DESC LIMIT 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"finding_type":["SLO"],"limit":3}`,
 				},
 			},
 			Explanation: "We are retrieving the latest SLO violations based on the 'starts_at' time, limited to 3.",
@@ -435,8 +455,8 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Question: "What are the latest SLO violations for nudgebee namespace?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events WHERE finding_type = 'SLO' AND subject_namespace = 'nudgebee' ORDER BY starts_at DESC LIMIT 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"finding_type":["SLO"],"subject_namespace":["nudgebee"],"limit":3}`,
 				},
 			},
 			Explanation: "We are retrieving the latest SLO violations for the 'nudgebee' namespace based on the 'starts_at' time, limited to 3.",
@@ -520,8 +540,12 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Explanation: "Aggregate firings vs distinct fingerprints per alert to find noisy alerts, then surface configured rules to spot coverage gaps.",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT aggregation_key, source, count(*) AS firings, count(DISTINCT fingerprint) AS distinct_patterns FROM events GROUP BY aggregation_key, source ORDER BY firings DESC",
+					Tool:  tools.ToolAggregateEvents,
+					Input: `{"group_by":["aggregation_key","source"],"relative_range":"30d","limit":50}`,
+				},
+				{
+					Tool:  tools.ToolAggregateEvents,
+					Input: `{"group_by":["aggregation_key","source"],"count_distinct_fingerprint":true,"relative_range":"30d","limit":50}`,
 				},
 				{
 					Tool:  tools.ToolTriageRules,
@@ -535,7 +559,7 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:  tools.ToolAggregateEvents,
-					Input: `{"group_by":"aggregation_key","priority":["HIGH"],"relative_range":"7d"}`,
+					Input: `{"group_by":["aggregation_key"],"priority":["HIGH"],"relative_range":"7d"}`,
 				},
 			},
 		},
