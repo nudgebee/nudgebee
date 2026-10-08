@@ -29,7 +29,7 @@ type cacheInvalidationMessage struct {
 // that a tenant's organisation knowledge bases changed.
 func publishOrgKnowledgeInvalidation(tenantId string) {
 	msg := cacheInvalidationMessage{KnowledgeBases: true, TenantId: tenantId}
-	if err := common.MqPublish(config.Config.RabbitMqLLMCacheInvalidationExchange, "", msg); err != nil {
+	if err := common.MqPublishFanout(config.Config.RabbitMqLLMCacheInvalidationExchange, msg); err != nil {
 		slog.Error("cache-invalidation: unable to publish knowledge base invalidation", "error", err, "tenant_id", tenantId)
 	}
 }

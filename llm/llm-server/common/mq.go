@@ -680,19 +680,29 @@ func MqConsumersHealthy(grace time.Duration) (bool, []MqConsumerStatus) {
 }
 
 func MqPublish(exchangeName string, routingKey string, message ...any) error {
-	return mqPublish(context.Background(), exchangeName, routingKey, message...)
+	return mqPublish(context.Background(), exchangeName, "", routingKey, message...)
+}
+
+// MqPublishFanout publishes to a fanout exchange (one every replica binds its
+// own queue to via MqFanoutSubscribe). MqPublish declares exchanges with the
+// default kind, direct, and RabbitMQ refuses that declare for an exchange that
+// already exists as fanout, so fanout messages must go through here.
+func MqPublishFanout(exchangeName string, message ...any) error {
+	return mqPublish(context.Background(), exchangeName, "fanout", "", message...)
 }
 
 // MqPublishWithContext threads a request context into the publish so the active
 // W3C trace context (traceparent) is injected into the message headers. The
 // consuming service can then extract it and continue the same distributed trace.
 func MqPublishWithContext(ctx context.Context, exchangeName string, routingKey string, message ...any) error {
-	return mqPublish(ctx, exchangeName, routingKey, message...)
+	return mqPublish(ctx, exchangeName, "", routingKey, message...)
 }
 
 // mqPublish retries up to maxAttempts on a closed channel or failed publisher create, replacing only its
 // own publisher (invariant 3). Not mandatory, not confirmed -> unroutable messages drop silently.
-func mqPublish(ctx context.Context, exchangeName string, routingKey string, message ...any) error {
+// exchangeKind is the kind the publisher declares the exchange with; "" keeps
+// the library default (direct).
+func mqPublish(ctx context.Context, exchangeName string, exchangeKind string, routingKey string, message ...any) error {
 	// Base header carried on every publish, plus the active W3C trace context
 	// (traceparent) injected from ctx so the consumer can continue the trace.
 	// A background ctx (the MqPublish path) simply has no span to inject.
@@ -720,6 +730,9 @@ func mqPublish(ctx context.Context, exchangeName string, routingKey string, mess
 	}
 
 	key := fmt.Sprintf("%s:%s", exchangeName, routingKey)
+	if exchangeKind != "" {
+		key += ":" + exchangeKind
+	}
 	var lastErr error
 	for attempt := range maxAttempts {
 		if attempt > 0 {
@@ -730,7 +743,7 @@ func mqPublish(ctx context.Context, exchangeName string, routingKey string, mess
 			}
 		}
 
-		publisher, err := getPublisher(key, exchangeName)
+		publisher, err := getPublisher(key, exchangeName, exchangeKind)
 		if err != nil {
 			if errors.Is(err, ErrRbmqNoConn) {
 				return err
@@ -764,7 +777,7 @@ func mqPublish(ctx context.Context, exchangeName string, routingKey string, mess
 	return fmt.Errorf("rbmq: publish to %s failed after %d attempts: %w", key, maxAttempts, lastErr)
 }
 
-func getPublisher(key string, exchangeName string) (mqPublisher, error) {
+func getPublisher(key string, exchangeName string, exchangeKind string) (mqPublisher, error) {
 	rbmqMux.Lock()
 	publisher, ok := rbmqPublishers[key]
 	rbmqMux.Unlock()
@@ -777,13 +790,16 @@ func getPublisher(key string, exchangeName string) (mqPublisher, error) {
 		slog.Error("rbmq: error connecting to rabbitmq")
 		return nil, ErrRbmqNoConn
 	}
-	newPublisher, err := mqNewPublisher(
-		conn,
+	opts := []func(*rabbitmq.PublisherOptions){
 		rabbitmq.WithPublisherOptionsLogging,
 		rabbitmq.WithPublisherOptionsExchangeName(exchangeName),
 		rabbitmq.WithPublisherOptionsExchangeDeclare,
 		rabbitmq.WithPublisherOptionsExchangeDurable,
-	)
+	}
+	if exchangeKind != "" {
+		opts = append(opts, rabbitmq.WithPublisherOptionsExchangeKind(exchangeKind))
+	}
+	newPublisher, err := mqNewPublisher(conn, opts...)
 	if err != nil {
 		slog.Error("rbmq: error creating publisher", "key", key, "error", err)
 		return nil, fmt.Errorf("rbmq: create publisher %s: %w", key, err)
