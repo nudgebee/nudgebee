@@ -1,6 +1,7 @@
 import apiAccount from '@api1/account';
 import { getBrandTitle } from '@hooks/useTenantBranding';
 import apiIntegrations from '@api1/integrations';
+import LLMDefaultsSummary from '@components/llm/LLMDefaultsSummary';
 import { withAccountGuard } from '@shared/AccountGuard';
 import k8sApi from '@api1/kubernetes';
 import apiUser from '@api1/user';
@@ -377,10 +378,7 @@ const ListIntegrations = ({ integrationName }) => {
     const accountIds = linkedAccounts(item)
       .map((a) => a?.cloud_account_id)
       .filter(Boolean);
-    if (accountIds.length === 0) {
-      snackbar.error('This LLM config is not linked to an account, so it cannot be made default');
-      return;
-    }
+    setIsActionLoading(true);
     try {
       const response = await apiIntegrations.addIntegrations({
         integration_id: item.id,
@@ -389,19 +387,24 @@ const ListIntegrations = ({ integrationName }) => {
         account_ids: accountIds,
         source: item?.source || 'user',
         skip_validation: true,
-        integration_config_values: [{ name: 'default_llm_provider', value: 'true' }],
+        integration_config_values: [],
+        // Makes it the tenant default only; each account keeps its own default.
+        llm_tenant_default: true,
       });
       const gqlErrors = response?.data?.errors;
       if (Array.isArray(gqlErrors) && gqlErrors.length > 0) {
         snackbar.error(gqlErrors[0]?.message || 'Failed to set default LLM provider');
         return;
       }
-      snackbar.success(`"${item.name}" is now the default LLM provider`);
+      snackbar.success(`"${item.name}" is now the organisation default LLM`);
+      setModalAction(null);
       listIntegrationConfiguration();
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('ListIntegrations: set default threw', err);
       snackbar.error('Failed to set default LLM provider');
+    } finally {
+      setIsActionLoading(false);
     }
   };
 
@@ -427,7 +430,9 @@ const ListIntegrations = ({ integrationName }) => {
       }
       setOpenModal(true);
     } else if (menuItem.id === 'set-default') {
-      await setAsDefaultLLM(item);
+      // Confirmed in the action dialog, which shows which accounts move to it.
+      setSelectedIntegration(item);
+      setModalAction('set_default');
     } else if (menuItem.id === 'delete' || menuItem.id === 'disable') {
       if (integrationName === 'workflow_webhook') {
         const workflow = await findAssociatedWorkflowForWebhook(item);
@@ -491,7 +496,7 @@ const ListIntegrations = ({ integrationName }) => {
 
   // The marker sits on the config's own name rather than in a column, because
   // it is a property of this config, not of any one account it serves: the
-  // tenant's default LLM provider, which accounts added later are linked to.
+  // tenant default, used by every account without its own default.
   const nameCell = (item) => {
     if (!isLLMIntegration || !isTenantDefault(item)) {
       return { text: item.name };
@@ -503,7 +508,7 @@ const ListIntegrations = ({ integrationName }) => {
           <Chip size='sm' variant='tag' tone='success'>
             Default
           </Chip>
-          <Tooltip title='Accounts added later use this provider automatically.'>
+          <Tooltip title="Accounts that don't have their own default use this config.">
             <InfoOutlinedIcon sx={{ fontSize: ds.text.body, color: ds.gray[500], cursor: 'help' }} />
           </Tooltip>
         </Stack>
@@ -518,7 +523,12 @@ const ListIntegrations = ({ integrationName }) => {
   const accountChips = (item) => {
     const linked = linkedAccounts(item).filter((a) => a?.cloud_account_name);
     if (linked.length === 0) {
-      return <span>-</span>;
+      // No accounts: every account in the organisation can use it.
+      return (
+        <Chip size='sm' variant='tag' tone='info'>
+          Organisation
+        </Chip>
+      );
     }
     const visible = linked.slice(0, VISIBLE_ACCOUNT_CHIPS);
     const hiddenCount = linked.length - visible.length;
@@ -761,6 +771,41 @@ const ListIntegrations = ({ integrationName }) => {
     setSelectedIntegration({});
   };
 
+  // An LLM config's delete, disable or enable can move accounts to another LLM
+  // or leave them with none; the backend reports which before the user confirms,
+  // and refuses the change when accounts would be left with no LLM.
+  const [llmImpact, setLlmImpact] = useState(null);
+  const llmImpactOp = modalAction === 'set_default' ? 'save' : ['delete', 'disable', 'enable'].includes(modalAction) ? modalAction : null;
+  const llmImpactApplies = isLLMIntegration && !!llmImpactOp && !!selectedIntegration?.id;
+  const llmImpactAccountKey = linkedAccounts(selectedIntegration)
+    .map((a) => a?.cloud_account_id)
+    .filter(Boolean)
+    .join(',');
+  useEffect(() => {
+    const op = llmImpactOp;
+    if (!llmImpactApplies) {
+      setLlmImpact(null);
+      return;
+    }
+    let cancelled = false;
+    setLlmImpact({ loading: true });
+    const accountIds = llmImpactAccountKey ? llmImpactAccountKey.split(',') : [];
+    apiIntegrations
+      .checkLLMDefaults({
+        op,
+        integration_id: selectedIntegration.id,
+        ...(op === 'save' && { account_ids: accountIds, llm_tenant_default: true }),
+      })
+      .then((report) => !cancelled && setLlmImpact(report ? { report } : { error: 'Could not check which accounts this affects' }))
+      .catch((err) => !cancelled && setLlmImpact({ error: err?.message || 'Could not check which accounts this affects' }));
+    return () => {
+      cancelled = true;
+    };
+  }, [llmImpactApplies, llmImpactOp, selectedIntegration?.id, llmImpactAccountKey]);
+  const llmChangeRefused = (llmImpact?.report?.blocked || []).length > 0;
+  // Before the check starts, llmImpact is still null: treat that as loading.
+  const llmChangeBlocked = llmImpactApplies && (!llmImpact || llmImpact.loading || !!llmImpact.error || llmChangeRefused);
+
   // otel_clickhouse is still agent-only: it has no user-configurable form, so there is
   // nothing for an Add button to open. Loki and Prometheus have both left that list —
   // each can now be connected directly.
@@ -824,6 +869,8 @@ const ListIntegrations = ({ integrationName }) => {
       handleStatusChange();
     } else if (modalAction === 'regenerate') {
       handleRegenerate();
+    } else if (modalAction === 'set_default') {
+      setAsDefaultLLM(selectedIntegration);
     }
   };
 
@@ -1049,22 +1096,41 @@ const ListIntegrations = ({ integrationName }) => {
         actionButtons={
           <>
             <DsButton id='integration-action-cancel-btn' tone='secondary' onClick={handleConfirmationClose} disabled={isActionLoading}>
-              Cancel
+              {llmChangeRefused ? 'Close' : 'Cancel'}
             </DsButton>
-            <DsButton
-              tone={modalAction === 'delete' || modalAction === 'disable' ? 'danger' : 'primary'}
-              loading={isActionLoading}
-              onClick={handleConfirmationSubmit}
-            >
-              {modalAction ? snakeToTitleCase(modalAction) : 'Submit'}
-            </DsButton>
+            {!llmChangeRefused && (
+              <DsButton
+                id='integration-action-confirm-btn'
+                tone={modalAction === 'delete' || modalAction === 'disable' ? 'danger' : 'primary'}
+                loading={isActionLoading}
+                disabled={llmChangeBlocked}
+                onClick={handleConfirmationSubmit}
+              >
+                {modalAction ? snakeToTitleCase(modalAction) : 'Submit'}
+              </DsButton>
+            )}
           </>
         }
       >
         <>
-          {modalAction === 'regenerate'
+          {llmChangeRefused
+            ? null
+            : modalAction === 'regenerate'
             ? 'Are you sure you want to regenerate the token? Existing agent connections will stop working until updated with new credentials.'
+            : modalAction === 'set_default'
+            ? `Make "${selectedIntegration.name}" the organisation default LLM? Accounts without their own default will use it.`
+            : isLLMIntegration
+            ? `${snakeToTitleCase(modalAction || '')} ${selectedIntegration.name}?`
             : `Are you sure you want to ${modalAction} this "${selectedIntegration.name}" - "${getDisplayName(integrationName)}" integration?`}
+          {llmImpact && (
+            <Box data-testid='integration-action-llm-impact' sx={{ mt: llmChangeRefused ? 0 : ds.space[4] }}>
+              {llmImpact.loading && (
+                <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600] }}>Checking which accounts this affects…</Typography>
+              )}
+              {llmImpact.error && <Typography sx={{ fontSize: ds.text.body, color: ds.gray[700] }}>{llmImpact.error}</Typography>}
+              <LLMDefaultsSummary report={llmImpact.report} action={modalAction === 'set_default' ? undefined : modalAction} />
+            </Box>
+          )}
           {(modalAction === 'delete' || modalAction === 'disable') && integrationsWithCautionMessage.includes(integrationName) ? (
             <Box sx={{ mt: ds.space[4], mb: ds.space[2], display: 'flex', flexDirection: 'column' }}>
               <Typography variant='subtitle1' sx={{ fontSize: ds.text.bodyLg }}>

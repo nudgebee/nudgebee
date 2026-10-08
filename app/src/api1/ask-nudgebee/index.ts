@@ -1758,6 +1758,28 @@ const api = {
       return { data: null, errors: [error] };
     }
   },
+  // Models of the tenant's organisation-wide LLM configs and its tenant default:
+  // the existing-model fallbacks a config saved with no accounts may use.
+  async listTenantModels() {
+    const LIST_TENANT_MODELS = `
+    query ListTenantModels {
+      ai_list_tenant_models {
+        data
+        errors
+      }
+    }
+    `;
+    try {
+      const response = await queryGraphQL(LIST_TENANT_MODELS, 'ListTenantModels', {});
+      return {
+        data: response?.data?.data?.ai_list_tenant_models?.data,
+        errors: response?.data?.data?.ai_list_tenant_models?.errors || response?.data?.errors || [],
+      };
+    } catch (error) {
+      console.error('failed to list tenant models-', error);
+      return { data: null, errors: [error] };
+    }
+  },
   async listModels(accountId: string) {
     if (accountId === 'demo') return null;
     const LIST_MODELS = `

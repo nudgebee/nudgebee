@@ -445,6 +445,10 @@ type Query {
 }
 
 type Query {
+  ai_list_tenant_models: AIListModelsResponse
+}
+
+type Query {
   ai_list_references(
     request: ListAIReferencesRequest!
   ): ListAIReferencesResponse
@@ -1495,6 +1499,12 @@ type Mutation {
   integrations_create_config(
     request: CreateIntegrationConfigRequest!
   ): CreateIntegrationConfigResponse
+}
+
+type Query {
+  integrations_check_llm_defaults(
+    request: CheckLLMDefaultsRequest!
+  ): CheckLLMDefaultsResponse
 }
 
 type Mutation {
@@ -4504,6 +4514,16 @@ input CreateIntegrationConfigRequest {
   tags: jsonb
   skip_validation: Boolean
   source: String
+  llm_tenant_default: Boolean
+  llm_account_default: Boolean
+}
+
+input CheckLLMDefaultsRequest {
+  op: String!
+  integration_id: String
+  account_ids: [String]
+  llm_tenant_default: Boolean
+  llm_account_default: Boolean
 }
 
 input IntegrationConfigValueInput {
@@ -8135,6 +8155,16 @@ type AlertActionListResponse {
 
 type AlertAction {
   actions: jsonb!
+}
+
+type CheckLLMDefaultsResponse {
+  env_configured: Boolean
+  tenant_default: jsonb
+  replaces_tenant_default: jsonb
+  becomes_tenant_wide: Boolean
+  affected: jsonb
+  replaced_account_defaults: jsonb
+  blocked: jsonb
 }
 
 type IntegrationSchemaResponse {

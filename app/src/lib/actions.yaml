@@ -1732,6 +1732,17 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: GDPR portability — exports a user's memory bundle as a fresh JSON artifact.
+  - name: ai_list_tenant_models
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/conversations/ai_list_tenant_models'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: List the models of the tenant's organisation-wide LLM configs and its tenant default
   - name: ai_list_models
     definition:
       kind: "synchronous"
@@ -3537,6 +3548,18 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
       timeout: 120
+    permissions:
+      - role: tenant_admin
+  - name: integrations_check_llm_defaults
+    comment: Report what an LLM integration save, delete, disable or enable would do to each account's default
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/integration'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 60
     permissions:
       - role: tenant_admin
   - name: integrations_delete_config

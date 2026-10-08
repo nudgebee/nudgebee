@@ -91,7 +91,7 @@ const LLMConfigList = ({ stickyTable = false }) => {
 
   // The marker sits on the config's own name rather than in a column, because
   // it is a property of this config, not of any one account it serves: the
-  // tenant's default LLM provider, which accounts added later are linked to.
+  // tenant default, used by every account without its own default.
   const nameCell = (item) => {
     if (!isTenantDefault(item)) {
       return { text: item.name || '-' };
@@ -103,7 +103,7 @@ const LLMConfigList = ({ stickyTable = false }) => {
           <Chip size='sm' variant='tag' tone='success'>
             Default
           </Chip>
-          <Tooltip title='Accounts added later use this provider automatically.'>
+          <Tooltip title="Accounts that don't have their own default use this config.">
             <InfoOutlinedIcon sx={{ fontSize: ds.text.body, color: ds.gray[500], cursor: 'help' }} />
           </Tooltip>
         </Stack>
@@ -114,7 +114,12 @@ const LLMConfigList = ({ stickyTable = false }) => {
   const accountChips = (item) => {
     const linked = linkedAccounts(item).filter((d) => d?.cloud_account_name);
     if (linked.length === 0) {
-      return <span>-</span>;
+      // No accounts: every account in the organisation can use it.
+      return (
+        <Chip size='sm' variant='tag' tone='info'>
+          Organisation
+        </Chip>
+      );
     }
     return (
       <Stack direction='row' spacing={0.5} useFlexGap flexWrap='wrap'>
