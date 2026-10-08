@@ -289,6 +289,8 @@ const WorkflowListing: React.FC = () => {
   const [selectedWorkflow, setSelectedWorkflow] = useState<any>({ id: '', name: '' });
   const [triggerLoading, setTriggerLoading] = useState<boolean>(false);
   const router = useRouter();
+  // Set while the run dialog is open for an automation the AI window has just built.
+  const openRunAfterTriggerRef = useRef(false);
   const persistKey = useMemo(() => workflowFilterKey(), []);
   // The "Created By" filter is sourced from the tenant user list
   // (users_list_by_tenant), which only tenant-level roles can read. Hide it for
@@ -1018,7 +1020,12 @@ const WorkflowListing: React.FC = () => {
       }
 
       const triggerData = response?.data?.workflow_execute;
-      if (triggerData?.execution_id) {
+      if (triggerData?.execution_id && openRunAfterTriggerRef.current) {
+        // Started from the AI window, for an automation the user has not seen run: open the run
+        // itself, where its steps, errors and any approval show as they happen.
+        snackbar.success(`Automation "${selectedWorkflow.name}" triggered successfully!`);
+        router.push(`/automation/${selectedWorkflow.id}?accountId=${selectedWorkflow.account_id}&executionId=${triggerData.execution_id}#executions`);
+      } else if (triggerData?.execution_id) {
         snackbar.success(`Automation "${selectedWorkflow.name}" triggered successfully!`);
         // Begin polling the new execution. The poller seeds an immediate
         // RUNNING + startTime override so the row updates in place — no
@@ -1040,6 +1047,7 @@ const WorkflowListing: React.FC = () => {
     setTriggerModalOpen(false);
     setSelectedWorkflow({ id: '', name: '' });
     setTriggerLoading(false);
+    openRunAfterTriggerRef.current = false;
   };
 
   const handleAiGenerateWorkflow = async (query: string) => {
@@ -1254,7 +1262,7 @@ const WorkflowListing: React.FC = () => {
   // (created_from_session_id). The list is newest first, so a just-saved automation is on the
   // first page. Returns null when the session saved nothing, undefined when that could not be
   // checked (the list call failed).
-  const findWorkflowSavedBySession = async (sessionId: string): Promise<{ id: string } | null | undefined> => {
+  const findWorkflowSavedBySession = async (sessionId: string): Promise<any | null | undefined> => {
     if (!createAccountId || !sessionId) {
       return undefined;
     }
@@ -1290,7 +1298,7 @@ const WorkflowListing: React.FC = () => {
       // finalize call does not mean the save went through. `saved` stays unset when the check
       // itself failed, and the modal then falls back to the conversation's own signal.
       const savedWorkflow = await findWorkflowSavedBySession(sessionId);
-      return savedWorkflow === undefined ? result : { ...result, saved: savedWorkflow !== null };
+      return savedWorkflow === undefined ? result : { ...result, saved: savedWorkflow !== null, savedWorkflow: savedWorkflow ?? undefined };
     } catch (error) {
       console.error('Error polling workflow conversation:', error);
       return null;
@@ -1302,6 +1310,31 @@ const WorkflowListing: React.FC = () => {
       return;
     }
     await apiWorkflow.aiGenerateWorkflow(createAccountId, query, conversationId, sessionId, undefined, true, messageId, agentId, 'Automation');
+  };
+
+  // Run now and Activate on the AI window's success screen hand over to what the row menu
+  // already does: the run dialog and the activate confirmation. The window closes first; the
+  // automation it built is the row both act on. That automation is not in the list yet, so the
+  // list is refreshed: it is there behind the dialog, and still there if the user cancels.
+  const showBuiltWorkflowInList = () => {
+    setCurrentPage(1);
+    setPageOffsetTokens({ 1: '' });
+    listWorkflows(1, rowsPerPage, '');
+  };
+
+  const handleRunBuiltWorkflow = (savedWorkflow: any) => {
+    setAiGenerateModalOpen(false);
+    showBuiltWorkflowInList();
+    setSelectedWorkflow(savedWorkflow);
+    openRunAfterTriggerRef.current = true;
+    setTriggerModalOpen(true);
+  };
+
+  const handleActivateBuiltWorkflow = (savedWorkflow: any) => {
+    setAiGenerateModalOpen(false);
+    showBuiltWorkflowInList();
+    setSelectedWorkflow(savedWorkflow);
+    setResumeModalOpen(true);
   };
 
   const handleWorkflowCompleted = async (_workflowJson: string, _conversationId: string, sessionId: string) => {
@@ -2073,6 +2106,8 @@ const WorkflowListing: React.FC = () => {
           onPollConversation={handlePollWorkflowConversation}
           onApproveOrRespond={handleApproveOrRespondWorkflow}
           onWorkflowCompleted={handleWorkflowCompleted}
+          onRunNow={hasWriteAccess(createAccountId) ? handleRunBuiltWorkflow : undefined}
+          onActivate={hasWriteAccess(createAccountId) ? handleActivateBuiltWorkflow : undefined}
           loading={aiGenerateLoading}
         />
 

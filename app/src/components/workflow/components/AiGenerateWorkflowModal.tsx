@@ -7,6 +7,7 @@ import { FormField } from '@shared/forms/FormComponents';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import { ds } from '@utils/colors';
 import ClarificationQuestion from './ClarificationQuestion';
+import { getAiBuildActions, SavedAutomationSummary } from '@components/workflow/automationMenu';
 
 type ModalStage = 'input' | 'generating' | 'plan_review' | 'text_followup' | 'success' | 'error';
 
@@ -52,6 +53,8 @@ interface AiGenerateWorkflowModalProps {
     status: string;
     // Whether this session saved an automation; unset when the caller could not check.
     saved?: boolean;
+    // The automation this session saved, as the list returns it; unset when it is not known.
+    savedWorkflow?: SavedAutomationSummary;
     // What the builder has done so far in this conversation: tool calls made, and tasks added.
     progress?: { steps: number; tasksAdded: number };
     workflowJson?: string;
@@ -68,6 +71,10 @@ interface AiGenerateWorkflowModalProps {
   onApproveOrRespond?: (query: string, conversationId: string, sessionId: string, messageId?: string, agentId?: string) => Promise<void>;
   onCancel?: (conversationId: string) => Promise<void>;
   onWorkflowCompleted?: (workflowJson: string, conversationId: string, sessionId: string) => void;
+  // Offered on the success screen for the automation the build saved. The caller owns what each
+  // does; leaving one out hides its button.
+  onRunNow?: (savedWorkflow: SavedAutomationSummary) => void;
+  onActivate?: (savedWorkflow: SavedAutomationSummary) => void;
   loading: boolean;
 }
 
@@ -94,6 +101,8 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
   onApproveOrRespond,
   onCancel,
   onWorkflowCompleted,
+  onRunNow,
+  onActivate,
   loading,
 }) => {
   const [query, setQuery] = useState('');
@@ -111,7 +120,12 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
   const [tasksAdded, setTasksAdded] = useState(0);
   // True once the conversation has shown no change for STALL_AFTER_MS.
   const [stalled, setStalled] = useState(false);
-  const [completedData, setCompletedData] = useState<{ workflowJson: string; conversationId: string; sessionId: string } | null>(null);
+  const [completedData, setCompletedData] = useState<{
+    workflowJson: string;
+    conversationId: string;
+    sessionId: string;
+    savedWorkflow?: SavedAutomationSummary;
+  } | null>(null);
 
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const elapsedIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -233,6 +247,7 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
                 workflowJson: result.workflowJson || '',
                 conversationId: result.conversationId || conversationId,
                 sessionId,
+                savedWorkflow: result.savedWorkflow,
               });
               setStage('success');
             } else if (result.summaryText) {
@@ -737,14 +752,22 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
           </Box>
         );
 
-      case 'success':
+      case 'success': {
+        // A new automation is saved paused and "built and saved" was where this window stopped,
+        // so most were never run and almost none with a schedule was switched on. Offer both
+        // here. One primary button: the next step for this automation, else Open in Editor.
+        const savedWorkflow = completedData?.savedWorkflow;
+        const actions = getAiBuildActions(savedWorkflow);
+        const showRunNow = Boolean(savedWorkflow && actions.runNow && onRunNow);
+        const showActivate = Boolean(savedWorkflow && actions.activate && onActivate);
         return (
           <Box sx={{ p: 2, pt: 0, display: 'flex', gap: 2, justifyContent: 'flex-end', '& button': { minWidth: '140px' } }}>
             <Button tone='secondary' size='md' onClick={handleClose}>
               Close
             </Button>
             <Button
-              tone='primary'
+              id='wf-ai-open-editor-btn'
+              tone={showRunNow || showActivate ? 'secondary' : 'primary'}
               size='md'
               onClick={() => {
                 if (!completedData) {
@@ -755,8 +778,19 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
             >
               Open in Editor
             </Button>
+            {savedWorkflow && showActivate && (
+              <Button id='wf-ai-activate-btn' tone={showRunNow ? 'secondary' : 'primary'} size='md' onClick={() => onActivate?.(savedWorkflow)}>
+                Activate
+              </Button>
+            )}
+            {savedWorkflow && showRunNow && (
+              <Button id='wf-ai-run-now-btn' tone='primary' size='md' onClick={() => onRunNow?.(savedWorkflow)}>
+                Run now
+              </Button>
+            )}
           </Box>
         );
+      }
 
       case 'error':
         return (

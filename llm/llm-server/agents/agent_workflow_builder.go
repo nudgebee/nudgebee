@@ -2127,10 +2127,14 @@ func (a *WorkflowBuilderAgent) checkMissingConfigs(ctx *security.RequestContext,
 	return a.finalizeWithAutoSave(ctx, request, inactiveJSON, missing), nil
 }
 
-// workflowStatusInactive mirrors the runbook model.WorkflowStatusInactive value. The valid workflow
-// statuses are ACTIVE, INACTIVE and PAUSED (there is no DRAFT — the builder prompt schema is wrong);
-// brand-new workflows default to PAUSED at the DAO.
-const workflowStatusInactive = "INACTIVE"
+// These mirror the runbook model's workflow statuses. The valid ones are ACTIVE, INACTIVE and
+// PAUSED (there is no DRAFT — the builder prompt schema is wrong); brand-new workflows default to
+// PAUSED at the DAO.
+const (
+	workflowStatusInactive = "INACTIVE"
+	workflowStatusPaused   = "PAUSED"
+	workflowStatusActive   = "ACTIVE"
+)
 
 // setWorkflowStatus returns the workflow JSON with its top-level status set to the given value.
 // The runbook server honours a non-empty top-level status on save.
@@ -2209,6 +2213,13 @@ func (a *WorkflowBuilderAgent) finalizeWithAutoSave(ctx *security.RequestContext
 		summary = withSaveFailure(summary, saveErr)
 	}
 
+	// A new automation's state goes right under the headline: "built and saved" alone left
+	// people with a scheduled automation that never fired, because nothing said it was paused.
+	// An automation saved INACTIVE has its own note below; an edit does not change the state.
+	if saved && a.state.Mode != "fix" && len(missingConfigs) == 0 {
+		summary = insertUnderHeadline(summary, a.savedAutomationNote(ctx, workflowId))
+	}
+
 	if len(missingConfigs) > 0 {
 		summary += fmt.Sprintf("\n\n*Saved as **INACTIVE** because %d config value(s) are not set yet: `%s`. Create them under Configs (use a `secret`-typed config for API keys/tokens), then set the automation to **ACTIVE** to run it.*",
 			len(missingConfigs), strings.Join(missingConfigs, "`, `"))
@@ -2247,14 +2258,85 @@ func (a *WorkflowBuilderAgent) buildWorkflowEditorLink(request core.NBAgentReque
 // after the task list, where it used to go, it is the one line a reader of a long automation
 // never reaches, and on a failed save it is the line that matters.
 func withSaveFailure(summary string, saveErr error) string {
-	headline, rest, _ := strings.Cut(summary, "\n\n")
 	// The reason is read by the person who asked for the automation, so it drops the prefix that
 	// names this package in logs.
-	note := "**Reason:** " + strings.TrimPrefix(truncateSaveError(saveErr), "workflow_builder: ")
+	return insertUnderHeadline(summary, "**Reason:** "+strings.TrimPrefix(truncateSaveError(saveErr), "workflow_builder: "))
+}
+
+// insertUnderHeadline puts note directly under the summary's first paragraph. An empty note
+// leaves the summary as it is.
+func insertUnderHeadline(summary string, note string) string {
+	if note == "" {
+		return summary
+	}
+	headline, rest, _ := strings.Cut(summary, "\n\n")
 	if rest == "" {
 		return headline + "\n\n" + note
 	}
 	return headline + "\n\n" + note + "\n\n" + rest
+}
+
+// savedAutomationNote says what state a newly saved automation is in, read back from the
+// workflow server. The server decides the status, not the definition that was sent: it saves
+// anything but its own three statuses as paused, and a save that lands on an automation this
+// conversation built earlier keeps the status that automation has now. When the automation
+// cannot be read back the reply goes out without the sentence.
+func (a *WorkflowBuilderAgent) savedAutomationNote(ctx *security.RequestContext, workflowId string) string {
+	saved, err := tools.DoRunbookRequest("GET", fmt.Sprintf("workflows/%s", workflowId), nil, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		ctx.GetLogger().Warn("workflow_builder: could not read back the saved automation, its state is left out of the reply", "workflow_id", workflowId, "error", err)
+		return ""
+	}
+	return savedStateNote(string(saved))
+}
+
+// savedStateNote is one sentence on what a saved automation's status means for its trigger:
+// whether it will fire on its own, and whether it can be run by hand. savedAutomation is the
+// automation as the workflow server returns it. An inactive automation, and a status this code
+// does not know, get no sentence.
+func savedStateNote(savedAutomation string) string {
+	var workflow struct {
+		Status     string `json:"status"`
+		Definition struct {
+			Triggers []struct {
+				Type string `json:"type"`
+			} `json:"triggers"`
+		} `json:"definition"`
+	}
+	if err := json.Unmarshal([]byte(savedAutomation), &workflow); err != nil {
+		return ""
+	}
+
+	// The first trigger that fires on its own decides the wording.
+	firing := ""
+	for _, trigger := range workflow.Definition.Triggers {
+		if t := strings.ToLower(strings.TrimSpace(trigger.Type)); t != "" && t != "manual" {
+			firing = t
+			break
+		}
+	}
+
+	switch workflow.Status {
+	case workflowStatusPaused:
+		switch firing {
+		case "":
+			return "It runs only when you start it."
+		case "schedule":
+			return "It is saved **paused**: its schedule will not fire until you activate it. You can still run it by hand."
+		default:
+			return fmt.Sprintf("It is saved **paused**: its %s trigger will not fire until you activate it.", firing)
+		}
+	case workflowStatusActive:
+		switch firing {
+		case "":
+			return "It runs only when you start it."
+		case "schedule":
+			return "It is saved **active**: its schedule is on."
+		default:
+			return fmt.Sprintf("It is saved **active**: its %s trigger is on.", firing)
+		}
+	}
+	return ""
 }
 
 // truncateSaveError returns a short, user-facing rendition of the save error.
