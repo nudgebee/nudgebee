@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,32 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
+
+// triageSourceGroups maps the Source filter's dropdown value (TriageRuleModal.tsx:
+// kubernetes/prometheus/pagerduty/datadog) to the raw values nudgebee writes to
+// events.source for that platform. Before this (NB-40110), a rule's match_source
+// was compared to events.source literally, so only "prometheus" ever matched -
+// events are recorded under vendor/webhook-specific values like
+// "kubernetes_api_server" or "pagerduty_webhook", never the friendly group name.
+// The prometheus group also covers the webhook/legacy sources that carry the
+// same alert (same grouping eventrule.MuteEventSources uses for mute targeting).
+var triageSourceGroups = map[string][]string{
+	"kubernetes": {"kubernetes_api_server"},
+	"prometheus": {"prometheus", "prometheus_alertmanager_webhook", "nudgebee", "prometheus_user"},
+	"pagerduty":  {"pagerduty_webhook"},
+	"datadog":    {"datadog_webhook"},
+}
+
+// triageMatchSources expands a rule's Source filter value into the raw event
+// sources it should match. A value with no known group (e.g. a suppression rule
+// that stores a raw source directly, like "AWS_CloudWatch_Alarm") still matches
+// literally.
+func triageMatchSources(matchSource string) []string {
+	if sources, ok := triageSourceGroups[matchSource]; ok {
+		return sources
+	}
+	return []string{matchSource}
+}
 
 // CheckTriageRules evaluates all matching rules for an event and returns the result
 func CheckTriageRules(ctx context.Context, db *sqlx.DB, event *models.Event, occurrenceNumber int) (*TriageRuleResult, error) {
@@ -380,9 +407,18 @@ func MatchesRuleWithOccurrence(event *models.Event, rule *TriageRule, occurrence
 		}
 	}
 
-	// Check source (exact match)
+	// Check source (event.Source must be one of the raw sources the rule's Source group covers).
+	// Checks the map directly rather than calling triageMatchSources, which would allocate a
+	// throwaway slice for every unmapped source on this per-event hot path.
 	if rule.MatchSource != nil && *rule.MatchSource != "" {
-		if event.Source == nil || *event.Source != *rule.MatchSource {
+		if event.Source == nil {
+			return false
+		}
+		if sources, ok := triageSourceGroups[*rule.MatchSource]; ok {
+			if !slices.Contains(sources, *event.Source) {
+				return false
+			}
+		} else if *rule.MatchSource != *event.Source {
 			return false
 		}
 	}
@@ -1251,8 +1287,8 @@ func PreviewTriageRule(ctx context.Context, db *sqlx.DB, req RulePreviewRequest,
 	}
 
 	if req.MatchSource != nil && *req.MatchSource != "" {
-		conditions += fmt.Sprintf(" AND source = $%d", argIndex)
-		args = append(args, *req.MatchSource)
+		conditions += fmt.Sprintf(" AND source = ANY($%d)", argIndex)
+		args = append(args, pq.Array(triageMatchSources(*req.MatchSource)))
 		argIndex++
 	}
 
@@ -1368,8 +1404,8 @@ func ApplyRuleToExistingEvents(ctx context.Context, db *sqlx.DB, rule *TriageRul
 	}
 
 	if rule.MatchSource != nil && *rule.MatchSource != "" {
-		query += fmt.Sprintf(" AND source = $%d", argIndex)
-		args = append(args, *rule.MatchSource)
+		query += fmt.Sprintf(" AND source = ANY($%d)", argIndex)
+		args = append(args, pq.Array(triageMatchSources(*rule.MatchSource)))
 		argIndex++
 	}
 
@@ -1461,8 +1497,8 @@ func applyScoreAdjustmentToExistingEvents(ctx context.Context, db *sqlx.DB, rule
 	}
 
 	if rule.MatchSource != nil && *rule.MatchSource != "" {
-		conditions += fmt.Sprintf(" AND source = $%d", argIndex)
-		args = append(args, *rule.MatchSource)
+		conditions += fmt.Sprintf(" AND source = ANY($%d)", argIndex)
+		args = append(args, pq.Array(triageMatchSources(*rule.MatchSource)))
 		argIndex++
 	}
 
@@ -1577,8 +1613,8 @@ func applyPriorityPinToExistingEvents(ctx context.Context, db *sqlx.DB, rule *Tr
 		argIndex++
 	}
 	if rule.MatchSource != nil && *rule.MatchSource != "" {
-		conditions += fmt.Sprintf(" AND source = $%d", argIndex)
-		args = append(args, *rule.MatchSource)
+		conditions += fmt.Sprintf(" AND source = ANY($%d)", argIndex)
+		args = append(args, pq.Array(triageMatchSources(*rule.MatchSource)))
 		argIndex++
 	}
 	if rule.MatchPriority != nil && *rule.MatchPriority != "" {
