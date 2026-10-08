@@ -13,7 +13,7 @@ import { toast } from '@ui/Toast';
 import AlarmCreationModal from '@components/cloudaccount/AlarmCreationModal';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import { hasCliCommand } from './cliCommands';
-import { hasWriteAccess, hasPermission, missingPermissionMessage } from '@lib/auth';
+import { hasWriteAccess, canCreateTicket } from '@lib/auth';
 import { safeParseJSON, panelActionBarSx } from './utils';
 import { k8sActionFor } from './k8sActions';
 import { canStartCloudAction, cloudActionFor } from './cloudActions';
@@ -60,12 +60,10 @@ const ActionBar = ({
   const recData = safeParseJSON(rec.recommendation);
   const hasAlarmConfig = recData?.alarm_config != null;
   const canWrite = hasWriteAccess(accountId);
-  // Creating a ticket needs write access to the recommendation's account OR the
-  // tickets:Write custom-role grant (tickets_create → tickets:Write). Without
-  // this the button was the one unconditional action in the bar: a read-only
-  // viewer could open the modal and only learn they couldn't when the create
-  // 403'd. Same gate as the events tables (KubernetesGroupedEventsTable).
-  const canCreateTicket = canWrite || hasPermission('tickets', 'Write');
+  // Creating a ticket needs read access to the recommendation's account OR the
+  // tickets:Write custom-role grant — the backend authorizes every *_readonly
+  // role (@lib/auth#canCreateTicket, #40211). Same gate as the events tables.
+  const ticketAllowed = canCreateTicket(accountId);
   const isDismissed = rec.status === 'Dismissed';
   // Only offer what the backend legality matrix accepts: dismiss from Open,
   // reactivate from Dismissed. Other statuses (InProgress, Closed, Archive)
@@ -122,15 +120,15 @@ const ActionBar = ({
             iconPlacement='start'
             onClick={() => onCreateTicket?.(rec)}
             id='action-bar-create-ticket'
-            disabled={!!rec.ticket?.ticket_id || !canCreateTicket}
+            disabled={!!rec.ticket?.ticket_id || !ticketAllowed}
             // Disabled rather than hidden, matching the events tables: a
             // read-only viewer still needs to see that a ticket exists (and
             // which one), and why the action isn't available to them.
             tooltip={
               rec.ticket?.ticket_id
                 ? `Ticket already created: ${rec.ticket.ticket_id}`
-                : !canCreateTicket
-                ? missingPermissionMessage('tickets:Write')
+                : !ticketAllowed
+                ? 'You need account access or the "tickets:Write" permission. Ask an admin to grant it.'
                 : undefined
             }
           >

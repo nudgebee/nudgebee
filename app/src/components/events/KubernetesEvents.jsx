@@ -51,7 +51,7 @@ import k8sApi from '@api1/kubernetes';
 import ticketsApi from '@api1/tickets';
 import apiUser from '@api1/user';
 import { getDateString, getLast24Hrs } from '@lib/datetime';
-import { hasWriteAccess, hasPermission, getCurrentTenant, getUserSession } from '@lib/auth';
+import { hasWriteAccess, canCreateTicket, getCurrentTenant, getUserSession } from '@lib/auth';
 import { safeJSONParse, titleCaseForAggregationKey, syncFilterFromQuery, toSeverityLevel, EXCLUDED_TRIAGE_AGGREGATION_KEYS } from 'src/utils/common';
 import { applyFiltersOnRouter } from '@lib/router';
 import { action } from 'src/utils/actionStyles';
@@ -944,13 +944,12 @@ const KubernetesEventsTable = ({
     return description;
   };
 
-  // Creating a ticket needs write access to the row's account OR the tickets:Write
-  // custom-role grant (tickets_create → tickets:Write). Without either, the Create
-  // Ticket action is disabled.
-  const canCreateTicketFor = (item) => hasWriteAccess(item?.account_id) || hasPermission('tickets', 'Write');
+  // Backend tickets_create authorizes read-only roles too — gate on read access,
+  // not write (@lib/auth#canCreateTicket, #40211).
+  const canCreateTicketFor = (item) => canCreateTicket(item?.account_id);
 
   const getMenuItems = (item, disableTicket) => {
-    const canCreateTicket = canCreateTicketFor(item);
+    const ticketAllowed = canCreateTicketFor(item);
     // Close/Open lives on the Alert Status badge's own dropdown (AlertStatusBadge),
     // not here — matching how Triage Status exposes its transitions on the badge
     // rather than in this overflow menu.
@@ -962,9 +961,9 @@ const KubernetesEventsTable = ({
           // ThreeDotsMenu items can't show a hover tooltip when disabled, so name
           // the required grant inline (the user can tell an admin exactly what to
           // grant) rather than in a tooltip.
-          label: canCreateTicket ? 'Create Ticket' : 'Create Ticket · requires tickets:Write',
+          label: ticketAllowed ? 'Create Ticket' : 'Create Ticket · requires account access',
           id: 'create-ticket',
-          disabled: disableTicket || !canCreateTicket,
+          disabled: disableTicket || !ticketAllowed,
           iconBlack: true,
         },
         {
@@ -986,9 +985,9 @@ const KubernetesEventsTable = ({
           // ThreeDotsMenu items can't show a hover tooltip when disabled, so name
           // the required grant inline (the user can tell an admin exactly what to
           // grant) rather than in a tooltip.
-          label: canCreateTicket ? 'Create Ticket' : 'Create Ticket · requires tickets:Write',
+          label: ticketAllowed ? 'Create Ticket' : 'Create Ticket · requires account access',
           id: 'create-ticket',
-          disabled: disableTicket || !canCreateTicket,
+          disabled: disableTicket || !ticketAllowed,
           iconBlack: true,
         },
       ];

@@ -33,7 +33,7 @@ import k8sApi from '@api1/kubernetes';
 import apiUser from '@api1/user';
 import ticketsApi from '@api1/tickets';
 import { applyFiltersOnRouter } from '@lib/router';
-import { hasWriteAccess, hasPermission, getCurrentTenant } from '@lib/auth';
+import { hasWriteAccess, canCreateTicket, getCurrentTenant } from '@lib/auth';
 import {
   convertToReadableFormat,
   titleCaseForAggregationKey,
@@ -87,16 +87,17 @@ const getNBStatusDisplay = (nbStatus: string) => {
 
 // Menu items for ThreeDotsMenu — disableTicket flips when a ticket already
 // exists for this fingerprint; canWrite gates the other modification actions for
-// read-only users (e.g. tenant_admin_readonly); canCreateTicket gates Create
-// Ticket specifically (account write OR the tickets:Write grant). ThreeDotsMenu
-// items can't show a hover tooltip when disabled, so the required grant is named
-// inline in the label instead.
-const getMenuItems = (disableTicket: boolean, canWrite: boolean, canCreateTicket: boolean) => [
+// read-only users (e.g. tenant_admin_readonly); ticketAllowed gates Create
+// Ticket specifically (account read access OR the tickets:Write grant —
+// @lib/auth#canCreateTicket, #40211). ThreeDotsMenu items can't show a hover
+// tooltip when disabled, so the required grant is named inline in the label
+// instead.
+const getMenuItems = (disableTicket: boolean, canWrite: boolean, ticketAllowed: boolean) => [
   {
     icon: TicketsIcon,
-    label: canCreateTicket ? 'Create Ticket' : 'Create Ticket · requires tickets:Write',
+    label: ticketAllowed ? 'Create Ticket' : 'Create Ticket · requires account access',
     id: 'create-ticket',
-    disabled: disableTicket || !canCreateTicket,
+    disabled: disableTicket || !ticketAllowed,
     iconBlack: true,
   },
   {
@@ -190,9 +191,7 @@ const transformTableData = (
     // require write access on the row's account. Read-only users
     // (tenant_admin_readonly, account_admin_readonly) see them disabled.
     const canWrite = hasWriteAccess(item.account_id);
-    // Creating a ticket needs write access to the row's account OR the tickets:Write
-    // custom-role grant (tickets_create → tickets:Write).
-    const canCreateTicket = canWrite || hasPermission('tickets', 'Write');
+    const ticketAllowed = canCreateTicket(item.account_id);
 
     // Columns based on type
     if (groupEventType === 'fingerprint') {
@@ -345,7 +344,7 @@ const transformTableData = (
               />
               <ThreeDotsMenu
                 sx={{ ...action.primary }}
-                menuItems={getMenuItems(hasExistingTicket, canWrite, canCreateTicket)}
+                menuItems={getMenuItems(hasExistingTicket, canWrite, ticketAllowed)}
                 data={item}
                 onMenuClick={onMenuClick}
               />

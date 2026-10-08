@@ -358,6 +358,15 @@ export function hasPermission(module: string, permissionClass: 'Read' | 'Write' 
   return userData?.permissions?.includes(`${module}:${permissionClass}`) ?? false;
 }
 
+// Backend `tickets_create` (app/src/lib/actions.yaml) authorizes every *_readonly
+// role, not just write roles — so gate the Create Ticket affordance on read access
+// to the row's account, not write. A tickets:Write custom-role grant still covers
+// holders who lack even read access to that account. One rule for every listing
+// that offers Create Ticket (#40211) — don't re-derive this per component.
+export function canCreateTicket(accountId?: string): boolean {
+  return hasReadAccess(accountId) || hasPermission('tickets', 'Write');
+}
+
 // Dynamic-RBAC: may the current user READ the tenant's custom roles? Mirrors
 // ee/customrole/service.go canReadCustomRoles — tenant-wide roles (including the
 // read-only flavors, which isTenantAdmin() deliberately excludes) plus the
