@@ -2518,8 +2518,15 @@ export function ConversationDetailView({
       {/* Header summary */}
       <Card>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--ds-space-4)', flexWrap: 'wrap' }}>
-          <Box>
-            <Box sx={{ fontSize: 'var(--ds-text-heading)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)' }}>
+          <Box sx={{ flex: '1 1 240px', minWidth: 0 }}>
+            <Box
+              sx={{
+                fontSize: 'var(--ds-text-heading)',
+                fontWeight: 'var(--ds-font-weight-semibold)',
+                color: 'var(--ds-gray-700)',
+                overflowWrap: 'anywhere',
+              }}
+            >
               {run.title}
             </Box>
             <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', alignItems: 'center', mt: 'var(--ds-space-1)', flexWrap: 'wrap' }}>
