@@ -144,6 +144,16 @@ describe('Datetime', () => {
       render(<Datetime value={new Date('2025-03-14T09:00:00Z')} baseDate={BASE} showTooltip={false} />);
       expect(screen.getByText(/-Mar-2025$/)).toBeInTheDocument();
     });
+
+    it('carries the reference year when alwaysShowYear is set', () => {
+      render(<Datetime value={new Date('2024-03-14T09:00:00Z')} baseDate={BASE} showTooltip={false} alwaysShowYear />);
+      expect(screen.getByText(/-Mar-2024$/)).toBeInTheDocument();
+    });
+
+    it('keeps relative buckets under 3 days even with alwaysShowYear', () => {
+      render(<Datetime value={past(2 * ONE_DAY)} baseDate={BASE} showTooltip={false} alwaysShowYear />);
+      expect(screen.getByText('2d')).toBeInTheDocument();
+    });
   });
 
   // ─── relative time buckets (future) ────────────────────────────────────────

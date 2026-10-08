@@ -27,10 +27,11 @@ function parseDateValue(value) {
 
 // The year is carried only when it differs from the reference year, so this
 // year's dates stay narrow in tight table columns while an older one can no
-// longer be mistaken for a recent date.
-function formatDateShort(date, refDate) {
+// longer be mistaken for a recent date. alwaysShowYear opts out of that for
+// sparse lists (e.g. certificate expiries) where "07-Nov" alone is ambiguous.
+function formatDateShort(date, refDate, alwaysShowYear = false) {
   const base = `${pad2(date.getDate())}-${MONTH_ABBR[date.getMonth()]}`;
-  return date.getFullYear() === refDate.getFullYear() ? base : `${base}-${date.getFullYear()}`;
+  return !alwaysShowYear && date.getFullYear() === refDate.getFullYear() ? base : `${base}-${date.getFullYear()}`;
 }
 
 function formatTooltip(date) {
@@ -49,7 +50,7 @@ function formatTooltip(date) {
 //   < 1 hour  → "X m"            + ago/in
 //   < 1 day   → "X hr[s] [Y m]"  + ago/in   (drops "0 m" when minutes are zero)
 //   < 3 days  → "X d"            + ago/in
-//   ≥ 3 days  → "dd-mmm"          (absolute, no ago/in; "dd-mmm-yyyy" off-year)
+//   ≥ 3 days  → "dd-mmm"          (absolute, no ago/in; "dd-mmm-yyyy" off-year or with alwaysShowYear)
 function formatRelative(deltaMs) {
   if (deltaMs < ONE_SEC) {
     return { mainText: 'now', useRelativeAffix: false };
@@ -93,6 +94,7 @@ export default function Datetime({
   sxSuffixSecondary = true,
   sxSecondary = false,
   sxPrefixSecondary = true,
+  alwaysShowYear = false,
 }) {
   const parsed = value ? parseDateValue(value) : null;
   // An unparseable value falls back to the same placeholder as a missing one;
@@ -122,7 +124,7 @@ export default function Datetime({
 
   const { mainText: relativeText, useRelativeAffix } = formatRelative(deltaMs);
   const isAbsolute = relativeText === null;
-  const mainText = isAbsolute ? formatDateShort(dateValue, ref) : relativeText;
+  const mainText = isAbsolute ? formatDateShort(dateValue, ref, alwaysShowYear) : relativeText;
 
   const valueStyle = {
     color: sxSecondary ? 'var(--ds-gray-500)' : 'var(--ds-gray-700)',
@@ -193,4 +195,5 @@ Datetime.propTypes = {
   sxSecondary: PropTypes.bool,
   sxPrefixSecondary: PropTypes.bool,
   sxPrefix: PropTypes.object,
+  alwaysShowYear: PropTypes.bool,
 };
