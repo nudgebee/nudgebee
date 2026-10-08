@@ -80,6 +80,12 @@ export interface EntityTable {
   columns: EntityColumn[];
   /** Columns the dashboard's time range may be applied to. */
   timeColumns: string[];
+  /**
+   * Rows are standing state rather than things that happened: a recommendation
+   * raised last month is as open today. A panel on such a table starts with the
+   * time range off — the author can still switch it on.
+   */
+  standing?: boolean;
   defaultColumns: string[];
   defaultSort: string;
 }
@@ -467,6 +473,7 @@ export const ENTITY_TABLES: EntityTable[] = [
       'worth (estimated savings). Filter on Is primary to count a finding once rather than once per revision.',
     columns: RECOMMENDATION_COLUMNS,
     timeColumns: ['created_at', 'updated_at'],
+    standing: true,
     defaultColumns: ['created_at', 'rule_name', 'category', 'resource_name', 'estimated_savings', 'status'],
     defaultSort: 'created_at',
   },
@@ -483,6 +490,7 @@ export const ENTITY_TABLES: EntityTable[] = [
       '"which rule fires most" — the engine cannot group the Recommendations table on the fly, so totals are not possible there.',
     columns: RECOMMENDATION_GROUPING_COLUMNS,
     timeColumns: ['timestamp', 'updated_at'],
+    standing: true,
     defaultColumns: ['rule_name', 'category', 'count', 'sum_estimated_savings', 'account_name'],
     defaultSort: 'sum_estimated_savings',
   },
@@ -872,9 +880,11 @@ export function defaultDraft(tableOrDatasource = ENTITY_TABLES[0].value): Entity
     // Some tables carry no filterable timestamp at all — a current-state
     // snapshot, or a grouping whose only date column is a max() the engine
     // cannot put in a WHERE. Those open with the time range OFF rather than
-    // with a switch that is on and filtering against nothing.
+    // with a switch that is on and filtering against nothing. So does a table
+    // of standing state: on the dashboard's default hour, "open recommendations"
+    // would be the handful raised in that hour.
     timeColumn: table.timeColumns[0] || '',
-    applyTimeRange: table.timeColumns.length > 0,
+    applyTimeRange: table.timeColumns.length > 0 && !table.standing,
     sortColumn: table.defaultSort,
     sortDesc: true,
     limit: 100,

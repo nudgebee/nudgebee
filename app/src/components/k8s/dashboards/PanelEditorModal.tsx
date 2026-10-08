@@ -567,9 +567,11 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
             provider: undefined,
             provider_index: undefined,
             // A nudgebee panel is authored as a structured query, so it starts
-            // from a working default rather than an empty one.
+            // from a working default rather than an empty one. The time column
+            // only when the range is on: a table of standing state keeps one
+            // chosen with the switch off.
             targets: entity
-              ? [{ ref_id: 'A', query: buildEntityQuery(entityStart) as any, time_column: entityStart.timeColumn }]
+              ? [{ ref_id: 'A', query: buildEntityQuery(entityStart) as any, time_column: entityStart.applyTimeRange ? entityStart.timeColumn : '' }]
               : [{ ...(prev.targets?.[0] || {}), ref_id: prev.targets?.[0]?.ref_id || 'A', expr: '', query: undefined, time_column: undefined }],
           }
         : prev

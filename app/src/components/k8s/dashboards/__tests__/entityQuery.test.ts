@@ -106,6 +106,17 @@ describe('tablesFor', () => {
     expect(events.timeColumn).toBe('starts_at');
   });
 
+  it('opens a table of standing state with the time range off, a column still at hand', () => {
+    // Open recommendations are not events: inside the dashboard's default hour
+    // there are a handful, and a savings panel summed those to nothing.
+    for (const table of ['recommendations_v2', 'recommendation_groupings_v2']) {
+      const draft = defaultDraft(table);
+      expect(draft.applyTimeRange).toBe(false);
+      // Still chosen, so switching the range on needs no second pick.
+      expect(draft.timeColumn).not.toBe('');
+    }
+  });
+
   it('starts a traces panel on the grouping table', () => {
     // "What is slow" is the question a traces panel is usually built to answer,
     // and latency percentiles exist only on the aggregate.

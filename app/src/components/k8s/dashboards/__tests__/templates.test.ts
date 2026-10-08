@@ -63,6 +63,26 @@ describe('widget library', () => {
     }
   });
 
+  it('keeps the dashboard time range off the widgets that list open recommendations', () => {
+    // "Savings opportunity by account" on the default Last 1 Hour showed the few
+    // recommendations raised that hour — no savings — instead of the standing total.
+    const ids = [
+      'savings-by-rule',
+      'savings-by-account',
+      'savings-by-service',
+      'top-savings-resources',
+      'critical-recommendations',
+      'rightsizing-recommendations',
+    ];
+    for (const id of ids) {
+      const template = PANEL_TEMPLATES.find((t) => t.id === id)!;
+      expect(template.panel.targets![0].time_column).toBe('');
+    }
+    // A widget about things that happened still follows the picker.
+    const events = PANEL_TEMPLATES.find((t) => t.id === 'noisiest-issues')!;
+    expect(events.panel.targets![0].time_column).toBe('starts_at');
+  });
+
   it('copies a widget pre-scoped, and shares no state with the library', () => {
     const template = PANEL_TEMPLATES.find((t) => t.id === 'noisiest-issues')!;
     const copy = panelFromTemplate(template, [{ id: 7 } as any], ACCOUNTS);
