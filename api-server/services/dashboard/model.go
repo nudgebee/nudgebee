@@ -180,6 +180,9 @@ type Dashboard struct {
 	// Version is the highest revision number in dashboard_versions. Populated on
 	// Get, omitted on List to keep the listing a single query.
 	Version int `json:"version,omitempty"`
+	// UpdatedByName is the display name of UpdatedBy, so the editor can say who
+	// saved over a stale copy. Populated on Get only, like Version.
+	UpdatedByName string `json:"updated_by_name,omitempty"`
 }
 
 type Binding struct {
@@ -227,6 +230,11 @@ type SaveRequest struct {
 	Bindings    []Binding  `json:"bindings,omitempty"`
 	// Message is an optional changelog line stored on the new version row.
 	Message string `json:"message,omitempty"`
+	// ExpectedVersion is the Version the caller's copy was read at. On an update
+	// that no longer matches the latest revision, Save refuses with ErrConflict
+	// instead of overwriting whatever was saved in between. 0 skips the check,
+	// so callers that predate it keep their behaviour.
+	ExpectedVersion int `json:"expected_version,omitempty"`
 }
 
 type DeleteRequest struct {

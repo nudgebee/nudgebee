@@ -18,6 +18,7 @@ import (
 var (
 	ErrNotFound  = errors.New("dashboard not found")
 	ErrForbidden = errors.New("access denied for dashboard")
+	ErrConflict  = errors.New("this dashboard was saved by someone else after you opened it; reload to see their changes")
 
 	slugStripRe = regexp.MustCompile(`[^a-z0-9]+`)
 
@@ -237,19 +238,20 @@ func validateBindings(bindings []Binding) error {
 	return nil
 }
 
-// scanDashboard reads one row. definition/tags arrive as JSONB bytes.
+// scanDashboard reads one row. definition/tags arrive as JSONB bytes. extra
+// receives any columns a query selects after dashboardColumns.
 func scanDashboard(rows interface {
 	Scan(dest ...any) error
-}) (Dashboard, error) {
+}, extra ...any) (Dashboard, error) {
 	var (
 		d       Dashboard
 		defRaw  []byte
 		tagsRaw []byte
 		desc    sql.NullString
 	)
-	err := rows.Scan(&d.Id, &d.TenantId, &d.Slug, &d.Title, &desc,
+	err := rows.Scan(append([]any{&d.Id, &d.TenantId, &d.Slug, &d.Title, &desc,
 		&defRaw, &d.SchemaVersion, &tagsRaw, &d.Status,
-		&d.IsBuiltin, &d.CreatedBy, &d.UpdatedBy, &d.CreatedAt, &d.UpdatedAt)
+		&d.IsBuiltin, &d.CreatedBy, &d.UpdatedBy, &d.CreatedAt, &d.UpdatedAt}, extra...)...)
 	if err != nil {
 		return d, err
 	}
@@ -332,22 +334,28 @@ func Get(ctx *security.RequestContext, req GetRequest) (*Dashboard, error) {
 	if err != nil {
 		return nil, err
 	}
+	// One statement, so the version is read from the same snapshot as the
+	// definition. Read separately, a save landing in between labels the old
+	// definition with the new version, and Save's conflict check then lets that
+	// stale copy overwrite the save it never saw.
 	row := dbms.Db.QueryRow(
-		fmt.Sprintf(`SELECT %s FROM dashboards WHERE id = $1 AND tenant_id = $2`, dashboardColumns),
+		fmt.Sprintf(`SELECT %s,
+			(SELECT COALESCE(MAX(v.version), 0) FROM dashboard_versions v WHERE v.dashboard_id = dashboards.id),
+			(SELECT COALESCE(u.display_name, u.username) FROM users u WHERE u.id = dashboards.updated_by)
+		 FROM dashboards WHERE id = $1 AND tenant_id = $2`, dashboardColumns),
 		req.Id, ctx.GetSecurityContext().GetTenantId())
 
-	d, err := scanDashboard(row)
+	var updatedByName sql.NullString
+	var version int
+	d, err := scanDashboard(row, &version, &updatedByName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	if err := dbms.Db.QueryRow(
-		`SELECT COALESCE(MAX(version), 0) FROM dashboard_versions WHERE dashboard_id = $1`,
-		d.Id).Scan(&d.Version); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
-	}
+	d.Version = version
+	d.UpdatedByName = updatedByName.String
 	return &d, nil
 }
 
@@ -412,8 +420,11 @@ func Save(ctx *security.RequestContext, req SaveRequest) (*Dashboard, error) {
 		id = req.Id
 		// is_builtin dashboards ship with the product; edits would be silently
 		// reverted by the next release, so refuse rather than pretend.
+		// FOR UPDATE holds the row until commit: a concurrent save of the same
+		// dashboard waits here, then reads the revision this one writes, so the
+		// version check below cannot pass for both.
 		var isBuiltin bool
-		err = tx.QueryRow(`SELECT is_builtin FROM dashboards WHERE id = $1 AND tenant_id = $2`,
+		err = tx.QueryRow(`SELECT is_builtin FROM dashboards WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
 			id, tenantId).Scan(&isBuiltin)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -423,6 +434,19 @@ func Save(ctx *security.RequestContext, req SaveRequest) (*Dashboard, error) {
 		}
 		if isBuiltin {
 			return nil, errors.New("built-in dashboards cannot be edited; duplicate it first")
+		}
+		// The caller sends the whole definition, so saving a stale copy would
+		// silently undo every save made since it was read.
+		if req.ExpectedVersion > 0 {
+			var current int
+			if err := tx.QueryRow(
+				`SELECT COALESCE(MAX(version), 0) FROM dashboard_versions WHERE dashboard_id = $1`,
+				id).Scan(&current); err != nil {
+				return nil, err
+			}
+			if current != req.ExpectedVersion {
+				return nil, ErrConflict
+			}
 		}
 		res, err := tx.Exec(
 			`UPDATE dashboards SET title=$1, description=$2, definition=$3,

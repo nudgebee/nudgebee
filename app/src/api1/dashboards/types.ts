@@ -291,6 +291,8 @@ export interface Dashboard {
   created_at?: string;
   updated_at?: string;
   version?: number;
+  /** Display name of `updated_by`. Returned by get and save, not by list. */
+  updated_by_name?: string;
 }
 
 /** What a listing that only links to dashboards reads — see listDashboardsBrief. */
@@ -321,6 +323,11 @@ export interface DashboardSaveRequest {
   status?: string;
   message?: string;
   bindings?: DashboardBinding[];
+  /**
+   * The `version` this copy was read at. An update whose copy is no longer the
+   * latest is refused with a 409 rather than overwriting the newer save.
+   */
+  expected_version?: number;
 }
 
 export interface DashboardListRequest {

@@ -12897,6 +12897,7 @@ input DashboardSaveRequest {
   status: String
   message: String
   bindings: [DashboardBindingInput]
+  expected_version: Int
 }
 
 type Dashboard {
@@ -12915,6 +12916,7 @@ type Dashboard {
   created_at: Datetime
   updated_at: Datetime
   version: Int
+  updated_by_name: String
 }
 
 type DashboardBinding {

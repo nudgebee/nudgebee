@@ -86,6 +86,8 @@ func dashboardError(c *gin.Context, err error) {
 		c.JSON(404, common.ErrorActionBadRequest(err.Error()))
 	case errors.Is(err, dashboard.ErrForbidden):
 		c.JSON(403, common.ErrorActionForbidden(err.Error()))
+	case errors.Is(err, dashboard.ErrConflict):
+		c.JSON(409, common.ErrorActionBadRequest(err.Error()))
 	default:
 		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 	}

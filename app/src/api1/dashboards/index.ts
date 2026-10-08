@@ -29,7 +29,8 @@ const DASHBOARD_FIELDS = `
     updated_by
     created_at
     updated_at
-    version`;
+    version
+    updated_by_name`;
 
 export const LIST_DASHBOARDS = `
 query ListDashboards($request: DashboardListRequest!) {

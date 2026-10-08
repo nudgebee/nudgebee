@@ -31,9 +31,11 @@ import LibraryBooksOutlinedIcon from '@mui/icons-material/LibraryBooksOutlined';
 import SearchIcon from '@mui/icons-material/Search';
 import BackButton from '@shared/buttons/BackButton';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
+import Datetime from '@shared/format/Datetime';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { downloadIcon, RefreshIcon, writeIconLight } from '@assets';
 import { ds } from '@utils/colors';
+import { getUpstreamStatus } from '@lib/errorMessages';
 import apiDashboards, { EMPTY_DEFINITION, type AccountOption, type Dashboard, type DashboardDefinition, type Panel } from '@api1/dashboards';
 import SortablePanel from './SortablePanel';
 import usePanelResize from './usePanelResize';
@@ -85,6 +87,12 @@ type Exit = { to: 'edit' } | { to: 'back' } | { to: 'route'; url: string; hashOn
 
 /** The definition's settings beside its panels. */
 type DashboardSettings = Pick<DashboardDefinition, 'time_from' | 'refresh'>;
+
+/** What one save writes; anything left out is taken from the saved dashboard. */
+type DashboardChange = { title?: string; description?: string; panels?: Panel[]; settings?: DashboardSettings };
+
+/** The answer to "someone else saved this dashboard since you opened it". */
+type ConflictChoice = 'reload' | 'overwrite' | 'cancel';
 
 const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, onChange, canEdit, initialEditing = false }) => {
   const router = useRouter();
@@ -212,6 +220,13 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
    * the author has just agreed to. Consumed by the first route change it sees.
    */
   const allowNavigation = useRef(false);
+  /** The newer saved copy the conflict prompt describes. Kept after it closes so the text holds through the fade. */
+  const [conflict, setConflict] = useState<Dashboard | null>(null);
+  const [conflictOpen, setConflictOpen] = useState(false);
+  /** Settles the save waiting on the conflict prompt with the author's answer. */
+  const answerConflict = useRef<((choice: ConflictChoice) => void) | null>(null);
+  // A save left waiting on a prompt that unmounted with the screen is abandoned.
+  useEffect(() => () => answerConflict.current?.('cancel'), []);
   /** The panel awaiting delete confirmation. Held whole so the prompt can name it. */
   const [pendingDelete, setPendingDelete] = useState<Panel | null>(null);
   /** The panel under the cursor mid-drag; drives the DragOverlay. */
@@ -271,17 +286,25 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     return () => cancelAnimationFrame(frame);
   }, [linkedPanel, editing, savedPanels, scrollToPanel]);
 
-  /** Writes the dashboard back. */
-  const persist = async (change: { title?: string; description?: string; panels?: Panel[]; settings?: DashboardSettings }): Promise<boolean> => {
+  /**
+   * Writes the dashboard back. `expectedVersion` is the revision the write
+   * replaces — the one this screen loaded, unless the author chose to overwrite
+   * a newer one.
+   */
+  const persist = async (change: DashboardChange, expectedVersion = dashboard.version): Promise<boolean> => {
     setSaving(true);
     // A create answers with its new id and the host writes it into the URL. That
     // push is this screen's own doing, so the guard below must not hold it.
     allowNavigation.current = true;
+    lastSaveError.current = '';
     try {
       const res = await apiDashboards.saveDashboard({
         // Empty on a dashboard that has never been written — `saveDashboard`
         // reads that as a create rather than an update.
         id: dashboard.id,
+        // Every save sends the whole definition, so one written over a newer
+        // save would silently undo it. The server refuses that with a 409.
+        expected_version: dashboard.id ? expectedVersion : undefined,
         title: change.title ?? dashboard.title,
         description: change.description ?? dashboard.description,
         // Falls back to the SAVED panels, never the draft: renaming mid-edit
@@ -302,10 +325,13 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
       // success toast keyed only on the absence of an exception would lie.
       if (res.errors || !res.data) {
         const message = Array.isArray(res.errors) ? (res.errors[0] as any)?.message : null;
-        lastSaveError.current = message || 'Could not save the dashboard.';
-        snackbar.error(lastSaveError.current);
         // Nothing was written and nothing navigates — hand the pass back.
         allowNavigation.current = false;
+        if (dashboard.id && getUpstreamStatus({ errors: res.errors }) === 409) {
+          return await resolveConflict(change, message);
+        }
+        lastSaveError.current = message || 'Could not save the dashboard.';
+        snackbar.error(lastSaveError.current);
         return false;
       }
       onChange?.(res.data);
@@ -314,6 +340,46 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
       // Guarantees the toolbar and every panel control unfreeze on both exits.
       setSaving(false);
     }
+  };
+
+  /**
+   * Someone saved this dashboard after it was opened. Asks the author whether to
+   * load that version or write this one over it, and answers as `persist` does.
+   * The toolbar stays frozen until they choose.
+   */
+  const resolveConflict = async (change: DashboardChange, message: string | null): Promise<boolean> => {
+    const latest = (await apiDashboards.getDashboard(dashboard.id)).data?.dashboard;
+    if (!latest) {
+      // Without the newer copy there is nothing to reload or name — say why the save failed.
+      snackbar.error(message || 'This dashboard was saved by someone else after you opened it.');
+      return false;
+    }
+    const choice = await new Promise<ConflictChoice>((resolve) => {
+      answerConflict.current = resolve;
+      setConflict(latest);
+      setConflictOpen(true);
+    });
+    answerConflict.current = null;
+    setConflictOpen(false);
+    // Against the version just read, so a third save landing meanwhile asks again.
+    if (choice === 'overwrite') return persist(change, latest.version);
+    if (choice === 'reload') reloadLatest(latest);
+    return false;
+  };
+
+  /** Shows the newer copy and drops this screen's unsaved edits — the conflict prompt's Reload. */
+  const reloadLatest = (latest: Dashboard) => {
+    onChange?.(latest);
+    setTitleDraft(latest.title);
+    setDescriptionDraft(latest.description || '');
+    setDraftSettings(null);
+    jsonApplied.current = false;
+    setDraftPanels(null);
+    setPanelModalOpen(false);
+    setEditingPanel(null);
+    // The exit a leave prompt was holding is off: the author is looking at a different dashboard now.
+    setPendingExit(null);
+    snackbar.info('Loaded the latest version of this dashboard.');
   };
 
   const openNewPanel = () => {
@@ -426,8 +492,9 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
       // than a toast about panel 7 over a grid of them.
       // It reopens on the draft as it is now — the applied JSON plus anything
       // edited on the canvas since — never on a stale copy of what was applied,
-      // which applied again would undo those edits.
-      if (jsonApplied.current) {
+      // which applied again would undo those edits. A conflict is not about the
+      // JSON, so it carries no error and the editor stays shut.
+      if (jsonApplied.current && lastSaveError.current) {
         setJsonReopen({ error: lastSaveError.current });
         setJsonOpen(true);
       }
@@ -1039,6 +1106,57 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
         <Typography variant='body2'>
           {isNew ? 'This dashboard has not been saved yet.' : `Your changes to ${dashboard.title} have not been saved.`} Discard them and they are
           gone — this cannot be undone.
+        </Typography>
+      </Modal>
+
+      {/* A save refused because someone else saved first. Reload is the safe
+          answer; Overwrite throws the other person's changes away, so it is the
+          one that reads as dangerous. Closing keeps the edits, unsaved. */}
+      <Modal
+        open={conflictOpen}
+        handleClose={() => answerConflict.current?.('cancel')}
+        title='Someone else saved this dashboard'
+        actionButtons={
+          <Stack direction='row' gap={ds.space[2]} justifyContent='flex-end' sx={{ width: '100%' }}>
+            <Button
+              tone='ghost'
+              size='md'
+              onClick={() => answerConflict.current?.('cancel')}
+              id='dashboard-conflict-cancel-btn'
+              data-testid='dashboard-conflict-cancel-btn'
+            >
+              Cancel
+            </Button>
+            <Button
+              tone='danger'
+              size='md'
+              onClick={() => answerConflict.current?.('overwrite')}
+              id='dashboard-conflict-overwrite-btn'
+              data-testid='dashboard-conflict-overwrite-btn'
+            >
+              Overwrite
+            </Button>
+            <Button
+              tone='primary'
+              size='md'
+              onClick={() => answerConflict.current?.('reload')}
+              id='dashboard-conflict-reload-btn'
+              data-testid='dashboard-conflict-reload-btn'
+            >
+              Reload
+            </Button>
+          </Stack>
+        }
+      >
+        <Typography variant='body2' component='div' data-testid='dashboard-conflict-message'>
+          {conflict?.updated_by_name || 'Another user'} saved {conflict?.title || 'this dashboard'}
+          {conflict?.updated_at ? (
+            <>
+              {' '}
+              <Datetime value={conflict.updated_at} />
+            </>
+          ) : null}{' '}
+          after you opened it. Reload to see their version and drop your unsaved changes, or overwrite to replace their changes with yours.
         </Typography>
       </Modal>
 
