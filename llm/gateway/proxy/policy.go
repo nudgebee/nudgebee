@@ -100,34 +100,10 @@ type policyStage struct{ router routing.Resolver }
 func (policyStage) Name() string { return "policy" }
 
 func (s policyStage) Handle(rc *RequestContext) (bool, error) {
-	p := rc.Identity.Policy
-	// A provider's own model list is unfiltered, so a restricted key reads the filtered /v1/models.
-	if p.Restricted() && rc.Endpoint == endpointMeta && rc.Gin.Request.Method == http.MethodGet {
-		return s.deny(rc, "endpoint_not_allowed", "", "This API key is restricted; list the models it may use at /v1/models.")
-	}
-	if p.Restricted() && rc.Endpoint != endpointMeta {
-		if rc.Endpoint == "" {
-			return s.deny(rc, "endpoint_not_allowed", "", fmt.Sprintf(
-				"This API key is restricted and cannot call %s %s. Restricted keys may call chat, responses, embeddings and conversations endpoints only.",
-				rc.Gin.Request.Method, rc.Path))
-		}
-		if !p.AllowsEndpoint(rc.Endpoint) {
-			return s.deny(rc, "endpoint_not_allowed", "", fmt.Sprintf(
-				"This API key is not allowed to call the %s endpoint.", rc.Endpoint))
-		}
-	}
-
 	provider, model := routedTarget(rc)
-	if p.Restricted() && rc.Endpoint != endpointMeta {
-		if !p.AllowsProvider(provider) {
-			return s.deny(rc, "provider_not_allowed", provider+"/"+model, fmt.Sprintf(
-				"This API key is not allowed to use provider %q.", provider))
-		}
-		if model == "" && rc.Generative && p.Models != nil {
-			return s.deny(rc, "model_not_allowed", provider+"/", "This API key is restricted to specific models, so the request must name a model.")
-		}
-		if model != "" && !allowsModel(rc.Identity.TenantID, p, provider, model) {
-			return s.deny(rc, "model_not_allowed", provider+"/"+model, keyModelMessage(rc, provider, model))
+	for _, l := range policyLayers(rc.Identity) {
+		if stop, err := s.checkLayer(rc, l, provider, model); stop || err != nil {
+			return stop, err
 		}
 	}
 	// The tenant's block rules matched the requested model in routeStage. Routing is
@@ -143,7 +119,66 @@ func (s policyStage) Handle(rc *RequestContext) (bool, error) {
 		return true, nil
 	}
 
-	s.pruneFallbacks(rc, p)
+	s.pruneFallbacks(rc)
+	return false, nil
+}
+
+// policyLayer is one owner of a restriction. A request must pass every layer, so a key never
+// reaches more than its user; reject is the usage reject_reason, subject opens the message.
+type policyLayer struct {
+	policy  auth.KeyPolicy
+	reject  string
+	subject string
+}
+
+// policyLayers lists the layers a request must pass, the user first, then the key.
+func policyLayers(id auth.Identity) []policyLayer {
+	return []policyLayer{
+		{policy: id.UserPolicy, reject: "user_policy", subject: "Your user account"},
+		{policy: id.Policy, reject: "key_policy", subject: "This API key"},
+	}
+}
+
+// targetAllowed reports whether every layer lets a request reach model on provider.
+func targetAllowed(id auth.Identity, provider, model string) bool {
+	for _, l := range policyLayers(id) {
+		p := l.policy
+		if p.Restricted() && (!p.AllowsProvider(provider) || !allowsModel(id.TenantID, p, provider, model)) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s policyStage) checkLayer(rc *RequestContext, l policyLayer, provider, model string) (bool, error) {
+	p := l.policy
+	if !p.Restricted() {
+		return false, nil
+	}
+	if rc.Endpoint == endpointMeta {
+		// A provider's own model list is unfiltered, so a restricted caller reads the filtered /v1/models.
+		if rc.Gin.Request.Method == http.MethodGet {
+			return s.deny(rc, l, "endpoint_not_allowed", "", l.subject+" is restricted; list the models it may use at /v1/models.")
+		}
+		return false, nil
+	}
+	if rc.Endpoint == "" {
+		return s.deny(rc, l, "endpoint_not_allowed", "", fmt.Sprintf(
+			"%s is restricted and cannot call %s %s. Restricted access may call chat, responses, embeddings and conversations endpoints only.",
+			l.subject, rc.Gin.Request.Method, rc.Path))
+	}
+	if !p.AllowsEndpoint(rc.Endpoint) {
+		return s.deny(rc, l, "endpoint_not_allowed", "", fmt.Sprintf("%s is not allowed to call the %s endpoint.", l.subject, rc.Endpoint))
+	}
+	if !p.AllowsProvider(provider) {
+		return s.deny(rc, l, "provider_not_allowed", provider+"/"+model, fmt.Sprintf("%s is not allowed to use provider %q.", l.subject, provider))
+	}
+	if model == "" && rc.Generative && p.Models != nil {
+		return s.deny(rc, l, "model_not_allowed", provider+"/", l.subject+" is restricted to specific models, so the request must name a model.")
+	}
+	if model != "" && !allowsModel(rc.Identity.TenantID, p, provider, model) {
+		return s.deny(rc, l, "model_not_allowed", provider+"/"+model, modelMessage(rc, l.subject, provider, model))
+	}
 	return false, nil
 }
 
@@ -209,9 +244,9 @@ func (s policyStage) blocked(rc *RequestContext, provider, model string) bool {
 	}).Denied
 }
 
-// pruneFallbacks drops every fallback the key or the tenant would refuse. The request
+// pruneFallbacks drops every fallback the user, the key or the tenant would refuse. The request
 // itself proceeds: the primary is allowed, and failover simply has fewer places to go.
-func (s policyStage) pruneFallbacks(rc *RequestContext, p auth.KeyPolicy) {
+func (s policyStage) pruneFallbacks(rc *RequestContext) {
 	fbs := rc.Decision.Fallbacks
 	if len(fbs) == 0 {
 		return
@@ -222,8 +257,8 @@ func (s policyStage) pruneFallbacks(rc *RequestContext, p auth.KeyPolicy) {
 		if model == "" {
 			continue // unusable for failover anyway
 		}
-		if p.Restricted() && (!p.AllowsProvider(string(target)) || !allowsModel(rc.Identity.TenantID, p, string(target), model)) {
-			slog.Info("policy: fallback dropped by key policy", "api_key_id", rc.Identity.APIKeyID, "fallback", string(target)+"/"+model)
+		if !targetAllowed(rc.Identity, string(target), model) {
+			slog.Info("policy: fallback dropped by user or key policy", "api_key_id", rc.Identity.APIKeyID, "fallback", string(target)+"/"+model)
 			continue
 		}
 		if s.blocked(rc, string(target), model) {
@@ -235,23 +270,23 @@ func (s policyStage) pruneFallbacks(rc *RequestContext, p auth.KeyPolicy) {
 	rc.Decision.Fallbacks = kept
 }
 
-func (s policyStage) deny(rc *RequestContext, code, target, message string) (bool, error) {
-	rc.RejectReason = "key_policy"
+func (s policyStage) deny(rc *RequestContext, l policyLayer, code, target, message string) (bool, error) {
+	rc.RejectReason = l.reject
 	rc.PolicyTarget = target
 	if !keyRefusals.allow(rc.Identity.APIKeyID) {
 		rc.RefusalSuppressed = true
 		edgeerr.Write(rc.Gin, rc.errorShape(), http.StatusForbidden, code, message)
 		return true, nil
 	}
-	slog.Info("policy: request denied by key policy",
-		"api_key_id", rc.Identity.APIKeyID, "tenant_id", rc.Identity.TenantID, "code", code,
+	slog.Info("policy: request denied", "layer", l.reject,
+		"api_key_id", rc.Identity.APIKeyID, "user_id", rc.Identity.UserID, "tenant_id", rc.Identity.TenantID, "code", code,
 		"endpoint", rc.Endpoint, "requested_model", rc.Decision.RequestedModel, "resolved_target", target)
 	edgeerr.Write(rc.Gin, rc.errorShape(), http.StatusForbidden, code, message)
 	return true, nil
 }
 
-// keyRefusals caps key-policy refusals at 10 rows and log lines per key per minute. The policy
-// stage runs before the rate limiter, so a leaked key could otherwise write without bound.
+// keyRefusals caps policy refusals (key, user and suspension) at 10 rows and log lines per key per
+// minute. These stages run before the rate limiter, so a leaked key could otherwise write without bound.
 var keyRefusals = newRefusalCap(10, time.Minute)
 
 // refusalCap counts refusals per key in a fixed window shared by all keys, allowing the first
@@ -284,13 +319,13 @@ func (c *refusalCap) allow(key string) bool {
 	return c.counts[key] <= c.max
 }
 
-// keyModelMessage names the requested model and, when routing changed it, the target
+// modelMessage names the requested model and, when routing changed it, the target
 // too, so a caller denied after an alias sees why a model they did not ask for matters.
-func keyModelMessage(rc *RequestContext, provider, model string) string {
+func modelMessage(rc *RequestContext, subject, provider, model string) string {
 	if req := rc.Decision.RequestedModel; req != "" && req != model {
-		return fmt.Sprintf("This API key is not allowed to use model %q (%q routes to %s/%s).", model, req, provider, model)
+		return fmt.Sprintf("%s is not allowed to use model %q (%q routes to %s/%s).", subject, model, req, provider, model)
 	}
-	return fmt.Sprintf("This API key is not allowed to use model %q.", model)
+	return fmt.Sprintf("%s is not allowed to use model %q.", subject, model)
 }
 
 // CatalogModel is one model name a key policy can allow.
@@ -317,4 +352,21 @@ func ModelCatalog(tenantID string) []CatalogModel {
 		out = append(out, CatalogModel{ID: m.id, Provider: m.ownedBy})
 	}
 	return out
+}
+
+// accessStage refuses a user a tenant admin suspended or whose access ended, before routing, so no
+// block rule or policy reason can mask it; the stop is metered like every other pipeline refusal.
+type accessStage struct{}
+
+func (accessStage) Name() string { return "access" }
+
+func (accessStage) Handle(rc *RequestContext) (bool, error) {
+	msg := rc.Identity.Access.Denial(time.Now())
+	if msg == "" {
+		return false, nil
+	}
+	rc.RejectReason = "user_suspended"
+	rc.RefusalSuppressed = !keyRefusals.allow(rc.Identity.APIKeyID)
+	edgeerr.Write(rc.Gin, rc.errorShape(), http.StatusForbidden, "access_suspended", msg)
+	return true, nil
 }

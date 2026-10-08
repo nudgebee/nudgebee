@@ -1,6 +1,9 @@
 package auth
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // Endpoint families a key policy can allow. The api-server validates against the same
 // four names (services/user/token_policy.go); an unknown name in a stored policy allows
@@ -45,4 +48,22 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// UserAccess is a tenant admin's switch on one user's gateway access, shared by every key the
+// user owns. The zero value is on, which is every user without an llm_gateway_user_access row.
+type UserAccess struct {
+	Suspended  bool
+	ValidUntil *time.Time
+}
+
+// Denial returns why the user's gateway access is off at now, or "" when it is on.
+func (a UserAccess) Denial(now time.Time) string {
+	switch {
+	case a.Suspended:
+		return "Your AI Gateway access is suspended. Ask a tenant admin to restore it."
+	case a.ValidUntil != nil && !now.Before(*a.ValidUntil):
+		return "Your AI Gateway access ended on " + a.ValidUntil.UTC().Format(time.RFC3339) + ". Ask a tenant admin to extend it."
+	}
+	return ""
 }

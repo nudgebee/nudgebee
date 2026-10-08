@@ -88,6 +88,12 @@ describe('permissionCatalog', () => {
     'billing_list',
     'billing_list_usage_costs',
     'billing_aggregate',
+    // AI Gateway quotas and per-user access are tenant-admin only (#38963).
+    'llm_gateway_list_rate_limits',
+    'llm_gateway_upsert_rate_limit',
+    'llm_gateway_delete_rate_limit',
+    'llm_gateway_list_user_access',
+    'llm_gateway_upsert_user_access',
   ];
 
   it('classifies every action in actions.yaml except the non-grantable ones', () => {
@@ -127,6 +133,19 @@ describe('permissionCatalog', () => {
     const customroles = buildCatalog(ACTION_NAMES).find((e) => e.module === 'customroles');
     expect(customroles).toBeDefined();
     expect(customroles!.classes).toEqual(['Read']);
+  });
+
+  it('keeps AI Gateway quota and user-access actions non-grantable', () => {
+    for (const name of [
+      'llm_gateway_list_rate_limits',
+      'llm_gateway_upsert_rate_limit',
+      'llm_gateway_delete_rate_limit',
+      'llm_gateway_list_user_access',
+      'llm_gateway_upsert_user_access',
+    ]) {
+      expect(classifyAction(name)).toBeNull();
+    }
+    expect(classifyAction('llm_gateway_list_models')).not.toBeNull();
   });
 
   it('keeps non-grantable modules out of the catalog', () => {

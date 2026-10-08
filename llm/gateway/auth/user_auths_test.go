@@ -12,6 +12,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -218,3 +219,58 @@ func TestUserAuthsValidator_QueryFiltersGatewayKinds(t *testing.T) {
 type assertErr struct{}
 
 func (assertErr) Error() string { return "db down" }
+
+// The user layer is read in the same lookup: user-scope rows (api_key_id = ”) matched on the key's
+// current tenant and owner, and the owner's access switch.
+func TestUserAuthsValidator_ReadsUserPolicyAndAccess(t *testing.T) {
+	v, mock := mockValidator(t)
+	v.recordAccess = func(*common.DatabaseManager, string) {}
+	raw := "user-restricted-key"
+	until := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`FROM llm_gateway_access_policies p\s+` +
+		`WHERE p\.api_key_id = '' AND p\.user_id = ua\."user"::text AND p\.tenant_id = ua\.tenant_id::text\s+\) upol ON true\s+` +
+		`LEFT JOIN llm_gateway_user_access acc\s+ON acc\.tenant_id = ua\.tenant_id::text AND acc\.user_id = ua\."user"::text`).
+		WithArgs(sha256hex(raw)).
+		WillReturnRows(sqlmock.NewRows([]string{"tenant_id", "user", "name", "api_key_id", "providers", "models", "endpoints",
+			"user_providers", "user_models", "user_endpoints", "suspended", "valid_until"}).
+			AddRow("tenant-1", "user-1", "ci", "key-1", nil, nil, nil, "{openai}", "{gpt-5}", nil, true, until))
+
+	id, ok := v.Validate(raw)
+	require.True(t, ok)
+	assert.False(t, id.Policy.Restricted())
+	assert.Equal(t, KeyPolicy{Providers: []string{"openai"}, Models: []string{"gpt-5"}}, id.UserPolicy)
+	assert.True(t, id.Access.Suspended)
+	require.NotNil(t, id.Access.ValidUntil)
+	assert.True(t, until.Equal(*id.Access.ValidUntil))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A gateway that rolls out before V1004 must keep serving keys: on 42P01 the lookup retries
+// without the suspend switch (none can exist before the table does). Other errors fail closed.
+func TestUserAuthsValidator_FallsBackWhenAccessTableMissing(t *testing.T) {
+	v, mock := mockValidator(t)
+	v.recordAccess = func(*common.DatabaseManager, string) {}
+	mock.ExpectQuery("LEFT JOIN llm_gateway_user_access").WillReturnError(&pq.Error{Code: "42P01"})
+	mock.ExpectQuery("false AS suspended, NULL::timestamptz AS valid_until").
+		WillReturnRows(sqlmock.NewRows([]string{"tenant_id", "user", "name", "api_key_id", "suspended"}).
+			AddRow("tenant-1", "user-1", "k", "key-1", false))
+
+	id, ok := v.Validate("tok")
+	require.True(t, ok)
+	assert.Equal(t, "key-1", id.APIKeyID)
+	assert.Empty(t, id.Access.Denial(time.Now()))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUserAuthsValidator_OtherQueryErrorFailsClosed(t *testing.T) {
+	v, mock := mockValidator(t)
+	mock.ExpectQuery("FROM user_auths").WillReturnError(&pq.Error{Code: "57014"}) // query_canceled
+	_, ok := v.Validate("tok")
+	assert.False(t, ok)
+	assert.NoError(t, mock.ExpectationsWereMet(), "no retry for errors other than 42P01")
+}
+
+func TestTokenLookupQuery_AccessJoinOnlyWhenAsked(t *testing.T) {
+	assert.Contains(t, tokenLookupQuery(true), "llm_gateway_user_access")
+	assert.NotContains(t, tokenLookupQuery(false), "llm_gateway_user_access")
+}

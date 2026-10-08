@@ -472,3 +472,163 @@ func TestHandle_KeyPolicyRefusalsCappedPerKey(t *testing.T) {
 	require.Len(t, sink.Events(), 2)
 	assert.Contains(t, sink.Events()[0].Attributes, `"reject_reason":"key_policy"`)
 }
+
+// #38963 verify 4: a suspended user is refused first, on every path, even where a user block rule exists.
+func TestAccessStage_SuspendedUser(t *testing.T) {
+	for _, tc := range []struct {
+		provider     schemas.ModelProvider
+		method, path string
+		model        string
+	}{
+		{schemas.OpenAI, "POST", "/v1/chat/completions", "gpt-4o-mini"},
+		{schemas.OpenAI, "GET", "/v1/models", ""},
+		{schemas.Anthropic, "POST", "/v1/messages", "claude-haiku-4-5"},
+	} {
+		rc, rec := newPolicyTestContext(tc.provider, tc.method, tc.path, tc.model, auth.KeyPolicy{})
+		rc.Identity.Access = auth.UserAccess{Suspended: true}
+		stop, err := accessStage{}.Handle(rc)
+		require.NoError(t, err)
+		require.True(t, stop, tc.path)
+		assert.Equal(t, http.StatusForbidden, rec.Code, tc.path)
+		assert.Equal(t, "user_suspended", rc.RejectReason, tc.path)
+		// Anthropic's error envelope carries no code field, only the message.
+		want := "access_suspended"
+		if tc.provider == schemas.Anthropic {
+			want = "suspended"
+		}
+		assert.Contains(t, rec.Body.String(), want, tc.path)
+	}
+	rc, _ := newPolicyTestContext(schemas.OpenAI, "POST", "/v1/chat/completions", "gpt-4o-mini", auth.KeyPolicy{})
+	stop, err := accessStage{}.Handle(rc)
+	require.NoError(t, err)
+	assert.False(t, stop, "an active user passes")
+}
+
+// The stage order is the guarantee: access runs before routing, so a block rule cannot mask a suspension.
+func TestPipeline_AccessStageRunsFirst(t *testing.T) {
+	p := newControlPipeline(nil, nil, nil)
+	require.Equal(t, "access", p.stages[0].Name())
+	require.Equal(t, "route", p.stages[1].Name())
+}
+
+func newUserPolicyTestContext(provider schemas.ModelProvider, method, path, model string, user, key auth.KeyPolicy) (*RequestContext, *httptest.ResponseRecorder) {
+	rc, rec := newPolicyTestContext(provider, method, path, model, key)
+	rc.Identity.UserPolicy = user
+	return rc, rec
+}
+
+func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var body struct {
+		Error struct{ Code string } `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	return body.Error.Code
+}
+
+// #38963 verify 1-2: a user-wide model restriction binds every key, including an unrestricted one.
+func TestPolicyStage_UserPolicyBindsUnrestrictedKey(t *testing.T) {
+	router := routing.NewEngine(nil)
+	user := auth.KeyPolicy{Models: []string{"gpt-4o-mini"}}
+
+	rc, _ := newUserPolicyTestContext(schemas.OpenAI, "POST", "/v1/chat/completions", "gpt-4o-mini", user, auth.KeyPolicy{})
+	assert.False(t, runRouteAndPolicy(t, router, rc))
+
+	rc, rec := newUserPolicyTestContext(schemas.OpenAI, "POST", "/v1/chat/completions", "gpt-5", user, auth.KeyPolicy{})
+	require.True(t, runRouteAndPolicy(t, router, rc))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Equal(t, "user_policy", rc.RejectReason)
+	assert.Equal(t, "model_not_allowed", errorCode(t, rec))
+	assert.Contains(t, rec.Body.String(), "Your user account")
+}
+
+// The effective policy is the intersection: the user allows {mini, gpt-5}, the key {mini}.
+func TestPolicyStage_KeyNarrowerThanUser(t *testing.T) {
+	router := routing.NewEngine(nil)
+	user := auth.KeyPolicy{Models: []string{"gpt-4o-mini", "gpt-5"}}
+	key := auth.KeyPolicy{Models: []string{"gpt-4o-mini"}}
+
+	rc, rec := newUserPolicyTestContext(schemas.OpenAI, "POST", "/v1/chat/completions", "gpt-5", user, key)
+	require.True(t, runRouteAndPolicy(t, router, rc))
+	assert.Equal(t, "key_policy", rc.RejectReason, "the user allows it; the key refuses it")
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// A key can never widen its user: the key allows claude, the user does not.
+func TestPolicyStage_KeyCannotWidenUser(t *testing.T) {
+	router := routing.NewEngine(nil)
+	user := auth.KeyPolicy{Providers: []string{"openai"}}
+	key := auth.KeyPolicy{Providers: []string{"anthropic"}}
+
+	rc, rec := newUserPolicyTestContext(schemas.Anthropic, "POST", "/v1/messages", "claude-haiku-4-5", user, key)
+	require.True(t, runRouteAndPolicy(t, router, rc))
+	assert.Equal(t, "user_policy", rc.RejectReason)
+	assert.Contains(t, rec.Body.String(), "Your user account is not allowed to use provider")
+}
+
+// A user endpoint restriction refuses unmodelled paths too, so a second key is no bypass.
+func TestPolicyStage_UserEndpointRestriction(t *testing.T) {
+	router := routing.NewEngine(nil)
+	user := auth.KeyPolicy{Endpoints: []string{auth.EndpointChat}}
+	for _, tc := range []struct{ method, path, model string }{
+		{"POST", "/v1/embeddings", "text-embedding-3-small"},
+		{"POST", "/v1/batches", ""},
+	} {
+		rc, rec := newUserPolicyTestContext(schemas.OpenAI, tc.method, tc.path, tc.model, user, auth.KeyPolicy{})
+		require.True(t, runRouteAndPolicy(t, router, rc), tc.path)
+		assert.Equal(t, "endpoint_not_allowed", errorCode(t, rec), tc.path)
+		assert.Equal(t, "user_policy", rc.RejectReason, tc.path)
+	}
+}
+
+// A fallback the user may not reach is pruned even when the key is unrestricted.
+func TestPolicyStage_UserPolicyPrunesFallbacks(t *testing.T) {
+	router := routing.NewEngine([]routing.Rule{
+		{ID: "fb", TenantID: "t", Enabled: true, Priority: 1,
+			Match: routing.Match{Provider: "openai", Model: "gpt-4o-mini"},
+			Target: routing.Target{Fallbacks: []routing.Endpoint{
+				{Provider: "anthropic", Model: "claude-opus-4-8"},
+				{Provider: "openai", Model: "gpt-5"},
+			}}},
+	})
+	user := auth.KeyPolicy{Models: []string{"gpt-4o-mini"}}
+	rc, _ := newUserPolicyTestContext(schemas.OpenAI, "POST", "/v1/chat/completions", "gpt-4o-mini", user, auth.KeyPolicy{})
+	require.False(t, runRouteAndPolicy(t, router, rc))
+	assert.Empty(t, rc.Decision.Fallbacks)
+}
+
+// #40087 at the user layer: a provider's unfiltered model list is refused to a restricted user too.
+func TestPolicy_RestrictedUserRefusedOnNativeModelList(t *testing.T) {
+	rc, rec := newUserPolicyTestContext(schemas.OpenAI, "GET", "/v1/models", "", chatOnlyMini, auth.KeyPolicy{})
+	require.True(t, runRouteAndPolicy(t, routing.NewEngine(nil), rc))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Equal(t, "user_policy", rc.RejectReason)
+	assert.Contains(t, rec.Body.String(), "Your user account is restricted; list the models it may use at /v1/models.")
+
+	rc, _ = newUserPolicyTestContext(schemas.OpenAI, "GET", "/v1/models", "", auth.KeyPolicy{}, auth.KeyPolicy{})
+	assert.False(t, runRouteAndPolicy(t, routing.NewEngine(nil), rc), "an unrestricted caller still reads it")
+}
+
+// #40090 at the user layer: user-policy refusals and suspensions share the key's cap, so a
+// leaked key of a restricted or suspended user can't write rows without bound either.
+func TestHandle_UserRefusalsAndSuspensionsCappedPerKey(t *testing.T) {
+	for name, id := range map[string]auth.Identity{
+		"user_policy":    {TenantID: "t", UserID: "u", APIKeyID: "key-u", UserPolicy: chatOnlyMini},
+		"user_suspended": {TenantID: "t", UserID: "u", APIKeyID: "key-s", Access: auth.UserAccess{Suspended: true}},
+	} {
+		prevCap := keyRefusals
+		keyRefusals = newRefusalCap(2, time.Minute)
+		router := routing.NewEngine(nil)
+		sink := &metering.CapturingSink{}
+		h := &handler{sink: sink, pipeline: NewPipeline(accessStage{}, routeStage{router: router}, policyStage{router: router})}
+		for range 5 {
+			c, rec := newHandleTestContext("POST", "/openai/v1/chat/completions", `{"model":"gpt-5"}`, auth.KeyPolicy{})
+			c.Set("nb_identity", id)
+			h.handle(c)
+			assert.Equal(t, http.StatusForbidden, rec.Code, name)
+		}
+		keyRefusals = prevCap
+		require.Len(t, sink.Events(), 2, name)
+		assert.Contains(t, sink.Events()[0].Attributes, `"reject_reason":"`+name+`"`, name)
+	}
+}

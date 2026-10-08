@@ -17,9 +17,9 @@ import (
 
 // The token lookup's policy join on a real Postgres, which sqlmock cannot show: which rows the
 // join picks up, that a key with none reads as unrestricted (array_agg over no rows is NULL),
-// and that the restriction survives the owner switching tenant. The table is created from the
-// V985 migration itself. Named _DB like the api-server's real-Postgres tests; skipped unless a
-// database is configured.
+// and that the restriction survives the owner switching tenant. The tables are created from the
+// V985 and V1004 migrations themselves. Named _DB like the api-server's real-Postgres tests;
+// skipped unless a database is configured.
 func TestUserAuthsValidator_KeyPolicy_DB(t *testing.T) {
 	dsn := os.Getenv("APP_DATABASE_URL")
 	if dsn == "" {
@@ -54,6 +54,13 @@ func TestUserAuthsValidator_KeyPolicy_DB(t *testing.T) {
 	require.NoError(t, err)
 	_, err = db.Exec(strings.ReplaceAll(string(ddl), "public.", ""))
 	require.NoError(t, err)
+	accessMigration, err := filepath.Glob("../../../api-server/migrations/migrations/app/*_create_llm_gateway_user_access.up.sql")
+	require.NoError(t, err)
+	require.Len(t, accessMigration, 1)
+	accessDDL, err := os.ReadFile(accessMigration[0])
+	require.NoError(t, err)
+	_, err = db.Exec(strings.ReplaceAll(string(accessDDL), "public.", ""))
+	require.NoError(t, err)
 
 	const tenant, otherTenant, user = "aaaaaaaa-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-000000000002", "bbbbbbbb-0000-4000-8000-000000000001"
 	addKey := func(raw string) string {
@@ -71,9 +78,11 @@ func TestUserAuthsValidator_KeyPolicy_DB(t *testing.T) {
 	addKey("raw-unrestricted")
 	allow(tenant, user, restricted, "model", "gpt-4o-mini")
 	allow(tenant, user, restricted, "endpoint", "chat")
-	// User- and tenant-wide rows are #38963's; until it lands they must not reach any key.
+	// User-wide rows reach every key of the user in that tenant; tenant-wide rows are not built yet.
 	allow(tenant, user, "", "model", "user-wide-model")
 	allow(tenant, "", "", "provider", "openai")
+	_, err = db.Exec(`INSERT INTO llm_gateway_user_access (tenant_id, user_id, suspended) VALUES ($1, $2, true)`, tenant, user)
+	require.NoError(t, err)
 
 	v := &userAuthsValidator{
 		db:           func() (*common.DatabaseManager, error) { return &common.DatabaseManager{Db: db}, nil },
@@ -82,10 +91,13 @@ func TestUserAuthsValidator_KeyPolicy_DB(t *testing.T) {
 	id, ok := v.Validate("raw-restricted")
 	require.True(t, ok)
 	assert.Equal(t, KeyPolicy{Models: []string{"gpt-4o-mini"}, Endpoints: []string{"chat"}}, id.Policy)
+	assert.Equal(t, KeyPolicy{Models: []string{"user-wide-model"}}, id.UserPolicy, "tenant-wide rows stay ignored")
+	assert.True(t, id.Access.Suspended)
 
 	id, ok = v.Validate("raw-unrestricted")
 	require.True(t, ok)
 	assert.False(t, id.Policy.Restricted(), "a key with no rows is unrestricted")
+	assert.Equal(t, []string{"user-wide-model"}, id.UserPolicy.Models, "the user layer reaches every key")
 
 	// The owner opens the app in another tenant, and UpdateUserAccessed moves their keys there.
 	_, err = db.Exec(`UPDATE user_auths SET tenant_id = $1 WHERE "user" = $2`, otherTenant, user)
@@ -94,4 +106,14 @@ func TestUserAuthsValidator_KeyPolicy_DB(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, otherTenant, id.TenantID)
 	assert.Equal(t, []string{"gpt-4o-mini"}, id.Policy.Models, "the restriction follows the key")
+	assert.False(t, id.UserPolicy.Restricted(), "tenant A's user rules do not follow the owner into tenant B")
+	assert.False(t, id.Access.Suspended, "nor does tenant A's suspension")
+
+	// A gateway deployed before V1004 still serves keys (and their key and user rules).
+	_, err = db.Exec(`DROP TABLE llm_gateway_user_access`)
+	require.NoError(t, err)
+	id, ok = v.Validate("raw-restricted")
+	require.True(t, ok, "missing access table falls back instead of refusing every key")
+	assert.Equal(t, []string{"gpt-4o-mini"}, id.Policy.Models)
+	assert.False(t, id.Access.Suspended)
 }

@@ -245,6 +245,40 @@ export async function deleteRateLimit(id: string, signal?: AbortSignal): Promise
   return unwrap<{ id: string }>(response, 'llm_gateway_delete_rate_limit');
 }
 
+// ─── Per-user access (#38963) ────────────────────────────────────────────────
+
+/** A user's gateway limits; null lists mean "any". `valid_until` is RFC3339. */
+export interface GatewayUserAccess {
+  user_id: string;
+  providers: string[] | null;
+  models: string[] | null;
+  endpoints: string[] | null;
+  suspended: boolean;
+  valid_until: string | null;
+}
+
+/** List the per-user gateway access rules for the current tenant. */
+export async function listUserAccess(signal?: AbortSignal): Promise<GatewayUserAccess[]> {
+  const query = `mutation ListUserAccess($request: json!) {
+    llm_gateway_list_user_access(request: $request) {
+      data
+    }
+  }`;
+  const response = await queryGraphQL(query, 'ListUserAccess', { request: {} }, undefined, signal);
+  return unwrap<GatewayUserAccess[]>(response, 'llm_gateway_list_user_access') ?? [];
+}
+
+/** Create or replace one user's access rule (there is no delete: clear every field to remove). */
+export async function upsertUserAccess(row: GatewayUserAccess, signal?: AbortSignal): Promise<GatewayUserAccess | null> {
+  const query = `mutation UpsertUserAccess($request: json!) {
+    llm_gateway_upsert_user_access(request: $request) {
+      data
+    }
+  }`;
+  const response = await queryGraphQL(query, 'UpsertUserAccess', { request: row }, undefined, signal);
+  return unwrap<GatewayUserAccess>(response, 'llm_gateway_upsert_user_access');
+}
+
 // ─── Data & privacy settings ───────────────────────────────────────────────────
 
 /**

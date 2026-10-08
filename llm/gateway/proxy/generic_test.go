@@ -126,6 +126,33 @@ func TestHandleModels_RestrictedKeyListsOnlyAllowedModels(t *testing.T) {
 	assert.ElementsMatch(t, []string{"google/gemma-3-27b-it-maas", "anthropic/claude-opus-4-8", "anthropic/claude-haiku-4-5"}, ids)
 }
 
+// A user-wide restriction filters /v1/models even when the key itself is unrestricted.
+func TestHandleModels_UserPolicyFiltersUnrestrictedKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest("GET", "/v1/models", nil)
+	c.Set("nb_identity", auth.Identity{TenantID: "tenant-1", UserPolicy: auth.KeyPolicy{Models: []string{"gpt-5-mini"}}})
+
+	(&handler{}).handleModels(c)
+
+	require.Equal(t, 200, rec.Code)
+	var body struct {
+		Data []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	var openai []string
+	for _, m := range body.Data {
+		if m.OwnedBy == "openai" {
+			openai = append(openai, m.ID)
+		}
+	}
+	assert.Equal(t, []string{"openai/gpt-5-mini"}, openai)
+}
+
 // A "fallbacks" list in the body used to ride the request converters into the engine, which
 // tries it on any failure of the primary, past every policy check: a key limited to
 // gpt-4o-mini reached gpt-5 by sending it as a fallback. Only the routing decision's
@@ -331,4 +358,17 @@ func TestStreamChat_MetersOnPreHeaderFailure(t *testing.T) {
 	assert.Equal(t, "bogus-unconfigured-provider", ev.Provider)
 	assert.NotEqual(t, 200, ev.StatusCode, "failed stream must not record a 200")
 	assert.Zero(t, ev.TotalTokens)
+}
+
+func TestHandleModels_SuspendedUserRefused(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest("GET", "/v1/models", nil)
+	c.Set("nb_identity", auth.Identity{TenantID: "tenant-1", Access: auth.UserAccess{Suspended: true}})
+
+	(&handler{}).handleModels(c)
+
+	require.Equal(t, 403, rec.Code)
+	assert.Contains(t, rec.Body.String(), "access_suspended")
 }

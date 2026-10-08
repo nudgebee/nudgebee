@@ -40,7 +40,14 @@ type Identity struct {
 	APIKeyID string
 	// Policy narrows what the key may reach; the zero value is unrestricted.
 	Policy KeyPolicy
+	// UserPolicy is the tenant admin's policy for the key's owner; a request must pass it and Policy.
+	UserPolicy KeyPolicy
+	// Access is the tenant admin's on/off switch for the owner, checked before any routing.
+	Access UserAccess
 }
+
+// Restricted reports whether the user or the key policy narrows anything.
+func (id Identity) Restricted() bool { return id.UserPolicy.Restricted() || id.Policy.Restricted() }
 
 // Validator resolves a raw bearer token to an identity. ok=false means the token
 // is invalid/unknown and the request must be rejected.

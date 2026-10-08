@@ -336,6 +336,15 @@ export function hasDeleteAccess(accountId?: string): boolean {
   return false;
 }
 
+// Per-user AI Gateway access and usage (#38963): tenant admins manage, read-only tenant admins view.
+export function canManageGatewayUserAccess(): boolean {
+  return isTenantAdmin() || isSuperAdmin();
+}
+
+export function canViewGatewayUserAccess(): boolean {
+  return canManageGatewayUserAccess() || !!userData?.roles?.includes('tenant_admin_readonly');
+}
+
 export function isTenantAdmin(): boolean {
   if (userData?.roles?.includes('tenant_admin')) {
     return true;

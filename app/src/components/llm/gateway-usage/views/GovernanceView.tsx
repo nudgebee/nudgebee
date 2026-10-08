@@ -73,6 +73,8 @@ const REJECT_LABEL: Record<string, string> = {
   blocked: 'Blocked (deny rule)',
   secret_blocked: 'Secret blocked (DLP)',
   key_policy: 'Key restriction',
+  user_policy: 'User policy',
+  user_suspended: 'User suspended',
   malformed_path: 'Malformed path',
   unreadable_body: 'Unreadable body',
   model_mismatch: 'Model mismatch (path vs body)',

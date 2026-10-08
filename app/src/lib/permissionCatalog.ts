@@ -297,6 +297,12 @@ const NON_GRANTABLE_ACTIONS = new Set<string>([
   'customroles_update_user_assignments',
   'customroles_update_group_assignments',
   'customroles_update_group_account_assignments',
+  // per-user AI Gateway access and quotas are tenant-admin only, #38963
+  'llm_gateway_list_rate_limits',
+  'llm_gateway_upsert_rate_limit',
+  'llm_gateway_delete_rate_limit',
+  'llm_gateway_list_user_access',
+  'llm_gateway_upsert_user_access',
 ]);
 
 export function normalizeModule(rawModule: string): string {

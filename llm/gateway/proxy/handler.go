@@ -107,22 +107,13 @@ func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, 
 	// (operator/account credential) when none is registered.
 	creds := credResolver()
 	h := &handler{
-		client:  client,
-		sink:    sink,
-		bodyLog: bodyLog,
-		limiter: limiter,
-		pricer:  pricer,
-		router:  router,
-		// Request pipeline (control stages), run after auth and before passthrough.
-		// route → policy → ratelimit → resolver → filter. Each stage is pluggable; an
-		// unset stage defaults to pass-through.
-		pipeline: NewPipeline(
-			routeStage{router: router},
-			policyStage{router: router},
-			ratelimitStage{limiter: limiter},
-			resolverStage{creds: creds},
-			filterStage{},
-		),
+		client:   client,
+		sink:     sink,
+		bodyLog:  bodyLog,
+		limiter:  limiter,
+		pricer:   pricer,
+		router:   router,
+		pipeline: newControlPipeline(router, limiter, creds),
 	}
 	// Auth runs first (the pipeline keys off the resolved identity), then the handler
 	// runs the pipeline and forwards.
@@ -135,6 +126,19 @@ func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, 
 	r.POST("/v1/chat/completions", authmw, h.handleChat)
 	r.POST("/v1/embeddings", authmw, h.handleEmbeddings)
 	r.GET("/v1/models", authmw, h.handleModels)
+}
+
+// newControlPipeline builds the control stages, run after auth and before passthrough:
+// access → route → policy → ratelimit → resolver → filter. An unset stage passes through.
+func newControlPipeline(router routing.Resolver, limiter *ratelimit.Limiter, creds CredResolver) *Pipeline {
+	return NewPipeline(
+		accessStage{},
+		routeStage{router: router},
+		policyStage{router: router},
+		ratelimitStage{limiter: limiter},
+		resolverStage{creds: creds},
+		filterStage{},
+	)
 }
 
 type handler struct {
@@ -211,7 +215,7 @@ func (h *handler) handle(c *gin.Context) {
 	// per-tenant credential on it, so it must exist before the pipeline runs.
 	bctx, cancel := schemas.NewBifrostContextWithCancel(c.Request.Context())
 
-	// Run the control pipeline (route → ratelimit → resolver → filter). Stages may
+	// Run the control pipeline (access → route → policy → ratelimit → resolver → filter). Stages may
 	// rewrite the request shape, inject a tenant credential, or reject the request.
 	rc := &RequestContext{
 		Gin: c, Ctx: c.Request.Context(), Bctx: bctx,

@@ -29,7 +29,7 @@ const chatCompletionsPath = "/v1/chat/completions"
 // from the model name (explicit "provider/model" or a well-known prefix); the
 // request is parsed into Bifrost's unified chat schema and dispatched through the
 // unified engine (so it can target any provider); and the response is returned in
-// the canonical OpenAI shape. The same auth + control pipeline (route → ratelimit →
+// the canonical OpenAI shape. The same auth + control pipeline (access → route → policy → ratelimit →
 // resolver → filter) and metering as the native mounts apply.
 func (h *handler) handleChat(c *gin.Context) {
 	start := time.Now()
@@ -283,14 +283,17 @@ func (h *handler) handleModels(c *gin.Context) {
 		Integration string `json:"integration,omitempty"`
 	}
 	identity := auth.FromContext(c)
+	if msg := identity.Access.Denial(time.Now()); msg != "" {
+		edgeerr.Write(c, edgeerr.OpenAI, http.StatusForbidden, "access_suspended", msg)
+		return
+	}
 	tenantModels := resolveModelCatalog(identity.TenantID)
 	data := make([]model, 0, len(genericModelCatalog)+len(tenantModels))
 	seen := make(map[string]bool, cap(data))
-	// A restricted key lists only what it may call, so a client picking from this list
+	// A restricted user or key lists only what it may call, so a client picking from this list
 	// never picks a model the gateway will refuse.
 	allowed := func(provider, id string) bool {
-		p := identity.Policy
-		if !p.Restricted() {
+		if !identity.Restricted() {
 			return true
 		}
 		// A tier alias is judged by the model it routes to, as policyStage judges it.
@@ -301,7 +304,7 @@ func (h *handler) handleModels(c *gin.Context) {
 			}
 			provider, id = d.ResolvedProvider, d.ResolvedModel
 		}
-		return p.AllowsProvider(provider) && allowsModel(identity.TenantID, p, provider, id)
+		return targetAllowed(identity, provider, id)
 	}
 	for _, m := range tenantModels {
 		if !allowed(string(m.Provider), m.ID) {

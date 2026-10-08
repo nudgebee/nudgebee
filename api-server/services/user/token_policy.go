@@ -136,9 +136,8 @@ const maxPolicyEntries = 200
 // restricted only when it is also scoped: unscoped, its platform side could mint an
 // unrestricted key and step around its own policy; scoped keys cannot mint keys.
 //
-// A key cannot be granted more than its owner here because there is no user or tenant
-// allowlist yet; tenant block rules are enforced by the gateway on every routed target.
-// Per-user policy (#38963) adds its ceiling check here.
+// A key may name more than its owner's user policy (#38963): the gateway intersects the two on
+// every request, so the excess is refused there rather than rejected at save time.
 func normalizeGatewayPolicy(kind string, scoped bool, p *GatewayPolicy) (*GatewayPolicy, error) {
 	if p == nil || (p.Providers == nil && p.Models == nil && p.Endpoints == nil) {
 		return nil, nil

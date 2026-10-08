@@ -63,7 +63,7 @@ const isModelName = (v) => v.length > 0 && v.length <= 200 && !/\s/.test(v);
 
 // Which providers, models and endpoint families an AI Gateway key may reach. Leaving a
 // field empty keeps that dimension open.
-export const GatewayRestrictionPicker = ({ value, onChange }) => {
+export const GatewayRestrictionPicker = ({ value, onChange, subject = 'key' }) => {
   const [catalog, setCatalog] = React.useState(null);
   const [catalogFailed, setCatalogFailed] = React.useState(false);
 
@@ -153,7 +153,7 @@ export const GatewayRestrictionPicker = ({ value, onChange }) => {
       />
       {!hasRestrictions(value) && (
         <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>
-          Pick at least one model, endpoint or provider to restrict this key.
+          Pick at least one model, endpoint or provider to restrict this {subject}.
         </Typography>
       )}
       <Callout

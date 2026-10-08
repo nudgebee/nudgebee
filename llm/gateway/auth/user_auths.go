@@ -67,33 +67,21 @@ func (v *userAuthsValidator) Validate(raw string) (Identity, bool) {
 		APIKeyID string `db:"api_key_id"`
 		// Read in the same lookup so a policy edit binds on the key's next request. NULL when
 		// the key has no rows for that dimension, which leaves it unrestricted.
-		Providers pq.StringArray `db:"providers"`
-		Models    pq.StringArray `db:"models"`
-		Endpoints pq.StringArray `db:"endpoints"`
+		Providers     pq.StringArray `db:"providers"`
+		Models        pq.StringArray `db:"models"`
+		Endpoints     pq.StringArray `db:"endpoints"`
+		UserProviders pq.StringArray `db:"user_providers"`
+		UserModels    pq.StringArray `db:"user_models"`
+		UserEndpoints pq.StringArray `db:"user_endpoints"`
+		Suspended     bool           `db:"suspended"`
+		ValidUntil    *time.Time     `db:"valid_until"`
 	}
-	// uuid columns cast to text so they scan into strings; "user" is a reserved word.
-	// kind excludes platform keys: an app-API credential must not authenticate LLM traffic.
-	// Only key-scope policy rows apply (user- and tenant-scope rows wait for #38963), matched by
-	// key and owner but not tenant: a key's tenant_id follows its owner's current tenant.
-	query := `
-		SELECT ua.tenant_id::text AS tenant_id, ua."user"::text AS "user", ua.name, ua.id::text AS api_key_id,
-		       pol.providers, pol.models, pol.endpoints
-		FROM user_auths ua
-		LEFT JOIN LATERAL (
-			SELECT array_agg(p.value) FILTER (WHERE p.dimension = 'provider') AS providers,
-			       array_agg(p.value) FILTER (WHERE p.dimension = 'model') AS models,
-			       array_agg(p.value) FILTER (WHERE p.dimension = 'endpoint') AS endpoints
-			FROM llm_gateway_access_policies p
-			WHERE p.api_key_id = ua.id::text AND p.user_id = ua."user"::text
-		) pol ON true
-		WHERE ua.` + tokenHashColumn + ` = $1
-		  AND ua.provider_type = 'credentials'
-		  AND ua.provider = 'token'
-		  AND ua.kind IN ('gateway', 'all')
-		  AND ua.status = 'active'
-		  AND (ua.expires_at IS NULL OR ua.expires_at > now())
-		LIMIT 1`
-	if err := db.QueryRowAndScan(&row, query, hash); err != nil {
+	err = db.QueryRowAndScan(&row, tokenLookupQuery(true), hash)
+	if isUndefinedTable(err) {
+		// Gateway rolled out before the V1004 migration: no suspension can exist yet, so skip the switch.
+		err = db.QueryRowAndScan(&row, tokenLookupQuery(false), hash)
+	}
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Identity{}, false // unknown/expired/revoked token
 		}
@@ -103,8 +91,58 @@ func (v *userAuthsValidator) Validate(raw string) (Identity, bool) {
 	v.recordTokenAccess(db, hash)
 	return Identity{
 		TenantID: row.TenantID, UserID: row.UserID, TokenID: row.Name, APIKeyID: row.APIKeyID,
-		Policy: KeyPolicy{Providers: row.Providers, Models: row.Models, Endpoints: row.Endpoints},
+		Policy:     KeyPolicy{Providers: row.Providers, Models: row.Models, Endpoints: row.Endpoints},
+		UserPolicy: KeyPolicy{Providers: row.UserProviders, Models: row.UserModels, Endpoints: row.UserEndpoints},
+		Access:     UserAccess{Suspended: row.Suspended, ValidUntil: row.ValidUntil},
 	}, true
+}
+
+// isUndefinedTable reports a Postgres 42P01 (relation does not exist).
+func isUndefinedTable(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "42P01"
+}
+
+// tokenLookupQuery reads a key with its own and its owner's rules; withAccess adds the suspend switch.
+// uuid columns cast to text so they scan into strings; "user" is a reserved word.
+// kind excludes platform keys: an app-API credential must not authenticate LLM traffic.
+// Key rows follow the key (matched by key and owner, not tenant: a key's tenant_id follows its
+// owner's current tenant). User rows and the access switch belong to the tenant that set them.
+func tokenLookupQuery(withAccess bool) string {
+	accessCols, accessJoin := "false AS suspended, NULL::timestamptz AS valid_until", ""
+	if withAccess {
+		accessCols = "COALESCE(acc.suspended, false) AS suspended, acc.valid_until"
+		accessJoin = `LEFT JOIN llm_gateway_user_access acc
+		       ON acc.tenant_id = ua.tenant_id::text AND acc.user_id = ua."user"::text`
+	}
+	return `
+		SELECT ua.tenant_id::text AS tenant_id, ua."user"::text AS "user", ua.name, ua.id::text AS api_key_id,
+		       pol.providers, pol.models, pol.endpoints,
+		       upol.providers AS user_providers, upol.models AS user_models, upol.endpoints AS user_endpoints,
+		       ` + accessCols + `
+		FROM user_auths ua
+		LEFT JOIN LATERAL (
+			SELECT array_agg(p.value) FILTER (WHERE p.dimension = 'provider') AS providers,
+			       array_agg(p.value) FILTER (WHERE p.dimension = 'model') AS models,
+			       array_agg(p.value) FILTER (WHERE p.dimension = 'endpoint') AS endpoints
+			FROM llm_gateway_access_policies p
+			WHERE p.api_key_id = ua.id::text AND p.user_id = ua."user"::text
+		) pol ON true
+		LEFT JOIN LATERAL (
+			SELECT array_agg(p.value) FILTER (WHERE p.dimension = 'provider') AS providers,
+			       array_agg(p.value) FILTER (WHERE p.dimension = 'model') AS models,
+			       array_agg(p.value) FILTER (WHERE p.dimension = 'endpoint') AS endpoints
+			FROM llm_gateway_access_policies p
+			WHERE p.api_key_id = '' AND p.user_id = ua."user"::text AND p.tenant_id = ua.tenant_id::text
+		) upol ON true
+		` + accessJoin + `
+		WHERE ua.` + tokenHashColumn + ` = $1
+		  AND ua.provider_type = 'credentials'
+		  AND ua.provider = 'token'
+		  AND ua.kind IN ('gateway', 'all')
+		  AND ua.status = 'active'
+		  AND (ua.expires_at IS NULL OR ua.expires_at > now())
+		LIMIT 1`
 }
 
 func (v *userAuthsValidator) recordTokenAccess(db *common.DatabaseManager, hash string) {
