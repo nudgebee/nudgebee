@@ -85,6 +85,7 @@ func (s *ZenDutyService) Get(ctx *gin.Context, config models.TicketConfiguration
 		Title:       incident.Title,
 		Description: incident.Summary,
 		Status:      clients.MapStatusToString(incident.Status),
+		Severity:    clients.MapUrgencyToString(incident.Urgency),
 		Assignee:    assignee,
 		Assignees:   assignees,
 		Platform:    "zenduty",
@@ -262,6 +263,7 @@ func (s *ZenDutyService) List(ctx *gin.Context, config models.TicketConfiguratio
 			TicketID:  incident.UniqueID,
 			Title:     incident.Title,
 			Status:    clients.MapStatusToString(incident.Status),
+			Severity:  clients.MapUrgencyToString(incident.Urgency),
 			Platform:  "zenduty",
 			URL:       incident.HTMLURL,
 			CreatedAt: &createdAt,
@@ -305,7 +307,7 @@ func CreateZenDutyIncident(ctx *gin.Context, configuration models.TicketConfigur
 
 	ticket.TicketID = createdIncident.UniqueID
 	ticket.Status = "triggered"
-	ticket.Severity = "NA"
+	ticket.Severity = clients.MapUrgencyToString(createdIncident.Urgency)
 	ticket.URL = createdIncident.HTMLURL
 	if ticket.URL == "" {
 		ticket.URL = fmt.Sprintf("https://www.zenduty.com/dashboard/incidents/%s", createdIncident.UniqueID)

@@ -473,6 +473,14 @@ func MapUrgencyFromString(urgency string) int {
 	return ZenDutyUrgencyHigh
 }
 
+// MapUrgencyToString converts ZenDuty numeric urgency to string severity.
+func MapUrgencyToString(urgency int) string {
+	if urgency == ZenDutyUrgencyLow {
+		return "low"
+	}
+	return "high"
+}
+
 // MapStatusToString converts ZenDuty numeric status to string.
 func MapStatusToString(status int) string {
 	switch status {
