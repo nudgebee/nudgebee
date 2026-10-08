@@ -13,7 +13,7 @@ import (
 
 func TestLogAnalysisInstructions_ExecutionAndEvidenceContract(t *testing.T) {
 	instructions := strings.Join(logAnalysisExecutionInstructions(), "\n")
-	for _, s := range []string{"one Python script", "one shell pipeline", "split once on TAB", "earliest/latest", "SAME execution", "malformed/skipped", "complete inline routine listing", "empty-result recovery"} {
+	for _, s := range []string{"one Python script", "one shell pipeline", "split on the first two TABs", "earliest/latest", "SAME execution", "malformed/skipped", "complete inline routine listing", "empty-result recovery"} {
 		require.Contains(t, instructions, s)
 	}
 	shared := strings.Join(sharedHeaderAndWorkflow(), "\n")

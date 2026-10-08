@@ -448,7 +448,7 @@ func TestFlattenLogsToTabSeparated(t *testing.T) {
 	t.Run("entry without timestamp still emits message", func(t *testing.T) {
 		input := `{"logs":[{"message":"just a message"}]}`
 		got := flattenLogsToTabSeparated(input)
-		assert.Equal(t, "\tjust a message\n", got)
+		assert.Equal(t, "\t-\tjust a message\n", got)
 	})
 
 	t.Run("line breaks inside a message stay on one line", func(t *testing.T) {
@@ -460,12 +460,43 @@ func TestFlattenLogsToTabSeparated(t *testing.T) {
 		got := flattenLogsToTabSeparated(input)
 		lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
 		require.Len(t, lines, 3, "one line per record: %q", got)
-		assert.Equal(t, "2026-05-06T03:00:10Z\tpanic: boom\\ngoroutine 1 [running]:\\n\tmain.go:12", lines[0])
-		assert.Equal(t, "2026-05-06T03:00:11Z\tprogress 10%\\rprogress 100%", lines[1])
+		assert.Equal(t, "2026-05-06T03:00:10Z\t-\tpanic: boom\\ngoroutine 1 [running]:\\n\tmain.go:12", lines[0])
+		assert.Equal(t, "2026-05-06T03:00:11Z\t-\tprogress 10%\\rprogress 100%", lines[1])
 		// JSON messages keep their own escapes, so the message still decodes.
 		var msg map[string]string
-		require.NoError(t, json.Unmarshal([]byte(strings.SplitN(lines[2], "\t", 2)[1]), &msg))
+		require.NoError(t, json.Unmarshal([]byte(strings.SplitN(lines[2], "\t", 3)[2]), &msg))
 		assert.Equal(t, `C:\tmp`, msg["path"])
+	})
+
+	// Without the source column, "which pods logged errors" could only be answered
+	// from pod names that happen to appear inside messages.
+	t.Run("source column names the pod, namespace and container", func(t *testing.T) {
+		input := `{"logs":[` +
+			`{"labels":{"pod":"api-7d9f-x2k","namespace":"shop","container":"api"},"timestamp":"2026-05-06T03:00:10Z","message":"boom"},` +
+			`{"labels":{"hostname":"worker-0","program":"worker"},"timestamp":"2026-05-06T03:00:11Z","message":"a\tb"},` +
+			`{"labels":{"k8s.pod.name":"web,1","k8s.namespace.name":"edge"},"timestamp":"2026-05-06T03:00:12Z","message":"c"},` +
+			`{"labels":{"app":"x"},"timestamp":"2026-05-06T03:00:13Z","message":"d"}` +
+			`]}`
+		lines := strings.Split(strings.TrimRight(flattenLogsToTabSeparated(input), "\n"), "\n")
+		require.Len(t, lines, 4)
+		assert.Equal(t, "2026-05-06T03:00:10Z\tpod=api-7d9f-x2k,ns=shop,container=api\tboom", lines[0])
+		assert.Equal(t, []string{"2026-05-06T03:00:11Z", "host=worker-0,container=worker", "a\tb"}, strings.SplitN(lines[1], "\t", 3),
+			"a hostname with no pod label is reported as host (it is the node on some providers), and a tab inside the message stays in the message")
+		assert.Equal(t, "2026-05-06T03:00:12Z\tpod=web 1,ns=edge\tc", lines[2], "a separator inside a value cannot split the column")
+		assert.Equal(t, "2026-05-06T03:00:13Z\t-\td", lines[3])
+	})
+
+	t.Run("a pod label wins over hostname, and values render as names", func(t *testing.T) {
+		input := `{"logs":[` +
+			`{"labels":{"pod":"api-0","hostname":"api-0","program":"api"},"timestamp":"t1","message":"m"},` +
+			`{"labels":{"hostname":"ip-10-0-1-5"},"timestamp":"t2","message":"m"},` +
+			`{"labels":{"pod":12345678,"namespace":{"nested":"x"}},"timestamp":"t3","message":"m"}` +
+			`]}`
+		lines := strings.Split(strings.TrimRight(flattenLogsToTabSeparated(input), "\n"), "\n")
+		require.Len(t, lines, 3)
+		assert.Equal(t, "t1\tpod=api-0,container=api\tm", lines[0], "no host= next to a real pod")
+		assert.Equal(t, "t2\thost=ip-10-0-1-5\tm", lines[1], "a node-level line is never reported as a pod")
+		assert.Equal(t, "t3\tpod=12345678\tm", lines[2], "a number prints as digits; a nested value is not a name")
 	})
 
 	t.Run("grep shape — head -N means N entries", func(t *testing.T) {
@@ -792,7 +823,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 	})
 
 	t.Run("preview format matches the file format, not the raw backend payload", func(t *testing.T) {
-		// The saved file is flattenLogsToTabSeparated(logs): "<timestamp>\t<message>"
+		// The saved file is flattenLogsToTabSeparated(logs): "<timestamp>\t<source>\t<message>"
 		// per entry. Previewing the raw Loki envelope instead made it impossible
 		// to write a working grep from the preview, which is what forced the
 		// extra `head` turn. Both must now be byte-identical for a payload that
@@ -803,8 +834,8 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 			"the inline preview must be the same representation that was written to file_ref")
 		assert.NotContains(t, str(env, "logs"), `{"logs":[`,
 			"the raw backend envelope must not leak into the preview")
-		assert.Equal(t, "timestamp_tab_message", str(env, "logs_format"))
-		assert.Contains(t, str(env, "logs_format_hint"), "split once on TAB")
+		assert.Equal(t, "timestamp_tab_source_tab_message", str(env, "logs_format"))
+		assert.Contains(t, str(env, "logs_format_hint"), "split on the first two TABs")
 		assert.Contains(t, str(env, "logs_format_hint"), "never JSON-decode the whole file")
 	})
 
@@ -1549,14 +1580,15 @@ func TestMakeFetchResponse_CarriesLogsShapeFromFileRef(t *testing.T) {
 
 // Shaped like a flattened Loki file from a real investigation: an init
 // container's plain-text line first, then the app's JSON lines newest first.
-const lokiFlattened = "2026-10-10T04:23:29.697273824Z\tdb.example.com:5432 - accepting connections\n" +
-	"2026-10-10T05:04:35.907815126Z\t{\"time\":\"2026-10-10T05:04:35Z\",\"level\":\"INFO\",\"msg\":\"refreshed event triggers\",\"count\":8}\n" +
-	"2026-10-10T05:04:05.903927097Z\t{\"time\":\"2026-10-10T05:04:05Z\",\"level\":\"INFO\",\"msg\":\"Workflow execution completed\"}\n" +
-	"2026-10-10T04:24:09.214670387Z\t{\"time\":\"2026-10-10T04:24:09Z\",\"level\":\"ERROR\",\"msg\":\"Workflow failed\",\"error\":\"status 400\"}\n" +
-	"2026-10-10T04:23:35.899211649Z\t{\"time\":\"2026-10-10T04:23:35Z\",\"level\":\"WARN\",\"msg\":\"connection closed\"}\n"
+// The <source> column must be skipped, or no message would start with "{".
+const lokiFlattened = "2026-10-10T04:23:29.697273824Z\tpod=wf-0,ns=wf,container=wait-db\tdb.example.com:5432 - accepting connections\n" +
+	"2026-10-10T05:04:35.907815126Z\tpod=wf-0,ns=wf,container=wf\t{\"time\":\"2026-10-10T05:04:35Z\",\"level\":\"INFO\",\"msg\":\"refreshed event triggers\",\"count\":8}\n" +
+	"2026-10-10T05:04:05.903927097Z\tpod=wf-0,ns=wf,container=wf\t{\"time\":\"2026-10-10T05:04:05Z\",\"level\":\"INFO\",\"msg\":\"Workflow execution completed\"}\n" +
+	"2026-10-10T04:24:09.214670387Z\tpod=wf-0,ns=wf,container=wf\t{\"time\":\"2026-10-10T04:24:09Z\",\"level\":\"ERROR\",\"msg\":\"Workflow failed\",\"error\":\"status 400\"}\n" +
+	"2026-10-10T04:23:35.899211649Z\tpod=wf-0,ns=wf,container=wf\t{\"time\":\"2026-10-10T04:23:35Z\",\"level\":\"WARN\",\"msg\":\"connection closed\"}\n"
 
 func TestDescribeLogLines_FlattenedLoki(t *testing.T) {
-	s := DescribeLogLines(lokiFlattened)
+	s := DescribeLogLines(lokiFlattened, true)
 
 	assert.Equal(t, 5, s.Lines)
 	assert.Equal(t, 5, s.Timestamped)
@@ -1569,28 +1601,28 @@ func TestDescribeLogLines_FlattenedLoki(t *testing.T) {
 	assert.Equal(t, map[string]int{"INFO": 2, "ERROR": 1, "WARN": 1}, s.Levels)
 
 	assert.Equal(t,
-		"5 lines, each <RFC 3339 timestamp><TAB><message>; "+
+		"5 lines, each <RFC 3339 timestamp><TAB><source><TAB><message>; "+
 			"timestamps 2026-10-10T04:23:29.697273824Z to 2026-10-10T05:04:35.907815126Z, not in time order (filter by comparing timestamps, not by line position); "+
 			"4 JSON messages with keys level, msg, time, count, error (INFO 2, ERROR 1, WARN 1); "+
-			"1 plain-text messages; no pod, container or other stream label is on the line.",
-		s.Describe(true))
+			"1 plain-text messages; <source> is pod=<pod>,ns=<namespace>,container=<container> with absent parts left out (host=<node> when the line names no pod), or - when unknown.",
+		s.Describe())
 }
 
 func TestDescribeLogLines_Order(t *testing.T) {
 	line := func(ts string) string { return ts + "\tmsg\n" }
 	newest := line("2026-10-10T05:00:00Z") + line("2026-10-10T04:00:00Z") + line("2026-10-10T03:00:00Z")
-	assert.Equal(t, "newest first", DescribeLogLines(newest).Order)
-	assert.NotContains(t, DescribeLogLines(newest).Describe(false), "not by line position")
+	assert.Equal(t, "newest first", DescribeLogLines(newest, false).Order)
+	assert.NotContains(t, DescribeLogLines(newest, false).Describe(), "not by line position")
 
 	oldest := line("2026-10-10T03:00:00Z") + line("2026-10-10T04:00:00Z")
-	assert.Equal(t, "oldest first", DescribeLogLines(oldest).Order)
+	assert.Equal(t, "oldest first", DescribeLogLines(oldest, false).Order)
 
 	var mostly strings.Builder
 	for h := 23; h >= 0; h-- {
 		mostly.WriteString(line("2026-10-10T" + twoDigits(h) + ":00:00Z"))
 	}
 	mostly.WriteString(line("2026-10-10T12:30:00Z"))
-	assert.Equal(t, "mostly newest first", DescribeLogLines(mostly.String()).Order)
+	assert.Equal(t, "mostly newest first", DescribeLogLines(mostly.String(), false).Order)
 }
 
 func twoDigits(n int) string {
@@ -1599,19 +1631,19 @@ func twoDigits(n int) string {
 
 // kubectl output passes through unchanged: no timestamps, no labels claim.
 func TestDescribeLogLines_PlainText(t *testing.T) {
-	s := DescribeLogLines("starting server\nlistening on :8080\n\n")
+	s := DescribeLogLines("starting server\nlistening on :8080\n\n", false)
 	assert.Equal(t, 2, s.Lines)
 	assert.Equal(t, 0, s.Timestamped)
 	assert.Equal(t, "", s.Order)
-	assert.Equal(t, "2 lines (0 start with <RFC 3339 timestamp><TAB>); 2 plain-text messages.", s.Describe(false))
-	assert.Equal(t, "empty", DescribeLogLines("").Describe(false))
+	assert.Equal(t, "2 lines (0 start with <RFC 3339 timestamp><TAB>); 2 plain-text messages.", s.Describe())
+	assert.Equal(t, "empty", DescribeLogLines("", false).Describe())
 }
 
 // Fractional seconds of different lengths must order by time, not by string:
 // "…:35Z" sorts after "…:35.1Z" lexically but is earlier.
 func TestDescribeLogLines_MixedFractionalSeconds(t *testing.T) {
 	body := "2026-10-10T05:04:35.1Z\tb\n2026-10-10T05:04:35Z\ta\n2026-10-10T05:04:34.999999999Z\tz\n"
-	s := DescribeLogLines(body)
+	s := DescribeLogLines(body, false)
 	assert.Equal(t, "2026-10-10T05:04:34.999999999Z", s.First)
 	assert.Equal(t, "2026-10-10T05:04:35.1Z", s.Last)
 	assert.Equal(t, "newest first", s.Order)
@@ -1619,7 +1651,52 @@ func TestDescribeLogLines_MixedFractionalSeconds(t *testing.T) {
 
 func TestDescribeLogLines_NumericLevels(t *testing.T) {
 	body := "2026-10-10T05:00:00Z\t{\"level\":30,\"msg\":\"ok\"}\n2026-10-10T04:59:00Z\t{\"level\":50,\"msg\":\"boom\"}\n"
-	assert.Equal(t, map[string]int{"30": 1, "50": 1}, DescribeLogLines(body).Levels)
+	assert.Equal(t, map[string]int{"30": 1, "50": 1}, DescribeLogLines(body, false).Levels)
+}
+
+// A source part every line has (the namespace the query named, the one pod it
+// read) says nothing per line, so it is named once instead of on every line.
+func TestFlattenLogsSharingSource(t *testing.T) {
+	rec := func(pod, ns, container, msg string) string {
+		return `{"labels":{"pod":"` + pod + `","namespace":"` + ns + `","container":"` + container + `"},"timestamp":"t","message":"` + msg + `"}`
+	}
+	envelope := func(recs ...string) string { return `{"logs":[` + strings.Join(recs, ",") + `]}` }
+
+	t.Run("a namespace query leaves ns out of every line", func(t *testing.T) {
+		body, shared := flattenLogsSharingSource(envelope(rec("api-0", "shop", "api", "a"), rec("web-0", "shop", "web", "b")))
+		assert.Equal(t, "ns=shop", shared)
+		assert.Equal(t, "t\tpod=api-0,container=api\ta\nt\tpod=web-0,container=web\tb\n", body)
+	})
+
+	t.Run("a single-pod read leaves the source column empty", func(t *testing.T) {
+		body, shared := flattenLogsSharingSource(envelope(rec("api-0", "shop", "api", "a"), rec("api-0", "shop", "api", "b")))
+		assert.Equal(t, "pod=api-0,ns=shop,container=api", shared)
+		assert.Equal(t, "t\t\ta\nt\t\tb\n", body)
+	})
+
+	t.Run("one record shares nothing", func(t *testing.T) {
+		body, shared := flattenLogsSharingSource(envelope(rec("api-0", "shop", "api", "a")))
+		assert.Empty(t, shared)
+		assert.Equal(t, "t\tpod=api-0,ns=shop,container=api\ta\n", body)
+	})
+
+	t.Run("a part missing from one line is not shared", func(t *testing.T) {
+		body, shared := flattenLogsSharingSource(envelope(rec("api-0", "shop", "api", "a"), `{"timestamp":"t","message":"b"}`))
+		assert.Empty(t, shared)
+		assert.Equal(t, "t\tpod=api-0,ns=shop,container=api\ta\nt\t-\tb\n", body)
+	})
+
+	t.Run("flattenLogsToTabSeparated keeps the full source", func(t *testing.T) {
+		raw := envelope(rec("api-0", "shop", "api", "a"), rec("web-0", "shop", "web", "b"))
+		assert.Equal(t, "t\tpod=api-0,ns=shop,container=api\ta\nt\tpod=web-0,ns=shop,container=web\tb\n", flattenLogsToTabSeparated(raw))
+	})
+
+	t.Run("the description names the shared source", func(t *testing.T) {
+		s := DescribeLogLines("2026-10-10T05:00:00Z\tpod=api-0\tm\n", true)
+		s.SharedSource = "ns=shop"
+		assert.Contains(t, s.Describe(), "every line is from ns=shop, so that is left out of <source>")
+		assert.NotContains(t, DescribeLogLines("2026-10-10T05:00:00Z\tpod=api-0\tm\n", true).Describe(), "every line is from")
+	})
 }
 
 // TestKubectlDisclosureNoteCoversTheCap covers issue #40196. Before this, a

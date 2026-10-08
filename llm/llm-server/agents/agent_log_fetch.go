@@ -995,7 +995,7 @@ func runAutoDiagnosticBundle(ctx *security.RequestContext, accountId string, req
 func makeFetchResponse(agentName, query, logs, flattened, fileRef, bundleSignal string, refs []toolcore.NBToolResponseReference) core.NBAgentResponse {
 	// Preview the SAME representation that was written to file_ref, not the raw
 	// backend payload. saveLogsToWorkspace writes flattenLogsToTabSeparated(logs) —
-	// "<timestamp>\t<message>" per line — while this used to inline the raw
+	// "<timestamp>\t<source>\t<message>" per line — while this used to inline the raw
 	// Loki/ES envelope. Showing one format and handing over a file in another
 	// makes it impossible to write a working grep from the preview alone, so the
 	// model had to spend a turn on `head -n 20 <file_ref>` first to discover the
@@ -1096,7 +1096,7 @@ func makeFetchResponse(agentName, query, logs, flattened, fileRef, bundleSignal 
 //
 // File layout: when the input is a Loki/Signoz/ES JSON envelope of shape
 // `{"logs":[{...},{...}]}`, the saved file is rewritten as JSONL — one log
-// entry per line in `<timestamp>\t<message>` form. This is what makes
+// entry per line in `<timestamp>\t<source>\t<message>` form. This is what makes
 // `grep "<pattern>" file | head -20` work as the LogAgent prompt expects:
 // each entry occupies its own line, head means N entries (not bytes), and
 // matches localise to a single record. Without this, the saved file is one
@@ -1116,7 +1116,7 @@ func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId
 	if label == "" {
 		label = "kubectl"
 	}
-	body := flattenLogsToTabSeparated(logs)
+	body, sharedSource := flattenLogsSharingSource(logs)
 	filename := fmt.Sprintf("logs_%s_%d.txt", label, time.Now().UnixNano())
 	wm := workspace.NewWorkspaceManager()
 	saveStart := time.Now()
@@ -1124,20 +1124,24 @@ func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId
 	saveDuration := time.Since(saveStart)
 	if err != nil {
 		ctx.GetLogger().Warn("fetch_logs: failed to save logs to workspace", "error", err, "file", filename, "duration", saveDuration.String())
-		return "", body, nil
+		// No file means no description to name the shared source in, so the
+		// inline logs keep the full source on every line.
+		return "", flattenLogsToTabSeparated(logs), nil
 	}
 	format := logsLayout(logs, body)
 	ctx.GetLogger().Info("fetch_logs: logs saved", "file", filename, "bytes", len(body), "raw_bytes", len(logs), "format", format, "duration", saveDuration.String())
 	// The description carries the file's shape, so whoever later sees only the
 	// reference (another agent, a later message, the evidence index) can filter
-	// it without first reading it. The flattened layout keeps only timestamp and
-	// message, so stream labels such as pod are not in the file.
+	// it without first reading it. It is also the one place the shared source is
+	// named, so it must stay with the file.
+	shape := DescribeLogLines(body, format == logsLayoutSourced)
+	shape.SharedSource = sharedSource
 	return filename, body, []toolcore.NBToolResponseReference{
 		{
 			Text:        filename,
 			Url:         filename,
 			Type:        "file",
-			Description: fmt.Sprintf("Raw log data from %s: %s", label, DescribeLogLines(body).Describe(format == "timestamp_tab_message")),
+			Description: fmt.Sprintf("Raw log data from %s: %s", label, shape.Describe()),
 		},
 	}
 }
@@ -1147,9 +1151,13 @@ func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId
 var logLineBreakEscaper = strings.NewReplacer("\r\n", `\n`, "\n", `\n`, "\r", `\r`)
 
 // flattenLogsToTabSeparated converts a Loki/Signoz/ES JSON envelope to one entry per
-// line. Each output line is `<outer_timestamp>\t<message>` where <message> is
-// the application's emitted line (often itself JSON of the form
-// `{"timestamp":"...","level":"ERROR",...}`). grep then matches per-entry
+// line. Each output line is `<outer_timestamp>\t<source>\t<message>`:
+// <source> names where the line came from (logSource: `pod=…,ns=…,container=…`,
+// or `-` when the record carries none of those labels), and <message> is the
+// application's emitted line (often itself JSON of the form
+// `{"timestamp":"...","level":"ERROR",...}`). Without <source> a question such
+// as "which pods logged errors" could only be answered from pod names that
+// happen to appear inside messages. grep then matches per-entry
 // and `head -N` means N entries. Line breaks inside a message (stack traces,
 // `\r` progress output) are written as the literal escapes `\n` / `\r`, so a
 // record never spans two lines and line counts stay record counts.
@@ -1159,9 +1167,24 @@ var logLineBreakEscaper = strings.NewReplacer("\r\n", `\n`, "\n", `\n`, "\r", `\
 //     found" placeholder, Datadog alternate shapes)
 //   - the envelope has zero entries
 func flattenLogsToTabSeparated(raw string) string {
+	body, _ := flattenLogs(raw, false)
+	return body
+}
+
+// flattenLogsSharingSource is flattenLogsToTabSeparated, except that source
+// parts every line has with the same value — ns=shop when the query named
+// namespace shop — are left out of the lines and returned once as shared
+// ("ns=shop"). Repeating them on every line says nothing. Use it only where
+// shared reaches whoever reads the file, as saveLogsToWorkspace does through
+// the file's description.
+func flattenLogsSharingSource(raw string) (body, shared string) {
+	return flattenLogs(raw, true)
+}
+
+func flattenLogs(raw string, shareSource bool) (string, string) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return raw
+		return raw, ""
 	}
 	// Fast path: the expected envelope is `{"logs":[...]}`, so anything not
 	// starting with `{` cannot be it — skip unmarshalling a potentially
@@ -1170,31 +1193,143 @@ func flattenLogsToTabSeparated(raw string) string {
 	// does start with `{` and still parses (into zero entries) before falling
 	// through below. Suggested in review by gemini-code-assist on PR #36182.
 	if !strings.HasPrefix(trimmed, "{") {
-		return raw
+		return raw, ""
 	}
 	var doc struct {
 		Logs []struct {
-			Timestamp string `json:"timestamp"`
-			Message   string `json:"message"`
+			Timestamp string         `json:"timestamp"`
+			Message   string         `json:"message"`
+			Labels    map[string]any `json:"labels"`
 		} `json:"logs"`
 	}
 	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
-		return raw
+		return raw, ""
 	}
 	if len(doc.Logs) == 0 {
-		return raw
+		return raw, ""
+	}
+	sources := make([][]string, len(doc.Logs))
+	for i, e := range doc.Logs {
+		sources[i] = logSourceParts(e.Labels)
+	}
+	var sharedParts []string
+	if shareSource {
+		sharedParts = sharedLogSourceParts(sources)
+	}
+	shared := make(map[string]bool, len(sharedParts))
+	for _, p := range sharedParts {
+		shared[p] = true
 	}
 	var b strings.Builder
 	b.Grow(len(raw))
-	for _, e := range doc.Logs {
+	for i, e := range doc.Logs {
 		ts := strings.TrimSpace(e.Timestamp)
 		msg := logLineBreakEscaper.Replace(strings.TrimSpace(e.Message))
 		b.WriteString(ts)
 		b.WriteByte('\t')
+		b.WriteString(logSource(sources[i], shared))
+		b.WriteByte('\t')
 		b.WriteString(msg)
 		b.WriteByte('\n')
 	}
-	return b.String()
+	return b.String(), strings.Join(sharedParts, ",")
+}
+
+// logSourceKeys lists, per part of <source>, the label names providers use for
+// it, most specific first. services-server normalises most providers to
+// pod/namespace/container; the rest are the provider-native spellings. "host"
+// is used only when no pod label exists: hostname/host name a pod on some
+// providers but the node on others (node-level syslog in SolarWinds, Splunk,
+// CubeAPM), so it is never reported as pod=.
+var logSourceKeys = []struct {
+	name string
+	keys []string
+}{
+	{"pod", []string{"pod", "k8s.pod.name", "pod_name"}},
+	{"host", []string{"hostname", "host", "host.name"}},
+	{"ns", []string{"namespace", "k8s.namespace.name", "namespace_name"}},
+	{"container", []string{"container", "k8s.container.name", "container_name", "program"}},
+}
+
+// logSourceSanitizer keeps a label value inside its column: no tab, line break
+// or the "," / "=" that separate the parts.
+var logSourceSanitizer = strings.NewReplacer("\t", " ", "\n", " ", "\r", " ", ",", " ", "=", " ")
+
+// logSourceParts returns a record's origin as `pod=…`, `ns=…`, `container=…`
+// parts (host=… in place of pod= when the record names no pod), leaving out the
+// parts it has no label for.
+func logSourceParts(labels map[string]any) []string {
+	var parts []string
+	hasPod := false
+	for _, part := range logSourceKeys {
+		if part.name == "host" && hasPod {
+			continue
+		}
+		for _, key := range part.keys {
+			s := logSourceLabelValue(labels[key])
+			if s == "" {
+				continue
+			}
+			parts = append(parts, part.name+"="+s)
+			hasPod = hasPod || part.name == "pod"
+			break
+		}
+	}
+	return parts
+}
+
+// logSource renders the <source> column: the parts not in shared, joined by
+// ",". It is `-` when the record has no parts at all, and empty when every part
+// it has is shared.
+func logSource(parts []string, shared map[string]bool) string {
+	if len(parts) == 0 {
+		return "-"
+	}
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if !shared[p] {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, ",")
+}
+
+// sharedLogSourceParts returns the parts every record has with the same value,
+// in the order the first record lists them. A single record shares nothing:
+// leaving its source out would save nothing.
+func sharedLogSourceParts(records [][]string) []string {
+	if len(records) < 2 {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, parts := range records {
+		for _, p := range parts {
+			counts[p]++
+		}
+	}
+	var shared []string
+	for _, p := range records[0] {
+		if counts[p] == len(records) {
+			shared = append(shared, p)
+		}
+	}
+	return shared
+}
+
+// logSourceLabelValue renders a scalar label value; nested values are not a name.
+func logSourceLabelValue(v any) string {
+	var s string
+	switch t := v.(type) {
+	case string:
+		s = t
+	case float64:
+		s = strconv.FormatFloat(t, 'f', -1, 64)
+	case bool, int, int64:
+		s = fmt.Sprint(t)
+	default:
+		return ""
+	}
+	return strings.TrimSpace(logSourceSanitizer.Replace(s))
 }
 
 // logsLayout reports which save path was taken — for the structured log line
@@ -1204,12 +1339,17 @@ func logsLayout(raw, body string) string {
 	if raw == body {
 		return "passthrough"
 	}
-	return "timestamp_tab_message"
+	return logsLayoutSourced
 }
 
+// logsLayoutSourced names the flattenLogsToTabSeparated layout. Compare against
+// this constant, not a literal, so renaming the layout cannot silently turn a
+// comparison false.
+const logsLayoutSourced = "timestamp_tab_source_tab_message"
+
 func logsFormatHint(format string) string {
-	if format == "timestamp_tab_message" {
-		return "One record per line: <timestamp><TAB><message>. Parse line-by-line and split once on TAB; never JSON-decode the whole file. JSON-decode only the message field when it begins with an object or array."
+	if format == logsLayoutSourced {
+		return "One record per line: <timestamp><TAB><source><TAB><message>. <source> is where the line came from, `pod=<pod>,ns=<namespace>,container=<container>` with absent parts left out, or `-` when unknown — use it for per-pod, per-namespace or per-container questions (host=<node> appears instead of pod= when the line names no pod; a host is not a pod). Parts that are the same on every line are left out of <source> and named once in logs_shape (\"every line is from …\"); an empty <source> means the line has nothing beyond them. Match message text against the message column only, never the whole line, so a pod named like an error does not match. Parse line-by-line and split on the first two TABs only (the message may contain tabs); never JSON-decode the whole file. JSON-decode only the message field when it begins with an object or array."
 	}
 	return "The file is the same line-oriented passthrough representation shown in the logs preview. Filter it directly with grep/awk; only apply structured parsing when the preview demonstrates that format."
 }
@@ -1804,6 +1944,12 @@ func providerSpecificQueryExamples(provider string) []core.NBAgentPromptExample 
 // in time order, and a pod grouping that found no pod.
 type LogFileShape struct {
 	Lines int
+	// Sourced says each line is "<timestamp><TAB><source><TAB><message>"
+	// (flattenLogsToTabSeparated), not "<timestamp><TAB><message>".
+	Sourced bool
+	// SharedSource holds the source parts every line has, left out of the lines
+	// (flattenLogsSharingSource), e.g. "ns=shop".
+	SharedSource string
 	// Timestamped counts lines that start with "<RFC 3339 timestamp><TAB>".
 	Timestamped  int
 	First, Last  string
@@ -1826,9 +1972,11 @@ const (
 
 var logLevelKeys = []string{"level", "severity", "lvl", "log.level", "levelname"}
 
-// DescribeLogLines measures a line-per-record log body.
-func DescribeLogLines(body string) LogFileShape {
-	var s LogFileShape
+// DescribeLogLines measures a line-per-record log body. sourced says the body is
+// flattenLogsToTabSeparated output, whose lines carry a <source> column between
+// timestamp and message.
+func DescribeLogLines(body string, sourced bool) LogFileShape {
+	s := LogFileShape{Sourced: sourced}
 	keyCounts := map[string]int{}
 	asc, desc := 0, 0
 	// Compared as times: RFC 3339 strings with different fractional-second
@@ -1841,9 +1989,15 @@ func DescribeLogLines(body string) LogFileShape {
 		}
 		s.Lines++
 		msg := line
+		ts, rest, cut := strings.Cut(line, "\t")
+		if cut && sourced {
+			// <source> sits between timestamp and message; skip it.
+			_, rest, _ = strings.Cut(rest, "\t")
+			msg = rest
+		}
 		// The length and dash check skips time.Parse for lines that cannot start
 		// with a timestamp; RFC3339 parsing accepts fractional seconds.
-		if ts, rest, ok := strings.Cut(line, "\t"); ok && len(ts) >= 20 && ts[4] == '-' {
+		if cut && len(ts) >= 20 && ts[4] == '-' {
 			if t, err := time.Parse(time.RFC3339, ts); err == nil {
 				s.Timestamped++
 				msg = rest
@@ -1942,16 +2096,18 @@ func DescribeLogLines(body string) LogFileShape {
 	return s
 }
 
-// Describe renders the shape as one paragraph. withoutLabels says the file holds
-// only timestamp and message, so pod, container and other stream labels are not
-// in it.
-func (s LogFileShape) Describe(withoutLabels bool) string {
+// Describe renders the shape as one paragraph.
+func (s LogFileShape) Describe() string {
 	if s.Lines == 0 {
 		return "empty"
 	}
 	var parts []string
 	if s.Timestamped == s.Lines {
-		parts = append(parts, fmt.Sprintf("%d lines, each <RFC 3339 timestamp><TAB><message>", s.Lines))
+		layout := "<RFC 3339 timestamp><TAB><message>"
+		if s.Sourced {
+			layout = "<RFC 3339 timestamp><TAB><source><TAB><message>"
+		}
+		parts = append(parts, fmt.Sprintf("%d lines, each %s", s.Lines, layout))
 	} else {
 		parts = append(parts, fmt.Sprintf("%d lines (%d start with <RFC 3339 timestamp><TAB>)", s.Lines, s.Timestamped))
 	}
@@ -1992,8 +2148,11 @@ func (s LogFileShape) Describe(withoutLabels bool) string {
 	if s.TextMessages > 0 {
 		parts = append(parts, fmt.Sprintf("%d plain-text messages", s.TextMessages))
 	}
-	if withoutLabels {
-		parts = append(parts, "no pod, container or other stream label is on the line")
+	if s.Sourced {
+		parts = append(parts, "<source> is pod=<pod>,ns=<namespace>,container=<container> with absent parts left out (host=<node> when the line names no pod), or - when unknown")
+		if s.SharedSource != "" {
+			parts = append(parts, fmt.Sprintf("every line is from %s, so that is left out of <source>; an empty <source> means the line is from %s and nothing more", s.SharedSource, s.SharedSource))
+		}
 	}
 	return strings.Join(parts, "; ") + "."
 }

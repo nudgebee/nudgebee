@@ -1942,7 +1942,7 @@ func saveEvidenceLogsToWorkspace(ctx *security.RequestContext, accountId, sessio
 	if hasWindow {
 		windowNote = fmt.Sprintf(" for the incident window (%s → %s)", window.startString(), window.endString())
 	}
-	note := fmt.Sprintf("## Stored Log Evidence\nThe full logs already collected%s are saved in your workspace at `%s` (%s). Grep this file first (e.g. `grep -iE \"error|timeout|fail\" %s | head -40`) before fetching live logs — logs fetched live at analysis time include activity from after the incident window.", windowNote, filename, agents.DescribeLogLines(logText).Describe(false), filename)
+	note := fmt.Sprintf("## Stored Log Evidence\nThe full logs already collected%s are saved in your workspace at `%s` (%s). Grep this file first (e.g. `grep -iE \"error|timeout|fail\" %s | head -40`) before fetching live logs — logs fetched live at analysis time include activity from after the incident window.", windowNote, filename, agents.DescribeLogLines(logText, false).Describe(), filename)
 	if coverage := strings.TrimSpace(event.Evidences.LogCoverageNote); coverage != "" {
 		note += " What this file covers: " + core.TruncateHead(coverage, maxLogCoverageNoteBytes)
 	}
