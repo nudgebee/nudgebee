@@ -1160,37 +1160,36 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
             />
           )}
           {data.length > 0 && (
-            <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 'var(--ds-space-2)', mb: 'var(--ds-space-2)' }}>
-              <Box
+            // Plain label beside the Toggle — wrapping both in a second track made the
+            // label read as a third button next to Chart / Table.
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                alignItems: 'center',
+                gap: 'var(--ds-space-2)',
+                mt: 'var(--ds-space-2)',
+                mb: 'var(--ds-space-2)',
+              }}
+            >
+              <Text
+                value='Display View:'
                 sx={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 'var(--ds-space-2)',
-                  padding: 'var(--ds-space-1) var(--ds-space-2)',
-                  backgroundColor: 'var(--ds-gray-alpha-100)',
-                  borderRadius: 'var(--ds-radius-md)',
-                  border: '1px solid var(--ds-gray-alpha-200)',
+                  fontSize: 'var(--ds-text-small)',
+                  fontWeight: 'var(--ds-font-weight-medium)',
+                  color: 'var(--ds-gray-600)',
+                  whiteSpace: 'nowrap',
                 }}
-              >
-                <Text
-                  value='Display View'
-                  sx={{
-                    fontSize: 'var(--ds-text-small)',
-                    fontWeight: 'var(--ds-font-weight-medium)',
-                    color: 'var(--ds-gray-600)',
-                    whiteSpace: 'nowrap',
-                  }}
-                />
-                <Toggle
-                  size='sm'
-                  options={[
-                    { value: 'chart', label: 'Chart' },
-                    { value: 'table', label: 'Table' },
-                  ]}
-                  activeValue={showChartView ? 'chart' : 'table'}
-                  onChange={(next) => setShowChartView(next === 'chart')}
-                />
-              </Box>
+              />
+              <Toggle
+                size='sm'
+                options={[
+                  { value: 'chart', label: 'Chart' },
+                  { value: 'table', label: 'Table' },
+                ]}
+                activeValue={showChartView ? 'chart' : 'table'}
+                onChange={(next) => setShowChartView(next === 'chart')}
+              />
             </Box>
           )}
           <Box sx={{ width: '100%', maxWidth: '100%', marginTop: 'var(--ds-space-4)' }}>
