@@ -93,7 +93,7 @@ const CustomDashboards: React.FC = () => {
   // submitted one feeds the request, so typing costs nothing until Enter.
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
-  const [selected, setSelected] = useState<{ dashboard: Dashboard; bindings: DashboardBinding[] } | null>(null);
+  const [selected, setSelected] = useState<{ dashboard: Dashboard; bindings: DashboardBinding[]; editing?: boolean } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Dashboard | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -103,10 +103,12 @@ const CustomDashboards: React.FC = () => {
   /** An unsaved dashboard — blank, or built from a template — waiting to be authored. */
   const [draftDashboard, setDraftDashboard] = useState<Dashboard | null>(null);
   /**
-   * Opens the next viewed dashboard straight in edit mode. Set by the listing's
-   * edit action, which means "edit this", not "look at this".
+   * The dashboard the listing's edit action asked to open in edit mode — "edit
+   * this", not "look at this". An id, used up by the one open it was said about,
+   * rather than a flag: the route can swap the open dashboard in place (the
+   * header search), and a flag turned that into "edit whichever opens next".
    */
-  const [openEditing, setOpenEditing] = useState(false);
+  const editOnOpen = useRef<string | null>(null);
 
   // Mirrors the backend gate: anyone who can write to at least one account may author dashboards, and the
   // panels they may point at are checked per account on save.
@@ -169,6 +171,9 @@ const CustomDashboards: React.FC = () => {
   // parameter, and this is the single place that turns it into a loaded dashboard.
   useEffect(() => {
     if (!router.isReady) return undefined;
+    // "Edit this" was said about one dashboard. Once the route names anything else — another dashboard,
+    // or the listing — the request is over, even when its own open was cut short and never used it.
+    if (editOnOpen.current !== routeId) editOnOpen.current = null;
     if (!routeId) {
       if (modeRef.current.name === 'view') setMode({ name: 'list' });
       return undefined;
@@ -179,12 +184,14 @@ const CustomDashboards: React.FC = () => {
     const signal = { cancelled: false };
     apiDashboards.getDashboard(routeId).then((res) => {
       if (signal.cancelled) return;
+      const editing = editOnOpen.current === routeId;
+      editOnOpen.current = null;
       if (res.errors || !res.data) {
         snackbar.error('Could not open that dashboard.');
         setRouteId(null);
         return;
       }
-      setSelected({ dashboard: res.data.dashboard, bindings: res.data.bindings || [] });
+      setSelected({ dashboard: res.data.dashboard, bindings: res.data.bindings || [], editing });
       setMode({ name: 'view', id: routeId });
     });
     return () => {
@@ -194,7 +201,7 @@ const CustomDashboards: React.FC = () => {
 
   /** Opens a dashboard for authoring — the same screen as viewing it, already in edit mode. */
   const openForEdit = (id: string) => {
-    setOpenEditing(true);
+    editOnOpen.current = id;
     setRouteId(id);
   };
 
@@ -408,11 +415,8 @@ const CustomDashboards: React.FC = () => {
         dashboard={selected.dashboard}
         accounts={accountOptions}
         canEdit={canWrite && !selected.dashboard.is_builtin}
-        initialEditing={openEditing}
-        onBack={() => {
-          setOpenEditing(false);
-          setRouteId(null);
-        }}
+        initialEditing={selected.editing}
+        onBack={() => setRouteId(null)}
         // Panels, title and description are edited in place; each save answers
         // with the stored dashboard, which becomes what this page holds.
         onChange={(saved) => setSelected((prev) => ({ dashboard: saved, bindings: prev?.bindings || [] }))}
