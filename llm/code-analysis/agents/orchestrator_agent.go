@@ -3269,6 +3269,17 @@ func seedRepoCloneBranch(tool *tools.RepoCloneTool, sessionCtx *session.SessionC
 	// not one the model picks during the run. Set on every request for the same
 	// no-leak reason as the two values above.
 	tool.SetCommitFromRequestOnly(sessionCtx != nil && sessionCtx.Mode == ModeFix)
+
+	// The repository whose setup script may run when it is cloned: the
+	// request's, and only for a run that writes a code change. Such a run already
+	// builds and tests the repository's code; an explore run only reads it, and
+	// cloning for one must not start running that repository's code. Reset to ""
+	// otherwise, for the same no-leak reason as the values above.
+	requestRepo := ""
+	if sessionCtx != nil && sessionCtx.RepoContext != nil && sessionCtx.Mode == ModeFix {
+		requestRepo = sessionCtx.RepoContext.URL
+	}
+	tool.SetRequestRepo(requestRepo)
 }
 
 // instructionsRequireWrite reports whether any entry in

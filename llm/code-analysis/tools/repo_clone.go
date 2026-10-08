@@ -33,6 +33,8 @@ type RepoCloneTool struct {
 	// run works on the revision the request names — a pinned commit, otherwise
 	// the branch tip — so a `commit` the model passes on its own is not used.
 	commitFromRequestOnly bool
+	// requestRepo is the repository the request names; see SetRequestRepo.
+	requestRepo string
 }
 
 type RepoCloneInput struct {
@@ -123,6 +125,34 @@ func (t *RepoCloneTool) SetDefaultBranch(branch string) {
 // DefaultBranch returns the branch used when an invocation omits `branch`.
 func (t *RepoCloneTool) DefaultBranch() string {
 	return t.defaultBranch
+}
+
+// SetRequestRepo names the repository the request is about. Its setup script
+// (see repo_setup.go) is run when that repository is cloned; no other
+// repository's is. Empty means no setup script is run.
+func (t *RepoCloneTool) SetRequestRepo(repoURL string) {
+	t.requestRepo = repoURL
+}
+
+// RequestRepo returns the repository whose setup script may be run.
+func (t *RepoCloneTool) RequestRepo() string {
+	return t.requestRepo
+}
+
+func (t *RepoCloneTool) runRequestRepoSetup(ctx context.Context, repoURL string, creds *credentials.ResolvedCredentials, repoDir string) *RepoSetupResult {
+	if !git.SameRepository(repoURL, t.requestRepo) {
+		return nil
+	}
+	// Read the script through the request's own URL, not the one the model
+	// passed, and with this request's token: the remote URL the shared clone has
+	// stored can carry a token from an earlier request.
+	remoteURL := t.requestRepo
+	if creds != nil && creds.Token != "" {
+		if authenticated, err := git.InjectTokenIntoURL(t.requestRepo, creds.Token); err == nil {
+			remoteURL = authenticated
+		}
+	}
+	return RunRepoSetup(ctx, t.gitClient.WorkspaceDir(), repoDir, remoteURL)
 }
 
 func (t *RepoCloneTool) Name() string {
@@ -345,6 +375,18 @@ func (t *RepoCloneTool) Execute(ctx context.Context, input map[string]any) core.
 	}
 	if ignoredCommit != "" {
 		observation += "\n\n" + ignoredCommitNote(ignoredCommit, cloneResult.CommitHash, params.Commit != "")
+	}
+
+	// Best effort: a repository without a setup script, or one whose script
+	// fails, is cloned exactly as before. Only for the repository the request
+	// names: the model can clone any URL, and cloning must not run that
+	// repository's code.
+	if setup := t.runRequestRepoSetup(ctx, params.RepoURL, internalCreds, cloneResult.LocalPath); setup != nil {
+		response["setup_script"] = map[string]any{
+			"status":    setup.Status,
+			"exit_code": setup.ExitCode,
+		}
+		observation += "\n\n" + setup.Note()
 	}
 
 	// Append repository index if available

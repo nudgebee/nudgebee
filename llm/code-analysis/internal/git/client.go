@@ -43,6 +43,11 @@ func (gc *GitClient) SetLogger(logger *common.Logger) {
 	gc.logger = logger
 }
 
+// WorkspaceDir returns the workspace root this client keeps its shared clones under.
+func (gc *GitClient) WorkspaceDir() string {
+	return gc.workspaceDir
+}
+
 type BlameResult struct {
 	CommitHash  string
 	Author      string
@@ -685,9 +690,16 @@ func (gc *GitClient) remoteDefaultBranch(ctx context.Context, repoURL string) (b
 	if err != nil {
 		return "", ""
 	}
+	return parseLsRemoteHead(string(out))
+}
+
+// parseLsRemoteHead reads the default branch and its tip out of
+// `git ls-remote --symref <remote> HEAD`. Both are empty unless the output
+// names a branch with a valid name and a commit.
+func parseLsRemoteHead(out string) (branch, tip string) {
 	// ref: refs/heads/main\tHEAD
 	// 8aeb28345088b0820b6873685268b491f5269b47\tHEAD
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		value, name, ok := strings.Cut(strings.TrimSpace(line), "\t")
 		if !ok || name != "HEAD" {
 			continue

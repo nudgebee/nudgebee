@@ -103,3 +103,27 @@ func TestSeedRepoCloneBranch_CommitFromRequestOnly(t *testing.T) {
 		t.Fatal("the fix-run setting leaked into a request with no session")
 	}
 }
+
+// The repository whose setup script may run is the request's, only for a run
+// that writes code, and a tool must not carry the previous request's over.
+func TestSeedRepoCloneRequestRepo(t *testing.T) {
+	tool := tools.NewRepoCloneTool("/tmp/ws", nil)
+	repo := &planners.RepositoryContext{URL: "https://github.com/acme/widgets"}
+
+	seedRepoCloneBranch(tool, &session.SessionContext{Mode: ModeFix, RepoContext: repo})
+	if got := tool.RequestRepo(); got != "https://github.com/acme/widgets" {
+		t.Fatalf("RequestRepo() = %q in fix mode, want the request's repository", got)
+	}
+
+	// An explore run only reads the repository; its clone must not run setup.
+	seedRepoCloneBranch(tool, &session.SessionContext{Mode: ModeExplore, RepoContext: repo})
+	if got := tool.RequestRepo(); got != "" {
+		t.Fatalf("RequestRepo() = %q in explore mode, want empty", got)
+	}
+
+	seedRepoCloneBranch(tool, &session.SessionContext{Mode: ModeFix, RepoContext: repo})
+	seedRepoCloneBranch(tool, &session.SessionContext{Mode: ModeFix})
+	if got := tool.RequestRepo(); got != "" {
+		t.Fatalf("RequestRepo() = %q after a request with no repository, want empty", got)
+	}
+}

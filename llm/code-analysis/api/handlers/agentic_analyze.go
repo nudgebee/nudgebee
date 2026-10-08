@@ -24,6 +24,7 @@ import (
 	"nudgebee/code-analysis-agent/internal/ownership"
 	"nudgebee/code-analysis-agent/internal/session"
 	"nudgebee/code-analysis-agent/llm"
+	"nudgebee/code-analysis-agent/tools"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -2206,6 +2207,16 @@ func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cf
 					"output": string(cfgOut),
 				})
 			}
+		}
+
+		// This clone does not go through the repo_clone tool, so run the
+		// repository's setup script here too. ah.config holds the workspace
+		// root; the per-request cfg points at this run's own directory.
+		if setup := tools.RunRepoSetup(ctx, ah.config.Analysis.WorkspaceDir, workspaceDir, cloneURL); setup != nil {
+			logger.Log(common.EventStepComplete, "Repository setup script handled for followup", map[string]any{
+				"status":    setup.Status,
+				"exit_code": setup.ExitCode,
+			})
 		}
 	}
 
