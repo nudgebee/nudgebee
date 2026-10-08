@@ -9675,6 +9675,11 @@ var table_metadata = map[string]TableDefinition{
 			LEFT JOIN users uu ON uu.id = ag.updated_by
 		) as application_group_v2`,
 		TenantIdColumnName: "tenant_id",
+		// "id" is a placeholder to clear service.go's empty-AccountIdColumnName
+		// check; the real restriction is AccountScope below.
+		AccountIdColumnName: "id",
+		AccountScope:        applicationGroupAccountScope("application_group_v2"),
+		PermissionModule:    "applications",
 		Columns: map[string]ColumnDefinition{
 			"id":                      {Type: ColumnDefinitionTypeString},
 			"name":                    {Type: ColumnDefinitionTypeString},
@@ -9689,12 +9694,16 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"application_group_groupings_v2": {
-		Type:               Aggregate,
-		Source:             database.Metastore,
-		Def:                "application_group",
-		Name:               "application_group_groupings_v2",
-		TenantIdColumnName: "tenant_id",
+		Type:                Aggregate,
+		Source:              database.Metastore,
+		Def:                 "application_group",
+		Name:                "application_group_groupings_v2",
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "id",
+		AccountScope:        applicationGroupAccountScope("application_group"),
+		PermissionModule:    "applications",
 		Columns: map[string]ColumnDefinition{
+			"id":        {Type: ColumnDefinitionTypeString},
 			"tenant_id": {Type: ColumnDefinitionTypeString},
 			"name":      {Type: ColumnDefinitionTypeString},
 			"count": {

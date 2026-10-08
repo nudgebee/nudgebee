@@ -311,6 +311,8 @@ func TestAccountScopableModulesPinned(t *testing.T) {
 		"accounts":         true,
 		"ai_conversations": true,
 		"ai_functions":     true,
+		// application_group_v2 / application_group_groupings_v2 now carry AccountScope.
+		"applications": true,
 		// The dashboard `nudgebee` datasource reaches these three through the panel
 		// allowlist (services/dashboard/entity_query.go); each needs a module so a
 		// custom-role holder has a grant to be given rather than a flat denial.
