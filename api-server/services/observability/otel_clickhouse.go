@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -230,6 +231,17 @@ var ClickhouseTraceGroupingTableDefinition = map[string]query.ColumnDefinition{
 		Def:          "AVG(duration_ns)",
 		IsAggregated: true,
 	},
+	// destination_workload_zones is what a grouped row reports as its destination zone: every
+	// zone the group's spans went to, joined. The raw destination_workload_zone column above
+	// stays non-aggregated for WHERE filters and is deliberately not a grouping dimension --
+	// one destination workload often runs in several zones (any DaemonSet does), so grouping on
+	// it would split each row per zone in the Trace Group tab, which shows no zone column and
+	// drills down without one.
+	"destination_workload_zones": {
+		Type:         query.ColumnDefinitionTypeString,
+		Def:          "arrayStringConcat(arraySort(groupUniqArrayIf(destination_workload_zone, destination_workload_zone != '')), ', ')",
+		IsAggregated: true,
+	},
 	"service_name": {
 		Type: query.ColumnDefinitionTypeString,
 	},
@@ -326,6 +338,32 @@ func (s *OtelClickhouseTraceSource) CountTraces(ctx *security.RequestContext, fe
 	return result, nil
 }
 
+// traceGroupingDimensions is what one grouped-traces row is keyed on. QueryGroupedTraces and
+// QueryGroupedTracesCount both group on it, so the count always pages the same rows the
+// listing returns.
+var traceGroupingDimensions = []string{
+	"workload_name",
+	"workload_namespace",
+	"destination_workload_name",
+	"destination_workload_namespace",
+	"resource",
+	"span_name",
+	"http_status_code",
+}
+
+// traceGroupingAggregates are the per-group values QueryGroupedTraces selects beside the
+// dimensions. Together the two lists are every column MapGroupingRowToTraceGroupingValues
+// reads; a field added to TraceGroupingValues has to be added to one of them and to the mapper.
+var traceGroupingAggregates = []string{
+	"count",
+	"error_count",
+	"p99_latency",
+	"p95_latency",
+	"max_latency",
+	"avg_duration_ns",
+	"destination_workload_zones",
+}
+
 func (s *OtelClickhouseTraceSource) QueryGroupedTracesCount(ctx *security.RequestContext, tracesRequest TracesV3Request) (common.OpenTelemetryTraceGroupCount, error) {
 	hasAccess := s.CheckAccess(ctx, tracesRequest.AccountId)
 	if !hasAccess {
@@ -342,15 +380,7 @@ func (s *OtelClickhouseTraceSource) QueryGroupedTracesCount(ctx *security.Reques
 		queryColumn.Name = "count"
 		queryRequest.Columns = []query.QueryColumn{queryColumn}
 		queryRequest.OrderBy = []query.QueryOrderBy{}
-		queryRequest.GroupBy = []string{
-			"workload_name",
-			"workload_namespace",
-			"destination_workload_name",
-			"destination_workload_namespace",
-			"resource",
-			"span_name",
-			"http_status_code",
-		}
+		queryRequest.GroupBy = slices.Clone(traceGroupingDimensions)
 		sqlQuery, err = query.GenerateSqlQuery(ctx, tracesRequest.AccountId, queryRequest, tableDef)
 	} else {
 		sqlQuery = tracesRequest.Query
@@ -770,6 +800,9 @@ func MapGroupingRowToTraceGroupingValues(row map[string]interface{}) (TraceGroup
 	}
 	if v, ok := row["destination_workload_namespace"].(string); ok {
 		trace.DestinationWorkloadNamespace = v
+	}
+	if v, ok := row["destination_workload_zones"].(string); ok && v != "" {
+		trace.DestinationWorkloadZone = &v
 	}
 	if v, ok := row["resource"].(string); ok {
 		trace.Resource = v
@@ -1462,30 +1495,11 @@ func (s *OtelClickhouseTraceSource) QueryGroupedTraces(ctx *security.RequestCont
 	if fetchTraceRequest.Query == "" {
 		tableDef := s.getTraceGroupingTableDef(ctx, fetchTraceRequest.AccountId)
 		queryRequest := getQueryRequest(ctx, fetchTraceRequest.QueryRequest, tableDef, "traces_grouping_v2")
-		queryRequest.Columns = []query.QueryColumn{
-			{Name: "count"},
-			{Name: "error_count"},
-			{Name: "p99_latency"},
-			{Name: "p95_latency"},
-			{Name: "max_latency"},
-			{Name: "avg_duration_ns"},
-			{Name: "workload_name"},
-			{Name: "workload_namespace"},
-			{Name: "destination_workload_name"},
-			{Name: "destination_workload_namespace"},
-			{Name: "resource"},
-			{Name: "span_name"},
-			{Name: "http_status_code"},
+		queryRequest.Columns = nil
+		for _, name := range slices.Concat(traceGroupingAggregates, traceGroupingDimensions) {
+			queryRequest.Columns = append(queryRequest.Columns, query.QueryColumn{Name: name})
 		}
-		queryRequest.GroupBy = []string{
-			"workload_name",
-			"workload_namespace",
-			"destination_workload_name",
-			"destination_workload_namespace",
-			"resource",
-			"span_name",
-			"http_status_code",
-		}
+		queryRequest.GroupBy = slices.Clone(traceGroupingDimensions)
 		queryRequest.OrderBy = redirectDurationNsSortToAvg(queryRequest.OrderBy)
 		sqlQuery, err = query.GenerateSqlQuery(ctx, fetchTraceRequest.AccountId, queryRequest, tableDef)
 	} else {
