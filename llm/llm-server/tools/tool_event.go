@@ -144,6 +144,7 @@ func resolveEventsViewPlaceholders(view, accountId string, skipDateFilter bool) 
 }
 
 type EventsExecuteTool struct {
+	core.ReadOnlyTool
 	// FullEvidence preserves the complete collected log body on the processed
 	// row instead of gutting it to mined error lines / a 500-byte tail. Set by
 	// programmatic single-event consumers (the event analyzer, the evidence

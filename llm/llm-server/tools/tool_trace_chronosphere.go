@@ -17,6 +17,7 @@ func init() {
 }
 
 type TracesExecuteChronosphereTool struct {
+	core.ReadOnlyTool
 	accountId string
 }
 

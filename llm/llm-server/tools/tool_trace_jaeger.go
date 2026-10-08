@@ -18,6 +18,7 @@ func init() {
 }
 
 type TracesExecuteJaegerTool struct {
+	core.ReadOnlyTool
 	accountId string
 }
 

@@ -73,6 +73,7 @@ func (m RecommendationResolutionExecuteTool) ToolPrompt() []string {
 const ToolRecommendationResolutionExecuteSql = "recommendation_resolution_execute"
 
 type RecommendationResolutionExecuteTool struct {
+	core.ReadOnlyTool
 }
 
 func (m RecommendationResolutionExecuteTool) Name() string {

@@ -55,7 +55,7 @@ func init() {
 	// Cache namespace is initialized in tools/core so knowledgebase_service.go can invalidate it.
 }
 
-type LoadSkillsTool struct{}
+type LoadSkillsTool struct{ core.ReadOnlyTool }
 
 var _ core.SchemaValidationInputNormalizer = LoadSkillsTool{}
 
@@ -579,7 +579,7 @@ func enrichIntegrationSkillsFromRAG(ctx core.NbToolContext, input core.NBToolCal
 // ---------------------------------------------------------------------------
 
 // SearchSkillsTool searches across manual and integration knowledge bases by query.
-type SearchSkillsTool struct{}
+type SearchSkillsTool struct{ core.ReadOnlyTool }
 
 func (s SearchSkillsTool) Name() string { return SearchSkillsToolName }
 

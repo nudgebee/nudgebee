@@ -31,6 +31,7 @@ func init() {
 // KGTraverseTool exposes the Knowledge Graph `kg_traverse` RPC action as an
 // LLM tool for directional multi-hop infrastructure topology exploration.
 type KGTraverseTool struct {
+	core.ReadOnlyTool
 	accountId string
 }
 

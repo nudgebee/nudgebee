@@ -21,6 +21,7 @@ func init() {
 // as an LLM tool so the agent can discover infrastructure resources by name,
 // type, namespace, source, or labels.
 type KGSearchNodesTool struct {
+	core.ReadOnlyTool
 	accountId string
 }
 

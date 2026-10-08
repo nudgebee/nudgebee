@@ -23,6 +23,7 @@ func init() {
 // traces analog of logs_execute_v2; use it via TracesDefaultAgentV2. It is NOT added to
 // any generic planner's tool list.
 type NBTraceToolV2 struct {
+	core.ReadOnlyTool
 	accountId string
 }
 

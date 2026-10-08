@@ -43,6 +43,7 @@ func init() {
 const ToolGetEventEvidence = "get_event_evidence"
 
 type GetEventEvidenceTool struct {
+	core.ReadOnlyTool
 }
 
 func (t GetEventEvidenceTool) Name() string {

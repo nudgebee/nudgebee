@@ -29,6 +29,7 @@ func init() {
 }
 
 type TracesExecuteClickhouseTool struct {
+	core.ReadOnlyTool
 	accountId   string
 	tracesTable string
 }

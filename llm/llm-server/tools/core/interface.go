@@ -348,6 +348,17 @@ type ToolRequestInference interface {
 	InferToolRequestType(ctx *security.RequestContext, toolName, input string) (ToolRequestType, error)
 }
 
+// ReadOnlyTool is embedded by tools that only ever read (observability
+// queries, searches, read-only views, skills, the notebook). It classifies every
+// call as a read, so the approval check does not log it as unchecked (#39880
+// C7). Embed it only if no input can make the tool change anything outside the
+// workspace.
+type ReadOnlyTool struct{}
+
+func (ReadOnlyTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (ToolRequestType, error) {
+	return ToolRequestTypeRead, nil
+}
+
 type ToolRequestInferencePrompt interface {
 	InferToolRequestTypePrompt(ctx *security.RequestContext, toolName, input string) (string, error)
 }

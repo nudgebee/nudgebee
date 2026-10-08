@@ -27,6 +27,7 @@ func init() {
 // configured (e.g. Dynatrace). Use this for any provider that does not have a
 // dedicated tool (TracesExecuteClickhouseTool, TracesExecuteJaegerTool, ...).
 type TracesExecuteDefaultTool struct {
+	core.ReadOnlyTool
 	accountId string
 }
 

@@ -26,6 +26,7 @@ func init() {
 }
 
 type MetricsSeriesMatchTool struct {
+	core.ReadOnlyTool
 	Provider string
 }
 

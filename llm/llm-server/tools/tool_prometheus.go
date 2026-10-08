@@ -96,6 +96,7 @@ func init() {
 }
 
 type PrometheusExecuteTool struct {
+	core.ReadOnlyTool
 }
 
 func (m PrometheusExecuteTool) Name() string {
@@ -728,6 +729,7 @@ func seriesFileNote(fileRef string, saveFailed bool, totalSeries, totalPoints, s
 }
 
 type MetricsListTool struct {
+	core.ReadOnlyTool
 	Provider     string
 	DefaultIndex string
 }
@@ -1355,6 +1357,7 @@ func parseMetricNamesFromLLMResponse(content string) []string {
 }
 
 type ListMetricsLabelsTool struct {
+	core.ReadOnlyTool
 	Provider     string
 	DefaultIndex string
 }
@@ -1480,6 +1483,7 @@ func (m ListMetricsLabelsTool) Call(nbRequestContext core.NbToolContext, input c
 // the iteration budget runs out and the run reports "no data" for a resource that is
 // in fact fully instrumented. Enumerating the values ends the loop in one call.
 type ListMetricsLabelValuesTool struct {
+	core.ReadOnlyTool
 	Provider     string
 	DefaultIndex string
 }
@@ -1729,6 +1733,7 @@ func (m ListMetricsLabelValuesTool) Call(nbRequestContext core.NbToolContext, in
 // against the account-specific prometheus collection in Qdrant, returning the most
 // semantically relevant metrics with example PromQL queries.
 type SearchMetricsTool struct {
+	core.ReadOnlyTool
 	Provider string
 }
 

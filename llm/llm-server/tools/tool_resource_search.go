@@ -26,6 +26,7 @@ func init() {
 }
 
 type K8sResourceSearchTool struct {
+	core.ReadOnlyTool
 	// workspaceAccountID stays on the conversation's origin account while an
 	// explicit cluster changes the inventory and relay target for this call.
 	workspaceAccountID string

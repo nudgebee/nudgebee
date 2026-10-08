@@ -399,6 +399,7 @@ func buildCanonicalLogQueryPromptV3(provider services_server.ObservabilityProvid
 // core.ExecuteAgentToolCall — so no second llm_conversation_agent row is
 // created for the fetch step.
 type fetchLogsDirectTool struct {
+	toolcore.ReadOnlyTool
 	accountId string
 }
 

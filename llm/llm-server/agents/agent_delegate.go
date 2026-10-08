@@ -58,6 +58,7 @@ func init() {
 // Security: the sub-agent can only use tools that the parent explicitly lists AND
 // that are resolvable for the account. There is no privilege escalation path.
 type delegateAgentTool struct {
+	toolcore.ReadOnlyTool
 	accountId string
 }
 
