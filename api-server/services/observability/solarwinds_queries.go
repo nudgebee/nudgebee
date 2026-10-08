@@ -2,6 +2,8 @@ package observability
 
 import (
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 
 	"nudgebee/services/security"
@@ -159,11 +161,37 @@ func buildSolarWindsFilter(meta RequestMetadata) string {
 	if meta.Name != "" {
 		if attrKey := swKindToAttrKey(meta.Kind); attrKey != "" {
 			parts = append(parts, fmt.Sprintf("%s: [%s]", attrKey, swEscapeValue(meta.Name)))
+		} else if meta.Kind != "node" {
+			// A workload named without a kind SolarWinds tags (or with none) must still be
+			// scoped to that workload: dropping the clause read the whole namespace.
+			name := swEscapeValue(meta.Name)
+			parts = append(parts, fmt.Sprintf("(k8s.deployment.name: [%s] OR k8s.statefulset.name: [%s] OR k8s.daemonset.name: [%s])", name, name, name))
 		}
+	}
+	if meta.PodNamesSupplied && meta.Kind != "node" {
+		parts = append(parts, swPodNamesClause(meta.PodNames))
 	}
 	// SWO measurements API uses a single space between filter clauses (consistent with
 	// buildSwTraceFilter in solarwinds_traces.go). " AND " is not a valid separator.
 	return strings.Join(parts, " ")
+}
+
+// swNoPodsSentinel is a pod name Kubernetes cannot produce (RFC1123 forbids
+// underscores) -- the same literal the Prometheus and Datadog builders use. Verified
+// against the live API: the filter is accepted and matches nothing.
+const swNoPodsSentinel = "__no_pods_resolved__"
+
+// swPodNamesClause scopes a query to the caller's exact pod list.
+//
+// Unquoted values are exact on SWO metrics, and a bracket list is an OR. An empty
+// list is an answer -- the caller resolved the pods and found none -- so it must
+// match nothing rather than fall back to every pod of the workload. Pod names need
+// no escaping: RFC1123 allows none of SWO's filter metacharacters.
+func swPodNamesClause(pods []string) string {
+	if len(pods) == 0 {
+		return fmt.Sprintf("k8s.pod.name: [%s]", swNoPodsSentinel)
+	}
+	return fmt.Sprintf("k8s.pod.name: [%s]", strings.Join(pods, ","))
 }
 
 // swBuildMultiValueFilter builds a SWO measurements filter clause for an attribute whose
@@ -219,7 +247,9 @@ func swBuildMultiValueFilter(attribute, pipeJoinedValues string) string {
 // swKindToAttrKey maps a Kubernetes resource kind to the SWO attribute key used in filters
 // and groupBy expressions.
 func swKindToAttrKey(kind string) string {
-	switch kind {
+	// The UI sends Kubernetes kinds as written in manifests ("Deployment"); a case-
+	// sensitive match dropped the workload filter and charted the whole namespace.
+	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "deployment":
 		return "k8s.deployment.name"
 	case "statefulset":
@@ -251,7 +281,11 @@ func buildSolarWindsGroupBy(meta RequestMetadata) string {
 // passed as arguments: groupBy because cluster-level callers use two different groupBy values across
 // two separate batch calls; aggregateBy because node queries use "AVG" (per-node average) while
 // workload queries use "SUM" (total across all pods belonging to the workload).
-func buildSolarWindsRequestParams(meta RequestMetadata, groupBy, aggregateBy string) map[string]any {
+//
+// preGroupBy names the entity a SUM adds up. The source answers SUM + preGroupBy as a
+// time-weighted total (see swTimeWeightedSum): plain SUM read 5x the true total at 6h and
+// 28x at 24h. Empty for an AVG over one entity's own series, which needs no pre-grouping.
+func buildSolarWindsRequestParams(meta RequestMetadata, groupBy, aggregateBy, preGroupBy string) map[string]any {
 	r := map[string]any{"aggregateBy": aggregateBy}
 	if filter := buildSolarWindsFilter(meta); filter != "" {
 		r["filter"] = filter
@@ -259,7 +293,155 @@ func buildSolarWindsRequestParams(meta RequestMetadata, groupBy, aggregateBy str
 	if groupBy != "" {
 		r["groupBy"] = groupBy
 	}
+	if preGroupBy != "" {
+		r["preGroupBy"] = preGroupBy
+		r["preGroupByMethod"] = "AVG"
+	}
 	return r
+}
+
+// The entities a utilisation SUM adds up.
+const (
+	// swEntityPod: pod usage metrics carry one series per pod.
+	swEntityPod = "k8s.pod.name"
+	// swEntityContainer: container spec metrics carry one series per container, so a
+	// multi-container pod holds more samples per bucket than its pod name alone accounts
+	// for: counted per pod, requests read 0.965 of the truth on a cluster with sidecars.
+	swEntityContainer = "k8s.pod.name,k8s.container.name"
+	// swEntityNode: node metrics carry one series per node.
+	swEntityNode = "k8s.node.name"
+)
+
+// swWorkloadEntity is the entity a workload key's metric is reported per.
+func swWorkloadEntity(metric string) string {
+	if strings.HasPrefix(metric, "k8s.container.spec.") {
+		return swEntityContainer
+	}
+	return swEntityPod
+}
+
+// swUtilisationBatch is one measurements call: the keys that share a request.
+type swUtilisationBatch struct {
+	queries map[string]string
+	request map[string]any
+}
+
+// swWorkloadBatches splits the workload keys by the entity their SUM must pre-group
+// by. SWO takes preGroupBy per request, not per metric, so usage and spec keys
+// cannot share a call.
+func swWorkloadBatches(meta RequestMetadata, queries map[string]string) []swUtilisationBatch {
+	byEntity := map[string]map[string]string{}
+	var order []string
+	for key, metric := range queries {
+		entity := swWorkloadEntity(metric)
+		if byEntity[entity] == nil {
+			byEntity[entity] = map[string]string{}
+			order = append(order, entity)
+		}
+		byEntity[entity][key] = metric
+	}
+	batches := make([]swUtilisationBatch, 0, len(order))
+	for _, entity := range order {
+		batches = append(batches, swUtilisationBatch{
+			queries: byEntity[entity],
+			request: buildSolarWindsRequestParams(meta, buildSolarWindsGroupBy(meta), "SUM", entity),
+		})
+	}
+	return batches
+}
+
+// fetchSolarWindsWorkloadUtilisation runs one measurements call per entity batch
+// (see swWorkloadBatches) and merges the results.
+func fetchSolarWindsWorkloadUtilisation(
+	ctx *security.RequestContext,
+	req GetUtilisationTrendRequest,
+	metricsProvider, integrationSource string,
+	meta RequestMetadata,
+	queries map[string]string,
+	instant bool,
+) (OutputMetricQuery, error) {
+	merged := OutputMetricQuery{Results: []QueryResult{}}
+	for _, batch := range swWorkloadBatches(meta, queries) {
+		out, err := FetchMetricsQuery(ctx, FetchMetricsRequest{
+			AccountId:            req.AccountId,
+			MetricProvider:       metricsProvider,
+			MetricProviderSource: integrationSource,
+			Queries:              batch.queries,
+			StartTime:            req.StartTime,
+			EndTime:              req.EndTime,
+			StepInterval:         req.StepInterval,
+			Instant:              instant,
+			Request:              batch.request,
+		})
+		if err != nil {
+			return out, err
+		}
+		merged.Results = append(merged.Results, out.Results...)
+	}
+	return merged, nil
+}
+
+// solarwindsCollapseOverTime reduces each series to one point of the requested
+// aggregate, over time.
+//
+// SWO's own whole-window answer (seriesType=SCALAR) cannot stand in: asked for MAX it
+// returned the busiest single node, not the peak of the cluster total. So the range is
+// fetched and reduced here, with the same arithmetic as Datadog and OpenObserve.
+//
+// `count` converts SWO buckets into the contract's unit -- Step-wide intervals with
+// data (metrics_aggregate_count.go). Each reading stands for swReadingSeconds of
+// observation.
+func solarwindsCollapseOverTime(results []QueryResult, meta RequestMetadata) {
+	if meta.Aggregate.Name == "" {
+		return
+	}
+	step := aggregateStepSeconds(meta)
+	for i := range results {
+		width := swReadingSeconds(results[i])
+		for j := range results[i].Payload {
+			series := &results[i].Payload[j]
+			if len(series.Timestamps) == 0 {
+				continue
+			}
+			value, ok := reduceOverTime(series.Values, meta.Aggregate)
+			switch {
+			case !ok:
+				// Every sample was a gap. Still one point, carrying NaN (null) rather
+				// than a zero that would read as idle -- as Datadog does.
+				value = math.NaN()
+			case meta.Aggregate.Name == AggregateCount:
+				value = stepEquivalentCount(value, width, step)
+			}
+			last := series.Timestamps[len(series.Timestamps)-1]
+			series.Timestamps, series.Values = []int64{last}, []float64{value}
+		}
+	}
+}
+
+// swReadingSeconds is how much observation one reading in the result stands for: the
+// bucket width SWO reported, or the typical (median) gap between consecutive readings
+// when that is longer. The two differ for windows of 15 minutes or less, which SWO
+// answers in 1-second buckets that each hold one scrape: there a reading covers the
+// scrape interval, not one second. With no reported width and no two readings to
+// compare, 0, which stepEquivalentCount reads as "do not convert".
+func swReadingSeconds(result QueryResult) float64 {
+	var gaps []int64
+	for _, series := range result.Payload {
+		for k := 1; k < len(series.Timestamps); k++ {
+			if gap := series.Timestamps[k] - series.Timestamps[k-1]; gap > 0 {
+				gaps = append(gaps, gap)
+			}
+		}
+	}
+	var typical int64
+	if len(gaps) > 0 {
+		sort.Slice(gaps, func(i, j int) bool { return gaps[i] < gaps[j] })
+		typical = gaps[len(gaps)/2]
+	}
+	if result.bucketSeconds > typical {
+		return float64(result.bucketSeconds)
+	}
+	return float64(typical)
 }
 
 // fetchSolarWindsClusterUtilisation handles cluster-level utilization queries for SolarWinds.
@@ -271,7 +453,8 @@ func buildSolarWindsRequestParams(meta RequestMetadata, groupBy, aggregateBy str
 //     → post-processes p90/p50/max via computePercentileFromSeries
 //   - Aggregate call: cluster-level request metrics + no groupBy (AVG)
 //     → cpu_request, memory_request
-//   - Sum call: node-level metrics summed across all nodes + no groupBy (SUM)
+//   - Sum call: node-level metrics summed across all nodes + no groupBy (SUM over nodes,
+//     time-weighted by the source)
 //     → cpu_real, mem_real, cpu_total, mem_total
 //
 // Results from all calls are merged. If only one call succeeds, partial results are returned.
@@ -352,7 +535,7 @@ func fetchSolarWindsClusterUtilisation(
 			StartTime:            req.StartTime,
 			EndTime:              req.EndTime,
 			Instant:              instant,
-			Request:              map[string]any{"aggregateBy": "SUM"},
+			Request:              buildSolarWindsRequestParams(RequestMetadata{}, "", "SUM", swEntityNode),
 		})
 		if err != nil {
 			if firstErr == nil {

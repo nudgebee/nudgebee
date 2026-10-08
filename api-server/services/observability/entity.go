@@ -349,6 +349,11 @@ type QueryResult struct {
 	// Note explains an empty Payload when the cause is known. Set only when it adds
 	// something the caller cannot infer, so its presence is itself a signal.
 	Note string `json:"note,omitempty"`
+
+	// bucketSeconds is the bucket width a provider aggregated into, when it reports
+	// one (SolarWinds). Internal only: the over-time collapse needs it to convert
+	// `count` when a series has a single bucket and no neighbour to measure from.
+	bucketSeconds int64
 }
 
 // Result represents a single metric or log group data point with labels, timestamps, and values.

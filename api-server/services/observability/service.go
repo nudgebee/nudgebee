@@ -3684,10 +3684,6 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 		result.Results = completeUtilisationResults(result.Results, meta.RequestedMetrics, queries, metricsProvider, esUtilisationScope(meta))
 	}()
 
-	// swRequest carries SolarWinds-specific filter/groupBy params passed as FetchMetricsRequest.Request.
-	// Nil for all other providers (safe — no other MetricSource reads req.Request).
-	var swRequest map[string]any
-
 	// --- 2. Build Queries based on Provider and Kind ---
 	switch metricsProvider {
 	case "datadog":
@@ -3731,23 +3727,45 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 		}
 
 	case "solarwinds":
-		clusterLevel := meta.Namespace == "" && meta.Name == "" && meta.NodeName == ""
-		if meta.Kind == "node" {
+		// An aggregate is answered by fetching the range and collapsing it below, not
+		// by an instant read: the last bucket is one point, not the window's max or avg.
+		if meta.Aggregate.Name != "" {
+			instant = false
+		}
+		var out OutputMetricQuery
+		switch {
+		case meta.Kind == "node":
 			// Node queries use AVG: per-node utilization values are already singular series.
 			queries = buildSolarWindsNodeQueries(meta.NodeName, meta.RequestedMetrics)
-			swRequest = buildSolarWindsRequestParams(meta, buildSolarWindsGroupBy(meta), "AVG")
-		} else if clusterLevel {
-			// Cluster-level needs two separate API calls (different groupBy per metric group).
-			// The helper handles both calls, merges results, and post-processes percentiles.
-			out, err := fetchSolarWindsClusterUtilisation(ctx, req, metricsProvider, integrationSource, meta, instant)
-			canonicaliseUtilisationLabels(out.Results, metricsProvider)
-			return out, err
-		} else {
-			// Workload queries use SUM: pod-level metrics must be summed across all pods
-			// belonging to the workload to yield total workload resource consumption.
+			out, err = FetchMetricsQuery(ctx, FetchMetricsRequest{
+				AccountId:            req.AccountId,
+				MetricProvider:       metricsProvider,
+				MetricProviderSource: integrationSource,
+				Queries:              queries,
+				StartTime:            req.StartTime,
+				EndTime:              req.EndTime,
+				StepInterval:         req.StepInterval,
+				Instant:              instant,
+				Request:              buildSolarWindsRequestParams(meta, buildSolarWindsGroupBy(meta), "AVG", ""),
+			})
+		case meta.Namespace == "" && meta.Name == "" && meta.NodeName == "":
+			// Cluster-level needs separate API calls (different groupBy per metric group).
+			// The helper handles the calls, merges results, and post-processes percentiles.
+			out, err = fetchSolarWindsClusterUtilisation(ctx, req, metricsProvider, integrationSource, meta, instant)
+		default:
+			// Workload queries SUM pod-level metrics across the workload's pods, one call
+			// per entity the SUM must pre-group by.
 			queries = buildSolarWindsWorkloadQueries(meta, meta.RequestedMetrics)
-			swRequest = buildSolarWindsRequestParams(meta, buildSolarWindsGroupBy(meta), "SUM")
+			out, err = fetchSolarWindsWorkloadUtilisation(ctx, req, metricsProvider, integrationSource, meta, queries, instant)
 		}
+		if err != nil {
+			return out, err
+		}
+		// After the cluster path's cross-node percentile, so p90_cpu with aggregate=max is
+		// the peak of the cluster's p90, not a p90 of each node's peak.
+		solarwindsCollapseOverTime(out.Results, meta)
+		canonicaliseUtilisationLabels(out.Results, metricsProvider)
+		return out, nil
 
 	// OpenObserve speaks PromQL but its engine is a subset: no falling-back `or`, no
 	// binary vector arithmetic, no quantile() aggregation. The cluster keys depend on
@@ -3796,7 +3814,6 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 		EndTime:              req.EndTime,
 		StepInterval:         req.StepInterval,
 		Instant:              instant,
-		Request:              swRequest,
 	})
 	if err != nil {
 		return output, err
