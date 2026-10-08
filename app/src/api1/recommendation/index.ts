@@ -2787,6 +2787,14 @@ const apiRecommendations = {
       where.recommendation_id = { _eq: data.recommendationId };
       whereAgg.recommendation_id = { _eq: data.recommendationId };
     }
+    // Severity scopes the listing and its aggregate alike — mirrors
+    // getRecommendationResolutionStatusCounts, which already filters the cards
+    // by rec_severity. Without this the Severity chip updated the cards but
+    // never the list.
+    if (data.severity?.length) {
+      where.rec_severity = { _in: data.severity };
+      whereAgg.rec_severity = { _in: data.severity };
+    }
     const response = await queryGraphQL(GET_RECOMMENDATION_RESOLUTION, 'RecommendationResolution', {
       where,
       whereAgg,
