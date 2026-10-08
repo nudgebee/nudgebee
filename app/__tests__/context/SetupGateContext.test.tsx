@@ -53,14 +53,6 @@ beforeEach(() => {
   mockListK8sAccAgentHealth.mockResolvedValue(agentHealth([]));
 });
 
-// No `<SetupGateProvider>` in the tree at all — the exact shape of a test that
-// renders a consumer in isolation (layout/index.test.jsx does this throughout,
-// deliberately, per its own comment) or of a real wiring bug. `locked: false`
-// already had to be safe here (it decides the route guard); `loading` joined
-// it the moment a second consumer (layout/index.jsx) started holding back
-// real content on `loading` alone, the same way `locked` holds back the
-// route — an unmocked default of `loading: true` would silently blank every
-// such render instead of leaving it alone.
 describe('the context default (no provider ancestor)', () => {
   it('is not loading', () => {
     render(<Probe />);

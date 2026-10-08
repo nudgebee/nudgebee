@@ -163,5 +163,22 @@ describe('UserMenuItems', () => {
       const menu = generateMenuItems();
       expect(menu).not.toContain('Switch Tenant');
     });
+
+    it('omits API Tokens while the setup gate is locked', () => {
+      const menu = generateMenuItems(false, true);
+      expect(menu).not.toContain('API Tokens');
+      expect(menu).toContain('Logout');
+      expect(menu).toContain('Version');
+    });
+
+    it('includes API Tokens once unlocked', () => {
+      const menu = generateMenuItems(false, false);
+      expect(menu).toContain('API Tokens');
+    });
+
+    it('defaults locked to false', () => {
+      const menu = generateMenuItems(false);
+      expect(menu).toContain('API Tokens');
+    });
   });
 });

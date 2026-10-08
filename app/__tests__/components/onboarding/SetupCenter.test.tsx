@@ -92,16 +92,16 @@ jest.mock('@ui/Modal', () => ({
 
 jest.mock('@components/integrations/modal/K8sAccountModal', () => ({
   __esModule: true,
-  // Exposes both callbacks as buttons so tests can tell them apart: step 1
-  // succeeding must refresh readiness without closing the wizard, only the
-  // wizard's own close (step 2 finishing, or the user dismissing it) may do that.
-  default: ({ handleClose, handleOnAccountCreate }: { handleClose: () => void; handleOnAccountCreate?: () => void }) => (
+  default: ({ handleClose, handleOnAccountCreate }: { handleClose: (saved?: boolean) => void; handleOnAccountCreate?: () => void }) => (
     <div data-testid='account-modal-k8s'>
       <button data-testid='k8s-modal-account-created' onClick={handleOnAccountCreate}>
         simulate step 1 success
       </button>
-      <button data-testid='k8s-modal-close' onClick={handleClose}>
-        close
+      <button data-testid='k8s-modal-close' onClick={() => handleClose(true)}>
+        close (account created)
+      </button>
+      <button data-testid='k8s-modal-cancel' onClick={() => handleClose(false)}>
+        cancel (nothing created)
       </button>
     </div>
   ),
@@ -696,6 +696,19 @@ describe('SetupCenter', () => {
     // The wizard's own close is what actually dismisses it.
     fireEvent.click(screen.getByTestId('k8s-modal-close'));
     await waitFor(() => expect(screen.queryByTestId('account-modal-k8s')).not.toBeInTheDocument());
+  });
+
+  it('does not refresh when the K8s wizard is cancelled with nothing created', async () => {
+    mockGetAllAccount.mockResolvedValue(payload());
+    render(<SetupCenter />);
+
+    fireEvent.click(await screen.findByTestId('setup-provider-k8s'));
+    await screen.findByTestId('account-modal-k8s');
+    expect(mockGetAllAccount).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('k8s-modal-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('account-modal-k8s')).not.toBeInTheDocument());
+    expect(mockGetAllAccount).toHaveBeenCalledTimes(1);
   });
 
   it('looks up K8s agent health for an active account, keyed by account id', async () => {

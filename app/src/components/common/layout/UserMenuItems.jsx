@@ -226,10 +226,11 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
 
 /**
  * Generate the menu items array based on conditions
- * @param {Object} options
+ * @param {boolean} hasMultipleTenantAccess
+ * @param {boolean} locked
  * @returns {Array} Array of menu item names
  */
-export const generateMenuItems = (hasMultipleTenantAccess = false) => {
+export const generateMenuItems = (hasMultipleTenantAccess = false, locked = false) => {
   const menu = ['UserInfo'];
 
   if (hasMultipleTenantAccess) {
@@ -238,7 +239,10 @@ export const generateMenuItems = (hasMultipleTenantAccess = false) => {
   // Tenant Settings relocated to Admin -> Tenant Settings (a real page tab now,
   // not an avatar-menu modal) — see docs/ia-consolidation-plan.md.
 
-  menu.push('API Tokens', 'Logout', 'Version');
+  if (!locked) {
+    menu.push('API Tokens');
+  }
+  menu.push('Logout', 'Version');
 
   return menu;
 };

@@ -302,7 +302,7 @@ const mixedStateNote = (item: OnboardingItemStatus): string | undefined => {
  * read as one family at 18px, and the amber ring has to be able to spin while
  * something is genuinely mid-flight.
  */
-const StatusGlyph = ({ state, size = 20, spin = false }: { state: OnboardingState; size?: number; spin?: boolean }) => {
+const StatusGlyph = ({ state, size = 20, spin = false, fraction }: { state: OnboardingState; size?: number; spin?: boolean; fraction?: number }) => {
   const common = { width: size, height: size, viewBox: '0 0 24 24', 'aria-hidden': true as const, style: { flexShrink: 0 } };
   if (state === 'done') {
     return (
@@ -320,6 +320,27 @@ const StatusGlyph = ({ state, size = 20, spin = false }: { state: OnboardingStat
     );
   }
   if (state === 'partial') {
+    if (!spin && fraction !== undefined) {
+      const r = 9.4;
+      const circumference = 2 * Math.PI * r;
+      const filled = Math.max(0, Math.min(1, fraction)) * circumference;
+      return (
+        <svg {...common}>
+          <circle cx='12' cy='12' r={r} fill='none' stroke='var(--ds-amber-200)' strokeWidth='2.3' />
+          <circle
+            cx='12'
+            cy='12'
+            r={r}
+            fill='none'
+            stroke='var(--ds-amber-500)'
+            strokeWidth='2.3'
+            strokeLinecap='round'
+            strokeDasharray={`${filled} ${circumference}`}
+            transform='rotate(-90 12 12)'
+          />
+        </svg>
+      );
+    }
     return (
       <svg {...common}>
         <circle cx='12' cy='12' r='9.4' fill='none' stroke='var(--ds-amber-200)' strokeWidth='2.3' />
@@ -986,6 +1007,7 @@ const PanelBody = ({
       : undefined;
 
   const scorable = panel.items.filter((i) => !i.planned);
+  const anyItemPending = panel.items.some((i) => i.state === 'partial');
   // `connectedBy` names every provider with a real, non-disabled account row —
   // a K8s cluster still waiting on its agent is in there too. The badge says
   // "connected", so it only counts once the item's own state agrees: a row
@@ -1021,7 +1043,12 @@ const PanelBody = ({
           cursor: 'pointer',
         }}
       >
-        <StatusGlyph state={panel.state} size={22} spin={panel.state === 'partial'} />
+        <StatusGlyph
+          state={panel.state}
+          size={22}
+          spin={anyItemPending}
+          fraction={!anyItemPending && panel.requiredTotal > 0 ? panel.requiredDone / panel.requiredTotal : undefined}
+        />
         <Box sx={{ flexGrow: 1, minWidth: 0 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
             <Typography
@@ -1356,10 +1383,15 @@ const SetupCenter = () => {
     setSelectedModules((prev) => (prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]));
   }, []);
 
-  const closeAccountModal = React.useCallback(() => {
-    setAccountModal(null);
-    refreshReadiness();
-  }, [refreshReadiness]);
+  const closeAccountModal = React.useCallback(
+    (saved?: boolean) => {
+      setAccountModal(null);
+      if (saved) {
+        refreshReadiness();
+      }
+    },
+    [refreshReadiness]
+  );
 
   const openIntegration = React.useCallback(
     (route: string) => {
@@ -1554,7 +1586,7 @@ const SetupCenter = () => {
             id={`${CARD_ID}-progress`}
             value={percent}
             size='md'
-            tone={essentialsLeft === 0 ? 'success' : 'neutral'}
+            tone={essentialsLeft === 0 ? 'success' : 'info'}
             // ProgressBar reserves a fixed 80px label column with no overflow
             // handling, so anything longer than about 'N of N' wraps to a second
             // line and knocks the bar out of alignment — the unit can't be

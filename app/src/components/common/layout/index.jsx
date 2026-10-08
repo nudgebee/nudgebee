@@ -383,8 +383,8 @@ const PageLayout = ({ children }) => {
   const favicon = brandingFaviconUrl;
 
   const avatarSubMenu = useMemo(() => {
-    return generateMenuItems(session?.hasMultipleTenantAccess || false);
-  }, []);
+    return generateMenuItems(session?.hasMultipleTenantAccess || false, navLocked);
+  }, [navLocked]);
 
   // LLM_ANALYSER is a per-tenant feature flag, not a UI_ENABLE_* deployment
   // toggle, so it can only be resolved client-side — same pattern as
@@ -988,27 +988,11 @@ const PageLayout = ({ children }) => {
               >
                 <Container maxWidth={false} sx={{ maxWidth: ds.space.mul(0, 900) }} style={{ paddingInline: 0 }}>
                   {gateLoading && router.pathname !== SETUP_ROUTE ? (
-                    // Until the gate's account lookup resolves, we don't yet know whether this
-                    // tenant is locked — so don't paint the real page at all. Reported live: a
-                    // locked tenant saw a genuine, live Home page (right after login, or after
-                    // the hard reload a tenant switch does) for however long that lookup took,
-                    // because nothing told Home to hold back while it was still in flight; only
-                    // once it resolved did the redirect below ever fire. Same reasoning
-                    // AccountGuard's `hideContent` mode already uses for the same class of
-                    // problem (`@ee/components/AccountGuard.tsx`): don't mount — and don't let
-                    // it start fetching — content a guard might immediately redirect away from.
                     <Loader />
                   ) : (
                     <Box
                       sx={navLocked && router.pathname !== SETUP_ROUTE ? { pointerEvents: 'none', opacity: 0.35, filter: 'grayscale(1)' } : undefined}
                     >
-                      {/* Once loaded, the rail dims on navLocked (above) — this region has to
-                          match, since a page's own content has no idea the gate exists.
-                          Reported live: the rail read as locked while the page underneath it
-                          kept rendering and responding to clicks normally. Same treatment, same
-                          condition, one level up. Excluded on /setup for the same reason
-                          PendingAgentInstallBanner already is below: that page's own content is
-                          what the gate is sending people to interact with. */}
                       {/* Reminder for a Kubernetes account whose install command was never
                           run. Lives here, not on one page: the add-cluster modal is reachable
                           from the header everywhere, so the reminder has to follow the user.

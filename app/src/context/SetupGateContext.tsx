@@ -109,14 +109,6 @@ interface SetupGateValue {
 }
 
 const SetupGateContext = React.createContext<SetupGateValue>({
-  // Never `true` here: this default is only ever read absent a real
-  // `SetupGateProvider` ancestor (a test rendering a consumer in isolation, or
-  // a wiring bug — `_app.tsx` always provides one on every real route). A
-  // provider-less `loading: true` would make `layout/index.jsx`'s "don't
-  // paint real content until the gate answers" guard swallow content in every
-  // such case, which is the opposite of this file's own rule one line below:
-  // unknown must never lock (or, now, block) — only a real provider's own
-  // resolving state is `loading`.
   loading: false,
   locked: false,
   canManageSetup: false,
