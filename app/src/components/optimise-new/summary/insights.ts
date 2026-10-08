@@ -315,10 +315,14 @@ export const generateNubiBriefing = (items: InsightItem[], totalDollars?: number
     return [
       { text: `${formatDollars(dollars, symbol)}/mo`, emphasis: 'money' },
       { text: ` in optimization opportunities across ${items.length} findings. ` },
-      { text: `${criticals}`, emphasis: 'alert' },
-      { text: ' are critical severity.' },
+      ...(criticals > 0
+        ? [{ text: `${criticals}`, emphasis: 'alert' as const }, { text: ' are critical severity.' }]
+        : [{ text: 'No critical severity.' }]),
       ...suffix,
     ];
+  }
+  if (items.length === 0) {
+    return [{ text: 'No findings match the current filters.' }, ...suffix];
   }
   return [
     { text: `${items.length} findings` },

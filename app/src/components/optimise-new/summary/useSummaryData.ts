@@ -5,7 +5,7 @@ import apiCloudAccount from '@api1/cloud-account';
 import { NON_SECURITY_CATEGORIES, DEFAULT_STATUS, UPGRADE_PLANNER_RULES } from '../utils';
 import { getBudgetExpectedMonthlyExpense } from '@lib/budget';
 import { getCurrencySymbol } from '@shared/format/Currency';
-import { transformApiToInsight, mapCategoryAndSubCategory } from './transformRecommendation';
+import { transformApiToInsight, mapCategoryAndSubCategory, deriveEnvironment } from './transformRecommendation';
 import type { CurrencyCostSummary, AccountCost } from './AccountClusterPane';
 import { AGING_DAYS, type InsightItem, type MainCategory } from './insights';
 
@@ -45,7 +45,7 @@ export function useSummaryData(accountId?: string | null, envFilter?: string | n
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [totalSavings, setTotalSavings] = useState(0);
-  const [savingsLoading, setSavingsLoading] = useState(true);
+  const [savingsScopeKey, setSavingsScopeKey] = useState<string | null>(null);
   // Tenant-wide (or account-scoped, when `accountId` narrows it) category split —
   // same underlying rows as `totalSavings`, just not collapsed into one sum.
   const [categoryBreakdown, setCategoryBreakdown] = useState(EMPTY_CATEGORY_BREAKDOWN);
@@ -109,15 +109,19 @@ export function useSummaryData(accountId?: string | null, envFilter?: string | n
     };
   }, []);
 
-  // Account scope shared by every aggregate below. A picked account wins; an
-  // env filter resolves to that environment's accounts; neither ⇒ '' (all).
+  // Account scope shared by every aggregate below. A picked account must also
+  // satisfy an active env filter, not just override it. Neither filter set ⇒ '' (all).
   // `scopeKey` is the effect dependency — the array identity changes on every
   // render, the joined string does not.
   const scopedAccountIds = useMemo((): string | string[] => {
-    if (accountId) return accountId;
+    if (accountId) {
+      if (!envFilter) return accountId;
+      const account = accounts[accountId];
+      return deriveEnvironment(account?.account_env, account?.account_name || '') === envFilter ? accountId : [];
+    }
     if (!envFilter) return '';
     return Object.entries(accounts)
-      .filter(([, a]) => (a.account_env === 'prod' ? 'prod' : 'non_prod') === envFilter)
+      .filter(([, a]) => deriveEnvironment(a.account_env, a.account_name) === envFilter)
       .map(([id]) => id);
   }, [accountId, envFilter, accounts]);
   // JSON, not a joined string: `[].join(',')` is `''`, which is also the "every
@@ -126,9 +130,9 @@ export function useSummaryData(accountId?: string | null, envFilter?: string | n
   // Selecting an environment that matches nothing would then leave a tenant-wide
   // headline sitting above an empty list.
   const scopeKey = JSON.stringify(scopedAccountIds);
-  // With an env filter the scope is only meaningful once accounts have landed —
-  // resolving it against an empty map would fetch `_in: []` and flash zeros.
-  const scopeReady = !envFilter || accountId ? true : accountsLoaded;
+  // With an env filter, resolving the scope needs `accounts` loaded (to read
+  // account_env), whether narrowing the full map or checking a single picked account.
+  const scopeReady = !envFilter || accountsLoaded;
 
   // Curated list = most urgent (finops_score) ∪ highest-impact (estimated_savings).
   // The finops ranking alone is dominated by the large volume of high-severity
@@ -187,8 +191,15 @@ export function useSummaryData(accountId?: string | null, envFilter?: string | n
   // from rendering — it only gates the headline number.
   useEffect(() => {
     if (!scopeReady) return;
+    // `_in: []` means "no filter" (all accounts) to the backend, not "no match" —
+    // short-circuit instead of sending it. Same guard as the effects below.
+    if (Array.isArray(scopedAccountIds) && scopedAccountIds.length === 0) {
+      setTotalSavings(0);
+      setCategoryBreakdown(EMPTY_CATEGORY_BREAKDOWN);
+      setSavingsScopeKey(scopeKey);
+      return;
+    }
     let cancelled = false;
-    setSavingsLoading(true);
 
     (async () => {
       try {
@@ -222,7 +233,7 @@ export function useSummaryData(accountId?: string | null, envFilter?: string | n
       } catch (err) {
         console.error('Failed to fetch savings total:', err);
       } finally {
-        if (!cancelled) setSavingsLoading(false);
+        if (!cancelled) setSavingsScopeKey(scopeKey);
       }
     })();
     return () => {
@@ -230,12 +241,17 @@ export function useSummaryData(accountId?: string | null, envFilter?: string | n
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey, scopeReady]);
+  const savingsLoading = savingsScopeKey !== scopeKey;
 
   // Cross-account $-at-stake ranking, only meaningful with no account already
   // selected — decoupled from the curated list's 200-row cap, unlike the
   // client-side reduction this replaces.
   useEffect(() => {
     if (accountId || !scopeReady) {
+      setWorstAccountRaw(null);
+      return;
+    }
+    if (Array.isArray(scopedAccountIds) && scopedAccountIds.length === 0) {
       setWorstAccountRaw(null);
       return;
     }
@@ -364,6 +380,10 @@ export function useSummaryData(accountId?: string | null, envFilter?: string | n
   // in the same universe as the rest of the widget.
   useEffect(() => {
     if (!scopeReady) return;
+    if (Array.isArray(scopedAccountIds) && scopedAccountIds.length === 0) {
+      setSafeToApply(null);
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {

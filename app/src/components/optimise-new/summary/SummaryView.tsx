@@ -217,6 +217,7 @@ const SummaryView = () => {
     loading,
     lastUpdated,
     totalSavings,
+    savingsLoading,
     categoryBreakdown,
     worstAccount,
     wipCount,
@@ -514,8 +515,10 @@ const SummaryView = () => {
             <Box>
               <NubiAvatar iconUrl={nubiIconUrl} name={assistantName} />
             </Box>
-            {loading ? (
-              <Skeleton shape='text' size='text' width={460} />
+            {loading || savingsLoading ? (
+              <Typography component='div' sx={{ flex: 1, minWidth: 0, fontSize: ds.text.body, lineHeight: 2 }}>
+                <Skeleton shape='text' size='text' width={460} sx={{ verticalAlign: 'middle' }} />
+              </Typography>
             ) : (
               <Typography
                 sx={{
