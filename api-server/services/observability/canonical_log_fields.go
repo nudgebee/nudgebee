@@ -64,7 +64,11 @@ var canonicalLogFields = []canonicalLogField{
 // Ignored keys are declared in PROVIDER space, so a canonical field is withheld when
 // its mapped image — or its own name, when unmapped — appears in that list.
 //
-// This is deliberately the only thing that withholds a field. Traces additionally
+// RefusedLogFieldsSource is the other way a field is withheld: the source's builder REFUSES
+// it with an error instead of stripping it (SolarWinds' trace_id), so a caller who sends it
+// learns why, but it must not be advertised as filterable either.
+//
+// Apart from those two, nothing withholds a field. Traces additionally
 // infer "what a provider can resolve" from whether it publishes a mapping at all
 // (providerDeclaresTraceFields), and that inference cost two production incidents
 // (#36940 then #37126) when a provider gained an alias-only mapping. It would be worse
@@ -74,6 +78,11 @@ func resolvableCanonicalLogFields(source LogSource, mergedMapping map[string]str
 	ignored := map[string]struct{}{}
 	if filter, ok := source.(QueryRequestKeyFilter); ok {
 		for _, key := range filter.GetIgnoredQueryRequestKeys() {
+			ignored[key] = struct{}{}
+		}
+	}
+	if refuser, ok := source.(RefusedLogFieldsSource); ok {
+		for _, key := range refuser.RefusedLogFields() {
 			ignored[key] = struct{}{}
 		}
 	}
@@ -93,6 +102,12 @@ func resolvableCanonicalLogFields(source LogSource, mergedMapping map[string]str
 		out = append(out, f)
 	}
 	return out
+}
+
+// RefusedLogFieldsSource is implemented by a log source whose query builder refuses some
+// fields outright. Keys are in provider space, like GetIgnoredQueryRequestKeys.
+type RefusedLogFieldsSource interface {
+	RefusedLogFields() []string
 }
 
 // buildLogLabels returns the field set a caller may filter on: the resolvable canonical

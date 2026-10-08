@@ -18,7 +18,7 @@ const (
 	swTestSeverityEq = "severity:INFO"
 	swTestMsgError   = "message:error"
 	swTestPodABC     = "pod-abc"
-	swTestHostPodX   = "host:pod-x"
+	swTestHostPodX   = `host:"pod-x"`
 	swTestISO2023    = "2023-01-01T00:00:00Z"
 	swTestEntitiesP  = "/v1/entities"
 )
@@ -83,8 +83,11 @@ func TestSWMapField(t *testing.T) {
 		{"timestamp", "time"},
 		{"body", "message"},
 		{"namespace", "k8s.namespace.name"},
-		{"app", "k8s.deployment.name"},
-		{"workload", "k8s.deployment.name"},
+		{"app", swWorkloadField},
+		{"workload", swWorkloadField},
+		{"node", "k8s.node.name"},
+		{"cluster", "k8s.cluster.name"},
+		{"service", "service.name"},
 		// passthrough — not in mapping
 		{"hostname", "hostname"},
 		{"severity", "severity"},
@@ -144,8 +147,11 @@ func TestBuildSWBinaryClause_EqualityOperators(t *testing.T) {
 		op       query.BinaryWhereClauseType
 		expected string
 	}{
-		{"Eq", query.Eq, "host:my-pod"},
-		{"EqF", query.EqF, "host:my-pod"},
+		// Quoted: SolarWinds matches a quoted value exactly (and case-sensitively) on
+		// host and program, but an unquoted one as a case-insensitive substring, so
+		// "pod = api" used to match every api-gateway pod too.
+		{"Eq", query.Eq, `host:"my-pod"`},
+		{"EqF", query.EqF, `host:"my-pod"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -168,7 +174,7 @@ func TestBuildSWBinaryClause_NotEqualOperators(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			result, err := buildSWBinaryClause("hostname", tc.op, "my-pod")
 			assert.NoError(t, err)
-			assert.Equal(t, "-(host:my-pod)", result)
+			assert.Equal(t, `-(host:"my-pod")`, result)
 		})
 	}
 }
@@ -204,7 +210,9 @@ func TestBuildSWBinaryClause_LikeOperators(t *testing.T) {
 		{"ILike", query.ILike, swTestMsgError},
 		{"LikeF", query.LikeF, swTestMsgError},
 		{"ILikeF", query.ILikeF, swTestMsgError},
-		{"NLike", query.NLike, "-(message:error)"},
+		// Case-sensitive: no exact search form, so the exclusion is applied to the rows
+		// and the search fetches everything.
+		{"NLike", query.NLike, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -222,7 +230,7 @@ func TestBuildSWBinaryClause_LikeInteriorWildcardSplitsIntoTerms(t *testing.T) {
 
 	result, err = buildSWBinaryClause("message", query.NLike, "invalid*customer")
 	assert.NoError(t, err)
-	assert.Equal(t, "-(message:invalid AND message:customer)", result)
+	assert.Equal(t, "", result, "applied to the rows; a search exclusion would over-exclude")
 }
 
 func TestBuildSWBinaryClause_LikeOnlyWildcardsMatchesEverything(t *testing.T) {
@@ -231,27 +239,21 @@ func TestBuildSWBinaryClause_LikeOnlyWildcardsMatchesEverything(t *testing.T) {
 	assert.Equal(t, "", result)
 }
 
-func TestBuildSWBinaryClause_ComparisonOperators(t *testing.T) {
-	cases := []struct {
-		name     string
-		op       query.BinaryWhereClauseType
-		expected string
-	}{
-		{"Gt", query.Gt, "duration:>100"},
-		{"GtF", query.GtF, "duration:>100"},
-		{"Gte", query.Gte, "duration:>=100"},
-		{"GteF", query.GteF, "duration:>=100"},
-		{"Lt", query.Lt, "duration:<100"},
-		{"LtF", query.LtF, "duration:<100"},
-		{"Lte", query.Lte, "duration:<=100"},
-		{"LteF", query.LteF, "duration:<=100"},
+// The comparison operators are neither advertised nor rendered: SolarWinds answers
+// "time:>…" with HTTP 500, and the time range belongs in startTime/endTime.
+func TestSolarWindsLogs_ComparisonOperatorsNotAdvertised(t *testing.T) {
+	ops := (&SolarWindsLogSource{}).GetSupportedOperators()
+	for _, op := range []string{"_gt", "_gte", "_lt", "_lte"} {
+		assert.NotContains(t, ops, op)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			result, err := buildSWBinaryClause("duration", tc.op, 100)
-			assert.NoError(t, err)
-			assert.Equal(t, tc.expected, result)
-		})
+}
+
+func TestBuildSWBinaryClause_ComparisonOperatorsRefused(t *testing.T) {
+	for _, op := range []query.BinaryWhereClauseType{query.Gt, query.GtF, query.Gte, query.GteF, query.Lt, query.LtF, query.Lte, query.LteF} {
+		result, err := buildSWBinaryClause("time", op, "2026-10-07T18:20:00Z")
+		assert.Error(t, err, op)
+		assert.Contains(t, err.Error(), "time range")
+		assert.Empty(t, result)
 	}
 }
 
@@ -261,30 +263,30 @@ func TestBuildSWBinaryClause_InOperator(t *testing.T) {
 	t.Run("[]any values", func(t *testing.T) {
 		result, err := buildSWBinaryClause("program", query.In, []any{"nginx", "envoy"})
 		assert.NoError(t, err)
-		assert.Equal(t, "(program:nginx OR program:envoy)", result)
+		assert.Equal(t, `(program:"nginx" OR program:"envoy")`, result)
 	})
 
 	t.Run("[]string values", func(t *testing.T) {
 		result, err := buildSWBinaryClause("program", query.In, []string{"nginx", "envoy"})
 		assert.NoError(t, err)
-		assert.Equal(t, "(program:nginx OR program:envoy)", result)
+		assert.Equal(t, `(program:"nginx" OR program:"envoy")`, result)
 	})
 
 	t.Run("single string fallback", func(t *testing.T) {
 		result, err := buildSWBinaryClause("program", query.In, "nginx")
 		assert.NoError(t, err)
-		assert.Equal(t, "program:nginx", result)
+		assert.Equal(t, `program:"nginx"`, result)
 	})
 
 	t.Run("pod field searched as host", func(t *testing.T) {
 		result, err := buildSWBinaryClause("hostname", query.In, []any{"pod-a", "pod-b"})
 		assert.NoError(t, err)
-		assert.Equal(t, "(host:pod-a OR host:pod-b)", result)
+		assert.Equal(t, `(host:"pod-a" OR host:"pod-b")`, result)
 	})
 
-	t.Run("empty slice", func(t *testing.T) {
+	t.Run("empty slice is refused, not dropped", func(t *testing.T) {
 		result, err := buildSWBinaryClause("program", query.In, []any{})
-		assert.NoError(t, err)
+		assert.Error(t, err)
 		assert.Equal(t, "", result)
 	})
 
@@ -298,7 +300,7 @@ func TestBuildSWBinaryClause_InOperator(t *testing.T) {
 func TestBuildSWBinaryClause_NotInOperator(t *testing.T) {
 	result, err := buildSWBinaryClause("program", query.NotIn, []any{"nginx", "envoy"})
 	assert.NoError(t, err)
-	assert.Equal(t, "-(program:nginx OR program:envoy)", result)
+	assert.Equal(t, `-(program:"nginx" OR program:"envoy")`, result)
 }
 
 // SolarWinds search cannot test whether a field is empty ("IS EMPTY" / "IS NOT
@@ -333,15 +335,68 @@ func TestBuildSWBinaryClause_SeverityUppercased(t *testing.T) {
 	})
 }
 
+// An operator the builder has no case for must be refused. It used to render "",
+// which dropped the filter, so a _regex query returned every row in the window.
 func TestBuildSWBinaryClause_UnknownOperator(t *testing.T) {
-	// Between is not handled — should return empty string with no error
-	result, err := buildSWBinaryClause("hostname", query.Between, "a")
-	assert.NoError(t, err)
+	for _, op := range []query.BinaryWhereClauseType{query.Between, query.Regex, query.NRegex, query.HasKey} {
+		result, err := buildSWBinaryClause("hostname", op, "a")
+		assert.Error(t, err, op)
+		assert.Contains(t, err.Error(), string(op))
+		assert.Empty(t, result)
+	}
+}
+
+// Workloads of every kind: the collector tags a pod with the attribute for its
+// owner's kind, so one deployment-only term missed StatefulSet and DaemonSet logs.
+func TestBuildSWBinaryClause_WorkloadMatchesEveryKind(t *testing.T) {
+	result, err := buildSWBinaryClause(swMapField("app"), query.Eq, "loki")
+	require.NoError(t, err)
+	assert.Equal(t, `(k8s.deployment.name:"loki" OR k8s.daemonset.name:"loki" OR k8s.statefulset.name:"loki")`, result)
+
+	// The search term is a substring match (it also finds loki-canary), so excluding it
+	// would over-exclude; "not loki" is applied to the rows instead.
+	result, err = buildSWBinaryClause(swMapField("workload"), query.Nq, "loki")
+	require.NoError(t, err)
 	assert.Equal(t, "", result)
+
+	result, err = buildSWBinaryClause(swMapField("app"), query.In, []any{"a", "b"})
+	require.NoError(t, err)
+	assert.Equal(t, `((k8s.deployment.name:"a" OR k8s.daemonset.name:"a" OR k8s.statefulset.name:"a") OR `+
+		`(k8s.deployment.name:"b" OR k8s.daemonset.name:"b" OR k8s.statefulset.name:"b"))`, result)
+
+	// Case-sensitive contains cannot be checked on a field the rows do not carry.
+	_, err = buildSWBinaryClause(swMapField("app"), query.Contains, "lok")
+	require.Error(t, err)
+	result, err = buildSWBinaryClause(swMapField("app"), query.IContains, "lok")
+	require.NoError(t, err)
+	assert.Equal(t, `(k8s.deployment.name:lok OR k8s.daemonset.name:lok OR k8s.statefulset.name:lok)`, result)
+}
+
+// Node, cluster and service reach the attributes SolarWinds search matches; as bare
+// canonical names they matched nothing.
+func TestBuildSWBinaryClause_CanonicalK8sFields(t *testing.T) {
+	cases := map[string]string{
+		"node":    `k8s.node.name:"node-1"`,
+		"cluster": `k8s.cluster.name:"node-1"`,
+		"service": `service.name:"node-1"`,
+	}
+	for canonical, want := range cases {
+		result, err := buildSWBinaryClause(swMapField(canonical), query.Eq, "node-1")
+		require.NoError(t, err, canonical)
+		assert.Equal(t, want, result, canonical)
+	}
+}
+
+// No trace id field has been confirmed in SolarWinds log search, so a trace_id
+// filter is refused instead of being sent as a term that matches nothing.
+func TestBuildSWBinaryClause_TraceIDRefused(t *testing.T) {
+	result, err := buildSWBinaryClause("trace_id", query.Eq, "abc")
+	assert.Error(t, err)
+	assert.Empty(t, result)
 }
 
 // ============================================================================
-// buildSWFilterClause / buildSWSubClauses
+// buildSWFilterClause
 // ============================================================================
 
 func TestBuildSWFilterClause_Empty(t *testing.T) {
@@ -358,7 +413,7 @@ func TestBuildSWFilterClause_SingleBinary(t *testing.T) {
 	}
 	result, err := buildSWFilterClause(where)
 	assert.NoError(t, err)
-	assert.Equal(t, "host:pod-abc", result)
+	assert.Equal(t, `host:"pod-abc"`, result)
 }
 
 func TestBuildSWFilterClause_AndSubClauses(t *testing.T) {
@@ -370,7 +425,7 @@ func TestBuildSWFilterClause_AndSubClauses(t *testing.T) {
 	}
 	result, err := buildSWFilterClause(where)
 	assert.NoError(t, err)
-	assert.Equal(t, "(host:pod-a AND severity:ERROR)", result)
+	assert.Equal(t, `(host:"pod-a" AND severity:ERROR)`, result)
 }
 
 func TestBuildSWFilterClause_OrSubClauses(t *testing.T) {
@@ -382,7 +437,7 @@ func TestBuildSWFilterClause_OrSubClauses(t *testing.T) {
 	}
 	result, err := buildSWFilterClause(where)
 	assert.NoError(t, err)
-	assert.Equal(t, "(host:pod-a OR host:pod-b)", result)
+	assert.Equal(t, `(host:"pod-a" OR host:"pod-b")`, result)
 }
 
 func TestBuildSWFilterClause_NotClause(t *testing.T) {
@@ -407,21 +462,8 @@ func TestBuildSWFilterClause_BinaryAndNot(t *testing.T) {
 	assert.NoError(t, err)
 	// Both parts joined by AND
 	assert.Contains(t, result, swTestHostPodX)
-	assert.Contains(t, result, "-(program:sidecar)")
+	assert.Contains(t, result, `-(program:"sidecar")`)
 	assert.Contains(t, result, " AND ")
-}
-
-func TestBuildSWSubClauses_Empty(t *testing.T) {
-	result, err := buildSWSubClauses(nil, " AND ")
-	assert.NoError(t, err)
-	assert.Equal(t, "", result)
-}
-
-func TestBuildSWSubClauses_AllEmpty(t *testing.T) {
-	// Sub-clauses that each produce empty output → combined result is empty
-	result, err := buildSWSubClauses([]query.QueryWhereClause{{}, {}}, " AND ")
-	assert.NoError(t, err)
-	assert.Equal(t, "", result)
 }
 
 // ============================================================================
@@ -440,7 +482,7 @@ func TestBuildLabelValuesFilter_WithCurrentFilters(t *testing.T) {
 		"pod":      "pod-a",
 	})
 	assert.Contains(t, result, swTestSeverityEq)
-	assert.Contains(t, result, "host:pod-a")
+	assert.Contains(t, result, `host:"pod-a"`)
 	assert.Contains(t, result, " AND ")
 	assert.NotContains(t, result, "EMPTY")
 }
@@ -662,13 +704,18 @@ func TestSolarWindsSource_QueryLabels(t *testing.T) {
 	ctx := mockRequestContext()
 	out, err := src.QueryLabels(ctx, FetchLogLabelRequest{AccountId: "acc-1"})
 	assert.NoError(t, err)
-	require.Len(t, out, 5)
+	require.Len(t, out, 10)
 	labels := make([]string, 0, len(out))
 	for _, l := range out {
 		labels = append(labels, l.Label)
 	}
 	sort.Strings(labels)
-	assert.Equal(t, []string{"hostname", "k8s.deployment.name", "k8s.namespace.name", "program", "severity"}, labels)
+	// Every field a canonical label maps to is listed, so the picker and the
+	// empty-result diagnosis both know it.
+	assert.Equal(t, []string{
+		"hostname", "k8s.cluster.name", "k8s.daemonset.name", "k8s.deployment.name", "k8s.namespace.name",
+		"k8s.node.name", "k8s.statefulset.name", "program", "service.name", "severity",
+	}, labels)
 }
 
 // ============================================================================
@@ -930,17 +977,47 @@ func TestSolarWindsSource_QueryLabelValues_WorkloadFromEntities(t *testing.T) {
 	defer func() { solarWindsDoGET = origGET }()
 	solarWindsDoGET = func(apiToken, baseURL, path string, params map[string]string) ([]byte, int, error) {
 		assert.Equal(t, swTestEntitiesP, path)
-		assert.Equal(t, "KubernetesDeployment", params["type"])
-		return []byte(`{"entities":[{"name":"hotrod"}]}`), http.StatusOK, nil
+		switch params["type"] {
+		case "KubernetesDeployment":
+			return []byte(`{"entities":[{"name":"hotrod"}]}`), http.StatusOK, nil
+		case "KubernetesStatefulSet":
+			return []byte(`{"entities":[{"name":"db"}]}`), http.StatusOK, nil
+		case "KubernetesDaemonSet":
+			return []byte(`{"entities":[{"name":"agent"},{"name":"hotrod"}]}`), http.StatusOK, nil
+		}
+		t.Errorf("unexpected entity type %q", params["type"])
+		return nil, http.StatusBadRequest, nil
 	}
 
 	src := &SolarWindsLogSource{}
 	ctx := mockRequestContext()
-	// canonical "app" → "k8s.deployment.name" via swMapField
+	// canonical "app" → every workload kind
 	out, err := src.QueryLabelValues(ctx, FetchLogLabelValuesRequest{AccountId: "acc-1", LabelName: "app"})
 	assert.NoError(t, err)
-	require.Len(t, out, 1)
-	assert.Equal(t, "hotrod", out[0].Value)
+	values := make([]string, 0, len(out))
+	for _, v := range out {
+		values = append(values, v.Value)
+	}
+	assert.ElementsMatch(t, []string{"hotrod", "db", "agent"}, values)
+}
+
+func TestSolarWindsSource_QueryLabelValues_NodeAndClusterFromEntities(t *testing.T) {
+	defer stubSWConfigs()()
+	origGET := solarWindsDoGET
+	defer func() { solarWindsDoGET = origGET }()
+	solarWindsDoGET = func(apiToken, baseURL, path string, params map[string]string) ([]byte, int, error) {
+		assert.Equal(t, swTestEntitiesP, path)
+		return []byte(`{"entities":[{"name":"` + params["type"] + `-1"}]}`), http.StatusOK, nil
+	}
+
+	src := &SolarWindsLogSource{}
+	ctx := mockRequestContext()
+	for label, want := range map[string]string{"node": "KubernetesNode-1", "cluster": "KubernetesCluster-1"} {
+		out, err := src.QueryLabelValues(ctx, FetchLogLabelValuesRequest{AccountId: "acc-1", LabelName: label})
+		require.NoError(t, err, label)
+		require.Len(t, out, 1, label)
+		assert.Equal(t, want, out[0].Value)
+	}
 }
 
 func TestSolarWindsSource_QueryLabelValues_UnknownFieldUsesLogSampling(t *testing.T) {
