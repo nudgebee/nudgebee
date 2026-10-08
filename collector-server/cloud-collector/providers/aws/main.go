@@ -106,6 +106,7 @@ func init() {
 		"systemsmanager":      &awsSystemsManager{},
 		"costoptimizationhub": &awsCostOptimizationHub{},
 		"costexplorer":        &awsCostExplorer{},
+		"commitments":         &awsCommitments{},
 		"computeoptimizer":    &awsComputeOptimizer{},
 		"trustedadvisor":      &awsTrustedAdvisor{},
 	}

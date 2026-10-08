@@ -140,6 +140,15 @@ type appConfig struct {
 	// DescribeConfigRuleEvaluationStatus sweeps instead of per-rule calls.
 	CloudCollectorAwsConfigRuleDiscoveryEnabled bool `mapstructure:"cloud_collector_aws_config_rule_discovery_enabled"`
 
+	// CloudCollectorCommitmentRecommendationsEnabled turns on the "commitments"
+	// recommendation pass (under-used, expiring and poorly covered Savings Plans
+	// and Reserved Instances). Off by default: the rows land in the shared
+	// recommendation table, so the Optimize page lists them from the next sync,
+	// and it has no catalog text or evidence view for these rules yet. While off
+	// the pass reports nothing, which also archives any rows raised while it was
+	// on.
+	CloudCollectorCommitmentRecommendationsEnabled bool `mapstructure:"cloud_collector_commitment_recommendations_enabled"`
+
 	// EnableMultiSourceServicemap is the rollout toggle for the multi-source AWS
 	// service-map engine (VPC Flow Logs etc.) instead of the legacy AWS Config path.
 	// Env: ENABLE_MULTI_SOURCE_SERVICEMAP
@@ -244,6 +253,9 @@ func init() {
 
 	// Per-rule AWS Config discovery is off by default — see CloudCollectorAwsConfigRuleDiscoveryEnabled.
 	viper.SetDefault("cloud_collector_aws_config_rule_discovery_enabled", false)
+
+	// Commitment recommendations are off by default — see CloudCollectorCommitmentRecommendationsEnabled.
+	viper.SetDefault("cloud_collector_commitment_recommendations_enabled", false)
 
 	// Multi-source service-map engine is off by default — see EnableMultiSourceServicemap.
 	viper.SetDefault("enable_multi_source_servicemap", false)

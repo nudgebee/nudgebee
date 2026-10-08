@@ -717,13 +717,13 @@ func storeAccountRecommendations(ctx *security.RequestContext, accountId string)
 // (account-level, not in cloud_resourses). The post-report job runs it before
 // resource discovery: it needs only a few account-level calls, and run after a
 // slow discovery it was the step left with no time budget.
-// AWS: costoptimizationhub, costexplorer, computeoptimizer, trustedadvisor
+// AWS: costoptimizationhub, costexplorer, commitments, computeoptimizer, trustedadvisor
 // GCP: recommender
 // Azure: advisor
 func storeNativeAccountRecommendations(ctx *security.RequestContext, accountId string) map[string]StoreUsageRecommendationResponse {
 	t0 := time.Now()
 	data := map[string]StoreUsageRecommendationResponse{}
-	nativeServices := []string{"costoptimizationhub", "costexplorer", "computeoptimizer", "trustedadvisor", "recommender", "advisor"}
+	nativeServices := []string{"costoptimizationhub", "costexplorer", "commitments", "computeoptimizer", "trustedadvisor", "recommender", "advisor"}
 	for _, svc := range nativeServices {
 		r, err := StoreRecommendations(ctx, accountId, providers.ListRecommendationsRequest{
 			ServiceName: svc,

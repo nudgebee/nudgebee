@@ -43,11 +43,11 @@ func StoreRecommendationsAll(ctx *security.RequestContext, accountId string) (St
 		ctx.GetLogger().Info("stored recommendations", "count", d.Count, "time", time.Since(t0).String())
 	}
 	// Collect native cloud provider recommendations (account-level services not in cloud_resourses)
-	// AWS: costoptimizationhub, costexplorer, computeoptimizer, trustedadvisor
+	// AWS: costoptimizationhub, costexplorer, commitments, computeoptimizer, trustedadvisor
 	// GCP: recommender
 	// Azure: advisor
 	// Services not found for a given cloud provider are silently skipped (return empty).
-	nativeServices := []string{"costoptimizationhub", "costexplorer", "computeoptimizer", "trustedadvisor", "recommender", "advisor"}
+	nativeServices := []string{"costoptimizationhub", "costexplorer", "commitments", "computeoptimizer", "trustedadvisor", "recommender", "advisor"}
 	for _, svc := range nativeServices {
 		d, err := StoreRecommendations(ctx, accountId, providers.ListRecommendationsRequest{
 			ServiceName: svc,

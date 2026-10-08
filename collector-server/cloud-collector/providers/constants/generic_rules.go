@@ -73,6 +73,24 @@ const (
 )
 
 // -----------------------------------------------------------------------------
+// COMMITMENTS - Savings Plans, Reserved Instances, Committed Use Discounts
+// -----------------------------------------------------------------------------
+
+const (
+	// UnderutilizedCommitment - A purchased commitment whose committed usage is not being consumed
+	// AWS: Savings Plans, EC2 and RDS Reserved Instances
+	UnderutilizedCommitment = "underutilized_commitment"
+
+	// CommitmentExpiringSoon - A purchased commitment that ends soon and needs a renewal decision
+	// AWS: Savings Plans, EC2 and RDS Reserved Instances
+	CommitmentExpiringSoon = "commitment_expiring_soon"
+
+	// LowCommitmentCoverage - Too little commitment-eligible usage is covered by a commitment
+	// AWS: Savings Plans
+	LowCommitmentCoverage = "low_commitment_coverage"
+)
+
+// -----------------------------------------------------------------------------
 // SECURITY - Encryption
 // -----------------------------------------------------------------------------
 
