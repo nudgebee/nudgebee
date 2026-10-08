@@ -82,7 +82,8 @@ export const latestUpdatedAt = (rows: Array<{ updated_at?: string | null }> | nu
 
 /**
  * Maps raw API priority / severity strings (HIGH, MEDIUM, FIRING, DEBUG, OK,
- * HIGHEST, …) to ds/SeverityIcon's fixed 5-level union. Unknown / lower-signal
+ * HIGHEST, …) to ds/SeverityIcon's fixed 5-level union. 'warning' folds to the
+ * amber 'medium' tier (the DS has no Warning level). Unknown / lower-signal
  * values collapse to 'info'.
  */
 export type DsSeverityLevel = 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -90,7 +91,7 @@ export const toSeverityLevel = (value: unknown): DsSeverityLevel => {
   const v = (value ?? '').toString().toLowerCase();
   if (v === 'critical' || v === 'highest' || v === 'firing') return 'critical';
   if (v === 'high') return 'high';
-  if (v === 'medium') return 'medium';
+  if (v === 'medium' || v === 'warning') return 'medium';
   if (v === 'low' || v === 'lowest') return 'low';
   return 'info';
 };
