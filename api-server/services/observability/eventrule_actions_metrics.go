@@ -610,7 +610,11 @@ func (a *observabilityMetricsAction) autoExecuteByWorkload(ctx playbooks.Playboo
 		return nil, fmt.Errorf("observabilityMetricsAction: workload utilisation query failed for provider %q: %w", provider, err)
 	}
 
-	return buildWorkloadMetricsResponse(request, metricsoutput), nil
+	resp := buildWorkloadMetricsResponse(request, metricsoutput)
+	if resp == nil {
+		logSkippedMetricsEvidence(ctx.GetLogger(), provider, metricsoutput)
+	}
+	return resp, nil
 }
 
 // workloadMetricTarget is the name and kind the utilisation query is keyed on. A
@@ -675,18 +679,51 @@ func workloadMetricTimeRange(ev playbooks.PlaybookEvent) (int64, int64) {
 	return startTime, endTime
 }
 
-// buildWorkloadMetricsResponse wraps a metrics query output into a playbook
-// response, returning nil when the query produced no data so empty evidence is
-// skipped. queryMeta is recorded under metadata["query"] for traceability.
-func buildWorkloadMetricsResponse(queryMeta any, metricsoutput OutputMetricQuery) playbooks.PlaybookActionResponse {
-	hasData := false
-	for _, r := range metricsoutput.Results {
-		if len(r.Payload) > 0 {
-			hasData = true
-			break
+// firstSeriesWithData returns the first series holding at least one finite
+// sample, or nil. A series is not data just because it exists: a filter that
+// matches nothing can come back as one series with labels {} and no samples
+// (SolarWinds), and null samples are carried as NaN (Datadog gaps, Prometheus
+// "NaN"), which Result.MarshalJSON sends as null along with ±Inf. A zero IS a
+// sample — error counts read `or vector(0)` — so it counts.
+func firstSeriesWithData(metricsoutput OutputMetricQuery) *Result {
+	for i := range metricsoutput.Results {
+		for j := range metricsoutput.Results[i].Payload {
+			series := &metricsoutput.Results[i].Payload[j]
+			for _, v := range series.Values {
+				if nonFiniteKind(v) == "" {
+					return series
+				}
+			}
 		}
 	}
-	if !hasData {
+	return nil
+}
+
+// logSkippedMetricsEvidence says why a metrics action saved no evidence card, so
+// an empty result is diagnosable without re-running the query. Provider errors
+// are included because some (a SolarWinds 404) surface nowhere else.
+func logSkippedMetricsEvidence(logger *slog.Logger, provider string, metricsoutput OutputMetricQuery) {
+	queryKeys := make([]string, 0, len(metricsoutput.Results))
+	series := 0
+	var queryErrors []string
+	for _, r := range metricsoutput.Results {
+		queryKeys = append(queryKeys, r.QueryKey)
+		series += len(r.Payload)
+		if r.Error != nil {
+			queryErrors = append(queryErrors, r.QueryKey+": "+*r.Error)
+		}
+	}
+	logger.Info("metrics action: skipping evidence, no series has a finite sample",
+		"provider", provider, "query_keys", queryKeys, "series", series, "query_errors", queryErrors)
+}
+
+// buildWorkloadMetricsResponse wraps a metrics query output into a playbook
+// response, returning nil when no series carries a finite sample so empty
+// evidence is skipped. queryMeta is recorded under metadata["query"] for
+// traceability.
+func buildWorkloadMetricsResponse(queryMeta any, metricsoutput OutputMetricQuery) playbooks.PlaybookActionResponse {
+	series := firstSeriesWithData(metricsoutput)
+	if series == nil {
 		return nil
 	}
 
@@ -695,16 +732,10 @@ func buildWorkloadMetricsResponse(queryMeta any, metricsoutput OutputMetricQuery
 		"query":                queryMeta,
 	}
 	resp := playbooks.NewPlaybookActionResponseJson(map[string]any{"data": metricsoutput}, map[string]any{}, []playbooks.PlaybookActionResponseInsight{}, metadata)
-	// Lift labels from the first result that actually carries data — Results[0]
-	// may be empty while a later query in the batch has a payload.
+	// Lift labels from the series that carries data — an earlier one may be empty.
 	labels := map[string]any{}
-	for _, r := range metricsoutput.Results {
-		if len(r.Payload) > 0 {
-			for k, v := range r.Payload[0].Metric {
-				labels[k] = v
-			}
-			break
-		}
+	for k, v := range series.Metric {
+		labels[k] = v
 	}
 	resp.Labels = labels
 	return resp
@@ -749,7 +780,8 @@ func (a *observabilityMetricsAction) Execute(ctx playbooks.PlaybookActionContext
 		startTime = endTime - int64(params.Duration*60*1000)
 	}
 
-	metricsoutput, err := FetchMetricsQuery(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), FetchMetricsRequest{
+	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
+	metricsoutput, err := FetchMetricsQuery(requestCtx, FetchMetricsRequest{
 		AccountId: params.AccountId,
 		Queries:   map[string]string{"query": params.Query},
 		StartTime: startTime,
@@ -762,7 +794,13 @@ func (a *observabilityMetricsAction) Execute(ctx playbooks.PlaybookActionContext
 	}
 
 	// Skip empty metric results (nil response) to avoid storing useless evidence.
-	return buildWorkloadMetricsResponse(rawParams, metricsoutput), nil
+	resp := buildWorkloadMetricsResponse(rawParams, metricsoutput)
+	if resp == nil {
+		// Resolved only on the skip path, for the log line.
+		provider, _, _ := GetLogsMetricsTracesProvider(requestCtx, params.AccountId, "", "metrics", "")
+		logSkippedMetricsEvidence(ctx.GetLogger(), provider, metricsoutput)
+	}
+	return resp, nil
 }
 
 // Datadog Metrics Action

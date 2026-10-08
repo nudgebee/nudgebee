@@ -2,6 +2,7 @@ package observability
 
 import (
 	"log/slog"
+	"math"
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/internal/testenv"
@@ -263,6 +264,62 @@ func TestBuildWorkloadMetricsResponse(t *testing.T) {
 			{QueryKey: "cpu_usage", Payload: []Result{}},
 		}}
 		assert.Nil(t, buildWorkloadMetricsResponse(queryMeta, out))
+	})
+
+	// A filter matching nothing on SolarWinds came back as one series with labels
+	// {} and no samples, and was saved as an evidence card with nothing in it.
+	t.Run("nil when the only series has no labels and no samples", func(t *testing.T) {
+		out := OutputMetricQuery{Results: []QueryResult{
+			{QueryKey: "cpu_usage", Payload: []Result{{Metric: map[string]string{}}}},
+		}}
+		assert.Nil(t, buildWorkloadMetricsResponse(queryMeta, out))
+	})
+
+	// Null samples are carried as NaN (Datadog's [ts, null], Prometheus "NaN");
+	// ±Inf marshals as null too. A card of nothing but gaps shows nothing.
+	t.Run("nil when every sample is non-finite", func(t *testing.T) {
+		out := OutputMetricQuery{Results: []QueryResult{
+			{QueryKey: "cpu_usage", Payload: []Result{
+				{Metric: map[string]string{}, Timestamps: []int64{1, 2}, Values: []float64{math.NaN(), math.NaN()}},
+				{Metric: map[string]string{"pod": "web-abc"}, Timestamps: []int64{1, 2}, Values: []float64{math.Inf(1), math.Inf(-1)}},
+			}},
+		}}
+		assert.Nil(t, buildWorkloadMetricsResponse(queryMeta, out))
+	})
+
+	// Zero is a measurement (error counts read `or vector(0)`), not an absence.
+	t.Run("series of real zeros is data", func(t *testing.T) {
+		out := OutputMetricQuery{Results: []QueryResult{
+			{QueryKey: "cpu_usage", Payload: []Result{
+				{Metric: map[string]string{"pod": "web-abc"}, Timestamps: []int64{1, 2}, Values: []float64{0, 0}},
+			}},
+		}}
+		assert.NotNil(t, buildWorkloadMetricsResponse(queryMeta, out))
+	})
+
+	t.Run("one finite sample among gaps is data", func(t *testing.T) {
+		out := OutputMetricQuery{Results: []QueryResult{
+			{QueryKey: "cpu_usage", Payload: []Result{
+				{Metric: map[string]string{"pod": "web-abc"}, Timestamps: []int64{1, 2}, Values: []float64{math.NaN(), 0.25}},
+			}},
+		}}
+		assert.NotNil(t, buildWorkloadMetricsResponse(queryMeta, out))
+	})
+
+	// Labels come from the series that carries data, not an empty one ahead of it.
+	t.Run("labels lifted from first series with data", func(t *testing.T) {
+		out := OutputMetricQuery{Results: []QueryResult{
+			{QueryKey: "empty", Payload: []Result{{Metric: map[string]string{}}}},
+			{QueryKey: "cpu_usage", Payload: []Result{
+				{Metric: map[string]string{"pod": "gap"}, Values: []float64{math.NaN()}},
+				{Metric: map[string]string{"pod": "web-abc"}, Values: []float64{0.5}},
+			}},
+		}}
+		resp := buildWorkloadMetricsResponse(queryMeta, out)
+		require.NotNil(t, resp)
+		jsonResp, ok := resp.(playbooks.PlaybookActionResponseJson)
+		require.True(t, ok, "expected PlaybookActionResponseJson")
+		assert.Equal(t, "web-abc", jsonResp.Labels["pod"])
 	})
 
 	// Regression for the reviewer-flagged label-extraction fix: labels must come
