@@ -36,7 +36,8 @@ type testConnectionResponse struct {
 	Summary string             `json:"summary,omitempty"`
 }
 
-// handleLLMConfigTestApis registers POST /v1/llm-config/test-connection.
+// handleLLMConfigTestApis registers POST /v1/llm-config/test-connection and
+// GET /v1/llm-config/env-status.
 //
 // Auth is enforced by the global authHandlerMiddleware in cmd/main.go (single
 // LLM_SERVER_TOKEN gate). This is an internal service-to-service endpoint —
@@ -53,6 +54,13 @@ type testConnectionResponse struct {
 // user-actionable message.
 func handleLLMConfigTestApis(r *gin.Engine, _ trace.Tracer, _ metric.Meter) {
 	group := r.Group("/v1/llm-config")
+
+	// GET /v1/llm-config/env-status tells api-server whether llm-server has a
+	// platform LLM (ENV) for accounts with no default, so it can decide whether a
+	// change that removes an account's LLM is blocked or only warned about.
+	group.GET("/env-status", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"configured": core.IsEnvLLMConfigured()})
+	})
 
 	group.POST("/test-connection", func(c *gin.Context) {
 		var req testConnectionRequest
