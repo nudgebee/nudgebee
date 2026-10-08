@@ -663,7 +663,7 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, namespace, acc
 		nsClause = fmt.Sprintf(" AND meta->>'namespace' = '%s'", namespace)
 	}
 	nbRequestContext.Stats.RecordDB(
-		fmt.Sprintf("SELECT type, name, namespace, status FROM cloud_resourses WHERE account = %s AND cloud_provider = 'K8s' AND is_active = true AND (name ILIKE ANY %v OR resourse_id ILIKE ANY %v)%s ORDER BY name LIMIT 20", accountId, patterns, patterns, nsClause),
+		fmt.Sprintf("WITH matches AS MATERIALIZED (SELECT type, name, namespace, status FROM cloud_resourses WHERE account = %s AND cloud_provider = 'K8s' AND is_active = true AND (name ILIKE ANY %v OR resourse_id ILIKE ANY %v)%s) SELECT * FROM matches ORDER BY name LIMIT 20", accountId, patterns, patterns, nsClause),
 		dbOutput, err, time.Since(dbStart))
 	if err != nil {
 		// Soft failure — fall through to the live-kubectl fallback, but surface
@@ -686,21 +686,25 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, namespace, acc
 // the package touching the same DB manager.
 func buildResourceSearchDBQuery(accountId, namespace string, patterns []string) (string, []interface{}) {
 	query := `
-		SELECT type,
-		       name,
-		       COALESCE(meta->>'namespace', '') AS namespace,
-		       COALESCE(meta->>'status', '')    AS status
-		FROM cloud_resourses
-		WHERE account = $1
-		  AND cloud_provider = 'K8s'
-		  AND is_active = true
-		  AND (name ILIKE ANY($2) OR resourse_id ILIKE ANY($2))`
+		WITH matches AS MATERIALIZED (
+			SELECT type,
+			       name,
+			       COALESCE(meta->>'namespace', '') AS namespace,
+			       COALESCE(meta->>'status', '')    AS status
+			FROM cloud_resourses
+			WHERE account = $1
+			  AND cloud_provider = 'K8s'
+			  AND is_active = true
+			  AND (name ILIKE ANY($2) OR resourse_id ILIKE ANY($2))`
 	args := []interface{}{accountId, pq.Array(patterns)}
 	if namespace != "" {
 		query += ` AND meta->>'namespace' = $3`
 		args = append(args, namespace)
 	}
 	query += `
+		)
+		SELECT type, name, namespace, status
+		FROM matches
 		ORDER BY name
 		LIMIT 20`
 	return query, args
@@ -725,6 +729,16 @@ func buildResourceSearchDBQuery(accountId, namespace string, patterns []string) 
 // inside the same WHERE clause, before ORDER BY/LIMIT — not as a Go-side filter
 // on the result — so a real match in the requested namespace can't be crowded
 // out of the top-20 by same-name matches in other namespaces.
+//
+// The filter runs in a MATERIALIZED CTE and ORDER BY/LIMIT apply to its result.
+// Written as one query block, `ORDER BY name LIMIT 20` lets Postgres walk the
+// (account, name) index in name order and stop at the 20th match, which reads
+// every row of the account — inactive ones included — until it gets there:
+// measured at 26s and 45s for accounts with 2M and 250k rows whose matches sort
+// late, against 0.3s and 1.3s cold with the filter materialized first. The
+// planner cannot see that cost because it assumes matches are spread evenly
+// through the name order. Materializing keeps the lookup on the trigram and
+// active-row indexes, so its cost is bounded by the account's active rows.
 func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId, namespace string, patterns []string) ([]K8sResourceInfo, error) {
 	if len(patterns) == 0 {
 		return nil, nil
