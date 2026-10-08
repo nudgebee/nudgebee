@@ -84,6 +84,33 @@ func TestResolveQueryWindowStillFiring(t *testing.T) {
 	assert.WithinDuration(t, time.Now(), end, 5*time.Second)
 }
 
+// What the event service hands over for an alert that has not resolved: a start
+// ten minutes before the alert and an end an hour after it. That is 70 minutes
+// wide, so the floor did not apply, and all but ten of them had not happened yet.
+func TestResolveQueryWindowFutureEndIsNotAnEnd(t *testing.T) {
+	fired := time.Now()
+	start, end := PlaybookEvent{
+		StartedAt: at(fired.Add(-10 * time.Minute)),
+		EndedAt:   at(fired.Add(time.Hour)),
+	}.ResolveQueryWindow(0)
+	assert.WithinDuration(t, time.Now(), end, 5*time.Second)
+	assert.Equal(t, DefaultQueryWindowMinutes*time.Minute, end.Sub(start))
+}
+
+// The clamp only reaches an end that has not happened yet. An alert that has
+// been firing for two days is handed over with end = start + 1h like any other,
+// and that end is long past: the window stays on the alert's start instead of
+// sliding to the most recent hours.
+func TestResolveQueryWindowOldFiringAlertStaysOnItsStart(t *testing.T) {
+	fired := time.Now().Add(-48 * time.Hour)
+	start, end := PlaybookEvent{
+		StartedAt: at(fired.Add(-10 * time.Minute)),
+		EndedAt:   at(fired.Add(time.Hour)),
+	}.ResolveQueryWindow(0)
+	assert.True(t, start.Equal(fired.Add(-10*time.Minute)), "start moved to %s", start)
+	assert.True(t, end.Equal(fired.Add(time.Hour)), "end moved to %s", end)
+}
+
 func TestResolveQueryWindowNoTimes(t *testing.T) {
 	start, end := PlaybookEvent{}.ResolveQueryWindow(0)
 	assert.Equal(t, DefaultQueryWindowMinutes*time.Minute, end.Sub(start))

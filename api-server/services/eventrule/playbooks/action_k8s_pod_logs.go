@@ -35,6 +35,16 @@ func (a *podLogAction) CanAutoExecute(ctx PlaybookActionContext) bool {
 	if kind == "deployment" || kind == "daemonset" || kind == "statefulset" || kind == "replicaset" || kind == "rollout" {
 		return false
 	}
+	// A Job is not a pod either, and its pods already have a reader: job_pod_enricher
+	// picks the failed pod and reads its current container. Asked for the Job by
+	// name, this action can only fail — a finished Job's pod has no previous
+	// container, and one already cleaned up has no pod.
+	if kind == "job" || kind == "cronjob" {
+		return false
+	}
+	if IsNeverStartedContainerAggKey(ctx.GetEvent().AggregationKey) {
+		return false
+	}
 	// Resolve namespace: SubjectNamespace is canonical, Labels is fallback
 	namespace := ctx.GetEvent().SubjectNamespace
 	if namespace == "" {
@@ -85,20 +95,20 @@ func podLogAutoParams(event PlaybookEvent) map[string]any {
 // terminatedContainerAggKeys is the set of event classes whose subject
 // container is already dead when enrichment runs.
 //
-// It is not a list of "things that crash". job_failure, KubeJobFailed,
-// KubePodCrashLooping and KubeContainerWaiting are all terminated-container
-// cases that were reading the live container: a finished Job has no live
-// container at all, so those events carried the replacement pod's output or
-// none. Guessing wrong is cheap — Execute retries against the live container
-// when the previous one's logs have already been garbage collected.
+// It is not a list of "things that crash": KubePodCrashLooping and
+// KubeContainerWaiting are terminated-container cases that were reading the
+// live container. Guessing wrong is cheap — Execute retries against the live
+// container when the previous one has no logs to give.
+//
+// Two groups that used to be here are not. image_pull_backoff_reporter's
+// container never started, so it has no previous instance to read
+// (IsNeverStartedContainerAggKey). job_failure and KubeJobFailed are about a
+// Job, which CanAutoExecute leaves to job_pod_enricher.
 var terminatedContainerAggKeys = map[string]bool{
-	"report_crash_loop":           true,
-	"pod_oom_killer_enricher":     true,
-	"image_pull_backoff_reporter": true,
-	"job_failure":                 true,
-	"KubeJobFailed":               true,
-	"KubePodCrashLooping":         true,
-	"KubeContainerWaiting":        true,
+	"report_crash_loop":       true,
+	"pod_oom_killer_enricher": true,
+	"KubePodCrashLooping":     true,
+	"KubeContainerWaiting":    true,
 }
 
 func (a *podLogAction) Execute(ctx PlaybookActionContext, rawParams map[string]any) (PlaybookActionResponse, error) {
@@ -108,31 +118,30 @@ func (a *podLogAction) Execute(ctx PlaybookActionContext, rawParams map[string]a
 		return nil, err
 	}
 
-	relayResponse, additionalInfo, err := a.fetch(ctx, params, params.Previous)
+	current, err := a.fetch(ctx, params, params.Previous)
 	if err != nil {
 		return nil, err
 	}
-	data, ok := relayResponse["data"].(string)
-	if !ok {
-		ctx.GetLogger().Error("relay: unable to process request", "response", slog.AnyValue(relayResponse))
-		return nil, errors.New("relay: unable to execute relay query")
-	}
 
 	// A previous container's logs live on the node that ran it and are garbage
-	// collected with it, so `previous: true` can answer "unable to retrieve
-	// container logs for containerd://…" — a successful response carrying no
-	// logs. Storing that string is worse than storing nothing: it reads as the
-	// workload's output, and because this action belongs to
-	// eventrule.logActions it also marks the log category collected, so the
-	// account's configured log source is never asked. Retry live instead.
+	// collected with it, and a container on its first run has no previous
+	// instance at all. Either way `previous: true` comes back with no logs — as
+	// "unable to retrieve container logs for containerd://…" in a successful
+	// response, or as "previous terminated container … not found" in a failed
+	// one. Storing that string is worse than storing nothing: it reads as the
+	// workload's output, and because this action belongs to eventrule.logActions
+	// it also marks the log category collected, so the account's configured log
+	// source is never asked. Retry live instead.
 	usedPrevious := params.Previous
-	if params.Previous && !usableAgentLogOutput(data) {
+	if usedPrevious && !current.usable() && !current.noPods {
 		ctx.GetLogger().Info("k8s_pod_log_enricher: previous container logs unavailable, retrying live container",
 			"pod", params.Name, "namespace", params.Namespace)
-		if liveResponse, liveInfo, liveErr := a.fetch(ctx, params, false); liveErr == nil {
-			if liveData, ok := liveResponse["data"].(string); ok && usableAgentLogOutput(liveData) {
-				relayResponse, additionalInfo, data, usedPrevious = liveResponse, liveInfo, liveData, false
-			}
+		// With no previous instance the live container is the only one there is,
+		// so it becomes the subject whatever it answers. A previous instance that
+		// was merely quiet in the window stays the subject unless the live one has
+		// something to say.
+		if live, liveErr := a.fetch(ctx, params, false); liveErr == nil && (live.usable() || current.refused) {
+			current, usedPrevious = live, false
 		}
 	}
 
@@ -140,17 +149,16 @@ func (a *podLogAction) Execute(ctx PlaybookActionContext, rawParams map[string]a
 	// to say: the container may simply have been quiet for the last hour, and on
 	// an account with no configured log source the agent is the only thing that
 	// can answer at all. Drop the window and take the tail, marked so nobody
-	// reads it as the incident's output.
+	// reads it as the incident's output. Not when the cluster refused: a container
+	// that never started has no tail either.
 	outsideWindow := false
-	if params.SinceTime > 0 && !usableAgentLogOutput(data) {
+	if params.SinceTime > 0 && !current.usable() && !current.refused {
 		unwindowed := params
 		unwindowed.SinceTime = 0
 		ctx.GetLogger().Info("k8s_pod_log_enricher: no logs inside the event window, falling back to the container tail",
 			"pod", params.Name, "namespace", params.Namespace, "since_time", params.SinceTime)
-		if tailResponse, tailInfo, tailErr := a.fetch(ctx, unwindowed, usedPrevious); tailErr == nil {
-			if tailData, ok := tailResponse["data"].(string); ok && usableAgentLogOutput(tailData) {
-				relayResponse, additionalInfo, data, outsideWindow = tailResponse, tailInfo, tailData, true
-			}
+		if tail, tailErr := a.fetch(ctx, unwindowed, usedPrevious); tailErr == nil && tail.usable() {
+			current, outsideWindow = tail, true
 		}
 	}
 
@@ -160,11 +168,12 @@ func (a *podLogAction) Execute(ctx PlaybookActionContext, rawParams map[string]a
 	// the week to 2026-09-23 — and, because this action belongs to
 	// eventrule.logActions, suppresses the account's configured log source for
 	// that event. Nil is the honest answer: no evidence, category still open.
-	if !usableAgentLogOutput(data) {
+	if !current.usable() {
 		ctx.GetLogger().Info("k8s_pod_log_enricher: no usable container logs, leaving log collection to the configured source",
-			"pod", params.Name, "namespace", params.Namespace, "previous", usedPrevious)
+			"pod", params.Name, "namespace", params.Namespace, "previous", usedPrevious, "reason", current.reason)
 		return nil, nil
 	}
+	relayResponse, additionalInfo, data := current.response, current.additionalInfo, current.data
 
 	filename, ok := relayResponse["filename"].(string)
 	if !ok {
@@ -230,8 +239,32 @@ func (a *podLogAction) Execute(ctx PlaybookActionContext, rawParams map[string]a
 	}, nil
 }
 
+// executeLogsEnricherFn is an indirection so tests can script the agent's answers.
+var executeLogsEnricherFn = relay.ExecuteAndExtractResponse
+
+// podLogFetch is one logs_enricher answer.
+type podLogFetch struct {
+	response       map[string]any
+	additionalInfo map[string]any
+	data           string
+	// refused is the cluster saying this container instance has no logs to give:
+	// it never started, it has no previous instance, its logs were collected with
+	// it. Asking again over a different window cannot change that; asking for a
+	// different instance can.
+	refused bool
+	// noPods is the refusal that covers every instance: the subject has no pod,
+	// so there is no live container to try in place of the previous one.
+	noPods bool
+	// reason is what the cluster said when it refused, for the log line.
+	reason string
+}
+
+func (f podLogFetch) usable() bool {
+	return !f.refused && usableAgentLogOutput(f.data)
+}
+
 // fetch runs one logs_enricher round-trip for the given container instance.
-func (a *podLogAction) fetch(ctx PlaybookActionContext, params podLogParams, previous bool) (map[string]any, map[string]any, error) {
+func (a *podLogAction) fetch(ctx PlaybookActionContext, params podLogParams, previous bool) (podLogFetch, error) {
 	actionParams := map[string]any{
 		"container_name": params.ContainerName,
 		"name":           params.Name,
@@ -260,7 +293,30 @@ func (a *podLogAction) fetch(ctx PlaybookActionContext, params podLogParams, pre
 		NoSinks: true,
 		Cache:   false,
 	}
-	return relay.ExecuteAndExtractResponse(relayRequest)
+	response, additionalInfo, err := executeLogsEnricherFn(relayRequest)
+	if err != nil {
+		// The agent reports the kubelet's "no logs here" answers as a failed action,
+		// so they arrive as an error rather than as output. They are still an
+		// answer, and Execute's fallbacks are written for it: returned as an error,
+		// "previous terminated container … not found" ended the run before the
+		// live-container retry could start.
+		if ClusterHasNoLogs(err.Error()) {
+			return podLogFetch{refused: true, noPods: noPodsAnswerPattern.MatchString(err.Error()), reason: err.Error()}, nil
+		}
+		return podLogFetch{}, err
+	}
+	data, ok := response["data"].(string)
+	if !ok {
+		ctx.GetLogger().Error("relay: unable to process request", "response", slog.AnyValue(response))
+		return podLogFetch{}, errors.New("relay: unable to execute relay query")
+	}
+	fetched := podLogFetch{response: response, additionalInfo: additionalInfo, data: data}
+	// Some of these answers come back as the body of a successful read instead:
+	// the kubelet serves "unable to retrieve container logs for …" as log content.
+	if decoded, decodeErr := DecodeAgentPayload(data); decodeErr == nil && IsLogRetrievalFailure(decoded) {
+		fetched.refused, fetched.reason = true, strings.TrimSpace(decoded)
+	}
+	return fetched, nil
 }
 
 // maxPodLogInsights is how many log patterns become card highlights.

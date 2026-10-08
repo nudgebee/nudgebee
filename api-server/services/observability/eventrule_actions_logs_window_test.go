@@ -1,11 +1,15 @@
 package observability
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
 
 	"nudgebee/services/eventrule/playbooks"
+	"nudgebee/services/relay"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -165,4 +169,90 @@ func TestKubectlLogKindsMatchesRelayRouting(t *testing.T) {
 		"pod":         true,
 		"job":         true,
 	}, kubectlLogKinds)
+}
+
+// scriptAgentLogActions stands a scripted agent in for the relay and returns the
+// names of the actions it was asked to run, in order.
+func scriptAgentLogActions(t *testing.T, answer func(action string) (map[string]any, error)) *[]string {
+	t.Helper()
+	actions := []string{}
+	original := executeAgentLogActionFn
+	t.Cleanup(func() { executeAgentLogActionFn = original })
+	executeAgentLogActionFn = func(request relay.RelayExecuteRequest) (map[string]any, map[string]any, error) {
+		actions = append(actions, request.Body.ActionName)
+		response, err := answer(request.Body.ActionName)
+		return response, map[string]any{}, err
+	}
+	return &actions
+}
+
+// kubectlAnswer is the shape kubectl_command_executor answers in: the command's
+// output as a JSON string inside a JsonBlock.
+func kubectlAnswer(stdout, stderr string, exitCode int) map[string]any {
+	inner, _ := json.Marshal(map[string]any{"command": "kubectl logs", "stdout": stdout, "stderr": stderr, "exit_code": exitCode})
+	return map[string]any{"type": "json", "data": string(inner)}
+}
+
+func deploymentLogContext() playbooks.PlaybookActionContext {
+	return playbooks.NewPlaybookActionContext("t", "a", slog.Default(), playbooks.PlaybookEvent{
+		SubjectName:      "web",
+		SubjectNamespace: "shop",
+		SubjectType:      "deployment",
+	})
+}
+
+// A container that never started makes `kubectl logs` exit non-zero, but that is
+// the cluster answering. logs_enricher would ask the same kubelet the same thing.
+func TestFetchLogsViaRelay_NoLogsFromTheClusterStopsAtKubectl(t *testing.T) {
+	actions := scriptAgentLogActions(t, func(string) (map[string]any, error) {
+		return kubectlAnswer("",
+			`Error from server (BadRequest): container "web" in pod "web-7d4b9c5f6-x2x7q" is waiting to start: CreateContainerConfigError`+"\n", 1), nil
+	})
+
+	response, err := (&observabilityLogAction{}).fetchLogsViaRelay(deploymentLogContext(), "web", "shop")
+
+	assert.NoError(t, err)
+	assert.Nil(t, response)
+	assert.Equal(t, []string{"kubectl_command_executor"}, *actions)
+}
+
+// Any other kubectl failure keeps its second route, and so does a refusal that
+// came after output: with --all-containers a waiting sidecar fails the command
+// once the other containers have written theirs.
+func TestFetchLogsViaRelay_KubectlFailureStillFallsBack(t *testing.T) {
+	cases := map[string]map[string]any{
+		"kubectl timed out": kubectlAnswer("", "error: timed out waiting for the condition\n", 1),
+		"a waiting sidecar after the others wrote theirs": kubectlAnswer(
+			"2026-08-20T08:14:47.884081861Z started\n",
+			`Error from server (BadRequest): container "proxy" in pod "web-7d4b9c5f6-x2x7q" is waiting to start: PodInitializing`+"\n", 1),
+	}
+	for name, kubectl := range cases {
+		t.Run(name, func(t *testing.T) {
+			actions := scriptAgentLogActions(t, func(action string) (map[string]any, error) {
+				if action == "kubectl_command_executor" {
+					return kubectl, nil
+				}
+				return nil, fmt.Errorf("relay: unable to execute relay query -  %v", "logs_enricher: no pods found for workload")
+			})
+
+			response, err := (&observabilityLogAction{}).fetchLogsViaRelay(deploymentLogContext(), "web", "shop")
+
+			// The agent finding no pods is an answer too, so the chain ends without
+			// an error rather than with the second route's.
+			assert.NoError(t, err)
+			assert.Nil(t, response)
+			assert.Equal(t, []string{"kubectl_command_executor", "logs_enricher"}, *actions)
+		})
+	}
+}
+
+func TestFetchLogsViaLogsEnricher_FailedReadIsStillAnError(t *testing.T) {
+	scriptAgentLogActions(t, func(string) (map[string]any, error) {
+		return nil, errors.New("unable to consume relay API")
+	})
+
+	response, err := (&observabilityLogAction{}).fetchLogsViaLogsEnricher(deploymentLogContext(), "web", "shop")
+
+	assert.Error(t, err)
+	assert.Nil(t, response)
 }

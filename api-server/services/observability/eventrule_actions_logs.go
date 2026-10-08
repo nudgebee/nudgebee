@@ -2024,22 +2024,13 @@ func isK8sLogTarget(workloadName, namespace string) bool {
 	return workloadName != "" && len(workloadName) <= 253 && k8sObjectNamePattern.MatchString(workloadName)
 }
 
-// noWorkloadLogAggKeys are event classes where a workload-scoped log query
-// cannot return the subject's logs, so whatever it does return is another pod's.
-//
-// An ImagePullBackOff pod never started a container and has no logs by
-// definition, but `logs` queries by workload, so it answered with the healthy
-// replicas still serving the old image. On dev, 130 of 133 such payloads
-// contained no reference to the failing pod at all, and 48 carried error lines
-// from unrelated work — rendered under the failing pod's finding. The image
-// name, the pull error and the pod events are the evidence here, and
-// pod_enricher plus resource_events_enricher already collect them.
-var noWorkloadLogAggKeys = map[string]bool{
-	"image_pull_backoff_reporter": true,
-}
-
 func (a *observabilityLogAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
-	if noWorkloadLogAggKeys[ctx.GetEvent().AggregationKey] {
+	// A workload-scoped log query cannot return the logs of a container that never
+	// started, so whatever it does return is another pod's. An ImagePullBackOff pod
+	// has no logs by definition, but `logs` queries by workload, so it answered
+	// with the healthy replicas still serving the old image — error lines from
+	// unrelated work, rendered under the failing pod's finding.
+	if playbooks.IsNeverStartedContainerAggKey(ctx.GetEvent().AggregationKey) {
 		return false
 	}
 	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
@@ -2101,9 +2092,18 @@ func (a *observabilityLogAction) AutoExecute(ctx playbooks.PlaybookActionContext
 				}
 				result, execErr := a.Execute(ctx, params)
 				if execErr == nil && result != nil {
+					// Same line the workload path writes, so one count covers every
+					// event the configured source answered. This path used to be
+					// silent, which made the source look almost unused in the logs.
+					ctx.GetLogger().Info("observability: logs auto action found results via configured source",
+						"query", query)
 					return result, nil
 				}
-				ctx.GetLogger().Info("observability: PlaybookQueryGenerator Execute failed, falling back to workload query", "error", execErr)
+				if execErr != nil {
+					ctx.GetLogger().Info("observability: PlaybookQueryGenerator Execute failed, falling back to workload query", "error", execErr)
+				} else {
+					ctx.GetLogger().Info("observability: generated log query returned no logs, trying workload query", "query", query)
+				}
 			} else {
 				ctx.GetLogger().Info("observability: PlaybookQueryGenerator failed, trying workload query", "error", genErr)
 			}
@@ -2264,6 +2264,9 @@ func (a *observabilityLogAction) autoExecuteByWorkload(ctx playbooks.PlaybookAct
 	return a.fetchLogsViaRelay(ctx, workloadName, namespace)
 }
 
+// executeAgentLogActionFn is an indirection so tests can script the agent's answers.
+var executeAgentLogActionFn = relay.ExecuteAndExtractResponse
+
 // fetchLogsViaRelay fetches logs via relay. For workload kinds (Deployment, DaemonSet,
 // StatefulSet, ReplicaSet) it uses kubectl logs since logs_enricher expects a pod name.
 func (a *observabilityLogAction) fetchLogsViaRelay(ctx playbooks.PlaybookActionContext, workloadName, namespace string) (playbooks.PlaybookActionResponse, error) {
@@ -2320,8 +2323,15 @@ func (a *observabilityLogAction) fetchLogsViaLogsEnricher(ctx playbooks.Playbook
 		NoSinks: true,
 		Cache:   false,
 	}
-	relayResponse, additionalInfo, err := relay.ExecuteAndExtractResponse(relayRequest)
+	relayResponse, additionalInfo, err := executeAgentLogActionFn(relayRequest)
 	if err != nil {
+		// The agent reports "no pods found for workload" and the kubelet's own
+		// no-logs answers as a failed action. They are the answer, not a failure.
+		if playbooks.ClusterHasNoLogs(err.Error()) {
+			ctx.GetLogger().Info("observability: the cluster has no logs for this subject",
+				"workload", workloadName, "namespace", namespace, "reason", err.Error())
+			return nil, nil
+		}
 		return nil, err
 	}
 	raw, ok := relayResponse["data"].(string)
@@ -2427,7 +2437,7 @@ func (a *observabilityLogAction) fetchLogsViaKubectl(ctx playbooks.PlaybookActio
 		NoSinks: true,
 		Cache:   false,
 	}
-	relayResponse, additionalInfo, err := relay.ExecuteAndExtractResponse(relayRequest)
+	relayResponse, additionalInfo, err := executeAgentLogActionFn(relayRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -2436,6 +2446,16 @@ func (a *observabilityLogAction) fetchLogsViaKubectl(ctx playbooks.PlaybookActio
 	// relayResponse["data"] (a JSON-encoded string), not at the top level.
 	stdout, stderr, exitCode, haveExitCode := extractKubectlOutput(relayResponse)
 	if kubectlLogsFailed(stdout, stderr, exitCode, haveExitCode) {
+		// A container that is waiting to start, or has exited and taken its logs with
+		// it, makes kubectl exit non-zero — but it is the cluster answering, and
+		// logs_enricher would only put the same question to the same kubelet. Only
+		// when kubectl printed nothing: with --all-containers a waiting sidecar fails
+		// the command after the other containers have written theirs.
+		if stdout == "" && playbooks.ClusterHasNoLogs(stderr) {
+			ctx.GetLogger().Info("observability: the cluster has no logs for this subject",
+				"workload", workloadName, "namespace", namespace, "reason", strings.TrimSpace(stderr))
+			return nil, nil
+		}
 		ctx.GetLogger().Error("relay: kubectl logs failed",
 			"exit_code", exitCode, "have_exit_code", haveExitCode, "stderr", stderr, "response", slog.AnyValue(relayResponse))
 		return nil, fmt.Errorf("relay: kubectl logs failed (exit %d): %s", exitCode, stderr)
