@@ -284,11 +284,11 @@ const AmazonRdsDetails = ({ drilldownQuery }: { drilldownQuery: any }) => {
         {drilldownQuery.meta?.DeletionProtection !== undefined && (
           <DataBlock title={'Deletion protection'} isCopyable={false} data={drilldownQuery.meta.DeletionProtection ? 'Enabled' : 'Disabled'} />
         )}
-        {drilldownQuery.meta?.Iops && <DataBlock title={'Provisioned IOPS'} isCopyable={false} data={drilldownQuery.meta.Iops + ' IOPS'} />}
-        {drilldownQuery.meta?.StorageThroughput && (
+        {drilldownQuery.meta?.Iops > 0 && <DataBlock title={'Provisioned IOPS'} isCopyable={false} data={drilldownQuery.meta.Iops + ' IOPS'} />}
+        {drilldownQuery.meta?.StorageThroughput > 0 && (
           <DataBlock title={'Storage throughput'} isCopyable={false} data={drilldownQuery.meta.StorageThroughput + ' MiBps'} />
         )}
-        {drilldownQuery.meta?.MaxAllocatedStorage && (
+        {drilldownQuery.meta?.MaxAllocatedStorage > 0 && (
           <DataBlock title={'Maximum storage threshold'} isCopyable={false} data={drilldownQuery.meta.MaxAllocatedStorage + ' GiB'} />
         )}
         {drilldownQuery.meta?.StorageEncrypted !== undefined && (
@@ -301,7 +301,7 @@ const AmazonRdsDetails = ({ drilldownQuery }: { drilldownQuery: any }) => {
             data={drilldownQuery.meta?.PerformanceInsightsEnabled ? 'Turned On' : 'Turned Off'}
           />
         )}
-        {drilldownQuery.meta?.PerformanceInsightsRetentionPeriod && (
+        {drilldownQuery.meta?.PerformanceInsightsRetentionPeriod > 0 && (
           <DataBlock title={'Retention period'} isCopyable={false} data={drilldownQuery.meta.PerformanceInsightsRetentionPeriod + ' days'} />
         )}
       </Box>
