@@ -442,6 +442,15 @@ func TestOtelClickhouseTraceSource_QueryGroupedTraces_SelectsAvgDurationNs(t *te
 	assert.False(t, rawDef.IsAggregated)
 }
 
+// TestGetBaseGroupingTraceQuery_FallbackDerivesDestinationZone pins that the non-materialized
+// grouping query (taken here because no agent is on record) reads the destination zone through
+// query.DestinationZoneExpr, i.e. from the misspelled key node-agent actually emits (#40498).
+func TestGetBaseGroupingTraceQuery_FallbackDerivesDestinationZone(t *testing.T) {
+	q := (&OtelClickhouseTraceSource{}).GetBaseGroupingTraceQuery(security.NewRequestContextForSuperAdmin(nil, nil, nil), "no-such-account")
+
+	assert.Contains(t, q, query.DestinationZoneExpr+" AS destination_workload_zone")
+}
+
 // TestQueryTracesRaw_Live exercises the raw-table capability against a live relay +
 // ClickHouse. It runs an aggregation (GROUP BY service with count + p95 latency) and
 // asserts QueryTracesRaw returns the real computed columns/values, while the typed

@@ -437,7 +437,8 @@ func (s *AzureAppInsightsTraceSource) convertAzureTraceToOpenteleMetry(azureTrac
 					switch k {
 					case "cloud.account.id":
 						otelTrace.ResourceAttributes["cloud.account.id"] = fmt.Sprintf("%v", v)
-					case "destination.cloud.availability_zone":
+					// node-agent emits this key misspelled; accept both (see query.DestinationZoneExpr).
+					case "destination.cloud.availablity_zone", "destination.cloud.availability_zone":
 						otelTrace.ResourceAttributes["cloud.availability_zone"] = fmt.Sprintf("%v", v)
 					case "cloud.region":
 						otelTrace.ResourceAttributes["cloud.region"] = fmt.Sprintf("%v", v)
