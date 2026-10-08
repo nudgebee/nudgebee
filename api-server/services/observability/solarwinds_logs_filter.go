@@ -136,7 +136,7 @@ func swIsGroup(expr string) bool {
 
 // renderSWWhere renders a where tree in the given mode. Binary fields and operators are
 // visited in sorted order so the same filter always renders the same string.
-func renderSWWhere(w query.QueryWhereClause, mode swRenderMode) (swClause, error) {
+func renderSWWhere(w query.QueryWhereClause, mode swRenderMode, env *swRenderEnv) (swClause, error) {
 	var parts []swClause
 
 	fields := make([]string, 0, len(w.Binary))
@@ -151,7 +151,7 @@ func renderSWWhere(w query.QueryWhereClause, mode swRenderMode) (swClause, error
 		}
 		sort.Strings(ops)
 		for _, op := range ops {
-			clause, err := renderSWLeaf(field, query.BinaryWhereClauseType(op), w.Binary[field][query.BinaryWhereClauseType(op)], mode)
+			clause, err := renderSWLeaf(field, query.BinaryWhereClauseType(op), w.Binary[field][query.BinaryWhereClauseType(op)], mode, env)
 			if err != nil {
 				return swClause{}, err
 			}
@@ -162,7 +162,7 @@ func renderSWWhere(w query.QueryWhereClause, mode swRenderMode) (swClause, error
 	if len(w.And) > 0 {
 		children := make([]swClause, 0, len(w.And))
 		for _, sub := range w.And {
-			c, err := renderSWWhere(sub, mode)
+			c, err := renderSWWhere(sub, mode, env)
 			if err != nil {
 				return swClause{}, err
 			}
@@ -173,7 +173,7 @@ func renderSWWhere(w query.QueryWhereClause, mode swRenderMode) (swClause, error
 	if len(w.Or) > 0 {
 		children := make([]swClause, 0, len(w.Or))
 		for _, sub := range w.Or {
-			c, err := renderSWWhere(sub, mode)
+			c, err := renderSWWhere(sub, mode, env)
 			if err != nil {
 				return swClause{}, err
 			}
@@ -182,7 +182,7 @@ func renderSWWhere(w query.QueryWhereClause, mode swRenderMode) (swClause, error
 		parts = append(parts, swOr(children))
 	}
 	if w.Not != nil {
-		c, err := renderSWWhere(*w.Not, !mode)
+		c, err := renderSWWhere(*w.Not, !mode, env)
 		if err != nil {
 			return swClause{}, err
 		}
@@ -208,20 +208,66 @@ func swPositiveOp(op query.BinaryWhereClauseType) (query.BinaryWhereClauseType, 
 	return op, false
 }
 
-func renderSWLeaf(field string, op query.BinaryWhereClauseType, val any, mode swRenderMode) (swClause, error) {
+func renderSWLeaf(field string, op query.BinaryWhereClauseType, val any, mode swRenderMode, env *swRenderEnv) (swClause, error) {
+	if field == "severity" {
+		var err error
+		if op, val, err = swSeverityLeaf(op, val); err != nil {
+			return swClause{}, err
+		}
+	}
 	pos, negated := swPositiveOp(op)
 	if negated {
-		inner, err := renderSWPositive(field, pos, val, !mode)
+		inner, err := renderSWPositive(field, pos, val, !mode, env)
 		return swNot(inner), err
 	}
-	return renderSWPositive(field, pos, val, mode)
+	return renderSWPositive(field, pos, val, mode, env)
+}
+
+// swSeverityLeaf turns any level condition into equality on a level the reader knows, so a
+// level filter always gets the token expansion and the row check. "level ilike error" used
+// to search severity:ERROR alone, which matches none of the Kubernetes lines (all INFO).
+// Pattern operators are accepted when, wildcards removed, the value names a level; any other
+// level condition is refused.
+func swSeverityLeaf(op query.BinaryWhereClauseType, val any) (query.BinaryWhereClauseType, any, error) {
+	pos, negated := swPositiveOp(op)
+	check := func(v string) (string, error) {
+		if swNormalizeLevel(strings.ToLower(v)) == "" {
+			return "", fmt.Errorf("SolarWinds log level filter: %q is not a level (use error, warn, info or debug)", v)
+		}
+		return v, nil
+	}
+	switch pos {
+	case query.Eq, query.EqF:
+		v, err := check(fmt.Sprintf("%v", val))
+		return op, v, err
+	case query.In:
+		values := swListValues(val)
+		out := make([]any, 0, len(values))
+		for _, v := range values {
+			if _, err := check(v); err != nil {
+				return op, nil, err
+			}
+			out = append(out, v)
+		}
+		return op, out, nil
+	case query.Contains, query.IContains, query.Like, query.LikeF, query.ILike, query.ILikeF:
+		v, err := check(strings.TrimSpace(strings.Trim(fmt.Sprintf("%v", val), "%*")))
+		if err != nil {
+			return op, nil, err
+		}
+		if negated {
+			return query.Nq, v, nil
+		}
+		return query.Eq, v, nil
+	}
+	return op, val, nil // the operator's own refusal (is_null, ranges, …) applies
 }
 
 // swRowFields are the fields a /v1/logs row carries, so a filter on them can be checked
 // exactly after the search. severity is carried too, but keeps SolarWinds' own semantics.
 var swRowFields = map[string]bool{"hostname": true, "program": true, "message": true}
 
-func renderSWPositive(field string, op query.BinaryWhereClauseType, val any, mode swRenderMode) (swClause, error) {
+func renderSWPositive(field string, op query.BinaryWhereClauseType, val any, mode swRenderMode, env *swRenderEnv) (swClause, error) {
 	if field == "trace_id" {
 		return swClause{}, fmt.Errorf("SolarWinds log search has no confirmed trace id field; filter on the message text instead")
 	}
@@ -234,7 +280,10 @@ func renderSWPositive(field string, op query.BinaryWhereClauseType, val any, mod
 	var term string
 	switch op {
 	case query.Eq, query.EqF:
-		term = swTerm(field, strVal, !severity)
+		if severity && swLevelOf(strVal) == "info" {
+			break // see swLevelOf: no search term finds INFO rows; the row check does
+		}
+		term = swTerm(field, strVal, true)
 	case query.In:
 		values := swListValues(val)
 		if len(values) == 0 {
@@ -243,10 +292,11 @@ func renderSWPositive(field string, op query.BinaryWhereClauseType, val any, mod
 		}
 		terms := make([]string, 0, len(values))
 		for _, v := range values {
-			if severity {
-				v = strings.ToUpper(v)
+			if severity && swLevelOf(v) == "info" {
+				terms = nil
+				break
 			}
-			terms = append(terms, swTerm(field, v, !severity))
+			terms = append(terms, swTerm(field, v, true))
 		}
 		term = strings.Join(terms, " OR ")
 		if len(terms) > 1 {
@@ -267,12 +317,33 @@ func renderSWPositive(field string, op query.BinaryWhereClauseType, val any, mod
 	}
 
 	clause := swExprClause(term)
+	// Under a negation, a workload's own pods (when known) name exactly a subset of its
+	// lines, so "app != loki" can be excluded by SolarWinds instead of read and dropped.
+	if mode == swSubset && (op == query.Eq || op == query.EqF || op == query.In) {
+		if pods := env.workloadPodTerms(field, op, val); pods != "" {
+			return swExprClause(pods), nil
+		}
+	}
 	// In subset mode an inexact term — including no term at all, as for level=info — must
 	// not stand for the rows it would select: render false and let the row check decide.
 	if mode == swSubset && !swTermIsExact(field, op, strVal) {
 		return swClause{kind: swFalse}, nil
 	}
 	return clause, nil
+}
+
+// swLevelOf folds a level word onto the reader's vocabulary (error / warn / info / debug),
+// or returns it lower-cased when it has no place there.
+//
+// "info" has no search term: SolarWinds matches its Kubernetes rows (shown as INFO) as
+// severity:DEBUG, not severity:INFO, so a level=info filter searches without narrowing and the
+// row check keeps the rows shown as info.
+func swLevelOf(level string) string {
+	lower := strings.ToLower(level)
+	if normalized := swNormalizeLevel(lower); normalized != "" {
+		return normalized
+	}
+	return lower
 }
 
 func swListValues(val any) []string {
@@ -298,7 +369,7 @@ func swTermIsExact(field string, op query.BinaryWhereClauseType, val string) boo
 		switch {
 		case field == "hostname", field == "program":
 			return true // quoted values are exact on event fields
-		case field == "message", field == "k8s.namespace.name", swWorkloadPodPatterns(field) != nil:
+		case field == "message", field == "severity", field == "k8s.namespace.name", swWorkloadPodPatterns(field) != nil:
 			return false
 		}
 		return true // other attributes: SolarWinds' substring semantics are the meaning
@@ -416,6 +487,12 @@ func evalSWWhere(w query.QueryWhereClause, row swRow) swTri {
 }
 
 func evalSWLeaf(field string, op query.BinaryWhereClauseType, val any, row swRow) swTri {
+	if field == "severity" {
+		var err error
+		if op, val, err = swSeverityLeaf(op, val); err != nil {
+			return swMaybe // refused when rendered; never reached for a row
+		}
+	}
 	pos, negated := swPositiveOp(op)
 	t := evalSWPositive(field, pos, val, row)
 	if negated {
@@ -426,6 +503,26 @@ func evalSWLeaf(field string, op query.BinaryWhereClauseType, val any, row swRow
 
 func evalSWPositive(field string, op query.BinaryWhereClauseType, val any, row swRow) swTri {
 	strVal := fmt.Sprintf("%v", val)
+	if field == "severity" {
+		// The level a row is shown with (SolarWinds' own, or the line's level token), so a
+		// level filter returns exactly the rows the reader labels that level.
+		var wants []string
+		switch op {
+		case query.Eq, query.EqF:
+			wants = []string{strVal}
+		case query.In:
+			wants = swListValues(val)
+		default:
+			return swMaybe
+		}
+		have := swLevelOf(row.log.Severity)
+		for _, want := range wants {
+			if swLevelOf(want) == have {
+				return swYes
+			}
+		}
+		return swNo
+	}
 	if v, ok := row.field(field); ok {
 		switch op {
 		case query.Eq, query.EqF:
@@ -584,7 +681,7 @@ func querySWPodNamespacesFor(apiToken, baseURL string, pods []string) (map[strin
 		}
 		body, statusCode, err := solarWindsDoGET(apiToken, baseURL, "/v1/entities", params)
 		if err != nil {
-			return nil, fmt.Errorf("SolarWinds pod namespace lookup failed: %w", err)
+			return nil, swRequestError("SolarWinds pod namespace lookup failed", err)
 		}
 		if statusCode != http.StatusOK {
 			return nil, fmt.Errorf("SolarWinds entities API returned HTTP %d", statusCode)
@@ -721,4 +818,165 @@ func filterSWRows(apiToken, baseURL string, w query.QueryWhereClause, logs []Out
 		}
 	}
 	return kept, nil
+}
+
+// ---------------------------------------------------------------------------------------
+// Workload exclusion by pod
+// ---------------------------------------------------------------------------------------
+
+// swRenderEnv carries what rendering may use beyond the filter itself. nil renders without it.
+type swRenderEnv struct {
+	// workloadPods maps swWorkloadPodsKey(field, workload) to the workload's pods, for the
+	// workloads whose pods are known completely enough to exclude by.
+	workloadPods map[string][]string
+}
+
+func swWorkloadPodsKey(field, workload string) string { return field + "\x00" + workload }
+
+// workloadPodTerms renders "these workloads' pods" as exact host terms, or "" when a value's
+// pods are not known.
+func (e *swRenderEnv) workloadPodTerms(field string, op query.BinaryWhereClauseType, val any) string {
+	if e == nil || swWorkloadPodPatterns(field) == nil {
+		return ""
+	}
+	values := []string{fmt.Sprintf("%v", val)}
+	if op == query.In {
+		values = swListValues(val)
+	}
+	var terms []string
+	for _, v := range values {
+		pods, ok := e.workloadPods[swWorkloadPodsKey(field, v)]
+		if !ok {
+			return ""
+		}
+		for _, pod := range pods {
+			terms = append(terms, swSearchField("hostname")+":"+swQuote(pod))
+		}
+	}
+	if len(terms) == 0 {
+		return ""
+	}
+	if len(terms) == 1 {
+		return terms[0]
+	}
+	return "(" + strings.Join(terms, " OR ") + ")"
+}
+
+// swWorkloadExclusionMaxPods caps how many pods an exclusion names; a workload with more
+// (a long-lived Deployment's pod history) is excluded by the row check instead.
+const swWorkloadExclusionMaxPods = 40
+
+// swWorkloadPodPages bounds the entity pages read per workload.
+const swWorkloadPodPages = 2
+
+// swWorkloadLeaves collects the (field, workload) pairs of every workload equality / in leaf.
+func swWorkloadLeaves(w query.QueryWhereClause, out map[[2]string]struct{}) {
+	for field, ops := range w.Binary {
+		if swWorkloadPodPatterns(field) == nil {
+			continue
+		}
+		for op, val := range ops {
+			pos, _ := swPositiveOp(op)
+			switch pos {
+			case query.Eq, query.EqF:
+				out[[2]string{field, fmt.Sprintf("%v", val)}] = struct{}{}
+			case query.In:
+				for _, v := range swListValues(val) {
+					out[[2]string{field, v}] = struct{}{}
+				}
+			}
+		}
+	}
+	for _, sub := range append(append([]query.QueryWhereClause{}, w.And...), w.Or...) {
+		swWorkloadLeaves(sub, out)
+	}
+	if w.Not != nil {
+		swWorkloadLeaves(*w.Not, out)
+	}
+}
+
+// swResolveRenderEnv looks up the pods of every workload the filter names. Lookups that fail
+// or find too many pods are left out, which only means the row check does that exclusion.
+func swResolveRenderEnv(apiToken, baseURL string, w query.QueryWhereClause) *swRenderEnv {
+	leaves := map[[2]string]struct{}{}
+	swWorkloadLeaves(w, leaves)
+	env := &swRenderEnv{workloadPods: map[string][]string{}}
+	for leaf := range leaves {
+		field, workload := leaf[0], leaf[1]
+		pods, ok := swWorkloadPodsCached(apiToken, baseURL, field, workload)
+		if ok {
+			env.workloadPods[swWorkloadPodsKey(field, workload)] = pods
+		}
+	}
+	return env
+}
+
+// swWorkloadPods lists the pods SolarWinds knows for a workload: an entity name search (a
+// substring match), narrowed to names shaped as that workload's pods. ok is false when the
+// list may be incomplete or too long to name in a search.
+func swWorkloadPods(apiToken, baseURL, field, workload string) (pods []string, ok bool) {
+	if workload == "" {
+		return nil, false
+	}
+	params := map[string]string{"type": "KubernetesPod", "name": workload, "pageSize": "1000"}
+	for page := 0; page < swWorkloadPodPages; page++ {
+		body, statusCode, err := solarWindsDoGET(apiToken, baseURL, "/v1/entities", params)
+		if err != nil || statusCode != http.StatusOK {
+			return nil, false
+		}
+		var resp swEntityResponse
+		if json.Unmarshal(body, &resp) != nil {
+			return nil, false
+		}
+		for _, e := range resp.Entities {
+			if swPodOwnedBy(e.Name, workload, field) {
+				pods = append(pods, e.Name)
+			}
+		}
+		if len(pods) > swWorkloadExclusionMaxPods {
+			return nil, false
+		}
+		token := swNextSkipToken(&swPageInfo{NextPage: resp.PageInfo.NextPage})
+		if token == "" {
+			return pods, true
+		}
+		params["skipToken"] = token
+	}
+	return nil, false // more pages than we read: the list may be incomplete
+}
+
+// swWorkloadPodsTTL bounds how long a workload's pod list is reused: GetQuery and QueryLogs
+// resolve the same filter back to back, and a new pod only costs a row-check exclusion.
+const swWorkloadPodsTTL = 2 * time.Minute
+
+var swWorkloadPodsCache = struct {
+	sync.Mutex
+	entries map[string]swWorkloadPodsEntry
+}{entries: map[string]swWorkloadPodsEntry{}}
+
+type swWorkloadPodsEntry struct {
+	pods    []string
+	ok      bool
+	expires time.Time
+}
+
+func swWorkloadPodsCached(apiToken, baseURL, field, workload string) ([]string, bool) {
+	key := swPodNamespaceCacheKey(apiToken, baseURL, swWorkloadPodsKey(field, workload))
+	now := time.Now()
+	swWorkloadPodsCache.Lock()
+	e, hit := swWorkloadPodsCache.entries[key]
+	swWorkloadPodsCache.Unlock()
+	if hit && now.Before(e.expires) {
+		return e.pods, e.ok
+	}
+	pods, ok := swWorkloadPods(apiToken, baseURL, field, workload)
+	swWorkloadPodsCache.Lock()
+	swWorkloadPodsCache.entries[key] = swWorkloadPodsEntry{pods: pods, ok: ok, expires: now.Add(swWorkloadPodsTTL)}
+	for k, old := range swWorkloadPodsCache.entries {
+		if now.After(old.expires) {
+			delete(swWorkloadPodsCache.entries, k)
+		}
+	}
+	swWorkloadPodsCache.Unlock()
+	return pods, ok
 }

@@ -35,9 +35,10 @@ type ObservabilityLogResponse struct {
 	// (unknown label name / unknown label value) when a canonical query matched nothing.
 	// Empty when the diagnosis found nothing actionable (a genuinely empty result).
 	Suggestion string `json:"suggestion,omitempty"`
-	// Coverage is set when the read stopped at its line limit. Nil means only
-	// that the limit asked for was not reached — a backend that lowers the
-	// limit on its own gives no sign of it here.
+	// Coverage is set when the read stopped at its line limit, or when the
+	// backend reported it stopped before reading the whole window (Partial).
+	// Nil means only that neither happened — a backend that lowers the limit on
+	// its own and does not say so gives no sign of it here.
 	Coverage *ObservabilityLogCoverage `json:"coverage,omitempty"`
 }
 
@@ -49,6 +50,10 @@ type ObservabilityLogResponse struct {
 type ObservabilityLogCoverage struct {
 	Limit    int `json:"limit"`
 	Returned int `json:"returned"`
+	// Partial is set when the backend stopped before reading the whole window
+	// although the limit was not reached (services-server's `partial`, e.g. a
+	// SolarWinds search out of time). Returned is then a lower bound.
+	Partial bool `json:"partial,omitempty"`
 	// Oldest and Newest bound the returned lines, RFC3339 UTC. Empty unless
 	// every line carried a timestamp that could be read: a span drawn from
 	// some of the lines would understate what was returned.
@@ -74,6 +79,18 @@ func NewObservabilityLogCoverage(logs []ObservabilityLog, limit int, startMs, en
 	if limit <= 0 || len(logs) < limit {
 		return nil
 	}
+	return newObservabilityLogCoverage(logs, limit, startMs, endMs)
+}
+
+// NewPartialObservabilityLogCoverage is the coverage of a read the backend says it
+// stopped before the end of the window (partial), whatever the line count.
+func NewPartialObservabilityLogCoverage(logs []ObservabilityLog, limit int, startMs, endMs int64) *ObservabilityLogCoverage {
+	coverage := newObservabilityLogCoverage(logs, limit, startMs, endMs)
+	coverage.Partial = true
+	return coverage
+}
+
+func newObservabilityLogCoverage(logs []ObservabilityLog, limit int, startMs, endMs int64) *ObservabilityLogCoverage {
 	coverage := &ObservabilityLogCoverage{Limit: limit, Returned: len(logs)}
 	// The lines are not sorted: several backends return them grouped by stream.
 	var oldest, newest time.Time

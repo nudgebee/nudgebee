@@ -691,6 +691,12 @@ func TestMakeFetchResponse_ReadCoverage(t *testing.T) {
 		assert.Empty(t, logReadCoverageNote(`{"stdout":"line"}`))
 	})
 
+	t.Run("a backend that stopped before the window's end: counts are a lower bound", func(t *testing.T) {
+		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":2000,"returned":85,"partial":true}}`)
+		assert.True(t, strings.HasPrefix(note, "partial read: the log backend stopped before reading the whole window, "+
+			`so the 85 lines returned are a lower bound — report counts as "at least 85", not as the total`), note)
+	})
+
 	t.Run("a span that could not be read is left out of the note", func(t *testing.T) {
 		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":5000,"returned":5000}}`)
 		assert.Equal(t, "partial read: the read stopped at its limit of 5000 lines, so the window may hold more lines than were read; "+

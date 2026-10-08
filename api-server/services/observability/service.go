@@ -901,6 +901,13 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 	return defaultProvider, defaultSource, matchedIntegration, nil
 }
 
+// PartialLogSource is a LogSource that can say its answer stopped short: it returns the lines
+// it found plus partial=true when it ran out of time before reading the whole window and
+// before reaching the limit (FetchLogsResult.Partial).
+type PartialLogSource interface {
+	QueryLogsPartial(ctx *security.RequestContext, req FetchLogRequest) ([]OutputLog, bool, error)
+}
+
 func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (FetchLogsResult, error) {
 	source, err := getLogSourceForAccount(ctx, fetchLogRequest.AccountId, fetchLogRequest.LogProvider, fetchLogRequest.LogProviderSource)
 	if err != nil {
@@ -993,7 +1000,13 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		}
 	}
 
-	logs, err := source.QueryLogs(ctx, fetchLogRequest)
+	var logs []OutputLog
+	partial := false
+	if ps, ok := source.(PartialLogSource); ok {
+		logs, partial, err = ps.QueryLogsPartial(ctx, fetchLogRequest)
+	} else {
+		logs, err = source.QueryLogs(ctx, fetchLogRequest)
+	}
 
 	// Resolve the query that was actually used so callers (UI, LLM, runbooks) can show
 	// it — including on the empty-result diagnosis early-returns below, not just the
@@ -1069,7 +1082,7 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	}
 	normalizeOutputLogLabels(logs, filteringMap)
 
-	return FetchLogsResult{Logs: logs, Query: usedQuery, Provider: provider}, nil
+	return FetchLogsResult{Logs: logs, Query: usedQuery, Provider: provider, Partial: partial}, nil
 }
 
 // lineContentFields are where-clause fields that filter the log message body
@@ -2150,7 +2163,8 @@ func mergeLogGroupsByPattern(out LogGroupOutput) LogGroupOutput {
 	// longer holds.
 	sort.SliceStable(groups, func(i, j int) bool { return groups[i].Count > groups[j].Count })
 
-	return LogGroupOutput{Groups: groups}
+	// Merging regroups; it does not change how much of the window was read.
+	return LogGroupOutput{Groups: groups, Sampled: out.Sampled, SampleStartTime: out.SampleStartTime}
 }
 
 // timestampedValues keeps a group's Values aligned with its Timestamps while

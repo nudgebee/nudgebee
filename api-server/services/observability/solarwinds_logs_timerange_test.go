@@ -1,9 +1,11 @@
 package observability
 
 import (
+	"errors"
 	"testing"
 
 	"nudgebee/services/query"
+	"nudgebee/services/security"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,7 +37,13 @@ func TestSWFoldTimeRange(t *testing.T) {
 	})
 
 	t.Run("GetQuery folds the range instead of failing on it", func(t *testing.T) {
-		q, err := (&SolarWindsLogSource{}).GetQuery(nil, req(query.QueryWhereClause{And: []query.QueryWhereClause{
+		// No configs: GetQuery renders without entity lookups, so no network is needed.
+		orig := solarWindsGetConfigs
+		solarWindsGetConfigs = func(*security.RequestContext, string) (string, string, error) {
+			return "", "", errors.New("no configs")
+		}
+		defer func() { solarWindsGetConfigs = orig }()
+		q, err := (&SolarWindsLogSource{}).GetQuery(mockRequestContext(), req(query.QueryWhereClause{And: []query.QueryWhereClause{
 			{Binary: query.BinaryWhereClause{"time": {query.Gte: "2026-10-07T17:30:00Z"}}},
 			{Binary: query.BinaryWhereClause{"program": {query.Eq: "api"}}},
 		}}))

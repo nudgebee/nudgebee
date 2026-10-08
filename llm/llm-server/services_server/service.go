@@ -405,6 +405,9 @@ func QueryLogs(ctx security.RequestContext, request LogQueryRequest) (core.Obser
 		Query      string                  `json:"query"`
 		Provider   string                  `json:"provider"`
 		Suggestion string                  `json:"suggestion"`
+		// Partial: the backend stopped before reading the whole window without
+		// reaching the limit, so Logs are the newest matches, not all of them.
+		Partial bool `json:"partial"`
 	}
 	if err = common.UnmarshalJson(jsonBody, &body); err != nil {
 		return observabilityResp, err
@@ -413,6 +416,9 @@ func QueryLogs(ctx security.RequestContext, request LogQueryRequest) (core.Obser
 	observabilityResp.Logs = body.Logs
 	observabilityResp.Suggestion = body.Suggestion
 	observabilityResp.Coverage = core.NewObservabilityLogCoverage(body.Logs, request.Limit, request.StartTime, request.EndTime)
+	if body.Partial {
+		observabilityResp.Coverage = core.NewPartialObservabilityLogCoverage(body.Logs, request.Limit, request.StartTime, request.EndTime)
+	}
 	if body.Query != "" {
 		observabilityResp.Metadata.Query = body.Query
 	}

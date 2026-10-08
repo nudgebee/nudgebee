@@ -317,21 +317,29 @@ func TestBuildSWBinaryClause_IsNullOperatorUnsupported(t *testing.T) {
 
 func TestBuildSWBinaryClause_SeverityUppercased(t *testing.T) {
 	t.Run("Eq on severity lowercases input uppercased in output", func(t *testing.T) {
+		result, err := buildSWBinaryClause("severity", query.Eq, "warn")
+		assert.NoError(t, err)
+		assert.Contains(t, result, "severity:WARN ")
+	})
+
+	t.Run("Eq info has no search term", func(t *testing.T) {
+		// Kubernetes rows shown as INFO match severity:DEBUG in search, not severity:INFO.
 		result, err := buildSWBinaryClause("severity", query.Eq, "info")
 		assert.NoError(t, err)
-		assert.Equal(t, swTestSeverityEq, result)
+		assert.Equal(t, "", result)
 	})
 
 	t.Run("In on severity uppercases all items", func(t *testing.T) {
 		result, err := buildSWBinaryClause("severity", query.In, []any{"warn", "error"})
 		assert.NoError(t, err)
-		assert.Equal(t, "(severity:WARN OR severity:ERROR)", result)
+		assert.Contains(t, result, "severity:WARN ")
+		assert.Contains(t, result, "severity:ERROR ")
 	})
 
-	t.Run("Contains on severity uppercases value", func(t *testing.T) {
+	t.Run("Contains on severity is equality on the level it names", func(t *testing.T) {
 		result, err := buildSWBinaryClause("severity", query.Contains, "err")
 		assert.NoError(t, err)
-		assert.Equal(t, "severity:ERR", result)
+		assert.Equal(t, swSeverityTerm("ERR"), result)
 	})
 }
 
@@ -425,7 +433,7 @@ func TestBuildSWFilterClause_AndSubClauses(t *testing.T) {
 	}
 	result, err := buildSWFilterClause(where)
 	assert.NoError(t, err)
-	assert.Equal(t, `(host:"pod-a" AND severity:ERROR)`, result)
+	assert.Equal(t, `(host:"pod-a" AND `+swSeverityTerm("ERROR")+`)`, result)
 }
 
 func TestBuildSWFilterClause_OrSubClauses(t *testing.T) {
@@ -447,7 +455,7 @@ func TestBuildSWFilterClause_NotClause(t *testing.T) {
 	where := query.QueryWhereClause{Not: &inner}
 	result, err := buildSWFilterClause(where)
 	assert.NoError(t, err)
-	assert.Equal(t, "-(severity:DEBUG)", result)
+	assert.Equal(t, "", result, "applied to the rows by the level they are shown with")
 }
 
 func TestBuildSWFilterClause_BinaryAndNot(t *testing.T) {
@@ -492,7 +500,7 @@ func TestBuildLabelValuesFilter_CanonicalNameMapped(t *testing.T) {
 	result := buildLabelValuesFilter(map[string]string{
 		"level": "error",
 	})
-	assert.Equal(t, "severity:error", result)
+	assert.Equal(t, swSeverityTerm("ERROR"), result)
 }
 
 // ============================================================================
@@ -1120,12 +1128,12 @@ func TestGroupSWLogsByPattern_PatternHashMatchesGroupingHash(t *testing.T) {
 func TestGroupSWLogsByPattern_NamespaceFilter(t *testing.T) {
 	// When selectedNamespace is set, only groups from that namespace are returned.
 	logs := []OutputLog{
-		{Message: "error in prod", Severity: "error", Labels: map[string]any{"hostname": "svc-a-abc12-xyz98", "program": "api"}},
-		{Message: "error in staging", Severity: "error", Labels: map[string]any{"hostname": "svc-b-abc12-xyz98", "program": "api"}},
+		{Message: "error in prod", Severity: "error", Labels: map[string]any{"hostname": "svc-a-7d9f8c6b5-bcdfg", "program": "api"}},
+		{Message: "error in staging", Severity: "error", Labels: map[string]any{"hostname": "svc-b-7d9f8c6b5-bcdfg", "program": "api"}},
 	}
 	podNamespaces := map[string]string{
-		"svc-a-abc12-xyz98": "production",
-		"svc-b-abc12-xyz98": "staging",
+		"svc-a-7d9f8c6b5-bcdfg": "production",
+		"svc-b-7d9f8c6b5-bcdfg": "staging",
 	}
 
 	out := groupSWLogsByPattern(logs, podNamespaces, "production", "", 0)
@@ -1136,12 +1144,12 @@ func TestGroupSWLogsByPattern_NamespaceFilter(t *testing.T) {
 func TestGroupSWLogsByPattern_NoNamespaceFilterReturnsAll(t *testing.T) {
 	// Empty selectedNamespace returns groups from all namespaces.
 	logs := []OutputLog{
-		{Message: "error alpha", Severity: "error", Labels: map[string]any{"hostname": "svc-a-abc12-xyz98", "program": "api"}},
-		{Message: "error beta", Severity: "error", Labels: map[string]any{"hostname": "svc-b-abc12-xyz98", "program": "api"}},
+		{Message: "error alpha", Severity: "error", Labels: map[string]any{"hostname": "svc-a-7d9f8c6b5-bcdfg", "program": "api"}},
+		{Message: "error beta", Severity: "error", Labels: map[string]any{"hostname": "svc-b-7d9f8c6b5-bcdfg", "program": "api"}},
 	}
 	podNamespaces := map[string]string{
-		"svc-a-abc12-xyz98": "production",
-		"svc-b-abc12-xyz98": "staging",
+		"svc-a-7d9f8c6b5-bcdfg": "production",
+		"svc-b-7d9f8c6b5-bcdfg": "staging",
 	}
 
 	out := groupSWLogsByPattern(logs, podNamespaces, "", "", 0)
@@ -1151,12 +1159,12 @@ func TestGroupSWLogsByPattern_NoNamespaceFilterReturnsAll(t *testing.T) {
 func TestGroupSWLogsByPattern_WorkloadFilter(t *testing.T) {
 	// When selectedWorkload is set, only groups from that workload are returned.
 	logs := []OutputLog{
-		{Message: "error in svc-a", Severity: "error", Labels: map[string]any{"hostname": "svc-a-abc12-xyz98", "program": "api"}},
-		{Message: "error in svc-b", Severity: "error", Labels: map[string]any{"hostname": "svc-b-abc12-xyz98", "program": "api"}},
+		{Message: "error in svc-a", Severity: "error", Labels: map[string]any{"hostname": "svc-a-7d9f8c6b5-bcdfg", "program": "api"}},
+		{Message: "error in svc-b", Severity: "error", Labels: map[string]any{"hostname": "svc-b-7d9f8c6b5-bcdfg", "program": "api"}},
 	}
 	podNamespaces := map[string]string{
-		"svc-a-abc12-xyz98": "production",
-		"svc-b-abc12-xyz98": "production",
+		"svc-a-7d9f8c6b5-bcdfg": "production",
+		"svc-b-7d9f8c6b5-bcdfg": "production",
 	}
 
 	out := groupSWLogsByPattern(logs, podNamespaces, "", "svc-a", 0)

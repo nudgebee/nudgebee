@@ -68,3 +68,29 @@ func TestQueryLogs_Coverage(t *testing.T) {
 		assert.NotContains(t, string(encoded), "coverage")
 	})
 }
+
+// services-server sets `partial` when its backend stopped before the end of the window
+// without reaching the limit (a SolarWinds search out of time). The lines are then the
+// newest matches, not all of them, and the coverage must say so.
+func TestQueryLogs_PartialFromServicesServer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"logs":     []map[string]any{{"timestamp": "2026-01-15T05:30:00Z", "message": "line"}},
+			"provider": "solarwinds",
+			"partial":  true,
+		})
+	}))
+	t.Cleanup(server.Close)
+	origEndpoint := config.Config.ServiceEndpoint
+	t.Cleanup(func() { config.Config.ServiceEndpoint = origEndpoint })
+	config.Config.ServiceEndpoint = server.URL
+
+	ctx := security.NewRequestContextForTenantAccountAdmin("test-tenant", "test-user", []string{"test-account"})
+	resp, err := QueryLogs(*ctx, LogQueryRequest{AccountId: "test-account", LogProvider: "solarwinds", Limit: 2000})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Coverage, "a partial read must not look whole because it is under the limit")
+	assert.True(t, resp.Coverage.Partial)
+	assert.Equal(t, 1, resp.Coverage.Returned)
+	assert.Equal(t, 2000, resp.Coverage.Limit)
+}

@@ -75,6 +75,10 @@ type FetchLogsResult struct {
 	// alongside an empty Logs and a nil error — a 200, not a 400 — so the diagnosis
 	// reads as "successfully determined what to fix" rather than a request failure.
 	Suggestion string `json:"suggestion,omitempty"`
+	// Partial is set when the provider stopped before reading the whole window and before
+	// reaching the limit (a time budget ran out), so Logs are the newest matches, not all
+	// of them: a count of Logs is "at least N". See PartialLogSource.
+	Partial bool `json:"partial,omitempty"`
 }
 
 type SearchResponse struct {
@@ -854,6 +858,12 @@ type FetchLogGroupRequest struct {
 // LogGroupOutput is the dedicated response type for the log_group API.
 type LogGroupOutput struct {
 	Groups []LogGroup `json:"groups"`
+	// Sampled is set when the provider counted only part of the window (it reads raw
+	// lines and stopped at its budget), so Count is a sample, not a total.
+	Sampled bool `json:"sampled,omitempty"`
+	// SampleStartTime is the oldest line the sample reached (ms epoch); the sample covers
+	// SampleStartTime to the request's end time. Zero unless Sampled.
+	SampleStartTime int64 `json:"sample_start_time,omitempty"`
 }
 
 // LogGroup represents a single aggregated log group (error pattern).
