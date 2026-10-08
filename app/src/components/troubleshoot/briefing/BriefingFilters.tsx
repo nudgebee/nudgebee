@@ -4,6 +4,7 @@ import FilterAltOutlinedIcon from '@mui/icons-material/FilterAltOutlined';
 import { useRouter } from 'next/router';
 import dayjs from 'dayjs';
 import FilterDropdown from '@ui/FilterDropdown';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import apiHome from '@api1/home';
 import { applyFiltersOnRouter } from '@lib/router';
@@ -50,11 +51,17 @@ const BriefingFilters = ({ showRange = true }: Props) => {
 
   const accountOptions = useMemo(
     () =>
-      accounts.map((account) => ({
-        label: account.label || account.account_name,
-        value: account.id || account.value,
-        group: account.cloud_provider || 'Other',
-      })),
+      accounts.map((account) => {
+        // 'Other' rather than undefined so an unresolved provider gets the generic
+        // cloud glyph instead of CloudProviderIcon's AWS fallback.
+        const provider = account.cloud_provider || 'Other';
+        return {
+          label: account.label || account.account_name,
+          value: account.id || account.value,
+          group: provider,
+          icon: <CloudProviderIcon cloud_provider={provider} width='16px' height='16px' />,
+        };
+      }),
     [accounts]
   );
 
@@ -105,6 +112,7 @@ const BriefingFilters = ({ showRange = true }: Props) => {
         placeholder='All accounts'
         multiple
         grouped
+        groupIcon={(groupKey: string) => <CloudProviderIcon cloud_provider={groupKey} width='14px' height='14px' />}
         selectionWithinGroup
         size='sm'
         options={accountOptions}
