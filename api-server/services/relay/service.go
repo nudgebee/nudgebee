@@ -320,9 +320,11 @@ func ExecutePrometheusWithStep(accountId string, startTime time.Time, endTime ti
 // UTC container (every flow-source resolver that calls ExecutePrometheus
 // silently degrades to no resolution).
 //
-// `steps`, not `step`: the agent's prometheus_queries_enricher reads that key
-// (its sibling prometheus_enricher reads `step`). Omitted at zero so the
-// agent's default applies rather than a literal "0".
+// Both `step` and `steps`: prometheus_queries_enricher historically reads
+// `steps`, but relay-server only recognises `step` — when it is missing the
+// relay fills in a window-derived default under `step`, and the agent reads
+// `step` before `steps`, so a caller's `steps` alone is silently overridden.
+// Omitted at zero so the relay/agent default applies rather than a literal "0".
 func prometheusActionParams(startTime, endTime time.Time, queriesMap map[string]string, instant bool, stepSeconds int) map[string]any {
 	promsqlQueries := make([]map[string]any, 0, len(queriesMap))
 	for key, query := range queriesMap {
@@ -341,7 +343,9 @@ func prometheusActionParams(startTime, endTime time.Time, queriesMap map[string]
 		"instant":        instant,
 	}
 	if stepSeconds > 0 {
-		params["steps"] = strconv.Itoa(stepSeconds)
+		step := strconv.Itoa(stepSeconds)
+		params["step"] = step
+		params["steps"] = step
 	}
 	return params
 }
