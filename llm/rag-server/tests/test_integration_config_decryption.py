@@ -39,16 +39,14 @@ def fetch(monkeypatch):
     monkeypatch.setattr(db_query.Config, "nudgebee_encryption_key", KEY_HEX)
 
     def run(rows):
-        db_query._llm_integrations_cache.clear()
         monkeypatch.setattr(db_query, "engine", type("E", (), {"connect": lambda self: FakeConnection(rows)})())
-        found = db_query.get_llm_integrations("acct")
-        return found[0]["config"] if found else {}
+        return db_query.get_llm_integration_config("i1")
 
     return run
 
 
 def row(name, value, is_encrypted=False):
-    return SimpleNamespace(id="i1", cloud_account_id="acct", name=name, value=value, is_encrypted=is_encrypted)
+    return SimpleNamespace(name=name, value=value, is_encrypted=is_encrypted)
 
 
 def test_an_encrypted_secret_is_decrypted_before_it_is_served(fetch):
