@@ -299,6 +299,29 @@ describe('buildEntityQuery', () => {
 });
 
 describe('draftFromQuery', () => {
+  it('restores the time range from the stored time column, not from the table default', () => {
+    // The column is stored beside the query. Nodes default to the range ON;
+    // a panel saved with it off has to come back off.
+    const query = buildEntityQuery(defaultDraft('k8s_nodes_v2'));
+
+    const off = draftFromQuery(query, '');
+    expect(off.applyTimeRange).toBe(false);
+    // Still chosen, so switching the range on needs no second pick.
+    expect(off.timeColumn).toBe('node_creation_time');
+
+    expect(draftFromQuery(query, 'updated_at')).toMatchObject({ applyTimeRange: true, timeColumn: 'updated_at' });
+
+    // A caller reading only the query's shape gets the table default.
+    expect(draftFromQuery(query)).toMatchObject({ applyTimeRange: true, timeColumn: 'node_creation_time' });
+  });
+
+  it('gives a panel with no stored query the table default, whatever it is told about the column', () => {
+    // A new panel has nothing stored to restore: "no time column" there is not a choice of off.
+    expect(draftFromQuery(undefined, '')).toEqual(defaultDraft());
+    expect(draftFromQuery({}, '')).toEqual(defaultDraft());
+    expect(draftFromQuery(undefined, '').applyTimeRange).toBe(true);
+  });
+
   it('reads a stored query back into the builder', () => {
     const original = { ...defaultDraft(), filters: [{ column: 'priority', operator: '_in', value: 'P0, P1' }], limit: 25, sortDesc: false };
     const restored = draftFromQuery(buildEntityQuery(original));

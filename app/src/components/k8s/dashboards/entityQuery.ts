@@ -1016,8 +1016,13 @@ export function renderEntityQuery(stored: unknown, render: (value: string) => st
 /**
  * Reads a stored query back into the editor's draft, so reopening a panel shows
  * the filters that were saved rather than an empty builder.
+ *
+ * `timeColumn` is the target's stored time column, which travels beside the
+ * query rather than in it. Given — even empty — it decides the time-range
+ * switch: on exactly when a column was stored. Left out, the table's default
+ * stands, which is all a caller reading the query's shape needs.
  */
-export function draftFromQuery(stored: unknown): EntityQueryDraft {
+export function draftFromQuery(stored: unknown, timeColumn?: string): EntityQueryDraft {
   const query = (stored || {}) as EntityQuery;
   const table = findTable(query.table || ENTITY_TABLES[0].value);
   const base = defaultDraft(table.value);
@@ -1041,6 +1046,8 @@ export function draftFromQuery(stored: unknown): EntityQueryDraft {
 
   return {
     ...base,
+    // The stored column as it is, so an edit elsewhere in the builder writes back what was there.
+    ...(timeColumn === undefined ? {} : { applyTimeRange: timeColumn !== '', timeColumn: timeColumn || base.timeColumn }),
     table: table.value,
     columns: columns.length > 0 ? columns : base.columns,
     filters,

@@ -305,7 +305,9 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
     // behaviour the panel does not have — and re-saving it silently widened the scope to whatever had been
     // connected since.
     setAccountIds(panel?.account_ids || []);
-    setEntityDraft(draftFromQuery(panel?.targets?.[0]?.query));
+    // With the stored time column: without it the builder showed the table's default switch, and the next
+    // edit anywhere in the query wrote that default over the panel's own setting.
+    setEntityDraft(draftFromQuery(panel?.targets?.[0]?.query, panel?.targets?.[0]?.time_column ?? ''));
   }, [panel, accountOptions]);
 
   /**
