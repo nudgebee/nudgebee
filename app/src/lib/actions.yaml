@@ -924,6 +924,7 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
+      - role: tenant_usage
       - role: k8s_namespace_admin_readonly
       - role: k8s_namespace_admin
       - role: account_admin_readonly
@@ -941,6 +942,7 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
+      - role: tenant_usage
       - role: k8s_namespace_admin_readonly
       - role: k8s_namespace_admin
       - role: account_admin_readonly
@@ -957,6 +959,7 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
+      - role: tenant_usage
       - role: k8s_namespace_admin_readonly
       - role: k8s_namespace_admin
       - role: account_admin_readonly
@@ -974,6 +977,7 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
+      - role: tenant_usage
       - role: k8s_namespace_admin_readonly
       - role: k8s_namespace_admin
       - role: account_admin_readonly
@@ -991,10 +995,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_create_routing_rule
@@ -1008,11 +1008,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
-      - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_update_routing_rule
     comment: Update an AI Gateway model routing rule
@@ -1025,11 +1020,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
-      - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_delete_routing_rule
     comment: Delete an AI Gateway model routing rule
@@ -1042,11 +1032,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
-      - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_list_tiers
     definition:
@@ -1058,10 +1043,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_list_models
@@ -1075,10 +1056,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_set_tier
@@ -1091,11 +1068,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
-      - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_reset_tier
     definition:
@@ -1107,11 +1079,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
-      - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_list_rate_limits
     comment: List AI Gateway rate-limit quotas
@@ -1185,10 +1152,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_update_settings
@@ -1201,8 +1164,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin
-      - role: account_admin
       - role: tenant_admin
   - name: egressfilter_get
     definition:

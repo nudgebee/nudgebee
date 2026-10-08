@@ -88,7 +88,17 @@ describe('permissionCatalog', () => {
     'billing_list',
     'billing_list_usage_costs',
     'billing_aggregate',
-    // AI Gateway quotas and per-user access are tenant-admin only (#38963).
+    // AI Gateway administration is tenant-admin only (#38963, #38965).
+    'llm_gateway_get_settings',
+    'llm_gateway_update_settings',
+    'llm_gateway_list_routing_rules',
+    'llm_gateway_create_routing_rule',
+    'llm_gateway_update_routing_rule',
+    'llm_gateway_delete_routing_rule',
+    'llm_gateway_list_tiers',
+    'llm_gateway_set_tier',
+    'llm_gateway_reset_tier',
+    'llm_gateway_list_models',
     'llm_gateway_list_rate_limits',
     'llm_gateway_upsert_rate_limit',
     'llm_gateway_delete_rate_limit',
@@ -135,8 +145,18 @@ describe('permissionCatalog', () => {
     expect(customroles!.classes).toEqual(['Read']);
   });
 
-  it('keeps AI Gateway quota and user-access actions non-grantable', () => {
+  it('keeps AI Gateway administration non-grantable and usage grantable', () => {
     for (const name of [
+      'llm_gateway_get_settings',
+      'llm_gateway_update_settings',
+      'llm_gateway_list_routing_rules',
+      'llm_gateway_create_routing_rule',
+      'llm_gateway_update_routing_rule',
+      'llm_gateway_delete_routing_rule',
+      'llm_gateway_list_tiers',
+      'llm_gateway_set_tier',
+      'llm_gateway_reset_tier',
+      'llm_gateway_list_models',
       'llm_gateway_list_rate_limits',
       'llm_gateway_upsert_rate_limit',
       'llm_gateway_delete_rate_limit',
@@ -145,7 +165,9 @@ describe('permissionCatalog', () => {
     ]) {
       expect(classifyAction(name)).toBeNull();
     }
-    expect(classifyAction('llm_gateway_list_models')).not.toBeNull();
+    for (const name of ['llm_gateway_aggregate_usage', 'llm_gateway_list_requests', 'llm_gateway_list_sessions', 'llm_gateway_get_request_body']) {
+      expect(classifyAction(name)).not.toBeNull();
+    }
   });
 
   it('keeps non-grantable modules out of the catalog', () => {

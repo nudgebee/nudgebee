@@ -439,6 +439,9 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
     // The caller's effective role, so a service (e.g. the AI Gateway) can grant a
     // tenant admin tenant-wide reads — viewing another user's captured request body.
     'x-user-role': opts.sessionVariables?.role || '',
+    // Every role the caller holds in this tenant; "-" = none, so a proxy dropping an empty
+    // header can't push the gateway onto the x-user-role label fallback.
+    'x-user-roles': (opts.sessionVariables?.allowed_roles || []).join(',') || '-',
   };
   // Apply per-action headers declared in actions.yaml's `headers:` block.
   // The yaml is authoritative — every action must explicitly declare which

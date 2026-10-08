@@ -7,6 +7,7 @@ import { Callout } from '@ui/Callout';
 import { CodeBlock } from '@ui/CodeBlock';
 import { ds } from 'src/utils/colors';
 import { GATEWAY_MATCH_PROVIDER_OPTIONS, listGatewayModels } from '@api1/gateway-config';
+import { canViewGatewayUserAccess } from '@lib/auth';
 
 // Mirrors gatewayEndpoints in api-server/services/user/token_policy.go and the families
 // the gateway classifies in llm/gateway/proxy/policy.go.
@@ -68,6 +69,11 @@ export const GatewayRestrictionPicker = ({ value, onChange, subject = 'key' }) =
   const [catalogFailed, setCatalogFailed] = React.useState(false);
 
   React.useEffect(() => {
+    // The model catalog is tenant-admin only (#38965); everyone else types model names.
+    if (!canViewGatewayUserAccess()) {
+      setCatalog([]);
+      return undefined;
+    }
     const ctrl = new AbortController();
     listGatewayModels(ctrl.signal)
       .then(setCatalog)
