@@ -58,7 +58,6 @@ const ENV_NB_ACCOUNT_ID = "NB_ACCOUNT_ID"
 const ENV_NB_CONVERSATION_ID = "NB_CONVERSATION_ID"
 const ENV_NB_TOOL_CONFIG_NAME = "NB_TOOL_CONFIG_NAME"
 const ENV_NB_WORKSPACE_TOKEN = "NB_WORKSPACE_TOKEN"
-const ENV_NB_RELAY_SERVER_ENDPOINT = "RELAY_SERVER_ENDPOINT"
 
 type WorkspaceTokenClaims struct {
 	AccountId       string `json:"account_id"`
@@ -533,10 +532,6 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 						{
 							Name:  ENV_NB_WORKSPACE_TOKEN,
 							Value: workspaceToken,
-						},
-						{
-							Name:  ENV_NB_RELAY_SERVER_ENDPOINT,
-							Value: config.Config.RelayServerEndpoint,
 						},
 						{
 							// Raises the in-pod command execution deadline (see

@@ -74,15 +74,8 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.workspaceNetworkPolicy.llmServerPort }}
-    # Egress to relay-server so workspace tools can run cluster operations
-    # via the relay gateway.
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: {{ .Values.workspaceNetworkPolicy.relayServerName }}
-      ports:
-        - protocol: TCP
-          port: {{ .Values.workspaceNetworkPolicy.relayServerPort }}
+    # No egress to relay-server: cluster and database commands go through
+    # llm-server's workspace proxy, which checks grants and audits (#39880).
     {{- with .Values.workspaceNetworkPolicy.extraEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

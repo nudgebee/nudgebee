@@ -112,11 +112,6 @@ workspaceNetworkPolicy:
   workspacePort: 8080
   # Port llm-server listens on for workspace callbacks.
   llmServerPort: 8000
-  # Name (app.kubernetes.io/name label) of the relay-server workload that
-  # workspace pods are allowed to reach.
-  relayServerName: relay-server
-  # Port relay-server listens on.
-  relayServerPort: 8080
   # If true, workspace pods may reach the public internet *except* the CIDRs
   # listed in `externalEgressExcept`. Required for tools like `git clone`,
   # `curl`, `pip install`, etc. Set to false for maximum lockdown.

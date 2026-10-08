@@ -149,13 +149,14 @@ func SetupRouter(cfg *config.Config, tracer *trace.Tracer, meter *metric.Meter, 
 	// 9) Prometheus Proxy (legacy)
 	handlers.HandlePrometheusApis(r, tracer, meter, logger, store, cfg, rpcClient)
 
-	// 10) Workspace execute - forwards shim requests from workspace pods directly to the k8s agent.
-	// Auth is via JWT workspace token (X-Workspace-Token), NOT the static secret key.
-	// Path mirrors llm-server's /api/v1/workspace/execute so the future cutover only requires
-	// swapping the base URL env var (NB_LLM_SERVER_URL → NB_RELAY_SERVER_URL) in the shim.
-	r.POST("/api/v1/workspace/execute",
-		handlers.NewWorkspaceExecuteHandler(store, rpcClient, cfg, tracer, meter, logger),
-	)
+	// 10) Workspace execute is not served here for now (#39880): the handler
+	// checks only that the token's account id matches, while llm-server's
+	// proxy also checks grants, target and write access and audits each call.
+	// Re-register it once relay enforces the same checks:
+	//
+	//	r.POST("/api/v1/workspace/execute",
+	//		handlers.NewWorkspaceExecuteHandler(store, rpcClient, cfg, tracer, meter, logger),
+	//	)
 
 	// 11) Generic API Proxy - forwards any HTTP request to agents via RPC
 	r.Any("/api/proxy/*path",

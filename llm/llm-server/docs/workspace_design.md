@@ -211,7 +211,7 @@ Compose deployments use `LLM_SERVER_WORKSPACE_RUNTIME=docker`. The host Docker s
 | `LLM_SERVER_SHELL_TOOL_ENABLED` | bool | Enable shell tool for agents |
 | `LLM_SERVER_JWT_SECRET` | string | JWT signing key for workspace tokens |
 
-**Helm values (NetworkPolicy):** the workspace pod `NetworkPolicy` is configured in `deploy/kubernetes/llm-server/values.yaml` under `workspaceNetworkPolicy.*` — see that file for `enabled`, `workspacePort`, `llmServerPort`, `relayServerName`/`Port`, `allowExternalEgress`, `externalEgressExcept`, `dnsNamespaceSelector`/`dnsPodSelector`, and `extraEgress`.
+**Helm values (NetworkPolicy):** the workspace pod `NetworkPolicy` is configured in `deploy/kubernetes/llm-server/values.yaml` under `workspaceNetworkPolicy.*` — see that file for `enabled`, `workspacePort`, `llmServerPort`, `allowExternalEgress`, `externalEgressExcept`, `dnsNamespaceSelector`/`dnsPodSelector`, and `extraEgress`.
 
 ## Known Limitations & Tracked Issues
 
