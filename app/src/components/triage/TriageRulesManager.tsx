@@ -54,6 +54,32 @@ const parseAccountIds = (raw: string | string[] | undefined): string[] =>
 
 const renderAccountGroupIcon = (provider: string) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
+// System-rule reasons end with a "— system default" suffix that's redundant once the row
+// already carries the "System" chip (see the Name column) — drop it only there.
+const SYSTEM_DEFAULT_SUFFIX = /\s*—\s*system default\s*$/i;
+
+// action_value for scoring rules is stored as JSON, e.g. {"adjustment": 30, "reason": "..."}
+// (see ActionValueData in api-server/services/triage/models.go) — parse it instead of showing the raw string.
+const parseScoreAdjustment = (actionValue: string | undefined, isSystemRule?: boolean): { primary: string; reason?: string } => {
+  if (!actionValue) {
+    return { primary: 'Adjust Score: N/A' };
+  }
+  try {
+    const parsed = JSON.parse(actionValue);
+    if (typeof parsed?.adjustment !== 'number') {
+      return { primary: 'Adjust Score: N/A' };
+    }
+    const sign = parsed.adjustment > 0 ? '+' : '';
+    let reason: string | undefined = parsed.reason || undefined;
+    if (reason && isSystemRule) {
+      reason = reason.replace(SYSTEM_DEFAULT_SUFFIX, '').trim() || undefined;
+    }
+    return { primary: `Adjust score ${sign}${parsed.adjustment}`, reason };
+  } catch {
+    return { primary: 'Adjust Score: N/A' };
+  }
+};
+
 const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) => {
   const router = useRouter();
   const tableId = 'triageRulesManager';
@@ -299,7 +325,7 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
 
     const data = paginatedRules.map((rule) => {
       const matchCriteria = getMatchCriteriaSummary(rule);
-      const actionDisplay = getActionDisplay(rule);
+      const actionCell = renderActionCell(rule);
 
       // Build drilldown query for expandable row
       const drilldownQuery = buildDrilldownQuery(rule);
@@ -341,7 +367,7 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
         {
           component: <Label text={getRuleTypeLabel(rule.rule_type)} variant='grey' />,
         },
-        { component: <Text value={actionDisplay} /> },
+        { component: actionCell },
         { component: <Text value={matchCriteria || '-'} /> },
         {
           component: (
@@ -409,12 +435,23 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
   const getActionDisplay = (rule: TriageRule): string => {
     if (rule.rule_type === 'suppression') {
       return rule.action === 'drop' ? 'Drop Events' : 'Suppress Events';
-    } else if (rule.rule_type === 'scoring') {
-      return `Adjust Score: ${rule.action_value || 'N/A'}`;
     } else if (rule.rule_type === 'classification') {
       return `Auto-classify: ${rule.action}`;
     }
     return rule.action;
+  };
+
+  const renderActionCell = (rule: TriageRule) => {
+    if (rule.rule_type !== 'scoring') {
+      return <Text value={getActionDisplay(rule)} />;
+    }
+    const { primary, reason } = parseScoreAdjustment(rule.action_value, rule.is_system_rule);
+    return (
+      <Box display='flex' flexDirection='column' alignItems='flex-start' gap='var(--ds-space-0)'>
+        <Text value={primary} />
+        {reason && <Text value={reason} secondaryText showAutoEllipsis lineClamp={2} />}
+      </Box>
+    );
   };
 
   const getRuleTypeLabel = (ruleType: string): string => {
