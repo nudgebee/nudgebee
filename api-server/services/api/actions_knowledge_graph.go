@@ -805,9 +805,6 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 	case "kg_delete_manual_dependency":
 		handleKgDeleteManualDependency(actionPayload, c, tracer, meter, logger)
 		return
-	case "kg_import_manual_dependencies":
-		handleKgImportManualDependencies(actionPayload, c, tracer, meter, logger)
-		return
 	case "kg_resolve_manual_dependency":
 		handleKgResolveManualDependency(actionPayload, c, tracer, meter, logger)
 		return
@@ -839,8 +836,8 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 	case "kg_apply_manual_node_merge":
 		handleKgApplyManualNodeMerge(actionPayload, c, tracer, meter, logger)
 		return
-	case "kg_import_manual_nodes":
-		handleKgImportManualNodes(actionPayload, c, tracer, meter, logger)
+	case "kg_create_manual_declarations":
+		handleKgCreateManualDeclarations(actionPayload, c, tracer, meter, logger)
 		return
 	case "kg_delete_all_manual_nodes":
 		handleKgDeleteAllManualNodes(actionPayload, c, tracer, meter, logger)

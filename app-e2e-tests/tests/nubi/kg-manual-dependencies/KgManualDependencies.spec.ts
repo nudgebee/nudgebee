@@ -27,8 +27,8 @@ import {
   walkPages,
 } from "./kgManualDependenciesHelper";
 
-// Nubi > b-Cortex > Knowledge Graph > Settings > Manual Dependencies
-// (app/src/components/knowledge-graph/ManualDependenciesTab.jsx). Declarations are
+// Nubi > b-Cortex > Knowledge Graph > Settings > Manual Declarations, Dependencies section
+// (app/src/components/knowledge-graph/ManualDependenciesSection.jsx). Declarations are
 // written, always under run-unique service names that no real workload carries so
 // the resolver can never pin them to a live node, and always deleted again. The
 // toolbar's Re-resolve all and Delete all act on the whole tenant and are never
@@ -39,7 +39,7 @@ import {
 
 test.describe("Nubi KG Manual Dependencies", () => {
   test(
-    "Nubi KG Manual Dependencies sanity - open b-Cortex, select Knowledge Graph, open Settings, switch to Manual Dependencies, verify the tab is selected and shows the declaration guidance, the Status filter, Import CSV and New declaration, and the list settles on rows or its empty state",
+    "Nubi KG Manual Dependencies sanity - open b-Cortex, select Knowledge Graph, open Settings, switch to Manual Declarations, verify the tab is selected and shows the declaration guidance, the Status filter, Import JSON, Declare node and Declare dependency, and the list settles on rows or its empty state",
     { tag: ["@dev", "@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(240000);
@@ -47,7 +47,7 @@ test.describe("Nubi KG Manual Dependencies", () => {
 
       // openManualDependencies() already proved Settings landed on Coverage first;
       // this is the state after the switch.
-      await expect(locators.manualDependenciesTab).toHaveAttribute("aria-selected", "true");
+      await expect(locators.manualDeclarationsTab).toHaveAttribute("aria-selected", "true");
       await expect(locators.coverageTab).toHaveAttribute("aria-selected", "false");
       await expect(locators.coverageDescription).toHaveCount(0);
       await expect(locators.manualDepsDescription).toContainText("CALLS / PUBLISHES_TO / SUBSCRIBES_TO");
@@ -55,8 +55,9 @@ test.describe("Nubi KG Manual Dependencies", () => {
       await expect(locators.statusFilter).toBeVisible({ timeout: 15000 });
       await expect(locators.statusFilter).toContainText("Status");
       await expect(locators.statusFilter).toContainText("All");
-      await expect(locators.importCsvBtn).toBeEnabled();
-      await expect(locators.newDeclarationBtn).toBeEnabled();
+      await expect(locators.importJsonBtn).toBeEnabled();
+      await expect(locators.declareNodeBtn).toBeEnabled();
+      await expect(locators.declareDependencyBtn).toBeEnabled();
       await expect(locators.rows().first().or(locators.emptyState)).toBeVisible();
     }
   );
@@ -85,7 +86,7 @@ test.describe("Nubi KG Manual Dependencies", () => {
   );
 
   test(
-    "Nubi KG Manual Dependencies - open New declaration, verify Create is blocked while both names are empty, enter a source name, verify it stays blocked, enter a destination name, verify Create enables, cancel, close and reopen Settings, verify no row with that name is listed and no create mutation is sent",
+    "Nubi KG Manual Dependencies - open Declare dependency, verify Create is blocked while both names are empty, enter a source name, verify it stays blocked, enter a destination name, verify Create enables, cancel, close and reopen Settings, verify no row with that name is listed and no create mutation is sent",
     { tag: ["@dev", "@regression", "@negative", "@validation"] },
     async ({ page }) => {
       test.setTimeout(240000);
@@ -116,7 +117,7 @@ test.describe("Nubi KG Manual Dependencies", () => {
   );
 
   test(
-    "Nubi KG Manual Dependencies - open New declaration, switch the Source kind to Cloud, verify Namespace and Cluster give way to Resource ID, Cloud account and Region and the node type resets to Database, switch back to Kubernetes, verify Namespace and Cluster return with K8sService, cancel, verify no create mutation is sent",
+    "Nubi KG Manual Dependencies - open Declare dependency, switch the Source kind to Cloud, verify Namespace and Cluster give way to Resource ID, Cloud account and Region and the node type resets to Database, switch back to Kubernetes, verify Namespace and Cluster return with K8sService, cancel, verify no create mutation is sent",
     { tag: ["@dev", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(240000);

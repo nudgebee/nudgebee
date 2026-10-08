@@ -1,8 +1,8 @@
-// The CSV help lists exactly the type values the importer accepts: node_type
+// The format help lists exactly the type values the server accepts: node_type
 // outside a connected account, specific_type per connected cloud.
 
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import ManualNodeCsvTypeValues, { csvTypeCategories, groupCsvTypeValues } from '../ManualNodeCsvTypeValues';
+import ManualNodeTypeValues, { typeCategories, groupTypeValues } from '../ManualNodeTypeValues';
 
 const name = { name: 'name', required: true };
 const SCHEMA = [
@@ -36,14 +36,14 @@ const SCHEMA = [
 ];
 
 it('groups type values by place and lists each specific type once', () => {
-  const { outside, providers } = groupCsvTypeValues(SCHEMA);
+  const { outside, providers } = groupTypeValues(SCHEMA);
   expect(outside.map((k) => k.node_type)).toEqual(['Database']);
   expect(providers.map((p) => p.provider)).toEqual(['AWS', 'K8s']);
   expect(providers[0].kinds.map((k) => k.specific_type)).toEqual(['RDSInstance', 'SQSQueue']);
 });
 
 it('makes one category per account type, outside accounts first', () => {
-  expect(csvTypeCategories(SCHEMA).map((c) => `${c.label}:${c.column}`)).toEqual([
+  expect(typeCategories(SCHEMA).map((c) => `${c.label}:${c.column}`)).toEqual([
     'Not in an account:node_type',
     'AWS:specific_type',
     'Kubernetes:specific_type',
@@ -51,8 +51,8 @@ it('makes one category per account type, outside accounts first', () => {
 });
 
 it('shows one account type at a time, with its values, node types and identity columns', () => {
-  render(<ManualNodeCsvTypeValues schema={SCHEMA} />);
-  const panel = screen.getByTestId('manual-nodes-csv-type-values');
+  render(<ManualNodeTypeValues schema={SCHEMA} />);
+  const panel = screen.getByTestId('manual-nodes-type-values');
 
   // Outside an account is shown first, keyed by node_type.
   expect(within(panel).getByRole('button', { name: 'Not in an account (1)' })).toHaveAttribute('aria-pressed', 'true');
@@ -72,6 +72,6 @@ it('shows one account type at a time, with its values, node types and identity c
 });
 
 it('renders nothing until the schema has loaded', () => {
-  const { container } = render(<ManualNodeCsvTypeValues schema={[]} />);
+  const { container } = render(<ManualNodeTypeValues schema={[]} />);
   expect(container).toBeEmptyDOMElement();
 });

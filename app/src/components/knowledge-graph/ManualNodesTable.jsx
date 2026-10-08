@@ -1,7 +1,7 @@
 // Manual Nodes table — one row per declared Knowledge Graph node.
 //
 // Display-only: every mutation (edit / merge / delete) bubbles up to
-// ManualNodesTab through the on*Click callbacks.
+// ManualNodesSection through the on*Click callbacks.
 
 import { Box, Typography } from '@mui/material';
 import PropTypes from 'prop-types';
@@ -70,7 +70,7 @@ const ManualNodesTable = ({ rows, accountNames, onEditClick, onMergeClick, onDel
           No manual nodes yet
         </Typography>
         <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>
-          Click <strong>New node</strong> to declare a resource the Knowledge Graph has not discovered, or <strong>Import CSV</strong> for many.
+          Click <strong>Declare node</strong> to declare a resource the Knowledge Graph has not discovered, or <strong>Import JSON</strong> for many.
         </Typography>
       </Box>
     );

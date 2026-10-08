@@ -1,10 +1,6 @@
 package flow_sources
 
 import (
-	"bytes"
-	"encoding/csv"
-	"os"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -133,96 +129,5 @@ func TestValidateManualNodeDetails_Shapes(t *testing.T) {
 	err := validateManualNodeDetails(node(map[string]interface{}{"created_at": "2026-01-01"}))
 	if err == nil || !strings.Contains(err.Error(), "read from the resource") {
 		t.Errorf("a collector-only field must say why it is refused, got %v", err)
-	}
-}
-
-func TestCSVRowToManualNode_Shapes(t *testing.T) {
-	core.RegisterSpecificTypeSchema(core.SpecificTypeSchema{
-		SpecificType: "TestManualCSVShapedType", NodeType: core.NodeTypeWorkload,
-		Properties: []core.PropertyDef{
-			{Name: "annotations", Shape: core.PropertyShapeMap},
-			{Name: "container_images", Shape: core.PropertyShapeList},
-		},
-	})
-	header := []string{"cloud_account", "specific_type", "name", "annotations", "container_images"}
-	idx := map[string]int{}
-	for i, h := range header {
-		idx[h] = i
-	}
-	req, err := csvRowToManualNode([]string{"acct", "TestManualCSVShapedType", "ledger", "team=payments; tier = gold", "ledger:1.4; sidecar:2 ;"}, header, idx)
-	if err != nil {
-		t.Fatalf("csvRowToManualNode: %v", err)
-	}
-	if got, want := req.Properties["annotations"], map[string]interface{}{"team": "payments", "tier": "gold"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("annotations = %v, want %v", got, want)
-	}
-	if got, want := req.Properties["container_images"], []interface{}{"ledger:1.4", "sidecar:2"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("container_images = %v, want %v", got, want)
-	}
-	if _, err := csvRowToManualNode([]string{"acct", "TestManualCSVShapedType", "ledger", "team", ""}, header, idx); err == nil || !strings.Contains(err.Error(), "annotations") {
-		t.Errorf("a malformed map cell must be refused by column name, got %v", err)
-	}
-}
-
-func TestParseCSVLabels(t *testing.T) {
-	got, err := parseCSVLabels("team=payments; env = prod ;")
-	if err != nil || got["team"] != "payments" || got["env"] != "prod" || len(got) != 2 {
-		t.Errorf("parseCSVLabels = %v, %v", got, err)
-	}
-	if _, err := parseCSVLabels("team"); err == nil {
-		t.Error("a pair without = must be refused")
-	}
-}
-
-func TestCSVRowToManualNode(t *testing.T) {
-	header := []string{"cloud_account", "specific_type", "name", "region", "network", "labels", "engine_version"}
-	idx := map[string]int{}
-	for i, h := range header {
-		idx[h] = i
-	}
-	req, err := csvRowToManualNode([]string{"123456789012", "RDSInstance", "orders-db", "us-east-1", "vpc-0abc", "team=payments", "16"}, header, idx)
-	if err != nil {
-		t.Fatalf("csvRowToManualNode: %v", err)
-	}
-	if req.CloudAccount != "123456789012" || req.SpecificType != "RDSInstance" || req.Name != "orders-db" ||
-		req.Region != "us-east-1" || req.Network != "vpc-0abc" || req.Labels["team"] != "payments" {
-		t.Errorf("columns mis-mapped: %+v", req)
-	}
-	if req.Properties["engine_version"] != "16" || len(req.Properties) != 1 {
-		t.Errorf("extra columns must become properties: %v", req.Properties)
-	}
-}
-
-// The sample CSV shipped for QA must stay parseable by the importer, with one
-// row per documented outcome (see test/testdata/sample_manual_nodes.README.md).
-func TestSampleManualNodesCSVParses(t *testing.T) {
-	raw, err := os.ReadFile("../test/testdata/sample_manual_nodes.csv")
-	if err != nil {
-		t.Fatalf("read sample: %v", err)
-	}
-	reader := csv.NewReader(bytes.NewReader(raw))
-	records, err := reader.ReadAll()
-	if err != nil {
-		t.Fatalf("sample is not valid CSV: %v", err)
-	}
-	header, rows := records[0], records[1:]
-	idx := map[string]int{}
-	for i, h := range header {
-		idx[h] = i
-	}
-	if _, ok := idx["name"]; !ok {
-		t.Fatal("sample header has no name column")
-	}
-	if len(rows) != 10 {
-		t.Errorf("sample has %d rows; the README documents 10", len(rows))
-	}
-	for i, rec := range rows {
-		req, err := csvRowToManualNode(rec, header, idx)
-		if err != nil {
-			t.Errorf("row %d does not parse: %v", i, err)
-		}
-		if req.Name == "" {
-			t.Errorf("row %d has no name", i)
-		}
 	}
 }

@@ -32,7 +32,7 @@ test.describe("Nubi KG Coverage", () => {
       const load = await openCoverage(page, locators);
 
       await expect(locators.coverageTab).toHaveAttribute("aria-selected", "true");
-      await expect(locators.manualDependenciesTab).toHaveAttribute("aria-selected", "false");
+      await expect(locators.manualDeclarationsTab).toHaveAttribute("aria-selected", "false");
       await expect(locators.manualDepsDescription).toHaveCount(0);
       // The rebuild cadence is product copy (nightly -> hourly), so only the sentence shape is pinned.
       await expect(locators.coverageDescription).toContainText(/Newly enabled items appear after the next \w+ rebuild/);
@@ -166,7 +166,7 @@ test.describe("Nubi KG Coverage", () => {
   );
 
   test(
-    "Nubi KG Coverage - toggle a flow source, switch to Manual Dependencies and back to Coverage, verify the tab reloads with the flow source back to its saved state and no save is sent",
+    "Nubi KG Coverage - toggle a flow source, switch to Manual Declarations and back to Coverage, verify the tab reloads with the flow source back to its saved state and no save is sent",
     { tag: ["@dev", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(240000);
@@ -179,7 +179,7 @@ test.describe("Nubi KG Coverage", () => {
       await flowBox.setChecked(!was);
       await expect(flowBox).toBeChecked({ checked: !was });
 
-      await locators.manualDependenciesTab.click();
+      await locators.manualDeclarationsTab.click();
       await expect(locators.manualDepsDescription).toBeVisible({ timeout: 30000 });
       await expect(locators.coverageDescription).toHaveCount(0);
 

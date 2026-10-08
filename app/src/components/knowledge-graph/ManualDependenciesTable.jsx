@@ -3,7 +3,7 @@
 // Renders a row per kg_manual_dependencies entry with status chips and a
 // per-row ThreeDotsMenu (Resolve for ambiguous rows + Edit / Re-resolve /
 // Delete for every row). Display-only — every mutation (resolve / edit /
-// reresolve / delete / refetch) bubbles up to ManualDependenciesTab via the
+// reresolve / delete / refetch) bubbles up to ManualDependenciesSection via the
 // matching `on*Click` callbacks so the data flow stays uni-directional.
 
 import { Box, Typography } from '@mui/material';
@@ -139,7 +139,7 @@ const ManualDependenciesTable = ({
           No manual dependencies yet
         </Typography>
         <Typography sx={{ fontSize: '12px', color: ds?.text?.secondaryDark ?? '#6b7280' }}>
-          Click <strong>Import CSV</strong> to seed declarations from a file.
+          Click <strong>Declare dependency</strong> to add one, or <strong>Import JSON</strong> to declare many.
         </Typography>
       </Box>
     );

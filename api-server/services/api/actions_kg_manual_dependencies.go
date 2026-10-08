@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -72,7 +71,7 @@ func manualDepWriteStatus(err error, fallback int) int {
 // Fire-and-forget, matching every other audit.LogChange caller: an audit
 // failure must never fail the request that succeeded.
 //
-// Tenant-wide operations (CSV import, bulk re-resolve, delete-all) have no
+// Tenant-wide operations (bulk re-resolve, delete-all) have no
 // single row to point at, so they target the tenant id — LogChange rejects an
 // empty TargetID.
 func auditManualDep(ctx *security.RequestContext, eventType audit.EventType, action audit.EventAction, targetID string, data map[string]any) {
@@ -241,55 +240,6 @@ func handleKgDeleteManualDependency(actionPayload *ActionRequest, c *gin.Context
 	auditManualDep(ctx, audit.EventTypeKGDependencyDelete, audit.EventActionDelete, fmt.Sprint(req.ID), map[string]any{"id": req.ID})
 
 	c.JSON(200, map[string]any{"data": map[string]any{"id": req.ID, "deleted": true}})
-}
-
-// handleKgImportManualDependencies accepts a CSV body and per-row imports
-// each declaration with synchronous resolution. Returns per-row results
-// (imported with status + match_count, or rejected with error).
-func handleKgImportManualDependencies(actionPayload *ActionRequest, c *gin.Context, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
-	kgRequest, ok := actionPayload.Input["request"].(map[string]interface{})
-	if !ok {
-		c.JSON(400, common.ErrorActionBadRequest("Invalid request format"))
-		return
-	}
-
-	var req struct {
-		CSV string `json:"csv"`
-	}
-	if err := common.UnmarshalMapToStruct(kgRequest, &req); err != nil {
-		c.JSON(400, common.ErrorActionBadRequest("Invalid request format: "+err.Error()))
-		return
-	}
-	if req.CSV == "" {
-		c.JSON(400, common.ErrorActionBadRequest("csv body is required"))
-		return
-	}
-
-	ctx, repo, tenantID, err := manualDepHandlerSetup(actionPayload, c, tracer, meter, logger)
-	if err != nil {
-		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-		return
-	}
-	userID := ctx.GetSecurityContext().GetUserId()
-
-	// Each row is checked against the accounts it touches; a refused row is rejected.
-	result, err := manualDepWriter(ctx, repo, security.SecurityAccessTypeCreate).ImportCSV(ctx.GetContext(), tenantID, userID, bytes.NewBufferString(req.CSV))
-	if err != nil {
-		ctx.GetLogger().Error("csv import failed", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("CSV import failed: "+err.Error()))
-		return
-	}
-
-	ctx.GetLogger().Info("csv import complete",
-		"tenant_id", tenantID,
-		"imported", len(result.Imported),
-		"rejected", len(result.Rejected))
-	auditManualDep(ctx, audit.EventTypeKGDependencyImport, audit.EventActionCreate, tenantID, map[string]any{
-		"imported": len(result.Imported),
-		"rejected": len(result.Rejected),
-	})
-
-	c.JSON(200, map[string]any{"data": result})
 }
 
 // handleKgResolveManualDependency pins one or both endpoints of an

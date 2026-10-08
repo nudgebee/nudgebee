@@ -2,8 +2,8 @@
 import { Page, Locator } from "@playwright/test";
 import { CommonLocators } from "../../GlobalLocators";
 
-// Nubi > b-Cortex > Knowledge Graph > Settings > Manual Dependencies
-// (app/src/components/knowledge-graph/KGSettings.jsx, ManualDependenciesTab.jsx,
+// Nubi > b-Cortex > Knowledge Graph > Settings > Manual Declarations
+// (app/src/components/knowledge-graph/KGSettings.jsx, ManualDependenciesSection.jsx,
 // ManualDependenciesTable.jsx, EditManualDependencyDialog.jsx, ConfirmDialog.jsx).
 // `grep -c data-testid` returns 0 for every one of those files, so nothing on this
 // surface is reachable at rung 1. Buttons carry stable visible labels and are taken
@@ -16,7 +16,7 @@ import { CommonLocators } from "../../GlobalLocators";
 export const RESOLUTION_STATUS_LABELS =
   /^(Resolved|Pending|Source unmatched|Dest unmatched|Source ambiguous|Dest ambiguous|Source: too many|Dest: too many|Node inactive|Invalid payload)$/;
 export const RELATIONSHIP_LABELS = /^(CALLS|PUBLISHES_TO|SUBSCRIBES_TO)$/;
-// ManualDependenciesTab's STATUS_FILTER_OPTIONS, in render order.
+// ManualDependenciesSection's STATUS_FILTER_OPTIONS, in render order.
 export const STATUS_FILTER_LABELS = ["All", "Resolved", "Pending", "Ambiguous", "Unmatched", "Too many matches", "Node inactive"] as const;
 
 function exactText(label: string): RegExp {
@@ -31,14 +31,16 @@ export class KgManualDependenciesLocators extends CommonLocators {
   readonly settingsDialog: Locator;
   readonly settingsCloseBtn: Locator;
   readonly coverageTab: Locator;
-  readonly manualDependenciesTab: Locator;
+  readonly manualDeclarationsTab: Locator;
   readonly coverageDescription: Locator;
   readonly manualDepsDescription: Locator;
   readonly statusFilter: Locator;
   readonly statusFilterPanel: Locator;
   readonly statusFilterOptions: Locator;
-  readonly importCsvBtn: Locator;
-  readonly newDeclarationBtn: Locator;
+  readonly importJsonBtn: Locator;
+  readonly declareNodeBtn: Locator;
+  readonly declareDependencyBtn: Locator;
+  readonly nodesTableBody: Locator;
   readonly tableBody: Locator;
   readonly emptyState: Locator;
   readonly pagerFirstPageBtn: Locator;
@@ -113,9 +115,9 @@ export class KgManualDependenciesLocators extends CommonLocators {
       .getByRole("tab", { name: "Coverage" })
       .or(this.settingsDialog.locator('[role="tab"]').filter({ hasText: /^Coverage$/ }))
       .first();
-    this.manualDependenciesTab = this.settingsDialog
-      .getByRole("tab", { name: "Manual Dependencies" })
-      .or(this.settingsDialog.locator('[role="tab"]').filter({ hasText: /^Manual Dependencies$/ }))
+    this.manualDeclarationsTab = this.settingsDialog
+      .getByRole("tab", { name: "Manual Declarations" })
+      .or(this.settingsDialog.locator('[role="tab"]').filter({ hasText: /^Manual Declarations$/ }))
       .first();
 
     // Each tab's guidance paragraph appears exactly once and only while that tab is
@@ -140,16 +142,20 @@ export class KgManualDependenciesLocators extends CommonLocators {
     // tests/Troubleshoot/KnowledgeGraph/knowledgeGraphLocators.ts).
     this.statusFilterOptions = this.statusFilterPanel.locator('[role="option"]');
 
-    // ds/Button renders its SafeIcon as <img alt='add'> / <img alt='upload'>, so the
-    // accessible names read "add New declaration" and "upload Import CSV" — hence
-    // the loose match on the visible label.
-    this.newDeclarationBtn = this.settingsDialog
-      .getByRole("button", { name: "New declaration" })
-      .or(this.settingsDialog.locator("button").filter({ hasText: /New declaration/ }))
+    // The tab's shared toolbar. Each button carries an id, and ds/Button renders its
+    // SafeIcon as <img alt='add'> / <img alt='upload'>, so the accessible names read
+    // "add Declare dependency" and "upload Import JSON" — hence the loose fallback.
+    this.declareDependencyBtn = this.settingsDialog
+      .locator("#manual-deps-new")
+      .or(this.settingsDialog.locator("button").filter({ hasText: /Declare dependency/ }))
       .first();
-    this.importCsvBtn = this.settingsDialog
-      .getByRole("button", { name: "Import CSV" })
-      .or(this.settingsDialog.locator("button").filter({ hasText: /Import CSV/ }))
+    this.declareNodeBtn = this.settingsDialog
+      .locator("#manual-nodes-new")
+      .or(this.settingsDialog.locator("button").filter({ hasText: /Declare node/ }))
+      .first();
+    this.importJsonBtn = this.settingsDialog
+      .locator("#manual-declarations-import-json")
+      .or(this.settingsDialog.locator("button").filter({ hasText: /Import JSON/ }))
       .first();
 
     // CustomTable stamps `${id}-body` on its data tbody only, and
@@ -157,6 +163,8 @@ export class KgManualDependenciesLocators extends CommonLocators {
     // there are no rows, so a row count of 0 is meaningful. Id-only on purpose: a
     // `tbody` fallback would settle every wait on the loading skeleton.
     this.tableBody = this.settingsDialog.locator("#manual-dependencies-table-body");
+    // The Nodes section above it, built the same way (CustomTable id manual-nodes-table).
+    this.nodesTableBody = this.settingsDialog.locator("#manual-nodes-table-body");
     this.emptyState = this.settingsDialog.getByText("No manual dependencies yet", { exact: true }).first();
 
     // CustomTable paginates client-side past ten rows through MUI Pagination, whose

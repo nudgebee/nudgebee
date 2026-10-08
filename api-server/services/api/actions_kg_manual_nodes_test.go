@@ -36,7 +36,7 @@ func callKG(t *testing.T, action, tenantID string, request map[string]any) (int,
 
 func TestManualNodeActions_MalformedRequestIs400(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, action := range []string{"kg_create_manual_node", "kg_update_manual_node", "kg_delete_manual_node", "kg_apply_manual_node_merge", "kg_import_manual_nodes"} {
+	for _, action := range []string{"kg_create_manual_node", "kg_update_manual_node", "kg_delete_manual_node", "kg_apply_manual_node_merge", "kg_create_manual_declarations"} {
 		t.Run(action, func(t *testing.T) {
 			if code, _ := callKG(t, action, uuid.NewString(), nil); code != 400 {
 				t.Fatalf("missing request: got %d, want 400", code)
@@ -50,7 +50,14 @@ func TestManualNodeActions_MalformedRequestIs400(t *testing.T) {
 		{"kg_update_manual_node", map[string]any{"node": map[string]any{}}},
 		{"kg_delete_manual_node", map[string]any{}},
 		{"kg_apply_manual_node_merge", map[string]any{}},
-		{"kg_import_manual_nodes", map[string]any{"csv": ""}},
+		{"kg_create_manual_declarations", map[string]any{}},
+		{"kg_create_manual_declarations", map[string]any{"document": "{"}},
+		{"kg_create_manual_declarations", map[string]any{"document": map[string]any{"nodes": []any{}, "dependencies": []any{}}}},
+		{"kg_create_manual_declarations", map[string]any{"document": map[string]any{"nodes": []any{map[string]any{"name": "a", "typo": 1}}}}},
+		{"kg_create_manual_declarations", map[string]any{"document": map[string]any{"nodes": []any{
+			map[string]any{"node_type": "Database", "name": "a"}, map[string]any{"node_type": "Cache", "name": "a"}}}}},
+		{"kg_create_manual_declarations", map[string]any{"document": map[string]any{"dependencies": []any{
+			map[string]any{"source": "ghost", "dest": map[string]any{"node_type": "Database", "name": "a"}}}}}},
 	} {
 		if code, _ := callKG(t, tc.action, uuid.NewString(), tc.request); code != 400 {
 			t.Errorf("%s with %v: got %d, want 400", tc.action, tc.request, code)

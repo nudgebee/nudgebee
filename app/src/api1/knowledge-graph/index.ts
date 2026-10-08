@@ -71,20 +71,6 @@ export interface ManualDependency {
   updated_at: string;
 }
 
-export interface CsvImportRowResult {
-  row_index: number;
-  id?: number;
-  status?: ManualDependencyResolutionStatus;
-  match_count?: number;
-  error?: string;
-  dependency?: ManualDependency;
-}
-
-export interface CsvImportResult {
-  imported: CsvImportRowResult[];
-  rejected: CsvImportRowResult[];
-}
-
 // Manually declared nodes. A node in a connected account carries the id the
 // collector writes for the same resource, so the two merge when it is
 // collected (status becomes 'adopted').
@@ -168,16 +154,67 @@ export interface ManualNodeDetailsPatch {
   labels?: Record<string, string>;
 }
 
-export interface ManualNodeCsvRowResult {
-  row_index: number;
-  id?: number;
-  error?: string;
-  node?: ManualNode;
+// A declarations document: nodes to declare, then the dependencies between
+// them and the rest of the graph (kg_create_manual_declarations).
+export interface ManualDeclarationEndpoint {
+  node_type: string;
+  name: string;
+  namespace?: string;
+  cluster?: string;
+  arn?: string;
+  account_id?: string;
+  region?: string;
 }
 
-export interface ManualNodeCsvResult {
-  imported: ManualNodeCsvRowResult[];
-  rejected: ManualNodeCsvRowResult[];
+export interface ManualNodeDeclaration extends ManualNodeCreateRequest {
+  // Names the node for the dependencies of the same document; defaults to name.
+  ref?: string;
+  // An account by its id or provider account number, and a network by its
+  // resource id or name, where the form sends ids.
+  cloud_account?: string;
+  network?: string;
+}
+
+export interface ManualDependencyDeclaration {
+  // A string is the ref of a node in the document; an object names a node
+  // already in the graph.
+  source: string | ManualDeclarationEndpoint;
+  dest: string | ManualDeclarationEndpoint;
+  relationship_type?: string;
+  notes?: string;
+}
+
+export interface ManualDeclarationsDocument {
+  nodes?: ManualNodeDeclaration[];
+  dependencies?: ManualDependencyDeclaration[];
+}
+
+export interface ManualNodeDeclarationResult {
+  index: number;
+  ref?: string;
+  id?: number;
+  node_id?: string;
+  error?: string;
+  node?: ManualNode;
+  declaration: ManualNodeDeclaration;
+}
+
+export interface ManualDependencyDeclarationResult {
+  index: number;
+  id?: number;
+  status?: ManualDependencyResolutionStatus;
+  error?: string;
+  dependency?: ManualDependency;
+  declaration: ManualDependencyDeclaration;
+}
+
+export interface ManualDeclarationsResult {
+  nodes: { created: ManualNodeDeclarationResult[]; existing: ManualNodeDeclarationResult[]; rejected: ManualNodeDeclarationResult[] };
+  dependencies: {
+    created: ManualDependencyDeclarationResult[];
+    existing: ManualDependencyDeclarationResult[];
+    rejected: ManualDependencyDeclarationResult[];
+  };
 }
 
 // -- GraphQL queries / mutations -------------------------------------------
@@ -300,13 +337,6 @@ mutation KgDeleteManualDependency {
   }
 }`;
 
-const KG_IMPORT_MANUAL_DEPENDENCIES = `
-mutation KgImportManualDependencies {
-  kg_import_manual_dependencies(request: __WHERE__) {
-    data
-  }
-}`;
-
 const KG_RESOLVE_MANUAL_DEPENDENCY = `
 mutation KgResolveManualDependency {
   kg_resolve_manual_dependency(request: __WHERE__) {
@@ -381,9 +411,9 @@ mutation KgApplyManualNodeMerge {
   }
 }`;
 
-const KG_IMPORT_MANUAL_NODES = `
-mutation KgImportManualNodes {
-  kg_import_manual_nodes(request: __WHERE__) {
+const KG_CREATE_MANUAL_DECLARATIONS = `
+mutation KgCreateManualDeclarations {
+  kg_create_manual_declarations(request: __WHERE__) {
     data
   }
 }`;
@@ -498,10 +528,6 @@ const apiKnowledgeGraph = {
     return await queryGraphQL(KG_LIST_MANUAL_DEPENDENCIES.replace('__WHERE__', gqlStringify(request)), 'KgListManualDependencies', {});
   },
 
-  importManualDependencies: async function (data: { csv: string }) {
-    return await queryGraphQL(KG_IMPORT_MANUAL_DEPENDENCIES.replace('__WHERE__', gqlStringify({ csv: data.csv })), 'KgImportManualDependencies', {});
-  },
-
   resolveManualDependency: async function (data: { id: number; sourceNodeId?: string; destinationNodeId?: string }) {
     const request: { id: number; source_node_id?: string; destination_node_id?: string } = { id: data.id };
     if (data.sourceNodeId) {
@@ -572,8 +598,14 @@ const apiKnowledgeGraph = {
     return await queryGraphQL(KG_APPLY_MANUAL_NODE_MERGE.replace('__WHERE__', gqlStringify(data)), 'KgApplyManualNodeMerge', {});
   },
 
-  importManualNodes: async function (data: { csv: string }) {
-    return await queryGraphQL(KG_IMPORT_MANUAL_NODES.replace('__WHERE__', gqlStringify({ csv: data.csv })), 'KgImportManualNodes', {});
+  // The document travels as its JSON text: a dependency side is a ref string
+  // or an endpoint object, which only the server's JSON parser tells apart.
+  createManualDeclarations: async function (data: { document: ManualDeclarationsDocument }) {
+    return await queryGraphQL(
+      KG_CREATE_MANUAL_DECLARATIONS.replace('__WHERE__', gqlStringify({ document: JSON.stringify(data.document) })),
+      'KgCreateManualDeclarations',
+      {}
+    );
   },
 
   deleteAllManualNodes: async function () {

@@ -1,30 +1,28 @@
-// Manual Dependencies tab — Phase 2 + 2.5 (NB-30989).
+// Dependencies section of the Manual Declarations tab (NB-30989).
 //
 // Container that owns:
 //   - data fetch (kg_list_manual_dependencies)
 //   - status filter
 //   - view state: 'table' vs 'resolve' (push-replace pattern)
-//   - sub-dialog open/close: CSV import, create/edit form, confirm prompts
+//   - sub-dialog open/close: edit form, declare-node form, confirm prompts
 //   - all per-row mutations: edit, reresolve, delete
 //   - panic actions: re-resolve all, delete all
-// Children render the table, the resolve panel, the CSV dialog, the
-// create/edit form, and the confirm prompts. Mutations all funnel through
-// here so the data-flow stays uni-directional.
+// The tab owns creating a dependency and the JSON import, and bumps
+// refreshKey when they change the list.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Box, Typography } from '@mui/material';
+import { Box } from '@mui/material';
 import PropTypes from 'prop-types';
 import ListingLayout from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import { Button } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';
 import Loader from '@shared/Loader';
-import { UploadIcon, PlusIcon, RefreshIcon, DeleteIconRed } from '@assets';
+import { DeleteIconRed, RefreshIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import apiKnowledgeGraph from '@api1/knowledge-graph';
 import ManualDependenciesTable from './ManualDependenciesTable';
 import ResolveAmbiguityPanel from './ResolveAmbiguityPanel';
-import CsvImportDialog from './CsvImportDialog';
 import EditManualDependencyDialog from './EditManualDependencyDialog';
 import EditManualNodeDialog from './EditManualNodeDialog';
 import ConfirmDialog from './ConfirmDialog';
@@ -45,17 +43,15 @@ const STATUS_FILTER_OPTIONS = [
 const VIEW_TABLE = 'table';
 const VIEW_RESOLVE = 'resolve';
 
-const ManualDependenciesTab = ({ open }) => {
+const ManualDependenciesSection = ({ open, schema, refreshKey, onNodesChanged }) => {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState('all');
   const [view, setView] = useState(VIEW_TABLE);
   const [selectedRow, setSelectedRow] = useState(null);
 
-  // Sub-dialog state. editRow=null means "create new"; editRow=<row> means
-  // "edit this row". We keep them as separate state vars from selectedRow
-  // because the resolve view also uses selectedRow.
-  const [csvDialogOpen, setCsvDialogOpen] = useState(false);
+  // Edit-dialog state, separate from selectedRow because the resolve view
+  // also uses selectedRow. Creating a dependency lives in the tab.
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editRow, setEditRow] = useState(null);
 
@@ -69,8 +65,7 @@ const ManualDependenciesTab = ({ open }) => {
   // "Declare node" on an unmatched endpoint: { row, side } while the node
   // dialog is open. The schema says which node types can be declared.
   const [declareFor, setDeclareFor] = useState(null);
-  const [nodeSchema, setNodeSchema] = useState([]);
-  const declarableTypes = useMemo(() => new Set(nodeSchema.flatMap((p) => (p.kinds ?? []).map((k) => k.node_type))), [nodeSchema]);
+  const declarableTypes = useMemo(() => new Set(schema.flatMap((p) => (p.kinds ?? []).map((k) => k.node_type))), [schema]);
 
   const statusFilterArray = useMemo(() => {
     if (!statusFilter || statusFilter === 'all') {
@@ -114,24 +109,20 @@ const ManualDependenciesTab = ({ open }) => {
     fetchRows();
   }, [open, fetchRows]);
 
+  // Something outside the section changed the list: refresh without a loader.
   useEffect(() => {
-    if (!open) {
-      return;
+    if (open && refreshKey) {
+      fetchRows({ showLoader: false });
     }
-    apiKnowledgeGraph
-      .getManualNodeSchema()
-      .then((res) => {
-        const payload = res?.data?.data?.kg_get_manual_node_schema?.data;
-        setNodeSchema(Array.isArray(payload) ? payload : []);
-      })
-      .catch((err) => console.error('Failed to fetch the manual node schema:', err));
-  }, [open]);
+  }, [open, refreshKey, fetchRows]);
 
   // Pin the declaring row's unmatched side to a node — the one just declared,
   // or the collected node the declaration turned out to duplicate.
   const pinDeclaredNode = async (nodeId) => {
     const { row, side } = declareFor;
     setDeclareFor(null);
+    // A node was declared (or matched): the Nodes section lists it.
+    onNodesChanged?.();
     if (!nodeId) {
       await fetchRows({ showLoader: false });
       return;
@@ -181,16 +172,6 @@ const ManualDependenciesTab = ({ open }) => {
   const handleResolvedSuccess = async () => {
     handleBackToTable();
     await fetchRows({ showLoader: false });
-  };
-
-  const handleCsvImported = async () => {
-    setCsvDialogOpen(false);
-    await fetchRows({ showLoader: false });
-  };
-
-  const handleNewClick = () => {
-    setEditRow(null);
-    setEditDialogOpen(true);
   };
 
   const handleEditClick = (row) => {
@@ -266,7 +247,7 @@ const ManualDependenciesTab = ({ open }) => {
         <>
           This will <strong>soft-delete every manual declaration</strong> for the tenant ({rows.length} active row
           {rows.length === 1 ? '' : 's'}) and remove every <code>source=&apos;manual&apos;</code> edge from the Knowledge Graph. The audit history is
-          preserved but rows must be re-imported to come back. Continue?
+          preserved but rows must be declared again to come back. Continue?
         </>
       ),
     });
@@ -316,15 +297,9 @@ const ManualDependenciesTab = ({ open }) => {
   }
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, py: 2 }}>
-      <Typography sx={{ fontSize: '12px', color: ds?.text?.secondaryDark ?? '#6b7280' }}>
-        Declare service-to-service dependencies (CALLS / PUBLISHES_TO / SUBSCRIBES_TO) so the Knowledge Graph can correlate alerts even without
-        distributed traces. Upload a CSV to seed many rows at once. Each row resolves to KG nodes at upload time; ambiguous rows can be disambiguated
-        from the list.
-      </Typography>
-
-      <ListingLayout>
-        <ListingLayout.Toolbar>
+    <>
+      <ListingLayout id='manual-dependencies-section'>
+        <ListingLayout.Toolbar title='Dependencies'>
           <FilterDropdown
             id='manual-deps-status-filter'
             label='Status'
@@ -357,17 +332,6 @@ const ManualDependenciesTab = ({ open }) => {
               Delete all
             </Button>
           )}
-          <Button
-            tone='secondary'
-            size='md'
-            onClick={() => setCsvDialogOpen(true)}
-            icon={<SafeIcon src={UploadIcon} alt='upload' width={14} height={14} />}
-          >
-            Import CSV
-          </Button>
-          <Button tone='primary' size='md' onClick={handleNewClick} icon={<SafeIcon src={PlusIcon} alt='add' width={14} height={14} />}>
-            New declaration
-          </Button>
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
           {loading ? (
@@ -388,7 +352,6 @@ const ManualDependenciesTab = ({ open }) => {
         </ListingLayout.Body>
       </ListingLayout>
 
-      <CsvImportDialog open={csvDialogOpen} onClose={() => setCsvDialogOpen(false)} onImported={handleCsvImported} />
       <EditManualDependencyDialog
         open={editDialogOpen}
         row={editRow}
@@ -401,7 +364,7 @@ const ManualDependenciesTab = ({ open }) => {
       <EditManualNodeDialog
         open={Boolean(declareFor)}
         initial={declareInitial}
-        schema={nodeSchema}
+        schema={schema}
         onClose={() => setDeclareFor(null)}
         onSaved={(created) => pinDeclaredNode(created?.kg_node_id)}
         onUseExisting={pinDeclaredNode}
@@ -416,12 +379,18 @@ const ManualDependenciesTab = ({ open }) => {
         onConfirm={handleConfirm}
         onClose={() => setConfirmState(null)}
       />
-    </Box>
+    </>
   );
 };
 
-ManualDependenciesTab.propTypes = {
+ManualDependenciesSection.propTypes = {
   open: PropTypes.bool.isRequired,
+  // kg_get_manual_node_schema: which endpoint types can be declared as nodes.
+  schema: PropTypes.array.isRequired,
+  // Bumped by the tab when a new dependency or an import changed the list.
+  refreshKey: PropTypes.number,
+  // Called after a node is declared from an unmatched endpoint.
+  onNodesChanged: PropTypes.func,
 };
 
-export default ManualDependenciesTab;
+export default ManualDependenciesSection;

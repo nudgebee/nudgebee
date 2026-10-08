@@ -50,13 +50,13 @@ const (
 // of a declared dependency. NodeType + Name are required (validated above the
 // resolver); the rest are optional qualifiers used to narrow the match.
 type ManualEndpoint struct {
-	NodeType  string
-	Name      string
-	Namespace string
-	Cluster   string
-	ARN       string
-	AccountID string
-	Region    string
+	NodeType  string `json:"node_type"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty"`
+	Cluster   string `json:"cluster,omitempty"`
+	ARN       string `json:"arn,omitempty"`
+	AccountID string `json:"account_id,omitempty"`
+	Region    string `json:"region,omitempty"`
 }
 
 // ManualMatchCandidate is what the operator (or UI) sees when a row is
@@ -176,7 +176,9 @@ func (r *ManualEndpointResolver) buildQuery(tenantID string, e ManualEndpoint) (
 	}
 
 	if e.Namespace != "" {
-		fmt.Fprintf(&sb, " AND query_attributes->>'namespace' = $%d", idx)
+		// Only some node types hoist namespace into query_attributes; a node
+		// declared outside any account keeps it in properties.
+		fmt.Fprintf(&sb, " AND COALESCE(query_attributes->>'namespace', properties->>'namespace') = $%d", idx)
 		args = append(args, e.Namespace)
 		idx++
 	}

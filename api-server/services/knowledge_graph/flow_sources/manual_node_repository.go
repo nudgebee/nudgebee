@@ -3,11 +3,9 @@ package flow_sources
 import (
 	"context"
 	"database/sql"
-	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"strings"
 
@@ -31,6 +29,9 @@ type ManualNodeGraphWriter interface {
 type ManualNodeRepository struct {
 	dbManager *database.DatabaseManager
 	logger    *slog.Logger
+	// deferFilterInvalidation leaves dropping the filter-options cache to the
+	// caller: an import writes many nodes and drops it once at the end.
+	deferFilterInvalidation bool
 }
 
 // NewManualNodeRepository binds a repository to the metastore.
@@ -42,8 +43,8 @@ func NewManualNodeRepository(dbManager *database.DatabaseManager, logger *slog.L
 }
 
 // ManualNodeCreate is a declaration request. The UI sends the account's id and
-// the picked network node's id; a CSV row may name the account by its
-// provider account number and the network by its resource id or name.
+// the picked network node's id; an imported document may name the account by
+// its provider account number and the network by its resource id or name.
 type ManualNodeCreate struct {
 	CloudAccountID string                 `json:"cloud_account_id"`
 	CloudAccount   string                 `json:"cloud_account"`
@@ -144,10 +145,17 @@ func (r *ManualNodeRepository) Create(ctx context.Context, graph ManualNodeGraph
 	if err != nil {
 		return nil, err
 	}
+	return r.createPrepared(ctx, graph, n, req.Authorize)
+}
+
+// createPrepared declares a prepared node: the second half of Create, kept
+// apart so an import still knows the node's identity when the declaration is
+// refused because the node is already in the graph.
+func (r *ManualNodeRepository) createPrepared(ctx context.Context, graph ManualNodeGraphWriter, n *ManualNode, authorize ManualAccountAuthorizer) (*ManualNode, error) {
 	// cloudInput already checked an account declaration before its lookups;
 	// this covers one outside any account, and must precede the graph lookup
 	// below so a refused caller cannot learn whether the resource is collected.
-	if req.Authorize != nil && !req.Authorize(n.CloudAccountID) {
+	if authorize != nil && !authorize(n.CloudAccountID) {
 		return nil, ErrManualNodeForbidden
 	}
 
@@ -404,7 +412,9 @@ func (r *ManualNodeRepository) writeNode(graph ManualNodeGraphWriter, n *ManualN
 	if err := graph.SaveNodes([]*core.DbNode{node}, version); err != nil {
 		return err
 	}
-	r.invalidateFilterOptions(n.TenantID)
+	if !r.deferFilterInvalidation {
+		r.invalidateFilterOptions(n.TenantID)
+	}
 	return nil
 }
 
@@ -739,194 +749,6 @@ func (r *ManualNodeRepository) flagDuplicates(tenantID string) (int, error) {
 	}
 	changed, _ := res.RowsAffected()
 	return int(changed), nil
-}
-
-// ---------------------------------------------------------------------------
-// CSV import
-// ---------------------------------------------------------------------------
-
-// manualNodeCSVColumns are the columns with a meaning of their own; any other
-// column is an optional property of the type.
-var manualNodeCSVColumns = map[string]bool{
-	"cloud_account": true, "node_type": true, "specific_type": true, "name": true, "region": true,
-	"network": true, "namespace": true, "description": true, "labels": true,
-}
-
-// ManualNodeCSVRowResult is one row's outcome.
-type ManualNodeCSVRowResult struct {
-	RowIndex int         `json:"row_index"`
-	ID       int64       `json:"id,omitempty"`
-	Error    string      `json:"error,omitempty"`
-	Node     *ManualNode `json:"node,omitempty"`
-}
-
-// ManualNodeCSVResult is an import's outcome.
-type ManualNodeCSVResult struct {
-	Imported []ManualNodeCSVRowResult `json:"imported"`
-	Rejected []ManualNodeCSVRowResult `json:"rejected"`
-}
-
-// ImportCSV declares one node per row. A row names its account by id or by
-// provider account number (blank = outside any connected account), its
-// network by resource id or name, and its labels as k=v;k=v.
-func (r *ManualNodeRepository) ImportCSV(ctx context.Context, graph ManualNodeGraphWriter, tenantID, userID string, authorize ManualAccountAuthorizer, body io.Reader) (*ManualNodeCSVResult, error) {
-	if tenantID == "" {
-		return nil, ErrTenantIDRequired
-	}
-	reader := csv.NewReader(body)
-	reader.FieldsPerRecord = -1
-	header, err := reader.Read()
-	if err == io.EOF {
-		return &ManualNodeCSVResult{Imported: []ManualNodeCSVRowResult{}, Rejected: []ManualNodeCSVRowResult{}}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read csv header: %w", err)
-	}
-	idx := make(map[string]int, len(header))
-	for i, h := range header {
-		idx[strings.TrimSpace(h)] = i
-	}
-	if _, ok := idx["name"]; !ok {
-		return nil, errors.New("csv missing required column: name")
-	}
-	_, hasType := idx["node_type"]
-	_, hasSpecific := idx["specific_type"]
-	if !hasType && !hasSpecific {
-		return nil, errors.New("csv needs a node_type or specific_type column")
-	}
-
-	result := &ManualNodeCSVResult{Imported: []ManualNodeCSVRowResult{}, Rejected: []ManualNodeCSVRowResult{}}
-	for rowIdx := 0; ; rowIdx++ {
-		rec, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			// Rows before this one are already declared, so aborting would
-			// leave a partial import the caller never hears about. A malformed
-			// row is rejected like any other and the reader moves on (an
-			// unterminated quote swallows the rest of the file into this one
-			// rejection, whose message carries the line span).
-			var parseErr *csv.ParseError
-			if errors.As(err, &parseErr) {
-				result.Rejected = append(result.Rejected, ManualNodeCSVRowResult{RowIndex: rowIdx, Error: err.Error()})
-				continue
-			}
-			return nil, fmt.Errorf("read csv row %d: %w", rowIdx, err)
-		}
-		req, err := csvRowToManualNode(rec, header, idx)
-		if err == nil {
-			req.TenantID, req.DeclaredByUserID, req.Authorize = tenantID, userID, authorize
-			var created *ManualNode
-			if created, err = r.Create(ctx, graph, req); err == nil {
-				result.Imported = append(result.Imported, ManualNodeCSVRowResult{RowIndex: rowIdx, ID: created.ID, Node: created})
-				continue
-			}
-		}
-		result.Rejected = append(result.Rejected, ManualNodeCSVRowResult{RowIndex: rowIdx, Error: err.Error()})
-	}
-	return result, nil
-}
-
-func csvRowToManualNode(rec, header []string, idx map[string]int) (ManualNodeCreate, error) {
-	col := func(name string) string {
-		i, ok := idx[name]
-		if !ok || i >= len(rec) {
-			return ""
-		}
-		return strings.TrimSpace(rec[i])
-	}
-	req := ManualNodeCreate{
-		CloudAccount: col("cloud_account"),
-		NodeType:     col("node_type"),
-		SpecificType: col("specific_type"),
-		Name:         col("name"),
-		Region:       col("region"),
-		Network:      col("network"),
-		Namespace:    col("namespace"),
-		Description:  col("description"),
-	}
-	if raw := col("labels"); raw != "" {
-		labels, err := parseCSVLabels(raw)
-		if err != nil {
-			return req, err
-		}
-		req.Labels = labels
-	}
-	// A cell holds text; a map or list property is written the way labels are.
-	shapes := map[string]core.PropertyShape{}
-	if req.CloudAccount != "" {
-		for _, p := range core.SchemaProperties(req.SpecificType) {
-			shapes[p.Name] = p.Shape
-		}
-	}
-	for i, h := range header {
-		h = strings.TrimSpace(h)
-		if manualNodeCSVColumns[h] || h == "" || i >= len(rec) {
-			continue
-		}
-		v := strings.TrimSpace(rec[i])
-		if v == "" {
-			continue
-		}
-		value, err := csvPropertyValue(h, v, shapes[h])
-		if err != nil {
-			return req, err
-		}
-		if req.Properties == nil {
-			req.Properties = map[string]interface{}{}
-		}
-		req.Properties[h] = value
-	}
-	return req, nil
-}
-
-// csvPropertyValue reads a property cell in its shape: "k=v;k=v" for a map,
-// "a;b" for a list, the text itself otherwise.
-func csvPropertyValue(name, raw string, shape core.PropertyShape) (interface{}, error) {
-	switch shape {
-	case core.PropertyShapeMap:
-		pairs, err := parseCSVPairs(name, raw)
-		if err != nil {
-			return nil, err
-		}
-		out := make(map[string]interface{}, len(pairs))
-		for k, v := range pairs {
-			out[k] = v
-		}
-		return out, nil
-	case core.PropertyShapeList:
-		var out []interface{}
-		for _, item := range strings.Split(raw, ";") {
-			if item = strings.TrimSpace(item); item != "" {
-				out = append(out, item)
-			}
-		}
-		return out, nil
-	}
-	return raw, nil
-}
-
-// parseCSVLabels reads "k=v;k=v".
-func parseCSVLabels(raw string) (map[string]string, error) {
-	return parseCSVPairs("labels", raw)
-}
-
-// parseCSVPairs reads a "k=v;k=v" cell of the named column.
-func parseCSVPairs(column, raw string) (map[string]string, error) {
-	out := map[string]string{}
-	for _, pair := range strings.Split(raw, ";") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		k, v, ok := strings.Cut(pair, "=")
-		if !ok || strings.TrimSpace(k) == "" {
-			return nil, fmt.Errorf("%s must be written key=value;key=value, got %q", column, pair)
-		}
-		out[strings.TrimSpace(k)] = strings.TrimSpace(v)
-	}
-	return out, nil
 }
 
 // ---------------------------------------------------------------------------

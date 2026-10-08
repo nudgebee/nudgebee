@@ -1,17 +1,36 @@
-// The values the Manual Nodes CSV accepts in its type columns, read from
-// kg_get_manual_node_schema so the list is always what the importer accepts:
+// The values a declared node's type fields accept, read from
+// kg_get_manual_node_schema so the list is always what the server accepts:
 // node_type outside a connected account, specific_type per connected cloud.
 
 import { useMemo, useState } from 'react';
 import { Box, Typography } from '@mui/material';
 import PropTypes from 'prop-types';
 import { Button } from '@ui/Button';
-import { csvTableSx } from './CsvImportDialog';
 import { ds } from 'src/utils/colors';
 
 const PROVIDER_LABELS = { K8s: 'Kubernetes' };
 
-// The columns besides name a type's identity reads, e.g. "region, network".
+// A compact reference table, shared with the import dialog's format panel.
+export const referenceTableSx = {
+  width: '100%',
+  borderCollapse: 'collapse',
+  fontSize: ds.text.caption,
+  '& th, & td': {
+    textAlign: 'left',
+    verticalAlign: 'top',
+    padding: `${ds.space.mul(0, 3)} ${ds.space[2]}`,
+    borderBottom: `1px solid ${ds.brand[200]}`,
+  },
+  '& th': {
+    fontWeight: ds.weight.semibold,
+    color: ds.brand[500],
+    backgroundColor: ds.background[100],
+    position: 'sticky',
+    top: 0,
+  },
+};
+
+// The fields besides name a type's identity reads, e.g. "region, network".
 const alsoNeeds = (kind) =>
   (kind.key_fields ?? [])
     .filter((f) => f.name !== 'name')
@@ -20,7 +39,7 @@ const alsoNeeds = (kind) =>
 
 const byNodeTypeThenName = (a, b) => a.node_type.localeCompare(b.node_type) || a.specific_type.localeCompare(b.specific_type);
 
-export const groupCsvTypeValues = (schema) => {
+export const groupTypeValues = (schema) => {
   const outside = (schema ?? []).find((p) => !p.cloud_account_id);
   const providers = new Map();
   for (const place of schema ?? []) {
@@ -45,8 +64,8 @@ const Code = ({ children }) => <code style={{ fontSize: ds.text.caption }}>{chil
 Code.propTypes = { children: PropTypes.node };
 
 // One category per account type: outside any account, then each connected cloud.
-export const csvTypeCategories = (schema) => {
-  const { outside, providers } = groupCsvTypeValues(schema);
+export const typeCategories = (schema) => {
+  const { outside, providers } = groupTypeValues(schema);
   const out = [];
   if (outside.length) {
     out.push({ key: 'outside', label: 'Not in an account', column: 'node_type', valueOf: (k) => k.node_type, kinds: outside });
@@ -57,8 +76,8 @@ export const csvTypeCategories = (schema) => {
   return out;
 };
 
-const ManualNodeCsvTypeValues = ({ schema }) => {
-  const categories = useMemo(() => csvTypeCategories(schema), [schema]);
+const ManualNodeTypeValues = ({ schema }) => {
+  const categories = useMemo(() => typeCategories(schema), [schema]);
   const [activeKey, setActiveKey] = useState(null);
   if (!categories.length) {
     return null;
@@ -66,7 +85,7 @@ const ManualNodeCsvTypeValues = ({ schema }) => {
   const active = categories.find((c) => c.key === activeKey) ?? categories[0];
   return (
     <Box
-      data-testid='manual-nodes-csv-type-values'
+      data-testid='manual-nodes-type-values'
       sx={{
         border: `1px solid ${ds.brand[200]}`,
         borderRadius: ds.radius.md,
@@ -78,8 +97,8 @@ const ManualNodeCsvTypeValues = ({ schema }) => {
       }}
     >
       <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], lineHeight: 1.5 }}>
-        Values for the type columns, by account type. Outside a connected account set <Code>node_type</Code>; in a connected account set{' '}
-        <Code>specific_type</Code> — only the clouds connected to this tenant are listed. &quot;Also needs&quot; are the other columns that decide the
+        Values for a node&apos;s type, by account type. Outside a connected account set <Code>node_type</Code>; in a connected account set{' '}
+        <Code>specific_type</Code> — only the clouds connected to this tenant are listed. &quot;Also needs&quot; are the other fields that decide the
         node&apos;s identity.
       </Typography>
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1] }} role='group' aria-label='Account type'>
@@ -96,7 +115,7 @@ const ManualNodeCsvTypeValues = ({ schema }) => {
         ))}
       </Box>
       <Box sx={{ maxHeight: '280px', overflowY: 'auto' }}>
-        <Box component='table' sx={csvTableSx}>
+        <Box component='table' sx={referenceTableSx}>
           <thead>
             <tr>
               <th>{active.column}</th>
@@ -121,9 +140,9 @@ const ManualNodeCsvTypeValues = ({ schema }) => {
   );
 };
 
-ManualNodeCsvTypeValues.propTypes = {
+ManualNodeTypeValues.propTypes = {
   // kg_get_manual_node_schema: one entry per place a node can be declared.
   schema: PropTypes.array,
 };
 
-export default ManualNodeCsvTypeValues;
+export default ManualNodeTypeValues;

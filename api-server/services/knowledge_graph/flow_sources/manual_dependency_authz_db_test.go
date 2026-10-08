@@ -1,7 +1,6 @@
 package flow_sources_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -186,22 +185,6 @@ func TestManualDependencyAuthz_Pin(t *testing.T) {
 	}
 	if pinned.ResolvedDestNodeID != payments.ID {
 		t.Errorf("pin not applied: %s", pinned.ResolvedDestNodeID)
-	}
-}
-
-// A CSV row refused for its accounts is rejected; the rest import.
-func TestManualDependencyAuthz_CSVImport(t *testing.T) {
-	f := newDepAuthzFixture(t)
-	csv := "source_node_type,source_name,dest_node_type,dest_name,relationship_type\n" +
-		"MessageQueue,orders,MessageQueue,payments,CALLS\n" +
-		"MessageQueue,orders,MessageQueue,billing,CALLS\n"
-	res, err := f.asAdminA.ImportCSV(context.Background(), f.tenantID, "", bytes.NewBufferString(csv))
-	if err != nil {
-		t.Fatalf("ImportCSV: %v", err)
-	}
-	if len(res.Imported) != 1 || len(res.Rejected) != 1 || res.Rejected[0].RowIndex != 1 ||
-		res.Rejected[0].Error != flow_sources.ErrManualDependencyForbidden.Error() {
-		t.Fatalf("expected row 0 imported and row 1 refused, got %+v / %+v", res.Imported, res.Rejected)
 	}
 }
 

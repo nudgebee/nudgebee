@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -325,44 +324,6 @@ func handleKgApplyManualNodeMerge(actionPayload *ActionRequest, c *gin.Context, 
 	c.JSON(200, map[string]any{"data": map[string]any{
 		"id": req.ID, "merged_into": merged.DuplicateNodeID, "dependencies_repointed": repointed,
 	}})
-}
-
-// handleKgImportManualNodes declares one node per CSV row.
-func handleKgImportManualNodes(actionPayload *ActionRequest, c *gin.Context, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
-	kgRequest, ok := actionPayload.Input["request"].(map[string]interface{})
-	if !ok {
-		c.JSON(400, common.ErrorActionBadRequest("Invalid request format"))
-		return
-	}
-	var req struct {
-		CSV string `json:"csv"`
-	}
-	if err := common.UnmarshalMapToStruct(kgRequest, &req); err != nil {
-		c.JSON(400, common.ErrorActionBadRequest("Invalid request format: "+err.Error()))
-		return
-	}
-	if req.CSV == "" {
-		c.JSON(400, common.ErrorActionBadRequest("csv body is required"))
-		return
-	}
-
-	ctx, repo, kg, tenantID, err := manualNodeHandlerSetup(actionPayload, c, tracer, meter, logger)
-	if err != nil {
-		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-		return
-	}
-	// Each row is checked against its own account; a refused row is rejected.
-	authorize := manualAccountAuthorizer(ctx.GetSecurityContext(), security.SecurityAccessTypeCreate)
-	result, err := repo.ImportCSV(ctx.GetContext(), kg, tenantID, ctx.GetSecurityContext().GetUserId(), authorize, bytes.NewBufferString(req.CSV))
-	if err != nil {
-		ctx.GetLogger().Warn("manual node csv import failed", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("CSV import failed: "+err.Error()))
-		return
-	}
-	auditManualNode(ctx, audit.EventTypeKGNodeImport, audit.EventActionCreate, tenantID, map[string]any{
-		"imported": len(result.Imported), "rejected": len(result.Rejected),
-	})
-	c.JSON(200, map[string]any{"data": result})
 }
 
 // handleKgDeleteAllManualNodes is the panic button.

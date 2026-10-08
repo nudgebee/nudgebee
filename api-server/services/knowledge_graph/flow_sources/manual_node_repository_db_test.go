@@ -1,10 +1,8 @@
 package flow_sources_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -289,43 +287,6 @@ func TestManualNodeLifecycle_DependencyResolvesToDeclaredNode(t *testing.T) {
 	}
 }
 
-func TestManualNodeLifecycle_CSVImport(t *testing.T) {
-	f := newManualNodeFixture(t)
-	// Row 2 is malformed CSV (a bare quote): it is rejected like any other
-	// bad row, and the rows after it still import.
-	csv := "cloud_account,specific_type,node_type,name,region,labels,description\n" +
-		"123456789012,SQSQueue,,csv-queue,us-east-1,team=payments,from csv\n" +
-		",,Database,billing-db,,,on-prem\n" +
-		",,Database,bad\"quote,,,\n" +
-		"123456789012,SQSQueue,,no-region,,,\n" +
-		",,Pod,not-allowed,,,\n" +
-		",,Cache,after-bad-row,,,\n"
-	res, err := f.repo.ImportCSV(context.Background(), f.kg, f.tenantID, "", nil, bytes.NewBufferString(csv))
-	if err != nil {
-		t.Fatalf("ImportCSV: %v", err)
-	}
-	if len(res.Imported) != 3 || len(res.Rejected) != 3 {
-		t.Fatalf("imported %d rejected %d, want 3 and 3: %+v", len(res.Imported), len(res.Rejected), res.Rejected)
-	}
-	if res.Rejected[0].RowIndex != 2 || res.Rejected[1].RowIndex != 3 || res.Rejected[2].RowIndex != 4 {
-		t.Errorf("wrong rows rejected: %+v", res.Rejected)
-	}
-	if !strings.Contains(res.Rejected[0].Error, "parse error") {
-		t.Errorf("malformed row should be rejected with the parse error, got %q", res.Rejected[0].Error)
-	}
-	if q := res.Imported[0].Node; q.CloudAccountID != f.account || q.Labels["team"] != "payments" || q.Description != "from csv" {
-		t.Errorf("csv row mis-imported: %+v", q)
-	}
-	if res.Imported[2].Node.Name != "after-bad-row" {
-		t.Errorf("the row after the malformed one was not imported: %+v", res.Imported[2].Node)
-	}
-
-	rows, nodes, err := f.repo.SoftDeleteAll(context.Background(), f.tenantID)
-	if err != nil || rows != 3 || nodes != 3 {
-		t.Fatalf("SoftDeleteAll: rows=%d nodes=%d err=%v", rows, nodes, err)
-	}
-}
-
 // A Kubernetes declaration: keyed like the k8s source keys the workload,
 // resolvable by namespace + cluster, refused when the cluster already reports
 // it, and not flagged as a duplicate of a same-named workload elsewhere.
@@ -452,8 +413,7 @@ func TestManualNodeLifecycle_AdoptedDeclarationRevives(t *testing.T) {
 }
 
 // A caller refused for the account writes nothing and learns nothing about
-// whether the resource is collected; a CSV row refused for its account is
-// rejected while the others import.
+// whether the resource is collected.
 func TestManualNodeLifecycle_RefusesUnauthorizedAccount(t *testing.T) {
 	f := newManualNodeFixture(t)
 	ctx := context.Background()
@@ -470,17 +430,5 @@ func TestManualNodeLifecycle_RefusesUnauthorizedAccount(t *testing.T) {
 	rows, _ := f.repo.List(ctx, f.tenantID)
 	if len(rows) != 0 {
 		t.Fatalf("a refused create left %d declarations", len(rows))
-	}
-
-	csv := "name,cloud_account,specific_type,node_type,region\n" +
-		"refused-queue," + f.account + ",SQSQueue,,us-east-1\n" +
-		"onprem-db,,,Database,\n"
-	res, err := f.repo.ImportCSV(ctx, f.kg, f.tenantID, "", onlyOutside, bytes.NewBufferString(csv))
-	if err != nil {
-		t.Fatalf("ImportCSV: %v", err)
-	}
-	if len(res.Imported) != 1 || res.Imported[0].Node.Name != "onprem-db" || len(res.Rejected) != 1 ||
-		res.Rejected[0].Error != flow_sources.ErrManualNodeForbidden.Error() {
-		t.Fatalf("expected onprem-db imported and the account row refused, got %+v / %+v", res.Imported, res.Rejected)
 	}
 }

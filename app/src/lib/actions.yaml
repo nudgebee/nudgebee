@@ -4084,18 +4084,6 @@ actions:
       - role: tenant_admin
       - role: account_admin
     comment: soft-delete one row AND remove the matching source='manual' edge from the KG in one transaction. Prevents ghost edges from outliving deleted declarations.
-  - name: kg_import_manual_dependencies
-    definition:
-      kind: synchronous
-      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
-      forward_client_headers: true
-      headers:
-        - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_admin
-      - role: account_admin
-    comment: bulk import declarations from CSV. Required header columns - source_node_type, source_name, dest_node_type, dest_name. Optional - source_namespace, source_cluster, source_arn, source_account_id, source_region, and the corresponding dest_ columns, plus relationship_type (defaults to CALLS) and notes. Returns per-row imported/rejected status.
   - name: kg_resolve_manual_dependency
     definition:
       kind: synchronous
@@ -4219,7 +4207,7 @@ actions:
       - role: tenant_admin
       - role: account_admin
     comment: resolve a possible_duplicate declaration in favour of the collected node it matches - dependencies pinned to the declared node move to it and the declaration is withdrawn.
-  - name: kg_import_manual_nodes
+  - name: kg_create_manual_declarations
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
@@ -4230,7 +4218,7 @@ actions:
     permissions:
       - role: tenant_admin
       - role: account_admin
-    comment: bulk-declare nodes from CSV. Columns - name (required), specific_type (cloud) or node_type (outside an account), cloud_account (id or account number; blank means outside any account), region, network (VPC id or name), namespace, description, labels (k=v;k=v); any other column is an optional property of the type. Returns per-row imported/rejected.
+    comment: 'declare KG nodes and dependencies from one JSON document, `{"nodes": [...], "dependencies": [...]}`. A node is a kg_create_manual_node request plus an optional ref (defaults to name, unique in the document). A dependency side is a ref to a node of the document, or an endpoint object with node_type, name and optional namespace, cluster, arn, account_id for a node already in the graph; relationship_type defaults to CALLS. Nodes land first; one already declared or collected comes back as existing and still links, and a dependency already declared comes back as existing. Invalid JSON, an unknown field, a duplicate or unknown ref, more than 1 MB or more than 500 items is a 400 with nothing written. Returns per-item results - nodes and dependencies, each created, existing or rejected.'
   - name: kg_delete_all_manual_nodes
     definition:
       kind: synchronous

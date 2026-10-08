@@ -1,79 +1,31 @@
-// Manual Nodes tab — nodes a user declares by hand so dependencies can point
-// at resources no collector has discovered.
+// Nodes section of the Manual Declarations tab — nodes a user declares by
+// hand so dependencies can point at resources no collector has discovered.
 //
-// Owns the data fetch (kg_list_manual_nodes + kg_get_manual_node_schema), the
-// declare/edit dialog, the CSV import and every mutation; ManualNodesTable
-// only renders.
+// Owns the list fetch (kg_list_manual_nodes), the edit dialog and every
+// per-row mutation; the tab owns the schema, declaring and the JSON import,
+// and bumps refreshKey when they change the list. ManualNodesTable only
+// renders.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Box, Typography } from '@mui/material';
+import { Box } from '@mui/material';
 import PropTypes from 'prop-types';
 import ListingLayout from '@ui/ListingLayout';
 import { Button } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';
 import Loader from '@shared/Loader';
-import { UploadIcon, PlusIcon } from '@assets';
-import SafeIcon from '@shared/icons/SafeIcon';
 import apiKnowledgeGraph from '@api1/knowledge-graph';
 import ManualNodesTable from './ManualNodesTable';
 import EditManualNodeDialog from './EditManualNodeDialog';
-import CsvImportDialog from './CsvImportDialog';
-import ManualNodeCsvTypeValues from './ManualNodeCsvTypeValues';
 import ConfirmDialog from './ConfirmDialog';
 import { ds } from 'src/utils/colors';
 
-// Column reference for the node CSV. Mirrors csvRowToManualNode on the backend
-// (manual_node_repository.go): any column not listed here is taken as an
-// optional property of the row's type.
-const MANUAL_NODES_CSV_SCHEMA = [
-  { name: 'name', required: true, purpose: 'The resource name as the cloud console shows it.', example: 'orders-db' },
-  {
-    name: 'cloud_account',
-    required: false,
-    purpose: 'Connected account id or account number. Blank = not in a connected account.',
-    example: '123456789012',
-  },
-  {
-    name: 'specific_type',
-    required: false,
-    purpose: 'Concrete type in a connected account (required there). Values are listed below.',
-    example: 'RDSInstance',
-  },
-  { name: 'node_type', required: false, purpose: 'Type outside a connected account (required there). Values are listed below.', example: 'Database' },
-  { name: 'region', required: false, purpose: 'Region; required in a connected account.', example: 'us-east-1' },
-  { name: 'network', required: false, purpose: 'VPC id or name, for types keyed by their VPC.', example: 'vpc-0abc123' },
-  { name: 'namespace', required: false, purpose: 'Kubernetes namespace (required in a cluster); optional grouping elsewhere.', example: 'payments' },
-  { name: 'description', required: false, purpose: 'What it is and who owns it.', example: 'billing primary' },
-  { name: 'labels', required: false, purpose: 'key=value pairs separated by ;', example: 'team=payments;env=prod' },
-];
-
-const MANUAL_NODES_CSV_CONFIG = {
-  title: 'Import Manual Nodes (CSV)',
-  schema: MANUAL_NODES_CSV_SCHEMA,
-  requiredColumns: ['name'],
-  requiredNote: (
-    <>
-      Required: <strong>name</strong>, plus <strong>specific_type</strong> in a connected account (with <strong>region</strong> for a cloud resource,{' '}
-      <strong>namespace</strong> for a Kubernetes one), or <strong>node_type</strong> outside one. Any other column is an optional property of the
-      type: a key/value one such as annotations is written like labels, a list such as subnet_ids as <strong>a;b</strong>.
-    </>
-  ),
-  importCsv: (csv) => apiKnowledgeGraph.importManualNodes({ csv }),
-  resultKey: 'kg_import_manual_nodes',
-};
-
-const ManualNodesTab = ({ open }) => {
+const ManualNodesSection = ({ open, schema, refreshKey }) => {
   const [rows, setRows] = useState([]);
-  const [schema, setSchema] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [csvDialogOpen, setCsvDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editRow, setEditRow] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
-
-  // The CSV dialog lists the type values this tenant's schema accepts.
-  const csvConfig = useMemo(() => ({ ...MANUAL_NODES_CSV_CONFIG, valuesPanel: <ManualNodeCsvTypeValues schema={schema} /> }), [schema]);
 
   const accountNames = useMemo(
     () =>
@@ -106,23 +58,18 @@ const ManualNodesTab = ({ open }) => {
     }
   }, []);
 
-  const fetchSchema = useCallback(async () => {
-    try {
-      const res = await apiKnowledgeGraph.getManualNodeSchema();
-      const payload = res?.data?.data?.kg_get_manual_node_schema?.data ?? [];
-      setSchema(Array.isArray(payload) ? payload : []);
-    } catch (err) {
-      console.error('Failed to fetch the manual node schema:', err);
-    }
-  }, []);
-
   useEffect(() => {
-    if (!open) {
-      return;
+    if (open) {
+      fetchRows();
     }
-    fetchRows();
-    fetchSchema();
-  }, [open, fetchRows, fetchSchema]);
+  }, [open, fetchRows]);
+
+  // Something outside the section changed the list: refresh without a loader.
+  useEffect(() => {
+    if (open && refreshKey) {
+      fetchRows({ showLoader: false });
+    }
+  }, [open, refreshKey, fetchRows]);
 
   const refresh = () => fetchRows({ showLoader: false });
 
@@ -216,42 +163,15 @@ const ManualNodesTab = ({ open }) => {
   };
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4], py: ds.space[4] }}>
-      <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>
-        Declare resources the Knowledge Graph has not discovered — an on-prem database, a third-party API, a resource in an account without a
-        collector — so manual dependencies can point at them. A node declared in a connected account is adopted by the collector when it discovers the
-        same resource.
-      </Typography>
-
-      <ListingLayout>
-        <ListingLayout.Toolbar>
+    <>
+      <ListingLayout id='manual-nodes-section'>
+        <ListingLayout.Toolbar title='Nodes'>
           <Box sx={{ flex: 1 }} />
           {rows.length > 0 && (
             <Button tone='danger' size='md' onClick={handleDeleteAllClick} id='manual-nodes-delete-all'>
               Delete all
             </Button>
           )}
-          <Button
-            tone='secondary'
-            size='md'
-            onClick={() => setCsvDialogOpen(true)}
-            icon={<SafeIcon src={UploadIcon} alt='upload' width={14} height={14} />}
-            id='manual-nodes-import-csv'
-          >
-            Import CSV
-          </Button>
-          <Button
-            tone='primary'
-            size='md'
-            onClick={() => {
-              setEditRow(null);
-              setEditDialogOpen(true);
-            }}
-            icon={<SafeIcon src={PlusIcon} alt='add' width={14} height={14} />}
-            id='manual-nodes-new'
-          >
-            New node
-          </Button>
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
           {loading ? (
@@ -273,15 +193,6 @@ const ManualNodesTab = ({ open }) => {
         </ListingLayout.Body>
       </ListingLayout>
 
-      <CsvImportDialog
-        open={csvDialogOpen}
-        onClose={() => setCsvDialogOpen(false)}
-        onImported={async () => {
-          setCsvDialogOpen(false);
-          await refresh();
-        }}
-        config={csvConfig}
-      />
       <EditManualNodeDialog
         open={editDialogOpen}
         row={editRow}
@@ -302,12 +213,16 @@ const ManualNodesTab = ({ open }) => {
         onConfirm={handleConfirm}
         onClose={() => setConfirmState(null)}
       />
-    </Box>
+    </>
   );
 };
 
-ManualNodesTab.propTypes = {
+ManualNodesSection.propTypes = {
   open: PropTypes.bool.isRequired,
+  // kg_get_manual_node_schema: account names and the edit form's fields.
+  schema: PropTypes.array.isRequired,
+  // Bumped by the tab when a declaration or an import changed the list.
+  refreshKey: PropTypes.number,
 };
 
-export default ManualNodesTab;
+export default ManualNodesSection;
