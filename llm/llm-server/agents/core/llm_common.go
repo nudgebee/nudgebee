@@ -3980,12 +3980,10 @@ func cloneConfigMap(src map[string]string) map[string]string {
 // db:<uuid> source ids: GetAllConfiguredModels emits a pickable row per slot per
 // integration, and resolveFromPinnedSource accepts only ids present in this list.
 //
-// Visibility is integrations linked to this cloud account, plus this tenant's
-// integrations that are not linked to any account. Another tenant's integration
-// can never appear here, which is what makes the pin path tenant-safe without a
-// second authorization check. Note this is wider than what resolution will pick
-// on its own: an unlinked integration is offered here but is never selected
-// automatically — only by an explicit db:<uuid> pin.
+// Visibility is llmPickableForAccount: integrations linked to this cloud account,
+// this tenant's integrations linked to no account, and the tenant default.
+// Another tenant's integration can never appear here, which is what makes the
+// pin path tenant-safe without a second authorization check.
 // cloneIntegrations deep-copies cached integrations before they leave the
 // accessor. Slices and maps are reference types, so handing out the cached ones
 // makes every caller a potential cache mutator — and a write while another
@@ -4035,28 +4033,61 @@ func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string
 		return nil, fmt.Errorf("getLLMIntegrationsForAccount: failed to get database manager: %w", err)
 	}
 
-	// i.name and icv.name are aliased apart — the scan below is positional, but
-	// two columns called "name" is a trap worth removing.
-	query := `SELECT i.id AS integration_id, i.name AS integration_name,
-					 icv.name AS config_key, icv.value AS config_value, icv.is_encrypted
-			  FROM integrations i
-			  JOIN integration_config_values icv ON i.id = icv.integration_id
+	// Which of these the account may pick is decided by llmPickableForAccount,
+	// so the flags come back with every row. Rows outside the tenant are never
+	// read unless they are linked to this account.
+	query := llmIntegrationRowsSelect + `
 			  WHERE i."type" = 'llm' AND i.status = 'enabled'
-				AND (EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
-							 WHERE ia.integration_id = i.id AND ia.cloud_account_id = :ac_id)
-					 OR (i.tenant_id = :tenant_id
-						 AND NOT EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
-										 WHERE ia.integration_id = i.id)))`
+				AND (i.tenant_id = :tenant_id
+					 OR EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
+								WHERE ia.integration_id = i.id AND ia.cloud_account_id = :ac_id))`
 	params := map[string]any{"ac_id": accountId, "tenant_id": tenantParam}
+	integrations, err := queryLLMIntegrations(ctx, dbManager, query, params, llmPickableForAccount, accountId)
+	if err != nil {
+		return nil, fmt.Errorf("getLLMIntegrationsForAccount: %w", err)
+	}
 
+	llmIntegrationsCacheMutex.Lock()
+	llmIntegrationsCache[accountId] = struct {
+		integrations []llmIntegration
+		ts           time.Time
+	}{integrations: integrations, ts: time.Now()}
+	llmIntegrationsCacheMutex.Unlock()
+
+	slog.Debug("Loaded LLM integrations for account", "accountId", accountId, "count", len(integrations))
+	return integrations, nil
+}
+
+// llmIntegrationRowsSelect is the shared column list for queryLLMIntegrations:
+// one row per config value, with the flags llmCandidate needs. Callers append
+// the WHERE clause and bind :ac_id (use NULL when there is no account).
+// i.name and icv.name are aliased apart: the scan is positional, but two
+// columns called "name" is a trap worth removing.
+const llmIntegrationRowsSelect = `SELECT i.id AS integration_id, i.name AS integration_name,
+					 icv.name AS config_key, icv.value AS config_value, icv.is_encrypted,
+					 EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
+							 WHERE ia.integration_id = i.id AND ia.cloud_account_id = :ac_id) AS linked,
+					 EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
+							 WHERE ia.integration_id = i.id) AS has_accounts,
+					 EXISTS (SELECT 1 FROM integration_config_values d
+							 WHERE d.integration_id = i.id AND d.name = 'default_llm_provider' AND d.value = 'true') AS tenant_default
+			  FROM integrations i
+			  JOIN integration_config_values icv ON i.id = icv.integration_id`
+
+// queryLLMIntegrations runs a llmIntegrationRowsSelect query and keeps the
+// integrations `keep` accepts, decrypted and sorted by name then id so lists
+// built from them are stable.
+func queryLLMIntegrations(ctx *security.RequestContext, dbManager *common.DatabaseManager, query string,
+	params map[string]any, keep func(llmCandidate) bool, logId string) ([]llmIntegration, error) {
 	var rows *sqlx.Rows
+	var err error
 	if ctx != nil {
 		rows, err = dbManager.Db.NamedQueryContext(ctx.GetContext(), query, params)
 	} else {
 		rows, err = dbManager.Db.NamedQuery(query, params)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("getLLMIntegrationsForAccount: query failed for account %s: %w", accountId, err)
+		return nil, fmt.Errorf("query failed for %s: %w", logId, err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -4069,11 +4100,15 @@ func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string
 		var id string
 		var integrationName, key, value sql.NullString
 		var isEncrypted sql.NullBool
-		if err := rows.Scan(&id, &integrationName, &key, &value, &isEncrypted); err != nil {
-			return nil, fmt.Errorf("getLLMIntegrationsForAccount: failed to scan row for account %s: %w", accountId, err)
+		var c llmCandidate
+		if err := rows.Scan(&id, &integrationName, &key, &value, &isEncrypted, &c.Linked, &c.HasAccounts, &c.TenantDefault); err != nil {
+			return nil, fmt.Errorf("failed to scan row for %s: %w", logId, err)
+		}
+		if !keep(c) {
+			continue
 		}
 		if !key.Valid || key.String == "" {
-			slog.Warn("LLM integration config: row has empty name; skipping", "accountId", accountId, "integrationId", id)
+			slog.Warn("LLM integration config: row has empty name; skipping", "scope", logId, "integrationId", id)
 			continue
 		}
 		plain := value.String
@@ -4081,7 +4116,7 @@ func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string
 			decrypted, decErr := common.Decrypt(plain)
 			if decErr != nil {
 				slog.Warn("LLM integration config: failed to decrypt encrypted field; skipping row",
-					"error", decErr, "accountId", accountId, "integrationId", id, "key", key.String)
+					"error", decErr, "scope", logId, "integrationId", id, "key", key.String)
 				continue
 			}
 			plain = decrypted
@@ -4094,10 +4129,9 @@ func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string
 		integ.Config[key.String] = plain
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("getLLMIntegrationsForAccount: failed iterating rows for account %s: %w", accountId, err)
+		return nil, fmt.Errorf("failed iterating rows for %s: %w", logId, err)
 	}
 
-	// Sorted so the model picker's row order is stable across calls.
 	integrations := make([]llmIntegration, 0, len(byId))
 	for _, integ := range byId {
 		integrations = append(integrations, *integ)
@@ -4108,16 +4142,25 @@ func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string
 		}
 		return integrations[a].Id < integrations[b].Id
 	})
-
-	llmIntegrationsCacheMutex.Lock()
-	llmIntegrationsCache[accountId] = struct {
-		integrations []llmIntegration
-		ts           time.Time
-	}{integrations: integrations, ts: time.Now()}
-	llmIntegrationsCacheMutex.Unlock()
-
-	slog.Debug("Loaded LLM integrations for account", "accountId", accountId, "count", len(integrations))
 	return integrations, nil
+}
+
+// getTenantWideLLMIntegrations returns a tenant's enabled integrations that a
+// config saved with no accounts may reference: those linked to no account, and
+// the tenant default.
+func getTenantWideLLMIntegrations(ctx *security.RequestContext, tenantId string) ([]llmIntegration, error) {
+	if tenantId == "" {
+		return nil, nil
+	}
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("getTenantWideLLMIntegrations: failed to get database manager: %w", err)
+	}
+	query := llmIntegrationRowsSelect + `
+			  WHERE i."type" = 'llm' AND i.status = 'enabled' AND i.tenant_id = :tenant_id`
+	params := map[string]any{"ac_id": nil, "tenant_id": tenantId}
+	keep := func(c llmCandidate) bool { return !c.HasAccounts || c.TenantDefault }
+	return queryLLMIntegrations(ctx, dbManager, query, params, keep, tenantId)
 }
 
 // fetchLLMIntegrationConfigByAccount queries LLM integration config linked to a specific cloud account.
@@ -4137,28 +4180,23 @@ func fetchLLMIntegrationConfigByAccount(ctx *security.RequestContext, dbManager 
 	return execLLMIntegrationConfigQuery(ctx, dbManager, query, map[string]any{"integration_id": integrationId}, accountId)
 }
 
-// selectAccountLLMIntegration picks which of an account's enabled LLM
-// integrations to resolve against, returning "" when there is no single answer.
-//
-// The choice is: the integration flagged default_llm_provider on its account
-// link row; otherwise the account's only enabled LLM integration, since linking
-// exactly one provider to an account is itself the operator's choice for it;
-// otherwise the tenant default provider when it is among the account's links,
-// because the integrations list shows that provider as "Default" for every
-// account it is linked to, whether or not the link row carries the flag.
-//
-// Every remaining no-single-answer shape ("several flagged", "several linked,
-// none flagged, tenant default not among them") falls through to ENV, the
-// documented final fallback, rather than guessing — picking one anyway would
-// silently bind an account to a credential its operator didn't choose.
+// selectAccountLLMIntegration picks the LLM integration an account resolves
+// against, returning "" to fall through to ENV. The rule lives in
+// chooseAccountLLMIntegration; this only loads the candidates: integrations
+// linked to the account, plus the account's tenant default whether or not it is
+// linked to the account.
 func selectAccountLLMIntegration(ctx *security.RequestContext, dbManager *common.DatabaseManager, accountId string) (string, error) {
-	// tenant_default mirrors the integration's own default_llm_provider config
-	// value, which the "Default LLM provider" checkbox keeps unique per tenant.
-	query := `SELECT i.id, ia.default_llm_provider, COALESCE(icv.value = 'true', false) AS tenant_default
+	query := `SELECT i.id,
+				  bool_or(ia.cloud_account_id IS NOT NULL) AS linked,
+				  bool_or(COALESCE(ia.default_llm_provider, false)) AS account_default,
+				  bool_or(COALESCE(icv.value = 'true', false)) AS tenant_default
 			  FROM integrations i
-			  JOIN integrations_cloud_accounts ia ON i.id = ia.integration_id
+			  LEFT JOIN integrations_cloud_accounts ia ON ia.integration_id = i.id AND ia.cloud_account_id = :ac_id
 			  LEFT JOIN integration_config_values icv ON icv.integration_id = i.id AND icv.name = 'default_llm_provider'
-			  WHERE i."type" = 'llm' AND i.status = 'enabled' AND ia.cloud_account_id = :ac_id`
+			  WHERE i."type" = 'llm' AND i.status = 'enabled'
+				AND (ia.cloud_account_id IS NOT NULL
+					 OR (icv.value = 'true' AND i.tenant_id = (SELECT tenant FROM cloud_accounts WHERE id = :ac_id)))
+			  GROUP BY i.id`
 	params := map[string]any{"ac_id": accountId}
 
 	var rows *sqlx.Rows
@@ -4178,45 +4216,20 @@ func selectAccountLLMIntegration(ctx *security.RequestContext, dbManager *common
 		}
 	}()
 
-	var all, defaults, tenantDefaults []string
+	var candidates []llmCandidate
 	for rows.Next() {
-		var id string
-		var isDefault sql.NullBool
-		var isTenantDefault bool
-		if err := rows.Scan(&id, &isDefault, &isTenantDefault); err != nil {
+		var c llmCandidate
+		if err := rows.Scan(&c.Id, &c.Linked, &c.AccountDefault, &c.TenantDefault); err != nil {
 			slog.Error("Failed to scan LLM integration row", "error", err, "accountId", accountId)
 			return "", err
 		}
-		all = append(all, id)
-		if isDefault.Valid && isDefault.Bool {
-			defaults = append(defaults, id)
-		}
-		if isTenantDefault {
-			tenantDefaults = append(tenantDefaults, id)
-		}
+		candidates = append(candidates, c)
 	}
 	if err := rows.Err(); err != nil {
 		slog.Error("iterating LLM integration rows", "error", err, "accountId", accountId)
 		return "", err
 	}
-
-	switch {
-	case len(defaults) == 1:
-		return defaults[0], nil
-	case len(defaults) > 1:
-		slog.Error("LLM config: account has multiple integrations flagged default; falling back to ENV",
-			"accountId", accountId, "defaultCount", len(defaults))
-		return "", nil
-	case len(all) == 1:
-		return all[0], nil
-	case len(tenantDefaults) == 1:
-		return tenantDefaults[0], nil
-	case len(all) > 1:
-		slog.Warn("LLM config: account has several enabled integrations, none flagged default and none the tenant default; falling back to ENV",
-			"accountId", accountId, "count", len(all))
-		return "", nil
-	}
-	return "", nil
+	return chooseAccountLLMIntegration(accountId, candidates), nil
 }
 
 // execLLMIntegrationConfigQuery runs a named query and scans results into a config map.

@@ -467,6 +467,36 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		c.JSON(200, buildApiResponse(map[string]any{"send_hour_utc": request.SendHourUTC}, nil))
 	})
 
+	// ai_list_tenant_models lists the models a config saved with no accounts may
+	// use as an existing-model fallback: the tenant's tenant-wide integrations and
+	// its tenant default. Tenant admins only, the same users who can save such a
+	// config.
+	groupV2.POST("/ai_list_tenant_models", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("ai_list_tenant_models")
+		var actionRequest ActionRequest
+		if err := c.ShouldBindJSON(&actionRequest); err != nil {
+			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			return
+		}
+		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		if err != nil {
+			c.JSON(401, buildApiResponse(nil, []error{err}))
+			return
+		}
+		sc := agentContext.GetSecurityContext()
+		if !sc.IsTenantAdmin() && !sc.IsSuperAdmin() {
+			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			return
+		}
+		models, err := core.GetTenantWideConfiguredModels(sc.GetTenantId())
+		if err != nil {
+			agentContext.GetLogger().Error("api: error listing tenant models", "error", err)
+			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
+		c.JSON(200, buildApiResponse(map[string]any{"models": models}, nil))
+	})
+
 	groupV2.POST("/ai_list_models", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal("ai_list_models")
 		requestMap := make(map[string]any)

@@ -1,0 +1,86 @@
+{
+  "_about": "Shared cases for which LLM config an account uses ('uses', '' = fall through to ENV) and which configs its model picker shows ('picker', sorted). Read by llm-server (agents/core), rag-server (get_default_llm_integration) and api-server (integrations_check_llm_defaults). Spec: llm/llm-server/docs/llm-default-provider-spec.md. A config with no 'accounts' is tenant-wide.",
+  "cases": [
+    {
+      "name": "own default beats the tenant default",
+      "configs": [
+        {"id": "own", "accounts": ["A"], "account_defaults": ["A"]},
+        {"id": "tenant", "accounts": ["A"], "tenant_default": true}
+      ],
+      "accounts": {"A": {"uses": "own", "picker": ["own", "tenant"]}}
+    },
+    {
+      "name": "an only config that is not marked default is not used",
+      "configs": [{"id": "only", "accounts": ["A"]}],
+      "accounts": {"A": {"uses": "", "picker": ["only"]}}
+    },
+    {
+      "name": "an unmarked only config gives way to the tenant default",
+      "configs": [
+        {"id": "only", "accounts": ["A"]},
+        {"id": "tenant", "accounts": ["B"], "tenant_default": true}
+      ],
+      "accounts": {
+        "A": {"uses": "tenant", "picker": ["only", "tenant"]},
+        "B": {"uses": "tenant", "picker": ["tenant"]}
+      }
+    },
+    {
+      "name": "the tenant default reaches accounts it is not linked to",
+      "configs": [{"id": "X", "accounts": ["A"], "account_defaults": ["A"], "tenant_default": true}],
+      "accounts": {
+        "A": {"uses": "X", "picker": ["X"]},
+        "B": {"uses": "X", "picker": ["X"]}
+      }
+    },
+    {
+      "name": "a tenant-wide config is pickable everywhere but used by no one",
+      "configs": [{"id": "wide"}],
+      "accounts": {
+        "A": {"uses": "", "picker": ["wide"]},
+        "B": {"uses": "", "picker": ["wide"]}
+      }
+    },
+    {
+      "name": "a disabled tenant default is ignored",
+      "configs": [
+        {"id": "off", "enabled": false, "tenant_default": true},
+        {"id": "mine", "accounts": ["A"], "account_defaults": ["A"]}
+      ],
+      "accounts": {
+        "A": {"uses": "mine", "picker": ["mine"]},
+        "B": {"uses": "", "picker": []}
+      }
+    },
+    {
+      "name": "another account's default is not in the picker",
+      "configs": [{"id": "a-only", "accounts": ["A"], "account_defaults": ["A"]}],
+      "accounts": {
+        "A": {"uses": "a-only", "picker": ["a-only"]},
+        "B": {"uses": "", "picker": []}
+      }
+    },
+    {
+      "name": "adding an unmarked config keeps the account on its default",
+      "configs": [
+        {"id": "first", "accounts": ["A"], "account_defaults": ["A"]},
+        {"id": "second", "accounts": ["A"]}
+      ],
+      "accounts": {"A": {"uses": "first", "picker": ["first", "second"]}}
+    },
+    {
+      "name": "two own defaults are ignored in favour of the tenant default",
+      "configs": [
+        {"id": "d1", "accounts": ["A"], "account_defaults": ["A"]},
+        {"id": "d2", "accounts": ["A"], "account_defaults": ["A"]},
+        {"id": "tenant", "tenant_default": true}
+      ],
+      "accounts": {"A": {"uses": "tenant", "picker": ["d1", "d2", "tenant"]}}
+    },
+    {
+      "name": "no configs at all",
+      "configs": [],
+      "accounts": {"A": {"uses": "", "picker": []}}
+    }
+  ]
+}

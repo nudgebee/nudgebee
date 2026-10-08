@@ -263,6 +263,10 @@ func main() {
 		slog.Warn("main: failed to register waiting conversation expiry job", "error", err)
 	}
 
+	if err := core.RegisterLLMHookLinkCleanup(); err != nil {
+		slog.Warn("main: failed to register LLM hook link cleanup job", "error", err)
+	}
+
 	// Memory-v2 scheduled maintenance jobs (both the SQL-only bundle in
 	// memory/maintenance and the LLM-driven bundle in agents/core) are
 	// registered through a hook so this call is safe on OSS binaries too:

@@ -2798,6 +2798,22 @@ func modelTierFromContext(ctx *security.RequestContext) ModelTier {
 // dynamic (env-var suffix scan) so newly-registered agents don't need to be
 // added to a hardcoded list.
 func GetAllConfiguredModels(accountId string) ([]ModelConfig, error) {
+	return buildConfiguredModels(true, accountId, func() ([]llmIntegration, error) {
+		return getLLMIntegrationsForAccount(nil, accountId)
+	})
+}
+
+// GetTenantWideConfiguredModels lists the DB slots of a tenant's tenant-wide
+// integrations (linked to no account) and of its tenant default: what a config
+// saved with no accounts may reference as an existing-model fallback. ENV slots
+// are left out because a fallback reference is always db:<uuid>.
+func GetTenantWideConfiguredModels(tenantId string) ([]ModelConfig, error) {
+	return buildConfiguredModels(false, tenantId, func() ([]llmIntegration, error) {
+		return getTenantWideLLMIntegrations(nil, tenantId)
+	})
+}
+
+func buildConfiguredModels(withEnv bool, logId string, loadIntegrations func() ([]llmIntegration, error)) ([]ModelConfig, error) {
 	var models []ModelConfig
 	seen := make(map[string]bool)
 
@@ -2866,79 +2882,82 @@ func GetAllConfiguredModels(accountId string) ([]ModelConfig, error) {
 	// has no endpoint/api-key to serve them with, and the resolver would error
 	// at pin time — so we don't surface those in the picker.
 
-	// ENV global + global fallbacks
-	if config.Config.LlmProvider != "" && config.Config.LlmModel != "" {
-		addModel(config.Config.LlmProvider, config.Config.LlmModel, "env:global", false, "")
-		addFallbacks(config.Config.LlmProvider, config.Config.LlmModelFallbacks, "env:global:fallback", "")
-	}
+	if withEnv {
+		// ENV global + global fallbacks
+		if config.Config.LlmProvider != "" && config.Config.LlmModel != "" {
+			addModel(config.Config.LlmProvider, config.Config.LlmModel, "env:global", false, "")
+			addFallbacks(config.Config.LlmProvider, config.Config.LlmModelFallbacks, "env:global:fallback", "")
+		}
 
-	// ENV tier + tier fallbacks (tier provider falls back to ENV-global)
-	for _, tier := range tiers {
-		tierProvider := config.Config.GetString(fmt.Sprintf(llmTierProviderFormat, tier), config.Config.LlmProvider)
-		tierModel := config.Config.GetString(fmt.Sprintf(llmTierModelFormat, tier), "")
-		if tierProvider == "" || tierModel == "" {
-			continue
-		}
-		addModel(tierProvider, tierModel, fmt.Sprintf("env:tier:%s", tier), false, "")
-		tierFb := config.Config.GetString(fmt.Sprintf(llmTierModelFallbackFormat, tier), "")
-		addFallbacks(tierProvider, tierFb, fmt.Sprintf("env:tier:%s:fallback", tier), "")
-	}
-
-	// ENV per-agent — dynamic env-var suffix scan (no hardcoded agent list).
-	// Looks for every LLM_PROVIDER_<AGENT> env var, pairs with the matching
-	// LLM_MODEL_NAME_<AGENT> and LLM_MODEL_FALLBACKS_<AGENT>. Excludes the
-	// LLM_PROVIDER_* credential/config knobs (API_KEY, API_ENDPOINT, REGION,
-	// ADAPTER_ID, etc.) so they are not mis-treated as agent names.
-	//
-	// Exact match OR "<KNOB>_" prefix: the first form rejects
-	// "LLM_PROVIDER_API_KEY"; the second rejects per-agent overrides like
-	// "LLM_PROVIDER_API_KEY_K8S_DEBUG_REACT". A bare HasPrefix on "API_"
-	// would wrongly skip a future agent literally named "api_gateway"
-	// (LLM_PROVIDER_API_GATEWAY), so the trailing underscore is required.
-	credentialKnobs := []string{
-		"API_KEY",
-		"API_ENDPOINT",
-		"API_VERSION",
-		"API_TYPE",
-		"REGION",
-		"ACCESS_KEY",
-		"SECRET_KEY",
-		"SESSION_TOKEN",
-		"ADAPTER_ID",
-		"REQUIRE_ADAPTER_ID",
-	}
-	const envProviderPrefix = "LLM_PROVIDER_"
-	for _, envKV := range os.Environ() {
-		eq := strings.IndexByte(envKV, '=')
-		if eq < 0 {
-			continue
-		}
-		k, provider := envKV[:eq], envKV[eq+1:]
-		if provider == "" || !strings.HasPrefix(k, envProviderPrefix) {
-			continue
-		}
-		upperSuffix := strings.TrimPrefix(k, envProviderPrefix)
-		if upperSuffix == "" {
-			continue
-		}
-		isCredentialKnob := false
-		for _, knob := range credentialKnobs {
-			if upperSuffix == knob || strings.HasPrefix(upperSuffix, knob+"_") {
-				isCredentialKnob = true
-				break
+		// ENV tier + tier fallbacks (tier provider falls back to ENV-global)
+		for _, tier := range tiers {
+			tierProvider := config.Config.GetString(fmt.Sprintf(llmTierProviderFormat, tier), config.Config.LlmProvider)
+			tierModel := config.Config.GetString(fmt.Sprintf(llmTierModelFormat, tier), "")
+			if tierProvider == "" || tierModel == "" {
+				continue
 			}
+			addModel(tierProvider, tierModel, fmt.Sprintf("env:tier:%s", tier), false, "")
+			tierFb := config.Config.GetString(fmt.Sprintf(llmTierModelFallbackFormat, tier), "")
+			addFallbacks(tierProvider, tierFb, fmt.Sprintf("env:tier:%s:fallback", tier), "")
 		}
-		if isCredentialKnob {
-			continue
+
+		// ENV per-agent — dynamic env-var suffix scan (no hardcoded agent list).
+		// Looks for every LLM_PROVIDER_<AGENT> env var, pairs with the matching
+		// LLM_MODEL_NAME_<AGENT> and LLM_MODEL_FALLBACKS_<AGENT>. Excludes the
+		// LLM_PROVIDER_* credential/config knobs (API_KEY, API_ENDPOINT, REGION,
+		// ADAPTER_ID, etc.) so they are not mis-treated as agent names.
+		//
+		// Exact match OR "<KNOB>_" prefix: the first form rejects
+		// "LLM_PROVIDER_API_KEY"; the second rejects per-agent overrides like
+		// "LLM_PROVIDER_API_KEY_K8S_DEBUG_REACT". A bare HasPrefix on "API_"
+		// would wrongly skip a future agent literally named "api_gateway"
+		// (LLM_PROVIDER_API_GATEWAY), so the trailing underscore is required.
+		credentialKnobs := []string{
+			"API_KEY",
+			"API_ENDPOINT",
+			"API_VERSION",
+			"API_TYPE",
+			"REGION",
+			"ACCESS_KEY",
+			"SECRET_KEY",
+			"SESSION_TOKEN",
+			"ADAPTER_ID",
+			"REQUIRE_ADAPTER_ID",
 		}
-		agentName := strings.ToLower(upperSuffix)
-		model := config.Config.GetString(fmt.Sprintf(llmModelFormat, agentName), "")
-		if model == "" {
-			continue
+		const envProviderPrefix = "LLM_PROVIDER_"
+		for _, envKV := range os.Environ() {
+			eq := strings.IndexByte(envKV, '=')
+			if eq < 0 {
+				continue
+			}
+			k, provider := envKV[:eq], envKV[eq+1:]
+			if provider == "" || !strings.HasPrefix(k, envProviderPrefix) {
+				continue
+			}
+			upperSuffix := strings.TrimPrefix(k, envProviderPrefix)
+			if upperSuffix == "" {
+				continue
+			}
+			isCredentialKnob := false
+			for _, knob := range credentialKnobs {
+				if upperSuffix == knob || strings.HasPrefix(upperSuffix, knob+"_") {
+					isCredentialKnob = true
+					break
+				}
+			}
+			if isCredentialKnob {
+				continue
+			}
+			agentName := strings.ToLower(upperSuffix)
+			model := config.Config.GetString(fmt.Sprintf(llmModelFormat, agentName), "")
+			if model == "" {
+				continue
+			}
+			addModel(provider, model, fmt.Sprintf("env:agent:%s", agentName), false, "")
+			fb := config.Config.GetString(fmt.Sprintf(llmModelFallbackFormat, agentName), "")
+			addFallbacks(provider, fb, fmt.Sprintf("env:agent:%s:fallback", agentName), "")
 		}
-		addModel(provider, model, fmt.Sprintf("env:agent:%s", agentName), false, "")
-		fb := config.Config.GetString(fmt.Sprintf(llmModelFallbackFormat, agentName), "")
-		addFallbacks(provider, fb, fmt.Sprintf("env:agent:%s:fallback", agentName), "")
+
 	}
 
 	// ─── DB ───────────────────────────────────────────────────────────────────
@@ -2949,12 +2968,12 @@ func GetAllConfiguredModels(accountId string) ([]ModelConfig, error) {
 	// embed the uuid — db:<uuid>[:tier|:agent:<name>][:fallback] — which is what
 	// resolveFromPinnedSource looks up.
 
-	integrations, err := getLLMIntegrationsForAccount(nil, accountId)
+	integrations, err := loadIntegrations()
 	if err != nil {
 		// The picker is still useful with ENV rows alone, so degrade rather than
 		// fail the whole list.
 		slog.Warn("GetAllConfiguredModels: unable to load LLM integrations; listing ENV slots only",
-			"error", err, "accountId", accountId)
+			"error", err, "scope", logId)
 		return models, nil
 	}
 
