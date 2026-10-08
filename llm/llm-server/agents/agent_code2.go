@@ -73,6 +73,36 @@ const codeAgentFailuresCacheNS = "code_agent_conv_failures"
 // present, so no diff and no PR were produced. It is a SUCCESS, not a failure.
 const codeAnalysisNoOpStatus = "no_op"
 
+// maxStatusPollErrors is how many consecutive unusable /status replies (a failed
+// call or a body that is not JSON) end a poll: 12 * 5s = 60s.
+const maxStatusPollErrors = 12
+
+// statusPollBudget counts consecutive unusable /status replies. Only a reply that
+// parses resets it, so an unreadable body cannot keep a poll alive to its deadline.
+type statusPollBudget struct{ consecutive int }
+
+// unusable records an unusable reply and reports whether the budget is spent.
+func (b *statusPollBudget) unusable() bool {
+	b.consecutive++
+	return b.consecutive >= maxStatusPollErrors
+}
+
+func (b *statusPollBudget) usable() { b.consecutive = 0 }
+
+// readStatusReply parses a /status body. An unreadable body spends the budget; only a
+// parsed one resets it, so the reset cannot happen before the body is known to be good.
+func readStatusReply(body []byte, budget *statusPollBudget) (reply map[string]any, exhausted bool, err error) {
+	if err := json.Unmarshal(body, &reply); err != nil {
+		return nil, budget.unusable(), err
+	}
+	if reply == nil {
+		// A JSON null parses cleanly but carries no status, so the poll would never end.
+		return nil, budget.unusable(), errors.New("status reply is null")
+	}
+	budget.usable()
+	return reply, false, nil
+}
+
 // A no-op carries the reason it happened. Mirrors NoOpBasisKey in
 // llm/code-analysis (orchestrator_agent.go): only a specialist verdict is a
 // finding about the file, so only it may be read back as "already present".
@@ -562,8 +592,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	// collapsing per-poll re-writes to ~2 per step regardless of poll count.
 	persistedStepStatus := map[string]string{}
 
-	const maxConsecutiveErrors = 12 // 12 * 5s = 60s of consecutive failures before giving up
-	consecutiveErrors := 0
+	var pollBudget statusPollBudget
 	pollDeadline := time.Now().Add(codeAnalysisMaxPollDuration)
 
 	for {
@@ -599,20 +628,25 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 				// out the consecutive-error budget.
 				return codeAnalysisResult{}, fmt.Errorf("analysis lost with its workspace pod: %w", err)
 			}
-			consecutiveErrors++
+			exhausted := pollBudget.unusable()
 			logger.Warn("code: failed to poll analysis status", "error", err, "analysis_id", analysisID,
-				"consecutive_errors", consecutiveErrors, "max_consecutive_errors", maxConsecutiveErrors)
-			if consecutiveErrors >= maxConsecutiveErrors {
+				"consecutive_errors", pollBudget.consecutive, "max_consecutive_errors", maxStatusPollErrors)
+			if exhausted {
 				cancelWorkspaceAnalysis(ctx, agentRequest.AccountId, analysisID)
-				return codeAnalysisResult{}, fmt.Errorf("analysis polling abandoned after %d consecutive errors: %w", consecutiveErrors, err)
+				return codeAnalysisResult{}, fmt.Errorf("analysis polling abandoned after %d consecutive errors: %w", pollBudget.consecutive, err)
 			}
 			continue
 		}
-		consecutiveErrors = 0
 
-		var statusResp map[string]any
-		if err := json.Unmarshal(statusBytes, &statusResp); err != nil {
-			logger.Warn("code: failed to parse status response", "error", err)
+		statusResp, exhausted, err := readStatusReply(statusBytes, &pollBudget)
+		if err != nil {
+			logger.Warn("code: failed to parse status response", "error", err, "analysis_id", analysisID,
+				"consecutive_errors", pollBudget.consecutive, "max_consecutive_errors", maxStatusPollErrors,
+				"body_len", len(statusBytes), "body_prefix", common.TruncateHead(string(statusBytes), 200))
+			if exhausted {
+				cancelWorkspaceAnalysis(ctx, agentRequest.AccountId, analysisID)
+				return codeAnalysisResult{}, fmt.Errorf("analysis polling abandoned after %d consecutive unreadable status replies: %w", pollBudget.consecutive, err)
+			}
 			continue
 		}
 
@@ -3379,8 +3413,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	pollWm := workspace.NewWorkspaceManagerWithTimeout(30 * time.Second)
 	lastProgress := ""
 	persistedStepStatus := map[string]string{}
-	const maxConsecutiveErrors = 12
-	consecutiveErrors := 0
+	var pollBudget statusPollBudget
 	pollDeadline := time.Now().Add(codeAnalysisMaxPollDuration)
 
 	for {
@@ -3401,19 +3434,25 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 				// here instead of waiting out the consecutive-error budget.
 				return core.NBAgentResponse{}, fmt.Errorf("followup lost with its workspace pod: %w", err)
 			}
-			consecutiveErrors++
+			exhausted := pollBudget.unusable()
 			logger.Warn("code followup: failed to poll status", "error", err, "analysis_id", analysisID,
-				"consecutive_errors", consecutiveErrors, "max_consecutive_errors", maxConsecutiveErrors)
-			if consecutiveErrors >= maxConsecutiveErrors {
-				return core.NBAgentResponse{}, fmt.Errorf("followup polling abandoned after %d consecutive errors: %w", consecutiveErrors, err)
+				"consecutive_errors", pollBudget.consecutive, "max_consecutive_errors", maxStatusPollErrors)
+			if exhausted {
+				return core.NBAgentResponse{}, fmt.Errorf("followup polling abandoned after %d consecutive errors: %w", pollBudget.consecutive, err)
 			}
 			continue
 		}
-		consecutiveErrors = 0
 
-		var statusResp map[string]any
-		if err := json.Unmarshal(statusBytes, &statusResp); err != nil {
-			logger.Warn("code followup: failed to parse status response", "error", err)
+		statusResp, exhausted, err := readStatusReply(statusBytes, &pollBudget)
+		if err != nil {
+			logger.Warn("code followup: failed to parse status response", "error", err, "analysis_id", analysisID,
+				"consecutive_errors", pollBudget.consecutive, "max_consecutive_errors", maxStatusPollErrors,
+				"body_len", len(statusBytes), "body_prefix", common.TruncateHead(string(statusBytes), 200))
+			if exhausted {
+				// The pod is answering, so the cancel lands; without it the follow-up keeps running.
+				cancelWorkspaceAnalysis(ctx, query.AccountId, analysisID)
+				return core.NBAgentResponse{}, fmt.Errorf("followup polling abandoned after %d consecutive unreadable status replies: %w", pollBudget.consecutive, err)
+			}
 			continue
 		}
 
