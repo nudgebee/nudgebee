@@ -355,6 +355,31 @@ const apiIntegrations = {
     }
   },
 
+  // What an LLM save, delete, disable or enable would do to each account: who
+  // moves, who would be left with no model, which defaults it replaces.
+  // Read-only; the LLM modal and list build their confirmations from it.
+  checkLLMDefaults: async function (data) {
+    const CHECK_LLM_DEFAULTS = `
+    query CheckLLMDefaults($data: CheckLLMDefaultsRequest!) {
+      integrations_check_llm_defaults(request: $data) {
+        env_configured
+        tenant_default
+        replaces_tenant_default
+        becomes_tenant_wide
+        affected
+        replaced_account_defaults
+        blocked
+      }
+    }
+    `;
+    const response = await queryGraphQL(CHECK_LLM_DEFAULTS, 'CheckLLMDefaults', { data });
+    const errors = response?.data?.errors;
+    if (Array.isArray(errors) && errors.length > 0) {
+      throw new Error(errors[0]?.message || 'Could not check the LLM defaults');
+    }
+    return response?.data?.data?.integrations_check_llm_defaults;
+  },
+
   deleteIntegrations: async function (data) {
     const DELETE_INTEGRATION = `
     mutation DeleteIntegrationConfig($data: DeleteIntegrationConfigRequest!) {
