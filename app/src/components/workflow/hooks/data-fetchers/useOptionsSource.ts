@@ -225,10 +225,14 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
   },
 
   mcp_tools: async (formValues) => {
-    const accountId = formValues._accountId;
+    const mode = formValues.connection_mode || 'integration';
+    // In integration mode the step can target another account; its tools are
+    // listed through that account, as the call itself will be. An expression is
+    // only known at run time, so it lists through the automation's account.
+    const stepAccountId = mode === 'integration' && formValues.account_id && !isTemplateString(formValues.account_id) ? formValues.account_id : '';
+    const accountId = stepAccountId || formValues._accountId;
     if (!accountId) return [];
 
-    const mode = formValues.connection_mode || 'integration';
     let params: Record<string, any>;
 
     if (mode === 'integration') {

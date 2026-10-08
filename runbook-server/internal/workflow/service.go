@@ -273,7 +273,7 @@ func (s *Service) validateTaskTypes(ctx *security.RequestContext, accountID stri
 					}
 
 					// Skip DB-level validation for template expressions — they resolve at execution time
-					if strings.Contains(strVal, "{{") {
+					if isTemplated(strVal) {
 						continue
 					}
 
@@ -292,8 +292,10 @@ func (s *Service) validateTaskTypes(ctx *security.RequestContext, accountID stri
 							if err != nil {
 								return common.ErrorBadRequest(fmt.Sprintf("task '%s' parameter '%s' validation failed: %v", task.ID, paramName, err))
 							}
-							if _, err := integrations.GetIntegration(ctx, accountID, prop.SubType, resolvedID); err != nil {
-								return common.ErrorBadRequest(fmt.Sprintf("task '%s' parameter '%s' validation failed: %v", task.ID, paramName, err))
+							if lookupAccount, known := integrationLookupAccount(accountID, task); known {
+								if _, err := integrations.GetIntegration(ctx, lookupAccount, prop.SubType, resolvedID); err != nil {
+									return common.ErrorBadRequest(fmt.Sprintf("task '%s' parameter '%s' validation failed: %v", task.ID, paramName, err))
+								}
 							}
 						}
 					}
@@ -348,6 +350,10 @@ func (s *Service) validateTaskTypes(ctx *security.RequestContext, accountID stri
 			}
 		}
 		return nil
+	}
+
+	if err := validateAIStepAccounts(ctx, accountID, wf.Definition); err != nil {
+		return err
 	}
 
 	return validateRecursive(wf.Definition.Tasks)

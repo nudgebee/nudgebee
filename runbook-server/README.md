@@ -182,6 +182,14 @@ You can **dry-run** a definition (see the [Glossary](#glossary) — it really ex
 
 Every record carries `TenantID` and `AccountID`. Every API call must supply them via headers (see [Authentication](#authentication)). The server never returns data across tenants.
 
+A run executes in its workflow's account and acts as the workflow's last editor (`updated_by`), whatever triggered it; a dry run and the Task Runner act as the caller, and hook actions carry no user at all. A task can work on another account of the same tenant through an optional `account_id` param (often a template such as `{{ event.cloud_account_id }}`). For most tasks, saving only checks that the account belongs to the tenant. The AI steps `llm.nubi`, `llm.investigate` and `llm.mcp_call` are stricter, because they hand a whole account to an agent:
+
+- **Saving** a literal `account_id` requires the caller to be able to read that account (built-in role or a `workflows` grant) — `internal/workflow/ai_step_account_validation.go`, applied to every nested step and to hook actions.
+- **Running** re-checks the resolved value, which is the only check a template gets (`internal/tasks/ai/account_param.go`): it must belong to the tenant and be readable by the user the run acts as. A step that runs without a user is refused another account.
+- **Pre-approved tools** (`approved_tools` on `llm.nubi`) are refused whenever the step targets another account.
+
+The two chat steps return the account they used as `account_id`, which the builder needs to link to the conversation.
+
 ### Config and secrets
 
 `/configs` stores key/value config per tenant or per account. Secret values are encrypted at rest with `nudgebee_encryption_key` and auto-decrypted when read.

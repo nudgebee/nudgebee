@@ -69,7 +69,7 @@ import TriggerDetailsPanel from './components/TriggerDetailsPanel';
 import ExecutionStatusBar, { type PendingApproval } from './components/ExecutionStatusBar';
 import { findExecutionTaskForNode, getSwitchAncestorChain, getSwitchChildNodeIds } from './utils/templateUtils';
 import { getDuration, getStatusColor, getStatusTone, isExecutionCompleted } from './utils/executionStatus';
-import { getLlmSessionId, buildAskNudgebeeHref } from './utils/llmChat';
+import { getLlmSessionId, getLlmAccountId, buildAskNudgebeeHref } from './utils/llmChat';
 import { resolveApprovalOptions } from './utils/approvalOptions';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 
@@ -2010,7 +2010,7 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                       {(() => {
                         const sid = getLlmSessionId(selectedTaskData);
                         if (!sid) return null;
-                        const href = buildAskNudgebeeHref(accountId, sid);
+                        const href = buildAskNudgebeeHref(getLlmAccountId(selectedTaskData, accountId), sid);
                         return (
                           <Button
                             size='xs'

@@ -42,10 +42,17 @@ func (t *LLMNubiTask) Execute(taskCtx types.TaskContext, params map[string]any) 
 	if err != nil {
 		return nil, err
 	}
+	accountID, err := resolveTaskAccount(taskCtx, params)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectCrossAccountApprovals(taskCtx, accountID, approvedTools); err != nil {
+		return nil, err
+	}
 	requestContext := taskCtx.GetNewRequestContext()
 	resp, err := llm.ProcessRequest(requestContext, applyWorkflowTrace(taskCtx, sessionScope, llm.LLMRequest{
 		Message:           params["message"].(string),
-		AccountId:         taskCtx.GetAccountID(),
+		AccountId:         accountID,
 		LlmProvider:       modelProvider,
 		LlmModelName:      modelName,
 		ToolConfirmations: approvedTools,
@@ -59,6 +66,7 @@ func (t *LLMNubiTask) Execute(taskCtx types.TaskContext, params map[string]any) 
 		"data":            resp.Message,
 		"conversation_id": resp.ConversationId,
 		"session_id":      resp.SessionId,
+		"account_id":      accountID,
 	}, nil
 }
 
@@ -76,6 +84,7 @@ func (t *LLMNubiTask) InputSchema() *types.Schema {
 			modelParamFieldName:         modelInputSchemaProperty(2),
 			sessionScopeParamFieldName:  sessionScopeInputSchemaProperty(3),
 			approvedToolsParamFieldName: approvedToolsInputSchemaProperty(4),
+			accountParamFieldName:       accountInputSchemaProperty(0, "ask NuBi about"),
 		},
 	}
 }
@@ -97,6 +106,11 @@ func (t *LLMNubiTask) OutputSchema() *types.Schema {
 			"session_id": {
 				Type:        "string",
 				Description: "NuBi Session Id",
+				Required:    true,
+			},
+			"account_id": {
+				Type:        "string",
+				Description: "Account the conversation ran against.",
 				Required:    true,
 			},
 		},
