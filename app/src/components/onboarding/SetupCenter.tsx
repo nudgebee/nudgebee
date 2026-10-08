@@ -1828,9 +1828,9 @@ const SetupCenter = () => {
           /accounts/account-form?cloudProvider=X mounts, reached here directly
           instead of through that page's own listing view. */}
       {accountModal === 'K8S' && <K8sAccountModal openModal handleClose={closeAccountModal} handleOnAccountCreate={refreshReadiness} />}
-      {accountModal === 'AWS' && <AddAwsAccountModal open onClose={closeAccountModal} />}
-      {accountModal === 'GCP' && <AddGcpAccountModal open onClose={closeAccountModal} />}
-      {accountModal === 'AZURE' && <AddAzureAccountModal open onClose={closeAccountModal} />}
+      {accountModal === 'AWS' && <AddAwsAccountModal open onClose={closeAccountModal} onAccountCreated={refreshReadiness} />}
+      {accountModal === 'GCP' && <AddGcpAccountModal open onClose={closeAccountModal} onAccountCreated={refreshReadiness} />}
+      {accountModal === 'AZURE' && <AddAzureAccountModal open onClose={closeAccountModal} onAccountCreated={refreshReadiness} />}
       {accountModal === 'SELFHOSTED' && <AddSelfHostedAccountModal open onClose={closeAccountModal} />}
 
       {/* Only shown when Add on Skills has more than one account to choose

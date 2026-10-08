@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Box, Typography, Grid } from '@mui/material';
 import { Modal } from '@ui/Modal';
 import { Chip } from '@ui/Chip';
@@ -8,10 +8,59 @@ import { ds } from 'src/utils/colors';
 import CopyButton from '@shared/buttons/CopyButton';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { docsUrl } from '@lib/externalUrls';
+import { ProgressLinear } from '@ui/ProgressLinear';
+import apiKubernetes1 from '@api1/kubernetes1';
+import { AGENT_CONNECTED } from '@components/integrations/pendingAgentInstall';
 
-const VmAgentCredentialsDialog = ({ open, onClose, accessKey, accessSecret }) => {
+const AGENT_POLL_MS = 10000;
+
+const VmAgentCredentialsDialog = ({ open, onClose, accessKey, accessSecret, accountId }) => {
   const { relayUrl, signingPublicKey } = useBrandingConfig();
   const [deployMethod, setDeployMethod] = useState('script');
+  // 'checking' → 'waiting' → 'connected', or 'shared' when the account already
+  // had a connected agent. The relay records one connection status per account
+  // and agent type, not per agent, so once any forager on the account is
+  // connected this dialog cannot tell whether the new one is too.
+  const [agentPhase, setAgentPhase] = useState('checking');
+
+  useEffect(() => {
+    if (!open || !accountId || !accessKey || !accessSecret) {
+      setAgentPhase('checking');
+      return undefined;
+    }
+    let cancelled = false;
+    let timer;
+    let isFirstCheck = true;
+    setAgentPhase('checking');
+    const check = async () => {
+      const res = await apiKubernetes1.listK8sAccAgentHealth(accountId, 'proxy');
+      if (cancelled) {
+        return;
+      }
+      // The client resolves failures instead of throwing. A failed read says
+      // nothing about the agent, so retry without spending the first check —
+      // otherwise an agent that was already connected would read as the new one.
+      const agents = res?.data?.data?.agent;
+      if (!Array.isArray(agents) || res?.data?.errors?.length) {
+        console.error('VmAgentCredentialsDialog: agent health check failed', { accountId, errors: res?.data?.errors || res?.message });
+        timer = setTimeout(check, AGENT_POLL_MS);
+        return;
+      }
+      const connected = agents.some((row) => row?.status === AGENT_CONNECTED);
+      if (connected) {
+        setAgentPhase(isFirstCheck ? 'shared' : 'connected');
+        return;
+      }
+      isFirstCheck = false;
+      setAgentPhase('waiting');
+      timer = setTimeout(check, AGENT_POLL_MS);
+    };
+    check();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [open, accountId, accessKey, accessSecret]);
 
   if (!accessKey || !accessSecret) {
     return null;
@@ -304,6 +353,39 @@ const VmAgentCredentialsDialog = ({ open, onClose, accessKey, accessSecret }) =>
           </Link>
         </Typography>
       </Box>
+      {accountId && agentPhase === 'waiting' && (
+        <Box data-testid='vm-agent-install-waiting'>
+          <ProgressLinear surface='section' tone='info' aria-label='Waiting for the agent to connect' />
+          <Box sx={{ mt: ds.space[2] }}>
+            <Banner
+              tone='info'
+              surface='section'
+              title='Waiting for the agent to connect from your machine'
+              message='Run the command above. This window stays open so you can still copy the secret; close it when you are done. The agent list for this account shows when it connects.'
+            />
+          </Box>
+        </Box>
+      )}
+      {accountId && agentPhase === 'connected' && (
+        <Box data-testid='vm-agent-install-connected'>
+          <Banner
+            tone='success'
+            surface='section'
+            title='Agent connected'
+            message='The agent reported in. Save the secret now if you have not already; it will not be shown again.'
+          />
+        </Box>
+      )}
+      {accountId && agentPhase === 'shared' && (
+        <Box data-testid='vm-agent-install-shared'>
+          <Banner
+            tone='info'
+            surface='section'
+            title='This account already has a connected agent'
+            message='Agent status is tracked per account, so this window cannot confirm the new agent on its own. After running the command, check the agent list for this account.'
+          />
+        </Box>
+      )}
     </Grid>
   );
 
@@ -320,6 +402,9 @@ const VmAgentCredentialsDialog = ({ open, onClose, accessKey, accessSecret }) =>
       open={open}
       width='md'
       isConfirmRequired={false}
+      // While waiting on the agent, only the explicit close gets out, so a stray
+      // click cannot drop a secret that is shown only once.
+      backdropClickClose={!(accountId && agentPhase === 'waiting')}
     >
       {credentials}
     </Modal>

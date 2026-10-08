@@ -1944,7 +1944,8 @@ const IntegrationDynamicFormModal = ({
               const accessKey = configs.find((f) => f.name === 'access_key');
               const accessSecret = configs.find((f) => f.name === 'access_secret');
               if (accessKey && accessSecret) {
-                setVmAgentCredentials({ accessKey: accessKey.value, accessSecret: accessSecret.value });
+                // The agent is created on the first selected account (CreateProxyAgent).
+                setVmAgentCredentials({ accessKey: accessKey.value, accessSecret: accessSecret.value, accountId: normalizedAccountIds[0] });
                 setShowModal(true);
               } else {
                 handleCloseModal(true);
@@ -2345,6 +2346,7 @@ const IntegrationDynamicFormModal = ({
         onClose={() => handleCloseModal(true)}
         accessKey={vmAgentCredentials?.accessKey}
         accessSecret={vmAgentCredentials?.accessSecret}
+        accountId={vmAgentCredentials?.accountId}
       />
       <Modal
         handleClose={() => {

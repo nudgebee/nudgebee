@@ -259,6 +259,22 @@ query AccountAgentHealth {
 }
 `;
 
+// A cloud account's agent row is written by cloud-collector, not by an installed
+// agent. connection_status is needed to tell whether the cost sync has reported
+// yet — see listCloudAccountFirstSync.
+export const LIST_CLOUD_ACC_FIRST_SYNC = `
+query CloudAccountFirstSync {
+  agent: agents_list_health(where: __WHERE__) {
+    rows {
+      cloud_account_id
+      status
+      status_message
+      connection_status
+    }
+  }
+}
+`;
+
 export const SLO_CREATE = `
 mutation SLOCreate($data: SLOCreateRequest!) {
   slo_config_create(request: $data) {
@@ -835,6 +851,25 @@ const apiKubernetes1 = {
       return response;
     } catch (error) {
       return error;
+    }
+  },
+  /**
+   * The cloud-collector's view of freshly created cloud accounts. `provider` is
+   * the agent type it writes: 'AWS', 'Azure' or 'GCP'. Returns [] on any failure
+   * so a poller simply tries again.
+   */
+  async listCloudAccountFirstSync(cloudAccountIds: string[], provider: string) {
+    try {
+      const where = { type: { _eq: provider }, cloud_account_id: { _in: cloudAccountIds } };
+      const queryStr = LIST_CLOUD_ACC_FIRST_SYNC.replace('__WHERE__', gqlStringify(where));
+      const response = await queryGraphQL(queryStr, 'CloudAccountFirstSync');
+      if (response?.data?.errors?.length) {
+        console.error('listCloudAccountFirstSync failed', { cloudAccountIds, errors: response.data.errors });
+      }
+      return response?.data?.data?.agent?.rows || [];
+    } catch (error) {
+      console.error('listCloudAccountFirstSync failed', { cloudAccountIds, error });
+      return [];
     }
   },
   async getAWSCloudFormationURL(query: any) {

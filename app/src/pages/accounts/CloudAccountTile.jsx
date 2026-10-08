@@ -939,15 +939,19 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
       });
   };
 
+  const refreshAfterAccountAdded = () => {
+    setSelectedNameFilter('');
+    setSelectedStatusFilter('active');
+    setCurrentPage(0);
+    setRefreshKey((prev) => prev + 1);
+    updateAllClusters(true);
+  };
+
   const handleCloseAddModal = (wasSuccessful = false) => {
     setOpenAddModal(false);
     // Only refresh the list if an account was successfully added
     if (wasSuccessful) {
-      setSelectedNameFilter('');
-      setSelectedStatusFilter('active');
-      setCurrentPage(0);
-      setRefreshKey((prev) => prev + 1);
-      updateAllClusters(true);
+      refreshAfterAccountAdded();
     }
   };
 
@@ -960,7 +964,9 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
 
   return (
     <>
-      <AddAccountModalComponent open={openAddModal} onClose={handleCloseAddModal} />
+      {/* onAccountCreated: cloud modals stay open for the first data sync, so the
+          list refreshes when the account is created rather than only on close. */}
+      <AddAccountModalComponent open={openAddModal} onClose={handleCloseAddModal} onAccountCreated={refreshAfterAccountAdded} />
       <Modal
         width='sm'
         open={!!eventAnalysisAccount}

@@ -19,6 +19,7 @@ import MarkDowns from '@shared/viewers/MarkDowns';
 import ValidationResultBanner from '@components/accounts/ValidationResultBanner';
 import { ACCOUNT_ENV_PROD, ACCOUNT_ENV_NON_PROD, DEFAULT_ACCOUNT_ENV, accountEnvTooltip } from '@shared/forms/AccountEnvToggle';
 import { getIntegrationDescription } from '@lib/integrationDescriptions';
+import { CloudFirstSyncStatus, useCloudFirstSync } from '@components/integrations/CloudFirstSync';
 
 const CF_INSTRUCTIONS = `### Step 1. Give Account Name
   ### Step 2. Click on Connect via AWS Console
@@ -66,7 +67,7 @@ const OPTION_DESC_SX = {
   maxWidth: '46ch',
 };
 
-const AddAwsAccountModal = ({ open, onClose }) => {
+const AddAwsAccountModal = ({ open, onClose, onAccountCreated }) => {
   const [activeTab, setActiveTab] = useState(TAB_CLOUDFORMATION);
   const [accountNameValue, setAccountNameValue] = useState('');
   const [accountEnvValue, setAccountEnvValue] = useState(DEFAULT_ACCOUNT_ENV);
@@ -85,7 +86,11 @@ const AddAwsAccountModal = ({ open, onClose }) => {
   const [isValidating, setIsValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // The account just created, held while its first data sync runs.
+  const [syncAccount, setSyncAccount] = useState(null);
   const pollingRef = useRef(null);
+  const syncAccountIds = syncAccount ? [syncAccount.id] : [];
+  const firstSync = useCloudFirstSync(syncAccountIds, 'AWS');
 
   const stopPolling = useCallback(() => {
     if (pollingRef.current) {
@@ -113,6 +118,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
     setIsValidating(false);
     setValidationResult(null);
     setActiveTab(TAB_CLOUDFORMATION);
+    setSyncAccount(null);
     stopPolling();
   }, [stopPolling]);
 
@@ -134,6 +140,28 @@ const AddAwsAccountModal = ({ open, onClose }) => {
     onClose(wasSuccessful);
   };
 
+  // The account exists from here on, so the list refreshes now rather than on
+  // close; the modal stays open to show the first sync. Without an id there is
+  // nothing to wait on, so close as before.
+  const startFirstSyncWait = (accountId, accountName) => {
+    if (!accountId) {
+      handleCloseModal(true);
+      return;
+    }
+    onAccountCreated?.();
+    setSyncAccount({ id: accountId, name: accountName });
+  };
+
+  useEffect(() => {
+    if (firstSync.phase !== 'done') {
+      return;
+    }
+    snackbar.success(`First data sync from AWS account "${syncAccount?.name}" finished.`);
+    handleCloseModal(true);
+    // handleCloseModal is stable enough for this one-shot close.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firstSync.phase]);
+
   const startPolling = (reqId) => {
     setIsPolling(true);
     pollingRef.current = setInterval(async () => {
@@ -147,7 +175,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
           } else {
             snackbar.success(`AWS Account "${statusData.account_name}" connected successfully.`);
           }
-          handleCloseModal(true);
+          startFirstSyncWait(statusData.account_id, statusData.account_name);
         }
       } catch {
         // Keep polling on transient errors
@@ -286,7 +314,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
       .then((res) => {
         if (res?.data?.status === 'SUCCESS') {
           notifyCreateResult(res, accountNameValue);
-          handleCloseModal(true);
+          startFirstSyncWait(res?.data?.data?.accounts_create?.id, accountNameValue);
         } else {
           snackbar.error(res?.data?.message || 'Failed to connect account');
         }
@@ -318,7 +346,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
       .then((res) => {
         if (res?.data?.status === 'SUCCESS') {
           notifyCreateResult(res, accountNameValue);
-          handleCloseModal(true);
+          startFirstSyncWait(res?.data?.data?.accounts_create?.id, accountNameValue);
         } else {
           snackbar.error(res?.data?.message || 'Failed to connect account');
         }
@@ -509,6 +537,35 @@ const AddAwsAccountModal = ({ open, onClose }) => {
       )}
     </Grid>
   );
+
+  // The account exists; the form is done. Show only the first sync.
+  if (syncAccount) {
+    return (
+      <Modal
+        width='md'
+        open={open}
+        handleClose={() => handleCloseModal(true)}
+        // While the first sync is pending, only the explicit close gets out.
+        backdropClickClose={firstSync.phase !== 'waiting'}
+        title={'Add AWS Account'}
+        subtitle={getIntegrationDescription('AWS')}
+      >
+        <CloudFirstSyncStatus
+          phase={firstSync.phase}
+          issues={firstSync.issues}
+          providerLabel='AWS'
+          accountNames={{ [syncAccount.id]: syncAccount.name }}
+        />
+        <Grid container spacing={2} mt={ds.space[2]} mb={ds.space[6]} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
+          <Grid item>
+            <Button id='aws-first-sync-close-btn' tone='primary' size='md' onClick={() => handleCloseModal(true)}>
+              Close
+            </Button>
+          </Grid>
+        </Grid>
+      </Modal>
+    );
+  }
 
   return (
     <Modal
