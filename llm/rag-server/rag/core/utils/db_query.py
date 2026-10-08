@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 engine = create_engine(DBConfig.url, poolclass=QueuePool, pool_size=5, max_overflow=20)
 
 # Simple in-memory cache for integrations
-_llm_integrations_cache: dict[str, dict] = {}
 _embeddings_integrations_cache: dict[str, dict] = {}
 
 
@@ -160,8 +159,27 @@ def get_servicenow_kb_integrations(cloud_account_id):
 # burst of concurrent requests for an uncached account collapses to a single
 # query (the sync fetches run in FastAPI's threadpool) instead of a thundering
 # herd. Cache hits don't take the lock.
-_llm_integrations_cache_lock = threading.Lock()
 _embeddings_integrations_cache_lock = threading.Lock()
+
+
+def _stored_config_value(integration_id, row):
+    """A config row's usable value, or None when it must be left unset.
+
+    Secrets are stored encrypted and the row says so, the same flag llm-server
+    reads (getLLMIntegrationsForAccount). Handing the stored form straight to a
+    provider sends ciphertext as the credential, which comes back as "API key not
+    valid" on a key that is perfectly good. decrypt_value returns its input
+    unchanged when it fails, so an undecryptable secret is dropped and the caller
+    falls back to configuration rather than authenticating with ciphertext.
+    """
+    value = row.value
+    if row.is_encrypted and value:
+        decrypted = decrypt_value(value)
+        if decrypted == value:
+            logger.warning("Integration %s: could not decrypt %s; leaving it unset", integration_id, row.name)
+            return None
+        return decrypted
+    return value
 
 
 def _get_integrations_cached(cache, lock, cloud_account_id, integration_type):
@@ -203,27 +221,9 @@ def _get_integrations_cached(cache, lock, cloud_account_id, integration_type):
                         integrations[integration_id]["account_id"] = row.cloud_account_id
                         integrations[integration_id]["config"] = {}
 
-                    # Secrets are stored encrypted and the row says so, the same flag
-                    # llm-server reads (getLLMIntegrationsForAccount). Handing the stored
-                    # form straight to a provider sends ciphertext as the credential,
-                    # which comes back as "API key not valid" on a key that is perfectly
-                    # good.
-                    value = row.value
-                    if row.is_encrypted and value:
-                        decrypted = decrypt_value(value)
-                        if decrypted == value:
-                            # decrypt_value returns its input unchanged when it fails, so
-                            # an undecryptable secret is indistinguishable from a real one.
-                            # Drop it and let the caller fall back to configuration rather
-                            # than authenticate with ciphertext.
-                            logger.warning(
-                                "Integration %s: could not decrypt %s; leaving it unset",
-                                integration_id,
-                                row.name,
-                            )
-                            continue
-                        value = decrypted
-
+                    value = _stored_config_value(integration_id, row)
+                    if value is None:
+                        continue
                     integrations[integration_id]["config"][row.name] = value
 
                 data = list(integrations.values())
@@ -236,43 +236,51 @@ def _get_integrations_cached(cache, lock, cloud_account_id, integration_type):
             return []
 
 
-def get_llm_integrations(cloud_account_id):
-    return _get_integrations_cached(_llm_integrations_cache, _llm_integrations_cache_lock, cloud_account_id, "llm")
+def choose_account_llm_integration(cloud_account_id, candidates):
+    """The integration an account resolves against, or None for the environment defaults.
+
+    Mirrors llm-server's chooseAccountLLMIntegration (agents/core/llm_default_pick.go),
+    and both run llm/llm-server/agents/core/testdata/llm_default_cases.json. Each
+    candidate is (id, linked to the account, marked default on the account's link,
+    tenant default). The account's own default wins, otherwise the tenant default.
+    Picking never depends on how many integrations an account has.
+    """
+    own = [c[0] for c in candidates if c[1] and c[2]]
+    tenant = [c[0] for c in candidates if c[3]]
+    if len(own) == 1:
+        return own[0]
+    if len(own) > 1:
+        logger.error(
+            f"LLM config: account {cloud_account_id} has {len(own)} integrations marked default; "
+            "using the tenant default"
+        )
+    if len(tenant) == 1:
+        return tenant[0]
+    if len(tenant) > 1:
+        logger.error(f"LLM config: tenant of account {cloud_account_id} has {len(tenant)} tenant defaults")
+    return None
 
 
 def get_default_llm_integration(cloud_account_id):
     """The one LLM integration this account resolves against, or None.
 
-    Mirrors llm-server's ``selectAccountLLMIntegration``
-    (agents/core/llm_common.go) so both services pick the same credential for
-    the same account, in its order: the integration flagged
-    ``default_llm_provider`` on its account link; failing that, the account's
-    only enabled LLM integration, since linking exactly one is itself the
-    operator's choice; failing that, the tenant's default provider when it is
-    among the account's links, because the integrations list shows that provider
-    as "Default" for every account it is linked to whether or not the link row
-    carries the flag.
-
-    The tenant default lives in ``integration_config_values``, written by the
-    "Default LLM provider" checkbox, and is a separate thing from the per-account
-    link flag. Reading only the link flag makes an account whose default was set
-    that way look like it has none, which drops the whole ingest onto the
-    environment defaults — a different model, and a different bill, from the one
-    its operator picked.
-
-    Every ambiguous shape — several flagged, or several linked with no single
-    default of either kind — returns None and falls through to the environment
-    defaults, exactly as llm-server does. Picking one anyway would silently bind
-    an account to a credential nobody chose, and for figure description that
-    shows up as "no vision-capable model" on an account that has one.
+    Loads the candidates llm-server's selectAccountLLMIntegration loads: enabled
+    integrations linked to the account, plus the tenant default whether or not it
+    is linked to the account. The rule is choose_account_llm_integration.
     """
     query = text("""
-        SELECT i.id, ia.default_llm_provider, COALESCE(icv.value = 'true', false) AS tenant_default
+        SELECT i.id,
+               bool_or(ia.cloud_account_id IS NOT NULL) AS linked,
+               bool_or(COALESCE(ia.default_llm_provider, false)) AS account_default,
+               bool_or(COALESCE(icv.value = 'true', false)) AS tenant_default
         FROM integrations i
-        JOIN integrations_cloud_accounts ia ON i.id = ia.integration_id
+        LEFT JOIN integrations_cloud_accounts ia ON ia.integration_id = i.id AND ia.cloud_account_id = :ac_id
         LEFT JOIN integration_config_values icv
                ON icv.integration_id = i.id AND icv.name = 'default_llm_provider'
-        WHERE i.type = 'llm' AND i.status = 'enabled' AND ia.cloud_account_id = :ac_id
+        WHERE i.type = 'llm' AND i.status = 'enabled'
+          AND (ia.cloud_account_id IS NOT NULL
+               OR (icv.value = 'true' AND i.tenant_id = (SELECT tenant FROM cloud_accounts WHERE id = :ac_id)))
+        GROUP BY i.id
         """)
     try:
         with engine.connect() as connection:
@@ -280,29 +288,32 @@ def get_default_llm_integration(cloud_account_id):
     except Exception as exc:
         logger.error(f"Failed to select default LLM integration for {cloud_account_id}: {exc}")
         return None
+    return choose_account_llm_integration(cloud_account_id, rows)
 
-    all_ids = [row[0] for row in rows]
-    defaults = [row[0] for row in rows if row[1]]
-    tenant_defaults = [row[0] for row in rows if row[2]]
 
-    if len(defaults) == 1:
-        return defaults[0]
-    if len(defaults) > 1:
-        logger.error(
-            f"LLM config: account {cloud_account_id} has {len(defaults)} integrations flagged default; "
-            "falling back to environment defaults"
-        )
-        return None
-    if len(all_ids) == 1:
-        return all_ids[0]
-    if len(tenant_defaults) == 1:
-        return tenant_defaults[0]
-    if len(all_ids) > 1:
-        logger.warning(
-            f"LLM config: account {cloud_account_id} has {len(all_ids)} enabled LLM integrations and no single "
-            f"default ({len(tenant_defaults)} marked the tenant default); falling back to environment defaults"
-        )
-    return None
+def get_llm_integration_config(integration_id):
+    """The decrypted config of one LLM integration, or {} when it cannot be read.
+
+    Read by id rather than through the account's links, because the integration an
+    account uses can be the tenant default, which need not be linked to it.
+    """
+    query = text("""
+        SELECT icv.name, icv.value, icv.is_encrypted
+        FROM integration_config_values icv
+        WHERE icv.integration_id = :integration_id
+        """)
+    try:
+        with engine.connect() as connection:
+            rows = connection.execute(query, {"integration_id": integration_id})
+            config = {}
+            for row in rows:
+                value = _stored_config_value(integration_id, row)
+                if value is not None and row.name:
+                    config[row.name] = value
+            return config
+    except Exception as exc:
+        logger.error(f"Failed to read LLM integration {integration_id}: {exc}")
+        return {}
 
 
 def get_embeddings_integrations(cloud_account_id):
