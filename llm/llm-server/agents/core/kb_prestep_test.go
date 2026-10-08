@@ -852,3 +852,15 @@ func TestEventKindSearchExcludesProductDocs(t *testing.T) {
 	assert.Equal(t, map[string]any{"must_not": []any{map[string]any{"field": "source", "value": "nudgebee_docs"}}}, body["metadata_filter"])
 	assert.Equal(t, true, body["use_reranking"])
 }
+
+type discoveryNamesTestAgent struct{ NBAgent }
+
+func (discoveryNamesTestAgent) GetName() string          { return "code_analysis" }
+func (discoveryNamesTestAgent) GetNameAliases() []string { return []string{"agent_code_2"} }
+
+func TestKnowledgeDiscoveryIncludesAllAgentsKBs(t *testing.T) {
+	// "All agents" KBs and organisation KBs are carried by the wildcard mapping
+	// row, so discovery that omits it never sees them.
+	require.Equal(t, []string{"code_analysis", "agent_code_2", toolcore.KBAgentWildcard},
+		discoveryAgentNames(discoveryNamesTestAgent{}))
+}

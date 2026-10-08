@@ -1,8 +1,10 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { Box, Typography } from '@mui/material';
 import { Input } from '@ui/Input';
 import { ToggleGroup } from '@ui/ToggleGroup';
+import { Select } from '@ui/Select';
+import apiUserManagement from '@api1/user';
 import Tooltip from '@ui/Tooltip';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { KB_AGENT_WILDCARD } from '@api1/knowledge-base';
@@ -25,6 +27,7 @@ const NOTE_CATEGORY_OPTIONS = [
   { value: 'sop', label: 'SOP' },
 ];
 const DEFAULT_NOTE_CATEGORY = 'fact';
+const SCOPE_SELECTED_ACCOUNTS = 'selected_accounts';
 
 // Shown as placeholder text, not pre-filled content: the only way left to tell
 // people they can @-mention an agent or #-mention a tool right in the note now
@@ -59,6 +62,11 @@ const KnowledgeBaseFormModal = ({
   contextTagOptions = [],
   contextTagsLoading = false,
   initialAgentIds = [],
+  // Tenant admins choose who can use the KB: [{ value, label }] of
+  // 'account' / 'organisation' / 'selected_accounts'. Unset hides the field.
+  scopeOptions = null,
+  initialVisibility = 'account',
+  initialAccountIds = [],
 }) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -77,6 +85,10 @@ const KnowledgeBaseFormModal = ({
   // 'text' or 'pdf' — decides how the selected file was read, and what format
   // the backend is told to parse it as.
   const [fileFormat, setFileFormat] = useState(KB_FORMAT_TEXT);
+  const [visibility, setVisibility] = useState(initialVisibility);
+  const [scopeAccountIds, setScopeAccountIds] = useState(initialAccountIds);
+  const [tenantAccounts, setTenantAccounts] = useState([]);
+  const [tenantAccountsLoading, setTenantAccountsLoading] = useState(false);
   const fileInputRef = useRef(null);
   const dropZoneRef = useRef(null);
 
@@ -101,7 +113,34 @@ const KnowledgeBaseFormModal = ({
     setSelectedFile(null);
     setFileContent('');
     setFileFormat(KB_FORMAT_TEXT);
+    setVisibility(initialVisibility);
+    setScopeAccountIds(initialAccountIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset only when the form opens or targets another KB
   }, [editKnowledgeBase, open]);
+
+  // The account picker for "Selected accounts" lists the tenant's accounts.
+  const showScope = Array.isArray(scopeOptions) && scopeOptions.length > 0;
+  useEffect(() => {
+    if (!open || !showScope) {
+      // A load cut short by closing the form must not leave the picker loading.
+      setTenantAccountsLoading(false);
+      return undefined;
+    }
+    let active = true;
+    setTenantAccountsLoading(true);
+    apiUserManagement
+      .listAccounts()
+      .then((rows) => active && setTenantAccounts(Array.isArray(rows) ? rows : []))
+      .catch(() => active && setTenantAccounts([]))
+      .finally(() => active && setTenantAccountsLoading(false));
+    return () => {
+      active = false;
+    };
+  }, [open, showScope]);
+  const tenantAccountOptions = useMemo(
+    () => tenantAccounts.map((a) => ({ value: a.id, label: a.account_name || a.id, group: a.cloud_provider || 'Other' })),
+    [tenantAccounts]
+  );
 
   // Carry the KB's existing mappings through the form untouched. Routing is
   // expressed in the note itself now — an `@agent` in the content is what points
@@ -251,6 +290,10 @@ const KnowledgeBaseFormModal = ({
       snackbar.error('Name must be between 3 and 50 characters');
       return;
     }
+    if (showScope && visibility === SCOPE_SELECTED_ACCOUNTS && scopeAccountIds.length === 0) {
+      snackbar.error('Pick at least one account to share this knowledge base with');
+      return;
+    }
     if (!selectedFile && !(isPdfEdit && content.trim().length === 0)) {
       if (content.trim().length === 0) {
         snackbar.error('Provide valid content or upload file for knowledge base');
@@ -271,6 +314,7 @@ const KnowledgeBaseFormModal = ({
       noteCategory,
       contextTags,
       agentIds: agentMode === 'all' ? [KB_AGENT_WILDCARD] : selectedAgentIds,
+      ...(showScope ? { visibility, accountIds: visibility === SCOPE_SELECTED_ACCOUNTS ? scopeAccountIds : [] } : {}),
     });
   };
 
@@ -282,7 +326,11 @@ const KnowledgeBaseFormModal = ({
       open={open}
       handleClose={onClose}
       title={editKnowledgeBase ? 'Edit Knowledge Base' : 'Create Knowledge Base'}
-      subtitle='Provide account-level knowledge that will be used by the AI for more precise responses.'
+      subtitle={
+        showScope && visibility !== 'account'
+          ? 'Provide organisation-wide knowledge that the AI uses for more precise responses in the accounts that can see it.'
+          : 'Provide account-level knowledge that will be used by the AI for more precise responses.'
+      }
       width='md'
     >
       <Box sx={{ padding: ds.space[5] }}>
@@ -353,6 +401,52 @@ const KnowledgeBaseFormModal = ({
             options={NOTE_CATEGORY_OPTIONS}
           />
         </Box>
+
+        {showScope && (
+          <Box sx={{ marginBottom: ds.space[4] }} data-testid='kb-scope-field'>
+            <Box sx={{ display: 'flex', alignItems: 'center', marginBottom: ds.space.mul(0, 3), gap: ds.space[1] }}>
+              <Typography
+                sx={{
+                  fontSize: 'var(--ds-text-body)',
+                  fontWeight: 'var(--ds-font-weight-medium)',
+                  color: 'var(--ds-blue-500)',
+                }}
+              >
+                Who can use it
+              </Typography>
+              <Tooltip
+                title='Organisation: every account in the organisation, for all of its agents; an account admin can switch it off for their account. Selected accounts: only the accounts you pick.'
+                placement='right'
+              >
+                <InfoOutlinedIcon sx={{ fontSize: 'var(--ds-text-title)', color: 'var(--ds-gray-700)', cursor: 'pointer' }} />
+              </Tooltip>
+            </Box>
+            <ToggleGroup
+              selection='single'
+              size='sm'
+              ariaLabel='Who can use this knowledge base'
+              value={visibility}
+              onChange={(next) => next && setVisibility(next)}
+              options={scopeOptions}
+            />
+            {visibility === SCOPE_SELECTED_ACCOUNTS && (
+              <Box sx={{ marginTop: ds.space[3] }}>
+                <Select
+                  id='kb-scope-accounts'
+                  label='Accounts'
+                  placeholder='Select accounts'
+                  multiple
+                  grouped
+                  searchable
+                  options={tenantAccountOptions}
+                  value={scopeAccountIds}
+                  onChange={(next) => setScopeAccountIds(Array.isArray(next) ? next : [])}
+                  loading={tenantAccountsLoading}
+                />
+              </Box>
+            )}
+          </Box>
+        )}
 
         {/* Name Field */}
         <Box sx={{ marginBottom: ds.space[4] }}>
@@ -794,6 +888,9 @@ KnowledgeBaseFormModal.propTypes = {
   contextTagOptions: PropTypes.array,
   contextTagsLoading: PropTypes.bool,
   initialAgentIds: PropTypes.array,
+  scopeOptions: PropTypes.arrayOf(PropTypes.shape({ value: PropTypes.string, label: PropTypes.string })),
+  initialVisibility: PropTypes.string,
+  initialAccountIds: PropTypes.arrayOf(PropTypes.string),
 };
 
 export default KnowledgeBaseFormModal;

@@ -1013,7 +1013,13 @@ func DiscoverKnowledgeCandidates(ctx *security.RequestContext, request NBAgentRe
 	if !AutomaticKnowledgeAllowed(request) || agent == nil {
 		return nil
 	}
-	names := append([]string{agent.GetName()}, agent.GetNameAliases()...)
-	kbs := fetchAgentKBs(ctx, request.AccountId, names, request.InheritSkillsFromAgents, request.SelectedSkillIds)
+	kbs := fetchAgentKBs(ctx, request.AccountId, discoveryAgentNames(agent), request.InheritSkillsFromAgents, request.SelectedSkillIds)
 	return retrieveRelevantKB(ctx, request, kbs).candidates
+}
+
+// discoveryAgentNames is the agent's canonical name, its aliases and the
+// all-agents wildcard, which carries KBs mapped to "All agents" and every
+// organisation KB the account can see (the executor's own lookup adds it too).
+func discoveryAgentNames(agent NBAgent) []string {
+	return toolcore.WithKBAgentWildcard(append([]string{agent.GetName()}, agent.GetNameAliases()...))
 }

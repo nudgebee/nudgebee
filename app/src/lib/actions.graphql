@@ -411,6 +411,12 @@ type Query {
 }
 
 type Query {
+  ai_list_kb_account_overrides(
+    request: ListKBAccountOverridesRequest!
+  ): ListKBAccountOverridesResponse
+}
+
+type Query {
   ai_get_kb_load_history(
     request: GetKBLoadHistoryRequest!
   ): GetKBLoadHistoryResponse
@@ -553,6 +559,18 @@ type Mutation {
 type Mutation {
   ai_update_kb_enabled(
     request: UpdateKBEnabledRequest!
+  ): UpdateKBEnabledResponse
+}
+
+type Mutation {
+  ai_update_kb_visibility(
+    request: UpdateKBVisibilityRequest!
+  ): UpdateKBVisibilityResponse
+}
+
+type Mutation {
+  ai_update_kb_account_override(
+    request: UpdateKBAccountOverrideRequest!
   ): UpdateKBEnabledResponse
 }
 
@@ -5588,6 +5606,8 @@ input KnowledgebaseInput {
   file_name: String!
   note_category: String
   context_tags: [String!]
+  visibility: String
+  account_ids: [String!]
 }
 
 input KnowledgebaseUpdateInput {
@@ -5624,6 +5644,40 @@ input UpdateKBEnabledRequest {
   account_id: String!
   kb_id: String!
   enabled: Boolean!
+}
+
+input UpdateKBVisibilityRequest {
+  kb_id: String!
+  visibility: String!
+  account_ids: [String!]
+  target_account_id: String
+}
+
+input UpdateKBAccountOverrideRequest {
+  account_id: String!
+  kb_id: String!
+  enabled: Boolean!
+}
+
+input ListKBAccountOverridesRequest {
+  kb_id: String!
+}
+
+type KBAccountOverride {
+  account_id: String
+  account_name: String
+  enabled: Boolean
+  updated_at: String
+}
+
+type ListKBAccountOverridesResponse {
+  data: [KBAccountOverride]
+  errors: [Error]
+}
+
+type UpdateKBVisibilityResponse {
+  data: KnowledgebaseOutput
+  errors: [Error]
 }
 
 input DeleteKBRequest {
@@ -9776,6 +9830,8 @@ type KnowledgebaseOutput {
   id: String!
   tenant_id: String!
   account_id: String!
+  visibility: String
+  switched_off: Boolean
   name: String!
   description: String
   data: String!

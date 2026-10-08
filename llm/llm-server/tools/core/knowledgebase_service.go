@@ -596,7 +596,14 @@ func GetKnowledgebaseScoped(sc *security.RequestContext, accountId, kbId string,
 
 	scope, scopeArgs := KBAccountScope("kb", 2, 3, orgIDs)
 	var kb Knowledgebase
-	err = dbms.Db.Get(&kb, `
+	err = dbms.Db.Get(&kb, kbFullRowSelect+`
+		WHERE kb.id = $1 AND `+scope, append([]any{kbId, accountId}, scopeArgs...)...)
+	return finishKBGet(kb, kbId, err)
+}
+
+// kbFullRowSelect reads one knowledge base with its content and the names of
+// the users who created and last updated it.
+const kbFullRowSelect = `
 		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.visibility, kb.name,
 		       COALESCE(kb.description, '') as description,
 		       kb.data, kb.data_format, kb.data_filename,
@@ -610,8 +617,9 @@ func GetKnowledgebaseScoped(sc *security.RequestContext, accountId, kbId string,
 		       kb.error_message
 		FROM llm_knowledgebases kb
 		LEFT JOIN users cu ON kb.created_by = cu.id
-		LEFT JOIN users uu ON kb.updated_by = uu.id
-		WHERE kb.id = $1 AND `+scope, append([]any{kbId, accountId}, scopeArgs...)...)
+		LEFT JOIN users uu ON kb.updated_by = uu.id`
+
+func finishKBGet(kb Knowledgebase, kbId string, err error) (Knowledgebase, error) {
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return Knowledgebase{}, errors.New(errKBNotFound)
@@ -629,6 +637,29 @@ func GetKnowledgebaseScoped(sc *security.RequestContext, accountId, kbId string,
 	}
 
 	return kb, nil
+}
+
+// GetOrganisationKnowledgebase reads an organisation knowledge base of the
+// caller's tenant without going through an account. Tenant admins (including
+// read-only ones) only; account users read organisation KBs through
+// GetKnowledgebase with their account.
+func GetOrganisationKnowledgebase(sc *security.RequestContext, kbId string) (Knowledgebase, error) {
+	if kbId == "" {
+		return Knowledgebase{}, errors.New(errKBIDRequired)
+	}
+	tenantId := sc.GetSecurityContext().GetTenantId()
+	if !canManageOrgKBs(sc, tenantId, security.SecurityAccessTypeRead) {
+		return Knowledgebase{}, errors.New(errKBUnauthorized)
+	}
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		slog.Error(logKBFailedDBManager, "error", err)
+		return Knowledgebase{}, err
+	}
+	var kb Knowledgebase
+	err = dbms.Db.Get(&kb, kbFullRowSelect+`
+		WHERE kb.id = $1 AND kb.account_id IS NULL AND kb.tenant_id = $2`, kbId, tenantId)
+	return finishKBGet(kb, kbId, err)
 }
 
 // ListKnowledgebasesForTenant returns every KB the caller can read across
@@ -1900,7 +1931,8 @@ func ListAgentKBs(sc *security.RequestContext, accountId, agentId string) ([]Kno
 	var kbs []Knowledgebase
 	// Join with mapping table to get KBs for this agent
 	// Note: Excluding data field for performance
-	mappedScope, mappedArgs := KBAccountScope("kb", 1, 3, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
+	orgIDs := VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId)
+	mappedScope, mappedArgs := KBAccountScope("kb", 1, 3, orgIDs)
 	err = dbms.Db.Select(&kbs, `
 		SELECT kb.id, kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.visibility, kb.name,
 		       COALESCE(kb.description, '') as description, kb.context_tags,
@@ -1913,7 +1945,7 @@ func ListAgentKBs(sc *security.RequestContext, accountId, agentId string) ([]Kno
 		       COALESCE(cu.display_name, '') as created_by,
 		       COALESCE(uu.display_name, '') as updated_by
 		FROM llm_knowledgebases kb
-		INNER JOIN llm_kb_agent_mappings m ON kb.id = m.kb_id
+		`+KBMappingsJoin(1, 3, orgIDs)+`
 		LEFT JOIN users cu ON kb.created_by = cu.id
 		LEFT JOIN users uu ON kb.updated_by = uu.id
 		WHERE m.account_id = $1 AND m.agent_id = $2 AND `+mappedScope+`
@@ -1949,7 +1981,8 @@ func ListActiveAgentSkillCandidates(sc *security.RequestContext, accountId strin
 	if err != nil {
 		return nil, fmt.Errorf("ListActiveAgentSkillCandidates: failed to get database manager: %w", err)
 	}
-	mappedScope, mappedArgs := KBAccountScope("kb", 1, 3, VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId))
+	orgIDs := VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId)
+	mappedScope, mappedArgs := KBAccountScope("kb", 1, 3, orgIDs)
 	var out []SkillCandidate
 	err = dbms.Db.Select(&out, `
 		SELECT DISTINCT ON (kb.id)
@@ -1957,7 +1990,7 @@ func ListActiveAgentSkillCandidates(sc *security.RequestContext, accountId strin
 		       kb.name,
 		       concat_ws(' ', kb.description, array_to_string(kb.context_tags, ' ')) as description
 		FROM llm_knowledgebases kb
-		INNER JOIN llm_kb_agent_mappings m ON kb.id = m.kb_id
+		`+KBMappingsJoin(1, 3, orgIDs)+`
 		WHERE m.account_id = $1
 		  AND m.agent_id = ANY($2::text[])
 		  AND kb.status = 'active'
@@ -2137,8 +2170,8 @@ func LoadActiveAgentSkillContents(sc *security.RequestContext, accountId string,
 
 	selectionActive := restrictToIds != nil
 
-	// Mapping rows are per account; an organisation KB mapped earlier must
-	// still be visible to the account now.
+	// Mapping rows are per account; organisation KBs visible to the account
+	// count as mapped to all agents (KBMappingsJoin).
 	orgIDs := VisibleOrgKnowledgebaseIDs(sc.GetContext(), accountId)
 	mappedScope3, mappedArgs := KBAccountScope("kb", 1, 3, orgIDs)
 	mappedScope5, _ := KBAccountScope("kb", 1, 5, orgIDs)
@@ -2155,7 +2188,7 @@ func LoadActiveAgentSkillContents(sc *security.RequestContext, accountId string,
 		       COALESCE(kb.data_format, '') as data_format,
 			       COALESCE(kb.kb_type, 'manual') as kb_type, COALESCE(kb.note_category, '') as note_category
 			FROM llm_knowledgebases kb
-			INNER JOIN llm_kb_agent_mappings m ON kb.id = m.kb_id
+			`+KBMappingsJoin(1, 3, orgIDs)+`
 			WHERE m.account_id = $1
 			  AND m.agent_id = ANY($2::text[])
 			  AND kb.status = 'active'
@@ -2177,7 +2210,7 @@ func LoadActiveAgentSkillContents(sc *security.RequestContext, accountId string,
 		       COALESCE(kb.data_format, '') as data_format,
 			       COALESCE(kb.kb_type, 'manual') as kb_type, COALESCE(kb.note_category, '') as note_category
 			FROM llm_knowledgebases kb
-			INNER JOIN llm_kb_agent_mappings m ON kb.id = m.kb_id
+			`+KBMappingsJoin(1, 3, orgIDs)+`
 			WHERE m.account_id = $1
 			  AND m.agent_id = $2
 			  AND kb.status = 'active'
@@ -2197,7 +2230,7 @@ func LoadActiveAgentSkillContents(sc *security.RequestContext, accountId string,
 		       COALESCE(kb.data_format, '') as data_format,
 			       COALESCE(kb.kb_type, 'manual') as kb_type, COALESCE(kb.note_category, '') as note_category
 			FROM llm_knowledgebases kb
-			INNER JOIN llm_kb_agent_mappings m ON kb.id = m.kb_id
+			`+KBMappingsJoin(1, 3, orgIDs)+`
 			WHERE m.account_id = $1
 			  AND m.agent_id = $2
 			  AND kb.status = 'active'
@@ -2218,7 +2251,7 @@ func LoadActiveAgentSkillContents(sc *security.RequestContext, accountId string,
 		       COALESCE(kb.data_format, '') as data_format,
 			       COALESCE(kb.kb_type, 'manual') as kb_type, COALESCE(kb.note_category, '') as note_category
 			FROM llm_knowledgebases kb
-			INNER JOIN llm_kb_agent_mappings m ON kb.id = m.kb_id
+			`+KBMappingsJoin(1, 5, orgIDs)+`
 			WHERE m.account_id = $1
 			  AND kb.status = 'active'
 			  AND kb.enabled

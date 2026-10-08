@@ -288,3 +288,30 @@ func TestSwitchedOffOrganisationKBsStayListable(t *testing.T) {
 	assert.NotContains(t, visibleKBCollections(rows, orgTestAccount), "kb_org-off",
 		"a switched-off KB stays out of every other read")
 }
+
+func TestOrganisationKBIsReadWithoutAnAccountByItsTenantAdmin(t *testing.T) {
+	mock := registerMockMetastore(t)
+	common.ResetDatabaseManager(common.Metastore)
+	mock.ExpectQuery(`WHERE kb.id = \$1 AND kb.account_id IS NULL AND kb.tenant_id = \$2`).
+		WithArgs("kb-1", orgTestTenant).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "account_id", "visibility", "name", "data"}).
+			AddRow("kb-1", "", "organisation", "DB failover", "steps"))
+
+	kb, err := GetOrganisationKnowledgebase(tenantAdmin(orgTestTenant), "kb-1")
+	require.NoError(t, err)
+	assert.Equal(t, "steps", kb.Data)
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	_, err = GetOrganisationKnowledgebase(accountAdmin(t), "kb-1")
+	require.EqualError(t, err, errKBUnauthorized, "an account admin reads organisation KBs through their account")
+}
+
+func TestOrganisationKBsCountAsMappedToAllAgents(t *testing.T) {
+	assert.Equal(t, "INNER JOIN llm_kb_agent_mappings m ON kb.id = m.kb_id", KBMappingsJoin(1, 3, nil),
+		"without organisation KBs the mapping join is unchanged")
+
+	join := KBMappingsJoin(1, 3, []string{"org-kb"})
+	assert.Contains(t, join, "FROM llm_kb_agent_mappings WHERE account_id = $1")
+	assert.Contains(t, join, "SELECT id, '*', $1::uuid FROM llm_knowledgebases WHERE id = ANY($3::uuid[])",
+		"each visible organisation KB is a wildcard mapping row for the account")
+}

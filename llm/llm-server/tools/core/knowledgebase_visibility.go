@@ -206,3 +206,21 @@ func KBAccountScope(alias string, accountParam, nextParam int, orgIDs []string) 
 	}
 	return fmt.Sprintf("(%s = $%d OR %s = ANY($%d::uuid[]))", col, accountParam, idCol, nextParam), []any{pq.Array(orgIDs)}
 }
+
+// KBMappingsJoin is the agent-mapping source for mapping-driven reads. An
+// organisation KB visible to the account counts as mapped to all agents
+// there: it gets a virtual wildcard row (agent_id "*") for the account, so it
+// resolves exactly like a KB the account mapped to "All agents", and the
+// per-account switch is how an account opts out. orgParam is the placeholder
+// already bound to orgIDs by KBAccountScope. With no organisation KBs the join
+// is the plain mapping table, so account-only queries are unchanged.
+func KBMappingsJoin(accountParam, orgParam int, orgIDs []string) string {
+	if len(orgIDs) == 0 {
+		return "INNER JOIN llm_kb_agent_mappings m ON kb.id = m.kb_id"
+	}
+	return fmt.Sprintf(`INNER JOIN (
+			SELECT kb_id, agent_id, account_id FROM llm_kb_agent_mappings WHERE account_id = $%d
+			UNION
+			SELECT id, '%s', $%d::uuid FROM llm_knowledgebases WHERE id = ANY($%d::uuid[])
+		) m ON kb.id = m.kb_id`, accountParam, KBAgentWildcard, accountParam, orgParam)
+}

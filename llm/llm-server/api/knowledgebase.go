@@ -243,13 +243,25 @@ func kbGet(c *gin.Context, context *security.RequestContext, payload map[string]
 		return
 	}
 
-	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+	if request.Id == "" {
+		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: id is required")}))
 		return
 	}
 
-	if request.Id == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: id is required")}))
+	// A tenant admin reads an organisation KB without an account.
+	if request.AccountId == "" && context.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead) {
+		resp, err := core.GetOrganisationKnowledgebase(context, request.Id)
+		if err != nil {
+			slog.Error("kb: failed to get organisation knowledge base", "error", err, "kb_id", request.Id)
+			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
+		c.JSON(200, buildApiResponse(resp, nil))
+		return
+	}
+
+	if request.AccountId == "" {
+		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
 		return
 	}
 

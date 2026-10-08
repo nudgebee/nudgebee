@@ -48,7 +48,7 @@ Tracking issue: #40313. Decision record: `docs/architecture-decisions.md` ("Orga
 
 ### Agent mappings
 
-Unchanged. An account admin can map any organisation KB visible to their account to their own agents. The mapping row keeps their `account_id`.
+An organisation KB is used by all agents in every account that can see it, as if each of those accounts had mapped it to "All agents". There are no per-agent mappings for organisation KBs; an account opts out with its switch. Account KBs keep their per-account mappings.
 
 ## Visibility
 
@@ -97,8 +97,9 @@ Unchanged. An account admin can map any organisation KB visible to their account
   - `ai_create_kb_mapping` accepts any organisation KB visible to the account.
   - KB names are trimmed. An organisation KB's name must be unique in its tenant, ignoring case.
 - **UI:**
-  - The KB form offers "Organisation / This account" to tenant admins, with an account picker for "Selected accounts".
-  - The KB list shows an "Organisation" badge on inherited KBs and a per-account on/off switch.
+  - The KB form offers tenant admins "Who can use it": This account, Organisation, or Selected accounts (with an account picker). The tenant-wide view creates organisation KBs only.
+  - In an account's list, an organisation KB shows an "Organisation" (or "Selected accounts") badge, is read-only for account admins, and its switch is that account's own on/off. Tenant admins can also edit it, delete it, or turn it off for all accounts.
+  - In the tenant-wide list, an organisation KB's switch turns it off or on for every account.
 
 There is no feature flag: once organisation KBs exist the change cannot be reverted, and with none, every path behaves as for account KBs alone.
 
