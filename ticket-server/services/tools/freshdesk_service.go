@@ -47,6 +47,7 @@ func init() {
 // freshdeskAttachment is a file attachment returned on a ticket or a conversation.
 // AttachmentURL is a pre-signed, short-lived S3 URL fetchable without a Freshdesk key.
 type freshdeskAttachment struct {
+	ID            int64  `json:"id"`
 	Name          string `json:"name"`
 	ContentType   string `json:"content_type"`
 	Size          int64  `json:"size"`
@@ -89,6 +90,62 @@ type freshdeskConversation struct {
 }
 
 var freshdeskTicketIDRe = regexp.MustCompile(`^[0-9]+$`)
+
+// freshdeskInlineImageRe matches an <img> tag's src attribute. An image pasted
+// mid-reply in Freshdesk's editor (as opposed to attached as a file) is embedded
+// directly in the conversation's HTML body and never appears in its attachments
+// array - confirmed live (body_text and attachments both lose it entirely, only
+// body has it). This is the only way to recover it.
+var freshdeskInlineImageRe = regexp.MustCompile(`<img\b[^>]*\bsrc="([^"]+)"[^>]*>`)
+
+var (
+	freshdeskBrRe       = regexp.MustCompile(`(?i)<br\s*/?>`)
+	freshdeskBlockEndRe = regexp.MustCompile(`(?i)</(div|p)>`)
+	freshdeskTagRe      = regexp.MustCompile(`<[^>]*>`)
+	freshdeskBlankLines = regexp.MustCompile(`\n{3,}`)
+)
+
+// freshdeskBodyToTextWithMarkers converts a conversation's HTML body to plain
+// text, replacing each inline <img> with an attachmentMarker so the frontend
+// (routed through the same [[nb-attachment:<id>]] renderer as GitHub/Jira) can
+// show it in its original position instead of always trailing the comment.
+// Only called when the body actually contains an inline image (see GetComments)
+// - for the common case without one, body_text is used as-is, since this
+// regex-based HTML->text conversion is an approximation of Freshdesk's own and
+// isn't worth the risk of subtly reformatting every other comment.
+func freshdeskBodyToTextWithMarkers(bodyHTML string) (string, []models.CommentAttachment) {
+	matches := freshdeskInlineImageRe.FindAllStringSubmatchIndex(bodyHTML, -1)
+	if len(matches) == 0 {
+		return "", nil
+	}
+
+	attachments := make([]models.CommentAttachment, 0, len(matches))
+	var sb strings.Builder
+	last := 0
+	for i, m := range matches {
+		sb.WriteString(bodyHTML[last:m[0]])
+		id := fmt.Sprintf("fd-inline-%d", i+1)
+		sb.WriteString(attachmentMarker(id))
+		attachments = append(attachments, models.CommentAttachment{
+			ID:   id,
+			Name: fmt.Sprintf("inline-image-%d.png", i+1),
+			// Freshdesk's inline markup carries no real content type; every
+			// observed case is a pasted screenshot (PNG), and the frontend
+			// only uses this to decide image-vs-link rendering.
+			ContentType: "image/png",
+			URL:         html.UnescapeString(bodyHTML[m[2]:m[3]]),
+		})
+		last = m[1]
+	}
+	sb.WriteString(bodyHTML[last:])
+
+	text := freshdeskBrRe.ReplaceAllString(sb.String(), "\n")
+	text = freshdeskBlockEndRe.ReplaceAllString(text, "\n")
+	text = freshdeskTagRe.ReplaceAllString(text, "")
+	text = html.UnescapeString(text)
+	text = freshdeskBlankLines.ReplaceAllString(text, "\n\n")
+	return strings.TrimSpace(text), attachments
+}
 
 // validateFreshdeskTicketID rejects non-numeric ids so they can't rewrite the URL path.
 func validateFreshdeskTicketID(id string) error {
@@ -466,16 +523,19 @@ func (s *FreshdeskService) GetComments(ctx *gin.Context, config models.TicketCon
 		if author == "" && c.UserID != nil {
 			author = strconv.FormatInt(*c.UserID, 10)
 		}
-		text := c.BodyText
+		text, attachments := freshdeskBodyToTextWithMarkers(c.Body)
 		if text == "" {
-			text = c.Body
+			text = c.BodyText
+			if text == "" {
+				text = c.Body
+			}
 		}
 		if c.Private {
 			text = "[private note] " + text
 		}
-		var attachments []models.CommentAttachment
 		for _, a := range c.Attachments {
 			attachments = append(attachments, models.CommentAttachment{
+				ID:          strconv.FormatInt(a.ID, 10),
 				Name:        a.Name,
 				ContentType: a.ContentType,
 				URL:         a.AttachmentURL,

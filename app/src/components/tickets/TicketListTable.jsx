@@ -559,7 +559,7 @@ const TicketDetailsComponent = ({ ticketData, accountsData }) => {
                                 </Typography>
                               )}
                             </Box>
-                            {platform === 'github' || platform === 'jira' ? (
+                            {platform === 'github' || platform === 'jira' || platform === 'freshdesk' ? (
                               // Text and attachments are interleaved in original order via
                               // [[nb-attachment:<id>]] markers - see renderCommentBodyWithInlineAttachments.
                               renderCommentBodyWithInlineAttachments(comment, platform === 'github' ? renderMarkdownSegment : renderPlainTextSegment)
