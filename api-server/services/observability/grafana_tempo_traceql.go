@@ -2,10 +2,12 @@ package observability
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"nudgebee/services/query"
 )
@@ -111,14 +113,59 @@ func tempoLiteral(attr, v string) string {
 		if strings.TrimSpace(v) == "" {
 			return "nil"
 		}
-		if _, err := strconv.ParseInt(v, 10, 64); err == nil {
+		if n, ok := tempoInteger(v); ok {
 			if attr == "duration" {
-				return v + "ns"
+				return n + "ns"
 			}
-			return v
+			return n
+		}
+		// duration_ns is canonical, but a caller may still say "300ms"; TraceQL only
+		// compares a duration with a duration, so a quoted string is a 400.
+		if d, err := time.ParseDuration(strings.TrimSpace(v)); attr == "duration" && err == nil {
+			return strconv.FormatInt(d.Nanoseconds(), 10) + "ns"
 		}
 	}
 	return strconv.Quote(v)
+}
+
+// tempoInteger reads an integer operand, accepting a whole number written as a float
+// ("3e+08", "300000000.0") — the form a JSON number takes once something has printed it.
+func tempoInteger(v string) (string, bool) {
+	v = strings.TrimSpace(v)
+	if _, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return v, true
+	}
+	if f, err := strconv.ParseFloat(v, 64); err == nil && f == math.Trunc(f) && math.Abs(f) < 1<<63 {
+		return strconv.FormatInt(int64(f), 10), true
+	}
+	return "", false
+}
+
+// tempoLikePattern turns a SQL LIKE pattern into a regex body: `%` is any run, `_` any
+// one character, `\%` and `\_` are literals. TraceQL's =~ matches the whole value, so
+// LIKE's implicit anchoring needs nothing extra.
+func tempoLikePattern(p string) string {
+	var b strings.Builder
+	escaped := false
+	for _, r := range p {
+		switch {
+		case escaped:
+			b.WriteString(regexp.QuoteMeta(string(r)))
+			escaped = false
+		case r == '\\':
+			escaped = true
+		case r == '%':
+			b.WriteString(".*")
+		case r == '_':
+			b.WriteString(".")
+		default:
+			b.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	if escaped {
+		b.WriteString(`\\`)
+	}
+	return b.String()
 }
 
 func tempoJoin(parts []string, sep string) string {
@@ -204,10 +251,21 @@ func tempoCondition(attr string, op query.BinaryWhereClauseType, raw any) (strin
 	}
 	plain := func(v string) string { return tempoLiteral(attr, v) }
 	contains := func(v string) string { return strconv.Quote("(?i).*" + regexp.QuoteMeta(v) + ".*") }
-	like := func(v string) string {
-		return strconv.Quote("(?i)" + strings.ReplaceAll(regexp.QuoteMeta(v), "%", ".*"))
+	like := func(v string) string { return strconv.Quote("(?i)" + tempoLikePattern(v)) }
+	// TraceQL anchors =~ at both ends, but the canonical _regex is a search ("contains
+	// regex match"): bare `pay` must match "payments", and `payment|ledger` both
+	// services. Wrapping keeps an explicit ^…$ meaning exactly what it says; (?s) lets
+	// the padding cross a newline in the value.
+	rx := func(v string) string { return strconv.Quote("(?s).*(?:" + v + ").*") }
+	if op == query.Regex || op == query.NRegex {
+		// Validate the pattern on its own: wrapped, an unbalanced `a)(b` would parse
+		// as a different, valid regex instead of failing.
+		for _, v := range values {
+			if _, err := regexp.Compile(v); err != nil {
+				return "", fmt.Errorf("grafana tempo: invalid regex %q for field %q: %w", v, attr, err)
+			}
+		}
 	}
-	rx := func(v string) string { return strconv.Quote(v) }
 	each := func(cmp string, lit func(string) string, sep string) string {
 		parts := make([]string, 0, len(values))
 		for _, v := range values {

@@ -192,11 +192,11 @@ func cubeAPMFilterValues(val any) []string {
 	case []any:
 		out := make([]string, 0, len(v))
 		for _, item := range v {
-			out = append(out, fmt.Sprintf("%v", item))
+			out = append(out, filterValueString(item))
 		}
 		return out
 	default:
-		return []string{fmt.Sprintf("%v", val)}
+		return []string{filterValueString(val)}
 	}
 }
 
@@ -232,6 +232,20 @@ func cubeAPMLikePattern(p string) string {
 		}
 	}
 	return b.String()
+}
+
+// filterValueString renders one operand. A JSON number decodes to float64, and %v
+// prints a float64 of 1e6 or more in exponent form: duration_ns 300000000 became
+// `3e+08`, which TraceQL rejects as a type mismatch. 'f' with precision -1 keeps the
+// shortest exact decimal.
+func filterValueString(v any) string {
+	switch n := v.(type) {
+	case float64:
+		return strconv.FormatFloat(n, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(n), 'f', -1, 32)
+	}
+	return fmt.Sprintf("%v", v)
 }
 
 // cubeAPMTraceWhere rewrites a canonical where-clause into one over LogsQL field

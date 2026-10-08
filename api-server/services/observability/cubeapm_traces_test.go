@@ -1086,3 +1086,22 @@ func TestCubeAPMCount(t *testing.T) {
 		}
 	}
 }
+
+func TestCubeAPMFilterValues_NumbersStayDecimal(t *testing.T) {
+	tests := []struct {
+		in   any
+		want []string
+	}{
+		{float64(300000000), []string{"300000000"}},
+		{float64(0.5), []string{"0.5"}},
+		{[]any{float64(500), float64(1e21)}, []string{"500", "1000000000000000000000"}},
+		{7, []string{"7"}},
+		{"300ms", []string{"300ms"}},
+	}
+	for _, tt := range tests {
+		got := cubeAPMFilterValues(tt.in)
+		if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+			t.Errorf("cubeAPMFilterValues(%v) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
