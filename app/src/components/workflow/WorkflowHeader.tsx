@@ -11,6 +11,12 @@ import { colors } from 'src/utils/colors';
 import CustomBackButton from '@shared/CustomBackButton';
 import { useRouter } from 'next/router';
 import WorkflowStateStrip from './WorkflowStateStrip';
+import { useAccountOptions } from './hooks/useAccountOptions';
+import { ds } from 'src/utils/colors';
+
+// Width of the centered Editor / Executions tabs. The right-hand group is
+// capped against it so it cannot run underneath them.
+const TABS_WIDTH_PX = 260;
 interface WorkflowHeaderProps {
   workflowTitle?: string;
   onTabChange?: (tab: string) => void;
@@ -102,6 +108,12 @@ const WorkflowHeader: React.FC<WorkflowHeaderProps> = ({
   ];
 
   const effectiveAllowTitleEdit = allowTitleEdit && canEdit;
+
+  // Name and provider of the account this automation is saved under, for the
+  // state strip. getCloudAccounts is cached, so this costs no extra request
+  // when the builder has already listed accounts.
+  const { options: accountOptions } = useAccountOptions(showStateStrip && Boolean(accountId));
+  const account = accountOptions.find((option) => option.value === accountId);
 
   const router = useRouter();
 
@@ -212,11 +224,28 @@ const WorkflowHeader: React.FC<WorkflowHeaderProps> = ({
             zIndex: 11,
           }}
         >
-          <NewToggleButtons options={tabOptions} noShadow={true} activeValue={activeTab} onChange={(value) => onTabChange?.(value)} width='260px' />
+          <NewToggleButtons
+            options={tabOptions}
+            noShadow={true}
+            activeValue={activeTab}
+            onChange={(value) => onTabChange?.(value)}
+            width={`${TABS_WIDTH_PX}px`}
+          />
         </Box>
       )}
 
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          justifyContent: 'flex-end',
+          minWidth: 0,
+          // Half the header, less half the tabs and their own padding:
+          // everything right of the tabs.
+          ...(onTabChange ? { maxWidth: `calc(50% - ${TABS_WIDTH_PX / 2}px - ${ds.space[2]})` } : {}),
+        }}
+      >
         {showStateStrip && (
           <WorkflowStateStrip
             hasUnsavedChanges={hasUnsavedChanges}
@@ -227,6 +256,8 @@ const WorkflowHeader: React.FC<WorkflowHeaderProps> = ({
             draftVersionNumber={draftVersionNumber}
             draftVersionName={draftVersionName}
             draftVersionId={draftVersionId}
+            accountName={account?.label}
+            accountProvider={account?.cloud_provider}
             isNewWorkflow={isNewWorkflow}
             onPublish={onPublish}
             onHistory={onHistory}

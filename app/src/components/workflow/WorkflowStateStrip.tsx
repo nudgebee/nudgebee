@@ -5,7 +5,23 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import Tooltip from '@ui/Tooltip';
 import { Chip } from '@ui/Chip';
 import { Button } from '@ui/Button';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { ds } from 'src/utils/colors';
+
+// One line, cut with an ellipsis. Built on wrapping text + line clamp rather
+// than `nowrap`, because a nowrap label insists on its full width: the name
+// then could not give way, and a long one would push the strip into the tabs.
+const accountNameSx = {
+  display: '-webkit-box',
+  WebkitLineClamp: 1,
+  WebkitBoxOrient: 'vertical',
+  overflow: 'hidden',
+  whiteSpace: 'normal',
+  wordBreak: 'break-all',
+  // Tall enough for descenders, which the chip's own line-height of 1 clips.
+  // Not padding: the top of the hidden second line shows through padding.
+  lineHeight: 1.5,
+} as const;
 
 interface WorkflowStateStripProps {
   /** Canvas has edits not yet persisted to the saved draft. */
@@ -31,6 +47,9 @@ interface WorkflowStateStripProps {
   draftVersionNumber?: number | null;
   draftVersionName?: string | null;
   draftVersionId?: string | null;
+  /** Account the automation is saved under; shown with the live version, new workflows included. */
+  accountName?: string | null;
+  accountProvider?: string | null;
   /** Hide Publish/History + live indicator for never-saved new workflows. */
   isNewWorkflow?: boolean;
   onPublish?: () => void;
@@ -41,7 +60,9 @@ interface WorkflowStateStripProps {
  * WorkflowStateStrip — the always-visible answer to "what am I looking at, and
  * what actually runs?". Sits in the builder header's top-right.
  *
- * Layout: `[Draft chip?] [Live vN chip] [Info ⓘ] [Publish] [History]`.
+ * Layout: `[Draft chip?] [Account chip] [Live vN chip] [Info ⓘ] [Publish] [History]`.
+ * When the row is too tight for the account name, the account chip moves
+ * directly above the live chip instead of widening the strip.
  *
  * The legacy "ahead of Live vX" hint was a definition-hash diff with no
  * lineage — it lied whenever the user restored an older version (it said
@@ -59,6 +80,8 @@ const WorkflowStateStrip: React.FC<WorkflowStateStripProps> = ({
   draftVersionNumber,
   draftVersionName,
   draftVersionId,
+  accountName,
+  accountProvider,
   isNewWorkflow = false,
   onPublish,
   onHistory,
@@ -106,6 +129,11 @@ const WorkflowStateStrip: React.FC<WorkflowStateStripProps> = ({
         // visual gap regardless of which chip ends up leftmost (unsaved /
         // draft / live).
         pl: 2,
+        // The header caps this strip at the space right of the tabs. Within
+        // that, only the account + live group gives way; if the rest still
+        // does not fit it spills left, as it always has, not off the screen.
+        minWidth: 0,
+        justifyContent: 'flex-end',
       }}
       data-testid='workflow-state-strip'
     >
@@ -147,28 +175,57 @@ const WorkflowStateStrip: React.FC<WorkflowStateStripProps> = ({
         )}
       </Box>
 
-      {/* Live version chip — always visible (when a live version exists) so the
-          user knows which snapshot all triggers (scheduled, event, webhook,
-          manual) run. Label spells out "Live version: vN" rather than the
-          previous bare "Live vN" so it can't be mistaken for the draft chip
-          ("Draft based on vN"). */}
-      {!isNewWorkflow && hasLiveVersion && (
-        <Tooltip title={`All triggers run the live version${liveVersionName ? ` (“${liveVersionName}”)` : ''}.`}>
-          <Box sx={{ display: 'flex', alignItems: 'center' }} data-testid='workflow-live-indicator'>
-            <Chip size='xs' variant='tag' tone='info'>
-              {`Live version: v${liveVersionNumber ?? '?'}`}
-            </Chip>
-          </Box>
-        </Tooltip>
-      )}
-      {!isNewWorkflow && !hasLiveVersion && (
-        <Tooltip title='No live version yet. Publish to create one — all triggers run the live version.'>
-          <Box sx={{ display: 'flex', alignItems: 'center' }} data-testid='workflow-live-indicator'>
-            <Chip size='xs' variant='tag' tone='neutral'>
-              No live version
-            </Chip>
-          </Box>
-        </Tooltip>
+      {/* Account + live version travel as one group: side by side while the
+          account name fits, account directly above the live version when it
+          does not. The group is never wider than the row can spare and never
+          narrower than the live chip, so the account adds no width the strip
+          does not have. It sits after the draft block so it stays put when
+          that block appears on the first edit. */}
+      {(accountName || !isNewWorkflow) && (
+        <Box
+          sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', columnGap: ds.space[2], rowGap: ds.space[0] }}
+        >
+          {accountName && (
+            <Tooltip title={`This automation is saved under ${accountName}.`}>
+              <Box sx={{ display: 'flex', alignItems: 'center', maxWidth: ds.space.mul(7, 5) }} data-testid='workflow-account-indicator'>
+                <Chip
+                  size='xs'
+                  variant='tag'
+                  tone='neutral'
+                  icon={accountProvider ? <CloudProviderIcon cloud_provider={accountProvider} width='14px' height='14px' /> : undefined}
+                >
+                  <Box component='span' sx={accountNameSx}>
+                    {accountName}
+                  </Box>
+                </Chip>
+              </Box>
+            </Tooltip>
+          )}
+
+          {/* Live version chip — always visible (when a live version exists) so the
+              user knows which snapshot all triggers (scheduled, event, webhook,
+              manual) run. Label spells out "Live version: vN" rather than the
+              previous bare "Live vN" so it can't be mistaken for the draft chip
+              ("Draft based on vN"). */}
+          {!isNewWorkflow && hasLiveVersion && (
+            <Tooltip title={`All triggers run the live version${liveVersionName ? ` (“${liveVersionName}”)` : ''}.`}>
+              <Box sx={{ display: 'flex', alignItems: 'center' }} data-testid='workflow-live-indicator'>
+                <Chip size='xs' variant='tag' tone='info'>
+                  {`Live version: v${liveVersionNumber ?? '?'}`}
+                </Chip>
+              </Box>
+            </Tooltip>
+          )}
+          {!isNewWorkflow && !hasLiveVersion && (
+            <Tooltip title='No live version yet. Publish to create one — all triggers run the live version.'>
+              <Box sx={{ display: 'flex', alignItems: 'center' }} data-testid='workflow-live-indicator'>
+                <Chip size='xs' variant='tag' tone='neutral'>
+                  No live version
+                </Chip>
+              </Box>
+            </Tooltip>
+          )}
+        </Box>
       )}
 
       {/* Versioning info icon — explains the publish → live → trigger semantics
