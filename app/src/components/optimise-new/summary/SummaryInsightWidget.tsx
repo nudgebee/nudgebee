@@ -220,6 +220,10 @@ interface BreakdownRow {
   label: string;
   dollars: number;
   count: number;
+  /** How many of this category are in the curated top list below — not `count`
+   * (the true tenant-wide total): clicking this row filters that same curated
+   * list, so showing its own count here is what actually lands in the table. */
+  shownCount: number;
 }
 
 const BreakdownTable = ({
@@ -253,7 +257,9 @@ const BreakdownTable = ({
           cursor: 'pointer',
           border: 'none',
           display: 'grid',
-          gridTemplateColumns: '1fr auto 44px',
+          // Wider than the footer's plain-number column: a "shown/total" count
+          // (e.g. "23/2016") needs more room than a single number.
+          gridTemplateColumns: '1fr auto 76px',
           gap: ds.space[2],
           alignItems: 'center',
           padding: '8px 10px',
@@ -274,7 +280,10 @@ const BreakdownTable = ({
           )}
         </Typography>
         <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[600], textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-          {row.count}
+          {row.shownCount.toLocaleString()}
+          <Box component='span' sx={{ color: ds.gray[500] }}>
+            /{row.count.toLocaleString()}
+          </Box>
         </Typography>
       </Box>
     ))}
@@ -291,7 +300,8 @@ const BreakdownTable = ({
         cursor: 'pointer',
         border: 'none',
         display: 'grid',
-        gridTemplateColumns: '1fr auto 44px',
+        // Matches the rows' column width above so the count column stays aligned.
+        gridTemplateColumns: '1fr auto 76px',
         gap: ds.space[2],
         alignItems: 'center',
         padding: '5px 10px',
@@ -428,9 +438,14 @@ const SummaryInsightWidget = ({
   const breakdownRows: BreakdownRow[] = useMemo(
     () =>
       (Object.keys(CATEGORY_LABELS) as MainCategory[])
-        .map((category) => ({ category, label: CATEGORY_LABELS[category], ...categoryBreakdown[category] }))
+        .map((category) => ({
+          category,
+          label: CATEGORY_LABELS[category],
+          ...(categoryBreakdown[category] ?? { dollars: 0, count: 0 }),
+          shownCount: items.filter((i) => i.category === category).length,
+        }))
         .sort((a, b) => b.dollars - a.dollars),
-    [categoryBreakdown]
+    [categoryBreakdown, items]
   );
   const breakdownTotalCount = breakdownRows.reduce((sum, row) => sum + row.count, 0);
 

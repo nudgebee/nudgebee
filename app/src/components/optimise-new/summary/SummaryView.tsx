@@ -733,6 +733,10 @@ const SummaryView = () => {
                   // ARNs ellipsize, instead of auto-layout stretching the row past its
                   // container and clipping the header bar on the right.
                   sx={{ '& > table': { tableLayout: 'fixed' } }}
+                  // A filter matching nothing is not the same as no data having loaded —
+                  // the generic default below reads like an outage otherwise.
+                  emptyHeading={hasTableFilter ? 'No findings match the current filters' : undefined}
+                  emptySubHeading={hasTableFilter ? 'Try clearing a filter to see more results.' : undefined}
                   headers={[
                     { name: 'Severity', width: '8%' },
                     { name: 'Finding', width: '28%' },
