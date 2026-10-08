@@ -30,6 +30,10 @@ type IntegrationCreateRequest struct {
 	AccountIds              []string                      `json:"account_ids"`
 	SkipValidation          bool                          `json:"skip_validation"`
 	Source                  string                        `json:"source,omitempty"`
+	// LLM only: the two default ticks. Absent, the default_llm_provider config
+	// value is read the old way (both defaults at once).
+	LLMTenantDefault  *bool `json:"llm_tenant_default,omitempty"`
+	LLMAccountDefault *bool `json:"llm_account_default,omitempty"`
 }
 
 type IntegrationDeleteRequest struct {
@@ -202,6 +206,10 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			preSaveAccountIds = ids
 		}
 
+		if request.IntegrationName == "llm" {
+			request.IntegrationConfigValues = core.WithLLMSaveOptions(request.IntegrationConfigValues,
+				core.LLMSaveOptions{TenantDefault: request.LLMTenantDefault, AccountDefault: request.LLMAccountDefault})
+		}
 		resp, err := core.CreateIntegrationConfig(ctx, request.IntegrationId, request.IntegrationName, request.IntegrationConfigName, request.IntegrationConfigValues, request.Tags, request.AccountIds, request.SkipValidation, request.Source)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -211,7 +219,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		c.JSON(200, resp)
 		// Audit is persisted by core.CreateIntegrationConfig (CreateAudit, DB) —
 		// no MQ publish here to avoid a duplicate write.
-		onIntegrationConfigChanged(ctx, mergeAccountIds(request.AccountIds, preSaveAccountIds))
+		onIntegrationConfigChanged(ctx, llmTenantWideAccounts(ctx, request.IntegrationName, mergeAccountIds(request.AccountIds, preSaveAccountIds)))
 		// Only announce on a genuine new binding (create). A config update of an
 		// existing space (e.g. toggling is_default) carries an IntegrationId and
 		// must not re-post the "now connected" card into the space.
@@ -221,6 +229,32 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		if integrations.IsWebhookMessagingIntegration(request.IntegrationName) {
 			notifyMessagingCacheInvalidate(ctx.GetSecurityContext().GetTenantId())
 		}
+		return
+	case "integrations_check_llm_defaults":
+		// What an LLM save, delete, disable or enable would do to each account;
+		// the modal builds its popups from this. Read-only.
+		var request core.LLMDefaultsChange
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		if err := common.UnmarshalMapToStruct(requestInput, &request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		switch request.Op {
+		case "save", "delete", "disable", "enable":
+		default:
+			c.JSON(400, common.ErrorActionBadRequest("op must be save, delete, disable or enable"))
+			return
+		}
+		report, err := core.CheckLLMChange(ctx, request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, report)
 		return
 	case "integrations_delete_config":
 		var request IntegrationDeleteRequest
@@ -271,7 +305,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		c.JSON(200, map[string]string{"status": "success"})
 		// Audit is persisted by core.DeleteIntegrationConfig (CreateAudit, DB) —
 		// no MQ publish here to avoid a duplicate write.
-		onIntegrationConfigChanged(ctx, affectedAccountIds)
+		onIntegrationConfigChanged(ctx, llmTenantWideAccounts(ctx, request.IntegrationName, affectedAccountIds))
 		if request.IntegrationName == integrations.IntegrationGoogleChatSpace {
 			notifyGoogleChatBinding(ctx.GetSecurityContext().GetTenantId(), request.IntegrationConfigName, "unbound")
 		}
@@ -399,7 +433,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 				"integration_name", request.IntegrationName,
 				"integration_config_name", request.IntegrationConfigName)
 		} else {
-			onIntegrationConfigChanged(ctx, ids)
+			onIntegrationConfigChanged(ctx, llmTenantWideAccounts(ctx, request.IntegrationName, ids))
 		}
 		return
 

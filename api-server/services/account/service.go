@@ -20,7 +20,6 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/database/models"
 	"nudgebee/services/license"
-	"nudgebee/services/llm"
 	"nudgebee/services/security"
 	tenantpkg "nudgebee/services/tenant"
 	"slices"
@@ -29,6 +28,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
@@ -635,11 +635,18 @@ func DeleteAccount(context *security.RequestContext, query AccountDeleteRequest)
 		}
 		plan = append(plan, accountRowDeletePlan...)
 	}
+	orphanedLLM, err := llmIntegrationsOnlyLinkedTo(tx, query.Id)
+	if err != nil {
+		return AccountDeleteResponse{}, err
+	}
 	for _, group := range plan {
 		err = deleteTables(context, tx, group.tables, query.Id, group.defaultAccountIdColumn)
 		if err != nil {
 			return AccountDeleteResponse{}, err
 		}
+	}
+	if err := disableLLMIntegrations(tx, orphanedLLM); err != nil {
+		return AccountDeleteResponse{}, err
 	}
 
 	err = tx.Commit()
@@ -1176,10 +1183,6 @@ func CreateAccount(context *security.RequestContext, query AccountCreateRequest)
 			}
 			return AccountCreateResponse{}, fmt.Errorf("account: unable to complete account setup, please try again")
 		}
-	}
-
-	if err := llm.AttachTenantDefaultLLMProvider(context.GetContext(), dbms, query.Tenant, newAccountId); err != nil {
-		context.GetLogger().Error("account: created, but failed to attach the default LLM provider", "error", err, "account", newAccountId)
 	}
 
 	// invalidate tenant cache
@@ -2806,4 +2809,44 @@ func UpdateAccountByAction(context *security.RequestContext, request AccountUpda
 		})
 	}
 	return AccountUpdateResponse{AffectedRows: int(affected)}, nil
+}
+
+// llmIntegrationsOnlyLinkedTo returns the enabled LLM integrations linked to
+// this account and no other, except the tenant default. Deleting the account
+// would leave them with no accounts, which makes an LLM integration
+// tenant-wide; nobody chose that, so they are disabled instead and an admin
+// decides their scope. The tenant default stays enabled: every account without
+// its own default already uses it, so nothing changes for anyone.
+func llmIntegrationsOnlyLinkedTo(tx *sql.Tx, accountId string) ([]string, error) {
+	rows, err := tx.Query(`
+		SELECT i.id::text FROM integrations i
+		JOIN integrations_cloud_accounts ia ON ia.integration_id = i.id
+		WHERE ia.cloud_account_id = $1 AND i.type = 'llm' AND i.status = 'enabled'
+		  AND NOT EXISTS (SELECT 1 FROM integrations_cloud_accounts o
+		                  WHERE o.integration_id = i.id AND o.cloud_account_id <> $1)
+		  AND NOT EXISTS (SELECT 1 FROM integration_config_values d
+		                  WHERE d.integration_id = i.id AND d.name = 'default_llm_provider' AND d.value = 'true')`, accountId)
+	if err != nil {
+		return nil, fmt.Errorf("account: failed to find LLM integrations linked only to %s: %w", accountId, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func disableLLMIntegrations(tx *sql.Tx, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(`UPDATE integrations SET status = 'disabled', updated_at = now() WHERE id = ANY($1::uuid[])`, pq.Array(ids)); err != nil {
+		return fmt.Errorf("account: failed to disable LLM integrations left with no accounts: %w", err)
+	}
+	return nil
 }

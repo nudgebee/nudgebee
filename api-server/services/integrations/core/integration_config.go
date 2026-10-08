@@ -131,10 +131,19 @@ func CreateIntegrationConfig(
 
 	isUpdate := integrationId != ""
 
+	// The LLM default ticks ride in the config values; take them out before the
+	// schema check, which rejects names it does not know.
+	var llm LLMSaveOptions
+	var llmExplicit bool
+	if intgerationType == llmIntegrationType {
+		llm, llmExplicit, integrationConfigValues = resolveLLMSaveOptions(integrationConfigValues)
+	}
+
 	// A cloud-account mapping is required unless the integration is tenant-scoped — either
 	// by category (ticketing, messaging) or by opting into TenantScopedIntegration (e.g.
 	// llm_gateway, which resolves credentials per-tenant and has no account concept).
-	if !isTenantScoped(integration) && len(accountIds) == 0 {
+	// An LLM integration with no accounts is tenant-wide: every account can pick it.
+	if !isTenantScoped(integration) && len(accountIds) == 0 && intgerationType != llmIntegrationType {
 		return IntegrationDto{}, errors.New("integrations: accountId is required")
 	}
 
@@ -443,6 +452,9 @@ func CreateIntegrationConfig(
 		source = "user"
 	}
 
+	// Read before the transaction so no HTTP call runs while the LLM lock is held.
+	llmEnv := intgerationType == llmIntegrationType && LLMEnvConfigured(ctx.GetContext())
+
 	// One transaction covers every write of the save — the integrations row,
 	// account links, config values and default-provider flags — so a failure
 	// part-way leaves the pre-save state intact. SELECT ... FOR UPDATE locks any
@@ -458,6 +470,14 @@ func CreateIntegrationConfig(
 			_ = tx.Rollback()
 		}
 	}()
+
+	if intgerationType == llmIntegrationType {
+		change := LLMDefaultsChange{Op: "save", IntegrationId: integrationId, AccountIds: accountIds,
+			TenantDefault: llm.TenantDefault, AccountDefault: llm.AccountDefault}
+		if err := enforceLLMChange(ctx, tx, change, llmEnv); err != nil {
+			return IntegrationDto{}, err
+		}
+	}
 
 	// Check integration_config_name uniqueness per (tenant, source, type).
 	// FOR UPDATE locks the row so a concurrent request cannot bypass this check.
@@ -606,6 +626,11 @@ func CreateIntegrationConfig(
 		_, err = tx.Exec(query, args...)
 		if err != nil {
 			return IntegrationDto{}, fmt.Errorf("failed to delete stale accounts: %w", err)
+		}
+	} else if isUpdate && intgerationType == llmIntegrationType {
+		// No accounts selected: the LLM integration becomes tenant-wide.
+		if _, err = tx.Exec(`DELETE FROM integrations_cloud_accounts WHERE integration_id = $1`, configId); err != nil {
+			return IntegrationDto{}, fmt.Errorf("failed to unlink accounts: %w", err)
 		}
 	}
 
@@ -867,6 +892,17 @@ func CreateIntegrationConfig(
 		}
 	}
 
+	if intgerationType == llmIntegrationType {
+		if llmExplicit {
+			if err := applyLLMSaveDefaults(ctx, tx, configId, accountIds, llm); err != nil {
+				return IntegrationDto{}, err
+			}
+		}
+		if err := markLLMDefaultsMigrated(tx, configId); err != nil {
+			return IntegrationDto{}, err
+		}
+	}
+
 	// Commit only once every account link, config value and default-provider
 	// flag is written: a multi-account save must land whole or not at all (#39690).
 	if err := tx.Commit(); err != nil {
@@ -996,9 +1032,8 @@ func CreateIntegrationConfig(
 // applyLLMTenantDefault records the "Default LLM provider" checkbox on the
 // integration itself, as its default_llm_provider row in
 // integration_config_values: the tenant has at most one integration with value
-// 'true', and llm.AttachTenantDefaultLLMProvider links it to accounts created
-// later. llm-server only reads that map by key, so the extra row never reaches
-// a provider credential.
+// 'true', and every account without its own default uses it. llm-server only
+// reads that map by key, so the extra row never reaches a provider credential.
 //
 // Marking an integration sets 'false' on the tenant's other LLM integrations
 // but leaves their per-account default_llm_provider flags alone, so changing
@@ -1372,20 +1407,27 @@ func LLMFallbackRefConfig(tenantId, integrationId, accountId string) (string, ma
 	if _, err := uuid.Parse(integrationId); err != nil {
 		return "", nil, fmt.Errorf("not an integration id: %q", integrationId)
 	}
-	if _, err := uuid.Parse(accountId); err != nil {
-		return "", nil, fmt.Errorf("not an account id: %q", accountId)
+	// No account means the referencing config is tenant-wide: it may only use
+	// what every account can use, the tenant-wide integrations and the tenant default.
+	if accountId != "" {
+		if _, err := uuid.Parse(accountId); err != nil {
+			return "", nil, fmt.Errorf("not an account id: %q", accountId)
+		}
 	}
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return "", nil, err
 	}
+	// Mirrors the model picker (llm-server llmPickableForAccount): linked to the
+	// account, linked to no account, or the tenant default.
 	var name string
 	err = dbms.Db.QueryRowx(`
 		SELECT i.name FROM integrations i
 		WHERE i.id = $1::uuid AND i.tenant_id = $2::uuid AND i.type = 'llm' AND i.status = 'enabled'
-		  AND (EXISTS (SELECT 1 FROM integrations_cloud_accounts ia WHERE ia.integration_id = i.id AND ia.cloud_account_id = $3::uuid)
-		       OR NOT EXISTS (SELECT 1 FROM integrations_cloud_accounts ia WHERE ia.integration_id = i.id))
-	`, integrationId, tenantId, accountId).Scan(&name)
+		  AND (EXISTS (SELECT 1 FROM integrations_cloud_accounts ia WHERE ia.integration_id = i.id AND ia.cloud_account_id = NULLIF($3, '')::uuid)
+		       OR NOT EXISTS (SELECT 1 FROM integrations_cloud_accounts ia WHERE ia.integration_id = i.id)
+		       OR EXISTS (SELECT 1 FROM integration_config_values d WHERE d.integration_id = i.id AND d.name = $4 AND d.value = 'true'))
+	`, integrationId, tenantId, accountId, DefaultLLMProvider).Scan(&name)
 	if err != nil {
 		return "", nil, err
 	}
@@ -1508,6 +1550,8 @@ func DeleteIntegrationConfig(
 		return err
 	}
 
+	llmEnv := strings.EqualFold(integrationType, llmIntegrationType) && LLMEnvConfigured(ctx.GetContext())
+
 	tx, err := dbms.Db.Beginx()
 	if err != nil {
 		slog.Error("integrations: failed to begin transaction", "error", err)
@@ -1563,6 +1607,11 @@ func DeleteIntegrationConfig(
 
 	if err = checkLLMFallbackNotReferenced(tx, integrationType, integrationId, tenantId, "delete"); err != nil {
 		return err
+	}
+	if strings.EqualFold(integrationType, llmIntegrationType) {
+		if err = enforceLLMChange(ctx, tx, LLMDefaultsChange{Op: "delete", IntegrationId: integrationId}, llmEnv); err != nil {
+			return err
+		}
 	}
 	if err = checkWorkflowWebhookNotInUse(tx, integrationType, integrationId, tenantId, "delete"); err != nil {
 		return err
@@ -1804,6 +1853,8 @@ func UpdateIntegrationConfigStatus(
 		return err
 	}
 
+	llmEnv := strings.EqualFold(integrationType, llmIntegrationType) && LLMEnvConfigured(ctx.GetContext())
+
 	tx, err := dbms.Db.Beginx()
 	if err != nil {
 		slog.Error("integrations: failed to begin transaction", "error", err)
@@ -1844,6 +1895,16 @@ func UpdateIntegrationConfigStatus(
 		}
 		slog.Error("integrations: failed to find integration", "error", err)
 		return err
+	}
+
+	if strings.EqualFold(integrationType, llmIntegrationType) {
+		op := "enable"
+		if integrationStatus == "disabled" {
+			op = "disable"
+		}
+		if err = enforceLLMChange(ctx, tx, LLMDefaultsChange{Op: op, IntegrationId: integrationId}, llmEnv); err != nil {
+			return err
+		}
 	}
 
 	if integrationStatus == "disabled" {
