@@ -1218,6 +1218,9 @@ func validateFallbackRef(sc *security.SecurityContext, ref, model, modelKey, acc
 	}
 	name, refCfg, err := llmFallbackRefConfig(sc.GetTenantId(), parts[1], accountId)
 	if err != nil {
+		if accountId == "" {
+			return fmt.Errorf("llm_fallback_ref_source %q is not an enabled LLM integration available to every account in the tenant", ref)
+		}
 		return fmt.Errorf("llm_fallback_ref_source %q is not an enabled LLM integration available to account %s", ref, accountId)
 	}
 	slotModel, slotFallbacks := refCfg["llm_model_name"], refCfg["llm_model_fallbacks"]
