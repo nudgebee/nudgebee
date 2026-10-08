@@ -369,6 +369,7 @@ const KubernetesEventsTable = ({
   const statusFilter = [
     { value: 'FIRING', label: 'Open' },
     { value: 'CLOSED', label: 'Closed' },
+    { value: 'RESOLVED', label: 'Resolved' },
   ];
   const priorityFilter = [
     { value: 'HIGH', label: 'High' },

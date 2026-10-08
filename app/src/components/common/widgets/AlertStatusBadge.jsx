@@ -58,6 +58,7 @@ const AlertStatusBadge = ({ eventId, status, canToggle, closedByName, closedReas
 
   const isOpen = status === 'FIRING';
   const isClosed = status === 'CLOSED';
+  const isResolved = status === 'RESOLVED';
   const canReopen = isClosed && !!closedByName;
   const showArrow = canToggle && (isOpen || isClosed);
 
@@ -113,8 +114,8 @@ const AlertStatusBadge = ({ eventId, status, canToggle, closedByName, closedReas
   const badgeLabel = (
     <Label
       margin='0'
-      text={isOpen ? 'Open' : isClosed ? 'Closed' : status}
-      variant={isOpen ? 'red' : isClosed ? 'grey' : ''}
+      text={isOpen ? 'Open' : isClosed ? 'Closed' : isResolved ? 'Resolved' : status}
+      variant={isOpen ? 'red' : isClosed ? 'grey' : isResolved ? 'green' : ''}
       showDropdownArrow={showArrow}
     />
   );
