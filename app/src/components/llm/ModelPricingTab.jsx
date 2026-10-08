@@ -7,6 +7,7 @@ import { Chip } from '@ui/Chip';
 import { EmptyState } from '@ui/EmptyState';
 import { Input } from '@ui/Input';
 import { Modal } from '@ui/Modal';
+import { Select } from '@ui/Select';
 import FilterDropdown from '@ui/FilterDropdown';
 import Tooltip from '@ui/Tooltip';
 import SearchInput from '@ui/SearchInput';
@@ -39,8 +40,9 @@ const HEADERS = [
 // configurable allowlist plus `vertexai_endpoint`, which is not settable from
 // the LLM config form but does appear in llm_conversation_token_usage — leaving
 // it out would make that spend permanently unpriceable, which is the $0-cost
-// problem this tab exists to solve. Free text was the alternative, but a typo
-// (`open-ai`, a trailing space) silently never matches a usage row.
+// problem this tab exists to solve. The Add form offers exactly this list: as
+// free text, a typo (`open-ai`, a trailing space) silently never matched a
+// usage row.
 const PRICEABLE_PROVIDERS = [
   'anthropic',
   'azure',
@@ -204,13 +206,7 @@ const ModelPricingTab = ({ stickyTable = false }) => {
   // trip. The server still rejects anything that gets past this.
   const draftError = () => {
     if (!draft) return null;
-    if (!draft.provider.trim() || !draft.model.trim()) return 'Enter both a provider and a model name.';
-    // A typo (`open-ai`, a stray capital or trailing space) would store a row
-    // that never matches a usage row — the price would look set and the model
-    // would still report $0. Normalise what is normalisable, reject the rest.
-    if (!PRICEABLE_PROVIDERS.includes(draft.provider.trim().toLowerCase())) {
-      return `Unknown provider. Use one of: ${PRICEABLE_PROVIDERS.join(', ')}.`;
-    }
+    if (!draft.provider || !draft.model.trim()) return 'Select a provider and enter a model name.';
     const input = Number(draft.input);
     const output = Number(draft.output);
     if (draft.input === '' || draft.output === '') return 'Enter both an input and an output rate.';
@@ -267,7 +263,7 @@ const ModelPricingTab = ({ stickyTable = false }) => {
     try {
       const price = {
         model_name: draft.model.trim(),
-        provider_name: draft.provider.trim().toLowerCase(),
+        provider_name: draft.provider,
         cost_per_million_input_tokens: Number(draft.input),
         cost_per_million_output_tokens: Number(draft.output),
       };
@@ -319,11 +315,10 @@ const ModelPricingTab = ({ stickyTable = false }) => {
   };
 
   // Warns when an override is about to drop a tier the built-in defines. The
-  // lookup has to normalise exactly as the save does, or typing `GoogleAI`
+  // lookup has to key on the same (provider, model) the save writes, or it
   // would find no built-in, skip the warning, and then save a row that does
   // match — losing the tier without ever having said so.
-  const builtInForDraft =
-    draft && prices.find((p) => p.is_built_in && p.provider_name === draft.provider.trim().toLowerCase() && p.model_name === draft.model.trim());
+  const builtInForDraft = draft && prices.find((p) => p.is_built_in && p.provider_name === draft.provider && p.model_name === draft.model.trim());
   const droppingTier = Boolean(builtInForDraft?.context_threshold_tokens && draft?.threshold === '');
 
   const tableData = useMemo(
@@ -522,15 +517,15 @@ const ModelPricingTab = ({ stickyTable = false }) => {
 
             {isNew && (
               <>
-                <Input
+                <Select
+                  id='pricing-provider-select'
                   label='Provider'
                   size='sm'
-                  value={draft.provider}
+                  options={PRICEABLE_PROVIDERS}
+                  value={draft.provider || null}
                   onChange={(v) => setDraft({ ...draft, provider: v })}
-                  placeholder='e.g. custom'
-                  help={`Must match the provider shown on your usage rows. AI Gateway models (custom / Vertex-OpenAI) use "vllm" and are priced by model id. One of: ${PRICEABLE_PROVIDERS.join(
-                    ', '
-                  )}.`}
+                  placeholder='Select a provider'
+                  help='Must match the provider shown on your usage rows. AI Gateway models (custom / Vertex-OpenAI) use "vllm" and are priced by model id.'
                 />
                 <Input
                   label='Model'

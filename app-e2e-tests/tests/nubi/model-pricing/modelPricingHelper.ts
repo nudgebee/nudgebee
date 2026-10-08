@@ -60,11 +60,24 @@ export interface RateDraft {
   provider?: string;
 }
 
+// Sets the provider in the open Add price dialog. It is picked from a list
+// since #40551; an environment still on the earlier text field gets the value
+// typed instead, so the same helper serves both.
+export async function chooseProvider(locators: ModelPricingLocators, provider: string): Promise<void> {
+  if ((await locators.providerSelect.count()) === 0) {
+    await locators.providerInput.fill(provider);
+    return;
+  }
+  await locators.providerSelect.click();
+  await locators.filterOption(provider).click();
+  await expect(locators.providerSelect).toContainText(provider, { timeout: 10000 });
+}
+
 // Opens the Add price dialog and fills the identity and rate fields.
 export async function fillNewRateForm(locators: ModelPricingLocators, draft: RateDraft): Promise<void> {
   await locators.addPriceBtn.click();
   await locators.modelInput.waitFor({ state: "visible", timeout: 15000 });
-  await locators.providerInput.fill(draft.provider ?? FIXTURE_PROVIDER);
+  await chooseProvider(locators, draft.provider ?? FIXTURE_PROVIDER);
   await locators.modelInput.fill(draft.model);
   await locators.inputRateInput.fill(draft.input);
   await locators.outputRateInput.fill(draft.output);
