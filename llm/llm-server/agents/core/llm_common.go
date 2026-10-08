@@ -3349,6 +3349,20 @@ func isQuotaError(err error) bool {
 		strings.Contains(errMsg, "resource exhausted")
 }
 
+// isOutOfCreditError matches provider billing exhaustion (Anthropic, OpenAI, OpenRouter wording).
+func isOutOfCreditError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := strings.ToLower(safeError(err))
+	for _, p := range []string{"credit balance is too low", "no credits remaining", "more credits", "available credits", "insufficient_quota"} {
+		if strings.Contains(errMsg, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // isTransientError checks if the error is temporary and might succeed on retry
 // This includes network issues, timeouts, and temporary server errors
 func isTransientError(err error) bool {
@@ -3529,9 +3543,13 @@ func classifyUserFacingLLMError(err error) error {
 		return ErrLLMRequestTooLarge
 	case errors.Is(err, ErrLLMServiceUnavailable):
 		return ErrLLMServiceUnavailable
+	case errors.Is(err, ErrLLMOutOfCredit):
+		return ErrLLMOutOfCredit
 	}
 
 	switch {
+	case isOutOfCreditError(err): // before quota: OpenAI sends it as a 429
+		return ErrLLMOutOfCredit
 	case isQuotaError(err):
 		// Specialised by which limit the provider named, so a daily cap isn't
 		// answered with "wait a moment". Falls back to the plain sentinel when

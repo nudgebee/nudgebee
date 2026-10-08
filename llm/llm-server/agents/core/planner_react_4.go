@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -734,6 +735,10 @@ func containsActionGrammar(text string) bool {
 // "call:default_api:qa_browser_click{element:link Troubleshoot,...}".
 const geminiTextToolCallMarker = "call:default_api:"
 
+// hermesToolCallMarker opens a Hermes-template call (Qwen, most open-weight models); vLLM
+// leaves a fenced or malformed body as text #39704.
+const hermesToolCallMarker = "<tool_call>"
+
 // errReact4TextToolCall marks a turn whose text carries a tool call that was
 // never dispatched. Plan re-prompts once on it before surfacing the wrapped
 // ErrParseFailure to the executor.
@@ -752,11 +757,13 @@ const textToolCallLogBytes = 300
 // "<update_notebook>...</update_notebook>", Gemini's
 // "call:default_api:<tool>{...}" — so instead of one matcher per shape this
 // treats any registered tool name used as a tag or followed directly by call
-// syntax ("name{", "name(") as a call. The Gemini marker matches on its own,
-// since the leaked name may not be a registered tool. A bare mention of a tool
-// name in prose ("I used update_notebook to...") is not a call.
+// syntax ("name{", "name(") as a call. The Gemini/Hermes markers & JSON call
+// objects match on their own, since the leaked name may not be a registered
+// tool. A bare mention of a tool name in prose ("I used update_notebook to...")
+// is not a call.
 func containsTextToolCall(text string, tools []toolcore.NBTool) bool {
-	if containsActionGrammar(text) || strings.Contains(text, geminiTextToolCallMarker) {
+	if containsActionGrammar(text) || strings.Contains(text, geminiTextToolCallMarker) ||
+		strings.Contains(text, hermesToolCallMarker) || containsJSONToolCall(text) {
 		return true
 	}
 	for _, tool := range tools {
@@ -791,6 +798,104 @@ func containsCallSyntax(text, name string) bool {
 		}
 		offset = start + 1
 	}
+}
+
+// Keys of a JSON-serialized tool call across model families: {<name key>: "<tool>", <arg key>: {...}}.
+var (
+	jsonToolNameKeys = []string{"name", "tool", "tool_name", "action", "function"}
+	jsonToolArgKeys  = []string{"arguments", "args", "parameters", "input", "tool_input", "action_input"}
+)
+
+// containsJSONToolCall: a JSON object at any depth with a string name key & object args, any
+// key order, any registered-or-not tool (#39704). Non-object args (quoted data) & JSON Schema
+// args (a tool definition shown in an answer) don't count.
+func containsJSONToolCall(text string) bool {
+	return len(jsonToolCallSpans(text)) > 0
+}
+
+// jsonToolCallSpans returns the [start, end) of each top-level JSON value in text holding a call.
+func jsonToolCallSpans(text string) [][2]int {
+	var spans [][2]int
+	// ponytail: retries Decode at each '{' after a failed parse, so a long
+	// malformed answer costs O(n*braces); only runs on no-tool-call turns.
+	for i := strings.IndexByte(text, '{'); i >= 0; {
+		dec := json.NewDecoder(strings.NewReader(text[i:]))
+		var v any
+		next := i + 1
+		if dec.Decode(&v) == nil {
+			next = i + int(dec.InputOffset())
+			if isJSONToolCall(v) {
+				spans = append(spans, [2]int{i, next})
+			}
+		}
+		j := strings.IndexByte(text[next:], '{')
+		if j < 0 {
+			return spans
+		}
+		i = next + j
+	}
+	return spans
+}
+
+// What a removed call leaves behind: a Hermes block, an empty fence, a "metrics = json.dumps()" line.
+var (
+	hermesBlockRe   = regexp.MustCompile(`(?s)<tool_call>.*?(</tool_call>|$)`)
+	emptyFenceRe    = regexp.MustCompile("(?m)^[ \t]*```[A-Za-z]*\\s*```[ \t]*$")
+	callResidueLine = regexp.MustCompile(`(?m)^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*(json\.(dumps|loads)\(['"]?['"]?\)?)?[ \t]*$`)
+)
+
+// stripTextToolCalls removes Hermes blocks & JSON call objects from text, keeping the prose around them.
+func stripTextToolCalls(text string) string {
+	text = hermesBlockRe.ReplaceAllString(text, "")
+	var b strings.Builder
+	last := 0
+	for _, span := range jsonToolCallSpans(text) {
+		b.WriteString(text[last:span[0]])
+		last = span[1]
+	}
+	b.WriteString(text[last:])
+	text = emptyFenceRe.ReplaceAllString(b.String(), "")
+	text = callResidueLine.ReplaceAllString(text, "")
+	return strings.TrimSpace(text)
+}
+
+func isJSONToolCall(v any) bool {
+	switch v := v.(type) {
+	case map[string]any:
+		if hasJSONKey(v, jsonToolNameKeys, func(x any) bool { s, ok := x.(string); return ok && s != "" }) &&
+			hasJSONKey(v, jsonToolArgKeys, func(x any) bool { m, ok := x.(map[string]any); return ok && !isJSONSchemaObject(m) }) {
+			return true
+		}
+		for _, child := range v {
+			if isJSONToolCall(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if isJSONToolCall(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isJSONSchemaObject reports whether m is an object schema, as in OpenAI or
+// Gemini function definitions (Gemini spells the type "OBJECT").
+func isJSONSchemaObject(m map[string]any) bool {
+	typ, _ := m["type"].(string)
+	_, hasProps := m["properties"].(map[string]any)
+	return strings.EqualFold(typ, "object") && hasProps
+}
+
+func hasJSONKey(m map[string]any, keys []string, ok func(any) bool) bool {
+	for _, k := range keys {
+		if v, found := m[k]; found && ok(v) {
+			return true
+		}
+	}
+	return false
 }
 
 func isIdentByte(c byte) bool {
@@ -1541,6 +1646,11 @@ func (o *NBReActPlanner4) renderTurn(steps []NBAgentPlannerToolActionStep, group
 		replayInput := step.Action.NativeToolInput
 		if replayInput == "" {
 			replayInput = step.Action.ToolInput
+		}
+		// One non-JSON replayed call 400s the whole request (vLLM "Extra data") -> every later turn
+		// fails #39704. doAction never ran such a call, and its observation says so.
+		if nativeArgumentsError(replayInput) != nil {
+			replayInput = "{}"
 		}
 		assistantParts = append(assistantParts, llms.ToolCall{
 			ID:   step.Action.ToolID,

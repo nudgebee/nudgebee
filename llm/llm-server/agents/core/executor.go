@@ -107,8 +107,27 @@ func sanitizeErrorForUser(err error) string {
 		}
 	}
 
+	// Planner errors carry internals ("react4: llm generate: ...") #39704. The classifier
+	// matches substrings ("connection", "500"), so only provider errors reach it.
+	switch {
+	case errors.Is(err, ErrParseFailure) || errors.Is(err, errSummaryTextToolCall):
+		return runStoppedEarlyMessage
+	case errors.Is(err, errLlmUnableToGenerate) || errors.Is(err, ErrLLMRateLimited) ||
+		errors.Is(err, ErrLLMRequestTooLarge) || errors.Is(err, ErrLLMServiceUnavailable):
+		if safe := classifyUserFacingLLMError(err); safe != nil {
+			return safe.Error()
+		}
+		return providerErrorMessage
+	}
+
 	return errStr
 }
+
+// User-facing text: unusable model reply / unclassified provider error.
+const (
+	runStoppedEarlyMessage = "The investigation stopped before it finished because the AI model returned a reply that could not be used. Please try again."
+	providerErrorMessage   = "The investigation stopped because the AI service returned an error. Please try again, or contact your administrator if it keeps happening."
+)
 
 // applyAgentModelTier returns a context whose ContextKeyModelTier reflects the
 // agent's declared model category — defaulting to Retrieval when the agent

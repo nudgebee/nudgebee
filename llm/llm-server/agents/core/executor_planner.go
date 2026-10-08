@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -808,12 +809,32 @@ func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
 		return nil, err
 	}
 	if response != nil && len(response.Choices) > 0 {
-		return map[string]any{
-			"output": sanitizeSummaryOutput(response.Choices[0].Content),
-		}, nil
+		output := sanitizeSummaryOutput(response.Choices[0].Content)
+		// Last answer, no retry behind it #39704: drop text tool calls & keep the answer around them;
+		// a summary that is only a call would ship undone work as the answer, so it fails.
+		if containsTextToolCall(output, nil) {
+			rest := stripTextToolCalls(output)
+			if len(rest) < minSummaryAnswerBytes || containsTextToolCall(rest, nil) {
+				e.ctx.GetLogger().Warn("plannerexecutor: summary wrote a tool call as text; failing the run instead of returning it",
+					"text", common.TruncateHead(output, textToolCallLogBytes))
+				return nil, errSummaryTextToolCall
+			}
+			e.ctx.GetLogger().Warn("plannerexecutor: summary held a tool call written as text; returning the answer without it",
+				"removedBytes", len(output)-len(rest))
+			output = rest
+		}
+		return map[string]any{"output": output}, nil
 	}
 	return nil, nil
 }
+
+// ponytail: length heuristic for "a real answer is left"; on test, call-only summaries leave
+// <= 93 bytes & answers around a call >= 675. Revisit if a short real answer is failed.
+const minSummaryAnswerBytes = 200
+
+// errSummaryTextToolCall: the fallback summary was a text tool call. Users see
+// runStoppedEarlyMessage (sanitizeErrorForUser); this text is for logs.
+var errSummaryTextToolCall = errors.New("the investigation stopped before it finished: the model described its next steps instead of running them. Please retry")
 
 // evaluateConditions checks if an action should be executed based on its conditions.
 // It returns true if the action should be executed, false otherwise.
@@ -2250,6 +2271,17 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		return NBAgentPlannerToolActionStep{
 			Action:      action,
 			Observation: fmt.Sprintf("Invalid tool name '%s'. Available tools: %s", sanitizedName, strings.Join(availableTools, ", ")),
+			Status:      ToolStatusFailure,
+		}, nil, nil
+	}
+
+	// --- Guard: native args that aren't a JSON object don't run. Else callNbTool passes the raw
+	// text as the command & an optional-only tool "succeeds" #39704. react_3 (no native args) skipped.
+	if err := nativeArgumentsError(action.NativeToolInput); err != nil {
+		e.ctx.GetLogger().Warn("plannerexecutor: native tool arguments are not a JSON object, not running the tool", "tool", action.Tool, "toolId", action.ToolID, "error", err)
+		return NBAgentPlannerToolActionStep{
+			Action:      action,
+			Observation: fmt.Sprintf("%s did not run: the arguments of this call were not a valid JSON object (%v). Call it again with complete JSON arguments if you still need it.", action.Tool, err),
 			Status:      ToolStatusFailure,
 		}, nil, nil
 	}
@@ -4419,6 +4451,22 @@ func inputsToString(inputValues map[string]any) (map[string]string, error) {
 	}
 
 	return inputs, nil
+}
+
+// nativeArgumentsError: nil for a JSON object or empty args (no-arg call). "null" is refused:
+// it unmarshals into a nil map without error -> the tool would get the command "null".
+func nativeArgumentsError(args string) error {
+	if strings.TrimSpace(args) == "" {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(args), &obj); err != nil {
+		return err
+	}
+	if obj == nil {
+		return errors.New("arguments are null")
+	}
+	return nil
 }
 
 // validateToolInput checks that every required field in the tool's InputSchema is

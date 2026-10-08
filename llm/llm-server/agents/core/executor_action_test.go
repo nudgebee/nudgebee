@@ -92,3 +92,64 @@ func TestDoActionToolNotFound(t *testing.T) {
 		})
 	}
 }
+
+// runCountingTool counts Calls, so a test can tell "ran" from "refused".
+type runCountingTool struct {
+	MockContextCapturingTool
+	calls int
+}
+
+func (c *runCountingTool) Call(_ toolcore.NbToolContext, _ toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
+	c.calls++
+	return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusSuccess, Data: "ran"}, nil
+}
+
+// Native args that aren't a JSON object must not run #39704. Before, the raw text became the
+// command & this optional-only tool (empty schema) "succeeded".
+func TestDoAction_MalformedNativeArgumentsDoNotRun(t *testing.T) {
+	request := NBAgentRequest{AccountId: "cccccccc-cccc-cccc-cccc-cccccccccccc", ConversationId: "conv-1", MessageId: "msg-1"}
+	run := func(t *testing.T, nativeArgs string) (NBAgentPlannerToolActionStep, int) {
+		t.Helper()
+		tool := &runCountingTool{MockContextCapturingTool: MockContextCapturingTool{NameVal: "logs"}}
+		tools := []toolcore.NBTool{tool}
+		executor := newPlannerExecutor(security.NewRequestContextForSuperAdmin(), &mockNBAgentPlanner{}, &MockAgent{SupportedTools: tools}, request, 3)
+		executor.toolCallbackHandler = nil
+		step, finish, err := executor.doAction(getNameToTool(tools), NBAgentPlannerToolAction{
+			ToolID: "t1", Tool: "logs", ToolInput: nativeArgs, NativeToolInput: nativeArgs,
+		}, "")
+		assert.NoError(t, err)
+		assert.Nil(t, finish)
+		return step, tool.calls
+	}
+
+	for name, args := range map[string]string{
+		"truncated":         `{"query": "error`,
+		"lost value":        `{"query": "error", "_memory_refs": }`,
+		"two extra closers": `{"query": "error"}}}`,
+		"non-brace suffix":  `{"query": "error"}]`,
+		"broken escape":     `{"query": "a\q"}`,
+		"unquoted key":      `{query: "error"}`,
+		"not an object":     `["error"]`,
+		"plain text":        `error in checkout`,
+		"null":              `null`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			step, calls := run(t, args)
+			assert.Zero(t, calls, "the tool must not run")
+			assert.Equal(t, ToolStatusFailure, step.Status)
+			assert.Contains(t, step.Observation, "logs did not run")
+			assert.Contains(t, step.Observation, "not a valid JSON object")
+		})
+	}
+
+	for name, args := range map[string]string{
+		"valid object": `{"query": "error"}`,
+		"no arguments": ``,
+	} {
+		t.Run(name, func(t *testing.T) {
+			step, calls := run(t, args)
+			assert.Equal(t, 1, calls)
+			assert.Equal(t, ToolStatusSuccess, step.Status)
+		})
+	}
+}

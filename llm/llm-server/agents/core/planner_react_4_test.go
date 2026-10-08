@@ -753,6 +753,111 @@ func TestReAct4_ParseCompletion_ToolNameWithoutCallSyntaxStillAnswers(t *testing
 	}
 }
 
+// issue39704Plan is one copy of the block in issue39704Leak.
+const issue39704Plan = "<tool_call>\n```json\n[\n  {\n    \"action\": \"memory\",\n    \"args\": {\n      \"query\": \"llm-server OOM\"\n    }\n  },\n" +
+	"  {\n    \"action\": \"kubectl_execute\",\n    \"args\": {\n      \"command\": \"kubectl get pods -A | grep llm-server\"\n    }\n  },\n" +
+	"  {\n    \"action\": \"events\",\n    \"args\": {\n      \"query\": \"llm-server OOM\"\n    }\n  }\n]\n```"
+
+// issue39704Leak: the stored test reply (Qwen3.6, message 60277fdf), <tool_call> + fenced JSON plan
+// x2. It came from the summary fallback after a 400 "Extra data"; the planner can emit it too.
+var issue39704Leak = issue39704Plan + "\n" + issue39704Plan
+
+// #39704: a tool plan written as text — with or without Qwen's <tool_call>
+// delimiter, and whether or not the named tools were preloaded — is a retryable
+// text tool call, never the final answer.
+func TestReAct4_ParseCompletion_TextToolPlanIsParseFailure(t *testing.T) {
+	kubectl := []toolcore.NBTool{&stubTool{name: "kubectl_execute"}}
+	for name, tc := range map[string]struct {
+		raw   string
+		tools []toolcore.NBTool
+	}{
+		"observed reply, tool preloaded":     {issue39704Leak, kubectl},
+		"observed reply, no tools preloaded": {issue39704Leak, nil},
+		"closed tool_call tag":               {`<tool_call>{"name": "kubectl_execute", "arguments": {"command": "kubectl get pods"}}</tool_call>`, nil},
+		"bare JSON plan":                     {`[{"action":"kubectl_execute","args":{"command":"kubectl get pods -A"}}]`, kubectl},
+		"name/arguments JSON":                {`{"name": "kubectl_execute", "arguments": {"command": "kubectl get pods"}}`, kubectl},
+		"tool not loaded":                    {`{"name": "workflow_dry_run", "arguments": {"id": "a1"}}`, kubectl},
+		"arguments first":                    {`{"arguments": {"command": "kubectl get pods"}, "name": "kubectl_execute"}`, nil},
+		"extra fields between":               {`{"action":"kubectl_execute","description":"list pods","id":1,"args":{"command":"kubectl get pods"}}`, nil},
+		"nested arguments":                   {`{"type":"function","name":"logs","parameters":{"command":{"type":"string","value":"logs for pod x"}}}`, nil},
+		"call nested in prose JSON":          {"Next step:\n```json\n{\"plan\": [{\"tool\": \"metrics\", \"parameters\": {\"q\": \"cpu\"}}]}\n```", nil},
+		"llama assignment":                   {`kubectl_execute = {"type": "function", "name": "kubectl_execute", "parameters": {"command": "kubectl top nodes"}}`, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			actions, finish, err := (&NBReActPlanner4{tools: tc.tools}).parseCompletion(&llms.ContentChoice{Content: tc.raw})
+			assert.ErrorIs(t, err, errReact4TextToolCall)
+			assert.ErrorIs(t, err, ErrParseFailure)
+			assert.Nil(t, actions)
+			assert.Nil(t, finish, "a plan must NOT become the final answer")
+		})
+	}
+}
+
+// Real answers that quote a tool name or carry JSON data still answer.
+func TestReAct4_ParseCompletion_AnswerQuotingToolNameStillAnswers(t *testing.T) {
+	o := &NBReActPlanner4{tools: []toolcore.NBTool{&stubTool{name: "kubectl_execute"}, &stubTool{name: "metrics"}}}
+	for _, raw := range []string{
+		`The exporter sidecar is {"name": "metrics", "args": ["--port=9100"]}.`,
+		`The log line was {"msg":"tool execution time","tool":"shell_execute","time":0.1,"input":"{\"command\":\"ls\"}"}.`,
+		`Values: {"name": "llm-server", "resources": {"limits": {"memory": "917Mi"}}}`,
+		`Unbalanced {"name": "x", "args": {"a": 1} and more text`,
+		"I ran `kubectl_execute` and llm-server was OOMKilled at 10:42.",
+		`The pod status was {"reason": "OOMKilled", "exitCode": 137}.`,
+		`The tool "kubectl_execute" returned no pods.`,
+		// Tool definitions share a call's name + parameters shape; a schema is not a call.
+		`Defined tools: [{"type":"function","function":{"name":"kubectl_execute","description":"Run kubectl","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}}]`,
+		`Gemini declaration: {"name": "metrics", "parameters": {"type": "OBJECT", "properties": {"q": {"type": "STRING"}}}}`,
+		"```json\n{\"tool\": \"logs\", \"input\": {\"type\": \"object\", \"properties\": {}}}\n```",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			_, finish, err := o.parseCompletion(&llms.ContentChoice{Content: raw})
+			assert.NoError(t, err)
+			assert.NotNil(t, finish)
+		})
+	}
+}
+
+// End to end through Plan: the #39704 reply is re-prompted once, and the
+// model's native call on the retry is what gets dispatched.
+func TestReAct4_Plan_TextToolPlanRetriesIntoNativeCall(t *testing.T) {
+	model := &critiqueRecordingModel{replies: []recordedReply{
+		{content: issue39704Leak},
+		{content: "", toolCall: true}, // native metrics call
+	}}
+	withFakeLLMModel(t, model)
+	ctx := llmOverrideContext()
+	p := &NBReActPlanner4{ctx: ctx, request: NBAgentRequest{Query: "investigate oom on llm-server"}, nbAgent: notebookOptOutAgent{},
+		tools: []toolcore.NBTool{&stubTool{name: "metrics"}, &stubTool{name: "kubectl_execute"}}}
+
+	actions, finish, err := p.Plan(ctx.GetContext(), nil, "investigate oom on llm-server")
+
+	require.NoError(t, err)
+	require.Nil(t, finish, "the leaked plan must not be returned as the answer")
+	require.Len(t, actions, 1)
+	require.Equal(t, "metrics", actions[0].Tool)
+	requests := model.requests()
+	require.Len(t, requests, 2, "one re-prompt")
+	retry := requests[1]
+	require.Equal(t, issue39704Leak, messageText(retry[len(retry)-2]), "the leaked text is replayed")
+	require.Contains(t, messageText(retry[len(retry)-1]), "native function calling")
+}
+
+// Leak, re-prompt, leak again: Plan gives up with a parse failure and never
+// returns the second leak as the answer, so it cannot reach the user as one.
+func TestReAct4_Plan_RepeatedTextToolPlanIsParseFailure(t *testing.T) {
+	model := &critiqueRecordingModel{replies: []recordedReply{{content: issue39704Leak}, {content: issue39704Leak}}}
+	withFakeLLMModel(t, model)
+	ctx := llmOverrideContext()
+	p := &NBReActPlanner4{ctx: ctx, request: NBAgentRequest{Query: "investigate oom on llm-server"}, nbAgent: notebookOptOutAgent{}}
+
+	actions, finish, err := p.Plan(ctx.GetContext(), nil, "investigate oom on llm-server")
+
+	require.ErrorIs(t, err, ErrParseFailure)
+	require.Nil(t, finish)
+	require.Empty(t, actions)
+	require.Len(t, model.requests(), 2, "exactly one re-prompt")
+}
+
 // The re-prompt replays the leaked text as the assistant turn and follows it
 // with the correction, so the model sees exactly what it did wrong.
 func TestReAct4_TextToolCallRetryMessages(t *testing.T) {
@@ -1055,4 +1160,34 @@ func TestReAct4_ResolveAgentContext_DefaultsWithoutCacheProvider(t *testing.T) {
 	agentCtx := planner.resolveAgentContext()
 	assert.NotNil(t, agentCtx)
 	assert.Equal(t, CacheScopeConversation, agentCtx.GetContext().Value(ContextKeyCacheScope))
+}
+
+// #39704 root cause: non-JSON args replayed as-is -> vLLM 400s every later request.
+// Valid args still replay byte-for-byte (thought signatures).
+func TestReAct4_RenderSteps_InvalidArgumentsReplayAsEmptyObject(t *testing.T) {
+	o := &NBReActPlanner4{}
+	for name, tc := range map[string]struct{ native, want string }{
+		"stray closing brace": {`{"query": "OOM kill investigation Kubernetes pod memory"}}`, `{}`},
+		"lost value":          {`{"command": "x", "_memory_refs": }`, `{}`},
+		"truncated":           {`{"query": "oom`, `{}`},
+		"not an object":       {`["oom"]`, `{}`},
+		"null":                {`null`, `{}`},
+		"valid kept verbatim": {`{"query": "oom",  "k": 1}`, `{"query": "oom",  "k": 1}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			steps := []NBAgentPlannerToolActionStep{{
+				Action:      NBAgentPlannerToolAction{Tool: "search_skills", ToolInput: tc.native, NativeToolInput: tc.native, ToolID: "c1"},
+				Observation: "search_skills did not run: the arguments of this call were not a valid JSON object",
+			}}
+			msgs := o.renderStepsToMessages(steps)
+			var call llms.ToolCall
+			for _, p := range msgs[0].Parts {
+				if c, ok := p.(llms.ToolCall); ok {
+					call = c
+				}
+			}
+			require.NotNil(t, call.FunctionCall)
+			assert.Equal(t, tc.want, call.FunctionCall.Arguments)
+		})
+	}
 }
