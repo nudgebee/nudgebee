@@ -4166,6 +4166,10 @@ var table_metadata = map[string]TableDefinition{
 			if podNamespaceFilter != "" {
 				joinKeyword = "JOIN"
 			}
+			// is_active: the finding's image is still run by an active pod. The pod
+			// subquery holds active pods only, so "it joined" is the whole test. The
+			// column was declared below without being selected here, so any request
+			// naming it failed with `column "is_active" does not exist`.
 			def := `
 		(
 			SELECT
@@ -4190,6 +4194,7 @@ var table_metadata = map[string]TableDefinition{
 				cr.workload_name,
 				cr.workload_type,
 				cr.namespace,
+				(cr.image IS NOT NULL)                  AS is_active,
 				(` + VulnerabilityRecommendationSQL("rec", "v.") + `)::varchar    AS recommendation
 			FROM recommendation rec
 			LEFT JOIN vulnerabilities v ON v.id = rec.vulnerability_id
