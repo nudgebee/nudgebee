@@ -581,7 +581,7 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 		if err := persistRemediationPlan(ctx, request.AccountId, request.EventId, plan, trace); err != nil {
 			return err
 		}
-		appendPlanToConversation(ctx, conversationId, request, sc.GetUserId(), plan)
+		appendPlanToConversation(ctx, conversationId, request, plan)
 		return nil
 	})
 }
@@ -589,12 +589,13 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 // appendPlanToConversation adds the plan as the event conversation's closing message, after the
 // summary / RCA / log-analysis ones, so Ask Nudgebee shows it too. Best effort: the plan is already
 // stored, and the investigation page does not read this message.
-func appendPlanToConversation(ctx *security.RequestContext, conversationId string, request RemediationGenerateRequest, userId string, plan RemediationPlan) {
+func appendPlanToConversation(ctx *security.RequestContext, conversationId string, request RemediationGenerateRequest, plan RemediationPlan) {
 	dao := agentcore.GetConversationDao()
 	if conversationId == "" || dao == nil {
 		return
 	}
-	_, err := dao.SaveConversationMessage("", conversationId, request.AccountId, userId, agentcore.MessageRoleHuman, agentcore.MessageTypeGeneration,
+	// No user id: nobody typed this message, and the investigation messages beside it carry none either.
+	_, err := dao.SaveConversationMessage("", conversationId, request.AccountId, "", agentcore.MessageRoleHuman, agentcore.MessageTypeGeneration,
 		"Suggest a remediation for the event with id "+request.EventId, planMarkdown(plan), remediationPlannerAgent, uuid.Nil, nil, "", "", "", agentcore.ConversationStatusCompleted)
 	if err != nil {
 		ctx.GetLogger().Warn("remediation_generate: plan not appended to conversation", "conversation_id", conversationId, "error", err)
