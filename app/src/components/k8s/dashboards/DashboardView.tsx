@@ -787,8 +787,11 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
               value={accountFilter}
               options={accountFilterOptions}
               searchPlaceholder='Search accounts…'
-              // Multi-select hands back the chosen option objects; an empty list is the filter cleared.
-              onSelect={(_e: unknown, next: { value: string }[]) => setAccountFilter((next || []).map((o) => o.value))}
+              // Multi-select hands back what was already picked as it was given — ids here — plus the
+              // option just ticked; an empty list is the filter cleared.
+              onSelect={(_e: unknown, next: (string | { value: string })[]) =>
+                setAccountFilter((next || []).map((o) => (typeof o === 'string' ? o : o.value)))
+              }
             />
           )}
           <CustomDateTimeRangePicker
