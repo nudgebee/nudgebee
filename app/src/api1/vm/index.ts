@@ -16,6 +16,7 @@
  * queries here are inert until that lands.
  */
 import { gqlStringify, queryGraphQL } from '@lib/HttpService';
+import { joinFleetMetrics } from '@components/vm/vmMetricsData';
 import apiHome from '@api1/home';
 import k8sApi from '@api1/kubernetes';
 import ticketsApi from '@api1/tickets';
@@ -470,7 +471,147 @@ function queryGraphQLCached(query: string, operationName: string, variables: Rec
   );
 }
 
+/** Utilisation keys the VM metrics panel asks for (see services/observability/prometheus_vm_queries.go). */
+export const VM_METRIC_KEYS = [
+  'cpu_usage_line',
+  'cpu_total',
+  'memory_usage_line',
+  'mem_total',
+  'disk_read_bytes',
+  'disk_write_bytes',
+  'disk_used',
+  'disk_total',
+  'vm_service_cpu_usage',
+  'vm_service_memory_usage',
+  'vm_service_disk_used',
+] as const;
+
+/** Fleet-wide keys behind the VM list's CPU and memory gauges (see prometheus_vm_queries.go). */
+export const VM_FLEET_METRIC_KEYS = [
+  'vm_fleet_cpu_used',
+  'vm_fleet_cpu_cores',
+  'vm_fleet_mem_used',
+  'vm_fleet_mem_total',
+  'vm_fleet_identity',
+  'vm_fleet_hostname',
+] as const;
+
+/** Current load of one VM, as a share of what it has. Undefined fields were not reported. */
+export interface VmFleetMetric {
+  cpuPct?: number;
+  memPct?: number;
+}
+
+export interface VmMetricSeries {
+  /** Labels of the series; per-service keys carry `container_id`. */
+  metric: Record<string, string>;
+  /** Epoch seconds. */
+  timestamps: number[];
+  values: number[];
+}
+
+export interface VmMetricResult {
+  key: string;
+  series: VmMetricSeries[];
+  /** Why the key has no data (no provider, unsupported key, query error). */
+  reason?: string;
+}
+
+const METRICS_QUERY_UTILISATION = `
+  query MetricsQueryUtilisation($jsonFilter: jsonb!, $accountId: String!, $startTime: Float!, $endTime: Float!) {
+    metrics_aggregate_utilisation(request: {account_id: $accountId, request: $jsonFilter, end_time: $endTime, start_time: $startTime}) {
+      results
+    }
+  }
+`;
+
+/** The backend returns series values as strings in some providers; normalise to numbers and drop non-finite points. */
+export function parseVmMetricResults(raw: any[]): VmMetricResult[] {
+  return (Array.isArray(raw) ? raw : []).map((r: any) => {
+    const series: VmMetricSeries[] = (r?.payload || []).map((p: any) => {
+      const timestamps: number[] = [];
+      const values: number[] = [];
+      (p?.timestamps || []).forEach((t: any, i: number) => {
+        const v = Number(p?.values?.[i]);
+        // Number(null) and Number('') are 0, which would pass as an epoch timestamp.
+        const ts = t === null || t === undefined || t === '' ? NaN : Number(t);
+        // A point needs both: a bad timestamp breaks the chart axis as surely as a bad value.
+        if (Number.isFinite(v) && Number.isFinite(ts)) {
+          timestamps.push(ts);
+          values.push(v);
+        }
+      });
+      return { metric: p?.metric || {}, timestamps, values };
+    });
+    return { key: r?.query_key, series, reason: r?.error || r?.note || undefined };
+  });
+}
+
 const apiVm = {
+  /**
+   * CPU, memory, disk and per-service metrics for one VM, read from the account's
+   * metrics provider. The VM is identified by whichever of its cloud instance id,
+   * private IP and hostname we know; the backend resolves the node-agent `instance`
+   * label from them.
+   */
+  async getVmMetrics({
+    accountId,
+    vm,
+    startDate,
+    endDate,
+    metrics = [...VM_METRIC_KEYS],
+  }: {
+    accountId: string;
+    vm: Pick<VmResource, 'name' | 'resourse_id' | 'meta'>;
+    /** Epoch ms. */
+    startDate: number;
+    endDate: number;
+    metrics?: string[];
+  }): Promise<VmMetricResult[]> {
+    const response = await queryGraphQL(METRICS_QUERY_UTILISATION, 'MetricsQueryUtilisation', {
+      accountId,
+      startTime: startDate,
+      endTime: endDate,
+      jsonFilter: {
+        kind: 'vm',
+        vm_instance_id: vm.resourse_id && !vm.resourse_id.startsWith('vm-') ? vm.resourse_id : undefined,
+        vm_ip: vm.meta?.private_ip || vm.meta?.PrivateIpAddress,
+        vm_hostname: vm.name,
+        metrics,
+        instant: false,
+      },
+    });
+    const errors = response?.data?.errors;
+    if (errors?.length) throw new Error(errors[0]?.message || 'Failed to load VM metrics');
+    return parseVmMetricResults(response?.data?.data?.metrics_aggregate_utilisation?.results);
+  },
+
+  /**
+   * CPU and memory use of every VM in `vms`, from one batched call: the backend answers per
+   * node-agent `instance` for the whole store, and the VMs are matched to those instances
+   * here by cloud instance id, then private IP, then hostname. A VM with no match is absent
+   * from the result (no agent, or one that stopped reporting).
+   */
+  async getVmFleetMetrics({
+    accountId,
+    vms,
+  }: {
+    accountId: string;
+    vms: Array<Pick<VmResource, 'id' | 'name' | 'resourse_id' | 'meta'>>;
+  }): Promise<Record<string, VmFleetMetric>> {
+    if (!vms.length) return {};
+    const end = Date.now();
+    const response = await queryGraphQL(METRICS_QUERY_UTILISATION, 'MetricsQueryUtilisation', {
+      accountId,
+      startTime: end - 5 * 60 * 1000,
+      endTime: end,
+      jsonFilter: { kind: 'vm_fleet', metrics: [...VM_FLEET_METRIC_KEYS], instant: true },
+    });
+    const errors = response?.data?.errors;
+    if (errors?.length) throw new Error(errors[0]?.message || 'Failed to load VM metrics');
+    return joinFleetMetrics(parseVmMetricResults(response?.data?.data?.metrics_aggregate_utilisation?.results), vms);
+  },
+
   /** Self-hosted accounts, i.e. everything the /vm page can be scoped to. */
   async getSelfHostedAccounts(refresh = false) {
     const accounts = await apiHome.getCloudAccounts('SelfHosted', refresh);

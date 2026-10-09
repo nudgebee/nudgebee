@@ -10,15 +10,17 @@ import Datetime from '@shared/format/Datetime';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { usePagination } from '@hooks/usePagination';
 import { hasWriteAccess } from '@lib/auth';
-import apiVm, { VmResource, VmScanStatus } from '@api1/vm';
+import apiVm, { VmFleetMetric, VmResource, VmScanStatus } from '@api1/vm';
 import { CellText, ScanStatusIndicator, SeverityCounts, useLatestRequest } from './common';
 import ScanVmDialog from './ScanVmDialog';
 import ScanAccountDialog from './ScanAccountDialog';
+import VmMetricsDialog from './VmMetricsDialog';
+import { VmMetricsCell } from './VmMetricsGauges';
 import VmPackages from './VmPackages';
 import VmVulnerabilities from './VmVulnerabilities';
 import { ds } from '@utils/colors';
 
-const HEADERS = ['Name', 'Host / Resource ID', 'Operating System', 'Status', 'Packages', 'Open Vulnerabilities', 'Last Scan', ''];
+const HEADERS = ['Name', 'Host / Resource ID', 'Operating System', 'Status', 'Metrics', 'Packages', 'Open Vulnerabilities', 'Last Scan', ''];
 
 const TABLE_ID = 'VM_INVENTORY_TABLE';
 
@@ -58,10 +60,14 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
   const [scanTarget, setScanTarget] = useState<VmResource | null>(null);
   const [showAccountScan, setShowAccountScan] = useState(false);
   const [scopedResourceIds, setScopedResourceIds] = useState<string[] | null>(null);
+  const [fleetMetrics, setFleetMetrics] = useState<Record<string, VmFleetMetric>>({});
+  const [fleetLoading, setFleetLoading] = useState(false);
+  const [metricsTarget, setMetricsTarget] = useState<VmResource | null>(null);
   const { page, rowsPerPage, changePage, setPage } = usePagination();
   const beginVmsRequest = useLatestRequest();
   const beginEnrichmentRequest = useLatestRequest();
   const beginScopeRequest = useLatestRequest();
+  const beginFleetRequest = useLatestRequest();
 
   const canScan = hasWriteAccess(accountId);
 
@@ -157,6 +163,30 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
     fetchEnrichment();
   }, [fetchEnrichment]);
 
+  // The gauges: one batched call for the VMs on screen, refreshed while the page is open.
+  // A failed refresh keeps the last gauges instead of blanking them: stale for a minute is
+  // more useful than empty because one query timed out.
+  useEffect(() => {
+    if (!accountId || !vms.length) {
+      setFleetMetrics({});
+      return undefined;
+    }
+    const load = () => {
+      const isLatest = beginFleetRequest();
+      setFleetLoading(true);
+      apiVm
+        .getVmFleetMetrics({ accountId, vms })
+        .then((metrics) => isLatest() && setFleetMetrics(metrics))
+        .catch((error) => console.error('Failed to load VM metrics:', error))
+        .finally(() => {
+          if (isLatest()) setFleetLoading(false);
+        });
+    };
+    load();
+    const interval = setInterval(load, 60 * 1000);
+    return () => clearInterval(interval);
+  }, [accountId, vms, beginFleetRequest]);
+
   // While any VM is mid-scan, poll so "Scanning…" resolves to a fresh Last
   // Scan time or "Scan failed" without a manual reload — the RPC only acks
   // the start (see #38466). Capped at scanTimeout (server-side) + a margin,
@@ -213,6 +243,7 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
       },
       { component: <CellText text={osByVm[vm.id]} /> },
       { component: <Label tone={statusTone(vm.status)} size='sm' text={vm.status || 'Unknown'} /> },
+      { component: <VmMetricsCell vmName={vm.name} metric={fleetMetrics[vm.id]} loading={fleetLoading} onOpen={() => setMetricsTarget(vm)} /> },
       { component: <CellText text={packages ? String(packages.count) : 'Not scanned'} /> },
       { component: <SeverityCounts counts={severities} /> },
       {
@@ -309,6 +340,7 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
         </ListingLayout.Body>
       </ListingLayout>
 
+      <VmMetricsDialog accountId={accountId} vm={metricsTarget} onClose={() => setMetricsTarget(null)} />
       <ScanVmDialog
         open={Boolean(scanTarget)}
         accountId={accountId}

@@ -73,6 +73,21 @@ const (
 	KeyDiskReadBytes      UtilisationKey = "disk_read_bytes"
 	KeyDiskWriteBytes     UtilisationKey = "disk_write_bytes"
 
+	// Self-hosted VM services: one series per service (node-agent `container_id`, e.g. /system.slice/ssh.service) on one VM.
+	KeyVMServiceCPUUsage    UtilisationKey = "vm_service_cpu_usage"
+	KeyVMServiceMemoryUsage UtilisationKey = "vm_service_memory_usage"
+	KeyVMServiceDiskUsed    UtilisationKey = "vm_service_disk_used"
+
+	// Self-hosted VM fleet: one series per node-agent `instance` across the whole store, so
+	// a list of VMs gets its CPU and memory gauges from a handful of queries, not one set
+	// per VM. The identity keys carry the labels that map an `instance` back to a VM.
+	KeyVMFleetCPUUsed  UtilisationKey = "vm_fleet_cpu_used"
+	KeyVMFleetCPUCores UtilisationKey = "vm_fleet_cpu_cores"
+	KeyVMFleetMemUsed  UtilisationKey = "vm_fleet_mem_used"
+	KeyVMFleetMemTotal UtilisationKey = "vm_fleet_mem_total"
+	KeyVMFleetIdentity UtilisationKey = "vm_fleet_identity"
+	KeyVMFleetHostname UtilisationKey = "vm_fleet_hostname"
+
 	// Network.
 	KeyNetworkReceivePacket         UtilisationKey = "network_receive_packet"
 	KeyNetworkTransmitPackets       UtilisationKey = "network_transmit_packets"
@@ -184,6 +199,15 @@ var utilisationKeys = func() map[UtilisationKey]bool {
 		KeyDiskUsed,
 		KeyDiskReadBytes,
 		KeyDiskWriteBytes,
+		KeyVMServiceCPUUsage,
+		KeyVMServiceMemoryUsage,
+		KeyVMServiceDiskUsed,
+		KeyVMFleetCPUUsed,
+		KeyVMFleetCPUCores,
+		KeyVMFleetMemUsed,
+		KeyVMFleetMemTotal,
+		KeyVMFleetIdentity,
+		KeyVMFleetHostname,
 		KeyNetworkReceivePacket,
 		KeyNetworkTransmitPackets,
 		KeyNetworkUsage,

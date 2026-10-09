@@ -3708,6 +3708,13 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 		result.Results = completeUtilisationResults(result.Results, meta.RequestedMetrics, queries, metricsProvider, esUtilisationScope(meta))
 	}()
 
+	// VM kinds are answered only by the PromQL stores that hold node-agent or
+	// node_exporter series. Any other provider would fall through to its pod and
+	// workload builders with an empty namespace and name.
+	if (meta.Kind == "vm" || meta.Kind == "vm_fleet") && !vmMetricsSupported(metricsProvider) {
+		return vmNotFoundResult(meta.RequestedMetrics, vmMetricsUnsupportedNote(metricsProvider)), nil
+	}
+
 	// --- 2. Build Queries based on Provider and Kind ---
 	switch metricsProvider {
 	case "datadog":
@@ -3728,9 +3735,23 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 	// placeholder, which CubeAPMMetricSource strips before querying, since a
 	// direct-API integration is already scoped to one cluster.
 	case "prometheus", "victoria_metrics", "chronosphere", "cubeapm":
-		if meta.Kind == "node" {
+		switch meta.Kind {
+		case "vm":
+			// A VM is not a Kubernetes node: its series carry node-agent labels, and
+			// the `instance` they use is a hash we have to look up first.
+			lookup := resolveVMInstance(ctx, req, metricsProvider, integrationSource, meta)
+			if lookup.Instance == "" {
+				// Say why instead of rendering nothing: every key gets the reason.
+				return vmNotFoundResult(meta.RequestedMetrics, lookup.Reason), nil
+			}
+			meta.VMInstance = lookup.Instance
+			queries = buildPrometheusVMQueries(meta, meta.RequestedMetrics)
+		case "vm_fleet":
+			// The VM list's gauges: every agent in the store, no single-VM lookup.
+			queries = buildPrometheusVMFleetQueries(meta.RequestedMetrics, meta.RateWindow)
+		case "node":
 			queries = buildPrometheusNodeQueries(meta, meta.RequestedMetrics)
-		} else {
+		default:
 			queries = buildPrometheusWorkloadQueries(meta, meta.RequestedMetrics)
 		}
 
@@ -4023,6 +4044,15 @@ type RequestMetadata struct {
 	// metrics after it and it differs by tracer, so it is probed per request; empty
 	// means none was found and the Datadog HTTP keys are not built.
 	APMOperation string
+
+	// VM fields (Kind == "vm"): how to find one self-hosted VM among the series a
+	// customer-run Prometheus holds. Any of the three identifies it; the node-agent
+	// labels its series with an opaque `instance` hash, so VMInstance is resolved
+	// from them (resolveVMInstance) before the queries are built.
+	VMInstanceID string // cloud instance id, matches node_cloud_info{instance_id}
+	VMIP         string // private IP, matches node_net_interface_ip{ip}
+	VMHostname   string // matches node_info{hostname}
+	VMInstance   string // resolved `instance` label value; empty until resolved
 }
 
 func parseRequestMetadata(reqMap map[string]any) (RequestMetadata, error) {
@@ -4052,6 +4082,15 @@ func parseRequestMetadata(reqMap map[string]any) (RequestMetadata, error) {
 
 	if kindRaw, ok := reqMap["kind"]; ok {
 		m.Kind, _ = kindRaw.(string)
+	}
+	if v, ok := reqMap["vm_instance_id"]; ok {
+		m.VMInstanceID, _ = v.(string)
+	}
+	if v, ok := reqMap["vm_ip"]; ok {
+		m.VMIP, _ = v.(string)
+	}
+	if v, ok := reqMap["vm_hostname"]; ok {
+		m.VMHostname, _ = v.(string)
 	}
 	if v, ok := reqMap["pvc_name"]; ok {
 		m.PVCName, _ = v.(string)
