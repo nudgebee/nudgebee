@@ -4584,6 +4584,20 @@ actions:
       - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
+  - name: metrics_check_vm_status
+    comment: Check whether a self-hosted VM account has metrics connected and agents reporting
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
   - name: metrics_aggregate_utilisation
     comment: Aggregate resource utilisation metrics
     definition:

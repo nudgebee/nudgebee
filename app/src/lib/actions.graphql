@@ -1853,6 +1853,12 @@ type Query {
 }
 
 type Query {
+  metrics_check_vm_status(
+    request: MetricsCheckVmStatusRequest!
+  ): VMMetricsStatus
+}
+
+type Query {
   metrics_aggregate_utilisation(
     request: MetricsQueryUtilisationRequest!
   ): OutputMetricQuery
@@ -9079,6 +9085,27 @@ type CreateAgentExtensionResponse {
 
 type AiDeleteFunctionResponse {
   data: jsonb
+}
+
+input MetricsCheckVmStatusRequest {
+  account_id: String!
+}
+
+type VMReportingAgent {
+  instance: String!
+  hostname: String
+}
+
+type VMMetricsStatus {
+  state: String!
+  provider: String
+  integration_id: String
+  integration_name: String
+  error: String
+  scope: String
+  inventory: Int
+  other_agents: Int
+  reporting: [VMReportingAgent!]!
 }
 
 type OutputMetricLabels {

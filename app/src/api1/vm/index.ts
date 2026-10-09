@@ -851,6 +851,56 @@ const apiVm = {
       updatedAt: row.updated_at,
     }));
   },
+  /**
+   * Whether this account's metrics store is connected and VM agents are writing to
+   * it. Probes the store through the forager, so it can take a few seconds: call it
+   * on demand rather than caching it.
+   */
+  async getMetricsStatus(accountId: string): Promise<VmMetricsStatus> {
+    const response = await queryGraphQL(METRICS_CHECK_VM_STATUS, 'MetricsCheckVmStatus', { accountId });
+    const errors = response?.data?.errors;
+    if (errors?.length) throw new Error(errors[0]?.message || 'Failed to check VM metrics');
+    const status = response?.data?.data?.metrics_check_vm_status;
+    if (!status) throw new Error('Failed to check VM metrics');
+    return { ...status, reporting: status.reporting || [] };
+  },
 };
+
+export type VmMetricsState = 'not_configured' | 'check_failed' | 'unreachable' | 'no_data' | 'connected';
+
+export interface VmMetricsStatus {
+  state: VmMetricsState;
+  provider?: string;
+  integration_id?: string;
+  integration_name?: string;
+  error?: string;
+  /** What `reporting` counts: this account's VMs, or every agent in the store when the account has no VM inventory to match against. */
+  scope?: 'account' | 'store';
+  /** VMs the account has on record. */
+  inventory?: number;
+  /** Agents writing to the same store that are not this account's VMs. */
+  other_agents?: number;
+  /** node-agents seen writing to the account's metrics store recently. */
+  reporting: Array<{ instance: string; hostname?: string }>;
+}
+
+const METRICS_CHECK_VM_STATUS = `
+  query MetricsCheckVmStatus($accountId: String!) {
+    metrics_check_vm_status(request: {account_id: $accountId}) {
+      state
+      provider
+      integration_id
+      integration_name
+      error
+      scope
+      inventory
+      other_agents
+      reporting {
+        instance
+        hostname
+      }
+    }
+  }
+`;
 
 export default apiVm;

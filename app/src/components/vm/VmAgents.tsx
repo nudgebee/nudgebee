@@ -8,6 +8,7 @@ import { Button } from '@ui/Button';
 import Datetime from '@shared/format/Datetime';
 import apiVm, { VmAgent } from '@api1/vm';
 import { CellText, useLatestRequest } from './common';
+import VmMetricsStatusCard from './VmMetricsStatusCard';
 import { ds } from '@utils/colors';
 
 const AGENT_HEADERS = ['Agent', 'Connection', 'Configuration', 'Version', 'Last Connected'];
@@ -71,45 +72,48 @@ const VmAgents = ({ accountId }: { accountId: string }) => {
   const manageIntegrations = () => router.push('/user-management?integration=server#integrations');
 
   return (
-    <Box sx={{ mt: 4 }}>
-      <ListingLayout id='vm-agents'>
-        <ListingLayout.Toolbar
-          title='Proxy Agents'
-          actions={
-            <Button id='vm-agents-manage' tone='secondary' size='sm' onClick={manageIntegrations}>
-              Manage
-            </Button>
-          }
-        />
-        <ListingLayout.Body>
-          <CustomTable
-            id='VM_AGENTS_TABLE'
-            headers={AGENT_HEADERS}
-            tableData={agentRows}
-            loading={loading}
-            emptyHeading='No proxy agent installed'
-            emptySubHeading='Add a VM Agent integration to reach the machines in this account.'
-            showUpdatedEmptyData={true}
+    <>
+      <VmMetricsStatusCard accountId={accountId} />
+      <Box sx={{ mt: 4 }}>
+        <ListingLayout id='vm-agents'>
+          <ListingLayout.Toolbar
+            title='Proxy Agents'
+            actions={
+              <Button id='vm-agents-manage' tone='secondary' size='sm' onClick={manageIntegrations}>
+                Manage
+              </Button>
+            }
           />
-          {/* Same Features block the K8s agent card carries. A forager reaches the
+          <ListingLayout.Body>
+            <CustomTable
+              id='VM_AGENTS_TABLE'
+              headers={AGENT_HEADERS}
+              tableData={agentRows}
+              loading={loading}
+              emptyHeading='No proxy agent installed'
+              emptySubHeading='Add a VM Agent integration to reach the machines in this account.'
+              showUpdatedEmptyData={true}
+            />
+            {/* Same Features block the K8s agent card carries. A forager reaches the
               platform only through the relay, so its connection is the relay's —
               there is no separate relayConnection flag to read as there is on the
               in-cluster agent. Hidden while nothing is installed: the table's
               empty state already says what to do. */}
-          {agents.length > 0 && (
-            <>
-              <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mt: 2, mb: 1 }}>Features</Typography>
-              <ul>
-                <li>
-                  <b>Relay - </b>
-                  {relayConnected ? 'Connected' : 'Disconnected'}
-                </li>
-              </ul>
-            </>
-          )}
-        </ListingLayout.Body>
-      </ListingLayout>
-    </Box>
+            {agents.length > 0 && (
+              <>
+                <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mt: 2, mb: 1 }}>Features</Typography>
+                <ul>
+                  <li>
+                    <b>Relay - </b>
+                    {relayConnected ? 'Connected' : 'Disconnected'}
+                  </li>
+                </ul>
+              </>
+            )}
+          </ListingLayout.Body>
+        </ListingLayout>
+      </Box>
+    </>
   );
 };
 
