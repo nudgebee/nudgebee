@@ -202,7 +202,7 @@ describe('useOptionsSource', () => {
     expect(mockGetCloudResource).toHaveBeenCalledWith({ account_id: 'acc-1', status: 'Active' }, 1000);
   });
 
-  it('failed direct-mode fetch -> toast + error on the field', async () => {
+  it('failed direct-mode fetch -> inline error on the field, no toast', async () => {
     mockListMCPTools.mockResolvedValue({
       errors: [{ message: 'Connection refused' }],
     });
@@ -215,9 +215,7 @@ describe('useOptionsSource', () => {
       await Promise.resolve();
     });
 
-    expect(mockToastError).toHaveBeenCalledWith(
-      'Unable to fetch MCP tools from the provided URL. Please verify the URL and try again. (Connection refused)'
-    );
+    expect(mockToastError).not.toHaveBeenCalled();
     expect(result.current.tool_name?.error).toBe(
       'Unable to fetch MCP tools from the provided URL. Please verify the URL and try again. (Connection refused)'
     );

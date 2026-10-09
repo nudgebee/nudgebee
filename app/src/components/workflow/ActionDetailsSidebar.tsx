@@ -3169,8 +3169,8 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     id={`action-sidebar-options-source-${fieldName}-input`}
                     size='small'
                     placeholder={placeholder}
-                    error={!!validationErrors[fieldName] || !!sourceData?.error}
-                    helperText={validationErrors[fieldName] || sourceData?.error || ''}
+                    error={!!validationErrors[fieldName]}
+                    helperText={validationErrors[fieldName] || ''}
                   />
                 )}
                 size='small'
@@ -4008,6 +4008,15 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
             ? EMAIL_BUILTIN_VARIABLES
             : undefined;
 
+        // A tool-list fetch that failed for this URL (MCP direct mode) is shown here, not on the dropdown it feeds.
+        const urlFetchError =
+          fieldName === 'url'
+            ? Object.entries(inputSchema)
+                .filter(([, def]) => Object.values((def as SchemaProperty).options_source?.dependency_mapping ?? {}).includes('url'))
+                .map(([name]) => optionsSourceData[name]?.error)
+                .find(Boolean)
+            : undefined;
+
         // Don't use DroppableWrapper here - it causes component remounting and focus loss
         // Instead, apply drop handlers directly to the outer Box
         const dropHandlers = !viewOnlyMode
@@ -4052,7 +4061,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   onChange={(newValue: string) => handleDataChange(fieldName, newValue)}
                   placeholder={fieldSchema.description || `Enter ${fieldName.replace(/_/g, ' ')}`}
                   disabled={isReadOnly || viewOnlyMode}
-                  error={validationErrors[fieldName] || ''}
+                  error={validationErrors[fieldName] || urlFetchError || ''}
                   required={isRequired}
                   previousTasks={prevTasks}
                   workflowInputs={workflowInputs}

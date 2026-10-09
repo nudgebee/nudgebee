@@ -530,7 +530,6 @@ export const useOptionsSource = (currentTaskDefinition: any, formValues: Record<
             return { fieldName: f.fieldName, options, loading: false };
           } catch (err: any) {
             if (err instanceof OptionsSourceError) {
-              snackbar.error(err.message);
               return { fieldName: f.fieldName, options: [], loading: false, error: err.message };
             }
             console.error('Failed to fetch options', { fieldName: f.fieldName, sourceType: f.sourceType, err });
