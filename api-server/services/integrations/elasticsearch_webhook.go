@@ -40,7 +40,8 @@ func init() {
 //	{
 //	  "rule":   { "id": "{{rule.id}}", "name": "{{rule.name}}",
 //	              "type": "{{rule.type}}", "url": "{{rule.url}}" },
-//	  "alert":  { "id": "{{alert.id}}", "action_group": "{{alert.actionGroup}}" },
+//	  "alert":  { "id": "{{alert.id}}", "uuid": "{{alert.uuid}}",
+//	              "action_group": "{{alert.actionGroup}}" },
 //	  "status": "firing",
 //	  "severity": "high",
 //	  "title": "{{rule.name}}",
@@ -56,6 +57,11 @@ func init() {
 // grouped by several fields, the values joined by a comma — and each value is
 // tried as a pod and as a workload name. An explicit workload label (`pod`,
 // `deployment`, …) still wins when it holds a single name.
+//
+// `{{alert.uuid}}` is optional and names one firing: Kibana (8.8 and later) issues
+// a new one each time the alert becomes active and repeats it on every run until
+// the alert recovers. With it, an alert that fires again after it recovered gets
+// an event of its own; without it every firing shares the alert's one event.
 //
 // `status` is templated per action group by the operator — "firing" on the
 // rule's "Query matched" action and "resolved" on its "Recovered" action —
@@ -227,6 +233,15 @@ func mapElasticsearchAlertToEvent(accountId string, payload map[string]any) (*co
 	if alertId != "" {
 		fingerprint = ruleId + ":" + alertId
 	}
+	// One firing of that alert. Any non-empty value is taken as sent, so a
+	// hand-rolled Watcher body can supply its own; a Kibana older than 8.8 renders
+	// `{{alert.uuid}}` as "", which leaves the delivery on the alert's one event.
+	// The payload carries no time the firing began ({{date}} is the delivery's), so
+	// the id itself is the key rather than core.FiringKeyFromStart.
+	firingKey := firstNonEmpty(
+		nestedString(payload, "alert", "uuid"),
+		stringValue(payload["alert_uuid"]),
+	)
 
 	status := mapElasticsearchStatus(firstNonEmpty(
 		stringValue(payload["status"]),
@@ -256,6 +271,10 @@ func mapElasticsearchAlertToEvent(accountId string, payload map[string]any) (*co
 	putIfNotEmpty(labels, "alertname", ruleName)
 	putIfNotEmpty(labels, "rule_id", ruleId)
 	putIfNotEmpty(labels, "alert_id", alertId)
+	// A firing that arrives while the alert's event is still open is folded into
+	// that event (core.firingFindingIDFor), so this label is where a recovery
+	// Nudgebee never received shows: it no longer matches the event's finding_id.
+	putIfNotEmpty(labels, "alert_uuid", firingKey)
 	putIfNotEmpty(labels, "rule_type", nestedString(payload, "rule", "type"))
 	putIfNotEmpty(labels, "rule_url", nestedString(payload, "rule", "url"))
 	putIfNotEmpty(labels, "value", firstNonEmpty(
@@ -319,6 +338,7 @@ func mapElasticsearchAlertToEvent(accountId string, payload map[string]any) (*co
 		WebhookId:             uuid.NewString(),
 		EventType:             ruleName,
 		EventId:               fingerprint,
+		FiringKey:             firingKey,
 		EventUrl:              eventUrl,
 		EventStatus:           string(status),
 		EventPriority:         string(severity),

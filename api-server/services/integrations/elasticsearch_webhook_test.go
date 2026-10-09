@@ -367,3 +367,58 @@ func TestElasticsearchWorkloadCandidates(t *testing.T) {
 
 	assert.Empty(t, elasticsearchWorkloadCandidates(map[string]string{"cluster": "dev"}))
 }
+
+// {{alert.uuid}} names one firing. It becomes the FiringKey and a label, and never
+// part of the alert's own identity, which resolve and replay key on.
+func TestMapElasticsearchAlertToEvent_AlertUuidIsTheFiringKey(t *testing.T) {
+	payload := canonicalKibanaPayload()
+	payload["alert"] = map[string]any{
+		"id":           "kubewatch",
+		"uuid":         " 4b3c68a5-4d6c-4866-a877-207b4fa717d9 ",
+		"action_group": "query matched",
+	}
+	// The nested field is the documented one and wins over the flat alias.
+	payload["alert_uuid"] = "flat-alias-value"
+
+	got, err := mapElasticsearchAlertToEvent("acct-1", payload)
+	require.NoError(t, err)
+	assert.Equal(t, "4b3c68a5-4d6c-4866-a877-207b4fa717d9", got.FiringKey)
+	assert.Equal(t, "4b3c68a5-4d6c-4866-a877-207b4fa717d9", got.Investigation.Labels["alert_uuid"])
+	assert.Equal(t, "baf85522-3bcb-41a7-bd3c-72942707a6fc:kubewatch", got.EventId)
+	assert.Equal(t, "baf85522-3bcb-41a7-bd3c-72942707a6fc:kubewatch", got.Investigation.Fingerprint)
+}
+
+func TestMapElasticsearchAlertToEvent_NoFiringKeyWithoutAlertUuid(t *testing.T) {
+	cases := map[string]map[string]any{
+		// The template from before the field was documented.
+		"field absent": {"id": "kubewatch", "action_group": "query matched"},
+		// Kibana older than 8.8 has no such variable and renders it empty.
+		"rendered empty": {"id": "kubewatch", "uuid": "", "action_group": "query matched"},
+		"only spaces":    {"id": "kubewatch", "uuid": "  ", "action_group": "query matched"},
+	}
+	for name, alert := range cases {
+		t.Run(name, func(t *testing.T) {
+			payload := canonicalKibanaPayload()
+			payload["alert"] = alert
+
+			got, err := mapElasticsearchAlertToEvent("acct-1", payload)
+			require.NoError(t, err)
+			assert.Empty(t, got.FiringKey)
+			assert.NotContains(t, got.Investigation.Labels, "alert_uuid")
+			assert.Equal(t, "baf85522-3bcb-41a7-bd3c-72942707a6fc:kubewatch", got.EventId)
+		})
+	}
+}
+
+// A hand-rolled Watcher body has no {{alert.uuid}}; whatever it sends to name a
+// firing is taken as sent, flat like its other fields.
+func TestMapElasticsearchAlertToEvent_FlatAlertUuidAlias(t *testing.T) {
+	got, err := mapElasticsearchAlertToEvent("acct-1", map[string]any{
+		"rule_id":    "watch-disk-full",
+		"alert_id":   "node-3",
+		"alert_uuid": "watch-disk-full_2026-08-13T11:49:24Z",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "watch-disk-full_2026-08-13T11:49:24Z", got.FiringKey)
+	assert.Equal(t, "watch-disk-full:node-3", got.EventId)
+}
