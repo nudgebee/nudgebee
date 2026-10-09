@@ -94,7 +94,7 @@ export const useBriefingData = (): BriefingState => {
     // It also makes total and completed share one population, so the "running"
     // figure below can no longer be computed across mismatched denominators.
     const investigations = apiAskNudgebee
-      .getConversationTimeAggregates({ startDate, endDate, sources: ['Investigation'], eventScoped: true })
+      .getConversationTimeAggregates({ accountIds, startDate, endDate, sources: ['Investigation'], eventScoped: true })
       .then((aggregates: any) => ({
         total: aggregates?.total_count ?? 0,
         completed: aggregates?.completed_count ?? 0,

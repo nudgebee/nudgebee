@@ -256,38 +256,24 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    // account_id is a single value on this endpoint, and an EMPTY string means
-    // tenant-wide — which is exactly the default state of this page, so bailing
-    // out on "no account selected" left the whole Overview blank. Three cases:
-    // none selected -> tenant-wide; one -> that account; several -> fetch each
-    // and sum, because passing only the first silently under-reports and passing
-    // '' would pull in accounts the reader has filtered out.
-    const targets = accountIds.length === 0 ? [''] : accountIds;
+    // Empty accountIds means tenant-wide here, not "no results".
     const startDate = new Date(window.startMs).toISOString();
     const endDate = new Date(window.endMs).toISOString();
 
-    Promise.all(
-      targets.map((accountId) =>
-        apiAskNudgebee
-          .getConversationTimeAggregates({ accountId, startDate, endDate, sources: ['Investigation'], eventScoped: true })
-          .catch(() => null)
-      )
-    )
-      .then((results: any[]) => {
+    apiAskNudgebee
+      .getConversationTimeAggregates({ accountIds, startDate, endDate, sources: ['Investigation'], eventScoped: true })
+      .then((row: any) => {
         if (cancelled) return;
-        const rows = results.filter(Boolean);
-        if (rows.length === 0) {
+        if (!row) {
           setEffort(null);
           return;
         }
         setEffort({
-          completed_count: rows.reduce((total, row) => total + num(row.completed_count), 0),
-          total_count: rows.reduce((total, row) => total + num(row.total_count), 0),
-          total_agent_active_time_seconds: rows.reduce((total, row) => total + num(row.total_agent_active_time_seconds), 0),
-          // Baseline and rate are tenant config, identical across accounts —
-          // take the first rather than summing them into nonsense.
-          manual_baseline_minutes: num(rows[0].manual_baseline_minutes),
-          engineer_hourly_rate_usd: num(rows[0].engineer_hourly_rate_usd),
+          completed_count: num(row.completed_count),
+          total_count: num(row.total_count),
+          total_agent_active_time_seconds: num(row.total_agent_active_time_seconds),
+          manual_baseline_minutes: num(row.manual_baseline_minutes),
+          engineer_hourly_rate_usd: num(row.engineer_hourly_rate_usd),
         });
       })
       .catch(() => {

@@ -2288,7 +2288,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		logger := slog.With("account_id", request.AccountId, "user_id", request.UserId)
+		logger := slog.With("account_ids", request.AccountIds, "user_id", request.UserId)
 
 		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
@@ -2296,10 +2296,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		// account_id is intentionally optional. The handler falls back to every
+		// account_ids is intentionally optional. The handler falls back to every
 		// account the caller's session is permitted to read, matching the
 		// multi-account roll-up the troubleshoot widget needs. Authorization
-		// of any explicit account_id happens inside the handler.
+		// of any explicit account_ids happens inside the handler.
 		if request.StartDate == "" || request.EndDate == "" {
 			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
 				common.Error{Message: "api: start_date and end_date are required"},

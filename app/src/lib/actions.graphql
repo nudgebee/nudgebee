@@ -5044,7 +5044,7 @@ input AIGetConversationUsageMetricsRequest {
 }
 
 input AIGetConversationTimeAggregatesRequest {
-  account_id: String!
+  account_ids: [String!]
   user_id: String
   start_date: String!
   end_date: String!
