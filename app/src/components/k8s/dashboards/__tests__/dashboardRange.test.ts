@@ -1,4 +1,6 @@
-import { refreshedRange } from '../dashboardRange';
+import type { Panel, PanelTarget } from '@api1/dashboards';
+import { panelQueryWindow, refreshedRange } from '../dashboardRange';
+import { buildEntityQuery, defaultDraft } from '../entityQuery';
 
 /*
  * What Refresh fetches, for each kind of range the picker hands over. The
@@ -39,5 +41,55 @@ describe('refreshedRange', () => {
   it('treats Current Week as the picker does — the last seven days', () => {
     const range = { startDate: CLICK - 7 * DAY, endDate: CLICK, shortcutClickTime: 7 * DAY };
     expect(refreshedRange(range, NOW)).toEqual({ startDate: NOW - 7 * DAY, endDate: NOW, shortcutClickTime: 7 * DAY });
+  });
+});
+
+/*
+ * A table written once a day has nothing to show for an hour. The range the
+ * dashboard hands over is widened for such a panel, and only for such a panel.
+ */
+describe('panelQueryWindow', () => {
+  const spend = buildEntityQuery(defaultDraft('spend_groupings_v2')) as never;
+  const events = buildEntityQuery(defaultDraft('events_v2')) as never;
+  const panel = (target: Partial<PanelTarget>, datasource = 'nudgebee') =>
+    ({ id: 1, title: 'p', type: 'table', datasource, targets: [{ ref_id: 'A', ...target }] } as Panel);
+
+  it('reaches back seven days on cloud spend when the range is shorter, keeping its end', () => {
+    const window = panelQueryWindow(panel({ query: spend, time_column: 'spend_date' }), NOW - HOUR, NOW);
+    expect(window).toEqual({ startTime: NOW - 7 * DAY, endTime: NOW, widened: { days: 7, table: 'Cloud spend' } });
+  });
+
+  it('leaves a range that is already seven days or longer alone', () => {
+    const spendPanel = panel({ query: spend, time_column: 'spend_date' });
+    expect(panelQueryWindow(spendPanel, NOW - 7 * DAY, NOW)).toEqual({ startTime: NOW - 7 * DAY, endTime: NOW });
+    expect(panelQueryWindow(spendPanel, SEP_1, NOW)).toEqual({ startTime: SEP_1, endTime: NOW });
+  });
+
+  it('leaves a table with no minimum on the range as picked', () => {
+    expect(panelQueryWindow(panel({ query: events, time_column: 'created_at' }), NOW - HOUR, NOW)).toEqual({ startTime: NOW - HOUR, endTime: NOW });
+  });
+
+  it('has nothing to widen on a spend panel with the time range off', () => {
+    expect(panelQueryWindow(panel({ query: spend, time_column: '' }), NOW - HOUR, NOW)).toEqual({ startTime: NOW - HOUR, endTime: NOW });
+    expect(panelQueryWindow(panel({ query: spend }), NOW - HOUR, NOW)).toEqual({ startTime: NOW - HOUR, endTime: NOW });
+  });
+
+  it('goes by the target the panel runs — the first it does not hide', () => {
+    const withTargets = (targets: PanelTarget[]): Panel => ({ ...panel({}), targets });
+    const spendSecond = withTargets([
+      { ref_id: 'A', hide: true, query: events },
+      { ref_id: 'B', query: spend, time_column: 'spend_date' },
+    ]);
+    expect(panelQueryWindow(spendSecond, NOW - HOUR, NOW).widened).toEqual({ days: 7, table: 'Cloud spend' });
+
+    const spendHidden = withTargets([
+      { ref_id: 'A', hide: true, query: spend, time_column: 'spend_date' },
+      { ref_id: 'B', query: events, time_column: 'created_at' },
+    ]);
+    expect(panelQueryWindow(spendHidden, NOW - HOUR, NOW)).toEqual({ startTime: NOW - HOUR, endTime: NOW });
+  });
+
+  it('leaves every other datasource alone', () => {
+    expect(panelQueryWindow(panel({ expr: 'up' }, 'metrics'), NOW - HOUR, NOW)).toEqual({ startTime: NOW - HOUR, endTime: NOW });
   });
 });

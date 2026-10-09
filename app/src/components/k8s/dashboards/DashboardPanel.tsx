@@ -47,6 +47,7 @@ import { thresholdChartPlugin, type ThresholdDrawing } from './panelThresholdCha
 import PanelState, { type PanelStateTone } from './PanelState';
 import { usePanelData, type ColumnKind, type PanelData, type PanelErrorKind, type PanelSeries } from './usePanelData';
 import { applyAccountFilter, describePanelScope, effectiveFilterAccount, panelQueryAccounts, resolvePanelAccounts } from './panelAccounts';
+import { panelQueryWindow } from './dashboardRange';
 import PanelColumnFilters, { PanelFilterMenu } from './PanelColumnFilters';
 import { appliedViewerFilters, loadViewerFilterValues, viewerFilterColumns, type ViewerFilter } from './panelViewerFilters';
 import { combineOf, consolidatedSeries, lastValue, metricLabel, statTotal } from './panelSeries';
@@ -328,12 +329,24 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
     () => panelQueryAccounts(scopedAccounts, accountFilter, panel.datasource === 'nudgebee').accounts.map((a) => a.value),
     [scopedAccounts, accountFilter, panel.datasource]
   );
+  // What this panel's queries run over: the dashboard's range, or the table's
+  // minimum window where that is longer — an hour of a table written once a
+  // day is empty. See panelQueryWindow.
+  const queryWindow = React.useMemo(() => panelQueryWindow(panel, startTime, endTime), [panel, startTime, endTime]);
   const loadFilterValues = React.useCallback(
-    (column: string) => loadViewerFilterValues({ panel, column, accountIds: queriedAccountIds, variables, startTime, endTime }),
-    [panel, queriedAccountIds, variables, startTime, endTime]
+    (column: string) =>
+      loadViewerFilterValues({
+        panel,
+        column,
+        accountIds: queriedAccountIds,
+        variables,
+        startTime: queryWindow.startTime,
+        endTime: queryWindow.endTime,
+      }),
+    [panel, queriedAccountIds, variables, queryWindow]
   );
   // A value list belongs to the accounts and the window it was read for.
-  const filterScopeKey = `${queriedAccountIds.join(',')}|${startTime}|${endTime}`;
+  const filterScopeKey = `${queriedAccountIds.join(',')}|${queryWindow.startTime}|${queryWindow.endTime}`;
 
   // Composite rather than a sum: either counter moving changes the key, and no
   // pair of values can collide the way `dashboard + panel` could.
@@ -392,8 +405,8 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
     accountFilter,
     viewerFilters: activeFilters,
     variables,
-    startTime,
-    endTime,
+    startTime: queryWindow.startTime,
+    endTime: queryWindow.endTime,
     refreshKey,
     enabled: (seen || forceLoad) && !sampleData,
     // `forceLoad` is the preview and the PNG capture — panels someone is waiting
@@ -406,6 +419,8 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
   const data = sampleData ?? fetched;
   const error = sampleData ? null : fetchError;
   const warning = sampleData ? null : fetchWarning;
+  // A sample was never queried, so it has no window to speak of.
+  const widened = sampleData ? undefined : queryWindow.widened;
 
   /** Nothing to draw yet — no data and no error. */
   const pending = panel.type !== 'text' && !data && !error;
@@ -914,6 +929,19 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
             {panel.datasource}
           </Chip>
         )}
+        {/* A panel reading a longer window than the toolbar names has to say so:
+            a week of spend under "Last 1 Hour" would be read as an hour's. */}
+        {widened && (
+          <Tooltip
+            title={`${widened.table} is recorded once a day, so a shorter range would show little or nothing. This panel shows the ${widened.days} days up to the end of the selected range.`}
+          >
+            <Box component='span' data-testid={`panel-window-${panel.id}`} sx={{ display: 'inline-flex', cursor: 'help' }}>
+              <Chip size='2xs' tone='subtle'>
+                Showing {widened.days} days
+              </Chip>
+            </Box>
+          </Tooltip>
+        )}
         <Box sx={{ flex: 1 }} />
         {!editing && (
           <PanelFilterMenu
@@ -1026,6 +1054,11 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
               <Chip size='2xs' tone='neutral'>
                 {shownLabel}
               </Chip>
+              {widened && (
+                <Chip size='2xs' tone='neutral'>
+                  {`Showing ${widened.days} days`}
+                </Chip>
+              )}
               {/* The modal draws the filtered answer, so it says what it was filtered by. */}
               {appliedViewerFilters(activeFilters).map((f) => (
                 <Chip key={f.column} size='2xs' tone='neutral'>

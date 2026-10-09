@@ -86,6 +86,13 @@ export interface EntityTable {
    * time range off — the author can still switch it on.
    */
   standing?: boolean;
+  /**
+   * The shortest window, in days, a panel on this table is queried over. For a
+   * table written once a day and a day or two behind, where the hour a
+   * dashboard opens on holds no row at all. A shorter range is widened to this
+   * many days, ending where the range ends — see panelQueryWindow.
+   */
+  minWindowDays?: number;
   defaultColumns: string[];
   defaultSort: string;
 }
@@ -506,6 +513,9 @@ export const ENTITY_TABLES: EntityTable[] = [
       'total to false — credits and tax lines are stored alongside real charges and every spend figure in the product leaves them out.',
     columns: SPEND_GROUPING_COLUMNS,
     timeColumns: ['spend_date'],
+    // Billed by the day and landing late: most accounts' newest spend row is a
+    // day or two old, so anything under a week misses whole accounts.
+    minWindowDays: 7,
     defaultColumns: ['resource_service_name', 'spend_amount', 'resource_count', 'currency_type'],
     defaultSort: 'spend_amount',
   },
