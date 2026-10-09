@@ -2275,6 +2275,16 @@ class CommonService:
 
         branding_name = settings.urls.branding_name
         branding_logo = settings.urls.branding_logo_url
+        # A brand with no logo gets no image: an Image with an empty url is not a valid element.
+        logo_columns = []
+        if branding_logo:
+            logo_columns.append(
+                {
+                    "type": "Column",
+                    "width": "auto",
+                    "items": [{"type": "Image", "url": branding_logo, "size": "Small", "style": "Person"}],
+                }
+            )
 
         card = {
             "type": "AdaptiveCard",
@@ -2284,18 +2294,7 @@ class CommonService:
                 {
                     "type": "ColumnSet",
                     "columns": [
-                        {
-                            "type": "Column",
-                            "width": "auto",
-                            "items": [
-                                {
-                                    "type": "Image",
-                                    "url": branding_logo,
-                                    "size": "Small",
-                                    "style": "Person",
-                                }
-                            ],
-                        },
+                        *logo_columns,
                         {
                             "type": "Column",
                             "width": "stretch",
@@ -2778,8 +2777,7 @@ class CommonService:
                     "card": {
                         "header": {
                             "title": f"Connect this space to {branding_name}",
-                            "imageUrl": branding_logo,
-                            "imageType": "CIRCLE",
+                            **({"imageUrl": branding_logo, "imageType": "CIRCLE"} if branding_logo else {}),
                         },
                         "sections": [
                             {
@@ -2828,8 +2826,7 @@ class CommonService:
                     "card": {
                         "header": {
                             "title": f"Welcome to {branding_name}!",
-                            "imageUrl": branding_logo,
-                            "imageType": "CIRCLE",
+                            **({"imageUrl": branding_logo, "imageType": "CIRCLE"} if branding_logo else {}),
                         },
                         "sections": [
                             {

@@ -114,7 +114,10 @@ def deployment_host(base_url: str) -> str:
 
 def resolve_branding(baseline: Branding, override: Optional[Dict[str, Any]], base_url: str) -> Branding:
     """Merge a row over the startup baseline. Anything absent or malformed in the
-    row keeps the baseline value, so a bad field can never blank the brand."""
+    row keeps the baseline value, so a bad field can never blank the brand.
+
+    The logo is the one exception: a row that renames the product without
+    supplying `email.logoUrl` gets no logo rather than the baseline one."""
     # A hand-edited row can hold any JSON, not just an object.
     if not isinstance(override, dict) or not override:
         return baseline
@@ -128,6 +131,7 @@ def resolve_branding(baseline: Branding, override: Optional[Dict[str, Any]], bas
     if isinstance(assistant_name, str) and assistant_name.strip():
         values["assistant_name"] = assistant_name
 
+    row_has_logo = False
     email = override.get("email")
     if isinstance(email, dict):
         for key, attr in _EMAIL_STRING_FIELDS.items():
@@ -140,10 +144,17 @@ def resolve_branding(baseline: Branding, override: Optional[Dict[str, Any]], bas
                 # Email clients need an absolute URL; the row stores a root-relative
                 # path, same as every other asset.
                 value = f"{base_url.rstrip('/')}{value}" if value.startswith("/") else value
+                row_has_logo = True
             values[attr] = value
         year = email.get("copyrightStartYear")
         if isinstance(year, (int, float)) and not isinstance(year, bool) and int(year) == year:
             values["branding_copyright_start_year"] = int(year)
+
+    # The baseline logo belongs to the baseline name. Beside a partner's name it
+    # is the house mark in a partner's email and chat cards, so it is dropped;
+    # every consumer treats an empty logo as "show none".
+    if values["branding_name"] != baseline.branding_name and not row_has_logo:
+        values["branding_logo_url"] = ""
 
     return Branding(**values)
 

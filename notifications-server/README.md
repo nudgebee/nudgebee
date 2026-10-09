@@ -234,8 +234,9 @@ Branding is configured in the database, in the same `tenant_branding_override` t
 
 - The row's `title` names the product in every notification (email subject and footer, Slack, Teams, Discord, Google Chat).
 - The row's optional `email` block (`logoUrl`, `supportEmail`, `primaryColor`, `headerBgColor`, `footerBgColor`, `footerLinkColor`, `address`, `copyrightStartYear`) restyles email. `logoUrl` is root-relative and made absolute with `BASE_URL`.
+- A row whose `title` renames the product and sets no `email.logoUrl` sends **no logo**: the email footer and the Microsoft Teams and Google Chat welcome/connect cards drop the image rather than show the bundled one beside the partner's name.
 
-The bundled [`branding/default/theme.json`](notifications_server/branding/default/theme.json) is the fallback for anything the row doesn't set, for a missing `BASE_URL`, and for messages sent before the first successful fetch. A failed refresh keeps the last values it applied. `TENANT_BRANDING_FILE` is no longer read.
+The bundled [`branding/default/theme.json`](notifications_server/branding/default/theme.json) is the fallback for anything else the row doesn't set, for a missing `BASE_URL`, and for messages sent before the first successful fetch. A failed refresh keeps the last values it applied. `TENANT_BRANDING_FILE` is no longer read.
 
 ## RabbitMQ Message Format
 

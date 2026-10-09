@@ -115,6 +115,40 @@ def test_partial_row_keeps_bundled_values_for_the_rest():
     assert urls.branding_address == "Pune"
 
 
+def test_renaming_row_without_an_email_logo_drops_the_bundled_logo():
+    # The bundled logo is the house mark; beside a partner's name it is the leak.
+    urls = make_urls()
+    refresh(refresher_with(urls, [{"calsoft.example.com": {"title": "Calsoft", "email": {"primaryColor": "#0047AB"}}}]))
+    assert urls.branding_name == "Calsoft"
+    assert urls.branding_logo_url == ""
+
+
+def test_renaming_row_keeps_whatever_logo_it_names():
+    # Even the bundled path: the row asked for it, so it is not a leftover.
+    urls = make_urls()
+    row = {"title": "Calsoft", "email": {"logoUrl": "/branding/default/logo.png"}}
+    refresh(refresher_with(urls, [{"calsoft.example.com": row}]))
+    assert urls.branding_logo_url == "https://calsoft.example.com/branding/default/logo.png"
+
+
+def test_row_that_keeps_the_bundled_name_keeps_the_bundled_logo():
+    urls = make_urls()
+    refresh(
+        refresher_with(urls, [{"calsoft.example.com": {"title": "Nudgebee", "email": {"primaryColor": "#0047AB"}}}])
+    )
+    assert urls.branding_logo_url == "https://calsoft.example.com/branding/default/logo.png"
+
+
+def test_bundled_logo_returns_when_the_renaming_row_is_removed():
+    urls = make_urls()
+    refresher = refresher_with(urls, [{"calsoft.example.com": {"title": "Calsoft"}}, {}])
+    refresh(refresher)
+    assert urls.branding_logo_url == ""
+    refresh(refresher)
+    assert urls.branding_name == "Nudgebee"
+    assert urls.branding_logo_url == "https://calsoft.example.com/branding/default/logo.png"
+
+
 def test_malformed_fields_never_blank_the_brand():
     urls = make_urls()
     row = {
