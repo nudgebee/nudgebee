@@ -135,7 +135,7 @@ const KubernetesSSLCertificateRecommendation = (props) => {
             ),
           });
           data.push({
-            component: <Datetime value={item.recommendation.expiry_date} suffix=' ' />,
+            component: <Datetime value={item.recommendation.expiry_date} suffix=' ' alwaysShowYear />,
           });
           data.push({ component: <Datetime value={item.updated_at} /> });
           data.push({
