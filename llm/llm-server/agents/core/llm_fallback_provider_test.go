@@ -329,7 +329,7 @@ func TestFallbackProbeTargets(t *testing.T) {
 		seedLLMIntegrations(t, "acct-probe-b") // cannot see the referenced integration
 		targets := fallbackProbeTargets(map[string]string{
 			llmFallbackRefSourceKey: "db:int-openai-gw", llmFallbackRefModelKey: "gpt-5.6-terra",
-		}, []string{"acct-probe-a", "acct-probe-b"})
+		}, []string{"acct-probe-a", "acct-probe-b"}, "")
 		require.Len(t, targets, 2)
 		assert.Equal(t, "openai", targets[0].provider)
 		assert.Equal(t, "gateway-key", targets[0].cfg[cfgKeyAPIKey])
@@ -344,15 +344,41 @@ func TestFallbackProbeTargets(t *testing.T) {
 			"llm_provider": "custom", "llm_model_name": "Qwen/A", "llm_provider_api_key": "primary-key",
 			"llm_extra_headers":    `{"X-Tenant":"primary"}`,
 			llmFallbackProviderKey: "openai", llmFallbackModelKey: "gpt-5.6-terra", "llm_fallback_api_key": "fallback-key",
-		}, nil)
+		}, nil, "")
 		require.Len(t, targets, 1)
 		assert.Equal(t, map[string]string{
 			cfgKeyProvider: "openai", cfgKeyModel: "gpt-5.6-terra", cfgKeyAPIKey: "fallback-key",
 		}, targets[0].cfg)
 	})
 
+	t.Run("with no accounts, reference is resolved among the organisation-wide configs", func(t *testing.T) {
+		seedTenantWideLLMIntegrations(t, "tenant-probe", openaiGateway)
+		cfg := map[string]string{llmFallbackRefSourceKey: "db:int-openai-gw", llmFallbackRefModelKey: "gpt-5.6-terra"}
+		targets := fallbackProbeTargets(cfg, nil, "tenant-probe")
+		require.Len(t, targets, 1)
+		require.NoError(t, targets[0].err)
+		assert.Equal(t, "openai", targets[0].provider)
+		assert.Equal(t, "gateway-key", targets[0].cfg[cfgKeyAPIKey])
+	})
+
+	t.Run("with no accounts, a reference outside the organisation-wide configs fails", func(t *testing.T) {
+		seedTenantWideLLMIntegrations(t, "tenant-probe")
+		cfg := map[string]string{llmFallbackRefSourceKey: "db:int-openai-gw", llmFallbackRefModelKey: "gpt-5.6-terra"}
+		targets := fallbackProbeTargets(cfg, nil, "tenant-probe")
+		require.Len(t, targets, 1)
+		require.Error(t, targets[0].err)
+		assert.Contains(t, targets[0].err.Error(), "not available to every account")
+	})
+
+	t.Run("with no accounts and no tenant, a reference asks for an account", func(t *testing.T) {
+		cfg := map[string]string{llmFallbackRefSourceKey: "db:int-openai-gw", llmFallbackRefModelKey: "gpt-5.6-terra"}
+		targets := fallbackProbeTargets(cfg, nil, "")
+		require.Len(t, targets, 1)
+		assert.Contains(t, targets[0].err.Error(), "select an account")
+	})
+
 	t.Run("no fallback configured", func(t *testing.T) {
-		assert.Empty(t, fallbackProbeTargets(map[string]string{"llm_provider": "openai"}, nil))
+		assert.Empty(t, fallbackProbeTargets(map[string]string{"llm_provider": "openai"}, nil, ""))
 	})
 }
 
@@ -487,7 +513,7 @@ func TestFallbackProbeTargets_PerCategory(t *testing.T) {
 		llmFallbackProviderKey: "openai", llmFallbackModelKey: "gpt-5.6-terra", "llm_fallback_api_key": "global-fb-key",
 		"llm_fallback_provider_summary": "custom", "llm_fallback_model_summary": "Qwen/B",
 		"llm_fallback_api_key_summary": "summary-fb-key", "llm_fallback_api_endpoint_summary": "https://vllm.example/v1",
-	}, nil)
+	}, nil, "")
 	require.Len(t, targets, 2)
 	bySource := map[string]probeTarget{}
 	for _, tg := range targets {
