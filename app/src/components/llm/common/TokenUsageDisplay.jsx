@@ -3,6 +3,7 @@ import { Box, Typography } from '@mui/material';
 import PropTypes from 'prop-types';
 import { IoIosStats } from 'react-icons/io';
 import Tooltip from '@ui/Tooltip';
+import { Link } from '@ui/Link';
 import { ds } from '@utils/colors';
 
 /**
@@ -39,6 +40,28 @@ const formatCost = (cost) => {
     return `$${cost.toFixed(2)}`;
   }
   return `$${cost.toFixed(4)}`;
+};
+
+// $0 from a model with no Model Pricing entry is a missing price, not a free model.
+const formatModelCost = (cost, unpricedRequests) => (unpricedRequests > 0 && !cost ? 'No price' : formatCost(cost));
+
+const unpricedCostColor = (unpricedRequests, cost) => (unpricedRequests > 0 && !cost ? 'var(--ds-amber-700)' : 'var(--ds-gray-500)');
+
+const MODEL_PRICING_URL = '/user-management?budgetsTab=pricing#ai-tools/budgets-limits';
+
+const UnpricedModelsNote = ({ show }) =>
+  show ? (
+    <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-amber-700)', marginTop: ds.space[1] }}>
+      Set a price in Admin → AI & Tools → Budgets & Limits →{' '}
+      <Link href={MODEL_PRICING_URL} openInNew secondaryText>
+        Model Pricing
+      </Link>
+      .
+    </Typography>
+  ) : null;
+
+UnpricedModelsNote.propTypes = {
+  show: PropTypes.bool.isRequired,
 };
 
 /**
@@ -345,6 +368,7 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
     total_cached_input_tokens = 0,
     total_cache_hit_rate_percentage: _total_cache_hit_rate_percentage = null,
     total_cost_usd = 0,
+    total_unpriced_requests = 0,
     model_usage = [],
     cache_savings = null,
     success_rate_percentage = null,
@@ -664,12 +688,20 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
                 <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
                   {formatTokens(model.output_tokens)}
                 </Typography>
-                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
-                  {formatCost(model.cost_usd)}
+                <Typography
+                  sx={{
+                    fontSize: 'var(--ds-text-caption)',
+                    color: unpricedCostColor(model.unpriced_requests, model.cost_usd),
+                    paddingTop: ds.space[1],
+                    textAlign: 'right',
+                  }}
+                >
+                  {formatModelCost(model.cost_usd, model.unpriced_requests)}
                 </Typography>
               </React.Fragment>
             ))}
           </Box>
+          <UnpricedModelsNote show={total_unpriced_requests > 0} />
         </Box>
       )}
 
@@ -748,6 +780,11 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
           Input: {formatTokens(total_input_tokens)} • Output: {formatTokens(total_output_tokens)} • Cached: {formatTokens(total_cached_input_tokens)}
         </Typography>
+        {total_unpriced_requests > 0 && (
+          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-amber-700)' }}>
+            Excludes {total_unpriced_requests} unpriced {total_unpriced_requests === 1 ? 'call' : 'calls'}.
+          </Typography>
+        )}
       </Box>
 
       {/* Savings Highlight Statement */}
@@ -943,6 +980,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
         cached_input_tokens: 0,
         output_tokens: 0,
         cost_usd: 0,
+        unpriced_requests: 0,
       };
     }
     acc[modelName].agents += 1;
@@ -950,10 +988,13 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
     acc[modelName].cached_input_tokens += agent.cached_input_tokens || 0;
     acc[modelName].output_tokens += agent.output_tokens || 0;
     acc[modelName].cost_usd += agent.cost_usd || 0;
+    acc[modelName].unpriced_requests += agent.unpriced_requests || 0;
     return acc;
   }, {});
 
   const modelUsageArray = Object.values(modelUsage);
+  // From all agents, so a call with no model name still matches the conversation total.
+  const messageUnpricedRequests = agents.reduce((sum, agent) => sum + (agent.unpriced_requests || 0), 0);
 
   // Calculate cache savings with cost details
   let cacheSavings = null;
@@ -1106,12 +1147,20 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
                 <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
                   {formatTokens(model.output_tokens)}
                 </Typography>
-                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
-                  {formatCost(model.cost_usd)}
+                <Typography
+                  sx={{
+                    fontSize: 'var(--ds-text-caption)',
+                    color: unpricedCostColor(model.unpriced_requests, model.cost_usd),
+                    paddingTop: ds.space[1],
+                    textAlign: 'right',
+                  }}
+                >
+                  {formatModelCost(model.cost_usd, model.unpriced_requests)}
                 </Typography>
               </React.Fragment>
             ))}
           </Box>
+          <UnpricedModelsNote show={messageUnpricedRequests > 0} />
         </Box>
       )}
 
@@ -1308,8 +1357,15 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
                   <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
                     {cell(formatTokens(agent.output_tokens))}
                   </Typography>
-                  <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
-                    {cell(formatCost(agent.cost_usd))}
+                  <Typography
+                    sx={{
+                      fontSize: 'var(--ds-text-caption)',
+                      color: unpricedCostColor(agent.unpriced_requests, agent.cost_usd),
+                      paddingTop: ds.space[1],
+                      textAlign: 'right',
+                    }}
+                  >
+                    {cell(formatModelCost(agent.cost_usd, agent.unpriced_requests))}
                   </Typography>
                 </React.Fragment>
               );
@@ -1394,6 +1450,11 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
           Input: {formatTokens(message_input_tokens)} • Output: {formatTokens(message_output_tokens)} • Cached:{' '}
           {formatTokens(message_cached_input_tokens)}
         </Typography>
+        {messageUnpricedRequests > 0 && (
+          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-amber-700)' }}>
+            Excludes {messageUnpricedRequests} unpriced {messageUnpricedRequests === 1 ? 'call' : 'calls'}.
+          </Typography>
+        )}
       </Box>
 
       {/* Cache Savings Highlight */}
@@ -1431,6 +1492,7 @@ export const AgentTokenUsage = ({ agentData }) => {
     cached_input_tokens = 0,
     cache_hit_rate_percentage = { Valid: false, Float64: 0 },
     cost_usd = 0,
+    unpriced_requests = 0,
     model_name = { Valid: false, String: '' },
     model_provider_name = { Valid: false, String: '' },
     agent_name = '',
@@ -1471,7 +1533,7 @@ export const AgentTokenUsage = ({ agentData }) => {
             )}
           </>
         )}
-        <Typography sx={costTextStyles}>Cost: {formatCost(cost_usd)}</Typography>
+        <Typography sx={costTextStyles}>Cost: {formatModelCost(cost_usd, unpriced_requests)}</Typography>
       </Box>
     </Box>
   );

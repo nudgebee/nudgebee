@@ -30,21 +30,23 @@ type ConversationMetrics struct {
 	TotalCachedInputTokens      int              `json:"total_cached_input_tokens"`
 	TotalCacheHitRatePercentage *float64         `json:"total_cache_hit_rate_percentage,omitempty"`
 	ModelUsage                  []ModelUsageStat `json:"model_usage"`
-	CacheSavings                CacheSavingsInfo `json:"cache_savings"`
-	SuccessRatePercentage       *float64         `json:"success_rate_percentage,omitempty"`
-	TotalRequests               int              `json:"total_requests"`
-	SuccessfulRequests          int              `json:"successful_requests"`
-	FailedRequests              int              `json:"failed_requests"`
-	TotalToolCalls              int              `json:"total_tool_calls"`
-	SuccessfulToolCalls         int              `json:"successful_tool_calls"`
-	TotalLatencySeconds         *float64         `json:"total_latency_seconds,omitempty"`
-	AverageLatencySeconds       *float64         `json:"average_latency_seconds,omitempty"`
-	WallTimeSeconds             *float64         `json:"wall_time_seconds,omitempty"`
-	AgentActiveTimeSeconds      *float64         `json:"agent_active_time_seconds,omitempty"`
-	ToolTimeSeconds             *float64         `json:"tool_time_seconds,omitempty"`
-	ApiTimeSeconds              *float64         `json:"api_time_seconds,omitempty"`
-	ApiTimePercentage           *float64         `json:"api_time_percentage,omitempty"`
-	ToolTimePercentage          *float64         `json:"tool_time_percentage,omitempty"`
+	// Calls whose model has no Model Pricing entry, so TotalCostUsd leaves them out.
+	TotalUnpricedRequests  int              `json:"total_unpriced_requests"`
+	CacheSavings           CacheSavingsInfo `json:"cache_savings"`
+	SuccessRatePercentage  *float64         `json:"success_rate_percentage,omitempty"`
+	TotalRequests          int              `json:"total_requests"`
+	SuccessfulRequests     int              `json:"successful_requests"`
+	FailedRequests         int              `json:"failed_requests"`
+	TotalToolCalls         int              `json:"total_tool_calls"`
+	SuccessfulToolCalls    int              `json:"successful_tool_calls"`
+	TotalLatencySeconds    *float64         `json:"total_latency_seconds,omitempty"`
+	AverageLatencySeconds  *float64         `json:"average_latency_seconds,omitempty"`
+	WallTimeSeconds        *float64         `json:"wall_time_seconds,omitempty"`
+	AgentActiveTimeSeconds *float64         `json:"agent_active_time_seconds,omitempty"`
+	ToolTimeSeconds        *float64         `json:"tool_time_seconds,omitempty"`
+	ApiTimeSeconds         *float64         `json:"api_time_seconds,omitempty"`
+	ApiTimePercentage      *float64         `json:"api_time_percentage,omitempty"`
+	ToolTimePercentage     *float64         `json:"tool_time_percentage,omitempty"`
 	// Streaming-latency averages over calls that reported them. Nil when no call
 	// streamed. AvgTtftMs is how long until the first token appeared; AvgItlMs is
 	// the per-token gap after that — together they separate "slow to start" from
@@ -83,6 +85,8 @@ type ModelUsageStat struct {
 	SuccessRatePercentage  *float64 `json:"success_rate_percentage,omitempty"`
 	SuccessfulRequests     int      `json:"successful_requests"`
 	FailedRequests         int      `json:"failed_requests"`
+	// Calls that spent tokens with no Model Pricing entry — CostUsd excludes them.
+	UnpricedRequests int `json:"unpriced_requests"`
 }
 
 type CacheSavingsInfo struct {
@@ -119,9 +123,10 @@ type AgentMetrics struct {
 	// True when LLMConfigName names an actual configured slot, false when it
 	// describes the resolution layer instead (nothing was pinned). The UI must
 	// not present the second kind as a config name.
-	LLMConfigIsSlot bool `json:"llm_config_is_slot"`
-	Requests        int  `json:"requests"`
-	FailedRequests  int  `json:"failed_requests"`
+	LLMConfigIsSlot  bool `json:"llm_config_is_slot"`
+	Requests         int  `json:"requests"`
+	FailedRequests   int  `json:"failed_requests"`
+	UnpricedRequests int  `json:"unpriced_requests"`
 }
 
 func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request ConversationUsageMetricsRequest) (ConversationUsageMetricsResponse, error) {
@@ -167,6 +172,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	messageMap := make(map[string][]AgentMetrics)
 	conversationId := ""
 	totalCost := 0.0
+	totalUnpriced := 0
 	totalInputTokens := 0
 	totalOutputTokens := 0
 	totalCachedInputTokens := 0
@@ -188,11 +194,13 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 			ModelTier:              agent.ModelTier,
 			Requests:               agent.Requests,
 			FailedRequests:         agent.FailedRequests,
+			UnpricedRequests:       agent.UnpricedRequests,
 			LLMConfigSource:        agent.LLMConfigSource,
 		}
 
 		messageMap[agent.MessageId] = append(messageMap[agent.MessageId], agentMetric)
 		totalCost += agentMetric.CostUsd
+		totalUnpriced += agent.UnpricedRequests
 		totalInputTokens += agent.InputTokens
 		totalOutputTokens += agent.OutputTokens
 		totalCachedInputTokens += agent.CachedInputTokens
@@ -387,6 +395,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		TotalCachedInputTokens:      totalCachedInputTokens,
 		TotalCacheHitRatePercentage: totalCacheHitRate,
 		ModelUsage:                  modelUsage,
+		TotalUnpricedRequests:       totalUnpriced,
 		CacheSavings:                cacheSavings,
 		SuccessRatePercentage:       successRate,
 		TotalRequests:               totalRequests,
@@ -428,8 +437,12 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId strin
 	// Fetch costs in batch. Tolerate a nil DAO (unit tests) — without pricing,
 	// CostUsd stays zero and only the per-model token aggregates are populated.
 	var costs map[string]modelPricing
+	pricingLoaded := false
 	if dao := GetConversationDao(); dao != nil {
-		costs, _ = dao.GetConversationCosts(modelNames, tenantId)
+		var err error
+		costs, err = dao.GetConversationCosts(modelNames, tenantId)
+		// A failed lookup says nothing about whether a price exists, so no call is flagged unpriced.
+		pricingLoaded = err == nil
 	}
 
 	modelMap := make(map[string]*ModelUsageStat)
@@ -484,6 +497,8 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId strin
 				record.OutputTokens,
 				record.ThinkingTokens,
 			)
+		} else if pricingLoaded && record.InputTokens+record.OutputTokens > 0 {
+			stat.UnpricedRequests++
 		}
 	}
 

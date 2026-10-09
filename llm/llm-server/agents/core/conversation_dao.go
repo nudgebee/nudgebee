@@ -3164,8 +3164,9 @@ type TokenMetrics struct {
 	ModelName            sql.NullString  `json:"model_name"`
 	ModelTier            string          `json:"model_tier"` // reasoning / retrieval / summary; empty when the call was not tier-tagged
 	LLMConfigSource      string          `json:"llm_config_source"`
-	Requests             int             `json:"requests"`        // calls in this group
-	FailedRequests       int             `json:"failed_requests"` // of which failed — a failure spends no tokens, so 0/0 rows are real work, not noise
+	Requests             int             `json:"requests"`          // calls in this group
+	FailedRequests       int             `json:"failed_requests"`   // of which failed — a failure spends no tokens, so 0/0 rows are real work, not noise
+	UnpricedRequests     int             `json:"unpriced_requests"` // calls that spent tokens on a model with no llm_model_pricing row
 	MessageId            string          `json:"message_id"`
 	ConversationId       string          `json:"conversation_id"`
 }
@@ -3489,6 +3490,8 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 
 	// Fetch Pricing Map upfront to avoid N+1 queries
 	pricingMap, err := chat.fetchModelPricing(TenantForPricing(accountId))
+	// A failed lookup says nothing about whether a price exists, so no call is flagged unpriced.
+	pricingLoaded := err == nil
 	if err != nil {
 		slog.Error("Failed to fetch model pricing", "error", err)
 		// Proceed with empty map, costs will be 0
@@ -3579,11 +3582,13 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 		// that column existed, or calls with no matching pricing entry at insert
 		// time, fall back to a live recompute here.
 		var cost float64
+		priced := call.CostUsd.Valid
 		if call.CostUsd.Valid {
 			cost = call.CostUsd.Float64
 		} else if call.ModelProviderName.Valid && call.ModelName.Valid {
 			key := call.ModelProviderName.String + ":" + call.ModelName.String
 			if pricing, ok := pricingMap[key]; ok {
+				priced = true
 				cost = CalculateTotalCost(
 					&pricing,
 					nonCached,
@@ -3629,6 +3634,9 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 		stat.CacheCreationTokens += call.CacheCreationTokens
 		stat.ThinkingTokens += call.ThinkingTokens
 		stat.Cost += cost
+		if pricingLoaded && !priced && call.InputTokens+call.OutputTokens > 0 {
+			stat.UnpricedRequests++
+		}
 	}
 	if err := rows.Err(); err != nil {
 		slog.Error("rows iteration error", "error", err)

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"testing"
 
 	"nudgebee/llm/common"
@@ -105,6 +106,68 @@ func TestGetConversationTokenUsage_PrefersStoredCostUsd(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, agents, 1)
 	assert.InDelta(t, 0.0456, agents[0].Cost, 1e-9)
+	assert.Equal(t, 0, agents[0].UnpricedRequests)
+}
+
+// A call with no stored cost and no pricing row is counted as unpriced, so the
+// UI can say "no price set" instead of showing a misleading $0.
+func TestGetConversationTokenUsage_CountsUnpricedCalls(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+
+	mock.ExpectQuery("FROM llm_model_pricing").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"provider_name", "model_name",
+			"cost_per_million_input_tokens", "cost_per_million_output_tokens",
+			"cache_cost_per_million_tokens_per_hour", "cost_per_million_cached_input_tokens",
+			"cost_per_million_cache_creation_tokens", "cost_per_million_cached_storage_per_hour",
+			"context_threshold_tokens", "cost_per_million_input_tokens_long_ctx",
+			"cost_per_million_output_tokens_long_ctx", "cost_per_million_cached_input_tokens_long_ctx",
+			"cost_per_million_cache_creation_tokens_long_ctx",
+		}))
+
+	mock.ExpectQuery("FROM llm_conversation_token_usage").
+		WithArgs("sess-3", "acc-3").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"agentname", "inputtokens", "outputtokens", "cachedinputtokens",
+			"cachecreationtokens", "thinkingtokens", "modelname", "modelprovidername",
+			"messageid", "conversationid",
+		}).
+			AddRow("k8s_debug", 1000, 200, 0, 0, 0, "new-model", "custom", "msg-1", "conv-1").
+			AddRow("k8s_debug", 0, 0, 0, 0, 0, "new-model", "custom", "msg-1", "conv-1"))
+
+	agents, err := dao.GetConversationTokenUsage("sess-3", "acc-3")
+	require.NoError(t, err)
+	require.Len(t, agents, 1)
+	assert.Equal(t, 0.0, agents[0].Cost)
+	// The second call spent no tokens, so it has nothing to price.
+	assert.Equal(t, 1, agents[0].UnpricedRequests)
+}
+
+func TestGetConversationTokenUsage_PricingLookupFailedFlagsNothing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+
+	mock.ExpectQuery("FROM llm_model_pricing").WillReturnError(errors.New("db unavailable"))
+	mock.ExpectQuery("FROM llm_conversation_token_usage").
+		WithArgs("sess-4", "acc-4").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"agentname", "inputtokens", "outputtokens", "cachedinputtokens",
+			"cachecreationtokens", "thinkingtokens", "modelname", "modelprovidername",
+			"messageid", "conversationid",
+		}).
+			AddRow("k8s_debug", 1000, 200, 0, 0, 0, "new-model", "custom", "msg-1", "conv-1"))
+
+	agents, err := dao.GetConversationTokenUsage("sess-4", "acc-4")
+	require.NoError(t, err)
+	require.Len(t, agents, 1)
+	assert.Equal(t, 0, agents[0].UnpricedRequests)
 }
 
 // TestGetConversationCost_KnownModel checks the single-call cost helper used

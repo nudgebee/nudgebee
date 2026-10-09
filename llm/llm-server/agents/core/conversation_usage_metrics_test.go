@@ -2,6 +2,7 @@ package core
 
 import (
 	"database/sql"
+	"errors"
 	"nudgebee/llm/security"
 	"os"
 	"testing"
@@ -328,10 +329,11 @@ func TestModelUsageStatsCalculation(t *testing.T) {
 type fixedPricingDao struct {
 	IConversationDao
 	pricing map[string]modelPricing
+	err     error
 }
 
 func (d *fixedPricingDao) GetConversationCosts(models []string, tenantId string) (map[string]modelPricing, error) {
-	return d.pricing, nil
+	return d.pricing, d.err
 }
 
 // TestModelUsageStatsCalculation_PerCallTiering locks in the fix for a cost
@@ -413,6 +415,53 @@ func TestModelUsageStatsCalculation_PrefersStoredCost(t *testing.T) {
 	// 0.0098 stored + 1M input × $5/M recomputed. Pricing the first call live
 	// would have charged it $0.53 instead of the $0.0098 it was billed.
 	assert.InDelta(t, 0.0098+5.0, stats[0].CostUsd, 1e-9)
+}
+
+// A model with no pricing row must be told apart from one priced at zero: both
+// cost $0, but only the first needs a Model Pricing entry.
+func TestModelUsageStatsCalculation_CountsUnpricedCalls(t *testing.T) {
+	original := GetConversationDao()
+	t.Cleanup(func() { SetConversationDao(original) })
+	SetConversationDao(&fixedPricingDao{
+		pricing: map[string]modelPricing{
+			"custom:free-model": {CostPerMillionInput: 0, CostPerMillionOutput: 0},
+		},
+	})
+
+	records := []TokenUsageDetailedRecord{
+		{LLMProvider: "custom", LLMModel: "free-model", InputTokens: 1_000, RequestStatus: "success"},
+		{LLMProvider: "custom", LLMModel: "new-model", InputTokens: 1_000, RequestStatus: "success"},
+		{LLMProvider: "custom", LLMModel: "new-model", InputTokens: 1_000, RequestStatus: "success"},
+		// Spent no tokens, so there is nothing to price.
+		{LLMProvider: "custom", LLMModel: "new-model", RequestStatus: "failure"},
+		// Billed at insert time: priced then, even though the row is gone now.
+		{
+			LLMProvider: "custom", LLMModel: "new-model", InputTokens: 1_000, RequestStatus: "success",
+			CostUsd: sql.NullFloat64{Float64: 0.01, Valid: true},
+		},
+	}
+
+	byModel := map[string]ModelUsageStat{}
+	for _, s := range calculateModelUsageStats(records, "") {
+		byModel[s.ModelName] = s
+	}
+	assert.Equal(t, 0, byModel["free-model"].UnpricedRequests)
+	assert.Equal(t, 0.0, byModel["free-model"].CostUsd)
+	assert.Equal(t, 2, byModel["new-model"].UnpricedRequests)
+}
+
+// A failed pricing lookup must not send users to Model Pricing for a price that may exist.
+func TestModelUsageStatsCalculation_PricingLookupFailedFlagsNothing(t *testing.T) {
+	original := GetConversationDao()
+	t.Cleanup(func() { SetConversationDao(original) })
+	SetConversationDao(&fixedPricingDao{err: errors.New("db unavailable")})
+
+	records := []TokenUsageDetailedRecord{
+		{LLMProvider: "custom", LLMModel: "new-model", InputTokens: 1_000, RequestStatus: "success"},
+	}
+	stats := calculateModelUsageStats(records, "")
+	assert.Equal(t, 1, len(stats))
+	assert.Equal(t, 0, stats[0].UnpricedRequests)
 }
 
 func TestCacheSavingsCalculation(t *testing.T) {
