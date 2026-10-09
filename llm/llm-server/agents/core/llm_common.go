@@ -526,7 +526,7 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 	llm, err := newLLMModel(provider, model, agentName, agentName != "", accountId, res)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to initialize LLM model", "error", err, "agentName", agentName, "provider", provider, "model", model)
-		return nil, ErrLlmUnableToGenerate(err)
+		return nil, newLLMFailure(ctx, ErrLlmUnableToGenerate(err), accountId, provider, model, res)
 	}
 
 	// Optimize chunk size to reduce continuation attempts.
@@ -690,7 +690,7 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 			recordTokenUsageFailure(ctx, conversationId, messageId, agentId, agentName,
 				provider, model, accountId, userId, callMetadata, err)
 		}
-		return nil, err
+		return nil, newLLMFailure(ctx, err, accountId, provider, model, res)
 	}
 
 	// Add safety check for nil completion (should not happen after retry logic)
@@ -3097,7 +3097,14 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 	isSummarization, _ := rc.ctx.GetContext().Value(summarizationCtxKey).(bool)
 
 	// Route based on error type
-	if isTokenLimitError(rc.lastErr) {
+	if isAffordableWithFewerTokens(rc.lastErr) {
+		// A fallback's lower max_tokens can still fit the remaining credit.
+		return handleQuotaError(rc, fallbackModels, false, fallbackCauseQuota)
+	} else if kind := classifyLLMFailure(rc.lastErr); kind.NeedsSettingsFix() {
+		// Credits, keys and model names don't recover on retry.
+		ctx.GetLogger().Warn("Primary model needs a settings fix, skipping retries", "kind", string(kind), "model", rc.currentModel, "agentId", agentId)
+		return handleSettingsFixError(rc, fallbackModels, kind)
+	} else if isTokenLimitError(rc.lastErr) {
 		// STRATEGY 1: Token Limit → Chunking with Context Preservation
 		if isSummarization {
 			ctx.GetLogger().Error("Token limit error during summarization (recursive), cannot handle",
@@ -3488,6 +3495,11 @@ func classifyUserFacingLLMError(err error) error {
 	// right size.
 	if err == nil {
 		return nil
+	}
+	// A failed model call already carries its own message.
+	var failure *LLMFailure
+	if errors.As(err, &failure) {
+		return err
 	}
 
 	// Idempotence: an error this function already produced is returned unchanged

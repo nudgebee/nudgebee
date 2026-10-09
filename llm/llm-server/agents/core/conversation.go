@@ -1817,6 +1817,11 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		}
 	}
 
+	if executeErr != nil {
+		// Set only on the returned value, after the context update, so the failure
+		// text never becomes the conversation's last answer.
+		agentResponse.Response = []string{agentResponseContent}
+	}
 	return agentResponse, executeErr
 }
 

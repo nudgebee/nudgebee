@@ -219,9 +219,13 @@ func handleRequestExecution(
 				return
 			}
 			logger.Error("api: error executing request", "metrics_key", metricsKey, "latency", time.Since(startTime).String(), "error", err)
+			message, ok := core.LLMFailureMessage(err)
+			if !ok {
+				message = common.SanitizeErrorMessage(err.Error())
+			}
 			c.JSON(http.StatusInternalServerError, buildApiResponse(resp, []error{
 				common.Error{
-					Message: common.SanitizeErrorMessage(err.Error()),
+					Message: message,
 				},
 			}))
 			return

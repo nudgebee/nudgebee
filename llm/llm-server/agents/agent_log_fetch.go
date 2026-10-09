@@ -1095,8 +1095,12 @@ func logsFormatHint(format string) string {
 }
 
 func errorResponse(agentName string, err error) core.NBAgentResponse {
+	text := err.Error()
+	if msg, ok := core.LLMFailureMessage(err); ok {
+		text = msg
+	}
 	return core.NBAgentResponse{
-		Response:  []string{err.Error()},
+		Response:  []string{text},
 		AgentName: agentName,
 		Status:    core.ConversationStatusFailed,
 	}

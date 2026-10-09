@@ -79,6 +79,9 @@ func sanitizeErrorForUser(err error) string {
 	if err == nil {
 		return ""
 	}
+	if msg, ok := LLMFailureMessage(err); ok {
+		return msg
+	}
 	errStr := err.Error()
 
 	// This is an actionable account misconfiguration, but the raw error also
