@@ -8,6 +8,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/integrations/promclient"
+	"nudgebee/services/integrations/promforager"
 	"nudgebee/services/security"
 )
 
@@ -19,6 +20,16 @@ import (
 // existing call sites in this package and in observability read unchanged.
 
 const IntegrationPrometheus = "prometheus"
+
+// connection_mode selects how Nudgebee reaches the endpoint. "direct" (the
+// default, and what every row saved before this field existed means) dials
+// prometheus_url from the server. "vm_agent" sends queries through a forager
+// inside the customer's network, for a store the server cannot reach.
+const (
+	PrometheusConnectionModeKey     = promclient.PrometheusConnectionModeKey
+	PrometheusConnectionModeDirect  = promclient.PrometheusConnectionModeDirect
+	PrometheusConnectionModeVMAgent = promclient.PrometheusConnectionModeVMAgent
+)
 
 type PrometheusUserConfig = promclient.PrometheusUserConfig
 
@@ -114,6 +125,15 @@ func GetPrometheusUserConfigs(sc *security.RequestContext, accountId string) (Pr
 	}
 	if cfg.URL == "" {
 		return cfg, fmt.Errorf("prometheus integration for account %s has no %s configured", accountId, PrometheusURLKey)
+	}
+	if values[PrometheusConnectionModeKey] == PrometheusConnectionModeVMAgent {
+		// The datasource key is the integration id unless the forager defines
+		// the datasource locally and the row carries a datasource_key.
+		datasourceKey := values["datasource_key"]
+		if datasourceKey == "" {
+			datasourceKey = dto.Id
+		}
+		cfg.ProxyTransport = promforager.NewTransport(accountId, datasourceKey, values["agent_type"])
 	}
 	return cfg, nil
 }

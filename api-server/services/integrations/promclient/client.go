@@ -36,6 +36,13 @@ import (
 // operator moving a cluster from agent-relayed to direct queries transcribes the
 // same values.
 const (
+	// connection_mode selects how Nudgebee reaches the endpoint: "direct" (the
+	// default) dials prometheus_url from the server, "vm_agent" goes through a
+	// forager in the customer's network.
+	PrometheusConnectionModeKey     = "connection_mode"
+	PrometheusConnectionModeDirect  = "direct"
+	PrometheusConnectionModeVMAgent = "vm_agent"
+
 	PrometheusURLKey          = "prometheus_url"
 	PrometheusAuthTypeKey     = "auth_type"
 	PrometheusUsernameKey     = "prometheus_username"
@@ -112,11 +119,30 @@ var emptyPayloadHash = func() string {
 	return hex.EncodeToString(sum[:])
 }()
 
+// ProxyTransport carries one request to a Prometheus that only a forager can
+// reach. relPath is the API path plus query, relative to the base URL the
+// forager holds; the forager applies the stored credentials itself. header
+// carries the extra headers and Content-Type. It returns the upstream HTTP
+// status, headers and body.
+type ProxyTransport func(ctx context.Context, method, relPath string, header http.Header, body []byte) (status int, respHeader http.Header, respBody []byte, err error)
+
 // PrometheusUserConfig is the resolved connection for a user-configured
 // (direct, non-agent) Prometheus-compatible endpoint.
 type PrometheusUserConfig struct {
 	URL      string
 	AuthType string
+
+	// ProxyTransport, when set, sends every request through a forager
+	// (connection_mode=vm_agent) instead of dialling URL from this process.
+	// Auth is then applied by the forager, not by applyAuth.
+	ProxyTransport ProxyTransport
+
+	// ViaForager records connection_mode=vm_agent. The URL is only reachable
+	// from the forager's network, so Do refuses to dial it from this process
+	// when no ProxyTransport was attached: a caller that builds its own config
+	// fails closed instead of making an outbound request to an
+	// admin-supplied URL.
+	ViaForager bool
 
 	Username    string
 	Password    string
@@ -329,6 +355,7 @@ func splitHeaderList(line string) ([]string, bool) {
 // query-time loader so both authenticate identically.
 func NewPrometheusUserConfig(values map[string]string) (PrometheusUserConfig, error) {
 	cfg := PrometheusUserConfig{
+		ViaForager:         strings.TrimSpace(values[PrometheusConnectionModeKey]) == PrometheusConnectionModeVMAgent,
 		URL:                normalizePrometheusURL(values[PrometheusURLKey]),
 		AuthType:           strings.TrimSpace(values[PrometheusAuthTypeKey]),
 		Username:           strings.TrimSpace(values[PrometheusUsernameKey]),
@@ -422,6 +449,12 @@ func (c PrometheusUserConfig) Do(ctx context.Context, method, apiPath string, pa
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if c.ProxyTransport != nil {
+		return c.doViaProxy(ctx, method, apiPath, params, contentType, body)
+	}
+	if c.ViaForager {
+		return nil, fmt.Errorf("prometheus: connection_mode=%s needs a forager transport; refusing to dial %s directly", PrometheusConnectionModeVMAgent, apiPath)
+	}
 
 	var reader io.Reader
 	if len(body) > 0 {
@@ -451,6 +484,41 @@ func (c PrometheusUserConfig) Do(ctx context.Context, method, apiPath string, pa
 		return nil, fmt.Errorf("prometheus: request to %s failed: %w", apiPath, err)
 	}
 	return resp, nil
+}
+
+// doViaProxy is Do for a forager-reached endpoint. It hands the transport a path
+// relative to the forager's base URL and rebuilds an *http.Response so callers
+// cannot tell the two modes apart.
+func (c PrometheusUserConfig) doViaProxy(ctx context.Context, method, apiPath string, params neturl.Values, contentType string, body []byte) (*http.Response, error) {
+	relPath := apiPath
+	if len(params) > 0 {
+		relPath += "?" + params.Encode()
+	}
+	header := make(http.Header)
+	for name, values := range c.ExtraHeaders {
+		for _, value := range values {
+			header.Add(name, value)
+		}
+	}
+	if contentType != "" {
+		header.Set("Content-Type", contentType)
+	}
+
+	status, respHeader, respBody, err := c.ProxyTransport(ctx, method, relPath, header, body)
+	if err != nil {
+		return nil, fmt.Errorf("prometheus: request to %s via forager failed: %w", apiPath, err)
+	}
+	if respHeader == nil {
+		respHeader = make(http.Header)
+	}
+	return &http.Response{
+		Status:        fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		StatusCode:    status,
+		Header:        respHeader,
+		Body:          io.NopCloser(bytes.NewReader(respBody)),
+		ContentLength: int64(len(respBody)),
+		Request:       &http.Request{Method: method},
+	}, nil
 }
 
 // payloadHash is the SigV4 hashed payload for a request body.

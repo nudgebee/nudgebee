@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"nudgebee/services/common"
@@ -33,6 +34,109 @@ var dualModeProxyMapping = map[string]struct {
 	"ssh":        {ProxyType: "ssh-proxy", DbType: ""},
 	"mcp":        {ProxyType: "mcp-proxy", DbType: ""},
 	"rabbitmq":   {ProxyType: "rabbitmq-proxy", DbType: ""},
+	// prometheus rides the forager's generic http proxy; the datasource type
+	// stays "prometheus" so the forager applies its Prometheus health check.
+	"prometheus": {ProxyType: "http-proxy", DbType: ""},
+}
+
+// singleInstanceDualModeTypes are dual-mode types that keep the one-per-account
+// rule in their default mode. Postgres, Redis and the rest address a distinct
+// backend each, so IsProxyIntegrationType exempts them from the duplicate check
+// regardless of connection_mode; a direct Prometheus has no such per-row
+// target, and two of them would make the user-row pick ambiguous. Only
+// vm_agent rows (IsProxyIntegration) are proxy integrations.
+var singleInstanceDualModeTypes = map[string]bool{
+	"prometheus": true,
+}
+
+// prometheusProxyAuthTypes maps the integration's auth_type values to the
+// forager http proxy's. Everything else (SigV4, Coralogix, Azure AD) needs the
+// server to sign requests and is rejected by the integration's validation.
+var prometheusProxyAuthTypes = map[string]string{
+	"none":         "",
+	"basic":        "basic",
+	"bearer_token": "bearer",
+}
+
+// prometheusIntegrationConfig is the part of a prometheus integration's config
+// the forager's http proxy consumes, under the integration's own key names.
+type prometheusIntegrationConfig struct {
+	URL         string `json:"prometheus_url"`
+	Username    string `json:"prometheus_username"`
+	Password    string `json:"prometheus_password"`
+	BearerToken string `json:"prometheus_bearer_token"`
+	AuthType    string `json:"auth_type"`
+}
+
+// prometheusProxyDatasource is the shape the forager's http proxy reads. Empty
+// fields are omitted so an unset auth_type sends none.
+type prometheusProxyDatasource struct {
+	BaseURL  string `json:"base_url,omitempty"`
+	AuthType string `json:"auth_type,omitempty"`
+}
+
+// prometheusProxyCredentials is the secret half, kept out of the plain config.
+type prometheusProxyCredentials struct {
+	Username    string `json:"username,omitempty"`
+	Password    string `json:"password,omitempty"`
+	BearerToken string `json:"bearer_token,omitempty"`
+}
+
+// prometheusServerOnlyKeys are server-side or unsupported through the forager,
+// so they are removed from the config map and never sent.
+var prometheusServerOnlyKeys = []string{
+	"prometheus_extra_headers", "prometheus_additional_labels",
+	"prometheus_ruler_type", "prometheus_ruler_url", "default_metrics_provider",
+	"aws_access_key_id", "aws_secret_access_key", "aws_region", "aws_service_name",
+	"coralogix_token", "azure_client_id", "azure_client_secret", "azure_tenant_id", "azure_resource",
+}
+
+// normalizePrometheusProxyDatasource rewrites a prometheus integration's config
+// into the shape the forager's http proxy reads: prometheus_url -> base_url,
+// prometheus_username/password/bearer_token -> credentials, auth_type translated.
+// The integration's own keys are removed so secrets never travel in the plain
+// config map and server-only settings (labels, ruler) are not sent at all.
+// Keys it does not know about are left in place.
+func normalizePrometheusProxyDatasource(configMap map[string]any, credentials map[string]string) {
+	var in prometheusIntegrationConfig
+	if raw, err := json.Marshal(configMap); err == nil {
+		// A mistyped value is skipped and the rest still decode; the keys are
+		// deleted below either way so nothing secret stays in the plain map.
+		if err := json.Unmarshal(raw, &in); err != nil {
+			slog.Warn("prometheus proxy config has a non-string value", "error", err)
+		}
+	}
+
+	for _, key := range []string{"prometheus_url", "prometheus_username", "prometheus_password", "prometheus_bearer_token", "auth_type"} {
+		delete(configMap, key)
+	}
+	for _, key := range prometheusServerOnlyKeys {
+		delete(configMap, key)
+	}
+
+	out := prometheusProxyDatasource{
+		BaseURL:  strings.TrimRight(strings.TrimSpace(in.URL), "/"),
+		AuthType: prometheusProxyAuthTypes[in.AuthType],
+	}
+	mergeJSON(&configMap, out)
+	mergeJSON(&credentials, prometheusProxyCredentials{
+		Username:    in.Username,
+		Password:    in.Password,
+		BearerToken: in.BearerToken,
+	})
+}
+
+// mergeJSON marshals v and decodes it into *dst (a pointer to a non-nil map), adding or overwriting only the
+// keys v emits.
+func mergeJSON(dst, v any) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		slog.Error("prometheus proxy config marshal failed", "error", err)
+		return
+	}
+	if err := json.Unmarshal(raw, dst); err != nil {
+		slog.Error("prometheus proxy config merge failed", "error", err)
+	}
 }
 
 // IsProxyIntegration returns true if the given integration is a proxy integration,
@@ -56,6 +160,19 @@ func IsProxyIntegration(integrationType string, configValues []IntegrationConfig
 // be a proxy integration (always-proxy or dual-mode type).
 // For dual-mode types, the actual determination requires checking connection_mode config.
 func IsProxyIntegrationType(integrationType string) bool {
+	t := strings.ToLower(integrationType)
+	if singleInstanceDualModeTypes[t] {
+		return false
+	}
+	return IsProxyCapableType(t)
+}
+
+// IsProxyCapableType is IsProxyIntegrationType without the single-instance
+// exemption: true for every type that can be a proxy integration in some mode.
+// Use it to decide whether to look at connection_mode (e.g. before deleting a
+// row, so the forager's datasource list is refreshed); use IsProxyIntegrationType
+// for the "multiple per account" rules.
+func IsProxyCapableType(integrationType string) bool {
 	t := strings.ToLower(integrationType)
 	if alwaysProxyTypes[t] {
 		return true
@@ -119,6 +236,9 @@ func BuildSingleDatasourceConfig(integrationType string, configValues []Integrat
 		if mapping.DbType != "" {
 			configMap["db_type"] = mapping.DbType
 		}
+	}
+	if strings.EqualFold(integrationType, "prometheus") {
+		normalizePrometheusProxyDatasource(configMap, credentials)
 	}
 
 	return relay.ProxyDatasourceConfig{
@@ -310,6 +430,9 @@ func queryProxyDatasources(accountID string) ([]relay.ProxyDatasourceConfig, err
 			if mapping.DbType != "" {
 				configMap["db_type"] = mapping.DbType
 			}
+		}
+		if strings.EqualFold(integrationType, "prometheus") {
+			normalizePrometheusProxyDatasource(configMap, credentials)
 		}
 
 		datasources = append(datasources, relay.ProxyDatasourceConfig{

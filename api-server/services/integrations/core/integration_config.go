@@ -640,6 +640,21 @@ func CreateIntegrationConfig(
 		}
 	}
 
+	// A dual-mode row switched out of vm_agent must still refresh the forager's
+	// datasource list, or the forager keeps serving the old datasource and its
+	// credentials. Read the stored mode before the values below overwrite it.
+	wasProxy := false
+	if isUpdate && IsProxyCapableType(intgerationType) {
+		var prevMode string
+		if modeErr := tx.QueryRow(`
+			SELECT value FROM integration_config_values
+			WHERE integration_id = $1 AND name = 'connection_mode'
+		`, configId).Scan(&prevMode); modeErr != nil && !errors.Is(modeErr, sql.ErrNoRows) {
+			return IntegrationDto{}, fmt.Errorf("failed to read previous connection_mode: %w", modeErr)
+		}
+		wasProxy = IsProxyIntegration(intgerationType, []IntegrationConfigValue{{Name: "connection_mode", Value: prevMode}})
+	}
+
 	parameters := []string{DefaultLogProvider, DefaultMetricsProvider, DefaultTraceProvider, DefaultLLMProvider}
 	// insert config values
 	for i, v := range integrationConfigValues {
@@ -1017,8 +1032,8 @@ func CreateIntegrationConfig(
 		}
 	}
 
-	// Trigger proxy config push if this is a proxy integration
-	if IsProxyIntegration(intgerationType, integrationConfigValues) {
+	// Trigger proxy config push if this is, or just stopped being, a proxy integration
+	if wasProxy || IsProxyIntegration(intgerationType, integrationConfigValues) {
 		for _, accId := range accountIds {
 			TriggerProxyConfigPush(accId)
 		}
@@ -1626,7 +1641,7 @@ func DeleteIntegrationConfig(
 	// Check if this is a proxy integration by querying its config values
 	var affectedAccountIDs []string
 	isProxy := false
-	if IsProxyIntegrationType(integrationType) {
+	if IsProxyCapableType(integrationType) {
 		// Fetch config values to determine if this is a proxy integration
 		configRows, qErr := tx.Queryx(`
 			SELECT name::text, value::text FROM integration_config_values WHERE integration_id = $1

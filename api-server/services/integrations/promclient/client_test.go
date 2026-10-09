@@ -464,3 +464,23 @@ func TestDo_PostsBodyAndSignsIt(t *testing.T) {
 	assert.Equal(t, emptyPayloadHash, payloadHash(nil))
 	assert.NotEqual(t, emptyPayloadHash, payloadHash([]byte("name: x")))
 }
+
+func TestDo_VMAgentWithoutTransportRefusesToDial(t *testing.T) {
+	var hit bool
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hit = true }))
+	defer server.Close()
+
+	cfg, err := NewPrometheusUserConfig(map[string]string{
+		PrometheusURLKey:            server.URL,
+		PrometheusConnectionModeKey: PrometheusConnectionModeVMAgent,
+	})
+	require.NoError(t, err)
+	assert.True(t, cfg.ViaForager)
+
+	resp, err := cfg.DoGet(context.Background(), "/api/v1/rules", nil)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.Error(t, err)
+	assert.False(t, hit, "a vm_agent config without a transport must not reach the URL")
+}
