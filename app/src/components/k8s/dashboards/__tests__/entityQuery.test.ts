@@ -5,12 +5,14 @@ import {
   draftFromQuery,
   findTable,
   operatorTakesList,
+  operatorTakesRegex,
   operatorTakesValue,
   operatorsFor,
   renderEntityQuery,
   selectableColumns,
   tablesFor,
 } from '../entityQuery';
+import { renderTemplate } from '../templating';
 
 describe('defaultDraft', () => {
   it('opens on a query that already runs', () => {
@@ -141,7 +143,7 @@ describe('operatorsFor', () => {
   });
 
   it('offers only operators the SQL generator implements', () => {
-    // `_icontains` / `_regex` are declared in the engine's operator constants
+    // `_icontains` and friends are declared in the engine's operator constants
     // but only the log providers implement them — the entity path answers
     // "binary clause type not supported", i.e. a panel that breaks at render.
     const implemented = new Set([
@@ -152,6 +154,8 @@ describe('operatorsFor', () => {
       '_like',
       '_nlike',
       '_ilike',
+      '_regex',
+      '_nregex',
       '_lt',
       '_lte',
       '_gt',
@@ -168,6 +172,28 @@ describe('operatorsFor', () => {
         }
       }
     }
+  });
+
+  it('offers a regex match on text columns of both datasources, and nowhere else', () => {
+    // The only way to say "A or B" on one column when the values are not known
+    // exactly — rows are AND-ed, and a pattern (%…%) has no alternation.
+    for (const [table, column] of [
+      [events, 'title'],
+      [findTable('traces_v2'), 'resource'],
+      [findTable('traces_groupings_v2'), 'resource'],
+    ] as const) {
+      const values = operatorsFor(table, column).map((o) => o.value);
+      expect([table.value, values.includes('_regex'), values.includes('_nregex')]).toEqual([table.value, true, true]);
+    }
+    expect(operatorsFor(events, 'computed_score').map((o) => o.value)).not.toContain('_regex');
+    expect(operatorsFor(events, 'starts_at').map((o) => o.value)).not.toContain('_regex');
+
+    expect(operatorTakesRegex('_regex')).toBe(true);
+    expect(operatorTakesRegex('_nregex')).toBe(true);
+    expect(operatorTakesRegex('_ilike')).toBe(false);
+    // One pattern, not a comma-separated list: `a,b|c` must reach the engine whole.
+    expect(operatorTakesList('_regex')).toBe(false);
+    expect(operatorTakesValue('_regex')).toBe(true);
   });
 
   it('does not offer "is empty" on traces', () => {
@@ -300,6 +326,17 @@ describe('aggregate filters', () => {
     expect((query.having as any)._and).toEqual([{ _binary: { event_count: { _gt: 100 } } }]);
   });
 
+  it('stores a regex filter as one pattern, exactly as typed', () => {
+    const query = buildEntityQuery({
+      ...defaultDraft('events_v2'),
+      filters: [{ column: 'title', operator: '_regex', value: ' registry-(central|edge), again ' }],
+    });
+    // Trimmed like every value, but never split on the comma the way a list is.
+    expect((query.where as any)._and).toEqual([{ _binary: { title: { _regex: 'registry-(central|edge), again' } } }]);
+    // …and it comes back into the builder as the same row.
+    expect(draftFromQuery(query).filters).toEqual([{ column: 'title', operator: '_regex', value: 'registry-(central|edge), again' }]);
+  });
+
   it('leaves HAVING off a query with no aggregate filter', () => {
     const query = buildEntityQuery({ ...defaultDraft('events_v2'), filters: [{ column: 'title', operator: '_ilike', value: '%oom%' }] });
     expect(query.having).toBeUndefined();
@@ -381,6 +418,17 @@ describe('renderEntityQuery', () => {
     expect(clauses[1]._binary.priority._in).toEqual(['P1', 'P0']);
     // `_is_null` carries a boolean, which no template touches.
     expect(clauses[2]._binary.ends_at._is_null).toBe(true);
+  });
+
+  it('keeps a regex anchor, and still fills a variable inside the pattern', () => {
+    // `$` ends a regex and starts a variable. Only a known variable name is
+    // substituted, so the trailing anchor must reach the engine untouched.
+    const regexQuery = buildEntityQuery({
+      ...defaultDraft('events_v2'),
+      filters: [{ column: 'title', operator: '_regex', value: '^($namespace|edge)-api$' }],
+    });
+    const rendered = renderEntityQuery(regexQuery, (v) => renderTemplate(v, { namespace: 'prod' }));
+    expect((rendered.where as any)._and[0]._binary.title._regex).toBe('^(prod|edge)-api$');
   });
 
   it('leaves column names and operators alone', () => {

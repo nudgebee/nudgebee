@@ -21,6 +21,51 @@ describe('toTraceWhere', () => {
     expect(unsupported).toEqual([]);
   });
 
+  it('sends a regex filter through as one pattern', () => {
+    const { where, unsupported, overwritten } = toTraceWhere(spans, [{ column: 'resource', operator: '_regex', value: 'registry-(central|edge)' }]);
+    expect(where).toEqual({ resource: { _regex: 'registry-(central|edge)' } });
+    expect(unsupported).toEqual([]);
+    expect(overwritten).toEqual([]);
+  });
+
+  it('reports a filter that replaced an earlier one on the same column and operator', () => {
+    // The clause has one slot per column and operator. Two "matches pattern"
+    // rows used to run as only the second, with nothing saying so — which read
+    // as an OR that only half worked.
+    const { where, overwritten } = toTraceWhere(spans, [
+      { column: 'resource', operator: '_ilike', value: '%central%' },
+      { column: 'resource', operator: '_ilike', value: '%edge%' },
+      { column: 'resource', operator: '_ilike', value: '%other%' },
+    ]);
+    expect(where).toEqual({ resource: { _ilike: '%other%' } });
+    // Named once, however many rows collided.
+    expect(overwritten).toEqual(['resource']);
+  });
+
+  it('does not report the same filter entered twice', () => {
+    // Nothing was lost: both rows say the same thing.
+    const { where, overwritten } = toTraceWhere(spans, [
+      { column: 'resource', operator: '_ilike', value: '%central%' },
+      { column: 'resource', operator: '_ilike', value: ' %central% ' },
+      { column: 'workload_namespace', operator: '_in', value: 'prod, staging' },
+      { column: 'workload_namespace', operator: '_in', value: 'prod,staging' },
+    ]);
+    expect(where).toEqual({ resource: { _ilike: '%central%' }, workload_namespace: { _in: ['prod', 'staging'] } });
+    expect(overwritten).toEqual([]);
+  });
+
+  it('does not report two filters on one column that use different operators', () => {
+    const { where, overwritten } = toTraceWhere(spans, [
+      { column: 'duration_ns', operator: '_gte', value: '1000000' },
+      { column: 'duration_ns', operator: '_lte', value: '5000000' },
+      // An unfinished row is skipped before it can collide with anything.
+      { column: 'resource', operator: '_ilike', value: '%central%' },
+      { column: 'resource', operator: '_ilike', value: '  ' },
+    ]);
+    expect(where).toEqual({ duration_ns: { _gte: 1000000, _lte: 5000000 }, resource: { _ilike: '%central%' } });
+    expect(overwritten).toEqual([]);
+  });
+
   it('coerces a value to what its operator and column type expect', () => {
     const { where } = toTraceWhere(spans, [
       { column: 'workload_namespace', operator: '_not_in', value: 'prod, staging' },
@@ -66,6 +111,17 @@ describe('toTraceWhere', () => {
 
 describe('runTracePanel', () => {
   beforeEach(() => jest.clearAllMocks());
+
+  it('carries the overwritten columns on the result, for the panel to warn about', async () => {
+    const filters = [
+      { column: 'resource', operator: '_ilike', value: '%central%' },
+      { column: 'resource', operator: '_ilike', value: '%edge%' },
+    ];
+    const spansResult = await runTracePanel({ ...defaultDraft('traces_v2'), filters }, 'acc-1', 1, 2);
+    expect(spansResult.overwritten).toEqual(['resource']);
+    const groupsResult = await runTracePanel({ ...defaultDraft('traces_groupings_v2'), filters }, 'acc-1', 1, 2);
+    expect(groupsResult.overwritten).toEqual(['resource']);
+  });
 
   it('sends the grouping filters as a where clause and no list parameters', async () => {
     await runTracePanel(

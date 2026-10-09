@@ -14,6 +14,21 @@ import { gqlStringify, queryGraphQL } from '@lib/HttpService';
  */
 export type TraceWhereClause = Record<string, Record<string, unknown>>;
 
+/**
+ * A caller that authors its own filter must hear a refusal.
+ *
+ * The server names what it will not run — a regex outside the supported subset,
+ * a trace provider that cannot filter that way — and the functions below return
+ * only `data`, so that answer used to arrive as an empty result and the panel
+ * said "Nothing came back", which reads as "the filter matched nothing". The
+ * listings that pass no clause of their own keep their existing behaviour.
+ */
+function throwIfRefused(response: any, where?: TraceWhereClause) {
+  if (!where || Object.keys(where).length === 0) return;
+  const message = response?.data?.errors?.[0]?.message;
+  if (message) throw new Error(message);
+}
+
 function mergeWhere(binary: Record<string, any>, where?: TraceWhereClause) {
   for (const [column, operators] of Object.entries(where || {})) {
     binary[column] = { ...(binary[column] || {}), ...operators };
@@ -250,6 +265,7 @@ const apiTrace = {
       opName,
       {}
     );
+    throwIfRefused(response, where);
     return response?.data?.data;
   },
   async traceDistinctWorloadAndNamespace(accountId: string, data: any) {
@@ -500,6 +516,7 @@ const apiTrace = {
       'TraceGroupingV3',
       {}
     );
+    throwIfRefused(response, where);
     return response?.data?.data || {};
   },
   async traceGroupZones({

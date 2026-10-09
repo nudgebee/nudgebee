@@ -399,6 +399,19 @@ func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition,
 					} else {
 						return "", fmt.Errorf("like clause %s not supported for non string type", binaryType)
 					}
+				case Regex, NRegex:
+					pattern, isString := value.(string)
+					if !isString || columnDef.Type != "string" {
+						return "", fmt.Errorf("regex clause %s needs a string column and a string pattern", binaryType)
+					}
+					if err := ValidateRegexFilter(pattern); err != nil {
+						return "", err
+					}
+					expr, err := regexMatchExpr(dialect, resolveColumnReference(column, columnDef, true), pattern, binaryType == NRegex)
+					if err != nil {
+						return "", err
+					}
+					binaryCondition.WriteString(expr)
 				case Eq:
 					binaryCondition.WriteString(resolveColumnReference(column, columnDef, true))
 					if columnDef.Type == "json" && tableDef.Source != database.AgentWarehouse {

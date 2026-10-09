@@ -268,6 +268,11 @@ func (s *OtelClickhouseTraceSource) GetSupportedOperators() []string {
 	return []string{"_eq", "_neq", "_like", "_ilike", "_nlike", "_gt", "_lt", "_gte", "_lte", "_is_null"}
 }
 
+// TraceRegexOperators: both compile to match() in the SQL generator (query/sql_regex.go).
+func (s *OtelClickhouseTraceSource) TraceRegexOperators() []query.BinaryWhereClauseType {
+	return []query.BinaryWhereClauseType{query.Regex, query.NRegex}
+}
+
 // injectTimeFilter re-inserts timestamp._between into the where clause from StartTime/EndTime
 // so the SQL generator can produce the correct time predicate.
 func (s *OtelClickhouseTraceSource) injectTimeFilter(req *TracesV3Request) {

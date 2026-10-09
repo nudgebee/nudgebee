@@ -299,9 +299,18 @@ export function usePanelData({
       )
         .then((result) => {
           if (cancelled) return;
+          const notes: string[] = [];
           if (result.unsupported.length > 0) {
-            setWarning(`Ignored filters this trace store cannot apply: ${result.unsupported.join(', ')}.`);
+            notes.push(`Ignored filters this trace store cannot apply: ${result.unsupported.join(', ')}.`);
           }
+          if (result.overwritten.length > 0) {
+            notes.push(
+              `Only the last filter on ${result.overwritten.join(
+                ', '
+              )} ran: two filters with the same column and operator cannot both apply. Combine them into one — "is one of" for exact values, "matches regex" for patterns (a|b).`
+            );
+          }
+          if (notes.length > 0) setWarning(notes.join(' '));
           setData({ labels: [], series: [], table: result });
         })
         .catch((err) => {

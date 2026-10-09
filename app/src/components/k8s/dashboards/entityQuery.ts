@@ -725,11 +725,17 @@ export function tablesFor(datasource: string): EntityTable[] {
 /**
  * Operators the SQL generator actually implements, per column type.
  *
- * Deliberately NOT the full `BinaryWhereClauseType` list: `_icontains`,
- * `_regex` and friends exist only in the operator CATALOG, which serves the log
- * providers (Loki / Elasticsearch chips). The entity path has no case for them
- * and fails the query with "binary clause type not supported", so offering them
- * here would build panels that only break at render.
+ * Deliberately NOT the full `BinaryWhereClauseType` list: `_icontains` and
+ * friends exist only in the operator CATALOG, which serves the log providers
+ * (Loki / Elasticsearch chips). The entity path has no case for them and fails
+ * the query with "binary clause type not supported", so offering them here
+ * would build panels that only break at render.
+ *
+ * The regex pair is what makes an OR on one column possible — `central|edge` —
+ * since rows are AND-ed. The server holds the pattern to the subset Postgres
+ * and ClickHouse read the same way (query/sql_regex.go) and names anything
+ * outside it, so a pattern cannot mean one thing on an events panel and
+ * another on a traces panel.
  *
  * `operatorsFor` narrows this per table — see the traces carve-out there.
  */
@@ -741,6 +747,8 @@ const OPERATORS_BY_TYPE: Record<EntityColumnType, { value: string; label: string
     { value: '_not_in', label: 'is none of' },
     { value: '_ilike', label: 'matches pattern (%…%)' },
     { value: '_nlike', label: 'does not match pattern' },
+    { value: '_regex', label: 'matches regex' },
+    { value: '_nregex', label: 'does not match regex' },
     { value: '_is_null', label: 'is empty' },
   ],
   number: [
@@ -767,6 +775,8 @@ const OPERATORS_BY_TYPE: Record<EntityColumnType, { value: string; label: string
 const LIST_OPERATORS = new Set(['_in', '_not_in']);
 /** Operators that take no value at all. */
 const NO_VALUE_OPERATORS = new Set(['_is_null']);
+/** Operators whose value is a regular expression rather than a literal. */
+const REGEX_OPERATORS = new Set(['_regex', '_nregex']);
 
 export interface EntityFilter {
   column: string;
@@ -842,6 +852,10 @@ export function operatorTakesValue(operator: string): boolean {
 
 export function operatorTakesList(operator: string): boolean {
   return LIST_OPERATORS.has(operator);
+}
+
+export function operatorTakesRegex(operator: string): boolean {
+  return REGEX_OPERATORS.has(operator);
 }
 
 /**
