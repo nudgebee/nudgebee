@@ -745,6 +745,48 @@ export const convertToReadableFormat = (input: string) => {
     .join(' ');
 };
 
+// Canonical Alert Status values + display label/tone, shared by every surface that shows an
+// event's alert lifecycle status (Troubleshoot, Cloud Account Events, Pod/Node Details).
+// `events.status` is FK-constrained in Postgres to this exact set (migrations V175 + V209) and
+// has not changed since CLOSED was added, so it's safe to keep as a static list rather than
+// fetched. "Firing" (not "Open") matches the raw backend value, since "Open" also means
+// something different and unrelated on the Triage Status axis (#40108).
+export const ALERT_STATUS_OPTIONS = [
+  { value: 'FIRING', label: 'Firing', variant: 'red' },
+  { value: 'RESOLVED', label: 'Resolved', variant: 'green' },
+  { value: 'CLOSED', label: 'Closed', variant: 'grey' },
+];
+const ALERT_STATUS_BY_VALUE = Object.fromEntries(ALERT_STATUS_OPTIONS.map((s) => [s.value, s]));
+export const getAlertStatusLabel = (status?: string) => ALERT_STATUS_BY_VALUE[status as string]?.label ?? status ?? '';
+export const getAlertStatusTone = (status?: string) => ALERT_STATUS_BY_VALUE[status as string]?.variant ?? '';
+// Groups can span multiple underlying events with different statuses (`distinct_status`): a
+// still-firing member always wins (most urgent), closed beats resolved only because it's the
+// pre-existing convention seen across this codebase — otherwise the raw sole value passes
+// through untouched, which is what lets a RESOLVED-only group display correctly instead of
+// silently folding into "Firing"/"Open" by default. The Hasura/Postgres aggregate comes back as
+// a JSON-encoded string (e.g. `"[\"RESOLVED\"]"`), not a real array — `.includes()` still matches
+// FIRING/CLOSED by accident as a substring, but indexing a string for the fallback returns its
+// first character, not its first element, so this normalizes to a real array first.
+//
+// This can disagree with a row's own `latest_*` fields (latest_nb_status, latest_title, ...),
+// which the backend picks by recency instead — `(array_agg(id ORDER BY created_at DESC))[1]`,
+// i.e. whichever underlying event happened most recently, regardless of its status. A group
+// whose oldest event is still FIRING but whose newest event is RESOLVED will show "Firing" here
+// while its other displayed fields (title, nb_status, ...) come from that RESOLVED event.
+export const deriveGroupAlertStatus = (distinctStatus: unknown): string => {
+  let arr: unknown;
+  if (Array.isArray(distinctStatus)) {
+    arr = distinctStatus;
+  } else if (typeof distinctStatus === 'string') {
+    const trimmed = distinctStatus.trim();
+    arr = trimmed.startsWith('[') ? safeJSONParse(trimmed) : [trimmed];
+  }
+  if (!Array.isArray(arr)) return '';
+  if (arr.includes('FIRING')) return 'FIRING';
+  if (arr.includes('CLOSED')) return 'CLOSED';
+  return arr[0] ?? '';
+};
+
 // formatAuditActor humanizes an audit EventActor enum (e.g. "K8S_AGENT" -> "K8s Agent")
 // for display in the User column when an audit has no human user_id — i.e. machine /
 // service-initiated events such as agent-run K8s tasks.

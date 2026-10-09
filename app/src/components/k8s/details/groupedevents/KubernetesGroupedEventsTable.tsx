@@ -35,11 +35,14 @@ import ticketsApi from '@api1/tickets';
 import { applyFiltersOnRouter } from '@lib/router';
 import { hasWriteAccess, canCreateTicket, getCurrentTenant } from '@lib/auth';
 import {
-  convertToReadableFormat,
   titleCaseForAggregationKey,
   syncFilterFromQuery,
   toSeverityLevel,
   EXCLUDED_TRIAGE_AGGREGATION_KEYS,
+  ALERT_STATUS_OPTIONS,
+  getAlertStatusLabel,
+  getAlertStatusTone,
+  deriveGroupAlertStatus,
 } from 'src/utils/common';
 import { Box, Typography } from '@mui/material';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
@@ -146,12 +149,7 @@ const transformTableData = (
     }
 
     // Determine Status
-    let status = 'OPEN';
-    if (item.distinct_status?.includes('FIRING')) {
-      status = 'FIRING';
-    } else if (item.distinct_status?.includes('CLOSED')) {
-      status = 'CLOSED';
-    }
+    const status = deriveGroupAlertStatus(item.distinct_status);
 
     // Resolve account name for the Alert cell
     const account = isTroubleshootPage ? accounts.find((acc: any) => (acc.id || acc.value) === item.account_id) : null;
@@ -298,9 +296,7 @@ const transformTableData = (
           ),
         },
         {
-          component: (
-            <Label margin='auto' text={convertToReadableFormat(status)} variant={status === 'FIRING' ? 'red' : status === 'CLOSED' ? 'grey' : ''} />
-          ),
+          component: <Label margin='auto' text={getAlertStatusLabel(status)} variant={getAlertStatusTone(status)} />,
         },
         {
           component: (
@@ -1298,10 +1294,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
           {
             type: 'dropdown',
             enabled: true,
-            options: [
-              { value: 'FIRING', label: 'Firing' },
-              { value: 'CLOSED', label: 'Closed' },
-            ],
+            options: ALERT_STATUS_OPTIONS.map(({ value, label }) => ({ value, label })),
             onSelect: (e: any) => {
               setSelectedStatus(e.target.value);
               setCurrentPage(1);

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import apiRecommendations, { RECOMMENDATION_SERVERITY } from '@api1/recommendation';
 import k8sApi from '@api1/kubernetes';
-import { snakeToTitleCase, cloudServiceLabel } from 'src/utils/common';
+import { snakeToTitleCase, cloudServiceLabel, ALERT_STATUS_OPTIONS } from 'src/utils/common';
 import apiResources from '@api1/resources';
 
 const useCloudFilter = (accountId: string) => {
@@ -33,11 +33,7 @@ const useEventCloudFilter = (accountId: string | string[], data: any = {}, timeR
   const [isOptionsLoading, setIsOptionsLoading] = useState({ serviceName: false, namespace: false, aggregationKey: false, source: false });
   const workloadFilter: any[] = [];
   const [sourceFilter, setSourceFilter] = useState<{ label: string; value: string }[]>([]);
-  const statusFilter = [
-    { value: 'FIRING', label: 'Firing' },
-    { value: 'CLOSED', label: 'Closed' },
-    { value: 'RESOLVED', label: 'Resolved' },
-  ];
+  const statusFilter = ALERT_STATUS_OPTIONS.map(({ value, label }) => ({ value, label }));
   const nbStatusFilter = [
     { value: 'OPEN', label: 'Open' },
     { value: 'ACTION_REQUIRED', label: 'Action Required' },

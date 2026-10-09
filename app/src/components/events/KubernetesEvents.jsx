@@ -52,7 +52,15 @@ import ticketsApi from '@api1/tickets';
 import apiUser from '@api1/user';
 import { getDateString, getLast24Hrs } from '@lib/datetime';
 import { hasWriteAccess, canCreateTicket, getCurrentTenant, getUserSession } from '@lib/auth';
-import { safeJSONParse, titleCaseForAggregationKey, syncFilterFromQuery, toSeverityLevel, EXCLUDED_TRIAGE_AGGREGATION_KEYS } from 'src/utils/common';
+import {
+  safeJSONParse,
+  titleCaseForAggregationKey,
+  syncFilterFromQuery,
+  toSeverityLevel,
+  EXCLUDED_TRIAGE_AGGREGATION_KEYS,
+  ALERT_STATUS_OPTIONS,
+  deriveGroupAlertStatus,
+} from 'src/utils/common';
 import { applyFiltersOnRouter } from '@lib/router';
 import { action } from 'src/utils/actionStyles';
 import { ds } from 'src/utils/colors';
@@ -310,7 +318,7 @@ const mapUniqueRowToEvent = (g) => {
     score_confidence: g.latest_score_confidence,
     nb_status: g.latest_nb_status,
     snoozed_until: g.latest_snoozed_until,
-    status: statusArr.includes('FIRING') ? 'FIRING' : statusArr.includes('CLOSED') ? 'CLOSED' : statusArr[0],
+    status: deriveGroupAlertStatus(statusArr),
     created_at: g.max_created_at,
     starts_at: g.max_created_at,
     subject_name: multiSubject ? `${g.count_subject_name} workloads` : firstOfJson(g.distinct_subject_name),
@@ -366,11 +374,7 @@ const KubernetesEventsTable = ({
   const persisted = useMemo(() => readPersistedFilters(persistKey), [persistKey]);
 
   const showEllipsis = true;
-  const statusFilter = [
-    { value: 'FIRING', label: 'Open' },
-    { value: 'CLOSED', label: 'Closed' },
-    { value: 'RESOLVED', label: 'Resolved' },
-  ];
+  const statusFilter = ALERT_STATUS_OPTIONS.map(({ value, label }) => ({ value, label }));
   const priorityFilter = [
     { value: 'HIGH', label: 'High' },
     { value: 'MEDIUM', label: 'Medium' },

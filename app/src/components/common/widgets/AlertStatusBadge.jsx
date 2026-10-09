@@ -8,6 +8,7 @@ import { Modal } from '@ui/Modal';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 import { ds } from '@utils/colors';
+import { getAlertStatusLabel, getAlertStatusTone } from 'src/utils/common';
 
 // Keep in sync with closeReasonCodes/reopenReasonCodes in event/service.go.
 const CLOSE_REASON_OPTIONS = [
@@ -58,7 +59,6 @@ const AlertStatusBadge = ({ eventId, status, canToggle, closedByName, closedReas
 
   const isOpen = status === 'FIRING';
   const isClosed = status === 'CLOSED';
-  const isResolved = status === 'RESOLVED';
   const canReopen = isClosed && !!closedByName;
   const showArrow = canToggle && (isOpen || isClosed);
 
@@ -111,14 +111,7 @@ const AlertStatusBadge = ({ eventId, status, canToggle, closedByName, closedReas
     }
   };
 
-  const badgeLabel = (
-    <Label
-      margin='0'
-      text={isOpen ? 'Open' : isClosed ? 'Closed' : isResolved ? 'Resolved' : status}
-      variant={isOpen ? 'red' : isClosed ? 'grey' : isResolved ? 'green' : ''}
-      showDropdownArrow={showArrow}
-    />
-  );
+  const badgeLabel = <Label margin='0' text={getAlertStatusLabel(status)} variant={getAlertStatusTone(status)} showDropdownArrow={showArrow} />;
 
   // Box must be the outermost trigger element — DropdownMenu clones it to
   // attach its open-menu onClick; nesting Tooltip outermost broke reopen

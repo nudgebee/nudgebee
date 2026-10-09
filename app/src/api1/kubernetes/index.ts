@@ -12,7 +12,7 @@ import {
   formatDateTime,
 } from '@lib/datetime';
 import { getBudgetExpectedMonthlyExpense, getExpectedYearlyExpense } from '@lib/budget';
-import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
+import { parseHttpResponseBodyMessage, safeJSONParse, ALERT_STATUS_OPTIONS, deriveGroupAlertStatus } from 'src/utils/common';
 import getMockData from '@api1/mock';
 import observability from '@api1/observability';
 import { getClusterData } from '@context/DataContext';
@@ -774,11 +774,7 @@ export const priorityFilter = [
   { value: 'INFO', label: 'Info' },
 ];
 
-export const statusFilter = [
-  { value: 'FIRING', label: 'Firing' },
-  { value: 'RESOLVED', label: 'Resolved' },
-  { value: 'CLOSED', label: 'Closed' },
-];
+export const statusFilter = ALERT_STATUS_OPTIONS.map(({ value, label }) => ({ value, label }));
 
 export const GET_RESOURCE_ATTRIBUTES = `
 query GetResourceAttributes {
@@ -2019,10 +2015,7 @@ query list_k8_issues_count {
         let allGroupings = data.event_groupings || [];
         if (query?.status) {
           const statuses = Array.isArray(query.status) ? query.status : [query.status];
-          allGroupings = allGroupings.filter((g: any) => {
-            const derivedStatus = g.distinct_status?.includes('FIRING') ? 'FIRING' : 'CLOSED';
-            return statuses.includes(derivedStatus);
-          });
+          allGroupings = allGroupings.filter((g: any) => statuses.includes(deriveGroupAlertStatus(g.distinct_status)));
         }
         if (query?.priority) {
           const priorities = Array.isArray(query.priority) ? query.priority : [query.priority];

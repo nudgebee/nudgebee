@@ -20,21 +20,11 @@ import Datetime from '@shared/format/Datetime';
 import apiHome from '@api1/home';
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
+import { ALERT_STATUS_OPTIONS, getAlertStatusLabel, getAlertStatusTone } from 'src/utils/common';
 
 const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
-// Event statuses come from the backend `event_status` reference table — the FK
-// source of truth for `events.status`. The complete set is fixed by that FK
-// (FIRING/RESOLVED/CLOSED, per migrations V175 + V209) and has not changed since
-// CLOSED was added, so it's kept here as a static list with display label/color.
-const STATUS_OPTIONS = [
-  { value: 'FIRING', label: 'Open', variant: 'red' },
-  { value: 'RESOLVED', label: 'Resolved', variant: 'green' },
-  { value: 'CLOSED', label: 'Closed', variant: 'grey' },
-];
-
-const statusFilter = STATUS_OPTIONS.map(({ value, label }) => ({ value, label }));
-const STATUS_BY_VALUE = Object.fromEntries(STATUS_OPTIONS.map((s) => [s.value, s]));
+const statusFilter = ALERT_STATUS_OPTIONS.map(({ value, label }) => ({ value, label }));
 
 const SEVERITY_LEVEL_MAP = {
   critical: 'critical',
@@ -183,8 +173,8 @@ const AutoInvestigated = () => {
             >
               <Label
                 margin='0'
-                text={STATUS_BY_VALUE[item.status]?.label ?? item.status}
-                variant={STATUS_BY_VALUE[item.status]?.variant ?? ''}
+                text={getAlertStatusLabel(item.status)}
+                variant={getAlertStatusTone(item.status)}
                 customLabelStyle={{ height: ds.space[3] }}
               />
               <Datetime value={item.updated_at} sx={{ fontSize: ds.text.caption }} />
