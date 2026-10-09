@@ -653,3 +653,11 @@ func TestDistinctErrorLines_OneLinePerPattern(t *testing.T) {
 	assert.Len(t, capped, 2)
 	assert.Equal(t, 3, total, "the pattern count is not limited by the line limit")
 }
+
+// get_event_by_id must filter on the uuid column inside the view so the
+// lookup uses the primary key, not a scan of the account's events.
+func TestByIDViewFiltersOnTheUUIDColumn(t *testing.T) {
+	query := "SELECT id, title FROM events WHERE id = 'c0f89551-c23d-49ea-bd8d-d0291170e66b'"
+	view := byIDView("a2a30b02-0f67-42e5-a2ab-c658230fd798", query)
+	assert.Contains(t, view, "FROM events WHERE id = 'c0f89551-c23d-49ea-bd8d-d0291170e66b'::uuid AND cloud_account_id = 'a2a30b02-0f67-42e5-a2ab-c658230fd798'::uuid")
+}

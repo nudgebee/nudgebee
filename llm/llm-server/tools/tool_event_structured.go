@@ -273,7 +273,7 @@ func (t GetEventByIdTool) byID(nbCtx core.NbToolContext, eventID string) (core.N
 	// conversation's workspace.
 	dataCtx := nbCtx.ForTarget()
 	dataAccountID := dataCtx.AccountId
-	view := resolveEventsViewPlaceholders(eventsViewWithId, dataAccountID, true)
+	view := byIDView(dataAccountID, query)
 	resp, data, err := sqlToolCall(dataCtx, query, "events", view, 1, nil)
 	if err != nil {
 		return resp, err
@@ -305,6 +305,15 @@ func (t GetEventByIdTool) byID(nbCtx core.NbToolContext, eventID string) (core.N
 	resp.Data = string(bytesData)
 	resp.References = append(eventReferences(nbCtx, dataAccountID, data), overflowRefs...)
 	return resp, nil
+}
+
+// byIDView is the events view with the id filter inside it, on the uuid
+// column. The view returns id::text, so the outer "WHERE id = '<uuid>'"
+// compares text and cannot use the primary key: on the largest dev account it
+// read 52k buffers (89k rows) per lookup instead of 4, and calls took up to
+// 10s when those pages were not cached.
+func byIDView(accountID, query string) string {
+	return injectIdPredicate(resolveEventsViewPlaceholders(eventsViewWithId, accountID, true), query)
 }
 
 // EventEvidenceFileName is the workspace file holding one event's structured
