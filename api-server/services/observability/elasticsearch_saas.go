@@ -698,6 +698,19 @@ func parseESPPLLogs(rawJSON string) ([]OutputLog, error) {
 }
 
 func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, error) {
+	logs, _, err := e.QueryLogsDetailed(ctx, fetchLogRequest)
+	return logs, err
+}
+
+// LabelAliasTargets implements labelAliasTargetsSource: the shipper spellings a
+// Nudgebee label is expanded into (esCanonicalK8sFields).
+func (e *ElasticSaasSource) LabelAliasTargets(name string) []string {
+	return esCandidateFields(name)
+}
+
+// QueryLogsDetailed implements [DetailedLogSource]: the dsl and kql paths also report
+// hits.total and the aggregations the body asked for. PPL reports neither.
+func (e *ElasticSaasSource) QueryLogsDetailed(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, LogQueryDetails, error) {
 	// A where clause that failed to render must never reach the cluster as an
 	// unfiltered search. FetchLogs treats a GetQuery error as non-fatal — some
 	// providers (Signoz, Datadog) apply the where clause natively inside
@@ -713,12 +726,12 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 		if qErr == nil {
 			qErr = errors.New("filter rendered to an empty query")
 		}
-		return nil, fmt.Errorf("elasticsearch: refusing to run an unfiltered search: %w", qErr)
+		return nil, LogQueryDetails{}, fmt.Errorf("elasticsearch: refusing to run an unfiltered search: %w", qErr)
 	}
 
 	cfg, err := GetElasticsearchConfig(ctx, fetchLogRequest.AccountId)
 	if err != nil {
-		return nil, err
+		return nil, LogQueryDetails{}, err
 	}
 
 	var queryType string
@@ -739,7 +752,7 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 			index = cfg.LogIndex
 		}
 		if index == "" {
-			return nil, fmt.Errorf("index is required for %s query", queryType)
+			return nil, LogQueryDetails{}, fmt.Errorf("index is required for %s query", queryType)
 		}
 
 		// dsl passes a raw DSL body straight through; kql translates the typed
@@ -754,7 +767,7 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 			body, berr = finalizeESLogQueryBody(fetchLogRequest.Query, fetchLogRequest.StartTime, fetchLogRequest.EndTime, fetchLogRequest.Limit, fetchLogRequest.Offset, fetchLogRequest.SortFields)
 		}
 		if berr != nil {
-			return nil, berr
+			return nil, LogQueryDetails{}, berr
 		}
 
 		// Log the exact index and body sent upstream. Labels/label-values hit the
@@ -769,15 +782,19 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 
 		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), body, cfg)
 		if err != nil {
-			return nil, fmt.Errorf("failed to execute elasticsearch %s query: %w", queryType, err)
+			return nil, LogQueryDetails{}, fmt.Errorf("failed to execute elasticsearch %s query: %w", queryType, err)
 		}
 		defer func() { _ = resp.Body.Close() }()
 
 		bodyBytes, err := readResponse(resp, "elasticsearch "+queryType+" query")
 		if err != nil {
-			return nil, err
+			return nil, LogQueryDetails{}, err
 		}
-		return parseESSearchLogs(string(bodyBytes))
+		logs, err := parseESSearchLogs(string(bodyBytes))
+		if err != nil {
+			return nil, LogQueryDetails{}, err
+		}
+		return logs, esLogQueryDetails(bodyBytes, esAggsDefinition(body), body["size"], fetchLogRequest.EndTime, fetchLogRequest.IncludeRaw), nil
 
 	case "ppl":
 		pplBody := map[string]any{"query": fetchLogRequest.Query}
@@ -789,17 +806,18 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 
 		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/_plugins/_ppl", cfg.Url), pplBody, cfg) //nolint:bodyclose
 		if err != nil {
-			return nil, fmt.Errorf("failed to execute elasticsearch PPL query: %w", err)
+			return nil, LogQueryDetails{}, fmt.Errorf("failed to execute elasticsearch PPL query: %w", err)
 		}
 
 		bodyBytes, err := readResponse(resp, "elasticsearch PPL query")
 		if err != nil {
-			return nil, err
+			return nil, LogQueryDetails{}, err
 		}
-		return parseESPPLLogs(string(bodyBytes))
+		logs, err := parseESPPLLogs(string(bodyBytes))
+		return logs, LogQueryDetails{}, err
 
 	default:
-		return nil, fmt.Errorf("unsupported query_type: %v", queryType)
+		return nil, LogQueryDetails{}, fmt.Errorf("unsupported query_type: %v", queryType)
 	}
 }
 

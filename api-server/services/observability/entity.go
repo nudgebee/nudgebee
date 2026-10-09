@@ -45,6 +45,10 @@ type FetchLogRequest struct {
 	// a key in Request — that map is provider-parameter space that LLM tools
 	// populate freely, which would make this flag agent-settable.
 	RecordHistory bool `json:"record_history"`
+	// IncludeRaw adds the provider's own fragments (aggregations_raw, total_raw) to the
+	// result, alongside the normalized fields. Typed top-level for the same reason as
+	// RecordHistory.
+	IncludeRaw bool `json:"include_raw"`
 	// Timeout, when set, bounds the provider call and turns off its retries: the caller
 	// has a budget and would rather have no answer than a late one. Set in-process only
 	// (never from a request body), by the log card's narrowed queries, and honoured by
@@ -79,6 +83,24 @@ type FetchLogsResult struct {
 	// reaching the limit (a time budget ran out), so Logs are the newest matches, not all
 	// of them: a count of Logs is "at least N". See PartialLogSource.
 	Partial bool `json:"partial,omitempty"`
+	// Truncated is true when more lines matched than were returned. Exact when Total is
+	// set; otherwise it means "as many lines came back as the limit allowed", which also
+	// holds when exactly that many matched, so it reads as "may be cut off".
+	Truncated bool `json:"truncated"`
+	// Total is the provider's match count, when it reports one; TotalRelation says
+	// whether it is exact ("eq") or a lower bound ("gte").
+	Total         *int64 `json:"total,omitempty"`
+	TotalRelation string `json:"total_relation,omitempty"`
+	// Series carries counts the query asked the provider for, in the metrics shape.
+	Series []Result `json:"series,omitempty"`
+	// SeriesNote says when Series is incomplete or empty although the provider returned
+	// counts. Kept apart from Suggestion, which existing callers read as the
+	// ValidateRequest diagnosis.
+	SeriesNote string `json:"series_note,omitempty"`
+	// AggregationsRaw and TotalRaw are the provider's own fragments, verbatim; set only
+	// when the request has IncludeRaw.
+	AggregationsRaw json.RawMessage `json:"aggregations_raw,omitempty"`
+	TotalRaw        json.RawMessage `json:"total_raw,omitempty"`
 }
 
 type SearchResponse struct {
@@ -100,6 +122,9 @@ type FetchLogLabelRequest struct {
 	// queryable fields. See FetchLogLabelsOrIndexFields — it used to mean the
 	// opposite.
 	FetchIndex bool `json:"fetch_index"`
+	// FieldsOnly returns only labels with Kind "field": the names a query written in
+	// the provider's own language understands. Ignored with FetchIndex.
+	FieldsOnly bool `json:"fields_only"`
 	// IntegrationConfigValues asks for the fields of the configuration DESCRIBED HERE
 	// rather than the one saved for this account, so the integration form can list a
 	// backend's fields before the integration exists. Optional: absent (the normal
@@ -128,6 +153,12 @@ type OutputLogLabel struct {
 	// implementing anything. Clients use it to offer only the operators the label's
 	// type supports; "unknown" is permissive and narrows nothing.
 	DataType string `json:"data_type"`
+	// Kind says what the name is: "field" when the provider itself understands it, or
+	// "alias" for a Nudgebee name that FetchLogs translates, with Field set to the
+	// provider field it maps to when that is known. Set by annotateLogLabelKinds; empty on
+	// listings that are not label listings (index targets, traces).
+	Kind  string `json:"kind,omitempty"`
+	Field string `json:"field,omitempty"`
 }
 
 type FieldsResponse struct {

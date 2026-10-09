@@ -1001,9 +1001,12 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	}
 
 	var logs []OutputLog
+	var details LogQueryDetails
 	partial := false
 	if ps, ok := source.(PartialLogSource); ok {
 		logs, partial, err = ps.QueryLogsPartial(ctx, fetchLogRequest)
+	} else if ds, ok := source.(DetailedLogSource); ok {
+		logs, details, err = ds.QueryLogsDetailed(ctx, fetchLogRequest)
 	} else {
 		logs, err = source.QueryLogs(ctx, fetchLogRequest)
 	}
@@ -1040,7 +1043,8 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	// suggestions — rather than an error: the diagnosis successfully determined what to fix, it
 	// didn't fail. Best-effort: each check fails open (returns nil) when it can't establish the
 	// provider's label/value set, so a legitimately-empty query falls through unchanged.
-	if fetchLogRequest.ValidateRequest && (err != nil || len(logs) == 0) {
+	countsOnly := countsQueryMatched(details)
+	if fetchLogRequest.ValidateRequest && (err != nil || (len(logs) == 0 && !countsOnly)) {
 		// One structured line per diagnosis run, so the trigger rate and hit rate are
 		// queryable in Loki (filter on msg="log_query_empty_result_diagnosis"). "outcome"
 		// distinguishes which check produced the hint the agent then rewrites against
@@ -1082,7 +1086,9 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	}
 	normalizeOutputLogLabels(logs, filteringMap)
 
-	return FetchLogsResult{Logs: logs, Query: usedQuery, Provider: provider, Partial: partial}, nil
+	result := FetchLogsResult{Logs: logs, Query: usedQuery, Provider: provider, Partial: partial}
+	applyLogQueryDetails(&result, details, fetchLogRequest.Limit, fetchLogRequest.Offset, partial, fetchLogRequest.IncludeRaw)
+	return result, nil
 }
 
 // lineContentFields are where-clause fields that filter the log message body
@@ -1924,7 +1930,23 @@ func FetchLogLabels(ctx *security.RequestContext, fetchLogRequest FetchLogLabelR
 	// canonical names on every provider — Loki reports stream labels, SigNoz reports
 	// attributes — which is why llm-server had to invent its own `_body` token.
 	merged := getMergedLabelMapping(ctx, fetchLogRequest.AccountId, source)
-	return buildLogLabels(resolvableCanonicalLogFields(source, merged), merged, discovered), nil
+	labels := buildLogLabels(resolvableCanonicalLogFields(source, merged), merged, discovered)
+	annotateLogLabelKinds(labels, merged, discovered, source)
+	if fetchLogRequest.FieldsOnly {
+		labels = fieldLabelsOnly(labels)
+	}
+	return labels, nil
+}
+
+// fieldLabelsOnly keeps the labels a query in the provider's own language understands.
+func fieldLabelsOnly(labels []OutputLogLabel) []OutputLogLabel {
+	out := make([]OutputLogLabel, 0, len(labels))
+	for _, l := range labels {
+		if l.Kind == "field" {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 func FetchLogLabelValues(ctx *security.RequestContext, fetchLogRequest FetchLogLabelValuesRequest) ([]OutputLogLabelValue, error) {
