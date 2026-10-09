@@ -116,6 +116,7 @@ import RemediationPanel, { isRemediationPlan, runnableActionCount } from '@compo
 import { podDetailsFromEvidence } from '@components/k8s/investigate/podFacts';
 import { uniqueInsightLines } from '@components/k8s/investigate/insightLines';
 import { placeByFinding } from '@components/k8s/investigate/cardOrder';
+import { showsStoredRuleGraph } from '@components/k8s/investigate/storedRuleGraph';
 import EventAlertControlsSection from '@components/k8s/investigate/EventAlertControlsSection';
 // Cloud-specific card imports
 import CloudTrailEventCard from '@components/cloudaccount/investigate/cards/CloudTrailEventCard';
@@ -1193,6 +1194,7 @@ const Investigate = () => {
       const dynamicCards = isCloud ? [] : [new AskAiCard(), new RCACard()];
 
       // K8s: Prometheus event graph
+      let eventGraphCard = null;
       if (isK8s && row.source === 'prometheus' && row?.labels?.alertname) {
         const response = await apiKubernetes1.getEventRules(
           {
@@ -1214,6 +1216,7 @@ const Investigate = () => {
           );
           if (await card.canRenderContent()) {
             dynamicCards.push(card);
+            eventGraphCard = card;
           }
         }
       }
@@ -1344,7 +1347,7 @@ const Investigate = () => {
             if (await card.canRenderContent()) dynamicCards.push(card);
           }
           if (actionType == 'application_performance_metrics') {
-            const card = new ExecutePrometheus(d, row);
+            const card = new ExecutePrometheus(d, row, { requireData: true });
             if (await card.canRenderContent()) dynamicCards.push(card);
           }
           const hasAnomaly = d?.is_anomaly;
@@ -1476,6 +1479,13 @@ const Investigate = () => {
           }
           if (await card.canRenderContent()) pushCard(card);
         }
+      }
+
+      // The alert pipeline already ran the rule's query when the alert fired and stored the result,
+      // with the object that fired marked. When that stored chart is the one on show, the page's
+      // own run of the same query is a repeat of it, so it is left out.
+      if (eventGraphCard && showsStoredRuleGraph(dynamicCards, eventGraphCard.queries[0]?.query)) {
+        dynamicCards.splice(dynamicCards.indexOf(eventGraphCard), 1);
       }
 
       // Build final card list
