@@ -467,6 +467,9 @@ const InstancesView = (props: {
     'Compute Engine': ['compute.googleapis.com/Instance'],
   };
   const ec2Type = ec2TypeMap[props?.serviceName] || ['virtualmachines'];
+  // The metrics the list query filters on; the Region options query mirrors them
+  // so the dropdown lists exactly the regions the table can populate.
+  const ec2ListMetrics = ['average_cpuutilization', 'average_memoryutilization'];
 
   const onSearchEnter = () => {
     setAppliedInstanceIdName(selectedInstanceIdName);
@@ -502,7 +505,7 @@ const InstancesView = (props: {
   useEffect(() => {
     if (props?.accountId) {
       apiCloudAccount.getDistinctTagKeys(props.accountId, props?.serviceName, ec2Type).then(setAvailableTagKeys);
-      apiCloudAccount.getDistinctRegions(props.accountId, props?.serviceName).then(setAvailableRegions);
+      apiCloudAccount.getInstanceRegions(props.accountId, props?.serviceName, ec2Type, ec2ListMetrics).then(setAvailableRegions);
     }
   }, [props?.accountId, props?.serviceName]);
 
@@ -543,7 +546,7 @@ const InstancesView = (props: {
           account_id: props?.accountId,
           serviceName: props?.serviceName,
           type: ec2Type,
-          metric: ['average_cpuutilization', 'average_memoryutilization'],
+          metric: ec2ListMetrics,
           nameFilter: appliedInstanceIdName,
           tagFilterKey: selectedTagKey || undefined,
           tagFilterValue: selectedTagValue || undefined,
