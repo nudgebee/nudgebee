@@ -38,7 +38,7 @@ import { ANNOTATIONS } from '@lib/annotationKeys';
 import UndoConfirmDialog from '@components/k8s/investigate/UndoConfirmDialog';
 import RecurrenceSince from '@components/k8s/investigate/RecurrenceSince';
 import apiRecommendations from '@api1/recommendation';
-import { hasReadAccess, hasWriteAccess, hasFeatureAccess } from '@lib/auth';
+import { hasReadAccess, hasWriteAccess } from '@lib/auth';
 import InvestigateResolution from '@components/k8s/investigate/InvestigateResolution';
 import { Card } from '@ui/Card';
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
@@ -482,7 +482,6 @@ const Investigate = () => {
   const [collapsedObj, setCollapsedObj] = useState({});
   const [generateRcaVisible, setGenerateRcaVisible] = useState(false);
   const [ticketData, setTicketData] = useState({ id: '', url: '' });
-  const [hasRcaFeatureAccess, setHasRcaFeatureAccess] = useState(false);
   const [sentFeedback, setSentFeedback] = useState({});
   const [alertLabels, setAlertLabels] = useState({});
   const [tabValue, setTabValue] = useState(1);
@@ -1839,12 +1838,6 @@ const Investigate = () => {
   };
   handleGenerateRCARef.current = handleGenerateRCA;
 
-  useEffect(() => {
-    hasFeatureAccess('GENERATE_RCA').then((res) => {
-      setHasRcaFeatureAccess(res);
-    });
-  }, []);
-
   const aiCreateFeedback = async (createFeedbackObject) => {
     if (row.id) {
       await apiAskNudgebee.createAiFeedback({
@@ -2479,7 +2472,7 @@ const Investigate = () => {
                             ) : null}
                           </Box>
                           {/* Generate RCA */}
-                          {hasWriteAccess(router.query.accountId) && hasRcaFeatureAccess && generateRcaVisible ? (
+                          {hasWriteAccess(router.query.accountId) && generateRcaVisible ? (
                             <Box sx={{ mr: 'var(--ds-space-2)' }}>
                               <Button
                                 tone='secondary'

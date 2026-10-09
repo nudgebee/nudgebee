@@ -154,16 +154,6 @@ const featureRecommendedContent = (baseTitle, assistantName) => ({
     whenToTurnOn: 'Leave on. Turn off per account when trialling, or when a noisy account should only be analysed on request.',
     why: 'Top of the automatic pipeline: every downstream stage depends on it. Also the single lever to stop model spend on unattended events.',
   },
-  GENERATE_RCA: {
-    description: 'Produces a written root cause analysis: the evidence chain from symptom to cause, not just a description of what fired.',
-    whenToTurnOn: 'You want investigation output that survives into postmortems and tickets.',
-    why: 'A summary says what happened; an RCA argues why. It costs materially more to produce, so it is separately switchable.',
-  },
-  EVENT_DEBUG_ANALYSIS_DISABLED: {
-    description: 'The deeper investigation pass that pulls logs and traces beyond the initial summary.',
-    whenToTurnOn: 'Leave on. Turn off for high-volume accounts, or where log access is not configured yet.',
-    why: 'Most expensive stage in the pipeline and the most likely to hit log-volume limits. Switching it off per account keeps the cheap stages running.',
-  },
   EVENT_INVESTIGATION_SKIP_SERVICE_LABEL_CHECK: {
     description:
       'Lets investigation run on events that carry no service label instead of skipping them. Accuracy drops, because the subject has to be inferred.',
@@ -232,15 +222,10 @@ const featureRecommendedContent = (baseTitle, assistantName) => ({
       'You need a role the built-ins do not express: auditor, workflow operator, cost analyst. Turning it back off is safe, definitions just stop applying.',
     why: 'Built-in roles are coarse. Because this switches on the grant mechanism that performs permission checks, it is admin-only and has a deployment-wide kill switch.',
   },
-  TROUBLESHOOT: {
-    description: "AI incident investigation product tier, metered against your plan's monthly incident allowance.",
-    whenToTurnOn: 'Not a toggle. It changes with the plan.',
-    why: 'An entitlement set by the subscription, not a product setting.',
-  },
   OPTIMIZE: {
     description: 'Cost optimisation product tier: rightsizing, spend analysis and recommendations.',
     whenToTurnOn: 'Not a toggle. It changes with the plan.',
-    why: 'Same entitlement mechanism as Troubleshoot, tracked on the honour system rather than metered.',
+    why: 'A plan entitlement, tracked on the honour system rather than metered.',
   },
 });
 
@@ -258,7 +243,6 @@ const FEATURE_NAVIGATION = {
   AI_COST_REPORT: { route: '/optimise#llm-analyser' },
   CUSTOM_ROLES: { route: '/user-management#access-users/roles' },
   CHANNEL_AWARENESS: { route: '/user-management#integrations' },
-  TROUBLESHOOT: { route: '/troubleshoot' },
   OPTIMIZE: { route: '/optimise' },
   UPGRADE_PLANNER: {
     path: 'Kubernetes › Details › Upgrade Planner',
@@ -271,10 +255,6 @@ const FEATURE_NAVIGATION = {
   AI_WORKFLOW_TOOLS: {
     path: 'Automation › a workflow’s settings',
     reason: 'Needs a specific workflow selected first, so it has no standalone link.',
-  },
-  GENERATE_RCA: {
-    path: 'Investigate › an event’s analysis',
-    reason: 'Only appears while investigating a specific event, not as a standalone screen.',
   },
   LLM_FUNCTION: {
     path: 'Ask {Assistant} Settings, or Kubernetes › Create Alert',
@@ -292,7 +272,6 @@ const FEATURE_NAVIGATION = {
   TRIAGE_LLM_SCORING: { reason: 'Backend-only behavior — there is no screen it turns on or off.' },
   EVENT_AUTO_AI_SUMMARY: { reason: 'Backend-only behavior — there is no screen it turns on or off.' },
   EVENT_ANALYSIS_ON_CHANNEL: { reason: 'Backend-only behavior — there is no screen it turns on or off.' },
-  EVENT_DEBUG_ANALYSIS_DISABLED: { reason: 'Backend-only behavior — there is no screen it turns on or off.' },
   EVENT_INVESTIGATION_SKIP_SERVICE_LABEL_CHECK: { reason: 'Backend-only behavior — there is no screen it turns on or off.' },
   EVENT_AUTO_RAISE_PR_ENABLED: { reason: 'Backend-only behavior — there is no screen it turns on or off.' },
 };
@@ -365,9 +344,13 @@ const FeatureToggleCell = ({ feature, choice, canEdit, saving, onChange }) => {
   );
 };
 
+// Rows in public.feature that are not settings. TROUBLESHOOT anchors the billing 'incidents'
+// dimension (billing_feature_mapping), so it stays in the table but is not a toggle.
+const HIDDEN_FEATURES = new Set(['TROUBLESHOOT']);
+
 const FEATURE_STATUS_DEFAULT = 'default';
 
-// A few flags store the opposite of their name (e.g. EVENT_DEBUG_ANALYSIS_DISABLED='enabled' means OFF); feature.stored_value_inverted marks those.
+// A flag can store the opposite of its name ('enabled' means OFF); feature.stored_value_inverted marks those.
 const displayedFromStored = (status, inverted) => {
   const on = status === 'enabled';
   return (inverted ? !on : on) ? 'on' : 'off';
@@ -481,7 +464,7 @@ const TenantSettings = () => {
           return;
         }
         if (features.length > 0) {
-          setFeatureOptions(features);
+          setFeatureOptions(features.filter((f) => !HIDDEN_FEATURES.has(f.value)));
         }
 
         if (tenantAttributes) {

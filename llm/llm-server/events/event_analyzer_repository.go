@@ -889,9 +889,8 @@ func HasStoredAnalysisContent(analysis string) bool {
 // reachable behind "Raise PR" (#37005 §4). It is reset to a minimal valid result
 // doc ({"source_updates":{}}) rather than "" so the Raise-PR consumer parses it
 // and reports "no proposed code fix is stored" instead of an empty-string parse
-// error. The investigation debug-skip passes false: re-analysing after
-// EVENT_DEBUG_ANALYSIS_DISABLED is turned on (or a Datadog event re-firing
-// without a service label) must not erase a previously stored investigation
+// error. The investigation debug-skip passes false: a Datadog event re-firing
+// without a service label must not erase a previously stored investigation
 // summary, which still feeds finalResponse.Investigation and the RCA input.
 func (r *EventAnalysisRepository) UpsertEventAnalysisStatus(ctx *security.RequestContext, eventId, eventFingerprint, cloudAccountId, aggregationKey, status, statusReason string, analysisType EventAnalysisType, clearPayload bool) error {
 	ctx.GetLogger().Info("analyzer: recording event analysis stage status", "event_fingerprint", eventFingerprint, "account_id", cloudAccountId, "event_aggregation_key", aggregationKey, "analysis_type", analysisType, "status", status)

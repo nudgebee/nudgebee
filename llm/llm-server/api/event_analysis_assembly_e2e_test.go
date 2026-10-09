@@ -63,8 +63,12 @@ func TestEventAnalysis_AssemblyToolPersisted(t *testing.T) {
 
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	require.NoError(t, err)
-	fingerprint, aggKey, err := getEventIdentity(dbManager, EventAnalysisRequest{EventId: eventID, AccountId: account})
+	var fingerprint, aggKey string
+	err = dbManager.Db.QueryRow(`SELECT fingerprint, aggregation_key FROM events WHERE id = $1 AND cloud_account_id = $2`, eventID, account).Scan(&fingerprint, &aggKey)
 	require.NoError(t, err)
+	if fingerprint == "" {
+		fingerprint = eventID
+	}
 
 	repo := events.NewEventAnalysisRepository(dbManager)
 
