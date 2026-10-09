@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS public.idx_auto_pilot_task_recommendation_status;

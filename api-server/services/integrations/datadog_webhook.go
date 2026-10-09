@@ -1034,7 +1034,7 @@ func lookupPodOwner(sc *security.RequestContext, dbms *database.DatabaseManager,
 		Namespace    string `db:"namespace"`
 	}
 	// Build the namespace filter dynamically rather than "$4 = '' OR namespace = $4":
-	// the OR form defeats the index on (tenant_id, namespace, name), so omit the
+	// the OR form defeats the index on (tenant_id, name), so omit the
 	// predicate entirely when the scope carried no namespace.
 	query := `
 		SELECT workload_name, workload_type, namespace

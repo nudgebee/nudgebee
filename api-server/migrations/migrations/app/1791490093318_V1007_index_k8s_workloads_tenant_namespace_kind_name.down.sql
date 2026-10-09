@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS public.idx_k8s_workloads_tenant_namespace_kind_name;
