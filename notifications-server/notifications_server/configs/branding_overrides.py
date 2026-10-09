@@ -65,6 +65,13 @@ _EMAIL_STRING_FIELDS = {
     "address": "branding_address",
 }
 
+# Top-level row field -> URLSettings attribute: links to the partner's own legal
+# pages, shown in the email footer.
+_LEGAL_LINK_FIELDS = {
+    "privacyUrl": "branding_privacy_url",
+    "termsUrl": "branding_terms_url",
+}
+
 
 @dataclass(frozen=True)
 class Branding:
@@ -79,6 +86,8 @@ class Branding:
     branding_footer_link_color: str
     branding_address: str
     branding_copyright_start_year: int
+    branding_privacy_url: str
+    branding_terms_url: str
 
     @classmethod
     def from_urls(cls, urls: URLSettings) -> "Branding":
@@ -87,6 +96,19 @@ class Branding:
     def apply_to(self, urls: URLSettings) -> None:
         for f in fields(self):
             setattr(urls, f.name, getattr(self, f.name))
+
+
+def _is_https_link(value: Any) -> bool:
+    """A link safe to write into an href. services-server refuses anything else on
+    write; a row edited by hand must not get a different scheme through."""
+    return (
+        isinstance(value, str)
+        and value.startswith("https://")
+        and len(value) > len("https://")
+        and value.isascii()
+        and value.isprintable()
+        and not any(c in value for c in " <>\"'`\\")
+    )
 
 
 def normalize_host(host: Optional[str]) -> str:
@@ -128,6 +150,17 @@ def resolve_branding(baseline: Branding, override: Optional[Dict[str, Any]], bas
     title = override.get("title")
     if isinstance(title, str) and title.strip():
         values["branding_name"] = title
+
+    # The baseline legal links lead to the baseline brand's own pages, so they
+    # follow the name: a row that renames the product gets the links it supplies,
+    # and none where it supplies none.
+    renamed = values["branding_name"] != baseline.branding_name
+    for key, attr in _LEGAL_LINK_FIELDS.items():
+        link = override.get(key)
+        if _is_https_link(link):
+            values[attr] = link
+        elif renamed:
+            values[attr] = ""
 
     assistant_name = override.get("assistantName")
     if isinstance(assistant_name, str) and assistant_name.strip():

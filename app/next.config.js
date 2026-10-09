@@ -84,12 +84,20 @@ const nextConfig = {
     ];
   },
   async rewrites() {
-    return [
-      {
-        source: '/.well-known/microsoft-identity-association.json',
-        destination: '/api/well-known/microsoft-identity-association',
-      },
-    ];
+    return {
+      // Ahead of the files in public/: the legal pages are answered per request
+      // host, so a partner host can send visitors to the partner's own policy.
+      beforeFiles: [
+        { source: '/privacy.html', destination: '/api/public/legal/privacy' },
+        { source: '/terms_of_use.html', destination: '/api/public/legal/terms' },
+      ],
+      afterFiles: [
+        {
+          source: '/.well-known/microsoft-identity-association.json',
+          destination: '/api/well-known/microsoft-identity-association',
+        },
+      ],
+    };
   },
   poweredByHeader: false,
   output: 'standalone',

@@ -239,6 +239,8 @@ Branding is configured in the database, in the same `tenant_branding_override` t
 
 The bundled [`branding/default/theme.json`](notifications_server/branding/default/theme.json) is the fallback for anything else the row doesn't set, for a missing `BASE_URL`, and for messages sent before the first successful fetch. A failed refresh keeps the last values it applied. `TENANT_BRANDING_FILE` is no longer read.
 
+The email footer links to the Privacy and Terms pages only when the host's row sets them, in its top-level `privacyUrl` and `termsUrl`. With no row there are none: the web app's bundled pages name one company's legal entity, which is not who runs a self-hosted install. Our own hosts set the links on their row the same way a partner does. A row that renames the product and leaves one out sends no link for it.
+
 ## RabbitMQ Message Format
 
 The consumer reads JSON messages from the `notifications` queue. Failed messages are sent to a delayed queue (`notifications_delayed`) and retried via the `dlx` dead-letter exchange after `RABBITMQ_DEAD_LETTER_DELAY_MS` ms.

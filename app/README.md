@@ -129,6 +129,8 @@ It takes effect within ~30s. See [`app/src/styles/defaultTokens.ts`](src/styles/
 
 **Asset URLs must be same-origin root-relative paths** (`/branding/acme/logo.svg`, or `""` to clear back to the house default). Absolute and scheme-relative URLs are rejected: a stored row that could point at another host is brand hijack and a tracking pixel on every page.
 
+**Legal links are the one exception.** `privacyUrl` and `termsUrl` take an absolute, ASCII-only `https://` URL to the partner's own policy pages (punycode for an internationalised domain), or `""` for none. When a host's row sets one, `/privacy.html` or `/terms_of_use.html` on that host redirects there (`src/pages/api/public/legal/[doc].ts`) and the email footer links to it. A host that sets neither serves the house pages as before; the OSS build ships no house pages (`.oss-exclude`), so there they answer 404. The house brand's own hosts set these too, so their emails carry the links — point them at an external page (the marketing site), never at the host's own `/privacy.html`, which would then redirect to itself.
+
 **Merge semantics** ([`mergeOverride.ts`](src/ee/branding/mergeOverride.ts)): `title`/`assistantName` and asset URLs replace, `colorTokens` merge per key over the house tokens, `theme` merges one level deep (setting `palette` keeps `typography`), `fontRemap` and `carouselSlides` replace wholesale.
 
 **Actions** — super-admin only, because rows are keyed by hostname and carry no tenant column (branding resolves before authentication, so there is no tenant scope to constrain a `tenant_admin`):

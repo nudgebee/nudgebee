@@ -22,6 +22,8 @@
 {%- set _address        = texts.address            | default("Pune", true) -%}
 {%- set _base_url       = links.base_url           | default("#", true) -%}
 {%- set _branding_url   = links.branding_url       | default("", true) -%}
+{%- set _privacy_url    = links.privacy_url        | default("", true) -%}
+{%- set _terms_url      = links.terms_url          | default("", true) -%}
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <meta charset="UTF-8" />
@@ -85,11 +87,13 @@
                       &nbsp;&middot;&nbsp;
                       <a href="mailto:{{ _support_email }}" style="color:#888888; text-decoration:none;">{{ _support_email }}</a>
                       {% endif %}
-                      {% if _branding_url %}
+                      {% if _privacy_url %}
                       &nbsp;&middot;&nbsp;
-                      <a href="{{ _branding_url }}/privacy" style="color:#888888; text-decoration:none;">Privacy</a>
+                      <a href="{{ _privacy_url }}" style="color:#888888; text-decoration:none;">Privacy</a>
+                      {% endif %}
+                      {% if _terms_url %}
                       &nbsp;&middot;&nbsp;
-                      <a href="{{ _branding_url }}/terms" style="color:#888888; text-decoration:none;">Terms</a>
+                      <a href="{{ _terms_url }}" style="color:#888888; text-decoration:none;">Terms</a>
                       {% endif %}
                     </p>
                   </td>

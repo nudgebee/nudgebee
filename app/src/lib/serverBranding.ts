@@ -38,6 +38,12 @@ export interface ServerBrandingData {
   // Nudgebee mascots (e.g. the bee loader). OSS defaults to false (app_config
   // hardcodes it) so the Nudgebee mascots show.
   isWhiteLabel?: boolean;
+  // Absolute https links to the partner's own legal pages; empty or absent
+  // means the host has none of its own. When set, the
+  // matching house page (/privacy.html, /terms_of_use.html) redirects there on
+  // this host — see pages/api/public/legal/[doc].ts.
+  privacyUrl?: string;
+  termsUrl?: string;
   // Optional tenant font remap: [{ family, src, weight?, style? }]. Re-points
   // hardcoded font-family names at a brand font via @font-face injected
   // client-side (see useThemeProvider). Null ⇒ no remap.

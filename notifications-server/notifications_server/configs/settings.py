@@ -109,6 +109,11 @@ class URLSettings(BaseSettings):
     branding_footer_link_color: str = "#ffcc00"
     branding_address: str = "Pune"
     branding_copyright_start_year: int = 2022
+    # Email footer links to the legal pages. Empty (the default) shows no link: the app's bundled pages
+    # name one company's legal entity, which is not who runs a self-hosted install. Only the host's
+    # branding row sets them (`privacyUrl` / `termsUrl`, see branding_overrides.py).
+    branding_privacy_url: str = ""
+    branding_terms_url: str = ""
 
     model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
