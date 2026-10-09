@@ -149,6 +149,12 @@ func (s *CubeAPMTraceSource) GetSupportedOperators() []string {
 	return []string{"_eq", "_neq", "_contains"}
 }
 
+// TraceRegexOperators: the where builder below has a case for _regex and none
+// for its negation, which it already refuses.
+func (s *CubeAPMTraceSource) TraceRegexOperators() []query.BinaryWhereClauseType {
+	return []query.BinaryWhereClauseType{query.Regex}
+}
+
 // cubeAPMTraceFieldsFor returns the LogsQL fields a filter label resolves to. It
 // accepts both a canonical label and an already-mapped field (see
 // cubeAPMTraceFieldAliases for why both arrive here).

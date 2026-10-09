@@ -16,6 +16,7 @@ import {
   filterableColumns,
   findTable,
   operatorTakesList,
+  operatorTakesRegex,
   operatorTakesValue,
   operatorsFor,
   selectableColumns,
@@ -29,6 +30,14 @@ interface Props {
   /** Tables this panel's datasource may query — events, or traces. */
   tables: EntityTable[];
   onChange: (draft: EntityQueryDraft, query: EntityQuery, timeColumn: string) => void;
+}
+
+/** What the value box asks for: nothing, a list, a regex, or a literal. */
+function valuePlaceholder(operator: string): string {
+  if (!operatorTakesValue(operator)) return '—';
+  if (operatorTakesList(operator)) return 'P0, P1';
+  if (operatorTakesRegex(operator)) return 'central|edge';
+  return 'value or $namespace';
 }
 
 /**
@@ -210,7 +219,7 @@ const EntityQueryBuilder: React.FC<Props> = ({ draft, tables, onChange }) => {
                       value={filter.value}
                       onChange={(v: string) => patchFilter(index, { value: v })}
                       disabled={!operatorTakesValue(operator)}
-                      placeholder={operatorTakesList(operator) ? 'P0, P1' : operatorTakesValue(operator) ? 'value or $namespace' : '—'}
+                      placeholder={valuePlaceholder(operator)}
                     />
                   </Box>
                   <Button

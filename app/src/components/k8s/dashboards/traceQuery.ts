@@ -55,13 +55,19 @@ const GROUPING_FIELDS = [
  * two rows on the same column (`duration_ns ≥ 1ms` and `duration_ns ≤ 5ms`
  * become one range), because the clause nests per column then per operator.
  *
+ * That nesting has one slot per column and operator, so a second row with the
+ * SAME column and operator has nowhere to go and replaces the first. It is
+ * reported as `overwritten` rather than lost quietly: two "matches pattern"
+ * rows used to run as only the last one, which reads as an OR that half works.
+ *
  * A column the table does not mark filterable is reported rather than dropped
  * silently — the builder only offers filterable columns, so a leftover means a
  * stored panel names a column that has since stopped being one.
  */
-export function toTraceWhere(table: EntityTable, filters: EntityFilter[]): { where: TraceWhereClause; unsupported: string[] } {
+export function toTraceWhere(table: EntityTable, filters: EntityFilter[]): { where: TraceWhereClause; unsupported: string[]; overwritten: string[] } {
   const where: TraceWhereClause = {};
   const unsupported: string[] = [];
+  const overwritten: string[] = [];
   const filterable = new Set(filterableColumns(table).map((c) => c.name));
 
   for (const filter of filters) {
@@ -72,9 +78,15 @@ export function toTraceWhere(table: EntityTable, filters: EntityFilter[]): { whe
     }
     // An unfinished row is not a filter on the empty string.
     if (operatorTakesValue(filter.operator) && filter.value.trim() === '') continue;
-    where[filter.column] = { ...where[filter.column], [filter.operator]: coerceFilterValue(table, filter) };
+    const value = coerceFilterValue(table, filter);
+    const earlier = where[filter.column]?.[filter.operator];
+    // The same filter twice loses nothing; only a DIFFERENT value replaces one.
+    if (earlier !== undefined && JSON.stringify(earlier) !== JSON.stringify(value) && !overwritten.includes(filter.column)) {
+      overwritten.push(filter.column);
+    }
+    where[filter.column] = { ...where[filter.column], [filter.operator]: value };
   }
-  return { where, unsupported };
+  return { where, unsupported, overwritten };
 }
 
 export interface TracePanelResult extends PanelQueryResult {
@@ -87,6 +99,8 @@ export interface TracePanelResult extends PanelQueryResult {
   column_names: string[];
   /** Filters the traces API cannot express, if the builder ever offers one. */
   unsupported: string[];
+  /** Columns where a later filter replaced an earlier one — see toTraceWhere. */
+  overwritten: string[];
 }
 
 export type ColumnKind = 'time' | 'text';
@@ -129,7 +143,7 @@ export async function runTracePanel(
   viewerFilters: ViewerFilter[] = []
 ): Promise<TracePanelResult> {
   const table = findTable(draft.table);
-  const { where, unsupported } = toTraceWhere(table, draft.filters);
+  const { where, unsupported, overwritten } = toTraceWhere(table, draft.filters);
   // The API parses these back with `new Date(x).getTime()`.
   const startDate = new Date(startMs).toISOString();
   const endDate = new Date(endMs).toISOString();
@@ -141,7 +155,7 @@ export async function runTracePanel(
   // here, since the only clause that says so would be read as "every row".
   if (!narrowTraceWhere(where, viewerFilters)) {
     const shown = grouping ? columns.filter((name) => GROUPING_FIELDS.includes(name)) : columns;
-    return { ...toResult(table, shown, []), unsupported };
+    return { ...toResult(table, shown, []), unsupported, overwritten };
   }
 
   if (grouping) {
@@ -172,7 +186,7 @@ export async function runTracePanel(
     // The grouping call returns a fixed field list, so a column the builder
     // offers but the response omits would render as a blank column.
     const selected = columns.filter((name) => GROUPING_FIELDS.includes(name));
-    return { ...toResult(table, selected, response?.traces_grouping_v3 || []), unsupported };
+    return { ...toResult(table, selected, response?.traces_grouping_v3 || []), unsupported, overwritten };
   }
 
   const response = await apiTrace.traceV2({
@@ -199,7 +213,7 @@ export async function runTracePanel(
     // GraphQL selection, so asking for fewer fetches less.
     cols: columns,
   });
-  return { ...toResult(table, columns, response?.traces_list || []), unsupported };
+  return { ...toResult(table, columns, response?.traces_list || []), unsupported, overwritten };
 }
 
 /**

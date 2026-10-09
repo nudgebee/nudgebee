@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/integrations"
+	"nudgebee/services/query"
 	"nudgebee/services/security"
 	"strconv"
 	"strings"
@@ -49,6 +50,11 @@ func (s *DynatraceTraceSource) GetLabelMapping() map[string]string {
 
 func (s *DynatraceTraceSource) GetSupportedOperators() []string {
 	return []string{"_eq", "_neq", "_gt", "_lt", "_gte", "_lte", "_like", "_nlike", "_ilike", "_icontains", "_contains", "_regex", "_nregex"}
+}
+
+// TraceRegexOperators: the shared DQL builder renders both as matches().
+func (s *DynatraceTraceSource) TraceRegexOperators() []query.BinaryWhereClauseType {
+	return []query.BinaryWhereClauseType{query.Regex, query.NRegex}
 }
 
 // QueryTraces fetches spans from Dynatrace Grail. If a trace_id filter is present in the

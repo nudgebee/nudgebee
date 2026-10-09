@@ -17,6 +17,7 @@ import (
 	"nudgebee/services/query"
 	"nudgebee/services/security"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -2473,6 +2474,63 @@ func buildTraceLabels(mergedMapping map[string]string, providerDeclares bool, di
 	return labels
 }
 
+// TraceRegexFilteringSource is implemented by a trace source whose query builder
+// has a case for the regex operators it names.
+//
+// Support is opt-in because the default is unsafe. Most trace builders read the
+// operators they know out of the where clause and skip the rest, so a regex sent
+// to one of them runs as no filter at all: the request succeeds and answers with
+// every span, which the caller reads as the matching ones. A source that does
+// not name an operator here is never handed it.
+type TraceRegexFilteringSource interface {
+	TraceRegexOperators() []query.BinaryWhereClauseType
+}
+
+// traceRegexOperatorLabels names the regex operators the way a filter builder shows them.
+var traceRegexOperatorLabels = map[query.BinaryWhereClauseType]string{
+	query.Regex:  "matches regex",
+	query.NRegex: "does not match regex",
+}
+
+// validateTraceWhere refuses a regex filter the resolved source cannot run. It is
+// run on the CALLER's clause, before the account's standing trace filters are
+// merged in, so it can only ever refuse what the caller asked for.
+func validateTraceWhere(source TraceSource, where query.QueryWhereClause) error {
+	var supported []query.BinaryWhereClauseType
+	if s, ok := source.(TraceRegexFilteringSource); ok {
+		supported = s.TraceRegexOperators()
+	}
+	for _, op := range []query.BinaryWhereClauseType{query.Regex, query.NRegex} {
+		if whereUsesOperator(where, op) && !slices.Contains(supported, op) {
+			return fmt.Errorf("a %q filter is not supported by this account's trace provider; filter with a pattern or a list of values instead", traceRegexOperatorLabels[op])
+		}
+	}
+	return nil
+}
+
+// whereUsesOperator reports whether any condition in the clause, at any depth of
+// _and / _or / _not, uses one of the given operators.
+func whereUsesOperator(where query.QueryWhereClause, operators ...query.BinaryWhereClauseType) bool {
+	for _, ops := range where.Binary {
+		for op := range ops {
+			if slices.Contains(operators, op) {
+				return true
+			}
+		}
+	}
+	for _, sub := range where.And {
+		if whereUsesOperator(sub, operators...) {
+			return true
+		}
+	}
+	for _, sub := range where.Or {
+		if whereUsesOperator(sub, operators...) {
+			return true
+		}
+	}
+	return where.Not != nil && whereUsesOperator(*where.Not, operators...)
+}
+
 func GetGroupedTraces(context *security.RequestContext, TraceQuery TracesV3Request) ([]TraceGroupingValues, error) {
 	if TraceQuery.AccountId == "" {
 		return []TraceGroupingValues{}, fmt.Errorf("account_id is required")
@@ -2488,6 +2546,9 @@ func GetGroupedTraces(context *security.RequestContext, TraceQuery TracesV3Reque
 	}
 	source, err := resolveTraceSource(context, TraceQuery.AccountId, traceProvider, integrationSource, traceIndexOverride(TraceQuery.Request))
 	if err != nil {
+		return []TraceGroupingValues{}, err
+	}
+	if err := validateTraceWhere(source, TraceQuery.QueryRequest.Where); err != nil {
 		return []TraceGroupingValues{}, err
 	}
 	if err := ApplyDefaultTraceFilters(context, &TraceQuery); err != nil {
@@ -2516,6 +2577,9 @@ func GetGroupedTracesCount(context *security.RequestContext, TraceQuery TracesV3
 	}
 	source, err := resolveTraceSource(context, TraceQuery.AccountId, traceProvider, integrationSource, traceIndexOverride(TraceQuery.Request))
 	if err != nil {
+		return common.OpenTelemetryTraceGroupCount{}, err
+	}
+	if err := validateTraceWhere(source, TraceQuery.QueryRequest.Where); err != nil {
 		return common.OpenTelemetryTraceGroupCount{}, err
 	}
 	if err := ApplyDefaultTraceFilters(context, &TraceQuery); err != nil {
@@ -2568,6 +2632,9 @@ func CountTraces(context *security.RequestContext, fetchTracesRequest TracesV3Re
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
+	if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
+		return common.OpenTelemetryTraceCount{}, err
+	}
 	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
@@ -2594,6 +2661,9 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 	}
 	source, err := resolveTraceSource(context, fetchTracesRequest.AccountId, traceProvider, integrationSource, traceIndexOverride(fetchTracesRequest.Request))
 	if err != nil {
+		return TracesResult{}, err
+	}
+	if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
 		return TracesResult{}, err
 	}
 	// Scope the request to the account's standing trace filters BEFORE the label
@@ -2727,6 +2797,9 @@ func GetRootSpansByTrace(context *security.RequestContext, fetchTracesRequest Tr
 	if err != nil {
 		return nil, err
 	}
+	if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
+		return nil, err
+	}
 	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
 		return nil, err
 	}
@@ -2756,6 +2829,9 @@ func CountTracesByTrace(context *security.RequestContext, fetchTracesRequest Tra
 
 	source, err := resolveTraceSource(context, fetchTracesRequest.AccountId, traceProvider, integrationSource, traceIndexOverride(fetchTracesRequest.Request))
 	if err != nil {
+		return common.OpenTelemetryTraceCount{}, err
+	}
+	if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
 	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
@@ -2856,6 +2932,9 @@ func GetTracesQuery(context *security.RequestContext, fetchTracesRequest TracesV
 	}
 	source, err := resolveTraceSource(context, fetchTracesRequest.AccountId, traceProvider, integrationSource, traceIndexOverride(fetchTracesRequest.Request))
 	if err != nil {
+		return "", err
+	}
+	if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
 		return "", err
 	}
 
