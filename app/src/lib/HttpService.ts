@@ -484,6 +484,15 @@ export function gqlStringify(obj_from_json: any, enums: string[] = [], pkey = ''
   return `{${props}}`;
 }
 
+// Escape a user-typed search term so SQL LIKE/ILIKE matches it literally instead of
+// treating it as a pattern. `%`, `_` and the escape char `\` are special to ILIKE, so a
+// typed `%` wrapped as `%…%` becomes `%%%` and matches every row (#40558). Callers wrap
+// the result with their own `%…%`; this only escapes the literal part. Escaping `\` first
+// (it is the escape char) is handled by the single-pass regex over the source string.
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&');
+}
+
 export const hitRelayServer = async (data: any, type = '') => {
   try {
     let headerObject = getTraceHeaders();

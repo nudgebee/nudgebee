@@ -1,4 +1,4 @@
-import { gqlStringify, queryGraphQL } from '@lib/HttpService';
+import { escapeLikePattern, gqlStringify, queryGraphQL } from '@lib/HttpService';
 import {
   getEndOfDay,
   getEndOfMonth,
@@ -853,8 +853,11 @@ const apiCloudAccount = {
       // as part of the id/name and find nothing.
       const nameFilter = data.nameFilter?.trim();
       if (nameFilter) {
+        // Match the typed text literally — escape %, _ and \ so a search like "%" does
+        // not become the ILIKE wildcard that matches every row (#40558).
+        const namePattern = '%' + escapeLikePattern(nameFilter) + '%';
         andConditions.push({
-          _or: [{ resourse_id: { _ilike: '%' + nameFilter + '%' } }, { name: { _ilike: '%' + nameFilter + '%' } }],
+          _or: [{ resourse_id: { _ilike: namePattern } }, { name: { _ilike: namePattern } }],
         });
       }
       // Handle tag filtering with JSON _contains (values serialized as JSON strings).

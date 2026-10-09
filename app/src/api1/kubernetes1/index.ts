@@ -1,4 +1,4 @@
-import { gqlStringify, queryGraphQL } from '@lib/HttpService';
+import { escapeLikePattern, gqlStringify, queryGraphQL } from '@lib/HttpService';
 import getMockData from '@api1/mock';
 import cache from '@lib/cache';
 import observability from '@api1/observability';
@@ -621,7 +621,9 @@ const apiKubernetes1 = {
         filterParams['enabled'] = { _eq: query.status == 'Enabled' };
       }
       if (query?.searchByName) {
-        filterParams['alert'] = { _ilike: '%' + query.searchByName + '%' };
+        // Match the typed name literally — escape %, _ and \ so a search like "%" does
+        // not become the ILIKE wildcard that matches every alert (#40558).
+        filterParams['alert'] = { _ilike: '%' + escapeLikePattern(query.searchByName) + '%' };
       }
       const response = await queryGraphQL(GET_EVENT_RULES.replaceAll('__WHERE__', gqlStringify(filterParams)), 'GetEventRules', {
         limit: limit,
