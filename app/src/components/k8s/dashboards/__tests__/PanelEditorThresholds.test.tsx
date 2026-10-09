@@ -122,24 +122,81 @@ describe('PanelEditorModal — thresholds', () => {
     expect(saved(onSave).options?.thresholds).toEqual([{ value: 80, color: 'red' }]);
   });
 
+  it('names each column once above the rows, and flags a bad field on the field itself', () => {
+    renderEditor(panel('timeseries', [{ value: 80, color: 'red' }]));
+    for (const name of ['When', 'Value', 'Hold', '(min)', 'Colour']) expect(screen.getByText(name)).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('threshold-for-0'), { target: { value: '1' } });
+    expect(screen.getByText('2–60 min')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('threshold-for-0'), { target: { value: '2.5' } });
+    expect(screen.getByText('Whole minutes')).toBeInTheDocument();
+  });
+
   it('has no hold field on a stat, which judges one number', () => {
     renderEditor(panel('stat', [{ value: 80, color: 'red' }]));
     expect(screen.queryByTestId('threshold-for-0')).toBeNull();
   });
 
-  it('holds Save until a new step has a number, then stores it', async () => {
+  it('flags a new step with no number only once Save is tried, then stores it', async () => {
     const onSave = renderEditor(panel('gauge'));
 
     fireEvent.click(screen.getByRole('button', { name: 'Add threshold' }));
+    // Still being filled in: no error yet.
+    expect(screen.queryByText('Enter a number')).toBeNull();
+
     // An empty step would save as config that draws nothing.
-    expect(screen.getByTestId('panel-save-btn')).toBeDisabled();
-    expect(screen.getByText(/Every threshold needs a number/)).toBeInTheDocument();
+    await save();
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByText('Enter a number')).toBeInTheDocument();
 
     fireEvent.change(screen.getByTestId('threshold-value-0'), { target: { value: '80' } });
-    expect(screen.getByTestId('panel-save-btn')).not.toBeDisabled();
+    expect(screen.queryByText('Enter a number')).toBeNull();
 
     await save();
     expect(saved(onSave).options?.thresholds).toEqual([{ value: 80, color: 'red' }]);
+  });
+
+  it('reads each step back as a sentence, with its hold when it has one', () => {
+    renderEditor(
+      panel('timeseries', [
+        { value: 50000000, color: 'red', for: 300 },
+        { value: 20000000, color: 'amber' },
+      ])
+    );
+    expect(screen.getByTestId('threshold-sentence-0')).toHaveTextContent(
+      'Turns the panel red when any line stays at or above 50,000,000 for 5 minutes in a row.'
+    );
+    expect(screen.getByTestId('threshold-sentence-1')).toHaveTextContent('Turns the panel amber as soon as any line is at or above 20,000,000.');
+  });
+
+  it('says nothing about a hold the field is flagging, rather than "as soon as"', () => {
+    renderEditor(panel('timeseries', [{ value: 80, color: 'red', for: 60 }]));
+    expect(screen.queryByTestId('threshold-sentence-0')).toBeNull();
+  });
+
+  it('names the account in the sentence when a chart step is scoped to one', () => {
+    const two = [
+      { value: 'acc-1', label: 'k8s-dev', cloud_provider: 'K8s' },
+      { value: 'acc-2', label: 'k8s-prod', cloud_provider: 'K8s' },
+    ] as AccountOption[];
+    const p = {
+      ...panel('timeseries', [{ value: 80, color: 'red', applies_to: 'account', account_id: 'acc-2' }]),
+      account_ids: ['acc-1', 'acc-2'],
+    } as unknown as Panel;
+    render(<PanelEditorModal open panel={p} isEdit accountOptions={two} onClose={jest.fn()} onSave={jest.fn()} />);
+    expect(screen.getByTestId('threshold-sentence-0')).toHaveTextContent('as soon as any k8s-prod line is at or above 80');
+  });
+
+  it('names each colour in the open list, not only its swatch', async () => {
+    renderEditor(panel('stat', [{ value: 80, color: 'red' }]));
+    fireEvent.click(document.getElementById('threshold-color-0') as HTMLElement);
+    const list = await screen.findByRole('listbox', { hidden: true });
+    for (const name of ['Red', 'Amber', 'Green', 'Blue']) expect(within(list).getByText(name)).toBeInTheDocument();
+  });
+
+  it('says nothing about a step that has no number yet', () => {
+    renderEditor(panel('gauge'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add threshold' }));
+    expect(screen.queryByTestId('threshold-sentence-0')).toBeNull();
   });
 
   it('forgets the list entirely when its last step is removed', async () => {
@@ -182,7 +239,7 @@ describe('PanelEditorModal — thresholds', () => {
     // A chart offers thresholds, but a stat's rule about one total is not a rule
     // about twenty lines, so the step does not carry across.
     expect(screen.getByText('Thresholds')).toBeInTheDocument();
-    expect(screen.getByText('No thresholds — the panel always draws plain.')).toBeInTheDocument();
+    expect(screen.queryByText(/No thresholds/)).toBeNull();
     await save();
     expect(saved(onSave).options).not.toHaveProperty('thresholds');
   });
@@ -249,19 +306,21 @@ describe('PanelEditorModal — thresholds', () => {
     expect(screen.queryByTestId('threshold-value-1')).toBeNull();
   });
 
-  it('holds Save for a step whose colour nothing can draw', () => {
-    renderEditor(panel('stat', [{ value: 80, color: 'chartreuse' }] as unknown as PanelThresholdStep[]));
+  it('refuses to save a step whose colour nothing can draw', async () => {
+    const onSave = renderEditor(panel('stat', [{ value: 80, color: 'chartreuse' }] as unknown as PanelThresholdStep[]));
 
-    expect(screen.getByTestId('panel-save-btn')).toBeDisabled();
+    await save();
+    expect(onSave).not.toHaveBeenCalled();
   });
 
-  it('clearing a value blocks Save rather than quietly reading as zero', () => {
-    renderEditor(panel('stat', [{ value: 80, color: 'red' }]));
+  it('clearing a value blocks Save rather than quietly reading as zero', async () => {
+    const onSave = renderEditor(panel('stat', [{ value: 80, color: 'red' }]));
 
-    expect(screen.getByTestId('panel-save-btn')).not.toBeDisabled();
     fireEvent.change(screen.getByTestId('threshold-value-0'), { target: { value: '' } });
-    expect(screen.getByTestId('panel-save-btn')).toBeDisabled();
     expect(screen.getByTestId('threshold-value-0')).toHaveValue(null);
+    await save();
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByText('Enter a number')).toBeInTheDocument();
   });
 });
 
@@ -289,7 +348,7 @@ describe('PanelEditorModal — what a threshold compares, and against which acco
 
   it('stores a comparison other than the default, and leaves the default unwritten', async () => {
     const onSave = renderEditor(panel('stat', [{ value: 2, color: 'red' }]));
-    await pick('threshold-op-0', '≤ at or below');
+    await pick('threshold-op-0', 'at or below');
     await save();
     expect(saved(onSave).options?.thresholds).toEqual([{ value: 2, color: 'red', op: 'lte' }]);
   });

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Stack, Typography } from '@mui/material';
+import { Banner } from '@ui/Banner';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { DeleteIconRed } from '@assets';
@@ -135,11 +136,44 @@ const COMMAND_HELP: Record<string, { placeholder: string; allowed: string; examp
   },
 };
 
-/** What a threshold step paints the panel in. */
-const THRESHOLD_COLOR_OPTIONS = THRESHOLD_COLORS.map((color) => ({ label: `${color[0].toUpperCase()}${color.slice(1)}`, value: color }));
+/** Name half of a colour's label; the closed picker hides it so the column stays a swatch wide. */
+const COLOR_NAME_CLASS = 'threshold-color-name';
 
-/** How a threshold step compares — the symbol the badge shows, spelled out. */
-const THRESHOLD_OP_OPTIONS = THRESHOLD_OPS.map((op) => ({ label: `${OP_SYMBOL[op]} ${OP_PHRASE[op]}`, value: op }));
+/** What a threshold step paints the panel in: a swatch, named in the open list so colour is never the only cue. */
+const THRESHOLD_COLOR_OPTIONS = THRESHOLD_COLORS.map((color) => {
+  const name = `${color[0].toUpperCase()}${color.slice(1)}`;
+  return {
+    label: (
+      <Box component='span' title={name} sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
+        <Box
+          component='span'
+          aria-hidden
+          sx={{ display: 'inline-block', width: 10, height: 10, flexShrink: 0, borderRadius: '50%', background: thresholdTone(color).border }}
+        />
+        <Box component='span' className={COLOR_NAME_CLASS}>
+          {name}
+        </Box>
+      </Box>
+    ),
+    value: color,
+  };
+});
+
+/** Spelled-out half of a comparison's label; the closed picker hides it so the column stays narrow. */
+const OP_PHRASE_CLASS = 'threshold-op-phrase';
+
+/** How a threshold step compares — the symbol the badge shows, spelled out in the open list. */
+const THRESHOLD_OP_OPTIONS = THRESHOLD_OPS.map((op) => ({
+  label: (
+    <>
+      {OP_SYMBOL[op]}
+      <Box component='span' className={OP_PHRASE_CLASS} sx={{ ml: ds.space[1] }}>
+        {OP_PHRASE[op]}
+      </Box>
+    </>
+  ),
+  value: op,
+}));
 
 /**
  * The "Applies to" picker's value for one account. The picker is one flat list —
@@ -175,7 +209,12 @@ const sameThreshold = (a: number, b: number): boolean => (Number.isNaN(a) && Num
  * Re-seeds only when the step's value stops agreeing with the text, so removing
  * the row above this one refreshes it while typing never does.
  */
-const ThresholdValue: React.FC<{ value: number; index: number; onChange: (next: number) => void }> = ({ value, index, onChange }) => {
+const ThresholdValue: React.FC<{ value: number; index: number; showError: boolean; onChange: (next: number) => void }> = ({
+  value,
+  index,
+  showError,
+  onChange,
+}) => {
   const [text, setText] = useState(() => (Number.isFinite(value) ? String(value) : ''));
 
   useEffect(() => {
@@ -190,9 +229,48 @@ const ThresholdValue: React.FC<{ value: number; index: number; onChange: (next: 
         setText(next);
         onChange(parseThreshold(next));
       }}
-      placeholder='80'
+      placeholder='e.g. 80'
+      error={showError && !Number.isFinite(value) ? 'Enter a number' : undefined}
       data-testid={`threshold-value-${index}`}
     />
+  );
+};
+
+/** One step read back as a sentence, so the author sees what the row they just built will do. */
+const ThresholdSentence: React.FC<{ step: PanelThresholdStep; subject: string; unit: string; isLine: boolean; index: number }> = ({
+  step,
+  subject,
+  unit,
+  isLine,
+  index,
+}) => {
+  if (!Number.isFinite(step.value)) return null;
+  // A hold the field is flagging would read as "as soon as" here, which is not what the author asked for.
+  if (isLine && step.for !== undefined && !isValidFor(step.for)) return null;
+  const hold = isLine && step.for !== undefined && isValidFor(step.for) ? step.for / 60 : undefined;
+  const figure = `${step.value.toLocaleString('en-US')}${unit ? ` ${unit}` : ''}`;
+  const bold = { fontWeight: ds.weight.semibold };
+  return (
+    <Typography
+      variant='body2'
+      sx={{ mt: ds.space[2], fontSize: ds.text.caption, fontWeight: ds.weight.regular, color: ds.gray[600] }}
+      data-testid={`threshold-sentence-${index}`}
+    >
+      Turns the panel{' '}
+      <Box component='span' sx={{ fontWeight: ds.weight.semibold, color: thresholdTone(step.color).text }}>
+        {step.color}
+      </Box>{' '}
+      {hold !== undefined ? (
+        <>
+          when {subject} stays <Box component='span' sx={bold}>{`${OP_PHRASE[opOf(step)]} ${figure}`}</Box> for{' '}
+          <Box component='span' sx={bold}>{`${hold} ${hold === 1 ? 'minute' : 'minutes'}`}</Box> in a row.
+        </>
+      ) : (
+        <>
+          {isLine ? 'as soon as' : 'when'} {subject} is <Box component='span' sx={bold}>{`${OP_PHRASE[opOf(step)]} ${figure}`}</Box>.
+        </>
+      )}
+    </Typography>
   );
 };
 
@@ -233,7 +311,14 @@ const ThresholdHold: React.FC<{ seconds: number | undefined; index: number; onCh
         setText(next);
         onChange(parseHold(next));
       }}
-      placeholder='for (min)'
+      placeholder='—'
+      error={
+        seconds === undefined || isValidFor(seconds)
+          ? undefined
+          : Number.isFinite(seconds) && seconds % 60 !== 0
+          ? 'Whole minutes'
+          : `${FOR_MIN_SECONDS / 60}–${FOR_MAX_SECONDS / 60} min`
+      }
       id={`threshold-for-${index}`}
       data-testid={`threshold-for-${index}`}
     />
@@ -293,6 +378,8 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
    * leaving the author looking at an unchanged form wondering if it took.
    */
   const [saving, setSaving] = useState(false);
+  /** A step still being filled in is not an error until the author tries to save it. */
+  const [thresholdsAttempted, setThresholdsAttempted] = useState(false);
   const fallbackRange = usePreviewRange(open);
 
   // Re-seed when a different panel is opened.
@@ -308,6 +395,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
     // With the stored time column: without it the builder showed the table's default switch, and the next
     // edit anywhere in the query wrote that default over the panel's own setting.
     setEntityDraft(draftFromQuery(panel?.targets?.[0]?.query, panel?.targets?.[0]?.time_column ?? ''));
+    setThresholdsAttempted(false);
   }, [panel, accountOptions]);
 
   /**
@@ -661,6 +749,12 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
    * which has to stay fixable.
    */
   const showAppliesTo = providerAccounts.length > 1 || thresholds.some((step) => appliesToOf(step) === 'account');
+  /** One column template for the header and every row, so each field sits under its name. */
+  const thresholdGridSx = {
+    display: 'grid',
+    gridTemplateColumns: [showAppliesTo && '110px', '64px', 'minmax(0, 1fr)', lineThresholds && '86px', '60px', '32px'].filter(Boolean).join(' '),
+    gap: ds.space[2],
+  };
   /** Steps that apply to the same value with an outcome worth spelling out — a hint, never a Save blocker. Lines are judged one by one, so there is nothing to overlap. */
   const thresholdConflicts = lineThresholds ? [] : thresholdOverlaps(thresholds, providerAccounts);
   // A chart has no single shown number, so "shown" and "every" are the same
@@ -715,11 +809,11 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
       (hasScope && (isEntity ? Boolean(targets[0]?.query) : targets.length > 0 && targets.every((t) => (t.expr || '').trim().length > 0)))) &&
     // The server refuses these too; catching them here saves a round trip that
     // comes back as a message about a panel the author can no longer see.
-    columns.every(isCompleteColumn) &&
-    // Not a server rule — `options` is opaque to it — but a step with no number
-    // is a row the author is still filling in, and it would save as inert config.
-    unfinishedThresholds.length === 0 &&
-    badHolds.length === 0;
+    columns.every(isCompleteColumn);
+  // Not a server rule — `options` is opaque to it — but a step with no number is a
+  // row the author is still filling in, and it would save as inert config. Checked on
+  // Save rather than greying the button, so the field says what is missing.
+  const thresholdsIncomplete = unfinishedThresholds.length > 0 || badHolds.length > 0;
 
   /** The draft as it would be stored — the preview runs this and the save sends it. */
   const resolvedDraft: Panel = {
@@ -730,6 +824,12 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
   };
 
   const handleSave = async () => {
+    if (thresholdsIncomplete) {
+      setThresholdsAttempted(true);
+      // Save sits in the footer and the thresholds may be scrolled out of view; without this the click looks like it did nothing.
+      document.getElementById('panel-thresholds')?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+      return;
+    }
     setSaving(true);
     try {
       await onSave(resolvedDraft);
@@ -1120,240 +1220,308 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
               </Card>
 
               {hasThresholds(draft.type) && (
-                <Card
-                  variant='tinted'
-                  header={
-                    <GroupHeader
-                      title='Thresholds'
-                      description={
-                        lineThresholds
-                          ? 'Draw a line on the chart and colour the panel when a series crosses it — the border and the title band take the step’s colour, and the header names the series. Give a step a hold, in minutes, to colour only once a series has stayed past the line that long.'
-                          : 'Colour the panel when a number crosses a line — the border and the title band take the step’s colour, and the header names the threshold that was crossed, and the account when it was one account’s.'
-                      }
-                    />
-                  }
-                >
-                  <Form.Section>
-                    <Box>
-                      <Stack direction='row' alignItems='center' gap={ds.space[2]} sx={{ mb: ds.space[2] }}>
-                        <Typography sx={{ fontFamily: ds.font.display, fontSize: 13, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
-                          Steps
-                        </Typography>
-                        <Box sx={{ flex: 1 }} />
-                        <Button
-                          tone='secondary'
-                          size='sm'
-                          // Red first: the first threshold anyone writes is the one
-                          // that means trouble, and a value of its own would be a
-                          // guess at the panel's scale.
-                          onClick={() => patchThresholds([...thresholds, { value: Number.NaN, color: 'red' }])}
-                          id='add-threshold'
-                        >
-                          Add threshold
-                        </Button>
-                      </Stack>
-
-                      {thresholds.length === 0 ? (
-                        <Typography variant='caption' sx={{ color: ds.gray[500] }}>
-                          No thresholds — the panel always draws plain.
-                        </Typography>
-                      ) : (
-                        <Stack gap={ds.space[2]}>
-                          {thresholds.map((step, i) => {
-                            const patchStep = (next: Partial<PanelThresholdStep>) =>
-                              patchThresholds(thresholds.map((other, j) => (j === i ? { ...other, ...next } : other)));
-                            return (
-                              // Indexed: two steps can hold the same value while one
-                              // is being typed, so neither value nor colour is a key.
-                              <Stack key={i} direction='row' gap={ds.space[2]} alignItems='center'>
-                                <Box
-                                  sx={{
-                                    width: 14,
-                                    height: 14,
-                                    flexShrink: 0,
-                                    borderRadius: ds.radius.sm,
-                                    background: thresholdTone(step.color).border,
-                                  }}
-                                />
-                                {/* Read left to right as the rule: "Every account ≥ 80 → Red". */}
-                                {showAppliesTo && (
-                                  <Box sx={{ flex: 1.4, minWidth: 0 }}>
-                                    <Select
-                                      value={
-                                        appliesToOf(step) === 'account'
-                                          ? `${ACCOUNT_SUBJECT}${step.account_id || ''}`
-                                          : lineThresholds
-                                          ? 'every'
-                                          : appliesToOf(step)
-                                      }
-                                      options={appliesToOptions}
-                                      onChange={(v: string) =>
-                                        v.startsWith(ACCOUNT_SUBJECT)
-                                          ? patchStep({ applies_to: 'account', account_id: v.slice(ACCOUNT_SUBJECT.length) })
-                                          : // "Shown number" is what an absent field means, so it is stored as one:
-                                            // the panel JSON stays what every step before this looked like.
-                                            patchStep({ applies_to: v === 'every' ? 'every' : undefined, account_id: undefined })
-                                      }
-                                      id={`threshold-applies-${i}`}
+                <Box id='panel-thresholds'>
+                  <Card
+                    variant='tinted'
+                    header={
+                      <GroupHeader
+                        title='Thresholds'
+                        description={
+                          lineThresholds
+                            ? 'Draw a line on the chart and colour the panel when a series crosses it.'
+                            : 'Colour the panel when its number crosses a line.'
+                        }
+                      />
+                    }
+                  >
+                    <Form.Section>
+                      <Box>
+                        {thresholds.length === 0 ? null : (
+                          <Stack gap={ds.space[2]}>
+                            {/* Named once above the rows, so a field still says what it is once something is typed in it. */}
+                            <Box
+                              sx={{
+                                ...thresholdGridSx,
+                                fontFamily: ds.font.display,
+                                fontSize: ds.text.small,
+                                fontWeight: ds.weight.medium,
+                                color: ds.gray[700],
+                              }}
+                            >
+                              {showAppliesTo && <span>Applies to</span>}
+                              <span>When</span>
+                              {/* Units live in the header: an affix box inside a column this narrow leaves no room to type. */}
+                              <span>
+                                Value{' '}
+                                {draft.unit?.trim() && (
+                                  <Box
+                                    component='span'
+                                    sx={{ color: ds.gray[500], fontWeight: ds.weight.regular, fontSize: ds.text.caption }}
+                                  >{`(${draft.unit.trim()})`}</Box>
+                                )}
+                              </span>
+                              {lineThresholds && (
+                                <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1] }}>
+                                  <span>
+                                    Hold{' '}
+                                    <Box component='span' sx={{ color: ds.gray[500], fontWeight: ds.weight.regular, fontSize: ds.text.caption }}>
+                                      (min)
+                                    </Box>
+                                  </span>
+                                  <Tooltip
+                                    title={`Optional. Colour only once a line has stayed past the value this long — ${FOR_MIN_SECONDS / 60} to ${
+                                      FOR_MAX_SECONDS / 60
+                                    } minutes. Empty fires on the latest sample.`}
+                                  >
+                                    <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', color: ds.gray[400], cursor: 'help' }}>
+                                      <InfoOutlinedIcon sx={{ fontSize: 13 }} />
+                                    </Box>
+                                  </Tooltip>
+                                </Box>
+                              )}
+                              <span>Colour</span>
+                              <span />
+                            </Box>
+                            {thresholds.map((step, i) => {
+                              const patchStep = (next: Partial<PanelThresholdStep>) =>
+                                patchThresholds(thresholds.map((other, j) => (j === i ? { ...other, ...next } : other)));
+                              return (
+                                // Indexed: two steps can hold the same value while one
+                                // is being typed, so neither value nor colour is a key.
+                                // Read left to right as the rule: "Every account ≥ 80 → Red".
+                                <Box key={i} sx={{ pb: ds.space[3], borderBottom: `1px solid ${ds.gray[200]}` }}>
+                                  <Box sx={{ ...thresholdGridSx, alignItems: 'start' }}>
+                                    {showAppliesTo && (
+                                      <Select
+                                        value={
+                                          appliesToOf(step) === 'account'
+                                            ? `${ACCOUNT_SUBJECT}${step.account_id || ''}`
+                                            : lineThresholds
+                                            ? 'every'
+                                            : appliesToOf(step)
+                                        }
+                                        options={appliesToOptions}
+                                        onChange={(v: string) =>
+                                          v.startsWith(ACCOUNT_SUBJECT)
+                                            ? patchStep({ applies_to: 'account', account_id: v.slice(ACCOUNT_SUBJECT.length) })
+                                            : // "Shown number" is what an absent field means, so it is stored as one:
+                                              // the panel JSON stays what every step before this looked like.
+                                              patchStep({ applies_to: v === 'every' ? 'every' : undefined, account_id: undefined })
+                                        }
+                                        clearable={false}
+                                        popoverWidth={240}
+                                        id={`threshold-applies-${i}`}
+                                      />
+                                    )}
+                                    {/* The closed picker shows only the symbol; the open list spells it out. The list is portalled, so this rule misses it. */}
+                                    <Box sx={{ [`& .${OP_PHRASE_CLASS}`]: { display: 'none' } }}>
+                                      <Select
+                                        value={opOf(step)}
+                                        options={THRESHOLD_OP_OPTIONS}
+                                        // `gte` is what an absent field means; stored as absent for the same reason.
+                                        onChange={(v: string) => patchStep({ op: v === 'gte' ? undefined : (v as PanelThresholdOp) })}
+                                        clearable={false}
+                                        popoverWidth={160}
+                                        id={`threshold-op-${i}`}
+                                      />
+                                    </Box>
+                                    <ThresholdValue
+                                      value={step.value}
+                                      index={i}
+                                      showError={thresholdsAttempted}
+                                      onChange={(next) => patchStep({ value: next })}
+                                    />
+                                    {lineThresholds && <ThresholdHold seconds={step.for} index={i} onChange={(next) => patchStep({ for: next })} />}
+                                    {/* Same trick as the comparison: the closed picker is the swatch alone, the open list names it. */}
+                                    <Box sx={{ [`& .${COLOR_NAME_CLASS}`]: { display: 'none' } }}>
+                                      <Select
+                                        value={step.color}
+                                        options={THRESHOLD_COLOR_OPTIONS}
+                                        onChange={(v: string) => patchStep({ color: v as PanelThresholdColor })}
+                                        clearable={false}
+                                        popoverWidth={140}
+                                        id={`threshold-color-${i}`}
+                                      />
+                                    </Box>
+                                    <Button
+                                      tone='ghost'
+                                      composition='icon-only'
+                                      aria-label={`Remove threshold ${i + 1}`}
+                                      icon={<SafeIcon src={DeleteIconRed} alt='delete' width={16} height={16} />}
+                                      onClick={() => patchThresholds(thresholds.filter((_, j) => j !== i))}
+                                      id={`remove-threshold-${i}`}
                                     />
                                   </Box>
-                                )}
-                                <Box sx={{ flex: 1 }}>
-                                  <Select
-                                    value={opOf(step)}
-                                    options={THRESHOLD_OP_OPTIONS}
-                                    // `gte` is what an absent field means; stored as absent for the same reason.
-                                    onChange={(v: string) => patchStep({ op: v === 'gte' ? undefined : (v as PanelThresholdOp) })}
-                                    id={`threshold-op-${i}`}
+                                  <ThresholdSentence
+                                    step={step}
+                                    index={i}
+                                    isLine={Boolean(lineThresholds)}
+                                    unit={draft.unit?.trim() || ''}
+                                    subject={
+                                      appliesToOf(step) === 'account'
+                                        ? lineThresholds
+                                          ? `any ${providerAccounts.find((a) => a.value === step.account_id)?.label || 'missing account'} line`
+                                          : providerAccounts.find((a) => a.value === step.account_id)?.label || 'that account'
+                                        : lineThresholds
+                                        ? 'any line'
+                                        : appliesToOf(step) === 'every'
+                                        ? 'any account'
+                                        : 'the number shown'
+                                    }
                                   />
                                 </Box>
-                                <Box sx={{ flex: 1 }}>
-                                  <ThresholdValue value={step.value} index={i} onChange={(next) => patchStep({ value: next })} />
-                                </Box>
-                                {lineThresholds && (
-                                  <Box sx={{ flex: 0.9 }}>
-                                    <ThresholdHold seconds={step.for} index={i} onChange={(next) => patchStep({ for: next })} />
-                                  </Box>
-                                )}
-                                <Box sx={{ flex: 1 }}>
-                                  <Select
-                                    value={step.color}
-                                    options={THRESHOLD_COLOR_OPTIONS}
-                                    onChange={(v: string) => patchStep({ color: v as PanelThresholdColor })}
-                                    id={`threshold-color-${i}`}
-                                  />
-                                </Box>
-                                <Button
-                                  tone='ghost'
-                                  composition='icon-only'
-                                  aria-label={`Remove threshold ${i + 1}`}
-                                  icon={<SafeIcon src={DeleteIconRed} alt='delete' width={16} height={16} />}
-                                  onClick={() => patchThresholds(thresholds.filter((_, j) => j !== i))}
-                                  id={`remove-threshold-${i}`}
-                                />
-                              </Stack>
-                            );
-                          })}
+                              );
+                            })}
+                          </Stack>
+                        )}
+
+                        <Stack direction='row' alignItems='center' justifyContent='space-between' gap={ds.space[3]} sx={{ mt: ds.space[3] }}>
+                          {thresholds.length > 0 && (
+                            <Tooltip
+                              title={`${
+                                lineThresholds
+                                  ? 'Each line on the chart is judged on its own, on the samples the chart is showing. A step with a hold colours the panel only once every sample inside the hold was past the line, and the chart shades that stretch. A hold needs at least two of the chart’s samples, so a long time range may be too coarse to judge it — the panel says so.'
+                                  : 'A value past a step’s line takes its colour.'
+                              } Past several, the furthest wins — the highest of the ≥ and > steps, the lowest of the ≤ and < steps — and when one of each applies, the more severe colour. Past none, the panel draws plain.${
+                                showAppliesTo && !lineThresholds
+                                  ? ' “Shown number” compares the number on the panel: the accounts’ sum or average, or one account’s when the view is narrowed to it. “Every account” checks each account on its own, and names the one that crossed.'
+                                  : ''
+                              }`}
+                            >
+                              <Box
+                                component='span'
+                                data-testid='threshold-how-it-works'
+                                sx={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: ds.space[1],
+                                  fontSize: ds.text.small,
+                                  color: ds.gray[600],
+                                  cursor: 'help',
+                                }}
+                              >
+                                <InfoOutlinedIcon sx={{ fontSize: 13 }} />
+                                How thresholds are evaluated
+                              </Box>
+                            </Tooltip>
+                          )}
+                          <Box sx={{ ml: 'auto' }}>
+                            <Button
+                              tone='secondary'
+                              size='sm'
+                              // Red first: the first threshold anyone writes is the one
+                              // that means trouble, and a value of its own would be a
+                              // guess at the panel's scale.
+                              onClick={() => patchThresholds([...thresholds, { value: Number.NaN, color: 'red' }])}
+                              id='add-threshold'
+                            >
+                              Add threshold
+                            </Button>
+                          </Box>
                         </Stack>
-                      )}
 
-                      {thresholds.length > 0 && (
-                        <Typography variant='caption' sx={{ display: 'block', mt: ds.space[2], color: ds.gray[500] }}>
-                          {lineThresholds
-                            ? 'Each line on the chart is judged on its own, on the samples the chart is showing. A step with a hold colours the panel only once every sample inside the hold was past the line, and the chart shades that stretch. A hold is 2 to 60 minutes and needs at least two of the chart’s samples, so a long time range may be too coarse to judge it — the panel says so.'
-                            : 'A value past a step’s line takes its colour.'}{' '}
-                          Past several, the furthest wins — the highest of the ≥ and &gt; steps, the lowest of the ≤ and &lt; steps — and when one of
-                          each applies, the more severe colour. Past none, the panel draws plain.
-                          {showAppliesTo &&
-                            !lineThresholds &&
-                            ' “Shown number” compares the number on the panel: the accounts’ sum or average, or one account’s when the view is narrowed to it. “Every account” checks each account on its own, and names the one that crossed.'}
-                        </Typography>
-                      )}
-
-                      {badHolds.length > 0 && (
-                        <Box
-                          data-testid='threshold-bad-hold'
-                          sx={{
-                            mt: ds.space[2],
-                            p: ds.space[3],
-                            border: `1px solid ${ds.amber[300]}`,
-                            background: ds.amber[100],
-                            borderRadius: ds.radius.md,
-                          }}
-                        >
-                          <Typography variant='body2' sx={{ color: ds.gray[700] }}>
-                            A hold is a whole number of minutes, from {FOR_MIN_SECONDS / 60} to {FOR_MAX_SECONDS / 60}. Change it, or clear it so the
-                            step fires on the latest sample.
-                          </Typography>
-                          <Box sx={{ mt: ds.space[2] }}>
-                            <Button tone='secondary' size='sm' onClick={() => clearHolds(badHolds)} id='threshold-clear-bad-holds'>
-                              Clear {badHolds.length === 1 ? 'this hold' : 'these holds'}
-                            </Button>
+                        {badHolds.length > 0 && (
+                          <Box data-testid='threshold-bad-hold' sx={{ mt: ds.space[2] }}>
+                            <Banner
+                              tone='warning'
+                              surface='section'
+                              message={`A hold is a whole number of minutes, from ${FOR_MIN_SECONDS / 60} to ${
+                                FOR_MAX_SECONDS / 60
+                              }. Change it, or clear it so the step fires on the latest sample.`}
+                              actions={[
+                                {
+                                  id: 'threshold-clear-bad-holds',
+                                  label: `Clear ${badHolds.length === 1 ? 'this hold' : 'these holds'}`,
+                                  onClick: () => clearHolds(badHolds),
+                                },
+                              ]}
+                            />
                           </Box>
-                        </Box>
-                      )}
+                        )}
 
-                      {ignoredHolds.length > 0 && (
-                        <Box
-                          data-testid='threshold-ignored-hold'
-                          sx={{
-                            mt: ds.space[2],
-                            p: ds.space[3],
-                            border: `1px solid ${ds.amber[300]}`,
-                            background: ds.amber[100],
-                            borderRadius: ds.radius.md,
-                          }}
-                        >
-                          <Typography variant='body2' sx={{ color: ds.gray[700] }}>
-                            {ignoredHolds.length === 1 ? 'A threshold has' : `${ignoredHolds.length} thresholds have`} a hold, which only a
-                            time-series panel can judge, so {ignoredHolds.length === 1 ? 'it is' : 'they are'} not drawn here. Remove the hold to have
-                            the step fire on the number shown.
-                          </Typography>
-                          <Box sx={{ mt: ds.space[2] }}>
-                            <Button tone='secondary' size='sm' onClick={() => clearHolds(ignoredHolds)} id='threshold-remove-ignored-holds'>
-                              Remove {ignoredHolds.length === 1 ? 'hold' : 'holds'}
-                            </Button>
-                          </Box>
-                        </Box>
-                      )}
-
-                      {unfinishedThresholds.length > 0 && (
-                        <Box
-                          sx={{
-                            mt: ds.space[2],
-                            p: ds.space[3],
-                            border: `1px solid ${ds.amber[300]}`,
-                            background: ds.amber[100],
-                            borderRadius: ds.radius.md,
-                          }}
-                        >
-                          <Typography variant='body2' sx={{ color: ds.gray[700] }}>
-                            Every threshold needs a number to compare against. Fill it in, or remove the step.
-                          </Typography>
-                        </Box>
-                      )}
-
-                      {thresholdConflicts.length > 0 && (
-                        <Box
-                          data-testid='threshold-overlaps'
-                          sx={{
-                            mt: ds.space[2],
-                            p: ds.space[3],
-                            border: `1px solid ${ds.blue[300]}`,
-                            background: ds.blue[100],
-                            borderRadius: ds.radius.md,
-                            display: 'grid',
-                            gap: ds.space[1],
-                          }}
-                        >
-                          {thresholdConflicts.map((overlap) => (
-                            <Typography key={overlap.steps.join(':')} variant='body2' sx={{ color: ds.gray[700] }}>
-                              {overlap.message}
+                        {ignoredHolds.length > 0 && (
+                          <Box
+                            data-testid='threshold-ignored-hold'
+                            sx={{
+                              mt: ds.space[2],
+                              p: ds.space[3],
+                              border: `1px solid ${ds.amber[300]}`,
+                              background: ds.amber[100],
+                              borderRadius: ds.radius.md,
+                            }}
+                          >
+                            <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+                              {ignoredHolds.length === 1 ? 'A threshold has' : `${ignoredHolds.length} thresholds have`} a hold, which only a
+                              time-series panel can judge, so {ignoredHolds.length === 1 ? 'it is' : 'they are'} not drawn here. Remove the hold to
+                              have the step fire on the number shown.
                             </Typography>
-                          ))}
-                        </Box>
-                      )}
+                            <Box sx={{ mt: ds.space[2] }}>
+                              <Button tone='secondary' size='sm' onClick={() => clearHolds(ignoredHolds)} id='threshold-remove-ignored-holds'>
+                                Remove {ignoredHolds.length === 1 ? 'hold' : 'holds'}
+                              </Button>
+                            </Box>
+                          </Box>
+                        )}
 
-                      {danglingThresholds.length > 0 && (
-                        <Box
-                          data-testid='threshold-dangling'
-                          sx={{
-                            mt: ds.space[2],
-                            p: ds.space[3],
-                            border: `1px solid ${ds.amber[300]}`,
-                            background: ds.amber[100],
-                            borderRadius: ds.radius.md,
-                          }}
-                        >
-                          <Typography variant='body2' sx={{ color: ds.gray[700] }}>
-                            {danglingThresholds.length === 1 ? 'A threshold names' : `${danglingThresholds.length} thresholds name`} an account this
-                            panel no longer covers, so it never fires. Pick one of the panel’s accounts, or remove the step.
-                          </Typography>
-                        </Box>
-                      )}
-                    </Box>
-                  </Form.Section>
-                </Card>
+                        {/* A missing number is flagged on its own field; this covers what no field shows, such as an imported colour or comparison the editor cannot read. */}
+                        {unfinishedThresholds.some((step) => Number.isFinite(step.value)) && (
+                          <Box
+                            sx={{
+                              mt: ds.space[2],
+                              p: ds.space[3],
+                              border: `1px solid ${ds.amber[300]}`,
+                              background: ds.amber[100],
+                              borderRadius: ds.radius.md,
+                            }}
+                          >
+                            <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+                              Every threshold needs a comparison, a number and a colour. Pick them again, or remove the step.
+                            </Typography>
+                          </Box>
+                        )}
+
+                        {thresholdConflicts.length > 0 && (
+                          <Box
+                            data-testid='threshold-overlaps'
+                            sx={{
+                              mt: ds.space[2],
+                              p: ds.space[3],
+                              border: `1px solid ${ds.blue[300]}`,
+                              background: ds.blue[100],
+                              borderRadius: ds.radius.md,
+                              display: 'grid',
+                              gap: ds.space[1],
+                            }}
+                          >
+                            {thresholdConflicts.map((overlap) => (
+                              <Typography key={overlap.steps.join(':')} variant='body2' sx={{ color: ds.gray[700] }}>
+                                {overlap.message}
+                              </Typography>
+                            ))}
+                          </Box>
+                        )}
+
+                        {danglingThresholds.length > 0 && (
+                          <Box
+                            data-testid='threshold-dangling'
+                            sx={{
+                              mt: ds.space[2],
+                              p: ds.space[3],
+                              border: `1px solid ${ds.amber[300]}`,
+                              background: ds.amber[100],
+                              borderRadius: ds.radius.md,
+                            }}
+                          >
+                            <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+                              {danglingThresholds.length === 1 ? 'A threshold names' : `${danglingThresholds.length} thresholds name`} an account this
+                              panel no longer covers, so it never fires. Pick one of the panel’s accounts, or remove the step.
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                    </Form.Section>
+                  </Card>
+                </Box>
               )}
 
               {isNudgebee && (
