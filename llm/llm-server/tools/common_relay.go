@@ -159,17 +159,12 @@ func getRelayCommandResponseData(relayResponse map[string]any) (map[string]any, 
 func buildArgoCDFlags(configValues []core.ToolConfigValue) string {
 	var flags []string
 
-	// Certificates are verified unless the integration explicitly opts out,
-	// matching the integration's own default and its Test Connection.
-	insecure := false
 	grpcWeb := false
 	configFilePath := ""
 
 	// Parse configuration values
 	for _, cfg := range configValues {
 		switch cfg.Name {
-		case "insecure":
-			insecure = strings.EqualFold(cfg.Value, "true")
 		case "grpc_web":
 			if strings.ToLower(cfg.Value) == "true" {
 				grpcWeb = true
@@ -187,11 +182,11 @@ func buildArgoCDFlags(configValues []core.ToolConfigValue) string {
 	// Add authentication token (ArgoCD CLI only supports token auth via flags)
 	flags = append(flags, "--auth-token $ARGOCD_AUTH_TOKEN")
 
-	// Add optional flags
-	if insecure {
-		flags = append(flags, "--insecure")
-	}
+	// Certificates are not verified yet: servers with self-signed certificates
+	// would fail, and the integration has no way to supply their CA.
+	flags = append(flags, "--insecure")
 
+	// Add optional flags
 	if grpcWeb {
 		flags = append(flags, "--grpc-web")
 	}

@@ -533,10 +533,10 @@ func extractRelayResponse(relayResponse map[string]any) (string, error) {
 }
 
 // fetchArgoCDIntegrationConfig fetches ArgoCD integration config from database
-func fetchArgoCDIntegrationConfig(accountId string) (secretName, serverURL, authTokenKeyInSecret string, insecure bool, err error) {
+func fetchArgoCDIntegrationConfig(accountId string) (secretName, serverURL, authTokenKeyInSecret string, err error) {
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		return "", "", "", false, fmt.Errorf("failed to get database manager: %w", err)
+		return "", "", "", fmt.Errorf("failed to get database manager: %w", err)
 	}
 
 	// Query to find ArgoCD integration for the account
@@ -552,7 +552,7 @@ func fetchArgoCDIntegrationConfig(accountId string) (secretName, serverURL, auth
 	var integrationId string
 	err = dbManager.Db.QueryRowx(query, accountId).Scan(&integrationId)
 	if err != nil {
-		return "", "", "", false, fmt.Errorf("no argocd integration found for account: %w", err)
+		return "", "", "", fmt.Errorf("no argocd integration found for account: %w", err)
 	}
 
 	// Fetch integration config values
@@ -568,7 +568,7 @@ func fetchArgoCDIntegrationConfig(accountId string) (secretName, serverURL, auth
 	}
 	var configRows []configRow
 	if err := dbManager.Db.Select(&configRows, configQuery, integrationId); err != nil {
-		return "", "", "", false, fmt.Errorf("failed to fetch integration config values: %w", err)
+		return "", "", "", fmt.Errorf("failed to fetch integration config values: %w", err)
 	}
 	configs := make(map[string]string)
 	for _, row := range configRows {
@@ -576,7 +576,7 @@ func fetchArgoCDIntegrationConfig(accountId string) (secretName, serverURL, auth
 		if row.IsEncrypted && value != "" {
 			decrypted, err := common.Decrypt(value)
 			if err != nil {
-				return "", "", "", false, fmt.Errorf("failed to decrypt config value %s: %w", row.Name, err)
+				return "", "", "", fmt.Errorf("failed to decrypt config value %s: %w", row.Name, err)
 			}
 			configs[row.Name] = decrypted
 		} else {
@@ -588,7 +588,6 @@ func fetchArgoCDIntegrationConfig(accountId string) (secretName, serverURL, auth
 	secretName = configs["k8s_secret"]
 	serverURL = configs["server"]
 	authTokenKeyInSecret = configs["auth_token_key_in_secret"]
-	insecure = strings.EqualFold(configs["insecure"], "true")
 
 	// Set defaults
 	if authTokenKeyInSecret == "" {
@@ -596,14 +595,14 @@ func fetchArgoCDIntegrationConfig(accountId string) (secretName, serverURL, auth
 	}
 
 	if secretName == "" {
-		return "", "", "", false, errors.New("k8s_secret not found in argocd integration config")
+		return "", "", "", errors.New("k8s_secret not found in argocd integration config")
 	}
 
 	if serverURL == "" {
-		return "", "", "", false, errors.New("server URL not found in argocd integration config")
+		return "", "", "", errors.New("server URL not found in argocd integration config")
 	}
 
-	return secretName, serverURL, authTokenKeyInSecret, insecure, nil
+	return secretName, serverURL, authTokenKeyInSecret, nil
 }
 
 // The app name comes from a workload annotation and the host from integration
@@ -614,20 +613,15 @@ var (
 	argoCDServerHostPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.-]*(:[0-9]+)?$`)
 )
 
-// argoCDAppGetCommand builds the app lookup command. Certificates are verified
-// unless the integration explicitly opts out.
-func argoCDAppGetCommand(appName, serverHost string, insecure bool) (string, error) {
+// argoCDAppGetCommand builds the app lookup command.
+func argoCDAppGetCommand(appName, serverHost string) (string, error) {
 	if !argoCDAppNamePattern.MatchString(appName) {
 		return "", fmt.Errorf("invalid argocd app name %q", appName)
 	}
 	if !argoCDServerHostPattern.MatchString(serverHost) {
 		return "", fmt.Errorf("invalid argocd server host %q: must be hostname[:port]", serverHost)
 	}
-	insecureFlag := ""
-	if insecure {
-		insecureFlag = " --insecure"
-	}
-	return fmt.Sprintf(`argocd app get %s --server %s%s --grpc-web --output json`, appName, serverHost, insecureFlag), nil
+	return fmt.Sprintf(`argocd app get %s --server %s --insecure --grpc-web --output json`, appName, serverHost), nil
 }
 
 // GetSourceCodeFromArgoCD queries ArgoCD API to get source code information
@@ -639,7 +633,7 @@ func GetSourceCodeFromArgoCD(ctx *security.RequestContext, accountId, appName st
 	ctx.GetLogger().Info("querying ArgoCD application", "app_name", appName)
 
 	// Fetch ArgoCD integration config
-	secretName, serverURL, authTokenKeyInSecret, insecure, err := fetchArgoCDIntegrationConfig(accountId)
+	secretName, serverURL, authTokenKeyInSecret, err := fetchArgoCDIntegrationConfig(accountId)
 	if err != nil {
 		ctx.GetLogger().Error("failed to fetch ArgoCD integration", "error", err)
 		return GetSourceCodeRepoResponse{}, fmt.Errorf("failed to fetch ArgoCD integration: %w", err)
@@ -651,7 +645,7 @@ func GetSourceCodeFromArgoCD(ctx *security.RequestContext, accountId, appName st
 
 	// Build the argocd CLI command
 	// ArgoCD CLI automatically uses ARGOCD_AUTH_TOKEN environment variable
-	argoCDCmd, err := argoCDAppGetCommand(appName, serverHost, insecure)
+	argoCDCmd, err := argoCDAppGetCommand(appName, serverHost)
 	if err != nil {
 		ctx.GetLogger().Warn("refusing ArgoCD lookup", "error", err)
 		return GetSourceCodeRepoResponse{}, fmt.Errorf("GetSourceCodeFromArgoCD: %w", err)

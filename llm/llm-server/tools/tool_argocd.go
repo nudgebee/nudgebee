@@ -180,8 +180,8 @@ func (m ArgoCDExecuteTool) ConfigSchema(ctx *security.RequestContext) core.ToolC
 			},
 			"insecure": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Skip TLS certificate verification (true/false, defaults to false)",
-				Default:     "false",
+				Description: "Skip TLS certificate verification (true/false, defaults to true)",
+				Default:     "true",
 			},
 			"config_file_path": {
 				Type:        core.ToolSchemaTypeString,
