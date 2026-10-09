@@ -1198,12 +1198,12 @@ func createNBToolFromDto(accountId string, tool ToolDto) (NBTool, error) {
 	switch tool.ExecutorType {
 	case ToolExecutorTypeWorkflow:
 		// Workflow executor type is deprecated - use workflow tools instead
-		slog.Warn("tools: workflow executor type is deprecated", "tool_id", tool.Id)
+		slog.Debug("tools: workflow executor type is deprecated", "tool_id", tool.Id)
 		return nil, errors.New("workflow executor type is deprecated, use workflow tools instead")
 	case ToolExecutorTypeMCP:
 		// MCP tools from llm_tools are deprecated — MCP tools now come from integrations.
 		// Existing llm_tools MCP entries are ignored; use MCP integrations instead.
-		slog.Warn("tools: MCP executor type in llm_tools is deprecated, use MCP integrations instead", "tool_id", tool.Id)
+		slog.Debug("tools: MCP executor type in llm_tools is deprecated, use MCP integrations instead", "tool_id", tool.Id)
 		return nil, errors.New("MCP tools are now managed via integrations")
 	case ToolExecutorTypeContainer:
 		return nbCustomContainerTool{
