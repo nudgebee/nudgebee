@@ -1,6 +1,7 @@
 from typing import List, Optional, Any, Dict, Union
 from dataclasses import dataclass
 import logging
+import os
 import traceback
 import warnings
 from server.recommendation.vertical_rightsizing.models.config import Config
@@ -20,6 +21,32 @@ warnings.filterwarnings("ignore", message="pkg_resources is deprecated", categor
 
 logger = logging.getLogger("rightsizing")
 tracer = get_trace(__name__)
+
+# Scan abort limits an operator can change without a release; unset keeps Config's default.
+_SCAN_LIMIT_ENV = {
+    "max_consecutive_timed_out_batches": "RIGHTSIZING_SCAN_MAX_TIMED_OUT_BATCHES",
+    "scan_seconds_per_workload": "RIGHTSIZING_SCAN_SECONDS_PER_WORKLOAD",
+    "min_scan_deadline_seconds": "RIGHTSIZING_SCAN_MIN_DEADLINE_SECONDS",
+}
+
+
+def _scan_limit_overrides() -> Dict[str, int]:
+    """A bad value falls back to the default: a typo here must not stop every scan."""
+    overrides: Dict[str, int] = {}
+    for field, env in _SCAN_LIMIT_ENV.items():
+        raw = os.environ.get(env)
+        if raw is None:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value < 1:
+            logger.warning(f"Ignoring {env}={raw!r}: expected a positive integer")
+            continue
+        overrides[field] = value
+    return overrides
+
 
 # Default cost constants (same as collector-server)
 DEFAULT_COST = {
@@ -110,6 +137,7 @@ async def generate_recommendations(
         resource_names=resource_names,
         max_recommendations_per_batch=max_recommendations,  # Use parameter value
         metrics_fetch_timeout=45,  # Increased timeout for better reliability
+        **_scan_limit_overrides(),
     )
     runner = RecommendationService(
         account_id,

@@ -69,4 +69,4 @@ jobs:
           poetry run black --check .
           poetry run flake8 .
           poetry run mypy server/**/*.py --namespace-packages
-          poetry run pytest tests/test_rabbitmq_consumer.py -q
+          poetry run pytest tests/test_rabbitmq_consumer.py tests/test_rightsizing_scan_abort.py -q
