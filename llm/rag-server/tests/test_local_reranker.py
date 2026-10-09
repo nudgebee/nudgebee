@@ -56,7 +56,9 @@ def _no_leaked_slots():
 def _stub(monkeypatch, scores):
     # predict must accept batch_size: rerank passes it to bound activation memory.
     monkeypatch.setattr(
-        lr, "get_reranker", lambda: type("M", (), {"predict": lambda self, pairs, batch_size=None: scores})()
+        lr,
+        "get_reranker",
+        lambda: type("M", (), {"predict": lambda self, pairs, batch_size=None, **kwargs: scores})(),
     )
 
 
@@ -205,7 +207,7 @@ def test_forward_passes_are_bounded_by_the_semaphore(monkeypatch):
     live = peak = 0
     lock = threading.Lock()
 
-    def predict(self, pairs, batch_size=None):
+    def predict(self, pairs, batch_size=None, **kwargs):
         nonlocal live, peak
         with lock:
             live += 1
@@ -230,7 +232,7 @@ def test_a_slot_is_released_when_scoring_raises(monkeypatch):
     # instead of hanging the suite, which is how it presents in production.
     monkeypatch.setattr(lr, "_inference_slots", threading.Semaphore(1))
 
-    def boom(self, pairs, batch_size=None):
+    def boom(self, pairs, batch_size=None, **kwargs):
         raise RuntimeError("scoring blew up")
 
     monkeypatch.setattr(lr, "get_reranker", lambda: type("M", (), {"predict": boom})())
@@ -266,14 +268,22 @@ def test_batch_size_is_taken_from_config(monkeypatch):
     monkeypatch.setattr(lr.Config, "reranker_batch_size", 3)
     seen = {}
 
-    def predict(self, pairs, batch_size=None):
+    def predict(self, pairs, batch_size=None, **kwargs):
         seen["batch_size"] = batch_size
+        seen["show_progress_bar"] = kwargs.get("show_progress_bar")
         return [0.99] * len(pairs)
 
     monkeypatch.setattr(lr, "get_reranker", lambda: type("M", (), {"predict": predict})())
     kept, ok = lr.rerank("q", _docs(9), threshold=0.5)
     assert ok is True
     assert seen["batch_size"] == 3
+    assert seen["show_progress_bar"] is False
+
+    seen.clear()
+    scores, ok = lr.score_documents("q", _docs(9))
+    assert ok is True
+    assert seen["batch_size"] == 3
+    assert seen["show_progress_bar"] is False
 
 
 def test_non_positive_bounds_are_clamped():
@@ -311,7 +321,7 @@ def test_queue_wait_excludes_model_loading(caplog):
     # contention — the opposite of what the number is read for.
     def slow_load():
         time.sleep(0.3)
-        return type("M", (), {"predict": lambda self, pairs, batch_size=None: [0.99] * len(pairs)})()
+        return type("M", (), {"predict": lambda self, pairs, batch_size=None, **kwargs: [0.99] * len(pairs)})()
 
     lr.get_reranker = slow_load
     try:
