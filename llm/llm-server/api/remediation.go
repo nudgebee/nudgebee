@@ -578,8 +578,73 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 
 	assignDelivery(ctx, request.AccountId, &plan)
 	respondWithStoredPlan(c, ctx.GetLogger(), plan, func() error {
-		return persistRemediationPlan(ctx, request.AccountId, request.EventId, plan, trace)
+		if err := persistRemediationPlan(ctx, request.AccountId, request.EventId, plan, trace); err != nil {
+			return err
+		}
+		appendPlanToConversation(ctx, conversationId, request, sc.GetUserId(), plan)
+		return nil
 	})
+}
+
+// appendPlanToConversation adds the plan as the event conversation's closing message, after the
+// summary / RCA / log-analysis ones, so Ask Nudgebee shows it too. Best effort: the plan is already
+// stored, and the investigation page does not read this message.
+func appendPlanToConversation(ctx *security.RequestContext, conversationId string, request RemediationGenerateRequest, userId string, plan RemediationPlan) {
+	dao := agentcore.GetConversationDao()
+	if conversationId == "" || dao == nil {
+		return
+	}
+	_, err := dao.SaveConversationMessage("", conversationId, request.AccountId, userId, agentcore.MessageRoleHuman, agentcore.MessageTypeGeneration,
+		"Suggest a remediation for the event with id "+request.EventId, planMarkdown(plan), remediationPlannerAgent, uuid.Nil, nil, "", "", "", agentcore.ConversationStatusCompleted)
+	if err != nil {
+		ctx.GetLogger().Warn("remediation_generate: plan not appended to conversation", "conversation_id", conversationId, "error", err)
+	}
+}
+
+// planMarkdown renders the plan for the chat transcript: summary, root cause, then each action
+// with its commands.
+func planMarkdown(plan RemediationPlan) string {
+	var b strings.Builder
+	b.WriteString("## Remediation plan\n\n" + plan.Summary)
+	if plan.RootCause != "" {
+		fmt.Fprintf(&b, "\n\n### Root cause\n%s", plan.RootCause)
+	}
+	if len(plan.Actions) > 0 {
+		b.WriteString("\n\n### Recommended actions")
+	}
+	for i, a := range plan.Actions {
+		name, detail := a.Action, a.Title
+		if name == "" {
+			name, detail = a.Title, ""
+		}
+		badge := "⚠️ **Mitigation**"
+		if a.Kind == RemediationKindFix {
+			badge = "✅ **Fix**"
+		}
+		if i > 0 {
+			b.WriteString("\n\n---")
+		}
+		fmt.Fprintf(&b, "\n\n#### %d. %s\n%s · %d%% confidence", i+1, name, badge, int(a.Confidence))
+		if detail != "" && detail != name {
+			fmt.Fprintf(&b, "\n\n%s", detail)
+		}
+		for _, cmd := range [][2]string{{"Run", a.ExecuteCommand}, {"Verify", a.VerifyCommand}, {"Rollback", a.RollbackCommand}} {
+			if cmd[1] != "" {
+				fmt.Fprintf(&b, "\n\n**%s**\n```bash\n%s\n```", cmd[0], cmd[1])
+			}
+		}
+		if a.RequiredChange.actionable() {
+			where := ""
+			if a.RequiredChange.Where != "" {
+				where = " (" + a.RequiredChange.Where + ")"
+			}
+			fmt.Fprintf(&b, "\n\n**Change in source** · `%s`%s\n%s", a.RequiredChange.Target, where, a.RequiredChange.Change)
+		}
+		if a.TradeOff != "" {
+			fmt.Fprintf(&b, "\n\n> **Trade-off:** %s", a.TradeOff)
+		}
+	}
+	return b.String()
 }
 
 // respondWithStoredPlan returns the plan only once it is stored. The stored plan is what Run is checked
