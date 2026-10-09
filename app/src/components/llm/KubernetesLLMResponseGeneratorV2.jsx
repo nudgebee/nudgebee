@@ -6,6 +6,7 @@ import NotifyBanner from '@shared/NotifyBanner';
 import Text from '@shared/format/Text';
 import ClusterDropDown from '@shared/navigation/ClusterDropDown';
 import ConversationLoader from '@shared/ConversationLoader';
+import { LiveStatusLoader } from './common/liveStatus';
 import Tooltip from '@ui/Tooltip';
 import AskNudgebeeLayout from '@shared/layout/AskNudgebeeLayoutV2';
 import { Button } from '@ui/Button';
@@ -328,6 +329,18 @@ const KubernetesLLMResponseGenerator = ({
     clearModelConfig,
     imageSupport,
   } = useLLMInvestigationControl(accountId, eventId);
+  // While a model call waits on a retry or a summary, the thinking indicator shows why.
+  const runningLiveStatus = useMemo(() => {
+    if (!Array.isArray(messages)) {
+      return undefined;
+    }
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.type === 'question') {
+        return messages[i].liveStatus;
+      }
+    }
+    return undefined;
+  }, [messages]);
 
   const isConversationInProgress = useMemo(
     () => conversationStatus === 'IN_PROGRESS' || !!currentlyProcessingQuestion,
@@ -2206,7 +2219,7 @@ const KubernetesLLMResponseGenerator = ({
                   mb={popup ? ds.space.mul(1, 5) : ds.space.mul(0, 35)}
                   sx={{ width: '100%', minWidth: popup ? ds.space.mul(1, 100) : 0, boxSizing: 'border-box' }}
                 >
-                  <ConversationLoader query={currentlyProcessingQuestion} startedAt={activeQuestionStartedAt} />
+                  <LiveStatusLoader liveStatus={runningLiveStatus} query={currentlyProcessingQuestion} startedAt={activeQuestionStartedAt} />
                 </Box>
               );
             })()}

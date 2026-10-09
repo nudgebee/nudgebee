@@ -10,6 +10,21 @@ import { configKeyForSource, isWholeConfigSource } from '@utils/llmConfigSource'
 import { getBrandTitle } from '@hooks/useTenantBranding';
 import { getUpstreamStatus, mapUpstreamError } from '@lib/errorMessages';
 
+// metadata arrives as a JSON string or an already-parsed object.
+const parseMessageMetadata = (metadata) => {
+  if (!metadata) {
+    return null;
+  }
+  if (typeof metadata === 'object') {
+    return metadata;
+  }
+  try {
+    return JSON.parse(metadata);
+  } catch {
+    return null;
+  }
+};
+
 const NULL_AGENT_ID = '00000000-0000-0000-0000-000000000000';
 const MAX_LEGACY_FORWARDED_RESPONSE_LENGTH = 16 * 1024;
 const asText = (value) => (value == null ? '' : String(value));
@@ -337,6 +352,7 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           updated_at: conversationMessage.updated_at,
           user: conversationMessage?.user?.display_name || 'System',
           attachments: conversationMessage.attachments || [],
+          liveStatus: parseMessageMetadata(conversationMessage.metadata)?.live_status,
         };
 
         if (conversationMessage.ack_message?.trim()) {

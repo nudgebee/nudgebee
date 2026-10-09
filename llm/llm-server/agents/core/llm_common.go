@@ -447,6 +447,10 @@ type retryContext struct {
 	// getLLMApiKey — resolve the SAME tier-specific key as the client-build
 	// path, instead of dropping the tier and falling back to the global key.
 	resolution *LLMConfigResolution
+	// Live status shown in the chat while this call retries (see llm_live_status.go).
+	liveStatusSet        bool
+	liveConfigName       string
+	liveConfigNameLoaded bool
 }
 
 func GetLLMNumTokensFromStringMessages(context *security.RequestContext, messages []string, provider string, model string) (numTokens int) {
@@ -2029,6 +2033,8 @@ func tryFallbackModel(rc *retryContext, next FallbackModel, attempt int) (*llms.
 		return nil, errors.New("invalid or already tried model")
 	}
 
+	rc.setLiveFallback(next)
+
 	// Save current state before mutation
 	previousModel := rc.currentModel
 	previousLLM := rc.llm
@@ -2230,6 +2236,7 @@ func buildCallMetadata(rc *retryContext, success bool) *LLMCallMetadata {
 func handleTokenLimitError(rc *retryContext) (*llms.ContentResponse, *LLMCallMetadata, error) {
 	ctx := rc.ctx
 
+	rc.setLiveSummarising()
 	ctx.GetLogger().Info("STRATEGY 1: Token limit error detected, applying chunking with context preservation",
 		"agentId", rc.agentId,
 		"model", rc.currentModel,
@@ -2815,6 +2822,7 @@ func handleTransientError(rc *retryContext, maxAttempts int) (*llms.ContentRespo
 			"maxAttempts", maxAttempts,
 			"previousError", safeError(rc.lastErr))
 
+		rc.setLiveRetry(backoffDuration, attempt+1, maxAttempts)
 		time.Sleep(backoffDuration)
 
 		// Retry with original model
@@ -2979,6 +2987,7 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 		capabilities:     capabilities,
 		promptVariant:    promptVariant,
 	}
+	defer rc.clearLiveStatus()
 
 	// Use the provided resolution or resolve it now
 	if res == nil {
@@ -3147,6 +3156,7 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 				backoff := min(base+jitter, emptyResponseMaxBackoff)
 				ctx.GetLogger().Warn("Empty response backoff before retry",
 					"attempt", attempt, "backoff", backoff, "model", rc.currentModel)
+				rc.setLiveRetry(backoff, attempt+1, emptyResponseMaxRetries+1)
 				time.Sleep(backoff)
 			} else {
 				ctx.GetLogger().Warn("Empty response immediate retry",

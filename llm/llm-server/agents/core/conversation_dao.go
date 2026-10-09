@@ -263,6 +263,7 @@ type IConversationDao interface {
 	UpdateConversationMessageContext(messageId string, context map[string]any) error
 	UpdateConversationMessage(id, response string, status ConversationStatus) error
 	UpdateConversationMessageMetadata(id string, metadata map[string]any) error
+	SetMessageLiveStatus(messageId, key string, status *LiveStatus) error
 	UpdateConversationMessageAsync(id, response string, status ConversationStatus)
 	UpdateMessageCompactResponse(context *security.RequestContext, messageId, compactResponse string) error
 	UpdateConversationMessageMetrics(id string, metrics string) error
@@ -1966,6 +1967,41 @@ func (chat *ConversationDao) UpdateConversationMessage(id, response string, stat
 //
 // An empty or nil metadata is treated as a no-op so callers can call
 // unconditionally without an empty-check at the call site.
+// SetMessageLiveStatus sets one entry under metadata.live_status, or removes it
+// when status is nil. Entries are keyed per agent so parallel sub-agents writing
+// to the same message never overwrite each other.
+func (chat *ConversationDao) SetMessageLiveStatus(messageId, key string, status *LiveStatus) error {
+	if messageId == "" || key == "" {
+		return nil
+	}
+	if status == nil {
+		_, err := chat.dbManager.Db.Exec(`UPDATE llm_conversation_messages
+              SET metadata = metadata #- ARRAY['live_status', $2::text], updated_at = now()
+              WHERE id = $1 AND jsonb_typeof(metadata) = 'object'
+                AND jsonb_typeof(metadata->'live_status') = 'object' AND metadata->'live_status' ? $2`, messageId, key)
+		if err != nil {
+			return fmt.Errorf("history: failed to clear live status: %w", err)
+		}
+		return nil
+	}
+	b, err := common.MarshalJson(status)
+	if err != nil {
+		return fmt.Errorf("history: failed to marshal live status: %w", err)
+	}
+	_, err = chat.dbManager.Db.Exec(`UPDATE llm_conversation_messages
+              SET metadata = jsonb_set(COALESCE(NULLIF(metadata, 'null'::jsonb), '{}'::jsonb), '{live_status}',
+                      CASE WHEN jsonb_typeof(metadata->'live_status') = 'object'
+                           THEN metadata->'live_status'
+                           ELSE '{}'::jsonb
+                      END || jsonb_build_object($2::text, $3::jsonb)),
+                  updated_at = now()
+              WHERE id = $1`, messageId, key, string(b))
+	if err != nil {
+		return fmt.Errorf("history: failed to set live status: %w", err)
+	}
+	return nil
+}
+
 func (chat *ConversationDao) UpdateConversationMessageMetadata(id string, metadata map[string]any) error {
 	if id == "" || len(metadata) == 0 {
 		return nil
