@@ -539,6 +539,18 @@ query GetTagKeys($where: CloudResourcesWhereRequest) {
 }
 `;
 
+// GCP labels (and some AWS tags) may carry an empty value (e.g. `goog-vertex-ai: ""`).
+// An empty string is falsy, so a raw "" value collapses to "no filter" everywhere the
+// tag-value dropdown funnels through — `value || null` in the components, `|| undefined`
+// at the getCloudResource call site, and the `&&`-guarded where clause below — and the
+// dropdown renders it as a blank, unreadable row (#40330). So carry an empty value as
+// this sentinel through the UI instead (truthy), label it "(empty)", and translate it
+// back to "" when building the query. The sentinel is collision-proof because GCP labels
+// allow only [a-z0-9_-] and AWS tag values exclude "$", so no real value can equal it; an
+// ASCII token (rather than a NUL-prefixed one) avoids WAF/proxy/log mangling of the value.
+export const EMPTY_TAG_VALUE = '$$nb_empty_tag_value$$';
+export const EMPTY_TAG_VALUE_LABEL = '(empty)';
+
 function applyTypeFilter(where: any, type: string | string[] | undefined) {
   if (Array.isArray(type)) {
     where.type = { _in: type };
@@ -708,7 +720,7 @@ const apiCloudAccount = {
       });
       return Array.from(valueSet)
         .sort((a, b) => a.localeCompare(b))
-        .map((v) => ({ label: v, value: v }));
+        .map((v) => (v === '' ? { label: EMPTY_TAG_VALUE_LABEL, value: EMPTY_TAG_VALUE } : { label: v, value: v }));
     } catch (error) {
       console.log('failed to fetch tag values-', error);
       return [];
@@ -845,12 +857,15 @@ const apiCloudAccount = {
           _or: [{ resourse_id: { _ilike: '%' + nameFilter + '%' } }, { name: { _ilike: '%' + nameFilter + '%' } }],
         });
       }
-      // Handle tag filtering with JSON _contains (values serialized as JSON strings)
+      // Handle tag filtering with JSON _contains (values serialized as JSON strings).
+      // The dropdown carries an empty label value as EMPTY_TAG_VALUE (see getDistinctTagValues);
+      // translate it back to "" here so it matches resources whose label value is empty.
       if (data.tagFilterKey && data.tagFilterValue) {
+        const tagFilterValue = data.tagFilterValue === EMPTY_TAG_VALUE ? '' : data.tagFilterValue;
         andConditions.push({
           _or: [
-            { tags: { _contains: JSON.stringify({ [data.tagFilterKey]: [data.tagFilterValue] }) } },
-            { tags: { _contains: JSON.stringify({ [data.tagFilterKey]: data.tagFilterValue }) } },
+            { tags: { _contains: JSON.stringify({ [data.tagFilterKey]: [tagFilterValue] }) } },
+            { tags: { _contains: JSON.stringify({ [data.tagFilterKey]: tagFilterValue }) } },
           ],
         });
       } else if (data.tagFilterKey) {
