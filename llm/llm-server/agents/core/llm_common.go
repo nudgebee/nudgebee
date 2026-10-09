@@ -4145,6 +4145,9 @@ func queryLLMIntegrations(ctx *security.RequestContext, dbManager *common.Databa
 	return integrations, nil
 }
 
+// tenantWideLLMIntegrations is replaced in tests, which have no database.
+var tenantWideLLMIntegrations = getTenantWideLLMIntegrations
+
 // getTenantWideLLMIntegrations returns a tenant's enabled integrations that a
 // config saved with no accounts may reference: those linked to no account, and
 // the tenant default.

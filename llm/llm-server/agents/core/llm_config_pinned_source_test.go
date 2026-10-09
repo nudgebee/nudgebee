@@ -36,6 +36,19 @@ func seedLLMIntegrations(t *testing.T, accountId string, integrations ...llmInte
 	})
 }
 
+// seedTenantWideLLMIntegrations stands in for the tenant's organisation-wide configs.
+func seedTenantWideLLMIntegrations(t *testing.T, tenantId string, integrations ...llmIntegration) {
+	t.Helper()
+	orig := tenantWideLLMIntegrations
+	tenantWideLLMIntegrations = func(_ *security.RequestContext, id string) ([]llmIntegration, error) {
+		if id != tenantId {
+			return nil, nil
+		}
+		return cloneIntegrations(integrations), nil
+	}
+	t.Cleanup(func() { tenantWideLLMIntegrations = orig })
+}
+
 func TestParseConfigSourceId_Valid(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -990,11 +1003,11 @@ func TestIntegrationConfigForPin_DoesNotAliasTheCache(t *testing.T) {
 	)
 	ctx := security.NewRequestContextForSuperAdmin()
 
-	first, err := integrationConfigForPin(ctx, "acct-alias", "int-alias")
+	first, err := integrationConfigForPin(ctx, "acct-alias", "", "int-alias")
 	require.NoError(t, err)
 	first["llm_model_name"] = "mutated"
 
-	second, err := integrationConfigForPin(ctx, "acct-alias", "int-alias")
+	second, err := integrationConfigForPin(ctx, "acct-alias", "", "int-alias")
 	require.NoError(t, err)
 	assert.Equal(t, "model-a", second["llm_model_name"], "cache must be unaffected by a caller's write")
 }

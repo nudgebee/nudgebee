@@ -667,10 +667,16 @@ func (m LLM) testConnection(rc *security.RequestContext, values []core.Integrati
 	if rc != nil && rc.GetContext() != nil {
 		reqCtx = rc.GetContext()
 	}
+	// With no accounts, llm-server resolves a referenced fallback among the
+	// tenant's organisation-wide configs.
+	tenantId := ""
+	if rc != nil && rc.GetSecurityContext() != nil {
+		tenantId = rc.GetSecurityContext().GetTenantId()
+	}
 
 	resp, err := common.HttpPost(url,
 		common.HttpWithContext(reqCtx),
-		common.HttpWithJsonBody(map[string]any{"config": cfg, "account_ids": ids}),
+		common.HttpWithJsonBody(map[string]any{"config": cfg, "account_ids": ids, "tenant_id": tenantId}),
 		common.HttpWithHeaders(headers),
 		// 90s: 5-way parallel probe across ~25 models, 15s per-probe budget on
 		// llm-server side, with slack for queueing and the response trip.

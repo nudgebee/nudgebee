@@ -753,7 +753,7 @@ func configuredFallback(ctx *security.RequestContext, accountId string, res *LLM
 		}
 	}
 	if src != "" {
-		fbRes, err := resolveFallbackRef(ctx, src, refModel, accountId, tier)
+		fbRes, err := resolveFallbackRef(ctx, src, refModel, accountId, "", tier)
 		if err != nil {
 			return nil, fmt.Errorf("configured fallback %q (%s) is unavailable: %w", refModel, src, err)
 		}
@@ -775,8 +775,9 @@ func configuredFallback(ctx *security.RequestContext, accountId string, res *LLM
 
 // resolveFallbackRef resolves a referenced slot exactly as a pinned request
 // would (visibility enforced for accountId) and checks it still serves model —
-// the slot's primary or one of its same-provider fallbacks.
-func resolveFallbackRef(ctx *security.RequestContext, sourceId, model, accountId string, tier ModelTier) (*LLMConfigResolution, error) {
+// the slot's primary or one of its same-provider fallbacks. tenantId is used only
+// when accountId is empty.
+func resolveFallbackRef(ctx *security.RequestContext, sourceId, model, accountId, tenantId string, tier ModelTier) (*LLMConfigResolution, error) {
 	parsed, err := parseConfigSourceId(sourceId)
 	if err != nil {
 		return nil, err
@@ -784,7 +785,7 @@ func resolveFallbackRef(ctx *security.RequestContext, sourceId, model, accountId
 	if parsed.Scope == "all" {
 		return nil, fmt.Errorf("a whole-config source cannot be a fallback; pick one slot")
 	}
-	fbRes, slotFallbacks, pinConfig, err := readPinnedSlot(ctx, sourceId, parsed, accountId, tier)
+	fbRes, slotFallbacks, pinConfig, err := readPinnedSlot(ctx, sourceId, parsed, accountId, tenantId, tier)
 	if err != nil {
 		return nil, err
 	}
@@ -3299,7 +3300,7 @@ func resolveFromPinnedSource(ctx *security.RequestContext, sourceId, accountId, 
 	// Recorded before readPinnedSlot rewrites Scope to the concrete slot.
 	wholeConfig := parsed.Scope == "all"
 
-	res, slotFallbacks, pinConfig, err := readPinnedSlot(ctx, sourceId, parsed, accountId, tier)
+	res, slotFallbacks, pinConfig, err := readPinnedSlot(ctx, sourceId, parsed, accountId, "", tier)
 	if err != nil {
 		return nil, err
 	}
@@ -3364,7 +3365,8 @@ func resolveFromPinnedSource(ctx *security.RequestContext, sourceId, accountId, 
 // readPinnedSlot reads the slot sourceId names into a pinned resolution (no request
 // reconciliation), shared by pinned requests & referenced fallbacks. Also returns the
 // slot's same-provider fallback models and, for db slots, the integration config.
-func readPinnedSlot(ctx *security.RequestContext, sourceId string, parsed *parsedConfigSource, accountId string, tier ModelTier) (*LLMConfigResolution, []string, map[string]string, error) {
+// tenantId is used only when accountId is empty (see integrationConfigForPin).
+func readPinnedSlot(ctx *security.RequestContext, sourceId string, parsed *parsedConfigSource, accountId, tenantId string, tier ModelTier) (*LLMConfigResolution, []string, map[string]string, error) {
 	res := &LLMConfigResolution{
 		Source:             "pinned:" + sourceId,
 		AccountId:          accountId,
@@ -3390,7 +3392,7 @@ func readPinnedSlot(ctx *security.RequestContext, sourceId string, parsed *parse
 			return nil, nil, nil, err
 		}
 	case "db":
-		pinConfig, err = integrationConfigForPin(ctx, accountId, parsed.IntegrationUuid)
+		pinConfig, err = integrationConfigForPin(ctx, accountId, tenantId, parsed.IntegrationUuid)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -3411,12 +3413,19 @@ func readPinnedSlot(ctx *security.RequestContext, sourceId string, parsed *parse
 // from getLLMIntegrationsForAccount's visibility filter — an integration
 // belonging to another tenant is never in the returned list, so an unrecognised
 // uuid is rejected here rather than silently resolving to someone else's
-// credentials.
-func integrationConfigForPin(ctx *security.RequestContext, accountId, integrationUuid string) (map[string]string, error) {
+// credentials. With no account, only tenantId's organisation-wide configs are
+// visible.
+func integrationConfigForPin(ctx *security.RequestContext, accountId, tenantId, integrationUuid string) (map[string]string, error) {
+	var integrations []llmIntegration
+	var err error
 	if accountId == "" {
-		return nil, fmt.Errorf("llm_config_source db:%s requires an account context", integrationUuid)
+		if tenantId == "" {
+			return nil, fmt.Errorf("llm_config_source db:%s requires an account context", integrationUuid)
+		}
+		integrations, err = tenantWideLLMIntegrations(ctx, tenantId)
+	} else {
+		integrations, err = getLLMIntegrationsForAccount(ctx, accountId)
 	}
-	integrations, err := getLLMIntegrationsForAccount(ctx, accountId)
 	if err != nil {
 		return nil, fmt.Errorf("llm_config_source db:%s: unable to load LLM integrations: %w", integrationUuid, err)
 	}
@@ -3426,6 +3435,9 @@ func integrationConfigForPin(ctx *security.RequestContext, accountId, integratio
 			// deep copy, so this map is not the cached one.
 			return integ.Config, nil
 		}
+	}
+	if accountId == "" {
+		return nil, fmt.Errorf("llm_config_source db:%s is not an LLM integration available to every account in the tenant", integrationUuid)
 	}
 	return nil, fmt.Errorf("llm_config_source db:%s is not an LLM integration available to this account — refresh model list and re-pick", integrationUuid)
 }

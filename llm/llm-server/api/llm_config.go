@@ -22,6 +22,8 @@ type testConnectionRequest struct {
 	// AccountIds the configuration is saved for. api-server has already checked
 	// the caller may act on each; a referenced fallback is resolved per account.
 	AccountIds []string `json:"account_ids,omitempty"`
+	// TenantId resolves a referenced fallback when AccountIds is empty.
+	TenantId string `json:"tenant_id,omitempty"`
 }
 
 // testConnectionResponse carries the per-target probe outcomes so the
@@ -78,7 +80,7 @@ func handleLLMConfigTestApis(r *gin.Engine, _ trace.Tracer, _ metric.Meter) {
 		for _, acct := range req.AccountIds {
 			core.ForgetLLMIntegrationsList(acct)
 		}
-		results, err := core.TestLLMProviderConnectionAll(c.Request.Context(), req.Config, req.AccountIds)
+		results, err := core.TestLLMProviderConnectionAll(c.Request.Context(), req.Config, req.AccountIds, req.TenantId)
 		if err != nil {
 			slog.Info("llm-config: connectivity probe enumeration failed",
 				"provider", req.Config["llm_provider"], "error", err)

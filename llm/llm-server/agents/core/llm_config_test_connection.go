@@ -121,12 +121,13 @@ func TestLLMProviderConnection(ctx context.Context, cfg map[string]string) error
 //
 // accountIds are the accounts the configuration is saved for; a fallback that
 // references an existing slot is resolved for each of them exactly as runtime does.
-func TestLLMProviderConnectionAll(ctx context.Context, cfg map[string]string, accountIds []string) ([]ProbeResult, error) {
+// With no accounts it is resolved among tenantId's organisation-wide configs.
+func TestLLMProviderConnectionAll(ctx context.Context, cfg map[string]string, accountIds []string, tenantId string) ([]ProbeResult, error) {
 	targets := enumerateProbeTargets(cfg)
 	if len(targets) == 0 {
 		return nil, errors.New("no probe targets — llm_provider and llm_model_name are required")
 	}
-	targets = append(targets, fallbackProbeTargets(cfg, accountIds)...)
+	targets = append(targets, fallbackProbeTargets(cfg, accountIds, tenantId)...)
 
 	results := make([]ProbeResult, len(targets))
 	sem := make(chan struct{}, probeConcurrency)
@@ -598,8 +599,9 @@ func newGoogleAIFromConfig(model string, cfg map[string]string) (llms.Model, err
 
 // fallbackProbeTargets returns every configured fallback in cfg (the integration's
 // and each category's) as probe targets, built by the readers runtime uses: the
-// fallback-owned slot, or — for a reference — the referenced slot per account.
-func fallbackProbeTargets(cfg map[string]string, accountIds []string) []probeTarget {
+// fallback-owned slot, or — for a reference — the referenced slot per account, or
+// among the tenant's organisation-wide configs when the config has no accounts.
+func fallbackProbeTargets(cfg map[string]string, accountIds []string, tenantId string) []probeTarget {
 	var out []probeTarget
 	seen := map[string]bool{}
 	add := func(t probeTarget) {
@@ -616,10 +618,20 @@ func fallbackProbeTargets(cfg map[string]string, accountIds []string) []probeTar
 		if src := strings.TrimSpace(cfg[fallbackKey(llmFallbackRefSourceKey, scope)]); src != "" {
 			model := strings.TrimSpace(cfg[fallbackKey(llmFallbackRefModelKey, scope)])
 			if len(accountIds) == 0 {
-				add(probeTarget{model: model, source: source, err: fmt.Errorf("select an account to test the fallback %s", src)})
+				if tenantId == "" {
+					add(probeTarget{model: model, source: source, err: fmt.Errorf("select an account to test the fallback %s", src)})
+					continue
+				}
+				res, err := resolveFallbackRef(nil, src, model, "", tenantId, scope)
+				if err != nil {
+					add(probeTarget{model: model, source: source, err: fmt.Errorf("fallback %s is not available to every account: %w", src, err)})
+					continue
+				}
+				add(probeTarget{provider: res.Provider, model: res.Model, source: source, cfg: probeCfgFromResolution(res)})
+				continue
 			}
 			for _, acct := range accountIds {
-				res, err := resolveFallbackRef(nil, src, model, acct, scope)
+				res, err := resolveFallbackRef(nil, src, model, acct, "", scope)
 				if err != nil {
 					add(probeTarget{model: model, source: source, err: fmt.Errorf("account %s cannot use fallback %s: %w", acct, src, err)})
 					continue

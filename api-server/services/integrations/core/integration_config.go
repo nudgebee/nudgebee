@@ -105,6 +105,12 @@ func isTenantScoped(integration Integration) bool {
 	return false
 }
 
+// accountRequiredForConnectionTest reports whether a connection test needs an
+// account. An LLM config saved with no accounts serves the whole organisation.
+func accountRequiredForConnectionTest(integration Integration, integrationType string) bool {
+	return !isTenantScoped(integration) && integrationType != "llm"
+}
+
 func CreateIntegrationConfig(
 	ctx *security.RequestContext,
 	integrationId string,
@@ -2166,7 +2172,7 @@ func TestIntegrationConnectionByConfig(
 	if len(accountIds) > 0 {
 		accountID = accountIds[0]
 	}
-	if !isTenantScoped(integration) && accountID == "" {
+	if accountRequiredForConnectionTest(integration, integrationType) && accountID == "" {
 		return nil, errors.New("at least one account_id is required for connection test")
 	}
 
