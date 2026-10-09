@@ -778,6 +778,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
+		// Resolved before the queue branch so a queued message and an immediately
+		// executed one attribute the same author.
+		request.UserId = attributionUserId(agentContext.GetSecurityContext(), request.UserId)
 
 		// Check if user has access to account
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
@@ -828,12 +831,6 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 					return
 				}
 			}
-		}
-
-		// Queued dispatch needs the authenticated author to reload permissions.
-		// Apply legacy system attribution only to immediate execution.
-		if agentContext.GetSecurityContext().IsSuperAdmin() {
-			request.UserId = security.GetSystemUserId()
 		}
 
 		if rejectUnfulfilledQueueRequest(c, &request) {
@@ -997,7 +994,8 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 					chatState["command"] = truncateQueryForAudit(info.Command)
 					chatState["decision"] = toolConfirmationDecision(request.Query)
 					// The signed-in identity that answered; request.UserId is
-					// rewritten to the system user for super admins above.
+					// rewritten to the system user for a super admin with no
+					// grant in this tenant.
 					approverUserID := ""
 					if sc := agentContext.GetSecurityContext(); sc != nil {
 						approverUserID = sc.GetUserId()

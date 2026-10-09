@@ -339,9 +339,7 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		if request.UserId == "" {
 			request.UserId = context.GetSecurityContext().GetUserId()
 		}
-		if context.GetSecurityContext().IsSuperAdmin() {
-			request.UserId = security.GetSystemUserId()
-		}
+		request.UserId = attributionUserId(context.GetSecurityContext(), request.UserId)
 
 		// Check if user has access to account
 		if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
@@ -518,9 +516,7 @@ func processEventAnalysis(c *gin.Context, tracer trace.Tracer, meter metric.Mete
 	if request.UserId == "" {
 		request.UserId = context.GetSecurityContext().GetUserId()
 	}
-	if context.GetSecurityContext().IsSuperAdmin() {
-		request.UserId = security.GetSystemUserId()
-	}
+	request.UserId = attributionUserId(context.GetSecurityContext(), request.UserId)
 
 	if request.UserId == "" || request.AccountId == "" || request.EventId == "" {
 		slog.Error("analyzer: userId, accountId and eventId are required", "user_id", request.UserId, "account_id", request.AccountId, "event_id", request.EventId)

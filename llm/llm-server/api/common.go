@@ -174,3 +174,22 @@ func buildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionReque
 	childLogger := logger.With("tenant_id", tenantId, "user_id", userId, "trace_id", span.SpanContext().TraceID().String())
 	return security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter), nil
 }
+
+// attributionUserId returns the user id to persist against a request's
+// conversation, messages and audit rows. A super admin visiting a tenant they
+// hold no grant in is recorded as the system user, which stores NULL and keeps
+// the operator out of that customer's conversation list; one who also holds a
+// role there is a member acting as themselves and keeps their own id.
+func attributionUserId(sc *security.SecurityContext, requestUserId string) string {
+	if sc == nil {
+		return requestUserId
+	}
+	// A context built without a user id carries a hard-coded tenant_admin, so
+	// HasExplicitTenantRole cannot vouch for it and there is nobody to credit.
+	identified := sc.GetUserId() != "" && sc.GetUserId() != security.GetSystemUserId()
+	tenantMember := identified && sc.HasExplicitTenantRole()
+	if sc.IsSuperAdmin() && !tenantMember {
+		return security.GetSystemUserId()
+	}
+	return requestUserId
+}

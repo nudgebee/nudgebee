@@ -194,6 +194,23 @@ func (sc *SecurityContext) IsSuperAdminReadonly() bool {
 	return slices.Contains(sc.roles, AUTH_SUPER_ADMIN_READONLY_ROLE)
 }
 
+// HasExplicitTenantRole reports whether the user holds a grant of their own in
+// this context's tenant. The super-admin roles are excluded because they are
+// global — their user_roles rows carry tenant_id IS NULL, so the per-tenant
+// lookup behind NewSecurityContext never returns them; anything else here came
+// from a row scoped to this tenant. Authorizes nothing on its own.
+func (sc *SecurityContext) HasExplicitTenantRole() bool {
+	if sc == nil {
+		return false
+	}
+	for _, role := range sc.roles {
+		if role != AUTH_SUPER_ADMIN_FULL_ROLE && role != AUTH_SUPER_ADMIN_READONLY_ROLE {
+			return true
+		}
+	}
+	return len(sc.customPermissions) > 0 || len(sc.scopedCustomPermissions) > 0
+}
+
 func (sc *SecurityContext) IsTenantAdmin() bool {
 	return slices.Contains(sc.roles, AUTH_TENANT_ADMIN_ROLE)
 }
