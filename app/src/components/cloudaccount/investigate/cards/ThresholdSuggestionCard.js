@@ -33,9 +33,17 @@ class ThresholdSuggestionCard {
       }
       this.suggestionData = result;
       const recType = result.suggestion?.recommendation_type;
-      let message = 'This alert may have a threshold that can be tuned to reduce noise.';
+      // The default is for a type this card does not know: say nothing it cannot stand behind.
+      let message = result.suggestion?.reason || 'Alert Tuning has a verdict for this alert.';
       let severity = 'Info';
-      if (recType === 'increase_duration') {
+      if (recType === 'tune_threshold') {
+        message = 'This alert may have a threshold that can be tuned to reduce noise.';
+      } else if (recType === 'investigate_signal') {
+        message = 'This alert is firing on real behaviour — the analysis says to investigate it rather than change its threshold.';
+        severity = 'Warning';
+      } else if (recType === 'insufficient_data') {
+        message = result.suggestion?.reason || "There is not enough data to judge this alert's threshold yet.";
+      } else if (recType === 'increase_duration') {
         message = 'This alert fires on transient spikes — consider increasing the evaluation window.';
       } else if (recType === 'tune_both') {
         message = 'This alert can be improved by adjusting both threshold and evaluation window.';
@@ -46,12 +54,7 @@ class ThresholdSuggestionCard {
         message = 'This alert fires on normal behavior — the alert definition itself needs review, not just the threshold.';
         severity = 'Warning';
       } else if (recType === 'not_eligible') {
-        const reason = result.suggestion?.reason || '';
-        if (reason.includes('metric query returned no data')) {
-          message = 'Threshold tuning is not available — the metric data required for analysis could not be retrieved from your monitoring system.';
-        } else {
-          message = reason || 'This alert type is not eligible for threshold tuning.';
-        }
+        message = result.suggestion?.reason || 'This alert has no threshold to tune.';
       } else if (recType === 'none') {
         message = 'This alert threshold appears correctly tuned.';
       }

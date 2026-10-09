@@ -123,6 +123,11 @@ func ApplyThresholdSuggestion(ctx *security.RequestContext, req ApplyThresholdRe
 		AppliedThreshold:  newThreshold,
 	}
 
+	// A row whose advice was recomputed after a direct apply can be applied again. Revert must
+	// then still lead back to the rule as it was before Alert Tuning first changed it, so the
+	// values that first apply recorded are kept rather than replaced by its own result.
+	keepRevertPoint := sug.ApplyStatus == "applied" && sug.ApplyMethod == "direct"
+
 	switch req.Method {
 	case "direct":
 		previous, err := applyDirect(ctx, &sugForApply, rule, rewritten)
@@ -133,10 +138,23 @@ func ApplyThresholdSuggestion(ctx *security.RequestContext, req ApplyThresholdRe
 			return result, err
 		}
 		result.Status = "applied"
-		if merr := markApplied(ctx.GetContext(), db, req, sc.GetUserId(), "applied", rewritten, newThreshold, nil); merr != nil {
+		if merr := markApplied(ctx.GetContext(), db, req, sc.GetUserId(), "applied", rewritten, newThreshold, nil, keepRevertPoint); merr != nil {
 			ctx.GetLogger().Error("failed to record threshold apply state", "error", merr, "alert_rule_key", req.AlertRuleKey)
 		}
-		storePreviousProviderConfig(ctx, db, req.AlertRuleKey, req.CloudAccountID, previous)
+		// A cloud apply reports what it replaced. A PromQL rule's wait is recorded here, as
+		// written, so a revert can restore a wait that minutes cannot express ("30s", none).
+		changedRuleWait := previous == nil && rewritten.ChangedDuration && rewritten.Duration != ""
+		switch {
+		case !keepRevertPoint:
+			if changedRuleWait {
+				previous = map[string]any{ruleDurationKey: rule.Duration}
+			}
+			storePreviousProviderConfig(ctx, db, req.AlertRuleKey, req.CloudAccountID, previous)
+		case changedRuleWait:
+			// The earlier apply's revert point is kept — but if that apply left the wait alone it
+			// recorded none, and this is the first change to it.
+			recordRuleWaitIfAbsent(ctx, db, req.AlertRuleKey, req.CloudAccountID, rule.Duration)
+		}
 
 	case "pr":
 		resolutionID, err := applyViaPR(ctx, &sugForApply, rule, rewritten, req)
@@ -148,7 +166,7 @@ func ApplyThresholdSuggestion(ctx *security.RequestContext, req ApplyThresholdRe
 		}
 		result.Status = "pending"
 		result.ResolutionID = &resolutionID
-		if merr := markApplied(ctx.GetContext(), db, req, sc.GetUserId(), "pending", rewritten, newThreshold, &resolutionID); merr != nil {
+		if merr := markApplied(ctx.GetContext(), db, req, sc.GetUserId(), "pending", rewritten, newThreshold, &resolutionID, keepRevertPoint); merr != nil {
 			ctx.GetLogger().Error("failed to record threshold apply state", "error", merr, "alert_rule_key", req.AlertRuleKey)
 		}
 	}
@@ -245,6 +263,11 @@ type ApplyOptionsResult struct {
 	CurrentThreshold float64       `json:"current_threshold"`
 	NewThreshold     float64       `json:"new_threshold"`
 	Operator         string        `json:"operator,omitempty"`
+	// The rule's wait before firing today, and the wait this suggestion would set (0 = the
+	// suggestion does not change it). CurrentDurationKnown is false when no rule was found.
+	CurrentDurationSeconds int  `json:"current_duration_seconds"`
+	CurrentDurationKnown   bool `json:"current_duration_known"`
+	NewDurationMinutes     int  `json:"new_duration_minutes"`
 }
 
 // GetThresholdApplyOptions returns, per source, which apply methods are available (with a
@@ -280,6 +303,11 @@ func GetThresholdApplyOptions(ctx *security.RequestContext, alertRuleKey, cloudA
 		Operator:         sug.Operator,
 	}
 
+	changesWait := sug.RecommendationType == "increase_duration" || sug.RecommendationType == "tune_both"
+	if changesWait {
+		out.NewDurationMinutes = sug.SuggestedDuration
+	}
+
 	// A stored 'disable' is never applied from here (see applyBlockReason).
 	if sug.RecommendationType == "disable" {
 		out.Options = []ApplyOption{
@@ -289,18 +317,35 @@ func GetThresholdApplyOptions(ctx *security.RequestContext, alertRuleKey, cloudA
 		return out, nil
 	}
 
-	// quality_only rows have no numeric suggestion (metric not fetchable), so there is nothing
-	// mechanical to apply — mark both methods unavailable.
+	// The advice is from an earlier run: the latest attempt to read the metric failed.
+	if sug.FetchFailedAt != "" {
+		out.Options = []ApplyOption{
+			{Method: "direct", Available: false, Reason: fetchFailedNotAppliedReason},
+			{Method: "pr", Available: false, Reason: fetchFailedNotAppliedReason},
+		}
+		return out, nil
+	}
+
+	rule, ruleErr := LoadSourceRule(ctx.GetContext(), db, sc.GetTenantId(), cloudAccountID, sug.AlertName, sug.Source, alertRuleKey)
+	if ruleErr == nil {
+		out.CurrentDurationSeconds = parseDurationSeconds(rule.Duration)
+		out.CurrentDurationKnown = true
+	}
+
+	// quality_only rows carry a verdict from firing history alone: no threshold was read, so an
+	// apply recorded here could not be reverted to one. Nothing is applied from such a row; a
+	// wait-time verdict says what to set where the rule is defined.
 	if sug.Status == "quality_only" {
 		reason := "no numeric suggestion — verdict from firing history only; review the rule in the provider console"
+		if changesWait && sug.SuggestedDuration > 0 {
+			reason = fmt.Sprintf("this advice comes from firing history alone, so it is not applied from here — set the rule to wait %s before firing where the rule is defined", formatWait(sug.SuggestedDuration*60))
+		}
 		out.Options = []ApplyOption{
 			{Method: "direct", Available: false, Reason: reason},
 			{Method: "pr", Available: false, Reason: reason},
 		}
 		return out, nil
 	}
-
-	rule, ruleErr := LoadSourceRule(ctx.GetContext(), db, sc.GetTenantId(), cloudAccountID, sug.AlertName, sug.Source, alertRuleKey)
 
 	// Dry-run preview (no write).
 	if ruleErr == nil {
@@ -338,6 +383,9 @@ func GetThresholdApplyOptions(ctx *security.RequestContext, alertRuleKey, cloudA
 	switch {
 	case !promQLSources[sug.Source]:
 		pr.Reason = fmt.Sprintf("PR apply is supported only for Prometheus rule files, not %q", sug.Source)
+	case sug.RecommendationType == "increase_duration":
+		// applyViaPR rewrites the rule's expression and nothing else.
+		pr.Reason = "a pull request changes the rule's expression only; a wait-time change is applied directly"
 	case eventrule.HasGitIntegration(ctx.GetContext(), db, sc.GetTenantId()):
 		pr.Available = true
 	default:
@@ -468,8 +516,9 @@ func applyViaPR(ctx *security.RequestContext, sug *ApplySuggestionRow, rule *Sou
 }
 
 // markApplied records a successful (or pending) apply on the suggestion row, capturing the
-// previous values for revert.
-func markApplied(ctx context.Context, db *sqlx.DB, req ApplyThresholdRequest, userID, status string, rewritten *RewrittenRule, appliedThreshold float64, resolutionID *string) error {
+// previous values for revert. keepRevertPoint leaves the previous values an earlier apply
+// recorded in place.
+func markApplied(ctx context.Context, db *sqlx.DB, req ApplyThresholdRequest, userID, status string, rewritten *RewrittenRule, appliedThreshold float64, resolutionID *string, keepRevertPoint bool) error {
 	var prevDuration *int
 	if rewritten.PreviousDuration > 0 {
 		d := rewritten.PreviousDuration
@@ -481,15 +530,15 @@ func markApplied(ctx context.Context, db *sqlx.DB, req ApplyThresholdRequest, us
 		    apply_method = $4,
 		    applied_at = NOW(),
 		    applied_by = $5,
-		    previous_threshold = $6,
-		    previous_duration = $7,
+		    previous_threshold = CASE WHEN $10::boolean THEN previous_threshold ELSE $6 END,
+		    previous_duration = CASE WHEN $10::boolean THEN previous_duration ELSE $7 END,
 		    applied_threshold = $8,
 		    resolution_id = $9,
 		    apply_error = NULL,
 		    updated_at = NOW()
 		WHERE alert_rule_key = $1 AND cloud_account_id = $2`,
 		req.AlertRuleKey, req.CloudAccountID, status, req.Method, userID,
-		rewritten.PreviousThreshold, prevDuration, appliedThreshold, resolutionID)
+		rewritten.PreviousThreshold, prevDuration, appliedThreshold, resolutionID, keepRevertPoint)
 	return err
 }
 
@@ -557,6 +606,20 @@ func planRevert(sug *ApplySuggestionRow, rule *SourceRule, previous map[string]a
 	if sug.RecommendationType == "disable" {
 		return revertPlan{reEnable: true, sug: sug, rewritten: &RewrittenRule{Expr: rule.Expr}, appliedThreshold: sug.CurrentThreshold}, nil
 	}
+	// A PromQL apply that changed the wait recorded the one it replaced. It is taken out of the
+	// map first: what remains, if anything, is a cloud apply's record and goes to Restore. (An
+	// apply writes one or the other, never both: the wait is recorded only where the cloud path
+	// reported nothing.)
+	previousWait, hasPreviousWait := previous[ruleDurationKey].(string)
+	if hasPreviousWait {
+		cloudOnly := make(map[string]any, len(previous))
+		for k, v := range previous {
+			if k != ruleDurationKey {
+				cloudOnly[k] = v
+			}
+		}
+		previous = cloudOnly
+	}
 	if len(previous) > 0 {
 		plan := revertPlan{
 			sug:              sug,
@@ -591,6 +654,21 @@ func planRevert(sug *ApplySuggestionRow, rule *SourceRule, previous map[string]a
 	if err != nil {
 		return revertPlan{}, err
 	}
+	// The recorded wait wins over the whole-minute bookkeeping, whatever the row recommends
+	// today: it is what the apply replaced.
+	if hasPreviousWait {
+		restore := previousWait
+		if restore == "" {
+			restore = "0s"
+		}
+		rewritten.Duration = ""
+		rewritten.ChangedDuration = false
+		if parseDurationSeconds(restore) != parseDurationSeconds(rule.Duration) {
+			rewritten.Duration = restore
+			rewritten.ChangedDuration = true
+			sugCopy.RecommendationType = "tune_both"
+		}
+	}
 	return revertPlan{sug: &sugCopy, rewritten: rewritten, appliedThreshold: *sug.PreviousThreshold}, nil
 }
 
@@ -612,6 +690,19 @@ func storePreviousProviderConfig(ctx *security.RequestContext, db *sqlx.DB, aler
 		WHERE alert_rule_key = $1 AND cloud_account_id = $2`,
 		alertRuleKey, cloudAccountID, value); err != nil {
 		ctx.GetLogger().Warn("threshold apply: cannot record previous provider config", "error", err, "alert_rule_key", alertRuleKey)
+	}
+}
+
+// recordRuleWaitIfAbsent records the wait a PromQL rule had before Alert Tuning first changed
+// it, unless one is already recorded. Best-effort, like storePreviousProviderConfig.
+func recordRuleWaitIfAbsent(ctx *security.RequestContext, db *sqlx.DB, alertRuleKey, cloudAccountID, ruleDuration string) {
+	if _, err := db.ExecContext(ctx.GetContext(), `
+		UPDATE event_threshold_suggestions
+		SET previous_provider_config = COALESCE(previous_provider_config, '{}'::jsonb) || jsonb_build_object($3::text, $4::text)
+		WHERE alert_rule_key = $1 AND cloud_account_id = $2
+		  AND (previous_provider_config ->> $3::text) IS NULL`,
+		alertRuleKey, cloudAccountID, ruleDurationKey, ruleDuration); err != nil {
+		ctx.GetLogger().Warn("threshold apply: cannot record the previous rule wait", "error", err, "alert_rule_key", alertRuleKey)
 	}
 }
 

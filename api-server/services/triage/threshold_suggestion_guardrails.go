@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/prometheus/prometheus/promql/parser"
 )
 
 // checkThresholdEligibility determines whether an alert is eligible for threshold tuning
@@ -27,6 +29,13 @@ func checkThresholdEligibility(alertDef *AlertDefinition) string {
 		return fmt.Sprintf("This alert uses an equality operator (%s). Threshold tuning is not applicable — consider adjusting the alert condition or adding a for-duration instead.", alertDef.Operator)
 	}
 
+	// A query that is itself an equality check ("current == max > 1") selects a state. The number
+	// after it only filters which instances count, so moving it changes which instances alert, not
+	// how sensitive the alert is.
+	if isEqualityQuery(alertDef.MetricName) {
+		return "This alert checks whether two values are equal (a state), not how high a value is, so there is no threshold to tune. If it is noisy, change how long the condition must hold before it fires."
+	}
+
 	// Intentional sensitivity alerts: threshold is 0 with > operator.
 	// These fire on *any* occurrence (e.g. error_count > 0, OOMKilled > 0).
 	// Raising the threshold means "allow N errors before alerting" which needs explicit intent.
@@ -41,6 +50,29 @@ func checkThresholdEligibility(alertDef *AlertDefinition) string {
 	}
 
 	return ""
+}
+
+// isEqualityQuery reports whether a query expression is, at its top level, an ==/!= comparison
+// used as a filter. It is parsed rather than string-matched: "100 * (count(up == 0) / count(up))"
+// contains "==" but is a percentage. Expressions that are not PromQL (cloud metric names) are not
+// equality queries.
+func isEqualityQuery(query string) bool {
+	if !strings.Contains(query, "=") {
+		return false
+	}
+	expr, err := promQLParser.ParseExpr(query)
+	if err != nil {
+		return false
+	}
+	for {
+		paren, ok := expr.(*parser.ParenExpr)
+		if !ok {
+			break
+		}
+		expr = paren.Expr
+	}
+	bin, ok := expr.(*parser.BinaryExpr)
+	return ok && (bin.Op == parser.EQLC || bin.Op == parser.NEQ) && !bin.ReturnBool
 }
 
 // SuggestionRisk indicates how risky a threshold suggestion is for the user.
@@ -280,15 +312,21 @@ func ValidateSuggestion(suggestion *ThresholdSuggestion, alertDef *AlertDefiniti
 		suggestion.Confidence = "low"
 	}
 
+	// A chronic diagnosis is itself the statement that the metric sits past the threshold when
+	// the alert is not firing, and its value is a re-baseline of an always-in-alarm rule. Two
+	// gates read differently for it (see each).
+	chronic := suggestion.Diagnosis == "chronic"
+
 	// --- Gate 4: Baseline mismatch detection ---
 	// When the metric's median (p50) exceeds the current threshold for a ">" operator,
 	// over half the data points fire the alert. This is a misconfigured threshold.
 	// For ">=" operators, p50 == threshold also means ~50% fires.
+	// Skipped for a chronic diagnosis: it restates the diagnosis and would refuse every value.
 	gtMismatch := suggestion.MetricP50 > alertDef.CurrentThreshold
 	if alertDef.Operator == ">=" && suggestion.MetricP50 >= alertDef.CurrentThreshold {
 		gtMismatch = true
 	}
-	if isGreaterThanOperator(alertDef.Operator) && alertDef.CurrentThreshold > 0 && gtMismatch {
+	if !chronic && isGreaterThanOperator(alertDef.Operator) && alertDef.CurrentThreshold > 0 && gtMismatch {
 		ratio := suggestion.MetricP50 / alertDef.CurrentThreshold
 		risk.Level = "dangerous"
 		suggestion.RecommendationType = "review_alert"
@@ -298,7 +336,7 @@ func ValidateSuggestion(suggestion *ThresholdSuggestion, alertDef *AlertDefiniti
 				"More than half of all data points fire this alert — it triggers on normal behavior. "+
 				"The alert definition itself needs review.",
 				suggestion.MetricP50, ratio, alertDef.CurrentThreshold))
-	} else if isLessThanOperator(alertDef.Operator) && alertDef.CurrentThreshold > 0 &&
+	} else if !chronic && isLessThanOperator(alertDef.Operator) && alertDef.CurrentThreshold > 0 &&
 		suggestion.MetricP50 < alertDef.CurrentThreshold {
 		ratio := alertDef.CurrentThreshold / suggestion.MetricP50
 		risk.Level = "dangerous"
@@ -313,7 +351,13 @@ func ValidateSuggestion(suggestion *ThresholdSuggestion, alertDef *AlertDefiniti
 
 	// --- Gate 5: Effective silencing detection ---
 	// If the suggestion would eliminate >= 95% of alerts, flag it as potentially silencing.
-	if suggestion.EstimatedReduction >= 95 && suggestion.RecommendationType != "disable" && suggestion.RecommendationType != "review_alert" {
+	// Not applied to a chronic re-baseline of an unbounded metric: a level that sits above the
+	// threshold all week loses nearly all its firings by construction, and the diagnosis already
+	// requires the new value to be one the metric still reached. On a bounded metric (a percentage
+	// or ratio of failures) it still applies: removing 95% there means alerting only near total
+	// failure.
+	rebaselinedLevel := chronic && !hint.isBounded
+	if suggestion.EstimatedReduction >= 95 && !rebaselinedLevel && suggestion.RecommendationType != "disable" && suggestion.RecommendationType != "review_alert" {
 		// Check if this is really just threshold tuning or effectively disabling
 		if alertQuality != nil && alertQuality.EngagementRate > 0.2 {
 			// People actually look at these alerts — silencing them is dangerous
@@ -370,6 +414,32 @@ func ValidateSuggestion(suggestion *ThresholdSuggestion, alertDef *AlertDefiniti
 		}
 	}
 
+	// --- Gate 9: No measurable spread ---
+	// The threshold maths falls back from median+MAD to IQR or a bare percentile when more than half
+	// the samples are one value (a queue that is empty except in bursts). The value is then read off
+	// the bursts alone, so it is never clean advice.
+	if offersNumber(suggestion.RecommendationType) && isSpreadlessMethod(suggestion.Method) {
+		if risk.Level != "dangerous" {
+			risk.Level = "review"
+		}
+		risk.Warnings = append(risk.Warnings,
+			"More than half of this metric's samples are a single value, so the suggested value is read from its bursts alone. Check it against a chart of the metric before applying.")
+		if suggestion.Confidence == "high" {
+			suggestion.Confidence = "medium"
+		}
+	}
+
+	// --- Gate 8: Sign flip ---
+	// A value on the other side of zero changes what the alert means (seconds until a certificate
+	// expires becoming seconds since it expired), not how sensitive it is.
+	if (alertDef.CurrentThreshold > 0 && suggestion.SuggestedThreshold < 0) ||
+		(alertDef.CurrentThreshold < 0 && suggestion.SuggestedThreshold > 0) {
+		risk.Level = "dangerous"
+		risk.Warnings = append(risk.Warnings,
+			"The suggested value has the opposite sign to the current threshold, which changes what the alert means rather than how sensitive it is.")
+		suggestion.Confidence = "low"
+	}
+
 	// Backstop: any dangerous suggestion must be surfaced as review_alert, never as clean
 	// advice. Gates 1/4 already set this; this catches gates that raise risk to "dangerous"
 	// without changing the recommendation type.
@@ -378,6 +448,14 @@ func ValidateSuggestion(suggestion *ThresholdSuggestion, alertDef *AlertDefiniti
 	}
 
 	return risk
+}
+
+// isSpreadlessMethod reports whether a threshold was derived by one of the fallbacks
+// computeUpperThreshold / computeLowerThreshold take when the median absolute deviation is zero
+// ("IQR", "P95", "P5", with or without a "-baseline" / "-chronic" suffix).
+func isSpreadlessMethod(method string) bool {
+	base, _, _ := strings.Cut(method, "-")
+	return base == "IQR" || base == "P95" || base == "P5"
 }
 
 // formatHumanDuration converts seconds to a human-readable duration string.

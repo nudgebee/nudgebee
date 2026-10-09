@@ -1475,24 +1475,25 @@ func handleEventGetThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx *se
 		labels := triage.GetLabelsMap(ev)
 		alertRuleKey := triage.ExtractAlertRuleKey(source, labels)
 		if alertRuleKey != "" {
-			cached, cacheErr := triage.GetCachedSuggestion(ctx.GetContext(), dbms.Db, alertRuleKey, *ev.CloudAccountId)
+			eventFingerprint := ""
+			if ev.Fingerprint != nil {
+				eventFingerprint = *ev.Fingerprint
+			}
+			cached, cacheErr := triage.GetCachedSuggestion(ctx.GetContext(), dbms.Db, alertRuleKey, *ev.CloudAccountId, eventFingerprint)
 			if cacheErr == nil && cached != nil {
 				c.JSON(http.StatusOK, cached)
 				return
 			}
 
 			// Check for a skipped/error cached row — surface it so the card shows with a reason
-			if skippedSource, skippedReason, err := triage.GetCachedSkippedReason(ctx.GetContext(), dbms.Db, alertRuleKey, *ev.CloudAccountId); err == nil {
+			if skippedSource, skippedStatus, skippedReason, err := triage.GetCachedSkippedReason(ctx.GetContext(), dbms.Db, alertRuleKey, *ev.CloudAccountId); err == nil {
 				c.JSON(http.StatusOK, triage.ThresholdSuggestionResponse{
 					Available: true,
 					Source:    skippedSource,
 					AlertDefinition: &triage.AlertDefinition{
 						AlarmName: alertRuleKey,
 					},
-					Suggestion: &triage.ThresholdSuggestion{
-						RecommendationType: "not_eligible",
-						Reason:             skippedReason,
-					},
+					Suggestion: triage.UnavailableSuggestion(skippedStatus, skippedReason),
 				})
 				return
 			}

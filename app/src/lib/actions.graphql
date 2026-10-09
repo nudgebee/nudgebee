@@ -10340,6 +10340,11 @@ type ThresholdSuggestionDetail {
   estimated_reduction: Float!
   method: String
   recommendation_type: String
+  recommendation_label: String
+  current_duration_seconds: Int
+  measured_on: String
+  measured_on_other: Boolean
+  fetch_failed_at: String
   suggested_duration: Int
   duration_reason: String
   risk_level: String
@@ -10368,6 +10373,7 @@ type ThresholdSuggestionListItem {
   estimated_reduction: Float
   method: String
   recommendation_type: String
+  recommendation_label: String
   computed_at: String
   event_aggregation_key: String
   firing_analysis: jsonb
@@ -10397,6 +10403,9 @@ type ThresholdApplyOptionsOutput {
   current_threshold: Float
   new_threshold: Float
   operator: String
+  current_duration_seconds: Int
+  current_duration_known: Boolean
+  new_duration_minutes: Int
 }
 
 type ThresholdApplyResultOutput {

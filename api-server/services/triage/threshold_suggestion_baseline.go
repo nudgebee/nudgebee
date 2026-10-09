@@ -142,10 +142,12 @@ func padAndMergeIntervals(intervals []firingInterval, alertDef *AlertDefinition,
 	}
 
 	// Pad-start = rule "for" duration + one step. AWS carries Period×EvaluationPeriods; Azure carries
-	// a window Period; Prometheus carries neither here, so fall back to one step.
+	// a window Period; a Prometheus rule carries its `for`. Without any, fall back to one step.
 	forSec := 0
 	if alertDef != nil {
 		switch {
+		case alertDef.ForSeconds > 0:
+			forSec = alertDef.ForSeconds
 		case alertDef.EvaluationPeriods > 0:
 			forSec = alertDef.Period * alertDef.EvaluationPeriods
 		case alertDef.Period > 0:
@@ -293,6 +295,18 @@ func diagnoseWithBaseline(alertDef *AlertDefinition, mh *MetricHistory, interval
 		return nil, false // threshold-0 handled by the eligibility gate; ratios can't scale by θ
 	}
 
+	// A yes/no condition has no level to tune. Decided before the firing self-check, which reads
+	// such a rule as a data-fidelity failure and reports "no firing window" beside an alert that
+	// fired a dozen times.
+	if isStateAlert(alertDef, mh.Values) {
+		return &ThresholdSuggestion{
+			RecommendationType: "not_eligible",
+			Reason:             stateAlertReason,
+			SuggestedThreshold: theta,
+			Confidence:         "low",
+		}, true
+	}
+
 	full := append([]float64(nil), mh.Values...)
 	sort.Float64s(full)
 
@@ -324,10 +338,10 @@ func diagnoseWithBaseline(alertDef *AlertDefinition, mh *MetricHistory, interval
 	if decomp.SelfCheckFailed {
 		s.RecommendationType = "insufficient_data"
 		if decomp.SampledIntervals == 0 {
-			s.Reason = "No firing window for this alert falls inside the 7-day metric history, so the history cannot be split into off-alert and firing behaviour — every sample would be labelled off-alert and any threshold derived from it would describe a period the alert never fired in. Abstaining."
+			s.Reason = "The metric history that could be read does not overlap any recent firing of the instance that was analysed, so normal behaviour cannot be compared with firing behaviour. No suggestion is made."
 		} else {
-			s.Reason = fmt.Sprintf("Only %d of %d firing windows contain a metric sample that crosses the threshold — the history does not represent the series/resolution the rule evaluated. Abstaining until fidelity is fixed.",
-				decomp.CorroboratedIntervals, decomp.SampledIntervals)
+			s.Reason = fmt.Sprintf("In %d of %d recent firings the metric that could be read never crossed the threshold, so it is not the data the rule fired on. No suggestion is made.",
+				decomp.SampledIntervals-decomp.CorroboratedIntervals, decomp.SampledIntervals)
 		}
 		return s, true
 	}
@@ -335,7 +349,7 @@ func diagnoseWithBaseline(alertDef *AlertDefinition, mh *MetricHistory, interval
 	// Not enough clean off-alert data to define a baseline.
 	if decomp.Baseline.Count < minThresholdSamples {
 		s.RecommendationType = "insufficient_data"
-		s.Reason = fmt.Sprintf("Only %d off-alert samples (need at least %d) — insufficient clean baseline to tune reliably.", decomp.Baseline.Count, minThresholdSamples)
+		s.Reason = fmt.Sprintf("Only %d metric samples fall outside firing periods (at least %d are needed), which is too few to describe normal behaviour.", decomp.Baseline.Count, minThresholdSamples)
 		return s, true
 	}
 
@@ -372,42 +386,56 @@ func diagnoseWithBaseline(alertDef *AlertDefinition, mh *MetricHistory, interval
 			return s, true
 		}
 
-		// Otherwise there IS headroom, and statistics alone cannot say whether the system is
+		// Otherwise there may be headroom, and statistics alone cannot say whether the system is
 		// persistently degraded or the threshold was set inside normal behaviour — the same shape
 		// covers "100% of requests are 4xx" and "normal load average is 4.9 against a threshold of
-		// 2". So state both readings and name the value that would sit outside the observed normal
-		// band, instead of returning no number at all. The type stays investigate_signal: it keeps
-		// the alert on the tuning list, and applying the value takes an explicit accept (the apply
-		// path promotes a user-supplied threshold to tune_threshold).
+		// 2". So both readings are stated, and the value that would sit outside the observed normal
+		// band is put forward as a candidate. Whether it is offered is decided by the same safety
+		// checks as any other tuning (finalizeSuggestion); a refused candidate leaves this row as
+		// "investigate" with the current threshold.
+		//
 		// Derived from the WHOLE observed history, not the off-alert baseline. Reaching this branch
 		// means the baseline itself crosses θ most of the time, so there is no clean off-alert
 		// normal to re-baseline against — the metric's actual operating range is what the full
 		// history shows. (The one shape where that would be wrong, a clean baseline far from θ with
 		// a long firing window, no longer arrives here: its baseline violation rate is low, so it
 		// reads as an excursion.)
+		s.baseReason = fmt.Sprintf("Threshold %.3g sits inside the metric's normal operating range: %.0f%% of off-alert samples already cross it (baseline p50=%.3g, observed p50=%.3g). Either the system is persistently degraded, or the threshold was set inside normal behaviour — the evidence cannot tell those apart.",
+			theta, blViol*100, decomp.Baseline.P50, s.MetricP50)
 		fMed := computeMedian(full)
 		fMad := computeMAD(full)
 		var outside float64
 		var method string
+		var loosens, reachable bool
 		if isGT {
 			outside, method = computeUpperThreshold(full, fMed, fMad, percentile(full, 95))
-			outside = applySanityCap(outside, theta, percentile(full, 99))
+			p99 := percentile(full, 99)
+			outside = applySanityCap(outside, theta, p99)
+			loosens, reachable = outside > theta, outside < p99
 		} else {
 			outside, method = computeLowerThreshold(full, fMed, fMad)
-			if floor := minOf(theta*0.1, percentile(full, 1)); outside < floor {
+			p1 := percentile(full, 1)
+			if floor := minOf(theta*0.1, p1); outside < floor {
 				outside = floor
 			}
+			loosens, reachable = outside < theta, outside > p1
 		}
-		if (isGT && outside > theta) || (isLT && outside < theta) {
-			s.SuggestedThreshold = roundTo(outside, 2)
-			s.Method = method + "-chronic"
-			s.EstimatedReduction = estimateReduction(full, theta, s.SuggestedThreshold, isGT)
-			s.Reason = fmt.Sprintf("Threshold %.3g sits inside the metric's normal operating range: %.0f%% of off-alert samples already cross it (baseline p50=%.3g, observed p50=%.3g). Either the system is persistently degraded, or the threshold was set inside normal behaviour — the evidence cannot tell those apart. %.3g is the nearest value outside the observed range (~%.0f%% fewer firings); confirm the current level is acceptable before applying it.",
-				theta, blViol*100, decomp.Baseline.P50, s.MetricP50, s.SuggestedThreshold, s.EstimatedReduction)
+		if !loosens {
+			s.Reason = s.baseReason + " The observed values are too spread out to place a threshold clear of them. Review the alert definition rather than the number."
 			return s, true
 		}
-		s.Reason = fmt.Sprintf("Threshold %.3g sits inside the metric's normal operating range: %.0f%% of off-alert samples already cross it (baseline p50=%.3g), and the observed distribution is too spread out to place a threshold clear of it. Review the alert definition rather than the number.",
-			theta, blViol*100, decomp.Baseline.P50)
+		// A value at the edge of what the metric did all week (or beyond it) would not have fired
+		// once: it is "switch the alert off" stated as a number.
+		if !reachable {
+			s.Reason = s.baseReason + " No value outside that range would still have fired on the last 7 days of data, so there is no new value to offer. Review the alert definition rather than the number."
+			return s, true
+		}
+		s.SuggestedThreshold = roundTo(outside, 2)
+		s.Method = method + "-chronic"
+		s.EstimatedReduction = estimateReduction(full, theta, s.SuggestedThreshold, isGT)
+		s.RecommendationType = "tune_threshold"
+		s.Reason = fmt.Sprintf("%s %.3g is the nearest value outside the observed range (~%.0f%% fewer firings); confirm the current level is acceptable before applying it.",
+			s.baseReason, s.SuggestedThreshold, s.EstimatedReduction)
 		return s, true
 	}
 
@@ -469,8 +497,9 @@ func diagnoseWithBaseline(alertDef *AlertDefinition, mh *MetricHistory, interval
 				tailLabel(isGT), bandEdge, theta, bMed)
 			return s, true
 		}
-		s.Reason = fmt.Sprintf("Normal (off-alert) band reaches the threshold: baseline p%s=%.2f vs threshold %.2f. Re-baseline to %.2f (baseline median=%.2f, MAD=%.2f).",
-			tailLabel(isGT), bandEdge, theta, s.SuggestedThreshold, bMed, bMad)
+		s.baseReason = fmt.Sprintf("Normal (off-alert) band reaches the threshold: baseline p%s=%.2f vs threshold %.2f.",
+			tailLabel(isGT), bandEdge, theta)
+		s.Reason = fmt.Sprintf("%s Re-baseline to %.2f (baseline median=%.2f, MAD=%.2f).", s.baseReason, s.SuggestedThreshold, bMed, bMad)
 		s.Confidence = computeConfidence(decomp.baselineSorted, theta, s.SuggestedThreshold, alertQuality)
 		// Coverage is no longer a verdict, but it still bounds how much the baseline can be trusted:
 		// a baseline drawn from a sliver of the window describes less of normal behaviour than the
@@ -497,15 +526,26 @@ func diagnoseWithBaseline(alertDef *AlertDefinition, mh *MetricHistory, interval
 	// 3) REAL EXCURSIONS — normal band is well clear of the threshold; firings are genuine departures.
 	case gapFrac >= (1 - excursionFraction):
 		s.Diagnosis = "excursion"
-		if alertQuality != nil && alertQuality.TransientRate > 0.7 {
+		current, known := currentWait(alertDef)
+		if advice := suggestWait(alertQuality, current, known); advice != nil {
 			s.RecommendationType = "increase_duration"
-			s.Reason = fmt.Sprintf("Firings are short, self-resolving excursions above a much lower normal band (baseline p%s=%.2f, threshold %.2f). Increase the evaluation window rather than raising the threshold.",
+			s.Reason = fmt.Sprintf("Firings are short, self-resolving excursions above a much lower normal band (baseline p%s=%.2f, threshold %.2f). Make the rule wait longer before it fires rather than raising the threshold.",
 				tailLabel(isGT), bandEdge, theta)
-			computeDurationRecommendation(s, alertDef, alertQuality)
+			advice.applyTo(s)
 		} else {
 			s.RecommendationType = "investigate_signal"
-			s.Reason = fmt.Sprintf("Firings are genuine excursions well clear of the normal band (baseline p%s=%.2f, threshold %.2f) and do not resolve quickly. Raising the threshold would hide real events — investigate instead.",
-				tailLabel(isGT), bandEdge, theta)
+			lasting := "and do not resolve quickly"
+			switch {
+			case alertQuality != nil && alertQuality.ResolutionRate < 0.5:
+				// Most firings carry no end time, so nothing is known about how long they last.
+				lasting = "and most carry no end time, so a longer wait cannot be shown to filter them"
+			case alertQuality != nil && alertQuality.TransientRate > 0.7 && !known:
+				lasting = "and most clear within minutes, but the rule's current wait is not known, so a longer one cannot be suggested"
+			case alertQuality != nil && alertQuality.TransientRate > 0.7:
+				lasting = fmt.Sprintf("and most clear within minutes, but the rule already waits %s and a longer wait would pass %d minutes", formatWait(current), maxSuggestedWaitMinutes)
+			}
+			s.Reason = fmt.Sprintf("Firings are genuine excursions well clear of the normal band (baseline p%s=%.2f, threshold %.2f) %s. Raising the threshold would hide real events — investigate instead.",
+				tailLabel(isGT), bandEdge, theta, lasting)
 		}
 		return s, true
 
@@ -561,10 +601,11 @@ func selectFiringSeries(seriesList []*MetricHistory, threshold float64, isGT boo
 // one produces a contaminated baseline). Falls back to the top-violating series when the relay
 // returned no labels or none match. The event's "pod" label is the workload's name once a workload
 // matched, so the labels are read through common.SeriesMatchLabels — the same view the alert chart
-// uses to pick its series.
-func selectSeriesForEvent(seriesList []*MetricHistory, eventLabels map[string]interface{}, threshold float64, isGT bool) *MetricHistory {
+// uses to pick its series. The second result reports whether the event's own series was found;
+// when it is false the series returned belongs to another instance of the rule.
+func selectSeriesForEvent(seriesList []*MetricHistory, eventLabels map[string]interface{}, threshold float64, isGT bool) (*MetricHistory, bool) {
 	if len(seriesList) == 0 {
-		return nil
+		return nil, false
 	}
 	eventLabels = common.SeriesMatchLabels(eventLabels)
 	var matches []*MetricHistory
@@ -574,9 +615,9 @@ func selectSeriesForEvent(seriesList []*MetricHistory, eventLabels map[string]in
 		}
 	}
 	if len(matches) > 0 {
-		return selectFiringSeries(matches, threshold, isGT)
+		return selectFiringSeries(matches, threshold, isGT), true
 	}
-	return selectFiringSeries(seriesList, threshold, isGT)
+	return selectFiringSeries(seriesList, threshold, isGT), false
 }
 
 // seriesMatchesEvent reports whether every series label is present in the event's labels with an

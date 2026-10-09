@@ -481,8 +481,13 @@ mutation EventGetThresholdSuggestion($event_id: String!) {
       estimated_reduction
       method
       recommendation_type
+      recommendation_label
       suggested_duration
       duration_reason
+      current_duration_seconds
+      measured_on
+      measured_on_other
+      fetch_failed_at
       risk_level
       risk_warnings
     }
@@ -536,6 +541,7 @@ mutation EventListThresholdSuggestions(
       estimated_reduction
       method
       recommendation_type
+      recommendation_label
       computed_at
       event_aggregation_key
       firing_analysis
@@ -572,6 +578,9 @@ mutation EventGetThresholdApplyOptions($alert_rule_key: String!, $cloud_account_
     current_threshold
     new_threshold
     operator
+    current_duration_seconds
+    current_duration_known
+    new_duration_minutes
   }
 }
 `;
@@ -1369,8 +1378,17 @@ export interface ThresholdSuggestionResponse {
     estimated_reduction: number;
     method?: string;
     recommendation_type?: string;
+    /** Server wording for recommendation_type; every screen shows this rather than its own. */
+    recommendation_label?: string;
     suggested_duration?: number;
     duration_reason?: string;
+    /** The rule's wait before firing today; meaningful when suggested_duration is set. */
+    current_duration_seconds?: number;
+    /** The instance whose metric was analysed, and whether it is another one than this alert's. */
+    measured_on?: string;
+    measured_on_other?: boolean;
+    /** When the last attempt to read the rule's metric failed; the verdict is then from an earlier run. */
+    fetch_failed_at?: string;
     risk_level?: string;
     risk_warnings?: string[];
   };
@@ -1405,6 +1423,8 @@ export interface ThresholdSuggestionItem {
   estimated_reduction?: number;
   method?: string;
   recommendation_type?: string;
+  /** Server wording for recommendation_type; every screen shows this rather than its own. */
+  recommendation_label?: string;
   computed_at?: string;
   event_aggregation_key?: string;
   firing_analysis?: {
@@ -1434,6 +1454,11 @@ export interface ThresholdSuggestionItem {
     recommendation_type?: string;
     suggested_duration?: number;
     duration_reason?: string;
+    current_duration_seconds?: number;
+    measured_on?: string;
+    measured_on_other?: boolean;
+    last_fetch_failed_at?: string;
+    last_fetch_error?: string;
     risk_level?: string;
     risk_warnings?: string[];
   };
@@ -1474,6 +1499,10 @@ export interface ThresholdApplyOptions {
   current_threshold?: number;
   new_threshold?: number;
   operator?: string;
+  /** The rule's wait today (seconds) and the wait this suggestion would set (minutes; 0 = unchanged). */
+  current_duration_seconds?: number;
+  current_duration_known?: boolean;
+  new_duration_minutes?: number;
 }
 
 export interface ApplyThresholdInput {

@@ -119,11 +119,17 @@ function formatThresholdContext(res) {
   lines.push('Propose it only if your hypotheses conclude the alert is miscalibrated. It is applied through the threshold panel, not a command.');
   if (trimmedString(def.alarm_name)) lines.push(`Alert: ${def.alarm_name}`);
   if (trimmedString(def.metric_name)) lines.push(`Metric: ${def.metric_name}`);
-  lines.push(`Current threshold: ${def.current_threshold ?? 'unknown'} -> suggested: ${suggestion.suggested_threshold}`);
+  // Only a tuning carries a new value; the other verdicts (a longer wait, disable) keep the current
+  // threshold, and "10 -> 10" would read as a suggestion that changes nothing.
+  if (suggestion.suggested_threshold === def.current_threshold) {
+    lines.push(`Current threshold: ${def.current_threshold} (no new value suggested)`);
+  } else {
+    lines.push(`Current threshold: ${def.current_threshold ?? 'unknown'} -> suggested: ${suggestion.suggested_threshold}`);
+  }
   if (recommendationType) lines.push(`Recommendation: ${recommendationType}`);
   if (trimmedString(suggestion.reason)) lines.push(`Reason: ${suggestion.reason}`);
   if (trimmedString(suggestion.confidence)) lines.push(`Confidence: ${suggestion.confidence}`);
-  if (typeof suggestion.estimated_reduction === 'number') {
+  if (typeof suggestion.estimated_reduction === 'number' && suggestion.estimated_reduction > 0) {
     lines.push(`Estimated noise reduction: ${suggestion.estimated_reduction}`);
   }
   if (trimmedString(res.alert_quality?.classification)) lines.push(`Alert quality: ${res.alert_quality.classification}`);

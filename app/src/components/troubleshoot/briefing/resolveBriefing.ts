@@ -1,6 +1,7 @@
 import { formatCount, formatPercent, formatShare } from './format';
 import { classifyDisagreement, MAPPING_DISCLOSURE, RANK_ORDER, SOURCE_SEVERITY_TO_RANK, type NubiRank, type SourceSeverity } from './severityRank';
 import { getAssistantLabel } from '@hooks/useTenantBranding';
+import { appliedIsCurrent } from '@components/triage/thresholdVerdict';
 
 export const INCIDENT_P1_THRESHOLD = 3;
 export const BACKLOG_THRESHOLD = 25;
@@ -31,6 +32,8 @@ export interface ThresholdSuggestionLike {
   firing_analysis?: { total_occurrences?: number | null } | null;
   recommendation_type?: string | null;
   apply_status?: string | null;
+  applied_at?: string | null;
+  computed_at?: string | null;
 }
 
 // Only these carry a change to make; the list also returns rows that just ask for a review.
@@ -326,8 +329,9 @@ export const resolveBriefing = (payload: BriefingPayload): BriefingModel => {
   const top3Pct = ingested > 0 ? (top3Share / ingested) * 100 : 0;
   const worstPct = worst && ingested > 0 ? (worst.count / ingested) * 100 : 0;
 
+  // A suggestion recomputed after its last apply is open again: the apply was for earlier advice.
   const openSuggestions = payload.thresholdSuggestions.filter(
-    (suggestion) => suggestion.apply_status !== 'applied' && TUNING_RECOMMENDATIONS.has(suggestion.recommendation_type || '')
+    (suggestion) => !appliedIsCurrent(suggestion) && TUNING_RECOMMENDATIONS.has(suggestion.recommendation_type || '')
   );
   const topSuggestion = openSuggestions[0];
 

@@ -11,6 +11,7 @@ import { Card } from '@ui/Card';
 import TimeSeriesChart from '@components/common/charts/TimeSeriesChart';
 import { useBriefingWindow } from '@components/troubleshoot/briefing/useBriefingData';
 import { resolveTimeSaved } from '@components/troubleshoot/analytics/timeSaved';
+import { appliedIsCurrent, offersNumber, recommendationTypeOf } from '@components/triage/thresholdVerdict';
 import { useRouter } from 'next/router';
 import { ds } from 'src/utils/colors';
 
@@ -454,8 +455,11 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
     // Rules are ordered by how much of the reader's week they would give back,
     // and each carries exactly one action, because a finding the reader cannot
     // act on is a statistic.
+    // Only a row that carries a new threshold value counts: the list also returns rules that are
+    // to be investigated or reviewed, and "we already have a threshold for it" is false for those.
     const suggestionByKey = new Map<string, any>();
     (state.suggestions || []).forEach((suggestion: any) => {
+      if (!offersNumber(recommendationTypeOf(suggestion)) || appliedIsCurrent(suggestion)) return;
       const key = suggestion?.event_aggregation_key || suggestion?.alert_name;
       if (key && !suggestionByKey.has(key)) suggestionByKey.set(key, suggestion);
     });

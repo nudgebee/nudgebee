@@ -550,6 +550,13 @@ type ThresholdSuggestionResponse struct {
 	AlertQuality    *AlertQualityScore   `json:"alert_quality,omitempty"`
 	QueryMetadata   *MetricQueryMetadata `json:"query_metadata,omitempty"`
 	Error           string               `json:"error,omitempty"`
+
+	// cause is why no suggestion could be computed. Error keeps the raw text for logs; the
+	// stored, user-facing reason is worded from cause (see plainReason).
+	cause error
+	// wait is the wait-time advice for a rule that has no numeric suggestion. It needs only the
+	// firing history and the rule's current wait, so it can exist where a threshold cannot.
+	wait *waitAdvice
 }
 
 // AlertDefinition describes the current alert/alarm configuration
@@ -563,6 +570,11 @@ type AlertDefinition struct {
 	EvaluationPeriods int     `json:"evaluation_periods"`
 	AlarmName         string  `json:"alarm_name"`
 	AlarmARN          string  `json:"alarm_arn,omitempty"`
+
+	// ForSeconds is how long a Prometheus-type rule waits before firing (its `for`). forKnown
+	// tells a rule with no wait apart from a source that does not carry one.
+	ForSeconds int `json:"for_seconds,omitempty"`
+	forKnown   bool
 }
 
 // FiringAnalysis contains statistics about how often the alert fires
@@ -581,6 +593,10 @@ type MetricHistory struct {
 	EndTime    string            `json:"end_time"`
 	Step       int               `json:"step"`
 	Labels     map[string]string `json:"labels,omitempty"` // per-series Prometheus label set, for label-matched selection
+
+	// otherInstance: no series matched the alert's own labels, so this is the rule's
+	// most-violating series — a different instance from the one the alert came from.
+	otherInstance bool
 }
 
 // ThresholdSuggestion contains the recommended threshold adjustment
@@ -602,6 +618,24 @@ type ThresholdSuggestion struct {
 	RiskLevel          string   `json:"risk_level,omitempty"`    // "safe", "review", "dangerous" — operational risk of applying this suggestion
 	RiskWarnings       []string `json:"risk_warnings,omitempty"` // human-readable warnings about why this suggestion needs careful review
 
+	// RecommendationLabel is the wording every screen shows for RecommendationType. Set where a
+	// response is built (recommendationLabel), never stored.
+	RecommendationLabel string `json:"recommendation_label,omitempty"`
+
+	// CurrentDurationSeconds is the rule's wait today, meaningful when SuggestedDuration is set
+	// (0 then means the rule fires at once).
+	CurrentDurationSeconds int `json:"current_duration_seconds"`
+
+	// MeasuredOn names the instance whose metric was analysed (its series labels). A rule can
+	// fire on many pods, queues or nodes; the verdict is read off one of them. MeasuredOnOther is
+	// set when that is not the instance the alert at hand came from.
+	MeasuredOn      string `json:"measured_on,omitempty"`
+	MeasuredOnOther bool   `json:"measured_on_other,omitempty"`
+
+	// FetchFailedAt is when the last attempt to read this rule's metric failed (RFC 3339). While
+	// set, the verdict shown is from an earlier run and is not applied.
+	FetchFailedAt string `json:"fetch_failed_at,omitempty"`
+
 	// Baseline-fidelity decomposition (baseline vs firing distributions). Populated when the
 	// history could be segmented against the alert's firing intervals; drives the deterministic
 	// diagnosis below. Persisted into metric_stats JSONB for the eval set — no schema change.
@@ -609,6 +643,10 @@ type ThresholdSuggestion struct {
 	Baseline         *DistStats `json:"baseline,omitempty"`          // metric distribution during off-alert windows
 	Firing           *DistStats `json:"firing,omitempty"`            // metric distribution during firing windows
 	BaselineCoverage float64    `json:"baseline_coverage,omitempty"` // fraction of samples outside firing windows
+
+	// baseReason is the chronic diagnosis without its candidate value, kept so finalizeSuggestion
+	// can word the outcome either way once the safety checks have run.
+	baseReason string
 }
 
 // DistStats holds robust statistics for one distribution (baseline or firing window).
@@ -647,4 +685,10 @@ type AlertQualityScore struct {
 	InstantRate     float64 `json:"instant_rate"`       // events where ends_at = starts_at / total
 	Classification  string  `json:"classification"`     // false_positive|noisy_but_real|noisy_ignored|broken|healthy
 	Recommendation  string  `json:"recommendation"`     // tune_threshold|increase_duration|investigate|no_action
+
+	// Counts behind the rates above, and how many firings cleared within each step of the wait
+	// ladder — the evidence for wait-time advice.
+	TotalCount    int                `json:"total_count,omitempty"`
+	ResolvedCount int                `json:"resolved_count,omitempty"`
+	ShortFirings  []ShortFiringCount `json:"short_firings,omitempty"`
 }

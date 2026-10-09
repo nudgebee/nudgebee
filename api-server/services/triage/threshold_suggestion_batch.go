@@ -3,6 +3,7 @@ package triage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -33,6 +34,17 @@ type noisyAlert struct {
 	Source         string `db:"source"`
 	FireCount      int    `db:"fire_count"`
 }
+
+// How long a stored row counts as fresh. Both sit a little under the nightly job's period
+// ("Threshold Suggestion Refresh", daily, runbook-server/internal/system/cron_triggers.yaml):
+// a row is stamped moments after its run starts, so a window of exactly one day (or seven) still
+// covers it when the next run starts, and it was refreshed only every second night (or eighth).
+// The writers below use okFreshWindow too, so a row the job re-queues can be replaced by it.
+const (
+	anyStatusFreshWindow = "22 hours"        // any row: do not recompute within a night
+	okFreshWindow        = "6 days 22 hours" // a metric-based ('ok') row: recompute weekly
+	listedMaxAge         = "9 days"          // a row not recomputed for this long is for a rule that went quiet
+)
 
 // AnalyzeNoisyAlerts scans for frequently-firing alerts and pre-computes threshold suggestions.
 // Called by the "Threshold Suggestion Refresh" cron job.
@@ -86,8 +98,8 @@ func AnalyzeNoisyAlerts(ctx *security.RequestContext, fetchSeries PromQLRangeSer
 	_, _ = db.Exec(`DELETE FROM event_threshold_suggestions WHERE computed_at < NOW() - INTERVAL '30 days'`)
 
 	// Skip alert_rule_keys that don't need re-processing:
-	// - Any status processed in the last 24 hours (recently computed)
-	// - status='ok' rows less than 7 days old (still valid, no need to re-query metrics)
+	// - Any status processed since the previous night's run (recently computed)
+	// - status='ok' rows under a week old (still valid, no need to re-query metrics)
 	type recentKeyRow struct {
 		AlertRuleKey   string `db:"alert_rule_key"`
 		CloudAccountID string `db:"cloud_account_id"`
@@ -96,8 +108,8 @@ func AnalyzeNoisyAlerts(ctx *security.RequestContext, fetchSeries PromQLRangeSer
 	if err = db.Select(&recentRows, `
 		SELECT alert_rule_key, cloud_account_id FROM event_threshold_suggestions
 		WHERE alert_rule_key IS NOT NULL
-		  AND (computed_at > NOW() - INTERVAL '24 hours'
-		       OR (status = 'ok' AND computed_at > NOW() - INTERVAL '7 days'))`); err != nil {
+		  AND (computed_at > NOW() - $1::interval
+		       OR (status = 'ok' AND computed_at > NOW() - $2::interval))`, anyStatusFreshWindow, okFreshWindow); err != nil {
 		ctx.GetLogger().Warn("threshold_suggestion_batch: failed to query recent keys, processing all", "error", err)
 	}
 	// Key by (alert_rule_key, cloud_account_id) to match the table's conflict target. Keying on
@@ -197,19 +209,33 @@ func processNoisyAlert(ctx *security.RequestContext, db *sqlx.DB, na noisyAlert,
 	response := GetThresholdSuggestion(ctx.GetContext(), db, ev, na.TenantID, fetchSeries)
 
 	if !response.Available || response.Suggestion == nil {
-		skipped.Add(1)
-		reason := response.Error
-		if reason == "" {
-			reason = "no suggestion available"
-		}
+		// The stored reason is read by people. The technical detail (which can carry the whole
+		// rule expression) goes to the log, and onto the row only where no screen renders it.
+		reason := plainReason(response.cause)
 		alertName := ""
 		if response.AlertDefinition != nil {
 			alertName = response.AlertDefinition.AlarmName
 		}
+		// The metric store did not answer. That says nothing about the rule, so a metric-based
+		// verdict the row still holds is kept, with the failure recorded beside it, and the next
+		// run tries again. A rule with no such verdict falls through to what its firing history
+		// alone supports — that needs no metric, so a store that never answers for this rule does
+		// not leave it with nothing.
+		if errors.Is(response.cause, errMetricQueryFailed) {
+			errCount.Add(1)
+			if markFetchFailed(ctx.GetContext(), db, na, reason) {
+				ctx.GetLogger().Warn("threshold_suggestion_batch: metric fetch failed, keeping the stored verdict",
+					"alert_rule_key", na.AlertRuleKey, "cloud_account_id", na.CloudAccountID, "source", na.Source)
+				return
+			}
+		}
+		skipped.Add(1)
+		ctx.GetLogger().Info("threshold_suggestion_batch: no numeric suggestion",
+			"alert_rule_key", na.AlertRuleKey, "cloud_account_id", na.CloudAccountID, "source", na.Source, "detail", response.Error)
 		// No numeric suggestion is possible (metric not fetchable / definition not parseable),
 		// but the events-table-only health verdict may still be actionable — persist it so the
 		// noisiest rules don't vanish as bare 'skipped' rows.
-		if recType := qualityOnlyRecommendation(response.AlertQuality); recType != "" {
+		if recType := qualityOnlyRecommendation(response.AlertQuality, response.wait); recType != "" {
 			fingerprint := na.AlertRuleKey
 			if ev.Fingerprint != nil && *ev.Fingerprint != "" {
 				fingerprint = *ev.Fingerprint
@@ -218,7 +244,7 @@ func processNoisyAlert(ctx *security.RequestContext, db *sqlx.DB, na noisyAlert,
 			if ev.AggregationKey != nil {
 				eventAggregationKey = *ev.AggregationKey
 			}
-			qReason := "verdict from firing history and engagement only (no metric data): " + reason
+			qReason := "Based on firing history only. " + reason
 			if err := upsertQualityOnlySuggestion(ctx.GetContext(), db, na, fingerprint, eventAggregationKey,
 				qReason, alertName, recType, response); err != nil {
 				ctx.GetLogger().Warn("threshold_suggestion_batch: failed to upsert quality-only suggestion",
@@ -260,6 +286,9 @@ func processNoisyAlert(ctx *security.RequestContext, db *sqlx.DB, na noisyAlert,
 		if reason == "" {
 			reason = "insufficient data to tune"
 		}
+		if response.Suggestion.MeasuredOn != "" {
+			reason += " Analysed instance: " + response.Suggestion.MeasuredOn + "."
+		}
 		alertName := ""
 		if response.AlertDefinition != nil {
 			alertName = response.AlertDefinition.AlarmName
@@ -279,7 +308,12 @@ func processNoisyAlert(ctx *security.RequestContext, db *sqlx.DB, na noisyAlert,
 		if response.AlertDefinition != nil {
 			alertName = response.AlertDefinition.AlarmName
 		}
-		upsertSkippedSuggestion(ctx.GetContext(), db, na, "skipped", "no reduction possible", alertName)
+		// "none" carries why no change is worth making (the change would barely move firings).
+		reason := "no reduction possible"
+		if recType == "none" && response.Suggestion.Reason != "" {
+			reason = response.Suggestion.Reason
+		}
+		upsertSkippedSuggestion(ctx.GetContext(), db, na, "skipped", reason, alertName)
 		return
 	}
 
@@ -311,8 +345,13 @@ func processNoisyAlert(ctx *security.RequestContext, db *sqlx.DB, na noisyAlert,
 
 // GetCachedSuggestion reads a pre-computed suggestion from the cache.
 // Returns nil if not found or stale (>7 days old).
-func GetCachedSuggestion(ctx context.Context, db *sqlx.DB, alertRuleKey, cloudAccountID string) (*ThresholdSuggestionResponse, error) {
+//
+// eventFingerprint is the fingerprint of the alert being looked at. The row holds one verdict for
+// the whole rule, measured on one of its instances; when that is not this alert's instance the
+// response says so (MeasuredOnOther) rather than letting the verdict read as being about it.
+func GetCachedSuggestion(ctx context.Context, db *sqlx.DB, alertRuleKey, cloudAccountID, eventFingerprint string) (*ThresholdSuggestionResponse, error) {
 	var row struct {
+		Fingerprint        *string   `db:"fingerprint"`
 		Source             string    `db:"source"`
 		AlertName          *string   `db:"alert_name"`
 		MetricName         string    `db:"metric_name"`
@@ -333,7 +372,7 @@ func GetCachedSuggestion(ctx context.Context, db *sqlx.DB, alertRuleKey, cloudAc
 
 	// COALESCEs cover status='quality_only' rows, which have no metric/threshold columns.
 	err := db.GetContext(ctx, &row, `
-		SELECT source, alert_name, COALESCE(metric_name, '') AS metric_name, metric_namespace,
+		SELECT fingerprint, source, alert_name, COALESCE(metric_name, '') AS metric_name, metric_namespace,
 		       COALESCE(current_threshold, 0) AS current_threshold, operator, aggregation,
 		       COALESCE(suggested_threshold, 0) AS suggested_threshold,
 		       COALESCE(reason, '') AS reason, confidence, estimated_reduction,
@@ -415,6 +454,18 @@ func GetCachedSuggestion(ctx context.Context, db *sqlx.DB, alertRuleKey, cloudAc
 			if v, ok := stats["duration_reason"].(string); ok {
 				resp.Suggestion.DurationReason = v
 			}
+			if v, ok := stats["current_duration_seconds"].(float64); ok {
+				resp.Suggestion.CurrentDurationSeconds = int(v)
+			}
+			if v, ok := stats["measured_on"].(string); ok {
+				resp.Suggestion.MeasuredOn = v
+			}
+			if v, ok := stats["measured_on_other"].(bool); ok {
+				resp.Suggestion.MeasuredOnOther = v
+			}
+			if v, ok := stats["last_fetch_failed_at"].(string); ok {
+				resp.Suggestion.FetchFailedAt = v
+			}
 			if v, ok := stats["risk_level"].(string); ok {
 				resp.Suggestion.RiskLevel = v
 			}
@@ -436,12 +487,21 @@ func GetCachedSuggestion(ctx context.Context, db *sqlx.DB, alertRuleKey, cloudAc
 		}
 	}
 
+	// A row stored under an older rule is served by today's: no new value unless it is a tuning.
+	enforceNumberInvariant(resp.Suggestion, row.CurrentThreshold)
+	resp.Suggestion.Reason = normalizeStoredReason(resp.Suggestion.RecommendationType, resp.Suggestion.Reason)
+	resp.Suggestion.RecommendationLabel = recommendationLabel(resp.Suggestion.RecommendationType)
+	if eventFingerprint != "" && row.Fingerprint != nil && *row.Fingerprint != "" && *row.Fingerprint != eventFingerprint {
+		resp.Suggestion.MeasuredOnOther = true
+	}
+
 	return resp, nil
 }
 
-// GetCachedSkippedReason returns the reason string for a recently-skipped suggestion.
-// This allows the investigate-page card to show a "not eligible" message instead of hiding entirely.
-func GetCachedSkippedReason(ctx context.Context, db *sqlx.DB, alertRuleKey, cloudAccountID string) (string, string, error) {
+// GetCachedSkippedReason returns the source, stored status and reason of a recent row that carries
+// no suggestion. This allows the investigate-page card to say why instead of hiding entirely; the
+// status tells "nothing to tune" (not_eligible) apart from "could not be analysed" (skipped, error).
+func GetCachedSkippedReason(ctx context.Context, db *sqlx.DB, alertRuleKey, cloudAccountID string) (string, string, string, error) {
 	var row struct {
 		Source string  `db:"source"`
 		Reason string  `db:"reason"`
@@ -456,9 +516,9 @@ func GetCachedSkippedReason(ctx context.Context, db *sqlx.DB, alertRuleKey, clou
 		  AND computed_at > NOW() - INTERVAL '7 days'
 	`, alertRuleKey, cloudAccountID)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return row.Source, row.Reason, nil
+	return row.Source, row.Status, row.Reason, nil
 }
 
 // UpsertSuggestionCache stores a live-computed suggestion into the cache for future use.
@@ -557,6 +617,13 @@ func upsertSuggestion(ctx context.Context, db *sqlx.DB, na noisyAlert, fingerpri
 		}
 		if response.Suggestion.DurationReason != "" {
 			stats["duration_reason"] = response.Suggestion.DurationReason
+		}
+		if response.Suggestion.SuggestedDuration > 0 {
+			stats["current_duration_seconds"] = response.Suggestion.CurrentDurationSeconds
+		}
+		if response.Suggestion.MeasuredOn != "" {
+			stats["measured_on"] = response.Suggestion.MeasuredOn
+			stats["measured_on_other"] = response.Suggestion.MeasuredOnOther
 		}
 		if response.Suggestion.RiskLevel != "" {
 			stats["risk_level"] = response.Suggestion.RiskLevel
@@ -665,7 +732,8 @@ func upsertSuggestion(ctx context.Context, db *sqlx.DB, na noisyAlert, fingerpri
 // alertName is optional — pass "" to fall back to alert_rule_key.
 // IMPORTANT: Never overwrite a status='ok' row with 'skipped' — a previous successful computation
 // should be preserved even if a subsequent metric query returns no data (transient failure).
-// Only overwrite 'ok' rows if they're stale (older than 7 days).
+// Only overwrite 'ok' rows if they're stale (older than okFreshWindow, the age at which the
+// nightly job re-queues them).
 func upsertSkippedSuggestion(ctx context.Context, db *sqlx.DB, na noisyAlert, status, reason, alertName string) {
 	if alertName == "" {
 		alertName = na.AlertRuleKey
@@ -679,20 +747,45 @@ func upsertSkippedSuggestion(ctx context.Context, db *sqlx.DB, na noisyAlert, st
 		  status = EXCLUDED.status,
 		  reason = EXCLUDED.reason,
 		  alert_name = COALESCE(NULLIF(EXCLUDED.alert_name, ''), event_threshold_suggestions.alert_name),
+		  metric_stats = event_threshold_suggestions.metric_stats - 'last_fetch_failed_at' - 'last_fetch_error',
 		  computed_at = NOW(),
 		  updated_at = NOW()
 		WHERE event_threshold_suggestions.status != 'ok'
-		   OR event_threshold_suggestions.computed_at < NOW() - INTERVAL '7 days'
-	`, na.AlertRuleKey, na.CloudAccountID, na.TenantID, na.Source, status, reason, alertName); err != nil {
+		   OR event_threshold_suggestions.computed_at < NOW() - $8::interval
+	`, na.AlertRuleKey, na.CloudAccountID, na.TenantID, na.Source, status, reason, alertName, okFreshWindow); err != nil {
 		slog.WarnContext(ctx, "threshold_suggestion_batch: failed to upsert skipped suggestion", "error", err, "alert_rule_key", na.AlertRuleKey)
 	}
+}
+
+// markFetchFailed records, on a row that holds a metric-based verdict, that the latest attempt to
+// read the rule's metric failed — and reports whether there was such a row. The verdict and its
+// computed_at are left alone, so the rule is re-queued on the next run; the marker lives in
+// metric_stats (last_fetch_failed_at, last_fetch_error), where readers find it to say the verdict
+// is from an earlier run and to hold back apply, and the next real verdict replaces it. A verdict
+// older than listedMaxAge is not kept: it has left the list, and the rule is better served by a
+// fresh firing-history verdict than by nothing.
+func markFetchFailed(ctx context.Context, db *sqlx.DB, na noisyAlert, reason string) bool {
+	res, err := db.ExecContext(ctx, `
+		UPDATE event_threshold_suggestions
+		SET metric_stats = COALESCE(metric_stats, '{}'::jsonb)
+		      || jsonb_build_object('last_fetch_failed_at', to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'last_fetch_error', $3::text),
+		    updated_at = NOW()
+		WHERE alert_rule_key = $1 AND cloud_account_id = $2
+		  AND status = 'ok' AND computed_at > NOW() - $4::interval
+	`, na.AlertRuleKey, na.CloudAccountID, reason, listedMaxAge)
+	if err != nil {
+		slog.WarnContext(ctx, "threshold_suggestion_batch: failed to record a metric fetch failure", "error", err, "alert_rule_key", na.AlertRuleKey)
+		return false
+	}
+	kept, _ := res.RowsAffected()
+	return kept > 0
 }
 
 // upsertQualityOnlySuggestion stores a health verdict for a rule that has no numeric threshold
 // suggestion (metric not fetchable). status='quality_only' rows carry alert_quality,
 // firing_analysis and a metric_stats.recommendation_type so the suggestions UI can render them,
 // but no thresholds. Same don't-clobber rule as upsertSkippedSuggestion: never overwrite a fresh
-// 'ok' row — a previous successful computation wins for 7 days.
+// 'ok' row — a previous successful computation wins until it is due for its weekly recompute.
 func upsertQualityOnlySuggestion(ctx context.Context, db *sqlx.DB, na noisyAlert, fingerprint, eventAggregationKey,
 	reason, alertName, recommendationType string, response ThresholdSuggestionResponse) error {
 	if alertName == "" {
@@ -709,7 +802,18 @@ func upsertQualityOnlySuggestion(ctx context.Context, db *sqlx.DB, na noisyAlert
 			return fmt.Errorf("failed to marshal firing analysis: %w", err)
 		}
 	}
-	metricStatsJSON, err := json.Marshal(map[string]any{"recommendation_type": recommendationType})
+	// detail is the technical cause (it can carry the whole rule expression). No screen renders it;
+	// it is kept on the row for whoever debugs why a rule got no number.
+	stats := map[string]any{"recommendation_type": recommendationType}
+	if response.Error != "" {
+		stats["detail"] = response.Error
+	}
+	if recommendationType == "increase_duration" && response.wait != nil {
+		stats["suggested_duration"] = response.wait.SuggestedMinutes
+		stats["current_duration_seconds"] = response.wait.CurrentSeconds
+		stats["duration_reason"] = response.wait.reason()
+	}
+	metricStatsJSON, err := json.Marshal(stats)
 	if err != nil {
 		return fmt.Errorf("failed to marshal metric stats: %w", err)
 	}
@@ -745,9 +849,9 @@ func upsertQualityOnlySuggestion(ctx context.Context, db *sqlx.DB, na noisyAlert
 		  computed_at = NOW(),
 		  updated_at = NOW()
 		WHERE event_threshold_suggestions.status != 'ok'
-		   OR event_threshold_suggestions.computed_at < NOW() - INTERVAL '7 days'
+		   OR event_threshold_suggestions.computed_at < NOW() - $12::interval
 	`, na.AlertRuleKey, fingerprint, na.CloudAccountID, na.TenantID, na.Source, reason, alertName,
-		alertQualityJSON, firingAnalysisJSON, metricStatsJSON, eventAggregationKey)
+		alertQualityJSON, firingAnalysisJSON, metricStatsJSON, eventAggregationKey, okFreshWindow)
 	return err
 }
 
@@ -769,6 +873,7 @@ type ThresholdSuggestionListItem struct {
 	EstimatedReduction  *float64 `json:"estimated_reduction" db:"estimated_reduction"`
 	Method              *string  `json:"method" db:"method"`
 	RecommendationType  *string  `json:"recommendation_type" db:"-"`
+	RecommendationLabel string   `json:"recommendation_label" db:"-"`
 	ComputedAt          *string  `json:"computed_at" db:"computed_at"`
 	EventAggregationKey *string  `json:"event_aggregation_key" db:"event_aggregation_key"`
 	ApplyStatus         *string  `json:"apply_status" db:"apply_status"`
@@ -807,9 +912,15 @@ func ListThresholdSuggestions(ctx context.Context, db *sqlx.DB, tenantID string,
 	// advice (Gate 1/4/5 route ceiling-pinned / baseline-mismatch / near-total-suppression here).
 	// quality_only rows are included regardless: for rules with no fetchable metric, review_alert
 	// IS the verdict (e.g. never-resolving spam) and must surface.
-	where := "WHERE tenant_id = $1 AND (status = 'quality_only' OR (status = 'ok' AND COALESCE(metric_stats->>'recommendation_type', '') <> 'review_alert'))"
-	args := []interface{}{tenantID}
-	argIdx := 2
+	//
+	// A row is recomputed only while its rule keeps firing. One not recomputed for listedMaxAge
+	// belongs to a rule that went quiet, so its advice describes a past week; it leaves the list.
+	// A row with a change applied or a PR open stays, since it is where that change is reverted
+	// or tracked.
+	where := "WHERE tenant_id = $1 AND (status = 'quality_only' OR (status = 'ok' AND COALESCE(metric_stats->>'recommendation_type', '') <> 'review_alert'))" +
+		" AND (computed_at > NOW() - $2::interval OR apply_status IN ('applied', 'pending'))"
+	args := []interface{}{tenantID, listedMaxAge}
+	argIdx := 3
 
 	if len(cloudAccountIDs) == 1 {
 		where += fmt.Sprintf(" AND cloud_account_id = $%d", argIdx)
@@ -903,13 +1014,23 @@ func ListThresholdSuggestions(ctx context.Context, db *sqlx.DB, tenantID string,
 		items[i].ID = items[i].AlertRuleKey
 
 		// Extract recommendation_type from metric_stats JSONB
+		recType := ""
 		if len(items[i].MetricStats) > 0 {
 			var stats map[string]interface{}
 			if err := json.Unmarshal(items[i].MetricStats, &stats); err == nil {
 				if rt, ok := stats["recommendation_type"].(string); ok {
 					items[i].RecommendationType = &rt
+					recType = rt
 				}
 			}
+		}
+		items[i].RecommendationLabel = recommendationLabel(recType)
+		// A row stored under an older rule is served by today's: no new value unless it is a tuning.
+		items[i].SuggestedThreshold, items[i].EstimatedReduction = normalizeStoredNumber(
+			recType, items[i].CurrentThreshold, items[i].SuggestedThreshold, items[i].EstimatedReduction)
+		if items[i].Reason != nil {
+			reason := normalizeStoredReason(recType, *items[i].Reason)
+			items[i].Reason = &reason
 		}
 	}
 

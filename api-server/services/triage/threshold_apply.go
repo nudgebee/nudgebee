@@ -99,10 +99,20 @@ type ApplySuggestionRow struct {
 	PreviousThreshold  *float64
 	PreviousDuration   *int
 	Found              bool
+	// FetchFailedAt is when the last attempt to read the rule's metric failed; empty when the
+	// row's verdict comes from the latest attempt.
+	FetchFailedAt string
 }
 
 // disableNotAppliedReason explains why a stored "disable" is never applied from here.
 const disableNotAppliedReason = "disabling a rule is not applied from Alert Tuning — use the alert-rule controls to disable or mute it"
+
+const fetchFailedNotAppliedReason = "the last attempt to read this rule's metric failed, so this advice is from an earlier run — it can be applied again once the metric has been read"
+
+// ruleDurationKey is where a direct apply to a PromQL rule records the wait it replaced, in the
+// same place a cloud apply records what it replaced. It is kept as written ("30s", "" for none)
+// so a revert restores it exactly; minutes cannot express a wait under a minute.
+const ruleDurationKey = "rule_duration"
 
 // applyNeedsOverride reports whether applying this suggestion needs the caller's explicit
 // override: anything short of a safe tuning with medium or high confidence. The rule is the same
@@ -121,6 +131,11 @@ func applyBlockReason(sug *ApplySuggestionRow, overrideRisk bool) string {
 	// row is not recomputed once its alert stops firing. No override lifts this.
 	if sug.RecommendationType == "disable" {
 		return "blocked: " + disableNotAppliedReason
+	}
+	// The last attempt to read the rule's metric failed, so the advice on the row is from an
+	// earlier run and has not been checked against the rule as it behaves now.
+	if sug.FetchFailedAt != "" {
+		return "blocked: " + fetchFailedNotAppliedReason
 	}
 	if overrideRisk {
 		return ""
@@ -192,8 +207,8 @@ func getSuggestionForApply(ctx context.Context, db *sqlx.DB, alertRuleKey, cloud
 	if row.ApplyMethod != nil {
 		out.ApplyMethod = *row.ApplyMethod
 	}
-	// recommendation_type / risk_level / suggested_duration live in the metric_stats JSONB.
-	out.RecommendationType = "tune_threshold"
+	// recommendation_type / risk_level / suggested_duration live in the metric_stats JSONB. A row
+	// without a type is not a tuning: it can be applied only with a value the user enters.
 	if row.MetricStats != nil {
 		var stats map[string]interface{}
 		if err := json.Unmarshal([]byte(*row.MetricStats), &stats); err == nil {
@@ -206,7 +221,14 @@ func getSuggestionForApply(ctx context.Context, db *sqlx.DB, alertRuleKey, cloud
 			if v, ok := stats["suggested_duration"].(float64); ok {
 				out.SuggestedDuration = int(v)
 			}
+			if v, ok := stats["last_fetch_failed_at"].(string); ok {
+				out.FetchFailedAt = v
+			}
 		}
+	}
+	// A row stored under an older rule is served by today's: no new value unless it is a tuning.
+	if !offersNumber(out.RecommendationType) {
+		out.SuggestedThreshold = out.CurrentThreshold
 	}
 	return out, nil
 }
@@ -395,7 +417,8 @@ func BuildRewrittenRule(sug *ApplySuggestionRow, rule *SourceRule, newThreshold 
 			out.Duration = fmt.Sprintf("%dm", newDurationMin)
 		}
 		out.ChangedThreshold = out.Expr != rule.Expr
-		out.ChangedDuration = out.Duration != "" && out.Duration != rule.Duration
+		// Compared as lengths of time: "2m" over a stored "120" (seconds) is not a change.
+		out.ChangedDuration = out.Duration != "" && parseDurationSeconds(out.Duration) != parseDurationSeconds(rule.Duration)
 
 	case azureSources[sug.Source]:
 		newExpr, err := setAzureCriteriaThreshold(rule.Expr, newThreshold, changeThreshold, newDurationMin, changeDuration)
@@ -662,6 +685,13 @@ func isPromQLExpr(expr string) bool {
 // bookkeeping. Handles Prometheus-style ("10m", "300s", "1h", "2h30m") and ISO8601
 // ("PT10M"). Returns 0 when it cannot parse.
 func parseDurationMinutes(d string) int {
+	return parseDurationSeconds(d) / 60
+}
+
+// parseDurationSeconds parses a rule's wait into seconds. Rules are stored in three shapes: a
+// Prometheus duration ("2m", "1h30m"), a bare number of seconds ("900", as the Prometheus rules
+// API reports it), and an ISO 8601 duration ("PT5M") from cloud providers. Anything else is 0.
+func parseDurationSeconds(d string) int {
 	d = strings.TrimSpace(d)
 	if d == "" {
 		return 0
@@ -669,9 +699,15 @@ func parseDurationMinutes(d string) int {
 	// ISO8601 (Azure windowSize, GCP-ish) — reuse the engine's parser.
 	if strings.HasPrefix(strings.ToUpper(d), "PT") {
 		if secs := parseISODurationToSeconds(d); secs > 0 {
-			return secs / 60
+			return secs
 		}
 		return 0
+	}
+	if secs, err := strconv.ParseFloat(d, 64); err == nil {
+		if secs < 0 {
+			return 0
+		}
+		return int(secs)
 	}
 	// Prometheus-style: sequence of <int><unit> tokens (s,m,h,d,w,y).
 	totalSeconds := 0
@@ -701,7 +737,7 @@ func parseDurationMinutes(d string) int {
 			totalSeconds += val * 31536000
 		}
 	}
-	return totalSeconds / 60
+	return totalSeconds
 }
 
 func cloneConfig(in map[string]interface{}) map[string]interface{} {

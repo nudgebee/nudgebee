@@ -14,6 +14,7 @@ import { Label } from '@ui/Label';
 import PRLink from '@shared/links/PRLink';
 import apiUser from '@api1/user';
 import apiTriage, { type ThresholdSuggestionItem } from '@api1/triage';
+import { appliedIsCurrent, offersNumber, recommendationDisplay, recommendationTypeOf, waitChange } from './thresholdVerdict';
 import { ds } from 'src/utils/colors';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
 import ThresholdEvidence, { RecentEventsTab } from './ThresholdEvidence';
@@ -56,16 +57,6 @@ const CONFIDENCE_VARIANTS: Record<string, string> = {
   low: 'grey',
 };
 
-const RECOMMENDATION_LABELS: Record<string, { label: string; variant: string }> = {
-  tune_threshold: { label: 'Tune Threshold', variant: 'blue' },
-  increase_duration: { label: 'Increase Duration', variant: 'orange' },
-  tune_both: { label: 'Tune Both', variant: 'blue' },
-  disable: { label: 'Disable Alert', variant: 'red' },
-  none: { label: 'No Change', variant: 'green' },
-  review_alert: { label: 'Review Alert', variant: 'orange' },
-  not_eligible: { label: 'Not Eligible', variant: 'grey' },
-};
-
 const APPLY_STATUS_LABELS: Record<string, { label: string; variant: string }> = {
   applied: { label: 'Applied', variant: 'green' },
   pending: { label: 'PR pending', variant: 'yellow' },
@@ -79,16 +70,13 @@ const RISK_COLORS: Record<string, { bg: string; text: string; icon: string }> = 
   safe: { bg: ds.green[100], text: ds.green[700], icon: '' },
 };
 
-const getRecommendationType = (item: ThresholdSuggestionItem): string => {
-  return item.metric_stats?.recommendation_type || item.recommendation_type || 'tune_threshold';
-};
-
 const getRiskLevel = (item: ThresholdSuggestionItem): string => {
   return item.metric_stats?.risk_level || 'safe';
 };
 
 const formatNoiseReduction = (item: ThresholdSuggestionItem): string => {
-  if (item.estimated_reduction == null) {
+  // A reduction describes a new threshold value; a row that offers none has nothing to estimate.
+  if (item.estimated_reduction == null || !offersNumber(recommendationTypeOf(item))) {
     return '-';
   }
   const reduction = Math.round(item.estimated_reduction);
@@ -199,8 +187,13 @@ const ThresholdSuggestionsManager: React.FC<ThresholdSuggestionsManagerProps> = 
         });
       }
 
-      const recType = getRecommendationType(item);
-      const recStyle = RECOMMENDATION_LABELS[recType] || RECOMMENDATION_LABELS.tune_threshold;
+      const recType = recommendationTypeOf(item);
+      const recStyle = recommendationDisplay(recType, item.recommendation_label);
+      // An apply made before the advice was last recomputed is history, not the state of this advice.
+      const appliedEarlier = item.apply_status === 'applied' && !appliedIsCurrent(item);
+      const waitText = waitChange(recType, item.metric_stats);
+      // The last run could not read the rule's metric, so the advice shown is from an earlier one.
+      const fetchFailed = !!item.metric_stats?.last_fetch_failed_at;
       const riskLevel = getRiskLevel(item);
       const riskStyle = RISK_COLORS[riskLevel] || RISK_COLORS.safe;
       const noiseText = formatNoiseReduction(item);
@@ -229,8 +222,8 @@ const ThresholdSuggestionsManager: React.FC<ThresholdSuggestionsManagerProps> = 
               ) : (
                 item.apply_status && (
                   <Label
-                    text={APPLY_STATUS_LABELS[item.apply_status]?.label || item.apply_status}
-                    variant={APPLY_STATUS_LABELS[item.apply_status]?.variant || 'grey'}
+                    text={appliedEarlier ? 'Changed earlier' : APPLY_STATUS_LABELS[item.apply_status]?.label || item.apply_status}
+                    variant={appliedEarlier ? 'grey' : APPLY_STATUS_LABELS[item.apply_status]?.variant || 'grey'}
                   />
                 )
               )}
@@ -240,24 +233,25 @@ const ThresholdSuggestionsManager: React.FC<ThresholdSuggestionsManagerProps> = 
                   sx={{ fontSize: ds.text.small, color: riskStyle.text, mt: 'var(--ds-space-1)', fontWeight: ds.weight.medium }}
                 />
               )}
+              {fetchFailed && (
+                <Text value='Metric not read on last run' sx={{ fontSize: ds.text.small, color: ds.amber[700], mt: 'var(--ds-space-1)' }} />
+              )}
             </Box>
           ),
         },
         {
           component: (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
-              <Text value={formatThreshold(item.current_threshold, item.operator)} />
-              {item.current_threshold !== item.suggested_threshold &&
-                recType !== 'disable' &&
-                recType !== 'none' &&
-                recType !== 'increase_duration' &&
-                recType !== 'review_alert' &&
-                recType !== 'not_eligible' && (
+            <Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
+                <Text value={formatThreshold(item.current_threshold, item.operator)} />
+                {item.current_threshold !== item.suggested_threshold && offersNumber(recType) && (
                   <>
                     <Text value='→' sx={{ color: ds.gray[600] }} />
                     <Text value={formatThreshold(item.suggested_threshold, item.operator)} sx={{ fontWeight: ds.weight.semibold }} />
                   </>
                 )}
+              </Box>
+              {waitText && <Text value={`Wait ${waitText}`} sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.medium }} />}
             </Box>
           ),
         },
