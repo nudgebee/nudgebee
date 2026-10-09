@@ -268,7 +268,7 @@ export const ECSTasks = (props: {
       >
         <SearchInput
           id='ecs-tasks-search'
-          label='Search by Name/ARN Snippet'
+          label='Search by Name'
           value={searchFilter}
           onChange={(next) => {
             if (searchFilter !== '' && next === '') {
@@ -544,7 +544,7 @@ export const ECSServices = (props: {
       >
         <SearchInput
           id='ecs-services-search'
-          label='Search by Name/ARN Snippet'
+          label='Search by Name'
           value={searchFilter}
           onChange={(next) => {
             if (searchFilter !== '' && next === '') {
@@ -1176,7 +1176,7 @@ export const ECSClusters = (props: {
       >
         <SearchInput
           id='ecs-clusters-search'
-          label='Search by Name/ARN Snippet'
+          label='Search by Name'
           value={searchFilter}
           onChange={(next) => {
             if (searchFilter !== '' && next === '') {
