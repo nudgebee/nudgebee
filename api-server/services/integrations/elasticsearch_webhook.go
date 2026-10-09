@@ -79,6 +79,27 @@ func (m ElasticsearchWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels mapElasticsearchAlertToEvent builds. Update it with the parser.
+func (m ElasticsearchWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "Keys under labels in the connector body become labels under their own name. A few rule and alert fields are added under fixed names.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "<key under labels>", Source: "labels.<key>"},
+			{Label: "alertname", Source: "rule.name"},
+			{Label: "rule_id", Source: "rule.id"},
+			{Label: "rule_type", Source: "rule.type"},
+			{Label: "alert_id", Source: "alert.id"},
+			{Label: "alert_uuid", Source: "alert.uuid"},
+			{Label: "value", Source: "value"},
+			{Label: "conditions", Source: "conditions"},
+		},
+		Notes: []string{
+			"Only flat text values under labels are kept. A nested object, number or boolean there is dropped.",
+			"status, severity, title, message and tags are not labels.",
+		},
+	}
+}
+
 func (m ElasticsearchWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

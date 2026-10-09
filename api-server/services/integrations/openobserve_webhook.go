@@ -66,6 +66,27 @@ func (m OpenObserveWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels mapOpenObserveAlertToEvent builds. Update it with the parser.
+func (m OpenObserveWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "Every field of the alert template body becomes a label. A few are also sent under fixed names.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "<field>", Source: "any field of the template body"},
+			{Label: "<parent>_<child>", Source: "a nested field"},
+			{Label: "alertname", Source: "first of alert_name, alertname, alert, name, title"},
+			{Label: "severity", Source: "first of severity, alert_severity, level, priority"},
+			{Label: "org_name", Source: "first of org_name, organization, org_id, org"},
+			{Label: "stream_name", Source: "first of stream_name, stream"},
+			{Label: "namespace", Source: "first of k8s_namespace_name, kubernetes_namespace_name, namespace, namespace_name"},
+		},
+		Notes: []string{
+			"Names are lowercased, and dots, dashes, slashes and spaces become underscores.",
+			"A template variable left unsubstituted, such as {var}, is dropped.",
+			"When an alert covers several rows a value arrives as a comma-separated list and only matches as the whole text.",
+		},
+	}
+}
+
 func (m OpenObserveWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

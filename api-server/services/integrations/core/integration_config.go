@@ -2467,6 +2467,10 @@ func IntegrationConfigs(context *security.RequestContext, integrationName string
 
 	schema := integration.ConfigSchema()
 	schema.Category = integration.Category()
+	if describer, ok := integration.(WebhookLabelDescriber); ok {
+		help := describer.WebhookLabelHelp()
+		schema.WebhookLabelHelp = &help
+	}
 	// Same injection CreateIntegrationConfig applies, so the schema the form is built
 	// from lists exactly the keys a save will accept. Without it the form would have no
 	// way to know the shared log blobs are allowed.

@@ -129,6 +129,26 @@ func (m AzureMonitorWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels ProcessEventWebook builds. Update it with the parser.
+func (m AzureMonitorWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "A fixed set of fields from the common alert schema.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "azure_subscription_id", Source: "subscription id in data.essentials.alertId"},
+			{Label: "azure_resource_group", Source: "resource group in data.essentials.alertTargetIDs[0]"},
+			{Label: "alert_rule", Source: "data.essentials.alertRule"},
+			{Label: "severity", Source: "data.essentials.severity (Sev0 to Sev4)"},
+			{Label: "signal_type", Source: "data.essentials.signalType"},
+			{Label: "monitor_condition", Source: "data.essentials.monitorCondition"},
+			{Label: "azure_service_name", Source: "resource provider and type in data.essentials.alertTargetIDs[0], lowercased"},
+		},
+		Notes: []string{
+			"customProperties, metric dimensions and resource tags are not labels.",
+			"With no matching rule, the alert goes to the connected account that owns the subscription.",
+		},
+	}
+}
+
 func (m AzureMonitorWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

@@ -389,6 +389,29 @@ func (m PagerDutyWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels ProcessEventWebook and applyPagerDutyIncident build. Update it with the parser.
+func (m PagerDutyWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "The PagerDuty service name is always sent. Custom fields and the original alert's labels are read through the PagerDuty API, so the PagerDuty integration must be linked with an API token.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "service_discovery", Source: "event.data.service.summary"},
+			{Label: "<query parameter>", Source: "event.client.url"},
+			{Label: "<custom field>", Source: "incident custom field, by field name"},
+			{Label: "<alert label>", Source: "labels of the original Alertmanager, Grafana or SigNoz alert"},
+			{Label: "annotation_<name>", Source: "annotations of the original Grafana or SigNoz alert"},
+			{Label: "severity", Source: "severity of the original alert"},
+			{Label: "namespace", Source: "namespace=\"...\" in the incident title"},
+			{Label: "pod", Source: "pod=\"...\" in the incident title"},
+		},
+		Notes: []string{
+			"Without the PagerDuty integration, only service_discovery and the URL parameters can be matched.",
+			"The service name is service_discovery, not service.",
+			"Events API custom_details are not copied as labels.",
+			"The incident's status, urgency and priority are not labels.",
+		},
+	}
+}
+
 func (m PagerDutyWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

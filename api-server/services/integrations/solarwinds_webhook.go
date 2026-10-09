@@ -28,6 +28,27 @@ func (m SolarWindsWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels the extractSolarWinds* functions build. Update it with the parser.
+func (m SolarWindsWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "A fixed set of fields from the alert.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "severity", Source: "severity"},
+			{Label: "priority", Source: "priority"},
+			{Label: "alert_type", Source: "type"},
+			{Label: "condition", Source: "condition"},
+			{Label: "entity_type", Source: "entities[0].type"},
+			{Label: "entity_id", Source: "entities[0].entityId"},
+			{Label: "entity_names", Source: "entities[].displayName, joined with commas"},
+			{Label: "host_name", Source: "events[0].hostName (log alerts)"},
+		},
+		Notes: []string{
+			"entity_names holds every entity joined with commas, so it matches a name only on a single-entity alert.",
+			"The alert name is the title, not a label.",
+		},
+	}
+}
+
 func (m SolarWindsWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

@@ -38,6 +38,7 @@ import VmAgentCredentialsDialog from './VmAgentCredentialsDialog';
 import { docsUrl } from '@lib/externalUrls';
 import ModelAliasList from '@components/common/forms/ModelAliasList';
 import LabelMappingCards, { parseLogLabelMappings, serializeLogLabelMappings } from './LabelMappingCards';
+import WebhookLabelHelpTooltip from './WebhookLabelHelpTooltip';
 import useLogFieldOptions, { fieldOptionsKey, indexForAccount } from './useLogFieldOptions';
 import DefaultFiltersCard, { emptyFilterCard, hasCardMissingAccount, parseDefaultFilters, serializeDefaultFilters } from './DefaultFiltersCard';
 import { TRACE_LABEL_ADVANCED_FIELDS, TRACE_LABEL_FIELDS } from '@components/common/settings/labelMapperFields';
@@ -2853,7 +2854,16 @@ const IntegrationDynamicFormModal = ({
                           <Box sx={{ display: 'flex', gap: ds.space[3], alignItems: 'flex-end', mb: ds.space[2] }}>
                             <Box sx={{ flex: 1 }}>
                               <Input
-                                label={condIdx === 0 ? 'Label name' : ''}
+                                label={
+                                  condIdx === 0 ? (
+                                    <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1] }}>
+                                      Label name
+                                      <WebhookLabelHelpTooltip help={config.webhook_label_help} matchesValues />
+                                    </Box>
+                                  ) : (
+                                    ''
+                                  )
+                                }
                                 placeholder='e.g. env'
                                 value={cond.key}
                                 onChange={(value) => handleConditionChange(ruleIdx, condIdx, 'key', value)}
@@ -2936,9 +2946,13 @@ const IntegrationDynamicFormModal = ({
                     fontWeight: 'var(--ds-font-weight-medium)',
                     mt: ds.space[6],
                     mb: ds.space[2],
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: ds.space[1],
                   }}
                 >
                   Webhook Label Mapping (Optional)
+                  <WebhookLabelHelpTooltip help={config.webhook_label_help} />
                 </Typography>
                 <Typography
                   variant='body2'

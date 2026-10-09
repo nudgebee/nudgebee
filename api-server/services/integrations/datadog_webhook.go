@@ -102,6 +102,26 @@ func (m DatadogWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels ProcessEventWebook builds. Update it with the parser.
+func (m DatadogWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "Monitor tags become labels: a tag key:value gives the label key. Tags are read through the Datadog API, so the Datadog integration must be linked to the same account.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "<tag key>", Source: "monitor tag key:value"},
+			{Label: "alert_name", Source: "monitor name, or the incident title"},
+			{Label: "pod_name", Source: "pod_name or pod in the monitor's group or tags"},
+			{Label: "container_name", Source: "kube_container_name or container_name"},
+			{Label: "<incident field>", Source: "incident field name, lowercased with underscores"},
+			{Label: "incident_uuid", Source: "incident.incident_uuid"},
+		},
+		Notes: []string{
+			"Without the Datadog integration, only tags in a tags= link inside the message are seen.",
+			"A tag without a colon is not a label.",
+			"The monitor's status, priority and title are not labels.",
+		},
+	}
+}
+
 func (m DatadogWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,
