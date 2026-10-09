@@ -3178,7 +3178,11 @@ func applySubjectFallbacks(webhookEvent *Event) {
 		}
 	}
 
-	if webhookEvent.SubjectNamespace == "" {
+	// A node is cluster-scoped, so a node subject takes no namespace from its
+	// labels: the `namespace` label on a node alert is the namespace of the
+	// exporter pod that reported it. An agent that works out the node itself
+	// sends the subject as a node with no namespace and those labels still on it.
+	if webhookEvent.SubjectNamespace == "" && !strings.EqualFold(webhookEvent.SubjectType, "node") {
 		for _, key := range namespaceKeys {
 			if namespace, ok := webhookEvent.Labels[key]; ok {
 				webhookEvent.SubjectNamespace = namespace

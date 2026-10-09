@@ -80,6 +80,12 @@ func (a *podMetricAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bo
 		return false
 	}
 	event := ctx.GetEvent()
+	// A node alert carries the pod and namespace labels of the exporter that
+	// reported it. They name the reporter, not a pod the alert is about, and the
+	// node's own capacity card comes from node_allocatable_resources_enricher.
+	if strings.EqualFold(event.SubjectType, "node") {
+		return false
+	}
 	labels := event.Labels
 	namespace := event.SubjectNamespace
 	if namespace == "" && labels != nil {

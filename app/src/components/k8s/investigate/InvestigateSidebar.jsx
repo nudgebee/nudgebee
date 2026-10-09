@@ -455,7 +455,8 @@ function InvestigateSidebar({
               <Text value={row.subject_namespace} secondaryText showAutoEllipsis sx={valueTextSx} />
             </Row>
           )}
-          {row?.subject_node && (
+          {/* A node alert's subject is the node, which the first row already names. */}
+          {row?.subject_node && row.subject_node !== row.subject_name && (
             <Row label={isCloud ? 'Region' : 'Node'}>
               <Text value={row.subject_node} copyableTooltip showAutoEllipsis sx={{ fontSize: ds.text.small, ...valueTextSx }} />
             </Row>

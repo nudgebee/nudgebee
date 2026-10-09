@@ -276,6 +276,12 @@ func TestPodLogCanAutoExecute(t *testing.T) {
 		{"job", subject("job_failure", "job", map[string]string{}), false},
 		{"cronjob named by the alert's kind label", subject("KubeJobFailed", "", map[string]string{"kind": "CronJob"}), false},
 		{"deployment", subject("KubePodCrashLooping", "deployment", map[string]string{}), false},
+		// The namespace label on a node alert is the exporter's, and no pod is
+		// called after the node.
+		{"node carrying the exporter's labels", PlaybookEvent{
+			AggregationKey: "NodeDiskIOSaturation", SubjectType: "node", SubjectName: "gke-pool-1-node-7f3a",
+			Labels: map[string]string{"namespace": "monitoring", "pod": "node-exporter-skqnn"},
+		}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

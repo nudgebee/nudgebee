@@ -64,6 +64,16 @@ func TestPodMetricAction_CanAutoExecute(t *testing.T) {
 			},
 			want: false,
 		},
+		{
+			// The pod and namespace labels on a node alert are the exporter's.
+			name:   "node subject carrying the exporter's pod labels → false",
+			action: podMetricAction{autodetectResource: "cpu"},
+			event: playbooks.PlaybookEvent{
+				SubjectType: "node", SubjectName: "gke-pool-1-node-7f3a",
+				Labels: map[string]string{"namespace": "monitoring", "pod": "node-exporter-skqnn"},
+			},
+			want: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

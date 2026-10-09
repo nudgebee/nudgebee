@@ -151,6 +151,22 @@ func TestApplySubjectFallbacks(t *testing.T) {
 		assert.Equal(t, "explicit-name", e.SubjectName)
 	})
 
+	// A node is cluster-scoped. The `namespace` label on its alert is the
+	// namespace of the exporter pod that reported it.
+	t.Run("a node subject takes no namespace from its labels", func(t *testing.T) {
+		e := Event{
+			SubjectType: "Node",
+			SubjectName: "gke-pool-1-node-7f3a",
+			Labels:      map[string]string{"cluster": "prod", "namespace": "monitoring", "pod": "node-exporter-skqnn"},
+		}
+
+		applySubjectFallbacks(&e)
+
+		assert.Equal(t, "", e.SubjectNamespace)
+		assert.Equal(t, "prod", e.Cluster)
+		assert.Equal(t, "gke-pool-1-node-7f3a", e.SubjectName)
+	})
+
 	t.Run("initialises a nil label map", func(t *testing.T) {
 		e := Event{}
 		assert.NotPanics(t, func() { applySubjectFallbacks(&e) })

@@ -42,6 +42,11 @@ func (a *podLogAction) CanAutoExecute(ctx PlaybookActionContext) bool {
 	if kind == "job" || kind == "cronjob" {
 		return false
 	}
+	// Nor is a node. The namespace label on its alert is the exporter's, so this
+	// action would be asking for a pod called after the node in that namespace.
+	if kind == "node" {
+		return false
+	}
 	if IsNeverStartedContainerAggKey(ctx.GetEvent().AggregationKey) {
 		return false
 	}
