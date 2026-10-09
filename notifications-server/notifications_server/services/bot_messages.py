@@ -260,6 +260,13 @@ def get_account_already_selected() -> str:
     return get_random_message(ACCOUNT_ALREADY_SELECTED)
 
 
+def get_account_pick_not_yours(asker_name: Optional[str] = None) -> str:
+    """Told to someone who clicks an account picker on another person's question."""
+    if asker_name:
+        return f"Only {asker_name} can choose the account for this question."
+    return "Only the person who asked can choose the account for this question."
+
+
 def get_thinking_indicator() -> str:
     """Get a random thinking/processing indicator."""
     return get_random_message(THINKING_INDICATORS)

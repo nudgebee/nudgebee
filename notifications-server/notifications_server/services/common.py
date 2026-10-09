@@ -1629,13 +1629,14 @@ class CommonService:
             "errors": errors,
         }
 
-    def post_slack_ephemeral_response(self, channel_id, team_id, user_id, message):
+    def post_slack_ephemeral_response(self, channel_id, team_id, user_id, message, thread_ts=None):
         bot = self.get_slack_installation(team_id)
         output_blocks = Transformer.to_slack(MarkdownBlock(text=message))
         self.slack_app.client.post_ephemeral(
             text="message",
             channel_id=channel_id,
             user=user_id,
+            thread_ts=thread_ts,
             token=bot.token,
             response_type="in_channel",
             replace_original=True,
