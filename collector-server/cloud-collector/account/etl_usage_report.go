@@ -363,8 +363,9 @@ func agentStatusForUsageSync(err error) AgentStatus {
 
 func StoreUsage(ctx *security.RequestContext, accountId string, month time.Month, year int) (StoreUsageReportResponse, error) {
 	// Capture month-of-call before any defers so the post-report publish is
-	// stable across mid-run month rollovers.
-	callTime := time.Now()
+	// stable across mid-run month rollovers. UTC to match the billing data
+	// and report dates this is compared against elsewhere in this file.
+	callTime := time.Now().UTC()
 	currentMonth := callTime.Month()
 	currentYear := callTime.Year()
 
@@ -536,10 +537,17 @@ func StoreUsage(ctx *security.RequestContext, accountId string, month time.Month
 		ctx.GetLogger().Info("usagereport: updated resources from usage report", "time", time.Since(t0).String(), "count", resourceCnt)
 	}
 
-	// trigger notifications
-	err = sendDailySpendNotification(ctx, dbms, accountId, account.AccountName, sink)
-	if err != nil {
-		ctx.GetLogger().Error("usagereport: unable to send notification", "error", err)
+	// trigger notifications - only for the current-month job. The previous-month
+	// job (publishPreviousMonth in StoreDailyUsageReportForAllAccounts) exists
+	// solely to backfill late-settling AWS/Azure billing data and runs on the
+	// same day as the current-month job; notifying for it too would send the
+	// daily spend report to Slack twice with conflicting numbers.
+	if month == currentMonth && year == currentYear {
+		if notifyErr := sendDailySpendNotification(ctx, dbms, accountId, account.AccountName, sink); notifyErr != nil {
+			ctx.GetLogger().Error("usagereport: unable to send notification", "error", notifyErr)
+		}
+	} else {
+		ctx.GetLogger().Debug("usagereport: skipping notification for non-current-month job", "month", month, "year", year)
 	}
 
 	// update spends
