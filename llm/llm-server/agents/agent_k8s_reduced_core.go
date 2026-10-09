@@ -59,6 +59,13 @@ func trimmedK8sCoreToolNames() []string {
 		// Unmentioned self-awareness questions arrive at the environment
 		// orchestrator. Mount Nubi so its description can route delegation.
 		NudgebeeAgentName,
+		// code_analyzer is preloaded rather than reached on-demand: code and
+		// CI-failure questions arrive at the environment orchestrator, and when it
+		// was only reachable via search_tools the planner browsed repositories one
+		// file per shell call instead (49-50 calls, hitting the iteration cap).
+		// It is offered only where a GitHub/GitLab integration exists
+		// (CodeAgent2.ConfigTools).
+		AgentCodeAnalyzer,
 		DelegateAgentToolName,
 		SearchToolsToolName,
 		// search_skills preload preserved so the model can query knowledge bases

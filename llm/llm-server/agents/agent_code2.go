@@ -1334,8 +1334,18 @@ func (l CodeAgent2) GetDescription() string {
 	return desc
 }
 
+// GetSupportedTools lists the git tools whose credentials code_analyzer clones
+// with. It does not call them through a planner; listing them is what gates the
+// agent-tool on a GitHub/GitLab integration (isToolConfigured checks an agent's
+// tools), so it is not offered on accounts where it can only fail.
 func (l CodeAgent2) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	return []toolcore.NBTool{}
+	var out []toolcore.NBTool
+	for _, name := range []string{tools.ToolExecuteGithubCliCommand, tools.ToolExecuteGitlabCliCommand} {
+		if t, ok := toolcore.GetNBTool(l.accountId, name); ok && t != nil {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func (l CodeAgent2) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
