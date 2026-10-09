@@ -31,11 +31,12 @@ import { ds } from '@utils/colors';
 const HEADERS = [
   { name: 'Severity', width: '8%' },
   { name: 'Vulnerability', width: '16%' },
-  { name: 'Package', width: '19%' },
-  { name: 'Installed', width: '17%' },
-  { name: 'Fixed In', width: '17%' },
+  { name: 'Package', width: '15%' },
+  { name: 'Installed', width: '15%' },
+  { name: 'Fixed In', width: '15%' },
   { name: 'CVSS', width: '5%' },
   { name: 'Last Seen', width: '10%' },
+  { name: 'Status', width: '8%' },
   { name: 'Actions', width: '8%' },
 ];
 
@@ -44,12 +45,13 @@ const HEADERS = [
 const HEADERS_WITH_ACCOUNT = [
   { name: 'Account', width: '12%' },
   { name: 'Severity', width: '8%' },
-  { name: 'Vulnerability', width: '15%' },
-  { name: 'Package', width: '16%' },
-  { name: 'Installed', width: '15%' },
-  { name: 'Fixed In', width: '15%' },
+  { name: 'Vulnerability', width: '12%' },
+  { name: 'Package', width: '13%' },
+  { name: 'Installed', width: '13%' },
+  { name: 'Fixed In', width: '13%' },
   { name: 'CVSS', width: '5%' },
   { name: 'Last Seen', width: '8%' },
+  { name: 'Status', width: '8%' },
   { name: 'Actions', width: '8%' },
 ];
 
@@ -376,6 +378,13 @@ const VmVulnerabilities = ({
           },
           { component: <CellText text={payload.cvss_v3_score != null ? String(payload.cvss_v3_score) : undefined} /> },
           { component: <Datetime value={finding.updated_at} /> },
+          {
+            component: finding.status ? (
+              <Label size='sm' tone={finding.status === 'Open' ? 'info' : 'neutral'} text={finding.status} />
+            ) : (
+              <CellText text='—' />
+            ),
+          },
           {
             component: (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
