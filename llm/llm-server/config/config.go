@@ -559,6 +559,7 @@ type appConfig struct {
 	EventAnalysisWorkerCount       int `mapstructure:"llm_server_event_analysis_worker_count"`
 	EventAnalysisQueueSize         int `mapstructure:"llm_server_event_analysis_queue_size"`
 	EventAnalysisRecoveryBatchSize int `mapstructure:"llm_server_event_analysis_recovery_batch_size"`
+	EventMqConcurrency             int `mapstructure:"llm_server_event_mq_concurrency"` // queued (automatic) analyses one pod runs at once; clicks use EventAnalysisWorkerCount
 	// EventAnalysisFreshnessHours bounds how long a COMPLETED analysis may be
 	// reused for a *different* event that shares its fingerprint. Past this age
 	// every reuse gate treats the stage as needing regeneration, so the new event
@@ -1442,6 +1443,7 @@ func init() {
 	viper.SetDefault("llm_server_conversation_task_worker_count", 20)
 	viper.SetDefault("llm_server_event_analysis_worker_count", 5)
 	viper.SetDefault("llm_server_event_analysis_queue_size", 100)
+	viper.SetDefault("llm_server_event_mq_concurrency", 2)
 	viper.SetDefault("llm_server_event_analysis_recovery_batch_size", 5)
 	// 0 = disabled; see EventAnalysisFreshnessHours for what this bounds and what
 	// enabling it costs.

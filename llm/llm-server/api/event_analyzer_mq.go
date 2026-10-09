@@ -100,10 +100,12 @@ func init() {
 	}
 	// MqConsume only registers a supervisor; connecting and consuming happen
 	// in the background ("rbmq: consumer running" / GET /health/mq).
+	concurrency := max(config.Config.EventMqConcurrency, 1)
 	slog.Info("eventasync: registering rabbitmq consumer",
 		"exchange", config.Config.RabbitMqTroubleshootExchange,
-		"queue", config.Config.RabbitMqTroubleshootQueue)
-	err := common.MqConsume(config.Config.RabbitMqTroubleshootExchange, config.Config.RabbitMqTroubleshootQueue, config.Config.RabbitMqTroubleshootQueue, processTroubleshootingEventFromMq)
+		"queue", config.Config.RabbitMqTroubleshootQueue,
+		"concurrency", concurrency)
+	err := common.MqConsume(config.Config.RabbitMqTroubleshootExchange, config.Config.RabbitMqTroubleshootQueue, config.Config.RabbitMqTroubleshootQueue, concurrency, processTroubleshootingEventFromMq)
 	if err != nil {
 		slog.Error("eventasync: unable to register consumer", "error", err)
 		return

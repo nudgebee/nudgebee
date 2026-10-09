@@ -313,15 +313,19 @@ func waitBounded(ctx context.Context, step string, f func()) {
 }
 
 // MqConsume registers a supervised consumer for queue and returns at once; connecting happens in the
-// background until MqClose. Errors only if queue already has a consumer.
-func MqConsume(exchangeName string, routingKey string, queue string, processor func(ctx context.Context, data []byte) error) error {
+// background until MqClose. Errors only if queue already has a consumer. Up to concurrency messages
+// are handled at once (values below 1 mean 1); prefetch matches it, so a message is only delivered
+// when a handler is free, and each is still acked after its processor returns.
+func MqConsume(exchangeName string, routingKey string, queue string, concurrency int, processor func(ctx context.Context, data []byte) error) error {
+	concurrency = max(concurrency, 1)
 	return startMqConsumer(queue, processor, func(conn *rabbitmq.Conn) (mqConsumer, error) {
 		return mqNewConsumer(
 			conn,
 			queue,
 			rabbitmq.WithConsumerOptionsRoutingKey(routingKey),
 			rabbitmq.WithConsumerOptionsExchangeName(exchangeName),
-			rabbitmq.WithConsumerOptionsQOSPrefetch(1),
+			rabbitmq.WithConsumerOptionsQOSPrefetch(concurrency),
+			rabbitmq.WithConsumerOptionsConcurrency(concurrency),
 			rabbitmq.WithConsumerOptionsExchangeDeclare,
 			rabbitmq.WithConsumerOptionsExchangeDurable,
 			rabbitmq.WithConsumerOptionsConsumerName(config.Config.OtelServiceName+"/"+routingKey+"/"+config.Config.ServerName),

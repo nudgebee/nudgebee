@@ -52,7 +52,7 @@ func TestMqHealth_StrandedConsumerTurns503AfterGrace(t *testing.T) {
 	})
 	config.Config.RabbitMqHost, config.Config.RabbitMqPort = "127.0.0.1", closedPort
 
-	require.NoError(t, common.MqConsume("nbtest_health_ex", "nbtest_health_q", "nbtest_health_q",
+	require.NoError(t, common.MqConsume("nbtest_health_ex", "nbtest_health_q", "nbtest_health_q", 1,
 		func(context.Context, []byte) error { return nil }))
 
 	mqHealthGrace = time.Hour

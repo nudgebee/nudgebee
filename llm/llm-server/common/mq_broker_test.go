@@ -65,7 +65,7 @@ func TestBroker_ClosedPublisherChannelInHandler_ConsumerKeepsConsuming(t *testin
 	inExchange, inQueue, outExchange := "nbtest_in_"+suffix, "nbtest_in_"+suffix, "nbtest_out_"+suffix
 
 	handled := make(chan error, 4)
-	require.NoError(t, MqConsume(inExchange, inQueue, inQueue, func(ctx context.Context, _ []byte) error {
+	require.NoError(t, MqConsume(inExchange, inQueue, inQueue, 1, func(ctx context.Context, _ []byte) error {
 		handled <- MqPublishWithContext(ctx, outExchange, "rk", "completion")
 		return nil
 	}))
@@ -134,7 +134,7 @@ func TestBroker_ConsumerAttachesAfterBrokerBecomesReachable(t *testing.T) {
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	exchange, queue := "nbtest_late_"+suffix, "nbtest_late_"+suffix
 	got := make(chan struct{}, 1)
-	require.NoError(t, MqConsume(exchange, queue, queue, func(context.Context, []byte) error {
+	require.NoError(t, MqConsume(exchange, queue, queue, 1, func(context.Context, []byte) error {
 		got <- struct{}{}
 		return nil
 	}))
