@@ -380,11 +380,12 @@ func loadWorkloadMetas(d *sqlx.DB, tenantId string, ids []string) (map[string]wo
 }
 
 // isNamespaceActive reports whether the namespace (key = "<account>/<name>") exists
-// and is active.
-func isNamespaceActive(d *sqlx.DB, tenantId, key string) bool {
+// and is active. A key that is not a namespace key is simply not active; an error
+// means the question could not be answered.
+func isNamespaceActive(d *sqlx.DB, tenantId, key string) (bool, error) {
 	account, name, ok := splitNamespaceKey(key)
 	if !ok {
-		return false
+		return false, nil
 	}
 	var exists bool
 	err := d.Get(&exists, `
@@ -392,7 +393,10 @@ func isNamespaceActive(d *sqlx.DB, tenantId, key string) bool {
 			SELECT 1 FROM k8s_namespaces
 			WHERE tenant_id = $1 AND cloud_account_id = $2 AND name = $3 AND is_active)`,
 		tenantId, account, name)
-	return err == nil && exists
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 // loadActiveNamespaceSet returns the set of active "<account>/<name>" keys for a

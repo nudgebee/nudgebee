@@ -12,6 +12,8 @@ export interface OwnerResult {
   owner_name?: string;
   source?: string;
   via?: string;
+  /** The resolver holds no active resource of this type under this key. Tenant admins only. */
+  no_active_resource?: boolean;
 }
 
 // One rung of the ownership chain: a display label, the ref used to resolve it,
@@ -21,6 +23,13 @@ export interface ChainLevel {
   resourceType: string;
   resourceKey: string;
   own: OwnerResult | null;
+  /**
+   * The resolver holds no active resource for this rung, so an owner assigned to it
+   * would be saved and then hidden. Kept beside `own` because `own` is null both for
+   * this and for a live resource nobody owns. Set after resolution, and only for
+   * viewers who may assign owners.
+   */
+  noActiveResource?: boolean;
 }
 
 export interface ResourceOwner {
@@ -138,7 +147,7 @@ export default function useResourceOwner(levels: ChainLevel[], reloadToken = 0):
         setResolved(
           levels.map((l) => {
             const r = byKey.get(`${l.resourceType}${SEP}${l.resourceKey}`);
-            return { ...l, own: r?.found && r.via === 'self' ? r : null };
+            return { ...l, own: r?.found && r.via === 'self' ? r : null, noActiveResource: !!r?.no_active_resource };
           })
         );
         setLoading(false);

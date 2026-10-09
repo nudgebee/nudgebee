@@ -1,4 +1,4 @@
-import { buildOwnershipLevels } from '../InvestigateSidebar';
+import { assignableOwnerRung, buildOwnershipLevels } from '../InvestigateSidebar';
 
 // The chain builder is the whole risk surface of ownership in the sidebar: which rungs
 // get asked for is decided here, and asking for the wrong one fails silently (it just
@@ -70,5 +70,38 @@ describe('buildOwnershipLevels', () => {
       const levels = buildOwnershipLevels(input);
       expect(levels[levels.length - 1].resourceType).toBe('cloud_account');
     }
+  });
+});
+
+// Which rung "Assign owner" may write to. The sidebar offers it for the investigated
+// resource only — the two ways that goes wrong are both silent, so they are pinned
+// here: an owner set one level up lands on everything under it, and an owner set on a
+// resource the resolver no longer holds is saved and then never shown.
+describe('assignableOwnerRung', () => {
+  const rung = (resourceType: string, extra = {}) => ({ level: resourceType, resourceType, resourceKey: 'k', own: null, ...extra });
+
+  it('offers the workload a k8s event is about', () => {
+    const levels = [rung('workload'), rung('namespace'), rung('cloud_account')];
+    expect(assignableOwnerRung(levels)).toBe(levels[0]);
+  });
+
+  it('offers the cloud resource a cloud event is about', () => {
+    const levels = [rung('cloud_resource'), rung('cloud_account')];
+    expect(assignableOwnerRung(levels)).toBe(levels[0]);
+  });
+
+  it('offers nothing when the event only identifies a namespace or an account', () => {
+    expect(assignableOwnerRung([rung('namespace'), rung('cloud_account')])).toBeNull();
+    expect(assignableOwnerRung([rung('cloud_account')])).toBeNull();
+  });
+
+  it('offers nothing for a resource the resolver no longer holds as active', () => {
+    expect(assignableOwnerRung([rung('workload', { noActiveResource: true }), rung('namespace')])).toBeNull();
+    expect(assignableOwnerRung([rung('cloud_resource', { noActiveResource: true })])).toBeNull();
+  });
+
+  it('offers nothing before the chain exists', () => {
+    expect(assignableOwnerRung([])).toBeNull();
+    expect(assignableOwnerRung(undefined)).toBeNull();
   });
 });

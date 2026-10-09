@@ -136,8 +136,14 @@ func GetOwner(ctx *security.RequestContext, req GetOwnerRequest) (OwnerResult, e
 	if err != nil {
 		return OwnerResult{}, err
 	}
-	res := resolveOne(singleDeps(d, tenantId), req.ResourceType, req.ResourceKey)
+	deps, lookupFailed := singleDeps(d, tenantId)
+	res := resolveOne(deps, req.ResourceType, req.ResourceKey)
 	one := []OwnerResult{res}
+	// The point lookups swallow their errors, so a failed one looks exactly like a
+	// resource that is gone. Unowned is a safe answer to that; "not active" is not.
+	if !canSeeResourceState(ctx) || lookupFailed() {
+		hideResourceState(one)
+	}
 	fillOwnerNames(d, tenantId, one)
 	return one[0], nil
 }
@@ -164,8 +170,28 @@ func Resolve(ctx *security.RequestContext, req ResolveRequest) ([]OwnerResult, e
 	for _, r := range req.Resources {
 		out = append(out, resolveOne(deps, r.ResourceType, r.ResourceKey))
 	}
+	if !canSeeResourceState(ctx) {
+		hideResourceState(out)
+	}
 	fillOwnerNames(d, tenantId, out)
 	return out, nil
+}
+
+// canSeeResourceState reports whether the caller may be told that a key names no
+// active resource. Reads only need a tenant, and resource ids are derived from names,
+// so answering everyone would let a user probe for resources in accounts they cannot
+// see. The one use of the answer is deciding whether an owner can be assigned, so it
+// goes to exactly the callers who may assign one.
+func canSeeResourceState(ctx *security.RequestContext) bool {
+	_, err := requireTenantAdmin(ctx)
+	return err == nil
+}
+
+// hideResourceState clears NoActiveResource in place.
+func hideResourceState(results []OwnerResult) {
+	for i := range results {
+		results[i].NoActiveResource = false
+	}
 }
 
 // fillOwnerNames resolves display names for the found owners in-place. Best-effort:
@@ -492,23 +518,34 @@ type resolveDeps struct {
 
 // singleDeps wires the resolver to point DB lookups (one-resource resolve). Rules
 // are loaded lazily — skipped entirely when a direct manual owner is found.
-func singleDeps(d *sqlx.DB, tenantId string) resolveDeps {
+//
+// The second return reports whether an existence lookup (workload, cloud resource or
+// namespace) failed. Those closures can only answer "not there", so the caller needs
+// it to tell a resource that is gone from a query that did not run.
+func singleDeps(d *sqlx.DB, tenantId string) (resolveDeps, func() bool) {
 	var rules, cloudRules []OwnershipRuleRow
 	loaded, cloudLoaded := false, false
-	return resolveDeps{
+	lookupFailed := false
+	deps := resolveDeps{
 		ownerOf: func(t, k string) *ResourceOwnerRow {
 			row, _ := getOwnerRow(d, tenantId, t, k)
 			return row
 		},
 		workload: func(id string) *workloadMeta {
-			m, _ := getWorkloadMeta(d, tenantId, id)
+			m, err := getWorkloadMeta(d, tenantId, id)
+			lookupFailed = lookupFailed || err != nil
 			return m
 		},
 		cloudResource: func(id string) *cloudResourceMeta {
-			m, _ := getCloudResourceMeta(d, tenantId, id)
+			m, err := getCloudResourceMeta(d, tenantId, id)
+			lookupFailed = lookupFailed || err != nil
 			return m
 		},
-		namespaceActive: func(key string) bool { return isNamespaceActive(d, tenantId, key) },
+		namespaceActive: func(key string) bool {
+			active, err := isNamespaceActive(d, tenantId, key)
+			lookupFailed = lookupFailed || err != nil
+			return active
+		},
 		getRules: func() []OwnershipRuleRow {
 			if !loaded {
 				rules, _ = loadEnabledRules(d, tenantId)
@@ -524,6 +561,7 @@ func singleDeps(d *sqlx.DB, tenantId string) resolveDeps {
 			return cloudRules
 		},
 	}
+	return deps, func() bool { return lookupFailed }
 }
 
 // resolveOne is the shared resolution logic. Read-time orphan guard: an owner only
@@ -553,6 +591,7 @@ func resolveOne(deps resolveDeps, resType, resKey string) OwnerResult {
 func resolveCloudResource(deps resolveDeps, res OwnerResult, key string) OwnerResult {
 	m := deps.cloudResource(key)
 	if m == nil {
+		res.NoActiveResource = true
 		return res // gone/inactive resource → no owner (orphan-safe)
 	}
 	if row := deps.ownerOf(ResourceTypeCloudResource, key); row != nil {
@@ -570,6 +609,7 @@ func resolveCloudResource(deps resolveDeps, res OwnerResult, key string) OwnerRe
 func resolveWorkload(deps resolveDeps, res OwnerResult, key string) OwnerResult {
 	wm := deps.workload(key)
 	if wm == nil {
+		res.NoActiveResource = true
 		return res // gone/inactive workload → no owner (orphan-safe)
 	}
 	if row := deps.ownerOf(ResourceTypeWorkload, key); row != nil {
@@ -596,6 +636,7 @@ func resolveWorkload(deps resolveDeps, res OwnerResult, key string) OwnerResult 
 
 func resolveNamespace(deps resolveDeps, res OwnerResult, key string) OwnerResult {
 	if !deps.namespaceActive(key) {
+		res.NoActiveResource = true
 		return res // gone/inactive namespace → no owner
 	}
 	// Manual namespace owner wins over a namespace rule (same precedence as workloads).
