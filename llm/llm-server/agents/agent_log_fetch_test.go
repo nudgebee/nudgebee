@@ -703,6 +703,17 @@ func TestMakeFetchResponse_ReadCoverage(t *testing.T) {
 			"lines in the window outside the returned span were not read, and nothing can be concluded about them; "+
 			"reading them takes a narrower window or filter", note)
 	})
+
+	t.Run("a widened read names the window asked for and the window read", func(t *testing.T) {
+		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":500,"returned":500,` +
+			`"oldest":"2026-10-08T10:20:00Z","newest":"2026-10-08T10:45:59Z",` +
+			`"requested_start":"2026-10-08T10:30:00Z","requested_end":"2026-10-08T10:32:00Z",` +
+			`"read_start":"2026-10-08T10:16:00Z","read_end":"2026-10-08T10:46:00Z"}}`)
+		assert.True(t, strings.HasSuffix(note, "; the window asked for was 2026-10-08T10:30:00Z to 2026-10-08T10:32:00Z; "+
+			"the read ran over the wider window 2026-10-08T10:16:00Z to 2026-10-08T10:46:00Z, and every line of the window asked for was read; "+
+			"only lines of the wider window outside the returned span were not read"), note)
+		assert.NotContains(t, note, "nothing can be concluded")
+	})
 }
 
 // The Loki path rewrites each entry's timestamp before the envelope is built;

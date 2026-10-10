@@ -226,6 +226,12 @@ func logReadCoverageNote(logs string) string {
 	if coverage.RequestedStart != "" && coverage.RequestedEnd != "" {
 		fmt.Fprintf(&b, "; the window asked for was %s to %s", coverage.RequestedStart, coverage.RequestedEnd)
 	}
+	if coverage.ReadStart != "" && coverage.ReadEnd != "" {
+		// The tool widened a narrow window and the lines returned reach past
+		// both of its ends: only the widening was cut short.
+		fmt.Fprintf(&b, "; the read ran over the wider window %s to %s, and every line of the window asked for was read; only lines of the wider window outside the returned span were not read", coverage.ReadStart, coverage.ReadEnd)
+		return b.String()
+	}
 	b.WriteString("; lines in the window outside the returned span were not read, and nothing can be concluded about them; reading them takes a narrower window or filter")
 	return b.String()
 }

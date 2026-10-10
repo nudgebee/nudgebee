@@ -62,6 +62,10 @@ type ObservabilityLogCoverage struct {
 	// RequestedStart and RequestedEnd are the window that was asked for.
 	RequestedStart string `json:"requested_start,omitempty"`
 	RequestedEnd   string `json:"requested_end,omitempty"`
+	// ReadStart and ReadEnd are the window the read ran over, set only when
+	// the log tool widened a narrow requested window before reading.
+	ReadStart string `json:"read_start,omitempty"`
+	ReadEnd   string `json:"read_end,omitempty"`
 }
 
 // logTimestampLayouts are the timestamp forms log backends return.
