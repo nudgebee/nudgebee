@@ -2296,7 +2296,13 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	// --- Turn Cache Check: Prevent redundant calls with identical or near-identical inputs.
 	// Uses normalized keys (collapsed whitespace, sorted JSON keys) to catch duplicates
 	// across plan regeneration and critique cycles within the same conversation turn.
-	if cachedStep, found := e.toolCallCache.Get(action.Tool, action.ToolInput); found {
+	// Skipped for tools whose result can change between calls (MCP: a page re-read
+	// after a click must show the new page, #39635).
+	resultCanChange := toolcore.ResultCanChange(nameToTool[strings.ToUpper(action.Tool)])
+	if resultCanChange {
+		e.ctx.GetLogger().Debug("plannerexecutor: tool result can change, not using the turn cache",
+			"tool", action.Tool, "toolId", action.ToolID)
+	} else if cachedStep, found := e.toolCallCache.Get(action.Tool, action.ToolInput); found {
 		e.ctx.GetLogger().Info("plannerexecutor: returning cached result for duplicate tool call",
 			"tool", action.Tool, "toolId", action.ToolID, "phase", "pre-rewrite")
 		cachedStep.Action.ToolID = action.ToolID
@@ -2323,7 +2329,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 
 		// Post-rewrite cache check: different original inputs may produce the same
 		// rewritten input. Check again to avoid redundant tool execution.
-		if action.ToolInput != originalInput {
+		if action.ToolInput != originalInput && !resultCanChange {
 			if cachedStep, found := e.toolCallCache.Get(action.Tool, action.ToolInput); found {
 				e.ctx.GetLogger().Info("plannerexecutor: returning cached result for duplicate tool call",
 					"tool", action.Tool, "toolId", action.ToolID, "phase", "post-rewrite")
@@ -2953,7 +2959,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	}
 
 	// Cache successful results under both original and rewritten inputs
-	if status == ToolStatusSuccess || status == ToolStatusEmptyResult {
+	if (status == ToolStatusSuccess || status == ToolStatusEmptyResult) && !resultCanChange {
 		e.toolCallCache.Put(action.Tool, originalInput, result)
 		if action.ToolInput != originalInput {
 			e.toolCallCache.Put(action.Tool, action.ToolInput, result)

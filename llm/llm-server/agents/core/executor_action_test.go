@@ -153,3 +153,51 @@ func TestDoAction_MalformedNativeArgumentsDoNotRun(t *testing.T) {
 		})
 	}
 }
+
+// changingCountingTool is a runCountingTool whose result can change between
+// identical calls, like every MCP tool (#39635).
+type changingCountingTool struct{ runCountingTool }
+
+func (*changingCountingTool) ResultCanChange() bool { return true }
+
+// A repeated identical call to a tool whose result can change must run again
+// and come back as a new step: a browser snapshot after a click must show the
+// page after the click (#39635). A tool that does not say keeps the turn cache.
+func TestDoAction_ResultCanChangeSkipsTurnCache(t *testing.T) {
+	request := NBAgentRequest{AccountId: "cccccccc-cccc-cccc-cccc-cccccccccccc", ConversationId: "conv-1", MessageId: "msg-1"}
+	run := func(t *testing.T, tool toolcore.NBTool) (first, second NBAgentPlannerToolActionStep, executor *plannerExecutor) {
+		t.Helper()
+		tools := []toolcore.NBTool{tool}
+		executor = newPlannerExecutor(security.NewRequestContextForSuperAdmin(), &mockNBAgentPlanner{}, &MockAgent{SupportedTools: tools}, request, 3)
+		executor.toolCallbackHandler = nil
+		for i, id := range []string{"snapshot-E1", "snapshot-E3"} {
+			step, finish, err := executor.doAction(getNameToTool(tools), NBAgentPlannerToolAction{
+				ToolID: id, Tool: "browser_snapshot", ToolInput: `{}`, NativeToolInput: `{}`,
+			}, "")
+			assert.NoError(t, err)
+			assert.Nil(t, finish)
+			executor.accumulateSteps([]NBAgentPlannerToolActionStep{step})
+			if i == 0 {
+				first = step
+			} else {
+				second = step
+			}
+		}
+		return first, second, executor
+	}
+
+	t.Run("result can change", func(t *testing.T) {
+		tool := &changingCountingTool{runCountingTool{MockContextCapturingTool: MockContextCapturingTool{NameVal: "browser_snapshot"}}}
+		_, second, executor := run(t, tool)
+		assert.Equal(t, 2, tool.calls, "the repeat must run again, not come from the turn cache")
+		assert.False(t, second.IsDuplicateCacheHit)
+		assert.Len(t, executor.steps, 2, "the repeat must be kept as a new step")
+	})
+
+	t.Run("result does not say", func(t *testing.T) {
+		tool := &runCountingTool{MockContextCapturingTool: MockContextCapturingTool{NameVal: "browser_snapshot"}}
+		_, second, _ := run(t, tool)
+		assert.Equal(t, 1, tool.calls, "a tool that does not say keeps the turn cache")
+		assert.True(t, second.IsDuplicateCacheHit)
+	})
+}

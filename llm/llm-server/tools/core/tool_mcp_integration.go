@@ -258,6 +258,10 @@ func (m mcpIntegrationTool) GetType() NBToolType {
 	return NBToolTypeTool
 }
 
+// ResultCanChange: an MCP server does not say whether a result is stable, and
+// browser, ticket and deploy tools return something new on every call (#39635).
+func (m mcpIntegrationTool) ResultCanChange() bool { return true }
+
 // GetImplType reports the tool implementation class for metrics labeling.
 // MCP integration tools share an HTTP/relay path and per-integration
 // credentials, so dashboards group them under type="mcp".

@@ -439,6 +439,37 @@ func TestReAct4_ParseCompletion_SynthesizesMissingID(t *testing.T) {
 	assert.Equal(t, generateToolId("kubectl", `{"command":"get pods"}`), actions[0].ToolID)
 }
 
+// changingResultTool is a tool whose result can change between identical
+// calls, like every MCP tool (#39635).
+type changingResultTool struct{ MockContextCapturingTool }
+
+func (*changingResultTool) ResultCanChange() bool { return true }
+
+// Gemini sends no call id. A repeated single call to a tool whose result can
+// change (a browser snapshot after a click) must get a new id, so the executor
+// runs it and keeps it as a new step instead of folding it into the first call
+// (#39635). A tool that does not say keeps the deterministic id.
+func TestReAct4_ParseCompletion_ResultCanChangeGetsStepUniqueID(t *testing.T) {
+	snapshot := &changingResultTool{MockContextCapturingTool{NameVal: "qa_browser_snapshot"}}
+	kubectl := &MockContextCapturingTool{NameVal: "kubectl"}
+	o := &NBReActPlanner4{tools: []toolcore.NBTool{snapshot, kubectl}}
+	parse := func(tool, args string) string {
+		t.Helper()
+		actions, _, err := o.parseCompletion(&llms.ContentChoice{ToolCalls: []llms.ToolCall{toolCall("", tool, args)}})
+		assert.NoError(t, err)
+		assert.Len(t, actions, 1)
+		return actions[0].ToolID
+	}
+
+	first := parse("qa_browser_snapshot", `{}`)
+	second := parse("qa_browser_snapshot", `{}`)
+	assert.NotEqual(t, first, second, "a repeated snapshot must not reuse the earlier call's id")
+	assert.Equal(t, generateToolId("qa_browser_snapshot", `{}`)+"-E2", second)
+
+	assert.Equal(t, parse("kubectl", `{"command":"get pods"}`), parse("kubectl", `{"command":"get pods"}`),
+		"a tool that does not say keeps the deterministic id, so repeats are still deduped")
+}
+
 func TestReAct4_ParseCompletion_SynthesizedIDsAreUniqueForIdenticalCalls(t *testing.T) {
 	o := &NBReActPlanner4{}
 	choice := &llms.ContentChoice{

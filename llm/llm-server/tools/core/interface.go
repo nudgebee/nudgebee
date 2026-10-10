@@ -359,6 +359,25 @@ func (ReadOnlyTool) InferToolRequestType(_ *security.RequestContext, _, _ string
 	return ToolRequestTypeRead, nil
 }
 
+// ResultCanChangeTool is implemented by tools whose result for the same input
+// can differ between two calls in one turn: a browser page re-read after a
+// click, a job status checked while it runs (#39635). The planner runs every
+// call of such a tool for real instead of reusing an earlier identical call's
+// result. All MCP tools report true: an MCP server gives no reliable signal
+// that a result is stable; custom container tools report true too.
+type ResultCanChangeTool interface {
+	ResultCanChange() bool
+}
+
+// ResultCanChange reports whether tool's result for the same input can differ
+// between calls. False for nil and for tools that do not say.
+func ResultCanChange(tool NBTool) bool {
+	if t, ok := tool.(ResultCanChangeTool); ok {
+		return t.ResultCanChange()
+	}
+	return false
+}
+
 type ToolRequestInferencePrompt interface {
 	InferToolRequestTypePrompt(ctx *security.RequestContext, toolName, input string) (string, error)
 }

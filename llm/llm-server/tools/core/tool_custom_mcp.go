@@ -144,6 +144,9 @@ func (m nbCustomMCPTool) GetType() NBToolType {
 	return NBToolTypeTool
 }
 
+// ResultCanChange: see mcpIntegrationTool.ResultCanChange (#39635).
+func (m nbCustomMCPTool) ResultCanChange() bool { return true }
+
 func (m nbCustomMCPTool) GetSubCommands() ([]NBToolCommand, error) {
 	client, err := m.getMcpClient()
 	if err != nil {

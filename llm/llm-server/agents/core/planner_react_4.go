@@ -384,6 +384,17 @@ func react4BasePromptName(agent NBAgent) string {
 
 func (o *NBReActPlanner4) GetTools() []toolcore.NBTool { return o.tools }
 
+// toolResultCanChange reports whether the planner's tool named name declares
+// that its result can change between identical calls (toolcore.ResultCanChange).
+func (o *NBReActPlanner4) toolResultCanChange(name string) bool {
+	for _, t := range o.tools {
+		if t != nil && strings.EqualFold(t.Name(), name) {
+			return toolcore.ResultCanChange(t)
+		}
+	}
+	return false
+}
+
 // agentName is a nil-safe accessor for logging. nbAgent is always set in
 // production, but parseCompletion and the critique paths are exercised directly
 // by unit tests that build a bare planner — the same reason the ctx accesses are
@@ -1343,10 +1354,17 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 			// ("...missing a thought_signature..., position 2"). Batches are rare —
 			// one in an entire comparison run — so nearly all the dedup benefit
 			// comes from the single-call path anyway.
-			if len(choice.ToolCalls) == 1 {
-				id = generateToolId(name, args)
-			} else {
+			//
+			// A tool whose result can change (every MCP tool) gets a step-unique
+			// id even in a single-call turn: re-reading a page after a click is a
+			// new call, not a repeat of the earlier read, and must run (#39635).
+			switch {
+			case len(choice.ToolCalls) > 1:
 				id = fmt.Sprintf("%s-E%d-%d", generateToolId(name, args), o.stepCount, i)
+			case o.toolResultCanChange(name):
+				id = fmt.Sprintf("%s-E%d", generateToolId(name, args), o.stepCount)
+			default:
+				id = generateToolId(name, args)
 			}
 		}
 		var signature []byte

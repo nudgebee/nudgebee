@@ -446,3 +446,14 @@ func TestMCPDiscoveryRetryAfter(t *testing.T) {
 		assert.Equal(t, tc.want, mcpDiscoveryRetryAfter(tc.failingFor), "failing for %s", tc.failingFor)
 	}
 }
+
+// Every MCP tool and custom container tool reports that its result can change,
+// so the planner runs a repeated identical call instead of reusing the first
+// result (#39635).
+func TestMCPTools_ResultCanChange(t *testing.T) {
+	assert.True(t, ResultCanChange(mcpIntegrationTool{toolName: "qa_browser_snapshot"}))
+	assert.True(t, ResultCanChange(nbCustomMCPTool{}))
+	assert.True(t, ResultCanChange(nbCustomContainerTool{}))
+	assert.False(t, ResultCanChange(nil))
+	assert.False(t, ResultCanChange(newMCPUnavailableTool(mcpIntegrationConfig{}, "x")))
+}
