@@ -226,6 +226,16 @@ func TestCLIChainsAreClassifiedPerStage(t *testing.T) {
 	assert.Equal(t, core.ToolRequestType(""), InferKubectlVerbType("kubectl get pods -A | grep api"))
 }
 
+// The CIS scan tool only starts Nudgebee's own scan, so it is always a read,
+// decided without an LLM call.
+func TestCisScanIsStaticRead(t *testing.T) {
+	got, err := CisScanTool{}.InferToolRequestType(security.NewRequestContext(context.Background(), nil, nil, nil, nil), "", `{}`)
+	require.NoError(t, err)
+	assert.Equal(t, core.ToolRequestTypeRead, got)
+	_, hasPrompt := any(CisScanTool{}).(core.ToolRequestInferencePrompt)
+	assert.False(t, hasPrompt, "no LLM prompt left behind")
+}
+
 // The image scan tool only triggers a scan, so it is always a read, decided
 // without an LLM call.
 func TestImageScanIsStaticRead(t *testing.T) {
