@@ -59,6 +59,8 @@ const useRightSizingRecord = (accountId, namespace, workloadType, workload) => {
     let active = true;
     // Rows are keyed "<namespace>/<Kind>/<name>" and the API matches that as a
     // substring, so keep only the exact row: "api" must not take "api-gateway"'s figure.
+    // With the namespace pinned every match starts with the key, so sorting by it
+    // puts the exact row first however many siblings share the prefix.
     const key = `${namespace}/${workloadType}/${workload}`.toLowerCase();
     Promise.resolve()
       .then(() =>
@@ -69,6 +71,8 @@ const useRightSizingRecord = (accountId, namespace, workloadType, workload) => {
           resourceNamespace: namespace,
           accountObjectId: key,
           status: ['Open', 'Assigned', 'InProgress'],
+          orderBy: 'account_object_id',
+          orderAsc: true,
         })
       )
       .then((res) => {
