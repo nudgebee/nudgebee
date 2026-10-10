@@ -37,6 +37,7 @@ import { adapterUserUpdateDataOnUserRoles, groupBelongsToTenant } from '@lib/use
 import { pickDefaultTenant } from '@lib/defaultTenant';
 import { findTenantByDomain } from '@lib/tenantLookup';
 import { dummyCredsAdminEmail } from '@lib/dummyCredsAdmin';
+import { ldapBindName, ldapSearchFilter } from '@lib/ldapUsername';
 import { getLicenseDetails, SERVICES_SERVER_UNREACHABLE_MSG, type LicenseTier } from '@lib/license';
 import { enrichAuthToken, enrichSession, onReturningOAuthSignIn, onUnknownOAuthSignIn, resolveLicensedTenantUser } from '@lib/authHooks';
 
@@ -902,8 +903,7 @@ if (process.env.NEXTAUTH_LDAP_URI) {
         }
         try {
           const searchFilter = process.env.NEXTAUTH_LDAP_LOGIN_FILTER ?? '(uid=%s)';
-          const searchDn = searchFilter.replace('%s', credentials.username);
-          console.log('searchDn', searchDn);
+          const searchDn = ldapBindName(searchFilter, credentials.username);
           await client.bind(searchDn, credentials.password);
         } catch (e) {
           console.log('LDAP Auth Error', e);
@@ -928,7 +928,7 @@ if (process.env.NEXTAUTH_LDAP_URI) {
             throw Error('Unable to bind to search user');
           }
           let searchFilter = process.env.NEXTAUTH_LDAP_SEARCH_FILTER ?? '(uid=%s)';
-          searchFilter = searchFilter.replace('%s', credentials.username);
+          searchFilter = ldapSearchFilter(searchFilter, credentials.username);
           const searchOptions = {
             filter: searchFilter,
             attributes: [ldapAttributeEmail, ldapAttributeGroup, ldapAttributeName, ldapAttributeFirstName, ldapAttributeLastName],
