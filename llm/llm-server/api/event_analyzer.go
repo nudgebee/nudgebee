@@ -86,6 +86,11 @@ type EventRCAAnalysisRequest struct {
 	UserId           string `json:"user_id"`
 	Regenerate       bool   `json:"regenerate"`
 	Generate         bool   `json:"generate"`
+	// StartedByPerson marks an RCA asked for over HTTP, and TriggeredBy is that
+	// person; an investigation this RCA has to re-run is labelled with them.
+	// Server-set only; recovery leaves both empty so it never relabels a run.
+	StartedByPerson bool   `json:"-" mapstructure:"-"`
+	TriggeredBy     string `json:"-" mapstructure:"-"`
 }
 
 type GetRCAFormatRequest struct {
@@ -174,6 +179,11 @@ type EventAnalysisResponse struct {
 	Review             map[string]any `json:"review,omitempty"`
 	BuildVerification  map[string]any `json:"build_verification,omitempty"`
 	FailureSummary     string         `json:"failure_summary,omitempty"`
+
+	// Trigger is how this event's current run started (events.AnalysisTrigger),
+	// and TriggeredByName who started it; empty when not recorded.
+	Trigger         string `json:"trigger,omitempty"`
+	TriggeredByName string `json:"triggered_by_name,omitempty"`
 }
 
 // EventAnalysisVersion is one complete historical incident-analysis response
@@ -188,9 +198,15 @@ type EventAnalysisVersion struct {
 	// TriggeredBy the user who started it; both empty when not recorded.
 	Trigger     string `json:"trigger,omitempty"`
 	TriggeredBy string `json:"triggered_by,omitempty"`
+	// TriggeredByName is the display name of TriggeredBy, when known.
+	TriggeredByName string `json:"triggered_by_name,omitempty"`
 }
 
 func attachEventAnalysisVersions(ctx *security.RequestContext, repo *events.EventAnalysisRepository, accountID string, response *EventAnalysisResponse) {
+	// How the event's current run started, so a run still in progress can show it.
+	if trigger, name, err := repo.GetAnalysisTrigger(ctx, response.EventId); err == nil {
+		response.Trigger, response.TriggeredByName = trigger, name
+	}
 	storedVersions, err := repo.ListCompletedEventAnalysisVersions(ctx, response.EventFingerprint, accountID, response.EventAggregationKey)
 	if err != nil || len(storedVersions) == 0 {
 		return
@@ -240,7 +256,7 @@ func buildStoredEventAnalysisVersion(current *EventAnalysisResponse, version eve
 	return EventAnalysisVersion{
 		ID:      fmt.Sprintf("event-%s-%d", version.EventID, version.VersionRank),
 		EventID: version.EventID, Status: string(events.AnalysisStatusCompleted), GeneratedAt: version.GeneratedAt, Data: payload,
-		Trigger: version.Trigger, TriggeredBy: version.TriggeredBy,
+		Trigger: version.Trigger, TriggeredBy: version.TriggeredBy, TriggeredByName: version.TriggeredByName,
 	}, nil
 }
 
@@ -362,6 +378,8 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		if request.UserId == "" {
 			request.UserId = context.GetSecurityContext().GetUserId()
 		}
+		_, request.TriggeredBy = httpAnalysisOrigin(request.Regenerate, "", request.UserId)
+		request.StartedByPerson = true
 		executeEventRCAAnalysis(context, request, c)
 	})
 
@@ -1507,6 +1525,12 @@ func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request
 			if err := eventAnalysisRepo.UpsertEventAnalysisInProgress(ctx, request.EventId, eventFingerprint, request.AccountId, eventAggregationKey, aType); err != nil {
 				ctx.GetLogger().Warn("failed to upsert event analysis in progress", "error", err, "analysis_type", aType)
 			}
+		}
+		if request.StartedByPerson {
+			// Same rule as the investigation endpoint: only a regenerate is a re-run;
+			// the RCA card asking on its own means someone viewed the alert.
+			trigger, _ := httpAnalysisOrigin(request.Regenerate, "", "")
+			recordAnalysisTrigger(ctx, eventAnalysisRepo, EventAnalysisRequest{EventId: request.EventId, Trigger: trigger, TriggeredBy: request.TriggeredBy})
 		}
 
 		// Trigger the normal analysis

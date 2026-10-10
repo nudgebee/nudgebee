@@ -33,10 +33,14 @@ func TestSetAnalysisTrigger(t *testing.T) {
 
 // Real Postgres: each analysis version keeps the trigger of the run that
 // produced it. A re-run claims a new log row and is stamped on its own; the
-// previous run's row is never changed, and a second stamp is a no-op.
+// previous run's row is never changed. A run redone on the same row is stamped
+// with whoever started it this time. Names come from users.display_name.
 func TestAnalysisTriggerVersionsPostgres(t *testing.T) {
 	repo := rcaIntegrationRepo(t)
-	_, err := repo.dbManager.Db.Exec(`ALTER TABLE event_log_analysis ADD COLUMN trigger text, ADD COLUMN triggered_by text`)
+	person := uuid.NewString()
+	_, err := repo.dbManager.Db.Exec(`ALTER TABLE event_log_analysis ADD COLUMN trigger text, ADD COLUMN triggered_by text;
+		CREATE TABLE users (id uuid PRIMARY KEY, display_name text);
+		INSERT INTO users (id, display_name) VALUES ('` + person + `', 'Pat Example')`)
 	require.NoError(t, err)
 	ctx := security.NewRequestContextForSuperAdmin()
 	account, event := uuid.NewString(), uuid.NewString()
@@ -68,7 +72,7 @@ func TestAnalysisTriggerVersionsPostgres(t *testing.T) {
 
 	first := run(false, AnalysisTriggerAutomatic, "", "first")
 	time.Sleep(10 * time.Millisecond)
-	second := run(true, AnalysisTriggerRerun, "user-1", "second")
+	second := run(true, AnalysisTriggerRerun, person, "second")
 	require.NotEqual(t, first, second, "a re-run claims a new log row")
 
 	trigger, by := triggerOf(first)
@@ -76,17 +80,32 @@ func TestAnalysisTriggerVersionsPostgres(t *testing.T) {
 	require.Nil(t, by)
 	trigger, by = triggerOf(second)
 	require.Equal(t, "rerun", trigger)
-	require.Equal(t, "user-1", *by)
+	require.Equal(t, person, *by)
 
-	// Recovery or a retry stamping again must not change the recorded trigger.
-	require.NoError(t, repo.SetAnalysisTrigger(ctx, event, AnalysisTriggerAutomatic, ""))
-	trigger, _ = triggerOf(second)
-	require.Equal(t, "rerun", trigger)
+	// The current run's trigger, as the card reads it while the run is in progress.
+	liveTrigger, liveName, err := repo.GetAnalysisTrigger(ctx, event)
+	require.NoError(t, err)
+	require.Equal(t, "rerun", liveTrigger)
+	require.Equal(t, "Pat Example", liveName)
+	noTrigger, noName, err := repo.GetAnalysisTrigger(ctx, uuid.NewString())
+	require.NoError(t, err, "an event with no analysis is not an error")
+	require.Empty(t, noTrigger)
+	require.Empty(t, noName)
 
 	versions, err := repo.ListCompletedEventAnalysisVersions(ctx, "fp", account, "agg")
 	require.NoError(t, err)
 	require.NotEmpty(t, versions)
 	require.Equal(t, "second", versions[0].Summary)
 	require.Equal(t, "rerun", versions[0].Trigger)
-	require.Equal(t, "user-1", versions[0].TriggeredBy)
+	require.Equal(t, person, versions[0].TriggeredBy)
+	require.Equal(t, "Pat Example", versions[0].TriggeredByName)
+
+	// A run redone on the same row (e.g. "Generate RCA" refreshing it) is
+	// labelled with whoever started it this time.
+	require.NoError(t, repo.SetAnalysisTrigger(ctx, event, AnalysisTriggerOnView, ""))
+	trigger, by = triggerOf(second)
+	require.Equal(t, "on_view", trigger)
+	require.Nil(t, by)
+	trigger, _ = triggerOf(first)
+	require.Equal(t, "automatic", trigger, "the earlier version is still untouched")
 }

@@ -67,6 +67,15 @@ const ANALYSIS_TRIGGER_LABELS = {
   notification: 'Slack / Teams',
 };
 
+// "Re-run by Pat" — the trigger label plus who started it, when a person did.
+const triggerText = (trigger, name) => {
+  const label = ANALYSIS_TRIGGER_LABELS[trigger];
+  if (!label) {
+    return '';
+  }
+  return name ? `${label} by ${name}` : label;
+};
+
 class AskAiCard {
   constructor() {
     this.id = 'AskAiCard';
@@ -640,12 +649,9 @@ class AskAiCard {
           versionGeneratedAt === currentGeneratedAt
         );
       });
-      // The live analysis is also listed in analysis_versions once completed; a run
-      // reused from another event keeps that event's trigger, so it shows none here.
-      const liveVersion = (localAiData?.analysis_versions || []).find(
-        (version) => version.event_id === event.id && version.generated_at && new Date(version.generated_at).getTime() === currentGeneratedAt
-      );
-      const liveTriggerLabel = ANALYSIS_TRIGGER_LABELS[liveVersion?.trigger];
+      // How this event's current run started, known from the moment it starts. Empty
+      // when the live analysis is reused from another event.
+      const liveTriggerLabel = triggerText(localAiData?.trigger, localAiData?.triggered_by_name);
       const isShowingFallback =
         selectedAnalysisVersion === 'live' && localAiData?.status?.toLowerCase() !== 'completed' && historicalVersions.length > 0;
       const effectiveVersionId = isShowingFallback ? historicalVersions[0].id : selectedAnalysisVersion;
@@ -1057,7 +1063,7 @@ class AskAiCard {
                                 value: 'live',
                                 label:
                                   localAiData?.status?.toLowerCase() === 'in_progress'
-                                    ? 'Latest · In progress'
+                                    ? `Latest${liveTriggerLabel ? ` · ${liveTriggerLabel}` : ''} · In progress`
                                     : `Latest${liveTriggerLabel ? ` · ${liveTriggerLabel}` : ''}${
                                         localAiData?.generated_at ? ` · ${formatClockCompact(localAiData.generated_at)}` : ''
                                       }`,
@@ -1067,8 +1073,8 @@ class AskAiCard {
                                 label: `${formatClockCompact(version.generated_at)}${
                                   version.event_id !== event.id
                                     ? ' · Recurring event'
-                                    : ANALYSIS_TRIGGER_LABELS[version.trigger]
-                                    ? ` · ${ANALYSIS_TRIGGER_LABELS[version.trigger]}`
+                                    : triggerText(version.trigger, version.triggered_by_name)
+                                    ? ` · ${triggerText(version.trigger, version.triggered_by_name)}`
                                     : ''
                                 }`,
                               })),

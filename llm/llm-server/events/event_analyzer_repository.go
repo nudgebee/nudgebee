@@ -175,6 +175,8 @@ type EventAnalysisEventVersion struct {
 	// it (see SetAnalysisTrigger); empty when not recorded.
 	Trigger     string `db:"trigger"`
 	TriggeredBy string `db:"triggered_by"`
+	// TriggeredByName is that user's display name; empty when unknown.
+	TriggeredByName string `db:"triggered_by_name"`
 }
 
 // AnalysisTrigger records how an event analysis run started.
@@ -195,10 +197,11 @@ const (
 
 // SetAnalysisTrigger records how a run started on the log-analysis row the run
 // has just claimed for eventId. Every run claims that row (a re-run claims a new
-// one), so it identifies the run; other stage rows are not stamped. Write-once: a
-// row that already has a trigger is left alone, so recovery and retries never
-// change it. A row shared from another event is never stamped. An empty
-// triggeredBy is stored as NULL.
+// one), so it identifies the run; other stage rows are not stamped. Call it only
+// when this caller starts a run: a run redone on the same row (a retry, or an RCA
+// refreshing a stale analysis) then shows who started it this time, and recovery,
+// which never calls it, keeps the label. A row shared from another event is never
+// stamped. An empty triggeredBy is stored as NULL.
 func (r *EventAnalysisRepository) SetAnalysisTrigger(ctx *security.RequestContext, eventId string, trigger AnalysisTrigger, triggeredBy string) error {
 	if eventId == "" || trigger == "" {
 		return nil
@@ -210,12 +213,37 @@ func (r *EventAnalysisRepository) SetAnalysisTrigger(ctx *security.RequestContex
 	_, err := r.dbManager.Db.Exec(
 		`UPDATE event_log_analysis a SET trigger = $3, triggered_by = $4
 		 FROM event_analysis_mapping m
-		 WHERE m.event_id = $1 AND m.analysis_type = $2 AND a.id = m.analysis_id AND a.event_id = m.event_id AND a.trigger IS NULL`,
+		 WHERE m.event_id = $1 AND m.analysis_type = $2 AND a.id = m.analysis_id AND a.event_id = m.event_id`,
 		eventId, AnalysisTypeLog, string(trigger), by)
 	if err != nil {
 		return fmt.Errorf("SetAnalysisTrigger: %w", err)
 	}
 	return nil
+}
+
+// GetAnalysisTrigger returns how the event's current run started and the display
+// name of the person who started it, from the log-analysis row the event is mapped
+// to. Both are empty when nothing is recorded or the row belongs to another event.
+// The users join casts triggered_by to uuid only when it is one, so it uses the
+// users primary key and a malformed value yields no name instead of an error.
+func (r *EventAnalysisRepository) GetAnalysisTrigger(ctx *security.RequestContext, eventId string) (trigger, triggeredByName string, err error) {
+	var row struct {
+		Trigger string `db:"trigger"`
+		Name    string `db:"triggered_by_name"`
+	}
+	err = r.dbManager.Db.Get(&row, `
+		SELECT COALESCE(a.trigger, '') AS trigger, COALESCE(u.display_name, '') AS triggered_by_name
+		FROM event_analysis_mapping m
+		JOIN event_log_analysis a ON a.id = m.analysis_id AND a.event_id = m.event_id
+		LEFT JOIN users u ON u.id = CASE WHEN a.triggered_by ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN a.triggered_by::uuid END
+		WHERE m.event_id = $1 AND m.analysis_type = $2`, eventId, AnalysisTypeLog)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("GetAnalysisTrigger: %w", err)
+	}
+	return row.Trigger, row.Name, nil
 }
 
 const eventAnalysisHistoryLimit = 5
@@ -242,6 +270,7 @@ func (r *EventAnalysisRepository) ListCompletedEventAnalysisVersions(ctx *securi
 			  AND a.status = $8
 			  AND a.event_id IS NOT NULL
 		)
+		, versions AS (
 		SELECT
 			a.event_id,
 			a.event_id::text AS related_event_id,
@@ -256,7 +285,11 @@ func (r *EventAnalysisRepository) ListCompletedEventAnalysisVersions(ctx *securi
 		FROM ranked a
 		GROUP BY a.event_id, a.version_rank
 		HAVING COUNT(DISTINCT a.analysis_type) = 4
-		ORDER BY generated_at DESC
+		)
+		SELECT v.*, COALESCE(u.display_name, '') AS triggered_by_name
+		FROM versions v
+		LEFT JOIN users u ON u.id = CASE WHEN v.triggered_by ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN v.triggered_by::uuid END
+		ORDER BY v.generated_at DESC
 		LIMIT $9`, fingerprint, accountID, aggKey,
 		AnalysisTypeSummary, AnalysisTypeInvestigation, AnalysisTypeLog, AnalysisTypeDetailedResponse,
 		AnalysisStatusCompleted, eventAnalysisHistoryLimit)
