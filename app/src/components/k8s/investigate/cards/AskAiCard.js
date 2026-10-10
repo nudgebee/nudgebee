@@ -58,6 +58,15 @@ export function expandParagraphBreaks(text) {
 
 const ZERO_UUID = '00000000-0000-0000-0000-000000000000';
 
+// How an analysis run started, as recorded by llm-server (events.AnalysisTrigger).
+const ANALYSIS_TRIGGER_LABELS = {
+  automatic: 'Automatic',
+  runbook: 'Runbook',
+  on_view: 'On view',
+  rerun: 'Re-run',
+  notification: 'Slack / Teams',
+};
+
 class AskAiCard {
   constructor() {
     this.id = 'AskAiCard';
@@ -631,6 +640,12 @@ class AskAiCard {
           versionGeneratedAt === currentGeneratedAt
         );
       });
+      // The live analysis is also listed in analysis_versions once completed; a run
+      // reused from another event keeps that event's trigger, so it shows none here.
+      const liveVersion = (localAiData?.analysis_versions || []).find(
+        (version) => version.event_id === event.id && version.generated_at && new Date(version.generated_at).getTime() === currentGeneratedAt
+      );
+      const liveTriggerLabel = ANALYSIS_TRIGGER_LABELS[liveVersion?.trigger];
       const isShowingFallback =
         selectedAnalysisVersion === 'live' && localAiData?.status?.toLowerCase() !== 'completed' && historicalVersions.length > 0;
       const effectiveVersionId = isShowingFallback ? historicalVersions[0].id : selectedAnalysisVersion;
@@ -1021,6 +1036,11 @@ class AskAiCard {
                         );
                       })}
                     </Box>
+                    {historicalVersions.length === 0 && liveTriggerLabel && (
+                      <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', whiteSpace: 'nowrap' }}>
+                        Started: {liveTriggerLabel}
+                      </Typography>
+                    )}
                     {historicalVersions.length > 0 && (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
                         <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', whiteSpace: 'nowrap' }}>
@@ -1038,11 +1058,19 @@ class AskAiCard {
                                 label:
                                   localAiData?.status?.toLowerCase() === 'in_progress'
                                     ? 'Latest · In progress'
-                                    : `Latest${localAiData?.generated_at ? ` · ${formatClockCompact(localAiData.generated_at)}` : ''}`,
+                                    : `Latest${liveTriggerLabel ? ` · ${liveTriggerLabel}` : ''}${
+                                        localAiData?.generated_at ? ` · ${formatClockCompact(localAiData.generated_at)}` : ''
+                                      }`,
                               },
                               ...historicalVersions.map((version) => ({
                                 value: version.id,
-                                label: `${formatClockCompact(version.generated_at)}${version.event_id !== event.id ? ' · Recurring event' : ''}`,
+                                label: `${formatClockCompact(version.generated_at)}${
+                                  version.event_id !== event.id
+                                    ? ' · Recurring event'
+                                    : ANALYSIS_TRIGGER_LABELS[version.trigger]
+                                    ? ` · ${ANALYSIS_TRIGGER_LABELS[version.trigger]}`
+                                    : ''
+                                }`,
                               })),
                             ]}
                           />

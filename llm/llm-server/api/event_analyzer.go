@@ -72,6 +72,10 @@ type EventAnalysisRequest struct {
 	// CompleteActivity. Empty when the request did not originate from a
 	// workflow.
 	TaskToken string `json:"task_token,omitempty"`
+	// Trigger and TriggeredBy record how this run started and who started it.
+	// Set by the server at each entry point, never accepted from a caller.
+	Trigger     events.AnalysisTrigger `json:"-" mapstructure:"-"`
+	TriggeredBy string                 `json:"-" mapstructure:"-"`
 }
 
 type EventRCAAnalysisRequest struct {
@@ -180,6 +184,10 @@ type EventAnalysisVersion struct {
 	Status      string          `json:"status"`
 	GeneratedAt time.Time       `json:"generated_at"`
 	Data        json.RawMessage `json:"data,omitempty"`
+	// Trigger is how this version's run started (events.AnalysisTrigger) and
+	// TriggeredBy the user who started it; both empty when not recorded.
+	Trigger     string `json:"trigger,omitempty"`
+	TriggeredBy string `json:"triggered_by,omitempty"`
 }
 
 func attachEventAnalysisVersions(ctx *security.RequestContext, repo *events.EventAnalysisRepository, accountID string, response *EventAnalysisResponse) {
@@ -232,6 +240,7 @@ func buildStoredEventAnalysisVersion(current *EventAnalysisResponse, version eve
 	return EventAnalysisVersion{
 		ID:      fmt.Sprintf("event-%s-%d", version.EventID, version.VersionRank),
 		EventID: version.EventID, Status: string(events.AnalysisStatusCompleted), GeneratedAt: version.GeneratedAt, Data: payload,
+		Trigger: version.Trigger, TriggeredBy: version.TriggeredBy,
 	}, nil
 }
 
@@ -540,7 +549,34 @@ func processEventAnalysis(c *gin.Context, tracer trace.Tracer, meter metric.Mete
 	if request.UserId == "" {
 		request.UserId = context.GetSecurityContext().GetUserId()
 	}
+	request.Trigger, request.TriggeredBy = httpAnalysisOrigin(request.Regenerate, request.Source, request.UserId)
 	executeEventInvestigation(context, request, c)
+}
+
+// httpAnalysisOrigin classifies an analysis asked for over HTTP: a regenerate is a
+// re-run, the Slack / Teams button arrives as an instant notification, and any
+// other request means someone viewed the alert. userId is recorded as the person
+// who asked unless it is the system user.
+func httpAnalysisOrigin(regenerate bool, source, userId string) (events.AnalysisTrigger, string) {
+	if userId == security.GetSystemUserId() {
+		userId = ""
+	}
+	switch {
+	case regenerate:
+		return events.AnalysisTriggerRerun, userId
+	case source == string(core.ConversationSourceInstantNotification):
+		return events.AnalysisTriggerNotification, userId
+	default:
+		return events.AnalysisTriggerOnView, userId
+	}
+}
+
+// recordAnalysisTrigger stamps the run just claimed with how it started. It is
+// bookkeeping only, so a failure is logged and never stops the analysis.
+func recordAnalysisTrigger(ctx *security.RequestContext, repo *events.EventAnalysisRepository, request EventAnalysisRequest) {
+	if err := repo.SetAnalysisTrigger(ctx, request.EventId, request.Trigger, request.TriggeredBy); err != nil {
+		ctx.GetLogger().Warn("analyzer: failed to record analysis trigger", "error", err, "event_id", request.EventId)
+	}
 }
 
 // shouldAttributeToSystemUser reports whether an event analysis run must be
@@ -856,6 +892,7 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 			return
 		}
 		claimedLog = true
+		recordAnalysisTrigger(ctx, eventAnalysisRepo, request)
 	} else {
 		claimed, claimErr := eventAnalysisRepo.ClaimEventAnalysis(ctx, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey, events.AnalysisTypeDetailedResponse, true)
 		if claimErr != nil {
@@ -1050,6 +1087,7 @@ func getOrCreateEventAnalysisStatus(ctx *security.RequestContext, request EventA
 			response.Status = string(core.ConversationStatusInProgress)
 			return response, nil
 		}
+		recordAnalysisTrigger(ctx, eventAnalysisRepo, request)
 		response.Status = string(events.AnalysisStatusCreated)
 		response.RelatedEventId = request.EventId
 	} else if strings.EqualFold(response.Status, string(events.AnalysisStatusCompleted)) {

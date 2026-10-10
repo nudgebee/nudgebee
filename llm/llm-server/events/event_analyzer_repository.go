@@ -171,6 +171,51 @@ type EventAnalysisEventVersion struct {
 	Investigation    string    `db:"investigation"`
 	Analysis         string    `db:"analysis"`
 	DetailedResponse string    `db:"detailed_response"`
+	// Trigger and TriggeredBy are how the version's run started and who started
+	// it (see SetAnalysisTrigger); empty when not recorded.
+	Trigger     string `db:"trigger"`
+	TriggeredBy string `db:"triggered_by"`
+}
+
+// AnalysisTrigger records how an event analysis run started.
+type AnalysisTrigger string
+
+const (
+	// AnalysisTriggerAutomatic: the alert arrived and was queued for analysis.
+	AnalysisTriggerAutomatic AnalysisTrigger = "automatic"
+	// AnalysisTriggerRunbook: a workflow's "Investigate event" step queued it.
+	AnalysisTriggerRunbook AnalysisTrigger = "runbook"
+	// AnalysisTriggerOnView: someone viewed the alert and the app asked for an analysis that did not exist yet.
+	AnalysisTriggerOnView AnalysisTrigger = "on_view"
+	// AnalysisTriggerRerun: someone asked for a fresh analysis (refresh / regenerate).
+	AnalysisTriggerRerun AnalysisTrigger = "rerun"
+	// AnalysisTriggerNotification: the "Ask Nubi to Analyse" button in a Slack / Teams notification.
+	AnalysisTriggerNotification AnalysisTrigger = "notification"
+)
+
+// SetAnalysisTrigger records how a run started on the log-analysis row the run
+// has just claimed for eventId. Every run claims that row (a re-run claims a new
+// one), so it identifies the run; other stage rows are not stamped. Write-once: a
+// row that already has a trigger is left alone, so recovery and retries never
+// change it. A row shared from another event is never stamped. An empty
+// triggeredBy is stored as NULL.
+func (r *EventAnalysisRepository) SetAnalysisTrigger(ctx *security.RequestContext, eventId string, trigger AnalysisTrigger, triggeredBy string) error {
+	if eventId == "" || trigger == "" {
+		return nil
+	}
+	var by any
+	if triggeredBy != "" {
+		by = triggeredBy
+	}
+	_, err := r.dbManager.Db.Exec(
+		`UPDATE event_log_analysis a SET trigger = $3, triggered_by = $4
+		 FROM event_analysis_mapping m
+		 WHERE m.event_id = $1 AND m.analysis_type = $2 AND a.id = m.analysis_id AND a.event_id = m.event_id AND a.trigger IS NULL`,
+		eventId, AnalysisTypeLog, string(trigger), by)
+	if err != nil {
+		return fmt.Errorf("SetAnalysisTrigger: %w", err)
+	}
+	return nil
 }
 
 const eventAnalysisHistoryLimit = 5
@@ -205,7 +250,9 @@ func (r *EventAnalysisRepository) ListCompletedEventAnalysisVersions(ctx *securi
 			COALESCE(MAX(a.summary) FILTER (WHERE a.analysis_type = $4), '') AS summary,
 			COALESCE(MAX(a.summary) FILTER (WHERE a.analysis_type = $5), '') AS investigation,
 			COALESCE(MAX(a.analysis) FILTER (WHERE a.analysis_type = $6), '') AS analysis,
-			COALESCE(MAX(a.summary) FILTER (WHERE a.analysis_type = $7), '') AS detailed_response
+			COALESCE(MAX(a.summary) FILTER (WHERE a.analysis_type = $7), '') AS detailed_response,
+			COALESCE(MAX(a.trigger) FILTER (WHERE a.analysis_type = $6), '') AS trigger,
+			COALESCE(MAX(a.triggered_by) FILTER (WHERE a.analysis_type = $6), '') AS triggered_by
 		FROM ranked a
 		GROUP BY a.event_id, a.version_rank
 		HAVING COUNT(DISTINCT a.analysis_type) = 4

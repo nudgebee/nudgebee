@@ -213,6 +213,10 @@ func processTroubleshootingEventFromMqWithRegister(msgCtx context.Context, data 
 		return nil
 	}
 	taskToken = eventAnalysisRequest.TaskToken
+	eventAnalysisRequest.Trigger = events.AnalysisTriggerAutomatic
+	if taskToken != "" {
+		eventAnalysisRequest.Trigger = events.AnalysisTriggerRunbook
+	}
 	publishState.EventID = eventAnalysisRequest.EventId
 	publishState.AccountID = eventAnalysisRequest.AccountId
 
