@@ -608,6 +608,14 @@ func (r RemediationExecuteTool) formatExecutionResult(result RemediationExecutio
 	return string(data), nil
 }
 
+// InferToolRequestType classifies the command with the shell tool's rules,
+// which hand a kubectl, helm or argocd command to that CLI's own classifier.
+// Anything those rules cannot decide (a host command, a compound expression)
+// returns "" and goes to the prompt below.
+func (r RemediationExecuteTool) InferToolRequestType(ctx *security.RequestContext, toolName, input string) (core.ToolRequestType, error) {
+	return ShellTool{}.InferToolRequestType(ctx, toolName, input)
+}
+
 // InferToolRequestTypePrompt returns a prompt to classify the remediation command type
 // This enables automatic approval workflow via the executor
 func (r RemediationExecuteTool) InferToolRequestTypePrompt(ctx *security.RequestContext, toolName, input string) (string, error) {
