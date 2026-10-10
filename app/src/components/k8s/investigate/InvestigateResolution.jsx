@@ -1,11 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Typography, Box, Radio, RadioGroup, FormControlLabel } from '@mui/material';
-import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
 import apiRecommendations from '@api1/recommendation';
 import apiKubernetes from '@api1/kubernetes';
 import * as yaml from 'js-yaml';
-import CustomTable from '@shared/tables/CustomTable';
 import PropTypes from 'prop-types';
 import { Button } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';
@@ -14,7 +12,14 @@ import { ds } from '@utils/colors';
 import { Callout } from '@ui/Callout';
 import { formatClockCompact } from '@shared/format/Datetime';
 import { detectGitOpsManager } from '@utils/workloadManager';
-import { describeChangeTiming, isRolloutOnlyKey, nameListPositions, revertTargetLabel } from '@components/k8s/investigate/changeRollback';
+import {
+  describeChangeTiming,
+  isRolloutOnlyKey,
+  nameListPositions,
+  resolutionRefusalText,
+  revertTargetLabel,
+} from '@components/k8s/investigate/changeRollback';
+import { useRollbackCheck } from '@components/k8s/investigate/useRollbackCheck';
 
 // What a rollback's rolling restart looks like for each kind — a DaemonSet restarts a pod on every
 // node, which "rolling restart" alone does not tell anyone approving it.
@@ -133,6 +138,17 @@ const InvestigateResolution = ({
     };
   }, [revertsSelectedChange, activeChangeId, row?.cloud_account_id]);
 
+  // The fields below are what the change recorded. Only the server knows whether the workload was
+  // changed again since, and it used to say so only as a refusal after the click.
+  const rollbackCheck = useRollbackCheck({
+    accountId: row?.cloud_account_id,
+    eventId: row?.id,
+    changeEventId: revertsSelectedChange ? activeChangeId : '',
+    enabled: isRevertTheDevelopment,
+  });
+  const rollbackBlocked = isRevertTheDevelopment && rollbackCheck.status === 'blocked';
+  const rollbackChecking = isRevertTheDevelopment && rollbackCheck.status === 'checking';
+
   // Who deploys the workload decides whether a rollback here lasts. Read from the manifest recorded
   // with the change being rolled back — the state that change left, i.e. the one live now.
   const revertDiff = (() => {
@@ -196,8 +212,6 @@ const InvestigateResolution = ({
       setRequestBody({ size: '', increase_replicas: requestBody.increase_replicas, restart: false, revert: false });
     } else if (value === 'restart') {
       setRequestBody({ size: '', increase_replicas: '', restart: true, revert: false });
-    } else if (value === 'revert') {
-      setRequestBody({ size: '', increase_replicas: '', restart: false, revert: true });
     } else if (value === 'cordon') {
       setRequestBody({ cordon: true, drain: false });
     } else if (value === 'drain') {
@@ -228,9 +242,7 @@ const InvestigateResolution = ({
 
   const renderConditionalFields = () => {
     let existingVolume = '';
-    let revertChanges = [];
     let revertFields = [];
-    let diffExists = false;
     const json = row?.evidences.find((f) => f.type == 'json')?.data ?? '';
     if (json) {
       const jsonParsed = typeof json === 'string' ? safeJSONParse(json) : json;
@@ -245,12 +257,7 @@ const InvestigateResolution = ({
     const evidences = Array.isArray(diffSource?.evidences) ? diffSource.evidences : [];
     const diff = evidences.find((f) => f?.type == 'diff')?.data ?? '';
     if (diff) {
-      diffExists = true;
       const stripKind = (path) => path.replace(/^(StatefulSet|DaemonSet|Deployment|ReplicaSet|Rollout)\./, '');
-      // A value the change added has no "old" (and one it deleted has no "new").
-      // Render that as a dash rather than "" so the row doesn't read as "the
-      // field was an empty string".
-      const renderValue = (value) => (value === null || value === undefined || value === '' ? '—' : JSON.stringify(value));
       // Prefer updated_values: it records old/new per path directly. Re-deriving
       // them by walking diff.old/diff.new renders blanks whenever the field's
       // YAML key differs from the path, because the snapshot is serialised
@@ -268,7 +275,6 @@ const InvestigateResolution = ({
           return { path: updatedPath, old: getNestedValue(oldData, updatedPath), new: getNestedValue(newData, updatedPath) };
         });
       }
-      revertChanges = revertFields.map((f) => [{ text: f.path }, { text: renderValue(f.old) }, { text: renderValue(f.new) }]);
     }
 
     if (isRevertTheDevelopment) {
@@ -328,8 +334,12 @@ const InvestigateResolution = ({
               }
             />
           )}
+          {rollbackBlocked && <Callout tone='critical' message={rollbackCheck.reason} data-testid='rollback-blocked-reason' />}
           {/* Current value first, then what the rollback writes: "Old / New" named the change's own
-              sides and left the operator to work out which one they were about to apply. */}
+              sides and left the operator to work out which one they were about to apply. The first
+              value is what the change set; it is called "Now" only once the server has confirmed
+              nothing changed it since — and never for a restart marker, which the server does not
+              check: the next deploy or restart writes another. */}
           <Box sx={{ border: '1px solid var(--ds-gray-200)', borderRadius: 'var(--ds-radius-sm)' }}>
             {revertFields.map((f, index) => (
               <Box
@@ -351,7 +361,9 @@ const InvestigateResolution = ({
                   )}
                 </Typography>
                 <Box sx={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', columnGap: ds.space[3], rowGap: ds.space[1] }}>
-                  <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>{'Now'}</Typography>
+                  <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>
+                    {rollbackCheck.status === 'allowed' && !isRolloutOnlyKey(f.path) ? 'Now' : 'At change time'}
+                  </Typography>
                   <Typography sx={{ ...monoSx, color: 'var(--ds-red-600)' }}>{formatFieldValue(f.new)}</Typography>
                   <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>{'After rollback'}</Typography>
                   <Typography sx={{ ...monoSx, color: 'var(--ds-green-600)' }}>{formatFieldValue(f.old)}</Typography>
@@ -413,19 +425,6 @@ const InvestigateResolution = ({
                 }
               />
               <FormControlLabel value='restart' control={<Radio />} label='Restart' />
-              {diffExists && (
-                <>
-                  <FormControlLabel value='revert' control={<Radio />} label='Revert' />
-                  {selectedOption === 'revert' && (
-                    <CustomTable
-                      tableData={revertChanges}
-                      headers={['Path', 'Old Value', 'New Value']}
-                      totalRows={revertChanges?.length}
-                      rowsPerPage={revertChanges?.length}
-                    />
-                  )}
-                </>
-              )}
             </Box>
           </RadioGroup>
         </div>
@@ -433,30 +432,6 @@ const InvestigateResolution = ({
     } else if (aggregationKey === 'image_pull_backoff_reporter') {
       return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
-          {diffExists ? (
-            <>
-              <Checkbox
-                checked={!!requestBody.revert}
-                onChange={(next) =>
-                  setRequestBody((prev) => ({
-                    ...prev,
-                    revert: next,
-                    imageChangeContainerName: '',
-                    imageNameWithTag: '',
-                  }))
-                }
-                label='Revert the Deployment'
-              />
-              <CustomTable
-                tableData={revertChanges}
-                headers={['Path', 'Old Value', 'New Value']}
-                totalRows={revertChanges?.length}
-                rowsPerPage={revertChanges?.length}
-              />
-            </>
-          ) : (
-            <></>
-          )}
           <Typography>Mention Container Name and Image Tag to change</Typography>
           <br />
           <Box display={'grid'} gridTemplateColumns={'1fr 1fr'} gap={ds.space[3]}>
@@ -468,7 +443,6 @@ const InvestigateResolution = ({
                 setRequestBody((prev) => ({
                   ...prev,
                   imageChangeContainerName: value,
-                  revert: false,
                 }));
                 setValidationError((prev) => ({ ...prev, imageChangeContainerName: '' }));
               }}
@@ -484,7 +458,6 @@ const InvestigateResolution = ({
                 setRequestBody((prev) => ({
                   ...prev,
                   imageNameWithTag: value,
-                  revert: false,
                 }));
                 setValidationError((prev) => ({ ...prev, imageNameWithTag: '' }));
               }}
@@ -520,7 +493,7 @@ const InvestigateResolution = ({
         valid = false;
       }
     } else if (aggregationKey === 'CPUThrottlingHigh' || aggregationKey === 'PodMemoryReachingLimit') {
-      if (!requestBody.size && !requestBody.increase_replicas && !requestBody.restart && !requestBody.revert) {
+      if (!requestBody.size && !requestBody.increase_replicas && !requestBody.restart) {
         snackbar.error('Select atleast one type of resolution');
         valid = false;
       }
@@ -551,7 +524,7 @@ const InvestigateResolution = ({
   // only a toast, so retrying meant navigating back to the event and reopening the dialog.
   const showFailure = (reason) => {
     const message = reason || 'The request was rejected and no reason was returned.';
-    setSubmitError(message);
+    setSubmitError(resolutionRefusalText(message));
     updateInvestigateSuccessSnackBar('error', `Failed to apply resolution: ${message}`);
   };
 
@@ -561,7 +534,7 @@ const InvestigateResolution = ({
     if (revertsSelectedChange && !selectedChange) {
       return;
     }
-    if (durability?.blocks) {
+    if (durability?.blocks || rollbackBlocked) {
       return;
     }
     if (!validateValuesBeforeSubmit()) {
@@ -636,7 +609,12 @@ const InvestigateResolution = ({
         {/* Dispatching before the selected change has loaded approves a diff the operator has not
             seen — the dialog is still showing "Loading…" at that point. The server validates the
             change independently, so this is about consent, not corruption. */}
-        <Button size='md' onClick={handleSubmit} loading={loading} disabled={(revertsSelectedChange && !selectedChange) || !!durability?.blocks}>
+        <Button
+          size='md'
+          onClick={handleSubmit}
+          loading={loading}
+          disabled={(revertsSelectedChange && !selectedChange) || !!durability?.blocks || rollbackBlocked || rollbackChecking}
+        >
           {isRevertTheDevelopment ? 'Roll back' : 'Submit'}
         </Button>
       </Box>

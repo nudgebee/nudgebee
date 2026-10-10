@@ -1314,6 +1314,14 @@ type Mutation {
 }
 
 type Query {
+  events_check_rollback(
+    account_id: String!
+    event_id: String!
+    change_event_id: String
+  ): EventRollbackCheckResponse
+}
+
+type Query {
   event_rules_groupings_v2(
     where: EventRulesGroupingsWhereRequest
     limit: Int
@@ -7940,6 +7948,11 @@ type RecommendationMissConfigRowResponse {
 
 type event_resolve_output {
   data: [jsonb]!
+}
+
+type EventRollbackCheckResponse {
+  allowed: Boolean!
+  reason: String
 }
 
 type auto_optimize_update_status_response {

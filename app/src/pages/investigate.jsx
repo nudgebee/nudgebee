@@ -40,6 +40,7 @@ import RecurrenceSince from '@components/k8s/investigate/RecurrenceSince';
 import apiRecommendations from '@api1/recommendation';
 import { hasReadAccess, hasWriteAccess } from '@lib/auth';
 import InvestigateResolution from '@components/k8s/investigate/InvestigateResolution';
+import RollbackActionDetail from '@components/k8s/investigate/RollbackActionDetail';
 import { Card } from '@ui/Card';
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -2866,6 +2867,17 @@ const Investigate = () => {
                                             const line = [detail, effect && detail ? effect.charAt(0).toLowerCase() + effect.slice(1) : effect]
                                               .filter(Boolean)
                                               .join(' · ');
+                                            if (resolvableOption.checksRollback && !settled) {
+                                              return (
+                                                <RollbackActionDetail
+                                                  accountId={row?.cloud_account_id}
+                                                  eventId={row?.id}
+                                                  changeEventId={resolvableOption.rollbackChoices?.[0]?.changeEventId || ''}
+                                                  line={line}
+                                                  blockedLine={resolvableOption.blockedActionDetail}
+                                                />
+                                              );
+                                            }
                                             return line ? <Text value={line} sx={{ fontSize: ds.text.caption, color: ds.gray[600] }} /> : null;
                                           })()}
                                           {outcome?.isSlow && (

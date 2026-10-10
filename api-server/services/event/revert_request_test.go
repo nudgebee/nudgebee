@@ -2,6 +2,7 @@ package event
 
 import (
 	"testing"
+	"time"
 
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database/models"
@@ -334,7 +335,7 @@ func TestLaterChangeConflict(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reason := laterChangeConflict(chosen, target, []models.Event{tc.later})
+			reason := laterChangeConflict(chosen, target, []models.Event{tc.later}, false)
 			if tc.conflict {
 				assert.NotEmpty(t, reason)
 			} else {
@@ -379,4 +380,228 @@ func TestGetRevertRecommendationRequest_RefusesAnotherObjectsChange(t *testing.T
 
 	_, err = getRevertRecommendationRequest(deploymentResource, withResourceName("statefulset/shop/services-server.yaml", imagePath), false)
 	require.NoError(t, err)
+}
+
+// The tests below hold the rule that a later change counts only while it still stands.
+
+const (
+	imagePath  = "spec.template.spec.containers[0].image"
+	rollmePath = "spec.template.metadata.annotations.rollme"
+	envValue   = "spec.template.spec.containers[0].env[2].value"
+	envItem    = "spec.template.spec.containers[0].env[2]"
+	envBefore  = "spec.template.spec.containers[0].env[1]"
+)
+
+var changeRecordedAt = time.Date(2026, 3, 4, 10, 0, 0, 0, time.UTC)
+
+func fieldChange(path string, old, new any) map[string]any {
+	return map[string]any{"path": path, "old": old, "new": new}
+}
+
+// recordedChange is a change recorded `minutes` after the one under test.
+func recordedChange(minutes int, values ...map[string]any) models.Event {
+	updated := make([]any, 0, len(values))
+	for _, v := range values {
+		updated = append(updated, v)
+	}
+	e := revertEvent(updated)
+	at := changeRecordedAt.Add(time.Duration(minutes) * time.Minute)
+	e.StartsAt = &at
+	return e
+}
+
+func targetsOf(change models.Event) map[string]bool {
+	targeted := map[string]bool{}
+	for path := range changedValuesOf(change) {
+		targeted[path] = true
+	}
+	return targeted
+}
+
+// Before this, any later record that ever differed refused the revert for good, so the refusal's
+// own advice — revert the later change first — led nowhere: the later change stayed on record.
+func TestLaterChangeConflict_ALaterChangeCountsOnlyWhileItStands(t *testing.T) {
+	image := recordedChange(0, fieldChange(imagePath, "v1", "v2"))
+	env := recordedChange(0, fieldChange(envValue, "a", "b"))
+
+	cases := []struct {
+		name   string
+		change models.Event
+		later  []models.Event
+		// "" when the revert is allowed; otherwise what the refusal must contain.
+		refusal string
+	}{
+		{"changed again", image, []models.Event{recordedChange(10, fieldChange(imagePath, "v2", "v3"))}, "2026-03-04T10:10:00Z"},
+		{"changed again, then put back", image, []models.Event{
+			recordedChange(10, fieldChange(imagePath, "v2", "v3")),
+			recordedChange(20, fieldChange(imagePath, "v3", "v2")),
+		}, ""},
+		{"put back, then changed once more", image, []models.Event{
+			recordedChange(10, fieldChange(imagePath, "v2", "v3")),
+			recordedChange(20, fieldChange(imagePath, "v3", "v2")),
+			recordedChange(30, fieldChange(imagePath, "v2", "v4")),
+		}, "2026-03-04T10:30:00Z"},
+		// The time is the newest change's: that is the one that has to be rolled back first.
+		{"two later changes stand", image, []models.Event{
+			recordedChange(10, fieldChange(imagePath, "v2", "v3")),
+			recordedChange(20, fieldChange(imagePath, "v3", "v4")),
+		}, "2026-03-04T10:20:00Z"},
+		// Two changes at one instant cannot be put in order, so which value is live is unknown.
+		{"moved and put back at the same instant", image, []models.Event{
+			recordedChange(10, fieldChange(imagePath, "v2", "v3")),
+			recordedChange(10, fieldChange(imagePath, "v3", "v2")),
+		}, "changed again"},
+		{"the same, read in the other order", image, []models.Event{
+			recordedChange(10, fieldChange(imagePath, "v3", "v2")),
+			recordedChange(10, fieldChange(imagePath, "v2", "v3")),
+		}, "changed again"},
+		{"the change itself, recorded twice", image, []models.Event{recordedChange(0, fieldChange(imagePath, "v1", "v2"))}, ""},
+
+		{"parent replaced", env, []models.Event{
+			recordedChange(10, fieldChange(envItem, map[string]any{"name": "A", "value": "b"}, map[string]any{"name": "A", "value": "c"})),
+		}, "changed again"},
+		{"parent replaced, then put back", env, []models.Event{
+			recordedChange(10, fieldChange(envItem, map[string]any{"name": "A", "value": "b"}, map[string]any{"name": "A", "value": "c"})),
+			recordedChange(20, fieldChange(envItem, map[string]any{"name": "A", "value": "c"}, map[string]any{"name": "A", "value": "b"})),
+		}, ""},
+		{"item added ahead of it", env, []models.Event{
+			recordedChange(10, fieldChange(envBefore, nil, map[string]any{"name": "NEW"})),
+		}, "added or removed an item"},
+		{"item added ahead of it, then removed again", env, []models.Event{
+			recordedChange(10, fieldChange(envBefore, nil, map[string]any{"name": "NEW"})),
+			recordedChange(20, fieldChange(envBefore, map[string]any{"name": "NEW"}, nil)),
+		}, ""},
+		// The item that went is not the one that came: the positions are not what they were.
+		{"item added ahead of it, a different one removed", env, []models.Event{
+			recordedChange(10, fieldChange(envBefore, nil, map[string]any{"name": "NEW"})),
+			recordedChange(20, fieldChange("spec.template.spec.containers[0].env[0]", map[string]any{"name": "FIRST"}, nil)),
+		}, "added or removed an item"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason := laterChangeConflict(tc.change, targetsOf(tc.change), tc.later, false)
+			if tc.refusal == "" {
+				assert.Empty(t, reason)
+			} else {
+				assert.Contains(t, reason, tc.refusal)
+			}
+		})
+	}
+}
+
+// A Helm upgrade stamps a new random `rollme` on the pod template every time, and a restart stamps
+// `restartedAt`. Neither is configuration and neither is ever put back, so while they counted,
+// one later deploy refused every earlier rollback for good — naming the marker as the reason.
+func TestLaterChangeConflict_RolloutMarkersNeverCount(t *testing.T) {
+	deploy := recordedChange(0, fieldChange(rollmePath, "a", "b"), fieldChange(imagePath, "v1", "v2"))
+	restartedAt := "spec.template.metadata.annotations.kubectl.kubernetes.io/restartedAt"
+	annotations := "spec.template.metadata.annotations"
+
+	cases := []struct {
+		name    string
+		later   []models.Event
+		refusal string
+	}{
+		{"a later deploy of the same image", []models.Event{recordedChange(10, fieldChange(rollmePath, "b", "c"))}, ""},
+		{"a later restart", []models.Event{recordedChange(10, fieldChange(restartedAt, nil, "2026-03-04T10:10:00Z"))}, ""},
+		{"a later deploy of another image", []models.Event{
+			recordedChange(10, fieldChange(rollmePath, "b", "c"), fieldChange(imagePath, "v2", "v3")),
+		}, `"` + imagePath + `" was changed again`},
+		{"another image, then that image put back by yet another deploy", []models.Event{
+			recordedChange(10, fieldChange(rollmePath, "b", "c"), fieldChange(imagePath, "v2", "v3")),
+			recordedChange(20, fieldChange(rollmePath, "c", "d"), fieldChange(imagePath, "v3", "v2")),
+		}, ""},
+		// Some records carry the annotations map whole rather than the one key.
+		{"the marker recorded as a whole annotations map", []models.Event{
+			recordedChange(10, fieldChange(annotations, map[string]any{"rollme": "b", "team": "x"}, map[string]any{"rollme": "c", "team": "x"})),
+		}, ""},
+		{"an annotations map first recorded, markers only", []models.Event{
+			recordedChange(10, fieldChange(annotations, nil, map[string]any{"kubectl.kubernetes.io/restartedAt": "2026-03-04T10:10:00Z"})),
+		}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason := laterChangeConflict(deploy, targetsOf(deploy), tc.later, false)
+			if tc.refusal == "" {
+				assert.Empty(t, reason)
+			} else {
+				assert.Contains(t, reason, tc.refusal)
+			}
+		})
+	}
+
+	// A real annotation changed inside that map is a change like any other.
+	team := recordedChange(0, fieldChange(annotations+".team", "x", "y"))
+	wholeMap := recordedChange(10, fieldChange(annotations, map[string]any{"rollme": "b", "team": "y"}, map[string]any{"rollme": "c", "team": "z"}))
+	assert.Contains(t, laterChangeConflict(team, targetsOf(team), []models.Event{wholeMap}, false), "changed again")
+
+	// And when the change being rolled back is itself recorded as the whole map, the rollback writes
+	// the whole map back — every annotation in it, not only the marker that moved. A later edit to a
+	// real annotation, or one added since, would be overwritten or dropped, so it must refuse; a
+	// later marker alone still does not.
+	mapChange := recordedChange(0, fieldChange(annotations, map[string]any{"rollme": "a", "team": "x"}, map[string]any{"rollme": "b", "team": "x"}))
+	for name, later := range map[string]models.Event{
+		"a real annotation edited in the map": recordedChange(10, fieldChange(annotations, map[string]any{"rollme": "b", "team": "x"}, map[string]any{"rollme": "b", "team": "y"})),
+		"a real annotation added by its key":  recordedChange(10, fieldChange(annotations+".owner", nil, "bob")),
+	} {
+		assert.Contains(t, laterChangeConflict(mapChange, targetsOf(mapChange), []models.Event{later}, false), "changed again", name)
+	}
+	laterMarker := recordedChange(10, fieldChange(rollmePath, "b", "c"))
+	assert.Empty(t, laterChangeConflict(mapChange, targetsOf(mapChange), []models.Event{laterMarker}, false))
+}
+
+// Only the annotation is a marker. A label, or anything else, that happens to carry the name is
+// configuration, and a later change to it blocks like any other.
+func TestLaterChangeConflict_AMarkerIsAnAnnotationNotAName(t *testing.T) {
+	for _, path := range []string{
+		"spec.template.metadata.labels.rollme",
+		"spec.template.metadata.annotations.my.rollme",
+		"spec.template.spec.containers[0].env[0].rollme",
+	} {
+		change := recordedChange(0, fieldChange(path, "a", "b"))
+		later := recordedChange(10, fieldChange(path, "b", "c"))
+		assert.Contains(t, laterChangeConflict(change, targetsOf(change), []models.Event{later}, false), "changed again", path)
+	}
+}
+
+func TestIsRolloutMarkerRecord(t *testing.T) {
+	assert.True(t, isRolloutMarkerRecord(rollmePath, "a", "b"))
+	assert.True(t, isRolloutMarkerRecord("spec.template.metadata.annotations.kubectl.kubernetes.io/restartedAt", nil, "t"))
+	assert.True(t, isRolloutMarkerRecord("metadata.annotations.rollme", "a", "b"))
+	assert.False(t, isRolloutMarkerRecord("spec.template.metadata.annotations.team", "x", "y"))
+	assert.False(t, isRolloutMarkerRecord("spec.template.metadata.labels.rollme", "a", "b"))
+	assert.False(t, isRolloutMarkerRecord(imagePath, "v1", "v2"))
+	assert.False(t, isRolloutMarkerRecord("spec.template.metadata.annotations", map[string]any{"team": "x"}, map[string]any{"team": "y"}))
+	// Nothing differs: not a marker change, and not a change at all.
+	assert.False(t, isRolloutMarkerRecord("spec.template.metadata.annotations", map[string]any{"rollme": "a"}, map[string]any{"rollme": "a"}))
+	// A value that is not a map cannot be read key by key, so it is not waved through.
+	assert.False(t, isRolloutMarkerRecord("spec.template.metadata.annotations", "rollme", nil))
+}
+
+// An undo writes the change's new values back and expects to find its old ones — what the rollback
+// left. Judged against the new side, as it was, the rollback's own record counted as "changed
+// again", so an undo was refused as soon as the rollback it undoes had been recorded.
+func TestLaterChangeConflict_UndoExpectsWhatTheRollbackLeft(t *testing.T) {
+	change := recordedChange(0, fieldChange(imagePath, "v1", "v2"))
+	rollback := recordedChange(10, fieldChange(imagePath, "v2", "v1"))
+
+	assert.Empty(t, laterChangeConflict(change, targetsOf(change), []models.Event{rollback}, true))
+
+	changedSince := recordedChange(20, fieldChange(imagePath, "v1", "v5"))
+	assert.Contains(t, laterChangeConflict(change, targetsOf(change), []models.Event{rollback, changedSince}, true), "2026-03-04T10:20:00Z")
+
+	// The same record still stops a second rollback of the change: it is already rolled back.
+	assert.NotEmpty(t, laterChangeConflict(change, targetsOf(change), []models.Event{rollback}, false))
+}
+
+// Which field a refusal names used to follow Go's map order, so the same click could be refused
+// for a different stated reason each time.
+func TestLaterChangeConflict_NamesTheSameFieldEveryTime(t *testing.T) {
+	change := recordedChange(0, fieldChange(imagePath, "v1", "v2"), fieldChange(envValue, "a", "b"), fieldChange("spec.replicas", 2, 3))
+	later := []models.Event{recordedChange(10, fieldChange(imagePath, "v2", "v3"), fieldChange(envValue, "b", "c"), fieldChange("spec.replicas", 3, 4))}
+	first := laterChangeConflict(change, targetsOf(change), later, false)
+	require.NotEmpty(t, first)
+	for i := 0; i < 50; i++ {
+		assert.Equal(t, first, laterChangeConflict(change, targetsOf(change), later, false))
+	}
 }

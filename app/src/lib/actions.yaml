@@ -3309,6 +3309,19 @@ actions:
       - role: tenant_admin
       - role: k8s_namespace_admin
       - role: account_admin
+  - name: events_check_rollback
+    comment: Check whether rolling back a recorded change would be refused right now, and why, without attempting it
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/event'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: k8s_namespace_admin
+      - role: account_admin
   - name: event_rules_groupings_v2
     comment: Aggregate event rules grouped by type and status
     definition:

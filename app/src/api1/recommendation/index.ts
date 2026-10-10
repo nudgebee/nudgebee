@@ -278,6 +278,19 @@ mutation ApplyRecommendation($account_id: String!, $event_id: String!, $data: js
 }
 `;
 
+export type RollbackCheck = { allowed: boolean; reason: string };
+export const ROLLBACK_CHECK_SHARED_MS = 30000;
+const rollbackChecks = new Map<string, { at: number; answer: Promise<RollbackCheck | null> }>();
+
+export const EVENTS_CHECK_ROLLBACK = `
+query EventsCheckRollback($account_id: String!, $event_id: String!, $change_event_id: String) {
+  events_check_rollback(account_id: $account_id, event_id: $event_id, change_event_id: $change_event_id) {
+    allowed
+    reason
+  }
+}
+`;
+
 export const ETL_CREATE_TICKET_RESOLUTION = `
 mutation CreateTicketResolution($account_id: String!, $recommendation_id: String!, $ticket_id: String!, $ticket_key: String) {
   recommendations_create_ticket_resolution(object: {account_id: $account_id, recommendation_id: $recommendation_id, ticket_id: $ticket_id, ticket_key: $ticket_key }) {
@@ -1804,6 +1817,8 @@ const apiRecommendations = {
         provider_config: provider_config,
       });
       invalidateOptimisationSummaryRecommendations();
+      // Whatever was just applied changed what is live, so no answer shared before it still holds.
+      [...rollbackChecks.keys()].filter((key) => key.startsWith(`${accountId}|${recommendationId}|`)).forEach((key) => rollbackChecks.delete(key));
       return {
         data: response?.data?.data?.events_update_resolution?.data,
         errors: response?.data?.errors,
@@ -1821,6 +1836,48 @@ const apiRecommendations = {
       data: response?.data?.data?.recommendations_apply?.data,
       errors: response?.data?.errors,
     };
+  },
+
+  // Asks the server whether rolling back a recorded change would be refused right now — the same
+  // steps the apply runs before it dispatches anything. Returns null when the question could not
+  // be answered (a transport failure, or a server that predates the action); the apply still
+  // refuses on the click, so "unknown" must never read as "blocked".
+  //
+  // The Remediation row, each history row and the dialog opened right after all ask about the same
+  // change, and the server reads every later change to answer, so one answer is shared for
+  // ROLLBACK_CHECK_SHARED_MS. Seconds, not the page's lifetime: the question is whether the workload
+  // changed since, and a dialog opened later has to ask again.
+  async checkEventRollback(accountId: string, eventId: string, changeEventId?: string): Promise<RollbackCheck | null> {
+    if (!accountId || !eventId || accountId === 'demo') return null;
+    // '' and the event's own id both mean the change attached to the event itself.
+    const change = changeEventId && changeEventId !== eventId ? changeEventId : '';
+    const key = `${accountId}|${eventId}|${change}`;
+    const now = Date.now();
+    const shared = rollbackChecks.get(key);
+    if (shared && now - shared.at < ROLLBACK_CHECK_SHARED_MS) return shared.answer;
+    // Answers past the window are dropped whenever a new one is kept, so a long session holds only
+    // the changes asked about in the last window, not every one it ever looked at.
+    rollbackChecks.forEach((entry, entryKey) => {
+      if (now - entry.at >= ROLLBACK_CHECK_SHARED_MS) rollbackChecks.delete(entryKey);
+    });
+
+    const answer: Promise<RollbackCheck | null> = queryGraphQL(EVENTS_CHECK_ROLLBACK, 'EventsCheckRollback', {
+      account_id: accountId,
+      event_id: eventId,
+      change_event_id: change,
+    })
+      .then((response: any) => {
+        const check = response?.data?.data?.events_check_rollback;
+        return typeof check?.allowed === 'boolean' ? { allowed: check.allowed, reason: check.reason || '' } : null;
+      })
+      .catch(() => null)
+      .then((result: RollbackCheck | null) => {
+        // An unanswered question is not an answer worth sharing: the next asker tries again.
+        if (!result && rollbackChecks.get(key)?.answer === answer) rollbackChecks.delete(key);
+        return result;
+      });
+    rollbackChecks.set(key, { at: now, answer });
+    return answer;
   },
 
   async createTicketResolution(accountId: string, recommendationId: string, ticketId: string, ticketKey?: string) {
