@@ -282,6 +282,12 @@ func TestPodLogCanAutoExecute(t *testing.T) {
 			AggregationKey: "NodeDiskIOSaturation", SubjectType: "node", SubjectName: "gke-pool-1-node-7f3a",
 			Labels: map[string]string{"namespace": "monitoring", "pod": "node-exporter-skqnn"},
 		}, false},
+		// The subject type decides on its own: a `kind` label naming something
+		// else does not turn a node alert back into a pod.
+		{"node whose kind label says pod", PlaybookEvent{
+			AggregationKey: "NodeDiskIOSaturation", SubjectType: "node", SubjectName: "gke-pool-1-node-7f3a",
+			Labels: map[string]string{"kind": "Pod", "namespace": "monitoring", "pod": "node-exporter-skqnn"},
+		}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

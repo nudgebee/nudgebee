@@ -44,7 +44,9 @@ func (a *podLogAction) CanAutoExecute(ctx PlaybookActionContext) bool {
 	}
 	// Nor is a node. The namespace label on its alert is the exporter's, so this
 	// action would be asking for a pod called after the node in that namespace.
-	if kind == "node" {
+	// The subject type is read on its own as well, so a `kind` label that says
+	// something else cannot put a node alert back on this path.
+	if kind == "node" || strings.EqualFold(ctx.GetEvent().SubjectType, "node") {
 		return false
 	}
 	if IsNeverStartedContainerAggKey(ctx.GetEvent().AggregationKey) {

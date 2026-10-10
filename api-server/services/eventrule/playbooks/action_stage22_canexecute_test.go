@@ -135,6 +135,15 @@ func TestSubjectPodNamespace(t *testing.T) {
 		assert.Equal(t, "", name)
 		assert.Equal(t, "", ns)
 	})
+	// The pod and namespace labels on a node alert are the exporter's.
+	t.Run("node subject carrying the exporter's pod labels returns empty", func(t *testing.T) {
+		name, ns := SubjectPodNamespace(PlaybookEvent{
+			SubjectType: "node", SubjectName: "gke-pool-1-node-7f3a",
+			Labels: map[string]string{"pod": "node-exporter-skqnn", "namespace": "monitoring"},
+		})
+		assert.Equal(t, "", name)
+		assert.Equal(t, "", ns)
+	})
 }
 
 func TestSubjectJobName(t *testing.T) {
