@@ -341,6 +341,9 @@ class RecommendationService:
         except Exception as e:
             logger.debug(f"Error processing {k8s_object}: {e}")
             return None
+        finally:
+            # The scan keeps every workload until it ends, including ones that failed.
+            k8s_object.release_pods()
 
     async def _collect_result(self) -> Result:
         workloads = await self._k8s_loader.list_scannable_objects()
