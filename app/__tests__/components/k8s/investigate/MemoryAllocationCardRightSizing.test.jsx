@@ -126,7 +126,7 @@ describe('Tune Resource Configuration — the stored right-sizing figure', () =>
         accountId: event.cloud_account_id,
         ruleName: 'pod_right_sizing',
         resourceNamespace: 'demo',
-        accountObjectId: 'demo/deployment/nbdemo-leak',
+        accountObjectId: 'demo/Deployment/nbdemo-leak',
         // The exact key sorts ahead of every sibling sharing it as a prefix, so a
         // page of nbdemo-leak-* rows can't push the workload's own row off it.
         orderBy: 'account_object_id',

@@ -61,7 +61,7 @@ const useRightSizingRecord = (accountId, namespace, workloadType, workload) => {
     // substring, so keep only the exact row: "api" must not take "api-gateway"'s figure.
     // With the namespace pinned every match starts with the key, so sorting by it
     // puts the exact row first however many siblings share the prefix.
-    const key = `${namespace}/${workloadType}/${workload}`.toLowerCase();
+    const key = `${namespace}/${workloadType}/${workload}`;
     Promise.resolve()
       .then(() =>
         recommendationApi.getK8sRecommendation({
@@ -77,7 +77,7 @@ const useRightSizingRecord = (accountId, namespace, workloadType, workload) => {
       )
       .then((res) => {
         const rows = res?.data?.recommendation || [];
-        if (active) setRecord(rows.find((r) => String(r?.account_object_id).toLowerCase() === key) || null);
+        if (active) setRecord(rows.find((r) => String(r?.account_object_id).toLowerCase() === key.toLowerCase()) || null);
       })
       // Without the record the form proposes from the event's own evidence.
       .catch(() => {});
@@ -129,7 +129,7 @@ const requestWithinLimit = (request, limit) => (request > 0 && limit > 0 ? Math.
 
 const MIB = 1024 * 1024;
 
-const toMb = (bytes) => formatMemory(bytes, 'bytes', 'mb')?.replace(',', '');
+const toMb = (bytes) => formatMemory(bytes, 'bytes', 'mb')?.replace(/,/g, '');
 
 // One container's memory figure from the stored right-sizing record, in bytes.
 // Nothing when the record has no number for it ("?" under an HPA, or no entry).
