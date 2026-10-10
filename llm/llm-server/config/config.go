@@ -1308,7 +1308,7 @@ func init() {
 	viper.SetDefault("llm_server_agent_max_sqlrows", 10)
 	viper.SetDefault("llm_server_agent_sql_timeout_sec", 120)
 	viper.SetDefault("llm_server_agent_sql_work_mem_mb", 32)
-	viper.SetDefault("llm_server_agent_max_tracesrows", 10)
+	viper.SetDefault("llm_server_agent_max_tracesrows", 100)
 	viper.SetDefault("llm_server_agent_max_scratchpad_chars", 200000)
 	viper.SetDefault("llm_server_max_skill_content_length", 5000)
 	viper.SetDefault("llm_server_kb_prestep_timeout_seconds", 5)

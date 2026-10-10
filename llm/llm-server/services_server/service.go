@@ -408,6 +408,10 @@ func QueryLogs(ctx security.RequestContext, request LogQueryRequest) (core.Obser
 		// Partial: the backend stopped before reading the whole window without
 		// reaching the limit, so Logs are the newest matches, not all of them.
 		Partial bool `json:"partial"`
+		// Total / TotalRelation: the backend's own match count, when it reports one
+		// with the result (Elasticsearch); absent otherwise.
+		Total         *int64 `json:"total"`
+		TotalRelation string `json:"total_relation"`
 	}
 	if err = common.UnmarshalJson(jsonBody, &body); err != nil {
 		return observabilityResp, err
@@ -419,6 +423,7 @@ func QueryLogs(ctx security.RequestContext, request LogQueryRequest) (core.Obser
 	if body.Partial {
 		observabilityResp.Coverage = core.NewPartialObservabilityLogCoverage(body.Logs, request.Limit, request.StartTime, request.EndTime)
 	}
+	observabilityResp.Coverage = core.WithBackendLogTotal(observabilityResp.Coverage, body.Logs, request.Limit, request.StartTime, request.EndTime, body.Total, body.TotalRelation)
 	if body.Query != "" {
 		observabilityResp.Metadata.Query = body.Query
 	}

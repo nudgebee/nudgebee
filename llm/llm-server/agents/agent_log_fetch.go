@@ -215,10 +215,20 @@ func logReadCoverageNote(logs string) string {
 	}
 	coverage := doc.Coverage
 	var b strings.Builder
-	if coverage.Partial && coverage.Returned < coverage.Limit {
+	switch {
+	case coverage.Partial && coverage.Returned < coverage.Limit:
 		fmt.Fprintf(&b, "partial read: the log backend stopped before reading the whole window, so the %d lines returned are a lower bound — report counts as \"at least %d\", not as the total", coverage.Returned, coverage.Returned)
-	} else {
+	case coverage.Total != nil && coverage.Returned < coverage.Limit:
+		fmt.Fprintf(&b, "partial read: the log backend returned %d lines, fewer than the limit of %d, although more lines matched", coverage.Returned, coverage.Limit)
+	default:
 		fmt.Fprintf(&b, "partial read: the read stopped at its limit of %d lines, so the window may hold more lines than were read", coverage.Limit)
+	}
+	if coverage.Total != nil {
+		if coverage.TotalRelation == "gte" {
+			fmt.Fprintf(&b, "; the backend counts at least %d matching lines in the window", *coverage.Total)
+		} else {
+			fmt.Fprintf(&b, "; the backend counts %d matching lines in the window", *coverage.Total)
+		}
 	}
 	if coverage.Oldest != "" && coverage.Newest != "" {
 		fmt.Fprintf(&b, "; the lines returned span %s to %s", coverage.Oldest, coverage.Newest)

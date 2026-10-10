@@ -54,6 +54,11 @@ type ObservabilityLogCoverage struct {
 	// although the limit was not reached (services-server's `partial`, e.g. a
 	// SolarWinds search out of time). Returned is then a lower bound.
 	Partial bool `json:"partial,omitempty"`
+	// Total is the backend's own count of matching lines, when it reports one with
+	// the result (Elasticsearch / OpenSearch `hits.total`); nil otherwise.
+	// TotalRelation is "eq" when Total is exact and "gte" when it is a lower bound.
+	Total         *int64 `json:"total,omitempty"`
+	TotalRelation string `json:"total_relation,omitempty"`
 	// Oldest and Newest bound the returned lines, RFC3339 UTC. Empty unless
 	// every line carried a timestamp that could be read: a span drawn from
 	// some of the lines would understate what was returned.
@@ -84,6 +89,33 @@ func NewObservabilityLogCoverage(logs []ObservabilityLog, limit int, startMs, en
 		return nil
 	}
 	return newObservabilityLogCoverage(logs, limit, startMs, endMs)
+}
+
+// WithBackendLogTotal adds the backend's own match count to a read's coverage. A read that did
+// not reach its limit gets coverage too when the backend says more lines matched than came back
+// (a backend that lowered the limit on its own). Unchanged when the backend reports no total.
+func WithBackendLogTotal(coverage *ObservabilityLogCoverage, logs []ObservabilityLog, limit int, startMs, endMs int64, total *int64, relation string) *ObservabilityLogCoverage {
+	if total == nil {
+		return coverage
+	}
+	// An exact count no larger than what came back: everything that matched was read, so a read
+	// that happened to fill its limit is whole and says nothing.
+	if relation != "gte" && *total <= int64(len(logs)) {
+		// A backend that flagged the read partial keeps its note; its count says nothing more.
+		if coverage != nil && coverage.Partial {
+			return coverage
+		}
+		return nil
+	}
+	if coverage == nil {
+		if *total <= int64(len(logs)) {
+			return nil
+		}
+		coverage = newObservabilityLogCoverage(logs, limit, startMs, endMs)
+	}
+	coverage.Total = total
+	coverage.TotalRelation = relation
+	return coverage
 }
 
 // NewPartialObservabilityLogCoverage is the coverage of a read the backend says it
@@ -150,6 +182,20 @@ type ObservabilityTraceResponse struct {
 	// name / unknown field value) when it fires. It arrives with an EMPTY Traces and a 200, so an
 	// empty trace result can say WHY it is empty instead of leaving the agent to guess and retry.
 	Suggestion string `json:"suggestion,omitempty"`
+	// Coverage is set when a cap cut the result: the backend returned as many rows as the
+	// query's limit, or the tool kept fewer than it received. Nil means no cap was hit.
+	Coverage *ObservabilityTraceCoverage `json:"coverage,omitempty"`
+}
+
+// ObservabilityTraceCoverage says a trace result stopped at a cap, so it is a sample of the
+// window, not all of it. Note is the same fact in words the agent can repeat.
+type ObservabilityTraceCoverage struct {
+	// Limit is the cap that was hit.
+	Limit int `json:"limit"`
+	// Received is how many rows the backend returned; Returned is how many the tool kept.
+	Received int    `json:"received"`
+	Returned int    `json:"returned"`
+	Note     string `json:"note"`
 }
 
 // ObservabilityTraceRawTable mirrors observability.RawTraceResult: an arbitrary ClickHouse result

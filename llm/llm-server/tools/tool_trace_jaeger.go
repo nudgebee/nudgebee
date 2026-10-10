@@ -108,10 +108,7 @@ func (m TracesExecuteJaegerTool) Call(nbRequestContext core.NbToolContext, input
 		}, err
 	}
 
-	// Restrict to 100 rows
-	if len(queryResponse.Traces) > 100 {
-		queryResponse.Traces = queryResponse.Traces[:100]
-	}
+	queryResponse = capTraceResponse(queryResponse, maxTracesInResponse)
 
 	response, err := common.MarshalJson(tracePayloadForResponse(queryResponse))
 	if err != nil {

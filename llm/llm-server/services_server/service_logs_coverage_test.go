@@ -10,6 +10,7 @@ import (
 
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -93,4 +94,81 @@ func TestQueryLogs_PartialFromServicesServer(t *testing.T) {
 	assert.True(t, resp.Coverage.Partial)
 	assert.Equal(t, 1, resp.Coverage.Returned)
 	assert.Equal(t, 2000, resp.Coverage.Limit)
+}
+
+// services-server sends the backend's own match count (Elasticsearch `hits.total`) with the
+// result. The coverage carries it so the agent can say "1,000 of 72,612", and a backend that
+// returned fewer lines than the limit although more matched still gets coverage.
+func TestQueryLogs_BackendTotal(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(payload)
+	}))
+	t.Cleanup(server.Close)
+	origEndpoint := config.Config.ServiceEndpoint
+	t.Cleanup(func() { config.Config.ServiceEndpoint = origEndpoint })
+	config.Config.ServiceEndpoint = server.URL
+
+	ctx := security.NewRequestContextForTenantAccountAdmin("test-tenant", "test-user", []string{"test-account"})
+	lines := func(n int) []map[string]any {
+		out := make([]map[string]any, n)
+		for i := range out {
+			out[i] = map[string]any{"timestamp": "2026-01-15T05:30:00Z", "message": "line"}
+		}
+		return out
+	}
+
+	t.Run("read at its limit: the total rides on the coverage", func(t *testing.T) {
+		payload = map[string]any{"logs": lines(2), "provider": "ES", "truncated": true, "total": 72612, "total_relation": "eq"}
+		resp, err := QueryLogs(*ctx, LogQueryRequest{AccountId: "test-account", Limit: 2})
+		require.NoError(t, err)
+		require.NotNil(t, resp.Coverage)
+		require.NotNil(t, resp.Coverage.Total)
+		assert.Equal(t, int64(72612), *resp.Coverage.Total)
+		assert.Equal(t, "eq", resp.Coverage.TotalRelation)
+	})
+
+	t.Run("fewer lines than the limit although more matched: coverage anyway", func(t *testing.T) {
+		payload = map[string]any{"logs": lines(2), "provider": "ES", "total": 10000, "total_relation": "gte"}
+		resp, err := QueryLogs(*ctx, LogQueryRequest{AccountId: "test-account", Limit: 50})
+		require.NoError(t, err)
+		require.NotNil(t, resp.Coverage)
+		assert.Equal(t, 2, resp.Coverage.Returned)
+		assert.Equal(t, "gte", resp.Coverage.TotalRelation)
+	})
+
+	t.Run("everything that matched came back: nothing to say", func(t *testing.T) {
+		payload = map[string]any{"logs": lines(2), "provider": "ES", "total": 2, "total_relation": "eq"}
+		resp, err := QueryLogs(*ctx, LogQueryRequest{AccountId: "test-account", Limit: 50})
+		require.NoError(t, err)
+		assert.Nil(t, resp.Coverage)
+	})
+
+	t.Run("the read filled its limit and the exact count says that was everything", func(t *testing.T) {
+		payload = map[string]any{"logs": lines(2), "provider": "ES", "total": 2, "total_relation": "eq"}
+		resp, err := QueryLogs(*ctx, LogQueryRequest{AccountId: "test-account", Limit: 2})
+		require.NoError(t, err)
+		assert.Nil(t, resp.Coverage)
+	})
+
+	t.Run("a backend that reports no total: unchanged", func(t *testing.T) {
+		payload = map[string]any{"logs": lines(2), "provider": "loki"}
+		resp, err := QueryLogs(*ctx, LogQueryRequest{AccountId: "test-account", Limit: 2})
+		require.NoError(t, err)
+		require.NotNil(t, resp.Coverage)
+		assert.Nil(t, resp.Coverage.Total)
+	})
+}
+
+// A read the backend flagged partial keeps its note even when an exact total looks small:
+// the backend stopped early, so its count is no proof the read was whole.
+func TestWithBackendLogTotal_PartialKept(t *testing.T) {
+	logs := []core.ObservabilityLog{{Timestamp: "2026-01-15T05:30:00Z"}}
+	partial := core.NewPartialObservabilityLogCoverage(logs, 50, 0, 0)
+	total := int64(1)
+	got := core.WithBackendLogTotal(partial, logs, 50, 0, 0, &total, "eq")
+	require.NotNil(t, got)
+	assert.True(t, got.Partial)
+	assert.Nil(t, got.Total)
 }

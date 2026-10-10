@@ -110,9 +110,7 @@ func (m NBTraceToolV2) Call(nbRequestContext core.NbToolContext, input core.NBTo
 	}
 
 	// A genuine empty result set is a normal success (the LLM will report no matches).
-	if len(queryResponse.Traces) > maxTracesInResponse {
-		queryResponse.Traces = queryResponse.Traces[:maxTracesInResponse]
-	}
+	queryResponse = capTraceResponse(queryResponse, maxTracesInResponse)
 
 	response, err := common.MarshalJson(tracePayloadForResponse(queryResponse))
 	if err != nil {

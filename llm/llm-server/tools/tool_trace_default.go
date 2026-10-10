@@ -123,9 +123,7 @@ func (m TracesExecuteDefaultTool) Call(nbRequestContext core.NbToolContext, inpu
 		}, err
 	}
 
-	if len(queryResponse.Traces) > maxTracesInResponse {
-		queryResponse.Traces = queryResponse.Traces[:maxTracesInResponse]
-	}
+	queryResponse = capTraceResponse(queryResponse, maxTracesInResponse)
 
 	response, err := common.MarshalJson(tracePayloadForResponse(queryResponse))
 	if err != nil {

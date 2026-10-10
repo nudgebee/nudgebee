@@ -697,6 +697,20 @@ func TestMakeFetchResponse_ReadCoverage(t *testing.T) {
 			`so the 85 lines returned are a lower bound — report counts as "at least 85", not as the total`), note)
 	})
 
+	t.Run("the backend's own count is named", func(t *testing.T) {
+		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":1000,"returned":1000,"total":72612,"total_relation":"eq"}}`)
+		assert.Contains(t, note, "partial read: the read stopped at its limit of 1000 lines")
+		assert.Contains(t, note, "the backend counts 72612 matching lines in the window")
+
+		note = logReadCoverageNote(`{"logs":[],"coverage":{"limit":1000,"returned":1000,"total":10000,"total_relation":"gte"}}`)
+		assert.Contains(t, note, "the backend counts at least 10000 matching lines in the window")
+	})
+
+	t.Run("fewer lines than the limit although more matched", func(t *testing.T) {
+		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":50,"returned":2,"total":10000,"total_relation":"gte"}}`)
+		assert.True(t, strings.HasPrefix(note, "partial read: the log backend returned 2 lines, fewer than the limit of 50, although more lines matched"), note)
+	})
+
 	t.Run("a span that could not be read is left out of the note", func(t *testing.T) {
 		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":5000,"returned":5000}}`)
 		assert.Equal(t, "partial read: the read stopped at its limit of 5000 lines, so the window may hold more lines than were read; "+

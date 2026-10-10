@@ -65,18 +65,45 @@ type ClickhouseAgentRow struct {
 	SpanName                     string `json:"span_name"`
 }
 type clickhouseTraceResponse struct {
-	Traces   []ClickhouseAgentRow            `json:"traces"`
-	Metadata core.ObservabilityTraceMetadata `json:"metadata"`
+	Traces   []ClickhouseAgentRow             `json:"traces"`
+	Metadata core.ObservabilityTraceMetadata  `json:"metadata"`
+	Coverage *core.ObservabilityTraceCoverage `json:"coverage,omitempty"`
 }
 
 // clickhouseRawTraceResponse is the agent-facing shape when services-server returns the raw result
 // table (aggregations, scalar counts, custom projections, or plain span listings). It preserves the
 // real columns/values and their order instead of coercing every row into the fixed span schema.
 type clickhouseRawTraceResponse struct {
-	Columns     []string                        `json:"columns"`
-	ColumnTypes []string                        `json:"column_types"`
-	Rows        [][]any                         `json:"rows"`
-	Metadata    core.ObservabilityTraceMetadata `json:"metadata"`
+	Columns     []string                         `json:"columns"`
+	ColumnTypes []string                         `json:"column_types"`
+	Rows        [][]any                          `json:"rows"`
+	Metadata    core.ObservabilityTraceMetadata  `json:"metadata"`
+	Coverage    *core.ObservabilityTraceCoverage `json:"coverage,omitempty"`
+}
+
+// capClickhouseRows trims a result to rowCap rows and says so when the query returned more.
+// The wrapper asks for rowCap+1 rows, so more than rowCap means the cap cut the result. Covers the
+// raw table and the legacy typed array an older services-server returns.
+func capClickhouseRows(resp core.ObservabilityTraceResponse, rowCap int) core.ObservabilityTraceResponse {
+	if rowCap <= 0 {
+		return resp
+	}
+	var received int
+	switch {
+	case resp.Result != nil && len(resp.Result.Rows) > rowCap:
+		received = len(resp.Result.Rows)
+		resp.Result.Rows = resp.Result.Rows[:rowCap]
+	case resp.Result == nil && len(resp.Traces) > rowCap:
+		received = len(resp.Traces)
+		resp.Traces = resp.Traces[:rowCap]
+	default:
+		return resp
+	}
+	resp.Coverage = &core.ObservabilityTraceCoverage{
+		Limit: rowCap, Received: received, Returned: rowCap,
+		Note: fmt.Sprintf("cut: the query returned more than %d rows and only the first %d are shown; aggregate (GROUP BY) or ORDER BY ... LIMIT to get the rows that matter — do not read these rows as all of them", rowCap, rowCap),
+	}
+	return resp
 }
 
 func (m TracesExecuteClickhouseTool) InputSchema() core.ToolSchema {
@@ -167,7 +194,10 @@ func (m TracesExecuteClickhouseTool) Call(nbRequestContext core.NbToolContext, i
 	// it, so a terminating `;` produces `... ; FORMAT JSONCompact`, which ClickHouse rejects with
 	// "Multi-statements are not allowed". cleanUpQuery already strips a trailing `;` from the
 	// agent-supplied SQL for the same reason; the wrapper must not reintroduce one.
-	finalQuery = fmt.Sprintf("select * from (%s) as ql limit %d", finalQuery, config.Config.LlmServerAgentMaxTracesRows)
+	// One row past the cap is fetched so a cut result can be told apart from one that fit, and
+	// the agent told (#40193). A LIMIT the model wrote below the cap still applies inside.
+	rowCap := config.Config.LlmServerAgentMaxTracesRows
+	finalQuery = fmt.Sprintf("select * from (%s) as ql limit %d", finalQuery, rowCap+1)
 
 	queryResponse, err := executeFetchTrace(nbRequestContext, "otel_clickhouse", "agent", finalQuery, core.TraceQueryBuilder{}, map[string]any{})
 	if err != nil {
@@ -183,6 +213,7 @@ func (m TracesExecuteClickhouseTool) Call(nbRequestContext core.NbToolContext, i
 		}, err
 	}
 
+	queryResponse = capClickhouseRows(queryResponse, rowCap)
 	response, err := serializeClickhouseTraceResponse(queryResponse)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("traces: unable to serialize on json", "error", err.Error())
@@ -217,6 +248,7 @@ func serializeClickhouseTraceResponse(queryResponse core.ObservabilityTraceRespo
 			ColumnTypes: queryResponse.Result.ColumnTypes,
 			Rows:        queryResponse.Result.Rows,
 			Metadata:    queryResponse.Metadata,
+			Coverage:    queryResponse.Coverage,
 		})
 	}
 
@@ -245,5 +277,6 @@ func serializeClickhouseTraceResponse(queryResponse core.ObservabilityTraceRespo
 	return common.MarshalJson(clickhouseTraceResponse{
 		Traces:   agentTrace,
 		Metadata: queryResponse.Metadata,
+		Coverage: queryResponse.Coverage,
 	})
 }

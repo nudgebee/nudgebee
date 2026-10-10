@@ -91,10 +91,7 @@ func (m TracesExecuteChronosphereTool) Call(nbRequestContext core.NbToolContext,
 		}, err
 	}
 
-	//restrict 100 rows only
-	if len(queryResponse.Traces) > 100 {
-		queryResponse.Traces = queryResponse.Traces[:100]
-	}
+	queryResponse = capTraceResponse(queryResponse, maxTracesInResponse)
 
 	response, err := common.MarshalJson(tracePayloadForResponse(queryResponse))
 	if err != nil {
