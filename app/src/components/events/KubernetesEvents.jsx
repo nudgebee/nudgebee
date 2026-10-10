@@ -269,13 +269,13 @@ const UNIQUE_COLS = [
   'latest_event_id',
   'latest_title',
   'latest_computed_priority',
+  'latest_priority',
   'latest_computed_score',
   'latest_score_factors',
   'latest_score_confidence',
   'latest_nb_status',
   'latest_snoozed_until',
   'distinct_status',
-  'distinct_priority',
   'distinct_subject_name',
   'distinct_subject_namespace',
   'count_subject_name',
@@ -284,7 +284,6 @@ const UNIQUE_COLS = [
   'is_new_issue',
 ];
 const UNIQUE_SORT_MAP = { computed_score: 'latest_computed_score', created_at: 'max_created_at', starts_at: 'max_created_at' };
-const SEVERITY_RANK = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'DEBUG', 'INFO'];
 
 const asJsonArray = (value) => {
   if (Array.isArray(value)) {
@@ -294,10 +293,6 @@ const asJsonArray = (value) => {
   return Array.isArray(parsed) ? parsed : [];
 };
 const firstOfJson = (value) => asJsonArray(value)[0];
-const highestSeverity = (value) => {
-  const arr = asJsonArray(value);
-  return SEVERITY_RANK.find((s) => arr.includes(s)) ?? arr[0];
-};
 
 // One fingerprint-grouped row -> the flat event shape buildRowData expects.
 // Fields that vary within a fingerprint show the latest occurrence, or a
@@ -311,7 +306,7 @@ const mapUniqueRowToEvent = (g) => {
     fingerprint: g.fingerprint,
     title: g.latest_title,
     aggregation_key: firstOfJson(g.distinct_aggregation_key),
-    priority: highestSeverity(g.distinct_priority),
+    priority: g.latest_priority,
     computed_priority: g.latest_computed_priority,
     computed_score: g.latest_computed_score,
     score_factors: g.latest_score_factors,
@@ -1562,9 +1557,12 @@ const KubernetesEventsTable = ({
         subject_name: query.subject_name,
         subject_type: query.subject_type,
         status: query.status,
-        priority: query.priority,
-        // getK8sEventGroupings maps nb_priority -> computed_priority (the Nubi rank),
-        // so briefing rank tiles (Ranked P1/P2/...) filter correctly in this view.
+        // A row here is an issue, and its severity and rank are those of its
+        // newest event: what the row shows and what the briefing counts. Both
+        // filters match that one value (getK8sEventGroupings sends them as a
+        // having), so each issue is in exactly one severity and one rank, and a
+        // briefing tile opens a list of the size it showed.
+        latest_priority: query.priority,
         nb_priority: query.computed_priority,
         source: query.source,
         nb_status: query.nb_status,

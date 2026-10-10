@@ -20,6 +20,20 @@ export interface DisagreementRow {
   event_count?: number | null;
 }
 
+// One row of the briefing's rank query: the issues whose NEWEST event carries
+// this source severity and this rank.
+export interface LatestSeverityRankRow {
+  latest_priority?: string | null;
+  latest_computed_priority?: string | null;
+  event_count?: number | null;
+}
+
+// Every issue is in exactly one of these rows, so the same rows feed the rank
+// tiles (summed per rank) and the severity comparison, and the two cannot count
+// different issues.
+export const issuesBySeverityAndRank = (rows: LatestSeverityRankRow[]): DisagreementRow[] =>
+  rows.map((row) => ({ priority: row.latest_priority, computed_priority: row.latest_computed_priority, event_count: row.event_count }));
+
 export interface SignalClassRow {
   aggregation_key?: string | null;
   event_count?: number | null;

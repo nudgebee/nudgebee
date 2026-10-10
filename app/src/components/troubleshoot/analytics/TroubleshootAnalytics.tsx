@@ -50,7 +50,6 @@ interface Row {
   created_at?: string;
   count_analysed_issues?: number;
   minutes_to_first_analysis?: number;
-  computed_priority?: string;
   latest_computed_priority?: string;
   count_subject_name?: number;
   distinct_subject_name?: string;
@@ -395,7 +394,7 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
 
     const sumRanks = (block: any, ranks: string[]) =>
       rowsOf(block)
-        .filter((row) => ranks.includes((row.computed_priority || '').toUpperCase()))
+        .filter((row) => ranks.includes((row.latest_computed_priority || '').toUpperCase()))
         .reduce((total, row) => total + num(row.event_count), 0);
 
     const issues = first(data.window_issues);
@@ -535,7 +534,8 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
         headline: `Urgent issues rose from ${prevUrgent} to ${urgent}`,
         evidence: 'Compared against the previous window of the same length.',
         actionText: 'See urgent issues',
-        action: () => onDrillDown({ status: 'ALL', ...scope, eventComputedPriority: 'P1' }),
+        // An issue count, so it opens the issue ("Unique") list, not the event list.
+        action: () => onDrillDown({ status: 'ALL', ...scope, eventComputedPriority: 'P1', eventsView: 'unique' }),
       });
     }
 
@@ -728,7 +728,7 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
             label='Problems we rated urgent'
             value={urgent}
             previous={prevUrgent}
-            onClick={() => onDrillDown({ status: 'ALL', ...scope, eventComputedPriority: 'P1' })}
+            onClick={() => onDrillDown({ status: 'ALL', ...scope, eventComputedPriority: 'P1', eventsView: 'unique' })}
           />
           {/* No previous-period comparison, so no delta — but it sits in a row with
               two that do, so the same Card + Stat keeps its sizing aligned. */}

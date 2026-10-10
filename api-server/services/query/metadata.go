@@ -1813,6 +1813,14 @@ var table_metadata = map[string]TableDefinition{
 				Def:          "(array_agg(computed_priority ORDER BY events.created_at DESC))[1]",
 				IsAggregated: true,
 			},
+			// The source severity of the same newest event latest_computed_priority
+			// reads its rank from. Severity changes within an issue as rank does, so
+			// a count of issues by severity needs the one value per issue.
+			"latest_priority": {
+				Type:         ColumnDefinitionTypeString,
+				Def:          "(array_agg(priority ORDER BY events.created_at DESC))[1]",
+				IsAggregated: true,
+			},
 			"latest_nb_status": {
 				Type:         ColumnDefinitionTypeString,
 				Def:          "(array_agg(nb_status ORDER BY CASE nb_status WHEN 'ACTION_REQUIRED' THEN 1 WHEN 'OPEN' THEN 2 WHEN 'SNOOZED' THEN 3 WHEN 'ACKNOWLEDGED' THEN 4 WHEN 'INVESTIGATING' THEN 5 WHEN 'DUPLICATE' THEN 6 WHEN 'SUPPRESSED' THEN 7 WHEN 'DROPPED' THEN 8 WHEN 'RESOLVED' THEN 9 ELSE 10 END, events.created_at DESC))[1]",

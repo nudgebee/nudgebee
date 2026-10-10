@@ -1,4 +1,11 @@
-import { BACKLOG_THRESHOLD, FLAGGED_CAP, INCIDENT_P1_THRESHOLD, resolveBriefing, type BriefingPayload } from '../resolveBriefing';
+import {
+  BACKLOG_THRESHOLD,
+  FLAGGED_CAP,
+  INCIDENT_P1_THRESHOLD,
+  issuesBySeverityAndRank,
+  resolveBriefing,
+  type BriefingPayload,
+} from '../resolveBriefing';
 
 const NOW = Date.parse('2026-08-05T00:00:00Z');
 
@@ -390,5 +397,38 @@ describe('resolveBriefing — degenerate inputs', () => {
     });
     expect(byKey(model.comparison, 'judged').value).toBe('4');
     expect(byKey(model.comparison, 'agreed').value).toBe('4');
+  });
+});
+
+// The rank query returns each issue once, under the severity and rank of its
+// newest event, and the same rows feed the rank tiles and the comparison. So
+// however often triage re-scored an issue inside the window, the ranks add up to
+// the issues and the comparison cannot count more issues than exist.
+describe('resolveBriefing — one issue, one rank', () => {
+  const rows = issuesBySeverityAndRank([
+    { latest_priority: 'HIGH', latest_computed_priority: 'P1', event_count: 6 },
+    { latest_priority: 'HIGH', latest_computed_priority: 'P3', event_count: 240 },
+    { latest_priority: 'MEDIUM', latest_computed_priority: 'P2', event_count: 15 },
+    { latest_priority: 'LOW', latest_computed_priority: 'P3', event_count: 336 },
+    { latest_priority: 'INFO', latest_computed_priority: null, event_count: 3 },
+  ]);
+  const payload = { ...prototypePayload(), windowIssues: 600, byRank: rows, disagreement: rows };
+  const model = resolveBriefing(payload);
+  const count = (items: { key: string }[], key: string) => Number(byKey(items, key).value.replace(/,/g, ''));
+
+  it('adds the rank tiles and the unranked issues up to the issue total', () => {
+    const ranked = ['p0', 'p1', 'p2', 'p3'].reduce((total, key) => total + count(model.ranking, key), 0);
+
+    expect(ranked).toBe(597);
+    expect(byKey(model.ranking, 'coverage').secondary).toBe('597 of 600');
+    expect(byKey(model.ranking, 'p1').secondary).toBe('of 600');
+  });
+
+  it('keeps the comparison total within the issue total, as the sum of its rows', () => {
+    const judged = count(model.comparison, 'judged');
+
+    expect(judged).toBe(597);
+    expect(count(model.comparison, 'below') + count(model.comparison, 'agreed') + count(model.comparison, 'above')).toBe(judged);
+    expect(judged).toBeLessThanOrEqual(model.header.issues);
   });
 });

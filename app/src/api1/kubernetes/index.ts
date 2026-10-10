@@ -1994,6 +1994,7 @@ query list_k8_issues_count {
       fingerprint?: string;
       source?: string[];
       nb_priority?: string;
+      latest_priority?: string;
       nb_status?: string | string[];
       is_new_issue?: boolean;
     } = {
@@ -2136,9 +2137,19 @@ query list_k8_issues_count {
       } else if (query['source'] && !Array.isArray(query['source'])) {
         filterParams['source'] = { _eq: query['source'] };
       }
+      // The rank of a group is the rank of its newest event (the one its row
+      // shows), and so is its source severity. A filter on either must match
+      // that one value. Matching any event in the group instead puts a group
+      // that was re-scored into every rank it passed through, and the filtered
+      // lists then add up to more rows than the unfiltered one.
+      const havingParams: any = {};
       if (query['nb_priority']) {
-        filterParams['computed_priority'] = { _eq: query['nb_priority'] };
+        havingParams['latest_computed_priority'] = { _eq: query['nb_priority'] };
       }
+      if (query['latest_priority']) {
+        havingParams['latest_priority'] = { _eq: query['latest_priority'] };
+      }
+      const havingCols = Object.keys(havingParams);
       if (query['nb_status']) {
         if (Array.isArray(query['nb_status'])) {
           filterParams['nb_status'] = { _in: query['nb_status'] };
@@ -2164,13 +2175,13 @@ query list_k8_issues_count {
 
       let LIST_K8_EVENTS_GROUPINGS = `
 query k8s_event_groupings($limit:Int,$offset:Int){
-  event_groupings: event_groupings_v2(where:__WHERE__, group_by:__GROUP_BY__, limit:$limit,offset:$offset,order_by:__ORDER_BY__ __COLUMN_TRANSFORMATIONS__){
+  event_groupings: event_groupings_v2(where:__WHERE__,__HAVING__ group_by:__GROUP_BY__, limit:$limit,offset:$offset,order_by:__ORDER_BY__ __COLUMN_TRANSFORMATIONS__){
     rows{
       __COLS__
     }
   }
 
-  event_groupings_aggregate: event_groupings_v2(where:__WHERE__, group_by:[], column_transformations:[{name: "event_count", expr: "distinct", args: __GROUP_BY__}], columns:["event_count"]){
+  event_groupings_aggregate: event_groupings_v2(where:__WHERE__,__HAVING__ group_by:__COUNT_GROUP_BY__, column_transformations:[{name: "event_count", expr: "distinct", args: __GROUP_BY__}], columns:__COUNT_COLS__){
     rows{
       event_count
     }
@@ -2180,7 +2191,7 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       if (query.onlyGroupingCount) {
         LIST_K8_EVENTS_GROUPINGS = `
 query k8s_event_groupings($limit:Int,$offset:Int){
-  event_groupings: event_groupings_v2(where:__WHERE__, group_by:__GROUP_BY__, limit:$limit,offset:$offset,order_by:__ORDER_BY__, column_transformations:[{name: "created_at", expr: "date_unit", args: ["day"]}]){
+  event_groupings: event_groupings_v2(where:__WHERE__,__HAVING__ group_by:__GROUP_BY__, limit:$limit,offset:$offset,order_by:__ORDER_BY__, column_transformations:[{name: "created_at", expr: "date_unit", args: ["day"]}]){
     rows{
       __COLS__
     }
@@ -2189,6 +2200,12 @@ query k8s_event_groupings($limit:Int,$offset:Int){
 `;
       }
       let formattedQuery = LIST_K8_EVENTS_GROUPINGS.replaceAll('__WHERE__', gqlStringify(filterParams));
+      formattedQuery = formattedQuery.replaceAll('__HAVING__', havingCols.length ? ` having:${gqlStringify(havingParams)},` : '');
+      // The total counts the groups. With a having it has to count the groups
+      // that pass it, which the engine answers when the count is grouped by the
+      // filtered columns: one row, since each is pinned to a single value.
+      formattedQuery = formattedQuery.replaceAll('__COUNT_GROUP_BY__', gqlStringify(havingCols));
+      formattedQuery = formattedQuery.replaceAll('__COUNT_COLS__', gqlStringify([...havingCols, 'event_count']));
       formattedQuery = formattedQuery.replaceAll('__GROUP_BY__', gqlStringify(groupBy));
       formattedQuery = formattedQuery.replaceAll('__COLS__', cols.join(' '));
       formattedQuery = formattedQuery.replaceAll(
@@ -2207,12 +2224,14 @@ query k8s_event_groupings($limit:Int,$offset:Int){
         limit: limit,
         offset: offset,
       });
+      const aggregateRows = response?.data?.data?.event_groupings_aggregate?.rows;
       return {
         data: {
           event_groupings: response?.data?.data?.event_groupings?.rows,
           event_groupings_aggregate: {
             aggregate: {
-              count: response?.data?.data?.event_groupings_aggregate?.rows?.[0]?.event_count,
+              // A total filtered by a having has no row when no group passes it.
+              count: aggregateRows?.[0]?.event_count ?? (havingCols.length && aggregateRows ? 0 : undefined),
             },
           },
         },

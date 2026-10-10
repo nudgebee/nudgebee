@@ -923,7 +923,10 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       priority: selectedPriority,
       priority_nin: !selectedPriority ? ['DEBUG', 'INFO'] : undefined,
       source: selectedSource?.map((f: any) => f.value) || [],
-      nb_priority: selectedNbPriority,
+      // Only the fingerprint view renders the Triage Priority filter. The value
+      // also arrives from the URL and from saved filters, and in the other views
+      // it would filter the list with nothing on screen to show or clear it.
+      nb_priority: groupEventType === 'fingerprint' ? selectedNbPriority : undefined,
       nb_status: selectedNBStatus.length > 0 ? selectedNBStatus.map((s) => s?.value || s) : undefined,
       is_new_issue: selectedIssueType === 'new' ? true : selectedIssueType === 'recurring' ? false : undefined,
     };

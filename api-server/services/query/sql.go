@@ -996,6 +996,161 @@ func GenerateSqlQuery(ctx *security.RequestContext, accountId string, request Qu
 // generateSqlQuery builds the SQL for request. accountScope is a server-built
 // predicate (see TableDefinition.AccountScope) ANDed with the request's WHERE.
 func generateSqlQuery(ctx *security.RequestContext, accountId string, request QueryRequest, tableDef TableDefinition, accountScope string) (string, error) {
+	if groupsByAggregate(request, tableDef) {
+		// Without a distinct count there is no unit to evaluate the aggregate
+		// over; generateGroupClause rejects the request as it always has.
+		if countColumn, ok := distinctCountColumn(request, tableDef); ok {
+			return generateGroupCountQuery(ctx, accountId, request, tableDef, accountScope, countColumn)
+		}
+	}
+	return generateSelectQuery(ctx, accountId, request, tableDef, accountScope, true)
+}
+
+// groupsByAggregate reports whether request groups by an aggregated column.
+func groupsByAggregate(request QueryRequest, tableDef TableDefinition) bool {
+	for _, groupBy := range request.GroupBy {
+		if tableDef.Columns[groupBy].IsAggregated {
+			return true
+		}
+	}
+	return false
+}
+
+// distinctCountColumn returns the requested column that counts distinct
+// groups: a count(*) column carrying the "distinct" transformation, whose args
+// name the columns that make up one group.
+func distinctCountColumn(request QueryRequest, tableDef TableDefinition) (QueryColumn, bool) {
+	if tableDef.Type != Aggregate {
+		return QueryColumn{}, false
+	}
+	for _, column := range request.Columns {
+		columnDef := tableDef.Columns[column.Name]
+		if columnDef.IsAggregated && columnDef.Def == "count(*)" && column.Expr == "distinct" && len(column.Args) > 0 {
+			return column, true
+		}
+	}
+	return QueryColumn{}, false
+}
+
+// columnOutside returns a column where names that is not in allowed.
+func columnOutside(where QueryWhereClause, allowed map[string]bool) (string, bool) {
+	for column := range where.Binary {
+		if !allowed[column] {
+			return column, true
+		}
+	}
+	for _, clause := range where.And {
+		if column, found := columnOutside(clause, allowed); found {
+			return column, true
+		}
+	}
+	for _, clause := range where.Or {
+		if column, found := columnOutside(clause, allowed); found {
+			return column, true
+		}
+	}
+	if where.Not != nil {
+		return columnOutside(*where.Not, allowed)
+	}
+	return "", false
+}
+
+// generateGroupCountQuery answers a request that groups by an aggregated
+// column while counting distinct groups: "how many issues, by the rank of each
+// issue's newest event".
+//
+// One statement cannot say that. Grouping the events by their own rank and
+// counting distinct issues counts an issue once under every rank its events
+// carry. So this takes two: the inner statement makes one row per group (the
+// distinct count's args) carrying the request's group by columns, and the outer
+// statement groups those rows and counts them.
+//
+// The inner statement is an ordinary request and goes through the same
+// generator as any other, so the def, the joins it picks, the WHERE and the
+// server's account scope are exactly what they would be for a plain grouping.
+// The request's HAVING runs there, once per group.
+func generateGroupCountQuery(ctx *security.RequestContext, accountId string, request QueryRequest, tableDef TableDefinition, accountScope string, countColumn QueryColumn) (string, error) {
+	const shape = "a request that groups by an aggregated column counts distinct groups"
+	grouped := make(map[string]bool, len(request.GroupBy))
+	for _, groupBy := range request.GroupBy {
+		grouped[groupBy] = true
+	}
+	for _, column := range request.Columns {
+		if column.Name != countColumn.Name && !grouped[column.Name] {
+			return "", fmt.Errorf("column %s cannot be selected: %s, and returns only its group by columns and %s", column.Name, shape, countColumn.Name)
+		}
+	}
+	// A filter on a group by column selects the same rows whether it is read
+	// per group or per output row. A filter on anything else would not: the
+	// count column means events per group inside and groups per row outside.
+	if column, found := columnOutside(request.Having, grouped); found {
+		return "", fmt.Errorf("column %s cannot be used in having: %s, and can filter only on its group by columns", column, shape)
+	}
+	for _, sortBy := range request.OrderBy {
+		if sortBy.Column != countColumn.Name && !grouped[sortBy.Column] {
+			return "", fmt.Errorf("column %s cannot be used in order by: %s, and can sort only on its group by columns and %s", sortBy.Column, shape, countColumn.Name)
+		}
+	}
+
+	inner := request
+	inner.Columns = nil
+	inner.GroupBy = append([]string{}, countColumn.Args...)
+	inner.OrderBy = nil
+	for _, groupBy := range request.GroupBy {
+		// A requested column carries its transformation (a date unit) with it.
+		column := QueryColumn{Name: groupBy}
+		for _, requested := range request.Columns {
+			if requested.Name == groupBy {
+				column = requested
+				break
+			}
+		}
+		inner.Columns = append(inner.Columns, column)
+		if !tableDef.Columns[groupBy].IsAggregated && !slices.Contains(inner.GroupBy, groupBy) {
+			inner.GroupBy = append(inner.GroupBy, groupBy)
+		}
+	}
+	innerQuery, err := generateSelectQuery(ctx, accountId, inner, tableDef, accountScope, false)
+	if err != nil {
+		return "", err
+	}
+
+	queryBuilder := strings.Builder{}
+	queryBuilder.WriteString("SELECT ")
+	for i, column := range request.Columns {
+		if i > 0 {
+			queryBuilder.WriteString(",")
+		}
+		if column.Name == countColumn.Name {
+			queryBuilder.WriteString("count(*) AS ")
+		}
+		queryBuilder.WriteString(column.Name)
+	}
+	queryBuilder.WriteString(" FROM (")
+	queryBuilder.WriteString(innerQuery)
+	queryBuilder.WriteString(") AS grouped GROUP BY ")
+	queryBuilder.WriteString(strings.Join(request.GroupBy, ","))
+
+	sortStr, err := generateOrderByClause(request, tableDef)
+	if err != nil {
+		return "", err
+	}
+	if sortStr != "" {
+		queryBuilder.WriteString(" ORDER BY ")
+		queryBuilder.WriteString(sortStr)
+	}
+	limitStr, err := generateLimitOffsetClause(request, tableDef)
+	if err != nil {
+		return "", err
+	}
+	queryBuilder.WriteString(limitStr)
+	return queryBuilder.String(), nil
+}
+
+// generateSelectQuery builds one SELECT statement for request. paginate is
+// false only for a statement another one reads from, which must see every row:
+// the LIMIT (and its default) belongs to the statement the caller receives.
+func generateSelectQuery(ctx *security.RequestContext, accountId string, request QueryRequest, tableDef TableDefinition, accountScope string, paginate bool) (string, error) {
 	// column transformation fix for datetime grouping
 	// if transforamtions are misisng then use day as default unit
 	for _, groupColumn := range request.GroupBy {
@@ -1106,12 +1261,14 @@ func generateSqlQuery(ctx *security.RequestContext, accountId string, request Qu
 			queryBuilder.WriteString(sortStr)
 		}
 
-		limitStr, err := generateLimitOffsetClause(request, tableDef)
-		if err != nil {
-			return "", err
-		}
-		if limitStr != "" {
-			queryBuilder.WriteString(limitStr)
+		if paginate {
+			limitStr, err := generateLimitOffsetClause(request, tableDef)
+			if err != nil {
+				return "", err
+			}
+			if limitStr != "" {
+				queryBuilder.WriteString(limitStr)
+			}
 		}
 		if projectLate {
 			// A subquery's row order is not guaranteed to survive, so the
