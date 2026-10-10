@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	"regexp"
 	"strings"
 
@@ -158,7 +159,7 @@ func authorizeToolRequest(ctx *security.RequestContext, agent NBAgent, request N
 		if toolValidator, ok := tool.(toolcore.ToolRequestInference); ok {
 			requestType1, err := toolValidator.InferToolRequestType(ctx, toolName, action.ToolInput)
 			if err != nil {
-				ctx.GetLogger().Error("auth: unable to infer tool request type", "error", err, "tool", toolName, "input", action.ToolInput, "agent", agent.GetName())
+				ctx.GetLogger().Error("auth: unable to infer tool request type", "error", err, "tool", toolName, "input", egressfilter.RedactForLog(action.ToolInput), "agent", agent.GetName())
 				return nil, nil, err
 			}
 			requestType = requestType1
@@ -177,7 +178,7 @@ func authorizeToolRequest(ctx *security.RequestContext, agent NBAgent, request N
 		// Neither the static rules nor an LLM prompt decided: the call runs as
 		// a read below. Logged so these calls can be reviewed (#39880 C7).
 		if requestType == "" {
-			ctx.GetLogger().Info("auth: no classifier decided, running as read", "tool", toolName, "input", TruncateHead(action.ToolInput, 500), "agent", agent.GetName())
+			ctx.GetLogger().Info("auth: no classifier decided, running as read", "tool", toolName, "input", egressfilter.RedactForLogPrefix(action.ToolInput, 500), "agent", agent.GetName())
 		}
 
 		// Enforce write access check on confirmed mutations, on the account
@@ -191,7 +192,7 @@ func authorizeToolRequest(ctx *security.RequestContext, agent NBAgent, request N
 				// An empty or blank account names no account the user can write.
 				account = strings.TrimSpace(account)
 				if account == "" || !ctx.GetSecurityContext().HasAccountAccess(account, security.SecurityAccessTypeCreate) {
-					ctx.GetLogger().Error("auth: agent is trying to execute command, but user doesnt have access to update", "tool", toolName, "input", action.ToolInput, "agent", agent.GetName(), "user", ctx.GetSecurityContext().GetUserId(), "account", account, "conversation_account", request.AccountId)
+					ctx.GetLogger().Error("auth: agent is trying to execute command, but user doesnt have access to update", "tool", toolName, "input", egressfilter.RedactForLog(action.ToolInput), "agent", agent.GetName(), "user", ctx.GetSecurityContext().GetUserId(), "account", account, "conversation_account", request.AccountId)
 					return &NBAgentPlannerFinishAction{
 						Data: fmt.Sprintf("auth: agent is trying to execute - %s, but user doesnt have access to update", action.ToolInput),
 					}, &requestType, nil
@@ -210,7 +211,7 @@ func authorizeToolRequest(ctx *security.RequestContext, agent NBAgent, request N
 func inferToolRequestTypeFromPrompt(ctx *security.RequestContext, request NBAgentRequest, agent NBAgent, toolName string, action NBAgentPlannerToolAction, toolValidator toolcore.ToolRequestInferencePrompt) (toolcore.ToolRequestType, error) {
 	prompt, err := toolValidator.InferToolRequestTypePrompt(ctx, toolName, action.ToolInput)
 	if err != nil {
-		ctx.GetLogger().Error("auth: unable to infer tool request type prompt", "error", err, "tool", toolName, "input", action.ToolInput, "agent", agent.GetName())
+		ctx.GetLogger().Error("auth: unable to infer tool request type prompt", "error", err, "tool", toolName, "input", egressfilter.RedactForLog(action.ToolInput), "agent", agent.GetName())
 		return "", err
 	}
 	if prompt == "" {
@@ -235,15 +236,15 @@ func inferToolRequestTypeFromPrompt(ctx *security.RequestContext, request NBAgen
 	case toolRequestTypeWrite, toolRequestTypeExecute:
 		requestTypeStr = string(toolcore.ToolRequestTypeCreate)
 	case toolRequestTypeUnknown:
-		ctx.GetLogger().Info("auth: classification returned unknown, routing to user approval", "tool", toolName, "input", action.ToolInput, "agent", agent.GetName())
+		ctx.GetLogger().Info("auth: classification returned unknown, routing to user approval", "tool", toolName, "input", egressfilter.RedactForLog(action.ToolInput), "agent", agent.GetName())
 		requestTypeStr = string(toolcore.ToolRequestTypeUpdate)
 	case "":
-		ctx.GetLogger().Warn("auth: classification returned unrecognized type, routing to user approval", "request_type", decision.Raw, "tool", toolName, "input", action.ToolInput, "agent", agent.GetName())
+		ctx.GetLogger().Warn("auth: classification returned unrecognized type, routing to user approval", "request_type", decision.Raw, "tool", toolName, "input", egressfilter.RedactForLog(action.ToolInput), "agent", agent.GetName())
 		requestTypeStr = string(toolcore.ToolRequestTypeUpdate)
 	}
 	// One line per LLM verdict, so what the classifier lets through unattended
 	// can be reviewed.
-	ctx.GetLogger().Info("auth: llm classified tool request", "request_type", requestTypeStr, "tool", toolName, "input", action.ToolInput, "agent", agent.GetName())
+	ctx.GetLogger().Info("auth: llm classified tool request", "request_type", requestTypeStr, "tool", toolName, "input", egressfilter.RedactForLog(action.ToolInput), "agent", agent.GetName())
 	return toolcore.ToolRequestType(requestTypeStr), nil
 }
 

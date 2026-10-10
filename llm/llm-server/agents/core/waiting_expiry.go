@@ -14,10 +14,11 @@ import (
 )
 
 // unattendedConversationSources are conversations started by an alert or an
-// automation rather than by a person in chat. Nobody watches their approval
-// prompts, and while one sits WAITING every new firing of the same alert is
-// skipped, so they expire after WaitingExpireUnattendedHours instead of
-// WaitingExpireDays.
+// automation, plus Slack/Teams threads: InstantNotification is used for both
+// queued alert analyses and chats in Slack or Teams. Their approval prompts are
+// rarely answered late, and while one sits WAITING every new firing of the same
+// alert is skipped, so they expire after WaitingExpireUnattendedHours instead of
+// WaitingExpireDays. The note is worded for both kinds.
 var unattendedConversationSources = []string{
 	string(ConversationSourceInvestigation),
 	string(ConversationSourceInstantNotification),
@@ -74,7 +75,7 @@ type waitingConversation struct {
 }
 
 func unattendedExpiryNote(hours int) string {
-	return fmt.Sprintf("Stopped after %d hours with no answer. This automatic run was waiting for someone to approve a step or answer a question, and nobody did, so that step was not run. The next run starts fresh.", hours)
+	return fmt.Sprintf("Stopped after %d hours with no answer. This was waiting for someone to approve a step or answer a question, and nobody did, so that step was not run. Ask again to continue; an automatic run starts fresh next time.", hours)
 }
 
 func chatExpiryNote(days int) string {

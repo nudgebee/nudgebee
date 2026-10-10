@@ -941,7 +941,7 @@ func (e *plannerExecutor) evaluateConditions(action NBAgentPlannerToolAction, av
 		)
 		llmResponse, err := GenerateAndTrackLLMContent(conditionCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.AgentId, true, []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, formattedPrompt)}, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
 		if err != nil || len(llmResponse.Choices) == 0 || llmResponse.Choices[0].Content == "" {
-			e.ctx.GetLogger().Error("plannerexecutor: LLM call for condition failed or returned no content", "prompt", formattedPrompt, "error", err)
+			e.ctx.GetLogger().Error("plannerexecutor: LLM call for condition failed or returned no content", "prompt", egressfilter.RedactForLog(formattedPrompt), "error", err)
 			return false, fmt.Errorf("LLM condition call failed or returned no content: %w", err)
 		}
 
@@ -2504,7 +2504,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 
 	toolResolveDur := time.Since(start)
 	e.ctx.GetLogger().Info("plannerexecutor: tool resolved", "tool", action.Tool, "resolve_duration", toolResolveDur.String())
-	e.ctx.GetLogger().Debug("plannerexecutor: identified request-type", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool)
+	e.ctx.GetLogger().Debug("plannerexecutor: identified request-type", logRequestType, requestType, "request", egressfilter.LazyRedact(action.ToolInput), "tool", action.Tool)
 
 	// Shell targets resolve before execution/confirmation; preserve action identity for resume.
 	if strings.EqualFold(tool.Name(), toolcore.ToolExecuteShellCommand) {
@@ -2643,10 +2643,10 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				}, nil, nil
 			}
 			if !isFollowupFound {
-				e.ctx.GetLogger().Info("plannerexecutor: generating followup for confirmation", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool)
+				e.ctx.GetLogger().Info("plannerexecutor: generating followup for confirmation", logRequestType, requestType, "request", egressfilter.RedactForLog(action.ToolInput), "tool", action.Tool)
 				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType, confirmationKey, confirmationQuestion, destination.followupTarget(), target != nil)
 				if err != nil {
-					e.ctx.GetLogger().Info("plannerexecutor: error in generating followup for confirmation", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool, "error", err)
+					e.ctx.GetLogger().Info("plannerexecutor: error in generating followup for confirmation", logRequestType, requestType, "request", egressfilter.RedactForLog(action.ToolInput), "tool", action.Tool, "error", err)
 					return NBAgentPlannerToolActionStep{}, nil, err
 				}
 				if followupFinish != nil {
@@ -4646,7 +4646,7 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	if _, ok := tool.(toolcore.NBMultiCommandTool); ok {
 		err := common.UnmarshalJson([]byte(input), &request)
 		if err != nil {
-			nbRequestContext.GetLogger().Error("plannerexecutor: invalid input format for tool", "error", err, "data", input, "tool", tool.Name())
+			nbRequestContext.GetLogger().Error("plannerexecutor: invalid input format for tool", "error", err, "data", egressfilter.RedactForLog(input), "tool", tool.Name())
 			return toolcore.NBToolResponse{}, err
 		}
 	} else {
@@ -4742,7 +4742,7 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	// later commands built from them. Governed by the egress filter settings.
 	data.Data = egressfilter.RedactToolOutput(nbRequestContext, parentAgentName, tool.Name(), data.Data)
 	latency := time.Since(t0).Seconds()
-	nbRequestContext.GetLogger().Info("tool execution time", "tool", tool.Name(), "time", latency, "input", input)
+	nbRequestContext.GetLogger().Info("tool execution time", "tool", tool.Name(), "time", latency, "input", egressfilter.RedactForLog(input))
 	// Record tool latency metric
 	// Use context.Background() for metrics, as security.RequestContext does not expose context.Context
 	common.MetricsToolLatencySeconds(implType, tool.Name(), agentRequest.AccountId, latency)
@@ -5285,13 +5285,13 @@ func (e *plannerExecutor) rewriteToolInput(action NBAgentPlannerToolAction, quer
 
 	llmResponse, err := GenerateAndTrackLLMContent(rewriteCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.AgentId, true, []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, prompt)}, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
 	if err != nil || len(llmResponse.Choices) == 0 || llmResponse.Choices[0].Content == "" {
-		e.ctx.GetLogger().Error("plannerexecutor: LLM call for rewriting tool input failed", "prompt", prompt, "error", err)
+		e.ctx.GetLogger().Error("plannerexecutor: LLM call for rewriting tool input failed", "prompt", egressfilter.RedactForLog(prompt), "error", err)
 		// Fallback to original input if rewriting fails
 		return action.ToolInput, err
 	}
 
 	rewrittenInput := strings.TrimSpace(llmResponse.Choices[0].Content)
-	e.ctx.GetLogger().Info("plannerexecutor: Rewrote tool input", "original", action.ToolInput, "rewritten", rewrittenInput)
+	e.ctx.GetLogger().Info("plannerexecutor: Rewrote tool input", "original", egressfilter.RedactForLog(action.ToolInput), "rewritten", egressfilter.RedactForLog(rewrittenInput))
 
 	return rewrittenInput, nil
 }

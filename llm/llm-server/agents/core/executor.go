@@ -750,7 +750,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// agent's ID causes a spurious "agentid is not found" error.
 	isResumingAgent := existingAgentId != uuid.Nil || originalAgentId != ""
 	refinementStart := time.Now()
-	ctx.GetLogger().Info("agentexecutor: handling refinement/followups", "query", request.Query, "agentId", agentId, "isResuming", isResumingAgent)
+	ctx.GetLogger().Info("agentexecutor: handling refinement/followups", "query", egressfilter.RedactForLog(request.Query), "agentId", agentId, "isResuming", isResumingAgent)
 	var refinementFollowupResponse NBAgentResponse
 	var refinementErr error
 	if isResumingAgent {
@@ -1088,7 +1088,7 @@ func syncAgentFollowupMessage(ctx *security.RequestContext, dao IConversationDao
 }
 
 func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request NBAgentRequest, agent NBAgent, history string, agentId uuid.UUID) (NBAgentRequest, NBAgentResponse, error) {
-	ctx.GetLogger().Info("followup: handling followup response", "agentId", request.AgentId, "query", request.Query)
+	ctx.GetLogger().Info("followup: handling followup response", "agentId", request.AgentId, "query", egressfilter.RedactForLog(request.Query))
 	followupMessage, err := HandleFollowupResponse(ctx, request)
 	if err != nil {
 		ctx.GetLogger().Error("agentexecutor: unable to handle followup response", "error", err)

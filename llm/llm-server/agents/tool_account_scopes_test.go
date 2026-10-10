@@ -100,6 +100,13 @@ func TestReadOnlyToolsAreNotWriteTools(t *testing.T) {
 	assert.NotZero(t, found, "no registered tool embeds ReadOnlyTool")
 }
 
+// event_summary is agent-local, so the registry walk above never sees it.
+func TestEventSummaryIsARead(t *testing.T) {
+	got, err := EventSummaryTool{}.InferToolRequestType(security.NewRequestContextForSuperAdmin(), ToolEventSummary, `{}`)
+	require.NoError(t, err)
+	assert.Equal(t, toolcore.ToolRequestTypeRead, got)
+}
+
 // The declarations must describe what each tool does today, so replacing the
 // per-tool target code with them changes no behaviour.
 func TestAccountScopesMatchCurrentBehaviour(t *testing.T) {

@@ -1148,7 +1148,9 @@ func (l AgentEvents) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlanne
 
 const ToolEventSummary = "event_summary"
 
+// EventSummaryTool only summarises event data already on the request.
 type EventSummaryTool struct {
+	toolcore.ReadOnlyTool
 }
 
 func (m EventSummaryTool) Name() string {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/common"
+	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 	"path/filepath"
@@ -198,9 +199,9 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 	originalCommand := command
 
 	// Size-limited logging to avoid excessive output in logs
-	cmdLog := command
-	if len(cmdLog) > 100 {
-		cmdLog = cmdLog[:100] + "..."
+	cmdLog := egressfilter.RedactForLogPrefix(command, 100)
+	if len(command) > 100 {
+		cmdLog += "..."
 	}
 	nbRequestContext.Ctx.GetLogger().Info("shell: executing shell command", "command_preview", cmdLog)
 

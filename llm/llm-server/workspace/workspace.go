@@ -14,6 +14,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	"os"
 	"regexp"
 	"strconv"
@@ -1135,9 +1136,9 @@ func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountI
 	}
 
 	logger := ctx.GetLogger()
-	cmdLog := command
-	if len(cmdLog) > 100 {
-		cmdLog = cmdLog[:100] + "..."
+	cmdLog := egressfilter.RedactForLogPrefix(command, 100)
+	if len(command) > 100 {
+		cmdLog += "..."
 	}
 	logger.Info("workspace: executing command", "command_preview", cmdLog, "account_id", accountId, "conversation_id", conversationId)
 

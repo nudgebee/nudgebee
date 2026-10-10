@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 )
@@ -46,6 +47,45 @@ func RedactToolOutput(rc *security.RequestContext, agent, tool, text string) str
 		ctx = WithAgentName(ctx, agent)
 	}
 	return redactToolOutput(ctx, tool, text)
+}
+
+// RedactForLog masks credentials in a value written to the logs (a tool
+// input, a command, a query). It follows the same switches as tool-output
+// redaction, so turning that off (LLM_SERVER_EGRESSFILTER_TOOL_OUTPUT_REDACT_ENABLED
+// and friends) also leaves log lines as they were. Only the logged copy
+// changes; callers keep using the original value.
+func RedactForLog(text string) string {
+	if !toolOutputRedactionEnabled() {
+		return text
+	}
+	return RedactSecrets(text)
+}
+
+// LazyRedact is a log attribute value masked only when the record is written,
+// for lines whose level is often off (Debug): slog resolves a LogValuer only
+// for records a handler accepts, so a disabled line costs nothing.
+type LazyRedact string
+
+func (r LazyRedact) LogValue() slog.Value {
+	return slog.StringValue(RedactForLog(string(r)))
+}
+
+// logRedactionMargin is how far past the kept part RedactForLogPrefix looks,
+// so a credential that starts inside the kept part is still seen whole.
+const logRedactionMargin = 4096
+
+// RedactForLogPrefix returns at most keep bytes from the start of text, masked
+// as RedactForLog would. Truncating first could cut a credential in half and
+// hide it from the rules (a URL password without its "@"); masking all of a
+// large input would scan text the log never shows. So it masks a window of
+// keep plus logRedactionMargin bytes, then cuts to keep.
+func RedactForLogPrefix(text string, keep int) string {
+	if len(text) <= keep {
+		// Fits as is: a mask longer than the value it replaces must not cut
+		// the end off a line the caller does not mark as truncated.
+		return RedactForLog(text)
+	}
+	return common.TruncateHead(RedactForLog(common.TruncateHead(text, keep+logRedactionMargin)), keep)
 }
 
 func toolOutputRedactionEnabled() bool {
