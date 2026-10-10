@@ -487,6 +487,13 @@ func readResponse(resp *http.Response, operation string) ([]byte, error) {
 // caller has real (partial) data. Non-search responses (no `hits` block) are left alone. Responses without a `_clusters` block — every
 // non-cross-cluster request — are skipped without a full decode.
 func esRemoteClusterFailure(body []byte) error {
+	return esRemoteClustersDidNotAnswer(body, esHitsTotal(string(body)) == 0)
+}
+
+// esRemoteClustersDidNotAnswer is esRemoteClusterFailure with the "nothing came back"
+// judgement made by the caller: a search sent with track_total_hits:false has no hit
+// count, so only the caller knows its result was empty.
+func esRemoteClustersDidNotAnswer(body []byte, empty bool) error {
 	if !bytes.Contains(body, []byte(`"_clusters"`)) {
 		return nil
 	}
@@ -508,7 +515,7 @@ func esRemoteClusterFailure(body []byte) error {
 	// Only a search result that reports exactly zero hits is judged. Responses with no
 	// hit count at all (field capabilities, listings) carry their data elsewhere, and a
 	// partial skip there still returned real content from the clusters that answered.
-	if r.Clusters.Skipped+r.Clusters.Failed == 0 || esHitsTotal(string(body)) != 0 {
+	if r.Clusters.Skipped+r.Clusters.Failed == 0 || !empty {
 		return nil
 	}
 

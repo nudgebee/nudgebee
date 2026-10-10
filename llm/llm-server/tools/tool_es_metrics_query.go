@@ -2,9 +2,11 @@ package tools
 
 import (
 	"fmt"
+	"math"
 	"nudgebee/llm/common"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools/core"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +41,10 @@ func (m ESMetricsQueryTool) Description() string {
 	  - "query": (required) the Elasticsearch DSL query body as a JSON object with "query" filters.
 	* Output: Returns metric time-series results (timestamps and values) extracted from matching document hits.
 
+	Discovery (no "query" needed):
+	  - {"index": "<pattern>", "discover": "datasets"} lists the datasets in the index, one line each with example fields.
+	  - {"index": "<pattern>", "discover": "sample", "dataset": "<name>"} returns the newest few documents of one dataset, flattened to path: value.
+
 	Important Notes:
 	* Always include a range filter on @timestamp in your query (default: now-6h).
 	* Do NOT use "aggs" or "size: 0" — the backend extracts time-series from document hits, not aggregation results.
@@ -55,10 +61,18 @@ func (m ESMetricsQueryTool) InputSchema() core.ToolSchema {
 			},
 			"query": {
 				Type:        core.ToolSchemaTypeObject,
-				Description: "The Elasticsearch DSL query body (JSON object with query, aggs, size, etc.).",
+				Description: "The Elasticsearch DSL query body (JSON object with query, aggs, size, etc.). Required unless `discover` is set.",
+			},
+			"discover": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Look at the data instead of querying it: \"datasets\" lists the index's datasets; \"sample\" returns recent documents of `dataset`.",
+			},
+			"dataset": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Dataset to sample when `discover` is \"sample\" (a name from the datasets listing).",
 			},
 		},
-		Required: []string{"index", "query"},
+		Required: []string{"index"},
 	}
 }
 
@@ -127,9 +141,47 @@ func parseESMetricsQueryInput(command string) (indexPattern string, queryObj any
 	return indexPattern, queryObj, "", nil
 }
 
+// esDiscoverRequest is a discovery call: look at the data instead of querying it.
+type esDiscoverRequest struct {
+	index, mode, dataset string
+}
+
+// parseESDiscoverInput reports whether the input asks for discovery, and validates it.
+// A normal query (no `discover` key) returns ok=false and is parsed as before.
+func parseESDiscoverInput(command string) (req esDiscoverRequest, ok bool, userMsg string, err error) {
+	var in map[string]any
+	if common.UnmarshalJson([]byte(command), &in) != nil {
+		return req, false, "", nil
+	}
+	mode, _ := in["discover"].(string)
+	if strings.TrimSpace(mode) == "" {
+		return req, false, "", nil
+	}
+	req.mode = strings.ToLower(strings.TrimSpace(mode))
+	req.index, _ = in["index"].(string)
+	req.dataset, _ = in["dataset"].(string)
+	req.index, req.dataset = strings.TrimSpace(req.index), strings.TrimSpace(req.dataset)
+	switch {
+	case req.index == "":
+		return req, true, "Field 'index' is required for discovery.", fmt.Errorf("es_metrics_query: discovery without index")
+	case req.mode != "datasets" && req.mode != "sample":
+		return req, true, fmt.Sprintf("Field 'discover' must be \"datasets\" or \"sample\", got %q.", mode), fmt.Errorf("es_metrics_query: unknown discover mode %q", mode)
+	case req.mode == "sample" && req.dataset == "":
+		return req, true, "Field 'dataset' is required when 'discover' is \"sample\". Run discover \"datasets\" first to list them.", fmt.Errorf("es_metrics_query: sample without dataset")
+	}
+	return req, true, "", nil
+}
+
 func (m ESMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	nbRequestContext = nbRequestContext.ForTarget()
 	nbRequestContext.Ctx.GetLogger().Info("es_metrics_query: executing metrics query", "input", input.Command)
+
+	if disc, isDiscover, userMsg, err := parseESDiscoverInput(input.Command); isDiscover {
+		if err != nil {
+			return core.NBToolResponse{Data: userMsg, Status: core.NBToolResponseStatusError}, err
+		}
+		return m.discover(nbRequestContext, disc)
+	}
 
 	indexPattern, queryObj, userMsg, err := parseESMetricsQueryInput(input.Command)
 	if err != nil {
@@ -164,19 +216,7 @@ func (m ESMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input core
 	startTime, endTime = ExpandNarrowTimeWindow(nbRequestContext.Ctx.GetLogger(), startTime, endTime)
 
 	queryKey := uuid.New().String()
-	req := core.ObservabilityMetricsQueryRequest{
-		AccountId:      nbRequestContext.AccountId,
-		MetricProvider: "ES",
-		Queries: map[string]string{
-			queryKey: string(queryBytes),
-		},
-		StartTime: startTime.UnixMilli(),
-		EndTime:   endTime.UnixMilli(),
-		Request: map[string]any{
-			"query_type":  "dsl",
-			"metric_name": indexPattern,
-		},
-	}
+	req := buildESMetricsQueryRequest(nbRequestContext.AccountId, indexPattern, queryKey, string(queryBytes), startTime, endTime)
 
 	response, err := services_server.QueryMetrics(*nbRequestContext.Ctx, req)
 	if err != nil {
@@ -207,8 +247,7 @@ func (m ESMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input core
 		}, nil
 	}
 
-	// Compute stats and cap series to manage token usage, mirroring the Prometheus tool pattern.
-	summarized := summarizeESMetricsResponse(response)
+	summarized, refs := inlineESResponse(nbRequestContext, response, "es_metrics_query", "Elasticsearch")
 
 	data, err := common.MarshalJson(summarized)
 	if err != nil {
@@ -220,10 +259,101 @@ func (m ESMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input core
 	}
 
 	return core.NBToolResponse{
-		Data:   string(data),
-		Type:   core.NBToolResponseTypeJson,
-		Status: core.NBToolResponseStatusSuccess,
+		Data:       string(data),
+		Type:       core.NBToolResponseTypeJson,
+		Status:     core.NBToolResponseStatusSuccess,
+		References: refs,
 	}, nil
+}
+
+// esSeriesMaxAbs ranks a series by |max| of its values; empty series sort last.
+func esSeriesMaxAbs(s core.ObservabilityMetricsQuerySeries) float64 {
+	if len(s.Values) == 0 {
+		return math.Inf(-1)
+	}
+	m := math.Inf(-1)
+	for _, v := range s.Values {
+		if a := math.Abs(v); !math.IsNaN(a) && a > m {
+			m = a
+		}
+	}
+	return m
+}
+
+// maxESInlineBytes bounds the serialized result the model reads. Series and point
+// counts alone do not: Elasticsearch series carry many labels (ids, IPs, hostnames), so
+// 150 stats rows came to ~90 KB and were cut in the middle at the 64 KB observation
+// limit, in a third of the agent's calls, at ~16k tokens each.
+const maxESInlineBytes = 24 * 1024
+
+// inlineESResponse is what a metrics tool built on this summarizer returns: the whole
+// result when it fits, otherwise the complete data saved to the workspace and stats
+// rows, most significant first, for as many series as fit in maxESInlineBytes.
+func inlineESResponse(nbRequestContext core.NbToolContext, response core.ObservabilityMetricsQueryResponse, tool, source string) (map[string]any, []core.NBToolResponseReference) {
+	if !esOversized(response) {
+		if s := summarizeESMetricsResponse(response, false); esJSONSize(s) <= maxESInlineBytes {
+			return s, nil
+		}
+	}
+	refs := saveESResponseWithNote(nbRequestContext, &response, tool, source)
+	return summarizeESMetricsResponse(response, true), refs
+}
+
+func esJSONSize(v any) int {
+	b, err := common.MarshalJson(v)
+	if err != nil {
+		return math.MaxInt
+	}
+	return len(b)
+}
+
+// saveESResponseWithNote saves the complete response to the workspace and adds a note
+// saying so to every result with series.
+func saveESResponseWithNote(nbRequestContext core.NbToolContext, response *core.ObservabilityMetricsQueryResponse, tool, source string) []core.NBToolResponseReference {
+	series, points := esResponseSize(*response)
+	fileRef, refs, saveErr := saveESSeriesToWorkspace(nbRequestContext, *response, source)
+	if saveErr != nil {
+		nbRequestContext.Ctx.GetLogger().Warn(tool+": failed to save results to workspace", "error", saveErr.Error())
+	}
+	note := esSeriesFileNote(fileRef, saveErr != nil, series, points)
+	for i := range response.Results {
+		if len(response.Results[i].Payload) == 0 {
+			continue
+		}
+		if response.Results[i].Note != "" {
+			response.Results[i].Note += " "
+		}
+		response.Results[i].Note += note
+	}
+	return refs
+}
+
+// saveESSeriesToWorkspace writes every series (labels, timestamps, values) as JSON to
+// the conversation workspace, so shell_execute/jq can read what is not inline.
+func saveESSeriesToWorkspace(nbRequestContext core.NbToolContext, resp core.ObservabilityMetricsQueryResponse, source string) (string, []core.NBToolResponseReference, error) {
+	byQuery := map[string][]core.ObservabilityMetricsQuerySeries{}
+	for _, r := range resp.Results {
+		byQuery[r.Query] = append(byQuery[r.Query], r.Payload...)
+	}
+	body, err := common.MarshalJson(byQuery)
+	if err != nil {
+		return "", nil, err
+	}
+	filename := fmt.Sprintf("metrics_es_%d.json", time.Now().UnixNano())
+	if err := wm.SaveFile(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, filename, string(body)); err != nil {
+		return "", nil, err
+	}
+	return filename, []core.NBToolResponseReference{{Text: filename, Url: filename, Type: "file", Description: "Full " + source + " metrics query results"}}, nil
+}
+
+// esSeriesFileNote tells the planner the result was too large to inline, what is
+// inline, and where the complete data is.
+func esSeriesFileNote(fileRef string, saveFailed bool, series, points int) string {
+	inline := fmt.Sprintf("This result has %d series and %d points, too much to show in full: inline results carry only per-series stats (min/max/avg/last), largest max first, for as many series as fit.", series, points)
+	if saveFailed {
+		return inline + " The full data could not be saved to the workspace; narrow the filter to see the rest."
+	}
+	return fmt.Sprintf("%s The complete results (every series, with timestamps and values) are saved to file_ref %q as JSON {query: [{metric, timestamps, values}]}. If you have shell_execute, use jq/python on that file for per-point detail or for series not shown instead of re-running the query; if you do not, narrow the filter.", inline, fileRef)
 }
 
 // validateESMetricsQueryShape catches malformed model output that is valid JSON but
@@ -304,9 +434,28 @@ func collectESMetricsErrors(resp core.ObservabilityMetricsQueryResponse) string 
 	return strings.Join(errs, "; ")
 }
 
-// maxESMetricsSeries is the maximum number of series to return per query result.
-// Beyond this, only stats are useful — raw values would blow the context window.
-const maxESMetricsSeries = 10
+// Size limits are shared with prometheus_execute (maxInlineSeries, maxInlinePoints):
+// past either, only per-series stats go inline for the most significant series and
+// the complete result is saved to a workspace file. ES used to keep 10 series and the
+// planner showed 5 of them: on dev, a namespace with 43 pods was reported as having
+// 10, and "which pod uses the most memory" was answered from a partial list (#39201).
+
+// esResponseSize counts series and raw points across a response.
+func esResponseSize(resp core.ObservabilityMetricsQueryResponse) (series, points int) {
+	for _, r := range resp.Results {
+		series += len(r.Payload)
+		for _, s := range r.Payload {
+			points += len(s.Values)
+		}
+	}
+	return series, points
+}
+
+// esOversized reports whether a response is too large to put inline.
+func esOversized(resp core.ObservabilityMetricsQueryResponse) bool {
+	series, points := esResponseSize(resp)
+	return series > maxInlineSeries || points > maxInlinePoints
+}
 
 // maxESMetricsDataPoints caps values/timestamps per series. When exceeded, values
 // are sub-sampled and stats are appended for accuracy.
@@ -315,12 +464,16 @@ const maxESMetricsDataPoints = 50
 // summarizeESMetricsResponse computes per-series stats (min/max/avg), caps the number
 // of series, and sub-samples large value arrays. This happens at the tool level so the
 // LLM always receives a manageable response regardless of query breadth.
-func summarizeESMetricsResponse(resp core.ObservabilityMetricsQueryResponse) map[string]any {
+//
+// statsOnly drops values and keeps rows, most significant first, until maxInlineSeries
+// rows or maxESInlineBytes are reached. Labels every series of a result shares are
+// listed once in common_labels instead of on each row.
+func summarizeESMetricsResponse(resp core.ObservabilityMetricsQueryResponse, statsOnly bool) map[string]any {
 	type seriesSummary struct {
 		Metric     map[string]string `json:"metric"`
-		Timestamps []int64           `json:"timestamps"`
-		Values     []float64         `json:"values"`
-		Stats      map[string]any    `json:"stats"`
+		Timestamps []int64           `json:"timestamps,omitempty"`
+		Values     []float64         `json:"values,omitempty"`
+		Stats      map[string]any    `json:"stats,omitempty"`
 		NumPoints  int               `json:"num_points"`
 	}
 
@@ -334,14 +487,20 @@ func summarizeESMetricsResponse(resp core.ObservabilityMetricsQueryResponse) map
 		// from". Both used to surface as total_series: 0, so the agent discarded
 		// correct queries and reformulated — 30 of 35 queries in one customer
 		// conversation came back with zero series and no way to tell which case it was.
-		DocsMatched  *int64  `json:"docs_matched,omitempty"`
-		Note         string  `json:"note,omitempty"`
-		Error        *string `json:"error,omitempty"`
-		CappedNotice string  `json:"capped_notice,omitempty"`
+		DocsMatched *int64 `json:"docs_matched,omitempty"`
+		Note        string `json:"note,omitempty"`
+		// Sample is real documents from the index when the query matched nothing:
+		// the field paths and value shapes the agent needs to correct its filter.
+		Sample       string            `json:"sample,omitempty"`
+		Error        *string           `json:"error,omitempty"`
+		CappedNotice string            `json:"capped_notice,omitempty"`
+		CommonLabels map[string]string `json:"common_labels,omitempty"`
 	}
 
 	out := map[string]any{}
 	results := make([]resultSummary, 0, len(resp.Results))
+	shown := 0 // inline series across the whole call, as prometheus_execute counts them
+	used := 0  // serialized bytes so far, against maxESInlineBytes
 
 	for _, r := range resp.Results {
 		rs := resultSummary{
@@ -350,19 +509,34 @@ func summarizeESMetricsResponse(resp core.ObservabilityMetricsQueryResponse) map
 			TotalSeries: len(r.Payload),
 			DocsMatched: r.DocsMatched,
 			Note:        r.Note,
+			Sample:      r.Sample,
 			Error:       r.Error,
 		}
 
 		series := r.Payload
-		if len(series) > maxESMetricsSeries {
-			rs.CappedNotice = fmt.Sprintf("Showing %d of %d series. Use more specific filters to narrow results.", maxESMetricsSeries, len(series))
-			series = series[:maxESMetricsSeries]
+		common := esCommonLabels(series)
+		rs.CommonLabels = common
+		if statsOnly {
+			// Most significant first (largest |max|), so the inline subset is the one
+			// that matters and a "top N" reads straight off the list; stable, so a
+			// retried call sees the same order.
+			series = append([]core.ObservabilityMetricsQuerySeries(nil), series...)
+			sort.SliceStable(series, func(i, j int) bool { return esSeriesMaxAbs(series[i]) > esSeriesMaxAbs(series[j]) })
+			if room := maxInlineSeries - shown; len(series) > room {
+				if room < 0 {
+					room = 0
+				}
+				rs.CappedNotice = fmt.Sprintf("Showing stats for %d of %d series (largest max first); the note says where the rest are.", room, len(series))
+				series = series[:room]
+			}
+			shown += len(series)
 		}
 
+		used += esJSONSize(rs)
 		payload := make([]seriesSummary, 0, len(series))
 		for _, s := range series {
 			ss := seriesSummary{
-				Metric:    s.Metric,
+				Metric:    esWithoutLabels(s.Metric, common),
 				NumPoints: len(s.Values),
 			}
 
@@ -379,10 +553,25 @@ func summarizeESMetricsResponse(resp core.ObservabilityMetricsQueryResponse) map
 					sum += v
 				}
 				ss.Stats = map[string]any{
-					"min": minVal,
-					"max": maxVal,
-					"avg": sum / float64(len(s.Values)),
+					"min":  minVal,
+					"max":  maxVal,
+					"avg":  sum / float64(len(s.Values)),
+					"last": esLatestValue(s.Timestamps, s.Values),
 				}
+			}
+
+			// Too large to inline: stats only (the raw values are in the saved file),
+			// as many rows as fit.
+			if statsOnly {
+				if size := esJSONSize(ss) + 1; used+size > maxESInlineBytes {
+					rs.CappedNotice = fmt.Sprintf("Showing stats for %d of %d series (largest max first); the note says where the rest are.", len(payload), len(r.Payload))
+					shown -= len(series) - len(payload)
+					break
+				} else {
+					used += size
+				}
+				payload = append(payload, ss)
+				continue
 			}
 
 			// Sub-sample if too many data points.
@@ -418,6 +607,23 @@ func summarizeESMetricsResponse(resp core.ObservabilityMetricsQueryResponse) map
 
 	out["results"] = results
 	return out
+}
+
+// esLatestValue is the value at the newest timestamp (values are not guaranteed to
+// arrive in time order). Without timestamps it is the last value.
+func esLatestValue(ts []int64, vals []float64) float64 {
+	if len(vals) == 0 {
+		return 0
+	}
+	best := len(vals) - 1
+	if len(ts) == len(vals) {
+		for i := range ts {
+			if ts[i] > ts[best] {
+				best = i
+			}
+		}
+	}
+	return vals[best]
 }
 
 // extractTimestampFromDSL parses the DSL query object to find the @timestamp range filter's
@@ -508,4 +714,85 @@ func resolveESTimeExpression(expr string) time.Time {
 	default:
 		return time.Time{}
 	}
+}
+
+// buildESMetricsQueryRequest is the request the tool sends for one query.
+func buildESMetricsQueryRequest(accountID, indexPattern, queryKey, query string, startTime, endTime time.Time) core.ObservabilityMetricsQueryRequest {
+	return core.ObservabilityMetricsQueryRequest{
+		AccountId:      accountID,
+		MetricProvider: "ES",
+		Queries: map[string]string{
+			queryKey: query,
+		},
+		StartTime: startTime.UnixMilli(),
+		EndTime:   endTime.UnixMilli(),
+		Request: map[string]any{
+			"query_type":  "dsl",
+			"metric_name": indexPattern,
+			// When the query matches nothing, return a few real documents so the
+			// agent can see the index's actual field paths and value shapes. Only
+			// this tool asks; pages and dashboards querying the same path do not.
+			"zero_match_sample": true,
+		},
+	}
+}
+
+// discover asks the api-server to describe the data: the datasets in the index, or
+// recent documents of one dataset. It goes through the same metrics call and the
+// same response shape as a query, so the planner view renders it like a sample.
+func (m ESMetricsQueryTool) discover(nbRequestContext core.NbToolContext, d esDiscoverRequest) (core.NBToolResponse, error) {
+	end := time.Now()
+	req := buildESMetricsQueryRequest(nbRequestContext.AccountId, d.index, "discover", "{}", end.Add(-24*time.Hour), end)
+	req.Request["discover"] = d.mode
+	if d.dataset != "" {
+		req.Request["dataset"] = d.dataset
+	}
+	response, err := services_server.QueryMetrics(*nbRequestContext.Ctx, req)
+	if err != nil {
+		return core.NBToolResponse{Data: fmt.Sprintf("Discovery failed: %s", err.Error()), Status: core.NBToolResponseStatusError}, err
+	}
+	if errText := collectESMetricsErrors(response); errText != "" {
+		return core.NBToolResponse{Data: fmt.Sprintf("Discovery failed: %s", errText), Status: core.NBToolResponseStatusError}, nil
+	}
+	data, err := common.MarshalJson(summarizeESMetricsResponse(response, false))
+	if err != nil {
+		return core.NBToolResponse{Status: core.NBToolResponseStatusError}, fmt.Errorf("es_metrics_query: failed to marshal discovery: %w", err)
+	}
+	return core.NBToolResponse{Data: string(data), Type: core.NBToolResponseTypeJson, Status: core.NBToolResponseStatusSuccess}, nil
+}
+
+// esCommonLabels returns the labels every series carries with the same value, so
+// they can be listed once; nil for fewer than two series.
+func esCommonLabels(series []core.ObservabilityMetricsQuerySeries) map[string]string {
+	if len(series) < 2 {
+		return nil
+	}
+	common := map[string]string{}
+	for k, v := range series[0].Metric {
+		common[k] = v
+	}
+	for _, s := range series[1:] {
+		for k, v := range common {
+			if s.Metric[k] != v {
+				delete(common, k)
+			}
+		}
+	}
+	if len(common) == 0 {
+		return nil
+	}
+	return common
+}
+
+func esWithoutLabels(metric, drop map[string]string) map[string]string {
+	if len(drop) == 0 {
+		return metric
+	}
+	out := make(map[string]string, len(metric))
+	for k, v := range metric {
+		if _, ok := drop[k]; !ok {
+			out[k] = v
+		}
+	}
+	return out
 }

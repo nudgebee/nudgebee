@@ -2,12 +2,14 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
+	"nudgebee/llm/workspace"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -213,4 +215,229 @@ func TestCollectESMetricsErrors_MixedBatch(t *testing.T) {
 	if !strings.Contains(got, "bad") || !strings.Contains(got, errText) {
 		t.Fatalf("expected joined error to name the failing key and text, got %q", got)
 	}
+}
+
+func TestSummarizeESMetricsResponse_PassesSampleThrough(t *testing.T) {
+	zero := int64(0)
+	out := summarizeESMetricsResponse(core.ObservabilityMetricsQueryResponse{Results: []core.ObservabilityMetricsQueryResult{{
+		QueryKey: "q", DocsMatched: &zero, Note: "matched nothing", Sample: "metricset.metric_name: CPUUtilization",
+	}}}, false)
+	b, err := json.Marshal(out)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"sample":"metricset.metric_name: CPUUtilization"`)
+}
+
+// The api-server reads documents on a miss only when asked; this tool is the one caller
+// that asks. Dropping the flag would silently turn the sample off for the agent.
+func TestBuildESMetricsQueryRequest_AsksForZeroMatchSample(t *testing.T) {
+	req := buildESMetricsQueryRequest("acc", "metrics-*", "k", `{"query":{"match_all":{}}}`, time.Unix(0, 0), time.Unix(60, 0))
+	assert.Equal(t, true, req.Request["zero_match_sample"])
+	assert.Equal(t, "dsl", req.Request["query_type"])
+	assert.Equal(t, "metrics-*", req.Request["metric_name"])
+}
+
+func TestParseESDiscoverInput(t *testing.T) {
+	d, ok, _, err := parseESDiscoverInput(`{"index":"metrics-*","discover":"datasets"}`)
+	require.True(t, ok)
+	require.NoError(t, err)
+	assert.Equal(t, "datasets", d.mode)
+
+	d, ok, _, err = parseESDiscoverInput(`{"index":"metrics-*","discover":"sample","dataset":"aws.cloudwatch_metrics"}`)
+	require.True(t, ok)
+	require.NoError(t, err)
+	assert.Equal(t, "aws.cloudwatch_metrics", d.dataset)
+
+	_, ok, msg, err := parseESDiscoverInput(`{"index":"metrics-*","discover":"sample"}`)
+	assert.True(t, ok)
+	assert.Error(t, err)
+	assert.Contains(t, msg, "Run discover \"datasets\" first")
+
+	_, ok, _, err = parseESDiscoverInput(`{"index":"metrics-*","discover":"everything"}`)
+	assert.True(t, ok)
+	assert.Error(t, err)
+
+	_, ok, _, _ = parseESDiscoverInput(`{"index":"metrics-*","query":{"query":{"match_all":{}}}}`)
+	assert.False(t, ok, "a normal query is not discovery")
+}
+
+func esTestResponse(n, points int) core.ObservabilityMetricsQueryResponse {
+	var p []core.ObservabilityMetricsQuerySeries
+	for i := 0; i < n; i++ {
+		ts := make([]int64, points)
+		vs := make([]float64, points)
+		for j := range ts {
+			ts[j] = int64(points - j) // newest first, to check "last" uses timestamps
+			vs[j] = float64(i*10 + j)
+		}
+		p = append(p, core.ObservabilityMetricsQuerySeries{Metric: map[string]string{"pod": fmt.Sprint(i)}, Timestamps: ts, Values: vs})
+	}
+	return core.ObservabilityMetricsQueryResponse{Results: []core.ObservabilityMetricsQueryResult{{QueryKey: "q", Query: "{}", Payload: p}}}
+}
+
+type esSummary struct {
+	Results []struct {
+		CommonLabels map[string]string `json:"common_labels"`
+		Payload      []struct {
+			Metric map[string]string  `json:"metric"`
+			Values []float64          `json:"values"`
+			Stats  map[string]float64 `json:"stats"`
+		} `json:"payload"`
+		CappedNotice string `json:"capped_notice"`
+	} `json:"results"`
+}
+
+func summarizeForTest(t *testing.T, resp core.ObservabilityMetricsQueryResponse) esSummary {
+	t.Helper()
+	b, err := json.Marshal(summarizeESMetricsResponse(resp, esOversized(resp)))
+	require.NoError(t, err)
+	var out esSummary
+	require.NoError(t, json.Unmarshal(b, &out))
+	return out
+}
+
+// Same limits as prometheus_execute: within them every series and its values stay
+// inline; past them, stats only for the most significant series.
+func TestSummarizeESMetricsResponse_SizeLimitsMatchPrometheus(t *testing.T) {
+	small := summarizeForTest(t, esTestResponse(43, 3)) // 43 series, 129 points: inline
+	require.Len(t, small.Results[0].Payload, 43)
+	assert.Len(t, small.Results[0].Payload[0].Values, 3, "within the limits, values stay inline")
+	assert.Equal(t, 0.0, small.Results[0].Payload[0].Stats["last"], "last = value at the newest timestamp")
+
+	big := summarizeForTest(t, esTestResponse(43, 60)) // 2,580 points: past maxInlinePoints
+	require.Len(t, big.Results[0].Payload, 43, "every series still has a stats line")
+	assert.Nil(t, big.Results[0].Payload[0].Values, "past the limits: stats only")
+	assert.Equal(t, "42", big.Results[0].Payload[0].Metric["pod"], "largest max first")
+	assert.Empty(t, big.Results[0].CappedNotice)
+
+	huge := summarizeForTest(t, esTestResponse(250, 2))
+	require.Len(t, huge.Results[0].Payload, maxInlineSeries)
+	assert.Contains(t, huge.Results[0].CappedNotice, "of 250 series")
+}
+
+type esSaveCapture struct {
+	workspace.WorkspaceManager
+	path, body string
+}
+
+func (c *esSaveCapture) SaveFile(_ *security.RequestContext, _, _, path, content string) error {
+	c.path, c.body = path, content
+	return nil
+}
+
+func TestSaveESSeriesToWorkspace_KeepsEverySeriesAndPoint(t *testing.T) {
+	orig := wm
+	capture := &esSaveCapture{}
+	wm = capture
+	defer func() { wm = orig }()
+
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "a", ConversationId: "c"}
+	ref, refs, err := saveESSeriesToWorkspace(ctx, esTestResponse(43, 60), "Elasticsearch")
+	require.NoError(t, err)
+	assert.Equal(t, capture.path, ref)
+	assert.True(t, strings.HasPrefix(ref, "metrics_es_"))
+	require.Len(t, refs, 1)
+	var saved map[string][]core.ObservabilityMetricsQuerySeries
+	require.NoError(t, json.Unmarshal([]byte(capture.body), &saved))
+	require.Len(t, saved["{}"], 43)
+	assert.Len(t, saved["{}"][0].Values, 60, "the file keeps every point")
+
+	note := esSeriesFileNote(ref, false, 43, 2580)
+	assert.Contains(t, note, ref)
+	assert.Contains(t, note, "43 series")
+	assert.Contains(t, esSeriesFileNote("", true, 43, 2580), "could not be saved")
+}
+
+// splunk_metrics_query shares inlineESResponse, so it shares this step too: a
+// stats-only result must always say where the full data went.
+func TestInlineESResponse_NotesEveryResultWithSeries(t *testing.T) {
+	orig := wm
+	wm = &esSaveCapture{}
+	defer func() { wm = orig }()
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "a", ConversationId: "c"}
+
+	out, refs := inlineESResponse(ctx, esTestResponse(5, 3), "splunk_metrics_query", "Splunk")
+	assert.Nil(t, refs, "within the limits nothing is saved")
+	b, _ := json.Marshal(out)
+	assert.NotContains(t, string(b), "file_ref")
+
+	big := esTestResponse(43, 60)
+	big.Results = append(big.Results, core.ObservabilityMetricsQueryResult{QueryKey: "empty"})
+	out, refs = inlineESResponse(ctx, big, "splunk_metrics_query", "Splunk")
+	require.Len(t, refs, 1)
+	assert.Equal(t, "Full Splunk metrics query results", refs[0].Description)
+	b, _ = json.Marshal(out)
+	var s struct {
+		Results []struct {
+			Note string `json:"note"`
+		} `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(b, &s))
+	assert.Contains(t, s.Results[0].Note, refs[0].Url)
+	assert.Empty(t, s.Results[1].Note, "a result without series gets no note")
+}
+
+// Series the way Elasticsearch builds them: a dozen labels per series, most shared.
+func esWideLabelResponse(n, points int) core.ObservabilityMetricsQueryResponse {
+	resp := esTestResponse(n, points)
+	for i := range resp.Results[0].Payload {
+		m := resp.Results[0].Payload[i].Metric
+		m["__name__"] = "kubernetes.pod.cpu.usage.nanocores"
+		m["kubernetes.namespace"] = "demo"
+		m["kubernetes.namespace_uid"] = "00000000-0000-0000-0000-000000000000"
+		m["kubernetes.node.hostname"] = fmt.Sprintf("node-%d.example.com", i%3)
+		m["kubernetes.pod.uid"] = fmt.Sprintf("00000000-0000-0000-0000-%012d", i)
+		m["kubernetes.pod.ip"] = fmt.Sprintf("10.0.0.%d", i%250)
+		m["kubernetes.replicaset.name"] = fmt.Sprintf("app-%d-5d8d6bb8f6", i)
+		m["kubernetes.pod.start_time"] = "2026-10-09T01:35:13Z"
+	}
+	return resp
+}
+
+func TestSummarizeESMetricsResponse_SharedLabelsListedOnce(t *testing.T) {
+	out := summarizeForTest(t, esWideLabelResponse(5, 3))
+	r := out.Results[0]
+	assert.Equal(t, "demo", r.CommonLabels["kubernetes.namespace"])
+	assert.Equal(t, "kubernetes.pod.cpu.usage.nanocores", r.CommonLabels["__name__"])
+	require.Len(t, r.Payload, 5)
+	assert.NotContains(t, r.Payload[0].Metric, "kubernetes.namespace", "a shared label is not repeated per row")
+	assert.Contains(t, r.Payload[0].Metric, "kubernetes.pod.uid", "a label that differs stays on the row")
+}
+
+// The bound that matters is bytes: 150 stats rows with Elasticsearch-sized labels were
+// ~90 KB and got cut in the middle at the 64 KB observation limit.
+func TestInlineESResponse_StaysWithinByteBudget(t *testing.T) {
+	orig := wm
+	capture := &esSaveCapture{}
+	wm = capture
+	defer func() { wm = orig }()
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "a", ConversationId: "c"}
+
+	t.Run("many series", func(t *testing.T) {
+		out, refs := inlineESResponse(ctx, esWideLabelResponse(400, 2), "es_metrics_query", "Elasticsearch")
+		b, err := json.Marshal(out)
+		require.NoError(t, err)
+		assert.LessOrEqual(t, len(b), maxESInlineBytes+1024, "inline result stays near the budget (notes and query text ride on top)")
+		require.Len(t, refs, 1, "what does not fit is saved")
+		assert.NotContains(t, string(b), `"values":null`)
+		var s esSummary
+		require.NoError(t, json.Unmarshal(b, &s))
+		assert.Contains(t, s.Results[0].CappedNotice, "of 400 series")
+		assert.Equal(t, "399", s.Results[0].Payload[0].Metric["pod"], "largest max first")
+	})
+	t.Run("few points, heavy labels", func(t *testing.T) {
+		resp := esWideLabelResponse(140, 1) // under the series and point limits, over the byte budget
+		require.False(t, esOversized(resp))
+		out, refs := inlineESResponse(ctx, resp, "splunk_metrics_query", "Splunk")
+		require.Len(t, refs, 1, "too large to inline is saved even under the count limits")
+		b, _ := json.Marshal(out)
+		assert.LessOrEqual(t, len(b), maxESInlineBytes+1024)
+	})
+	t.Run("small result unchanged", func(t *testing.T) {
+		out, refs := inlineESResponse(ctx, esTestResponse(3, 5), "es_metrics_query", "Elasticsearch")
+		assert.Nil(t, refs)
+		var s esSummary
+		b, _ := json.Marshal(out)
+		require.NoError(t, json.Unmarshal(b, &s))
+		assert.Len(t, s.Results[0].Payload[0].Values, 5, "values stay inline")
+	})
 }

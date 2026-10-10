@@ -848,3 +848,13 @@ func TestExecutePromQl_NilRequestContextReturnsError(t *testing.T) {
 		assert.Nil(t, data)
 	})
 }
+
+func TestFilterLabelsByName(t *testing.T) {
+	labels := []core.ObservabilityMetricsSeriesLabel{
+		{Label: "aws.dimensions.DBInstanceIdentifier"}, {Label: "metricset.dimensions.DBInstanceIdentifier"}, {Label: "kubernetes.pod.name"},
+	}
+	got := filterLabelsByName(labels, "dbinstanceidentifier")
+	require.Len(t, got, 2)
+	assert.Len(t, filterLabelsByName(labels, ""), 3, "no filter keeps everything")
+	assert.Empty(t, filterLabelsByName(labels, "nope"))
+}

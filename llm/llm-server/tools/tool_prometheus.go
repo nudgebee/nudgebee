@@ -1373,10 +1373,11 @@ func (m ListMetricsLabelsTool) GetType() core.NBToolType {
 func (m ListMetricsLabelsTool) Description() string {
 	return `Returns List of Available labels for a given metric.
 		Usage:
-		* Input: (required) Metric Name.
+		* Input: (required) Metric Name (on Elasticsearch: the index pattern).
+		* Optional "filter": part of a field name; only fields whose path contains it are returned (e.g. "DBInstanceIdentifier" finds "aws.dimensions.DBInstanceIdentifier").
 		* Output: The tool will return available labels for the given metric.
 
-		Purpose: Use this tool to list the labels available for a given metric name.
+		Purpose: Use this tool to list the labels available for a given metric name, or to find the full path of a field you know by name.
 		`
 }
 
@@ -1388,9 +1389,30 @@ func (m ListMetricsLabelsTool) InputSchema() core.ToolSchema {
 				Type:        core.ToolSchemaTypeString,
 				Description: "metrics name to fetch labels",
 			},
+			"filter": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Optional part of a field name; only fields whose path contains it are returned (case-insensitive).",
+			},
 		},
 		Required: []string{"command"},
 	}
+}
+
+// filterLabelsByName keeps the labels whose name contains fragment, case-insensitively.
+// On Elasticsearch a field list can run to thousands of paths; this is how the agent
+// finds where a field it knows by name actually lives in this index.
+func filterLabelsByName(labels []core.ObservabilityMetricsSeriesLabel, fragment string) []core.ObservabilityMetricsSeriesLabel {
+	f := strings.ToLower(strings.TrimSpace(fragment))
+	if f == "" {
+		return labels
+	}
+	out := make([]core.ObservabilityMetricsSeriesLabel, 0)
+	for _, l := range labels {
+		if strings.Contains(strings.ToLower(l.Label), f) {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 func (m ListMetricsLabelsTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
@@ -1441,6 +1463,17 @@ func (m ListMetricsLabelsTool) Call(nbRequestContext core.NbToolContext, input c
 			Data:   err.Error(),
 			Status: core.NBToolResponseStatusError,
 		}, err
+	}
+
+	if fragment := sanitizeMetricsArg(argString(input, "filter")); fragment != "" {
+		total := len(labelsResponse.Labels)
+		labelsResponse.Labels = filterLabelsByName(labelsResponse.Labels, fragment)
+		note := fmt.Sprintf("%d of %d fields contain %q.", len(labelsResponse.Labels), total, fragment)
+		if fallbackNote != "" {
+			fallbackNote += " " + note
+		} else {
+			fallbackNote = note
+		}
 	}
 
 	var payload any = labelsResponse

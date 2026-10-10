@@ -362,6 +362,11 @@ type appConfig struct {
 	// load-balancer paths.
 	FeatureKGCFNStackResourcesFromDB bool `mapstructure:"feature_kg_cfn_stack_resources_from_db"`
 
+	// ESMetricsZeroMatchSampleEnabled makes an Elasticsearch metrics query that matches
+	// no documents also return a few real documents from the index, so the agent can
+	// see the actual field paths. Costs at most two extra bounded searches per miss.
+	ESMetricsZeroMatchSampleEnabled bool `mapstructure:"es_metrics_zero_match_sample_enabled"`
+
 	// Webhook execution mode - true for async (default), false for sync (useful for tests)
 	WebhookAsyncExecution bool `mapstructure:"webhook_async_execution"`
 
@@ -625,6 +630,7 @@ func init() {
 	viper.SetDefault("feature_kg_cloud_topology_from_db", true)
 	viper.SetDefault("feature_kg_cfn_stack_resources_from_db", true)
 	viper.SetDefault("webhook_async_execution", true)
+	viper.SetDefault("es_metrics_zero_match_sample_enabled", true)
 
 	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.12")
 

@@ -482,12 +482,13 @@ func (e ElasticSearchMetricsAgent) buildSystemPrompt(
 		// queryable, and a `term` filter on it silently matches nothing — 13 times in one
 		// traced investigation. Forbidding it outright (the previous wording) stopped
 		// nothing, because it named no replacement. Explain the translation instead.
-		"`__name__` in a RESULT is not a queryable field — it is the metric's fully-qualified field path. To select that metric, use an `exists` filter on the path itself (e.g. `{\"exists\":{\"field\":\"kubernetes.pod.cpu.usage.nanocores\"}}`), never `{\"term\":{\"__name__\":...}}`. On OTel indices, which do have a real metric-name field, filter `name.keyword` instead.",
+		"`__name__` and the other labels in a RESULT are names this backend builds for each series; they are not guaranteed to be field names in the index. Never filter on `__name__`. Depending on the layout, `__name__` is a numeric field's path (select it with an `exists` filter on that path) or the value of a metric-name field (filter that field). When a query matches nothing, the tool returns real documents from the index: take field paths and value shapes from those documents, not from result labels.",
+		"Never report data as missing or not ingested unless the tool said the index has no documents. A query that matched nothing, or a check that did not run, only shows that this query found nothing: say what you could not find and why.",
 		// Sampling first is cheaper and more reliable than any built-in field list: it
 		// returns only fields this account actually populates. Measured on a customer
 		// estate: one sampled document is ~4KB and names every metric in its dataset,
 		// against ~400KB for the full mapping, most of which is unpopulated template.
-		"When you do not know an index's fields, FETCH A SAMPLE FIRST: `{\"query\":{\"match_all\":{}},\"size\":2}` with a recent time range. The `__name__` values in the result are this environment's real metric paths and the label keys are its real dimensions. Prefer them over any field name you assume.",
+		"When you do not know an index's fields, FETCH A SAMPLE FIRST: `{\"query\":{\"match_all\":{}},\"size\":2}` with a recent time range. The result's series labels show what the index holds, but they may be shortened; when a filter built from them matches nothing, use the documents the tool returns instead.",
 		"Do not ask the user for clarification — make the best assumption and proceed.",
 	}
 	if schemas[schemaOTel] {

@@ -240,6 +240,9 @@ type ObservabilityMetricsQueryResult struct {
 	DocsMatched *int64 `json:"docs_matched,omitempty"`
 	// Note explains an empty Payload when the backend knows why.
 	Note string `json:"note,omitempty"`
+	// Sample holds real documents, flattened to `path: value` lines, when an
+	// Elasticsearch query matched nothing. Note says which search found them.
+	Sample string `json:"sample,omitempty"`
 }
 
 type ObservabilityMetricsQuerySeries struct {

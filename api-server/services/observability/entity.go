@@ -385,6 +385,10 @@ type QueryResult struct {
 	// one (SolarWinds). Internal only: the over-time collapse needs it to convert
 	// `count` when a series has a single bucket and no neighbour to measure from.
 	bucketSeconds int64
+
+	// Sample holds real documents, flattened to `path: value` lines, when a query
+	// matched nothing. Note says which search produced them. Elasticsearch only.
+	Sample string `json:"sample,omitempty"`
 }
 
 // Result represents a single metric or log group data point with labels, timestamps, and values.
