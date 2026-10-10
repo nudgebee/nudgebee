@@ -146,14 +146,14 @@ func tempoInteger(v string) (string, bool) {
 // LIKE's implicit anchoring needs nothing extra.
 func tempoLikePattern(p string) string {
 	var b strings.Builder
-	escaped := false
-	for _, r := range p {
-		switch {
-		case escaped:
-			b.WriteString(regexp.QuoteMeta(string(r)))
-			escaped = false
-		case r == '\\':
-			escaped = true
+	runes := []rune(p)
+	for i := 0; i < len(runes); i++ {
+		switch r := runes[i]; {
+		// Only `\%`, `\_` and `\\` are escapes (sqllike.go); any other backslash is a
+		// literal, so a Windows path like `C:\assets` keeps its separator.
+		case r == '\\' && i+1 < len(runes) && (runes[i+1] == '%' || runes[i+1] == '_' || runes[i+1] == '\\'):
+			b.WriteString(regexp.QuoteMeta(string(runes[i+1])))
+			i++
 		case r == '%':
 			b.WriteString(".*")
 		case r == '_':
@@ -161,9 +161,6 @@ func tempoLikePattern(p string) string {
 		default:
 			b.WriteString(regexp.QuoteMeta(string(r)))
 		}
-	}
-	if escaped {
-		b.WriteString(`\\`)
 	}
 	return b.String()
 }

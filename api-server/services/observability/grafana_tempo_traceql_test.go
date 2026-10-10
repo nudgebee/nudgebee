@@ -261,3 +261,24 @@ func TestTempoWhere_SpanAttributesFilter(t *testing.T) {
 	}})
 	require.Error(t, err, "an attribute name that is not a plain dotted key must not reach TraceQL")
 }
+
+// tempoLikePattern follows the canonical SQL LIKE contract in sqllike.go: a backslash
+// escapes only `%`, `_` and `\`; before any other character, or at the end, it is a
+// literal backslash. It used to treat every `\` as an escape, so `C:\assets`
+// silently became `C:assets` and matched nothing.
+func TestTempoLikePatternEscapes(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{`100\%`, `100%`},
+		{`a\_b`, `a_b`},
+		{`a\\b`, `a\\b`},
+		{`C:\assets`, `C:\\assets`},
+		{`trailing\`, `trailing\\`},
+		{`%x_`, `.*x.`},
+		{`a.b`, `a\.b`},
+	}
+	for _, tt := range tests {
+		if got := tempoLikePattern(tt.in); got != tt.want {
+			t.Errorf("tempoLikePattern(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
