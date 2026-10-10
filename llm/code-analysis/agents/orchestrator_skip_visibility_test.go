@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"nudgebee/code-analysis-agent/common"
 )
 
 // When CodeFixer is skipped, the response must say so on every path — not only
@@ -84,5 +86,68 @@ func TestSkipBranchSurvivesNullSpecialistResult(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// In fix mode the only diff a response may carry is the one computed from the
+// checkout. A specialist that fills in git_diff itself has written text, not
+// applied a change: when the fixer then does not run, that text went back to the
+// caller next to a summary saying "git_diff is empty", and did not apply.
+//
+// The specialist's answer is not always bare JSON. The paths that return it
+// parse it strictly, so a fenced or prose-wrapped answer must come out of this
+// step as plain JSON, or the original text — diff included — is what they hand
+// back.
+func TestModelWrittenDiffIsDroppedHoweverTheSpecialistWrapsItsAnswer(t *testing.T) {
+	answer := `{"title":"Add search tests","file_path":"e2e/tests/locators.ts","requires_fix":true,` +
+		`"fixed_code":"export const searchBox = 1;","git_diff":"@@ -0,0 +1 @@\n+export const searchBox = 1;\n"}`
+	cases := map[string]string{
+		"bare JSON":        answer,
+		"in a code fence":  "```json\n" + answer + "\n```",
+		"wrapped in prose": "Here is the analysis you asked for:\n" + answer + "\nLet me know if anything is unclear.",
+	}
+	for name, specialistResult := range cases {
+		t.Run(name, func(t *testing.T) {
+			// As Execute parses it.
+			factsData, err := common.ExtractJSONFromLLMResponse(specialistResult, common.NewLogger("test", "", "", nil))
+			if err != nil {
+				t.Fatalf("fixture does not parse: %v", err)
+			}
+
+			cleaned := dropModelWrittenDiff(factsData, specialistResult)
+
+			if _, has := factsData["git_diff"]; has {
+				t.Error("git_diff is still in the parsed facts the fixer result is merged onto")
+			}
+			// As the skipped / nothing-to-change / clone-failure paths parse it.
+			var returned map[string]any
+			if err := json.Unmarshal([]byte(cleaned), &returned); err != nil {
+				t.Fatalf("the text those paths return must be plain JSON, got %q: %v", cleaned, err)
+			}
+			if _, has := returned["git_diff"]; has {
+				t.Error("the specialist's own git_diff must not survive")
+			}
+			if strings.Contains(cleaned, "searchBox = 1;\\n") {
+				t.Error("the diff text is still in the returned answer")
+			}
+			// The analysis itself stays: it is a proposal, and is labelled as one.
+			if returned["fixed_code"] == nil || returned["requires_fix"] != true || returned["title"] != "Add search tests" {
+				t.Errorf("the rest of the specialist's answer must be kept, got %+v", returned)
+			}
+		})
+	}
+}
+
+// A specialist that answers with the literal `null` parses into a nil map. Its
+// answer has no diff to remove and must come back as it went in, not rewritten.
+func TestModelWrittenDiffRemovalLeavesAnEmptyAnswerAlone(t *testing.T) {
+	for _, answer := range []string{"null", " null\n"} {
+		factsData, err := common.ExtractJSONFromLLMResponse(answer, common.NewLogger("test", "", "", nil))
+		if err != nil || factsData != nil {
+			t.Fatalf("fixture: %q should parse to a nil map without error, got %v, %v", answer, factsData, err)
+		}
+		if got := dropModelWrittenDiff(factsData, answer); got != answer {
+			t.Errorf("dropModelWrittenDiff(nil, %q) = %q, want it unchanged", answer, got)
+		}
 	}
 }
