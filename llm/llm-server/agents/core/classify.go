@@ -59,6 +59,10 @@ type ClassificationCall struct {
 	// classification tier, or the summary tier when no classification model is
 	// configured for the call's account (see classificationTier).
 	Tier ModelTier
+	// KeepCallerTier runs the call on whatever tier the caller's context has,
+	// including none (the account's global model), and ignores Tier. For callers
+	// whose model must not change when they move onto Classify.
+	KeepCallerTier bool
 	// TrackContent persists prompt/response on the token-usage row when tracing is on.
 	TrackContent bool
 }
@@ -143,14 +147,17 @@ var classificationGenerate = GenerateAndTrackLLMContent
 
 // classifyWithLLM is the LLM backend: strict label matching with corrective retries.
 func classifyWithLLM(ctx *security.RequestContext, call ClassificationCall, task ClassificationTask, input string) (ClassificationDecision, error) {
-	tier := call.Tier
-	if tier == "" {
-		tier = classificationTier(ctx, call)
+	llmCtx := ctx
+	if !call.KeepCallerTier {
+		tier := call.Tier
+		if tier == "" {
+			tier = classificationTier(ctx, call)
+		}
+		llmCtx = security.NewRequestContext(
+			context.WithValue(ctx.GetContext(), ContextKeyModelTier, tier),
+			ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter(),
+		)
 	}
-	llmCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), ContextKeyModelTier, tier),
-		ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter(),
-	)
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, classificationSystemPrompt(task)),
 		llms.TextParts(llms.ChatMessageTypeHuman, input),

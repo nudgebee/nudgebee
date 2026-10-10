@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
@@ -305,4 +306,64 @@ func TestIsAgentToolAuthorizedToProcessRequest_LogsDefaultRead(t *testing.T) {
 		NBAgentPlannerToolAction{Tool: "mock_static_tool", ToolInput: "list"})
 	require.NoError(t, err)
 	require.NotContains(t, buf.String(), "no classifier decided")
+}
+
+// The LLM classifier maps every answer the tool prompts allow, and an unsure
+// or invalid answer always routes to approval, never to read.
+func TestInferToolRequestTypeFromPrompt_Answers(t *testing.T) {
+	tool := mockInferenceTool{mockTool: mockTool{name: "mock_cli"}, prompt: "Classify the command"}
+	agent := mockAgentWithTools{mockPlainAgent: mockPlainAgent{name: "test_agent"}, tools: []toolcore.NBTool{tool}}
+	cases := []struct {
+		name    string
+		answers []string
+		want    toolcore.ToolRequestType
+		calls   int
+	}{
+		{"read", []string{"read"}, toolcore.ToolRequestTypeRead, 1},
+		{"delete with punctuation", []string{"Delete."}, toolcore.ToolRequestTypeDelete, 1},
+		{"unknown asks for approval without a retry", []string{"unknown"}, toolcore.ToolRequestTypeUpdate, 1},
+		{"write counts as create", []string{"write"}, toolcore.ToolRequestTypeCreate, 1},
+		{"execute counts as create", []string{"execute"}, toolcore.ToolRequestTypeCreate, 1},
+		{"invalid then valid", []string{"it reads pods", "read"}, toolcore.ToolRequestTypeRead, 2},
+		{"never valid asks for approval", []string{"no idea", "no idea", "no idea"}, toolcore.ToolRequestTypeUpdate, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := stubGenerate(t, tc.answers, nil)
+			ctx := security.NewRequestContext(
+				context.WithValue(context.Background(), ContextKeyModelTier, ModelTierReasoning),
+				security.NewRequestContextForSuperAdmin().GetSecurityContext(), slog.Default(), nil, nil)
+			got, err := inferToolRequestTypeFromPrompt(ctx, NBAgentRequest{AccountId: "test-account"}, agent, "mock_cli",
+				NBAgentPlannerToolAction{Tool: "mock_cli", ToolInput: "mock list"}, tool)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+			require.Len(t, *calls, tc.calls)
+		})
+	}
+}
+
+// The classifier keeps the calling agent's tier, including none, so the model
+// is unchanged.
+func TestInferToolRequestTypeFromPrompt_KeepsCallerTier(t *testing.T) {
+	var tier ModelTier
+	old := classificationGenerate
+	classificationGenerate = func(ctx *security.RequestContext, _, _, _, _, _ string, _ bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+		tier = modelTierFromContext(ctx)
+		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "read"}}}, nil
+	}
+	t.Cleanup(func() { classificationGenerate = old })
+
+	tool := mockInferenceTool{mockTool: mockTool{name: "mock_cli"}, prompt: "Classify the command"}
+	agent := mockAgentWithTools{mockPlainAgent: mockPlainAgent{name: "test_agent"}, tools: []toolcore.NBTool{tool}}
+	for _, callerTier := range []ModelTier{ModelTierRetrieval, ""} {
+		goCtx := context.Background()
+		if callerTier != "" {
+			goCtx = context.WithValue(goCtx, ContextKeyModelTier, callerTier)
+		}
+		ctx := security.NewRequestContext(goCtx, security.NewRequestContextForSuperAdmin().GetSecurityContext(), slog.Default(), nil, nil)
+		_, err := inferToolRequestTypeFromPrompt(ctx, NBAgentRequest{AccountId: "test-account"}, agent, "mock_cli",
+			NBAgentPlannerToolAction{Tool: "mock_cli", ToolInput: "mock list"}, tool)
+		require.NoError(t, err)
+		require.Equal(t, callerTier, tier)
+	}
 }

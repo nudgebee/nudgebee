@@ -73,6 +73,7 @@ Every decision is logged as `classification_decision` (task, labels, valid, back
   - `ClassificationTask` has `Name`, `Instructions`, `Options []ClassificationOption{Label, Description}` and `Multi`.
   - `ClassificationDecision` has `Labels`, `Valid`, `Raw`, `Backend` and `Latency`. Decision-model backends will add `Confidence`, `Probabilities` and `Model`.
   - `ClassificationCall` carries the ids that `GenerateAndTrackLLMContent` needs. `AgentId` is the calling agent's id, because it drives API-key resolution and cost attribution.
+  - `Tier` picks the model tier; empty means the classification tier. `KeepCallerTier` instead runs on whatever tier the caller's context has, including none, for callers whose model must not change when they move onto the API (the tool-approval check).
 - **LLM backend:** `classifyWithLLM` calls `GenerateAndTrackLLMContent` with `llms.WithTemperature(0)` and `WithThinkingLevel(ThinkingLevelFastTask)`.
   - It does not use structured enum output, because our provider adapters have no common option for it.
   - Production Gemini returned an exact label for 211 of 211 real workflow-intent messages.
