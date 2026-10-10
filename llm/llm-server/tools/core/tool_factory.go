@@ -19,7 +19,7 @@ var (
 )
 
 func RegisterNBToolFactory(tool string, toolFactory func(accountId string) (NBTool, error)) {
-	slog.Info("registering tool", "tool", tool)
+	slog.Debug("registering tool", "tool", tool)
 	if _, ok := nbSystemTools[strings.ToLower(tool)]; ok {
 		slog.Warn("tool already registered", "tool", tool)
 	}

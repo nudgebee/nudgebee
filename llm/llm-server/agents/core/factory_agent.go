@@ -26,7 +26,7 @@ func IsSystemAgentAlias(agent string) bool {
 }
 
 func RegisterNBAgentFactory(agent string, agentFactory func(accountId string) (NBAgent, error)) {
-	slog.Info("registering agent", "agent", agent)
+	slog.Debug("registering agent", "agent", agent)
 	if _, ok := nbSystemAgents[strings.ToLower(agent)]; ok {
 		slog.Warn("agent already registered", "agent", agent)
 	}
@@ -87,7 +87,7 @@ func registerNBAgentFactoryAndTool(agent string, agentFactory func(accountId str
 }
 
 func registerNBAgentTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string, targetSupported bool, routedByTarget bool) {
-	slog.Info("registering agent", "agent", agent)
+	slog.Debug("registering agent", "agent", agent)
 	if _, ok := nbSystemAgents[strings.ToLower(agent)]; ok {
 		slog.Warn("agent already registered", "agent", agent)
 	}
@@ -131,7 +131,7 @@ func RegisterTargetAwareNBAgentFactoryAsTool(agent string, agentFactory func(acc
 }
 
 func registerNBAgentFactoryAsTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string, targetSupported bool) {
-	slog.Info("registering agent as tool", "agent", agent)
+	slog.Debug("registering agent as tool", "agent", agent)
 	if _, ok := nbSystemAgents[strings.ToLower(agent)]; ok {
 		slog.Warn("agent already registered", "agent", agent)
 	}
@@ -142,7 +142,7 @@ func registerNBAgentFactoryAsTool(agent string, agentFactory func(accountId stri
 }
 
 func RegisterNBAgentFactoryAndToolAndPrioritizeAgentResponseForTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string) {
-	slog.Info("registering agent", "agent", agent)
+	slog.Debug("registering agent", "agent", agent)
 	if _, ok := nbSystemAgents[strings.ToLower(agent)]; ok {
 		slog.Warn("agent already registered", "agent", agent)
 	}
