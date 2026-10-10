@@ -697,17 +697,20 @@ class AskAiCard {
       const liveTriggerLabel = triggerText(localAiData?.trigger, localAiData?.triggered_by_name);
       const isShowingFallback =
         selectedAnalysisVersion === 'live' && localAiData?.status?.toLowerCase() !== 'completed' && historicalVersions.length > 0;
-      const effectiveVersionId = isShowingFallback ? historicalVersions[0].id : selectedAnalysisVersion;
+      // While a new run is in progress, show this alert's own previous result before a related alert's.
+      const fallbackVersion = historicalVersions.find((version) => version.event_id === event.id) || historicalVersions[0];
+      const effectiveVersionId = isShowingFallback ? fallbackVersion.id : selectedAnalysisVersion;
       const selectedVersion = historicalVersions.find((version) => version.id === effectiveVersionId);
       const displayedAiData = selectedVersion?.data || (selectedVersion ? null : localAiData);
       const isViewingHistory = !!selectedVersion;
 
       let { analysis, summary, investigation, detailed_response, source_updates, task_statuses, code_analysis_enabled } = displayedAiData || {};
 
-      // While a Refresh Investigation run is in flight, ignore the previous run's
-      // retained content (the backend keeps the old summary/investigation text
-      // until the new run lands) so every section renders the same in-progress
-      // loader as a first-time investigation instead of a stale, completed result.
+      // While a Refresh Investigation run is in flight, ignore any previous run's
+      // content still on the live response (a re-run now gets its own empty rows,
+      // but a server on the older in-place behaviour returns the old text) so every
+      // section renders the in-progress loader instead of a stale, completed result.
+      // The previous run itself is shown through the version fallback above.
       const isRegenerating = !isViewingHistory && cardInstance.isRefreshing && localAiData?.status?.toLowerCase() === 'in_progress';
       if (isRegenerating) {
         analysis = '';
@@ -890,16 +893,20 @@ class AskAiCard {
               </Box>
             )}
 
-            {code_analysis_enabled !== false && source_updates?.gitDiff && displayedAiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO] && (
-              /* No gitDiff prop on purpose: the diff is rendered immediately above this button, so
+            {/* Not on an older version: the PR is raised from the live analysis, not the diff shown. */}
+            {code_analysis_enabled !== false &&
+              !isViewingHistory &&
+              source_updates?.gitDiff &&
+              displayedAiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO] && (
+                /* No gitDiff prop on purpose: the diff is rendered immediately above this button, so
                  repeating it inside the confirmation would show the same patch twice. The
                  remediation row, which has no diff on screen, does pass it. */
-              <EventRaisePrPanel
-                data={cardInstance.buildResolveData()}
-                repoUrl={displayedAiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO]}
-                filePath={source_updates?.file_path || displayedAiData?.file_details?.files?.[0]?.file_path}
-              />
-            )}
+                <EventRaisePrPanel
+                  data={cardInstance.buildResolveData()}
+                  repoUrl={displayedAiData?.source_details?.[ANNOTATIONS.WORKLOAD_GIT_REPO]}
+                  filePath={source_updates?.file_path || displayedAiData?.file_details?.files?.[0]?.file_path}
+                />
+              )}
           </Box>
         );
       };

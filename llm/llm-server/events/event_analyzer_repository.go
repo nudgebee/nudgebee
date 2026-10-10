@@ -252,6 +252,10 @@ const eventAnalysisHistoryLimit = 5
 // the rows already retained in event_log_analysis. Ranking within each
 // (event, analysis type) aligns the four stages from the same generation while
 // leaving event_analysis_mapping free to keep pointing at only the live rows.
+// Rows of every status are ranked, and a version is listed only when all four of
+// its stages are COMPLETED: a re-run has its own row for each stage (see
+// StartFreshStages), so while it is unfinished, or after it fails, its
+// rank holds no complete version and the previous run still lines up as one.
 func (r *EventAnalysisRepository) ListCompletedEventAnalysisVersions(ctx *security.RequestContext, fingerprint, accountID, aggKey string) ([]EventAnalysisEventVersion, error) {
 	var versions []EventAnalysisEventVersion
 	err := r.dbManager.Db.Select(&versions, `
@@ -267,7 +271,6 @@ func (r *EventAnalysisRepository) ListCompletedEventAnalysisVersions(ctx *securi
 			  AND a.cloud_account_id = $2
 			  AND a.event_aggregation_key = $3
 			  AND a.analysis_type IN ($4, $5, $6, $7)
-			  AND a.status = $8
 			  AND a.event_id IS NOT NULL
 		)
 		, versions AS (
@@ -284,7 +287,7 @@ func (r *EventAnalysisRepository) ListCompletedEventAnalysisVersions(ctx *securi
 			COALESCE(MAX(a.triggered_by) FILTER (WHERE a.analysis_type = $6), '') AS triggered_by
 		FROM ranked a
 		GROUP BY a.event_id, a.version_rank
-		HAVING COUNT(DISTINCT a.analysis_type) = 4
+		HAVING COUNT(DISTINCT a.analysis_type) FILTER (WHERE a.status = $8) = 4
 		)
 		SELECT v.*, COALESCE(u.display_name, '') AS triggered_by_name
 		FROM versions v
@@ -558,6 +561,57 @@ func (r *EventAnalysisRepository) UpsertEventAnalysisInProgress(ctx *security.Re
 	}
 
 	return tx.Commit()
+}
+
+// StartFreshStages gives each listed stage of eventId a new IN_PROGRESS row when
+// its mapped row is finished (COMPLETED or FAILED), and points the event's mapping
+// at it, in one transaction. A re-run then writes its results to rows of its own,
+// the way a new event with the same fingerprint does: the previous run's rows are
+// kept as they were, every run has exactly one row per stage, and the history
+// lines runs up correctly. A stage whose mapped row is IN_PROGRESS is a run still
+// going and is left alone (replacing it would leave an orphan for recovery to
+// re-dispatch), as is a stage with no mapping. Call it only for explicit re-runs.
+func (r *EventAnalysisRepository) StartFreshStages(ctx *security.RequestContext, eventId, fingerprint, accountId, aggKey string, stages ...EventAnalysisType) error {
+	if eventId == "" || len(stages) == 0 {
+		return nil
+	}
+	tx, err := r.dbManager.Db.Beginx()
+	if err != nil {
+		return fmt.Errorf("StartFreshStages: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, stage := range stages {
+		var status string
+		err := tx.Get(&status, `
+			SELECT a.status FROM event_analysis_mapping m
+			JOIN event_log_analysis a ON a.id = m.analysis_id
+			WHERE m.event_id = $1 AND m.analysis_type = $2
+			FOR UPDATE OF m`, eventId, stage)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("StartFreshStages: read %s: %w", stage, err)
+		}
+		if status == string(AnalysisStatusInProgress) {
+			continue
+		}
+		var id string
+		if err := tx.QueryRowx(
+			`INSERT INTO event_log_analysis (event_id, event_fingerprint, analysis, summary, status, cloud_account_id, event_aggregation_key, analysis_type) VALUES ($1, $2, '', '', $3, $4, $5, $6) RETURNING id`,
+			eventId, fingerprint, AnalysisStatusInProgress, accountId, aggKey, stage,
+		).Scan(&id); err != nil {
+			return fmt.Errorf("StartFreshStages: insert %s: %w", stage, err)
+		}
+		if _, err := upsertAnalysisMapping(tx, eventId, id, stage, true); err != nil {
+			return fmt.Errorf("StartFreshStages: map %s: %w", stage, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("StartFreshStages: %w", err)
+	}
+	return nil
 }
 
 // ClaimEventAnalysis atomically claims an analysis row for processing.

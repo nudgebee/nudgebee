@@ -589,6 +589,15 @@ func httpAnalysisOrigin(regenerate bool, source, userId string) (events.Analysis
 	}
 }
 
+// startFreshStagesForRerun keeps the previous run's finished stage rows when an
+// explicit re-run starts (see StartFreshStages). On failure the re-run
+// proceeds as before, updating those rows in place.
+func startFreshStagesForRerun(ctx *security.RequestContext, repo *events.EventAnalysisRepository, eventId, fingerprint, accountId, aggKey string, stages ...events.EventAnalysisType) {
+	if err := repo.StartFreshStages(ctx, eventId, fingerprint, accountId, aggKey, stages...); err != nil {
+		ctx.GetLogger().Warn("analyzer: failed to keep previous run's results; re-run will overwrite them", "error", err, "event_id", eventId)
+	}
+}
+
 // recordAnalysisTrigger stamps the run just claimed with how it started. It is
 // bookkeeping only, so a failure is logged and never stops the analysis.
 func recordAnalysisTrigger(ctx *security.RequestContext, repo *events.EventAnalysisRepository, request EventAnalysisRequest) {
@@ -911,6 +920,12 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 		}
 		claimedLog = true
 		recordAnalysisTrigger(ctx, eventAnalysisRepo, request)
+		if request.Regenerate {
+			// The log claim above already gave this re-run its own log row; give the
+			// other stages their own rows too, so the previous run stays in the history.
+			startFreshStagesForRerun(ctx, eventAnalysisRepo, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey,
+				events.AnalysisTypeSummary, events.AnalysisTypeInvestigation, events.AnalysisTypeDetailedResponse)
+		}
 	} else {
 		claimed, claimErr := eventAnalysisRepo.ClaimEventAnalysis(ctx, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey, events.AnalysisTypeDetailedResponse, true)
 		if claimErr != nil {
@@ -1519,6 +1534,12 @@ func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request
 	if existingLogAnalysis == nil || eventAnalysisRepo.IsAnalysisStale(existingLogAnalysis.UpdatedAt) || (existingLogAnalysis.Status != string(events.AnalysisStatusCompleted) && existingLogAnalysis.Status != string(events.AnalysisStatusInProgress)) {
 		ctx.GetLogger().Info("analyzer: log analysis not done or started, triggering it before RCA", "event_id", request.EventId)
 
+		if request.Regenerate {
+			// A regenerate is a new run: keep the previous run's finished rows before
+			// they are marked IN_PROGRESS below.
+			startFreshStagesForRerun(ctx, eventAnalysisRepo, request.EventId, eventFingerprint, request.AccountId, eventAggregationKey,
+				events.AnalysisTypeSummary, events.AnalysisTypeInvestigation, events.AnalysisTypeLog, events.AnalysisTypeDetailedResponse)
+		}
 		// Mark analysis tasks as IN_PROGRESS to prevent concurrent executions
 		analysisTypes := []events.EventAnalysisType{events.AnalysisTypeSummary, events.AnalysisTypeInvestigation, events.AnalysisTypeLog}
 		for _, aType := range analysisTypes {
