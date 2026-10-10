@@ -59,6 +59,18 @@ func init() {
 	cacheClientLocal, _ := bigcache_store.New(context.Background(), defaultConfig)
 	bigcacheStore := bigcache.NewBigcache(cacheClientLocal)
 	featureFlagCache = cache.New[[]byte](bigcacheStore)
+	common.OnReplicaBroadcast(common.ChangeFeatureFlag, common.ReplicaHandler{
+		OnKeys: func([]string) { clearFeatureFlagCache() },
+		OnAll:  clearFeatureFlagCache,
+	})
+}
+
+// clearFeatureFlagCache drops every cached flag on this replica. A change is
+// rare and the cache refills one row lookup per key, so clearing everything is
+// simpler than working out which tenant, default, explicit and account keys a
+// write touched.
+func clearFeatureFlagCache() {
+	_ = featureFlagCache.Clear(context.Background())
 }
 
 func ListTenants(context *security.RequestContext) ([]models.Tenant, error) {
@@ -1731,13 +1743,8 @@ func UpsertFeatureFlags(ctx *security.RequestContext, request FeatureFlagUpsertR
 		return FeatureFlagUpsertResponse{}, common.ErrorInternal("Error committing feature flag transaction")
 	}
 
-	// Invalidate caches — account-scoped entry only when upsert was account-scoped.
+	common.ReplicaBroadcast(ctx.GetContext(), common.ChangeFeatureFlag, tenantId)
 	for _, f := range request.Features {
-		_ = featureFlagCache.Delete(context.Background(), f.FeatureId+":"+tenantId)
-		_ = featureFlagCache.Delete(context.Background(), f.FeatureId+":default:"+tenantId)
-		if f.AccountId != "" {
-			_ = featureFlagCache.Delete(context.Background(), f.FeatureId+":default:"+tenantId+":"+f.AccountId)
-		}
 		// CUSTOM_ROLES is read while BUILDING a security context, and contexts are
 		// cached for 30 minutes — so without this drop, turning dynamic RBAC off (or
 		// on) would keep leaking the old answer for up to half an hour. Dropping the
@@ -2111,6 +2118,7 @@ func DeleteFeature(context *security.RequestContext, request DeleteFeatureReques
 			"status": "error",
 		}, err
 	}
+	common.ReplicaBroadcast(context.GetContext(), common.ChangeFeatureFlag, context.GetSecurityContext().GetTenantId())
 
 	return map[string]string{
 		"status": "success",

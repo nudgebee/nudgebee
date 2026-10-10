@@ -75,6 +75,7 @@ var (
 	metricsPRFollowupOutcomeTotal   metric.Int64Counter
 	metricsPRFollowupReclaimedTotal metric.Int64Counter
 	metricsPRFollowupWebhookTotal   metric.Int64Counter
+	metricsReplicaBroadcastTotal    metric.Int64Counter
 )
 
 // Histogram bucket boundaries for event and playbook processing.
@@ -194,6 +195,12 @@ func InitMetrics() {
 		meter,
 		"nb_services_subject_resolution",
 		"Total number of webhook subject resolution attempts via LLM",
+	)
+
+	metricsReplicaBroadcastTotal = mustCreateInt64Counter(
+		meter,
+		"nb_services_replica_broadcast",
+		"Replica broadcast messages published by or received on this pod, by type and direction",
 	)
 
 	metricsKGEndpointCollision = mustCreateInt64Counter(
@@ -590,5 +597,19 @@ func MetricsPRFollowupWebhook(ctx context.Context, result string) {
 	}
 	metricsPRFollowupWebhookTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(MetricKeyResult, result),
+	))
+}
+
+// metricsReplicaBroadcast counts one replica broadcast message (#40807).
+// direction is "published", "publish_failed", "received" or "ignored".
+func metricsReplicaBroadcast(changeType, direction string) {
+	if metricsReplicaBroadcastTotal == nil {
+		return
+	}
+	metricsCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	metricsReplicaBroadcastTotal.Add(metricsCtx, 1, metric.WithAttributes(
+		attribute.String("type", changeType),
+		attribute.String("direction", direction),
 	))
 }

@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+from rag.core import replica_broadcast
 from rag.core.cache_backend import get_cache_backend
 from utils.config import Config
 
@@ -320,6 +321,18 @@ class CollectionListCache:
         """Invalidate cache (alias for clear)."""
         self.clear()
 
+    def drop_local(self) -> None:
+        """Forget this process's copy without touching the shared snapshot.
+
+        Used when another replica changed the collections: it already
+        republished the shared copy, so this pod only reloads its own.
+        """
+        with self._lock:
+            self._generation += 1
+            self._collections = None
+            self._collection_generations.clear()
+            self._timestamp = 0.0
+
     def exists(self, collection_name: str) -> Optional[bool]:
         """
         Check if a collection exists in cache (lightweight).
@@ -374,3 +387,11 @@ _collection_list_cache = CollectionListCache(ttl_seconds=Config.rag_collection_c
 def get_collection_list_cache() -> CollectionListCache:
     """Get global collection list cache instance."""
     return _collection_list_cache
+
+
+# The list holds every collection, so a change to any of them drops all of it.
+replica_broadcast.on_replica_broadcast(
+    replica_broadcast.CHANGE_RAG_COLLECTIONS,
+    on_keys=lambda _names: _collection_list_cache.drop_local(),
+    on_all=_collection_list_cache.drop_local,
+)

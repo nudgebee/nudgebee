@@ -26,7 +26,8 @@ type modelTokenLimits struct {
 	MaxContext int
 }
 
-const modelLimitsCacheTTL = 5 * time.Minute
+// Short so edited model limits reach every replica quickly (#40807).
+const modelLimitsCacheTTL = 1 * time.Minute
 
 type modelLimitsEntry struct {
 	byKey map[string]modelTokenLimits // "provider:model", lowercased

@@ -124,7 +124,9 @@ type wsCacheEntry struct {
 }
 
 const (
-	agentCacheTTL          = 30 * time.Minute
+	// agentCacheTTL is short so a key deleted or rotated in api-server stops
+	// working on every relay pod within a minute (#40807).
+	agentCacheTTL          = 1 * time.Minute
 	wsCacheTTL             = 30 * time.Minute
 	wsNotConnectedCacheTTL = 2 * time.Minute
 	// ownerCacheTTL bounds how long a datasource → agent routing answer is

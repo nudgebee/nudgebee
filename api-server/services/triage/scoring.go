@@ -285,9 +285,11 @@ type envCacheEntry struct {
 }
 
 var (
-	envCache    = make(map[string]envCacheEntry)
-	envCacheMu  sync.RWMutex
-	envCacheTTL = 5 * time.Minute
+	envCache   = make(map[string]envCacheEntry)
+	envCacheMu sync.RWMutex
+	// Short so a prod/non-prod change on the account reaches every replica
+	// quickly; one query per account per minute is negligible (#40807).
+	envCacheTTL = 1 * time.Minute
 )
 
 // getAccountEnv returns the cloud account's raw account_env value, cached for

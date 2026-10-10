@@ -211,6 +211,8 @@ func main() {
 	}
 	common.InitMetrics()
 	core.InitMetrics()
+	// Every replica holds per-pod caches, so every replica must hear about changes.
+	_ = common.StartReplicaBroadcastSubscriber()
 	egressfilter.PlatformEntropyEnabled = config.Config.LlmServerEgressFilterEntropyEnabled
 	prompts.InitializeGlobalLoader()
 	// Every registered prompt must resolve against the embedded FS. Prompts ship

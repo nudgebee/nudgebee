@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/services/account"
+	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
@@ -35,6 +36,19 @@ func InvalidateTraceIntegrationCache() {
 	traceIntegrationCache.Lock()
 	traceIntegrationCache.entries = make(map[string]traceIntCacheEntry)
 	traceIntegrationCache.Unlock()
+}
+
+func init() {
+	common.OnReplicaBroadcast(common.ChangeIntegration, common.ReplicaHandler{
+		OnKeys: func(accountIds []string) {
+			traceIntegrationCache.Lock()
+			defer traceIntegrationCache.Unlock()
+			for _, accountId := range accountIds {
+				delete(traceIntegrationCache.entries, accountId)
+			}
+		},
+		OnAll: InvalidateTraceIntegrationCache,
+	})
 }
 
 type traceIntCacheEntry struct {

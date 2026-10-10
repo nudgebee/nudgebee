@@ -549,8 +549,7 @@ func UpdateEventMute(ctx *security.RequestContext, req UpdateEventMuteRequest) (
 	if err != nil {
 		return nil, err
 	}
-	// Other replicas pick the change up when their rule cache expires (triageRulesTTL).
-	ClearTriageRulesCache()
+	ClearTriageRulesCache(sc.GetTenantId())
 	if b.ruleID != "" {
 		// Muted / muted_workloads changed; re-read the rule.
 		if target, err := eventrule.ResolveRuleTarget(ctx, b.ruleID, eventrule.ResolveOptions{}); err == nil {

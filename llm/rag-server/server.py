@@ -16,6 +16,7 @@ from qdrant_client.http.exceptions import ResponseHandlingException
 
 from config import setup_logger
 from controllers.document_controller import load_module_docs
+from rag.core import replica_broadcast
 from rag.core.documents import collection as document_collection
 from rag.core.documents import (
     embedding_migration,
@@ -207,6 +208,10 @@ async def lifespan(app: FastAPI):
     # Start the post-startup task in background thread
     thread = threading.Thread(target=post_startup_task, daemon=True)
     thread.start()
+
+    # Every replica holds per-pod caches, so every replica must hear about
+    # changes made on other pods and in other services (#40807).
+    replica_broadcast.start_replica_broadcast_subscriber()
 
     yield
 

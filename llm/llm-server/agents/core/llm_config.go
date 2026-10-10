@@ -39,6 +39,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/llms/bedrock"
 	"nudgebee/llm/llms/decision"
@@ -623,10 +624,30 @@ func GetConversationOverride(conversationId string) (string, string, Conversatio
 	return provider, model, tierOverrides, configSource, nil
 }
 
+// InvalidateConversationOverrideCache drops the conversation's pinned model on
+// every replica, so the next turn uses the new choice wherever it lands.
 func InvalidateConversationOverrideCache(conversationId string) {
-	conversationOverrideCacheMutex.Lock()
-	delete(conversationOverrideCache, conversationId)
-	conversationOverrideCacheMutex.Unlock()
+	if conversationId == "" {
+		return
+	}
+	common.ReplicaBroadcast(context.Background(), common.ChangeConversationOverride, conversationId)
+}
+
+func init() {
+	common.OnReplicaBroadcast(common.ChangeConversationOverride, common.ReplicaHandler{
+		OnKeys: func(conversationIds []string) {
+			conversationOverrideCacheMutex.Lock()
+			defer conversationOverrideCacheMutex.Unlock()
+			for _, conversationId := range conversationIds {
+				delete(conversationOverrideCache, conversationId)
+			}
+		},
+		OnAll: func() {
+			conversationOverrideCacheMutex.Lock()
+			defer conversationOverrideCacheMutex.Unlock()
+			clear(conversationOverrideCache)
+		},
+	})
 }
 
 func getLLMFallbackModelName(accountId, agentName string, tier ModelTier, appendAgentName bool, resolution ...*LLMConfigResolution) string {

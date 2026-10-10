@@ -64,7 +64,8 @@ const (
 	// since-revoked automation still hits assertAIInvocationAllowed server-side,
 	// which refuses it as not_opted_in. The worst case is a confusing refusal,
 	// never an unauthorised run.
-	automationToolCacheTTL = 5 * time.Minute
+	// One minute so a workflow-server change reaches every replica quickly (#40807).
+	automationToolCacheTTL = 1 * time.Minute
 
 	// automationToolFailureTTL is how long a failed load is remembered. Failures
 	// are cached far more briefly than successes so a transient error cannot

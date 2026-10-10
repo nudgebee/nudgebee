@@ -29,6 +29,7 @@ var (
 	metricsLLMCacheSkipTotal          metric.Int64Counter
 	metricsLLMCachedTokensTotal       metric.Int64Counter
 	metricsLLMCacheInvalidationsTotal metric.Int64Counter
+	metricsReplicaBroadcastTotal      metric.Int64Counter
 	metricsLLMCircuitBreakerTripped   metric.Int64Counter
 	metricsLLMRateLimitHitsTotal      metric.Int64Counter
 
@@ -268,6 +269,15 @@ func InitMetrics() {
 		)
 		if err != nil {
 			slog.Error("metrics: failed to create nb_llm_cache_invalidations metric", "error", err)
+		}
+
+		// Replica broadcast messages (#40807)
+		metricsReplicaBroadcastTotal, err = meter.Int64Counter(
+			"nb_llm_replica_broadcast",
+			metric.WithDescription("Replica broadcast messages published by or received on this pod, by type and direction"),
+		)
+		if err != nil {
+			slog.Error("metrics: failed to create nb_llm_replica_broadcast metric", "error", err)
 		}
 
 		// LLM circuit breaker trips
@@ -795,5 +805,18 @@ func MetricsToolCacheLookup(toolType, outcome string) {
 	metricsToolCacheLookup.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String("type", toolType),
 		attribute.String("outcome", outcome),
+	))
+}
+
+// metricsReplicaBroadcast counts one replica broadcast message (#40807).
+// direction is "published", "publish_failed", "received" or "ignored".
+func metricsReplicaBroadcast(changeType, direction string) {
+	InitMetrics()
+	if metricsReplicaBroadcastTotal == nil {
+		return
+	}
+	metricsReplicaBroadcastTotal.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("type", changeType),
+		attribute.String("direction", direction),
 	))
 }

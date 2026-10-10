@@ -94,13 +94,28 @@ type metricsProviderCacheEntry struct {
 // metricsProviderCache memoizes nonAgentMetricsProvider per account.
 // ExecutePrometheus is invoked per node inside knowledge-graph / discovery
 // loops, so an uncached lookup would be one extra Metastore round-trip per
-// call. An entry is stale for up to metricsProviderCacheTTL after an account
-// changes its default metrics provider; that only delays the agent-vs-skip
-// decision, it never breaks a request.
+// call. An integration change drops the account's entry on every replica.
 var metricsProviderCache = struct {
 	sync.RWMutex
 	entries map[string]metricsProviderCacheEntry
 }{entries: make(map[string]metricsProviderCacheEntry)}
+
+func init() {
+	common.OnReplicaBroadcast(common.ChangeIntegration, common.ReplicaHandler{
+		OnKeys: func(accountIds []string) {
+			metricsProviderCache.Lock()
+			defer metricsProviderCache.Unlock()
+			for _, accountId := range accountIds {
+				delete(metricsProviderCache.entries, accountId)
+			}
+		},
+		OnAll: func() {
+			metricsProviderCache.Lock()
+			defer metricsProviderCache.Unlock()
+			metricsProviderCache.entries = make(map[string]metricsProviderCacheEntry)
+		},
+	})
+}
 
 // nonAgentMetricsProvider returns the account's configured default metrics
 // provider when it is a user-integrated backend (Datadog, Dynatrace, Splunk,

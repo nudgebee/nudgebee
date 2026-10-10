@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"nudgebee/services/common"
 	"nudgebee/services/llm"
 	"nudgebee/services/observability"
 	"nudgebee/services/security"
@@ -78,6 +79,7 @@ func invalidateIntegrationCaches(ctx *security.RequestContext, accountIds []stri
 		return
 	}
 	llm.InvalidateLLMServerCacheForAccounts(ctx, accountIds)
+	common.ReplicaBroadcast(ctx.GetContext(), common.ChangeIntegration, accountIds...)
 	for _, accId := range accountIds {
 		observability.InvalidateDefaultLogFiltersCache(accId)
 		observability.InvalidateDefaultTraceFiltersCache(accId)

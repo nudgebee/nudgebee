@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"nudgebee/services/common"
 	"nudgebee/services/internal/database/models"
 
 	"github.com/google/uuid"
@@ -277,12 +278,39 @@ var (
 	triageRulesTTL     = 60 * time.Second
 )
 
-// ClearTriageRulesCache invalidates the entire triage rules cache
-// This should be called whenever rules are created, updated, or deleted
-func ClearTriageRulesCache() {
-	triageRulesCacheMu.Lock()
-	triageRulesCache = make(map[string]triageRulesCacheEntry)
-	triageRulesCacheMu.Unlock()
+func init() {
+	common.OnReplicaBroadcast(common.ChangeTriageRules, common.ReplicaHandler{
+		OnKeys: func(tenantIDs []string) {
+			triageRulesCacheMu.Lock()
+			defer triageRulesCacheMu.Unlock()
+			for key := range triageRulesCache {
+				for _, tenantID := range tenantIDs {
+					if strings.HasPrefix(key, tenantID+":") {
+						delete(triageRulesCache, key)
+						break
+					}
+				}
+			}
+		},
+		OnAll: func() {
+			triageRulesCacheMu.Lock()
+			defer triageRulesCacheMu.Unlock()
+			triageRulesCache = make(map[string]triageRulesCacheEntry)
+		},
+	})
+}
+
+// ClearTriageRulesCache drops the tenant's cached rules on every replica. Call
+// it after rules, mutes, overrides or classifications change. Rules are cached
+// per tenant:account, and a tenant-wide rule applies to all of the tenant's
+// accounts, so the whole tenant is dropped; an empty tenantID (a system rule)
+// drops every tenant.
+func ClearTriageRulesCache(tenantID string) {
+	if tenantID == "" {
+		common.ReplicaBroadcastAll(context.Background(), common.ChangeTriageRules)
+		return
+	}
+	common.ReplicaBroadcast(context.Background(), common.ChangeTriageRules, tenantID)
 }
 
 // LoadMatchingRules loads all enabled rules for the given tenant/account
@@ -1209,7 +1237,7 @@ func CreateTriageRule(ctx context.Context, db *sqlx.DB, req CreateTriageRuleRequ
 
 	// Invalidate the in-process LoadMatchingRules cache so the new rule is visible to
 	// CheckTriageRules on the very next event without waiting for the TTL refresh.
-	ClearTriageRulesCache()
+	ClearTriageRulesCache(tenantID)
 	return rule, nil
 }
 
@@ -1879,7 +1907,7 @@ func UpdateTriageRule(ctx context.Context, db *sqlx.DB, req UpdateTriageRuleRequ
 		return nil, fmt.Errorf("failed to update rule: %w", err)
 	}
 
-	ClearTriageRulesCache()
+	ClearTriageRulesCache(tenantID)
 	return &updatedRule, nil
 }
 
@@ -1894,7 +1922,7 @@ func DeleteTriageRule(ctx context.Context, db *sqlx.DB, ruleID string, hardDelet
 		`
 		_, err := db.ExecContext(ctx, query, ruleID, cloudAccountID)
 		if err == nil {
-			ClearTriageRulesCache()
+			ClearTriageRulesCache(tenantID)
 		}
 		return err
 	}
@@ -1910,7 +1938,7 @@ func DeleteTriageRule(ctx context.Context, db *sqlx.DB, ruleID string, hardDelet
 	`
 	_, err := db.ExecContext(ctx, query, ruleID, cloudAccountID)
 	if err == nil {
-		ClearTriageRulesCache()
+		ClearTriageRulesCache(tenantID)
 	}
 	return err
 }
@@ -1964,7 +1992,7 @@ func ToggleSystemRuleOverride(ctx context.Context, db *sqlx.DB, req ToggleSystem
 		"disabled", req.Disabled,
 	)
 
-	ClearTriageRulesCache()
+	ClearTriageRulesCache(tenantID)
 
 	return &ToggleSystemRuleOverrideResponse{
 		Success:      true,

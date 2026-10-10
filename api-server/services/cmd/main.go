@@ -156,6 +156,8 @@ func main() {
 		return
 	}
 	common.InitMetrics()
+	// Every role holds per-pod caches, so every replica must hear about changes.
+	_ = common.StartReplicaBroadcastSubscriber()
 	common.RegisterDependencyMetrics(func(ctx context.Context) common.DependencyStats {
 		var s common.DependencyStats
 

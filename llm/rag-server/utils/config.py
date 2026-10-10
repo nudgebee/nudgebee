@@ -92,9 +92,10 @@ class Config:
     max_retry_duration = int(os.environ.get("MAX_RETRY_DURATION", 600))
     initial_wait_time = int(os.environ.get("INITIAL_WAIT_TIME", 1))
     ranking_threshold = float(os.environ.get("RANKING_THRESHOLD", 0.5))
-    rag_llm_provider_cache_ttl = int(
-        os.environ.get("RAG_LLM_PROVIDER_CACHE_TTL", 1800)
-    )  # LLM/embeddings provider config & client cache (default 30 min)
+    # LLM/embeddings provider config & client cache. Five minutes so a rotated
+    # key or endpoint reaches every replica quickly; rebuilding a client is
+    # cheap (the on-device model itself is loaded once per process) (#40807).
+    rag_llm_provider_cache_ttl = int(os.environ.get("RAG_LLM_PROVIDER_CACHE_TTL", 300))
     rag_collection_cache_ttl = int(
         os.environ.get("RAG_COLLECTION_CACHE_TTL", 1800)
     )  # Qdrant collection list cache (default 30 min)

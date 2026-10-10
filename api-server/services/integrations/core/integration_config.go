@@ -46,6 +46,32 @@ func InvalidateIntegrationCache() {
 	query.InvalidateTraceIntegrationCache()
 }
 
+func init() {
+	common.OnReplicaBroadcast(common.ChangeIntegration, common.ReplicaHandler{
+		OnKeys: dropIntegrationCacheForAccounts,
+		OnAll: func() {
+			integrationByTypeCache.Lock()
+			defer integrationByTypeCache.Unlock()
+			integrationByTypeCache.entries = make(map[string]integrationCacheEntry)
+		},
+	})
+}
+
+// dropIntegrationCacheForAccounts drops the accounts' cached integrations on
+// this replica; the cache is keyed account:type:tenant.
+func dropIntegrationCacheForAccounts(accountIds []string) {
+	integrationByTypeCache.Lock()
+	defer integrationByTypeCache.Unlock()
+	for key := range integrationByTypeCache.entries {
+		for _, accountId := range accountIds {
+			if strings.HasPrefix(key, accountId+":") {
+				delete(integrationByTypeCache.entries, key)
+				break
+			}
+		}
+	}
+}
+
 type IntegrationStatus string
 
 const (

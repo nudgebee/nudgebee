@@ -247,7 +247,7 @@ func ClassifyEvent(ctx context.Context, db *sqlx.DB, req ClassifyEventRequest, c
 	}
 
 	if ruleID != nil {
-		ClearTriageRulesCache()
+		ClearTriageRulesCache(tenantID)
 	}
 
 	// 12. Queue bulk update for existing events (async, outside transaction).

@@ -38,6 +38,10 @@ type PromptLoader struct {
 	fs    fs.FS
 }
 
+// promptCacheTTL bounds how long a prompt or experiment change takes to reach
+// every replica; changes are rare and reloads cheap (#40807).
+const promptCacheTTL = 5 * time.Minute
+
 // InitializeGlobalLoader initializes the global prompt loader.
 // This should be called once during application startup.
 // It never returns an error: DB unavailability is non-fatal (loader falls back
@@ -63,8 +67,8 @@ func InitializeGlobalLoader() {
 			}
 		}
 
-		// Create cache with 1 hour TTL
-		cache := NewPromptCache(1 * time.Hour)
+		// Prompt and experiment edits reach every replica within the TTL (#40807).
+		cache := NewPromptCache(promptCacheTTL)
 
 		globalLoader = &PromptLoader{
 			db:    promptDB,
@@ -90,7 +94,7 @@ func GetLoader() *PromptLoader {
 func NewLoaderForTesting() *PromptLoader {
 	return &PromptLoader{
 		db:    nil,
-		cache: NewPromptCache(1 * time.Hour),
+		cache: NewPromptCache(promptCacheTTL),
 		fs:    embeddedFS,
 	}
 }

@@ -171,7 +171,8 @@ type CrossSourceEnricherInterface interface {
 }
 
 const (
-	accountMappingsCacheTTL    = 1 * time.Hour
+	// Account renames show up within this window on every replica (#40807).
+	accountMappingsCacheTTL    = 5 * time.Minute
 	msgAccountMappingsFallback = "failed to get account mappings, proceeding without name conversion"
 )
 

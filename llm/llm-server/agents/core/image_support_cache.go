@@ -9,7 +9,7 @@ import (
 // imageSupportCacheTTL bounds how stale the in-memory vision-capability
 // catalog (backed by llm_model_pricing.supports_image_input) can get before
 // the next lookup triggers a reload.
-const imageSupportCacheTTL = 5 * time.Minute
+const imageSupportCacheTTL = 1 * time.Minute
 
 // imageSupportCache is a lazily-refreshed, in-memory view of the explicit
 // per-model vision-capability verdicts recorded in llm_model_pricing. Only

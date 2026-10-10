@@ -103,8 +103,7 @@ func UpdateRuleMute(ctx *security.RequestContext, req UpdateRuleMuteRequest) (ev
 	if err != nil {
 		return eventrule.RuleCapabilities{}, err
 	}
-	// Other replicas pick the change up when their rule cache expires (triageRulesTTL).
-	ClearTriageRulesCache()
+	ClearTriageRulesCache(sc.GetTenantId())
 
 	caps := target.Capabilities()
 	caps.Muted = req.Muted
