@@ -1830,6 +1830,9 @@ func (o *NBReActPlanner3) Plan(
 					})
 				}
 			}
+			if note, ok := finalIterationsNote(ctx); ok {
+				mcList = appendNoteToLastMessage(mcList, note)
+			}
 
 			callOptions := []llms.CallOption{llms.WithTemperature(0.0)}
 			provider := GetLLMProvider(o.ctx, o.request.AccountId, o.nbAgent.GetName(), true, o.request.ConversationId)

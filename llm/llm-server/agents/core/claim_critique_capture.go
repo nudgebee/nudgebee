@@ -202,7 +202,7 @@ func (chat *ConversationDao) SaveClaimCritiqueAudit(ctx context.Context, record 
 	decision := record.Decision
 	switch {
 	case decision != "":
-	case record.Completed && record.Status != "budget_exhausted":
+	case record.Completed && !claimStopStatuses[record.Status]:
 		// The review ran but gave no verdict (too large, model error, invalid
 		// output); the answer went out unreviewed. Keep it apart from a review
 		// that never ran because the refinement budget was spent.
@@ -226,19 +226,34 @@ func (chat *ConversationDao) SaveClaimCritiqueAudit(ctx context.Context, record 
 	return nil
 }
 
+// Statuses of a terminal answer that went out with no critique: the refinement
+// budget was spent, or the loop ended without a finish and the executor's
+// fallback summary wrote the answer. Both are stored as "skipped", never as a
+// verdict.
+const (
+	claimStatusBudgetExhausted = "budget_exhausted"
+	claimStatusFallbackSummary = "fallback_summary"
+)
+
+var claimStopStatuses = map[string]bool{claimStatusBudgetExhausted: true, claimStatusFallbackSummary: true}
+
 // Record the terminal candidate without calling a critic beyond the existing
 // budget. A budget stop is deliberately not an acceptance or a claim verdict.
 func captureClaimBudgetStop(ctx *security.RequestContext, request NBAgentRequest, planner, agentName, input, answer, notebook string, steps []NBAgentPlannerToolActionStep) {
+	captureClaimStop(ctx, request, planner, agentName, claimStatusBudgetExhausted, input, answer, notebook, steps)
+}
+
+func captureClaimStop(ctx *security.RequestContext, request NBAgentRequest, planner, agentName, status, input, answer, notebook string, steps []NBAgentPlannerToolActionStep) {
 	if !config.Config.ClaimCritiqueFeedbackEnabled || ctx == nil ||
 		(request.ParentAgentId != "" && request.ParentAgentId != request.AgentId) {
 		return
 	}
 	record := newClaimCapture(ctx, request, planner, agentName, "unknown", "", input, answer, notebook, steps)
-	record.Status = "budget_exhausted"
+	record.Status = status
 	record.Completed = true
 	record.Detail.FeedbackEnabled = true
-	record.Detail.EffectiveDecision = "budget_exhausted"
+	record.Detail.EffectiveDecision = status
 	if err := persistClaimCapture(ctx, record); err != nil {
-		ctx.GetLogger().Error("claim critique budget outcome capture failed", "audit_id", record.ID)
+		ctx.GetLogger().Error("claim critique stop capture failed", "audit_id", record.ID, "status", status)
 	}
 }

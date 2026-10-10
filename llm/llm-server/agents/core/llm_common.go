@@ -244,6 +244,10 @@ const (
 	// contextKeyPreserveInput forbids evidence truncation, summarization, fallback and continuation for audits.
 	contextKeyPreserveInput LLMContextKey = "preserve_input"
 	contextKeyClaimUsageID  LLMContextKey = "claim_usage_id"
+	// contextKeyIterationsLeft is how many planning iterations a run whose answer
+	// is critiqued has left, counting the current one; set by the executor
+	// before each Plan.
+	contextKeyIterationsLeft LLMContextKey = "iterations_left"
 )
 
 var errPreservedPromptChanged = errors.New("complete evidence does not fit model input budget")

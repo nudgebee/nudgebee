@@ -498,6 +498,9 @@ func (o *NBReActPlanner4) Plan(
 	}
 	messages := o.buildMessages(plannerInput, intermediateSteps)
 	messages = AppendImagesToLastHumanMessage(messages, o.request.Images)
+	if note, ok := finalIterationsNote(ctx); ok {
+		messages = appendNoteToLastMessage(messages, note)
+	}
 	clarificationContinuationRetried := false
 	textToolCallRetried := false
 

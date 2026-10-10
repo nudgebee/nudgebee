@@ -634,6 +634,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 
 	result, err := e.summarizeConversation()
 	if err == nil && result != nil && len(result) > 0 {
+		e.recordUncritiquedSummary(inputs["input"], result)
 		return result, err
 	} else if err != nil {
 		e.ctx.GetLogger().Error("plannerexecutor: unable to summarize conversation", "error", err)
@@ -641,6 +642,47 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 	}
 
 	return map[string]any{"output": agents.ErrNotFinished.Error()}, agents.ErrNotFinished
+}
+
+// isTopLevel reports whether this executor runs the conversation's own agent
+// rather than a delegated sub-agent.
+func (e *plannerExecutor) isTopLevel() bool {
+	return e.agentRequest.ParentAgentId == "" || e.agentRequest.ParentAgentId == e.agentRequest.AgentId
+}
+
+// critiqueApplies mirrors the planners' gate for critiquing a final answer:
+// requested explicitly, or a top-level investigation, unless the agent opts out.
+// Only those runs get the finish-now note and the fallback record: other runs
+// lose nothing to the fallback summary, and agents with a small iteration cap
+// would otherwise be told to stop almost at once.
+func (e *plannerExecutor) critiqueApplies() bool {
+	allowed := e.agentRequest.EnableCritique || (e.isTopLevel() && IsInvestigationRequestTask(e.agentRequest.Query))
+	if agent, ok := e.agent.(NBAgentReActPlannerCritiqueSupport); ok {
+		allowed = allowed && agent.CritiqueEnabled()
+	}
+	return allowed
+}
+
+// recordUncritiquedSummary marks an answer the fallback summary wrote for a run
+// whose finish would have been critiqued: the run ended without a finish (the
+// iteration cap, a brake or the agent timeout), so no critique ran. Without
+// this the case is indistinguishable from an accepted answer (#40774).
+func (e *plannerExecutor) recordUncritiquedSummary(input string, result map[string]any) {
+	if !e.critiqueApplies() {
+		return
+	}
+	planner := "react3"
+	if _, ok := e.agentPlanner.(*NBReActPlanner4); ok {
+		planner = "react4"
+	}
+	notebook := ""
+	if p, ok := e.agentPlanner.(NBAgentNotebookProvider); ok {
+		notebook = p.GetNotebook()
+	}
+	answer, _ := result["output"].(string)
+	e.ctx.GetLogger().Warn("plannerexecutor: final answer came from the fallback summary and was not critiqued",
+		"agent", e.agent.GetName(), "iteration", e.currentIteration, "maxIterations", e.maxIterations, "steps", len(e.steps))
+	captureClaimStop(e.ctx, e.agentRequest, planner, e.agent.GetName(), claimStatusFallbackSummary, input, answer, notebook, e.steps)
 }
 
 // shouldCountFailedIteration reports whether an iteration should advance the
@@ -1005,7 +1047,11 @@ func (e *plannerExecutor) doIteration(
 		_, span = e.ctx.GetTracer().Start(e.ctx.GetContext(), "Agent:Plan")
 		e.ctx.GetLogger().Info("plannerexecutor: generating plan", "agent", e.agent.GetName(), "iteration", e.currentIteration)
 		planStart := time.Now()
-		actions, finish, err = e.agentPlanner.Plan(ctx, previousIterationSteps, input["input"])
+		planCtx := ctx
+		if e.critiqueApplies() {
+			planCtx = context.WithValue(ctx, contextKeyIterationsLeft, e.maxIterations-e.currentIteration)
+		}
+		actions, finish, err = e.agentPlanner.Plan(planCtx, previousIterationSteps, input["input"])
 		span.End() // End plan span immediately after planning
 		e.ctx.GetLogger().Info("plannerexecutor: plan generation complete", "duration", time.Since(planStart).String(), "actions", len(actions), "hasFinish", finish != nil)
 
@@ -5071,6 +5117,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 			// comma-ok on result["output"]: a summary map without a string
 			// "output" key must not panic the timeout-recovery path.
 			if summary, ok := result["output"].(string); sumErr == nil && ok {
+				executor.recordUncritiquedSummary(plannerQuery, result)
 				return NBAgentPlannerExecutorResponse{
 					Status:      AgentExecutionStatusSuccess,
 					Response:    summary,
