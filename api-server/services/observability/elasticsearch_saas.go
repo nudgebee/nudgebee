@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
@@ -352,6 +353,29 @@ var esSkipVerifyClient = func() *http.Client {
 		Timeout:   30 * time.Second,
 	}
 }()
+
+// esIndexURL builds `<base>/<index>/<endpoint>` with each comma-separated index
+// path-escaped. The index comes from requests (the agent's tool input, page filters),
+// and pasted in raw it could leave its path segment: `/`, `?` or `#` in it reached a
+// different Elasticsearch API. Escaped, they stay inside an index name, which
+// Elasticsearch rejects as invalid; wildcards, `cluster:` prefixes and `<date-math>`
+// names still work because Elasticsearch decodes the path. Dots are escaped only in an
+// element containing `..`: a proxy in front of the cluster that decodes `%2F` and then
+// normalizes the path would otherwise resolve it as a path step, and ordinary names
+// (dated and `.ds-` indices) keep their dots.
+func esIndexURL(base, index, endpoint string) string {
+	parts := strings.Split(index, ",")
+	for i, p := range parts {
+		p = strings.TrimSpace(p) // configured lists are often written "a, b"
+		// PathEscape leaves `+`, which servers may decode as a space (date math `now/d+1d`).
+		e := strings.ReplaceAll(url.PathEscape(p), "+", "%2B")
+		if strings.Contains(p, "..") {
+			e = strings.ReplaceAll(e, ".", "%2E")
+		}
+		parts[i] = e
+	}
+	return base + "/" + strings.Join(parts, ",") + "/" + endpoint
+}
 
 // esRequest executes an HTTP request to OpenSearch with the configured auth method.
 func esRequest(method, rawURL, body string, cfg *ElasticsearchConfig) (*http.Response, error) {
@@ -775,12 +799,13 @@ func (e *ElasticSaasSource) QueryLogsDetailed(ctx *security.RequestContext, fetc
 		// data and this does not, the difference is in the resolved index or in
 		// this body — both need to be replayable by hand against the cluster.
 		renderedJSON, _ := json.Marshal(body)
+		searchURL := esIndexURL(cfg.Url, index, "_search")
 		slog.Info("ES log query", "index", index,
-			"url", fmt.Sprintf("%s/%s/_search", cfg.Url, index),
+			"url", searchURL,
 			"start_ms", fetchLogRequest.StartTime, "end_ms", fetchLogRequest.EndTime,
 			"body", string(renderedJSON))
 
-		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), body, cfg)
+		resp, err := esRequestJSON("POST", searchURL, body, cfg)
 		if err != nil {
 			return nil, LogQueryDetails{}, fmt.Errorf("failed to execute elasticsearch %s query: %w", queryType, err)
 		}
@@ -916,7 +941,7 @@ func (e *ElasticSaasSource) QueryLabelValues(ctx *security.RequestContext, fetch
 
 	fieldsToTry := []string{fetchLogRequest.LabelName}
 
-	searchURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
+	searchURL := esIndexURL(cfg.Url, index, "_search")
 	var bodyBytes []byte
 	for _, field := range fieldsToTry {
 		aggsQuery := map[string]any{
@@ -1016,7 +1041,7 @@ func (e *ElasticSaasSource) QueryIndexFields(ctx *security.RequestContext, fetch
 		return esFetchFieldCaps(cfg, index)
 	}
 
-	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_mapping", cfg.Url, index), "", cfg) //nolint:bodyclose
+	resp, err := esRequest("GET", esIndexURL(cfg.Url, index, "_mapping"), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query elasticsearch mapping: %w", err)
 	}
@@ -1055,7 +1080,7 @@ func esIndexIsRemote(index string) bool {
 // they are from a `_mapping` walk. A field mapped with different types across indices
 // takes the first type in sorted order, so repeated calls agree.
 func esFetchFieldCaps(cfg *ElasticsearchConfig, index string) ([]OutputLogLabelFields, error) {
-	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_field_caps?fields=*", cfg.Url, index), "", cfg) //nolint:bodyclose
+	resp, err := esRequest("GET", esIndexURL(cfg.Url, index, "_field_caps?fields=*"), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query elasticsearch field capabilities: %w", err)
 	}

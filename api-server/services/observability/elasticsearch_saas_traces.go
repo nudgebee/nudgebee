@@ -523,7 +523,7 @@ func (e *ElasticSaasTraceSource) QueryTraces(ctx *security.RequestContext, req T
 
 	dsl := buildTraceQuery(req, elasticTraceLabelMapping)
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", esIndexURL(cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request)), "_search"), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query traces: %w", err)
 	}
@@ -567,7 +567,7 @@ func (e *ElasticSaasTraceSource) CountTraces(ctx *security.RequestContext, req T
 	delete(dsl, "sort")
 	delete(dsl, "from")
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", esIndexURL(cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request)), "_search"), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, fmt.Errorf("failed to count traces: %w", err)
 	}
@@ -635,7 +635,7 @@ func (e *ElasticSaasTraceSource) GetLabelValues(ctx *security.RequestContext, re
 		}
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", esIndexURL(cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request)), "_search"), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("failed to query label values: %w", err)
 	}
@@ -719,7 +719,7 @@ func (e *ElasticSaasTraceSource) QueryGroupedTraces(ctx *security.RequestContext
 		boolFilters = append(boolFilters, whereFilters...)
 	}
 
-	searchURL := fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request)))
+	searchURL := esIndexURL(cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request)), "_search")
 	buckets, err := fetchAllCompositeTraceBuckets(
 		ctx, cfg, searchURL, boolFilters,
 		esCompositeSources(elasticTraceGroupDims),
@@ -782,7 +782,7 @@ func (e *ElasticSaasTraceSource) QueryGroupedTracesCount(ctx *security.RequestCo
 		},
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", esIndexURL(cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request)), "_search"), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return common.OpenTelemetryTraceGroupCount{}, fmt.Errorf("failed to query grouped traces count: %w", err)
 	}
@@ -828,7 +828,7 @@ func (e *ElasticSaasTraceSource) QueryTracesHeatmap(ctx *security.RequestContext
 		},
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request))), dsl, cfg) //nolint:bodyclose
+	resp, err := esRequestJSON("POST", esIndexURL(cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request)), "_search"), dsl, cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query traces heatmap: %w", err)
 	}

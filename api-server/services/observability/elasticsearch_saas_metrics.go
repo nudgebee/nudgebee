@@ -407,7 +407,7 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 		// Mirrors the "ES log query" line so both paths are greppable the same way:
 		// resolved index, full URL, the window, and the rendered body — enough to
 		// replay the exact request by hand against the cluster.
-		esURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
+		esURL := esIndexURL(cfg.Url, index, "_search")
 		if !batch {
 			slog.Info("ES metrics query", "index", index, "url", esURL,
 				"query_key", queryKey, "query_type", queryType,
@@ -650,7 +650,7 @@ func esFetchLabelValues(cfg *ElasticsearchConfig, index, reqLabel string) ([]Out
 	// `name.keyword` works. So: try the suffixed field, then fall back on either an
 	// error OR an empty result.
 	queryLabelValues := func(field string) ([]OutputMetricsLabelValues, error) {
-		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), buildDSL(field), cfg) //nolint:bodyclose
+		resp, err := esRequestJSON("POST", esIndexURL(cfg.Url, index, "_search"), buildDSL(field), cfg) //nolint:bodyclose
 		if err != nil {
 			return nil, fmt.Errorf("failed to query metric label values: %w", err)
 		}
@@ -739,7 +739,7 @@ func esFetchMetricFields(cfg *ElasticsearchConfig, index string) ([]OutputMetric
 	}
 
 	// Fetch field names from the index mapping.
-	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_mapping", cfg.Url, index), "", cfg) //nolint:bodyclose
+	resp, err := esRequest("GET", esIndexURL(cfg.Url, index, "_mapping"), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query metrics labels: %w", err)
 	}
@@ -2219,7 +2219,7 @@ func fetchESMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTr
 
 			renderedQuery := group.rendered
 
-			esURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
+			esURL := esIndexURL(cfg.Url, index, "_search")
 			slog.Info("ES utilisation query", "index", index, "url", esURL,
 				"metric", metricKey, "scope", scope, "sources", len(plan.Sources), "step_sec", stepSec,
 				"start_ms", req.StartTime, "end_ms", req.EndTime)
