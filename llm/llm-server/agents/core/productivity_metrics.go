@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/tmc/langchaingo/llms"
 )
 
 const (
@@ -81,41 +80,29 @@ func ClassifyMessage(ctx *security.RequestContext, userId, accountId, conversati
 		msg.Message,
 		strings.Join(tools, ", "))
 
-	systemPrompt := `Classify this user message into one of the following categories:
-- investigation: If the message is about troubleshooting, debugging, searching logs, analyzing metrics, checking traces, service status, slowness, or errors.
-- others: If it is a general query, greeting, help request, or any other topic not directly related to active investigation/troubleshooting.
-
-Respond ONLY with the category name.`
-
-	options := []string{ClassificationInvestigation, ClassificationOthers}
-
-	mcList := []llms.MessageContent{
-		{
-			Role:  llms.ChatMessageTypeSystem,
-			Parts: []llms.ContentPart{llms.TextContent{Text: systemPrompt}},
-		},
-		{
-			Role:  llms.ChatMessageTypeHuman,
-			Parts: []llms.ContentPart{llms.TextContent{Text: input}},
+	task := ClassificationTask{
+		Name:         "productivity_category",
+		Instructions: "Classify this user message, using the tools that were executed for it, into one of the categories.",
+		Options: []ClassificationOption{
+			{Label: ClassificationInvestigation, Description: "The message is about troubleshooting, debugging, searching logs, analyzing metrics, checking traces, service status, slowness, or errors."},
+			{Label: ClassificationOthers, Description: "A general query, greeting, help request, or any other topic not directly related to active investigation/troubleshooting."},
 		},
 	}
-
-	// Generate content for internal classification call and track it for token counting
-	result, err := GenerateAndTrackLLMContent(ctx, userId, accountId, conversationId, messageId, ClassificationInvestigation, true, mcList, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
+	// No tier: this background job uses the classification tier. AgentId stays
+	// "investigation" as before, because it keys this call's LLM config and cost.
+	decision, err := Classify(ctx, ClassificationCall{
+		UserId:         userId,
+		AccountId:      accountId,
+		ConversationId: conversationId,
+		MessageId:      messageId,
+		AgentId:        ClassificationInvestigation,
+		TrackContent:   true,
+	}, task, input)
 	if err != nil {
 		return "", err
 	}
-
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("no response from LLM")
+	if decision.Valid {
+		return decision.Label(), nil
 	}
-
-	chosen := strings.ToLower(strings.TrimSpace(result.Choices[0].Content))
-	for _, opt := range options {
-		if strings.Contains(chosen, opt) {
-			return opt, nil
-		}
-	}
-
 	return ClassificationOthers, nil
 }

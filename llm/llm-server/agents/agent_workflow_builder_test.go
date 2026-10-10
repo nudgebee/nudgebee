@@ -2368,3 +2368,33 @@ func TestPlanApproval_RequestChangesNeverBuilds(t *testing.T) {
 		})
 	}
 }
+
+func TestTurnIntentClassification(t *testing.T) {
+	request := core.NBAgentRequest{AccountId: "acct", UserId: "user", AgentId: "agent", ConversationId: "conv", MessageId: "msg"}
+	for _, hasWorkflow := range []bool{true, false} {
+		call, task := turnIntentClassification(request, hasWorkflow)
+
+		// Stays on today's model; the classification tier is a separate switch.
+		assert.Equal(t, core.ModelTierRetrieval, call.Tier)
+		assert.Equal(t, "agent", call.AgentId, "agent id keys LLM config and cost")
+		assert.True(t, call.TrackContent)
+
+		assert.Equal(t, "workflow_turn_intent", task.Name)
+		assert.Contains(t, task.Instructions, map[bool]string{true: "There IS currently", false: "There is NOT currently"}[hasWorkflow])
+		assert.Contains(t, task.Instructions, "A pasted error message", "pasted-error rule (#39381)")
+		assert.NotContains(t, task.Instructions, "Respond with ONLY one word", "Classify adds its own answer format")
+
+		// parseTurnIntent maps these labels back to intents, so they must stay the intent constants.
+		var labels []string
+		for _, o := range task.Options {
+			labels = append(labels, o.Label)
+			assert.NotEmpty(t, o.Description, o.Label)
+		}
+		assert.Equal(t, []string{string(turnIntentAnswer), string(turnIntentEdit), string(turnIntentCreate)}, labels)
+	}
+
+	// An invalid answer reaches parseTurnIntent as "", which falls back safely.
+	assert.Equal(t, turnIntentEdit, parseTurnIntent("", true))
+	assert.Equal(t, turnIntentCreate, parseTurnIntent("", false))
+	assert.Equal(t, turnIntentCreate, parseTurnIntent(string(turnIntentEdit), false), "nothing to edit without a workflow")
+}

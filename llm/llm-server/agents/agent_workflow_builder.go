@@ -756,6 +756,9 @@ func (a *WorkflowBuilderAgent) handleEntry(ctx *security.RequestContext, request
 // existing workflow ("also fetch comments and summarise") are recognised as edits rather than being
 // funnelled into failure diagnosis.
 //
+// The decision goes through the common classification API (core.Classify), so its model or backend
+// can change without touching this code; the fallback below stays here.
+//
 // Conservative defaults: on classifier error or an unparseable answer it returns EDIT when a
 // workflow is loaded (the safe non-create choice for the canvas) and CREATE otherwise. It never
 // returns EDIT when no workflow exists — a stray "edit" with nothing to edit becomes CREATE.
@@ -765,7 +768,21 @@ func (a *WorkflowBuilderAgent) classifyTurnIntent(ctx *security.RequestContext, 
 		fallback = turnIntentEdit
 	}
 
-	systemPrompt := fmt.Sprintf(`You classify a user's message in an automation-builder chat into exactly one of three intents. There %s currently an automation open in the editor.
+	call, task := turnIntentClassification(request, hasWorkflow)
+	decision, err := core.Classify(ctx, call, task, request.Query)
+	if err != nil {
+		ctx.GetLogger().Warn("workflow_builder: turn intent classification failed, using fallback", "error", err, "fallback", fallback)
+		return fallback
+	}
+	// An invalid answer has an empty label, which parseTurnIntent maps to the fallback.
+	return parseTurnIntent(decision.Label(), hasWorkflow)
+}
+
+// turnIntentClassification builds the turn-intent decision for core.Classify: the call stays on the
+// retrieval tier (today's model; moving it to the classification tier is a later switch), and the
+// options' descriptions are short because the full rules are in the instructions.
+func turnIntentClassification(request core.NBAgentRequest, hasWorkflow bool) (core.ClassificationCall, core.ClassificationTask) {
+	instructions := fmt.Sprintf(`You classify a user's message in an automation-builder chat into exactly one of three intents. There %s currently an automation open in the editor.
 
 ANSWER — the user wants information, an explanation, or a diagnosis with NO change requested. Examples:
 - "explain this workflow", "what does this automation do?", "summarize it"
@@ -792,41 +809,37 @@ Rules:
 - "create"/"build"/"make a new" a fresh automation is CREATE. If something is already open and the
   user asks to change it, that is EDIT, not CREATE.
 - If the user only asks to understand or diagnose (even an error or failure) and requests NO change,
-  it is ANSWER.
+  it is ANSWER — for example "why did it fail?" or "what does this error mean?".
+- A pasted error message, or "still failing" / "getting this error again", with an automation open and
+  no question about why, is a request to repair it: EDIT.
 - If genuinely ambiguous between ANSWER and a change, prefer the change (EDIT if an automation is
-  open, otherwise CREATE).
-
-Respond with ONLY one word: ANSWER, EDIT, or CREATE.`, map[bool]string{true: "IS", false: "is NOT"}[hasWorkflow])
-
-	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
-		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
+  open, otherwise CREATE).`, map[bool]string{true: "IS", false: "is NOT"}[hasWorkflow])
+	call := core.ClassificationCall{
+		UserId:         request.UserId,
+		AccountId:      request.AccountId,
+		ConversationId: request.ConversationId,
+		MessageId:      request.MessageId,
+		AgentId:        request.AgentId,
+		Tier:           core.ModelTierRetrieval,
+		TrackContent:   true,
 	}
-
-	// Lite/fast model — this is a one-word classification.
-	classifyCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), core.ContextKeyModelTier, core.ModelTierRetrieval),
-		ctx.GetSecurityContext(),
-		ctx.GetLogger(),
-		ctx.GetTracer(),
-		ctx.GetMeter(),
-	)
-
-	completion, err := core.GenerateAndTrackLLMContent(classifyCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
-	if err != nil {
-		ctx.GetLogger().Warn("workflow_builder: turn intent classification failed, using fallback", "error", err, "fallback", fallback)
-		return fallback
+	task := core.ClassificationTask{
+		Name:         "workflow_turn_intent",
+		Instructions: instructions,
+		Options: []core.ClassificationOption{
+			{Label: string(turnIntentAnswer), Description: "The user wants information, an explanation, a diagnosis or status, with no change requested."},
+			{Label: string(turnIntentEdit), Description: "The user wants to change or repair the automation that is open."},
+			{Label: string(turnIntentCreate), Description: "The user wants to build a new automation from scratch."},
+		},
 	}
-	if completion == nil || len(completion.Choices) == 0 || completion.Choices[0] == nil {
-		return fallback
-	}
-	return parseTurnIntent(completion.Choices[0].Content, hasWorkflow)
+	return call, task
 }
 
-// parseTurnIntent interprets the classifier's raw answer into a turnIntent. It checks for EDIT/CREATE
-// before ANSWER so a verbose reply naming a change wins over an incidental "answer" mention, and it
-// downgrades EDIT to CREATE when no workflow is loaded (nothing to edit). On no match it returns the
-// hasWorkflow-aware fallback (EDIT when a workflow is open, else CREATE) — never silently ANSWER.
+// parseTurnIntent maps the classifier's label to a turnIntent. It downgrades EDIT to CREATE when no
+// workflow is loaded (nothing to edit), and turns an empty label — an invalid answer — into the
+// hasWorkflow-aware fallback (EDIT when a workflow is open, else CREATE), never silently ANSWER.
+// core.Classify only ever returns an exact label or "", so the substring matching below is lenient
+// beyond what it needs to be; it is kept for the existing table of raw answers.
 func parseTurnIntent(answer string, hasWorkflow bool) turnIntent {
 	up := strings.ToUpper(strings.TrimSpace(answer))
 	switch {

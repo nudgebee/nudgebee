@@ -244,3 +244,32 @@ func TestGetAllConfiguredModels_ListsClassificationTier(t *testing.T) {
 	}
 	assert.True(t, found, "a configured classification model must appear in the model picker")
 }
+
+func TestClassifyMessage_UsesClassifyAndKeepsFallback(t *testing.T) {
+	stubClassificationTier(t, "db-global")
+	var agentIDs []string
+	var tiers []ModelTier
+	answers := []string{"Investigation"}
+	old := classificationGenerate
+	classificationGenerate = func(rc *security.RequestContext, _, _, _, _, agentId string, _ bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+		agentIDs = append(agentIDs, agentId)
+		tiers = append(tiers, modelTierFromContext(rc))
+		require.NotEmpty(t, answers, "Classify made more LLM calls than this test scripted")
+		a := answers[0]
+		answers = answers[1:]
+		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: a}}}, nil
+	}
+	t.Cleanup(func() { classificationGenerate = old })
+
+	msg := ConversationMessage{Message: "why is checkout slow?"}
+	got, err := ClassifyMessage(testRequestContext(), "u", "a", "c", "m", msg, nil)
+	require.NoError(t, err)
+	assert.Equal(t, ClassificationInvestigation, got)
+	assert.Equal(t, []string{ClassificationInvestigation}, agentIDs, "agent id keeps keying LLM config and cost")
+	assert.Equal(t, []ModelTier{ModelTierSummary}, tiers, "unconfigured classification tier resolves as summary")
+
+	answers = []string{"hmm", "not sure", "no idea"}
+	got, err = ClassifyMessage(testRequestContext(), "u", "a", "c", "m", msg, nil)
+	require.NoError(t, err)
+	assert.Equal(t, ClassificationOthers, got, "an invalid answer still maps to others")
+}
