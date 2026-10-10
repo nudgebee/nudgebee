@@ -1187,6 +1187,10 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
       }
 
       investigationGenerationRef.current += 1;
+      // A read already in flight (such as the re-read when the user returns to the tab) shows
+      // the conversation before this send. Retire it so it cannot mark the conversation idle
+      // and reopen the composer while the send is still being accepted.
+      fetchIdRef.current++;
       const sessionKey = currentSessionRef.current;
       const investigationGeneration = investigationGenerationRef.current;
       const finalQuery = querySuffix ? `${text} ${querySuffix}` : text;
