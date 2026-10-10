@@ -154,6 +154,7 @@ optional `email` block restyles email:
 "email": {
   "logoUrl": "/branding/acme/logo.png",   // root-relative; made absolute with BASE_URL
   "supportEmail": "support@acme.example.com",
+  "fromName": "Acme Ops",                 // display name on the From line; the address stays EMAIL_FROM
   "primaryColor": "#0047AB", "headerBgColor": "#001f4d", "footerBgColor": "#10264c", "footerLinkColor": "#ffcc00",
   "address": "1 Acme Way, Anytown",
   "copyrightStartYear": 2024
@@ -164,6 +165,9 @@ Colours must be hex, `rgb()`/`rgba()` or a named colour, and `address` may not c
 — these values are written straight into HTML email. One deployment sends one brand: a deployment
 serving several partner hostnames under one  `BASE_URL` brands all of their notifications with that
 host's row.
+
+`fromName` is written into a mail header, so it takes visible characters and plain spaces only, with no
+angle brackets or double quotes.
 
 ### Local development
 

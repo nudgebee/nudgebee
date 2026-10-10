@@ -133,8 +133,9 @@ def _generate_context(template_params):
 
 
 def format_from_header(frm):
-    """Apply EMAIL_FROM_NAME as the display name when set; otherwise return the address unchanged."""
-    name = settings.email.from_name
+    """Put a display name on the From address: the branding row's `email.fromName`, else
+    EMAIL_FROM_NAME. With neither, return the address unchanged."""
+    name = settings.urls.branding_from_name or settings.email.from_name
     if not name or not frm:
         return frm
     return formataddr((name, parseaddr(frm)[1] or frm))

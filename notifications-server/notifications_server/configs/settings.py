@@ -99,6 +99,9 @@ class URLSettings(BaseSettings):
     branding_name: str = "Nudgebee"
     assistant_name: str = "Nubi"
     branding_logo_url: str = "/branding/default/logo.png"
+    # Display name for the email From header. Only the database row sets it (email.fromName);
+    # empty falls back to EMAIL_FROM_NAME.
+    branding_from_name: str = ""
     branding_support_email: str = ""
     branding_primary_color: str = "#3470e9"
     branding_header_bg_color: str = "#004C74"

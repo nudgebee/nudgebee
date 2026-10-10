@@ -222,3 +222,29 @@ def test_generated_email_carries_display_name(monkeypatch):
         frm="alerts@example.com",
     )
     assert msg["From"] == "Nudgebee Alerts <alerts@example.com>"
+
+
+def test_from_header_prefers_the_branding_row_name(monkeypatch):
+    # A partner's row must win over the deployment-wide name, or the house name stays on their mail.
+    monkeypatch.setattr(settings.email, "from_name", "Nudgebee Alerts")
+    monkeypatch.setattr(settings.urls, "branding_from_name", "Contoso Ops")
+    assert format_from_header("alerts@example.com") == "Contoso Ops <alerts@example.com>"
+    assert format_from_header("Nudgebee <alerts@example.com>") == "Contoso Ops <alerts@example.com>"
+
+
+def test_from_header_uses_the_branding_row_name_without_a_configured_one(monkeypatch):
+    monkeypatch.setattr(settings.email, "from_name", "")
+    monkeypatch.setattr(settings.urls, "branding_from_name", "Contoso Ops")
+    assert format_from_header("alerts@example.com") == "Contoso Ops <alerts@example.com>"
+
+
+def test_generated_email_carries_the_branding_row_name(monkeypatch):
+    monkeypatch.setattr(settings.urls, "branding_from_name", "Contoso Ops")
+    msg = generate_email(
+        to=["user@example.com"],
+        subject="hello",
+        template_params={"message": "body"},
+        template_type="generic",
+        frm="alerts@example.com",
+    )
+    assert msg["From"] == "Contoso Ops <alerts@example.com>"

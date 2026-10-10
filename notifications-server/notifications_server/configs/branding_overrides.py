@@ -56,6 +56,7 @@ Fetcher = Callable[[], Awaitable[OverrideMap]]
 # services-server on write (branding.validateEmail).
 _EMAIL_STRING_FIELDS = {
     "logoUrl": "branding_logo_url",
+    "fromName": "branding_from_name",
     "supportEmail": "branding_support_email",
     "primaryColor": "branding_primary_color",
     "headerBgColor": "branding_header_bg_color",
@@ -70,6 +71,7 @@ class Branding:
     branding_name: str
     assistant_name: str
     branding_logo_url: str
+    branding_from_name: str
     branding_support_email: str
     branding_primary_color: str
     branding_header_bg_color: str
@@ -138,6 +140,12 @@ def resolve_branding(baseline: Branding, override: Optional[Dict[str, Any]], bas
             value = email.get(key)
             if not isinstance(value, str):
                 continue
+            if key == "fromName":
+                # Goes into a mail header, where a line break starts a new one. The
+                # write path refuses it; a row edited by hand must not get it through.
+                if not value.isprintable():
+                    continue
+                value = value.strip()
             if key == "logoUrl":
                 if not value:
                     continue

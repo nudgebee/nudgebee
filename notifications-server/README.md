@@ -216,7 +216,7 @@ Configure the Google Cloud project's OAuth redirect to `${BASE_URL}/api/integrat
 | `EMAIL_SERVER_USER` | SMTP username (optional; leave empty for relays that don't require auth) |
 | `EMAIL_SERVER_PASSWORD` | SMTP password (optional) |
 | `EMAIL_FROM` | Default From address |
-| `EMAIL_FROM_NAME` | Optional display name for the From header |
+| `EMAIL_FROM_NAME` | Optional display name for the From header; the branding row's `email.fromName` takes precedence |
 | `EMAIL_MAX_CONCURRENT_SENDS` | Concurrency limit (default 10) |
 
 ### Upstream service URLs
@@ -233,6 +233,7 @@ Configure the Google Cloud project's OAuth redirect to `${BASE_URL}/api/integrat
 Branding is configured in the database, in the same `tenant_branding_override` table the web app uses. This service has no request host, so it applies the row whose host matches its **`BASE_URL`** hostname, fetched from services-server (`GET /v1/branding/overrides`, using `SERVICE_API_SERVER_URL` and `ACTION_API_SERVER_TOKEN`) at startup and every 60 seconds ([`configs/branding_overrides.py`](notifications_server/configs/branding_overrides.py)).
 
 - The row's `title` names the product in every notification (email subject and footer, Slack, Teams, Discord, Google Chat).
+- The row's optional `email.fromName` is the display name on the From line of every email, e.g. `Acme Ops <alerts@example.com>`. The address itself stays `EMAIL_FROM`. Unset or `""` falls back to `EMAIL_FROM_NAME`.
 - The row's optional `email` block (`logoUrl`, `supportEmail`, `primaryColor`, `headerBgColor`, `footerBgColor`, `footerLinkColor`, `address`, `copyrightStartYear`) restyles email. `logoUrl` is root-relative and made absolute with `BASE_URL`.
 - A row whose `title` renames the product and sets no `email.logoUrl` sends **no logo**: the email footer and the Microsoft Teams and Google Chat welcome/connect cards drop the image rather than show the bundled one beside the partner's name.
 
