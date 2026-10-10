@@ -636,8 +636,8 @@ func isSafeRepoKey(repoKey string) bool {
 // repoLocks serializes base-clone / fetch / worktree-add per repository. Without
 // it, two concurrent analyses of the same repo both observe a missing base and
 // each perform a full bare clone (the "re-cloned all 9,199 files" waste), and
-// the reuse path's mutations of the shared bare-repo config (remote set-url /
-// set-branches, plus worktree metadata) race. Keyed by repoKey so different
+// the reuse path's mutations of the shared bare-repo config (remote set-url,
+// plus worktree metadata) race. Keyed by repoKey so different
 // repos still prepare in parallel. Locks are process-lived and never removed —
 // the set is bounded by the number of distinct repos a workspace pod sees.
 //
@@ -716,30 +716,42 @@ func parseLsRemoteHead(out string) (branch, tip string) {
 	return branch, tip
 }
 
-// ensureRemoteTracking makes each named branch resolvable as origin/<branch> in a bare
-// base repo, by adding it to the remote's fetch refspec and fetching it.
+// branchRefspec is the refspec that brings one branch into its remote-tracking
+// ref. Every fetch names it on the command line. The shared clone's config keeps
+// no list of branches: a list outlives the branches on it, and a fetch that walks
+// a list naming a branch the remote has since deleted fails as a whole.
+func branchRefspec(branch string) string {
+	return fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branch, branch)
+}
+
+// clearStoredRefspecs removes the branch list earlier versions kept in the
+// clone's config, so a clone made by them behaves like one made now. It writes
+// only when there is something to remove: every checkout shares this config
+// file, and a run setting its commit identity must not have to race for the
+// config lock each time the clone is reused.
 //
-// It widens the refspec one branch at a time rather than to refs/heads/*, so the
+// It does not run under the request's context. A request cancelled mid-write
+// would kill git while it holds the config lock, and the lock file left behind
+// blocks every later config write on this shared clone.
+func (gc *GitClient) clearStoredRefspecs(baseDir string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stored, err := exec.CommandContext(ctx, "git", "-C", baseDir, "config", "--get-all", "remote.origin.fetch").Output()
+	if err != nil || strings.TrimSpace(string(stored)) == "" {
+		return
+	}
+	if out, err := exec.CommandContext(ctx, "git", "-C", baseDir, "config", "--unset-all", "remote.origin.fetch").CombinedOutput(); err != nil {
+		gc.logger.Log(common.EventStepFailure, "Failed to clear stored refspecs", map[string]any{"error": err.Error(), "output": string(out)})
+	}
+}
+
+// ensureRemoteTracking makes each named branch resolvable as origin/<branch> in a bare
+// base repo, by fetching it into its remote-tracking ref.
+//
+// It fetches one branch at a time rather than refs/heads/*, so the
 // agent's `git branch -a` view stays limited to branches the request actually asked
 // for. Failures are logged and tolerated: a missing base branch should degrade the
 // merge-conflict view, not fail the whole analysis.
-// refspecConfigured reports whether origin already fetches this branch into a
-// remote-tracking ref. Matches the whole refspec line so a branch whose name is
-// a suffix of another ("main" vs "feature/main") is not mistaken for it.
-func refspecConfigured(ctx context.Context, baseDir, branch string) bool {
-	out, err := exec.CommandContext(ctx, "git", "-C", baseDir, "config", "--get-all", "remote.origin.fetch").Output()
-	if err != nil {
-		return false
-	}
-	want := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", branch, branch)
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.TrimSpace(line) == want {
-			return true
-		}
-	}
-	return false
-}
-
 func (gc *GitClient) ensureRemoteTracking(ctx context.Context, baseDir string, branches ...string) {
 	seen := map[string]struct{}{}
 	for _, branch := range branches {
@@ -756,23 +768,10 @@ func (gc *GitClient) ensureRemoteTracking(ctx context.Context, baseDir string, b
 			continue
 		}
 
-		// `git remote set-branches --add` appends unconditionally, so a bare
-		// clone reused across runs accumulates one duplicate refspec per call.
-		// Add it only when it is not already configured; the fetch below still
-		// runs either way so the ref is up to date.
-		if !refspecConfigured(ctx, baseDir, branch) {
-			addBr := exec.CommandContext(ctx, "git", "-C", baseDir, "remote", "set-branches", "--add", "origin", branch)
-			if out, err := addBr.CombinedOutput(); err != nil {
-				gc.logger.Log(common.EventStepFailure, "Failed to add branch to refspec", map[string]any{
-					"error": err.Error(), "output": string(out), "branch": branch,
-				})
-				continue
-			}
-		}
-		fetchCmd := exec.CommandContext(ctx, "git", "-C", baseDir, "fetch", "origin", branch)
+		fetchCmd := exec.CommandContext(ctx, "git", "-C", baseDir, "fetch", "origin", branchRefspec(branch))
 		if out, err := fetchCmd.CombinedOutput(); err != nil {
 			gc.logger.Log(common.EventStepFailure, "Failed to fetch remote-tracking branch", map[string]any{
-				"error": err.Error(), "output": string(out), "branch": branch,
+				"error": err.Error(), "output": RedactURLCredentials(string(out)), "branch": branch,
 			})
 		}
 	}
@@ -886,8 +885,8 @@ func (gc *GitClient) CloneSealedAtCommit(ctx context.Context, repoURL string, cr
 // commit. When commit is non-empty the worktree is checked out at exactly that
 // commit rather than at the tip of a branch.
 //
-// Why this exists separately from `branch`: `git clone --branch` and
-// `git remote set-branches` only accept ref names, so a SHA passed as a branch
+// Why this exists separately from `branch`: `git clone --branch` and a branch
+// refspec take a ref name and nothing else, so a SHA passed as a branch
 // fails the clone, or worse resolves nowhere and silently falls back to HEAD —
 // which yields an analysis of the wrong code with no error. Pinning is needed
 // whenever the question is "what did this code look like when the incident
@@ -1049,35 +1048,40 @@ func (gc *GitClient) CloneOrReuseRepositoryAtCommit(ctx context.Context, repoURL
 	// hundreds of stale claude/* exploration branches whose names look
 	// task-relevant and pull the LLM off-task).
 	//
-	// Reuse with a different branch widens the refspec via `remote
-	// set-branches --add` and then fetches only that branch.
+	// Reuse with a different branch fetches only that branch.
+	//
+	// A fetch that fails is this request's error and nothing more. Every
+	// checkout made from this clone keeps its bookkeeping inside it, so deleting
+	// the clone to repair a failed fetch broke every other run using the
+	// repository — and the usual cause was not a broken clone but a branch the
+	// remote had since deleted.
 	if _, err := os.Stat(filepath.Join(baseDir, "HEAD")); err == nil {
 		gc.logger.Log(common.EventStepStart, "Reusing existing clone, ensuring branch is fetched", map[string]any{"base_dir": baseDir, "branch": branch})
 		setURL := exec.CommandContext(ctx, "git", "-C", baseDir, "remote", "set-url", "origin", authURL)
 		if out, err := setURL.CombinedOutput(); err != nil {
 			gc.logger.Log(common.EventStepFailure, "Failed to update remote URL", map[string]any{"error": err.Error(), "output": string(out)})
 		}
+		gc.clearStoredRefspecs(baseDir)
 		if branch != "" {
 			if len(branch) > 0 && branch[0] == '-' {
 				gc.logger.Log(common.EventStepFailure, "Invalid branch name starting with dash", map[string]any{"branch": branch})
 				return nil, fmt.Errorf("invalid branch name: %s", branch)
 			}
-			// Add this branch to the refspec list (no-op if already present)
-			addBr := exec.CommandContext(ctx, "git", "-C", baseDir, "remote", "set-branches", "--add", "origin", branch)
-			if out, err := addBr.CombinedOutput(); err != nil {
-				gc.logger.Log(common.EventStepFailure, "Failed to add branch to refspec", map[string]any{"error": err.Error(), "output": string(out), "branch": branch})
-			}
-			fetchCmd := exec.CommandContext(ctx, "git", "-C", baseDir, "fetch", "origin", branch)
+			fetchCmd := exec.CommandContext(ctx, "git", "-C", baseDir, "fetch", "origin", branchRefspec(branch))
 			if out, err := fetchCmd.CombinedOutput(); err != nil {
-				gc.logger.Log(common.EventStepFailure, "git fetch failed, will re-clone", map[string]any{"error": err.Error(), "output": string(out), "branch": branch})
-				_ = os.RemoveAll(baseDir)
+				gc.logger.Log(common.EventStepFailure, "git fetch failed", map[string]any{"error": err.Error(), "output": RedactURLCredentials(string(out)), "branch": branch})
+				return nil, fmt.Errorf("failed to fetch branch %s: %s: %w", branch, RedactURLCredentials(strings.TrimSpace(string(out))), err)
 			}
-		} else {
-			// No specific branch — fetch what's already in the refspec
+		} else if commit == "" {
+			// The remote did not say what its default branch is (see above), so
+			// there is no branch to name. A remote that cannot be reached fails
+			// here rather than yielding a checkout of whatever this clone last
+			// saw. A pinned commit needs no fetch here: the commit and the
+			// default branch are each fetched by name further down.
 			fetchCmd := exec.CommandContext(ctx, "git", "-C", baseDir, "fetch", "origin")
 			if out, err := fetchCmd.CombinedOutput(); err != nil {
-				gc.logger.Log(common.EventStepFailure, "git fetch failed, will re-clone", map[string]any{"error": err.Error(), "output": string(out)})
-				_ = os.RemoveAll(baseDir)
+				gc.logger.Log(common.EventStepFailure, "git fetch failed", map[string]any{"error": err.Error(), "output": RedactURLCredentials(string(out))})
+				return nil, fmt.Errorf("failed to fetch from the remote: %s: %w", RedactURLCredentials(strings.TrimSpace(string(out))), err)
 			}
 		}
 	}
@@ -1106,7 +1110,7 @@ func (gc *GitClient) CloneOrReuseRepositoryAtCommit(ctx context.Context, repoURL
 		// refspec, so refs/remotes/origin/* is empty and `origin/<branch>` does not
 		// resolve. The worktree checkout then silently fell back to HEAD and
 		// `git merge origin/<base>` could not reproduce a PR merge conflict. Establish
-		// the remote-tracking refspec for exactly the branches this request needs.
+		// the remote-tracking refs for exactly the branches this request needs.
 		gc.ensureRemoteTracking(ctx, baseDir, append([]string{branch}, extraBranches...)...)
 		return nil
 	}
@@ -1260,8 +1264,8 @@ func (gc *GitClient) CloneOrReuseRepositoryAtCommit(ctx context.Context, repoURL
 // The bare clone is single-branch by construction, so an arbitrary historical
 // commit is usually absent even when the branch it lives on was fetched. Tries
 // the cheap targeted fetch first (GitHub and GitLab both serve arbitrary SHAs
-// via uploadpack.allowAnySHA1InWant); falls back to widening the refspec and
-// fetching everything for servers that refuse SHA requests.
+// via uploadpack.allowAnySHA1InWant); falls back to fetching every
+// branch for servers that refuse SHA requests.
 func (gc *GitClient) ensureCommitPresent(ctx context.Context, baseDir, commit string) error {
 	has := func() bool {
 		return exec.CommandContext(ctx, "git", "-C", baseDir, "cat-file", "-e", commit+"^{commit}").Run() == nil
@@ -1274,29 +1278,21 @@ func (gc *GitClient) ensureCommitPresent(ctx context.Context, baseDir, commit st
 	fetchCtx, cancel := context.WithTimeout(ctx, gc.timeout)
 	defer cancel()
 	if out, err := exec.CommandContext(fetchCtx, "git", "-C", baseDir, "fetch", "--no-tags", "origin", commit).CombinedOutput(); err != nil {
-		gc.logger.Log(common.EventStepFailure, "Targeted commit fetch failed, widening refspec", map[string]any{
-			"commit": commit, "error": err.Error(), "output": string(out),
+		gc.logger.Log(common.EventStepFailure, "Targeted commit fetch failed, fetching every branch", map[string]any{
+			"commit": commit, "error": err.Error(), "output": RedactURLCredentials(string(out)),
 		})
 	} else if has() {
 		return nil
 	}
 
-	// Server refused the SHA (or served it without making it reachable). Widen the
-	// refspec to all branches and fetch again — slower, but it is the only option
-	// left before failing.
-	// Bounded even though this only rewrites .git/config and never touches the
-	// network: a stale index.lock is enough to block it indefinitely, and this
-	// path already runs after a failed fetch. Failure stays non-fatal — the
-	// fetch below is the operation that decides the outcome.
-	setBranchesCtx, cancelSetBranches := context.WithTimeout(ctx, gc.timeout)
-	defer cancelSetBranches()
-	if out, err := exec.CommandContext(setBranchesCtx, "git", "-C", baseDir, "remote", "set-branches", "origin", "*").CombinedOutput(); err != nil {
-		gc.logger.Log(common.EventStepFailure, "Failed to widen refspec", map[string]any{"error": err.Error(), "output": string(out)})
-	}
+	// Server refused the SHA (or served it without making it reachable). Fetch
+	// every branch and look again — slower, but it is the only option left before
+	// failing. The refspec is given here, not stored in the clone's config, so the
+	// widening lasts for this fetch only.
 	wideCtx, wideCancel := context.WithTimeout(ctx, gc.timeout)
 	defer wideCancel()
-	if out, err := exec.CommandContext(wideCtx, "git", "-C", baseDir, "fetch", "--no-tags", "origin").CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to fetch commit %s: %s: %w", commit, string(out), err)
+	if out, err := exec.CommandContext(wideCtx, "git", "-C", baseDir, "fetch", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to fetch commit %s: %s: %w", commit, RedactURLCredentials(strings.TrimSpace(string(out))), err)
 	}
 	if !has() {
 		return fmt.Errorf("commit %s not found in repository after fetch", commit)

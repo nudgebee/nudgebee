@@ -57,35 +57,31 @@ func TestCloneAtCommit_DefaultBranchIsComparable(t *testing.T) {
 	}
 }
 
-// A bare clone is cached and reused across runs, and `git remote set-branches
-// --add` appends unconditionally — so tracking the default branch on every
-// pinned clone would grow one duplicate refspec per analysis.
-func TestCloneAtCommit_RefspecNotDuplicatedOnReuse(t *testing.T) {
+// A bare clone is cached and reused across runs. Nothing a request asks for is
+// written into its config: a stored branch list outlives the branches on it, and
+// a fetch that walks a list naming a branch the remote has deleted fails as a
+// whole. Each fetch names its branch instead, so reuse leaves no list behind.
+func TestCloneAtCommit_KeepsNoBranchListInTheClone(t *testing.T) {
 	origin := buildOriginRepo(t)
 	baseSHA := strings.TrimSpace(gitRun(t, origin, "rev-parse", "test~1"))
 
 	workspace := t.TempDir()
 	gc := NewGitClient(workspace, 60*time.Second, 0)
 
-	var repoDir string
 	for i := 0; i < 3; i++ {
-		res, err := gc.CloneOrReuseRepositoryAtCommit(context.Background(), origin, nil, "", baseSHA,
-			filepath.Join(t.TempDir(), "wt"))
-		if err != nil {
-			t.Fatalf("clone %d: %v", i, err)
+		if _, err := gc.CloneOrReuseRepositoryAtCommit(context.Background(), origin, nil, "", baseSHA,
+			filepath.Join(t.TempDir(), "wt")); err != nil {
+			t.Fatalf("pinned clone %d: %v", i, err)
 		}
-		repoDir = filepath.Join(workspace, "repos", repoKeyFromURL(origin))
-		_ = res
+	}
+	// A branch under analysis together with the base it would merge into.
+	if _, err := gc.CloneOrReuseRepository(context.Background(), origin, nil, "prod",
+		filepath.Join(t.TempDir(), "wt"), "test"); err != nil {
+		t.Fatalf("clone prod: %v", err)
 	}
 
-	out := gitRun(t, repoDir, "config", "--get-all", "remote.origin.fetch")
-	var n int
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if strings.TrimSpace(line) == "+refs/heads/test:refs/remotes/origin/test" {
-			n++
-		}
-	}
-	if n != 1 {
-		t.Fatalf("default-branch refspec configured %d times after 3 clones, want 1:\n%s", n, out)
+	repoDir := filepath.Join(workspace, "repos", repoKeyFromURL(origin))
+	if stored := storedRefspecs(repoDir); stored != "" {
+		t.Fatalf("the clone's config names branches after reuse:\n%s", stored)
 	}
 }

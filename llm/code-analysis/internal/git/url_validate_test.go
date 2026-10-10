@@ -72,6 +72,11 @@ func TestValidateBranchName(t *testing.T) {
 		"trailing whitespace": "main ",
 		"newline":             "main\nrm -rf /",
 		"control character":   "main\x00",
+		"every branch":        "*",
+		"branch pattern":      "stale/*",
+		"question mark":       "fix?",
+		"bracket":             "fix[1]",
+		"refspec separator":   "main:refs/heads/other",
 	}
 	for name, branch := range invalid {
 		t.Run(name, func(t *testing.T) {
