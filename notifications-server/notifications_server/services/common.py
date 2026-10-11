@@ -1680,8 +1680,8 @@ class CommonService:
                 await send_email_async(email_msg)
                 sent_to.append(recipient)
                 LOG.info("Email sent successfully to %s", recipient)
-            except Exception as e:
-                LOG.error("Failed to send email to %s: %s", recipient, e)
+            except Exception:
+                LOG.exception("Failed to send email to %s", recipient)
                 errors.append({"recipient": recipient, "error": "Unexpected error; see server logs"})
 
         return sent_to, errors
@@ -1714,8 +1714,8 @@ class CommonService:
                 len(bcc_list or []),
             )
             return envelope, []
-        except Exception as e:
-            LOG.error("Failed to send combined email: %s", e)
+        except Exception:
+            LOG.exception("Failed to send combined email")
             return [], [{"recipients": envelope, "error": "Unexpected error; see server logs"}]
 
     @staticmethod
@@ -2587,8 +2587,8 @@ class CommonService:
                 return {"success": True, "platform": "ms_teams"}
             error_detail = resp.text if resp else "No response"
             return {"success": False, "platform": "ms_teams", "error": error_detail}
-        except Exception as e:
-            LOG.error("MS Teams test notification error: %s", e)
+        except Exception:
+            LOG.exception("MS Teams test notification error")
             return {"success": False, "platform": "ms_teams", "error": "Unexpected error; see server logs"}
 
     def _send_test_discord(self, messaging_platform, channel_id, message):
@@ -2601,8 +2601,8 @@ class CommonService:
             if not response.get("ok"):
                 return {"success": False, "platform": "discord", "error": response.get("error", "Unknown error")}
             return {"success": True, "platform": "discord"}
-        except Exception as e:
-            LOG.error("Error sending Discord test notification: %s", e)
+        except Exception:
+            LOG.exception("Error sending Discord test notification")
             return {"success": False, "platform": "discord", "error": "Unexpected error; see server logs"}
 
     def _send_test_google_chat(self, messaging_platform, channel_id, message, tenant_id):
@@ -2620,8 +2620,8 @@ class CommonService:
             if result and result.get("success"):
                 return {"success": True, "platform": "google_chat"}
             return {"success": False, "platform": "google_chat", "error": "Failed to post message"}
-        except Exception as e:
-            LOG.error("Google Chat test notification error: %s", e)
+        except Exception:
+            LOG.exception("Google Chat test notification error")
             return {"success": False, "platform": "google_chat", "error": "Unexpected error; see server logs"}
 
     async def teams_send_welcome_message(self, activity: Activity) -> bool:

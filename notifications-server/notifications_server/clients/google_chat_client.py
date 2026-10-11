@@ -461,8 +461,8 @@ class GoogleChatClient:
             if not setup_result.get("success"):
                 return None, setup_result
             return setup_result.get("space_id"), None
-        except Exception as e:
-            LOG.error("Failed to setup DM with user %s: %s", user_id, e)
+        except Exception:
+            LOG.exception("Failed to setup DM with user %s", user_id)
             return None, {"success": False, "error": "Failed to set up the DM space"}
 
     @staticmethod
