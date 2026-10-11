@@ -55,8 +55,10 @@ export const generateQuery = (logProvider, chips, operations, metricName = '', a
     let dql = `timeseries val = ${aggregator}(${metricKey})`;
     if (chips.length > 0) {
       const filterExprs = chips.map((chip) => {
-        const escapedLabel = chip.label.replace(/`/g, '\\`');
-        const escapedValue = chip.value.replace(/"/g, '\\"');
+        // Escape backslashes first: otherwise a value ending in "\" escapes the
+        // closing quote and the rest of the DQL is read as part of the string.
+        const escapedLabel = chip.label.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
+        const escapedValue = chip.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         switch (chip.operator) {
           case '!=':
           case '_neq':
