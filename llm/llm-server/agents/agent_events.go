@@ -852,6 +852,10 @@ func reduceEventData(event events.Event) map[string]any {
 		eventData["log_pattern_breakdown"] = event.Evidences.LogPatternBreakdown
 	}
 
+	if event.Evidences.AnomalyDetection != nil {
+		eventData["anomaly_detection"] = event.Evidences.AnomalyDetection
+	}
+
 	if len(event.Evidences.Others) > 0 {
 		otherEntries := []map[string]any{}
 		for _, other := range event.Evidences.Others {

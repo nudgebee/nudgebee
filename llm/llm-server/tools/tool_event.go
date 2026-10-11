@@ -257,6 +257,15 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 		}
 		for _, evidence := range evidences {
 
+			if events.IsAnomalyRecord(evidence) {
+				if summary, ok := events.SummarizeAnomalyRecord(evidence); ok {
+					investigateData.AnomalyDetection = &summary
+				} else {
+					slog.Warn("evidence: unreadable anomaly reference_value, skipping", "event_id", data["id"])
+				}
+				continue
+			}
+
 			if evidence.Type == "diff" {
 				evidenceData, ok := evidence.Data.(map[string]any)
 				if !ok {

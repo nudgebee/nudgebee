@@ -1812,6 +1812,15 @@ const maxInvestigationPromptBytes = 64000
 func buildInvestigationEvidenceContext(ev events.InvestigateData) string {
 	var b strings.Builder
 
+	// 0. Anomaly events: what the detector measured and compared. The event's
+	// only other trace of it is a bare value label, and without the metric,
+	// unit and baseline the agent went looking for the detector's code.
+	if ev.AnomalyDetection != nil {
+		b.WriteString("### Anomaly Detection\n")
+		b.WriteString(ev.AnomalyDetection.Render())
+		b.WriteString("\n")
+	}
+
 	// 1. Insight messages summarise the metric / trace / alert / dependency
 	// findings the enrichers attached to the event. Short, pre-ranked,
 	// highest signal per byte — always first so a large log body can never
@@ -1927,7 +1936,7 @@ func saveEvidenceLogsToWorkspace(ctx *security.RequestContext, accountId, sessio
 	if hasWindow {
 		windowNote = fmt.Sprintf(" for the incident window (%s → %s)", window.startString(), window.endString())
 	}
-	note := fmt.Sprintf("## Stored Log Evidence\nThe full logs already collected%s are saved in your workspace at `%s` (one log line per row). Grep this file first (e.g. `grep -iE \"error|timeout|fail\" %s | head -40`) before fetching live logs — logs fetched live at analysis time include activity from after the incident window.", windowNote, filename, filename)
+	note := fmt.Sprintf("## Stored Log Evidence\nThe full logs already collected%s are saved in your workspace at `%s` (%s). Grep this file first (e.g. `grep -iE \"error|timeout|fail\" %s | head -40`) before fetching live logs — logs fetched live at analysis time include activity from after the incident window.", windowNote, filename, agents.DescribeLogLines(logText).Describe(false), filename)
 	if coverage := strings.TrimSpace(event.Evidences.LogCoverageNote); coverage != "" {
 		note += " What this file covers: " + core.TruncateHead(coverage, maxLogCoverageNoteBytes)
 	}
@@ -1971,9 +1980,12 @@ var emptyInvestigateDataJSON = func() string {
 	return string(b)
 }()
 
-// structuredEvidenceNote is the prompt pointer to the saved structured evidence.
-func structuredEvidenceNote(file string) string {
-	return fmt.Sprintf("## Stored Structured Evidence\nThe event's structured evidence (metric series, pod and node data, events, deployment diff) is saved in your workspace at `%s` as JSON. Parse it (e.g. `jq 'keys' %s`) before fetching live data; each section's `data` field is usually a JSON document stored as a string, so decode it a second time. Logs are not in this file — use the Collected Evidence section or the stored log file.", file, file)
+// structuredEvidenceNote is the prompt pointer to the saved structured evidence,
+// with the file's shape so the agent can read the sections it needs directly.
+// ev is the evidence as saved (structuredEvidenceForWorkspace drops LogData).
+func structuredEvidenceNote(file string, ev events.InvestigateData) string {
+	ev.LogData = ""
+	return fmt.Sprintf("## Stored Structured Evidence\nThe event's structured evidence (metric series, pod and node data, events, deployment diff) is saved in your workspace at `%s` as JSON. Read it before fetching live data. Logs are not in this file — use the Collected Evidence section or the stored log file.\n%s", file, strings.TrimSpace(tools.EventEvidenceShape(ev)))
 }
 
 // Padding applied when an event's own window has no width. Collectors stamp
@@ -2937,7 +2949,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			}
 			if content, ok := structuredEvidenceForWorkspace(eventData.Evidences); ok {
 				if file := saveOverflowToWorkspace(ctx, request.AccountId, parentConversationId, tools.EventEvidenceFileName(request.EventId), content); file != "" {
-					eventAnalsysisPrompt = eventAnalsysisPrompt + "\n\n" + structuredEvidenceNote(file)
+					eventAnalsysisPrompt = eventAnalsysisPrompt + "\n\n" + structuredEvidenceNote(file, eventData.Evidences)
 				}
 			}
 			// Persist any oversized prompt inputs the guardrail condensed to a

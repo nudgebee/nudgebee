@@ -3,6 +3,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -370,11 +371,14 @@ func offloadEventEvidence(ctx *security.RequestContext, wm workspace.WorkspaceMa
 		"to page a list use query_mode=filter with offset and limit. "+
 		"Logs are reduced in the file: error lines are in error_log_data, and log_data is empty or a short tail; use get_event_evidence with evidence_type=logs for the full log body.\n%s",
 		len(fullBytes), outputFile, preview)
+	// The description carries only the shape's first line: it is repeated for
+	// every saved file in the evidence index on later turns, so the full shape
+	// stays in the preview above.
 	return inline, []core.NBToolResponseReference{{
 		Text:        "Full event evidence saved to workspace",
 		Url:         outputFile,
 		Type:        "file",
-		Description: "Full event evidence collected by system",
+		Description: "Full event evidence collected by system. " + strings.SplitN(EventEvidenceShape(investigateData), "\n", 2)[0],
 	}}
 }
 
@@ -1027,41 +1031,17 @@ const (
 // first error lines, alert labels/data, then every other non-empty section
 // with its size so the model knows what to read from the file.
 func buildEventEvidencePreview(id events.InvestigateData) string {
-	// evType is the get_event_evidence evidence_type for the section; "" means
-	// the tool cannot return it and it is only in the file.
-	sections := []previewSection{
-		{"log_data", "logs", nil, len(id.LogData)},
-		{"pod_metrics", "pod_metrics", id.PodMetrics, 0},
-		{"node_metrics", "node_metrics", id.NodeMetrics, 0},
-		{"metrics_queries_data", "metrics_data", id.MetricsData, 0},
-		{"pod_events", "pod_events", id.PodEvents, 0},
-		{"node_events", "node_events", id.NodeEvents, 0},
-		{"noisy_neighbours", "noisy_neighbours", id.NoisyNeighbours, 0},
-		{"api_failures", "api_failures", id.ApiFailures, 0},
-		{"user_actions", "user_actions", id.UserActions, 0},
-		{"rdbms_query_data", "rdbms_query_response", id.RDBMSQueryData, 0},
-		{"markdown_data", "markdowns", id.Markdowns, 0},
-		{"others", "", id.Others, 0},
-		{"pod_data", "pod_data", []events.InvestigateDataInsight{id.PodData}, 0},
-		{"node_data", "", []events.InvestigateDataInsight{id.NodeData}, 0},
-		{"deployment", "deployment", []events.InvestigateDataInsight{id.Deployment}, 0},
-		{"job_information", "job_information", []events.InvestigateDataInsight{id.JobInformation}, 0},
-		{"job_events", "job_events", []events.InvestigateDataInsight{id.JobEvents}, 0},
-		{"job_pod_events", "", []events.InvestigateDataInsight{id.JobPodEvents}, 0},
-		{"related_events", "related_events", []events.InvestigateDataInsight{id.RelatedEvents}, 0},
-		{"container_metrics", "container_metrics", []events.InvestigateDataInsight{id.ContainerMetrics}, 0},
-		{"traces", "traces", []events.InvestigateDataInsight{id.Traces}, 0},
-		{"service_map_data", "", []events.InvestigateDataInsight{id.ServiceMap}, 0},
-	}
-	for i := range sections {
-		if sections[i].items != nil {
-			sections[i].size = insightSliceSize(sections[i].items)
-		}
-	}
+	sections := evidenceSections(id)
 
 	var b strings.Builder
 	b.WriteString("Key facts:\n")
 
+	if id.AnomalyDetection != nil {
+		b.WriteString("anomaly_detection:\n")
+		for line := range strings.SplitSeq(strings.TrimSpace(id.AnomalyDetection.Render()), "\n") {
+			b.WriteString("  " + line + "\n")
+		}
+	}
 	if id.LogSummary != nil {
 		if raw, err := common.MarshalJson(id.LogSummary); err == nil {
 			fmt.Fprintf(&b, "log_summary: %s\n", truncateUTF8Safe(string(raw), previewFieldChars))
@@ -1094,6 +1074,8 @@ func buildEventEvidencePreview(id events.InvestigateData) string {
 			fmt.Fprintf(&b, "%s: %s\n", f.name, truncateUTF8Safe(string(raw), previewFieldChars))
 		}
 	}
+	b.WriteString(previewMetricCards(id.MetricsData))
+	b.WriteString(previewTraces(id.Traces))
 
 	sort.Slice(sections, func(i, j int) bool { return sections[i].size > sections[j].size })
 	var tail strings.Builder
@@ -1125,6 +1107,207 @@ type previewSection struct {
 	evType string
 	items  []events.InvestigateDataInsight
 	size   int
+}
+
+// evidenceSections lists the evidence file's sections with their sizes. evType is
+// the get_event_evidence evidence_type for the section; "" means the tool cannot
+// return it and it is only in the file.
+func evidenceSections(id events.InvestigateData) []previewSection {
+	sections := []previewSection{
+		{"log_data", "logs", nil, len(id.LogData)},
+		{"pod_metrics", "pod_metrics", id.PodMetrics, 0},
+		{"node_metrics", "node_metrics", id.NodeMetrics, 0},
+		{"metrics_queries_data", "metrics_data", id.MetricsData, 0},
+		{"pod_events", "pod_events", id.PodEvents, 0},
+		{"node_events", "node_events", id.NodeEvents, 0},
+		{"noisy_neighbours", "noisy_neighbours", id.NoisyNeighbours, 0},
+		{"api_failures", "api_failures", id.ApiFailures, 0},
+		{"user_actions", "user_actions", id.UserActions, 0},
+		{"rdbms_query_data", "rdbms_query_response", id.RDBMSQueryData, 0},
+		{"markdown_data", "markdowns", id.Markdowns, 0},
+		{"others", "", id.Others, 0},
+		{"pod_data", "pod_data", []events.InvestigateDataInsight{id.PodData}, 0},
+		{"node_data", "", []events.InvestigateDataInsight{id.NodeData}, 0},
+		{"deployment", "deployment", []events.InvestigateDataInsight{id.Deployment}, 0},
+		{"job_information", "job_information", []events.InvestigateDataInsight{id.JobInformation}, 0},
+		{"job_events", "job_events", []events.InvestigateDataInsight{id.JobEvents}, 0},
+		{"job_pod_events", "", []events.InvestigateDataInsight{id.JobPodEvents}, 0},
+		{"related_events", "related_events", []events.InvestigateDataInsight{id.RelatedEvents}, 0},
+		{"container_metrics", "container_metrics", []events.InvestigateDataInsight{id.ContainerMetrics}, 0},
+		{"traces", "traces", []events.InvestigateDataInsight{id.Traces}, 0},
+		{"service_map_data", "", []events.InvestigateDataInsight{id.ServiceMap}, 0},
+	}
+	for i := range sections {
+		if sections[i].items != nil {
+			sections[i].size = insightSliceSize(sections[i].items)
+		}
+	}
+	return sections
+}
+
+// EventEvidenceShape describes the event evidence file so it can be read without
+// first exploring it: which top-level keys hold data and in what form, the metric
+// cards by name, and the traces' unit. Agents told only "parse it (jq 'keys')"
+// spent their first turns listing keys, printing sections that turned out empty
+// and working out which "prometheus" card was which.
+func EventEvidenceShape(id events.InvestigateData) string {
+	var b strings.Builder
+	b.WriteString("Top-level keys with data: ")
+	var withData, empty []string
+	for _, s := range evidenceSections(id) {
+		if s.size <= 0 {
+			empty = append(empty, s.name)
+			continue
+		}
+		desc := fmt.Sprintf("%s (%d bytes", s.name, s.size)
+		switch {
+		case s.items == nil:
+			desc += ", text"
+		case len(s.items) > 1:
+			desc += fmt.Sprintf(", list of %d entries", len(s.items))
+		}
+		if sectionDataIsString(s.items) {
+			desc += ", each entry's .data is a JSON document stored as a string: decode it a second time"
+		}
+		withData = append(withData, desc+")")
+	}
+	if id.AnomalyDetection != nil {
+		withData = append([]string{"anomaly_detection (the anomaly detector's result, already decoded)"}, withData...)
+	}
+	if len(withData) == 0 {
+		b.WriteString("none")
+	} else {
+		b.WriteString(strings.Join(withData, "; "))
+	}
+	b.WriteString(".\n")
+	if len(empty) > 0 {
+		b.WriteString("Empty, do not read: " + strings.Join(empty, ", ") + ".\n")
+	}
+	b.WriteString(previewMetricCards(id.MetricsData))
+	b.WriteString(previewTraces(id.Traces))
+	return b.String()
+}
+
+// sectionDataIsString reports whether every entry of a section that has data
+// carries it as a string rather than a decoded object.
+func sectionDataIsString(items []events.InvestigateDataInsight) bool {
+	seen := false
+	for _, it := range items {
+		if it.Data == nil {
+			continue
+		}
+		if _, ok := it.Data.(string); !ok {
+			return false
+		}
+		seen = true
+	}
+	return seen
+}
+
+const (
+	previewQueryChars   = 160
+	previewSlowestSpans = 3
+	previewSpanChars    = 100
+)
+
+// previewMetricCards lists the metric cards by the name the file keys them on,
+// with how many series hold data. Every card's own title is just "prometheus",
+// so without this the model reads each card to find which one is which, and
+// cannot tell an empty card (all NaN) from a quiet one.
+func previewMetricCards(cards []events.InvestigateDataInsight) string {
+	if len(cards) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("metrics_queries_data cards (name in .additional_info.title, series in .data.series_list_result[].values):\n")
+	for i, card := range cards {
+		name, _ := card.AdditionalInfo["title"].(string)
+		if name == "" {
+			name = card.Title
+		}
+		withData, total := 0, 0
+		if m := (GetEventEvidenceTool{}).toMap(card.Data); m != nil {
+			series, _ := m["series_list_result"].([]any)
+			for _, s := range series {
+				sm, _ := s.(map[string]any)
+				values, _ := sm["values"].([]any)
+				total++
+				for _, v := range values {
+					if !math.IsNaN(toFloat64(v)) {
+						withData++
+						break
+					}
+				}
+			}
+		}
+		fmt.Fprintf(&b, "  [%d] %s: ", i, name)
+		if withData == 0 {
+			b.WriteString("no data")
+		} else {
+			fmt.Fprintf(&b, "%d of %d series with data", withData, total)
+		}
+		if card.Unit != "" {
+			fmt.Fprintf(&b, ", unit %s", card.Unit)
+		}
+		if card.Query != "" {
+			fmt.Fprintf(&b, ", query %s", truncateUTF8Safe(card.Query, previewQueryChars))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// previewTraces states the span count and Duration's unit, and names the slowest
+// spans. Durations are nanoseconds; read as microseconds, a 0.4 ms query looks
+// like 0.4 s.
+func previewTraces(traces events.InvestigateDataInsight) string {
+	m, _ := traces.Data.(map[string]any)
+	spans, _ := m["data"].([]any)
+	if len(spans) == 0 {
+		return ""
+	}
+	type span struct {
+		ns   float64
+		desc string
+	}
+	var all []span
+	for _, s := range spans {
+		sm, _ := s.(map[string]any)
+		ns := toFloat64(sm["Duration"])
+		if math.IsNaN(ns) {
+			continue
+		}
+		attrs, _ := sm["SpanAttributes"].(map[string]any)
+		str := func(k string) string { v, _ := attrs[k].(string); return strings.TrimSpace(v) }
+		parts := []string{}
+		if name, _ := sm["SpanName"].(string); name != "" && name != str("http.method") {
+			parts = append(parts, name)
+		}
+		if dest := str("destination.workload_name"); dest != "" {
+			parts = append(parts, "to "+dest)
+		}
+		if method, path := str("http.method"), str("http.path"); method != "" || path != "" {
+			parts = append(parts, strings.TrimSpace(method+" "+path))
+		} else if stmt := strings.Join(strings.Fields(str("db.statement")), " "); stmt != "" {
+			parts = append(parts, stmt)
+		}
+		all = append(all, span{ns, truncateUTF8Safe(strings.Join(parts, " "), previewSpanChars)})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].ns > all[j].ns })
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "traces: %d spans in .traces.data.data[]; Duration is in nanoseconds", len(spans))
+	if len(all) > 0 {
+		b.WriteString("; slowest:")
+		for i, s := range all {
+			if i == previewSlowestSpans {
+				break
+			}
+			fmt.Fprintf(&b, " %.1f ms %s;", s.ns/1e6, s.desc)
+		}
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 // errTemplateNoise matches what differs between otherwise identical log

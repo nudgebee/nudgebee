@@ -973,6 +973,14 @@ func makeFetchResponse(agentName, query, logs, flattened, fileRef, bundleSignal 
 	if coverageNote != "" {
 		envelope["read_coverage"] = coverageNote
 	}
+	// saveLogsToWorkspace measured the file once; reuse it rather than scan a
+	// multi-MB body again.
+	for _, ref := range refs {
+		if ref.Type == "file" && ref.Url == fileRef && fileRef != "" {
+			envelope["logs_shape"] = ref.Description
+			break
+		}
+	}
 	body, err := common.MarshalJson(envelope)
 	if err != nil {
 		return core.NBAgentResponse{
@@ -1027,13 +1035,18 @@ func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId
 		ctx.GetLogger().Warn("fetch_logs: failed to save logs to workspace", "error", err, "file", filename, "duration", saveDuration.String())
 		return "", body, nil
 	}
-	ctx.GetLogger().Info("fetch_logs: logs saved", "file", filename, "bytes", len(body), "raw_bytes", len(logs), "format", logsLayout(logs, body), "duration", saveDuration.String())
+	format := logsLayout(logs, body)
+	ctx.GetLogger().Info("fetch_logs: logs saved", "file", filename, "bytes", len(body), "raw_bytes", len(logs), "format", format, "duration", saveDuration.String())
+	// The description carries the file's shape, so whoever later sees only the
+	// reference (another agent, a later message, the evidence index) can filter
+	// it without first reading it. The flattened layout keeps only timestamp and
+	// message, so stream labels such as pod are not in the file.
 	return filename, body, []toolcore.NBToolResponseReference{
 		{
 			Text:        filename,
 			Url:         filename,
 			Type:        "file",
-			Description: fmt.Sprintf("Raw log data from %s", label),
+			Description: fmt.Sprintf("Raw log data from %s: %s", label, DescribeLogLines(body).Describe(format == "timestamp_tab_message")),
 		},
 	}
 }
@@ -1696,4 +1709,205 @@ func providerSpecificQueryExamples(provider string) []core.NBAgentPromptExample 
 	default:
 		return []core.NBAgentPromptExample{}
 	}
+}
+
+// LogFileShape describes a saved log file well enough to filter it without first
+// reading it: how many records, the timestamp range, whether lines are in time
+// order, and what the messages look like. Agents handed only a filename used to
+// spend turns on `head`, a slice that came back empty because the lines were not
+// in time order, and a pod grouping that found no pod.
+type LogFileShape struct {
+	Lines int
+	// Timestamped counts lines that start with "<RFC 3339 timestamp><TAB>".
+	Timestamped  int
+	First, Last  string
+	Order        string
+	JSONMessages int
+	TextMessages int
+	TopKeys      []string
+	Levels       map[string]int
+}
+
+const (
+	// logShapeMaxDecoded bounds how many JSON messages are decoded for keys and
+	// levels; the rest are counted but not decoded.
+	logShapeMaxDecoded = 5000
+	logShapeTopKeys    = 8
+	// logShapeMostlyOrdered is the share of adjacent timestamp pairs that must
+	// agree for the file to count as mostly in one order.
+	logShapeMostlyOrdered = 0.9
+)
+
+var logLevelKeys = []string{"level", "severity", "lvl", "log.level", "levelname"}
+
+// DescribeLogLines measures a line-per-record log body.
+func DescribeLogLines(body string) LogFileShape {
+	var s LogFileShape
+	keyCounts := map[string]int{}
+	asc, desc := 0, 0
+	// Compared as times: RFC 3339 strings with different fractional-second
+	// lengths do not sort lexically ("…35Z" sorts after "…35.1Z").
+	var first, last, prev time.Time
+	decoded := 0
+	for line := range strings.SplitSeq(body, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		s.Lines++
+		msg := line
+		// The length and dash check skips time.Parse for lines that cannot start
+		// with a timestamp; RFC3339 parsing accepts fractional seconds.
+		if ts, rest, ok := strings.Cut(line, "\t"); ok && len(ts) >= 20 && ts[4] == '-' {
+			if t, err := time.Parse(time.RFC3339, ts); err == nil {
+				s.Timestamped++
+				msg = rest
+				if first.IsZero() || t.Before(first) {
+					first, s.First = t, ts
+				}
+				if last.IsZero() || t.After(last) {
+					last, s.Last = t, ts
+				}
+				if !prev.IsZero() {
+					switch {
+					case t.After(prev):
+						asc++
+					case t.Before(prev):
+						desc++
+					}
+				}
+				prev = t
+			}
+		}
+		msg = strings.TrimSpace(msg)
+		if !strings.HasPrefix(msg, "{") {
+			s.TextMessages++
+			continue
+		}
+		s.JSONMessages++
+		if decoded >= logShapeMaxDecoded {
+			continue
+		}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal([]byte(msg), &fields) != nil {
+			s.JSONMessages--
+			s.TextMessages++
+			continue
+		}
+		decoded++
+		for k := range fields {
+			keyCounts[k]++
+		}
+		for _, k := range logLevelKeys {
+			raw, ok := fields[k]
+			if !ok {
+				continue
+			}
+			// pino and Bunyan write numeric levels (30 is info); count those
+			// under the number rather than drop them.
+			var val any
+			level := ""
+			if json.Unmarshal(raw, &val) == nil {
+				switch v := val.(type) {
+				case string:
+					level = strings.ToUpper(v)
+				case float64:
+					level = strconv.FormatFloat(v, 'f', -1, 64)
+				}
+			}
+			if level != "" {
+				if s.Levels == nil {
+					s.Levels = map[string]int{}
+				}
+				s.Levels[level]++
+				break
+			}
+		}
+	}
+
+	if pairs := asc + desc; pairs > 0 {
+		switch {
+		case desc == 0:
+			s.Order = "oldest first"
+		case asc == 0:
+			s.Order = "newest first"
+		case float64(desc)/float64(pairs) >= logShapeMostlyOrdered:
+			s.Order = "mostly newest first"
+		case float64(asc)/float64(pairs) >= logShapeMostlyOrdered:
+			s.Order = "mostly oldest first"
+		default:
+			s.Order = "not in time order"
+		}
+	}
+
+	keys := make([]string, 0, len(keyCounts))
+	for k := range keyCounts {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keyCounts[keys[i]] != keyCounts[keys[j]] {
+			return keyCounts[keys[i]] > keyCounts[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	if len(keys) > logShapeTopKeys {
+		keys = keys[:logShapeTopKeys]
+	}
+	s.TopKeys = keys
+	return s
+}
+
+// Describe renders the shape as one paragraph. withoutLabels says the file holds
+// only timestamp and message, so pod, container and other stream labels are not
+// in it.
+func (s LogFileShape) Describe(withoutLabels bool) string {
+	if s.Lines == 0 {
+		return "empty"
+	}
+	var parts []string
+	if s.Timestamped == s.Lines {
+		parts = append(parts, fmt.Sprintf("%d lines, each <RFC 3339 timestamp><TAB><message>", s.Lines))
+	} else {
+		parts = append(parts, fmt.Sprintf("%d lines (%d start with <RFC 3339 timestamp><TAB>)", s.Lines, s.Timestamped))
+	}
+	if s.First != "" {
+		span := fmt.Sprintf("timestamps %s to %s", s.First, s.Last)
+		if s.Order != "" {
+			span += ", " + s.Order
+		}
+		if s.Order != "oldest first" && s.Order != "newest first" {
+			span += " (filter by comparing timestamps, not by line position)"
+		}
+		parts = append(parts, span)
+	}
+	if s.JSONMessages > 0 {
+		m := fmt.Sprintf("%d JSON messages", s.JSONMessages)
+		if len(s.TopKeys) > 0 {
+			m += " with keys " + strings.Join(s.TopKeys, ", ")
+		}
+		if len(s.Levels) > 0 {
+			levels := make([]string, 0, len(s.Levels))
+			for l := range s.Levels {
+				levels = append(levels, l)
+			}
+			sort.Slice(levels, func(i, j int) bool {
+				if s.Levels[levels[i]] != s.Levels[levels[j]] {
+					return s.Levels[levels[i]] > s.Levels[levels[j]]
+				}
+				return levels[i] < levels[j]
+			})
+			counts := make([]string, 0, len(levels))
+			for _, l := range levels {
+				counts = append(counts, fmt.Sprintf("%s %d", l, s.Levels[l]))
+			}
+			m += " (" + strings.Join(counts, ", ") + ")"
+		}
+		parts = append(parts, m)
+	}
+	if s.TextMessages > 0 {
+		parts = append(parts, fmt.Sprintf("%d plain-text messages", s.TextMessages))
+	}
+	if withoutLabels {
+		parts = append(parts, "no pod, container or other stream label is on the line")
+	}
+	return strings.Join(parts, "; ") + "."
 }
