@@ -476,9 +476,39 @@ func buildCubeAPMTraceGroupQuery(req TracesV3Request, env string) (string, error
 		"quantile(0.95, duration) p95, " +
 		"quantile(0.99, duration) p99, " +
 		"max(duration) max_duration, " +
-		"sum(duration) total_duration" +
-		" | sort by (count desc)" +
+		"avg(duration) avg_duration" +
+		cubeAPMTraceGroupSort(req.QueryRequest.OrderBy) +
 		cubeAPMTracePage(req.QueryRequest.Offset, req.QueryRequest.Limit), nil
+}
+
+// cubeAPMTraceGroupSortFields maps the API's grouped sort columns onto this source's
+// stats aliases. "duration_ns" is the grouped response's average -- the API name every
+// trace source uses for that column -- so it sorts on avg_duration rather than on a raw
+// span duration, which would order the rows by something the column does not show.
+var cubeAPMTraceGroupSortFields = map[string]string{
+	"count":       "count",
+	"error_count": "error_count",
+	"p95_latency": "p95",
+	"p99_latency": "p99",
+	"max_latency": "max_duration",
+	"duration_ns": "avg_duration",
+}
+
+// cubeAPMTraceGroupSort renders the grouped view's sort pipe. The grouped view sorts on
+// stats output columns, not on span fields, so this is a separate mapping from
+// cubeAPMTraceSort. A column this source does not aggregate leaves the order untouched:
+// the busiest group first, which is what the view showed before any column was sortable.
+func cubeAPMTraceGroupSort(orderBy []query.QueryOrderBy) string {
+	field, dir := "count", "desc"
+	if len(orderBy) > 0 {
+		if mapped, ok := cubeAPMTraceGroupSortFields[orderBy[0].Column]; ok {
+			field = mapped
+			if strings.HasPrefix(strings.ToLower(string(orderBy[0].Order)), "asc") {
+				dir = "asc"
+			}
+		}
+	}
+	return fmt.Sprintf(" | sort by (%s %s)", field, dir)
 }
 
 // isCubeAPMMissingTraceEndpoint reports whether a request failed because this
@@ -627,7 +657,10 @@ func cubeAPMTraceRowToSpan(row map[string]any) common.OpenTelemetryTrace {
 	return out
 }
 
-// cubeAPMTraceGroupRowToValues projects one grouped-view stats row.
+// cubeAPMTraceGroupRowToValues projects one grouped-view stats row. DurationNS carries
+// the group's mean span duration, matching every other trace source's grouped response
+// and the "Avg Duration" column that renders it -- not the summed duration, which reads
+// as minutes on a group of fast spans and can exceed the row's own max.
 func cubeAPMTraceGroupRowToValues(row map[string]any) TraceGroupingValues {
 	return TraceGroupingValues{
 		Count:             cubeAPMCount(row["count"]),
@@ -638,7 +671,7 @@ func cubeAPMTraceGroupRowToValues(row map[string]any) TraceGroupingValues {
 		WorkloadName:      cubeAPMString(row["service"]),
 		WorkloadNamespace: cubeAPMString(row["_resource.k8s.namespace.name"]),
 		SpanName:          cubeAPMString(row["span_name"]),
-		DurationNS:        cubeAPMInt(row["total_duration"]),
+		DurationNS:        cubeAPMInt(row["avg_duration"]),
 	}
 }
 

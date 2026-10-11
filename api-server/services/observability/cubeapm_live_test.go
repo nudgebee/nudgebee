@@ -258,8 +258,18 @@ func TestLiveCubeAPMTraces(t *testing.T) {
 		if i >= 3 {
 			break
 		}
-		t.Logf("    %s / %s calls=%d errors=%d p95=%dns",
-			g.WorkloadName, g.SpanName, g.Count, g.ErrorCount, g.P95Latency)
+		t.Logf("    %s / %s calls=%d errors=%d avg=%dns p95=%dns max=%dns",
+			g.WorkloadName, g.SpanName, g.Count, g.ErrorCount, g.DurationNS, g.P95Latency, g.MaxLatency)
+	}
+	// DurationNS is the group's mean span duration, so it can never exceed the group's
+	// max. This is the check that catches a summed duration reaching the "Avg Duration"
+	// column, and the one that proves this CubeAPM accepts avg() in the stats pipe --
+	// a rejected aggregate fails QueryGroupedTraces above instead.
+	for _, g := range groups {
+		if g.MaxLatency > 0 && g.DurationNS > g.MaxLatency {
+			t.Errorf("%s / %s: avg duration %dns exceeds max %dns",
+				g.WorkloadName, g.SpanName, g.DurationNS, g.MaxLatency)
+		}
 	}
 
 	// The waterfall: fetch one full trace by id.

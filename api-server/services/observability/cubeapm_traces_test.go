@@ -342,11 +342,52 @@ func TestBuildCubeAPMTraceGroupQuery(t *testing.T) {
 		`count() if (status_code:=ERROR) error_count`,
 		`quantile(0.95, duration) p95`,
 		`quantile(0.99, duration) p99`,
+		`max(duration) max_duration`,
+		`avg(duration) avg_duration`,
 		`| sort by (count desc) | limit 10`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("group query %q is missing %q", got, want)
 		}
+	}
+	// The grouped view must never ask CubeAPM for a summed duration: the response field
+	// it feeds is an average, and a sum there reads as minutes on a group of fast spans.
+	if strings.Contains(got, "sum(duration)") {
+		t.Errorf("group query selects a summed duration: %q", got)
+	}
+}
+
+func TestBuildCubeAPMTraceGroupQuerySort(t *testing.T) {
+	tests := []struct {
+		name    string
+		orderBy []query.QueryOrderBy
+		want    string
+	}{
+		{"default", nil, "| sort by (count desc)"},
+		// The API's "duration_ns" is the grouped average, so it must sort on the average
+		// aggregate -- not on max_duration, and not on a summed duration.
+		{"avg duration", []query.QueryOrderBy{{Column: "duration_ns", Order: "desc"}}, "| sort by (avg_duration desc)"},
+		{"avg duration asc", []query.QueryOrderBy{{Column: "duration_ns", Order: "asc"}}, "| sort by (avg_duration asc)"},
+		{"p99", []query.QueryOrderBy{{Column: "p99_latency", Order: "desc"}}, "| sort by (p99 desc)"},
+		{"p95", []query.QueryOrderBy{{Column: "p95_latency", Order: "desc"}}, "| sort by (p95 desc)"},
+		{"max", []query.QueryOrderBy{{Column: "max_latency", Order: "desc"}}, "| sort by (max_duration desc)"},
+		{"error count", []query.QueryOrderBy{{Column: "error_count", Order: "desc"}}, "| sort by (error_count desc)"},
+		// A column this source does not aggregate keeps the busiest group first rather
+		// than sorting on a stats alias that is not in the pipeline.
+		{"unknown column", []query.QueryOrderBy{{Column: "http_status_code", Order: "asc"}}, "| sort by (count desc)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := buildCubeAPMTraceGroupQuery(TracesV3Request{
+				QueryRequest: TracesQueryBuilderRequest{OrderBy: tt.orderBy, Limit: 10},
+			}, "")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("group query %q is missing %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -571,7 +612,7 @@ func TestCubeAPMTraceRowStatusFallsBackToErrorFlag(t *testing.T) {
 }
 
 func TestCubeAPMTraceGroupRowToValues(t *testing.T) {
-	rows := decodeTraceRows(t, `{"count":"1538","service":"checkout","span_name":"sql.query","_resource.k8s.namespace.name":"payments","error_count":"3","p95":"1768549","p99":"2500000.5","max_duration":"10392193","total_duration":"1185111982"}`)
+	rows := decodeTraceRows(t, `{"count":"1538","service":"checkout","span_name":"sql.query","_resource.k8s.namespace.name":"payments","error_count":"3","p95":"1768549","p99":"2500000.5","max_duration":"10392193","avg_duration":"770554.6"}`)
 	g := cubeAPMTraceGroupRowToValues(rows[0])
 
 	if g.Count != 1538 || g.ErrorCount != 3 {
@@ -583,8 +624,12 @@ func TestCubeAPMTraceGroupRowToValues(t *testing.T) {
 	if g.WorkloadName != "checkout" || g.WorkloadNamespace != "payments" || g.SpanName != "sql.query" {
 		t.Errorf("dimensions = %q/%q/%q", g.WorkloadName, g.WorkloadNamespace, g.SpanName)
 	}
-	if g.DurationNS != 1185111982 {
-		t.Errorf("DurationNS = %d", g.DurationNS)
+	// The average, not the summed duration, and so never above the row's own max.
+	if g.DurationNS != 770554 {
+		t.Errorf("DurationNS = %d, want the group average 770554", g.DurationNS)
+	}
+	if g.DurationNS > g.MaxLatency {
+		t.Errorf("DurationNS %d exceeds MaxLatency %d", g.DurationNS, g.MaxLatency)
 	}
 }
 
