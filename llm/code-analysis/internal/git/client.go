@@ -614,6 +614,15 @@ func repoKeyFromURL(repoURL string) string {
 	return u
 }
 
+// isSafeRepoKey reports whether repoKey can name a directory under repos/.
+// repoKeyFromURL already maps "/" to "_", so the remaining ways to leave that
+// directory are a key that is empty, ".", or "..": filepath.Join would then
+// resolve baseDir to repos/ or the workspace root itself, and the RemoveAll
+// calls on a failed clone or fetch would delete every other repository there.
+func isSafeRepoKey(repoKey string) bool {
+	return repoKey != "" && repoKey != "." && repoKey != ".." && !strings.ContainsAny(repoKey, `/\`)
+}
+
 // repoLocks serializes base-clone / fetch / worktree-add per repository. Without
 // it, two concurrent analyses of the same repo both observe a missing base and
 // each perform a full bare clone (the "re-cloned all 9,199 files" waste), and
@@ -832,6 +841,10 @@ func (gc *GitClient) CloneOrReuseRepositoryAtCommit(ctx context.Context, repoURL
 	}
 
 	repoKey := repoKeyFromURL(repoURL)
+	if !isSafeRepoKey(repoKey) {
+		// The URL is left out: it can carry credentials.
+		return nil, fmt.Errorf("invalid repository URL")
+	}
 	baseDir := filepath.Join(gc.workspaceDir, "repos", repoKey)
 
 	// Serialize base preparation + worktree creation for this repo so concurrent
