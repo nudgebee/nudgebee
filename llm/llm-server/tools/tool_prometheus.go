@@ -454,6 +454,15 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 		refs       []core.NBToolResponseReference
 	)
 	oversized := totalPoints > maxInlinePoints || totalSeries > maxInlineSeries
+	// Bytes too, not only counts: a node-CPU query returns one series per core and
+	// mode, and under the count limits its 50–100 KB went inline whole, growing the
+	// Prometheus agent's context 15–27k tokens per step (58–69 s to first token by step
+	// 4 on dev, #39201). es_metrics_query bounds the same way.
+	if !oversized {
+		if b, err := common.MarshalJson(seriesByQuery); err == nil && len(b) > promInlineBytes {
+			oversized = true
+		}
+	}
 	if oversized {
 		// Save before statsOnlySeries below: it strips timestamps/values from these same maps in place.
 		fileRef, refs, err = saveSeriesToWorkspace(nbRequestContext, seriesByQuery)
@@ -462,14 +471,24 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 			nbRequestContext.Ctx.GetLogger().Warn("prometheus: failed to save metrics to workspace", "error", err.Error())
 		}
 	}
-	shown := 0
+	shown, used := 0, 0
 	for _, q := range queries {
 		apiData, ok := seriesByQuery[q]
 		if !ok {
 			continue
 		}
 		if oversized {
-			apiData, shown = statsOnlySeries(apiData, shown)
+			n := len(apiData)
+			apiData, shown, used = statsOnlySeriesWithin(apiData, shown, used)
+			if n > 0 && len(apiData) == 0 {
+				// Not "[]": that reads as no data when the series are only in the saved file.
+				where := "see the saved file"
+				if saveFailed {
+					where = "narrow this query to see them"
+				}
+				finalData[q] = fmt.Sprintf("%d series, not shown inline (inline limit reached); %s", n, where)
+				continue
+			}
 		}
 		data, err := common.MarshalJson(apiData)
 		if err != nil {
@@ -1927,4 +1946,32 @@ func MetricsDiscoveryProviderFor(provider services_server.ObservabilityProvider)
 		return strings.TrimSpace(provider.Provider)
 	}
 	return "prometheus"
+}
+
+// promInlineBytes bounds the inline series JSON; past it the full result is saved to
+// the workspace and only per-series stats go inline, as for the count limits.
+const promInlineBytes = 24 * 1024
+
+// statsOnlySeriesWithin is statsOnlySeries that also stops at promInlineBytes, so a
+// result with many wide series still fits; the rest stay in the saved file.
+func statsOnlySeriesWithin(apiData []any, shown, used int) ([]any, int, int) {
+	ranked, _ := statsOnlySeries(apiData, 0)
+	kept := make([]any, 0, len(ranked))
+	for _, s := range ranked {
+		if shown >= maxInlineSeries {
+			break
+		}
+		b, err := common.MarshalJson(s)
+		if err != nil {
+			// One bad series must not fail the whole query's marshal below.
+			continue
+		}
+		if used+len(b)+1 > promInlineBytes {
+			break
+		}
+		used += len(b) + 1
+		kept = append(kept, s)
+		shown++
+	}
+	return kept, shown, used
 }
