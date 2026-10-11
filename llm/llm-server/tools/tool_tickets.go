@@ -475,7 +475,9 @@ func sanitizeURL(rawURL string) string {
 
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		slog.Error("failed to parse URL", "url", rawURL, "error", err)
+		// Neither the URL nor the parse error (which quotes it) is logged: a
+		// ticketing URL can embed user:token credentials.
+		slog.Error("failed to parse ticketing URL")
 		return rawURL
 	}
 	return u.String()
