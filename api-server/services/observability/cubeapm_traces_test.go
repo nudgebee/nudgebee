@@ -163,10 +163,94 @@ func TestCubeAPMTraceWhereRendering(t *testing.T) {
 
 func TestCubeAPMTraceWhereRejectsUnsupportedOperator(t *testing.T) {
 	_, err := cubeAPMTraceBaseQuery("", query.QueryWhereClause{
-		Binary: query.BinaryWhereClause{"duration_ns": {query.Gt: "10"}},
+		Binary: query.BinaryWhereClause{"span_name": {query.NLike: "GET%"}},
 	}, "")
 	if err == nil {
 		t.Fatal("an operator the builder cannot render must fail, not be dropped silently")
+	}
+}
+
+// The SLO page's Latency Traces tab filters on duration_ns >= threshold. CubeAPM
+// stores the span duration as a nanosecond count in `duration`; a filter on the
+// canonical name matched no span at all (verified live: 0 against 717).
+func TestCubeAPMTraceDurationRange(t *testing.T) {
+	tests := []struct {
+		name string
+		op   query.BinaryWhereClauseType
+		val  any
+		want string
+	}{
+		// The value arrives as a JSON number, so float64 is what really reaches here.
+		{"gte from a JSON number", query.Gte, float64(5000000), `duration:>=5000000`},
+		{"gt", query.Gt, "5000000", `duration:>5000000`},
+		{"lt", query.Lt, "5000000", `duration:<5000000`},
+		{"lte", query.Lte, 1.5, `duration:<=1.5`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mustTraceBase(t, query.QueryWhereClause{
+				Binary: query.BinaryWhereClause{"duration_ns": {tt.op: tt.val}},
+			}, "")
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("query %q is missing %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// A range bound is rendered unquoted — a quoted bound compares as a string — so a
+// value that is not a finite number must be rejected rather than spliced into the
+// query. ParseFloat alone accepts NaN and the infinities, which would reach CubeAPM
+// as `duration:>=NaN`.
+func TestCubeAPMTraceRangeRejectsNonNumericValue(t *testing.T) {
+	for _, v := range []string{`1 | delete`, "NaN", "Inf", "+Inf", "-infinity"} {
+		_, err := cubeAPMTraceBaseQuery("", query.QueryWhereClause{
+			Binary: query.BinaryWhereClause{"duration_ns": {query.Gte: v}},
+		}, "")
+		if err == nil {
+			t.Errorf("range bound %q must be rejected", v)
+		}
+	}
+}
+
+// A bound ParseFloat accepts in another spelling (hex, exponent) is rendered as the
+// plain decimal it denotes, so CubeAPM only ever sees a form it is known to parse.
+func TestCubeAPMTraceRangeRendersPlainDecimal(t *testing.T) {
+	for v, want := range map[string]string{"0x1p3": `duration:>=8`, "5e+06": `duration:>=5000000`} {
+		got := mustTraceBase(t, query.QueryWhereClause{
+			Binary: query.BinaryWhereClause{"duration_ns": {query.Gte: v}},
+		}, "")
+		if !strings.Contains(got, want) {
+			t.Errorf("bound %q: query %q is missing %q", v, got, want)
+		}
+	}
+}
+
+// The exact where clause the SLO page's Latency Traces tab sends. A span names its
+// callee but carries no callee namespace, so destination_workload_namespace must be
+// dropped — rendered as a field, it matched nothing and blanked the tab.
+func TestCubeAPMTraceSLOLatencyWhere(t *testing.T) {
+	where := query.QueryWhereClause{Binary: query.BinaryWhereClause{
+		"destination_workload_namespace": {query.In: []any{"demo"}},
+		"destination_workload_name":      {query.In: []any{"flagd"}},
+		"duration_ns":                    {query.Gte: float64(5000000)},
+	}}
+	src := &CubeAPMTraceSource{}
+	for name, w := range map[string]query.QueryWhereClause{
+		"canonical":              where,
+		"after upstream mapping": convertWhereClauseWithMApping(where, src.GetLabelMapping()),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := mustTraceBase(t, w, "")
+			for _, want := range []string{`duration:>=5000000`, `peer.service:="flagd"`, `server.address:="flagd"`} {
+				if !strings.Contains(got, want) {
+					t.Errorf("query %q is missing %q", got, want)
+				}
+			}
+			if strings.Contains(got, "destination_workload_namespace") || strings.Contains(got, "duration_ns") {
+				t.Errorf("query %q filters on a field CubeAPM spans do not carry", got)
+			}
+		})
 	}
 }
 

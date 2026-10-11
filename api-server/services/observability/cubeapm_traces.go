@@ -89,6 +89,17 @@ var cubeAPMTraceLabelMapping = map[string]string{
 	"span_id":                   "span_id",
 	"parent_id":                 "parent_id",
 	"parent_span_id":            "parent_id",
+	"duration_ns":               "duration",
+}
+
+// cubeAPMTraceUnsupportedFields are canonical filter fields a CubeAPM span cannot
+// express: a span names its callee (peer.service, server.address, …) but carries no
+// callee namespace. Dropped rather than matched, for the reason OpenObserve, Splunk
+// and Tempo drop the same field — rendered as a LogsQL field it matches no span, which
+// blanked the SLO page's trace tabs. Dropping is confined to this named set, so any
+// other unknown field still reaches CubeAPM verbatim.
+var cubeAPMTraceUnsupportedFields = map[string]bool{
+	"destination_workload_namespace": true,
 }
 
 // cubeAPMTraceFieldAliases lists every LogsQL field a label may be backed by, for
@@ -263,6 +274,9 @@ func cubeAPMTraceWhere(where query.QueryWhereClause) (query.QueryWhereClause, er
 
 	labels := make([]string, 0, len(where.Binary))
 	for label := range where.Binary {
+		if cubeAPMTraceUnsupportedFields[label] {
+			continue
+		}
 		labels = append(labels, label)
 	}
 	sort.Strings(labels)
@@ -289,7 +303,7 @@ func cubeAPMTraceWhere(where query.QueryWhereClause) (query.QueryWhereClause, er
 				matchOp, negate = query.Eq, true
 			case query.Like, query.ILike:
 				matchOp, like = query.Regex, true
-			case query.Contains, query.Regex:
+			case query.Contains, query.Regex, query.Gt, query.Gte, query.Lt, query.Lte:
 				matchOp = op
 			default:
 				return query.QueryWhereClause{}, fmt.Errorf("unsupported operator %q for CubeAPM traces (field %q)", op, label)
