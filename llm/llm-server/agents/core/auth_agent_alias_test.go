@@ -342,9 +342,9 @@ func TestInferToolRequestTypeFromPrompt_Answers(t *testing.T) {
 	}
 }
 
-// The classifier keeps the calling agent's tier, including none, so the model
-// is unchanged.
-func TestInferToolRequestTypeFromPrompt_KeepsCallerTier(t *testing.T) {
+// The check runs on the calling agent's tier. A caller with no tier gets the
+// classification tier, which is the summary tier until one is configured.
+func TestInferToolRequestTypeFromPrompt_Tier(t *testing.T) {
 	var tier ModelTier
 	old := classificationGenerate
 	classificationGenerate = func(ctx *security.RequestContext, _, _, _, _, _ string, _ bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -355,15 +355,28 @@ func TestInferToolRequestTypeFromPrompt_KeepsCallerTier(t *testing.T) {
 
 	tool := mockInferenceTool{mockTool: mockTool{name: "mock_cli"}, prompt: "Classify the command"}
 	agent := mockAgentWithTools{mockPlainAgent: mockPlainAgent{name: "test_agent"}, tools: []toolcore.NBTool{tool}}
-	for _, callerTier := range []ModelTier{ModelTierRetrieval, ""} {
-		goCtx := context.Background()
-		if callerTier != "" {
-			goCtx = context.WithValue(goCtx, ContextKeyModelTier, callerTier)
-		}
-		ctx := security.NewRequestContext(goCtx, security.NewRequestContextForSuperAdmin().GetSecurityContext(), slog.Default(), nil, nil)
-		_, err := inferToolRequestTypeFromPrompt(ctx, NBAgentRequest{AccountId: "test-account"}, agent, "mock_cli",
-			NBAgentPlannerToolAction{Tool: "mock_cli", ToolInput: "mock list"}, tool)
-		require.NoError(t, err)
-		require.Equal(t, callerTier, tier)
+	cases := []struct {
+		name       string
+		callerTier ModelTier
+		source     string // where the classification tier would resolve from
+		want       ModelTier
+	}{
+		{"caller tier is kept", ModelTierRetrieval, "db-tier", ModelTierRetrieval},
+		{"no caller tier, classification not configured", "", "db-global", ModelTierSummary},
+		{"no caller tier, classification configured", "", "db-tier", ModelTierClassification},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubClassificationTier(t, tc.source)
+			goCtx := context.Background()
+			if tc.callerTier != "" {
+				goCtx = context.WithValue(goCtx, ContextKeyModelTier, tc.callerTier)
+			}
+			ctx := security.NewRequestContext(goCtx, security.NewRequestContextForSuperAdmin().GetSecurityContext(), slog.Default(), nil, nil)
+			_, err := inferToolRequestTypeFromPrompt(ctx, NBAgentRequest{AccountId: "test-account"}, agent, "mock_cli",
+				NBAgentPlannerToolAction{Tool: "mock_cli", ToolInput: "mock list"}, tool)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, tier)
+		})
 	}
 }

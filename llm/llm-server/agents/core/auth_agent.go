@@ -217,15 +217,16 @@ func inferToolRequestTypeFromPrompt(ctx *security.RequestContext, request NBAgen
 	if prompt == "" {
 		return "", nil
 	}
-	// The gate runs on the calling agent's model, as before, and is tracked
-	// without content, as before.
+	// The gate runs on the calling agent's tier. A caller with no tier gets the
+	// classification tier (summary until configured) instead of the account's
+	// global model. Tracked without content, as before.
 	decision, err := Classify(ctx, ClassificationCall{
 		UserId:         request.UserId,
 		AccountId:      request.AccountId,
 		ConversationId: request.ConversationId,
 		MessageId:      request.MessageId,
 		AgentId:        request.AgentId,
-		KeepCallerTier: true,
+		Tier:           modelTierFromContext(ctx),
 	}, toolRequestTypeTask(prompt), wrapUntrustedToolInput(action.ToolInput))
 	if err != nil {
 		ctx.GetLogger().Error("auth: unable to execute llm model for infering tool request type", "error", err, "agent", agent.GetName(), "tool", toolName)
