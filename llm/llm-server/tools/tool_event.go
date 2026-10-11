@@ -242,6 +242,19 @@ func formatErrorLogLine(entry map[string]any, message string) (string, bool) {
 	return strings.TrimSpace(ts) + "\t" + sev + "\t" + message, true
 }
 
+// anomalyCurrentLabel reads the event's anomaly_current label; labels arrive as a
+// JSON string from SQL or as a decoded map.
+func anomalyCurrentLabel(labels any) string {
+	m, ok := labels.(map[string]any)
+	if !ok {
+		if str, isStr := labels.(string); isStr && str != "" {
+			_ = json.Unmarshal([]byte(str), &m)
+		}
+	}
+	v, _ := m["anomaly_current"].(string)
+	return v
+}
+
 func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int, messagesMap map[string][]map[string]string) map[string]any {
 	investigateData := events.InvestigateData{}
 	if data["evidences"] != nil {
@@ -259,6 +272,7 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 
 			if events.IsAnomalyRecord(evidence) {
 				if summary, ok := events.SummarizeAnomalyRecord(evidence); ok {
+					summary.SetLabelValue(anomalyCurrentLabel(data["labels"]))
 					investigateData.AnomalyDetection = &summary
 				} else {
 					slog.Warn("evidence: unreadable anomaly reference_value, skipping", "event_id", data["id"])

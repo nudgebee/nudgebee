@@ -1136,6 +1136,8 @@ func evidenceSections(id events.InvestigateData) []previewSection {
 		{"container_metrics", "container_metrics", []events.InvestigateDataInsight{id.ContainerMetrics}, 0},
 		{"traces", "traces", []events.InvestigateDataInsight{id.Traces}, 0},
 		{"service_map_data", "", []events.InvestigateDataInsight{id.ServiceMap}, 0},
+		{"alert_labels", "alert_labels", []events.InvestigateDataInsight{id.AlertLabels}, 0},
+		{"alert_data", "alert_data", []events.InvestigateDataInsight{id.AlertData}, 0},
 	}
 	for i := range sections {
 		if sections[i].items != nil {
@@ -1183,8 +1185,76 @@ func EventEvidenceShape(id events.InvestigateData) string {
 	if len(empty) > 0 {
 		b.WriteString("Empty, do not read: " + strings.Join(empty, ", ") + ".\n")
 	}
+	b.WriteString(previewOthers(id.Others))
 	b.WriteString(previewMetricCards(id.MetricsData))
 	b.WriteString(previewTraces(id.Traces))
+	return b.String()
+}
+
+const (
+	previewOthersBytes     = 1500
+	previewOthersDescChars = 90
+	previewOthersHeaders   = 6
+)
+
+// previewOthers names each entry of others. Every entry's own title is just its
+// format ("json", "table"), so agents opened each one to learn what it held:
+// a Kubernetes change object, a table of pod events, the pods on a node.
+func previewOthers(items []events.InvestigateDataInsight) string {
+	if len(items) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("others entries (.others[i].data):\n")
+	for i, it := range items {
+		name, _ := it.AdditionalInfo["title"].(string)
+		var detail string
+		m := (GetEventEvidenceTool{}).toMap(it.Data)
+		switch {
+		case m["rows"] != nil || m["headers"] != nil:
+			if name == "" {
+				name, _ = m["table_name"].(string)
+			}
+			rows, _ := m["rows"].([]any)
+			headers, _ := m["headers"].([]any)
+			cols := make([]string, 0, previewOthersHeaders)
+			for _, h := range headers {
+				if len(cols) == previewOthersHeaders {
+					cols = append(cols, "…")
+					break
+				}
+				if hs, ok := h.(string); ok {
+					cols = append(cols, hs)
+				}
+			}
+			detail = fmt.Sprintf("table, %d rows, columns %s", len(rows), strings.Join(cols, ", "))
+		case m != nil:
+			kind, _ := m["kind"].(string)
+			desc, _ := m["description"].(string)
+			if kind != "" || desc != "" {
+				detail = strings.TrimSpace(kind + " change: " + truncateUTF8Safe(strings.Join(strings.Fields(desc), " "), previewOthersDescChars))
+			} else {
+				keys := make([]string, 0, len(m))
+				for k := range m {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				detail = "object with keys " + strings.Join(keys, ", ")
+			}
+		default:
+			detail = it.Title
+		}
+		line := fmt.Sprintf("  [%d] ", i)
+		if name != "" {
+			line += name + ": "
+		}
+		line += detail + "\n"
+		if b.Len()+len(line) > previewOthersBytes {
+			fmt.Fprintf(&b, "  … %d more entries\n", len(items)-i)
+			break
+		}
+		b.WriteString(line)
+	}
 	return b.String()
 }
 
@@ -1335,7 +1405,8 @@ func distinctErrorLines(lines []string, limit int) ([]string, int) {
 }
 
 // insightHighlights inlines the one-line insight messages of every section
-// except pod_events/pod_data (rootCauseSlice already carries theirs). Critical
+// except pod_events/pod_data (rootCauseSlice already carries theirs) and the
+// alert sections (printed whole in the key facts). Critical
 // and warning messages come first, duplicates are dropped, and the result
 // stays within maxBytes.
 func insightHighlights(sections []previewSection, maxBytes int) string {
@@ -1355,7 +1426,7 @@ func insightHighlights(sections []previewSection, maxBytes int) string {
 	seen := map[string]struct{}{}
 	var entries []entry
 	for _, sec := range sections {
-		if sec.name == "pod_events" || sec.name == "pod_data" {
+		if sec.name == "pod_events" || sec.name == "pod_data" || sec.name == "alert_labels" || sec.name == "alert_data" {
 			continue
 		}
 		for _, item := range sec.items {

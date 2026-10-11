@@ -23,7 +23,7 @@ func TestBuildInvestigationEvidenceContext_AnomalyDetection(t *testing.T) {
 
 	got := buildInvestigationEvidenceContext(ev)
 
-	if !strings.HasPrefix(got, "### Anomaly Detection\nLatency anomaly from the anomaly detector, metric workload_http_latency_p99") {
+	if !strings.HasPrefix(got, "### Anomaly Detection\nLatency anomaly from the anomaly detector, measured as") {
 		t.Fatalf("anomaly section missing or not first:\n%s", got)
 	}
 	for _, want := range []string{"reported value: 0.89 s", "trigger threshold: 0.5 s", "Baseline: mean 0.029 s"} {

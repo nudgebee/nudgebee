@@ -92,7 +92,7 @@ func TestSummarizeAnomalyRecord_Latency(t *testing.T) {
 
 	text := s.Render()
 	for _, want := range []string{
-		"metric workload_http_latency_p99 (p99 HTTP request latency, unit s)",
+		"measured as p99 HTTP request latency in s (platform metric key workload_http_latency_p99, not a series name; the LATENCY Metric card's metadata.query is the query it runs)",
 		"reported value: 0.89 s (the first flagged point, at 2026-10-10 04:58:00)",
 		"trigger threshold: 0.5 s",
 		"evaluation window: 2026-10-10T04:00:00Z to 2026-10-10T05:00:00Z",
@@ -188,7 +188,7 @@ func TestSummarizeAnomalyRecord_SeriesEndsBeforeEvaluationWindow(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, s.SeriesEndsBeforeWindow)
 	assert.Equal(t, "2026-10-08 09:06:00", s.ReportedValueAt)
-	assert.Contains(t, s.Render(), "Stored series: 2026-10-08 09:06:00 to 2026-10-10 01:08:00. It ends before the evaluation window")
+	assert.Contains(t, s.Render(), "Stored series: 2026-10-08 09:06:00 to 2026-10-10 01:08:00. It ends before the evaluation window, so nothing stored confirms a value in that window")
 }
 
 func TestSummarizeAnomalyRecord_StringValuesAndRuneSafeInsights(t *testing.T) {
@@ -223,4 +223,20 @@ func TestSummarizeAnomalyRecord_SkipsPointsWithoutTimestamp(t *testing.T) {
 	assert.Equal(t, "2026-10-10 04:58:00", s.SeriesStart)
 	assert.Equal(t, 1, s.AnomalousPoints)
 	assert.InDelta(t, 0.89, *s.PeakValue, 1e-9)
+}
+
+// Seen on dev: the event label said 1.62 while the record reported 10. A label
+// within rounding of the reported value is not called out.
+func TestSetLabelValue(t *testing.T) {
+	s, ok := SummarizeAnomalyRecord(decodeEvidence(t, anomalyRecordJSON(t, "Latency", latencyReference())))
+	require.True(t, ok)
+
+	s.SetLabelValue("0.89")
+	assert.Empty(t, s.LabelValue)
+	s.SetLabelValue("not a number")
+	assert.Empty(t, s.LabelValue)
+
+	s.SetLabelValue("1.62")
+	assert.Equal(t, "1.62", s.LabelValue)
+	assert.Contains(t, s.Render(), "The event's anomaly_current label is 1.62, which does not match the reported value above.")
 }

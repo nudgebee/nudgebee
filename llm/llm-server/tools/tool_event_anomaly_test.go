@@ -104,3 +104,36 @@ func TestEventEvidenceShape(t *testing.T) {
 	assert.Contains(t, shape, "  [0] LATENCY Metric: no data\n")
 	assert.Contains(t, shape, "traces: 1 spans in .traces.data.data[]; Duration is in nanoseconds")
 }
+
+// Every others entry's own title is just its format, so the shape names each
+// one: tables by title with row count and columns, change objects by kind.
+func TestEventEvidenceShape_OthersAndAlertSections(t *testing.T) {
+	ev := events.InvestigateData{
+		AlertLabels: events.InvestigateDataInsight{Data: []any{map[string]any{"name": "severity", "value": "warning"}}},
+		Others: []events.InvestigateDataInsight{
+			{Title: "json", Data: map[string]any{"kind": "Node", "description": "A `Node` in namespace `` has been `Updated`:\n`node-a`", "obj": map[string]any{}}},
+			{Title: "table", AdditionalInfo: map[string]any{"title": "Recent Node Events"}, Data: map[string]any{
+				"table_name": "*Node events:*",
+				"headers":    []any{"Last Seen", "Type", "Reason", "Source", "Count", "Message", "Object"},
+				"rows":       []any{[]any{"1m", "Warning", "Pressure"}, []any{"2m", "Normal", "Ok"}},
+			}},
+			{Title: "json", Data: `{"b":1,"a":2}`},
+		},
+	}
+
+	shape := EventEvidenceShape(ev)
+
+	assert.Contains(t, shape, "alert_labels (")
+	assert.Contains(t, shape, "alert_data")
+	assert.Contains(t, shape, "others entries (.others[i].data):\n")
+	assert.Contains(t, shape, "  [0] Node change: A `Node` in namespace `` has been `Updated`: `node-a`\n")
+	assert.Contains(t, shape, "  [1] Recent Node Events: table, 2 rows, columns Last Seen, Type, Reason, Source, Count, Message, …\n")
+	assert.Contains(t, shape, "  [2] object with keys a, b\n")
+}
+
+func TestAnomalyCurrentLabel(t *testing.T) {
+	assert.Equal(t, "1.62", anomalyCurrentLabel(`{"anomaly_current":"1.62"}`))
+	assert.Equal(t, "1.62", anomalyCurrentLabel(map[string]any{"anomaly_current": "1.62"}))
+	assert.Equal(t, "", anomalyCurrentLabel(nil))
+	assert.Equal(t, "", anomalyCurrentLabel("not json"))
+}

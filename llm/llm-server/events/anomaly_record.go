@@ -3,6 +3,7 @@ package events
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +16,9 @@ import (
 type anomalyMetric struct {
 	key  string
 	desc string
+	// card is the title of the event's metric evidence card for the same metric
+	// (anomoly.collectEvidences); its metadata.query is the query the key ran.
+	card string
 	// unit is left empty where the detector's numbers do not share one scale.
 	unit string
 }
@@ -26,9 +30,9 @@ type anomalyMetric struct {
 // series is in cores (see generate_insights in abstract.py), so naming one unit
 // would be wrong for half the numbers.
 var anomalyMetrics = map[string]anomalyMetric{
-	"Latency":   {key: "workload_http_latency_p99", desc: "p99 HTTP request latency", unit: "s"},
-	"Memory":    {key: "memory_usage_max_pod", desc: "largest pod memory working set", unit: "bytes"},
-	"CPU":       {key: "cpu_usage", desc: "CPU usage"},
+	"Latency":   {key: "workload_http_latency_p99", desc: "p99 HTTP request latency", unit: "s", card: "LATENCY Metric"},
+	"Memory":    {key: "memory_usage_max_pod", desc: "largest pod memory working set", unit: "bytes", card: "MEMORY Metric"},
+	"CPU":       {key: "cpu_usage", desc: "CPU usage", card: "CPU Metric"},
 	"ErrorRate": {key: "workload_http_error_count / workload_http_request_count", desc: "smoothed HTTP error ratio", unit: "ratio 0-1"},
 	"Replicas":  {key: "replica_defined", desc: "desired replicas", unit: "replicas"},
 }
@@ -46,6 +50,7 @@ type AnomalySummary struct {
 	AnomalyType             string             `json:"anomaly_type"`
 	Metric                  string             `json:"metric,omitempty"`
 	MetricDescription       string             `json:"metric_description,omitempty"`
+	MetricCard              string             `json:"metric_card,omitempty"`
 	Unit                    string             `json:"unit,omitempty"`
 	CurrentValue            *float64           `json:"current_value,omitempty"`
 	ReportedValueAt         string             `json:"reported_value_at,omitempty"`
@@ -64,6 +69,9 @@ type AnomalySummary struct {
 	PeakValue               *float64           `json:"peak_value,omitempty"`
 	PeakAt                  string             `json:"peak_at,omitempty"`
 	Insights                []string           `json:"insights,omitempty"`
+	// LabelValue is the event's anomaly_current label when it does not match the
+	// record's reported value; the two can come from different detector runs.
+	LabelValue string `json:"label_value,omitempty"`
 }
 
 // anomalyReference is the part of the detector's reference_value the summary reads.
@@ -113,7 +121,7 @@ func SummarizeAnomalyRecord(e Evidence) (AnomalySummary, bool) {
 		EvaluationWindowMinutes: ref.EvaluationPeriod,
 	}
 	if m, ok := anomalyMetrics[e.AnomalyType]; ok {
-		s.Metric, s.MetricDescription, s.Unit = m.key, m.desc, m.unit
+		s.Metric, s.MetricDescription, s.Unit, s.MetricCard = m.key, m.desc, m.unit, m.card
 	}
 	if ref.StartTime != "" && ref.TrainingEndTime != "" {
 		s.TrainingWindow = ref.StartTime + " to " + ref.TrainingEndTime
@@ -198,9 +206,16 @@ func (s AnomalySummary) Render() string {
 
 	fmt.Fprintf(&b, "%s anomaly from the anomaly detector", s.AnomalyType)
 	if s.Metric != "" {
-		fmt.Fprintf(&b, ", metric %s (%s", s.Metric, s.MetricDescription)
+		fmt.Fprintf(&b, ", measured as %s", s.MetricDescription)
 		if s.Unit != "" {
-			fmt.Fprintf(&b, ", unit %s", s.Unit)
+			fmt.Fprintf(&b, " in %s", s.Unit)
+		}
+		// The key names the metric to the platform's metrics layer, which turns
+		// it into the provider's own query; read as a series name it matches
+		// nothing, and an agent spent minutes searching for it.
+		fmt.Fprintf(&b, " (platform metric key %s, not a series name", s.Metric)
+		if s.MetricCard != "" {
+			fmt.Fprintf(&b, "; the %s card's metadata.query is the query it runs", s.MetricCard)
 		}
 		b.WriteString(")")
 	}
@@ -251,7 +266,7 @@ func (s AnomalySummary) Render() string {
 	if s.SeriesEnd != "" {
 		fmt.Fprintf(&b, "Stored series: %s to %s.", s.SeriesStart, s.SeriesEnd)
 		if s.SeriesEndsBeforeWindow {
-			b.WriteString(" It ends before the evaluation window, so the points evaluated in that window are not stored and the flagged points below are from earlier.")
+			b.WriteString(" It ends before the evaluation window, so nothing stored confirms a value in that window: the reported value and the flagged points below are from earlier.")
 		}
 		b.WriteString("\n")
 	}
@@ -265,6 +280,9 @@ func (s AnomalySummary) Render() string {
 	for _, in := range s.Insights {
 		b.WriteString("Detector insight: " + in + "\n")
 	}
+	if s.LabelValue != "" {
+		fmt.Fprintf(&b, "The event's anomaly_current label is %s, which does not match the reported value above.\n", s.LabelValue)
+	}
 	return b.String()
 }
 
@@ -277,6 +295,20 @@ func parseSeriesTime(ts string) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+// SetLabelValue records the event's anomaly_current label when it disagrees with
+// the reported value by more than rounding (labels carry two decimals). Memory
+// and CPU labels carry units ("820 Mi", "1.5 cores") and are left alone.
+func (s *AnomalySummary) SetLabelValue(label string) {
+	label = strings.TrimSpace(label)
+	v, err := strconv.ParseFloat(label, 64)
+	if err != nil || s.CurrentValue == nil {
+		return
+	}
+	if math.Abs(v-*s.CurrentValue) > 0.006 {
+		s.LabelValue = label
+	}
 }
 
 func toFloat(v any) (float64, bool) {
