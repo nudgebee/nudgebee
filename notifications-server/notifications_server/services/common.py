@@ -2585,8 +2585,10 @@ class CommonService:
             )
             if resp and resp.status_code < 400:
                 return {"success": True, "platform": "ms_teams"}
-            error_detail = resp.text if resp else "No response"
-            return {"success": False, "platform": "ms_teams", "error": error_detail}
+            if resp is None:
+                return {"success": False, "platform": "ms_teams", "error": "No response"}
+            LOG.warning("MS Teams test notification failed: %s - %s", resp.status_code, resp.text)
+            return {"success": False, "platform": "ms_teams", "error": f"HTTP {resp.status_code}"}
         except Exception:
             LOG.exception("MS Teams test notification error")
             return {"success": False, "platform": "ms_teams", "error": "Unexpected error; see server logs"}
