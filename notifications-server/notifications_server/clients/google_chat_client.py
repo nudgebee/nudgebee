@@ -48,7 +48,9 @@ def parse_http_error(error: HttpError) -> Tuple[int, Optional[str], str]:
     """
     status_code = error.resp.status if error.resp else 0
     error_status = None
-    error_message = str(error)
+    # Not str(error): it embeds the request URL and is exception text. The API's own
+    # message from the response body replaces this when present.
+    error_message = f"Google Chat API error (HTTP {status_code})"
 
     try:
         # HttpError.content contains the JSON error response
