@@ -153,9 +153,9 @@ class DiscordClient:
         headers = cls.get_headers(token)
         try:
             guilds = cls._list_guilds(headers)
-        except Exception as e:
+        except Exception:
             LOG.exception("Failed to fetch Discord guilds")
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": "Unexpected error; see server logs"}
 
         if len(guilds) >= cls.MAX_GUILDS:
             LOG.warning(
@@ -207,9 +207,9 @@ class DiscordClient:
             error = cls._error_message(resp) if resp is not None else "no response"
             LOG.error("Failed to post to Discord channel %s: %s", channel_id, error)
             return {"ok": False, "error": error}
-        except Exception as e:
+        except Exception:
             LOG.exception(f"Error posting message to Discord channel {channel_id}")
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": "Unexpected error; see server logs"}
 
     @classmethod
     def _message_payload(cls, kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -255,9 +255,9 @@ class DiscordClient:
             else:
                 LOG.error("Discord token validation failed: %s", resp.text)
                 return {"ok": False, "error": f"Invalid token (HTTP {resp.status_code})"}
-        except Exception as e:
+        except Exception:
             LOG.exception("Error validating Discord token")
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": "Unexpected error; see server logs"}
 
     @classmethod
     def users_list(cls, token: str, **kwargs) -> Dict[str, Any]:

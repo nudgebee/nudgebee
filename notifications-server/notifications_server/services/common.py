@@ -401,7 +401,7 @@ class CommonService:
                     return {"error": {"message": f"Failed to join channel: {error_msg}"}}
 
             except SlackApiError as e:
-                error_msg = e.response.get("error", str(e))
+                error_msg = e.response.get("error") or "slack_api_error"
                 LOG.error(f"Slack API error joining channel {channel_id}: {error_msg}")
 
                 return self._check_error_msg(error_msg, "channels:join")
@@ -651,7 +651,7 @@ class CommonService:
                 LOG.error("Failed to create Slack channel %s: %s", normalized, error_msg)
                 return self._check_error_msg(error_msg, scope)
         except SlackApiError as e:
-            error_msg = e.response.get("error", str(e))
+            error_msg = e.response.get("error") or "slack_api_error"
             # Race: another caller created it between our lookup and create.
             if error_msg == "name_taken":
                 found = self._find_slack_channel(messaging_platform, normalized)
@@ -783,7 +783,7 @@ class CommonService:
                     continue
                 error_msg = response.get("error", ERR_UNKNOWN)
             except SlackApiError as e:
-                error_msg = e.response.get("error", str(e))
+                error_msg = e.response.get("error") or "slack_api_error"
 
             if error_msg in ("already_in_channel", "already_in_group"):
                 already_members.append(user_id)
@@ -973,7 +973,7 @@ class CommonService:
                 }
 
             except SlackApiError as e:
-                error_msg = e.response.get("error", str(e))
+                error_msg = e.response.get("error") or "slack_api_error"
                 LOG.error(f"Slack API error sending message to channel {channel_id}: {error_msg}")
 
                 return self._check_error_msg(error_msg, "chat:write")
@@ -1044,7 +1044,7 @@ class CommonService:
             }
 
         except SlackApiError as e:
-            error_msg = e.response.get("error", str(e))
+            error_msg = e.response.get("error") or "slack_api_error"
             LOG.error(f"Slack API error sending DM to user {user_id}: {error_msg}")
             return self._check_dm_error_msg(error_msg)
 
@@ -1682,7 +1682,7 @@ class CommonService:
                 LOG.info("Email sent successfully to %s", recipient)
             except Exception as e:
                 LOG.error("Failed to send email to %s: %s", recipient, e)
-                errors.append({"recipient": recipient, "error": str(e)})
+                errors.append({"recipient": recipient, "error": "Unexpected error; see server logs"})
 
         return sent_to, errors
 
@@ -1716,7 +1716,7 @@ class CommonService:
             return envelope, []
         except Exception as e:
             LOG.error("Failed to send combined email: %s", e)
-            return [], [{"recipients": envelope, "error": str(e)}]
+            return [], [{"recipients": envelope, "error": "Unexpected error; see server logs"}]
 
     @staticmethod
     def _build_email_response(sent_to, errors):
@@ -2000,7 +2000,7 @@ class CommonService:
             }
 
         except SlackApiError as e:
-            error_msg = e.response.get("error", str(e))
+            error_msg = e.response.get("error") or "slack_api_error"
             LOG.error(f"Slack API error fetching thread messages {channel_id}/{thread_ts}: {error_msg}")
             return {"success": False, "error": self._get_thread_error_message(error_msg)}
 
@@ -2560,7 +2560,7 @@ class CommonService:
                 return {"success": False, "platform": "slack", "error": error_msg}
             return {"success": True, "platform": "slack"}
         except SlackApiError as e:
-            error_msg = e.response.get("error", str(e))
+            error_msg = e.response.get("error") or "slack_api_error"
             LOG.error("Slack API error sending test notification: %s", error_msg)
             return {"success": False, "platform": "slack", "error": error_msg}
 
@@ -2589,7 +2589,7 @@ class CommonService:
             return {"success": False, "platform": "ms_teams", "error": error_detail}
         except Exception as e:
             LOG.error("MS Teams test notification error: %s", e)
-            return {"success": False, "platform": "ms_teams", "error": str(e)}
+            return {"success": False, "platform": "ms_teams", "error": "Unexpected error; see server logs"}
 
     def _send_test_discord(self, messaging_platform, channel_id, message):
         from notifications_server.clients.discord_client import DiscordClient
@@ -2603,7 +2603,7 @@ class CommonService:
             return {"success": True, "platform": "discord"}
         except Exception as e:
             LOG.error("Error sending Discord test notification: %s", e)
-            return {"success": False, "platform": "discord", "error": str(e)}
+            return {"success": False, "platform": "discord", "error": "Unexpected error; see server logs"}
 
     def _send_test_google_chat(self, messaging_platform, channel_id, message, tenant_id):
         error = self._refresh_google_chat_token(messaging_platform)
@@ -2622,7 +2622,7 @@ class CommonService:
             return {"success": False, "platform": "google_chat", "error": "Failed to post message"}
         except Exception as e:
             LOG.error("Google Chat test notification error: %s", e)
-            return {"success": False, "platform": "google_chat", "error": str(e)}
+            return {"success": False, "platform": "google_chat", "error": "Unexpected error; see server logs"}
 
     async def teams_send_welcome_message(self, activity: Activity) -> bool:
         """Send welcome message when bot is added to a Teams conversation."""

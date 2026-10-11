@@ -398,7 +398,7 @@ class MsTeamsClient:
             LOG.warning("Failed to create channel: %s - %s", response.status_code, response.text)
             return {
                 "success": False,
-                "error": f"Failed to create channel: {response.status_code} - {response.text}",
+                "error": f"Failed to create channel: HTTP {response.status_code}",
             }
 
         return {"success": False, "error": "Rate limit exceeded creating channel"}
@@ -444,8 +444,8 @@ class MsTeamsClient:
             # per-user partial semantics rather than aborting the whole batch.
             try:
                 validate_graph_api_id(user_id, "user_id")
-            except ValueError as e:
-                failed.append({"user_id": user_id, "error": str(e)})
+            except ValueError:
+                failed.append({"user_id": user_id, "error": "Invalid user_id"})
                 continue
 
             payload = {
@@ -552,7 +552,7 @@ class MsTeamsClient:
             return {
                 "success": False,
                 "provider": "ms_teams",
-                "error": f"Failed to add reaction: {response.status_code} - {response.text}",
+                "error": f"Failed to add reaction: HTTP {response.status_code}",
             }
 
         # Retries exhausted (only reached if last attempt was a 429)
@@ -707,7 +707,7 @@ class MsTeamsClient:
                 LOG.warning("Failed to create chat: %s - %s", chat_response.status_code, chat_response.text)
                 return {
                     "success": False,
-                    "error": f"Failed to create chat: {chat_response.status_code} - {chat_response.text}",
+                    "error": f"Failed to create chat: HTTP {chat_response.status_code}",
                 }
 
             chat_id = chat_response.json().get("id")
@@ -750,7 +750,7 @@ class MsTeamsClient:
                 LOG.warning("Failed to send message: %s - %s", msg_response.status_code, msg_response.text)
                 return {
                     "success": False,
-                    "error": f"Failed to send message: {msg_response.status_code} - {msg_response.text}",
+                    "error": f"Failed to send message: HTTP {msg_response.status_code}",
                 }
 
             return {"success": True, "message_id": msg_response.json().get("id")}

@@ -170,9 +170,14 @@ class GoogleChatAppClient:
                 if not _handle_retryable_error(e, attempt + 1, max_retries, retry_sleep, tenant):
                     break
 
-            except Exception as e:
+            except Exception:
                 LOG.exception("Unexpected error sending Google Chat app message for tenant %s", tenant)
-                return {"success": False, "channel_id": space_id, "reason": "unexpected_error", "error": str(e)}
+                return {
+                    "success": False,
+                    "channel_id": space_id,
+                    "reason": "unexpected_error",
+                    "error": "Unexpected error; see server logs",
+                }
 
         return {
             "success": False,
@@ -208,9 +213,14 @@ class GoogleChatAppClient:
                 "reason": error_status or "api_error",
                 "error": error_message,
             }
-        except Exception as e:
+        except Exception:
             LOG.exception("Unexpected error leaving Google Chat space %s", space_id)
-            return {"success": False, "channel_id": space_id, "reason": "unexpected_error", "error": str(e)}
+            return {
+                "success": False,
+                "channel_id": space_id,
+                "reason": "unexpected_error",
+                "error": "Unexpected error; see server logs",
+            }
 
     @classmethod
     def join_space(cls, space):
@@ -243,9 +253,14 @@ class GoogleChatAppClient:
                 status_code,
             )
             return {"success": False, "channel_id": space_id, "reason": reason, "error": error_message}
-        except Exception as e:
+        except Exception:
             LOG.exception("Unexpected error joining Google Chat space %s", space_id)
-            return {"success": False, "channel_id": space_id, "reason": "unexpected_error", "error": str(e)}
+            return {
+                "success": False,
+                "channel_id": space_id,
+                "reason": "unexpected_error",
+                "error": "Unexpected error; see server logs",
+            }
 
     @classmethod
     def membership_status(cls, space):
@@ -266,9 +281,9 @@ class GoogleChatAppClient:
             if status_code == 403:
                 return {"status": "needs_authorization", "channel_id": space_id}
             return {"status": "error", "channel_id": space_id, "reason": error_status, "error": error_message}
-        except Exception as e:
+        except Exception:
             LOG.exception("Unexpected error probing Google Chat membership for %s", space_id)
-            return {"status": "error", "channel_id": space_id, "error": str(e)}
+            return {"status": "error", "channel_id": space_id, "error": "Unexpected error; see server logs"}
 
     @classmethod
     def find_space_by_display_name(cls, display_name, tenant=None):
@@ -332,9 +347,9 @@ class GoogleChatAppClient:
                 status_code,
             )
             return {"success": False, "reason": reason, "error": error_message}
-        except Exception as e:
+        except Exception:
             LOG.exception("Unexpected error creating Google Chat space for tenant %s", tenant)
-            return {"success": False, "reason": "unexpected_error", "error": str(e)}
+            return {"success": False, "reason": "unexpected_error", "error": "Unexpected error; see server logs"}
 
     @classmethod
     def add_members(cls, space, user_ids, tenant=None):
@@ -390,9 +405,9 @@ class GoogleChatAppClient:
                     status_code,
                 )
                 failed.append({"user_id": user_id, "error": error_message})
-            except Exception as e:
+            except Exception:
                 LOG.exception("Unexpected error adding Google Chat member %s to %s", user_id, space_id)
-                failed.append({"user_id": user_id, "error": str(e)})
+                failed.append({"user_id": user_id, "error": "Unexpected error; see server logs"})
 
         return {
             "success": True,

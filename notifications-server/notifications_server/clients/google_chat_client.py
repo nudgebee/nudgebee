@@ -249,9 +249,14 @@ class GoogleChatClient:
                 if not _handle_retryable_error(e, attempt + 1, max_retries, retry_sleep, tenant):
                     break
 
-            except Exception as e:
+            except Exception:
                 LOG.exception("Unexpected error sending Google Chat message for tenant %s", tenant)
-                return {"success": False, "channel_id": space_id, "reason": "unexpected_error", "error": str(e)}
+                return {
+                    "success": False,
+                    "channel_id": space_id,
+                    "reason": "unexpected_error",
+                    "error": "Unexpected error; see server logs",
+                }
 
         return {
             "success": False,
@@ -458,7 +463,7 @@ class GoogleChatClient:
             return setup_result.get("space_id"), None
         except Exception as e:
             LOG.error("Failed to setup DM with user %s: %s", user_id, e)
-            return None, {"success": False, "error": f"Failed to setup DM: {str(e)}"}
+            return None, {"success": False, "error": "Failed to set up the DM space"}
 
     @staticmethod
     def send_direct_message(token, user_id, message, tenant=None):
@@ -516,9 +521,9 @@ class GoogleChatClient:
                 if not _handle_retryable_error(e, attempt + 1, max_retries, retry_sleep, tenant):
                     break
 
-            except Exception as e:
+            except Exception:
                 LOG.exception("Unexpected error sending Google Chat DM for tenant %s", tenant)
-                return {"success": False, "error": str(e)}
+                return {"success": False, "error": "Unexpected error; see server logs"}
 
         return {"success": False, "error": "Rate limit exceeded"}
 

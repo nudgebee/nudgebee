@@ -602,7 +602,7 @@ class GroupedMessageHandler:
                     return {"status": "ok"}
             except Exception as e:
                 LOG.exception("Failed reading from Redis for %s: %s", key, e)
-                return {"status": "failed", "error": str(e)}
+                return {"status": "failed", "error": "Unexpected error; see server logs"}
 
             LOG.info("Flushing %d messages for %s", len(raw_list), key)
 
@@ -661,7 +661,7 @@ class GroupedMessageHandler:
 
             except Exception as e:
                 LOG.exception("Error flushing group %s: %s", key, e)
-                return {"status": "failed", "error": str(e)}
+                return {"status": "failed", "error": "Unexpected error; see server logs"}
 
 
 # ----------------------------- MessageService -----------------------------
