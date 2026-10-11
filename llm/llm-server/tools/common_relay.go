@@ -1199,7 +1199,8 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 	}
 	responseParsedbytes, err := common.MarshalJson(responseParsed)
 	if err != nil {
-		toolContext.Ctx.GetLogger().Error("unable to execute command", "query", query, "response", responseParsed, "error", err)
+		// The command and its result can carry secrets or customer data: log their size only.
+		toolContext.Ctx.GetLogger().Error("unable to execute command", "query_length", len(query), "error", err)
 		return nil, err
 	}
 	return string(responseParsedbytes), nil
