@@ -58,7 +58,7 @@ class QdrantToQdrantMigration:
             return stats
         except Exception as e:
             logger.error(f"Error getting source stats: {e}")
-            return {"total_collections": 0, "collections": [], "error": str(e)}
+            return {"total_collections": 0, "collections": [], "error": "Failed to read collection stats"}
 
     def get_target_stats(self) -> Dict[str, Any]:
         """Get statistics from standalone Qdrant."""
@@ -73,7 +73,7 @@ class QdrantToQdrantMigration:
             return stats
         except Exception as e:
             logger.error(f"Error getting target stats: {e}")
-            return {"total_collections": 0, "collections": [], "error": str(e)}
+            return {"total_collections": 0, "collections": [], "error": "Failed to read collection stats"}
 
     def migrate_collection(self, collection_name: str, batch_size: int = 25, force: bool = False) -> Dict[str, Any]:
         """
@@ -224,7 +224,7 @@ class QdrantToQdrantMigration:
         except Exception as e:
             logger.error(f"Error migrating collection {collection_name}: {e}", exc_info=True)
             result["status"] = "failed"
-            result["error"] = str(e)
+            result["error"] = "Migration failed; see server logs"
             return result
 
     def migrate_all(self, batch_size: int = 25, force: bool = False) -> Dict[str, Any]:
@@ -285,7 +285,7 @@ class QdrantToQdrantMigration:
 
         except Exception as e:
             logger.error(f"Error during migration: {e}", exc_info=True)
-            result["error"] = str(e)
+            result["error"] = "Migration failed; see server logs"
 
         return result
 
@@ -315,9 +315,10 @@ class QdrantToQdrantMigration:
                 validation["checks"].append(
                     {"check": "standalone_qdrant", "status": "ok", "collections": target_stats["total_collections"]}
                 )
-            except Exception as e:
+            except Exception:
                 validation["valid"] = False
-                validation["errors"].append(f"Cannot connect to standalone Qdrant: {e}")
+                logger.error("Cannot connect to standalone Qdrant", exc_info=True)
+                validation["errors"].append("Cannot connect to standalone Qdrant")
 
             # Check 3: QDRANT_URL is set
             if not self.target_url:
@@ -326,8 +327,9 @@ class QdrantToQdrantMigration:
             else:
                 validation["checks"].append({"check": "qdrant_url", "status": "ok", "url": self.target_url})
 
-        except Exception as e:
+        except Exception:
             validation["valid"] = False
-            validation["errors"].append(str(e))
+            logger.error("Migration validation failed", exc_info=True)
+            validation["errors"].append("Validation failed; see server logs")
 
         return validation
