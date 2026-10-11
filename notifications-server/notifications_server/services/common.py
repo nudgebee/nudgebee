@@ -1448,8 +1448,10 @@ class CommonService:
                 "reaction": emoji,
             }
         except SlackApiError as e:
-            error_msg = e.response.get("error", str(e))
-            LOG.error("Slack API error adding reaction: %s", error_msg)
+            # Slack's error code (e.g. "channel_not_found") is safe to return; never fall
+            # back to the exception text, which the caller would pass to its client.
+            error_msg = e.response.get("error") or "slack_api_error"
+            LOG.error("Slack API error adding reaction: %s", e)
             return {"success": False, "provider": "slack", "error": error_msg}
 
     def _add_teams_reaction(self, messaging_platform, channel_id, message_id, emoji, team_id, tenant_id):

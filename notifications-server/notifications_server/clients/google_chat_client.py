@@ -317,9 +317,10 @@ class GoogleChatClient:
                 if not _handle_retryable_error(e, attempt + 1, max_retries, retry_sleep, tenant):
                     break
 
-            except Exception as e:
+            except Exception:
                 LOG.exception("Unexpected error adding Google Chat reaction for tenant %s", tenant)
-                return {"success": False, "provider": "google_chat", "error": str(e)}
+                # The detail is in the log; callers get a stable message, not exception text.
+                return {"success": False, "provider": "google_chat", "error": "Unexpected error while adding reaction"}
 
         return {"success": False, "provider": "google_chat", "error": last_error_message or "rate_limit_exceeded"}
 
