@@ -2,6 +2,7 @@ package mq
 
 import (
 	"context"
+	neturl "net/url"
 	"sync"
 	"time"
 
@@ -21,7 +22,7 @@ type ConnectionManager struct {
 func NewConnectionManager(url string) (*ConnectionManager, error) {
 	cm := &ConnectionManager{url: url}
 	if err := cm.connect(); err != nil {
-		slog.Warn("Initial RabbitMQ connection failed; will retry in background", "url", url, "error", err)
+		slog.Warn("Initial RabbitMQ connection failed; will retry in background", "url", redactAMQPURL(url), "error", err)
 	}
 	go cm.handleReconnect()
 	return cm, nil
@@ -125,4 +126,15 @@ func (cm *ConnectionManager) Close() {
 		cm.conn.Close() // nolint
 	}
 	cm.connMu.Unlock()
+}
+
+// redactAMQPURL masks the password in an AMQP URL (amqp://user:pass@host)
+// so the broker address can be logged. An unparseable URL is not logged at
+// all, since it may still carry credentials.
+func redactAMQPURL(raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return "<unparseable>"
+	}
+	return u.Redacted()
 }
