@@ -134,7 +134,7 @@ func TestWideningUpdatesTheRowThenRescopesTheCollection(t *testing.T) {
 		WithArgs("kb-1").
 		WillReturnRows(sqlmock.NewRows([]string{"name", "account_id", "tenant_id", "visibility", "kb_type"}).
 			AddRow("DB failover", orgTestAccount, orgTestTenant, "account", "manual"))
-	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM llm_knowledgebases WHERE account_id IS NULL AND tenant_id = \$1 AND LOWER\(BTRIM\(name\)\) = LOWER\(BTRIM\(\$2\)\)`).
+	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM llm_knowledgebases WHERE account_id IS NULL AND tenant_id = \$1 AND integration_id IS NULL AND LOWER\(BTRIM\(name\)\) = LOWER\(BTRIM\(\$2\)\)`).
 		WithArgs(orgTestTenant, "DB failover", "kb-1").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectBegin()
@@ -312,6 +312,7 @@ func TestOrganisationKBsCountAsMappedToAllAgents(t *testing.T) {
 
 	join := KBMappingsJoin(1, 3, []string{"org-kb"})
 	assert.Contains(t, join, "FROM llm_kb_agent_mappings WHERE account_id = $1")
-	assert.Contains(t, join, "SELECT id, '*', $1::uuid FROM llm_knowledgebases WHERE id = ANY($3::uuid[])",
-		"each visible organisation KB is a wildcard mapping row for the account")
+	assert.Contains(t, join, "SELECT id, '*', $1::uuid FROM llm_knowledgebases WHERE id = ANY($3::uuid[]) AND integration_id IS NULL",
+		"each visible manual organisation KB is a wildcard mapping row for the account; an integration's (#40605) is "+
+			"reached only through the account's own mappings, as before")
 }

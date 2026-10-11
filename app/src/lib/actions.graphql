@@ -10061,6 +10061,7 @@ type KBDocument {
   content_type: String
   document_key: String
   note_category: String
+  account_marks: Int
 }
 
 input UpsertKBDocumentCategoryRequest {

@@ -398,6 +398,27 @@ describe('KBDocumentsModal Fact/SOP marks', () => {
     await waitFor(() => expect(within(group).getByRole('radio', { name: 'SOP' })).toHaveAttribute('aria-checked', 'true'));
   });
 
+  // An integration's organisation knowledge base (#40605): accounts that carry
+  // their own mark are counted, and setting the mark here replaces theirs.
+  it('says how many accounts mark a document differently, until the mark is set here', async () => {
+    const user = userEvent.setup();
+    apiKnowledgeBase.getKBDocuments.mockResolvedValue({
+      data: {
+        items: [{ id: 'p1', title: 'Runbook: restart auth-svc', url: null, document_key: RUNBOOK_KEY, note_category: 'fact', account_marks: 2 }],
+        nextOffset: null,
+      },
+      errors: [],
+    });
+    apiKnowledgeBase.setKBDocumentCategory.mockResolvedValue({ data: { status: 'ok' }, errors: [] });
+    renderModal({ canEdit: true });
+
+    expect(await screen.findByText('2 accounts differ')).toBeInTheDocument();
+    const group = screen.getByRole('group', { name: 'Mark Runbook: restart auth-svc as a fact or an SOP' });
+    await user.click(within(group).getByRole('radio', { name: 'SOP' }));
+
+    await waitFor(() => expect(screen.queryByText('2 accounts differ')).not.toBeInTheDocument());
+  });
+
   it('clears a mark with Default', async () => {
     const user = userEvent.setup();
     apiKnowledgeBase.setKBDocumentCategory.mockResolvedValue({ data: { status: 'ok' }, errors: [] });

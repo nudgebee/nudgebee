@@ -16,7 +16,7 @@ Tracking issue: #40313. Decision record: `docs/architecture-decisions.md` ("Orga
 8. **Tenant boundary:** a KB is never visible outside its tenant.
 9. **Account admins:** they see the organisation KBs visible to their account read-only, marked "Organisation", and can switch one off for their account.
 
-**Scope:** manual knowledge bases. Integration knowledge bases (Confluence, ServiceNow) keep one row per account with their existing per-account switch, and search honours both mechanisms.
+**Scope:** manual knowledge bases, and since #40605 integration knowledge bases (Confluence, ServiceNow): each integration has one organisation knowledge base, shared with every account by default; a tenant admin can restrict it to selected accounts, and an account admin can switch it off for their account. Its content comes from the integration, so only who can use it, the per-account switch and its documents' Fact/SOP marks are set by people. The integration's linked accounts still decide where credentials and scraping come from: the knowledge base exists while a Confluence integration is linked to at least one account, or a ServiceNow integration has knowledge sync on.
 
 ## Data model
 
@@ -31,8 +31,8 @@ Tracking issue: #40313. Decision record: `docs/architecture-decisions.md` ("Orga
 | `organisation` | tenant | every account in the tenant, except accounts that switched it off |
 | `selected_accounts` | tenant | only the accounts switched on |
 
-- **Names:** account KB names are unique per account, and organisation KB names are unique per tenant. The same name may exist at both levels; the account KB wins for that account.
-- **Integration rows** always have an account.
+- **Names:** account KB names are unique per account, and manual organisation KB names are unique per tenant. The same name may exist at both levels; the account KB wins for that account — except over an integration's knowledge base, whose name comes from the integration.
+- **Integration rows** have no account: one organisation row per integration (unique on `integration_id`). The V1013 migration folded the earlier per-account rows into it; a per-account integration row is ignored if an older llm-server re-creates one during a rolling deploy.
 
 ### Per-account switches: `llm_kb_account_overrides`
 
@@ -43,12 +43,12 @@ Tracking issue: #40313. Decision record: `docs/architecture-decisions.md` ("Orga
 
 ### Fact/SOP marks: `llm_kb_capability_entries`
 
-- **Organisation KBs are manual:** their Fact/SOP category is on the KB row (`note_category`) and stays with it when the KB is widened or moved back to an account.
-- **Per-document marks** apply to integration KBs (Confluence, ServiceNow pages), which stay account-owned until integration KBs move to the organisation. Tenant-level marks (`account_id` NULL, unique per `(tenant_id, document_key)`) are reserved for that step; an account-level mark will override the tenant mark for that account.
+- **Manual KBs:** their Fact/SOP category is on the KB row (`note_category`) and stays with it when the KB is widened or moved back to an account.
+- **Per-document marks** apply to integration KBs (Confluence, ServiceNow pages). A tenant admin sets a document's mark once for the tenant (`account_id` NULL, unique per `(tenant_id, document_key)`); setting it replaces every account's own mark on that document. An account-level mark, where one remains, overrides the tenant mark for that account, and the Documents list counts those accounts.
 
 ### Agent mappings
 
-An organisation KB is used by all agents in every account that can see it, as if each of those accounts had mapped it to "All agents". There are no per-agent mappings for organisation KBs; an account opts out with its switch. Account KBs keep their per-account mappings.
+A manual organisation KB is used by all agents in every account that can see it, as if each of those accounts had mapped it to "All agents"; an account opts out with its switch. An integration's organisation KB is not: as before #40605, it reaches an agent's skill list and mapped search only through mappings the account made, and is otherwise found by the account-wide search. Mappings are keyed by `(kb_id, agent_id, account_id)`, so each account maps an organisation KB independently. Account KBs keep their per-account mappings.
 
 ## Visibility
 

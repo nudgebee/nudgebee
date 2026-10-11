@@ -213,6 +213,10 @@ const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit }) =
   // the optimistic value and the server's agree on one handle.
   const [categories, setCategories] = useState({});
   const [savingKeys, setSavingKeys] = useState([]);
+  // Documents whose mark was saved here. On an integration's organisation
+  // knowledge base that save replaced every account's own mark (#40605), so
+  // their "accounts differ" count no longer applies.
+  const [settledKeys, setSettledKeys] = useState([]);
   const [categoryError, setCategoryError] = useState(null);
   // Bumped whenever the modal target changes so late responses for a previous
   // KB (or a closed modal) are dropped instead of overwriting fresh state.
@@ -227,6 +231,7 @@ const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit }) =
     setContents({});
     setCategories({});
     setSavingKeys([]);
+    setSettledKeys([]);
     setCategoryError(null);
     // In-flight requests for the previous target are ignored, so their
     // finally() never clears these; reset them here instead.
@@ -294,7 +299,9 @@ const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit }) =
           // than showing none.
           setCategories((prev) => ({ ...prev, [documentKey]: previous }));
           setCategoryError(errorMessage(response, 'Failed to update document category'));
+          return;
         }
+        setSettledKeys((prev) => [...prev, documentKey]);
       })
       .finally(() => {
         if (key !== requestKey.current) return;
@@ -459,6 +466,7 @@ const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit }) =
               const documentKey = doc.document_key || '';
               const category = categories[documentKey] || '';
               const saving = savingKeys.includes(documentKey);
+              const accountsDiffer = settledKeys.includes(documentKey) ? 0 : doc.account_marks || 0;
               return (
                 <Box key={doc.id} sx={{ borderBottom: '1px solid var(--ds-gray-100)', py: ds.space[2] }} data-testid='kb-document-row'>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], minWidth: 0 }}>
@@ -488,6 +496,13 @@ const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit }) =
                       </Box>
                     ) : (
                       category !== '' && <Label text={category === 'sop' ? 'SOP' : 'Fact'} tone='neutral' />
+                    )}
+                    {accountsDiffer > 0 && (
+                      <Label
+                        text={`${accountsDiffer} ${accountsDiffer === 1 ? 'account differs' : 'accounts differ'}`}
+                        tone='warning'
+                        id={`kb-document-accounts-differ-${doc.id}`}
+                      />
                     )}
                     <Button
                       tone='ghost'

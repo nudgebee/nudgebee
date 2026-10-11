@@ -767,6 +767,7 @@ const apiKnowledgeBase = {
               url
               document_key
               note_category
+              account_marks
             }
             next_offset
             indexed

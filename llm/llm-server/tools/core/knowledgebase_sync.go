@@ -10,22 +10,64 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 
-	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
 
 // integrationKBRow is the row shape returned by the integration-KB eligibility
-// query — confluence (always when enabled) and servicenow (when the
-// sync_knowledge_base config flag is true). Shared by the periodic tick
-// (syncIntegrationKBs) and the per-account fast path
+// query: one row per integration whose knowledge should be indexed — confluence
+// (enabled and linked to at least one account) and servicenow (enabled, with the
+// sync_knowledge_base config flag on). Shared by the periodic tick
+// (syncIntegrationKBs) and the per-tenant fast path
 // (EnsureIntegrationKBsForAccount).
+//
+// Each integration has ONE knowledge base: an organisation row (account_id NULL,
+// #40605) that every account of the tenant sees unless it is switched off for
+// that account or restricted to selected accounts (llm_kb_account_overrides).
 type integrationKBRow struct {
 	IntegrationID   string `db:"integration_id"`
 	IntegrationType string `db:"integration_type"`
-	CloudAccountID  string `db:"cloud_account_id"`
 	TenantID        string `db:"tenant_id"`
 	IntegrationName string `db:"integration_name"`
 }
+
+// eligibleIntegrationsQuery lists the integrations that should have a knowledge
+// base, optionally limited to one tenant ($1 = ” means every tenant).
+//
+// Confluence integrations carry no tenant of their own (integrations.tenant_id
+// is not populated for them), so the tenant comes from a linked account; an
+// integration with no linked account has nowhere to scrape from and is not
+// eligible. An integration belongs to one tenant, so its linked accounts share
+// it; the ORDER BY only makes the pick deterministic. integration_name comes from integrations.name — the column
+// api-server writes the user-typed display name to (integration_config.go);
+// it is intentionally NOT mirrored into integration_config_values.
+const eligibleIntegrationsQuery = `
+	(SELECT DISTINCT ON (i.id)
+		i.id as integration_id,
+		i.type as integration_type,
+		ca.tenant as tenant_id,
+		COALESCE(NULLIF(i.name, ''), i.type) as integration_name
+	FROM integrations i
+	JOIN integrations_cloud_accounts ica ON i.id = ica.integration_id
+	JOIN cloud_accounts ca ON ica.cloud_account_id = ca.id
+	WHERE i.type IN ('confluence') AND i.status = 'enabled'
+	  AND ($1 = '' OR ca.tenant::text = $1)
+	ORDER BY i.id, ca.tenant)
+
+	UNION ALL
+
+	SELECT
+		i.id as integration_id,
+		i.type as integration_type,
+		i.tenant_id as tenant_id,
+		COALESCE(NULLIF(i.name, ''), i.type) as integration_name
+	FROM integrations i
+	JOIN integration_config_values icv_sync ON i.id = icv_sync.integration_id
+	WHERE i.type = 'servicenow'
+	  AND i.status = 'enabled'
+	  AND icv_sync.name = 'sync_knowledge_base' AND icv_sync.value = 'true'
+	  AND EXISTS (SELECT 1 FROM cloud_accounts ca WHERE ca.tenant = i.tenant_id AND ca.status = 'active')
+	  AND ($1 = '' OR i.tenant_id::text = $1)
+`
 
 // StartIntegrationKBSync starts a background goroutine that periodically syncs integration KB entries
 func StartIntegrationKBSync(ctx context.Context) {
@@ -35,7 +77,7 @@ func StartIntegrationKBSync(ctx context.Context) {
 	slog.Info("kb_sync: initialized", "interval_minutes", config.Config.KBSyncIntervalMinutes)
 
 	// Run immediately on startup
-	syncIntegrationKBs()
+	syncIntegrationKBs(ctx)
 
 	for {
 		select {
@@ -43,13 +85,14 @@ func StartIntegrationKBSync(ctx context.Context) {
 			slog.Info("kb_sync: stopping integration KB sync")
 			return
 		case <-ticker.C:
-			syncIntegrationKBs()
+			syncIntegrationKBs(ctx)
 		}
 	}
 }
 
-// syncIntegrationKBs checks all integrations and creates KB entries if they don't exist
-func syncIntegrationKBs() {
+// syncIntegrationKBs ensures every eligible integration has its organisation
+// knowledge base and archives the ones whose integration is no longer eligible.
+func syncIntegrationKBs(ctx context.Context) {
 	slog.Info("kb_sync: starting integration KB sync")
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
@@ -58,85 +101,64 @@ func syncIntegrationKBs() {
 		return
 	}
 
-	// Query for all integrations (cloud account specific and tenant level).
-	// integration_name comes from integrations.name — the column api-server
-	// writes the user-typed display name to (integration_config.go:419/443).
-	// It is intentionally NOT mirrored into integration_config_values, so a
-	// LEFT JOIN to icv_name there always returns NULL → KB names degraded to
-	// "<type>_<id8>" (e.g. "confluence_a1b2c3d4") instead of the real name.
-	query := `
-		SELECT DISTINCT
-			i.id as integration_id,
-			i.type as integration_type,
-			ica.cloud_account_id,
-			ca.tenant as tenant_id,
-			COALESCE(NULLIF(i.name, ''), i.type) as integration_name
-		FROM integrations i
-		JOIN integrations_cloud_accounts ica ON i.id = ica.integration_id
-		JOIN cloud_accounts ca ON ica.cloud_account_id = ca.id
-		WHERE i.type IN ('confluence') AND i.status = 'enabled'
-
-		UNION ALL
-
-		SELECT DISTINCT
-			i.id as integration_id,
-			i.type as integration_type,
-			ca.id as cloud_account_id,
-			i.tenant_id as tenant_id,
-			COALESCE(NULLIF(i.name, ''), i.type) as integration_name
-		FROM integrations i
-		JOIN integration_config_values icv_sync
-			ON i.id = icv_sync.integration_id
-		INNER JOIN cloud_accounts ca ON i.tenant_id = ca.tenant
-		WHERE i.type = 'servicenow'
-		  AND i.status = 'enabled'
-		  AND ca.status = 'active'
-		  AND icv_sync.name = 'sync_knowledge_base' AND icv_sync.value = 'true'
-	`
-
 	var integrations []integrationKBRow
-	err = dbms.Db.Select(&integrations, query)
-	if err != nil {
+	if err := dbms.Db.SelectContext(ctx, &integrations, eligibleIntegrationsQuery, ""); err != nil {
 		slog.Error("kb_sync: failed to fetch integrations", "error", err)
 		return
 	}
 
 	slog.Info("kb_sync: found integrations", "count", len(integrations))
 
-	created := 0
-	skipped := 0
-	errors := 0
+	created, skipped, errored := ensureIntegrationKBs(ctx, dbms, integrations)
 
+	// Reconcile: the forward pass above only inserts. Archive organisation rows
+	// whose integration is no longer enabled+syncing+linked and reactivate the
+	// ones that returned — otherwise a disabled integration leaves its KB
+	// stranded as active. An empty eligible set across every tenant is far more
+	// likely a transient gap than every integration genuinely removed, so it
+	// skips the archive/reactivate passes.
+	archived, reactivated := 0, 0
+	if len(integrations) > 0 {
+		archived, reactivated = reconcileIntegrationKBs(ctx, dbms, integrationIDs(integrations), "")
+	}
+	recovered := recoverStuckKBs(ctx, dbms)
+	invalidateKBCachesAfterStatusChange(archived+reactivated+recovered, "reconcile")
+
+	slog.Info("kb_sync: completed sync",
+		"total", len(integrations),
+		"created", created,
+		"skipped", skipped,
+		"errors", errored,
+		"archived", archived,
+		"reactivated", reactivated,
+		"recovered", recovered)
+}
+
+func ensureIntegrationKBs(ctx context.Context, dbms *common.DatabaseManager, integrations []integrationKBRow) (created, skipped, errored int) {
 	for _, integration := range integrations {
 		// Per-iteration deadline so one hung integration cannot stall the
-		// entire periodic tick. 30s covers DB checks/inserts + the rag-server
+		// whole pass. 30s covers DB checks/inserts + the rag-server
 		// scrape-kick HTTP call; rag-server runs the scrape asynchronously.
-		iterCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		iterCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		switch ensureKBForIntegration(iterCtx, dbms, integration) {
 		case kbEnsureCreated:
 			created++
 		case kbEnsureSkipped:
 			skipped++
 		case kbEnsureErrored:
-			errors++
+			errored++
 		}
 		cancel()
 	}
+	return created, skipped, errored
+}
 
-	// Reconcile: the forward pass above only inserts. Archive integration KBs
-	// whose (integration, account) pair is no longer enabled+syncing+linked, and
-	// reactivate ones whose pair has returned — otherwise a disabled integration
-	// or an unlinked account leaves its KB stranded as active.
-	archived, reactivated, recovered := reconcileIntegrationKBs(dbms, integrations)
-
-	slog.Info("kb_sync: completed sync",
-		"total", len(integrations),
-		"created", created,
-		"skipped", skipped,
-		"errors", errors,
-		"archived", archived,
-		"reactivated", reactivated,
-		"recovered", recovered)
+func integrationIDs(rows []integrationKBRow) []string {
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.IntegrationID)
+	}
+	return ids
 }
 
 // invalidateKBCachesAfterStatusChange clears the KB caches wholesale after a
@@ -158,77 +180,57 @@ func invalidateKBCachesAfterStatusChange(changed int, reason string) {
 	}
 }
 
-// reconcileIntegrationKBs archives integration KBs whose (integration,
-// account) pair is no longer in the eligible set, reactivates archived KBs
-// whose pair has returned, and recovers KBs of any type stuck in
-// 'processing'. eligible is the current set of enabled+syncing integration ×
-// linked cloud account rows; an empty slice skips the archive/reactivate
-// passes — an empty result is treated as a transient gap, not a genuine "all
-// integrations removed".
+// reconcileIntegrationKBs archives the organisation rows of integrations that
+// are not in eligibleIDs and reactivates the archived ones that are. tenantID
+// limits both passes to one tenant; empty means every tenant.
 //
-// The match is on the pair, not the integration id alone: llm_knowledgebases
-// holds one row per (account_id, integration_id) (UNIQUE, V622), and an
-// integration linked to several accounts stays eligible for the others when
-// one account is unlinked. Matching on integration id would reactivate the
-// unlinked account's row every tick, undoing the per-account archive done by
-// EnsureIntegrationKBsForAccount right after the unlink.
-func reconcileIntegrationKBs(dbms *common.DatabaseManager, eligible []integrationKBRow) (archived, reactivated, recovered int) {
-	// Archive / reactivate only when the eligible set is non-empty. An empty
-	// set means the integrations query returned zero rows — far more likely a
-	// transient gap (mid-migration, a brief disable, a JOIN hiccup) than every
-	// integration genuinely removed. Archiving on an empty set would wipe every
-	// integration KB across all tenants, so skip both passes instead.
-	if len(eligible) > 0 {
-		integrationIDs := make([]string, 0, len(eligible))
-		accountIDs := make([]string, 0, len(eligible))
-		for _, row := range eligible {
-			integrationIDs = append(integrationIDs, row.IntegrationID)
-			accountIDs = append(accountIDs, row.CloudAccountID)
-		}
-		// The two arrays are positionally paired; unnest zips them back into
-		// (integration_id, account_id) rows the UPDATEs correlate against.
-		const eligiblePair = `SELECT 1 FROM unnest($1::uuid[], $2::uuid[]) AS e(integration_id, account_id)
-				WHERE e.integration_id = kb.integration_id AND e.account_id = kb.account_id`
-
-		// Archive integration KBs whose pair dropped out of the eligible set.
-		if res, err := dbms.Db.Exec(`UPDATE llm_knowledgebases kb SET status = 'archived', updated_at = NOW()
-			WHERE kb.kb_type = 'integration' AND kb.status != 'archived' AND NOT EXISTS (`+eligiblePair+`)`,
-			pq.Array(integrationIDs), pq.Array(accountIDs)); err != nil {
-			slog.Error("kb_sync: failed to archive stale integration KBs", "error", err)
-		} else {
-			n, _ := res.RowsAffected()
-			archived = int(n)
-		}
-
-		// Reactivate archived KBs whose pair is eligible again.
-		if res, err := dbms.Db.Exec(`UPDATE llm_knowledgebases kb SET status = 'active', updated_at = NOW()
-			WHERE kb.kb_type = 'integration' AND kb.status = 'archived' AND EXISTS (`+eligiblePair+`)`,
-			pq.Array(integrationIDs), pq.Array(accountIDs)); err != nil {
-			slog.Error("kb_sync: failed to reactivate integration KBs", "error", err)
-		} else {
-			n, _ := res.RowsAffected()
-			reactivated = int(n)
-		}
-	}
-
-	// Recover KBs stuck in 'processing'. A retrigger (and manual create/update)
-	// sets 'processing' and relies on the rag-server scrape to flip it to
-	// active/error; if either server restarts mid-scrape nothing clears it.
-	// Scoped to every kb_type — manual KBs no longer carry a local status flip
-	// either. Anything 'processing' past the staleness window is a failed load.
-	if res, err := dbms.Db.Exec(`UPDATE llm_knowledgebases SET status = 'error', updated_at = NOW()
-		WHERE status = 'processing'
-		  AND updated_at < NOW() - make_interval(mins => $1)`,
-		config.Config.KBProcessingStaleMinutes); err != nil {
-		slog.Error("kb_sync: failed to recover stuck KBs", "error", err)
+// Per-account integration rows (the pre-#40605 shape) are left alone: the V1013
+// migration folds them into the organisation rows and copies their status, so
+// archiving them here — possibly before the migration has run — would make the
+// folded rows start out archived. Every reader ignores them, so one an older
+// llm-server re-creates during a rolling deploy is harmless.
+func reconcileIntegrationKBs(ctx context.Context, dbms *common.DatabaseManager, eligibleIDs []string, tenantID string) (archived, reactivated int) {
+	if res, err := dbms.Db.ExecContext(ctx, `UPDATE llm_knowledgebases kb SET status = 'archived', updated_at = NOW()
+		WHERE kb.kb_type = 'integration' AND kb.account_id IS NULL AND kb.status != 'archived'
+		  AND ($2 = '' OR kb.tenant_id::text = $2)
+		  AND NOT (kb.integration_id = ANY($1::uuid[]))`,
+		pq.Array(eligibleIDs), tenantID); err != nil {
+		slog.Error("kb_sync: failed to archive stale integration KBs", "error", err, "tenant_id", tenantID)
 	} else {
 		n, _ := res.RowsAffected()
-		recovered = int(n)
+		archived = int(n)
 	}
 
-	invalidateKBCachesAfterStatusChange(archived+reactivated+recovered, "reconcile")
+	if res, err := dbms.Db.ExecContext(ctx, `UPDATE llm_knowledgebases kb SET status = 'active', updated_at = NOW()
+		WHERE kb.kb_type = 'integration' AND kb.account_id IS NULL AND kb.status = 'archived'
+		  AND ($2 = '' OR kb.tenant_id::text = $2)
+		  AND kb.integration_id = ANY($1::uuid[])`,
+		pq.Array(eligibleIDs), tenantID); err != nil {
+		slog.Error("kb_sync: failed to reactivate integration KBs", "error", err, "tenant_id", tenantID)
+	} else {
+		n, _ := res.RowsAffected()
+		reactivated = int(n)
+	}
 
-	return archived, reactivated, recovered
+	return archived, reactivated
+}
+
+// recoverStuckKBs fails KBs stuck in 'processing'. A retrigger (and manual
+// create/update) sets 'processing' and relies on the rag-server scrape to flip
+// it to active/error; if either server restarts mid-scrape nothing clears it.
+// Scoped to every kb_type. Anything 'processing' past the staleness window is a
+// failed load.
+func recoverStuckKBs(ctx context.Context, dbms *common.DatabaseManager) int {
+	res, err := dbms.Db.ExecContext(ctx, `UPDATE llm_knowledgebases SET status = 'error', updated_at = NOW()
+		WHERE status = 'processing'
+		  AND updated_at < NOW() - make_interval(mins => $1)`,
+		config.Config.KBProcessingStaleMinutes)
+	if err != nil {
+		slog.Error("kb_sync: failed to recover stuck KBs", "error", err)
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return int(n)
 }
 
 // kbEnsureResult is the per-integration outcome returned by ensureKBForIntegration.
@@ -240,115 +242,61 @@ const (
 	kbEnsureErrored                       // DB error reading/writing — logged inside
 )
 
-// ensureKBForIntegration creates the llm_knowledgebases row for a single
-// integration if one does not already exist, and on a fresh insert kicks
-// rag-server's indexing endpoint. Idempotent — safe to call repeatedly
-// (existing-row pre-check + ON CONFLICT DO NOTHING handle races). Shared by
-// the periodic tick (syncIntegrationKBs) and the per-account fast path
-// (EnsureIntegrationKBsForAccount).
+// ensureKBForIntegration creates the integration's organisation knowledge base
+// if it does not exist yet, refreshes its name after an integration rename, and
+// on a fresh insert kicks rag-server's indexing endpoint. Idempotent — safe to
+// call repeatedly (existing-row pre-check + ON CONFLICT DO NOTHING handle races).
 func ensureKBForIntegration(ctx context.Context, dbms *common.DatabaseManager, integration integrationKBRow) kbEnsureResult {
-	// Fail-fast: the upstream SELECT joins on NOT NULL columns so these
-	// should already be non-empty, but guard explicitly so a future code
-	// path that builds an integrationKBRow by hand can't silently widen the
-	// UPDATE / SELECT below into a cross-row scan.
-	if integration.IntegrationID == "" || integration.CloudAccountID == "" {
+	if integration.IntegrationID == "" || integration.TenantID == "" {
 		slog.Error("kb_sync: refusing to ensure KB with empty identifiers",
 			"integration_id", integration.IntegrationID,
-			"cloud_account_id", integration.CloudAccountID)
-		return kbEnsureErrored
-	}
-	// Check if KB entry already exists for this integration. The id and current
-	// name come back with it: a rename below has to invalidate the caches keyed
-	// on the OLD name, which is gone once the UPDATE lands. At most one row
-	// matches — UNIQUE (account_id, integration_id), V622.
-	var existing struct {
-		Id   string `db:"id"`
-		Name string `db:"name"`
-	}
-	kbExists := false
-	checkQuery := `
-		SELECT id, name FROM llm_knowledgebases
-		WHERE integration_id = $1
-		AND account_id = $2
-	`
-	switch err := dbms.Db.GetContext(ctx, &existing, checkQuery, integration.IntegrationID, integration.CloudAccountID); {
-	case err == nil:
-		kbExists = true
-	case errors.Is(err, sql.ErrNoRows):
-		kbExists = false
-	default:
-		slog.Error("kb_sync: failed to check existing KB",
-			"integration_id", integration.IntegrationID,
-			"error", err)
+			"tenant_id", integration.TenantID)
 		return kbEnsureErrored
 	}
 
-	// KB display name is the user-typed integration name verbatim. Uniqueness
-	// of the underlying row is enforced upstream by two DB constraints, so the
-	// name itself does not need to be unique:
-	//   1. integrations: UNIQUE (source, type, name, tenant_id)  — V567
-	//   2. llm_knowledgebases: UNIQUE (account_id, integration_id) — V622
-	// Computed before the existing-row branch so an integration rename
-	// refreshes the existing KB's display name in the same call.
+	// KB display name is the user-typed integration name verbatim; it need not
+	// be unique (idx_kb_name_tenant_unique covers manual organisation rows only).
 	kbName := integration.IntegrationName
 	kbDescription := "Knowledge Base for integration: " + integration.IntegrationName
 
-	if kbExists {
+	var existingID string
+	switch err := dbms.Db.GetContext(ctx, &existingID, `SELECT id FROM llm_knowledgebases
+		WHERE integration_id = $1 AND account_id IS NULL`, integration.IntegrationID); {
+	case err == nil:
 		// Refresh display name + description in case the user renamed the
-		// integration since the KB row was created. Without this the KB
-		// list UI would keep showing the old name forever — the create
-		// path is the only writer of llm_knowledgebases.name today, and
-		// ON CONFLICT DO NOTHING above means a re-INSERT never refreshes
-		// it. The `WHERE name != $1 OR description != $2` guard makes the
-		// UPDATE a no-op (zero rows affected) on every cache-invalidation
-		// where the name has not actually changed, so updated_at does not
-		// churn.
-		// `IS DISTINCT FROM` (not `!=`) so a hypothetical NULL value in
-		// name/description doesn't make the comparison evaluate to NULL and
-		// silently skip the refresh. The INSERT path never writes NULL
-		// today, but defensive against schema or column-default changes.
+		// integration. The IS DISTINCT FROM guard makes this a no-op when
+		// nothing changed, so updated_at does not churn.
 		res, err := dbms.Db.ExecContext(ctx, `UPDATE llm_knowledgebases
 			SET name = $1, description = $2, updated_at = NOW()
-			WHERE integration_id = $3
-			  AND account_id = $4
+			WHERE id = $3
 			  AND (name IS DISTINCT FROM $1 OR description IS DISTINCT FROM $2)`,
-			kbName, kbDescription, integration.IntegrationID, integration.CloudAccountID)
+			kbName, kbDescription, existingID)
 		if err != nil {
-			// Not fatal — name refresh is best-effort. The KB stays
-			// usable; only the display label is stale.
+			// Not fatal — the KB stays usable; only the display label is stale.
 			slog.Warn("kb_sync: failed to refresh KB display name",
-				"integration_id", integration.IntegrationID,
-				"error", err)
+				"integration_id", integration.IntegrationID, "error", err)
 		} else if n, _ := res.RowsAffected(); n > 0 {
-			// Same invalidation contract as a manual rename: clear the body
-			// cached under the old name as well as the new one, plus the skill
-			// menu of every agent this KB is mapped to.
-			invalidateKBCaches(dbms, integration.CloudAccountID, existing.Id, existing.Name, kbName)
+			// Skill bodies and menus are cached per account under the KB's
+			// name, and every account of the tenant sees this KB.
+			invalidateOrgKnowledgeCaches(integration.TenantID)
 			slog.Info("kb_sync: refreshed KB display name after integration rename",
-				"integration_id", integration.IntegrationID,
-				"integration_name", integration.IntegrationName,
-				"kb_name", kbName)
+				"integration_id", integration.IntegrationID, "kb_name", kbName)
 		}
-		slog.Debug("kb_sync: KB already exists",
-			"integration_id", integration.IntegrationID,
-			"integration_name", integration.IntegrationName)
 		return kbEnsureSkipped
+	case errors.Is(err, sql.ErrNoRows):
+	default:
+		slog.Error("kb_sync: failed to check existing KB",
+			"integration_id", integration.IntegrationID, "error", err)
+		return kbEnsureErrored
 	}
 
-	// Create KB entry for this integration using INSERT ... ON CONFLICT DO NOTHING
-	// to handle race conditions and ensure idempotency. New rows start as
-	// 'processing' — the rag-server scrape flips them to 'active' once the
-	// integration's documents are indexed.
-	insertQuery := `
-		INSERT INTO llm_knowledgebases
-		(id, tenant_id, account_id, name, description, data, data_format, data_filename, data_size_bytes, status, kb_type, kb_source, integration_id, created_at, updated_at)
-		VALUES (gen_random_uuid(), $1, $2, $3, $4, '', 'text', $5, 0, 'processing', 'integration', $6, $7, NOW(), NOW())
-		ON CONFLICT (account_id, integration_id) WHERE integration_id IS NOT NULL DO NOTHING
-	`
-
-	result, err := dbms.Db.ExecContext(ctx, insertQuery,
+	// New rows start as 'processing' — the rag-server scrape flips them to
+	// 'active' once the integration's documents are indexed.
+	result, err := dbms.Db.ExecContext(ctx, `INSERT INTO llm_knowledgebases
+		(id, tenant_id, account_id, visibility, name, description, data, data_format, data_filename, data_size_bytes, status, kb_type, kb_source, integration_id, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, NULL, 'organisation', $2, $3, '', 'text', $4, 0, 'processing', 'integration', $5, $6, NOW(), NOW())
+		ON CONFLICT (integration_id) WHERE account_id IS NULL AND integration_id IS NOT NULL DO NOTHING`,
 		integration.TenantID,
-		integration.CloudAccountID,
 		kbName,
 		kbDescription,
 		integration.IntegrationType+"_"+integration.IntegrationID+"_kb.txt",
@@ -362,13 +310,8 @@ func ensureKBForIntegration(ctx context.Context, dbms *common.DatabaseManager, i
 			"error", err)
 		return kbEnsureErrored
 	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		// ON CONFLICT DO NOTHING — another goroutine won the race.
-		slog.Debug("kb_sync: KB already exists (conflict handled)",
-			"integration_id", integration.IntegrationID,
-			"integration_name", integration.IntegrationName)
+	if n, _ := result.RowsAffected(); n == 0 {
+		// ON CONFLICT DO NOTHING — another replica won the race.
 		return kbEnsureSkipped
 	}
 
@@ -377,215 +320,70 @@ func ensureKBForIntegration(ctx context.Context, dbms *common.DatabaseManager, i
 		"integration_name", integration.IntegrationName,
 		"integration_type", integration.IntegrationType,
 		"kb_name", kbName)
+	invalidateOrgKnowledgeCaches(integration.TenantID)
 
 	// Kick initial indexing so the new KB does not sit idle until the next
-	// scrape cycle. Best-effort — the periodic scrape is the safety net if
-	// this call fails. The ctx deadline bounds the rag-server HTTP call so
-	// the MQ-consumer-dispatched goroutine (cache_invalidation_mq.go) can
-	// never leak on a slow/hung rag-server.
-	if kickErr := triggerIntegrationKBSync(ctx, integration.CloudAccountID, integration.IntegrationID, integration.IntegrationType, "system"); kickErr != nil {
+	// scrape cycle. Best-effort — the periodic scrape is the safety net. The
+	// ctx deadline bounds the rag-server HTTP call. rag-server scrapes by
+	// integration id; the account is not used.
+	if kickErr := triggerIntegrationKBSync(ctx, "", integration.IntegrationID, integration.IntegrationType, "system"); kickErr != nil {
 		slog.Warn("kb_sync: failed to kick initial indexing",
 			"integration_id", integration.IntegrationID, "error", kickErr)
 	}
 	return kbEnsureCreated
 }
 
-// EnsureIntegrationKBsForAccount runs the integration-KB sync scoped to a
-// single cloud account. Called from the cache-invalidation consumer
-// immediately after an integration mutation (create / status change /
-// delete) so the KB list reflects the new state within seconds instead of
-// waiting up to KBSyncIntervalMinutes (default 30) for the next periodic
-// tick.
+// EnsureIntegrationKBsForAccount runs the integration-KB sync for the tenant
+// of one cloud account. Called from the cache-invalidation consumer right after
+// an integration mutation (create / status change / delete / link change) so the
+// KB list reflects the new state within seconds instead of waiting up to
+// KBSyncIntervalMinutes (default 30) for the next periodic tick.
 //
-// Two passes over the account's integrations:
-//  1. Ensure — create llm_knowledgebases rows for currently-eligible
-//     integrations that don't yet have one. Idempotent (per-integration
-//     pre-check + ON CONFLICT DO NOTHING).
-//  2. Archive / reactivate — drive llm_knowledgebases.status to match
-//     reality for this account: archive rows whose integration is no
-//     longer eligible (disabled, deleted, or sync_knowledge_base flipped
-//     off), reactivate rows whose integration has returned. Scoped to
-//     account_id, so this does NOT race the periodic tick's full-table
-//     reconcileIntegrationKBs — the two passes can interleave safely
-//     because they only ever agree on the same account's rows.
-//
-// The periodic tick (syncIntegrationKBs + reconcileIntegrationKBs) remains
-// the safety net for the "all integrations removed across every tenant"
-// case and for the 'processing' staleness recovery, both of which are
-// intentionally global.
+// The knowledge base belongs to the tenant, so the whole tenant is reconciled.
+// Unlike the periodic tick, an empty eligible set here is a legitimate state
+// (the tenant disabled or deleted every KB-syncing integration), and archives
+// all of the tenant's integration knowledge bases.
 func EnsureIntegrationKBsForAccount(accountId string) {
 	if accountId == "" {
 		return
 	}
 
-	// Bound the whole fast path: the DB query + N×ensureKBForIntegration
-	// (which itself does a DB read, a DB insert, and a rag-server HTTP POST)
-	// + the archive/reactivate UPDATEs. MQ consumer dispatches us in a
-	// goroutine; without this deadline a hung rag-server would leak a
-	// goroutine per cache-invalidation message.
+	// Bounds the whole fast path; the consumer dispatches it in a goroutine, and
+	// without a deadline a hung rag-server would leak one per message.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		slog.Error("kb_sync: failed to get database manager",
-			"account_id", accountId, "error", err)
+		slog.Error("kb_sync: failed to get database manager", "account_id", accountId, "error", err)
 		return
 	}
 
-	// Same eligibility predicates as syncIntegrationKBs, scoped to one
-	// cloud_account_id. Branch 1 (confluence) joins via the
-	// integrations_cloud_accounts mapping; branch 2 (servicenow) joins via
-	// tenant and filters cloud_accounts.id directly. integration_name reads
-	// from the canonical integrations.name column (see syncIntegrationKBs
-	// comment for why icv_name is the wrong place).
-	query := `
-		SELECT DISTINCT
-			i.id as integration_id,
-			i.type as integration_type,
-			ica.cloud_account_id,
-			ca.tenant as tenant_id,
-			COALESCE(NULLIF(i.name, ''), i.type) as integration_name
-		FROM integrations i
-		JOIN integrations_cloud_accounts ica ON i.id = ica.integration_id
-		JOIN cloud_accounts ca ON ica.cloud_account_id = ca.id
-		WHERE i.type IN ('confluence')
-		  AND i.status = 'enabled'
-		  AND ica.cloud_account_id = $1
-
-		UNION ALL
-
-		SELECT DISTINCT
-			i.id as integration_id,
-			i.type as integration_type,
-			ca.id as cloud_account_id,
-			i.tenant_id as tenant_id,
-			COALESCE(NULLIF(i.name, ''), i.type) as integration_name
-		FROM integrations i
-		JOIN integration_config_values icv_sync
-			ON i.id = icv_sync.integration_id
-		INNER JOIN cloud_accounts ca ON i.tenant_id = ca.tenant
-		WHERE i.type = 'servicenow'
-		  AND i.status = 'enabled'
-		  AND ca.status = 'active'
-		  AND icv_sync.name = 'sync_knowledge_base' AND icv_sync.value = 'true'
-		  AND ca.id = $1
-	`
+	var tenantID string
+	if err := dbms.Db.GetContext(ctx, &tenantID, `SELECT tenant::text FROM cloud_accounts WHERE id = $1`, accountId); err != nil {
+		slog.Error("kb_sync: failed to resolve the account's tenant", "account_id", accountId, "error", err)
+		return
+	}
 
 	var integrations []integrationKBRow
-	if err := dbms.Db.SelectContext(ctx, &integrations, query, accountId); err != nil {
-		slog.Error("kb_sync: per-account fetch failed",
-			"account_id", accountId, "error", err)
+	if err := dbms.Db.SelectContext(ctx, &integrations, eligibleIntegrationsQuery, tenantID); err != nil {
+		slog.Error("kb_sync: per-tenant fetch failed", "tenant_id", tenantID, "error", err)
 		return
 	}
 
-	slog.Info("kb_sync: per-account fast path",
-		"account_id", accountId, "found", len(integrations))
-
-	// Ensure pass — create KB rows for currently-eligible integrations.
-	created, skipped, errors := 0, 0, 0
-	for _, integration := range integrations {
-		switch ensureKBForIntegration(ctx, dbms, integration) {
-		case kbEnsureCreated:
-			created++
-		case kbEnsureSkipped:
-			skipped++
-		case kbEnsureErrored:
-			errors++
-		}
+	created, skipped, errored := ensureIntegrationKBs(ctx, dbms, integrations)
+	archived, reactivated := reconcileIntegrationKBs(ctx, dbms, integrationIDs(integrations), tenantID)
+	if archived+reactivated > 0 {
+		invalidateOrgKnowledgeCaches(tenantID)
 	}
 
-	// Archive / reactivate pass — drive existing rows for this account to
-	// match the eligibility set. Unlike the full-table reconcile in the
-	// periodic tick, an empty eligible set here is a legitimate state (the
-	// user disabled or deleted every KB-syncing integration on this
-	// account) — archive all of this account's integration KBs in that
-	// case. Scoping by account_id keeps both branches race-free against
-	// the periodic tick's broader UPDATEs.
-	eligibleIDs := make([]string, 0, len(integrations))
-	for _, integration := range integrations {
-		eligibleIDs = append(eligibleIDs, integration.IntegrationID)
-	}
-	archived, reactivated := archiveReactivateAccountKBs(ctx, dbms, accountId, eligibleIDs)
-
-	slog.Info("kb_sync: per-account fast path complete",
+	slog.Info("kb_sync: per-tenant fast path complete",
 		"account_id", accountId,
+		"tenant_id", tenantID,
+		"found", len(integrations),
 		"created", created,
 		"skipped", skipped,
-		"errors", errors,
+		"errors", errored,
 		"archived", archived,
 		"reactivated", reactivated)
-}
-
-// archiveReactivateAccountKBs mirrors reconcileIntegrationKBs's archive +
-// reactivate logic, scoped to a single account_id so the fast path can run
-// after a per-account mutation without racing the periodic tick's
-// full-table pass.
-//
-// Empty eligibleIDs is the "no KB-syncing integrations remain for this
-// account" case (e.g. last integration disabled/deleted) — legitimate and
-// triggers a blanket archive of this account's integration KBs. The
-// periodic tick treats an empty result very differently because there it
-// would imply "all integrations gone across every tenant", a much louder
-// signal that's almost always a transient gap.
-func archiveReactivateAccountKBs(ctx context.Context, dbms *common.DatabaseManager, accountId string, eligibleIDs []string) (archived, reactivated int) {
-	if len(eligibleIDs) == 0 {
-		// Archive every non-archived integration KB for this account — the
-		// fast path was triggered by a confirmed mutation and the eligibility
-		// query came back empty, so the account genuinely has no
-		// KB-syncing integrations left. No reactivate candidates.
-		res, err := dbms.Db.ExecContext(ctx, `UPDATE llm_knowledgebases
-			SET status = 'archived', updated_at = NOW()
-			WHERE kb_type = 'integration'
-			  AND account_id = $1
-			  AND status != 'archived'`, accountId)
-		if err != nil {
-			slog.Error("kb_sync: failed to archive stale integration KBs (empty eligible set)",
-				"account_id", accountId, "error", err)
-			return 0, 0
-		}
-		n, _ := res.RowsAffected()
-		invalidateKBCachesAfterStatusChange(int(n), "account_archive_all")
-		return int(n), 0
-	}
-
-	// Archive integration KBs whose integration dropped out of the eligible
-	// set (disable / delete / sync_knowledge_base flipped off).
-	archiveQ, archiveArgs, err := sqlx.In(`UPDATE llm_knowledgebases
-		SET status = 'archived', updated_at = NOW()
-		WHERE kb_type = 'integration'
-		  AND account_id = ?
-		  AND status != 'archived'
-		  AND integration_id NOT IN (?)`, accountId, eligibleIDs)
-	if err != nil {
-		slog.Error("kb_sync: failed to build per-account archive query",
-			"account_id", accountId, "error", err)
-	} else if res, err := dbms.Db.ExecContext(ctx, dbms.Db.Rebind(archiveQ), archiveArgs...); err != nil {
-		slog.Error("kb_sync: failed to archive stale integration KBs",
-			"account_id", accountId, "error", err)
-	} else {
-		n, _ := res.RowsAffected()
-		archived = int(n)
-	}
-
-	// Reactivate archived KBs whose integration returned (re-enabled, or
-	// sync_knowledge_base flipped back on).
-	reactQ, reactArgs, err := sqlx.In(`UPDATE llm_knowledgebases
-		SET status = 'active', updated_at = NOW()
-		WHERE kb_type = 'integration'
-		  AND account_id = ?
-		  AND status = 'archived'
-		  AND integration_id IN (?)`, accountId, eligibleIDs)
-	if err != nil {
-		slog.Error("kb_sync: failed to build per-account reactivate query",
-			"account_id", accountId, "error", err)
-	} else if res, err := dbms.Db.ExecContext(ctx, dbms.Db.Rebind(reactQ), reactArgs...); err != nil {
-		slog.Error("kb_sync: failed to reactivate integration KBs",
-			"account_id", accountId, "error", err)
-	} else {
-		n, _ := res.RowsAffected()
-		reactivated = int(n)
-	}
-	invalidateKBCachesAfterStatusChange(archived+reactivated, "account_reconcile")
-	return archived, reactivated
 }

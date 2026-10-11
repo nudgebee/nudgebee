@@ -197,8 +197,9 @@ def _max_documents_per_run() -> int:
 
 def _pending_knowledgebases() -> List[KBCollection]:
     """Every active, enabled KB's collection, deduped by collection name, with
-    every account that maps to it — integration KBs share one collection per
-    integration, one KB row per cloud account.
+    the account whose LLM settings classify it. An organisation KB (no
+    account_id — every integration's KB since #40605) uses an active account of
+    its tenant; one whose tenant has none is skipped.
 
     Mirrors kbCollectionName in llm-server's tools/core/knowledgebase_service.go;
     the two must stay in sync or this looks at the wrong collection.
@@ -211,11 +212,15 @@ def _pending_knowledgebases() -> List[KBCollection]:
     with engine.connect() as connection:
         rows = connection.execute(
             text(
-                "SELECT id, account_id, kb_type, integration_id FROM llm_knowledgebases "
-                "WHERE status = 'active' AND enabled = true"
+                "SELECT kb.id, kb.kb_type, kb.integration_id, COALESCE(kb.account_id, "
+                "(SELECT ca.id FROM cloud_accounts ca WHERE ca.tenant = kb.tenant_id AND ca.status = 'active' "
+                "ORDER BY ca.id LIMIT 1)) AS account_id "
+                "FROM llm_knowledgebases kb WHERE kb.status = 'active' AND kb.enabled = true"
             )
         )
         for row in rows:
+            if row.account_id is None:
+                continue
             if row.kb_type == "integration" and row.integration_id:
                 name, is_manual = f"{row.integration_id}_knowledge_base", False
             else:

@@ -173,7 +173,7 @@ func TestReadersQueryVisibleOrganisationKBs(t *testing.T) {
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
 	t.Run("ListKnowledgebases", func(t *testing.T) {
-		mock.ExpectQuery(`WHERE \(kb.account_id = \$1 OR kb.id = ANY\(\$2::uuid\[\]\)\)\s+ORDER BY kb.created_at DESC`).
+		mock.ExpectQuery(`WHERE \(kb.account_id = \$1 OR kb.id = ANY\(\$2::uuid\[\]\)\) AND NOT \(kb.kb_type = 'integration' AND kb.account_id IS NOT NULL\)\s+ORDER BY kb.created_at DESC`).
 			WithArgs("account-a", sqlmock.AnyArg()).
 			WillReturnError(errors.New("stop"))
 		_, err := ListKnowledgebases(sc, "account-a")

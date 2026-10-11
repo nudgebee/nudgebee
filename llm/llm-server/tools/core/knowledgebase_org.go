@@ -112,12 +112,14 @@ func resolveKBForWrite(sc *security.RequestContext, dbms *common.DatabaseManager
 
 // kbNameTaken reports whether name is already used by another KB of the same
 // owner (excluding excludeId). Names are compared trimmed, case-insensitively,
-// the way name lookups and the account-wins rule compare them.
+// the way name lookups and the account-wins rule compare them. An integration's
+// knowledge base is named after the integration and never blocks a name
+// (#40605), as idx_kb_name_tenant_unique covers manual rows only.
 func kbNameTaken(dbms *common.DatabaseManager, owner kbOwner, name, excludeId string) (bool, error) {
 	pred, arg := owner.predicate(1)
 	var taken bool
 	err := dbms.Db.Get(&taken, `SELECT EXISTS(SELECT 1 FROM llm_knowledgebases WHERE `+pred+
-		` AND LOWER(BTRIM(name)) = LOWER(BTRIM($2)) AND id::text <> $3)`, arg, name, excludeId)
+		` AND integration_id IS NULL AND LOWER(BTRIM(name)) = LOWER(BTRIM($2)) AND id::text <> $3)`, arg, name, excludeId)
 	if err != nil {
 		return false, fmt.Errorf("kb: failed to check name: %w", err)
 	}
@@ -221,10 +223,14 @@ func SetKnowledgebaseVisibility(sc *security.RequestContext, kbId, visibility st
 	if !canManageOrgKBs(sc, kb.TenantId, security.SecurityAccessTypeUpdate) {
 		return Knowledgebase{}, errors.New(errKBOrgAdminOnly)
 	}
-	if kb.KBType == KBTypeIntegration {
-		return Knowledgebase{}, errors.New("integration knowledge bases cannot change scope")
+	// An integration's knowledge base is an organisation row (#40605): it can be
+	// shared with every account or restricted to selected ones, never moved into
+	// a single account. Its collection is tenant-scoped and reach is decided by
+	// the visibility rule, so nothing is re-scoped and indexing does not block it.
+	if kb.KBType == KBTypeIntegration && (kb.AccountId != "" || visibility == KBVisibilityAccount) {
+		return Knowledgebase{}, errors.New("an integration's knowledge base can be shared with the whole organisation or with selected accounts only")
 	}
-	if kb.Status == string(KBStatusProcessing) {
+	if kb.KBType != KBTypeIntegration && kb.Status == string(KBStatusProcessing) {
 		// Indexing captured the current owner; re-scoping now could miss the
 		// collection it is about to create.
 		return Knowledgebase{}, errors.New("the knowledge base is still being indexed; change its scope once indexing finishes")

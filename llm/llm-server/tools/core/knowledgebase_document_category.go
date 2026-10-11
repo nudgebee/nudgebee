@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
@@ -150,9 +151,15 @@ func kbDocumentCategories(ctx context.Context, accountId string, keys []string) 
 		DocumentKey  string `db:"document_key"`
 		NoteCategory string `db:"note_category"`
 	}
+	// The account's own mark wins over its tenant's (account_id NULL, set once
+	// on an integration's organisation knowledge base, #40605): ordering tenant
+	// rows first lets the account row overwrite them below.
 	err = dbms.Db.SelectContext(ctx, &rows,
 		`SELECT document_key, note_category FROM llm_kb_capability_entries
-		 WHERE entry_type = 'kb_document_mark' AND account_id = $1 AND document_key = ANY($2::text[])`,
+		 WHERE entry_type = 'kb_document_mark' AND document_key = ANY($2::text[])
+		   AND (account_id = $1
+		        OR (account_id IS NULL AND tenant_id = (SELECT tenant FROM cloud_accounts WHERE id = $1)))
+		 ORDER BY account_id NULLS FIRST`,
 		accountId, pq.Array(keys))
 	if err != nil {
 		return nil, fmt.Errorf("kb: failed to read document categories: %w", err)
@@ -163,6 +170,38 @@ func kbDocumentCategories(ctx context.Context, accountId string, keys []string) 
 	return categories, nil
 }
 
+// kbDocumentAccountMarkCounts returns document_key -> how many accounts of the
+// tenant carry their own mark on it, which overrides the tenant's mark there.
+// The tenant view of an integration's organisation knowledge base shows it, so
+// a tenant admin sees where "set once" does not hold yet.
+func kbDocumentAccountMarkCounts(ctx context.Context, tenantId string, keys []string) (map[string]int, error) {
+	counts := map[string]int{}
+	if tenantId == "" || len(keys) == 0 {
+		return counts, nil
+	}
+	dbms, err := knowledgeDatabase(common.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("kb: failed to get database manager: %w", err)
+	}
+	var rows []struct {
+		DocumentKey string `db:"document_key"`
+		Accounts    int    `db:"accounts"`
+	}
+	err = dbms.Db.SelectContext(ctx, &rows,
+		`SELECT document_key, COUNT(*) AS accounts FROM llm_kb_capability_entries
+		 WHERE entry_type = 'kb_document_mark' AND tenant_id = $1 AND account_id IS NOT NULL
+		   AND document_key = ANY($2::text[])
+		 GROUP BY document_key`,
+		tenantId, pq.Array(keys))
+	if err != nil {
+		return nil, fmt.Errorf("kb: failed to count account document marks: %w", err)
+	}
+	for _, row := range rows {
+		counts[row.DocumentKey] = row.Accounts
+	}
+	return counts, nil
+}
+
 // SetKBDocumentCategory marks one document as a procedure (sop) or reference
 // material (fact). An empty category removes the mark, which returns the
 // document to its knowledge base's default treatment.
@@ -171,6 +210,10 @@ func kbDocumentCategories(ctx context.Context, accountId string, keys []string) 
 // knowledge base it was set from — it authorizes the write and gives the row
 // something to cascade from — but the same page reached through a second
 // knowledge base carries the same mark, because it is the same page.
+//
+// On an integration's organisation knowledge base (#40605) the mark is set once
+// for the whole tenant, by a tenant admin: it is written with no account and
+// replaces every account's own mark on that document.
 func SetKBDocumentCategory(sc *security.RequestContext, accountId, kbId, documentKey, category string) error {
 	if accountId == "" || kbId == "" {
 		return errors.New(errKBAccountIDRequired)
@@ -194,16 +237,23 @@ func SetKBDocumentCategory(sc *security.RequestContext, accountId, kbId, documen
 	// mark is scoped to, and names the collection the document must be in.
 	var kb struct {
 		TenantID      string  `db:"tenant_id"`
+		AccountID     string  `db:"account_id"`
 		KBType        string  `db:"kb_type"`
 		IntegrationID *string `db:"integration_id"`
 	}
 	err = dbms.Db.GetContext(sc.GetContext(), &kb,
-		`SELECT tenant_id, kb_type, integration_id FROM llm_knowledgebases WHERE id = $1 AND account_id = $2`, kbId, accountId)
+		`SELECT kb.tenant_id, COALESCE(kb.account_id::text, '') AS account_id, kb.kb_type, kb.integration_id
+		 FROM llm_knowledgebases kb JOIN cloud_accounts ca ON ca.id = $2
+		 WHERE kb.id = $1 AND (kb.account_id = $2 OR (kb.account_id IS NULL AND kb.tenant_id = ca.tenant))`, kbId, accountId)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return errors.New(errKBNotFound)
 		}
 		return fmt.Errorf("kb: failed to fetch knowledgebase: %w", err)
+	}
+	tenantMark := kb.AccountID == ""
+	if tenantMark && !canManageOrgKBs(sc, kb.TenantID, security.SecurityAccessTypeUpdate) {
+		return errors.New(errKBOrgAdminOnly)
 	}
 
 	// The key must name a document of this knowledge base's own collection, and
@@ -217,6 +267,11 @@ func SetKBDocumentCategory(sc *security.RequestContext, accountId, kbId, documen
 	if !strings.HasPrefix(documentKey, collection+"|") {
 		return errors.New(errKBDocumentKeyForeign)
 	}
+	actor := sql.NullString{String: sc.GetSecurityContext().GetUserId(), Valid: sc.GetSecurityContext().GetUserId() != ""}
+	if tenantMark {
+		return setTenantDocumentCategory(sc, dbms, kb.TenantID, kbId, documentKey, category, actor)
+	}
+
 	if category == "" {
 		_, err = dbms.Db.ExecContext(sc.GetContext(),
 			`DELETE FROM llm_kb_capability_entries WHERE entry_type = 'kb_document_mark' AND account_id = $1 AND document_key = $2`,
@@ -227,7 +282,6 @@ func SetKBDocumentCategory(sc *security.RequestContext, accountId, kbId, documen
 		return nil
 	}
 
-	actor := sql.NullString{String: sc.GetSecurityContext().GetUserId(), Valid: sc.GetSecurityContext().GetUserId() != ""}
 	// The ON CONFLICT target is the partial unique index on (account_id, document_key)
 	// WHERE entry_type = 'kb_document_mark' — this table's other entry types have their
 	// own, disjoint partial unique indexes, so this can never collide with one of theirs.
@@ -243,6 +297,33 @@ func SetKBDocumentCategory(sc *security.RequestContext, accountId, kbId, documen
 		return fmt.Errorf("kb: failed to set document category: %w", err)
 	}
 	return nil
+}
+
+// setTenantDocumentCategory writes the tenant's mark on one document and drops
+// every account's own mark on it, in one transaction: a mark set from the
+// organisation knowledge base applies to all accounts. An empty category clears
+// the tenant mark as well.
+func setTenantDocumentCategory(sc *security.RequestContext, dbms *common.DatabaseManager, tenantId, kbId, documentKey, category string, actor sql.NullString) error {
+	_, err := dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
+		if _, err := tx.ExecContext(sc.GetContext(),
+			`DELETE FROM llm_kb_capability_entries
+			 WHERE entry_type = 'kb_document_mark' AND tenant_id = $1 AND document_key = $2`,
+			tenantId, documentKey); err != nil {
+			return nil, fmt.Errorf("kb: failed to clear document categories: %w", err)
+		}
+		if category == "" {
+			return nil, nil
+		}
+		if _, err := tx.ExecContext(sc.GetContext(), `
+			INSERT INTO llm_kb_capability_entries
+				(entry_type, tenant_id, account_id, kb_id, document_key, note_category, created_by, updated_by)
+			VALUES ('kb_document_mark', $1, NULL, $2, $3, $4, $5, $5)`,
+			tenantId, kbId, documentKey, category, actor); err != nil {
+			return nil, fmt.Errorf("kb: failed to set document category: %w", err)
+		}
+		return nil, nil
+	})
+	return err
 }
 
 // ResolveDocumentCategories stamps each retrieval hit that a user has marked

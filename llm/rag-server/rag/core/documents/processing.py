@@ -102,11 +102,13 @@ def update_integration_kb_load_result(
     document_count: Optional[int] = None,
     error_message: Optional[str] = None,
 ) -> None:
-    """Record a load's outcome on every integration KB row for an integration.
+    """Record a load's outcome on an integration's knowledge base.
 
-    An integration can have one KB row per cloud account in its tenant, all
-    backed by the same vector collection — so the update keys on integration_id
-    rather than a single KB id. On failure error_message holds the reason; on
+    An integration has one knowledge base, its organisation row (account_id
+    NULL, #40605), so the update keys on integration_id. A per-account row is
+    the old shape — only an llm-server still running older code re-creates one,
+    during a rolling deploy — and is left alone so it never turns active. On
+    failure error_message holds the reason; on
     success it holds any shortfall worth reporting — a load that indexed the text
     but dropped the pictures is active, not failed, and must still say so — and is
     cleared when there is nothing to report.
@@ -121,7 +123,7 @@ def update_integration_kb_load_result(
                             "UPDATE llm_knowledgebases SET status = :status, "
                             "document_count = :doc_count, last_loaded_at = NOW(), "
                             "error_message = :error_message, updated_at = NOW() "
-                            "WHERE integration_id = :iid AND kb_type = 'integration'"
+                            "WHERE integration_id = :iid AND kb_type = 'integration' AND account_id IS NULL"
                         ),
                         {
                             "status": status,
@@ -135,7 +137,7 @@ def update_integration_kb_load_result(
                         sql_text(
                             "UPDATE llm_knowledgebases SET status = :status, "
                             "error_message = :error_message, updated_at = NOW() "
-                            "WHERE integration_id = :iid AND kb_type = 'integration'"
+                            "WHERE integration_id = :iid AND kb_type = 'integration' AND account_id IS NULL"
                         ),
                         {"status": status, "error_message": error_message, "iid": integration_id},
                     )

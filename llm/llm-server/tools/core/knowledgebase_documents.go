@@ -49,6 +49,10 @@ type KBDocument struct {
 	// NoteCategory is the mark a user put on this document: "sop", "fact", or
 	// "" when it carries none and keeps its knowledge base's treatment.
 	NoteCategory string `json:"note_category"`
+	// AccountMarks counts the accounts whose own mark overrides the tenant's on
+	// this document. Set only when listing an integration's organisation
+	// knowledge base (#40605), so a tenant admin sees where they differ.
+	AccountMarks int `json:"account_marks,omitempty"`
 }
 
 // KBDocumentsPage is one page of a knowledge base's documents. NextOffset is
@@ -222,6 +226,21 @@ func getRAG(ctx context.Context, path string, out any) (found bool, err error) {
 	return true, nil
 }
 
+// integrationOrgKBTenant returns the tenant of kbId when it is an integration's
+// organisation knowledge base (#40605), and "" otherwise or on a failed read.
+func integrationOrgKBTenant(ctx context.Context, kbId string) string {
+	dbms, err := knowledgeDatabase(common.Metastore)
+	if err != nil {
+		return ""
+	}
+	var tenantId string
+	if err := dbms.Db.GetContext(ctx, &tenantId, `SELECT tenant_id::text FROM llm_knowledgebases
+		WHERE id = $1 AND account_id IS NULL AND kb_type = 'integration'`, kbId); err != nil {
+		return ""
+	}
+	return tenantId
+}
+
 // ListKBDocuments returns one page of a knowledge base's stored documents
 // (title and link only). A KB whose collection was never built returns an
 // empty page.
@@ -287,6 +306,15 @@ func ListKBDocuments(sc *security.RequestContext, accountId, kbId string, limit 
 	}
 	for i := range page.Items {
 		page.Items[i].NoteCategory = categories[page.Items[i].DocumentKey]
+	}
+	if tenantId := integrationOrgKBTenant(sc.GetContext(), kbId); tenantId != "" {
+		counts, err := kbDocumentAccountMarkCounts(sc.GetContext(), tenantId, keys)
+		if err != nil {
+			sc.GetLogger().Warn("kb: unable to count account document marks", "error", err, "kb_id", kbId)
+		}
+		for i := range page.Items {
+			page.Items[i].AccountMarks = counts[page.Items[i].DocumentKey]
+		}
 	}
 	page.NextOffset = ragPage.NextOffset
 	// An offset means an earlier page was served, so the index holds documents even

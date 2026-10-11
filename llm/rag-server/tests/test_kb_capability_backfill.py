@@ -211,17 +211,21 @@ def test_pending_knowledgebases_names_manual_and_integration_collections(monkeyp
     assert pending["int-9_knowledge_base"] == backfill.KBCollection("int-9_knowledge_base", False, ["acct-2"])
 
 
-def test_an_integration_collection_keeps_every_account_that_shares_it(monkeypatch):
+def test_an_organisation_kb_is_classified_with_an_account_of_its_tenant(monkeypatch):
+    # An organisation row has no account; the query gives it an active account of
+    # its tenant, or none when the tenant has no active account.
     rows = [
-        SimpleNamespace(id="kb-1", account_id="acct-b", kb_type="integration", integration_id="int-9"),
-        SimpleNamespace(id="kb-2", account_id="acct-a", kb_type="integration", integration_id="int-9"),
-        SimpleNamespace(id="kb-3", account_id="acct-a", kb_type="integration", integration_id="int-9"),
+        SimpleNamespace(id="kb-1", account_id="acct-a", kb_type="integration", integration_id="int-9"),
+        SimpleNamespace(id="kb-2", account_id=None, kb_type="integration", integration_id="int-8"),
     ]
-    monkeypatch.setattr(db_query, "engine", _fake_engine({"FROM llm_knowledgebases": rows}))
+    engine = _fake_engine(
+        {"COALESCE(kb.account_id, (SELECT ca.id FROM cloud_accounts ca WHERE ca.tenant = kb.tenant_id": rows}
+    )
+    monkeypatch.setattr(db_query, "engine", engine)
 
     pending = backfill._pending_knowledgebases()
 
-    assert pending == [backfill.KBCollection("int-9_knowledge_base", False, ["acct-a", "acct-b"])]
+    assert pending == [backfill.KBCollection("int-9_knowledge_base", False, ["acct-a"])]
 
 
 def test_only_active_enabled_knowledgebases_are_listed(monkeypatch):
@@ -231,7 +235,7 @@ def test_only_active_enabled_knowledgebases_are_listed(monkeypatch):
         "engine",
         _fake_engine(
             {
-                "status = 'active' AND enabled = true": [
+                "kb.status = 'active' AND kb.enabled = true": [
                     SimpleNamespace(id="kb-1", account_id="acct-1", kb_type="manual", integration_id=None)
                 ]
             }

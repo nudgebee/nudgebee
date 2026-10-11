@@ -145,8 +145,12 @@ func TestSetKBDocumentCategoryValidatesInput(t *testing.T) {
 	assert.EqualError(t, SetKBDocumentCategory(sc, "account-a", "kb-1", "key", "policy"), errKBDocumentCategoryInvalid)
 }
 
+var markKBColumns = []string{"tenant_id", "account_id", "kb_type", "integration_id"}
+
+const markKBQuery = `SELECT kb.tenant_id, COALESCE\(kb.account_id::text, ''\) AS account_id, kb.kb_type, kb.integration_id`
+
 func markableKBRow() *sqlmock.Rows {
-	return sqlmock.NewRows([]string{"tenant_id", "kb_type", "integration_id"}).AddRow("tenant-1", KBTypeIntegration, "integration-a")
+	return sqlmock.NewRows(markKBColumns).AddRow("tenant-1", "account-a", KBTypeIntegration, "integration-a")
 }
 
 func TestSetKBDocumentCategoryUpsertsAndClears(t *testing.T) {
@@ -154,14 +158,14 @@ func TestSetKBDocumentCategoryUpsertsAndClears(t *testing.T) {
 	sc := security.NewRequestContextForSuperAdmin()
 	key := confluenceCollection + "|101"
 
-	mock.ExpectQuery(`SELECT tenant_id, kb_type, integration_id FROM llm_knowledgebases`).WithArgs("kb-1", "account-a").
+	mock.ExpectQuery(markKBQuery).WithArgs("kb-1", "account-a").
 		WillReturnRows(markableKBRow())
 	mock.ExpectExec(`INSERT INTO llm_kb_capability_entries`).
 		WithArgs("tenant-1", "account-a", "kb-1", key, "sop", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	require.NoError(t, SetKBDocumentCategory(sc, "account-a", "kb-1", " "+key+" ", "sop"))
 
-	mock.ExpectQuery(`SELECT tenant_id, kb_type, integration_id FROM llm_knowledgebases`).WithArgs("kb-1", "account-a").
+	mock.ExpectQuery(markKBQuery).WithArgs("kb-1", "account-a").
 		WillReturnRows(markableKBRow())
 	mock.ExpectExec(`DELETE FROM llm_kb_capability_entries`).
 		WithArgs("account-a", key).
@@ -178,12 +182,12 @@ func TestSetKBDocumentCategoryRejectsKeysOutsideTheKnowledgeBase(t *testing.T) {
 	mock := mockKBDatabase(t)
 	sc := security.NewRequestContextForSuperAdmin()
 
-	mock.ExpectQuery(`SELECT tenant_id, kb_type, integration_id FROM llm_knowledgebases`).WithArgs("kb-1", "account-a").
+	mock.ExpectQuery(markKBQuery).WithArgs("kb-1", "account-a").
 		WillReturnRows(markableKBRow())
 	assert.EqualError(t, SetKBDocumentCategory(sc, "account-a", "kb-1", "integration-b_knowledge_base|101", "sop"), errKBDocumentKeyForeign)
 
-	mock.ExpectQuery(`SELECT tenant_id, kb_type, integration_id FROM llm_knowledgebases`).WithArgs("kb-m", "account-a").
-		WillReturnRows(sqlmock.NewRows([]string{"tenant_id", "kb_type", "integration_id"}).AddRow("tenant-1", KBTypeManual, nil))
+	mock.ExpectQuery(markKBQuery).WithArgs("kb-m", "account-a").
+		WillReturnRows(sqlmock.NewRows(markKBColumns).AddRow("tenant-1", "account-a", KBTypeManual, nil))
 	assert.EqualError(t, SetKBDocumentCategory(sc, "account-a", "kb-m", "kb_kb-m|Runbooks", "sop"), errKBDocumentNotMarkable)
 
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -199,7 +203,7 @@ func TestDocumentMarksAreAccountWideOnBothReadPaths(t *testing.T) {
 	mock := mockKBDatabase(t)
 	key := confluenceCollection + "|101"
 
-	mock.ExpectQuery(`SELECT document_key, note_category FROM llm_kb_capability_entries\s+WHERE entry_type = 'kb_document_mark' AND account_id = \$1 AND document_key = ANY`).
+	mock.ExpectQuery(markReadQuery).
 		WithArgs("account-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"document_key", "note_category"}).AddRow(key, "sop"))
 
@@ -209,13 +213,62 @@ func TestDocumentMarksAreAccountWideOnBothReadPaths(t *testing.T) {
 	got := ResolveDocumentCategories(security.NewRequestContextForSuperAdmin(), "account-a", docs)
 	assert.Equal(t, KnowledgePurposeProcedure, KnowledgeDocumentPurpose(got[0]))
 
-	mock.ExpectQuery(`SELECT document_key, note_category FROM llm_kb_capability_entries\s+WHERE entry_type = 'kb_document_mark' AND account_id = \$1 AND document_key = ANY`).
+	mock.ExpectQuery(markReadQuery).
 		WithArgs("account-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"document_key", "note_category"}).AddRow(key, "sop"))
 
 	listed, err := kbDocumentCategories(security.NewRequestContextForSuperAdmin().GetContext(), "account-a", []string{key})
 	require.NoError(t, err)
 	assert.Equal(t, KBNoteCategorySOP, listed[key], "the list must show the same mark retrieval applies")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+const markReadQuery = `SELECT document_key, note_category FROM llm_kb_capability_entries\s+WHERE entry_type = 'kb_document_mark' AND document_key = ANY\(\$2::text\[\]\)\s+AND \(account_id = \$1\s+OR \(account_id IS NULL AND tenant_id = \(SELECT tenant FROM cloud_accounts WHERE id = \$1\)\)\)\s+ORDER BY account_id NULLS FIRST`
+
+// A tenant mark (set once on an integration's organisation knowledge base,
+// #40605) applies in every account; an account's own mark on the same document
+// wins there. Tenant rows come first so the account row overwrites them.
+func TestAnAccountMarkWinsOverTheTenantMark(t *testing.T) {
+	mock := mockKBDatabase(t)
+	shared, own := confluenceCollection+"|101", confluenceCollection+"|102"
+	mock.ExpectQuery(markReadQuery).
+		WithArgs("account-a", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"document_key", "note_category"}).
+			AddRow(shared, "fact").AddRow(own, "fact").AddRow(own, "sop"))
+
+	got, err := kbDocumentCategories(security.NewRequestContextForSuperAdmin().GetContext(), "account-a", []string{shared, own})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{shared: KBNoteCategoryFact, own: KBNoteCategorySOP}, got)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// On an integration's organisation knowledge base a tenant admin sets the mark
+// once: it is written with no account and replaces every account's own mark.
+func TestATenantMarkReplacesTheAccountMarks(t *testing.T) {
+	mock := mockKBDatabase(t)
+	key := confluenceCollection + "|101"
+	mock.ExpectQuery(markKBQuery).WithArgs("kb-org", orgTestAccount).
+		WillReturnRows(sqlmock.NewRows(markKBColumns).AddRow(orgTestTenant, "", KBTypeIntegration, "integration-a"))
+	mock.ExpectBegin()
+	mock.ExpectExec(`DELETE FROM llm_kb_capability_entries\s+WHERE entry_type = 'kb_document_mark' AND tenant_id = \$1 AND document_key = \$2`).
+		WithArgs(orgTestTenant, key).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(`INSERT INTO llm_kb_capability_entries[\s\S]*VALUES \('kb_document_mark', \$1, NULL, \$2, \$3, \$4, \$5, \$5\)`).
+		WithArgs(orgTestTenant, "kb-org", key, "sop", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, SetKBDocumentCategory(tenantAdmin(orgTestTenant), orgTestAccount, "kb-org", key, "sop"))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// An account admin sees an organisation knowledge base read-only and cannot
+// change its marks for the tenant.
+func TestAnAccountAdminCannotSetATenantMark(t *testing.T) {
+	mock := mockKBDatabase(t)
+	mock.ExpectQuery(markKBQuery).WithArgs("kb-org", orgTestAccount).
+		WillReturnRows(sqlmock.NewRows(markKBColumns).AddRow(orgTestTenant, "", KBTypeIntegration, "integration-a"))
+
+	err := SetKBDocumentCategory(accountAdmin(t), orgTestAccount, "kb-org", confluenceCollection+"|101", "sop")
+	assert.EqualError(t, err, errKBOrgAdminOnly)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -230,8 +283,8 @@ func TestKBDocumentCategoriesSkipsQueryWithoutKeys(t *testing.T) {
 // A knowledge base in another account must not be markable through a guessed id.
 func TestSetKBDocumentCategoryRejectsForeignKnowledgeBase(t *testing.T) {
 	mock := mockKBDatabase(t)
-	mock.ExpectQuery(`SELECT tenant_id, kb_type, integration_id FROM llm_knowledgebases`).WithArgs("kb-other", "account-a").
-		WillReturnRows(sqlmock.NewRows([]string{"tenant_id", "kb_type", "integration_id"}))
+	mock.ExpectQuery(markKBQuery).WithArgs("kb-other", "account-a").
+		WillReturnRows(sqlmock.NewRows(markKBColumns))
 
 	err := SetKBDocumentCategory(security.NewRequestContextForSuperAdmin(), "account-a", "kb-other", "key", "sop")
 	assert.EqualError(t, err, errKBNotFound)

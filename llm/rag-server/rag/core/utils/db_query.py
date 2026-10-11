@@ -457,9 +457,11 @@ def _org_kb_visible(row, own_names):
     ``organisation`` reaches every account in the tenant unless the account
     switched it off; ``selected_accounts`` reaches only accounts switched on.
     ``row.override_enabled`` is this account's switch (None when it has none).
-    The account's own manual knowledge base of the same name wins over it.
+    The account's own manual knowledge base of the same name wins over it,
+    except over an integration's: that name comes from the integration (#40605).
     """
-    if not row.enabled or (row.name and row.name.lower() in own_names):
+    shadowed = not row.integration_id and row.name and row.name.lower() in own_names
+    if not row.enabled or shadowed:
         return False
     if row.visibility == "organisation":
         return row.override_enabled is not False
@@ -471,17 +473,12 @@ def _org_kb_visible(row, own_names):
 def _live_kb_names_from_rows(rows, account_uuid):
     """Collapse ``llm_knowledgebases`` rows into the searchable collection names.
 
-    Enabled rows contribute their collection name. Disabled rows contribute
-    nothing — and a disabled row belonging to ``account_uuid`` additionally
-    *removes* that name, overriding any sibling row that would have added it.
-
-    That asymmetry exists because an integration's vector collection is shared
-    by every account in the tenant, while the switch is per KB row. Without the
-    subtraction, "account A turned this Confluence KB off" would be silently
-    undone by account B leaving its own row on. A disabled row in another
-    account never subtracts — it has no say over what this account searches.
+    Enabled account rows contribute their collection name; disabled ones
+    contribute nothing.
 
     Organisation knowledge bases (no ``account_id``) follow ``_org_kb_visible``.
+    An integration's knowledge base is its organisation row (#40605); a
+    per-account integration row is the old shape and is ignored.
     Another account's manual knowledge base never counts here: its collection is
     already hidden by its ``account`` metadata, and leaving it out keeps this
     gate equal to llm-server's visibility rule for an account query (shared
@@ -499,24 +496,18 @@ def _live_kb_names_from_rows(rows, account_uuid):
         and str(row.account_id) == account_uuid
         and row.name
     }
-    names, disabled_here = set(), set()
+    names = set()
     for row in rows:
-        name = _kb_collection_name(row)
-        if (
-            account_uuid
-            and row.account_id is not None
-            and not row.integration_id
-            and str(row.account_id) != account_uuid
-        ):
+        if row.account_id is not None and row.integration_id:
+            continue
+        if account_uuid and row.account_id is not None and str(row.account_id) != account_uuid:
             continue
         if row.account_id is None:
             if _org_kb_visible(row, own_names):
-                names.add(name)
+                names.add(_kb_collection_name(row))
         elif row.enabled:
-            names.add(name)
-        elif account_uuid and str(row.account_id) == account_uuid:
-            disabled_here.add(name)
-    return names - disabled_here
+            names.add(_kb_collection_name(row))
+    return names
 
 
 def get_live_kb_collection_names(account_id, tenant_id):
@@ -542,13 +533,10 @@ def get_live_kb_collection_names(account_id, tenant_id):
     asynchronous, and search must not serve a disabled integration's content
     while it catches up.
 
-    Rows the user has switched off (``kb.enabled = false``) are excluded, and —
-    unlike every other rule here — a switched-off row for *this account* also
-    subtracts the name a sibling row would have contributed. The scope clause is
-    an OR across account and tenant, and integration KBs share one collection
-    per integration across the tenant's accounts, so without the subtraction one
-    account disabling its row would be overruled by another account that left
-    the same integration on. See ``_live_kb_names_from_rows``.
+    Rows the user has switched off (``kb.enabled = false``) are excluded. An
+    integration's knowledge base is one organisation row (#40605), switched off
+    per account through ``llm_kb_account_overrides``; a per-account integration
+    row is the old shape and contributes nothing. See ``_live_kb_names_from_rows``.
 
     Organisation knowledge bases (``account_id`` NULL) are found through the
     tenant clause; restriction, switch-off and the name clash with the
@@ -566,8 +554,8 @@ def get_live_kb_collection_names(account_id, tenant_id):
         return None
     try:
         with engine.connect() as connection:
-            # kb.enabled is NOT filtered in SQL: the disabled rows are needed
-            # below to subtract this account's own switched-off collections.
+            # kb.enabled is NOT filtered in SQL: a disabled own manual KB still
+            # shadows an organisation KB of the same name (_live_kb_names_from_rows).
             query = text("""
                 SELECT kb.id, kb.integration_id, kb.account_id, kb.enabled, kb.name, kb.visibility,
                        o.enabled AS override_enabled

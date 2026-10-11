@@ -20,7 +20,8 @@ import (
 //     account switched it off (override enabled = false);
 //   - visibility "selected_accounts": only accounts switched on;
 //   - never when the account has its own manual KB with the same non-empty name
-//     (lowercased), even while that KB is switched off;
+//     (lowercased), even while that KB is switched off — unless the
+//     organisation KB is an integration's (#40605);
 //   - never while the organisation KB itself is switched off.
 //
 // Account-owned KBs are untouched: reads keep their kb.account_id = $1 clause
@@ -67,11 +68,14 @@ func visibleKBCollections(rows []kbVisibilityRow, accountId string) map[string]b
 			}
 		}
 	}
-	names, disabledHere := map[string]bool{}, map[string]bool{}
+	names := map[string]bool{}
 	for _, r := range rows {
 		manual := r.IntegrationId == nil || *r.IntegrationId == ""
 		switch {
-		case accountId != "" && r.AccountId != nil && manual && !isOwn(r):
+		case r.AccountId != nil && !manual:
+			// A per-account integration row is the pre-#40605 shape: an
+			// integration's knowledge base is its organisation row.
+		case accountId != "" && r.AccountId != nil && !isOwn(r):
 			// Another account's manual KB is never visible.
 		case r.AccountId == nil:
 			if orgKBVisible(r, ownNames) {
@@ -79,18 +83,17 @@ func visibleKBCollections(rows []kbVisibilityRow, accountId string) map[string]b
 			}
 		case r.Enabled:
 			names[r.collectionName()] = true
-		case accountId != "" && isOwn(r):
-			disabledHere[r.collectionName()] = true
 		}
-	}
-	for name := range disabledHere {
-		delete(names, name)
 	}
 	return names
 }
 
 func orgKBVisible(r kbVisibilityRow, ownNames map[string]bool) bool {
-	if !r.Enabled || (lowerName(r.Name) != "" && ownNames[lowerName(r.Name)]) {
+	// An account's own manual KB shadows an organisation KB of the same name,
+	// but not an integration's: its name comes from the integration, not from
+	// someone choosing to replace it.
+	manual := r.IntegrationId == nil || *r.IntegrationId == ""
+	if !r.Enabled || (manual && lowerName(r.Name) != "" && ownNames[lowerName(r.Name)]) {
 		return false
 	}
 	switch r.Visibility {
@@ -175,12 +178,13 @@ func loadOrgKBVisibilityRows(ctx context.Context, accountId string) []kbVisibili
 		       kb.enabled, kb.name, kb.visibility, o.enabled AS override_enabled
 		FROM llm_knowledgebases kb
 		JOIN cloud_accounts ca ON ca.id = $1 AND ca.tenant = kb.tenant_id
+		LEFT JOIN integrations i ON i.id = kb.integration_id
 		LEFT JOIN llm_kb_account_overrides o ON o.kb_id = kb.id AND o.account_id = $1
 		WHERE kb.status != 'archived'
+		  AND (kb.integration_id IS NULL OR i.status = 'enabled')
 		  AND (kb.account_id IS NULL OR (kb.account_id = $1 AND kb.integration_id IS NULL))`, accountId)
-	// Organisation rows are manual (kb_org_manual_only_check), so the account's
-	// integration rows, which only matter for shared integration collections,
-	// are not loaded here.
+	// An integration's knowledge base is its organisation row (#40605); a
+	// per-account integration row is the old shape and is not loaded.
 	if err != nil {
 		slog.Warn("kb: organisation visibility query failed", "error", err, "account_id", accountId)
 		return nil
@@ -207,13 +211,16 @@ func KBAccountScope(alias string, accountParam, nextParam int, orgIDs []string) 
 	return fmt.Sprintf("(%s = $%d OR %s = ANY($%d::uuid[]))", col, accountParam, idCol, nextParam), []any{pq.Array(orgIDs)}
 }
 
-// KBMappingsJoin is the agent-mapping source for mapping-driven reads. An
+// KBMappingsJoin is the agent-mapping source for mapping-driven reads. A manual
 // organisation KB visible to the account counts as mapped to all agents
 // there: it gets a virtual wildcard row (agent_id "*") for the account, so it
 // resolves exactly like a KB the account mapped to "All agents", and the
-// per-account switch is how an account opts out. orgParam is the placeholder
-// already bound to orgIDs by KBAccountScope. With no organisation KBs the join
-// is the plain mapping table, so account-only queries are unchanged.
+// per-account switch is how an account opts out. An integration's organisation
+// KB (#40605) does not: like the per-account integration KBs it replaced, it
+// reaches an agent only through mappings the account made, which are keyed by
+// account. orgParam is the placeholder already bound to orgIDs by
+// KBAccountScope. With no organisation KBs the join is the plain mapping table,
+// so account-only queries are unchanged.
 func KBMappingsJoin(accountParam, orgParam int, orgIDs []string) string {
 	if len(orgIDs) == 0 {
 		return "INNER JOIN llm_kb_agent_mappings m ON kb.id = m.kb_id"
@@ -221,6 +228,6 @@ func KBMappingsJoin(accountParam, orgParam int, orgIDs []string) string {
 	return fmt.Sprintf(`INNER JOIN (
 			SELECT kb_id, agent_id, account_id FROM llm_kb_agent_mappings WHERE account_id = $%d
 			UNION
-			SELECT id, '%s', $%d::uuid FROM llm_knowledgebases WHERE id = ANY($%d::uuid[])
+			SELECT id, '%s', $%d::uuid FROM llm_knowledgebases WHERE id = ANY($%d::uuid[]) AND integration_id IS NULL
 		) m ON kb.id = m.kb_id`, accountParam, KBAgentWildcard, accountParam, orgParam)
 }

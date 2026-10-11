@@ -49,6 +49,10 @@ jest.mock('@components/llm/KnowledgeBaseFormModal', () => ({
       </div>
     ) : null,
 }));
+jest.mock('@components/llm/KnowledgeBaseSharingModal', () => ({
+  __esModule: true,
+  default: ({ open, knowledgeBase }) => (open ? <span>{`sharing:${knowledgeBase?.name}`}</span> : null),
+}));
 jest.mock('@components/llm/MemoryTable', () => ({
   MemoryTable: ({ columns, rows }) => (
     <div>
@@ -92,39 +96,19 @@ jest.mock('@ui/Switch', () => ({
   ),
 }));
 
-// Tenant-wide raw list: a user KB in one account, an integration KB provisioned
-// in two accounts (grouped into one row), and an integration KB in one account.
+// Tenant-wide list: a user KB in one account, and an integration's knowledge
+// base — one organisation row for the integration (#40605).
 const kbs = [
   { id: 'kb-m', name: 'Runbooks', kb_type: 'manual', status: 'active', enabled: true, account_id: 'acct-9', account_name: 'Prod' },
   {
-    id: 'kb-i1',
+    id: 'kb-i',
     name: 'Confluence',
     kb_type: 'integration',
     integration_id: 'int-1',
     status: 'active',
     enabled: true,
-    account_id: 'acct-9',
-    account_name: 'Prod',
-  },
-  {
-    id: 'kb-i2',
-    name: 'Confluence',
-    kb_type: 'integration',
-    integration_id: 'int-1',
-    status: 'active',
-    enabled: true,
-    account_id: 'acct-2',
-    account_name: 'Stage',
-  },
-  {
-    id: 'kb-s',
-    name: 'Jira',
-    kb_type: 'integration',
-    integration_id: 'int-2',
-    status: 'active',
-    enabled: true,
-    account_id: 'acct-9',
-    account_name: 'Prod',
+    account_id: '',
+    visibility: 'organisation',
   },
 ];
 
@@ -160,16 +144,28 @@ describe('KnowledgeBaseTab tenant-wide row actions', () => {
     expect(screen.queryByRole('button', { name: 'Add Knowledge Base' })).not.toBeInTheDocument();
   });
 
-  it('keeps an integration KB shared by several accounts read-only, but not one in a single account', async () => {
+  it("shows an integration's knowledge base once, as an organisation KB a non-admin cannot change", async () => {
     render(<KnowledgeBaseTab accountId='' />);
     fireEvent.click(await screen.findByText('tab:integration'));
 
-    const shared = await screen.findByTestId('row-Confluence');
-    expect(within(shared).queryByTestId('menu-Confluence')).not.toBeInTheDocument();
-    expect(within(shared).getByRole('checkbox')).toBeDisabled();
-    const single = screen.getByTestId('row-Jira');
-    expect(within(single).getByText('menu:Retrigger')).toBeEnabled();
-    expect(within(single).getByRole('checkbox')).toBeEnabled();
+    const row = await screen.findByTestId('row-Confluence');
+    expect(screen.getAllByTestId('row-Confluence')).toHaveLength(1);
+    expect(within(row).getAllByText('Organisation').length).toBeGreaterThan(0);
+    expect(within(row).getByText('menu:Retrigger')).toBeDisabled();
+    expect(within(row).queryByText('menu:Who can use it')).not.toBeInTheDocument();
+  });
+
+  it("lets a tenant admin choose who can use an integration's knowledge base and retrigger it", async () => {
+    isTenantAdmin.mockReturnValue(true);
+    render(<KnowledgeBaseTab accountId='' />);
+    fireEvent.click(await screen.findByText('tab:integration'));
+
+    const row = await screen.findByTestId('row-Confluence');
+    fireEvent.click(within(row).getByText('menu:Who can use it'));
+    expect(await screen.findByText('sharing:Confluence')).toBeInTheDocument();
+
+    fireEvent.click(within(row).getByText('menu:Retrigger'));
+    await waitFor(() => expect(apiKnowledgeBase.retriggerKB).toHaveBeenCalledWith('', 'kb-i'));
   });
 
   it("runs delete, retrigger and the enable switch against the row's own account", async () => {
@@ -182,10 +178,6 @@ describe('KnowledgeBaseTab tenant-wide row actions', () => {
     fireEvent.click(within(row).getByText('menu:Delete'));
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(apiKnowledgeBase.deleteKnowledgeBase).toHaveBeenCalledWith('acct-9', 'kb-m'));
-
-    fireEvent.click(screen.getByText('tab:integration'));
-    fireEvent.click(within(await screen.findByTestId('row-Jira')).getByText('menu:Retrigger'));
-    await waitFor(() => expect(apiKnowledgeBase.retriggerKB).toHaveBeenCalledWith('acct-9', 'kb-s'));
   });
 
   it("loads the edit form's agents for the row's account and saves to it", async () => {

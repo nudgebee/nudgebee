@@ -84,7 +84,9 @@ class KBSearchRequest(BaseModel):
 
 
 class KBRetriggerIntegrationRequest(BaseModel):
-    account_id: str
+    # Unused: the scrape is selected by integration_id. Empty for an
+    # integration's organisation knowledge base (#40605).
+    account_id: str = ""
     integration_id: str
     kb_source: str
     triggered_by: str = "system"

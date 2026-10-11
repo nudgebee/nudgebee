@@ -37,12 +37,14 @@ var kbEmbeddingWorkerPool *common.WorkerPool
 // CacheProvider on deployed envs) those entries outlive the rollout and would
 // have made every KB look switched off for up to the 30-minute TTL. Bump this
 // suffix again if the cached value shape ever changes in a way old entries
-// cannot satisfy.
-const CacheNamespaceLlmKbMapping = "llm_kb_mapping_v4"
+// cannot satisfy. v5: #40605 folded integration KBs into organisation rows, so
+// cached menus can name deleted per-account KB ids.
+const CacheNamespaceLlmKbMapping = "llm_kb_mapping_v5"
 
 // CacheNamespaceLlmSkillContent caches individual skill content fetched by load_skills.
 // Declared here (in tools/core) so KB update/delete paths can invalidate it.
-const CacheNamespaceLlmSkillContent = "llm_skill_content"
+// v2: see CacheNamespaceLlmKbMapping (#40605).
+const CacheNamespaceLlmSkillContent = "llm_skill_content_v2"
 
 // KBAgentWildcard is the agent_id a knowledge base is mapped to when the user
 // picks "All agents" in the KB form. It is stored as an ordinary row in
@@ -672,6 +674,12 @@ func GetOrganisationKnowledgebase(sc *security.RequestContext, kbId string) (Kno
 // account_id is in their JWT-carried account list; users with no
 // account-scoped role see nothing. Tenant is taken from the security
 // context, never user-supplied, so there's no cross-tenant query path.
+// notLegacyIntegrationRow leaves out per-account integration rows: an
+// integration's knowledge base is its organisation row (#40605), and a
+// per-account row only reappears, archived, when an older llm-server re-creates
+// it during a rolling deploy.
+const notLegacyIntegrationRow = `NOT (kb.kb_type = 'integration' AND kb.account_id IS NOT NULL)`
+
 func ListKnowledgebasesForTenant(sc *security.RequestContext) ([]Knowledgebase, error) {
 	secCtx := sc.GetSecurityContext()
 	tenantID := secCtx.GetTenantId()
@@ -718,7 +726,7 @@ func ListKnowledgebasesForTenant(sc *security.RequestContext) ([]Knowledgebase, 
 		args  []any
 	)
 	if seesAllAccountsInTenant {
-		query = baseSelect + ` WHERE kb.tenant_id = $1 ORDER BY kb.created_at DESC`
+		query = baseSelect + ` WHERE kb.tenant_id = $1 AND ` + notLegacyIntegrationRow + ` ORDER BY kb.created_at DESC`
 		args = []any{tenantID}
 	} else {
 		accountIDs := secCtx.GetAccountIds()
@@ -727,7 +735,7 @@ func ListKnowledgebasesForTenant(sc *security.RequestContext) ([]Knowledgebase, 
 			// rather than running an unfiltered scan.
 			return []Knowledgebase{}, nil
 		}
-		query = baseSelect + ` WHERE kb.tenant_id = $1 AND kb.account_id = ANY($2::uuid[]) ORDER BY kb.created_at DESC`
+		query = baseSelect + ` WHERE kb.tenant_id = $1 AND kb.account_id = ANY($2::uuid[]) AND ` + notLegacyIntegrationRow + ` ORDER BY kb.created_at DESC`
 		args = []any{tenantID, pq.Array(accountIDs)}
 	}
 	if err := dbms.Db.Select(&kbs, query, args...); err != nil {
@@ -774,7 +782,7 @@ func ListKnowledgebases(sc *security.RequestContext, accountId string) ([]Knowle
 		FROM llm_knowledgebases kb
 		LEFT JOIN users cu ON kb.created_by = cu.id
 		LEFT JOIN users uu ON kb.updated_by = uu.id
-		WHERE `+scope+`
+		WHERE `+scope+` AND `+notLegacyIntegrationRow+`
 		ORDER BY kb.created_at DESC`, append([]any{accountId}, scopeArgs...)...)
 	if err != nil {
 		slog.Error(logKBFailedQuery, "error", err, "account_id", accountId)
@@ -1152,26 +1160,13 @@ func DeleteKnowledgebase(sc *security.RequestContext, accountId, kbId string) er
 	// <integration_id>_knowledge_base collection. Continue with DB deletion
 	// even if vector deletion fails.
 	if kb.KBType == KBTypeIntegration {
-		// Every cloud account in a tenant gets its own KB row for the same
-		// integration, all backed by the one shared <integration_id>_knowledge_base
-		// collection. Only drop the collection when this is the last row, so
-		// deleting one never strands the siblings. Keep it on a count error.
-		siblings := 1
-		if kb.IntegrationId != nil {
-			if err := dbms.Db.Get(&siblings,
-				"SELECT COUNT(*) FROM llm_knowledgebases WHERE integration_id = $1 AND id != $2",
-				*kb.IntegrationId, kbId); err != nil {
-				slog.Error("kb: failed to count sibling integration KBs", "error", err, "kb_id", kbId)
-				siblings = 1
-			}
-		}
-		if siblings == 0 {
+		// An integration's knowledge base is its organisation row (#40605), which
+		// owns the <integration_id>_knowledge_base collection. A per-account row is
+		// the old shape and owns nothing, so deleting one keeps the collection.
+		if kb.AccountId == "" {
 			if err := deleteRAGCollection(kbCollectionName(kb.KBType, kb.IntegrationId, kbId)); err != nil {
 				slog.Error("kb: failed to delete integration vector collection", "error", err, "kb_id", kbId)
 			}
-		} else {
-			slog.Info("kb: keeping shared integration collection still referenced by other KB rows",
-				"kb_id", kbId, "siblings", siblings)
 		}
 	} else if err := deleteKBVectorCollection(owner.label(), kbId); err != nil {
 		slog.Error("kb: failed to delete vector collection", "error", err, "kb_id", kbId)
@@ -2320,7 +2315,7 @@ func MapKBToAgent(sc *security.RequestContext, accountId, kbId, agentId string) 
 		_, err := tx.Exec(`
 			INSERT INTO llm_kb_agent_mappings (kb_id, agent_id, account_id, created_by, updated_by, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $4, NOW(), NOW())
-			ON CONFLICT (kb_id, agent_id) DO UPDATE
+			ON CONFLICT (kb_id, agent_id, account_id) DO UPDATE
 			SET updated_at = NOW(), updated_by = $5`,
 			kbId, agentId, accountId, userId, userId)
 
@@ -2338,7 +2333,7 @@ func MapKBToAgent(sc *security.RequestContext, accountId, kbId, agentId string) 
 			FROM llm_kb_agent_mappings m
 			LEFT JOIN users cu ON m.created_by = cu.id
 			LEFT JOIN users uu ON m.updated_by = uu.id
-			WHERE m.kb_id = $1 AND m.agent_id = $2`, kbId, agentId)
+			WHERE m.kb_id = $1 AND m.agent_id = $2 AND m.account_id = $3`, kbId, agentId, accountId)
 
 		if err != nil {
 			slog.Error("kb: failed to fetch mapping", "error", err, "kb_id", kbId, "agent_id", agentId)
