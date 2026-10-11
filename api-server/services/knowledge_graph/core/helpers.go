@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -758,14 +759,47 @@ func getNodeProp(properties map[string]interface{}, key string) string {
 	return ""
 }
 
+// getScalarNodeProp is getNodeProp restricted to scalars: it returns "" for a list or an
+// object instead of its Go print form. Some properties legitimately hold composites — an
+// AWS load balancer stores its AvailabilityZones under availability_zone as a list of
+// records (ZoneName, SubnetId, LoadBalancerAddresses, …), declared that way by its schema.
+// Formatting one of those with %v yields `[map[LoadBalancerAddresses:[] … ZoneName:us-east-1c] …]`,
+// which is internal detail, not a value to show a user.
+func getScalarNodeProp(properties map[string]interface{}, key string) string {
+	if properties == nil {
+		return ""
+	}
+	v, ok := properties[key]
+	if !ok || v == nil {
+		return ""
+	}
+	// Indirect so a pointer is judged, and printed, by what it points at: a typed nil
+	// pointer becomes invalid here rather than printing "<nil>", a pointer to a list is
+	// skipped like the list itself, and a *string prints its value rather than an address.
+	// A struct is skipped too — it has no meaningful one-line form either.
+	val := reflect.Indirect(reflect.ValueOf(v))
+	if !val.IsValid() {
+		return ""
+	}
+	switch val.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Array, reflect.Struct:
+		return ""
+	}
+	return fmt.Sprintf("%v", val.Interface())
+}
+
 // extractNodeLocation returns the most specific region/zone/AZ available for a cloud
 // resource, used by the UI to disambiguate identically-named nodes (e.g. many "default"
 // subnets across zones). Different sources store it under different keys — zone (GCP
 // compute), availability_zone (AWS), region (subnets, Azure, GKE, global services) — so we
 // probe them most-specific first. Returns "" for nodes with no location (e.g. K8s workloads).
+//
+// A key holding a composite is skipped rather than printed, so a resource whose
+// availability_zone is a list of records (AWS load balancers) falls through to its region
+// instead of showing the raw records where a location belongs.
 func extractNodeLocation(properties map[string]interface{}) string {
 	for _, key := range []string{"zone", "availability_zone", "region", "location"} {
-		if v := getNodeProp(properties, key); v != "" {
+		if v := getScalarNodeProp(properties, key); v != "" {
 			return v
 		}
 	}
