@@ -47,6 +47,10 @@ const formatModelCost = (cost, unpricedRequests) => (unpricedRequests > 0 && !co
 
 const unpricedCostColor = (unpricedRequests, cost) => (unpricedRequests > 0 && !cost ? 'var(--ds-amber-700)' : 'var(--ds-gray-500)');
 
+// Reasoning tokens are billed at the output rate but are not part of Output, so
+// without this column Input / Cached / Output do not add up to Cost.
+const THINKING_HEADER_TITLE = 'Reasoning (thinking) tokens — billed at the output rate, in addition to Output';
+
 const MODEL_PRICING_URL = '/user-management?budgetsTab=pricing#ai-tools/budgets-limits';
 
 const UnpricedModelsNote = ({ show }) =>
@@ -366,6 +370,7 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
     total_input_tokens = 0,
     total_output_tokens = 0,
     total_cached_input_tokens = 0,
+    total_thinking_tokens = 0,
     total_cache_hit_rate_percentage: _total_cache_hit_rate_percentage = null,
     total_cost_usd = 0,
     total_unpriced_requests = 0,
@@ -452,7 +457,7 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
   };
 
   const tooltipContent = (
-    <Box sx={{ padding: ds.space.mul(0, 5), width: ds.space.mul(1, 95) }}>
+    <Box sx={{ padding: ds.space.mul(0, 5), width: ds.space.mul(1, 110) }}>
       <Typography sx={{ ...tooltipTitleStyles, fontSize: 'var(--ds-text-body)', marginBottom: ds.space[2] }}>Conversation Metrics</Typography>
 
       {/* Interaction Summary */}
@@ -579,7 +584,7 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
           <Box
             sx={{
               display: 'grid',
-              gridTemplateColumns: '2fr 0.7fr 1fr 1fr 1fr 1fr',
+              gridTemplateColumns: '2fr 0.7fr 1fr 1fr 1fr 1fr 1fr',
               rowGap: ds.space[0],
               columnGap: ds.space[3],
               fontSize: 'var(--ds-text-caption)',
@@ -648,6 +653,19 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
               Output
             </Typography>
             <Typography
+              title={THINKING_HEADER_TITLE}
+              sx={{
+                fontSize: 'var(--ds-text-caption)',
+                fontWeight: 'var(--ds-font-weight-semibold)',
+                color: 'var(--ds-gray-700)',
+                paddingBottom: ds.space[1],
+                borderBottom: `1px solid ${'var(--ds-gray-200)'}`,
+                textAlign: 'right',
+              }}
+            >
+              Thinking
+            </Typography>
+            <Typography
               sx={{
                 fontSize: 'var(--ds-text-caption)',
                 fontWeight: 'var(--ds-font-weight-semibold)',
@@ -687,6 +705,9 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
                 </Typography>
                 <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
                   {formatTokens(model.output_tokens)}
+                </Typography>
+                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
+                  {formatTokens(model.thinking_tokens)}
                 </Typography>
                 <Typography
                   sx={{
@@ -778,7 +799,8 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
           </Typography>
         </Box>
         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
-          Input: {formatTokens(total_input_tokens)} • Output: {formatTokens(total_output_tokens)} • Cached: {formatTokens(total_cached_input_tokens)}
+          Input: {formatTokens(total_input_tokens)} • Output: {formatTokens(total_output_tokens)} • Thinking: {formatTokens(total_thinking_tokens)} •
+          Cached: {formatTokens(total_cached_input_tokens)}
         </Typography>
         {total_unpriced_requests > 0 && (
           <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-amber-700)' }}>
@@ -954,6 +976,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
     message_input_tokens = 0,
     message_output_tokens = 0,
     message_cached_input_tokens = 0,
+    message_thinking_tokens = 0,
     message_cache_hit_rate_percentage = null,
     message_cost_usd = 0,
     agents = [],
@@ -979,6 +1002,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
         input_tokens: 0,
         cached_input_tokens: 0,
         output_tokens: 0,
+        thinking_tokens: 0,
         cost_usd: 0,
         unpriced_requests: 0,
       };
@@ -987,6 +1011,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
     acc[modelName].input_tokens += agent.input_tokens || 0;
     acc[modelName].cached_input_tokens += agent.cached_input_tokens || 0;
     acc[modelName].output_tokens += agent.output_tokens || 0;
+    acc[modelName].thinking_tokens += agent.thinking_tokens || 0;
     acc[modelName].cost_usd += agent.cost_usd || 0;
     acc[modelName].unpriced_requests += agent.unpriced_requests || 0;
     return acc;
@@ -1022,7 +1047,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
   }
 
   const tooltipContent = (
-    <Box sx={{ padding: ds.space.mul(0, 5), width: ds.space.mul(1, 130) }}>
+    <Box sx={{ padding: ds.space.mul(0, 5), width: ds.space.mul(1, 145) }}>
       <Typography sx={{ ...tooltipTitleStyles, fontSize: 'var(--ds-text-body)', marginBottom: ds.space[2] }}>Message Metrics</Typography>
 
       {/* Model Usage Table */}
@@ -1041,7 +1066,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
           <Box
             sx={{
               display: 'grid',
-              gridTemplateColumns: '2fr 0.7fr 1fr 1fr 1fr 1fr',
+              gridTemplateColumns: '2fr 0.7fr 1fr 1fr 1fr 1fr 1fr',
               rowGap: ds.space[0],
               columnGap: ds.space[3],
               fontSize: 'var(--ds-text-caption)',
@@ -1110,6 +1135,19 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
               Output
             </Typography>
             <Typography
+              title={THINKING_HEADER_TITLE}
+              sx={{
+                fontSize: 'var(--ds-text-caption)',
+                fontWeight: 'var(--ds-font-weight-semibold)',
+                color: 'var(--ds-gray-700)',
+                paddingBottom: ds.space[1],
+                borderBottom: `1px solid ${'var(--ds-gray-200)'}`,
+                textAlign: 'right',
+              }}
+            >
+              Thinking
+            </Typography>
+            <Typography
               sx={{
                 fontSize: 'var(--ds-text-caption)',
                 fontWeight: 'var(--ds-font-weight-semibold)',
@@ -1147,6 +1185,9 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
                 <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
                   {formatTokens(model.output_tokens)}
                 </Typography>
+                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
+                  {formatTokens(model.thinking_tokens)}
+                </Typography>
                 <Typography
                   sx={{
                     fontSize: 'var(--ds-text-caption)',
@@ -1180,7 +1221,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
           <Box
             sx={{
               display: 'grid',
-              gridTemplateColumns: '2.6fr 0.9fr 0.9fr 0.9fr 0.9fr 1fr',
+              gridTemplateColumns: '2.6fr 0.9fr 0.9fr 0.9fr 0.9fr 0.9fr 1fr',
               rowGap: ds.space[0],
               columnGap: ds.space[3],
               fontSize: 'var(--ds-text-caption)',
@@ -1247,6 +1288,19 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
               }}
             >
               Output
+            </Typography>
+            <Typography
+              title={THINKING_HEADER_TITLE}
+              sx={{
+                fontSize: 'var(--ds-text-caption)',
+                fontWeight: 'var(--ds-font-weight-semibold)',
+                color: 'var(--ds-gray-700)',
+                paddingBottom: ds.space[1],
+                borderBottom: `1px solid ${'var(--ds-gray-200)'}`,
+                textAlign: 'right',
+              }}
+            >
+              Thinking
             </Typography>
             <Typography
               sx={{
@@ -1357,6 +1411,9 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
                   <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
                     {cell(formatTokens(agent.output_tokens))}
                   </Typography>
+                  <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
+                    {cell(formatTokens(agent.thinking_tokens))}
+                  </Typography>
                   <Typography
                     sx={{
                       fontSize: 'var(--ds-text-caption)',
@@ -1447,8 +1504,8 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
           </Typography>
         </Box>
         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
-          Input: {formatTokens(message_input_tokens)} • Output: {formatTokens(message_output_tokens)} • Cached:{' '}
-          {formatTokens(message_cached_input_tokens)}
+          Input: {formatTokens(message_input_tokens)} • Output: {formatTokens(message_output_tokens)} • Thinking:{' '}
+          {formatTokens(message_thinking_tokens)} • Cached: {formatTokens(message_cached_input_tokens)}
         </Typography>
         {messageUnpricedRequests > 0 && (
           <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-amber-700)' }}>
@@ -1553,6 +1610,7 @@ ConversationTokenUsage.propTypes = {
     total_input_tokens: PropTypes.number.isRequired,
     total_output_tokens: PropTypes.number.isRequired,
     total_cached_input_tokens: PropTypes.number,
+    total_thinking_tokens: PropTypes.number,
     total_cache_hit_rate_percentage: PropTypes.number,
     total_cost_usd: PropTypes.number.isRequired,
     model_usage: PropTypes.arrayOf(
@@ -1560,6 +1618,7 @@ ConversationTokenUsage.propTypes = {
         model_provider: PropTypes.string,
         model_name: PropTypes.string,
         requests: PropTypes.number,
+        thinking_tokens: PropTypes.number,
         cost_usd: PropTypes.number,
         success_rate_percentage: PropTypes.number,
       })
@@ -1588,6 +1647,7 @@ MessageTokenUsage.propTypes = {
     message_input_tokens: PropTypes.number.isRequired,
     message_output_tokens: PropTypes.number.isRequired,
     message_cached_input_tokens: PropTypes.number,
+    message_thinking_tokens: PropTypes.number,
     message_cache_hit_rate_percentage: PropTypes.number,
     message_cost_usd: PropTypes.number.isRequired,
     agents: PropTypes.arrayOf(
@@ -1597,6 +1657,7 @@ MessageTokenUsage.propTypes = {
         input_tokens: PropTypes.number,
         output_tokens: PropTypes.number,
         cached_input_tokens: PropTypes.number,
+        thinking_tokens: PropTypes.number,
         cost_usd: PropTypes.number,
         model_name: PropTypes.object,
         model_provider_name: PropTypes.object,

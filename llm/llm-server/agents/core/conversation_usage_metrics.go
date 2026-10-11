@@ -22,12 +22,14 @@ type ConversationUsageMetricsResponse struct {
 }
 
 type ConversationMetrics struct {
-	ConversationId              string           `json:"conversation_id"`
-	Messages                    []MessageMetrics `json:"messages"`
-	TotalCostUsd                float64          `json:"total_cost_usd"`
-	TotalInputTokens            int              `json:"total_input_tokens"`
-	TotalOutputTokens           int              `json:"total_output_tokens"`
-	TotalCachedInputTokens      int              `json:"total_cached_input_tokens"`
+	ConversationId         string           `json:"conversation_id"`
+	Messages               []MessageMetrics `json:"messages"`
+	TotalCostUsd           float64          `json:"total_cost_usd"`
+	TotalInputTokens       int              `json:"total_input_tokens"`
+	TotalOutputTokens      int              `json:"total_output_tokens"`
+	TotalCachedInputTokens int              `json:"total_cached_input_tokens"`
+	// Reasoning tokens, billed at the output rate on top of TotalOutputTokens.
+	TotalThinkingTokens         int              `json:"total_thinking_tokens"`
 	TotalCacheHitRatePercentage *float64         `json:"total_cache_hit_rate_percentage,omitempty"`
 	ModelUsage                  []ModelUsageStat `json:"model_usage"`
 	// Calls whose model has no Model Pricing entry, so TotalCostUsd leaves them out.
@@ -105,6 +107,7 @@ type MessageMetrics struct {
 	MessageInputTokens            int            `json:"message_input_tokens"`
 	MessageOutputTokens           int            `json:"message_output_tokens"`
 	MessageCachedInputTokens      int            `json:"message_cached_input_tokens"`
+	MessageThinkingTokens         int            `json:"message_thinking_tokens"`
 	MessageCacheHitRatePercentage *float64       `json:"message_cache_hit_rate_percentage,omitempty"`
 }
 
@@ -113,6 +116,7 @@ type AgentMetrics struct {
 	InputTokens            int             `json:"input_tokens"`
 	OutputTokens           int             `json:"output_tokens"`
 	CachedInputTokens      int             `json:"cached_input_tokens"`
+	ThinkingTokens         int             `json:"thinking_tokens"`
 	CacheHitRatePercentage sql.NullFloat64 `json:"cache_hit_rate_percentage"`
 	CostUsd                float64         `json:"cost_usd"`
 	ModelProviderName      sql.NullString  `json:"model_provider_name"`
@@ -176,6 +180,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	totalInputTokens := 0
 	totalOutputTokens := 0
 	totalCachedInputTokens := 0
+	totalThinkingTokens := 0
 
 	for _, agent := range agents {
 		if conversationId == "" {
@@ -187,6 +192,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 			InputTokens:            agent.InputTokens,
 			OutputTokens:           agent.OutputTokens,
 			CachedInputTokens:      agent.CachedInputTokens,
+			ThinkingTokens:         agent.ThinkingTokens,
 			CacheHitRatePercentage: agent.CacheHitRate,
 			CostUsd:                agent.Cost,
 			ModelProviderName:      agent.ModelProviderName,
@@ -204,6 +210,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		totalInputTokens += agent.InputTokens
 		totalOutputTokens += agent.OutputTokens
 		totalCachedInputTokens += agent.CachedInputTokens
+		totalThinkingTokens += agent.ThinkingTokens
 	}
 
 	// Calculate conversation-level cache hit rate
@@ -293,12 +300,14 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		messageInputTokens := 0
 		messageOutputTokens := 0
 		messageCachedInputTokens := 0
+		messageThinkingTokens := 0
 
 		for _, agent := range agentsList {
 			messageCost += agent.CostUsd
 			messageInputTokens += agent.InputTokens
 			messageOutputTokens += agent.OutputTokens
 			messageCachedInputTokens += agent.CachedInputTokens
+			messageThinkingTokens += agent.ThinkingTokens
 		}
 
 		// Calculate message-level cache hit rate
@@ -315,6 +324,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 			MessageInputTokens:            messageInputTokens,
 			MessageOutputTokens:           messageOutputTokens,
 			MessageCachedInputTokens:      messageCachedInputTokens,
+			MessageThinkingTokens:         messageThinkingTokens,
 			MessageCacheHitRatePercentage: messageCacheHitRate,
 		})
 	}
@@ -393,6 +403,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		TotalInputTokens:            totalInputTokens,
 		TotalOutputTokens:           totalOutputTokens,
 		TotalCachedInputTokens:      totalCachedInputTokens,
+		TotalThinkingTokens:         totalThinkingTokens,
 		TotalCacheHitRatePercentage: totalCacheHitRate,
 		ModelUsage:                  modelUsage,
 		TotalUnpricedRequests:       totalUnpriced,
