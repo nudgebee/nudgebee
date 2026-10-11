@@ -313,6 +313,9 @@ const NON_GRANTABLE_ACTIONS = new Set<string>([
   'llm_gateway_delete_rate_limit',
   'llm_gateway_list_user_access',
   'llm_gateway_upsert_user_access',
+  // every key in the tenant, and revoking any of them, is tenant-admin only, #38965
+  'users_list_tenant_tokens',
+  'users_delete_tenant_token',
 ]);
 
 export function normalizeModule(rawModule: string): string {

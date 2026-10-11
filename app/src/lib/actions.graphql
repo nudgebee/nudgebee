@@ -2547,6 +2547,18 @@ type Query {
   users_list_token: UserAuthTokenResponse
 }
 
+type Query {
+  users_list_tenant_tokens(
+    user: TenantTokenListRequest
+  ): TenantTokenListResponse
+}
+
+type Mutation {
+  users_delete_tenant_token(
+    user: TenantTokenDeleteRequest!
+  ): TenantTokenDeleteResponse
+}
+
 type Mutation {
   cloud_check_credentials(
     object: ValidateCloudCredentialsInput!
@@ -4954,6 +4966,17 @@ input UserTokenCreateRequest {
 input UserTokenDeleteRequest {
   id: String
   name: String
+}
+
+input TenantTokenListRequest {
+  user_id: String
+  kind: String
+  limit: Int
+  offset: Int
+}
+
+input TenantTokenDeleteRequest {
+  id: String!
 }
 
 input UserTokenUpdateRequest {
@@ -8697,6 +8720,18 @@ type UserAuthTokenResponse {
   tokens: [UserAuthToken]
 }
 
+type TenantTokenListResponse {
+  tokens: [UserAuthToken]
+  total: Int
+}
+
+type TenantTokenDeleteResponse {
+  id: String
+  name: String
+  owner_id: String
+  status: String
+}
+
 type UserAuthToken {
   id: String
   name: String
@@ -8707,6 +8742,11 @@ type UserAuthToken {
   accessed_at: timestamp
   expires_at: timestamp
   scopes: [String]
+  token_suffix: String
+  owner_id: String
+  owner_name: String
+  last_provider: String
+  last_model: String
   gateway_policy: GatewayPolicy
   limits: [TokenLimit]
   usage: TokenUsage

@@ -309,21 +309,6 @@ func replaceKeyGatewayPolicy(tx sqlExecer, k keyScope, p *GatewayPolicy) error {
 	return nil
 }
 
-// loadKeyGatewayPolicies returns the stored policy of each of the user's keys in the tenant,
-// matched the way the gateway matches them; an unrestricted key has no entry.
-func loadKeyGatewayPolicies(q sqlx.Queryer, tenantID, userID string) (map[string]*GatewayPolicy, error) {
-	var rows []policyEntry
-	if err := sqlx.Select(q, &rows,
-		`SELECT p.api_key_id, p.dimension, p.value
-		   FROM user_auths ua
-		   JOIN llm_gateway_access_policies p ON p.api_key_id = ua.id::text AND p.user_id = ua."user"::text
-		  WHERE ua.tenant_id = $1 AND ua."user" = $2 AND ua.provider_type = 'credentials' AND ua.provider = 'token'
-		  ORDER BY p.value`, tenantID, userID); err != nil {
-		return nil, err
-	}
-	return gatewayPoliciesByKey(rows), nil
-}
-
 // validateDeleteRequest accepts either identifier, preferring the id.
 func validateDeleteRequest(r UserTokenDeleteRequest) error {
 	if r.Id == "" && r.Name == "" {

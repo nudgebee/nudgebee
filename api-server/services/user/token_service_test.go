@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"database/sql/driver"
 	"strings"
 	"testing"
 
@@ -45,6 +46,11 @@ func keyOwner(t *testing.T) *security.RequestContext {
 	return security.NewRequestContext(context.Background(), &sc, nil, nil, nil)
 }
 
+// fourChars matches the stored suffix: the token is random, so only its shape is known.
+type fourChars struct{}
+
+func (fourChars) Match(v driver.Value) bool { s, ok := v.(string); return ok && len(s) == 4 }
+
 func storedKeyRow() *sqlmock.Rows {
 	return sqlmock.NewRows([]string{"id", "user", "tenant_id"}).AddRow(storedKey, storedUser, storedTenant)
 }
@@ -62,7 +68,9 @@ func TestCreateUserAuthToken_StoresThePolicyUnderTheStoredKey(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "status"}).AddRow(storedUser, "active"))
 	mock.ExpectQuery(`SELECT id FROM user_auths WHERE name = \$1`).WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectBegin()
-	mock.ExpectQuery(`INSERT INTO user_auths [\s\S]* RETURNING id::text, "user"::text, tenant_id::text`).
+	anyArg := sqlmock.AnyArg()
+	mock.ExpectQuery(`INSERT INTO user_auths [\s\S]*token_suffix\)[\s\S]* RETURNING id::text, "user"::text, tenant_id::text`).
+		WithArgs(anyArg, anyArg, anyArg, anyArg, anyArg, anyArg, anyArg, anyArg, fourChars{}).
 		WillReturnRows(storedKeyRow())
 	mock.ExpectExec(deleteKeyPolicy).WithArgs(storedKey, storedUser).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(insertKeyPolicy).WithArgs(storedTenant, storedUser, storedKey, "model", "gpt-4o-mini").
@@ -73,6 +81,7 @@ func TestCreateUserAuthToken_StoresThePolicyUnderTheStoredKey(t *testing.T) {
 		Name: "ci", Kind: KindGateway, GatewayPolicy: &GatewayPolicy{Models: []string{"gpt-4o-mini"}},
 	})
 	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Token) // shown once, to its creator
 	assert.Equal(t, []string{"gpt-4o-mini"}, resp.GatewayPolicy.Models)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -81,7 +90,7 @@ func TestCreateUserAuthToken_StoresThePolicyUnderTheStoredKey(t *testing.T) {
 // rather than leaving the union of both lists.
 func TestUpdateUserAuthToken_LocksTheKeyBeforeReplacingItsPolicy(t *testing.T) {
 	mock := mockMetastore(t)
-	mock.ExpectQuery(`SELECT kind, scopes FROM user_auths`).WillReturnRows(sqlmock.NewRows([]string{"kind", "scopes"}).AddRow(KindGateway, nil))
+	mock.ExpectQuery(`SELECT kind, scopes, name FROM user_auths`).WillReturnRows(sqlmock.NewRows([]string{"kind", "scopes", "name"}).AddRow(KindGateway, nil, "ci"))
 	mock.ExpectBegin()
 	mock.ExpectQuery(`SELECT id::text, "user"::text, tenant_id::text FROM user_auths[\s\S]*FOR UPDATE`).
 		WithArgs(strings.ToUpper(storedKey), strings.ToUpper(storedTenant), strings.ToUpper(storedUser)).
@@ -102,7 +111,7 @@ func TestUpdateUserAuthToken_LocksTheKeyBeforeReplacingItsPolicy(t *testing.T) {
 // unrestricted key. Scoped, it can.
 func TestUpdateUserAuthToken_AllKeyPolicyNeedsScopes(t *testing.T) {
 	mock := mockMetastore(t)
-	mock.ExpectQuery(`SELECT kind, scopes FROM user_auths`).WillReturnRows(sqlmock.NewRows([]string{"kind", "scopes"}).AddRow(KindAll, nil))
+	mock.ExpectQuery(`SELECT kind, scopes, name FROM user_auths`).WillReturnRows(sqlmock.NewRows([]string{"kind", "scopes", "name"}).AddRow(KindAll, nil, "ci"))
 
 	_, err := UpdateUserAuthToken(keyOwner(t), UserTokenUpdateRequest{
 		Id: storedKey, GatewayPolicy: &GatewayPolicy{Models: []string{"gpt-4o-mini"}},
@@ -111,7 +120,7 @@ func TestUpdateUserAuthToken_AllKeyPolicyNeedsScopes(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 
 	mock = mockMetastore(t)
-	mock.ExpectQuery(`SELECT kind, scopes FROM user_auths`).WillReturnRows(sqlmock.NewRows([]string{"kind", "scopes"}).AddRow(KindAll, "{tickets:Read}"))
+	mock.ExpectQuery(`SELECT kind, scopes, name FROM user_auths`).WillReturnRows(sqlmock.NewRows([]string{"kind", "scopes", "name"}).AddRow(KindAll, "{tickets:Read}", "ci"))
 	mock.ExpectBegin()
 	mock.ExpectQuery(`SELECT id::text, "user"::text, tenant_id::text FROM user_auths[\s\S]*FOR UPDATE`).WillReturnRows(storedKeyRow())
 	mock.ExpectExec(deleteKeyPolicy).WithArgs(storedKey, storedUser).WillReturnResult(sqlmock.NewResult(0, 0))
@@ -130,10 +139,12 @@ func TestUpdateUserAuthToken_AllKeyPolicyNeedsScopes(t *testing.T) {
 func TestDeleteUserAuthToken_RemovesTheKeysPolicy(t *testing.T) {
 	mock := mockMetastore(t)
 	mock.ExpectBegin()
-	mock.ExpectQuery(`DELETE FROM user_auths [\s\S]* RETURNING id::text, "user"::text, tenant_id::text`).
+	mock.ExpectQuery(`DELETE FROM user_auths [\s\S]* RETURNING id::text, "user"::text, tenant_id::text, name, kind`).
 		WithArgs(storedKey, strings.ToUpper(storedTenant), strings.ToUpper(storedUser)).
-		WillReturnRows(storedKeyRow())
-	mock.ExpectExec(`DELETE FROM llm_gateway_rate_limits`).WillReturnResult(sqlmock.NewResult(0, 0))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "user", "tenant_id", "name", "kind"}).
+			AddRow(storedKey, storedUser, storedTenant, "ci", KindGateway))
+	mock.ExpectExec(`DELETE FROM llm_gateway_rate_limits WHERE api_key_id = \$1$`).WithArgs(storedKey).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(deleteKeyPolicy).WithArgs(storedKey, storedUser).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectCommit()
 

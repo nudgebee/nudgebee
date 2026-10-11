@@ -238,6 +238,9 @@ query ListUserTokens {
       accessed_at
       expires_at
       scopes
+      token_suffix
+      last_provider
+      last_model
       gateway_policy { providers models endpoints }
       limits { metric period value model }
       usage { requests tokens cost_usd }
@@ -263,6 +266,42 @@ const DELETE_USER_TOKEN = `
 mutation DeleteUserToken($id: String, $name: String) {
   users_delete_token(user: {id: $id, name: $name}) {
     name
+  }
+}
+`;
+
+const LIST_TENANT_TOKENS = `
+query ListTenantTokens($user_id: String, $kind: String, $limit: Int, $offset: Int) {
+  users_list_tenant_tokens(user: {user_id: $user_id, kind: $kind, limit: $limit, offset: $offset}) {
+    total
+    tokens {
+      id
+      name
+      kind
+      status
+      created_at
+      accessed_at
+      expires_at
+      scopes
+      token_suffix
+      owner_id
+      owner_name
+      last_provider
+      last_model
+      gateway_policy { providers models endpoints }
+      limits { metric period value model }
+      usage { requests tokens cost_usd }
+    }
+  }
+}
+`;
+
+const DELETE_TENANT_TOKEN = `
+mutation DeleteTenantToken($id: String!) {
+  users_delete_tenant_token(user: {id: $id}) {
+    id
+    name
+    status
   }
 }
 `;
@@ -814,6 +853,25 @@ const apiUser = {
         data: response?.data?.data?.users_delete_token,
         errors: response?.data?.errors,
       };
+    } catch (err) {
+      return { data: null, errors: [err] };
+    }
+  },
+  listTenantTokens: async function ({ userId = null, kind = null, limit = 50, offset = 0 } = {}) {
+    try {
+      const response = await queryGraphQL(LIST_TENANT_TOKENS, 'ListTenantTokens', { user_id: userId, kind, limit, offset });
+      return {
+        data: response?.data?.data?.users_list_tenant_tokens || { tokens: [], total: 0 },
+        errors: response?.data?.errors,
+      };
+    } catch (err) {
+      return { data: { tokens: [], total: 0 }, errors: [err] };
+    }
+  },
+  deleteTenantToken: async function ({ id }) {
+    try {
+      const response = await queryGraphQL(DELETE_TENANT_TOKEN, 'DeleteTenantToken', { id });
+      return { data: response?.data?.data?.users_delete_tenant_token, errors: response?.data?.errors };
     } catch (err) {
       return { data: null, errors: [err] };
     }

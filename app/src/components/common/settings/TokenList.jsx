@@ -10,14 +10,19 @@ import { ds } from 'src/utils/colors';
 import { carriesGatewayTraffic, KIND_LABELS } from './keyKinds';
 import { describeGatewayPolicy } from './GatewayRestrictions';
 
-const formatDate = (date) => dayjs(date).format('MMM DD, YYYY HH:mm');
+export const formatDate = (date) => dayjs(date).format('MMM DD, YYYY HH:mm');
 
 // 'all' takes the warm hue: it is the one kind that opens both the app API and the gateway.
-const KIND_HUES = { platform: 'blue', gateway: 'violet', all: 'amber' };
+export const KIND_HUES = { platform: 'blue', gateway: 'violet', all: 'amber' };
 
-const limitsText = (limits) => (limits || []).map((l) => `${l.value} ${l.metric}/${l.period}${l.model ? ` (${l.model})` : ''}`).join(', ') || '—';
+export const limitsText = (limits) =>
+  (limits || []).map((l) => `${l.value} ${l.metric}/${l.period}${l.model ? ` (${l.model})` : ''}`).join(', ') || '—';
 
-const usageText = (usage) => (usage ? `$${(usage.cost_usd ?? 0).toFixed(2)} · ${usage.requests ?? 0} reqs` : '—');
+export const usageText = (usage) => (usage ? `$${(usage.cost_usd ?? 0).toFixed(2)} · ${usage.requests ?? 0} reqs` : '—');
+
+// Keys made before #38965 have no stored suffix.
+export const suffixText = (t) => (t.token_suffix ? `…${t.token_suffix}` : '—');
+export const lastUsedText = (t) => (t.accessed_at ? formatDate(t.accessed_at) : '—');
 
 // A key with no scopes has its owner's full access; otherwise list what it may call.
 const AccessCell = ({ scopes }) => {
@@ -93,7 +98,17 @@ const TokenList = ({ tokens, onRevoke, onEditAccess }) => {
     const label = KIND_LABELS[t.kind] ?? t.kind;
     const reachesGateway = carriesGatewayTraffic(t.kind);
     return [
-      { text: t.name, component: <Typography variant='body2'>{t.name}</Typography> },
+      {
+        text: `${t.name} ${suffixText(t)}`,
+        component: (
+          <Box>
+            <Typography variant='body2'>{t.name}</Typography>
+            <Typography variant='caption' sx={{ fontFamily: ds.font.mono, color: ds.gray[500] }}>
+              {suffixText(t)}
+            </Typography>
+          </Box>
+        ),
+      },
       {
         text: label,
         component: (
@@ -103,7 +118,7 @@ const TokenList = ({ tokens, onRevoke, onEditAccess }) => {
         ),
       },
       { text: formatDate(t.created_at) },
-      { text: t.accessed_at ? formatDate(t.accessed_at) : '—' },
+      { text: t.last_model ? `${lastUsedText(t)} · ${t.last_model}` : lastUsedText(t) },
       { text: t.expires_at ? formatDate(t.expires_at) : 'never' },
       accessColumn(t),
       { text: reachesGateway ? limitsText(t.limits) : '—' },

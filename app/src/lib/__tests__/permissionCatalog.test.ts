@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
-import { classifyAction, buildCatalog, normalizeModule, type PermissionClass } from '@lib/permissionCatalog';
+import { classifyAction, buildCatalog, normalizeModule, isTokenScopeBlockedAction, type PermissionClass } from '@lib/permissionCatalog';
 
 // Pull every action name from actions.yaml (+ the EE overlay) directly, so this
 // test stays decoupled from rpcRoutes internals and exercises the real action
@@ -104,6 +104,9 @@ describe('permissionCatalog', () => {
     'llm_gateway_delete_rate_limit',
     'llm_gateway_list_user_access',
     'llm_gateway_upsert_user_access',
+    // Every key in the tenant, and revoking any of them, is tenant-admin only (#38965).
+    'users_list_tenant_tokens',
+    'users_delete_tenant_token',
   ];
 
   it('classifies every action in actions.yaml except the non-grantable ones', () => {
@@ -168,6 +171,12 @@ describe('permissionCatalog', () => {
     for (const name of ['llm_gateway_aggregate_usage', 'llm_gateway_list_requests', 'llm_gateway_list_sessions', 'llm_gateway_get_request_body']) {
       expect(classifyAction(name)).not.toBeNull();
     }
+  });
+
+  it('keeps tenant-wide API key actions non-grantable', () => {
+    expect(classifyAction('users_list_tenant_tokens')).toBeNull();
+    expect(classifyAction('users_delete_tenant_token')).toBeNull();
+    expect(isTokenScopeBlockedAction('users_list_tenant_tokens')).toBe(true);
   });
 
   it('keeps non-grantable modules out of the catalog', () => {

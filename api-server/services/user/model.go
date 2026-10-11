@@ -90,19 +90,37 @@ type UserAuthTokenResponse struct {
 }
 
 type UserAuthToken struct {
-	Id         string         `json:"id" db:"id"`
-	Name       string         `json:"name" db:"name"`
-	Provider   string         `json:"provider" db:"provider"`
-	Kind       string         `json:"kind" db:"kind"`
-	Status     string         `json:"status" db:"status"`
-	CreatedAt  string         `json:"created_at" db:"created_at"`
-	AccessedAt *string        `json:"accessed_at" db:"accessed_at"`
-	ExpiresAt  *string        `json:"expires_at" db:"expires_at"`
-	Scopes     pq.StringArray `json:"scopes" db:"scopes"`
+	Id           string         `json:"id" db:"id"`
+	Name         string         `json:"name" db:"name"`
+	Provider     string         `json:"provider" db:"provider"`
+	Kind         string         `json:"kind" db:"kind"`
+	Status       string         `json:"status" db:"status"`
+	CreatedAt    string         `json:"created_at" db:"created_at"`
+	AccessedAt   *string        `json:"accessed_at" db:"accessed_at"`
+	ExpiresAt    *string        `json:"expires_at" db:"expires_at"`
+	Scopes       pq.StringArray `json:"scopes" db:"scopes"`
+	TokenSuffix  string         `json:"token_suffix" db:"token_suffix"`
+	OwnerID      string         `json:"owner_id" db:"owner_id"`
+	OwnerName    string         `json:"owner_name" db:"owner_name"`
+	LastProvider string         `json:"last_provider"`
+	LastModel    string         `json:"last_model"`
 	// GatewayPolicy is folded from llm_gateway_access_policies; nil when unrestricted.
 	GatewayPolicy *GatewayPolicy `json:"gateway_policy"`
 	Limits        []TokenLimit   `json:"limits"`
 	Usage         *TokenUsage    `json:"usage"`
+}
+
+// TenantTokenListRequest pages every key in the caller's tenant; UserID and Kind narrow it.
+type TenantTokenListRequest struct {
+	UserID string `json:"user_id" mapstructure:"user_id"`
+	Kind   string `json:"kind" mapstructure:"kind"`
+	Limit  int    `json:"limit" mapstructure:"limit"`
+	Offset int    `json:"offset" mapstructure:"offset"`
+}
+
+type TenantTokenListResponse struct {
+	Tokens []UserAuthToken `json:"tokens"`
+	Total  int             `json:"total"`
 }
 
 // TokenUsage is a gateway key's consumption in the current calendar month.
@@ -225,4 +243,16 @@ type UserUpdateProfileRequest struct {
 type UserUpdateProfileResponse struct {
 	Status  string `json:"status"`
 	Message string `json:"message"`
+}
+
+// TenantTokenDeleteRequest revokes any key in the caller's tenant; id only, never a name.
+type TenantTokenDeleteRequest struct {
+	Id string `json:"id" mapstructure:"id"`
+}
+
+type TenantTokenDeleteResponse struct {
+	Id      string `json:"id"`
+	Name    string `json:"name"`
+	OwnerId string `json:"owner_id"`
+	Status  string `json:"status"`
 }

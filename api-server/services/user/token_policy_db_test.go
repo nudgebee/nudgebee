@@ -84,12 +84,13 @@ func TestKeyGatewayPolicy_DB(t *testing.T) {
 		}
 		return tx.Commit()
 	}
-	policyOf := func(t *testing.T, tenant, user, key string) *GatewayPolicy {
+	policyOf := func(t *testing.T, key string) *GatewayPolicy {
 		tx, err := base.BeginTxx(ctx, nil)
 		require.NoError(t, err)
 		defer func() { _ = tx.Rollback() }()
-		got, err := loadKeyGatewayPolicies(tx, tenant, user)
+		got, err := loadGatewayPoliciesForKeys(tx, []string{key})
 		require.NoError(t, err)
+		require.LessOrEqual(t, len(got), 1, "only the asked key")
 		return got[key]
 	}
 	const tenant, otherTenant = "aaaaaaaa-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-000000000002"
@@ -120,7 +121,7 @@ func TestKeyGatewayPolicy_DB(t *testing.T) {
 		require.NoError(t, first.Commit())
 		require.NoError(t, <-done)
 
-		assert.Equal(t, []string{"model-b"}, policyOf(t, tenant, user, key).Models)
+		assert.Equal(t, []string{"model-b"}, policyOf(t, key).Models)
 	})
 
 	t.Run("rows follow the key when its owner switches tenant", func(t *testing.T) {
@@ -130,11 +131,11 @@ func TestKeyGatewayPolicy_DB(t *testing.T) {
 		// What UpdateUserAccessed does when the owner opens the app in another tenant.
 		_, err := base.ExecContext(ctx, `UPDATE user_auths SET tenant_id = $1 WHERE "user" = $2`, otherTenant, user)
 		require.NoError(t, err)
-		assert.Equal(t, []string{"gpt-4o-mini"}, policyOf(t, otherTenant, user, key).Models)
+		assert.Equal(t, []string{"gpt-4o-mini"}, policyOf(t, key).Models)
 
 		// An edit from the new tenant replaces the rows written in the old one.
 		require.NoError(t, edit(base, otherTenant, user, key, &GatewayPolicy{Models: []string{"claude-haiku-4-5"}}))
-		assert.Equal(t, []string{"claude-haiku-4-5"}, policyOf(t, otherTenant, user, key).Models)
+		assert.Equal(t, []string{"claude-haiku-4-5"}, policyOf(t, key).Models)
 	})
 
 	t.Run("rows take the stored ids, whatever form the session sent", func(t *testing.T) {
@@ -142,8 +143,8 @@ func TestKeyGatewayPolicy_DB(t *testing.T) {
 		key := newKey(t, tenant, user)
 		require.NoError(t, edit(base, strings.ToUpper(tenant), strings.ToUpper(user), strings.ToUpper(key),
 			&GatewayPolicy{Endpoints: []string{"chat"}}))
-		assert.Equal(t, []string{"chat"}, policyOf(t, tenant, user, key).Endpoints)
-		assert.Nil(t, policyOf(t, tenant, user, newKey(t, tenant, user)), "a key with no rows is unrestricted")
+		assert.Equal(t, []string{"chat"}, policyOf(t, key).Endpoints)
+		assert.Nil(t, policyOf(t, newKey(t, tenant, user)), "a key with no rows is unrestricted")
 	})
 
 	t.Run("a key row must name its user and a known dimension", func(t *testing.T) {

@@ -6248,6 +6248,30 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin_readonly
       - role: account_admin
+  - name: users_list_tenant_tokens
+    comment: List every API key in the tenant (admins; never the secret)
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: super_admin_readonly
+  - name: users_delete_tenant_token
+    comment: Revoke any API key in the tenant by id (tenant admins)
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
   - name: cloud_check_credentials
     definition:
       kind: synchronous
@@ -7764,6 +7788,8 @@ custom_types:
     - name: FetchLogLabelValuesRequest
     - name: UserTokenCreateRequest
     - name: UserTokenDeleteRequest
+    - name: TenantTokenListRequest
+    - name: TenantTokenDeleteRequest
     - name: TraceServiceMapRequest
     - name: DefaultProviderRequest
     - name: FetchMetricsListRequest
@@ -8257,6 +8283,8 @@ custom_types:
     - name: UserTokenDeleteResponse
     - name: UserAuthTokenResponse
     - name: UserAuthToken
+    - name: TenantTokenListResponse
+    - name: TenantTokenDeleteResponse
     - name: ServiceApplicationId
     - name: Instance
     - name: Link

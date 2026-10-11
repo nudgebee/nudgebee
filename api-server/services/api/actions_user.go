@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"log/slog"
 	"nudgebee/services/audit"
 	"nudgebee/services/common"
@@ -11,6 +12,15 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// tokenActionStatus keeps a 403/404 from the key service instead of folding it into 400.
+func tokenActionStatus(err error) int {
+	var ce common.Error
+	if errors.As(err, &ce) && ce.Code != 0 {
+		return ce.Code
+	}
+	return 400
+}
 
 func handleUserAction(actionPayload *ActionRequest, c *gin.Context, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
 	tenantRequest := actionPayload.Input
@@ -297,6 +307,59 @@ func handleUserAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 		}
 
 		c.JSON(200, resp)
+		return
+	case "users_list_tenant_tokens":
+		var request user.TenantTokenListRequest
+		if raw, ok := tenantRequest["user"].(map[string]any); ok {
+			if err := common.UnmarshalMapToStruct(raw, &request); err != nil {
+				c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+				return
+			}
+		}
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		resp, err := user.ListTenantTokens(ctx, request)
+		if err != nil {
+			c.JSON(tokenActionStatus(err), common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, resp)
+		return
+	case "users_delete_tenant_token":
+		var request user.TenantTokenDeleteRequest
+		raw, _ := tenantRequest["user"].(map[string]any)
+		if err := common.UnmarshalMapToStruct(raw, &request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		resp, err := user.DeleteTenantToken(ctx, request)
+		if err != nil {
+			c.JSON(tokenActionStatus(err), common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, resp)
+		if err := audit.PublishAuditEvent(ctx, audit.Audit{
+			TenantId:      ctx.GetSecurityContext().GetTenantId(),
+			UserId:        ctx.GetSecurityContext().GetUserId(),
+			EventTime:     time.Now(),
+			EventCategory: audit.EventCategoryUser,
+			EventType:     audit.EventTypeUserLoginDelete,
+			EventState:    map[string]any{"request_id": request.Id, "id": resp.Id, "name": resp.Name, "owner_id": resp.OwnerId},
+			EventActor:    audit.EventActorApiService,
+			EventTarget:   "user_auth_token",
+			EventAction:   audit.EventActionDelete,
+			EventStatus:   audit.EventStatusSuccess,
+		}); err != nil {
+			ctx.GetLogger().Error("failed to publish audit event", "error", err)
+		}
 		return
 	case "users_delete_one":
 		var request user.UserDeleteRequest

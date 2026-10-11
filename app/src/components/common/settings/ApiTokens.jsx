@@ -1,17 +1,31 @@
 import React, { useEffect, useState } from 'react';
+import { useRouter } from 'next/router';
 import { Box, Typography } from '@mui/material';
 import { Modal } from '@ui/Modal';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
+import { Banner } from '@ui/Banner';
 import { Button } from '@ui/Button';
+import { ToggleGroup } from '@ui/ToggleGroup';
+import { Select } from '@ui/Select';
 import { toast as snackbar } from '@ui/Toast';
 import { ds } from 'src/utils/colors';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import InfoIcon from '@mui/icons-material/Info';
 import apiUser from '@api1/user/';
 import { getAppBaseUrl } from '@lib/externalUrls';
+import { canManageGatewayUserAccess, canViewGatewayUserAccess } from '@lib/auth';
+import { listTenantUsers } from '@api1/gateway-config';
 import TokenList from './TokenList';
+import TenantTokenList from './TenantTokenList';
 import CreateTokenDialog from './CreateTokenDialog';
 import { EditGatewayAccessDialog } from './GatewayRestrictions';
+import { KIND_LABELS } from './keyKinds';
+
+const TENANT_PAGE_SIZE = 50;
+const NO_TENANT_FILTER = { userId: '', kind: '' };
+const KIND_FILTER_OPTIONS = [{ value: '', label: 'All types' }, ...Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }))];
+// Where an admin narrows a user without revoking their keys.
+const USER_ACCESS_PATH = '/user-management#ai-tools/gateway';
 
 // `defaultKind` is the type the Create form starts on. Pass a single-purpose kind, never
 // 'all': a key that opens both the app API and the gateway must only ever be picked on purpose.
@@ -26,9 +40,30 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
   const [deleteDialog, setDeleteDialog] = useState({ open: false, token: null });
   const [editAccessToken, setEditAccessToken] = useState(null);
   const [savingAccess, setSavingAccess] = useState(false);
+  const isKeyAdmin = canViewGatewayUserAccess();
+  const canRevokeAny = canManageGatewayUserAccess();
+  const router = useRouter();
+  const [view, setView] = useState('mine');
+  const [tenantTokens, setTenantTokens] = useState({ tokens: [], total: 0 });
+  const [tenantPage, setTenantPage] = useState(0);
+  const [tenantPageSize, setTenantPageSize] = useState(TENANT_PAGE_SIZE);
+  const [tenantError, setTenantError] = useState(null);
+  const [tenantLoaded, setTenantLoaded] = useState(false);
+  const [tenantFilter, setTenantFilter] = useState(NO_TENANT_FILTER);
+  const [ownerOptions, setOwnerOptions] = useState([]);
+  const [adminRevoke, setAdminRevoke] = useState(null);
 
   useEffect(() => {
     if (open) {
+      // The modal stays mounted between opens, so each open starts back on My keys.
+      setView('mine');
+      setTenantTokens({ tokens: [], total: 0 });
+      setTenantPage(0);
+      setTenantPageSize(TENANT_PAGE_SIZE);
+      setTenantError(null);
+      setTenantLoaded(false);
+      setTenantFilter(NO_TENANT_FILTER);
+      setAdminRevoke(null);
       fetchTokens();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -47,6 +82,77 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
     } catch (error) {
       snackbar.error(`Failed to fetch API tokens - ${parseHttpResponseBodyMessage(error)}`);
       setTokens([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchTenantTokens = async (page = tenantPage, filter = tenantFilter, size = tenantPageSize) => {
+    try {
+      setLoading(true);
+      const response = await apiUser.listTenantTokens({
+        ...(filter.userId && { userId: filter.userId }),
+        ...(filter.kind && { kind: filter.kind }),
+        limit: size,
+        offset: page * size,
+      });
+      if (response.errors && response.errors.length > 0) {
+        const message = `Failed to fetch tenant API keys - ${parseHttpResponseBodyMessage(response)}`;
+        setTenantError(message);
+        snackbar.error(message);
+        return;
+      }
+      setTenantError(null);
+      const { tokens: rows = [], total = 0 } = response.data;
+      // A revoke can empty the last page; step back once, only to an earlier page.
+      const lastPage = Math.max(0, Math.ceil(total / size) - 1);
+      if (rows.length === 0 && lastPage < page) {
+        await fetchTenantTokens(lastPage, filter, size);
+        return;
+      }
+      setTenantTokens(response.data);
+      setTenantPage(page);
+      setTenantPageSize(size);
+      setTenantLoaded(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const changeTenantFilter = (patch) => {
+    const next = { ...tenantFilter, ...patch };
+    setTenantFilter(next);
+    fetchTenantTokens(0, next);
+  };
+
+  // Owner names for the filter; without them the filter still offers "All owners".
+  const loadOwnerOptions = async () => {
+    try {
+      const users = await listTenantUsers();
+      setOwnerOptions(users.map((u) => ({ value: u.id, label: u.display_name || u.username || u.id })));
+    } catch {
+      setOwnerOptions([]);
+    }
+  };
+
+  const manageUserAccess = () => {
+    handleClose();
+    router.push(USER_ACCESS_PATH);
+  };
+
+  const confirmAdminRevoke = async () => {
+    try {
+      setLoading(true);
+      const response = await apiUser.deleteTenantToken({ id: adminRevoke.id });
+      if (response.errors && response.errors.length > 0) {
+        snackbar.error(`Failed to revoke API key - ${parseHttpResponseBodyMessage(response)}`);
+        return;
+      }
+      snackbar.success(`Revoked ${adminRevoke.name}`);
+      setAdminRevoke(null);
+      // The revoked key may be the admin's own.
+      fetchTokens();
+      await fetchTenantTokens();
     } finally {
       setLoading(false);
     }
@@ -211,20 +317,84 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
 
           {/* Tokens List */}
           <Box>
-            <Box sx={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', mb: ds.space[4] }}>
-              <Button
-                size='md'
-                onClick={() => {
-                  setShowCreateDialog(true);
-                  setCreatedToken(null);
-                  setCreatedTokenName(null);
-                }}
-              >
-                Create Token
-              </Button>
-            </Box>
+            {isKeyAdmin && (
+              <Box sx={{ mb: ds.space[4] }}>
+                <ToggleGroup
+                  selection='single'
+                  size='sm'
+                  ariaLabel='Which API keys'
+                  value={view}
+                  onChange={(next) => {
+                    setView(next);
+                    if (next === 'all') {
+                      fetchTenantTokens(0);
+                      if (ownerOptions.length === 0) loadOwnerOptions();
+                    }
+                  }}
+                  options={[
+                    { value: 'mine', label: 'My keys' },
+                    { value: 'all', label: 'All keys' },
+                  ]}
+                />
+              </Box>
+            )}
+            {view === 'mine' && (
+              <>
+                <Box sx={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', mb: ds.space[4] }}>
+                  <Button
+                    size='md'
+                    onClick={() => {
+                      setShowCreateDialog(true);
+                      setCreatedToken(null);
+                      setCreatedTokenName(null);
+                    }}
+                  >
+                    Create Token
+                  </Button>
+                </Box>
 
-            <TokenList tokens={tokens} onRevoke={revokeToken} onEditAccess={setEditAccessToken} />
+                <TokenList tokens={tokens} onRevoke={revokeToken} onEditAccess={setEditAccessToken} />
+              </>
+            )}
+            {view === 'all' && (
+              <Box sx={{ display: 'flex', gap: ds.space[3], mb: ds.space[4] }}>
+                <Box sx={{ flex: 1 }}>
+                  <Select
+                    label='Owner'
+                    searchable
+                    size='sm'
+                    id='tenant-keys-owner'
+                    options={[{ value: '', label: 'All owners' }, ...ownerOptions]}
+                    value={tenantFilter.userId}
+                    onChange={(userId) => changeTenantFilter({ userId: userId || '' })}
+                  />
+                </Box>
+                <Box sx={{ flex: 1 }}>
+                  <Select
+                    label='Type'
+                    size='sm'
+                    id='tenant-keys-kind'
+                    options={KIND_FILTER_OPTIONS}
+                    value={tenantFilter.kind}
+                    onChange={(kind) => changeTenantFilter({ kind: kind || '' })}
+                  />
+                </Box>
+              </Box>
+            )}
+            {view === 'all' && tenantError && <Banner tone='critical' message={tenantError} />}
+            {view === 'all' && !tenantError && tenantLoaded && (
+              <TenantTokenList
+                tokens={tenantTokens.tokens}
+                total={tenantTokens.total}
+                page={tenantPage}
+                pageSize={tenantPageSize}
+                onPageChange={(next, size) => fetchTenantTokens(next, tenantFilter, size)}
+                filtered={Boolean(tenantFilter.userId || tenantFilter.kind)}
+                canRevoke={canRevokeAny}
+                onRevoke={setAdminRevoke}
+                onManageAccess={manageUserAccess}
+              />
+            )}
           </Box>
 
           {/* Action Buttons */}
@@ -333,6 +503,22 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
       >
         <Typography sx={{ color: ds.gray[500], fontSize: ds.text.bodyLg, lineHeight: '20px' }}>
           Are you sure you want to delete &quot;{deleteDialog.token?.name}&quot;? This action cannot be undone.
+        </Typography>
+      </Modal>
+
+      <Modal
+        open={!!adminRevoke}
+        onClose={() => setAdminRevoke(null)}
+        width='sm'
+        title='Revoke API key'
+        confirmText='Revoke key'
+        confirmTone='danger'
+        onConfirm={confirmAdminRevoke}
+        loader={loading}
+      >
+        <Typography sx={{ color: ds.gray[500], fontSize: ds.text.bodyLg, lineHeight: '20px' }}>
+          &quot;{adminRevoke?.name}&quot; belongs to {adminRevoke?.owner_name || 'another user'}. It stops working within a minute and cannot be
+          restored. To limit a user without revoking, use AI Tools → Gateway → User access.
         </Typography>
       </Modal>
     </>
