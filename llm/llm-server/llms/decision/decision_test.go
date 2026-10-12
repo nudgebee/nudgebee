@@ -114,7 +114,8 @@ func TestChoose_Live(t *testing.T) {
 				"An automation is open. Which action does the user want?", criteria)
 			require.NoError(t, err)
 			assert.Equal(t, "EDIT", choice.Choice)
-			t.Logf("%s: choice=%s confidence=%v probabilities=%v model=%s tokens=%d", model, choice.Choice, choice.Confidence, choice.Probabilities, choice.Model, choice.InputTokens)
+			require.NotNil(t, choice.Confidence)
+			t.Logf("%s: choice=%s confidence=%.3f probabilities=%v model=%s tokens=%d", model, choice.Choice, *choice.Confidence, choice.Probabilities, choice.Model, choice.InputTokens)
 		})
 	}
 }

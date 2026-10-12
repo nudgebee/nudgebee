@@ -16,15 +16,15 @@ const PROVIDER_OPTIONS = [
 ];
 
 const MODEL_OPTIONS = [
-  { value: 'clef-flash', label: 'clef-flash (faster, cheaper)' },
-  { value: 'clef', label: 'clef' },
+  { value: 'clef', label: 'clef (recommended)' },
+  { value: 'clef-flash', label: 'clef-flash (cheaper)' },
 ];
 
 export const DEFAULT_MIN_CONFIDENCE = '0.9';
 
 export const emptyDecisionState = () => ({
   provider: '',
-  model: 'clef-flash',
+  model: 'clef',
   endpoint: '',
   apiKey: '',
   minConfidence: DEFAULT_MIN_CONFIDENCE,

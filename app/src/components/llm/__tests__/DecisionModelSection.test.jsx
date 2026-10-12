@@ -28,7 +28,8 @@ describe('decision model settings', () => {
     expect(state).toMatchObject({ provider: DECISION_PROVIDER, model: 'clef', endpoint: 'acct', minConfidence: '0.85' });
   });
 
-  it('fills the default minimum confidence', () => {
+  it('fills the default model and minimum confidence', () => {
+    expect(emptyDecisionState().model).toBe('clef');
     expect(decisionStateFromConfig({}).minConfidence).toBe(DEFAULT_MIN_CONFIDENCE);
     expect(decisionStateFromConfig(null)).toEqual(emptyDecisionState());
   });
