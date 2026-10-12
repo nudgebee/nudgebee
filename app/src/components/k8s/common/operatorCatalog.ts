@@ -61,6 +61,18 @@ export function getOperatorsForLabel(descriptors: OperatorDescriptor[] | undefin
   );
 }
 
+// ClickHouse logs (otel_clickhouse) derive level from a fixed set of words
+// (critical, error, warning, info, debug, unknown), and the backend refuses a
+// pattern operator on it (contains, like), so a chip built with one always fails.
+const OTEL_CLICKHOUSE_LEVEL_OPERATORS = ['_eq', '_neq', '_in', '_not_in', '_regex', '_nregex'];
+
+// narrowOperatorsForLabel drops the operators one provider refuses on one label,
+// which the data-type filter cannot see: level is a string like any other.
+export function narrowOperatorsForLabel(options: OperatorOption[], logProvider?: string, labelName?: string): OperatorOption[] {
+  if (logProvider !== 'otel_clickhouse' || labelName !== 'level') return options;
+  return options.filter((o) => OTEL_CLICKHOUSE_LEVEL_OPERATORS.includes(o.value));
+}
+
 // Inverse map from legacy UI values (CONTAINS, NOT ILIKE, =, ...) to backend
 // tokens. Mirrors lineOperatorMap + operatorMap in LogGenerateQuery.js but runs
 // on the INBOUND (hydration) path for persisted URLs and saved queries. Stays

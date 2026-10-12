@@ -22,7 +22,8 @@ export const generateQuery = (
     logProvider === 'ES' ||
     (logProvider === 'solarwinds' && providerType === 'logs') ||
     (logProvider === 'openobserve' && providerType === 'logs') ||
-    (logProvider === 'cubeapm' && providerType === 'logs');
+    (logProvider === 'cubeapm' && providerType === 'logs') ||
+    (logProvider === 'otel_clickhouse' && providerType === 'logs');
 
   const hasValidOperations = isLogsProvider && operations?.some((op) => op.value && op.value.trim() !== '');
 
@@ -237,7 +238,8 @@ export const generateQuery = (
     logProvider === 'ES' ||
     (logProvider === 'solarwinds' && providerType == 'logs') ||
     (logProvider === 'openobserve' && providerType == 'logs') ||
-    (logProvider === 'cubeapm' && providerType == 'logs')
+    (logProvider === 'cubeapm' && providerType == 'logs') ||
+    (logProvider === 'otel_clickhouse' && providerType === 'logs')
   ) {
     const operatorMap = {
       // Legacy UI values (kept for persisted state + providers still emitting them)

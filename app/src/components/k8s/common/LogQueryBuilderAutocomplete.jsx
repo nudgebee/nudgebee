@@ -34,7 +34,7 @@ import { Input } from '@ui/Input';
 import DsTooltip from '@ui/Tooltip';
 import { generateQuery } from './LogGenerateQuery';
 import { getLineOperators } from './QueryBuilder';
-import { getOperatorsForLabel, getOperatorDisplayLabel, normalizeLegacyOperator } from './operatorCatalog';
+import { getOperatorsForLabel, getOperatorDisplayLabel, narrowOperatorsForLabel, normalizeLegacyOperator } from './operatorCatalog';
 
 // TODO: move server-side when service_map/knowledge_graph gain a backend
 // GetSupportedOperators. Both are served by triage/service_map.go and
@@ -868,7 +868,11 @@ const LogQueryBuilderAutocomplete = ({
   // Labels with no known type keep the full list.
   const getLabelDataType = (labelName) => labels.find((l) => (l.label || l.index || l.field) === labelName)?.data_type;
 
-  const operatorsForLabel = (labelName) => resolveMockOperators(logProvider, operatorDescriptors, getLabelDataType(labelName));
+  const operatorsForLabel = (labelName) =>
+    narrowOperatorsForLabel(resolveMockOperators(logProvider, operatorDescriptors, getLabelDataType(labelName)), logProvider, labelName);
+
+  // Providers whose logs builder offers line filters (the Operations panel).
+  const hasLineOperations = ['loki', 'otel_clickhouse', 'newrelic', 'dynatrace', 'loggly'].includes(logProvider);
 
   // Fetch values for a specific label
   const fetchValuesForLabel = async (labelName) => {
@@ -937,7 +941,8 @@ const LogQueryBuilderAutocomplete = ({
             logProvider == 'hive' ||
             logProvider == 'openobserve' ||
             logProvider == 'cubeapm' ||
-            logProvider == 'splunk_enterprise') &&
+            logProvider == 'splunk_enterprise' ||
+            logProvider === 'otel_clickhouse') &&
           providerType == 'logs'
         ) {
           response = await observability.fetchLogLabelValues({
@@ -2172,9 +2177,9 @@ const LogQueryBuilderAutocomplete = ({
             )}
           </Box>
 
-          {/* Operations for Loki, New Relic, Dynatrace, and Loggly — logs only.
+          {/* Operations for Loki, ClickHouse logs, New Relic, Dynatrace, and Loggly — logs only.
               Operations are line/log filters; the metrics screen never shows them, regardless of integration. */}
-          {['loki', 'newrelic', 'dynatrace', 'loggly'].includes(logProvider) && providerType !== 'metrics' && activeBlockId === block.id && (
+          {hasLineOperations && providerType !== 'metrics' && activeBlockId === block.id && (
             <Box
               sx={{
                 width: '50%',

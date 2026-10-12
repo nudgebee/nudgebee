@@ -140,6 +140,9 @@ const QueryModeSwitcher = ({
     switch (provider) {
       case 'loki':
         return 'Example: {job="api-server"} |= "error" | json | status >= 500';
+      case 'otel_clickhouse':
+        // LogQL, translated to SQL over the cluster's otel_logs table.
+        return 'Example: {namespace="prod", app="api-server"} |= "error" | json | status >= 500';
       case 'prometheus':
       case 'chronosphere':
       case 'victoria-metrics':
@@ -278,7 +281,7 @@ const QueryModeSwitcher = ({
   }, [initialQuery]);
 
   useEffect(() => {
-    const whichDefaultMode = logProvider == 'signoz' || logProvider == 'loggly' || logProvider == 'loki' ? 'build' : 'code';
+    const whichDefaultMode = ['signoz', 'loggly', 'loki', 'otel_clickhouse'].includes(logProvider) ? 'build' : 'code';
     setCurrentQLEditor(whichDefaultMode);
   }, [logProvider]);
 
@@ -883,6 +886,8 @@ const QueryModeSwitcher = ({
         return 'Elasticsearch DSL';
       case 'loki':
         return 'Loki';
+      case 'otel_clickhouse':
+        return 'LogQL';
       default:
         return snakeToTitleCase(type);
     }
