@@ -92,7 +92,8 @@ const tooltipStyles = {
   padding: 0,
   border: '1px solid var(--ds-blue-400)',
   borderRadius: ds.radius.lg,
-  maxWidth: ds.space.mul(1, 135),
+  // Must fit the widest popover (Message Metrics: 145 + padding), or its right-hand columns are clipped.
+  maxWidth: ds.space.mul(1, 155),
   maxHeight: 'none',
   overflow: 'visible',
 };
