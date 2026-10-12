@@ -249,6 +249,16 @@ type appConfig struct {
 	// references it, and stuck-delivery recovery only looks back 30 minutes.
 	NBRetentionDaysEventIncomingWebhooks int `mapstructure:"nb_retention_days_event_incoming_webhooks"`
 
+	// Retention window for inactive/deleted cloud resources that have no active
+	// references in spends, events, metrics, or application mappings.
+	NBRetentionDaysInactiveCloudResources int `mapstructure:"nb_retention_days_inactive_cloud_resources"`
+
+	// Retention window for telemetry metric points in cloud_resource_metrics.
+	NBRetentionDaysCloudResourceMetrics int `mapstructure:"nb_retention_days_cloud_resource_metrics"`
+
+	// Retention window for workload CPU/memory profile dumps in application_profile.
+	NBRetentionDaysApplicationProfiles int `mapstructure:"nb_retention_days_application_profiles"`
+
 	// Oldest stuck webhook delivery the recovery cron will re-drive. Older ones
 	// are marked skipped: replaying a stale alert re-runs analysis on today's data.
 	StuckWebhookRecoveryMaxAgeMinutes int `mapstructure:"stuck_webhook_recovery_max_age_minutes"`
@@ -607,6 +617,9 @@ func init() {
 	viper.SetDefault("nb_retention_days_recommendations_archive", 30)
 	viper.SetDefault("nb_retention_days_ai_cost_report_dispatch_log", 7)
 	viper.SetDefault("nb_retention_days_event_incoming_webhooks", 14)
+	viper.SetDefault("nb_retention_days_inactive_cloud_resources", 30)
+	viper.SetDefault("nb_retention_days_cloud_resource_metrics", 60)
+	viper.SetDefault("nb_retention_days_application_profiles", 30)
 	viper.SetDefault("stuck_webhook_recovery_max_age_minutes", 60)
 	viper.SetDefault("nb_retention_days_rag_retrieval_trace", 30)
 	viper.SetDefault("nb_retention_days_event_analysis", 90)

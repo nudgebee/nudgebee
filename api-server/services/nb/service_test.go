@@ -18,5 +18,10 @@ func TestGetVersions(t *testing.T) {
 }
 
 func TestJobCleanup(t *testing.T) {
-	CleanupData(security.NewRequestContextForSuperAdmin(slog.Default(), nil, nil), "events_normal")
+	ctx := security.NewRequestContextForSuperAdmin(slog.Default(), nil, nil)
+	CleanupData(ctx, "events_normal")
+	CleanupData(ctx, "event_resolutions_orphaned")
+	CleanupData(ctx, "cloud_resource_metrics")
+	CleanupData(ctx, "cloud_resources_inactive")
+	CleanupData(ctx, "application_profile")
 }

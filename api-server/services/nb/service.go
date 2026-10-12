@@ -369,6 +369,85 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 				) DELETE FROM event_incoming_webhooks WHERE id IN (SELECT id FROM to_del)`,
 					config.Config.NBRetentionDaysEventIncomingWebhooks, cleanupBatchSize),
 			},
+			{
+				// Event resolutions whose parent event was purged by event retention.
+				// event_resolution lacks an FK constraint to events, so this sweep
+				// reclaims orphaned records.
+				Name:      "event_resolutions_orphaned",
+				Metastore: database.Metastore,
+				Batched:   true,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT er.id FROM event_resolution er
+					WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.id = er.event_id)
+					LIMIT %d
+				) DELETE FROM event_resolution WHERE id IN (SELECT id FROM to_del)`,
+					cleanupBatchSize),
+			},
+			{
+				// Granular telemetry metric points accumulated by collectors, OpenCost,
+				// and ETL. Dashboards and anomaly rules only query recent windows (24h-30d).
+				Name:      "cloud_resource_metrics",
+				Metastore: database.Metastore,
+				Batched:   true,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT id FROM cloud_resource_metrics
+					WHERE timestamp < now() - interval '%d days'
+					LIMIT %d
+				) DELETE FROM cloud_resource_metrics WHERE id IN (SELECT id FROM to_del)`,
+					config.Config.NBRetentionDaysCloudResourceMetrics, cleanupBatchSize),
+			},
+			{
+				// Inactive or deleted resources that are past retention and have no
+				// references in spends, events, metrics, application mappings, attributes,
+				// recommendations, relationships, or query logs.
+				//
+				// Guards:
+				// - spends, events, metrics, mappings: preserve historical telemetry and app groups.
+				// - recommendation: prevents cascade-deleting recommendations on inactive resources,
+				//   which would otherwise hit RESTRICT on recommendation_resolution(recommendation_id)
+				//   and abort the batch.
+				// - cloud_resource_relationships (source_id & destination_id) and dw_queries:
+				//   guards against NO ACTION / RESTRICT foreign key violations.
+				// - k8s_pods, k8s_workloads, k8s_nodes, insight, workload_criticality: no FK, so
+				//   deleting would leave dangling resource id links. k8s rows age out via the
+				//   k8s_* sweeps above, after which the resource becomes eligible on a later run.
+				Name:      "cloud_resources_inactive",
+				Metastore: database.Metastore,
+				Batched:   true,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT cr.id FROM cloud_resourses cr
+					WHERE (cr.is_active = false OR cr.status IN ('Deleted', 'Inactive'))
+					  AND cr.updated_at < now() - interval '%d days'
+					  AND NOT EXISTS (SELECT 1 FROM spends s WHERE s.cloud_resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM events e WHERE e.cloud_resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM cloud_resource_metrics crm WHERE crm.cloud_resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM application_group_mapping agm WHERE agm.cloud_resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM cloud_resource_attributes cra WHERE cra.resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM recommendation r WHERE r.resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM cloud_resource_relationships crr WHERE crr.source_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM cloud_resource_relationships crr WHERE crr.destination_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM dw_queries dwq WHERE dwq.resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM k8s_pods kp WHERE kp.cloud_resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM k8s_workloads kw WHERE kw.cloud_resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM k8s_nodes kn WHERE kn.cloud_resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM insight i WHERE i.resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM workload_criticality wc WHERE wc.cloud_resource_id = cr.id)
+					LIMIT %d
+				) DELETE FROM cloud_resourses WHERE id IN (SELECT id FROM to_del)`,
+					config.Config.NBRetentionDaysInactiveCloudResources, cleanupBatchSize),
+			},
+			{
+				// Pod/workload CPU and memory profiling dumps (JSONB profile payloads).
+				Name:      "application_profile",
+				Metastore: database.Metastore,
+				Batched:   true,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT id FROM application_profile
+					WHERE created_at < now() - interval '%d days'
+					LIMIT %d
+				) DELETE FROM application_profile WHERE id IN (SELECT id FROM to_del)`,
+					config.Config.NBRetentionDaysApplicationProfiles, cleanupBatchSize),
+			},
 		}
 
 	jobsToRemove := []dataCleanupJob{}
