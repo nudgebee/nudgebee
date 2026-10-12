@@ -101,7 +101,10 @@ func ListResources(ctx *security.RequestContext, accountId string, request provi
 }
 
 func ListRecommendations(ctx *security.RequestContext, accountId string, filter providers.ListRecommendationsRequest) (providers.ListRecommendationsResponse, error) {
-	recommendations, _, err := getRecommendationsInternal(ctx, accountId, filter)
+	filter.SkipDiskPerformance = true
+	recommendations, account, err := getRecommendationsInternal(ctx, accountId, filter)
+	// Placeholders for rules that could not be evaluated are for the store step only.
+	recommendations.Items, _ = splitUnevaluatedRecommendations(account, recommendations.Items)
 	return recommendations, err
 }
 

@@ -212,6 +212,7 @@ const (
 	AzureDiskUnattachedCMKMissing       = "azure_disk_unattached_cmk_missing"
 	AzureDiskUnattachedUnencrypted      = "azure_disk_unattached_unencrypted"
 	AzureDiskUnattachedVolume           = "orphaned_volume"
+	AzureDiskPerformanceOverprovisioned = "disk_performance_overprovisioned"
 	AzureManagedDiskSKUUpgrade          = "azure_managed_disk_sku_upgrade"
 
 	// =============================================================================

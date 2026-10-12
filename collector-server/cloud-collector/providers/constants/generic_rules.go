@@ -66,6 +66,11 @@ const (
 	// Azure: azure_disk_unattached_volume
 	UnattachedVolume = "unattached_volume"
 
+	// DiskPerformanceOverprovisioned - Attached disks whose provisioned IOPS or
+	// throughput is far above the observed peak
+	// AWS, Azure, GCP: disk_performance_overprovisioned
+	DiskPerformanceOverprovisioned = "disk_performance_overprovisioned"
+
 	// StorageLifecycle - Object storage without lifecycle policies
 	// AWS: aws_s3_lifecycle_policy_not_enabled
 	// Azure: azure_storage_lifecycle_management_disabled

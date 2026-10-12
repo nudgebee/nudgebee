@@ -7,10 +7,12 @@ import (
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/security"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 type storeRecommendationsDeps struct {
@@ -168,12 +170,18 @@ func storeRecommendations(ctx *security.RequestContext, accountId string, filter
 		}, err
 	}
 
+	// A rule that could not be evaluated for a resource reports a placeholder
+	// instead of a recommendation. Take those out before anything is stored, and
+	// keep the rows they stand for out of this sync's archive step below.
+	var protectedKeys []string
+	recommendations.Items, protectedKeys = splitUnevaluatedRecommendations(account, recommendations.Items)
+	archiveQuery, archiveArgs := archiveOpenRecommendationsQuery(accountId, filter.ServiceName, protectedKeys)
+
 	if len(recommendations.Items) == 0 {
 		// Only Open recommendations are this sync's to archive. Anything a user
 		// or agent has touched (InProgress, Assigned, Closed, Dismissed — and any
 		// future status) is not reset by a provider run.
-		query := `update recommendation set status = 'Archive' where cloud_account_id = $1 and status = 'Open' and (resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) or lower((recommendation ->> 'service_name')::varchar) = $2)`
-		r, err := dbms.Exec(query, accountId, strings.ToLower(filter.ServiceName))
+		r, err := dbms.Exec(archiveQuery, archiveArgs...)
 		if err != nil {
 			ctx.GetLogger().Error("unable to archive recommendations", "error", err)
 		}
@@ -295,9 +303,7 @@ func storeRecommendations(ctx *security.RequestContext, accountId string, filter
 	// or agent has claimed or settled must survive the sync with its status
 	// intact, while its payload, savings and severity keep refreshing below.
 	_, err = dbms.DoInTransaction(func(dmt common.DatabaseManagerTx) (any, error) {
-		query := `update recommendation set status = 'Archive' where cloud_account_id = $1 and status = 'Open' and (resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) or lower((recommendation ->> 'service_name')::varchar) = $2 )`
-
-		_, err := dmt.Exec(query, accountId, strings.ToLower(filter.ServiceName))
+		_, err := dmt.Exec(archiveQuery, archiveArgs...)
 		if err != nil {
 			ctx.GetLogger().Error("unable to archive recommendations", "error", err)
 			return nil, err
@@ -323,6 +329,47 @@ func storeRecommendations(ctx *security.RequestContext, accountId string, filter
 		Duration: time.Since(t0),
 		Count:    len(recommendations.Items),
 	}, err
+}
+
+// unevaluatedKeySeparator joins a rule name and an account object id into one key.
+// It is the ASCII unit separator, which appears in neither.
+const unevaluatedKeySeparator = "\x1f"
+
+// splitUnevaluatedRecommendations separates real recommendations from the
+// placeholders a rule reports for resources it could not evaluate in this run (see
+// providers.Recommendation.Unevaluated). It returns the recommendations to store, and
+// for each placeholder a key naming the row it stands for: the rule name joined to the
+// same account object id the row was stored under.
+func splitUnevaluatedRecommendations(account providers.Account, items []providers.Recommendation) (toStore []providers.Recommendation, protectedKeys []string) {
+	if !slices.ContainsFunc(items, func(r providers.Recommendation) bool { return r.Unevaluated }) {
+		return items, nil
+	}
+	toStore = make([]providers.Recommendation, 0, len(items))
+	for _, r := range items {
+		if !r.Unevaluated {
+			toStore = append(toStore, r)
+			continue
+		}
+		accountObjectId := buildExternalResourceId(account.CloudProvider, account.AccountNumber, r.ResourceRegion, r.ResourceServiceName, r.ResourceType, r.ResourceId, "")
+		protectedKeys = append(protectedKeys, r.RuleName+unevaluatedKeySeparator+accountObjectId)
+	}
+	return toStore, protectedKeys
+}
+
+// archiveOpenRecommendationsQuery builds the statement that archives a service's Open
+// recommendations at the start of a sync, before the ones still reported are stored
+// again as Open. Rows named by protectedKeys are left out: their rule could not be
+// evaluated this run, so their not being reported again says nothing about whether
+// they still apply. With no protected keys the statement is exactly what it has
+// always been.
+func archiveOpenRecommendationsQuery(accountId, serviceName string, protectedKeys []string) (string, []any) {
+	query := `update recommendation set status = 'Archive' where cloud_account_id = $1 and status = 'Open' and (resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) or lower((recommendation ->> 'service_name')::varchar) = $2)`
+	args := []any{accountId, strings.ToLower(serviceName)}
+	if len(protectedKeys) > 0 {
+		query += ` and not ((rule_name || chr(31) || coalesce(account_object_id, '')) = ANY($3::text[]))`
+		args = append(args, pq.Array(protectedKeys))
+	}
+	return query, args
 }
 
 func getRecommendationsInternal(ctx *security.RequestContext, accountId string, filter providers.ListRecommendationsRequest) (providers.ListRecommendationsResponse, providers.Account, error) {

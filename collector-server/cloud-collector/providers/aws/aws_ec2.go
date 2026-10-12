@@ -1908,6 +1908,8 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 		}
 	}
 
+	recommendations = append(recommendations, a.diskPerformanceRecommendations(ctx, account, filter, existingResources)...)
+
 	return recommendations, nil
 }
 

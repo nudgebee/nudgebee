@@ -280,10 +280,21 @@ type Recommendation struct {
 	ResourceRegion      string                 `json:"resource_region"  valdiate:"required"`
 	ExternalResourceId  string                 `json:"external_resource_id,omitempty"` // Optional: actual resource's external_resource_id for linking to cloud_resourses
 	DedupeGroup         string                 `json:"dedupe_group,omitempty"`         // Optional: collapses alternative recommendations for the same opportunity in aggregations (e.g. 8 Savings Plan variants for one workload)
+	// Unevaluated marks a placeholder, not a recommendation: the rule RuleName could
+	// not be evaluated for this resource in this run — its usage could not be read,
+	// or the run's work limit was reached first. Nothing is stored for it; it only
+	// tells the store step to leave a row this rule raised earlier for the resource
+	// as it is, since "could not check" must not read as "no longer applies".
+	Unevaluated bool `json:"unevaluated,omitempty"`
 }
 
 type ListRecommendationsRequest struct {
 	ServiceName string `json:"service_name"`
+	// SkipDiskPerformance leaves out the disk performance rule, which reads up to
+	// 30 days of usage per disk from the cloud's metrics API. The read-only list
+	// path sets it: only the store step needs the rule's result. Not settable
+	// from a request body.
+	SkipDiskPerformance bool `json:"-"`
 }
 
 type ListSupportedRecommendationsResponse struct {
