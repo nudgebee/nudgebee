@@ -208,6 +208,7 @@ func buildESMetricsQueryBody(queryType, queryDSL string, startMillis, endMillis 
 			userBody["size"] = esMetricsDefaultSize
 		}
 		esDefaultNewestFirst(userBody)
+		esDefaultSearchTimeout(userBody)
 		if startMillis > 0 && endMillis > 0 {
 			userQuery, ok := userBody["query"].(map[string]any)
 			if !ok {
@@ -248,7 +249,23 @@ func buildESMetricsQueryBody(queryType, queryDSL string, startMillis, endMillis 
 		},
 	}
 	esDefaultNewestFirst(body)
+	esDefaultSearchTimeout(body)
 	return body, nil
+}
+
+// esMetricsSearchTimeout bounds how long Elasticsearch works on one metric
+// query. Our HTTP client gives up at 30s, but without this the cluster keeps
+// running the search: an agent-written aggregation (terms inside a 1m
+// date_histogram over days) could load a customer's cluster for minutes.
+const esMetricsSearchTimeout = "20s"
+
+// esDefaultSearchTimeout sets the server-side search timeout unless the query
+// sets its own. A timed-out search returns what it has with timed_out: true,
+// which esTimedOutNote reports.
+func esDefaultSearchTimeout(body map[string]any) {
+	if _, ok := body["timeout"]; !ok {
+		body["timeout"] = esMetricsSearchTimeout
+	}
 }
 
 // esNewestFirstSort orders raw metric documents newest first on either time
@@ -546,9 +563,16 @@ func runESMetricsQueries(cfg *ElasticsearchConfig, index string, req FetchMetric
 			DocsMatched: &docsMatched,
 		}
 		if len(payload) == 0 && stats.DocsMatched > 0 {
-			qr.Note = esNoSeriesNote(stats)
+			if stats.HasAggregations && stats.HitsReturned == 0 {
+				qr.Note = esEmptyAggregationNote(stats)
+			} else {
+				qr.Note = esNoSeriesNote(stats)
+			}
 		}
 		if note := esDocCapNote(stats, queryBody, req.StartTime, req.EndTime); note != "" && len(payload) > 0 {
+			qr.Note = esJoinNotes(qr.Note, note)
+		}
+		if note := esTimedOutNote(string(bodyBytes)); note != "" {
 			qr.Note = esJoinNotes(qr.Note, note)
 		}
 		if note := esShardFailureNote(string(bodyBytes)); note != "" {
@@ -1870,6 +1894,8 @@ type esParseStats struct {
 	// than DocsMatched says. FirstTs/LastTs bound the parsed points (epoch s).
 	TotalIsLowerBound bool
 	FirstTs, LastTs   int64
+	// HasAggregations: the response carried an aggregations section.
+	HasAggregations bool
 }
 
 func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
@@ -2200,6 +2226,7 @@ func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, 
 	}
 	return results, esParseStats{
 		TotalIsLowerBound:  esHitsTotalIsLowerBound(string(bodyBytes)),
+		HasAggregations:    len(esResp.Aggregations) > 0,
 		FirstTs:            firstTs,
 		LastTs:             lastTs,
 		DocsMatched:        esHitsTotal(string(bodyBytes)),
@@ -2531,4 +2558,27 @@ func esShardFailureNote(raw string) string {
 		reason = " (" + reason + ")"
 	}
 	return fmt.Sprintf("%d of %d shards failed%s, so these results are partial: documents on the failed shards were not read.", failed, total, reason)
+}
+
+// esEmptyAggregationNote is for a size:0 aggregation whose documents matched but
+// whose buckets or metric values came back empty (a null avg/max): almost always
+// a field name that does not exist in these documents. Unlike esNoSeriesNote it
+// asks for a corrected query, because rewriting is the fix here (#39201).
+func esEmptyAggregationNote(stats esParseStats) string {
+	return fmt.Sprintf("The query matched %d document(s) but its aggregation returned no buckets or only empty values. "+
+		"Check that the aggregated and grouped fields exist in these documents (sample one, or list the fields), then rerun with the correct field names.", stats.DocsMatched)
+}
+
+// esTimedOutNote says when Elasticsearch stopped the search at its time limit:
+// it still answers 200 with whatever it had gathered, which otherwise reads as
+// the whole answer.
+func esTimedOutNote(raw string) string {
+	var probe struct {
+		TimedOut bool `json:"timed_out"`
+	}
+	if err := json.Unmarshal([]byte(raw), &probe); err != nil || !probe.TimedOut {
+		return ""
+	}
+	return "Elasticsearch stopped this query at its time limit, so these results are partial. " +
+		"Narrow the window or filters, or use a coarser date_histogram interval or fewer terms buckets."
 }

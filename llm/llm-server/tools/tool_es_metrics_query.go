@@ -39,7 +39,7 @@ func (m ESMetricsQueryTool) Description() string {
 	* Input: Provide a JSON object with:
 	  - "index": (required) the Elasticsearch index pattern to query (e.g. "metrics-*", "metricbeat-*")
 	  - "query": (required) the Elasticsearch DSL query body as a JSON object with "query" filters.
-	* Output: Returns metric time-series results (timestamps and values) extracted from matching document hits.
+	* Output: Returns metric time-series results (timestamps and values) built from matching document hits or aggregation buckets.
 
 	Discovery (no "query" needed):
 	  - {"index": "<pattern>", "discover": "datasets"} lists the datasets in the index, one line each with example fields.
@@ -47,7 +47,7 @@ func (m ESMetricsQueryTool) Description() string {
 
 	Important Notes:
 	* Always include a range filter on @timestamp in your query (default: now-6h).
-	* Do NOT use "aggs" or "size: 0" — the backend extracts time-series from document hits, not aggregation results.
+	* For an average, sum, count or top-N across many documents or series (e.g. overall average latency, the pod with the most memory, failed invoices per team), use an aggregation with "size:0": metric aggs ("avg", "sum", "max", "value_count") optionally inside "terms" (with "order" and "size" for top-N) or "date_histogram". For "aggregate_metric_double" fields (APM "transaction.duration.summary"), the average is a "sum" aggregation divided by a "value_count" aggregation, both on that field (Elasticsearch applies them to its stored sum and value_count sub-fields; this is not a document count). Otherwise use filter queries to get time series.
 	* The query is executed via the metrics_query API which handles Elasticsearch communication.`
 }
 

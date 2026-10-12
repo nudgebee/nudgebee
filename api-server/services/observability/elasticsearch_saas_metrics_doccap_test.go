@@ -88,3 +88,33 @@ func TestESShardFailures(t *testing.T) {
 		esShardFailureNote(`{"_shards":{"total":2,"failed":1}}`))
 	assert.False(t, esRejectedDefaultSort(map[string]any{"sort": esNewestFirstSort()}, nil))
 }
+
+// An aggregation on a field the documents lack returns a null value: the note
+// must ask for a corrected query, not say "do not reformulate" (#39201).
+func TestESEmptyAggregationNote(t *testing.T) {
+	raw := []byte(`{"hits":{"total":{"value":5000,"relation":"eq"},"hits":[]},"aggregations":{"a":{"value":null}}}`)
+	payload, stats, err := parseESMetricsHitsWithStats(raw, 0)
+	require.NoError(t, err)
+	assert.Empty(t, payload)
+	assert.True(t, stats.HasAggregations)
+	assert.Equal(t, 0, stats.HitsReturned)
+	note := esEmptyAggregationNote(stats)
+	assert.Contains(t, note, "matched 5000 document(s) but its aggregation returned no buckets")
+	assert.Contains(t, note, "rerun with the correct field names")
+}
+
+// A metric query must not run unbounded on the customer's cluster (#39201).
+func TestESDefaultSearchTimeout(t *testing.T) {
+	body, err := buildESMetricsQueryBody("dsl", `{"size":0,"aggs":{"a":{"max":{"field":"v"}}}}`, 1, 2)
+	require.NoError(t, err)
+	assert.Equal(t, esMetricsSearchTimeout, body["timeout"])
+	builder, err := buildESMetricsQueryBody("", `[]`, 1, 2)
+	require.NoError(t, err)
+	assert.Equal(t, esMetricsSearchTimeout, builder["timeout"])
+	own, err := buildESMetricsQueryBody("dsl", `{"timeout":"5s","query":{"match_all":{}}}`, 1, 2)
+	require.NoError(t, err)
+	assert.Equal(t, "5s", own["timeout"], "a query's own timeout is kept")
+
+	assert.Contains(t, esTimedOutNote(`{"timed_out":true,"hits":{"hits":[]}}`), "stopped this query at its time limit")
+	assert.Empty(t, esTimedOutNote(`{"timed_out":false,"hits":{"hits":[]}}`))
+}

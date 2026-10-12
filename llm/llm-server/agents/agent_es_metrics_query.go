@@ -210,7 +210,7 @@ func buildESMetricsQueryPrompt(
 	b.WriteString("**Rules:**\n")
 	b.WriteString("  - Select the metric the question is about, and ONLY that metric: filter it by name (`name.keyword`) or by `exists` on its value path, per the schema above. A query with no metric filter returns every field in the index and is never the right answer.\n")
 	b.WriteString("  - Copy names the user gave (namespace, workload, container, node) literally. Do not correct spelling, expand abbreviations, or substitute a similar name you know.\n")
-	b.WriteString("  - Use `bool`/`filter` only. NEVER use `aggs` or `size: 0` — the backend builds the time series from document hits, not from aggregation results.\n")
+	b.WriteString("  - Use `bool`/`filter` queries for time series. For an average, sum, count or top-N over the window, use an aggregation with `size: 0` (metric aggs inside `terms` or `date_histogram`); the backend turns aggregation buckets into series too.\n")
 	b.WriteString("  - If the question cannot be answered from the fields above, still return your best query rather than prose. The user can edit it.\n")
 
 	return b.String()
