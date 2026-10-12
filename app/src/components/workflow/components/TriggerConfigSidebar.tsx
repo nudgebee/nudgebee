@@ -14,7 +14,6 @@ import apiKubernetes1 from '@api1/kubernetes1';
 import apiIntegrations from '@api1/integrations';
 import recommendationApi from '@api1/recommendation';
 import { formatRuleName } from '@components/optimise-new/utils';
-import { titleCaseForAggregationKey } from 'src/utils/common';
 import CopyButton from '@shared/buttons/CopyButton';
 import {
   STRUCTURED_FILTER_FIELDS,
@@ -32,6 +31,7 @@ import {
   type FilterValuesByAccount,
   type ScopeAccount,
   accountsSilencedByFilter,
+  eventTypeLabel,
   mergeFilterOptions,
   namespaceFieldCopy,
   silencedAccountsMessage,
@@ -315,7 +315,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   const namespaceCopy = namespaceFieldCopy(filterScopeAccounts.map((a) => providerOf(a.id) || ''));
   const mergedFilterOptions = useMemo(
     () => ({
-      event_type: mergeFilterOptions('event_type', filterScopeAccounts, filterValuesByAccount, filterEventType, titleCaseForAggregationKey),
+      event_type: mergeFilterOptions('event_type', filterScopeAccounts, filterValuesByAccount, filterEventType, eventTypeLabel),
       namespace: mergeFilterOptions('namespace', filterScopeAccounts, filterValuesByAccount, filterNamespace),
       source: mergeFilterOptions('source', filterScopeAccounts, filterValuesByAccount, filterSource),
     }),
@@ -1504,7 +1504,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                 >
                   <FormField
                     label='Event Type'
-                    description='Aggregation key from the event rules catalog'
+                    description='Alert name from the event rules catalog. Cloud alarms are listed per resource; picking one matches only that resource'
                     value={filterEventType}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                       handleStructuredFilterChange('event_type', (e.target.value as unknown as string[]) || [])

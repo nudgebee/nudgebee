@@ -1,3 +1,4 @@
+import { titleCaseForAggregationKey } from 'src/utils/common';
 import { isCloudProvider, structuredFieldDescription, structuredFieldLabel } from './eventFilter';
 
 /** Filter fields whose options come from an account's own events; priority is a fixed list. */
@@ -45,6 +46,28 @@ export const mergeFilterOptions = (
     .filter((v) => !seenIn.has(v))
     .map((value) => ({ value, label: loaded.length > 0 ? `${formatLabel(value)} · not seen` : formatLabel(value) }));
   return [...unseen, ...options];
+};
+
+// Account may be empty (S3) or non-numeric (AWS-managed `arn:aws:iam::aws:policy/...`).
+const ARN_RE = /^arn:[\w-]+:[\w-]+:[\w-]*:[\w-]*:(.+)$/;
+
+// Short name for an ARN's resource part; load balancers and target groups end in a random id.
+const arnResourceName = (resource: string): string => {
+  const parts = resource.split(/[/:]/).filter(Boolean);
+  if (parts[0] === 'loadbalancer' && ['app', 'net', 'gwy'].includes(parts[1]) && parts[2]) return parts[2];
+  if (parts[0] === 'targetgroup' && parts[1]) return parts[1];
+  return parts[parts.length - 1] || resource;
+};
+
+/**
+ * Event Type option label. Cloud alarm keys are `<alert>-<resource ARN>` (one per resource), so
+ * they read as `<Alert> · <resource name>`; the value, which matching compares, is unchanged.
+ */
+export const eventTypeLabel = (value: string): string => {
+  const at = value.indexOf('-arn:');
+  const resource = at > 0 ? ARN_RE.exec(value.slice(at + 1))?.[1] : undefined;
+  if (!resource) return titleCaseForAggregationKey(value);
+  return `${titleCaseForAggregationKey(value.slice(0, at))} · ${arnResourceName(resource)}`;
 };
 
 export interface SilencedAccount {
