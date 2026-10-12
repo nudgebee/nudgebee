@@ -5,12 +5,16 @@ import (
 	"math"
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule/playbooks"
+	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/testenv"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -403,4 +407,40 @@ func TestAutoExecuteByWorkloadIntegration(t *testing.T) {
 	require.NoError(t, mErr)
 	t.Logf("labels: %v", resp.GetAdditionalInfo())
 	t.Logf("metric data:\n%s", string(data))
+}
+
+func mockMetastore(t *testing.T) sqlmock.Sqlmock {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) {
+		return &database.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}, nil
+	})
+	t.Cleanup(func() { database.RegisterDatabaseManagerHook(database.Metastore, nil) })
+	return mock
+}
+
+func TestGetValidPrometheusExpressionFromEventRules_Sources(t *testing.T) {
+	expectedQuery := `SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' AND source IN ('prometheus', 'prometheus_alertmanager_webhook', 'prometheus_user', 'nudgebee', 'chronosphere', 'chronosphere_user') ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1`
+
+	mock := mockMetastore(t)
+	alertName := "NodeHighCpu"
+	accountID := "acc-123"
+	chronosphereExpr := `100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 90`
+
+	mock.ExpectQuery(regexp.QuoteMeta(expectedQuery)).
+		WithArgs(alertName, accountID).
+		WillReturnRows(sqlmock.NewRows([]string{"expr"}).AddRow(chronosphereExpr))
+
+	ctx := playbooks.NewPlaybookActionContext("tenant-1", accountID, slog.Default(), playbooks.PlaybookEvent{
+		Name: alertName,
+	})
+
+	action := &prometheusAction{}
+	expr, err := action.getValidPrometheusExpressionFromEventRules(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, chronosphereExpr, expr)
+	require.NoError(t, mock.ExpectationsWereMet())
 }

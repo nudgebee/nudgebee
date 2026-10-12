@@ -144,7 +144,7 @@ func (a *prometheusAction) getValidPrometheusExpressionFromEventRules(ctx playbo
 
 	for _, name := range namesToTry {
 		var expr string
-		err = dbms.Db.QueryRowx("SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1",
+		err = dbms.Db.QueryRowx("SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' AND source IN ('prometheus', 'prometheus_alertmanager_webhook', 'prometheus_user', 'nudgebee', 'chronosphere', 'chronosphere_user') ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1",
 			name, ctx.GetAccountId()).Scan(&expr)
 		if err != nil {
 			continue
