@@ -1011,13 +1011,7 @@ const K8sIntegrationTile = () => {
           </ListingLayout.Body>
         ) : (
           <>
-            <ListingLayout.Toolbar
-              actions={
-                <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], whiteSpace: 'nowrap' }}>
-                  {totalCount} {totalCount === 1 ? 'cluster' : 'clusters'}
-                </Typography>
-              }
-            >
+            <ListingLayout.Toolbar>
               <FilterDropdown
                 id='k8s-status-filter'
                 label='Status'

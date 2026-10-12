@@ -1495,13 +1495,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
           </ListingLayout.Body>
         ) : (
           <>
-            <ListingLayout.Toolbar
-              actions={
-                <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], whiteSpace: 'nowrap' }}>
-                  {totalCount} {totalCount === 1 ? 'account' : 'accounts'}
-                </Typography>
-              }
-            >
+            <ListingLayout.Toolbar>
               <FilterDropdown
                 id={`${cloudProvider?.toLowerCase()}-status-filter`}
                 label='Status'
