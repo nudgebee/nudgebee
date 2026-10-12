@@ -220,8 +220,8 @@ export interface ManualDeclarationsResult {
 // -- GraphQL queries / mutations -------------------------------------------
 
 const KG_GET_COMPLETE_GRAPH = `
-mutation KnowledgeGraph {
-  kg_get_complete_graph(request: __WHERE__) {
+mutation KnowledgeGraph($request: kg_get_complete_graph_input!) {
+  kg_get_complete_graph(request: $request) {
     data {
       edges
       generated_at
@@ -248,8 +248,8 @@ query KgFilterOptions {
 }`;
 
 const KG_GET_FILTER_VALUES = `
-query KgFilterOptionLabelValues {
-  kg_get_filter_values(request: __WHERE__) {
+query KgFilterOptionLabelValues($request: kg_get_filter_values_input!) {
+  kg_get_filter_values(request: $request) {
     data {
       filter_key
       filter_type
@@ -460,7 +460,7 @@ const apiKnowledgeGraph = {
     if (data?.levels) {
       request.levels = data.levels;
     }
-    return await queryGraphQL(KG_GET_COMPLETE_GRAPH.replace('__WHERE__', gqlStringify(request)), 'KnowledgeGraph', {}, undefined, signal);
+    return queryGraphQL(KG_GET_COMPLETE_GRAPH, 'KnowledgeGraph', { request }, undefined, signal);
   },
 
   getFilterOptions: async function (data?: { accountIds?: string[]; nodeTypes?: string[] }) {
@@ -494,7 +494,7 @@ const apiKnowledgeGraph = {
     if (data.attributes && Object.keys(data.attributes).length) request.attributes = data.attributes;
     if (data.labelKeys?.length) request.label_keys = data.labelKeys;
     if (data.attributeKeys?.length) request.attribute_keys = data.attributeKeys;
-    return await queryGraphQL(KG_GET_FILTER_VALUES.replace('__WHERE__', gqlStringify(request)), 'KgFilterOptionLabelValues', {});
+    return queryGraphQL(KG_GET_FILTER_VALUES, 'KgFilterOptionLabelValues', { request });
   },
 
   getNode: async function (nodeId: string) {

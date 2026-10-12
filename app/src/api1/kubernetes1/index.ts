@@ -1990,9 +1990,16 @@ const apiKubernetes1 = {
     }
   },
   knowledgeGraph: async function (data: any, signal?: AbortSignal) {
+    // Pass `request` as a GraphQL variable rather than inlining it. Label/
+    // attribute keys like `app.kubernetes.io/name` are not valid GraphQL Name
+    // tokens, so gqlStringify-ing them into an inline object literal makes the
+    // gateway's parser reject the whole query (#40696). Variable values are
+    // carried as JSON and never tokenized as query text, so arbitrary keys
+    // survive. `request` is always an object (possibly empty), so the non-null
+    // `!` never trips the gateway's missing-required-variable guard.
     const KNOWLEDGE_GRAPH = `
-    mutation KnowledgeGraph {
-      kg_get_complete_graph(request: __WHERE__) {
+    mutation KnowledgeGraph($request: kg_get_complete_graph_input!) {
+      kg_get_complete_graph(request: $request) {
         data {
           edges
           generated_at
@@ -2024,11 +2031,7 @@ const apiKubernetes1 = {
     if (data?.levels) {
       request['levels'] = data.levels;
     }
-    try {
-      return await queryGraphQL(KNOWLEDGE_GRAPH.replace('__WHERE__', gqlStringify(request)), 'KnowledgeGraph', {}, undefined, signal);
-    } catch (err) {
-      throw err;
-    }
+    return queryGraphQL(KNOWLEDGE_GRAPH, 'KnowledgeGraph', { request }, undefined, signal);
   },
   knowledgeGraphFilterOptions: async function (data?: { accountIds?: string[]; nodeTypes?: string[]; specificTypes?: string[] }) {
     const KNOWLEDGE_GRAPH_FILTER_OPTIONS = `
@@ -2130,9 +2133,14 @@ const apiKubernetes1 = {
     labelKeys?: string[];
     attributeKeys?: string[];
   }) {
+    // Request goes through a GraphQL variable so arbitrary-keyed scope filters
+    // (e.g. a `labels` map keyed by `app.kubernetes.io/name`) are not inlined
+    // as object-literal keys the parser rejects — same fix as knowledgeGraph
+    // above (#40696). `request` always carries filter_type/filter_key, so it
+    // is never empty and the non-null `!` is safe.
     const KNOWLEDGE_GRAPH_FILTER_LABEL_VALUES = `
-    query KgFilterOptionLabelValues {
-      kg_get_filter_values(request: __WHERE__) {
+    query KgFilterOptionLabelValues($request: kg_get_filter_values_input!) {
+      kg_get_filter_values(request: $request) {
         data {
           filter_key
           filter_type
@@ -2153,11 +2161,7 @@ const apiKubernetes1 = {
     if (data.attributes && Object.keys(data.attributes).length) request.attributes = data.attributes;
     if (data.labelKeys?.length) request.label_keys = data.labelKeys;
     if (data.attributeKeys?.length) request.attribute_keys = data.attributeKeys;
-    try {
-      return await queryGraphQL(KNOWLEDGE_GRAPH_FILTER_LABEL_VALUES.replace('__WHERE__', gqlStringify(request)), 'KgFilterOptionLabelValues', {});
-    } catch (err) {
-      throw err;
-    }
+    return queryGraphQL(KNOWLEDGE_GRAPH_FILTER_LABEL_VALUES, 'KgFilterOptionLabelValues', { request });
   },
   // Single round-trip powering the always-on columns (A/B/C) of the Nubi briefing
   // strip. Every block reads event_groupings_v2 over the same display window so

@@ -462,6 +462,10 @@ export const splitAndParallelQuery = async (
   return queryGraphQLParallel(queries);
 };
 
+// GraphQL Name production: /[_A-Za-z][_0-9A-Za-z]*/ (covers Hasura operators
+// like `_eq`, which lead with `_`). Keys outside it cannot be inlined.
+const GRAPHQL_NAME = /^[_A-Za-z][_0-9A-Za-z]*$/;
+
 export function gqlStringify(obj_from_json: any, enums: string[] = [], pkey = ''): string {
   if (typeof obj_from_json !== 'object') {
     if (enums && enums.indexOf(pkey) >= 0) {
@@ -495,6 +499,17 @@ export function gqlStringify(obj_from_json: any, enums: string[] = [], pkey = ''
   ];
   const props = Object.keys(obj_from_json || {})
     .map((key) => {
+      // Inlining emits `key:value` as a GraphQL object literal, whose keys must
+      // be valid GraphQL Name tokens. A map keyed by something like
+      // `app.kubernetes.io/name` produces invalid syntax and makes the gateway
+      // reject the whole operation with a cryptic parse error (#40696). Such a
+      // map belongs in a GraphQL *variable*, not inlined — fail loud in dev/test
+      // so the next caller catches it here instead of as a 502 in production.
+      if (process.env.NODE_ENV !== 'production' && !GRAPHQL_NAME.test(key)) {
+        throw new Error(
+          `gqlStringify: "${key}" is not a valid GraphQL object-literal key. ` + `Pass this object as a GraphQL variable instead of inlining it.`
+        );
+      }
       if (ops.indexOf(key) >= 0) {
         return `${key}:${gqlStringify(obj_from_json[key], enums, pkey)}`;
       }

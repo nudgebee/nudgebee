@@ -1286,9 +1286,25 @@ const ServiceMapContent = ({ cardElevation }) => {
           abortController.signal
         )
         .then((res) => {
-          const data = res?.data?.data?.kg_get_complete_graph?.data || { nodes: [], edges: [] };
-          setRawData(data);
-          if (!data.nodes?.length) {
+          // A failed request still resolves here: queryGraphQL's catch returns
+          // the error response rather than throwing on a 502, and the gateway
+          // reports upstream/parse/permission failures as an `errors` array on
+          // a 200. Both used to fall through to the empty graph below and
+          // render as "No nodes match your filters" with no error shown
+          // (#40696). Treat an errors array — or a missing payload with no
+          // errors (e.g. a network failure that resolves to a bare XHR) — as a
+          // failure, and keep the empty-but-valid graph as a real empty state.
+          const payload = res?.data?.data?.kg_get_complete_graph?.data;
+          const errorMessage = res?.data?.errors?.[0]?.message;
+          if (errorMessage || !payload) {
+            console.error('Failed to fetch knowledge graph:', errorMessage || `status ${res?.status ?? 'unknown'}`);
+            snackbar.error('Failed to load knowledge graph data.');
+            setRawData({ nodes: [], edges: [] });
+            setIsGraphLoading(false);
+            return;
+          }
+          setRawData(payload);
+          if (!payload.nodes?.length) {
             setIsGraphLoading(false);
           }
         })
