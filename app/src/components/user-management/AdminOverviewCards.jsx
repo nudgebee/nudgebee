@@ -116,7 +116,7 @@ const CARDS = [
     description: 'Choose the models, tools and agents that power the assistant.',
     stats: [
       { key: 'providers', one: 'provider', many: 'providers', target: { hash: 'ai-tools/providers' } },
-      { key: 'mcps', one: 'MCP', many: 'MCPs', target: { hash: 'ai-tools/tools-mcp' } },
+      { key: 'mcps', one: 'MCP', many: 'MCPs', target: { hash: 'ai-tools/tools-mcp', action: 'tools-mcp-servers' } },
     ],
     // Most links navigate to the relevant AI & Tools sub-tab, but two point
     // elsewhere because the admin sub-tab is a read-only mirror, not where the
