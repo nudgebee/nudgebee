@@ -28,6 +28,12 @@ func (m OtelClickhouseAgent) ConfigSchema() core.IntegrationSchema {
 		// schema to decide whether a row offers Test Connection.
 		Testable: true,
 		Properties: map[string]core.IntegrationSchemaProperty{
+			"default_log_provider": {
+				Type:        core.ToolSchemaTypeBoolean,
+				Description: "Set as default log provider for this account",
+				Default:     false,
+				Priority:    13,
+			},
 			"default_traces_provider": {
 				Type:        core.ToolSchemaTypeBoolean,
 				Description: "Set as default traces provider for this account",

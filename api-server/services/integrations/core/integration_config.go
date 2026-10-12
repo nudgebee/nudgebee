@@ -2972,6 +2972,39 @@ func AgentIntegrationState(
 	return configured, usable, nil
 }
 
+// AgentStatusFlagOn reports whether the account's agent reports key as true in its
+// connection_status. A key an older agent never sends reads as false. Read from the
+// row, not the 15-minute agent details cache, so a change counts at the agent's next
+// heartbeat.
+func AgentStatusFlagOn(context *security.RequestContext, accountId, key string) (bool, error) {
+	if context == nil || context.GetSecurityContext() == nil {
+		return false, errors.New("integrations: request context and security context are required")
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return false, err
+	}
+
+	const query = `
+		SELECT EXISTS (
+			SELECT 1
+			FROM agent a
+			JOIN cloud_accounts ca ON ca.id = a.cloud_account_id
+			WHERE a.cloud_account_id = $1
+			  AND ca.tenant = $2
+			  AND a.type != 'proxy'
+			  AND a.connection_status ->> $3 = 'true'
+		)`
+	var on bool
+	if err = dbms.Db.QueryRowx(query, accountId, context.GetSecurityContext().GetTenantId(), key).Scan(&on); err != nil {
+		context.GetLogger().Error("integrations: failed to read agent status flag",
+			"account_id", accountId, "key", key, "error", err)
+		return false, err
+	}
+	return on, nil
+}
+
 // GetIntegrationConfigValueByName returns the value of a single config entry
 // for the given integration. Returns an empty string (no error) when the
 // entry is not present. Encrypted values are returned as stored (encrypted);

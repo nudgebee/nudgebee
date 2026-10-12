@@ -99,6 +99,30 @@ var nudgebeeAgentFeatureKeys = map[string]bool{
 	"opencostServerSide": true, "tracesEnabled": true, "grafanaEnabled": true,
 	"autoScalerEnabled": true, "nodeAgentCount": true, "logsConnectionProvider": true,
 	"traceProvider": true, "prometheusRetentionTime": true, "installationNamespace": true,
+	"clickhouseLogsConnection": true,
+}
+
+// nudgebeeAgentFeatures keeps the allowlisted keys of connection_status, plus
+// logsServedBy when the server's provider check found the cluster's logs come from
+// the agent's ClickHouse, and logsServedByFailed when that check also found it
+// unusable. Only the provider name and whether there was an error are read from the
+// check's stamp, never the error text.
+func nudgebeeAgentFeatures(connectionStatus map[string]any) map[string]any {
+	features := map[string]any{}
+	for key, value := range connectionStatus {
+		if nudgebeeAgentFeatureKeys[key] {
+			features[key] = value
+		}
+	}
+	stamp, _ := connectionStatus["providerStatus"].(map[string]any)
+	logs, _ := stamp["logs"].(map[string]any)
+	if logs["provider"] == "otel_clickhouse" && logs["source"] == "agent" {
+		features["logsServedBy"] = "otel_clickhouse"
+		if failed, _ := logs["error"].(string); failed != "" {
+			features["logsServedByFailed"] = true
+		}
+	}
+	return features
 }
 
 // NudgebeeAgentHealthGetTool returns the platform-recorded collector heartbeat
@@ -150,16 +174,11 @@ func (t NudgebeeAgentHealthGetTool) Call(nbCtx core.NbToolContext, input core.NB
 		if row == nil {
 			continue
 		}
-		features := map[string]any{}
 		connectionStatus, _ := row["connection_status"].(map[string]any)
 		if encoded, ok := row["connection_status"].(string); ok {
 			_ = json.Unmarshal([]byte(encoded), &connectionStatus)
 		}
-		for key, value := range connectionStatus {
-			if nudgebeeAgentFeatureKeys[key] {
-				features[key] = value
-			}
-		}
+		features := nudgebeeAgentFeatures(connectionStatus)
 		row["features"] = features
 		deploymentModel := nudgebeeDeploymentModel(row["type"])
 		row["deployment_model"] = deploymentModel
@@ -297,6 +316,16 @@ func nudgebeeFeatureHealth(features map[string]any) map[string]string {
 	}
 	for key, name := range connections {
 		result[name] = nudgebeeConnectionVerdict(features[key])
+	}
+	// logsConnection is the agent's Loki / Elasticsearch check. ClickHouse logs have
+	// their own: ClickHouse answers and the logs table is present. As on the agent page
+	// (app/src/utils/logsServedBy.js), the server's provider check finding them
+	// unusable reads as down whatever the agent's flag says.
+	if features["logsServedBy"] == "otel_clickhouse" {
+		result["logs"] = nudgebeeConnectionVerdict(features["clickhouseLogsConnection"])
+		if failed, _ := features["logsServedByFailed"].(bool); failed {
+			result["logs"] = "disconnected"
+		}
 	}
 	if serverManaged, _ := features["opencostServerSide"].(bool); serverManaged {
 		result["opencost"] = "server_managed"

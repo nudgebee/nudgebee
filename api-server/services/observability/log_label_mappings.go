@@ -120,10 +120,11 @@ func sanitizeLabelMapping(raw map[string]string) map[string]string {
 // to a log source at all.
 //
 // Exposed so the integration form can offer the Log Label Mapping editor only where a
-// log query actually exists. The integration CATEGORY is too coarse for that: jaeger
-// and otel_clickhouse are observability_platform / log category but serve traces only,
-// and rendering a log field editor on them would be dead config. Deriving it from the
-// same switch getLogSource uses is what keeps the two from drifting.
+// log query actually exists. The integration CATEGORY is too coarse for that: jaeger,
+// and an otel_clickhouse added by hand rather than by the agent, are
+// observability_platform / log category but serve traces only, and rendering a log
+// field editor on them would be dead config. Deriving it from the same switch
+// getLogSource uses is what keeps the two from drifting.
 func SupportsLogSource(provider, integrationSource string) bool {
 	_, err := getLogSource(provider, integrationSource)
 	return err == nil

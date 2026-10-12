@@ -122,7 +122,7 @@ class TestTelemetryHealthCheckedAt(unittest.TestCase):
         ):
             th.handle_telemetry(TENANT, ACCOUNT, AGENT, payload)
 
-        agent_updates = [p for p in calls if p and p[-1] == AGENT and len(p) == 6]
+        agent_updates = [p for p in calls if p and p[-1] == AGENT and len(p) == 7]
         self.assertEqual(len(agent_updates), 1, f"expected exactly one agent UPDATE, got {len(agent_updates)}")
         return agent_updates[0]
 

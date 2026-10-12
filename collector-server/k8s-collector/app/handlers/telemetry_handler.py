@@ -349,7 +349,19 @@ _SIGNALS = (
     ("logsConnectionProvider", "logsConnection", "default_log_provider"),
     ("metricsConnectionProvider", "prometheusConnection", "default_metrics_provider"),
     ("tracesConnectionProvider", "tracesEnabled", "default_traces_provider"),
+    # The agent's ClickHouse logs table, reported beside its logs provider
+    # (nudgebee/k8s-agent#660). It links otel_clickhouse so a user can pick it for
+    # logs, and keeps the link while the table is reported even if traces move
+    # away, but never claims the default: the agent's own logs provider does.
+    ("clickhouseLogsTable", "clickhouseLogsConnection", None),
 )
+
+# Flags whose absence from a post means off. The merge into connection_status keeps a key
+# the agent stops sending, so a `true` would outlive the agent that sent it: after a
+# rollback to an agent that predates the flag, ClickHouse would stay offered as the
+# cluster's logs provider. Only a post that reports flags at all clears them, as only
+# such a post is stamped with healthCheckedAt.
+_CLEARED_WHEN_OMITTED = ("clickhouseLogsCollected",)
 
 
 def _signal_providers(stats: Dict[str, Any]) -> Dict[str, Optional[str]]:
@@ -374,6 +386,7 @@ def _signal_providers(stats: Dict[str, Any]) -> Dict[str, Optional[str]]:
         "logsConnectionProvider": named(stats.get("logsConnectionProvider")),
         "metricsConnectionProvider": metrics_provider,
         "tracesConnectionProvider": named(stats.get("traceProvider")),
+        "clickhouseLogsTable": "otel_clickhouse" if named(stats.get("clickhouseLogsTable")) else None,
     }
 
 
@@ -418,8 +431,10 @@ def handle_telemetry(tenant_id: str, cloud_account_id: str, agent_id: str, data:
     # isinstance guard also catches a JSON array, which the str-normalisation above
     # lets through untouched.
     reported_stats = activity_stats
+    cleared_keys = []
     if isinstance(activity_stats, dict) and activity_stats:
         reported_stats = {**activity_stats, "healthCheckedAt": reported_at.strftime("%Y-%m-%dT%H:%M:%SZ")}
+        cleared_keys = [key for key in _CLEARED_WHEN_OMITTED if key not in activity_stats]
 
     connection_status = json.dumps(reported_stats)
 
@@ -448,7 +463,7 @@ def handle_telemetry(tenant_id: str, cloud_account_id: str, agent_id: str, data:
     update_agent = sql.SQL("""UPDATE {}
            SET version = %s, last_connected_at = %s,
                k8s_version = %s,
-               connection_status = COALESCE(connection_status, '{{}}'::jsonb) || %s::jsonb,
+               connection_status = (COALESCE(connection_status, '{{}}'::jsonb) || %s::jsonb) - %s::text[],
                k8s_provider = %s
            WHERE id = %s""").format(sql.Identifier("agent"))
 
@@ -463,6 +478,7 @@ def handle_telemetry(tenant_id: str, cloud_account_id: str, agent_id: str, data:
             reported_at,
             k8s_version,
             connection_status,
+            cleared_keys,
             k8s_provider,
             agent_id,
         ],
@@ -488,6 +504,8 @@ def handle_telemetry(tenant_id: str, cloud_account_id: str, agent_id: str, data:
     providers = _signal_providers(activity_stats)
 
     for provider_type, flag, default_column in _SIGNALS:
+        if not providers[provider_type]:
+            continue
         _upsert_integration(
             tenant_id,
             cloud_account_id,

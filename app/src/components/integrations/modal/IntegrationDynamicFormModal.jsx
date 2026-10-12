@@ -37,6 +37,8 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import apiTicketIntegrations from '@api1/tickets';
 import cache from '@lib/cache';
 import VmAgentCredentialsDialog from './VmAgentCredentialsDialog';
+import k8sApi from '@api1/kubernetes';
+import { clustersCollectingClickHouseLogs, showsAgentProviderToggle } from './clickHouseLogsToggle';
 import { buildWebhookUrl } from '@lib/webhookUrl';
 import { docsUrl } from '@lib/externalUrls';
 import ModelAliasList from '@components/common/forms/ModelAliasList';
@@ -321,6 +323,9 @@ const IntegrationDynamicFormModal = ({
   const [labelMapping, setLabelMapping] = useState({ subject_name_labels: [], namespace_labels: [], severity_labels: [] });
   const [agentAccountProviders, setAgentAccountProviders] = useState([]);
   const [providerFields, setProviderFields] = useState([]);
+  // Clusters whose agent collects container logs into ClickHouse; the ClickHouse row
+  // offers its Logs toggle only there (see clickHouseLogsToggle.js).
+  const [clickHouseLogsClusters, setClickHouseLogsClusters] = useState(() => new Set());
   const [vmAgentCredentials, setVmAgentCredentials] = useState(null);
   const [isTesting, setIsTesting] = useState(false);
   // Object.keys, not !!editData: ListIntegrations passes `editData={selectedIntegration || {}}`,
@@ -385,6 +390,19 @@ const IntegrationDynamicFormModal = ({
       }
     }
   }, [openModal, isAgentSource, editData]);
+
+  useEffect(() => {
+    if (!openModal || !isAgentSource || editData?.type !== 'otel_clickhouse') {
+      return undefined;
+    }
+    let active = true;
+    k8sApi.getAgentHealth({}).then((res) => {
+      if (active) setClickHouseLogsClusters(clustersCollectingClickHouseLogs(res?.data));
+    });
+    return () => {
+      active = false;
+    };
+  }, [openModal, isAgentSource, editData?.type]);
 
   useEffect(() => {
     if (openModal) {
@@ -2286,33 +2304,42 @@ const IntegrationDynamicFormModal = ({
                 >
                   {acc.account_name || acc.cloud_account_id}
                 </Typography>
-                {providerFields.map((provider) => (
-                  <Box
-                    key={provider.key}
-                    sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                    }}
-                  >
-                    <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400] }}>
-                      {provider.label}
-                    </Typography>
-                    <FormControlLabel
-                      control={
-                        <Switch
-                          checked={!!acc[provider.key]}
-                          onChange={(e) => handleAgentProviderToggle(acc.cloud_account_id, provider.key, e.target.checked)}
-                          size='sm'
-                          disabled={isSubmitting}
-                        />
-                      }
-                      label={acc[provider.key] ? 'Enabled' : 'Disabled'}
-                      labelPlacement='start'
-                      sx={{ mr: 0, gap: ds.space[2] }}
-                    />
-                  </Box>
-                ))}
+                {providerFields
+                  .filter((provider) =>
+                    showsAgentProviderToggle({
+                      integrationType: editData?.type,
+                      providerKey: provider.key,
+                      isOn: acc[provider.key],
+                      logsCollected: clickHouseLogsClusters.has(acc.cloud_account_id),
+                    })
+                  )
+                  .map((provider) => (
+                    <Box
+                      key={provider.key}
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400] }}>
+                        {provider.label}
+                      </Typography>
+                      <FormControlLabel
+                        control={
+                          <Switch
+                            checked={!!acc[provider.key]}
+                            onChange={(e) => handleAgentProviderToggle(acc.cloud_account_id, provider.key, e.target.checked)}
+                            size='sm'
+                            disabled={isSubmitting}
+                          />
+                        }
+                        label={acc[provider.key] ? 'Enabled' : 'Disabled'}
+                        labelPlacement='start'
+                        sx={{ mr: 0, gap: ds.space[2] }}
+                      />
+                    </Box>
+                  ))}
               </Box>
             ))}
             <Box

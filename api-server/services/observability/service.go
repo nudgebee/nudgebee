@@ -337,6 +337,8 @@ func getLogSource(provider, integrationSource string) (LogSource, error) {
 		return &SplunkEnterpriseLogSource{}, nil
 	case provider == "cubeapm" && integrationSource == "user":
 		return &CubeAPMLogSource{}, nil
+	case provider == "otel_clickhouse" && integrationSource == "agent":
+		return &OtelClickhouseLogSource{}, nil
 		// hive:agent is intentionally NOT wired here yet — the relay-mode
 		// `HiveSource` is implemented but the matching `hive_query` /
 		// `hive_schema` actions don't exist in nudgebee-agent yet. Returning
@@ -720,12 +722,47 @@ func servingSource(dto *core.IntegrationDto) (string, error) {
 	return dto.Source, nil
 }
 
+// clickHouseLogsFlag is the agent's ClickHouse logs check: ClickHouse answers and
+// the logs table is present. It does not say logs are arriving.
+const clickHouseLogsFlag = "clickhouseLogsConnection"
+
+// clickHouseLogsCollectedFlag says the cluster ships its container logs into the
+// agent's ClickHouse: the agent chart's logs collection is on. Without it the logs
+// table holds at most OTLP logs from instrumented apps, so ClickHouse is not
+// offered, or used, as the cluster's logs provider.
+const clickHouseLogsCollectedFlag = "clickhouseLogsCollected"
+
+// clickHouseLogsCollected reports clickHouseLogsCollectedFlag for the account; a var
+// so tests can answer without an agent row.
+var clickHouseLogsCollected = func(ctx *security.RequestContext, accountId string) (bool, error) {
+	return core.AgentStatusFlagOn(ctx, accountId, clickHouseLogsCollectedFlag)
+}
+
+// errClickHouseLogsNotCollected answers a caller that names the agent's ClickHouse as
+// the logs provider on a cluster that does not collect its logs there.
+var errClickHouseLogsNotCollected = errors.New("observability: this cluster does not collect its container logs into the agent's ClickHouse (otel_clickhouse); turn on logs collection in the agent chart, or read logs from another provider")
+
+// BuiltInProviderDownError says the account's default for a signal is the agent's own
+// provider and it cannot serve right now. It carries the provider so the status view
+// can still name the source the user picked, not one it would fall back to.
+type BuiltInProviderDownError struct {
+	ProviderType string
+	Provider     string
+}
+
+func (e *BuiltInProviderDownError) Error() string {
+	return fmt.Sprintf("observability: the built-in %s provider (%s) is configured on this cluster but is not reachable right now", e.ProviderType, e.Provider)
+}
+
 // builtInHealthFlags lists the flags in an agent's connection_status that say its
 // own provider for a signal is up. Chronosphere serves traces from the metrics
 // backend and older agents report its traces as off, so either flag counts there.
 func builtInHealthFlags(providerType, provider string) []string {
 	switch providerType {
 	case "logs":
+		if provider == "otel_clickhouse" {
+			return []string{clickHouseLogsFlag}
+		}
 		return []string{"logsConnection"}
 	case "metrics":
 		return []string{"prometheusConnection"}
@@ -803,12 +840,34 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 			return usable, nil
 		}
 
+		// A ClickHouse logs pick counts only while the cluster collects its logs there.
+		// Where collection is off, or was turned off after the pick, the pick is
+		// passed over like no default, so logs come from where they did before.
+		isClickHouseLogsPick := integrationDto != nil && providerType == "logs" &&
+			integrationDto.Type == "otel_clickhouse" && isAgentOwnProvider(integrationDto)
+		if isClickHouseLogsPick {
+			collected, cErr := clickHouseLogsCollected(ctx, accountId)
+			if cErr != nil {
+				return "", "", nil, cErr
+			}
+			if !collected {
+				integrationDto = nil
+			}
+		}
+
 		if integrationDto != nil && isAgentOwnProvider(integrationDto) {
 			usable, uErr := builtInUsable(integrationDto.Type)
 			if uErr != nil {
 				return "", "", nil, uErr
 			}
 			if !usable {
+				// The agent never makes ClickHouse the logs default, so this one is the
+				// user's pick, on a cluster that collects its logs there. Reading Loki or
+				// another provider in its place would hide that the pick is broken: say
+				// so instead.
+				if isClickHouseLogsPick && builtInDown != "" {
+					return "", "", nil, &BuiltInProviderDownError{ProviderType: "logs", Provider: "otel_clickhouse"}
+				}
 				integrationDto = nil
 			}
 		}
@@ -961,6 +1020,18 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 	if providerType == "traces" && defaultProvider == "" {
 		if cp, cErr := cloud.GetCloudAccountProvider(accountId, ctx.GetSecurityContext().GetTenantId()); cErr == nil && strings.EqualFold(cp, "gcp") {
 			return "gcp", "user", nil, nil
+		}
+	}
+	// A caller naming the agent's ClickHouse for logs (the default path checked this
+	// already) gets an answer only where the cluster collects its logs there; an empty
+	// table would read as "no errors".
+	if logProviderFromRequest != "" && providerType == "logs" && defaultProvider == "otel_clickhouse" && defaultSource == "agent" {
+		collected, cErr := clickHouseLogsCollected(ctx, accountId)
+		if cErr != nil {
+			return "", "", nil, cErr
+		}
+		if !collected {
+			return "", "", nil, errClickHouseLogsNotCollected
 		}
 	}
 	return defaultProvider, defaultSource, matchedIntegration, nil
@@ -2602,10 +2673,25 @@ func listAvailableProviders(context *security.RequestContext, accountId, provide
 		}
 	}
 
+	// The agent's ClickHouse is linked to nearly every cluster through traces, but it
+	// serves logs only where the cluster collects them there.
+	clickHouseLogsOffered := func() bool {
+		collected, err := clickHouseLogsCollected(context, accountId)
+		if err != nil {
+			context.GetLogger().Warn("listAvailableProviders: failed to read whether ClickHouse collects logs",
+				"account_id", accountId, "error", err)
+			return false
+		}
+		return collected
+	}
+
 	seen := map[string]bool{}
 	available := []AvailableProvider{}
 	add := func(provider, source string) {
 		if provider == "" || seen[provider] || !servesType(provider, source) {
+			return
+		}
+		if providerType == "logs" && provider == "otel_clickhouse" && !clickHouseLogsOffered() {
 			return
 		}
 		seen[provider] = true

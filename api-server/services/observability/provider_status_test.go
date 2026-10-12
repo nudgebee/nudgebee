@@ -6,8 +6,24 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
+	"strings"
 	"testing"
 )
+
+// The sweep takes a cluster in for its ClickHouse logs pick only while the agent reports
+// the logs collected, as the resolver only serves the pick then; a stamp left from before
+// is cleared through the "already stamped" arm.
+func TestProviderStatusAccountsQuery_ClickHouseArmNeedsCollectedLogs(t *testing.T) {
+	start := strings.Index(providerStatusAccountsQuery, "i.type = 'otel_clickhouse'")
+	if start < 0 {
+		t.Fatal("no otel_clickhouse arm in the candidate query")
+	}
+	arm := providerStatusAccountsQuery[start:]
+	arm = arm[:strings.Index(arm, ")")]
+	if !strings.Contains(arm, "a.connection_status ->> 'clickhouseLogsCollected' = 'true'") {
+		t.Errorf("the otel_clickhouse arm does not require collected logs:\n%s", arm)
+	}
+}
 
 type resolvedProvider struct {
 	provider    string
@@ -286,15 +302,55 @@ func TestProviderStatusStampIsDroppedWhenNoIntegrationServesAnySignal(t *testing
 		{ProviderType: "logs", Provider: "loki", Source: "agent"},
 		{ProviderType: "metrics", Provider: "prometheus", Source: "agent"},
 	}
-	if hasIntegrationServedSignal(agentOnly) {
+	if stampCarriesAnswer(agentOnly) {
 		t.Error("an all-agent result must not be treated as integration-served")
 	}
 
 	withIntegration := append(agentOnly, ProviderConnectionStatus{
 		ProviderType: "traces", Provider: "datadog", Source: "user", IntegrationId: "dd-1",
 	})
-	if !hasIntegrationServedSignal(withIntegration) {
+	if !stampCarriesAnswer(withIntegration) {
 		t.Error("a single integration-served signal must keep the stamp")
+	}
+}
+
+// The agent reports its Loki as its logs provider whatever the account's default is,
+// so only the stamp can tell the page that ClickHouse serves this cluster's logs.
+func TestProviderStatusStampIsKeptForClickHouseLogs(t *testing.T) {
+	for _, logs := range []ProviderConnectionStatus{
+		{ProviderType: "logs", Provider: "otel_clickhouse", Source: "agent"},
+		{ProviderType: "logs", Provider: "otel_clickhouse", Source: "agent", Error: "not reachable right now"},
+	} {
+		statuses := []ProviderConnectionStatus{logs, {ProviderType: "metrics", Provider: "prometheus", Source: "agent"}}
+		if !stampCarriesAnswer(statuses) {
+			t.Errorf("a ClickHouse logs entry must keep the stamp: %+v", logs)
+		}
+	}
+	// otel_clickhouse serving traces is what the agent itself reports.
+	traces := []ProviderConnectionStatus{{ProviderType: "traces", Provider: "otel_clickhouse", Source: "agent"}}
+	if stampCarriesAnswer(traces) {
+		t.Error("agent-reported ClickHouse traces must not keep a stamp")
+	}
+}
+
+// A ClickHouse logs default that cannot serve must stay named as the logs provider,
+// with its error, rather than turn into the Loki the agent reports.
+func TestCheckProviderStatus_ClickHouseLogsDefaultDownKeepsItsName(t *testing.T) {
+	stubProviderStatusSeams(t, map[string]resolvedProvider{
+		"logs": {err: &BuiltInProviderDownError{ProviderType: "logs", Provider: "otel_clickhouse"}},
+	}, func(string) error { return nil })
+	stubAgentDetails(t, account.AgentDetailsFeatures{LogsConnectionProvider: strPtr("loki")}, nil)
+
+	statuses, err := CheckProviderStatus(security.NewRequestContextForSuperAdmin(nil, nil, nil), "acc-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	l := byType(statuses)["logs"]
+	if l.Provider != "otel_clickhouse" || l.Source != "agent" {
+		t.Errorf("expected otel_clickhouse/agent, got %+v", l)
+	}
+	if l.Error == "" || l.Connected {
+		t.Errorf("expected the resolver's error and not connected: %+v", l)
 	}
 }
 

@@ -82,6 +82,10 @@ type Query struct {
 
 var tableName = regexp.MustCompile(`^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)?$`)
 
+// ValidTableName reports whether name is a table Options.Table accepts:
+// [database.]table, letters, digits and underscores only.
+func ValidTableName(name string) bool { return tableName.MatchString(name) }
+
 // Translate turns a LogQL query into one ClickHouse SELECT over otel_logs.
 func Translate(logql string, opts Options) (Query, error) {
 	if err := normalize(&opts); err != nil {

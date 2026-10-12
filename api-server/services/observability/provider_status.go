@@ -2,6 +2,7 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"nudgebee/services/account"
 	"nudgebee/services/common"
@@ -134,7 +135,14 @@ func CheckProviderStatus(ctx *security.RequestContext, accountId string) ([]Prov
 		status := ProviderConnectionStatus{ProviderType: providerType}
 
 		provider, source, integration, err := resolveProviderForStatus(ctx, accountId, "", providerType, "")
-		if err != nil {
+		var downErr *BuiltInProviderDownError
+		if errors.As(err, &downErr) {
+			// The default is the agent's own provider and it is down. Name it, not the
+			// backend the agent reports: that one is not where this signal comes from.
+			status.Error = err.Error()
+			status.Provider = downErr.Provider
+			status.Source = "agent"
+		} else if err != nil {
 			// Nothing serves this signal (no default integration and no live agent).
 			// Keep the reason, then fall through to the agent's last-reported backend so
 			// the row still names where this signal comes from.
@@ -207,6 +215,13 @@ type providerStatusAccount struct {
 // provider from the very same row it renders the Agent tab from, so it fills those in
 // locally rather than waiting on a cron to copy them into a stamp.
 //
+// The one agent-served exception is a logs default on the agent's ClickHouse: the agent
+// names its Loki as its logs provider whatever the default is, so only the stamp can say
+// ClickHouse serves the logs. Each such cluster joins the sweep while its agent reports
+// the logs collected (otherwise the resolver passes the pick over, and a stamp left from
+// before goes through the "already stamped" arm once); once they near ~100, derive that
+// entry from the agent list instead, or the deadline above comes back.
+//
 // The `a.type != 'proxy'` guard picks the row the agent's own telemetry writes, which is
 // the row the UI reads and the row stampProviderStatus updates.
 const providerStatusAccountsQuery = `
@@ -224,6 +239,18 @@ const providerStatusAccountsQuery = `
 	        AND i.source::text != 'agent'
 	        AND i.status::text != 'disabled'
 	        AND (ica.default_log_provider OR ica.default_metrics_provider OR ica.default_traces_provider)
+	    )
+	    OR EXISTS (
+	      SELECT 1
+	      FROM integrations_cloud_accounts ica
+	      INNER JOIN integrations i ON i.id = ica.integration_id
+	      WHERE ica.cloud_account_id = ca.id
+	        AND i.source::text = 'agent'
+	        AND i.type = 'otel_clickhouse'
+	        AND i.name = i.type
+	        AND i.status::text != 'disabled'
+	        AND ica.default_log_provider
+	        AND a.connection_status ->> '` + clickHouseLogsCollectedFlag + `' = 'true'
 	    )
 	    OR COALESCE(a.connection_status, '{}'::jsonb) ? '` + ProviderStatusKey + `'
 	  )
@@ -273,7 +300,7 @@ func stampProviderStatus(ctx *security.RequestContext, accountId string, statuse
 	// contentless stamp: it is what the "or already stamped" arm of the candidate query keys
 	// off, so leaving it behind would keep re-checking an account forever after its last
 	// integration was removed. This is what makes that arm self-limiting.
-	if !hasIntegrationServedSignal(statuses) {
+	if !stampCarriesAnswer(statuses) {
 		return clearProviderStatus(ctx, accountId)
 	}
 
@@ -306,16 +333,23 @@ func stampProviderStatus(ctx *security.RequestContext, accountId string, statuse
 	return nil
 }
 
-// hasIntegrationServedSignal reports whether any signal is served by a non-agent
-// integration — the only case this check produces information the page cannot derive
-// on its own.
-func hasIntegrationServedSignal(statuses []ProviderConnectionStatus) bool {
+// stampCarriesAnswer reports whether the check produced something the page cannot
+// derive on its own: a signal served by a non-agent integration, or logs served by
+// the agent's ClickHouse, which the agent's own logsConnectionProvider never names.
+func stampCarriesAnswer(statuses []ProviderConnectionStatus) bool {
 	for _, status := range statuses {
-		if status.IntegrationId != "" {
+		if status.IntegrationId != "" || isClickHouseLogs(status) {
 			return true
 		}
 	}
 	return false
+}
+
+// isClickHouseLogs: the account's logs default is the agent's ClickHouse. The entry
+// names it and carries no integration_id; the page reads its health from the live
+// clickhouseLogsConnection flag, and an error here (the resolver found it down).
+func isClickHouseLogs(status ProviderConnectionStatus) bool {
+	return status.ProviderType == "logs" && status.Provider == "otel_clickhouse" && status.Source == "agent"
 }
 
 // clearProviderStatus removes the stamp, returning the account to "the agent describes

@@ -22,6 +22,7 @@ test_telemetry_health_checked_at.py. Whether the statements do what they say aga
 a real database is not something this harness can show.
 """
 
+import json
 import os
 import sys
 import unittest
@@ -375,6 +376,125 @@ class TestDefaultClaimBeforeMigration(unittest.TestCase):
     def test_any_other_database_error_still_raises(self):
         with self.assertRaises(_PGError):
             self._claim_with(_PGError("40P01"))
+
+
+# The agent keeps naming its Loki for logs and reports its ClickHouse logs table beside
+# it (nudgebee/k8s-agent#660): clickhouseLogsTable is the table checked, empty when the
+# agent has no ClickHouse; clickhouseLogsConnection says the table is present.
+CLICKHOUSE_LOGS = {**ALL_ON, "clickhouseLogsConnection": True, "clickhouseLogsTable": "default.otel_logs"}
+
+
+class TestClickHouseLogsTable(unittest.TestCase):
+    def _post(self, activity_stats, previous):
+        """Handle one telemetry post; return the (provider, provider_type) links removed
+        and each upsert as (provider, connection_enabled, provider_type, default_column)."""
+        released, upserted = [], []
+
+        def run_query(_statement, params=None):
+            return [[previous]] if params == [AGENT] else []
+
+        with mock.patch.object(th.database, "run_query", side_effect=run_query), mock.patch.object(
+            th, "_notify_scanner_heartbeat"
+        ), mock.patch.object(
+            th,
+            "_upsert_integration",
+            side_effect=lambda *args, **kwargs: upserted.append((args[2], args[3], args[4], kwargs["default_column"])),
+        ), mock.patch.object(
+            th,
+            "_unlink_integration",
+            side_effect=lambda tenant, account, provider, provider_type: released.append((provider, provider_type)),
+        ):
+            th.handle_telemetry(
+                TENANT, ACCOUNT, AGENT, {"version": "0.1.28", "stats": {}, "activity_stats": activity_stats}
+            )
+        return released, upserted
+
+    def test_a_reported_logs_table_links_clickhouse_as_a_logs_candidate_without_claiming(self):
+        """So a user can pick ClickHouse for logs, while the agent's Loki keeps the claim."""
+        _, upserted = self._post(dict(CLICKHOUSE_LOGS), previous=None)
+
+        self.assertIn(("otel_clickhouse", True, "clickhouseLogsTable", None), upserted)
+        self.assertIn(("loki", True, "logsConnectionProvider", "default_log_provider"), upserted)
+
+    def test_moving_traces_away_keeps_the_link_logs_use(self):
+        now = {k: v for k, v in CLICKHOUSE_LOGS.items() if k != "traceProvider"}
+        now["tracesEnabled"] = False
+
+        released, _ = self._post(now, previous=CLICKHOUSE_LOGS)
+
+        self.assertEqual(released, [])
+
+    def test_clickhouse_used_by_neither_logs_nor_traces_is_unlinked(self):
+        now = {k: v for k, v in CLICKHOUSE_LOGS.items() if k != "traceProvider"}
+        now.update({"tracesEnabled": False, "clickhouseLogsConnection": False, "clickhouseLogsTable": ""})
+
+        released, _ = self._post(now, previous=CLICKHOUSE_LOGS)
+
+        self.assertIn("otel_clickhouse", [provider for provider, _ in released])
+
+    def test_an_agent_without_clickhouse_links_nothing_for_it(self):
+        now = {**ALL_ON, "clickhouseLogsConnection": False, "clickhouseLogsTable": "", "traceProvider": "jaeger"}
+
+        _, upserted = self._post(now, previous=None)
+
+        self.assertNotIn("otel_clickhouse", [provider for provider, *_ in upserted])
+
+    def test_an_older_agent_without_the_fields_keeps_the_link_traces_use(self):
+        """A post without clickhouseLogsConnection says nothing about the table."""
+        released, _ = self._post(dict(ALL_ON), previous=CLICKHOUSE_LOGS)
+
+        self.assertEqual(released, [])
+
+
+class TestClickHouseLogsCollectedFlag(unittest.TestCase):
+    """clickhouseLogsCollected gates ClickHouse as a logs provider. The merge into
+    connection_status keeps a key a post leaves out, so the agent UPDATE drops this one
+    when a post that reports flags omits it: a `true` cannot outlive the agent that sent
+    it (a rollback to an agent that predates the flag)."""
+
+    def _agent_update(self, activity_stats):
+        """Handle one telemetry post; return the agent UPDATE's text and params.
+
+        sql.SQL is swapped for the identity so the statement reaches run_query as text."""
+        updates = []
+
+        def run_query(statement, params=None):
+            if params and params[-1] == AGENT and len(params) == 7:
+                updates.append((" ".join(statement.split()), params))
+            return []
+
+        with mock.patch.object(th.sql, "SQL", side_effect=lambda text: text), mock.patch.object(
+            th.database, "run_query", side_effect=run_query
+        ), mock.patch.object(th, "_notify_scanner_heartbeat"), mock.patch.object(th, "_upsert_integration"):
+            th.handle_telemetry(
+                TENANT, ACCOUNT, AGENT, {"version": "0.1.28", "stats": {}, "activity_stats": activity_stats}
+            )
+        self.assertEqual(len(updates), 1)
+        return updates[0]
+
+    def test_the_update_removes_the_keys_it_is_given_after_the_merge(self):
+        statement, params = self._agent_update(dict(CLICKHOUSE_LOGS))
+
+        self.assertIn(
+            "connection_status = (COALESCE(connection_status, '{}'::jsonb) || %s::jsonb) - %s::text[]", statement
+        )
+        self.assertEqual(params[4], ["clickhouseLogsCollected"])
+
+    def test_a_post_that_sends_the_flag_keeps_what_it_says(self):
+        for value in (True, False):
+            with self.subTest(clickhouseLogsCollected=value):
+                _, params = self._agent_update({**CLICKHOUSE_LOGS, "clickhouseLogsCollected": value})
+
+                self.assertEqual(params[4], [])
+                self.assertIs(json.loads(params[3])["clickhouseLogsCollected"], value)
+
+    def test_a_post_that_reports_no_flags_clears_nothing(self):
+        """An empty or malformed activity_stats says nothing about any flag."""
+        for activity_stats in ({}, None, "not json"):
+            with self.subTest(activity_stats=activity_stats):
+                _, params = self._agent_update(activity_stats)
+
+                self.assertEqual(params[4], [])
 
 
 if __name__ == "__main__":

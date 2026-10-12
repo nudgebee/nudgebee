@@ -541,6 +541,55 @@ func TestNudgebeeFeatureHealthForModelFiltersIrrelevantFeatures(t *testing.T) {
 	assert.Empty(t, nudgebeeFeatureHealthForModel(features, "unknown"))
 }
 
+// When the cluster's logs come from the agent's ClickHouse, logsConnection (the agent's
+// Loki / Elasticsearch check) says nothing about them: logs health is the ClickHouse
+// logs check, which means the logs table is present. The server's provider check
+// finding them unusable reads as down, as it does on the agent page.
+func TestNudgebeeFeatureHealthClickHouseLogs(t *testing.T) {
+	status := func(provider string, chLogs any, stampErr string) map[string]any {
+		s := map[string]any{
+			"logsConnection":           false,
+			"clickhouseLogsConnection": chLogs,
+			"logProviderConfig":        map[string]any{"secret": "x"},
+		}
+		if provider != "" {
+			entry := map[string]any{"provider": provider, "source": "agent"}
+			if stampErr != "" {
+				entry["error"] = stampErr
+			}
+			s["providerStatus"] = map[string]any{"checkedAt": "2026-10-17T10:00:00Z", "logs": entry}
+		}
+		return s
+	}
+	logsHealth := func(s map[string]any) string { return nudgebeeFeatureHealth(nudgebeeAgentFeatures(s))["logs"] }
+
+	features := nudgebeeAgentFeatures(status("otel_clickhouse", true, ""))
+	assert.Equal(t, "otel_clickhouse", features["logsServedBy"])
+	assert.Equal(t, true, features["clickhouseLogsConnection"])
+	assert.NotContains(t, features, "providerStatus", "the stamp itself is never passed through")
+	assert.NotContains(t, features, "logProviderConfig")
+	assert.Equal(t, "healthy", logsHealth(status("otel_clickhouse", true, "")))
+
+	assert.Equal(t, "disconnected", logsHealth(status("otel_clickhouse", false, "")))
+	// An agent that does not report the check.
+	assert.Equal(t, "unknown", logsHealth(status("otel_clickhouse", nil, "")))
+
+	// The server could not use ClickHouse logs, whatever the agent's flag says.
+	failed := nudgebeeAgentFeatures(status("otel_clickhouse", true, "raw resolver text"))
+	assert.Equal(t, true, failed["logsServedByFailed"])
+	assert.NotContains(t, failed, "error", "the error text is never passed through")
+	assert.Equal(t, "disconnected", nudgebeeFeatureHealth(failed)["logs"])
+	assert.Equal(t, "disconnected", logsHealth(status("otel_clickhouse", nil, "raw resolver text")))
+
+	// Any other logs provider is still judged by logsConnection.
+	for _, provider := range []string{"", "loki"} {
+		features := nudgebeeAgentFeatures(status(provider, true, "raw resolver text"))
+		assert.NotContains(t, features, "logsServedBy")
+		assert.NotContains(t, features, "logsServedByFailed")
+		assert.Equal(t, "disconnected", nudgebeeFeatureHealth(features)["logs"])
+	}
+}
+
 func TestNudgebeeHealthErrorClassification(t *testing.T) {
 	tests := []struct {
 		message string
