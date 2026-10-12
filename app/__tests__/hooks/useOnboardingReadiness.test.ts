@@ -125,4 +125,71 @@ describe('useOnboardingReadiness', () => {
       expect(mockListProviderCapabilities).toHaveBeenCalledTimes(5);
     });
   });
+
+  // Detection only feeds the metrics/logs/traces items, and the first account
+  // to report a signal wins — so once all three are found, asking further
+  // accounts only spends the viewer's per-user GraphQL budget.
+  describe('telemetry detection stops once every signal is found', () => {
+    const caps = (...entries: Array<[string, string]>) => ({
+      data: { data: { observability_list_provider_capabilities: entries.map(([provider_type, provider]) => ({ provider_type, provider })) } },
+    });
+    const answerPerAccount = (answers: Record<string, ReturnType<typeof caps>>) =>
+      mockListProviderCapabilities.mockImplementation(({ account_id }: { account_id: string }) => Promise.resolve(answers[account_id] ?? caps()));
+    const askedIds = () => mockListProviderCapabilities.mock.calls.map(([arg]) => arg.account_id);
+
+    const loadThenReadSignals = async () => {
+      const { result } = renderHook(() => useOnboardingReadiness());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      const asked = askedIds();
+      mockListProviderCapabilities.mockClear();
+      let input: Awaited<ReturnType<typeof result.current.refresh>>;
+      await act(async () => {
+        input = await result.current.refresh();
+      });
+      return { asked, detectedSignals: input?.detectedSignals };
+    };
+
+    beforeEach(() => {
+      mockGetAllAccount.mockResolvedValue(payload(Array.from({ length: 12 }, (_, i) => awsAccount(`acc-${i}`))));
+      mockGetKnowledgeBases.mockResolvedValue({ data: [] });
+    });
+
+    it('asks only the first five accounts when they report every signal', async () => {
+      answerPerAccount({ 'acc-0': caps(['metrics', 'prometheus'], ['logs', 'loki'], ['traces', 'clickhouse']) });
+
+      const { asked, detectedSignals } = await loadThenReadSignals();
+
+      expect(asked).toEqual(['acc-0', 'acc-1', 'acc-2', 'acc-3', 'acc-4']);
+      expect(detectedSignals).toEqual({ metrics: 'prometheus', logs: 'loki', traces: 'clickhouse' });
+    });
+
+    it('asks the rest while a signal is still missing, and the first account to report a signal still wins', async () => {
+      answerPerAccount({
+        'acc-0': caps(['metrics', 'prometheus'], ['logs', 'loki']),
+        'acc-7': caps(['metrics', 'datadog'], ['traces', 'tempo']),
+      });
+
+      const { asked, detectedSignals } = await loadThenReadSignals();
+
+      expect(asked).toHaveLength(12);
+      expect(detectedSignals).toEqual({ metrics: 'prometheus', logs: 'loki', traces: 'tempo' });
+    });
+  });
+
+  describe('enabled', () => {
+    it('makes no request while disabled, then fetches once enabled', async () => {
+      mockGetAllAccount.mockResolvedValue(payload([awsAccount('acc-1')]));
+      mockGetKnowledgeBases.mockResolvedValue({ data: [] });
+
+      const { result, rerender } = renderHook(({ enabled }) => useOnboardingReadiness([], { enabled }), { initialProps: { enabled: false } });
+      expect(mockGetAllAccount).not.toHaveBeenCalled();
+      expect(mockListProviderCapabilities).not.toHaveBeenCalled();
+      expect(result.current.loading).toBe(true);
+
+      rerender({ enabled: true });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(mockGetAllAccount).toHaveBeenCalledTimes(1);
+      expect(mockListProviderCapabilities).toHaveBeenCalledTimes(1);
+    });
+  });
 });

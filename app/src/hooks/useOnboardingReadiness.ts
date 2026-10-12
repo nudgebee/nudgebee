@@ -51,7 +51,7 @@ type GetAllAccountResult =
 
 /**
  * `observability_list_provider_capabilities` is per-account, so detection costs
- * one request each, fired in parallel on every `/home` load (via
+ * one request per account asked, on every `/home` load (via
  * `SetupProgressBanner`) as well as `/setup` — this is not a one-off cost.
  * Scoring is tenant-wide (a signal found anywhere counts), so a cap here is a
  * real tradeoff, not a free one: a tenant whose only working account for a
@@ -60,6 +60,60 @@ type GetAllAccountResult =
  * happens for realistic tenant sizes; still a cap, not a fix — see the doc.
  */
 const DETECT_ACCOUNT_LIMIT = 30;
+
+/**
+ * Every signal the capabilities call can return — the backend asks exactly
+ * these three per account — and the only telemetry item ids the evaluators
+ * read detection for.
+ */
+const DETECTABLE_SIGNALS = ['metrics', 'logs', 'traces'];
+
+/**
+ * Accounts asked before the rest. The first account to report a signal wins,
+ * so once all of `DETECTABLE_SIGNALS` have been seen, asking further accounts
+ * cannot change the result. An established tenant usually has them all on its
+ * first few accounts, which keeps its `/home` load at this many requests
+ * instead of `DETECT_ACCOUNT_LIMIT`. The per-user GraphQL rate limit is a
+ * fixed per-minute count, so what matters is how many requests go out, not how
+ * many are in flight at once. When a signal is still missing, the rest go out
+ * together, so the worst case costs one extra round trip, not one per batch.
+ */
+const DETECT_FIRST_WAVE = 5;
+
+type CapabilitiesPayload = { observability_list_provider_capabilities?: Array<Record<string, unknown>> } | undefined;
+
+const fetchCapabilities = (accountIds: string[]): Promise<CapabilitiesPayload[]> =>
+  Promise.all(
+    accountIds.map((id) =>
+      apiAccount
+        .listProviderCapabilities({ account_id: id })
+        .then((res: unknown) => (res as { data?: { data?: CapabilitiesPayload } })?.data?.data)
+        .catch(() => undefined)
+    )
+  );
+
+async function detectSignals(accountIds: string[]): Promise<DetectedSignals> {
+  const detectedSignals: DetectedSignals = {};
+  // Account order is kept across both waves, so "first account to report a
+  // signal wins" picks the same provider it would with every account asked.
+  const record = (payloads: CapabilitiesPayload[]) =>
+    payloads.forEach((payload) => {
+      (payload?.observability_list_provider_capabilities || []).forEach((entry) => {
+        const signal = typeof entry?.provider_type === 'string' ? entry.provider_type : '';
+        const provider = typeof entry?.provider === 'string' ? entry.provider : '';
+        // Presence is the whole signal: the backend returns an entry only for
+        // a provider that actually resolves. First account to report a signal
+        // wins — scoring is tenant-wide.
+        if (signal && provider && !detectedSignals[signal]) detectedSignals[signal] = provider;
+      });
+    });
+
+  record(await fetchCapabilities(accountIds.slice(0, DETECT_FIRST_WAVE)));
+  if (accountIds.length > DETECT_FIRST_WAVE && DETECTABLE_SIGNALS.some((signal) => !detectedSignals[signal])) {
+    record(await fetchCapabilities(accountIds.slice(DETECT_FIRST_WAVE)));
+  }
+  return detectedSignals;
+}
 
 export interface UseOnboardingReadinessResult {
   readiness: OnboardingReadiness | null;
@@ -81,8 +135,12 @@ export interface UseOnboardingReadinessResult {
  * `evaluateOnboarding` itself already treats "empty = everything selected"
  * for — pass nothing for a consumer with no module-selection UI of its own
  * (the banner), or the live selection for one that has it (the card).
+ *
+ * `enabled: false` skips the mount fetch, for a consumer that already knows it
+ * will render nothing (the banner, for a viewer who cannot act on it or has
+ * snoozed it). `loading` stays true until the first enabled fetch resolves.
  */
-export function useOnboardingReadiness(selectedModules: string[] = []): UseOnboardingReadinessResult {
+export function useOnboardingReadiness(selectedModules: string[] = [], { enabled = true }: { enabled?: boolean } = {}): UseOnboardingReadinessResult {
   const [inputs, setInputs] = React.useState<EvaluateOnboardingInput | null>(null);
   const [loading, setLoading] = React.useState(true);
 
@@ -125,19 +183,8 @@ export function useOnboardingReadiness(selectedModules: string[] = []): UseOnboa
       )
       .map((a) => a.id);
 
-    const detectedSignals: DetectedSignals = {};
-    const [capabilityResults, agentHealthResult, kbResult] = await Promise.all([
-      Promise.all(
-        accountIds.map((id) =>
-          apiAccount
-            .listProviderCapabilities({ account_id: id })
-            .then(
-              (res: unknown) =>
-                (res as { data?: { data?: { observability_list_provider_capabilities?: Array<Record<string, unknown>> } } })?.data?.data
-            )
-            .catch(() => undefined)
-        )
-      ),
+    const [detectedSignals, agentHealthResult, kbResult] = await Promise.all([
+      detectSignals(accountIds),
       k8sAccountIds.length > 0 ? apiKubernetes1.listK8sAccAgentHealth(k8sAccountIds).catch(() => undefined) : Promise.resolve(undefined),
       // Tenant-wide in one call (empty accountId — same mode SetupCenter's own
       // KB-chip fetch and KnowledgeBaseTab.jsx already use), not one request per
@@ -154,17 +201,6 @@ export function useOnboardingReadiness(selectedModules: string[] = []): UseOnboa
       // transient failure under-reports rather than risking a false done.
       apiKnowledgeBase.getKnowledgeBases('').catch(() => undefined),
     ]);
-
-    capabilityResults.forEach((payload) => {
-      (payload?.observability_list_provider_capabilities || []).forEach((entry) => {
-        const signal = typeof entry?.provider_type === 'string' ? entry.provider_type : '';
-        const provider = typeof entry?.provider === 'string' ? entry.provider : '';
-        // Presence is the whole signal: the backend returns an entry only for
-        // a provider that actually resolves. First account to report a signal
-        // wins — scoring is tenant-wide.
-        if (signal && provider && !detectedSignals[signal]) detectedSignals[signal] = provider;
-      });
-    });
 
     // Absent entirely (call failed, or no K8s accounts to ask about) means the
     // lookup never resolved — leave it `undefined` so the model falls back to
@@ -211,6 +247,7 @@ export function useOnboardingReadiness(selectedModules: string[] = []): UseOnboa
   }, [fetchInputs]);
 
   React.useEffect(() => {
+    if (!enabled) return undefined;
     let cancelled = false;
     fetchInputs()
       .then((next) => {
@@ -226,7 +263,7 @@ export function useOnboardingReadiness(selectedModules: string[] = []): UseOnboa
     return () => {
       cancelled = true;
     };
-  }, [fetchInputs]);
+  }, [fetchInputs, enabled]);
 
   // Toggling a module changes what is required, not what is connected — so it
   // re-evaluates the payload already fetched rather than going back to the
