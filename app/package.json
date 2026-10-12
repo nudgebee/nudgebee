@@ -159,7 +159,7 @@
       "uuid": "^11.1.1"
     },
     "ws": "^8.20.1",
-    "brace-expansion": "^5.0.9",
+    "brace-expansion": "^5.0.12",
     "cookie": "^0.7.2",
     "nanoid": "^3.3.18",
     "@istanbuljs/load-nyc-config": {
