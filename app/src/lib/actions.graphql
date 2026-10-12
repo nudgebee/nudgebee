@@ -2861,7 +2861,6 @@ input tickets_insert_one_input {
   status: String
   ticket_id: String
   assignee: String
-  reporter: String
   project_key: String
   title: String
   description: String

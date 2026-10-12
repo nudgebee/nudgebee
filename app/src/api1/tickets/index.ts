@@ -40,8 +40,8 @@ query ListTicketConfigsForCreate {
 `;
 
 export const CREATE_TICKET = `
-mutation CreateTicket($assignee: String, $reporter: String, $integration_id: String, $reference_id: String, $ticket_type: String, $project_key: String, $description: String, $title: String, $source: String, $severity: String, $account_id: String, $additional_fields: jsonb) {
-  tickets_create(object: {assignee: $assignee, reporter: $reporter, integration_id: $integration_id, reference_id: $reference_id, ticket_type: $ticket_type, project_key: $project_key, description: $description, title: $title, source: $source, severity: $severity, account_id: $account_id, additional_fields: $additional_fields}) {
+mutation CreateTicket($assignee: String, $integration_id: String, $reference_id: String, $ticket_type: String, $project_key: String, $description: String, $title: String, $source: String, $severity: String, $account_id: String, $additional_fields: jsonb) {
+  tickets_create(object: {assignee: $assignee, integration_id: $integration_id, reference_id: $reference_id, ticket_type: $ticket_type, project_key: $project_key, description: $description, title: $title, source: $source, severity: $severity, account_id: $account_id, additional_fields: $additional_fields}) {
     data {
       insert_tickets_one {
         id
@@ -156,8 +156,12 @@ query ListJiraSummary{
 }
 `;
 
-const GET_JIRA_META = `
-query GetJiraMeta($integration_id: String!, $project_key: String!) {
+// Generic create-meta fetch - every ticketing tool's GetCreateMeta (Jira,
+// ServiceNow, GitHub, GitLab, PagerDuty, ZenDuty, Freshdesk) answers this same
+// action, dispatched by tool on the backend. Named GetTicketCreateMeta (not
+// GetJiraMeta) since Jira is no longer its only caller.
+const GET_TICKET_CREATE_META = `
+query GetTicketCreateMeta($integration_id: String!, $project_key: String!) {
   tickets_get_create_meta(integration_id: $integration_id, project_key: $project_key) {
     data
   }
@@ -542,7 +546,7 @@ const apiIntegrations = {
     const cached = cache.get(cacheKey);
     if (cached) return cached;
     try {
-      const response = await queryGraphQL(GET_JIRA_META, 'GetJiraMeta', {
+      const response = await queryGraphQL(GET_TICKET_CREATE_META, 'GetTicketCreateMeta', {
         integration_id: configuration_id,
         project_key: project_key,
       });

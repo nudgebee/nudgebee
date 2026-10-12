@@ -333,25 +333,38 @@ func ListTicketConfigsForTenant(tenantId string) ([]models.TicketConfigOption, e
 	return options, nil
 }
 
-// encodeJiraTicketFields normalizes a Jira ticket's additional_fields into
-// wire shapes before create, using the cached create-meta that drove the form.
-// Best-effort: on meta failure the payload passes through unchanged.
-func encodeJiraTicketFields(ctx *gin.Context, configuration models.TicketConfigurations, ticket *models.Ticket) {
-	if configuration.Tool != "jira" {
+// encodeTicketAdditionalFields normalizes a ticket's additional_fields into its
+// tool's wire shapes before create, using the cached create-meta that drove the
+// form. Best-effort: on meta failure the payload passes through unchanged. Only
+// Jira and Freshdesk need this - every other supported tool's create-meta
+// fields already map directly to wire-ready scalars.
+func encodeTicketAdditionalFields(ctx *gin.Context, configuration models.TicketConfigurations, ticket *models.Ticket) {
+	// Gate first so a tool neither encoder knows about is a plain no-op, never
+	// a silent fall-through to the wrong tool's encoder.
+	switch configuration.Tool {
+	case "jira", "freshdesk":
+	default:
 		return
 	}
+
 	additionalFields, ok := ticket.AdditionalFields.(map[string]interface{})
 	if !ok || len(additionalFields) == 0 {
 		return
 	}
 	var fieldMeta map[string]tools.FieldInfo
 	if meta, err := fetchCreateMetaCached(ctx, configuration, ticket.ProjectKey); err != nil {
-		slog.Warn("jira create: create-meta unavailable, sending additional fields unencoded",
-			"integration", configuration.ID, "project", ticket.ProjectKey, "error", slog.AnyValue(err))
+		slog.Warn("ticket create: create-meta unavailable, sending additional fields unencoded",
+			"tool", configuration.Tool, "integration", configuration.ID, "project", ticket.ProjectKey, "error", slog.AnyValue(err))
 	} else {
 		fieldMeta = tools.FieldsForIssueType(meta, ticket.TicketType)
 	}
-	ticket.AdditionalFields = tools.EncodeJiraAdditionalFields(fieldMeta, additionalFields)
+
+	switch configuration.Tool {
+	case "jira":
+		ticket.AdditionalFields = tools.EncodeJiraAdditionalFields(fieldMeta, additionalFields)
+	case "freshdesk":
+		ticket.AdditionalFields = tools.EncodeFreshdeskAdditionalFields(fieldMeta, additionalFields)
+	}
 }
 
 func CreateIssue(ctx *gin.Context, ticket models.Ticket) (models.TicketInsertResponse, error) {
@@ -396,7 +409,7 @@ func CreateIssue(ctx *gin.Context, ticket models.Ticket) (models.TicketInsertRes
 	if !ok {
 		return GetErrorResponse("unsupported ticketing tool."), fmt.Errorf("unsupported tool: %s", configuration.Tool)
 	}
-	encodeJiraTicketFields(ctx, configuration, &ticket)
+	encodeTicketAdditionalFields(ctx, configuration, &ticket)
 	ticket, err = manager.Create(ctx, configuration, ticket)
 
 	if err != nil {
