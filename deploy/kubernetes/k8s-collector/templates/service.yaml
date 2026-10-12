@@ -17,3 +17,6 @@ spec:
       name: http
   selector:
     {{- include "k8s_collector.selectorLabels" . | nindent 4 }}
+    {{- if .Values.dualMode.enabled }}
+    app.kubernetes.io/component: server
+    {{- end }}
