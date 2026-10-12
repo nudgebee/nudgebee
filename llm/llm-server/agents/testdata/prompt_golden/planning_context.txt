@@ -29,6 +29,7 @@ AI & INVESTIGATION:
 
 NOTIFICATIONS (REQUIRES: a matching notification integration configured on the account):
 - notifications.im → Send messages to configured IM provider. Params: provider ("slack"|"teams"), channel (string), message (string). Optional: message_thread_id, template, team_id. Output: { channel, message_id, team, provider }
+- notifications.dm → Send a Slack direct message to one person. Params: provider ("slack"), user_id (the person's Slack member ID, e.g. U012AB3CD — never a display name; take it from CLARIFICATION ANSWERS, else {{ Configs.slack_user_id }}), message (string). Output: { user_id, channel_id, message_id, provider }
 - notifications.read_thread → Read thread replies/reactions. Params: provider ("slack"), channel_id, thread_ts. Output (directly on output, NOT output.data): { success, messages[], has_responses, has_reactions, reply_count, error, channel_id, thread_ts }. Each message has: ts, text, user, reactions[], is_parent.
 
 KUBERNETES (REQUIRES: K8s cloud account configured):

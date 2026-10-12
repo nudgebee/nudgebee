@@ -378,6 +378,8 @@ type ClarifyingQuestion struct {
 	Options  []string `json:"options"`
 	// Kind marks a question whose answer is settled in code. See clarifyKindChatChannel.
 	Kind string `json:"kind,omitempty"`
+	// Recipient is the person a chat-user question is about, as the request names them.
+	Recipient string `json:"recipient,omitempty"`
 }
 
 type WorkflowBuilderState struct {
@@ -407,6 +409,10 @@ type WorkflowBuilderState struct {
 	// ChatChannelRetriedAt is the position, counted from 1, of the channel question that has
 	// already been asked a second time; 0 when none has.
 	ChatChannelRetriedAt int `json:"chat_channel_retried_at,omitempty"`
+	// ChatUsers maps each name a Slack DM recipient was called by, normalised, to their member id.
+	ChatUsers map[string]string `json:"chat_users,omitempty"`
+	// ChatUserRetriedAt is ChatChannelRetriedAt for chat-user questions.
+	ChatUserRetriedAt int `json:"chat_user_retried_at,omitempty"`
 }
 
 func init() {
@@ -463,6 +469,8 @@ type WorkflowBuilderAgent struct {
 	// chatChannelLister, when set, lists the Slack channels in place of the notification service.
 	// Tests set it; it is nil everywhere else.
 	chatChannelLister func(ctx *security.RequestContext) ([]chatChannel, bool)
+	// chatUserLister is chatChannelLister for the workspace's members.
+	chatUserLister func(ctx *security.RequestContext) ([]chatUser, bool)
 
 	// validatedSnapshot is the definition as it stood when validate last passed, empty when the
 	// last validate failed or none has run. A build ends at finalize only for this definition.
@@ -1024,7 +1032,13 @@ func (a *WorkflowBuilderAgent) handleIntentAndPlan(ctx *security.RequestContext,
 			ClarifyingAnswers:   make([]string, len(questions)),
 			ClarifyingIndex:     0,
 		}
-		return a.buildClarificationResponse(request, questions[0])
+		// A DM recipient the workspace knows is settled here and not asked about.
+		a.settleChatUserQuestions(ctx)
+		a.skipAnsweredQuestions()
+		if a.state.ClarifyingIndex < len(questions) {
+			return a.buildClarificationResponse(request, a.state.ClarifyingQuestions[a.state.ClarifyingIndex])
+		}
+		return a.generatePlanAndAskApproval(ctx, request, intent, a.buildClarificationContext())
 	}
 
 	// No clarification needed — proceed directly to plan generation
@@ -1188,6 +1202,7 @@ QUESTION STYLE:
 DO NOT INVENT RESOURCE VALUES:
 - Specific resource names (Slack channels, k8s namespaces, S3 buckets, DB tables, repo names, etc.) MUST come from the context above. Never guess or fabricate them.
 - Slack channel: if the automation posts to Slack, the request names no channel, and no key under AVAILABLE CONFIGS holds the channel to use, ask where to post — as a question with "kind": "chat_channel" and an empty options list. Never propose channel names yourself: the user types the channel and it is checked against the workspace. If the user skips, the workflow uses {{ Configs.slack_channel }} as a placeholder.
+- Slack direct message: if the automation sends a Slack direct message to a person, always ask who gets it — as a question with "kind": "chat_user", an empty options list, and "recipient" set to the person exactly as the request names them (empty when it names nobody). Never propose people or Slack IDs yourself: the name is looked up in the workspace, and the question is shown only when that lookup does not find exactly one person. If the user skips, the workflow uses {{ Configs.slack_user_id }} as a placeholder.
 - Any other resource value that is not enumerated in the context above: do not ask about it here. Defer to {{ Configs.<key> }} or workflow Inputs.
 
 WHEN TO RETURN ZERO QUESTIONS:
@@ -1205,6 +1220,12 @@ OUTPUT FORMAT (JSON only, no other text):
     {
       "question": "Which Slack channel should this post to?",
       "kind": "chat_channel",
+      "options": []
+    },
+    {
+      "question": "Who should get the direct message?",
+      "kind": "chat_user",
+      "recipient": "Jane Doe",
       "options": []
     }
   ]
@@ -1281,7 +1302,7 @@ func parseClarifyingQuestionsJSON(content string, maxQuestions int) ([]Clarifyin
 	// name it offered would be invented. The user types the channel and code checks it.
 	for i := range result.Questions {
 		result.Questions[i].Kind = normalizeQuestionKind(result.Questions[i].Kind)
-		if result.Questions[i].Kind == clarifyKindChatChannel {
+		if result.Questions[i].Kind == clarifyKindChatChannel || result.Questions[i].Kind == clarifyKindChatUser {
 			result.Questions[i].Options = nil
 		}
 	}
@@ -1409,6 +1430,14 @@ func (a *WorkflowBuilderAgent) handleClarificationResponse(ctx *security.Request
 		}
 		answer = resolved
 	}
+	if idx < len(a.state.ClarifyingQuestions) && a.state.ClarifyingQuestions[idx].Kind == clarifyKindChatUser &&
+		answer != "" && !strings.EqualFold(answer, "Skip") {
+		resolved, askAgain := a.resolveChatUserAnswer(ctx, request, answer)
+		if askAgain != nil {
+			return *askAgain, nil
+		}
+		answer = resolved
+	}
 
 	// Store the answer (unless skipped)
 	if idx < len(a.state.ClarifyingAnswers) && !strings.EqualFold(answer, "Skip") {
@@ -1417,6 +1446,7 @@ func (a *WorkflowBuilderAgent) handleClarificationResponse(ctx *security.Request
 
 	// Move to next question
 	a.state.ClarifyingIndex++
+	a.skipAnsweredQuestions()
 
 	if a.state.ClarifyingIndex < len(a.state.ClarifyingQuestions) {
 		// More questions to ask
@@ -1435,6 +1465,14 @@ func (a *WorkflowBuilderAgent) handleClarificationResponse(ctx *security.Request
 		return a.runEditToolLoop(ctx, originalRequest, clarificationContext)
 	}
 	return a.generatePlanAndAskApproval(ctx, originalRequest, a.state.Intent, clarificationContext)
+}
+
+// skipAnsweredQuestions moves past questions already answered in code before they were asked.
+func (a *WorkflowBuilderAgent) skipAnsweredQuestions() {
+	for a.state.ClarifyingIndex < len(a.state.ClarifyingQuestions) && a.state.ClarifyingIndex < len(a.state.ClarifyingAnswers) &&
+		a.state.ClarifyingAnswers[a.state.ClarifyingIndex] != "" {
+		a.state.ClarifyingIndex++
+	}
 }
 
 // buildClarificationResponse formats a clarifying question as a FollowupRequest with structured option data.
@@ -2100,7 +2138,7 @@ func (a *WorkflowBuilderAgent) checkMissingConfigs(ctx *security.RequestContext,
 			IsTerminal: true,
 		}, nil
 	}
-	workflowJSON = rewriteChatChannelsJSON(resolvedJSON, a.state.ChatChannels)
+	workflowJSON = rewriteChatUsersJSON(rewriteChatChannelsJSON(resolvedJSON, a.state.ChatChannels), a.state.ChatUsers)
 
 	refs := extractConfigReferences(workflowJSON)
 	if len(refs) == 0 {
@@ -2954,6 +2992,7 @@ AI & INVESTIGATION:
 
 NOTIFICATIONS (REQUIRES: a matching notification integration configured on the account):
 - notifications.im → Send messages to configured IM provider. Params: provider ("slack"|"teams"), channel (string), message (string). Optional: message_thread_id, template, team_id. Output: { channel, message_id, team, provider }
+- notifications.dm → Send a Slack direct message to one person. Params: provider ("slack"), user_id (the person's Slack member ID, e.g. U012AB3CD — never a display name; take it from CLARIFICATION ANSWERS, else {{ Configs.slack_user_id }}), message (string). Output: { user_id, channel_id, message_id, provider }
 - notifications.read_thread → Read thread replies/reactions. Params: provider ("slack"), channel_id, thread_ts. Output (directly on output, NOT output.data): { success, messages[], has_responses, has_reactions, reply_count, error, channel_id, thread_ts }. Each message has: ts, text, user, reactions[], is_parent.
 
 KUBERNETES (REQUIRES: K8s cloud account configured):
@@ -4622,6 +4661,11 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 
 	// A channel the user named in a clarifying answer is written by name; put its id in place.
 	rewriteChatChannels(a.state.WorkingWorkflow, a.state.ChatChannels)
+
+	// A Slack DM to a name fails every run with "User not found": put the member id in place or fail.
+	if issues := a.settleChatUserIds(ctx); len(issues) > 0 {
+		return chatUserLintMessage(issues)
+	}
 
 	// Local account lint: a cloud-CLI task with no resolvable account saves as an automation
 	// that looks live and runs against nothing. The server accepts both shapes (#35391).
