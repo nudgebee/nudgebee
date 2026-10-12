@@ -131,10 +131,11 @@ func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurre
 }
 
 // llmTriageScoringEnabled reports whether the LLM-assisted scoring path is active for this event's
-// tenant. The primary gate is the per-tenant TRIAGE_LLM_SCORING feature flag (toggled in Tenant
-// Settings; default off, enabled tenant-by-tenant). The global config flag stays as a force-on-all
-// override (local testing / a global kill-switch). IsFeatureExplicitlyEnabled nil-guards its
-// context and caches per (feature, tenant), so this stays cheap on the hot path.
+// tenant. The primary gate is the per-tenant TRIAGE_LLM_SCORING feature flag (Tenant Settings): on
+// unless the tenant has a 'disabled' row. Tenants that existed when it became default-on were given
+// that row, so only tenants created since start on it. The global config flag stays as a
+// force-on-all override (local testing). IsFeatureEnabledByDefault nil-guards its context and
+// caches per (feature, tenant), so this stays cheap on the hot path.
 func llmTriageScoringEnabled(event *models.Event) bool {
 	if config.Config.FeatureLLMTriageScoringEnabled {
 		return true
@@ -142,7 +143,7 @@ func llmTriageScoringEnabled(event *models.Event) bool {
 	if event == nil || event.Tenant == nil || *event.Tenant == "" {
 		return false
 	}
-	return tenant.IsFeatureExplicitlyEnabled(nil, *event.Tenant, tenant.FEATURE_TRIAGE_LLM_SCORING)
+	return tenant.IsFeatureEnabledByDefault(nil, *event.Tenant, tenant.FEATURE_TRIAGE_LLM_SCORING)
 }
 
 // legacyScoreAwaitingVerdict scores an event whose class can't get an AI verdict for now (see

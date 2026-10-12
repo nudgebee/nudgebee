@@ -141,7 +141,7 @@ const featureRecommendedContent = (baseTitle, assistantName) => ({
   },
   TRIAGE_LLM_SCORING: {
     description: 'Classifies each alert and applies a fixed policy to derive a P0-P3 priority, replacing the severity x environment formula.',
-    whenToTurnOn: 'Your P1 queue is full of things nobody would page for, and severity labels differ across alert sources.',
+    whenToTurnOn: 'Leave on. Turn off only if you need priorities to follow the severity your alert sources declare.',
     why: 'The legacy formula only sees declared severity and environment. Classification reads the alert itself; the deterministic policy keeps the result reproducible and auditable.',
   },
   WEBHOOK_LLM_RESOLUTION: {
