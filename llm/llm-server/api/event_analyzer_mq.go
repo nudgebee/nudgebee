@@ -470,8 +470,17 @@ func processTroubleshootingEventFromMqWithRegister(msgCtx context.Context, data 
 	} else {
 		confirmed, terminal := getConfirmedTerminalAnalysis(ctx, eventAnalysisRequest, dbManager)
 		if !terminal {
-			skipPublish = true
-			return fmt.Errorf("eventasync: analysis returned success without persisted terminal state for event %s", eventAnalysisRequest.EventId)
+			analysisStatus := strings.ToUpper(strings.TrimSpace(analysisResp.Status))
+			if analysisStatus == string(events.AnalysisStatusCompleted) || analysisStatus == string(events.AnalysisStatusFailed) {
+				ctx.GetLogger().Warn("eventasync: analysis returned success without persisted terminal state, falling back to in-memory response",
+					"eventId", eventAnalysisRequest.EventId,
+					"status", analysisResp.Status,
+				)
+				confirmed = analysisResp
+			} else {
+				skipPublish = true
+				return fmt.Errorf("eventasync: analysis returned success without persisted terminal state for event %s", eventAnalysisRequest.EventId)
+			}
 		}
 		common.MetricsEventAnalysisOperationsTotal("mq_investigation", "success", eventAnalysisRequest.AccountId)
 		fillPublishStateFromResponse(&publishState, confirmed, confirmed.Status)
