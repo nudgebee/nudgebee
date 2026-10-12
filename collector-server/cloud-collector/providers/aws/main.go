@@ -1042,7 +1042,7 @@ func (a *awsProvider) GetUsageReport(ctx providers.CloudProviderContext, account
 }
 
 func (a *awsProvider) StreamUsageReport(ctx providers.CloudProviderContext, account providers.Account, month time.Month, year int, emit func([]providers.UsageReportItem) error) error {
-	return streamAwsUsageReport(ctx, account, month, year, emit)
+	return explainAssumeRoleRefusal(account, streamAwsUsageReport(ctx, account, month, year, emit))
 }
 
 // GetAvailableUsageReportPeriods implements providers.UsageReportPeriodDiscoverer
