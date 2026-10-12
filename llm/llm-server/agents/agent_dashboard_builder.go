@@ -444,7 +444,7 @@ func normaliseGeneratedPanel(p writerPanel, id int) (*generatedPanel, string) {
 			W: clampPanelWidth(firstPositive(int(p.Width), int(p.GridPos.W)), panelType),
 			H: clampPanelHeight(firstPositive(int(p.Height), int(p.GridPos.H))),
 		},
-		Unit: truncateRunes(strings.TrimSpace(p.Unit), maxPanelUnitLength),
+		Unit: truncateRunesPlain(strings.TrimSpace(p.Unit), maxPanelUnitLength),
 	}
 
 	if panelType == "text" {
@@ -634,10 +634,10 @@ func clampPanelHeight(h int) int {
 	return h
 }
 
-// truncateRunes cuts to n characters with no marker: the result is shown to users
+// truncateRunesPlain cuts to n characters with no marker: the result is shown to users
 // as a unit suffix, so the agents package's truncateString (which appends a
 // "... (truncated" note and cuts by bytes) cannot be used here.
-func truncateRunes(s string, n int) string {
+func truncateRunesPlain(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {
 		return s
