@@ -1,0 +1,603 @@
+# LogQL corpus for the #40145 spike: every LogQL form found in nudgebee-enterprise
+# (the #40145 spike memo on #40143, "What we emit") has at least one entry.
+#
+# v1 entries carry the hand-written ClickHouse translation; TestTranslate_Corpus
+# requires the translator to produce exactly it. Each was checked against Loki 3.4.2
+# on the same data (see the PR's UI validation).
+#   kind: logs   -> where (ANDed after the time bounds), optional direction / limit
+#   kind: metric -> where, series (SQL rendering Loki's label set), agg count|rate, step (= range)
+# unsupported entries carry the exact error the translator must return.
+# parity: "" = must equal Loki; "known-diff: <why>" = a deliberate, documented difference.
+# Write the rule behind each translation in notes.
+entries:
+  # ---------- stream selectors ----------
+  - id: sel-eq
+    source: llm/llm-server/agents/agent_log_fetch.go:1607 (few-shot 3) via obs/loki.go:100 BuildLokiQuery
+    features: [selector-eq]
+    logql: |-
+      {namespace="shop"}
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'shop'
+  - id: sel-app-ns
+    source: obs/loki_test.go:1532 (verified BuildLokiQuery output shape)
+    features: [selector-eq, label-alias-app]
+    logql: |-
+      {app="web", namespace="shop"}
+    status: v1
+    kind: logs
+    where: |-
+      workload = 'web' AND namespace = 'shop'
+  - id: sel-neq
+    source: obs/loki.go:168 (all-negative selectors get <field>=~".+" prepended)
+    features: [selector-neq, selector-re]
+    logql: |-
+      {namespace=~".+", namespace!="shop"}
+    status: v1
+    kind: logs
+    where: |-
+      match(namespace, '^(?:.+)$') AND namespace != 'shop'
+  - id: sel-re-alt
+    source: obs/loki.go:455 (In -> =~"a|b")
+    features: [selector-re, re-alternation, label-alias-app]
+    logql: |-
+      {app=~"web|ledger", namespace=~"shop|payments"}
+    status: v1
+    kind: logs
+    where: |-
+      match(workload, '^(?:web|ledger)$') AND match(namespace, '^(?:shop|payments)$')
+    notes: Loki label matchers are fully anchored, so the SQL wraps them in ^(?:...)$. Line filters are not anchored.
+  - id: sel-re-anchored
+    source: Review Focus 1 (label matchers are fully anchored)
+    features: [selector-re, re-alternation]
+    logql: |-
+      {namespace=~"sho.*|pay"}
+    status: v1
+    kind: logs
+    where: |-
+      match(namespace, '^(?:sho.*|pay)$')
+    notes: 'The anchor applies to the whole alternation: "pay" must equal the value, so payments does not match and only shop does; unanchored match(namespace, ''sho.*|pay'') also returns payments and fails parity.'
+  - id: sel-nre
+    source: obs/loki.go:243 buildLabelSelector (NotIn -> !~)
+    features: [selector-nre, selector-re]
+    logql: |-
+      {namespace=~".+", container!~"istio-proxy|coredns"}
+    status: v1
+    kind: logs
+    where: |-
+      match(namespace, '^(?:.+)$') AND NOT match(container, '^(?:istio-proxy|coredns)$')
+  - id: generatequery-workload
+    source: obs/loki.go:1088 GenerateQuery
+    features: [selector-re]
+    logql: |-
+      {pod=~"web-.*", namespace="shop"}
+    status: v1
+    kind: logs
+    where: |-
+      match(pod, '^(?:web-.*)$') AND namespace = 'shop'
+  # ---------- limit and direction ----------
+  - id: all-ns-newest
+    source: obs/loki.go:121 ({namespace=~".+"} fallback when the request has only line filters); obs/loki.go:852 limit cap 5000
+    features: [limit-direction, selector-re]
+    logql: |-
+      {namespace=~".+"}
+    status: v1
+    kind: logs
+    where: |-
+      match(namespace, '^(?:.+)$')
+    notes: 6000 lines match; backward returns the newest 5000.
+  - id: forward-oldest
+    source: llm/llm-server/agents/agent_log_fetch.go:1607 (few-shot 13, direction forward)
+    features: [limit-direction]
+    logql: |-
+      {namespace="shop"}
+    status: v1
+    kind: logs
+    direction: forward
+    limit: 200
+    where: |-
+      namespace = 'shop'
+  # ---------- line filters ----------
+  - id: trace-id
+    source: obs/eventrule_actions_logs.go:2149 (autoExecuteByTraceID where trace_id = <id>) rendered by obs/loki.go:121 as {namespace=~".+"} |= "<id>"
+    features: [line-contains]
+    logql: |-
+      {namespace=~".+"} |= "4bf92f3577b34da6"
+    status: v1
+    kind: logs
+    where: |-
+      match(namespace, '^(?:.+)$') AND position(Body, '4bf92f3577b34da6') > 0
+  - id: contains-case
+    source: obs/loki.go:549 buildWhere (_eq on log -> |=)
+    features: [line-contains]
+    logql: |-
+      {namespace="shop"} |= "Error"
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'shop' AND position(Body, 'Error') > 0
+    notes: "|= is case-sensitive."
+  - id: not-contains
+    source: obs/loki.go:549 buildWhere (_neq on log -> !=)
+    features: [line-not-contains]
+    logql: |-
+      {namespace="shop"} != "healthz"
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'shop' AND position(Body, 'healthz') = 0
+  - id: builder-ilike
+    source: obs/loki_test.go:1532 (_ilike "%error%" -> |~ "^(?i).*error.*$")
+    features: [line-re, re-case-insensitive, re-anchored, label-alias-app]
+    logql: |-
+      {app="relay-server", namespace="nudgebee"} |~ "^(?i).*error.*$"
+    status: v1
+    kind: logs
+    where: |-
+      workload = 'relay-server' AND namespace = 'nudgebee' AND match(Body, '(?-s)^(?i).*error.*$')
+    notes: ClickHouse match() lets . match a newline; Go RE2 in Loki does not. (?-s) restores Loki's meaning, so the multi-line template must NOT match.
+  - id: builder-ilike-not
+    source: obs/loki_test.go:1532 (_ilike + _nlike)
+    features: [line-not-re, re-anchored]
+    logql: |-
+      {app="web", namespace="shop"} |~ "^(?i).*error.*$" !~ "^.*healthz.*$"
+    status: v1
+    kind: logs
+    where: |-
+      workload = 'web' AND namespace = 'shop' AND match(Body, '(?-s)^(?i).*error.*$') AND NOT match(Body, '(?-s)^.*healthz.*$')
+  - id: builder-or
+    source: obs/loki.go:659 (OR over log content -> (?i:.*a.*)|(?i:.*b.*)); obs/loki_test.go:1532
+    features: [line-re, re-alternation]
+    logql: |-
+      {app="relay-server", namespace="nudgebee"} |~ "^(?i).*database.*$" |~ "(?i:.*ERROR.*)|(?i:.*WARN.*)"
+    status: v1
+    kind: logs
+    where: |-
+      workload = 'relay-server' AND namespace = 'nudgebee' AND match(Body, '(?-s)^(?i).*database.*$') AND match(Body, '(?-s)(?i:.*ERROR.*)|(?i:.*WARN.*)')
+  - id: log-groups
+    source: obs/loki.go:1270 buildLogGroupStreamQuery (limit 1000)
+    features: [line-re, re-case-insensitive, re-alternation, re-anchored]
+    logql: |-
+      {namespace=~".+"} |~ "(?i)(err|crit|fatal|panic)|^E[0-9]{4}"
+    status: v1
+    kind: logs
+    limit: 1000
+    where: |-
+      match(namespace, '^(?:.+)$') AND match(Body, '(?-s)(?i)(err|crit|fatal|panic)|^E[0-9]{4}')
+    notes: Line filters match anywhere in the line, so the SQL does not anchor them.
+  - id: card-filter
+    source: obs/loki.go:627 (pattern) and obs/loki.go:1115 withLineFilter (backtick raw string)
+    features: [backtick-string, line-re]
+    logql: |-
+      {namespace="kube-system"} |~ `(?i)(^|[^a-z])(err|crit|fatal|ftl|emerg|panic)|^[EF][0-9]{4} `
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'kube-system' AND match(Body, '(?-s)(?i)(^|[^a-z])(err|crit|fatal|ftl|emerg|panic)|^[EF][0-9]{4} ')
+  - id: backslash
+    source: Review Focus 4 (escaping)
+    features: [backtick-string, string-escape]
+    logql: |-
+      {namespace="shop"} |~ `\bwarn(ing)?\b`
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'shop' AND match(Body, '(?-s)\\bwarn(ing)?\\b')
+    notes: A regex backslash is doubled inside a ClickHouse string literal.
+  - id: quote-pipe
+    source: Review Focus 4 (escaping)
+    features: [line-contains, string-escape]
+    logql: |-
+      {namespace="shop"} |= "said \"hello|world\""
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'shop' AND position(Body, 'said "hello|world"') > 0
+  - id: single-quote
+    source: Review Focus 4 (escaping; a single quote inside |=)
+    features: [line-contains, string-escape]
+    logql: |-
+      {namespace="shop"} |= "it's"
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'shop' AND position(Body, 'it\'s') > 0
+    notes: The translator escapes a single quote as \' inside a ClickHouse string literal (ClickHouse also accepts '').
+  - id: backslash-literal
+    source: Review Focus 4 (escaping; a LogQL string escape inside |=)
+    features: [line-contains, string-escape]
+    logql: |-
+      {namespace="shop"} |= "\\backslash"
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'shop' AND position(Body, '\\backslash') > 0
+    notes: 'The LogQL double-quoted string "\\backslash" is the literal \backslash; the SQL literal escapes that backslash again as \\.'
+  - id: literal-regex-chars
+    source: Review Focus 4 (|= is literal, not a regex)
+    features: [line-contains, string-escape]
+    logql: |-
+      {namespace="shop"} |= "(?i)[a-z]+ $literal"
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'shop' AND position(Body, '(?i)[a-z]+ $literal') > 0
+  - id: unicode
+    source: Review Focus 4 (escaping)
+    features: [line-contains]
+    logql: |-
+      {namespace="shop"} |= "ünïcödé"
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'shop' AND position(Body, 'ünïcödé') > 0
+  # ---------- label aliases ----------
+  - id: app-label-differs
+    source: llm/llm-server/agents/agent_log_fetch.go:1607 (few-shots key on app)
+    features: [label-alias-app]
+    logql: |-
+      {app="checkout-api"}
+    status: v1
+    kind: logs
+    where: |-
+      workload = 'checkout-api'
+    parity: "known-diff: Loki's app label is the pod's app label (checkout-api); workload is the owner name (checkout). Closing the gap needs the log agent to keep the pod's app label; see the #40145 memo on #40143."
+    expect_loki: 1200
+    expect_ch: 0
+  - id: service-name-differs
+    source: .claude/skills/loki-logs/SKILL.md (dev Loki label set includes service_name)
+    features: [label-alias-service_name]
+    logql: |-
+      {service_name="checkout-api"}
+    status: v1
+    kind: logs
+    where: |-
+      ServiceName = 'checkout-api'
+    parity: "known-diff: Loki derives service_name from the pod's app label (checkout-api); the log agent sets service.name to the owner name (checkout). Same root cause and fix as app-label-differs."
+    expect_loki: 1200
+    expect_ch: 0
+  - id: job-differs
+    source: llm/llm-server/agents/agent_log_fetch.go:1607 (few-shot 4 uses job)
+    features: [label-alias-job]
+    logql: |-
+      {job="shop/checkout-api"}
+    status: v1
+    kind: logs
+    where: |-
+      concat(namespace, '/', workload) = 'shop/checkout-api'
+    parity: "known-diff: promtail derives job as <namespace>/<app> from the pod's app label (shop/checkout-api); our job uses the owner name (shop/checkout). Same root cause and fix as app-label-differs."
+    expect_loki: 1200
+    expect_ch: 0
+  - id: job-alias
+    source: llm/llm-server/agents/agent_log_fetch.go:1607 (few-shot 4 uses job)
+    features: [label-alias-job]
+    logql: |-
+      {job="payments/ledger"}
+    status: v1
+    kind: logs
+    where: |-
+      concat(namespace, '/', workload) = 'payments/ledger'
+    notes: promtail sets job=<namespace>/<app>.
+  - id: node-alias
+    source: llm/llm-server/agents/agent_log_fetch.go:1607 (few-shot 10 uses node_name)
+    features: [label-alias-node_name, line-contains]
+    logql: |-
+      {node_name="node-a"} |= "ERROR"
+    status: v1
+    kind: logs
+    where: |-
+      node = 'node-a' AND position(Body, 'ERROR') > 0
+  - id: stream-alias
+    source: llm/llm-server/agents/agent_log_fetch.go:1607 (few-shot 6 uses stream)
+    features: [label-alias-stream]
+    logql: |-
+      {namespace="jobs", stream="stderr"}
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'jobs' AND stream = 'stderr'
+  - id: filename-alias
+    source: llm/llm-server/agents/agent_log_fetch.go:1607 (few-shot 7 uses filename)
+    features: [label-alias-filename]
+    logql: |-
+      {filename="/var/log/pods/payments_ledger-0_uid-ledger-0/ledger/0.log"}
+    status: v1
+    kind: logs
+    where: |-
+      LogAttributes['log.file.path'] = '/var/log/pods/payments_ledger-0_uid-ledger-0/ledger/0.log'
+  - id: service-name-alias
+    source: .claude/skills/loki-logs/SKILL.md (dev Loki label set includes service_name)
+    features: [label-alias-service_name]
+    logql: |-
+      {service_name="relay-server"}
+    status: v1
+    kind: logs
+    where: |-
+      ServiceName = 'relay-server'
+    notes: Loki 3 derives service_name from app. The log agent sets service.name to the workload.
+  - id: level-alias
+    source: llm/llm-server/agents/agent_log_fetch.go:1607 (few-shot 8 filters level warn|error)
+    features: [label-alias-level, selector-re]
+    logql: |-
+      {app="web", level=~"warn|error"}
+    status: v1
+    kind: logs
+    where: |-
+      workload = 'web' AND level IN ('warning', 'error')
+    parity: "known-diff: Loki has a level label only when the shipper adds one (this Loki has none, so it returns nothing); ClickHouse derives level for every row, as critical/error/warning/info/debug/unknown."
+    expect_loki: 0
+    expect_ch: 900
+    notes: 'The SQL applies the value mapping proposed for #40146: Loki-convention warn becomes our warning; error, critical, info and debug are unchanged. A regex matcher that is a plain alternation of values becomes IN over the mapped values, which is the same as the fully anchored match(level, ''^(?:warning|error)$'').'
+  # ---------- parsers ----------
+  - id: json-status
+    source: app/src/components/k8s/common/QueryModeSwitcher.jsx:138 (UI example)
+    features: [parser-json, label-filter-numeric]
+    logql: |-
+      {namespace="shop"} | json | status >= 500
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'shop' AND toFloat64OrNull(multiIf(JSONType(Body, 'status') = 'String', JSONExtractString(Body, 'status'), JSONType(Body, 'status') IN ('Int64', 'UInt64', 'Double', 'Bool'), JSONExtractRaw(Body, 'status'), '')) >= 500
+    notes: 'A json field renders as its text the way Loki labels it (a string as-is, a number or bool as written, an object, array or missing key as ''''), so one expression serves string and numeric filters. Loki keeps lines | json cannot parse (__error__=JSONParserErr), but a numeric filter on a label the line lacks drops them, and toFloat64OrNull('''') is NULL, so no isValidJSON guard is needed. A status that is present but not numeric is KEPT by Loki with __error__=LabelFilterErr, which this SQL deliberately drops (no parity line has a non-numeric status).'
+  - id: json-nonnumeric
+    source: Review Focus 5 (a present, non-numeric value under a numeric filter)
+    features: [parser-json, label-filter-numeric]
+    logql: |-
+      {namespace="shop"} | json | msg >= 500
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'shop' AND toFloat64OrNull(multiIf(JSONType(Body, 'msg') = 'String', JSONExtractString(Body, 'msg'), JSONType(Body, 'msg') IN ('Int64', 'UInt64', 'Double', 'Bool'), JSONExtractRaw(Body, 'msg'), '')) >= 500
+    parity: "known-diff: Loki keeps lines whose value is not a number, tagged __error__=LabelFilterErr; ClickHouse has no __error__ label to show users why a line that fails status >= 500 appears, so the translator drops them."
+    expect_loki: 370
+    expect_ch: 0
+    notes: 'Loki-exact SQL (reproduces all 370 lines): namespace = ''shop'' AND JSONHas(Body, ''msg'') AND ifNull(toFloat64OrNull(trim(BOTH ''"'' FROM JSONExtractRaw(Body, ''msg''))) >= 500, 1).'
+  - id: json-level
+    source: app/src/pages/api/client-errors.ts:9; .claude/skills/loki-logs/SKILL.md
+    features: [parser-json, label-filter-string]
+    logql: |-
+      {namespace="shop"} | json | level="error"
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'shop' AND multiIf(JSONType(Body, 'level') = 'String', JSONExtractString(Body, 'level'), JSONType(Body, 'level') IN ('Int64', 'UInt64', 'Double', 'Bool'), JSONExtractRaw(Body, 'level'), '') = 'error'
+    notes: After a parser, level names the extracted field, as in Loki (level is not a stream label here), so the derived level column is not used.
+  - id: logfmt-status
+    source: roadmap (expected v1 feature); no current emitter
+    features: [parser-logfmt, label-filter-numeric]
+    logql: |-
+      {namespace="payments"} | logfmt | status >= 500
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'payments' AND toFloat64OrNull(extractKeyValuePairs(Body, '=', ' ', '"')['status']) >= 500
+    notes: 'Loki logfmt never fails on these lines (non-logfmt tokens become sanitized keys such as _api_items_req, JSON lines yield no status), so only a numeric status= survives status >= 500, as with extractKeyValuePairs; a non-numeric status would be kept by Loki with __error__=LabelFilterErr and is dropped here, as in json-status.'
+  # ---------- metric queries (range == step) ----------
+  - id: sum-by-ns
+    source: roadmap (expected v1); obs/kql/kql_loki.go (sum by)
+    features: [sum-by, count_over_time, line-contains]
+    logql: |-
+      sum by (namespace) (count_over_time({namespace=~"shop|payments"} |= "ERROR" [5m]))
+    status: v1
+    kind: metric
+    step: 5m
+    agg: count
+    series: |-
+      concat('namespace="', namespace, '"')
+    where: |-
+      match(namespace, '^(?:shop|payments)$') AND position(Body, 'ERROR') > 0
+  - id: sum-all
+    source: obs/alertrule/loki_alert_rule_test.go:35 (without the "> 0")
+    features: [sum, count_over_time]
+    logql: |-
+      sum(count_over_time({namespace="shop"} |= "error" [5m]))
+    status: v1
+    kind: metric
+    step: 5m
+    agg: count
+    series: |-
+      ''
+    where: |-
+      namespace = 'shop' AND position(Body, 'error') > 0
+  - id: rate-by-pod
+    source: roadmap (expected v1)
+    features: [rate, sum-by]
+    logql: |-
+      sum by (pod) (rate({namespace="shop", container="web"} [5m]))
+    status: v1
+    kind: metric
+    step: 5m
+    agg: rate
+    series: |-
+      concat('pod="', pod, '"')
+    where: |-
+      namespace = 'shop' AND container = 'web'
+    notes: 'Each point t counts (t-step, t]: the line at exactly start is counted at t=start, so pod web-7d9f8-abc12 has 7 points and web-7d9f8-def34 has 5; a line at start+5m lands on start+5m, not start+10m.'
+  - id: bare-count
+    source: llm/rag-server/data/loki.csv (count_over_time, with [5m] in place of [30m])
+    features: [count_over_time, metric-stream-labels]
+    logql: |-
+      count_over_time({namespace="jobs"} |= "timeout" [5m])
+    status: v1
+    kind: metric
+    step: 5m
+    agg: count
+    series: |-
+      concat('app="', workload, '",container="', container,
+             '",filename="', LogAttributes['log.file.path'],
+             '",job="', namespace, '/', workload,
+             '",namespace="', namespace, '",node_name="', node,
+             '",pod="', pod, '",service_name="', ServiceName,
+             '",stream="', stream, '"')
+    where: |-
+      namespace = 'jobs' AND position(Body, 'timeout') > 0
+    notes: Without an aggregation, Loki keeps every stream label; the SQL rebuilds them from the alias map.
+  # ---------- precedence and chains (added with the translator, #40145 review) ----------
+  - id: label-filter-precedence
+    source: translator review (and binds tighter than or in a label filter)
+    features: [label-filter-string]
+    logql: |-
+      {namespace=~".+"} | namespace="shop" or namespace="payments" and stream="stderr"
+    status: v1
+    kind: logs
+    where: |-
+      match(namespace, '^(?:.+)$') AND (namespace = 'shop' OR (namespace = 'payments' AND stream = 'stderr'))
+    notes: Reading it left to right instead, (shop or payments) and stderr, would drop shop's stdout lines.
+  - id: label-filter-comma
+    source: translator review (a comma is and, binding looser than or)
+    features: [label-filter-string]
+    logql: |-
+      {namespace=~".+"} | stream="stderr", namespace="shop" or namespace="jobs"
+    status: v1
+    kind: logs
+    where: |-
+      match(namespace, '^(?:.+)$') AND stream = 'stderr' AND (namespace = 'shop' OR namespace = 'jobs')
+    notes: Measured against Loki 3.4.2. Reading the comma as a tighter and, (stderr and shop) or jobs, returns jobs' stdout lines too.
+  - id: line-or
+    source: translator review (|= with or keeps a line that has either)
+    features: [line-contains]
+    logql: |-
+      {namespace="shop"} |= "healthz" or "ERROR"
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'shop' AND (position(Body, 'healthz') > 0 OR position(Body, 'ERROR') > 0)
+  - id: line-not-or
+    source: translator review (!= with or drops a line that has either)
+    features: [line-not-contains]
+    logql: |-
+      {namespace="shop"} != "healthz" or "ERROR"
+    status: v1
+    kind: logs
+    where: |-
+      namespace = 'shop' AND position(Body, 'healthz') = 0 AND position(Body, 'ERROR') = 0
+  - id: json-metric
+    source: translator review (a metric over | json needs __error__="")
+    features: [parser-json, sum-by, count_over_time]
+    logql: |-
+      sum by (namespace) (count_over_time({namespace=~".+"} | json | __error__="" [5m]))
+    status: v1
+    kind: metric
+    step: 5m
+    agg: count
+    series: |-
+      concat('namespace="', namespace, '"')
+    where: |-
+      match(namespace, '^(?:.+)$') AND isValidJSON(Body) AND JSONType(Body) = 'Object'
+    notes: Without __error__="" Loki fails the query on the first line that is not JSON, so the translator refuses that form. Loki's json parser needs an object, so 42 or [1, 2] is an error too (TestStack_JSONMatchesLoki).
+  # ---------- unsupported: the translator refuses these ----------
+  - id: line-format
+    source: obs/kql/kql_loki.go (dead code)
+    features: [line_format, parser-json]
+    logql: |-
+      {namespace="shop"} | json | line_format "{{.msg}}"
+    status: unsupported
+    error: "unsupported LogQL: line_format"
+  - id: label-format
+    source: LogQL spec (no emitter; listed so the refusal is tested)
+    features: [label_format]
+    logql: |-
+      {namespace="shop"} | logfmt | label_format lvl=level
+    status: unsupported
+    error: "unsupported LogQL: label_format"
+  - id: pattern-parser
+    source: LogQL spec (no emitter)
+    features: [pattern]
+    logql: |-
+      {namespace="shop"} | pattern "<method> <path> <status> <_>"
+    status: unsupported
+    error: "unsupported LogQL: pattern parser"
+  - id: regexp-parser
+    source: obs/kql/kql_loki.go (dead code)
+    features: [regexp]
+    logql: |-
+      {app="web"} | regexp "(?P<status>[0-9]{3})"
+    status: unsupported
+    error: "unsupported LogQL: regexp parser"
+  - id: unwrap
+    source: LogQL spec (no emitter)
+    features: [unwrap]
+    logql: |-
+      sum(sum_over_time({namespace="shop"} | logfmt | unwrap duration [5m]))
+    status: unsupported
+    error: "unsupported LogQL: unwrap"
+  - id: topk
+    source: LogQL spec (no emitter)
+    features: [topk]
+    logql: |-
+      topk(3, sum by (pod) (count_over_time({namespace="shop"}[5m])))
+    status: unsupported
+    error: "unsupported LogQL: topk"
+  - id: quantile
+    source: LogQL spec (no emitter)
+    features: [quantile_over_time]
+    logql: |-
+      quantile_over_time(0.99, {namespace="shop"} | logfmt | unwrap duration [5m])
+    status: unsupported
+    error: "unsupported LogQL: quantile_over_time"
+  - id: offset
+    source: LogQL spec (no emitter)
+    features: [offset]
+    logql: |-
+      count_over_time({namespace="shop"}[5m] offset 1h)
+    status: unsupported
+    error: "unsupported LogQL: offset"
+  - id: range-ne-step
+    source: roadmap (range must equal step; anything else fails loudly)
+    features: [range-ne-step]
+    logql: |-
+      sum(count_over_time({namespace="shop"}[10m]))
+    status: unsupported
+    error: "unsupported LogQL: range [10m] must equal the query step (5m)"
+    notes: The message quotes the request's step; 5m is the step the corpus test sends.
+  - id: metric-comparison
+    source: obs/alertrule/loki_alert_rule_test.go:35 (ruler expr; ruler runs in Loki, not our query path)
+    features: [metric-comparison]
+    logql: |-
+      sum(count_over_time({namespace="demo"} |= "error" [5m])) > 0
+    status: unsupported
+    error: "unsupported LogQL: comparison operators in metric queries"
+  - id: bytes-over-time
+    source: LogQL spec (no emitter)
+    features: [bytes_over_time]
+    logql: |-
+      bytes_over_time({namespace="shop"}[5m])
+    status: unsupported
+    error: "unsupported LogQL: bytes_over_time"
+  - id: absent-over-time
+    source: LogQL spec (no emitter)
+    features: [absent_over_time]
+    logql: |-
+      absent_over_time({namespace="shop"}[5m])
+    status: unsupported
+    error: "unsupported LogQL: absent_over_time"
+  - id: label-unknown-instance
+    source: llm/llm-server/agents/agent_log_fetch.go:1607 (few-shot 6 uses instance)
+    features: [label-unknown]
+    logql: |-
+      {instance="web-01", stream="stderr"}
+    status: unsupported
+    error: 'unknown label "instance"; supported labels: app, container, filename, job, level, namespace, node_name, pod, service_name, stream'
+  - id: builder-not
+    source: obs/loki.go:669 (NOT renders as !(...), which is not LogQL)
+    features: [invalid-syntax]
+    logql: |-
+      {namespace="shop"} !(|= "healthz")
+    status: unsupported
+    error: "invalid LogQL"
+    notes: The translator appends the parser's position and reason. The builder bug itself is a separate follow-up.
+  - id: csv-invalid
+    source: llm/rag-server/data/loki.csv (malformed few-shot answer)
+    features: [invalid-syntax]
+    logql: |-
+      {app="cache-service"} != {level="debug"}
+    status: unsupported
+    error: "invalid LogQL"
+  - id: limit-stage
+    source: obs/kql/kql_loki.go (dead code emits "| limit N")
+    features: [invalid-syntax]
+    logql: |-
+      {app="t"} |~ "x" | limit 10
+    status: unsupported
+    error: "invalid LogQL"
