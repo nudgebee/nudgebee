@@ -192,7 +192,7 @@ describe('resolveBriefing — reproduces the approved prototype', () => {
   });
 
   it('keeps the mapping assumption on column C, not in the flagged column', () => {
-    expect(model.mappingCaveat).toContain('HIGH = P1 · MEDIUM = P2 · LOW/INFO = P3');
+    expect(model.mappingCaveat).toContain('HIGH → P1, MEDIUM → P2, LOW/INFO/DEBUG → P3');
     expect(model.callouts.map((entry) => entry.key)).not.toContain('mapping-assumption');
   });
 
