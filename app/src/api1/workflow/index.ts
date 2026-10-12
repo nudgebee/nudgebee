@@ -162,6 +162,7 @@ query ListWorkflows($accountIds:[String!], $status:String, $last_execution_statu
       }
       last_execution_time
       last_execution_version
+      last_execution_failed_step_count
       definition {
         triggers {
           type
@@ -394,6 +395,9 @@ query listWorkflowExecutions($accountId:String!, $id:String!, $limit:Int, $next_
       workflow_id
       version
       version_number
+      failed_step_count
+      first_failed_step
+      first_failed_step_error
     }
   }
 }
@@ -449,6 +453,9 @@ query getWorkflowExecution($request: WorkflowExecutionGetRequest!) {
     version_id
     version_number
     version_name
+    failed_step_count
+    first_failed_step
+    first_failed_step_error
   }
 }
 `;
@@ -661,6 +668,9 @@ query ListAccountExecutions($request: AccountExecutionListRequest!) {
       user_name
       failure_reason
       version_number
+      failed_step_count
+      first_failed_step
+      first_failed_step_error
     }
   }
 }

@@ -36,4 +36,9 @@ const (
 	// trade-off is that Memo is not server-side filterable in visibility
 	// queries; it is read back with the execution and counted by the caller.
 	MemoWorkflowAITriggered = "workflow_ai_triggered" // bool; true for AI-initiated executions
+	// Steps that failed under failure_policy "continue" on a run that still
+	// completed, written at the end of the run so list views read it per row.
+	MemoFailedStepCount      = "failed_step_count"       // int
+	MemoFirstFailedStep      = "first_failed_step"       // string; task id
+	MemoFirstFailedStepError = "first_failed_step_error" // string; secret-scrubbed, truncated
 )

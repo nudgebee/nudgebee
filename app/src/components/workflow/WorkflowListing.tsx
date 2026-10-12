@@ -10,6 +10,7 @@ import Tooltip from '@ui/Tooltip';
 import Text from '@shared/format/Text';
 import Datetime from '@shared/format/Datetime';
 import { Label } from '@ui/Label';
+import FailedStepsMark from './components/FailedStepsMark';
 import { CodeBlock } from '@ui/CodeBlock';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Button as DsButton } from '@ui/Button';
@@ -222,7 +223,7 @@ interface LastExecutionCellProps {
 // Renders the "Last Execution" column. Reads LiveExecutionStatusContext so
 // the row updates in place when a triggered execution transitions states —
 // no listing refetch required.
-const LastExecutionCell: React.FC<LastExecutionCellProps> = ({ workflow }) => {
+export const LastExecutionCell: React.FC<LastExecutionCellProps> = ({ workflow }) => {
   const liveStatuses = useContext(LiveExecutionStatusContext);
   const override = liveStatuses[workflow.id];
   const status = override?.status || workflow.last_execution_status;
@@ -246,6 +247,13 @@ const LastExecutionCell: React.FC<LastExecutionCellProps> = ({ workflow }) => {
   return (
     <Box sx={{ display: 'flex', gap: 'var(--ds-space-1)', flexDirection: 'row', alignItems: 'center' }}>
       <Label text={status.toLowerCase()} tone={getStatusTone(status)} textTransform='capitalize' />
+      {/* A live override is a newer run than the listing's count describes. */}
+      {!override && (
+        <FailedStepsMark
+          info={{ failed_step_count: workflow.last_execution_failed_step_count }}
+          testId={`workflow-last-run-failed-steps-${workflow.id}`}
+        />
+      )}
       {version !== undefined && version !== null && (
         <>
           <Text value='·' sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', mx: 'var(--ds-space-0)' }} />

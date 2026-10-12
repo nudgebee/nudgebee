@@ -580,7 +580,7 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 			// the failure path below: a called run records status, not the callee's hooks.
 			panicErr := temporal.NewApplicationError("workflow panic", "panic", panicMessage)
 			if !isChildWorkflow {
-				updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, panicErr, secretValues)
+				updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, panicErr, secretValues, "")
 			} else if !wf.DryRun {
 				setLastExecutionStatus(ctx, wf, lastExecTarget, model.WorkflowExecutionStatusFailed, panicErr.Error(), logger)
 			}
@@ -770,7 +770,7 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	if workflowError != nil {
 		logger.Info("Workflow execution failed because of error", "workflowId", wf.ID, "error", logsafe.ScrubSecretValues(workflowError.Error(), secretValues))
 		if !isChildWorkflow {
-			updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, workflowError, secretValues)
+			updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, workflowError, secretValues, "")
 		} else if !wf.DryRun {
 			// A called run records status on the callee's row, but not its hooks or tags.
 			childStatus, childMessage := terminalStatusFor(workflowError)
@@ -835,6 +835,18 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 		}
 	}
 
+	// A step that failed under failure_policy "continue" leaves the run COMPLETED;
+	// record it on the run's Memo so run lists can mark the run (#40461).
+	var failedSteps model.FailedSteps
+	if templateContext != nil {
+		failedSteps = collectFailedSteps(wf.Definition.Tasks, templateContext.Tasks)
+	}
+	if failedSteps.FailedStepCount > 0 {
+		if err := workflow.UpsertMemo(ctx, failedStepsMemo(failedSteps)); err != nil {
+			logger.Error("Failed to upsert failed-steps memo", "error", err)
+		}
+	}
+
 	if !isChildWorkflow {
 		// --- Persist workflow_last_execution_time state (Success Only) ---
 		if !wf.DryRun {
@@ -889,10 +901,10 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 				}
 			}
 		}
-		updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, nil, secretValues)
+		updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, nil, secretValues, failedStepsStatusMessage(failedSteps))
 	} else if !wf.DryRun {
 		// As on the failure path: status on the callee's row, no hooks or tags.
-		setLastExecutionStatus(ctx, wf, lastExecTarget, model.WorkflowExecutionStatusCompleted, "", logger)
+		setLastExecutionStatus(ctx, wf, lastExecTarget, model.WorkflowExecutionStatusCompleted, failedStepsStatusMessage(failedSteps), logger)
 	}
 
 	logger.Info("Workflow execution completed", "workflowId", wf.ID, "result", logsafe.Shape(workflowResult))
@@ -1892,7 +1904,9 @@ func processTaskLoop(
 	return completedTasks, executionTrace, nil
 }
 
-func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Workflow, targetWorkflowID string, inputs map[string]any, logger temporalLog.Logger, workflowError error, secretValues []string) {
+// completedMessage is the status message recorded when the run completed (it
+// names failed continue-on-failure steps); a failed run records its error.
+func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Workflow, targetWorkflowID string, inputs map[string]any, logger temporalLog.Logger, workflowError error, secretValues []string, completedMessage string) {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error("Panic recovered in workflow deferred cleanup hooks", "panic", r)
@@ -1915,6 +1929,9 @@ func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Wo
 	statusUpdateCtx := workflow.WithActivityOptions(ctx, activityOptions)
 
 	finalStatus, statusMessage := terminalStatusFor(workflowError)
+	if workflowError == nil {
+		statusMessage = completedMessage
+	}
 	canceled := finalStatus == model.WorkflowExecutionStatusCanceled
 
 	if !wf.DryRun {

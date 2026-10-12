@@ -9247,6 +9247,7 @@ type Workflow {
   last_execution_status: String
   last_execution_time: timestamp
   last_execution_version: Int
+  last_execution_failed_step_count: Int
   name: String!
   created_by: String
   created_by_user: WorkflowUser
@@ -9366,6 +9367,9 @@ type WorkflowExecutionGetResponse {
   workflow_result: jsonb
   error: String
   tasks: [WorkflowExecutionTaskResponse]
+  failed_step_count: Int
+  first_failed_step: String
+  first_failed_step_error: String
 }
 
 type WorkflowExecutionTaskResponse {
@@ -9407,6 +9411,9 @@ type WorkflowExecutionSummary {
   workflow_name: String
   version: Int
   version_number: Int
+  failed_step_count: Int
+  first_failed_step: String
+  first_failed_step_error: String
 }
 
 # A dashboard row: the standard summary plus the fields Temporal's visibility
@@ -9427,6 +9434,9 @@ type AccountExecutionSummary {
   duration_ms: Float
   user_name: String
   failure_reason: String
+  failed_step_count: Int
+  first_failed_step: String
+  first_failed_step_error: String
 }
 
 type AccountExecutionListResponse {

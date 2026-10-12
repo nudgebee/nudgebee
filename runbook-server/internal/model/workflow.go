@@ -85,7 +85,10 @@ type Workflow struct {
 	LastExecutionStatusMessage *string                 `json:"last_execution_status_message,omitempty" yaml:"last_execution_status_message,omitempty"`
 	LastExecutionTime          *time.Time              `json:"last_execution_time,omitempty" yaml:"last_execution_time,omitempty"`
 	LastExecutionVersion       *int                    `json:"last_execution_version,omitempty" yaml:"last_execution_version,omitempty"`
-	Name                       string                  `json:"name" yaml:"name" validate:"required,workflowname"`
+	// LastExecutionFailedStepCount is derived from the status message of a
+	// completed last run whose continue-on-failure steps failed.
+	LastExecutionFailedStepCount int    `json:"last_execution_failed_step_count,omitempty" yaml:"-"`
+	Name                         string `json:"name" yaml:"name" validate:"required,workflowname"`
 	// Description is the human-facing workflow description. Workflow YAML has
 	// always accepted a top-level `description:` key; before this field existed
 	// yaml.v3 silently discarded it.
@@ -887,6 +890,7 @@ type WorkflowExecutionDetails struct {
 	WorkflowResult   any                     `json:"workflow_result"` // New field for overall workflow result
 	Error            string                  `json:"error,omitempty"` // Failure reason if the workflow failed
 	Tasks            []TaskExecutionDetails  `json:"tasks"`           // Details for each task
+	FailedSteps
 	// Definition is the workflow definition snapshot captured when this run started,
 	// reconstructed from the Temporal WORKFLOW_EXECUTION_STARTED event input. This may
 	// differ from the current saved definition if the workflow was edited after the run.
@@ -927,6 +931,15 @@ type WorkflowExecutionSummary struct {
 	WorkflowName       string                  `json:"workflow_name,omitempty"`
 	Version            *int                    `json:"version,omitempty"`
 	VersionNumber      *int                    `json:"version_number,omitempty"`
+	FailedSteps
+}
+
+// FailedSteps marks a completed run whose continue-on-failure steps failed;
+// zero on a clean run. Read back from the run's Memo.
+type FailedSteps struct {
+	FailedStepCount      int    `json:"failed_step_count,omitempty"`
+	FirstFailedStep      string `json:"first_failed_step,omitempty"`
+	FirstFailedStepError string `json:"first_failed_step_error,omitempty"`
 }
 
 // ListWorkflowExecutionResponse contains a list of workflow executions.

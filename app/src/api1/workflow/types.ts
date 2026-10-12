@@ -190,6 +190,10 @@ export interface AccountExecutionItem {
   user_name?: string;
   failure_reason?: string;
   version_number?: number;
+  /** Set on a COMPLETED run whose continue-on-failure steps failed. */
+  failed_step_count?: number;
+  first_failed_step?: string;
+  first_failed_step_error?: string;
 }
 
 export interface AccountExecutionListResponse {

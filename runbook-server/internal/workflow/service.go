@@ -2054,6 +2054,7 @@ func (s *Service) ListWorkflows(ctx *security.RequestContext, accountIds []strin
 		if workflows[i].Definition.Version == "" {
 			workflows[i].Definition.Version = "v1"
 		}
+		workflows[i].LastExecutionFailedStepCount = failedStepCountFromStatusMessage(workflows[i].LastExecutionStatus, workflows[i].LastExecutionStatusMessage)
 	}
 
 	// Reconcile stale RUNNING statuses by checking Temporal's actual execution status.
@@ -2130,8 +2131,13 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, workflo
 			closeTime = latestExec.CloseTime.AsTime()
 		}
 		var statusMessage string
-		if latestStatus == model.WorkflowExecutionStatusTimedOut {
+		switch latestStatus {
+		case model.WorkflowExecutionStatusTimedOut:
 			statusMessage = "Workflow execution timed out"
+		case model.WorkflowExecutionStatusCompleted:
+			failed := s.failedStepsFromMemo(latestExec.Memo)
+			statusMessage = failedStepsStatusMessage(failed)
+			workflows[i].LastExecutionFailedStepCount = failed.FailedStepCount
 		}
 		go func() {
 			dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2930,6 +2936,7 @@ func (s *Service) ListWorkflowExecutions(ctx *security.RequestContext, accountId
 				}
 			}
 		}
+		summary.FailedSteps = s.failedStepsFromMemo(info.Memo)
 
 		summaries = append(summaries, summary)
 	}
@@ -3208,6 +3215,7 @@ func (s *Service) GetDetailedWorkflowExecution(ctx *security.RequestContext, acc
 			}
 		}
 		workflowDetails.Memo = memoMap
+		workflowDetails.FailedSteps = s.failedStepsFromMemo(info.Memo)
 	}
 
 	// Prefer the version snapshot for definition display so the execution
@@ -3741,6 +3749,8 @@ func (s *Service) syncLastExecutionStatus(ctx context.Context, tenantID, account
 		statusMessage = "Execution canceled"
 	case model.WorkflowExecutionStatusTerminated:
 		statusMessage = "Execution terminated"
+	case model.WorkflowExecutionStatusCompleted:
+		statusMessage = failedStepsStatusMessage(s.failedStepsFromMemo(latestExec.Memo))
 	}
 	if err := s.store.SetLastExecutionStatus(ctx, tenantID, accountId, workflowId, latestStatus, closeTime, statusMessage, runVersion); err != nil {
 		slog.Error("failed to sync last execution status after cancel", "workflowID", workflowId, "error", err)
