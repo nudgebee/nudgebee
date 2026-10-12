@@ -88,9 +88,22 @@ func createUserRole(dbms *database.DatabaseManager, userId, role, entityType, en
 	return err
 }
 
+// formatRoleLabel renders a tenant role for display in the invitation email.
+// Mirrors app/src/utils/common.ts formatUserRoleName — keep both in sync.
+func formatRoleLabel(role string) string {
+	switch role {
+	case security.AUTH_TENANT_ADMIN_ROLE:
+		return "Admin"
+	case security.AUTH_TENANT_READ_ADMIN_ROLE:
+		return "ReadOnly Admin"
+	default:
+		return "Member"
+	}
+}
+
 // sendTenantInvitationEmail sends an invitation email and sets the invited tenant
 // as the user's default. Replaces the RPC user_tenant_onboard_email event trigger.
-func sendTenantInvitationEmail(ctx *security.RequestContext, userId, tenantId string) {
+func sendTenantInvitationEmail(ctx *security.RequestContext, userId, tenantId, role string) {
 	// Detach from HTTP request context so this goroutine survives after the response is sent
 	ctx = security.NewRequestContext(context.WithoutCancel(ctx.GetContext()), ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 
@@ -140,20 +153,28 @@ func sendTenantInvitationEmail(ctx *security.RequestContext, userId, tenantId st
 		strings.TrimRight(config.Config.BaseUrl, "/"),
 		strings.ReplaceAll(url.QueryEscape(tenantObj.Name), "+", "%20"))
 
+	inviterName := ctx.GetSecurityContext().GetDisplayName()
+	roleLabel := formatRoleLabel(role)
+
+	subject := fmt.Sprintf("You were added to %s on %s", tenantObj.Name, config.Config.BrandingName)
+	if inviterName != "" {
+		subject = fmt.Sprintf("%s added you to %s on %s", inviterName, tenantObj.Name, config.Config.BrandingName)
+	}
+
 	message := map[string]any{
 		"kind":      "email",
 		"email":     []string{userObj.Username},
-		"subject":   config.Config.BrandingName + " invitation notification",
+		"subject":   subject,
 		"tenant_id": tenantObj.Id,
 		"type":      "invite",
 		"parameters": map[string]any{
+			"inviter_name":  inviterName,
+			"invitee_email": userObj.Username,
+			"role":          roleLabel,
 			"texts": map[string]any{
-				"login_button": "Go to " + config.Config.BrandingName,
-				"title":        "User Invitation",
 				"organization": map[string]any{
-					"id":            tenantObj.Id,
-					"name":          tenantObj.Name,
-					"currency_code": "$",
+					"id":   tenantObj.Id,
+					"name": tenantObj.Name,
 				},
 			},
 			"links": map[string]any{
@@ -277,7 +298,7 @@ func CreateUser(context *security.RequestContext, userRequest UserCreateRequest)
 		userTenantId = context.GetSecurityContext().GetTenantId()
 
 		// Send invitation email (replaces RPC user_tenant_onboard_email trigger)
-		go sendTenantInvitationEmail(context, userModel.Id, userTenantId)
+		go sendTenantInvitationEmail(context, userModel.Id, userTenantId, role)
 	} else if context.GetSecurityContext().IsSuperAdmin() && userRequest.Tenantname != "" {
 		// create and assign user to new tenant
 		resp, err := tenant.CreateTenant(context, tenant.TenantCreateRequest{

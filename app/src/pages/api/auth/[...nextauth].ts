@@ -583,9 +583,9 @@ if (process.env.EMAIL_SERVER_HOST && (process.env.NEXTAUTH_MAGICLINK_CREDS_ENABL
         try {
           await axios.post(`${notificationServiceUrl}/api/emails/send`, {
             recipients: email,
-            subject: 'Sign in to your account',
+            subject: "Here's your sign-in link",
             template: 'magic_link',
-            template_params: { magic_link_url: url },
+            template_params: { magic_link_url: url, email },
           });
         } catch (err: any) {
           // axios throws on non-2xx by default. Capture status + body when
