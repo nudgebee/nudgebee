@@ -73,10 +73,19 @@ const Tabs = ({
         flex.style.setProperty('--ct-indicator-width', '0px');
         return;
       }
-      const containerRect = flex.getBoundingClientRect();
-      const tabRect = selected.getBoundingClientRect();
-      flex.style.setProperty('--ct-indicator-x', `${tabRect.left - containerRect.left}px`);
-      flex.style.setProperty('--ct-indicator-width', `${tabRect.width}px`);
+      // offsetLeft/offsetWidth, not getBoundingClientRect(): the latter
+      // reflects any CSS transform on an ancestor (e.g. the modal's own
+      // open/enter transition, still mid-animation when a deep-linked tab
+      // mounts straight onto a non-default sub-tab). A transform active at
+      // measurement time scales or shifts both rects together, so the
+      // computed offset comes out wrong relative to the transform's final
+      // (settled) state — and since nothing but a size change re-triggers
+      // this effect, that wrong value sticks forever once the transform
+      // finishes. offsetLeft/offsetWidth are pure layout-box values (relative
+      // to `flex`, which is the nearest `position`-ed ancestor), unaffected
+      // by transforms on anything above it.
+      flex.style.setProperty('--ct-indicator-x', `${selected.offsetLeft}px`);
+      flex.style.setProperty('--ct-indicator-width', `${selected.offsetWidth}px`);
     };
 
     update();

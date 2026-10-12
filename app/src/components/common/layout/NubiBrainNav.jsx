@@ -28,6 +28,7 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import BCortexIcon from '@assets/ask-nudgebee/bcortex-icon.icon.svg';
 import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
 import { hasAdminSurfaceAccess } from '@lib/auth';
+import { bCortexOpener } from '@lib/bCortexOpenService';
 
 // These modals are click-gated (default closed) and client-only, but this nav rail
 // is rendered by the global PageLayout on every authenticated route. Importing them
@@ -143,6 +144,21 @@ const NubiBrainNav = ({ surface = 'dark', accountId }) => {
     // keeps this from re-firing (and re-opening) on unrelated route changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router.isReady, router.query?.bcortex]);
+
+  // In-app trigger (e.g. a GlobalPageSearch.jsx pick) — opens the modal
+  // directly on the tab requested, without a page navigation or URL change.
+  // Not filtered through DEEP_LINKABLE_TABS: that allowlist guards against a
+  // stale/mistyped *external* link (the weekly-digest query param below);
+  // every tab passed here instead comes from navSearchPages.ts's own
+  // bCortexSearchFragments, a code-reviewed list kept in sync with
+  // BCortexModal's real tab ids, so there's nothing to validate against.
+  useEffect(() => {
+    return bCortexOpener.subscribe((tab) => {
+      setBcortexInitialTab(tab);
+      setBcortexMounted(true);
+      setOpenBCortexModal(true);
+    });
+  }, []);
 
   const tint = surface === 'dark' ? 'var(--ds-background-100)' : 'var(--ds-gray-600)';
 

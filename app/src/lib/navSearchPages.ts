@@ -592,10 +592,13 @@ export const gcpDetailsSearchFragments: GcpDetailsSearchFragment[] = [
 ];
 
 // CloudFoundry Cloud Account Details tabs — same route/shape as
-// awsDetailsSearchFragments above, see `cfOptions` in
-// src/pages/cloud-account/details/[CloudAccountDetails].jsx. `label` is the
-// hardcoded row title shown to the user; `slug` is the slash-joined path used
-// for the row's `type` chip, its searchText, and its acronym.
+// awsDetailsSearchFragments above, see `cfOptions` (and the shared `baseOptions`
+// Summary tab, kept for CF too) in src/pages/cloud-account/details/
+// [CloudAccountDetails].jsx. Unlike AWS/Azure/GCP, CF has no Optimize/Monitoring
+// tabs (disabled there) and no Services tab (hidden there), so those are simply
+// absent here rather than needing a navSearchIgnoredFragments entry. `label` is
+// the hardcoded row title shown to the user; `slug` is the slash-joined path
+// used for the row's `type` chip, its searchText, and its acronym.
 export interface CloudFoundryDetailsSearchFragment {
   label: string;
   slug: string;
@@ -614,6 +617,64 @@ export const cloudFoundryDetailsSearchFragments: CloudFoundryDetailsSearchFragme
   { label: 'CloudFoundry Spaces', slug: 'cloudfoundry/cf-spaces/instances', fragment: 'cf-spaces/instances' },
   { label: 'CloudFoundry Space Events', slug: 'cloudfoundry/cf-spaces/events', fragment: 'cf-spaces/events' },
   { label: 'CloudFoundry Routes', slug: 'cloudfoundry/cf-routes/instances', fragment: 'cf-routes/instances' },
+];
+
+// Every b-Cortex tab (BCortexModal.jsx's *_SUB_TABS_CONFIG arrays, plus the
+// flat Knowledge Graph top-level tab — Memory/Preferences/Knowledge/Insights
+// aren't listed on their own since each already defaults to its first
+// sub-tab). b-Cortex is a modal, not a route, so there's no page of its own
+// to index — GlobalPageSearch.jsx opens these directly via the bCortexOpener
+// seam (NubiBrainNav.jsx subscribes to it) rather than navigating anywhere.
+// `memoryOnly`/`requiresFeature`/`requiresFeedbackScope` mirror the matching
+// field on that tab's own config in BCortexModal.jsx exactly, so
+// GlobalPageSearch.jsx can gate a row the same way the modal gates the tab
+// itself. Kept here rather than exported from the modal so this stays a
+// read-only mirror of the registry, not a second copy the modal depends on;
+// keep the two in sync by hand.
+export interface BCortexSearchFragment {
+  label: string;
+  slug: string;
+  tab: string;
+  memoryOnly?: boolean;
+  requiresFeature?: string;
+  requiresFeedbackScope?: boolean;
+}
+
+export const bCortexSearchFragments: BCortexSearchFragment[] = [
+  { label: 'Patterns', slug: 'bcortex/memory/patterns', tab: 'patterns' },
+  { label: 'Decisions', slug: 'bcortex/memory/decisions', tab: 'decisions' },
+  { label: 'Sessions', slug: 'bcortex/memory/sessions', tab: 'sessions' },
+  { label: 'Soul', slug: 'bcortex/memory/soul', tab: 'soul' },
+  { label: 'Privacy', slug: 'bcortex/memory/privacy', tab: 'privacy' },
+  { label: 'Collective', slug: 'bcortex/memory/collective', tab: 'collective' },
+
+  { label: 'Preferences - Inferred', slug: 'bcortex/preferences/inferred', tab: 'inferred' },
+  { label: 'Preferences - Typed', slug: 'bcortex/preferences/typed', tab: 'typed' },
+
+  { label: 'Knowledge Base', slug: 'bcortex/knowledge/knowledge-base', tab: 'knowledge-base' },
+  {
+    label: 'Account Context',
+    slug: 'bcortex/knowledge/account-context',
+    tab: 'account-context',
+    memoryOnly: true,
+  },
+  {
+    label: 'My Functions',
+    slug: 'bcortex/knowledge/my-functions',
+    tab: 'my-functions',
+    requiresFeature: 'LLM_FUNCTION',
+  },
+
+  { label: 'Knowledge Graph', slug: 'bcortex/knowledge-graph', tab: 'knowledge-graph' },
+
+  { label: 'Digests', slug: 'bcortex/insights/digests', tab: 'digests' },
+  {
+    label: 'Feedback',
+    slug: 'bcortex/insights/feedback',
+    tab: 'feedback',
+    requiresFeedbackScope: true,
+  },
+  { label: 'My Usage', slug: 'bcortex/insights/my-usage', tab: 'my-usage' },
 ];
 
 // Tabs/sub-tabs that exist in page source today but are NOT represented
@@ -641,8 +702,10 @@ export const navSearchIgnoredFragments: string[] = [
 
   // /auto-pilot/task/{taskId} — src/pages/auto-pilot/task/[TaskDetails].jsx.
   // Needs a runtime taskId like the provider detail pages above, so it would
-  // need its own `autoPilotTaskSearchFragments`-style array, not a static path.
-  // NOT confirmed intentional.
+  // need its own `autoPilotTaskSearchFragments`-style array fed by a live task
+  // listing (same shape as navSearchWorkflowItems/navSearchDashboardItems in
+  // GlobalPageSearch.jsx), not a static path. Tracked as a follow-up to
+  // nudgebee-enterprise#40890. NOT confirmed intentional.
   'auto-pilot/task#tasks',
   'auto-pilot/task#details',
 
