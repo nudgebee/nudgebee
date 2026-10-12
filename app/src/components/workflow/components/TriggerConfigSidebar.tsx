@@ -1072,14 +1072,14 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   const renderOptimizationConfig = () => (
     <FormCard
       title='Optimization Trigger Configuration'
-      description='Configure which optimization recommendations should trigger this automation'
+      description='Pick at least one filter: Cluster, Category or Rule Name'
       icon={null}
       number={1}
       columns={1}
     >
       <FormField
         label='Cluster'
-        description='Filter by cluster or cloud account (optional)'
+        description='Filter by cluster or cloud account'
         value={optimizationClusters[0] || ''}
         onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
           const value = e.target.value || '';
@@ -1122,7 +1122,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
 
       <FormField
         label='Category'
-        description='Filter by recommendation category (optional)'
+        description='Filter by recommendation category'
         value={optimizationCategories[0] || ''}
         onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
           const value = e.target.value || '';
@@ -1149,7 +1149,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
 
       <FormField
         label='Rule Name'
-        description='Filter by specific optimization rule (optional)'
+        description='Filter by specific optimization rule'
         value={optimizationRuleNames[0] || ''}
         onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
           const value = e.target.value || '';
@@ -1202,7 +1202,6 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
           • This workflow triggers when a new optimization recommendation is created
           <br />• Use the filters above to narrow which recommendations trigger this workflow
           <br />• The recommendation data is available in the workflow as <CodeBlock inline code='event' />
-          <br />• Leave all filters empty to trigger on any recommendation
         </Typography>
       </Box>
 

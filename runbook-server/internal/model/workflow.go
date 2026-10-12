@@ -409,6 +409,26 @@ func (d WorkflowDefinition) SupportsAIInvocation() bool {
 	return strings.TrimSpace(d.LLMDescription) != "" && d.HasManualTrigger()
 }
 
+const optimizationNeedsFilterMsg = "Optimization trigger needs at least one filter: Cluster, Category or Rule Name"
+
+// optimizationParamsHaveFilter reports whether params would build a non-empty event filter.
+func optimizationParamsHaveFilter(params map[string]any) bool {
+	for _, key := range []string{"categories", "rule_names", "clusters"} {
+		arr, _ := params[key].([]any)
+		for _, item := range arr {
+			if s, ok := item.(string); ok && s != "" {
+				return true
+			}
+		}
+	}
+	if s, ok := params["filter"].(string); ok {
+		s = strings.TrimSpace(s)
+		s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "{{"), "}}"))
+		return s != ""
+	}
+	return false
+}
+
 // Validate performs struct-level validation for Trigger.
 //
 // Every trigger type states its own param requirements in its case below, and each
@@ -606,7 +626,7 @@ func (t Trigger) Validate(sl validator.StructLevel) {
 		// Manual trigger accepts optional input parameters
 	case WorkflowTriggerOptimization:
 		if len(t.Params) == 0 {
-			sl.ReportError(t.Params, "params", "Params", "optimization_trigger_needs_params", "Optimization trigger requires params with at least one of: categories, rule_names, clusters, filter")
+			sl.ReportError(t.Params, "params", "Params", "optimization_trigger_needs_params", optimizationNeedsFilterMsg)
 			return
 		}
 		// Check for unsupported parameters
@@ -622,7 +642,6 @@ func (t Trigger) Validate(sl validator.StructLevel) {
 				return
 			}
 		}
-
 		// Validate that array params contain strings
 		for _, arrayParam := range []string{"categories", "rule_names", "clusters"} {
 			if val, ok := t.Params[arrayParam]; ok {
@@ -653,6 +672,12 @@ func (t Trigger) Validate(sl validator.StructLevel) {
 					return
 				}
 			}
+		}
+
+		// Empty lists build no filter and the trigger loader drops unfiltered
+		// optimization rules (storage.BuildOptimizationFilter), so it would never fire.
+		if !optimizationParamsHaveFilter(t.Params) {
+			sl.ReportError(t.Params, "params", "Params", "optimization_trigger_needs_params", optimizationNeedsFilterMsg)
 		}
 	}
 }

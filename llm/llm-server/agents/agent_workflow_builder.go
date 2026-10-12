@@ -630,7 +630,7 @@ Do not generalise from it to the other four types.
     - LLM ANALYSIS / RCA is NOT a field on the event. To include AI analysis, add an "llm.event_investigate" task and reference ITS output — do not read event.labels for a "reason"/"analysis".
     - "on" (lifecycle phase) selects WHEN the workflow fires: event.created (default), event.triaged, event.updated, investigation.completed (use this when the task needs the LLM RCA, which is only ready by then), event.resolved, event.closed.
     - BEFORE building an event trigger, call get_event_trigger_schema to confirm the live fields, the real label keys for this account, and a sample event.
-- "optimization" - All params optional (empty = match every recommendation). Params: {"categories": ["PodRightSizing"|"RightSizing"|"K8sInstanceRecommendation"|"K8sSpotRecommendation"|"Configuration"|"Security"|"K8sMissingAttribute"], "rule_names": ["vertical_rightsize"|"horizontal_rightsize"|"pvc_rightsize"|"continuous_rightsize"|"replica_right_sizing"|"Spot instance recommendation"|"Abandoned resource"], "clusters": ["string",...], "filter": "jinja2 (optional)"}. Filter and tasks see the recommendation event — fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id. Tasks read it via {{ Inputs.event.<field> }}.
+- "optimization" - Needs AT LEAST ONE non-empty filter (categories, rule_names, clusters or filter); an unfiltered optimization trigger is rejected. Params: {"categories": ["PodRightSizing"|"RightSizing"|"K8sInstanceRecommendation"|"K8sSpotRecommendation"|"Configuration"|"Security"|"K8sMissingAttribute"], "rule_names": ["vertical_rightsize"|"horizontal_rightsize"|"pvc_rightsize"|"continuous_rightsize"|"replica_right_sizing"|"Spot instance recommendation"|"Abandoned resource"], "clusters": ["string",...], "filter": "jinja2 (optional)"}. Filter and tasks see the recommendation event — fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id. Tasks read it via {{ Inputs.event.<field> }}.
 
 ## INPUT STRUCTURE:
 {
@@ -682,7 +682,7 @@ Do not generalise from it to the other four types.
 10. Schedule trigger MUST have "cron" param. Optional "overlap_policy" must be one of Skip|BufferOne|BufferAll|AllowAll|CancelOther|TerminateOther. Optional "catchup_window" MUST use Go time.ParseDuration units (ns|us|ms|s|m|h) — day units like "7d" are NOT supported (use "168h" for 7 days); compound durations like "1h30m" ARE allowed
 11. Webhook trigger MUST have "integration_name" param
 12. Event trigger MUST have AT LEAST ONE of "event_type" OR "filter". "event_type" may be a string or array of strings
-13. Optimization trigger: all params are optional (categories[], rule_names[], clusters[], filter). Empty params means "match every recommendation". Array params must contain strings only
+13. Optimization trigger MUST have AT LEAST ONE non-empty filter: categories[], rule_names[], clusters[] or filter. Empty params are rejected. Array params must contain strings only
 `
 }
 
@@ -1548,7 +1548,7 @@ CRITICAL RULES:
   - For severity use event.computed_priority (P0|P1|P2|P3) or event.computed_score (0-100), NOT a guessed label like event.labels.nb_triage. Add {{ event.nb_status == 'OPEN' }} to skip duplicates.
   - For AI analysis/RCA, add an llm.event_investigate task and reference its output — there is no event.labels analysis/reason field.
   - event_type must be a REAL registered type (confirm via get_event_trigger_schema); do not invent values like "incident.resolved" or "db.connection.spike".
-- Optimization trigger: all params optional (categories[], rule_names[], clusters[], filter). Empty = match every recommendation
+- Optimization trigger: needs at least one non-empty filter (categories[], rule_names[], clusters[] or filter). Empty params are rejected
 - TRIGGER PAYLOAD ACCESS IN TASKS:
   - Manual/Schedule: user inputs → {{ Inputs.<key> }}
   - Webhook: request body → {{ Inputs.webhook_payload }}
@@ -2934,7 +2934,7 @@ it is silently discarded. E.g. a webhook trigger is
 - "schedule" → Requires: cron (5-field UTC string, e.g. "0 9 * * MON-FRI"). Optional: overlap_policy ("Skip"|"BufferOne"|"BufferAll"|"AllowAll"|"CancelOther"|"TerminateOther"; default "Skip"), catchup_window (Go time.ParseDuration syntax; valid units ns|us|ms|s|m|h ONLY; day/week units like "7d" are NOT supported — use hours: "168h" = 7 days; compound durations like "1h30m" ARE valid; default "60s"). IMPORTANT: Always set overlap_policy: "Skip" for monitoring automations to prevent overlapping runs.
 - "webhook" → Requires: integration_name (string — must reference a workflow_webhook integration configured on the account). Optional: secret (string), filter (Jinja2 expression on payload, must render to literal "true" or "1"). Filter context: {{ webhook_payload }} at root. Tasks read the request body via {{ Inputs.webhook_payload }}.
 - "event" → Requires AT LEAST ONE of: event_type (string or [string,...]) OR filter (Jinja2); optional "on" lifecycle phase (default event.created). Filter context: {{ event.<field> }} at root (NOT Inputs.event). Real fields: event_type, source, title, description, category, priority (HIGH|MEDIUM|LOW|INFO|DEBUG), status, nb_status (OPEN|DUPLICATE|SUPPRESSED|...), computed_priority (P0-P3, may be absent), computed_score (0-100, may be absent), subject_type/name/namespace/node, cluster (a NAME, not a UUID), fingerprint, cloud_resource_id, labels (free-form alert labels — keys are source-specific, get them from get_event_trigger_schema). NO event.reason/event.message. For severity use computed_priority/computed_score (+ nb_status=='OPEN'); for AI analysis add an llm.event_investigate task. Tasks read the event via {{ Inputs.event.<field> }}.
-- "optimization" → Fires on new K8s/cost optimization recommendations. All params optional (empty = match every recommendation). Optional: categories ([string,...] from: PodRightSizing, RightSizing, K8sInstanceRecommendation, K8sSpotRecommendation, Configuration, Security, K8sMissingAttribute), rule_names ([string,...] from: vertical_rightsize, horizontal_rightsize, pvc_rightsize, continuous_rightsize, replica_right_sizing, "Spot instance recommendation", "Abandoned resource"), clusters ([string,...]), filter (Jinja2). Tasks read the recommendation via {{ Inputs.event.<field> }} — known fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id.
+- "optimization" → Fires on new K8s/cost optimization recommendations. Needs at least one non-empty filter (empty params are rejected). Pick from: categories ([string,...] from: PodRightSizing, RightSizing, K8sInstanceRecommendation, K8sSpotRecommendation, Configuration, Security, K8sMissingAttribute), rule_names ([string,...] from: vertical_rightsize, horizontal_rightsize, pvc_rightsize, continuous_rightsize, replica_right_sizing, "Spot instance recommendation", "Abandoned resource"), clusters ([string,...]), filter (Jinja2). Tasks read the recommendation via {{ Inputs.event.<field> }} — known fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id.
 
 COMMON TASK TYPES — WHEN TO USE EACH:
 
@@ -3140,7 +3140,7 @@ PLAN FORMAT — Fill in every section. Be specific, not vague.
    - If schedule: exact cron expression (5-field UTC) + overlap_policy + (if needed) catchup_window (Go duration syntax, units ns|us|ms|s|m|h ONLY — "7d" NOT supported, use "168h"; compound "1h30m" OK)
    - If webhook: integration_name + optional filter (must render "true"/"1") + optional secret
    - If event: event_type (string or array) AND/OR filter (at least one required); call out which event fields ({{ event.priority }}, {{ event.cluster }}, etc.) the filter uses
-   - If optimization: any of categories[]/rule_names[]/clusters[]/filter (all optional; empty = match every recommendation). Use enum values verbatim from the planning context.
+   - If optimization: any of categories[]/rule_names[]/clusters[]/filter (at least one non-empty; empty params are rejected). Use enum values verbatim from the planning context.
 
 **3. Inputs:** (skip if none)
    - For each: id, type (string/number/boolean/json), default value, whether required

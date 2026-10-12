@@ -2133,7 +2133,7 @@ func TestToolInitWorkflow_TriggerShape(t *testing.T) {
 			trigger: map[string]interface{}{"type": "manual"},
 		},
 		{
-			name:    "optimization with all-optional params omitted",
+			name:    "optimization missing its filter is not a shape error",
 			trigger: map[string]interface{}{"type": "optimization"},
 		},
 		{
