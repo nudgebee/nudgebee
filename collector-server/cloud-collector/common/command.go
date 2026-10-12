@@ -203,6 +203,17 @@ func (e *CommandTimeoutError) Error() string {
 	return fmt.Sprintf("command timed out after %v", e.Timeout)
 }
 
+// IsCommandOutcome reports whether err means the command ran and failed on its
+// own terms — it exited non-zero or hit a deadline, its own or the request's —
+// rather than the collector
+// failing to run it. A disabled API, an expired secret or a missing resource all
+// end this way; they are answers about the customer's cloud, not collector faults.
+func IsCommandOutcome(err error) bool {
+	var exitErr *CommandExitError
+	var timeoutErr *CommandTimeoutError
+	return errors.As(err, &exitErr) || errors.As(err, &timeoutErr) || errors.Is(err, context.DeadlineExceeded)
+}
+
 type cappedBuffer struct {
 	buffer    bytes.Buffer
 	remaining int
@@ -402,7 +413,9 @@ func SecureExecute(ctx context.Context, opts SecureCommandOptions) (string, stri
 		default:
 			killProcessGroup(pid, "timed-out")
 			if !structuredResult {
-				return "", "", fmt.Errorf("command timed out after %v", timeout)
+				// Same text as before, now typed, so callers can tell a command that
+				// ran out of time from a failure to run it.
+				return "", "", &CommandTimeoutError{Timeout: timeout}
 			}
 			terminalErr = &CommandTimeoutError{Timeout: timeout}
 			<-done
@@ -435,9 +448,6 @@ func SecureExecute(ctx context.Context, opts SecureCommandOptions) (string, stri
 		return stdoutBuf.String(), stderrBuf.String(), terminalErr
 	}
 	if ws.Exited() && ws.ExitStatus() != 0 {
-		if !structuredResult {
-			return stdoutBuf.String(), stderrBuf.String(), fmt.Errorf("command exited with status %d", ws.ExitStatus())
-		}
 		return stdoutBuf.String(), stderrBuf.String(), &CommandExitError{ExitCode: ws.ExitStatus()}
 	}
 	if ws.Signaled() {

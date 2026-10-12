@@ -1550,7 +1550,13 @@ func (a *awsProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, acco
 		Untrusted: true,
 	})
 	if err != nil {
-		ctx.GetLogger().Error("AWS CLI command execution failed", "error", err, "stderr", stderr, "command", command)
+		// A command that ran and failed is the customer's cloud answering, and a
+		// caller that hung up stopped it on purpose; neither is a collector fault.
+		log := ctx.GetLogger().Error
+		if common.IsCommandOutcome(err) || ctx.GetContext().Err() != nil {
+			log = ctx.GetLogger().Warn
+		}
+		log("AWS CLI command execution failed", "error", err, "stderr", stderr, "command", command)
 		return stdout, fmt.Errorf("AWS CLI command failed: %w, Stderr: %s", err, stderr)
 	}
 

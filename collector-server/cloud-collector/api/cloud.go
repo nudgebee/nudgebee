@@ -817,7 +817,7 @@ func handleCloudProviderApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.
 		}
 		resp, err := account.ExecuteCliCommand(ctx, request.AccountId, request.Command)
 		if err != nil {
-			c.JSON(500, buildApiResponse(nil, err))
+			c.JSON(executeCliErrorStatus(c.Request.Context(), err), buildApiResponse(nil, err))
 			return
 		}
 		c.JSON(200, buildApiResponse(resp))
@@ -1553,3 +1553,29 @@ func handleCloudProviderApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.
 	})
 
 }
+
+// executeCliErrorStatus maps a failed /execute_cli call to its HTTP status. Only a
+// fault in the collector itself is a 500. A command that ran and exited non-zero —
+// a disabled API, an expired secret, a missing resource — is 422, and one that ran
+// out of time is 504; both still carry the command's error text, and every caller
+// already treats any non-200 as a failure. A caller that hung up before the answer
+// gets 499, so its own timeout is not counted as a collector error.
+func executeCliErrorStatus(requestCtx context.Context, err error) int {
+	var timeoutErr *common.CommandTimeoutError
+	switch {
+	// The request's own deadline (130s) is shorter than a command's default
+	// timeout (180s), so a slow command usually ends as a cancelled context
+	// rather than a typed timeout; both mean it ran out of time.
+	case errors.As(err, &timeoutErr), errors.Is(err, context.DeadlineExceeded):
+		return http.StatusGatewayTimeout
+	case common.IsCommandOutcome(err):
+		return http.StatusUnprocessableEntity
+	case requestCtx.Err() != nil:
+		return statusClientClosedRequest
+	}
+	return http.StatusInternalServerError
+}
+
+// statusClientClosedRequest is the de facto status (nginx's 499) for a request the
+// client abandoned before the server answered.
+const statusClientClosedRequest = 499

@@ -1351,7 +1351,11 @@ func azureCliLogin(ctx providers.CloudProviderContext, session azureAuthSession)
 		Timeout: azureCliLoginTimeout,
 	})
 	if err != nil {
-		ctx.GetLogger().Error("az CLI login command execution failed", "error", err, "stderr", stderr)
+		log := ctx.GetLogger().Error
+		if common.IsCommandOutcome(err) {
+			log = ctx.GetLogger().Warn
+		}
+		log("az CLI login command execution failed", "error", err, "stderr", stderr)
 		return nil, fmt.Errorf("az CLI login failed: %w", err)
 	}
 
@@ -1364,7 +1368,11 @@ func azureCliLogin(ctx providers.CloudProviderContext, session azureAuthSession)
 			Timeout: azureCliLoginTimeout,
 		})
 		if err != nil {
-			ctx.GetLogger().Error("az CLI account set command failed", "error", err, "stderr", stderr)
+			log := ctx.GetLogger().Error
+			if common.IsCommandOutcome(err) {
+				log = ctx.GetLogger().Warn
+			}
+			log("az CLI account set command failed", "error", err, "stderr", stderr)
 			return nil, fmt.Errorf("az CLI account set failed: %w", err)
 		}
 	}
@@ -1475,7 +1483,13 @@ func (a *azureProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, ac
 		if lo.ContainsBy(azureCliBadCredentialCodes, func(code string) bool { return strings.Contains(stderr, code) }) {
 			cliSession.invalidate()
 		}
-		ctx.GetLogger().Error("az CLI command execution failed", "error", err, "stderr", stderr, "command", command)
+		// A command that ran and failed is the customer's cloud answering, and a
+		// caller that hung up stopped it on purpose; neither is a collector fault.
+		log := ctx.GetLogger().Error
+		if common.IsCommandOutcome(err) || ctx.GetContext().Err() != nil {
+			log = ctx.GetLogger().Warn
+		}
+		log("az CLI command execution failed", "error", err, "stderr", stderr, "command", command)
 		return stdout, fmt.Errorf("az CLI command failed: %w, Stderr: %s", err, stderr)
 	}
 

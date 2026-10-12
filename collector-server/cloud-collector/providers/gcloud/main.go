@@ -181,7 +181,13 @@ func (a *gcloudProvider) ListResources(ctx providers.CloudProviderContext, accou
 		}
 		serviceResources, err := service.GetResources(ctx, account, regionName)
 		if err != nil {
-			ctx.GetLogger().Error("failed to fetch resources", "error", err, "service", serviceName, "region", regionName)
+			// A service the collector does not list resources for is not a failure;
+			// the sync above already ignores it.
+			log := ctx.GetLogger().Error
+			if errors.Is(err, errors.ErrUnsupported) {
+				log = ctx.GetLogger().Debug
+			}
+			log("failed to fetch resources", "error", err, "service", serviceName, "region", regionName)
 			return providers.ListResourcesResponse{
 				Items: resources,
 			}, err
@@ -417,7 +423,11 @@ func (a *gcloudProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, a
 		Timeout: 30 * time.Second,
 	})
 	if err != nil {
-		ctx.GetLogger().Error("gcloud auth command failed", "error", err, "stderr", stderr)
+		log := ctx.GetLogger().Error
+		if common.IsCommandOutcome(err) {
+			log = ctx.GetLogger().Warn
+		}
+		log("gcloud auth command failed", "error", err, "stderr", stderr)
 		return "", fmt.Errorf("gcloud auth failed: %w", err)
 	}
 
@@ -429,7 +439,13 @@ func (a *gcloudProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, a
 		Untrusted: true,
 	})
 	if err != nil {
-		ctx.GetLogger().Error("gcloud CLI command execution failed", "error", err, "stderr", stderr, "command", command, "stdout", stdout)
+		// A command that ran and failed is the customer's cloud answering, and a
+		// caller that hung up stopped it on purpose; neither is a collector fault.
+		log := ctx.GetLogger().Error
+		if common.IsCommandOutcome(err) || ctx.GetContext().Err() != nil {
+			log = ctx.GetLogger().Warn
+		}
+		log("gcloud CLI command execution failed", "error", err, "stderr", stderr, "command", command, "stdout", stdout)
 		return stdout, fmt.Errorf("gcloud CLI command failed: %w, Stderr: %s", err, stderr)
 	}
 
