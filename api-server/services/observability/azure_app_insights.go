@@ -190,6 +190,20 @@ func normalizeAzureTraceColumns(columns []Column) []Column {
 
 type AzureResponse struct {
 	Tables []Table `json:"tables"`
+	// Error is set on an HTTP 200 that still failed in part (code "PartialError"):
+	// the tables hold only what was computed before the failure.
+	Error *AzureQueryError `json:"error,omitempty"`
+}
+
+// AzureQueryError is the error object of a query response; Details carries the
+// specific cause behind a generic top-level message.
+type AzureQueryError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Details []struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"details,omitempty"`
 }
 
 type Table struct {

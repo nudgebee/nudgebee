@@ -2,6 +2,10 @@ package observability
 
 import (
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,4 +121,63 @@ func TestESDefaultSearchTimeout(t *testing.T) {
 
 	assert.Contains(t, esTimedOutNote(`{"timed_out":true,"hits":{"hits":[]}}`), "stopped this query at its time limit")
 	assert.Empty(t, esTimedOutNote(`{"timed_out":false,"hits":{"hits":[]}}`))
+}
+
+// An index whose mapping rejected the default sort is remembered, so the next
+// query on it runs once, unsorted, instead of failing and rerunning (#39201).
+func TestESRejectedDefaultSort_RememberedPerIndex(t *testing.T) {
+	var posts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		posts = append(posts, string(b))
+		if strings.Contains(string(b), `"sort"`) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"reason":"Text fields are not optimised for operations that require per-document field data (fielddata)"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"hits":{"total":{"value":1,"relation":"eq"},"hits":[{"_source":{"@timestamp":"2026-10-07T10:00:00Z","value":1}}]}}`))
+	}))
+	defer srv.Close()
+	t.Cleanup(func() { esSortRejected.Delete(esSortRejectedKey(srv.URL, "metrics-x")) })
+
+	run := func() {
+		t.Helper()
+		out, err := runESMetricsQueries(&ElasticsearchConfig{Url: srv.URL}, "metrics-x", FetchMetricsRequest{
+			Request: map[string]any{"query_type": "dsl", "batch": true},
+			Queries: map[string]string{"q": `{"query":{"match_all":{}}}`},
+		})
+		require.NoError(t, err)
+		require.Len(t, out.Results, 1)
+		require.Nil(t, out.Results[0].Error)
+		assert.NotContains(t, out.Results[0].Query, `"sort"`)
+	}
+
+	run()
+	require.Len(t, posts, 2, "first query: sorted, rejected, rerun unsorted")
+	assert.True(t, esSortRejectedRecently(srv.URL, "metrics-x"))
+	assert.False(t, esSortRejectedRecently(srv.URL, "metrics-y"), "only the rejecting index is remembered")
+
+	posts = nil
+	run()
+	require.Len(t, posts, 1, "remembered: one unsorted query")
+	assert.NotContains(t, posts[0], `"sort"`)
+
+	// Expired: the default sort is tried again.
+	esSortRejected.Store(esSortRejectedKey(srv.URL, "metrics-x"), time.Now().Add(-time.Second))
+	posts = nil
+	run()
+	require.Len(t, posts, 2)
+	assert.Contains(t, posts[0], `"sort"`)
+}
+
+// An unsorted query (an index that rejected the default sort) read an arbitrary
+// slice: the note must not claim it is the newest.
+func TestESDocCapNote_Unsorted(t *testing.T) {
+	note := esDocCapNote(esParseStats{DocsMatched: 10000, HitsReturned: 10000, TotalIsLowerBound: true, FirstTs: 1, LastTs: 2}, map[string]any{}, 0, 0)
+	assert.Contains(t, note, "only an arbitrary set of 10000 were read, spread unevenly between 1970-01-01 00:00 UTC and 1970-01-01 00:00 UTC")
+	assert.NotContains(t, note, "newest")
 }

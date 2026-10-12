@@ -386,6 +386,10 @@ type QueryResult struct {
 	// `count` when a series has a single bucket and no neighbour to measure from.
 	bucketSeconds int64
 
+	// pagesCapped is set when a provider stopped paging at its page cap with more
+	// pages left (SolarWinds), so the caller can say series are missing. Internal only.
+	pagesCapped bool
+
 	// Sample holds real documents, flattened to `path: value` lines, when a query
 	// matched nothing. Note says which search produced them. Elasticsearch only.
 	Sample string `json:"sample,omitempty"`

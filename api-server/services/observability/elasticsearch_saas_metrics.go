@@ -484,6 +484,13 @@ func runESMetricsQueries(cfg *ElasticsearchConfig, index string, req FetchMetric
 			continue
 		}
 
+		// An index known to reject the default sort is queried without it rather
+		// than failing, and being rerun, on every query.
+		if sortSpec, ok := queryBody["sort"]; ok && reflect.DeepEqual(sortSpec, esNewestFirstSort()) &&
+			esSortRejectedRecently(cfg.Url, index) {
+			delete(queryBody, "sort")
+		}
+
 		renderedJSON, _ := json.Marshal(queryBody)
 		renderedQuery := string(renderedJSON)
 
@@ -521,6 +528,10 @@ func runESMetricsQueries(cfg *ElasticsearchConfig, index string, req FetchMetric
 			delete(queryBody, "sort")
 			if resp, err = esRequestJSON("POST", esURL, queryBody, cfg); err == nil { //nolint:bodyclose
 				bodyBytes, err = readResponse(resp, "metric query")
+			}
+			if err == nil {
+				// Only once the unsorted rerun worked: the sort was the problem.
+				esMarkSortRejected(cfg.Url, index)
 			}
 			renderedJSON, _ = json.Marshal(queryBody)
 			renderedQuery = string(renderedJSON)
@@ -2477,14 +2488,17 @@ func esDocCapNote(stats esParseStats, body map[string]any, startMs, endMs int64)
 	if stats.TotalIsLowerBound {
 		matched = "more than " + matched
 	}
-	which := "the newest"
-	if sortSpec, ok := body["sort"]; ok && !reflect.DeepEqual(sortSpec, esNewestFirstSort()) {
+	which, span := "the newest", ", so these series cover only %s to %s"
+	if sortSpec, ok := body["sort"]; !ok {
+		// Unsorted (e.g. an index that rejected the default sort): an arbitrary slice.
+		which, span = "an arbitrary set of", ", spread unevenly between %s and %s"
+	} else if !reflect.DeepEqual(sortSpec, esNewestFirstSort()) {
 		which = "the first (in the query's sort order)"
 	}
 	const layout = "2006-01-02 15:04 UTC"
 	note := fmt.Sprintf("The query matched %s documents but only %s %d were read", matched, which, stats.HitsReturned)
 	if stats.FirstTs > 0 && stats.LastTs > 0 {
-		note += fmt.Sprintf(", so these series cover only %s to %s",
+		note += fmt.Sprintf(span,
 			time.Unix(stats.FirstTs, 0).UTC().Format(layout), time.Unix(stats.LastTs, 0).UTC().Format(layout))
 		if startMs > 0 && endMs > 0 {
 			note += fmt.Sprintf(" of the requested %s to %s", time.UnixMilli(startMs).UTC().Format(layout), time.UnixMilli(endMs).UTC().Format(layout))
@@ -2513,6 +2527,39 @@ func esRejectedDefaultSort(body map[string]any, err error) bool {
 }
 
 var errDefaultSortRejected = errors.New("shard failed on the default sort")
+
+// esSortRejectedTTL is how long an index that rejected the default sort is
+// queried without it. Mappings rarely change; the TTL bounds how long a fixed
+// mapping still gets unsorted (arbitrary-slice) answers.
+const esSortRejectedTTL = time.Hour
+
+// esSortRejected holds the indices, keyed by cluster URL and index string, whose
+// mapping rejected the default sort, with when that stops applying. Without it
+// every query on such an index ran twice (#39201).
+var esSortRejected sync.Map // string → time.Time
+
+func esSortRejectedKey(clusterURL, index string) string {
+	return clusterURL + "\x00" + index
+}
+
+func esMarkSortRejected(clusterURL, index string) {
+	esSortRejected.Store(esSortRejectedKey(clusterURL, index), time.Now().Add(esSortRejectedTTL))
+}
+
+// esSortRejectedRecently reports whether the index rejected the default sort
+// within esSortRejectedTTL, dropping an expired entry.
+func esSortRejectedRecently(clusterURL, index string) bool {
+	key := esSortRejectedKey(clusterURL, index)
+	v, ok := esSortRejected.Load(key)
+	if !ok {
+		return false
+	}
+	if time.Now().After(v.(time.Time)) {
+		esSortRejected.CompareAndDelete(key, v)
+		return false
+	}
+	return true
+}
 
 // esShardFailures reads _shards from a search response: how many failed of how
 // many, and the first failure's reason.
