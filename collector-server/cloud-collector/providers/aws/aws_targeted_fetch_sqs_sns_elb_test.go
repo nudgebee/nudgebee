@@ -116,7 +116,15 @@ func (f *fakeAwsEndpoint) reset() {
 func startFakeAws(t *testing.T, respond func(req fakeAwsRequest) (int, string)) *fakeAwsEndpoint {
 	t.Helper()
 	fake := &fakeAwsEndpoint{respond: respond}
-	server := httptest.NewServer(fake)
+	pointAwsSdkAt(t, fake)
+	return fake
+}
+
+// pointAwsSdkAt serves every AWS SDK client the provider builds from handler, with
+// static test credentials, for the duration of the test.
+func pointAwsSdkAt(t *testing.T, handler http.Handler) {
+	t.Helper()
+	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
 	emptyFile := filepath.Join(t.TempDir(), "empty")
@@ -134,7 +142,6 @@ func startFakeAws(t *testing.T, respond func(req fakeAwsRequest) (int, string)) 
 	} {
 		t.Setenv(k, v)
 	}
-	return fake
 }
 
 func awsQueryResponse(action, namespace, result string) string {
