@@ -5150,6 +5150,16 @@ const observationHistoryWindow = 3
 // either way: its own reasoning rides in the assistant turns, which are never trimmed.
 const trimmedObservationHeadBytes = 1000
 
+// staleObservationTrimBatchBytes is how much trimming has to save before it runs. Rewriting an
+// observation changes the prompt from that message on, and the provider's prompt cache only covers
+// what comes before the first change — so trimming the one observation that just left the window on
+// every step kept the cached prefix at roughly the system prompt, under Gemini's ~16k-token floor,
+// and builder steps cached nothing (#39972). Letting stale observations pile up to this many
+// trimmable bytes and then trimming them all at once keeps the history append-only between
+// batches. ~14k tokens of stale payload at most: simulated builds cost 10–40% less input than
+// trimming every step, and grow far less than never trimming.
+const staleObservationTrimBatchBytes = 48000
+
 // loopObservation records where a tool observation landed in the tool-loop message history and
 // what it contained, so trimStaleObservations can rewrite that message in place later.
 type loopObservation struct {
@@ -5160,11 +5170,22 @@ type loopObservation struct {
 }
 
 // trimStaleObservations shrinks every observation that has fallen out of the recent window to a
-// head snippet, rewriting its message in place. Trimming is one-way and idempotent — an already
-// trimmed observation is skipped — so the whole loop costs one pass per observation. Any
-// anti-thrash nudge appended to a trimmed observation goes with it; the nudge was a signal for the
-// iteration it was delivered on, and the live ones are all inside the window.
+// head snippet, rewriting its message in place — but only once that saves at least
+// staleObservationTrimBatchBytes, so the history changes in rare batches rather than on every step.
+// Trimming is one-way and idempotent — an already trimmed observation is skipped — so the whole
+// loop costs one pass per observation. Any anti-thrash nudge appended to a trimmed observation goes
+// with it; the nudge was a signal for the iteration it was delivered on. Between batches an old
+// nudge can sit outside the window untrimmed — it was true when sent and still reads as history.
 func trimStaleObservations(messages []llms.MessageContent, observations []loopObservation) {
+	saving := 0
+	for i := 0; i < len(observations)-observationHistoryWindow; i++ {
+		if o := observations[i]; !o.trimmed && len(o.body) > trimmedObservationHeadBytes {
+			saving += len(o.body) - trimmedObservationHeadBytes
+		}
+	}
+	if saving < staleObservationTrimBatchBytes {
+		return
+	}
 	for i := 0; i < len(observations)-observationHistoryWindow; i++ {
 		o := &observations[i]
 		if o.trimmed {
