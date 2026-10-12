@@ -3,6 +3,7 @@ package triage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -105,6 +106,9 @@ func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurre
 	llmResult, llmErr := ComputeScoreLLM(ctx, db, event, correlationType, correlationScore, isIncidentChild)
 
 	if !config.Config.FeatureLLMTriageScoringShadow {
+		if errors.Is(llmErr, ErrNoVerdictPossible) {
+			return legacyScoreAwaitingVerdict(ctx, db, event, occurrenceNumber, correlationType, correlationScore, isIncidentChild)
+		}
 		if llmErr != nil || llmResult == nil {
 			slog.WarnContext(ctx, "LLM triage scoring failed; falling back to legacy",
 				"event_id", event.Id, "error", llmErr)
@@ -139,6 +143,20 @@ func llmTriageScoringEnabled(event *models.Event) bool {
 		return false
 	}
 	return tenant.IsFeatureExplicitlyEnabled(nil, *event.Tenant, tenant.FEATURE_TRIAGE_LLM_SCORING)
+}
+
+// legacyScoreAwaitingVerdict scores an event whose class can't get an AI verdict for now (see
+// ErrNoVerdictPossible) with the legacy formula. The result carries the class key and the
+// fallback marker, so rescoreFreshlyMintedClass still upgrades it once a later mint succeeds.
+func legacyScoreAwaitingVerdict(ctx context.Context, db *sqlx.DB, event *models.Event, occurrenceNumber int, correlationType string, correlationScore float64, isIncidentChild bool) (*ScoreResult, error) {
+	result, err := computeLegacyScore(ctx, db, event, occurrenceNumber, correlationType, correlationScore, isIncidentChild)
+	if err != nil || result == nil {
+		return result, err
+	}
+	result.Factors["class_key"] = ClassKey(event)
+	result.Factors["verdict_source"] = "fallback"
+	result.Factors["verdict_lookup"] = "no_verdict_possible"
+	return result, nil
 }
 
 // computeLegacyScore is the original severity*env scoring formula. Takes

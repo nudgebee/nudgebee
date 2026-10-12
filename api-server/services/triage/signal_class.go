@@ -142,19 +142,49 @@ func claimSignalClass(ctx context.Context, db *sqlx.DB, tenantID, classKey strin
 	// keeps the WHERE false → no steal → claim returns false (correct). Self-heals orphaned claims.
 	// updated_at is set explicitly (not relying on the column default) since the lease TTL check
 	// below depends on it being a real timestamp, never NULL.
+	//
+	// A 'failed' row (the last mint errored) is re-claimable only once it is an hour old, so a
+	// tenant whose LLM is missing or broken makes one attempt per class per hour, not one per alert.
 	res, err := db.ExecContext(ctx, `
 		INSERT INTO triage_signal_class (tenant_id, class_key, status, updated_at)
 		VALUES ($1, $2, 'minting', now())
 		ON CONFLICT (tenant_id, class_key) DO UPDATE
 		    SET status = 'minting', updated_at = now()
-		    WHERE triage_signal_class.status = 'minting'
-		      AND triage_signal_class.updated_at < now() - interval '15 minutes'`, tenantID, classKey)
+		    WHERE (triage_signal_class.status = 'minting'
+		           AND triage_signal_class.updated_at < now() - interval '15 minutes')
+		       OR (triage_signal_class.status = 'failed'
+		           AND triage_signal_class.updated_at < now() - interval '1 hour')`, tenantID, classKey)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to claim signal class", "tenant_id", tenantID, "class_key", classKey, "error", err)
 		return false
 	}
 	n, _ := res.RowsAffected()
 	return n > 0
+}
+
+// isSignalClassFailed reports whether the class's last mint failed and it is waiting out its retry
+// hour. A failed lookup reads as not failed, so the caller keeps today's fallback scoring.
+func isSignalClassFailed(ctx context.Context, db *sqlx.DB, tenantID, classKey string) bool {
+	var failed bool
+	if err := db.GetContext(ctx, &failed,
+		`SELECT EXISTS (SELECT 1 FROM triage_signal_class WHERE tenant_id = $1 AND class_key = $2 AND status = 'failed')`,
+		tenantID, classKey); err != nil {
+		slog.WarnContext(ctx, "failed to check whether a signal class is waiting to retry its mint",
+			"tenant_id", tenantID, "class_key", classKey, "error", err)
+		return false
+	}
+	return failed
+}
+
+// markSignalClassFailed parks a claimed class after its mint failed. The row stays, so the claim
+// above refuses it for an hour; deleting it instead let the very next alert retry the LLM.
+func markSignalClassFailed(ctx context.Context, db *sqlx.DB, tenantID, classKey string) {
+	if _, err := db.ExecContext(ctx,
+		`UPDATE triage_signal_class SET status = 'failed', updated_at = now()
+		 WHERE tenant_id = $1 AND class_key = $2 AND status = 'minting'`,
+		tenantID, classKey); err != nil {
+		slog.WarnContext(ctx, "failed to park signal class after a failed mint", "class_key", classKey, "error", err)
+	}
 }
 
 // saveSignalVerdict promotes a class to active with the minted verdict and stamps the prompt
