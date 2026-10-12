@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"nudgebee/llm/common"
@@ -37,6 +38,9 @@ type CloudResourceInfo struct {
 	Region      string `json:"region" db:"region"`
 	AccountID   string `json:"account_id" db:"account_id"`
 	AccountName string `json:"account_name,omitempty" db:"account_name"`
+	// Matches before the limit: overall, and per account name as JSON.
+	Total         int    `json:"-" db:"total"`
+	AccountCounts string `json:"-" db:"account_counts"`
 }
 
 func (r CloudResourceSearchTool) Name() string {
@@ -194,7 +198,7 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 		args = append(args, request.Region)
 	}
 
-	query += " ORDER BY ca.account_name ASC, cr.name ASC LIMIT 20"
+	query = cloudResourceSearchPage(query)
 
 	var resources []CloudResourceInfo
 	rows, err := dbms.Db.Queryx(query, args...)
@@ -218,7 +222,7 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 
 	response := CloudResourceSearchResponse{
 		Resources: resources,
-		Message:   fmt.Sprintf("Found %d cloud resources matching your query.", len(resources)),
+		Message:   fmt.Sprintf("Found %d cloud resources matching your query.", len(resources)) + cloudCutoffNote(resources),
 	}
 
 	// On a miss, bound any live fallback to the regions this account actually uses.
@@ -278,4 +282,55 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 		Type:   core.NBToolResponseTypeJson,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil
+}
+
+// cloudResourceSearchLimit caps one lookup's rows; cloudCutoffNote says when
+// more matched.
+const cloudResourceSearchLimit = 50
+
+// cloudResourceSearchPage wraps the filtered lookup so the limit is shared
+// across accounts (round-robin by name within each account) and the result
+// carries per-account match counts. Ordered by account name alone, the first
+// account alphabetically filled every row: a Lambda search returned 20
+// aws-demo functions and hid dev-aws, where the throttled one was (#39201).
+func cloudResourceSearchPage(filtered string) string {
+	return fmt.Sprintf(`
+		WITH m AS (%s)
+		SELECT name, type, service, region, account_id, COALESCE(account_name, '') AS account_name,
+		       COUNT(*) OVER () AS total,
+		       COALESCE((SELECT json_object_agg(acct, n)::text FROM (
+		            SELECT COALESCE(account_name, account_id::text, 'unknown') AS acct, COUNT(*) AS n FROM m GROUP BY 1) a), '{}') AS account_counts
+		FROM (
+			SELECT m.*, ROW_NUMBER() OVER (PARTITION BY m.account_id ORDER BY m.name) AS rn
+			FROM m
+		) ranked
+		ORDER BY rn, COALESCE(account_name, ''), name
+		LIMIT %d`, filtered, cloudResourceSearchLimit)
+}
+
+// cloudCutoffNote tells the caller when more resources matched than were
+// returned, with per-account counts, so it can pick the right account or
+// narrow the search. Empty when nothing was cut.
+func cloudCutoffNote(resources []CloudResourceInfo) string {
+	if len(resources) == 0 || resources[0].Total <= len(resources) {
+		return ""
+	}
+	// Counted over every match, so accounts with nothing on the page still show.
+	byAccount := map[string]int{}
+	_ = common.UnmarshalJson([]byte(resources[0].AccountCounts), &byAccount)
+	names := make([]string, 0, len(byAccount))
+	for n := range byAccount {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if byAccount[names[i]] != byAccount[names[j]] {
+			return byAccount[names[i]] > byAccount[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	parts := make([]string, 0, len(names))
+	for _, n := range names {
+		parts = append(parts, fmt.Sprintf("%s %d", n, byAccount[n]))
+	}
+	return fmt.Sprintf(" Showing %d of %d (by account: %s); narrow with resource_name, service, resource_type or region to see the rest.", len(resources), resources[0].Total, strings.Join(parts, ", "))
 }

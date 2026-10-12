@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -43,4 +44,28 @@ func TestMissRegionHint(t *testing.T) {
 		msg := missRegionHint("x", "EC2", []string{"eu-north-1", "us-east-1", "us-west-2"})
 		assert.True(t, strings.Contains(msg, "eu-north-1, us-east-1, us-west-2"))
 	})
+}
+
+// TestCloudResourceSearchPage pins #39201: the limit is shared round-robin
+// across accounts instead of filling with the alphabetically first account.
+func TestCloudResourceSearchPage(t *testing.T) {
+	q := cloudResourceSearchPage("SELECT 1")
+	assert.Contains(t, q, "ROW_NUMBER() OVER (PARTITION BY m.account_id ORDER BY m.name) AS rn")
+	assert.Contains(t, q, "ORDER BY rn,")
+	assert.Contains(t, q, "AS account_counts")
+	assert.Contains(t, q, fmt.Sprintf("LIMIT %d", cloudResourceSearchLimit))
+}
+
+func TestCloudCutoffNote(t *testing.T) {
+	assert.Empty(t, cloudCutoffNote(nil))
+	assert.Empty(t, cloudCutoffNote([]CloudResourceInfo{{Total: 1, AccountCounts: `{"a":1}`}}))
+	// aws-prod has matches but none on the page: it still shows in the note.
+	counts := `{"aws-demo": 54, "dev-aws": 21, "aws-prod": 12}`
+	rows := []CloudResourceInfo{
+		{AccountName: "aws-demo", Total: 87, AccountCounts: counts},
+		{AccountName: "dev-aws", Total: 87, AccountCounts: counts},
+	}
+	note := cloudCutoffNote(rows)
+	assert.Contains(t, note, "Showing 2 of 87")
+	assert.Contains(t, note, "by account: aws-demo 54, dev-aws 21, aws-prod 12")
 }

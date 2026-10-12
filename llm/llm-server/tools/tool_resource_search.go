@@ -664,10 +664,10 @@ func (r K8sResourceSearchTool) handleFuzzyResourceType(request K8sResourceSearch
 // this a namespace-scoped query still got every namespace's match back as one
 // ambiguous "multiple" result. The caller applies any resource-type filter;
 // live kubectl remains the fallback when this returns empty.
-func (r K8sResourceSearchTool) searchDbForResources(resourceName, namespace, accountId string, nbRequestContext core.NbToolContext) []K8sResourceInfo {
+func (r K8sResourceSearchTool) searchDbForResources(resourceName, namespace, resourceType, accountId string, nbRequestContext core.NbToolContext) ([]K8sResourceInfo, inventoryCount) {
 	resourceName = strings.TrimSpace(resourceName)
 	if resourceName == "" {
-		return nil
+		return nil, inventoryCount{}
 	}
 	if namespace == "--all-namespaces" {
 		namespace = ""
@@ -692,7 +692,11 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, namespace, acc
 	}
 
 	dbStart := time.Now()
-	found, err := r.queryK8sResourcesByName(accountId, namespace, patterns)
+	var typeSpellings []string
+	if r.isSpecificResourceType(resourceType) {
+		typeSpellings = k8sTypeSpellings(resourceType)
+	}
+	found, counts, err := r.queryK8sResourcesByName(accountId, namespace, patterns, typeSpellings)
 	// Render the statement the way a human would re-run it: the SQL text is a
 	// constant, so the patterns are the only informative part.
 	// Record the rows themselves, not a count: the whole point of the step list is
@@ -707,18 +711,67 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, namespace, acc
 	if namespace != "" {
 		nsClause = fmt.Sprintf(" AND meta->>'namespace' = '%s'", namespace)
 	}
+	if len(typeSpellings) > 0 {
+		nsClause += fmt.Sprintf(" AND lower(type) = ANY (ARRAY['%s'])", strings.Join(typeSpellings, "','"))
+	}
 	nbRequestContext.Stats.RecordDB(
-		fmt.Sprintf("WITH matches AS MATERIALIZED (SELECT type, name, namespace, status FROM cloud_resourses WHERE account = %s AND cloud_provider = 'K8s' AND is_active = true AND (name ILIKE ANY %v OR resourse_id ILIKE ANY %v)%s) SELECT * FROM matches ORDER BY name LIMIT 20", accountId, patterns, patterns, nsClause),
+		fmt.Sprintf("WITH matches AS MATERIALIZED (SELECT type, name, namespace, status FROM cloud_resourses WHERE account = %s AND cloud_provider = 'K8s' AND is_active = true AND (name ILIKE ANY %v OR resourse_id ILIKE ANY %v)%s) SELECT * FROM matches ORDER BY name LIMIT %d", accountId, patterns, patterns, nsClause, k8sInventoryLimit),
 		dbOutput, err, time.Since(dbStart))
 	if err != nil {
 		// Soft failure — fall through to the live-kubectl fallback, but surface
 		// the error so DB issues aren't invisible. Queryx never returns
 		// sql.ErrNoRows, so any error here is unexpected.
 		nbRequestContext.Ctx.GetLogger().Warn("resource_search: cloud_resourses lookup failed", "terms", variations, "account", accountId, "error", err)
-		return nil
+		return nil, inventoryCount{}
 	}
-	nbRequestContext.Ctx.GetLogger().Info("resource_search: cloud_resourses lookup", "terms", variations, "account", accountId, "count", len(found))
-	return found
+	nbRequestContext.Ctx.GetLogger().Info("resource_search: cloud_resourses lookup", "terms", variations, "account", accountId, "count", len(found), "total", counts.Total)
+	return found, counts
+}
+
+// k8sInventoryLimit caps the rows one inventory lookup returns. When more match,
+// the result says so (inventoryCutoffNote) instead of passing the first rows off
+// as everything.
+const k8sInventoryLimit = 50
+
+// inventoryCount is how many inventory rows matched before the limit, in total
+// and per resource type.
+type inventoryCount struct {
+	Total  int
+	ByType map[string]int
+}
+
+// k8sTypeSpellings returns the lowercased cloud_resourses type values that
+// NormalizeK8sType maps to the requested type. The inventory stores Kind names
+// ("Pod", "Endpoints"), so the canonical singular and its plurals cover it;
+// the type filter has to run in SQL, before the limit, or a Service ranked
+// after 50 same-named Pods would be dropped.
+func k8sTypeSpellings(resourceType string) []string {
+	want := NormalizeK8sType(resourceType)
+	return []string{want, want + "s", want + "es"}
+}
+
+// inventoryCutoffNote tells the caller that the inventory matched more rows
+// than it returned, with per-type counts, so it narrows the search instead of
+// treating the first rows as the full answer. Empty when nothing was cut.
+func inventoryCutoffNote(shown int, counts inventoryCount) string {
+	if counts.Total <= shown {
+		return ""
+	}
+	types := make([]string, 0, len(counts.ByType))
+	for t := range counts.ByType {
+		types = append(types, t)
+	}
+	sort.Slice(types, func(i, j int) bool {
+		if counts.ByType[types[i]] != counts.ByType[types[j]] {
+			return counts.ByType[types[i]] > counts.ByType[types[j]]
+		}
+		return types[i] < types[j]
+	})
+	parts := make([]string, 0, len(types))
+	for _, t := range types {
+		parts = append(parts, fmt.Sprintf("%s %d", t, counts.ByType[t]))
+	}
+	return fmt.Sprintf(" Showing %d of %d matching inventory resources (by type: %s); narrow with namespace, resource_type or a more specific name to see the rest.", shown, counts.Total, strings.Join(parts, ", "))
 }
 
 // buildResourceSearchDBQuery builds the cloud_resourses lookup statement and its
@@ -729,7 +782,7 @@ func (r K8sResourceSearchTool) searchDbForResources(resourceName, namespace, acc
 // singleton cached on first use for the life of the test binary, which makes
 // sqlmock-based tests of this SQL fragile against unrelated tests elsewhere in
 // the package touching the same DB manager.
-func buildResourceSearchDBQuery(accountId, namespace string, patterns []string) (string, []interface{}) {
+func buildResourceSearchDBQuery(accountId, namespace string, patterns, typeSpellings []string) (string, []interface{}) {
 	query := `
 		WITH matches AS MATERIALIZED (
 			SELECT type,
@@ -746,12 +799,19 @@ func buildResourceSearchDBQuery(accountId, namespace string, patterns []string) 
 		query += ` AND meta->>'namespace' = $3`
 		args = append(args, namespace)
 	}
-	query += `
+	if len(typeSpellings) > 0 {
+		args = append(args, pq.Array(typeSpellings))
+		query += fmt.Sprintf(" AND lower(type) = ANY($%d)", len(args))
+	}
+	// Counts cover every match, before LIMIT, including types not on the page.
+	query += fmt.Sprintf(`
 		)
-		SELECT type, name, namespace, status
+		SELECT type, name, namespace, status,
+		       COUNT(*) OVER () AS total,
+		       COALESCE((SELECT json_object_agg(COALESCE(type, 'unknown'), n)::text FROM (SELECT type, COUNT(*) AS n FROM matches GROUP BY type) t), '{}') AS type_counts
 		FROM matches
 		ORDER BY name
-		LIMIT 20`
+		LIMIT %d`, k8sInventoryLimit)
 	return query, args
 }
 
@@ -784,32 +844,39 @@ func buildResourceSearchDBQuery(accountId, namespace string, patterns []string) 
 // planner cannot see that cost because it assumes matches are spread evenly
 // through the name order. Materializing keeps the lookup on the trigram and
 // active-row indexes, so its cost is bounded by the account's active rows.
-func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId, namespace string, patterns []string) ([]K8sResourceInfo, error) {
+func (r K8sResourceSearchTool) queryK8sResourcesByName(accountId, namespace string, patterns, typeSpellings []string) ([]K8sResourceInfo, inventoryCount, error) {
+	counts := inventoryCount{ByType: map[string]int{}}
 	if len(patterns) == 0 {
-		return nil, nil
+		return nil, counts, nil
 	}
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		return nil, err
+		return nil, counts, err
 	}
 
-	query, args := buildResourceSearchDBQuery(accountId, namespace, patterns)
+	query, args := buildResourceSearchDBQuery(accountId, namespace, patterns, typeSpellings)
 	rows, err := dbms.Db.Queryx(query, args...)
 	if err != nil {
-		return nil, err
+		return nil, counts, err
 	}
 	defer func() { _ = rows.Close() }()
 
 	var out []K8sResourceInfo
 	for rows.Next() {
 		var res K8sResourceInfo
-		if scanErr := rows.Scan(&res.Type, &res.Name, &res.Namespace, &res.Status); scanErr != nil {
-			return nil, scanErr
+		var total int
+		var typeCounts string
+		if scanErr := rows.Scan(&res.Type, &res.Name, &res.Namespace, &res.Status, &total, &typeCounts); scanErr != nil {
+			return nil, counts, scanErr
+		}
+		if counts.Total == 0 {
+			counts.Total = total
+			_ = common.UnmarshalJson([]byte(typeCounts), &counts.ByType)
 		}
 		res.Source = resourceSourceInventory
 		out = append(out, res)
 	}
-	return out, rows.Err()
+	return out, counts, rows.Err()
 }
 
 // isSpecificResourceType reports whether resourceType names a concrete kind to
@@ -911,7 +978,8 @@ func (r K8sResourceSearchTool) handleResourceSuggestions(request K8sResourceSear
 	// (a new pod is queryable within ~1s), scoped to this account (= this
 	// cluster). It's authoritative and fast, so live kubectl runs only as a
 	// fallback when the DB returns nothing.
-	resources = r.searchDbForResources(request.ResourceName, namespace, nbRequestContext.AccountId, nbRequestContext)
+	resources, inventoryCounts := r.searchDbForResources(request.ResourceName, namespace, request.ResourceType, nbRequestContext.AccountId, nbRequestContext)
+	inventoryShown := len(resources)
 	if r.isSpecificResourceType(request.ResourceType) {
 		resources = r.filterResourcesByType(resources, request.ResourceType)
 	}
@@ -973,7 +1041,7 @@ func (r K8sResourceSearchTool) handleResourceSuggestions(request K8sResourceSear
 	if len(resources) > 0 {
 		resources = r.removeDuplicateResources(resources)
 	}
-	message = resourceSearchResultMessage(len(resources), clusterConnected)
+	message = resourceSearchResultMessage(len(resources), clusterConnected) + inventoryCutoffNote(inventoryShown, inventoryCounts)
 
 	// Enrich resources with owner references (mostly for Pods)
 	resources = r.enrichWithOwners(resources, nbRequestContext)
