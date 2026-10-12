@@ -1201,6 +1201,20 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	return we.GetRunID(), nil // Return the actual Temporal Run ID
 }
 
+// WebhookRunInputs builds a webhook run's inputs: webhook_payload is the raw body and
+// webhook_json the parsed body, set only when the body is a JSON object or array.
+func WebhookRunInputs(payload []byte) map[string]any {
+	inputs := map[string]any{"webhook_payload": string(payload)}
+	var parsed any
+	if json.Unmarshal(payload, &parsed) == nil {
+		switch parsed.(type) {
+		case map[string]any, []any:
+			inputs["webhook_json"] = parsed
+		}
+	}
+	return inputs
+}
+
 // FanOutWebhookEvent dispatches a webhook payload to every active workflow whose
 // webhook trigger subscribes to the given integration name, scoped to the calling
 // security context's tenant. For each subscriber:
@@ -1241,7 +1255,6 @@ func (s *Service) FanOutWebhookEvent(ctx *security.RequestContext, integrationNa
 	if json.Unmarshal(payload, &payloadData) != nil {
 		payloadData = string(payload)
 	}
-	payloadString := string(payload)
 
 	// Build the template context once. The payload is identical across every
 	// subscriber's filter render, and Render does not mutate the context, so
@@ -1289,7 +1302,7 @@ func (s *Service) FanOutWebhookEvent(ctx *security.RequestContext, integrationNa
 				}
 			}
 
-			inputs := map[string]any{"webhook_payload": payloadString}
+			inputs := WebhookRunInputs(payload)
 			runID, exerr := s.ExecuteWorkflow(ctx, wf.AccountID, wf.ID, model.WorkflowTriggerWebhook, inputs)
 			if exerr != nil {
 				sawFailure = true

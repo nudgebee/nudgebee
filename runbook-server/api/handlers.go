@@ -649,9 +649,7 @@ func (s *Server) handleGenericWebhook(c *gin.Context) {
 		}
 	}
 
-	inputs := map[string]any{
-		"webhook_payload": string(webhookPayload),
-	}
+	inputs := workflow.WebhookRunInputs(webhookPayload)
 
 	runID, err := s.workflowService.ExecuteWorkflow(sc, accountID, workflowID, "webhook", inputs)
 	if err != nil {

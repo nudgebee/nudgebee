@@ -722,3 +722,51 @@ func (s *APITestSuite) TestWebhookFanOutRejectsMissingTenant() {
 	s.Equal(http.StatusUnauthorized, w.Code)
 	s.Contains(w.Body.String(), "unable to identify tenant")
 }
+
+// postGenericWebhook posts body to a webhook workflow filtered on action == "go"
+// and returns the response plus the inputs the run was started with.
+func (s *APITestSuite) postGenericWebhook(body string, expectRun bool) (*httptest.ResponseRecorder, map[string]any) {
+	wf := &model.Workflow{
+		ID:     "wf-hook",
+		Status: model.WorkflowStatusActive,
+		Definition: model.WorkflowDefinition{
+			Inputs: []model.Input{{ID: "webhook_payload", Type: "string"}},
+			Triggers: []model.Trigger{{Type: model.WorkflowTriggerWebhook, Params: map[string]any{
+				"filter": `{{ webhook_payload.action == "go" }}`,
+			}}},
+		},
+	}
+	s.workflowService.On("GetWorkflow", mock.Anything, "test-account", "wf-hook").Return(wf, nil).Once()
+	var captured map[string]any
+	if expectRun {
+		s.workflowService.On("ExecuteWorkflow", mock.Anything, "test-account", "wf-hook", model.WorkflowTrigger("webhook"), mock.Anything).
+			Run(func(args mock.Arguments) { captured = args.Get(4).(map[string]any) }).
+			Return("run-1", nil).Once()
+	}
+	req, _ := http.NewRequest(http.MethodPost, "/webhook/wf-hook", strings.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "test-tenant")
+	req.Header.Set("X-Account-ID", "test-account")
+	w := httptest.NewRecorder()
+	s.server.router.ServeHTTP(w, req)
+	return w, captured
+}
+
+// TestGenericWebhookPassesParsedJSONToRun covers #40458: steps read parsed fields
+// via Inputs.webhook_json while Inputs.webhook_payload stays the raw body.
+func (s *APITestSuite) TestGenericWebhookPassesParsedJSONToRun() {
+	raw := `{"action":"go","nested":{"k":"v"}}`
+	w, inputs := s.postGenericWebhook(raw, true)
+	s.Equal(http.StatusAccepted, w.Code)
+	s.Equal(raw, inputs["webhook_payload"])
+	s.Equal(map[string]any{"action": "go", "nested": map[string]any{"k": "v"}}, inputs["webhook_json"])
+
+	out, err := workflow.Render("{{ Inputs.webhook_json.nested.k }}", workflow.NewTemplateContextWithEngine(nil, inputs, "jinja"))
+	s.NoError(err)
+	s.Equal("v", out)
+}
+
+func (s *APITestSuite) TestGenericWebhookFilterStillRejects() {
+	w, _ := s.postGenericWebhook(`{"action":"stop"}`, false)
+	s.Equal(http.StatusOK, w.Code)
+	s.Contains(w.Body.String(), "webhook ignored by filter")
+}

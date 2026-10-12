@@ -81,4 +81,8 @@ func TestWorkflowBuilderPromptEngineRules(t *testing.T) {
 
 	// (c) whole-value templates for non-string params (covers MCP args/headers).
 	assert.Contains(t, planning, "WHOLE-VALUE TEMPLATES FOR NON-STRING PARAMS", "planning context missing whole-value template rule (#31494)")
+
+	// (d) webhook steps read parsed fields from Inputs.webhook_json, not the raw string (#40458).
+	assert.Contains(t, schema, "Inputs.webhook_json.<field>", "workflow schema missing the webhook_json rule (#40458)")
+	assert.Contains(t, planning, "Inputs.webhook_json.<field>", "planning context missing the webhook_json rule (#40458)")
 }

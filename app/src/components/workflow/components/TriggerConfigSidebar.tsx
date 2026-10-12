@@ -1438,6 +1438,9 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                 border: `1px solid ${ds.gray[200]}`,
               }}
             >
+              <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], lineHeight: 1.5, mb: ds.space[1] }}>
+                In steps, read JSON fields with {'{{ Inputs.webhook_json.<field> }}'}. The raw body is {'{{ Inputs.webhook_payload }}'}.
+              </Typography>
               <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], lineHeight: 1.5 }}>
                 Need a new webhook? Create one in the{' '}
                 <Link href={WORKFLOW_WEBHOOK_INTEGRATIONS_URL} openInNew>
