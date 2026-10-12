@@ -50,6 +50,10 @@ jest.mock('@lib/auth', () => ({
   isGrantsOnlyUser: () => false,
 }));
 jest.mock('@api1/observability', () => ({ __esModule: true, default: { metricsQuery: jest.fn(), fetchLogs: jest.fn() } }));
+jest.mock('@hooks/useTenantBranding', () => ({
+  ...jest.requireActual('@hooks/useTenantBranding'),
+  useTenantBranding: () => ({ assistantName: 'Nubi', baseTitle: 'Brand' }),
+}));
 jest.mock('@api1/dashboards', () => ({
   __esModule: true,
   default: { listDashboards: jest.fn(), getDashboard: jest.fn(), updateDashboard: jest.fn(), createDashboard: jest.fn(), deleteDashboard: jest.fn() },

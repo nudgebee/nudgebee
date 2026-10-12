@@ -53,6 +53,21 @@ const renderMarkdownWithCharts = (text, markDownProps, onLinkClick) => {
   return <>{parts}</>;
 };
 
+/** A dashboard definition as the dashboard builder answers: `{ title, definition: { panels: [...] } }`. */
+const isDashboardDefinition = (json) =>
+  !!json && typeof json === 'object' && typeof json.title === 'string' && Array.isArray(json.definition?.panels);
+
+const dashboardSummaryMarkdown = (dashboard) => {
+  const panels = dashboard.definition.panels;
+  const lines = [`**${dashboard.title}** — ${panels.length} panel${panels.length === 1 ? '' : 's'}`];
+  if (dashboard.description) lines.push('', dashboard.description);
+  lines.push('', ...panels.map((p) => `- ${p?.title || 'Untitled panel'}${p?.type ? ` (${p.type})` : ''}`));
+  if (Array.isArray(dashboard.warnings) && dashboard.warnings.length > 0) {
+    lines.push('', '**Changed while checking:**', ...dashboard.warnings.map((w) => `- ${w}`));
+  }
+  return lines.join('\n');
+};
+
 /**
  * Check if parsed JSON is a workflow definition
  * Supports two formats:
@@ -276,6 +291,15 @@ const LLMAnswerRenderer = ({ toolCall, messages = [], onNavigateToTask, groupInd
           >
             <code>{formattedJson}</code>
           </pre>
+        );
+      }
+
+      // A generated dashboard (Dashboards → Generate with Nubi): summarise it
+      // rather than flattening the definition into a table. The conversation's
+      // "Open as dashboard" button opens the real thing.
+      if (isDashboardDefinition(jsonParsed)) {
+        return (
+          <MarkDowns data={dashboardSummaryMarkdown(jsonParsed)} sx={{ width: '100%', overflowX: 'auto', p: 0 }} onLinkClick={onLinkClickProp} />
         );
       }
 

@@ -32,6 +32,20 @@ const DASHBOARD_FIELDS = `
     version
     updated_by_name`;
 
+// Starts a dashboard generation on llm-server. Async: the answer arrives on the
+// conversation, polled by session id (useLlmAsyncPolling), as the metrics tab's
+// "generate query" does.
+export const GENERATE_DASHBOARD = `
+  mutation GenerateDashboard($request: AIGenerateDashboardRequest!) {
+    ai_generate_dashboard(request: $request) {
+      data {
+        conversation_id
+        session_id
+      }
+    }
+  }
+`;
+
 export const LIST_DASHBOARDS = `
 query ListDashboards($request: DashboardListRequest!) {
   dashboards_list(request: $request) {${DASHBOARD_FIELDS}
@@ -204,6 +218,18 @@ const apiDashboards = {
     const response = await queryGraphQL(EXECUTE_ENTITY_QUERY, 'ExecuteEntityQuery', { request }, undefined, signal);
     return {
       data: response?.data?.data?.dashboards_execute_entity_query ?? null,
+      errors: response?.data?.errors,
+    };
+  },
+
+  /**
+   * Asks the dashboard agent for a draft. Returns the session to poll; the draft
+   * itself is never saved by this call — the editor's Save does that.
+   */
+  async generateDashboard(request: { account_id: string; query: string }): Promise<Result<{ session_id?: string; conversation_id?: string }>> {
+    const response = await queryGraphQL(GENERATE_DASHBOARD, 'GenerateDashboard', { request: { ...request, async: true } });
+    return {
+      data: response?.data?.data?.ai_generate_dashboard?.data ?? null,
       errors: response?.data?.errors,
     };
   },

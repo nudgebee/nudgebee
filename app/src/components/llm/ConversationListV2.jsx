@@ -43,6 +43,7 @@ const conversationSources = [
   { value: 'Investigation', label: 'Event Analysis' },
   { value: 'InstantNotification', label: 'Slack Channel' },
   { value: 'Automation', label: 'Automation' },
+  { value: 'DashboardBuilder', label: 'Dashboard' },
 ];
 
 const allSourceValues = conversationSources.map((s) => s.value);
@@ -54,7 +55,7 @@ const sourceLabels = Object.fromEntries(conversationSources.map((s) => [s.value,
 const TYPE_GROUPS = {
   Chats: ['UserInvestigation', 'InstantNotification'],
   System: ['Investigation', 'Automation', 'Optimize'],
-  Queries: ['PrometheusQuery', 'LokiQuery', 'ESQuery'],
+  Queries: ['PrometheusQuery', 'LokiQuery', 'ESQuery', 'DashboardBuilder'],
 };
 
 const parseAccountIds = (raw) => (raw ? String(raw).split(',').filter(Boolean) : []);
@@ -264,6 +265,7 @@ const ConversationList = ({
               'InstantNotification',
               'WorkflowBuilder',
               'Automation',
+              'DashboardBuilder',
             ],
       limit: PAGE_SIZE,
       offset: source !== 'polling' ? page * PAGE_SIZE : 0,
@@ -747,7 +749,7 @@ const ConversationList = ({
                   },
                   {
                     label: 'Query transcripts',
-                    description: 'Prometheus · Loki · ES',
+                    description: 'Prometheus · Loki · ES · Dashboard',
                     active: selectedType === 'Queries',
                     onSelect: () => handleTypeSelect('Queries'),
                   },

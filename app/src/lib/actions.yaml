@@ -547,6 +547,20 @@ actions:
       - role: account_admin
       - role: tenant_admin
     comment: Generate Metrics Query
+  - name: ai_generate_dashboard
+    comment: Generate an unsaved dashboard draft from a natural-language description
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/completions/dashboard-generate'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 120
+    permissions:
+      - role: k8s_namespace_admin
+      - role: tenant_admin
+      - role: account_admin
   - name: ai_generate_workflow
     comment: Generate an automation workflow from a natural-language description
     definition:
@@ -7524,6 +7538,7 @@ custom_types:
     - name: ApplicationMetricsRequest
     - name: NudgebeeAIGetPrometheusQueryRequest
     - name: AIGetMetricsQueryRequest
+    - name: AIGenerateDashboardRequest
     - name: AIGetLogQueryRequest
     - name: AiFeedbackCreateRequest
     - name: GetInvestigateQueryRequest
@@ -7998,6 +8013,7 @@ custom_types:
     - name: NudgebeeAIGetPrometheusQueryResponse
     - name: NudgebeeAIGetPrometheusQuery
     - name: AIGetMetricsQueryResponse
+    - name: AIGenerateDashboardResponse
     - name: AIGeneratedQuery
     - name: AIGetLogQueryResponse
     - name: GenerateFeedbackResponse

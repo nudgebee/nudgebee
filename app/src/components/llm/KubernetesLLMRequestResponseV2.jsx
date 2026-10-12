@@ -31,12 +31,35 @@ import ReferencesPopover from './common/ReferencesModal';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import CheckIcon from '@mui/icons-material/Check';
 import { toast } from '@ui/Toast';
+import { useRouter } from 'next/router';
+import DashboardOutlinedIcon from '@mui/icons-material/DashboardOutlined';
+import { useOptionalNubiGlobalChat } from '@context/NubiGlobalChatContext';
+import { DASHBOARD_BUILDER_SOURCE, NUBI_DRAFT_PARAM, stashGeneratedDashboard } from '@components/k8s/dashboards/generatedDashboard';
 
 const KubernetesLLMRequestResponse = (props) => {
   const [sentFeedback, setSentFeedback] = useState({});
   const [recordsPerPage, setRecordsPerPage] = useState(5);
   const [currentPage, setCurrentPage] = useState(0);
   const [referencesAnchorEl, setReferencesAnchorEl] = useState(null);
+  const router = useRouter();
+  const nubiChat = useOptionalNubiGlobalChat();
+
+  // A dashboard generation (Dashboards page → Generate with Nubi) answers with a
+  // dashboard definition; this reopens it on the Dashboards page as an unsaved draft.
+  // Each answer opens its own turn: after a follow-up the latest turn may not be
+  // a dashboard, and the one shown above this button still is.
+  const conversationRow = props.conversationJson?.data?.llm_conversations?.[0];
+  const thisMessage = conversationRow?.llm_conversation_messages?.find((m) => m?.id === props.toolCall?.id);
+  const canOpenAsDashboard = conversationRow?.source === DASHBOARD_BUILDER_SOURCE && thisMessage?.status === 'COMPLETED';
+  const handleOpenAsDashboard = () => {
+    const error = stashGeneratedDashboard(conversationRow, props.toolCall?.id);
+    if (error) {
+      toast.error(error);
+      return;
+    }
+    nubiChat?.close();
+    router.push(`/dashboards?${NUBI_DRAFT_PARAM}=nubi#list`);
+  };
 
   useEffect(() => {
     // MessageStream batch-fetches feedback for every response in the conversation via
@@ -1124,6 +1147,18 @@ const KubernetesLLMRequestResponse = (props) => {
             {props.toolCall.type == 'response' && !props.isResponseInProgress && (
               <>
                 <Box display={'flex'} alignItems={'center'} gap={ds.space.mul(0, 5)}>
+                  {canOpenAsDashboard && (
+                    <Button
+                      tone='secondary'
+                      size='sm'
+                      icon={<DashboardOutlinedIcon sx={{ fontSize: 18 }} />}
+                      onClick={handleOpenAsDashboard}
+                      id='nubi-open-as-dashboard-btn'
+                      data-testid='nubi-open-as-dashboard-btn'
+                    >
+                      Open as dashboard
+                    </Button>
+                  )}
                   <Button
                     tone='ghost'
                     size='sm'

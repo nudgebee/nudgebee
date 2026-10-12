@@ -1728,13 +1728,13 @@ func MetricsDiscoveryProvider(accountId string) string {
 			"accountId", accountId, "error", err)
 		return "prometheus"
 	}
-	return metricsDiscoveryProviderFor(provider)
+	return MetricsDiscoveryProviderFor(provider)
 }
 
-// metricsDiscoveryProviderFor is the decision MetricsDiscoveryProvider makes once
+// MetricsDiscoveryProviderFor is the decision MetricsDiscoveryProvider makes once
 // the account's provider is known, split out so it can be exercised for backends
 // no test environment has to be wired up to.
-func metricsDiscoveryProviderFor(provider services_server.ObservabilityProvider) string {
+func MetricsDiscoveryProviderFor(provider services_server.ObservabilityProvider) string {
 	if metricsDiscoveryUsesConfiguredProvider(provider) {
 		return strings.TrimSpace(provider.Provider)
 	}

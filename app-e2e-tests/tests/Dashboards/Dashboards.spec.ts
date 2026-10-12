@@ -30,17 +30,17 @@ test.describe("Dashboards", () => {
     await test.step("The toolbar offers one authoring button", async () => {
       await expect(locators.newDashboardBtn).toBeVisible();
       await expect(locators.newDashboardBtn).toHaveText("New dashboard");
-      // Menu closed: its items are not mounted, which is what makes the toolbar
-      // read as one action instead of three competing buttons.
+      // Chooser closed: its cards are not mounted, which is what makes the toolbar
+      // read as one action instead of four competing buttons.
       await expect(locators.templateGalleryBtn).toHaveCount(0);
       await expect(locators.importDashboardBtn).toHaveCount(0);
     });
 
-    await test.step("Its menu holds the three ways to start a dashboard", async () => {
+    await test.step("Its chooser holds the ways to start a dashboard", async () => {
       await locators.openAuthoringMenu();
-      await expect(locators.templateGalleryBtn).toHaveText("Use a template");
-      await expect(locators.importDashboardBtn).toHaveText("Import dashboard");
-      await expect(locators.newBlankDashboardBtn).toHaveText("Blank dashboard");
+      await expect(locators.templateGalleryBtn).toContainText("Use a template");
+      await expect(locators.importDashboardBtn).toContainText("Import dashboard");
+      await expect(locators.newBlankDashboardBtn).toContainText("Blank dashboard");
     });
   });
 
