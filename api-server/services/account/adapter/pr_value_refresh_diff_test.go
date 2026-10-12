@@ -102,14 +102,29 @@ func TestFollowupInstructionHandled(t *testing.T) {
 func TestBuildPRFollowupChatRequestCarriesTheInstruction(t *testing.T) {
 	meta := prMetadata{PRURL: "https://github.com/acme/infra/pull/42", RepoURL: "https://github.com/acme/infra"}
 
-	review := buildPRFollowupChatRequest(meta, "tok", "Follow up on PR", "", nil)
+	review := buildPRFollowupChatRequest(meta, "Follow up on PR", "", nil)
 	assert.NotContains(t, review.Query, `"instruction"`)
 
-	refresh := buildPRFollowupChatRequest(meta, "tok", "Apply cpu 265m", "Apply cpu 265m", nil)
+	refresh := buildPRFollowupChatRequest(meta, "Apply cpu 265m", "Apply cpu 265m", nil)
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(refresh.Query, "@agent_code_2 ")), &payload))
 	assert.Equal(t, "Apply cpu 265m", payload["instruction"])
 	assert.Equal(t, true, payload["followup"])
+}
+
+// The query is stored as the chat message and logged downstream, so it must
+// never carry a git credential; the agent resolves its own (#40868).
+func TestBuildPRFollowupChatRequestCarriesNoGitCredential(t *testing.T) {
+	meta := prMetadata{PRURL: "https://github.com/acme/infra/pull/42", RepoURL: "https://github.com/acme/infra", PRBranch: "fix/x"}
+
+	req := buildPRFollowupChatRequest(meta, "Follow up on PR", "", nil)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(req.Query, "@agent_code_2 ")), &payload))
+	assert.NotContains(t, payload, "git_token")
+	assert.Equal(t, map[string]any{
+		"query": "Follow up on PR", "followup": true, "pr_url": meta.PRURL,
+		"git_repo": meta.RepoURL, "pr_branch": "fix/x",
+	}, payload, "a new field here is stored and logged with every followup; keep secrets out")
 }
 
 // A run that finished without the values on the branch is charged to the cap —
