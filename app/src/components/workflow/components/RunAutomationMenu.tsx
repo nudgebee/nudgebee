@@ -43,6 +43,12 @@ interface RunAutomationMenuProps {
   // caller can refresh any event-level status it renders (e.g. the investigation
   // page's "Workflow Resolution Status" button) without a manual page refresh.
   onTriggered?: () => void;
+  // Changing it refetches the automation list (e.g. after an AI build saved a new one).
+  refreshKey?: number;
+  // Opens the run dialog for this automation; a new `key` asks again for the same one.
+  runRequest?: { workflow: WorkflowListItem; key: number } | null;
+  // Called once the run dialog has opened for `runRequest`, so the caller can clear it.
+  onRunRequestHandled?: () => void;
 }
 
 // Poll the triggered-executions list every 5s while the dropdown is open. Closed
@@ -173,6 +179,9 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
   canRun = false,
   onCreateAutomation,
   onTriggered,
+  refreshKey = 0,
+  runRequest,
+  onRunRequestHandled,
 }) => {
   const router = useRouter();
   const [workflows, setWorkflows] = useState<WorkflowListItem[]>([]);
@@ -323,6 +332,24 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
     lastFetchedAccountIdRef.current = accountId;
     fetchWorkflows();
   }, [canView, canRun, accountId, fetchWorkflows]);
+
+  // The mount effect above loads the list once per account; a new refreshKey loads it again.
+  const lastRefreshKeyRef = useRef(refreshKey);
+  useEffect(() => {
+    if (lastRefreshKeyRef.current === refreshKey) return;
+    lastRefreshKeyRef.current = refreshKey;
+    if (!canView && !canRun) return;
+    fetchWorkflows();
+  }, [refreshKey, canView, canRun, fetchWorkflows]);
+
+  const lastRunRequestKeyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!runRequest?.workflow?.id || !canRun || lastRunRequestKeyRef.current === runRequest.key) return;
+    lastRunRequestKeyRef.current = runRequest.key;
+    setSelectedWorkflow(runRequest.workflow);
+    setModalOpen(true);
+    onRunRequestHandled?.();
+  }, [runRequest, canRun, onRunRequestHandled]);
 
   const handleSelect = (workflow: WorkflowListItem) => {
     setSelectedWorkflow(workflow);

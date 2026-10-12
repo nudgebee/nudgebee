@@ -15,6 +15,7 @@ import { Modal } from '@ui/Modal';
 import WorkflowTemplatesModal from '@components/workflow/components/WorkflowTemplatesModal';
 import AiGenerateWorkflowModal from '@components/workflow/components/AiGenerateWorkflowModal';
 import RunAutomationMenu from '@components/workflow/components/RunAutomationMenu';
+import { finishEventPageBuild, findWorkflowSavedBySession, parseConversationPollResult } from '@components/workflow/aiBuildSession';
 import EventAutomationRunsList from '@components/workflow/components/EventAutomationRunsList';
 import apiWorkflow from '@api1/workflow';
 import { EditIcon, SparklesIconBG } from '@assets';
@@ -504,6 +505,12 @@ const Investigate = () => {
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
   const [showAiGenerateModal, setShowAiGenerateModal] = useState(false);
   const [aiGenerateLoading, setAiGenerateLoading] = useState(false);
+  // Bumped when an AI build saves an automation, so the Automations dropdown refetches its list.
+  const [automationListRefreshKey, setAutomationListRefreshKey] = useState(0);
+  // An automation the AI window's Run now hands to the dropdown's run dialog (tagged to this event).
+  const [automationRunRequest, setAutomationRunRequest] = useState(null);
+  // One activation per build session: polls can overlap while the first one is still activating.
+  const aiBuildActivationsRef = useRef(new Map());
 
   // Build event context for workflow template pre-fill
   const eventContextForTemplate = useMemo(() => {
@@ -637,7 +644,18 @@ const Investigate = () => {
         return null;
       }
       try {
-        const response = await apiWorkflow.aiGenerateWorkflow(accountId, query, undefined, undefined, undefined, true);
+        // Source "Automation" makes the builder save the automation server-side, as the Automations list does.
+        const response = await apiWorkflow.aiGenerateWorkflow(
+          accountId,
+          query,
+          undefined,
+          undefined,
+          undefined,
+          true,
+          undefined,
+          undefined,
+          'Automation'
+        );
         const aiData = response?.data?.ai_generate_workflow?.data;
         if (aiData?.session_id) {
           sessionStorage.setItem('aiInitialQuery', query);
@@ -664,94 +682,14 @@ const Investigate = () => {
         if (!conversation) {
           return null;
         }
-        const status = conversation.status;
-        const messages = conversation.llm_conversation_messages || [];
-        const reversedMessages = [...messages].reverse();
-        const lastGenMsg = reversedMessages.find((m) => m.message_type === 'generation');
-        const lastFollowupMsg = reversedMessages.find((m) => m.message_type === 'followup');
-
-        if (status === 'COMPLETED') {
-          let workflowJson = '';
-          const followupResponse = (lastFollowupMsg?.response || '').trimStart();
-          if (followupResponse.startsWith('{')) {
-            workflowJson = lastFollowupMsg?.response || '';
-          }
-          if (!workflowJson) {
-            const genResponse = (lastGenMsg?.response || '').trimStart();
-            if (genResponse.startsWith('{')) {
-              workflowJson = lastGenMsg?.response || '';
-            }
-          }
-          if (!workflowJson) {
-            workflowJson = lastGenMsg?.response || '';
-          }
-          return { status: 'COMPLETED', workflowJson, conversationId: conversation.id };
+        const result = parseConversationPollResult(conversation);
+        if (result?.status !== 'COMPLETED') {
+          return result;
         }
-
-        if (status === 'FAILED') {
-          return { status: 'FAILED', errorMessage: lastGenMsg?.response || 'Automation generation failed. Please try again.' };
-        }
-
-        if (status !== 'WAITING') {
-          return null;
-        }
-
-        // WAITING: read the question from message_config.question (canonical
-        // location, always populated). Fall back to followup message.message,
-        // then legacy followup.response. llm-server #29309 stopped writing the
-        // question to followup.response — relying on response alone leaves the
-        // modal stuck on "Generating...".
-        const agents = lastGenMsg?.llm_conversation_agents || [];
-        const lastAgent = agents[agents.length - 1];
-        let planOptions;
-        let followupType;
-        let followupData;
-        let configQuestion = '';
-        let agentId = lastAgent?.id;
-
-        const rawConfig = lastFollowupMsg?.message_config;
-        if (rawConfig) {
-          try {
-            const config = typeof rawConfig === 'string' ? JSON.parse(rawConfig) : rawConfig;
-            planOptions = config.followupOptions;
-            followupType = config.followupType;
-            followupData = config.followupData;
-            configQuestion = typeof config.question === 'string' ? config.question : '';
-            if (config.agentId) {
-              agentId = config.agentId;
-            }
-          } catch {
-            // ignore parse errors
-          }
-        }
-
-        const followupResponse = lastFollowupMsg?.response || '';
-        const followupMessage = lastFollowupMsg?.message || '';
-        const genResponse = lastGenMsg?.response || '';
-        let planText;
-        if (configQuestion) {
-          planText = configQuestion;
-        } else if (followupMessage) {
-          planText = followupMessage;
-        } else if (followupResponse && !followupResponse.trimStart().startsWith('{')) {
-          planText = followupResponse;
-        } else {
-          planText = genResponse;
-        }
-        planText = planText.replace(/^Here's my plan for building your workflow:\s*/i, '');
-        planText = planText.replace(/\s*Would you like to approve this plan or request changes\?\s*$/i, '');
-
-        return {
-          status: 'WAITING',
-          planText,
-          planOptions,
-          followupType,
-          followupData,
-          conversationId: conversation.id,
-          messageId: lastFollowupMsg?.id,
-          messageUpdatedAt: lastFollowupMsg?.updated_at,
-          agentId,
-        };
+        // An automation built from an event is made ready to run here: saved (server-side), live v1, ACTIVE.
+        return await finishEventPageBuild(accountId, sessionId, result, aiBuildActivationsRef.current, () =>
+          setAutomationListRefreshKey((n) => n + 1)
+        );
       } catch (error) {
         console.error('Error polling workflow conversation:', error);
         return null;
@@ -766,21 +704,28 @@ const Investigate = () => {
       if (!accountId) {
         return;
       }
-      await apiWorkflow.aiGenerateWorkflow(accountId, query, conversationId, sessionId, undefined, true, messageId, agentId);
+      await apiWorkflow.aiGenerateWorkflow(accountId, query, conversationId, sessionId, undefined, true, messageId, agentId, 'Automation');
     },
     [router]
   );
 
+  // Open in Editor opens the automation the build saved, not an unsaved canvas.
   const handleWorkflowCompleted = useCallback(
-    (workflowJson, _conversationId, sessionId) => {
+    async (_workflowJson, _conversationId, sessionId) => {
       const accountId = router.query.accountId;
-      sessionStorage.setItem('aiGeneratedWorkflow', workflowJson);
-      sessionStorage.setItem('aiSessionId', sessionId);
-      router.push(`/automation/new?accountId=${accountId}&loadFromAI=true`);
       setShowAiGenerateModal(false);
+      const saved = await findWorkflowSavedBySession(accountId, sessionId);
+      router.push(saved?.id ? `/automation/${saved.id}?accountId=${accountId}` : `/automation?accountId=${accountId}`);
     },
     [router]
   );
+
+  const clearAutomationRunRequest = useCallback(() => setAutomationRunRequest(null), []);
+
+  const handleRunBuiltWorkflow = useCallback((savedWorkflow) => {
+    setShowAiGenerateModal(false);
+    setAutomationRunRequest({ workflow: savedWorkflow, key: Date.now() });
+  }, []);
 
   const handleOpenKB = async () => {
     if (!row?.aggregation_key) {
@@ -2194,6 +2139,7 @@ const Investigate = () => {
           onPollConversation={handlePollWorkflowConversation}
           onApproveOrRespond={handleApproveOrRespondWorkflow}
           onWorkflowCompleted={handleWorkflowCompleted}
+          onRunNow={hasWriteAccess(row?.cloud_account_id || router.query.accountId) ? handleRunBuiltWorkflow : undefined}
           loading={aiGenerateLoading}
         />
       )}
@@ -3051,6 +2997,9 @@ const Investigate = () => {
                                         canRun={hasWriteAccess(row?.cloud_account_id || router.query.accountId)}
                                         onCreateAutomation={() => setShowTemplatesModal(true)}
                                         onTriggered={handleAutomationTriggered}
+                                        refreshKey={automationListRefreshKey}
+                                        runRequest={automationRunRequest}
+                                        onRunRequestHandled={clearAutomationRunRequest}
                                       />
                                     </Box>
                                   </Box>

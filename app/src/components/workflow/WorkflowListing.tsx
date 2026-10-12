@@ -35,6 +35,7 @@ import ConfigurationManager from './ConfigurationManager';
 import CreateWorkflowOptionsModal from './components/CreateWorkflowOptionsModal';
 import WorkflowTemplatesModal from './components/WorkflowTemplatesModal';
 import { getAutomationToggleAction } from './automationMenu';
+import { findWorkflowSavedBySession, parseConversationPollResult } from './aiBuildSession';
 import { buildWorkflowExportJson, buildWorkflowShareUrl, sanitizeWorkflowDefinitionForExport } from './workflowExport';
 import {
   manualTriggerIcon,
@@ -1138,155 +1139,6 @@ const WorkflowListing: React.FC = () => {
     }
   };
 
-  const parseConversationPollResult = (conversation: any) => {
-    const status = conversation.status;
-    const messages = conversation.llm_conversation_messages || [];
-    const reversedMessages = [...messages].reverse();
-    const lastGenMsg = reversedMessages.find((m: any) => m.message_type === 'generation');
-    const lastFollowupMsg = reversedMessages.find((m: any) => m.message_type === 'followup');
-
-    if (status === 'COMPLETED') {
-      // After plan approval, the workflow JSON is stored on the followup message's response.
-      // For direct generation (no plan approval), it's on the generation message.
-      let workflowJson = '';
-      const followupResponse = (lastFollowupMsg?.response || '').trimStart();
-      if (followupResponse.startsWith('{')) {
-        workflowJson = lastFollowupMsg?.response || '';
-      }
-      if (!workflowJson) {
-        const genResponse = (lastGenMsg?.response || '').trimStart();
-        if (genResponse.startsWith('{')) {
-          workflowJson = lastGenMsg?.response || '';
-        }
-      }
-      // Automation / post-approval builds keep JSON out of `response` (that holds a human-readable
-      // summary, and the last followup `response` is just the user's "Approve and Build" click).
-      // The built workflow lives in the finalize tool call — use it as the success signal.
-      if (!workflowJson) {
-        const finalizeCall = reversedMessages
-          .flatMap((m: any) => m.llm_conversation_agents || [])
-          .flatMap((a: any) => a.llm_conversation_tool_calls || [])
-          .find((tc: any) => tc.tool_name === 'finalize' && tc.status === 'success');
-        if (finalizeCall?.response) {
-          workflowJson = finalizeCall.response;
-        }
-      }
-      // Don't fall back to non-JSON responses — they're text answers, not workflows.
-      // The polling loop handles COMPLETED without workflowJson separately.
-      // `summaryText` is the human-readable build summary (markdown) shown on the success screen.
-      const summaryText = lastGenMsg?.response || '';
-      return { status: 'COMPLETED', workflowJson, summaryText, conversationId: conversation.id };
-    }
-
-    if (status === 'FAILED') {
-      // The generation message's own `response` is empty for the Automation flow — the actionable
-      // detail (e.g. an auto-save failure with the runbook server's reason) lives on the agent
-      // record. Fall back to the last agent response before the generic message.
-      const agentResponse = (lastGenMsg?.llm_conversation_agents || [])
-        .map((a: any) => a?.response)
-        .filter(Boolean)
-        .pop();
-      return {
-        status: 'FAILED',
-        errorMessage: lastGenMsg?.response || agentResponse || 'Automation generation failed. Please try again.',
-      };
-    }
-
-    // What the builder has done so far. The modal shows it while a build runs and uses it to tell
-    // a run that is moving from one that is stuck.
-    const toolCalls = messages.flatMap((m: any) => m.llm_conversation_agents || []).flatMap((a: any) => a.llm_conversation_tool_calls || []);
-    const progress = {
-      steps: toolCalls.length,
-      tasksAdded: toolCalls.filter((tc: any) => tc.tool_name === 'add_task' && tc.status === 'success').length,
-    };
-
-    if (status !== 'WAITING') {
-      return { status, progress };
-    }
-
-    // WAITING: could be plan approval or config approval. The followup question
-    // text lives in three places depending on the backend version:
-    //   1) message_config.question — canonical location (always populated)
-    //   2) followup message.message — also populated by the backend
-    //   3) followup message.response — legacy; backend stopped writing this in
-    //      llm-server #29309 to avoid duplicate rendering in ask-nudgebee chat.
-    // Read in that order so we recover the plan text regardless of backend
-    // version.
-    const agents = lastGenMsg?.llm_conversation_agents || [];
-    const lastAgent = agents[agents.length - 1];
-    let planOptions: string[] | undefined;
-    let followupType: string | undefined;
-    let configQuestion = '';
-    let agentId = lastAgent?.id;
-
-    let followupData: any;
-
-    const rawConfig = lastFollowupMsg?.message_config;
-    if (rawConfig) {
-      try {
-        const config = typeof rawConfig === 'string' ? JSON.parse(rawConfig) : rawConfig;
-        planOptions = config.followupOptions;
-        followupType = config.followupType;
-        followupData = config.followupData;
-        configQuestion = typeof config.question === 'string' ? config.question : '';
-        if (config.agentId) {
-          agentId = config.agentId;
-        }
-      } catch {
-        // ignore parse errors
-      }
-    }
-
-    const followupResponse = lastFollowupMsg?.response || '';
-    const followupMessage = lastFollowupMsg?.message || '';
-    const genResponse = lastGenMsg?.response || '';
-    let planText: string;
-    if (configQuestion) {
-      planText = configQuestion;
-    } else if (followupMessage) {
-      planText = followupMessage;
-    } else if (followupResponse && !followupResponse.trimStart().startsWith('{')) {
-      planText = followupResponse;
-    } else {
-      planText = genResponse;
-    }
-    planText = planText.replace(/^Here's my plan for building your workflow:\s*/i, '');
-    planText = planText.replace(/\s*Would you like to approve this plan or request changes\?\s*$/i, '');
-
-    return {
-      status: 'WAITING',
-      progress,
-      planText,
-      planOptions,
-      followupType,
-      followupData,
-      conversationId: conversation.id,
-      messageId: lastFollowupMsg?.id,
-      agentId,
-    };
-  };
-
-  // The automation a builder session saved, located by its chat-session lineage
-  // (created_from_session_id). The list is newest first, so a just-saved automation is on the
-  // first page. Returns null when the session saved nothing, undefined when that could not be
-  // checked (the list call failed).
-  const findWorkflowSavedBySession = async (sessionId: string): Promise<any | null | undefined> => {
-    if (!createAccountId || !sessionId) {
-      return undefined;
-    }
-    try {
-      const res: any = await apiWorkflow.listWorkflows([createAccountId], undefined, undefined, undefined, 50, '', '', undefined, undefined);
-      const workflows = res?.data?.workflow_list?.workflows;
-      if (!Array.isArray(workflows)) {
-        return undefined;
-      }
-      return workflows.find((w: any) => w.created_from_session_id === sessionId) ?? null;
-    } catch (error) {
-      console.error('Failed to locate the saved automation by session:', error);
-      return undefined;
-    }
-  };
-
   const handlePollWorkflowConversation = async (sessionId: string) => {
     if (!createAccountId) {
       return null;
@@ -1305,7 +1157,7 @@ const WorkflowListing: React.FC = () => {
       // tool calls the conversation recorded: the builder can save without a finalize call, and a
       // finalize call does not mean the save went through. `saved` stays unset when the check
       // itself failed, and the modal then falls back to the conversation's own signal.
-      const savedWorkflow = await findWorkflowSavedBySession(sessionId);
+      const savedWorkflow = await findWorkflowSavedBySession(createAccountId, sessionId);
       return savedWorkflow === undefined ? result : { ...result, saved: savedWorkflow !== null, savedWorkflow: savedWorkflow ?? undefined };
     } catch (error) {
       console.error('Error polling workflow conversation:', error);
@@ -1353,7 +1205,7 @@ const WorkflowListing: React.FC = () => {
     if (!createAccountId) {
       return;
     }
-    const match = await findWorkflowSavedBySession(sessionId);
+    const match = await findWorkflowSavedBySession(createAccountId, sessionId);
     if (match?.id) {
       router.push(`/automation/${match.id}?accountId=${createAccountId}`);
       return;
