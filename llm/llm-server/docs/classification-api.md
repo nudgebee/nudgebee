@@ -22,7 +22,17 @@ The API never applies a fallback. When the model's answer is not one of the opti
 The API sits in front of interchangeable backends, so a decision can move to another model or provider without changing its caller.
 
 - **LLM (default):** sends the instructions and options as a strict "answer with only the option" prompt on a low-thinking, temperature-0 call. It accepts only an exact option (case-insensitive) and retries up to twice, telling the model its last answer was invalid.
-- **Decision models (planned):** hosted models built for this job, which return a choice with probabilities and a confidence score. They are opt-in and server-configured. An answer below a configured confidence goes to the LLM instead. Multi-option decisions always use the LLM, because no decision-model API supports them.
+- **Decision models (beta):** hosted models built for this job, which return a choice with probabilities and a confidence score. The first is Cloudflare's Clef on Workers AI. A decision uses one only when an admin turns it on for that decision; an answer below the decision's minimum confidence, a provider error or a timeout goes to the LLM instead. Multi-option decisions always use the LLM, because no decision-model API supports them.
+
+### Decision models
+
+- **Where they are configured.** A decision model is set in the existing LLM configuration, in its own "decision" slot next to the model tiers. The slot is what makes it decision-only: it is never offered for chat, a model tier, an agent or a fallback, and it cannot be pinned. The provider keeps its vendor name (`cloudflare`); Cloudflare is not a chat provider, so it is also refused in every chat setting.
+- **Settings.** Provider, model, credentials and a minimum confidence (default 0.9). Once a decision model is set, every decision that may use one does. With no decision model, every decision uses the LLM exactly as before.
+- **Who can turn them on.** Only tenants with the `LLM_DECISION_MODELS` feature, which is off for everyone until the provider's data terms are approved: the settings section is hidden without it, and the integration API refuses to save a decision model. Server settings (ENV) on a self-hosted install are the operator's own choice and are not gated.
+- **Which configuration applies.** The same pin rules as the LLM call the decision would fall back to: a per-task pick for that task's model, then a request or conversation pin. A pinned call uses that integration's decision settings only, so its text never reaches a decision model configured elsewhere. Otherwise the account's LLM integration applies, or the server settings on installs without one.
+- **Which decisions use one.** For now only the automation builder's answer/edit/create decision. The tool approval check stays on the LLM: a confident wrong "read" would skip the user's approval, so it moves only after a labelled replay with injection and hidden-write cases shows no false "read" at a very high threshold. Adding a decision to the list turns it on wherever a decision model is set, so a riskier decision needs its own opt-in first.
+- **Data.** The decision input passes through the same egress filter and PII scrubbing as an LLM call before it is sent. Check the provider's data-retention terms before setting a decision model.
+- **Tuning.** A minimum confidence is tuned against the decision's current prompt; after a prompt change, replay the decision again and re-check the threshold.
 
 ### The classification tier
 
@@ -71,7 +81,7 @@ Every decision is logged as `classification_decision` (task, labels, valid, back
 
 - **API:** `core.Classify(ctx, ClassificationCall, ClassificationTask, input) → ClassificationDecision` in `agents/core/classify.go`.
   - `ClassificationTask` has `Name`, `Instructions`, `Options []ClassificationOption{Label, Description}` and `Multi`.
-  - `ClassificationDecision` has `Labels`, `Valid`, `Raw`, `Backend` and `Latency`. Decision-model backends will add `Confidence`, `Probabilities` and `Model`.
+  - `ClassificationDecision` has `Labels`, `Valid`, `Raw`, `Backend` and `Latency`. Decision models add `Confidence`, `Probabilities`, `Model` and `FellBack`.
   - `ClassificationCall` carries the ids that `GenerateAndTrackLLMContent` needs. `AgentId` is the calling agent's id, because it drives API-key resolution and cost attribution.
   - `Tier` picks the model tier; empty means the classification tier. `KeepCallerTier` instead runs on whatever tier the caller's context has, including none, for callers whose model must not change when they move onto the API (classification-type agents, which keep their own tier). The tool-approval check passes the calling agent's tier, so only a caller with no tier lands on the classification tier.
 - **LLM backend:** `classifyWithLLM` calls `GenerateAndTrackLLMContent` with `llms.WithTemperature(0)` and `WithThinkingLevel(ThinkingLevelFastTask)`.
@@ -81,6 +91,13 @@ Every decision is logged as `classification_decision` (task, labels, valid, back
   - **Resolution:** `classificationTier` probes `ResolveLLMConfig` with that tier and uses it only when `Source` is `env-tier`, `db-tier`, `context-override-tier` or `conversation-tier`. `TestClassificationTier_RealResolver` pins those labels.
   - **Other tier settings:** the thinking budget is the summary budget. Context size, the connection test and the model picker (`GetAllConfiguredModels`) cover the tier. The tier-layer `Source` values are the `llmConfigSource*Tier` constants.
 - **Metrics:** `nb_llm_classification_decisions` (task, backend, valid, ok) and `nb_llm_classification_decision_latency` (task, backend).
+- **Decision models:** `agents/core/classify_decision.go` and the `llms/decision` client.
+  - Keys: `llm_tier_provider_decision` (`cloudflare`), `llm_tier_model_decision` (`clef` or `clef-flash`), `llm_tier_api_key_decision` (Cloudflare API token, encrypted), `llm_tier_api_endpoint_decision` (Cloudflare account id or a base URL) and `llm_tier_min_confidence_decision` (default 0.9). The same keys work as ENV variables.
+  - Decisions that use it: `decisionPilotTasks` in llm-server.
+  - Resolution: `decisionConfigSource` uses `effectivePin`, the same function as `ResolveLLMConfig` (the fallback tier's per-task pick, then the request pin, then the conversation pin); else the account's integration; else ENV. An invalid or unavailable pin turns decisions off.
+  - Validation (api-server): the model must be `clef` or `clef-flash`, the endpoint a Cloudflare account id or an https URL, and a fallback reference to the decision slot is rejected. `parseConfigSourceId` rejects `tier:decision`; `GetLLMModel` refuses decision providers; api-server rejects them in every chat key.
+  - Call: the client is wrapped by `wrapOutboundModel`, the same egress filter and scrub decorators as `GetLLMModel`, with a 2 s deadline. Confidence is the provider's, or the chosen option's probability. The call is recorded on the token-usage table with provider `cloudflare`.
+  - Decision fields: `Confidence`, `Probabilities`, `Model`, `FellBack` (asked, but the LLM answered). The `classification_decision` log adds `confidence`, `decision_model` and `fell_back`.
 - **Tests:**
   - `classify_test.go`: unit tests.
   - `classify_live_test.go`: opt-in; `CLASSIFY_LIVE_MODELS`, `CLASSIFY_LIVE_KEY` and `CLASSIFY_LIVE_ENDPOINT` select cheap models through the Google AI adapter.

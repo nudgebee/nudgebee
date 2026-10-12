@@ -81,6 +81,11 @@ func TestIsLLMOverrideKeyForDelete(t *testing.T) {
 		{"agent secret key", "llm_provider_secret_key_aws_debug", false},
 		{"agent session token", "llm_provider_session_token_aws_debug", false},
 
+		// Per-decision settings and the decision slot (#40902).
+		{"decision threshold", "llm_tier_min_confidence_decision", true},
+		{"decision slot provider", "llm_tier_provider_decision", true},
+		{"decision slot key", "llm_tier_api_key_decision", false},
+
 		// Unrelated keys — never delete.
 		{"empty", "", false},
 		{"random", "host", false},

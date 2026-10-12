@@ -11,8 +11,9 @@ import (
 )
 
 // Common classification API: one entry point for fixed-choice decisions. Backends
-// sit behind Classify so callers do not change when a model or provider does;
-// this file ships the LLM backend. See docs/classification-api.md.
+// sit behind Classify so callers do not change when a model or provider does:
+// the LLM backend here and decision models in classify_decision.go. See
+// docs/classification-api.md.
 //
 // Classify never applies a caller's fallback. It returns an error when the backend
 // fails and Valid=false when the answer is not one of the task's options; each
@@ -67,15 +68,20 @@ type ClassificationCall struct {
 	TrackContent bool
 }
 
-// ClassificationDecision is the outcome of Classify.
-// Backends that score their answers (decision models) add confidence fields when
-// they land; the LLM's served model is recorded on its token-usage row.
+// ClassificationDecision is the outcome of Classify. The LLM's served model is
+// recorded on its token-usage row.
 type ClassificationDecision struct {
 	Labels  []string // canonical labels, primary first; empty when !Valid
 	Valid   bool     // false: no usable answer — the caller applies its own fallback
 	Raw     string   // the backend's raw answer, for logs
-	Backend string   // which backend answered, e.g. "llm"
+	Backend string   // which backend answered: "llm" or "decision"
 	Latency time.Duration
+	// Decision-model fields. Set when a decision model was asked, including when
+	// it was not confident enough and the LLM answered (FellBack).
+	Confidence    *float64
+	Probabilities map[string]float64
+	Model         string // the provider's reported model version
+	FellBack      bool   // a decision model was asked but the LLM answered
 }
 
 // Label returns the primary label, or "" when the decision is not valid.
@@ -92,7 +98,24 @@ func Classify(ctx *security.RequestContext, call ClassificationCall, task Classi
 		return ClassificationDecision{}, fmt.Errorf("classify: task needs a name and at least one option")
 	}
 	start := time.Now()
+	var tried *ClassificationDecision
+	if b, ok := decisionBackendFor(ctx, call, task); ok {
+		dd, accepted, derr := classifyWithDecision(ctx, call, task, input, b)
+		if accepted {
+			dd.Latency = time.Since(start)
+			recordClassificationDecision(ctx, task, dd, nil)
+			return dd, nil
+		}
+		if derr != nil {
+			ctx.GetLogger().Warn("classify: decision model failed, using the LLM", "task", task.Name, "error", derr)
+		}
+		tried = &dd
+	}
 	d, err := classifyWithLLM(ctx, call, task, input)
+	if tried != nil {
+		d.FellBack = true
+		d.Confidence, d.Probabilities, d.Model = tried.Confidence, tried.Probabilities, tried.Model
+	}
 	d.Latency = time.Since(start)
 	recordClassificationDecision(ctx, task, d, err)
 	if err != nil {
@@ -149,12 +172,8 @@ var classificationGenerate = GenerateAndTrackLLMContent
 func classifyWithLLM(ctx *security.RequestContext, call ClassificationCall, task ClassificationTask, input string) (ClassificationDecision, error) {
 	llmCtx := ctx
 	if !call.KeepCallerTier {
-		tier := call.Tier
-		if tier == "" {
-			tier = classificationTier(ctx, call)
-		}
 		llmCtx = security.NewRequestContext(
-			context.WithValue(ctx.GetContext(), ContextKeyModelTier, tier),
+			context.WithValue(ctx.GetContext(), ContextKeyModelTier, classificationCallTier(ctx, call)),
 			ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter(),
 		)
 	}
@@ -186,6 +205,19 @@ func classifyWithLLM(ctx *security.RequestContext, call ClassificationCall, task
 		}
 	}
 	return d, nil // Valid=false: the caller applies its fallback
+}
+
+// classificationCallTier is the tier the LLM backend runs a call on: the
+// caller's own tier with KeepCallerTier, else call.Tier, else the classification
+// tier (summary until configured).
+func classificationCallTier(ctx *security.RequestContext, call ClassificationCall) ModelTier {
+	if call.KeepCallerTier {
+		return modelTierFromContext(ctx)
+	}
+	if call.Tier != "" {
+		return call.Tier
+	}
+	return classificationTier(ctx, call)
 }
 
 // classificationTierResolve resolves the LLM config for a call; a variable so
@@ -261,6 +293,12 @@ func recordClassificationDecision(ctx *security.RequestContext, task Classificat
 	attrs := []any{
 		"task", task.Name, "labels", strings.Join(d.Labels, ","), "valid", d.Valid,
 		"backend", d.Backend, "latency_ms", d.Latency.Milliseconds(),
+	}
+	if d.Confidence != nil {
+		attrs = append(attrs, "confidence", *d.Confidence, "decision_model", d.Model)
+	}
+	if d.FellBack {
+		attrs = append(attrs, "fell_back", true)
 	}
 	if err != nil {
 		attrs = append(attrs, "error", err.Error())

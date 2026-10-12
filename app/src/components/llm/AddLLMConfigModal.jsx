@@ -23,6 +23,13 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { computeTierDefaults } from '@utils/tierDefaults';
 import { getIntegrationDescription } from '@lib/integrationDescriptions';
 import LLMDefaultsSummary, { needsLLMDefaultsConfirm } from './LLMDefaultsSummary';
+import { useFeatureAccess } from '@hooks/useFeatureAccess';
+import DecisionModelSection, {
+  decisionConfigValues,
+  decisionStateFromConfig,
+  emptyDecisionState,
+  validateDecisionState,
+} from './DecisionModelSection';
 
 const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
@@ -1016,6 +1023,11 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   // expand/collapse state.
   const [agentRows, setAgentRows] = useState([]);
 
+  // Decision model (#40902): the integration's decision slot and per-decision settings.
+  const [decisionCfg, setDecisionCfg] = useState(emptyDecisionState);
+  // Hidden until the tenant has LLM_DECISION_MODELS; saved settings are kept either way.
+  const decisionModelsEnabled = useFeatureAccess('LLM_DECISION_MODELS') === true;
+
   // Free-text filter applied to agent override cards. Only shown when there
   // are more than 3 rows — at small counts the filter just adds noise.
   const [agentFilter, setAgentFilter] = useState('');
@@ -1355,7 +1367,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           secretsCfg[k] = !!hasValueByName[k];
         }
       });
+      secretsCfg.llm_tier_api_key_decision = !!hasValueByName.llm_tier_api_key_decision;
       setSecretsConfigured(secretsCfg);
+      setDecisionCfg(decisionStateFromConfig(cfg));
 
       // Per-tier load. A tier's provider field is "Inherit" (empty in form
       // state) when the saved llm_tier_provider_<tier> matches the global
@@ -1529,6 +1543,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setExtraHeaders('');
       setSecretsConfigured({});
       setInitialOverrideKeys(new Set());
+      setDecisionCfg(emptyDecisionState());
       setTiers({
         reasoning: emptyConfig(),
         retrieval: emptyConfig(),
@@ -1618,7 +1633,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     // configured, letting the form submit without re-entry.
     // The configured fallback is its own slot, independent of the primary's
     // provider, so its "✓ Configured" flags survive the switch.
-    setSecretsConfigured((prev) => Object.fromEntries(Object.entries(prev).filter(([k]) => k.startsWith('llm_fallback_'))));
+    setSecretsConfigured((prev) =>
+      Object.fromEntries(Object.entries(prev).filter(([k]) => k.startsWith('llm_fallback_') || k === 'llm_tier_api_key_decision'))
+    );
     // Category-tier and per-agent overrides reference provider-specific
     // model names (e.g. gemini-3-flash-preview, claude-3-5-sonnet,
     // gpt-4o). They are invalid for the new provider, so clear both so
@@ -2024,7 +2041,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       creds: validateOverrideCreds(row, (c) => `llm_provider_${c}_${row.agent || ''}`),
     })),
   };
+  const decisionErrors = decisionModelsEnabled ? validateDecisionState(decisionCfg, !!secretsConfigured.llm_tier_api_key_decision) : {};
   const hasAnyError =
+    Object.keys(decisionErrors).length > 0 ||
     !!errors.model ||
     !!errors.fallbacks ||
     !!errors.oauthTokenUrl ||
@@ -2205,6 +2224,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         pushPlain(shape.showsApiType, `llm_provider_api_type_${row.agent}`, row.apiType);
       }
     });
+    // Decision model slot and per-decision settings.
+    out.push(...decisionConfigValues(decisionCfg));
     // Emit explicit empty values for tier / agent override keys that were
     // present when the modal opened but are no longer in `out`. This signals
     // DELETE on the backend save path so cleared tier models / removed
@@ -3046,6 +3067,23 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         </Stack>
 
         <Divider />
+
+        {/* ---------- Decision models ---------- */}
+        {decisionModelsEnabled && (
+          <>
+            <Box sx={{ mb: 'var(--ds-space-4)' }}>
+              <DecisionModelSection
+                state={decisionCfg}
+                errors={decisionErrors}
+                apiKeyConfigured={!!secretsConfigured.llm_tier_api_key_decision}
+                onChange={(field, value) => setDecisionCfg((prev) => ({ ...prev, [field]: value }))}
+                renderSecretInput={(props) => <SecretInput {...props} />}
+              />
+            </Box>
+
+            <Divider />
+          </>
+        )}
 
         {/* ---------- Agent Overrides ---------- */}
         <Typography variant='subtitle2' sx={{ fontWeight: 'var(--ds-font-weight-semibold)', mb: 'var(--ds-space-2)' }}>

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"nudgebee/services/config"
 	"nudgebee/services/integrations/core"
+	"nudgebee/services/security"
 	"sort"
 	"strings"
 	"testing"
@@ -645,4 +646,94 @@ func TestBuildAggregateProbeError(t *testing.T) {
 		assert.NotContains(t, out, "vertexai")
 		assert.Contains(t, out, "googleai (bad-model")
 	})
+}
+
+// A decision model (#40902) is configured in the decision slot only, and its
+// provider can never be used by a chat key.
+func TestLLMValidateConfig_DecisionModel(t *testing.T) {
+	base := func(extra map[string]string) map[string]string {
+		cfg := map[string]string{
+			"llm_provider":         "googleai",
+			"llm_model_name":       "gemini-x",
+			"llm_provider_api_key": "k",
+		}
+		for k, v := range extra {
+			cfg[k] = v
+		}
+		return cfg
+	}
+	slot := map[string]string{
+		"llm_tier_provider_decision":     "cloudflare",
+		"llm_tier_model_decision":        "clef-flash",
+		"llm_tier_api_key_decision":      "token",
+		"llm_tier_api_endpoint_decision": "0123456789abcdef0123456789abcdef",
+	}
+	withSlot := func(extra map[string]string) map[string]string {
+		cfg := base(slot)
+		for k, v := range extra {
+			cfg[k] = v
+		}
+		return cfg
+	}
+	tests := []struct {
+		name        string
+		cfg         map[string]string
+		wantSubstrs []string
+	}{
+		{name: "decision slot with the default threshold", cfg: withSlot(nil)},
+		{name: "decision slot with a threshold", cfg: withSlot(map[string]string{"llm_tier_min_confidence_decision": "0.85"})},
+		{name: "https base URL is accepted", cfg: withSlot(map[string]string{"llm_tier_api_endpoint_decision": "https://gateway.example.com/ai/run"})},
+		{name: "decision provider as the main provider", cfg: map[string]string{"llm_provider": "cloudflare", "llm_model_name": "clef"},
+			wantSubstrs: []string{`llm_provider "cloudflare" is invalid`}},
+		{name: "decision provider on a chat tier", cfg: base(map[string]string{"llm_tier_provider_reasoning": "cloudflare"}),
+			wantSubstrs: []string{"llm_tier_provider_reasoning: cloudflare is only available as a decision model"}},
+		{name: "decision provider for an agent", cfg: base(map[string]string{"llm_provider_k8s_orchestrator": "cloudflare"}),
+			wantSubstrs: []string{"llm_provider_k8s_orchestrator: cloudflare is only available as a decision model"}},
+		{name: "chat provider in the decision slot", cfg: withSlot(map[string]string{"llm_tier_provider_decision": "googleai"}),
+			wantSubstrs: []string{`llm_tier_provider_decision "googleai" is invalid`}},
+		{name: "decision slot missing credentials", cfg: base(map[string]string{"llm_tier_provider_decision": "cloudflare"}),
+			wantSubstrs: []string{"llm_tier_model_decision is required", "llm_tier_api_key_decision is required", "llm_tier_api_endpoint_decision is required"}},
+		{name: "unknown decision model", cfg: withSlot(map[string]string{"llm_tier_model_decision": "gpt-x"}),
+			wantSubstrs: []string{`llm_tier_model_decision "gpt-x" is invalid`}},
+		{name: "endpoint that is neither an account id nor https", cfg: withSlot(map[string]string{"llm_tier_api_endpoint_decision": "http://10.0.0.1/ai/run"}),
+			wantSubstrs: []string{"must be a Cloudflare account id or an https URL"}},
+		{name: "threshold out of range", cfg: withSlot(map[string]string{"llm_tier_min_confidence_decision": "1.5"}),
+			wantSubstrs: []string{"llm_tier_min_confidence_decision must be a number above 0 and at most 1"}},
+		{name: "threshold without a decision model", cfg: base(map[string]string{"llm_tier_min_confidence_decision": "0.9"}),
+			wantSubstrs: []string{"no decision model is configured"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := LLM{}.ValidateConfig(nil, llmConfig(tt.cfg), "")
+			if len(tt.wantSubstrs) == 0 {
+				assert.Empty(t, errs, "expected no validation errors, got: %v", errs)
+				return
+			}
+			for _, sub := range tt.wantSubstrs {
+				assert.Truef(t, errorsContain(errs, sub), "expected an error containing %q, got: %v", sub, errs)
+			}
+		})
+	}
+}
+
+func TestValidateFallbackRef_RejectsDecisionSlot(t *testing.T) {
+	err := validateFallbackRef(nil, "db:11111111-1111-1111-1111-111111111111:tier:decision", "clef-flash", "llm_fallback_ref_model", "")
+	assert.ErrorContains(t, err, "cannot be a fallback")
+	err = validateFallbackRef(nil, "env:tier:decision", "clef-flash", "llm_fallback_ref_model", "")
+	assert.ErrorContains(t, err, "cannot be a fallback")
+}
+
+// Decision-model settings save only for tenants with LLM_DECISION_MODELS.
+func TestCheckDecisionModelsFeature(t *testing.T) {
+	old := decisionModelsEnabled
+	t.Cleanup(func() { decisionModelsEnabled = old })
+	sc := &security.SecurityContext{}
+	slot := map[string]string{"llm_tier_provider_decision": "cloudflare"}
+
+	decisionModelsEnabled = func(*security.SecurityContext) bool { return false }
+	assert.ErrorContains(t, checkDecisionModelsFeature(sc, slot), "LLM_DECISION_MODELS")
+	assert.NoError(t, checkDecisionModelsFeature(sc, map[string]string{"llm_provider": "googleai"}), "no decision settings, no check")
+
+	decisionModelsEnabled = func(*security.SecurityContext) bool { return true }
+	assert.NoError(t, checkDecisionModelsFeature(sc, slot))
 }

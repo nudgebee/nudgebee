@@ -41,6 +41,7 @@ import (
 	"net/http"
 	"nudgebee/llm/config"
 	"nudgebee/llm/llms/bedrock"
+	"nudgebee/llm/llms/decision"
 	"nudgebee/llm/llms/googleai"
 	"nudgebee/llm/llms/googleai/vertex"
 	vertexendpoint "nudgebee/llm/llms/googleai/vertexai_endpoint"
@@ -271,41 +272,52 @@ func GetLLMModel(provider string, modelName string, agentName string, appendAgen
 		slog.Debug("Routing to Anthropic LLM provider")
 		model, err = getAnthropicLLM(provider, modelName, agentName, appendAgentName, accountId, res)
 	default:
+		if decision.IsProvider(provider) {
+			return nil, fmt.Errorf("provider %s is only available as a decision model and cannot serve LLM calls", provider)
+		}
 		slog.Error("Unknown LLM provider", "provider", provider)
 		return nil, errors.New("llm model not found - " + provider)
 	}
 
 	if err == nil && model != nil {
-		// Layer 1 (innermost — runs LAST before the real model): optional EE
-		// PII/PHI scrub + rehydrate. ee/scrubbing installs the decorator via
-		// init() against the LLMModelDecorator hook — see ee_registry.go. nil
-		// = no decoration, OSS behavior, zero cost.
-		if LLMModelDecorator != nil {
-			model = LLMModelDecorator(model)
-		}
-		// Layer 2 (outermost — runs FIRST on outbound payload): OSS egress
-		// filter. Master switch gates the entire egressfilter subsystem. When
-		// off, we skip the WrapModel call entirely — no decorator, no metric
-		// emission, no payload serialization, zero overhead. Per-detector
-		// flags below only matter once the master is on. See
-		// docs/pii-secret-scrubbing.md.
-		//
-		// Wrapping order is deliberate: egressfilter inspects the raw outbound
-		// text BEFORE the scrub decorator rewrites secrets to [REDACTED_*],
-		// so its credential gate sees what the caller actually produced.
-		if config.Config.LlmServerEgressFilterEnabled {
-			model = egressfilter.WrapModel(
-				model,
-				provider,
-				modelName,
-				config.Config.LlmServerEgressFilterSecretsEnabled,
-				egressfilter.ParseMode(config.Config.LlmServerEgressFilterSecretsMode),
-			)
-		}
+		model = wrapOutboundModel(model, provider, modelName)
 		llmClientCache[cacheKey] = llmCacheEntry{model: model, ts: time.Now()}
 	}
 
 	return model, err
+}
+
+// wrapOutboundModel applies the outbound decorators every model call goes
+// through: the optional EE scrub decorator and the egress filter. Decision
+// models (classify_decision.go) use it too, so their input is filtered the same.
+func wrapOutboundModel(model llms.Model, provider, modelName string) llms.Model {
+	// Layer 1 (innermost — runs LAST before the real model): optional EE
+	// PII/PHI scrub + rehydrate. ee/scrubbing installs the decorator via
+	// init() against the LLMModelDecorator hook — see ee_registry.go. nil
+	// = no decoration, OSS behavior, zero cost.
+	if LLMModelDecorator != nil {
+		model = LLMModelDecorator(model)
+	}
+	// Layer 2 (outermost — runs FIRST on outbound payload): OSS egress
+	// filter. Master switch gates the entire egressfilter subsystem. When
+	// off, we skip the WrapModel call entirely — no decorator, no metric
+	// emission, no payload serialization, zero overhead. Per-detector
+	// flags below only matter once the master is on. See
+	// docs/pii-secret-scrubbing.md.
+	//
+	// Wrapping order is deliberate: egressfilter inspects the raw outbound
+	// text BEFORE the scrub decorator rewrites secrets to [REDACTED_*],
+	// so its credential gate sees what the caller actually produced.
+	if config.Config.LlmServerEgressFilterEnabled {
+		model = egressfilter.WrapModel(
+			model,
+			provider,
+			modelName,
+			config.Config.LlmServerEgressFilterSecretsEnabled,
+			egressfilter.ParseMode(config.Config.LlmServerEgressFilterSecretsMode),
+		)
+	}
+	return model
 }
 
 // ForwardedLLMConfig is the resolved, decrypted LLM configuration that
@@ -2400,21 +2412,7 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 	// that credential, not the conversation-wide pin: in By-task mode each task
 	// carries its own (credential, model) pair, so a blanket pin must not
 	// override it. Untagged calls still use the conversation pin below.
-	pinnedSource, pinnedTierModel := tierPinFor(ctx, conversationId, tier)
-	if pinnedSource == "" {
-		pinnedSource = pinnedConfigSourceFromContext(ctx)
-		// Background work (memory extraction, session extractor, title
-		// generation) runs on a fresh context.Background(), so the stamped key
-		// is gone and those calls would silently resolve through the layered
-		// walk — a different endpoint and api key than the user pinned. The
-		// conversation row is the durable record; the tier layer below already
-		// relies on the same fallback.
-		if pinnedSource == "" && conversationId != "" {
-			if _, _, _, convPin, err := GetConversationOverride(conversationId); err == nil {
-				pinnedSource = convPin
-			}
-		}
-	}
+	pinnedSource, pinnedTierModel := effectivePin(ctx, conversationId, tier)
 	// A whole config is resolved like an account default with that config in
 	// place of the account's, so its fallbacks, tiers and agent overrides apply.
 	whole, err := wholeConfigChoiceFor(ctx, pinnedSource, pinnedTierModel, accountId)
@@ -3218,6 +3216,31 @@ func tierPinFor(ctx *security.RequestContext, conversationId string, tier ModelT
 	return "", ""
 }
 
+// effectivePin returns the pinned source a call resolves through, and the
+// model a per-task pick names: the tier's own pick first, then the request pin,
+// then the conversation pin. Decision models (classify_decision.go) use it too,
+// so they follow exactly the pin the LLM call would.
+func effectivePin(ctx *security.RequestContext, conversationId string, tier ModelTier) (string, string) {
+	if source, model := tierPinFor(ctx, conversationId, tier); source != "" {
+		return source, model
+	}
+	if source := pinnedConfigSourceFromContext(ctx); source != "" {
+		return source, ""
+	}
+	// Background work (memory extraction, session extractor, title
+	// generation) runs on a fresh context.Background(), so the stamped key
+	// is gone and those calls would silently resolve through the layered
+	// walk — a different endpoint and api key than the user pinned. The
+	// conversation row is the durable record; the tier layer below already
+	// relies on the same fallback.
+	if conversationId != "" {
+		if _, _, _, convPin, err := GetConversationOverride(conversationId); err == nil {
+			return convPin, ""
+		}
+	}
+	return "", ""
+}
+
 // pinnedConfigSourceFromContext returns the pinned source id stamped into ctx,
 // or "" if none. Used by ResolveLLMConfig to short-circuit its layered walk.
 func pinnedConfigSourceFromContext(ctx *security.RequestContext) string {
@@ -3288,6 +3311,10 @@ func parseConfigSourceId(sourceId string) (*parsedConfigSource, error) {
 		}
 	default:
 		return nil, fmt.Errorf("invalid llm_config_source %q: unknown layer %q (expected env|db)", sourceId, p.Layer)
+	}
+	// The decision slot holds a decision model, which cannot serve LLM calls.
+	if p.Scope == "tier" && ModelTier(p.Name) == ModelTierDecision {
+		return nil, fmt.Errorf("invalid llm_config_source %q: the decision slot cannot be pinned", sourceId)
 	}
 	return p, nil
 }

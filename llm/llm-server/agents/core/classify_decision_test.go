@@ -1,0 +1,261 @@
+package core
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"strings"
+	"testing"
+
+	"nudgebee/llm/llms/decision"
+	"nudgebee/llm/security"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/tmc/langchaingo/llms"
+)
+
+func pilotTask() ClassificationTask {
+	t := intentTask()
+	t.Name = "workflow_turn_intent"
+	return t
+}
+
+func decisionSlot(minConfidence string) map[string]string {
+	return map[string]string{
+		"llm_tier_provider_decision":     decision.ProviderCloudflare,
+		"llm_tier_model_decision":        "clef-flash",
+		"llm_tier_api_key_decision":      "token",
+		"llm_tier_api_endpoint_decision": "acct",
+		llmDecisionMinConfidenceKey:      minConfidence,
+	}
+}
+
+// stubDecisionConfig makes decision settings resolve to cfg.
+func stubDecisionConfig(t *testing.T, cfg map[string]string) {
+	t.Helper()
+	old := decisionConfigSource
+	decisionConfigSource = func(*security.RequestContext, string, string, ModelTier) (map[string]string, string) {
+		return cfg, "db"
+	}
+	t.Cleanup(func() { decisionConfigSource = old })
+}
+
+// stubDecisionChooser scripts the decision model and records the state it was sent.
+func stubDecisionChooser(t *testing.T, choice decision.Choice, err error) *[]string {
+	t.Helper()
+	states := &[]string{}
+	old := decisionChooser
+	decisionChooser = func(_ context.Context, _ *decisionBackend, state, _ string, _ map[string]string) (decision.Choice, error) {
+		*states = append(*states, state)
+		return choice, err
+	}
+	t.Cleanup(func() { decisionChooser = old })
+	return states
+}
+
+func conf(v float64) *float64 { return &v }
+
+func TestParseDecisionMinConfidence(t *testing.T) {
+	v, err := ParseDecisionMinConfidence("")
+	require.NoError(t, err)
+	assert.Equal(t, defaultDecisionMinConfidence, v, "empty uses the default")
+	v, err = ParseDecisionMinConfidence(" 0.75 ")
+	require.NoError(t, err)
+	assert.Equal(t, 0.75, v)
+	for _, raw := range []string{"0", "1.5", "-0.1", "high"} {
+		_, err := ParseDecisionMinConfidence(raw)
+		assert.ErrorContains(t, err, "above 0 and at most 1", raw)
+	}
+}
+
+func TestDecisionBackendFor(t *testing.T) {
+	ctx := testRequestContext()
+
+	stubDecisionConfig(t, decisionSlot(""))
+	b, ok := decisionBackendFor(ctx, ClassificationCall{AccountId: "acct"}, pilotTask())
+	require.True(t, ok, "a configured decision model is used without further settings")
+	assert.Equal(t, "clef-flash", b.model)
+	assert.Equal(t, defaultDecisionMinConfidence, b.minConfidence)
+
+	stubDecisionConfig(t, decisionSlot("0.8"))
+	b, ok = decisionBackendFor(ctx, ClassificationCall{}, pilotTask())
+	require.True(t, ok)
+	assert.Equal(t, 0.8, b.minConfidence)
+
+	_, ok = decisionBackendFor(ctx, ClassificationCall{}, intentTask())
+	assert.False(t, ok, "only pilot decisions use a decision model")
+	multi := pilotTask()
+	multi.Multi = true
+	_, ok = decisionBackendFor(ctx, ClassificationCall{}, multi)
+	assert.False(t, ok, "decision models answer single-choice questions only")
+
+	chat := decisionSlot("")
+	chat["llm_tier_provider_decision"] = "googleai"
+	stubDecisionConfig(t, chat)
+	_, ok = decisionBackendFor(ctx, ClassificationCall{}, pilotTask())
+	assert.False(t, ok, "a chat provider in the decision slot is not a decision model")
+
+	stubDecisionConfig(t, decisionSlot("2"))
+	_, ok = decisionBackendFor(ctx, ClassificationCall{}, pilotTask())
+	assert.False(t, ok, "an invalid threshold switches the decision model off")
+
+	stubDecisionConfig(t, map[string]string{"llm_provider": "googleai"})
+	_, ok = decisionBackendFor(ctx, ClassificationCall{}, pilotTask())
+	assert.False(t, ok, "no decision model configured")
+}
+
+func TestClassify_DecisionBackend(t *testing.T) {
+	cases := []struct {
+		name        string
+		choice      decision.Choice
+		chooseErr   error
+		wantBackend string
+		wantLabel   string
+		wantLLM     bool
+		wantConf    float64
+	}{
+		{"confident answer is used", decision.Choice{Choice: "EDIT", Confidence: conf(0.95), Model: "clef-flash-1"}, nil, "decision", "EDIT", false, 0.95},
+		{"probability stands in for a missing confidence", decision.Choice{Choice: "edit", Probabilities: map[string]float64{"edit": 0.9, "ANSWER": 0.1}}, nil, "decision", "EDIT", false, 0.9},
+		{"low confidence goes to the LLM", decision.Choice{Choice: "EDIT", Confidence: conf(0.6)}, nil, "llm", "ANSWER", true, 0.6},
+		{"an answer that is not an option goes to the LLM", decision.Choice{Choice: "DELETE", Confidence: conf(0.99)}, nil, "llm", "ANSWER", true, 0.99},
+		{"a provider error goes to the LLM", decision.Choice{}, errors.New("HTTP 401"), "llm", "ANSWER", true, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubDecisionConfig(t, decisionSlot("0.8"))
+			stubDecisionChooser(t, tc.choice, tc.chooseErr)
+			llmCalls := stubGenerate(t, []string{"ANSWER"}, nil)
+			d, err := Classify(testRequestContext(), ClassificationCall{AccountId: "acct"}, pilotTask(), "fix it")
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantBackend, d.Backend)
+			assert.Equal(t, tc.wantLabel, d.Label())
+			assert.Equal(t, tc.wantLLM, len(*llmCalls) == 1)
+			assert.Equal(t, tc.wantLLM, d.FellBack)
+			if tc.chooseErr == nil {
+				require.NotNil(t, d.Confidence)
+				assert.InDelta(t, tc.wantConf, *d.Confidence, 1e-9)
+			}
+		})
+	}
+}
+
+// The decision model is never asked when nothing is configured, so the LLM
+// path is unchanged.
+func TestClassify_NoDecisionConfigured(t *testing.T) {
+	stubDecisionConfig(t, nil)
+	states := stubDecisionChooser(t, decision.Choice{Choice: "EDIT", Confidence: conf(1)}, nil)
+	stubGenerate(t, []string{"CREATE"}, nil)
+	d, err := Classify(testRequestContext(), ClassificationCall{}, pilotTask(), "make one")
+	require.NoError(t, err)
+	assert.Equal(t, "llm", d.Backend)
+	assert.Equal(t, "CREATE", d.Label())
+	assert.False(t, d.FellBack)
+	assert.Nil(t, d.Confidence)
+	assert.Empty(t, *states)
+}
+
+// The decision call goes through the same outbound decorators as an LLM call,
+// so the scrub/egress layers see and can rewrite its text.
+func TestClassify_DecisionInputIsDecorated(t *testing.T) {
+	old := LLMModelDecorator
+	LLMModelDecorator = func(m llms.Model) llms.Model { return scrubbingModel{inner: m} }
+	t.Cleanup(func() { LLMModelDecorator = old })
+	stubDecisionConfig(t, decisionSlot("0.8"))
+	states := stubDecisionChooser(t, decision.Choice{Choice: "EDIT", Confidence: conf(0.9)}, nil)
+
+	_, err := Classify(testRequestContext(), ClassificationCall{}, pilotTask(), "token PLAIN-SECRET-VALUE is failing")
+	require.NoError(t, err)
+	require.Len(t, *states, 1)
+	assert.Equal(t, "token [REDACTED] is failing", (*states)[0])
+}
+
+type scrubbingModel struct{ inner llms.Model }
+
+func (s scrubbingModel) GenerateContent(ctx context.Context, msgs []llms.MessageContent, opts ...llms.CallOption) (*llms.ContentResponse, error) {
+	out := make([]llms.MessageContent, len(msgs))
+	for i, m := range msgs {
+		parts := make([]llms.ContentPart, len(m.Parts))
+		for j, p := range m.Parts {
+			if t, ok := p.(llms.TextContent); ok {
+				p = llms.TextContent{Text: strings.ReplaceAll(t.Text, "PLAIN-SECRET-VALUE", "[REDACTED]")}
+			}
+			parts[j] = p
+		}
+		out[i] = llms.MessageContent{Role: m.Role, Parts: parts}
+	}
+	return s.inner.GenerateContent(ctx, out, opts...)
+}
+
+func (s scrubbingModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	return "", errors.New("not used")
+}
+
+func TestParseConfigSourceId_RejectsDecisionSlot(t *testing.T) {
+	for _, id := range []string{"env:tier:decision", "db:11111111-1111-1111-1111-111111111111:tier:decision"} {
+		_, err := parseConfigSourceId(id)
+		assert.ErrorContains(t, err, "cannot be pinned", id)
+	}
+	_, err := parseConfigSourceId("env:tier:classification")
+	assert.NoError(t, err)
+}
+
+// decisionConfigSource follows ResolveLLMConfig's pin precedence for the
+// fallback's tier, so a pinned conversation's text never reaches a decision
+// model configured on another integration.
+func TestDecisionConfigSource_FollowsPins(t *testing.T) {
+	const pinned = "11111111-1111-1111-1111-111111111111"
+	oldPin, oldAccount := decisionPinConfig, decisionAccountConfig
+	t.Cleanup(func() { decisionPinConfig, decisionAccountConfig = oldPin, oldAccount })
+	decisionPinConfig = func(_ *security.RequestContext, _, _, uuid string) (map[string]string, error) {
+		return map[string]string{"from": "pin:" + uuid}, nil
+	}
+	decisionAccountConfig = func(*security.RequestContext, string) (map[string]string, error) {
+		return map[string]string{"from": "account"}, nil
+	}
+	ctxWith := func(key, value any) *security.RequestContext {
+		goCtx := context.Background()
+		if key != nil {
+			goCtx = context.WithValue(goCtx, key, value)
+		}
+		return security.NewRequestContext(goCtx, security.NewRequestContextForSuperAdmin().GetSecurityContext(), slog.Default(), nil, nil)
+	}
+	byTask := ConversationTierOverrides{Picks: map[string]TierModelPick{
+		string(ModelTierRetrieval): {Model: "m", ConfigSource: "db:" + pinned + ":tier:retrieval"},
+	}}
+
+	cases := []struct {
+		name string
+		ctx  *security.RequestContext
+		tier ModelTier
+		want string
+	}{
+		{"per-task pick for the fallback's tier", ctxWith(ContextKeyLlmTierModelOverrides, byTask), ModelTierRetrieval, "pin:" + pinned},
+		{"a pick for another tier does not apply", ctxWith(ContextKeyLlmTierModelOverrides, byTask), ModelTierSummary, "account"},
+		{"request pin", ctxWith(ContextKeyLlmConfigSourceOverride, "db:"+pinned), ModelTierRetrieval, "pin:" + pinned},
+		{"no pin uses the account integration", ctxWith(nil, nil), ModelTierRetrieval, "account"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, _ := decisionConfigSource(tc.ctx, "acct", "", tc.tier)
+			assert.Equal(t, tc.want, cfg["from"])
+		})
+	}
+
+	cfg, source := decisionConfigSource(ctxWith(ContextKeyLlmConfigSourceOverride, "db:"+pinned+":tier:decision"), "acct", "", ModelTierRetrieval)
+	assert.Nil(t, cfg, "an invalid pin turns decisions off rather than falling back to the account")
+	assert.Equal(t, "pin-invalid", source)
+
+	decisionPinConfig = func(*security.RequestContext, string, string, string) (map[string]string, error) {
+		return nil, errors.New("not linked")
+	}
+	cfg, source = decisionConfigSource(ctxWith(ContextKeyLlmConfigSourceOverride, "db:"+pinned), "acct", "", ModelTierRetrieval)
+	assert.Nil(t, cfg, "an unavailable pinned integration turns decisions off")
+	assert.Equal(t, "pin-unavailable", source)
+}
+
+// A decision-only provider can never serve an LLM call.
+func TestGetLLMModel_RefusesDecisionProvider(t *testing.T) {
+	_, err := GetLLMModel(decision.ProviderCloudflare, "clef", "", false, "")
+	assert.ErrorContains(t, err, "decision model and cannot serve LLM calls")
+}
