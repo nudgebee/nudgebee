@@ -8,6 +8,7 @@ import (
 	"nudgebee/services/config"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -204,8 +205,9 @@ func buildESMetricsQueryBody(queryType, queryDSL string, startMillis, endMillis 
 		}
 		userBody = esWrapBareQueryClause(userBody)
 		if _, ok := userBody["size"]; !ok {
-			userBody["size"] = 10000
+			userBody["size"] = esMetricsDefaultSize
 		}
+		esDefaultNewestFirst(userBody)
 		if startMillis > 0 && endMillis > 0 {
 			userQuery, ok := userBody["query"].(map[string]any)
 			if !ok {
@@ -237,14 +239,52 @@ func buildESMetricsQueryBody(queryType, queryDSL string, startMillis, endMillis 
 	if startMillis > 0 && endMillis > 0 {
 		filters = append(filters, esMetricsTimeRangeClause(startMillis, endMillis))
 	}
-	return map[string]any{
-		"size": 10000,
+	body := map[string]any{
+		"size": esMetricsDefaultSize,
 		"query": map[string]any{
 			"bool": map[string]any{
 				"filter": filters,
 			},
 		},
-	}, nil
+	}
+	esDefaultNewestFirst(body)
+	return body, nil
+}
+
+// esNewestFirstSort orders raw metric documents newest first on either time
+// field the window filter accepts (esMetricsTimeRangeClause). unmapped_type
+// keeps an index without one of the fields from failing the search.
+// A fresh value per call: request bodies must not share mutable maps.
+func esNewestFirstSort() []any {
+	return []any{
+		map[string]any{"@timestamp": map[string]any{"order": "desc", "unmapped_type": "date"}},
+		map[string]any{"time": map[string]any{"order": "desc", "unmapped_type": "long"}},
+	}
+}
+
+// esDefaultNewestFirst sorts a document-returning query newest first unless it
+// already has a sort. Unsorted, a query matching more documents than its size
+// returned an arbitrary slice: on dev, 44% of capped results held a single
+// timestamp of a multi-hour window (#39201). Sorted, the cap keeps the most
+// recent part of the window, and esDocCapNote says which part that is.
+//
+// Skipped when the body has a sort, aggregations (their series already cover the
+// whole window), or an option Elasticsearch rejects alongside sort. An index
+// pattern mixing @timestamp-only and time-only documents still fills the cap
+// with @timestamp documents first; rare enough to leave.
+func esDefaultNewestFirst(body map[string]any) {
+	for _, key := range []string{"sort", "aggs", "aggregations", "rescore", "knn", "rank", "retriever", "collapse", "search_after"} {
+		if _, ok := body[key]; ok {
+			return
+		}
+	}
+	if size, ok := body["size"].(float64); ok && size == 0 {
+		return
+	}
+	if size, ok := body["size"].(int); ok && size == 0 {
+		return
+	}
+	body["sort"] = esNewestFirstSort()
 }
 
 // esQueryFieldNames extracts the field names a DSL query filters on. Walks the parsed
@@ -453,6 +493,21 @@ func runESMetricsQueries(cfg *ElasticsearchConfig, index string, req FetchMetric
 		}
 
 		bodyBytes, err := readResponse(resp, "metric query")
+		if err == nil && esShardsRejectedDefaultSort(queryBody, bodyBytes) {
+			// Unsortable time field in some index: Elasticsearch answers 200 but drops
+			// that shard. Rerun unsorted so no data is lost to the default sort.
+			err = errDefaultSortRejected
+		}
+		if err != nil && esRejectedDefaultSort(queryBody, err) {
+			// A matched index maps a time field to a type that cannot be sorted:
+			// run the query as it was before the default sort existed.
+			delete(queryBody, "sort")
+			if resp, err = esRequestJSON("POST", esURL, queryBody, cfg); err == nil { //nolint:bodyclose
+				bodyBytes, err = readResponse(resp, "metric query")
+			}
+			renderedJSON, _ = json.Marshal(queryBody)
+			renderedQuery = string(renderedJSON)
+		}
 		if err != nil {
 			errStr := err.Error()
 			results = append(results, QueryResult{
@@ -492,6 +547,12 @@ func runESMetricsQueries(cfg *ElasticsearchConfig, index string, req FetchMetric
 		}
 		if len(payload) == 0 && stats.DocsMatched > 0 {
 			qr.Note = esNoSeriesNote(stats)
+		}
+		if note := esDocCapNote(stats, queryBody, req.StartTime, req.EndTime); note != "" && len(payload) > 0 {
+			qr.Note = esJoinNotes(qr.Note, note)
+		}
+		if note := esShardFailureNote(string(bodyBytes)); note != "" {
+			qr.Note = esJoinNotes(qr.Note, note)
 		}
 		// Nothing matched: show the agent real documents rather than leave it to guess
 		// whether the filter or the data is wrong.
@@ -1805,6 +1866,10 @@ type esParseStats struct {
 	// caller states it: a capped result that does not say it is capped reads as the
 	// complete answer, which is the defect this whole path exists to remove.
 	GenericTruncation string
+	// TotalIsLowerBound is hits.total.relation == "gte": more documents matched
+	// than DocsMatched says. FirstTs/LastTs bound the parsed points (epoch s).
+	TotalIsLowerBound bool
+	FirstTs, LastTs   int64
 }
 
 func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
@@ -2122,7 +2187,21 @@ func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, 
 	if returned > 0 {
 		sampleFields = esSourceFieldNames(esResp.Hits.Hits[0].Source)
 	}
+	var firstTs, lastTs int64
+	for _, r := range results {
+		for _, ts := range r.Timestamps {
+			if firstTs == 0 || ts < firstTs {
+				firstTs = ts
+			}
+			if ts > lastTs {
+				lastTs = ts
+			}
+		}
+	}
 	return results, esParseStats{
+		TotalIsLowerBound:  esHitsTotalIsLowerBound(string(bodyBytes)),
+		FirstTs:            firstTs,
+		LastTs:             lastTs,
 		DocsMatched:        esHitsTotal(string(bodyBytes)),
 		HitsReturned:       returned,
 		SeriesParsed:       len(results),
@@ -2334,4 +2413,122 @@ func fetchESMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTr
 	wg.Wait()
 
 	return OutputMetricQuery{Results: results}, nil
+}
+
+// esHitsTotalIsLowerBound reports hits.total.relation == "gte": Elasticsearch
+// stopped counting (10,000 by default), so more documents matched.
+func esHitsTotalIsLowerBound(rawJSON string) bool {
+	var probe struct {
+		Hits struct {
+			Total struct {
+				Relation string `json:"relation"`
+			} `json:"total"`
+		} `json:"hits"`
+	}
+	if err := json.Unmarshal([]byte(rawJSON), &probe); err != nil {
+		return false
+	}
+	return probe.Hits.Total.Relation == "gte"
+}
+
+// esDocCapNote says when a raw-document query read fewer documents than it
+// matched, and which part of the requested window the series cover. Without it
+// a 10,000-document slice of a 6 h window read as the whole window: 254 of 258
+// capped results on dev carried no sign of it (#39201). Empty when not capped.
+func esDocCapNote(stats esParseStats, body map[string]any, startMs, endMs int64) string {
+	if _, ok := body["aggs"]; ok {
+		return "" // aggregation series cover the whole window; the note would misdescribe them
+	}
+	if _, ok := body["aggregations"]; ok {
+		return ""
+	}
+	// Only the default cap: a deliberate small size ("size":1 for the latest value) is not a gap.
+	if stats.HitsReturned < esMetricsDefaultSize || (!stats.TotalIsLowerBound && stats.DocsMatched <= int64(stats.HitsReturned)) {
+		return ""
+	}
+	matched := fmt.Sprintf("%d", stats.DocsMatched)
+	if stats.TotalIsLowerBound {
+		matched = "more than " + matched
+	}
+	which := "the newest"
+	if sortSpec, ok := body["sort"]; ok && !reflect.DeepEqual(sortSpec, esNewestFirstSort()) {
+		which = "the first (in the query's sort order)"
+	}
+	const layout = "2006-01-02 15:04 UTC"
+	note := fmt.Sprintf("The query matched %s documents but only %s %d were read", matched, which, stats.HitsReturned)
+	if stats.FirstTs > 0 && stats.LastTs > 0 {
+		note += fmt.Sprintf(", so these series cover only %s to %s",
+			time.Unix(stats.FirstTs, 0).UTC().Format(layout), time.Unix(stats.LastTs, 0).UTC().Format(layout))
+		if startMs > 0 && endMs > 0 {
+			note += fmt.Sprintf(" of the requested %s to %s", time.UnixMilli(startMs).UTC().Format(layout), time.UnixMilli(endMs).UTC().Format(layout))
+		}
+	}
+	return note + ". Values outside that span were not read: narrow the filters (one entity, fewer fields) or shorten the window before reporting peaks, averages or trends for the whole window."
+}
+
+// esMetricsDefaultSize is how many raw documents a metric query reads when it
+// does not set a size.
+const esMetricsDefaultSize = 10000
+
+// esRejectedDefaultSort reports whether a failed search carried the default
+// sort and Elasticsearch's error points at sorting (a time field mapped as text,
+// or date vs date_nanos across indices).
+func esRejectedDefaultSort(body map[string]any, err error) bool {
+	if err == nil {
+		return false
+	}
+	sortSpec, ok := body["sort"]
+	if !ok || !reflect.DeepEqual(sortSpec, esNewestFirstSort()) {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return err == errDefaultSortRejected || strings.Contains(msg, "sort") || strings.Contains(msg, "fielddata")
+}
+
+var errDefaultSortRejected = errors.New("shard failed on the default sort")
+
+// esShardFailures reads _shards from a search response: how many failed of how
+// many, and the first failure's reason.
+func esShardFailures(raw string) (failed, total int, reason string) {
+	var probe struct {
+		Shards struct {
+			Total    int `json:"total"`
+			Failed   int `json:"failed"`
+			Failures []struct {
+				Reason any `json:"reason"` // an object with a reason, or a plain string
+			} `json:"failures"`
+		} `json:"_shards"`
+	}
+	if err := json.Unmarshal([]byte(raw), &probe); err != nil {
+		return 0, 0, ""
+	}
+	if len(probe.Shards.Failures) > 0 {
+		switch r := probe.Shards.Failures[0].Reason.(type) {
+		case string:
+			reason = r
+		case map[string]any:
+			reason, _ = r["reason"].(string)
+		}
+	}
+	return probe.Shards.Failed, probe.Shards.Total, reason
+}
+
+// esShardsRejectedDefaultSort: the search succeeded but some shard failed on
+// the default sort (e.g. "match_only_text fields do not support sorting").
+func esShardsRejectedDefaultSort(body map[string]any, bodyBytes []byte) bool {
+	failed, _, reason := esShardFailures(string(bodyBytes))
+	return failed > 0 && esRejectedDefaultSort(body, errors.New(reason))
+}
+
+// esShardFailureNote says when some shards failed: Elasticsearch still answers
+// 200 with the other shards' documents, which otherwise read as the whole answer.
+func esShardFailureNote(raw string) string {
+	failed, total, reason := esShardFailures(raw)
+	if failed == 0 {
+		return ""
+	}
+	if reason != "" {
+		reason = " (" + reason + ")"
+	}
+	return fmt.Sprintf("%d of %d shards failed%s, so these results are partial: documents on the failed shards were not read.", failed, total, reason)
 }
