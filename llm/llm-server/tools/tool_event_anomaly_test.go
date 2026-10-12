@@ -82,7 +82,7 @@ func TestBuildEventEvidencePreview_AnomalyMetricCardsAndTraces(t *testing.T) {
 	assert.True(t, strings.HasPrefix(preview, "Key facts:\nanomaly_detection:\n  Latency anomaly from the anomaly detector"), preview)
 	assert.Contains(t, preview, "  [0] CPU Metric: 1 of 1 series with data, unit cores\n")
 	assert.Contains(t, preview, "  [1] LATENCY Metric: no data\n")
-	assert.Contains(t, preview, "traces: 2 spans in .traces.data.data[]; Duration is in nanoseconds; slowest: 5103.8 ms request to relay-server POST /request; 0.4 ms query UPDATE workflows SET status = $1;\n")
+	assert.Contains(t, preview, "traces: 2 spans in .traces.data.data[]; Duration is in nanoseconds, stored as strings (convert before sorting); slowest: 5103.8 ms request to relay-server POST /request; 0.4 ms query UPDATE workflows SET status = $1;\n")
 }
 
 // The shape replaces exploring the file: which keys hold data and in what form,
@@ -102,7 +102,7 @@ func TestEventEvidenceShape(t *testing.T) {
 	assert.Contains(t, shape, "; traces (57 bytes).") // a decoded object: no second decode
 	assert.Contains(t, shape, "Empty, do not read: log_data, pod_metrics,")
 	assert.Contains(t, shape, "  [0] LATENCY Metric: no data\n")
-	assert.Contains(t, shape, "traces: 1 spans in .traces.data.data[]; Duration is in nanoseconds")
+	assert.Contains(t, shape, "traces: 1 spans in .traces.data.data[]; Duration is in nanoseconds, stored as strings")
 }
 
 // Every others entry's own title is just its format, so the shape names each
@@ -136,4 +136,34 @@ func TestAnomalyCurrentLabel(t *testing.T) {
 	assert.Equal(t, "1.62", anomalyCurrentLabel(map[string]any{"anomaly_current": "1.62"}))
 	assert.Equal(t, "", anomalyCurrentLabel(nil))
 	assert.Equal(t, "", anomalyCurrentLabel("not json"))
+}
+
+// The run that motivated this: the detector's series ended before the window and
+// the LATENCY card, which queried the window, was empty. The summary now opens
+// by saying the anomaly is unconfirmed instead of leaving the agent to connect them.
+func TestProcessRowWithMessages_AnomalyUnconfirmedInWindow(t *testing.T) {
+	row := buildEvidencesRow(t, []map[string]any{
+		{
+			"anomaly_type":  "Latency",
+			"is_anomaly":    true,
+			"current_value": 7.24,
+			"reference_value": map[string]any{
+				"trigger_threshold_max": 0.5,
+				"evaluation_period":     60,
+				"end_time":              "2026-10-11T17:00:00Z",
+				"data":                  []any{map[string]any{"timestamp": "2026-10-09 01:32:00", "data": 7.24, "anomaly": true}},
+			},
+		},
+		{
+			"type":            "prometheus",
+			"data":            map[string]any{"series_list_result": []any{}},
+			"additional_info": map[string]any{"title": "LATENCY Metric"},
+		},
+	})
+	ev := processedEvidence(t, EventsExecuteTool{}.processRowWithMessages(row, 0, 1, nil))
+
+	require.NotNil(t, ev.AnomalyDetection)
+	require.NotNil(t, ev.AnomalyDetection.WindowCardHasData)
+	assert.False(t, *ev.AnomalyDetection.WindowCardHasData)
+	assert.True(t, strings.HasPrefix(ev.AnomalyDetection.Render(), "Unconfirmed: no data in the evaluation window supports this anomaly."), ev.AnomalyDetection.Render())
 }

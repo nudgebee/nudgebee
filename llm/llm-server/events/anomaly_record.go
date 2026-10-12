@@ -47,28 +47,32 @@ const (
 // threshold and the baseline it was compared against, and when the flagged
 // points are. The raw series it came from (often ~1,600 points) is left out.
 type AnomalySummary struct {
-	AnomalyType             string             `json:"anomaly_type"`
-	Metric                  string             `json:"metric,omitempty"`
-	MetricDescription       string             `json:"metric_description,omitempty"`
-	MetricCard              string             `json:"metric_card,omitempty"`
-	Unit                    string             `json:"unit,omitempty"`
-	CurrentValue            *float64           `json:"current_value,omitempty"`
-	ReportedValueAt         string             `json:"reported_value_at,omitempty"`
-	EvaluatedAt             string             `json:"evaluated_at,omitempty"`
-	TriggerThreshold        *float64           `json:"trigger_threshold,omitempty"`
-	EvaluationWindowMinutes *float64           `json:"evaluation_window_minutes,omitempty"`
-	EvaluationWindow        string             `json:"evaluation_window,omitempty"`
-	SeriesStart             string             `json:"series_start,omitempty"`
-	SeriesEnd               string             `json:"series_end,omitempty"`
-	SeriesEndsBeforeWindow  bool               `json:"series_ends_before_window,omitempty"`
-	TrainingWindow          string             `json:"training_window,omitempty"`
-	Baseline                map[string]float64 `json:"baseline,omitempty"`
-	AnomalousPoints         int                `json:"anomalous_points"`
-	FirstAnomalousAt        string             `json:"first_anomalous_at,omitempty"`
-	LastAnomalousAt         string             `json:"last_anomalous_at,omitempty"`
-	PeakValue               *float64           `json:"peak_value,omitempty"`
-	PeakAt                  string             `json:"peak_at,omitempty"`
-	Insights                []string           `json:"insights,omitempty"`
+	AnomalyType             string   `json:"anomaly_type"`
+	Metric                  string   `json:"metric,omitempty"`
+	MetricDescription       string   `json:"metric_description,omitempty"`
+	MetricCard              string   `json:"metric_card,omitempty"`
+	Unit                    string   `json:"unit,omitempty"`
+	CurrentValue            *float64 `json:"current_value,omitempty"`
+	ReportedValueAt         string   `json:"reported_value_at,omitempty"`
+	EvaluatedAt             string   `json:"evaluated_at,omitempty"`
+	TriggerThreshold        *float64 `json:"trigger_threshold,omitempty"`
+	EvaluationWindowMinutes *float64 `json:"evaluation_window_minutes,omitempty"`
+	EvaluationWindow        string   `json:"evaluation_window,omitempty"`
+	SeriesStart             string   `json:"series_start,omitempty"`
+	SeriesEnd               string   `json:"series_end,omitempty"`
+	SeriesEndsBeforeWindow  bool     `json:"series_ends_before_window,omitempty"`
+	// WindowCardHasData says whether the metric card of the same metric, which
+	// queried the evaluation window when the event was created, holds data. Nil
+	// when the event has no such card.
+	WindowCardHasData *bool              `json:"window_card_has_data,omitempty"`
+	TrainingWindow    string             `json:"training_window,omitempty"`
+	Baseline          map[string]float64 `json:"baseline,omitempty"`
+	AnomalousPoints   int                `json:"anomalous_points"`
+	FirstAnomalousAt  string             `json:"first_anomalous_at,omitempty"`
+	LastAnomalousAt   string             `json:"last_anomalous_at,omitempty"`
+	PeakValue         *float64           `json:"peak_value,omitempty"`
+	PeakAt            string             `json:"peak_at,omitempty"`
+	Insights          []string           `json:"insights,omitempty"`
 	// LabelValue is the event's anomaly_current label when it does not match the
 	// record's reported value; the two can come from different detector runs.
 	LabelValue string `json:"label_value,omitempty"`
@@ -204,6 +208,11 @@ func (s AnomalySummary) Render() string {
 		return out
 	}
 
+	// Lead with it: stated only further down, an investigation still took the
+	// stale reported value for the current symptom.
+	if s.SeriesEndsBeforeWindow && s.WindowCardHasData != nil && !*s.WindowCardHasData {
+		fmt.Fprintf(&b, "Unconfirmed: no data in the evaluation window supports this anomaly. The detector's stored series ends before the window, and the %s card, which queried the window, returned no data.\n", s.MetricCard)
+	}
 	fmt.Fprintf(&b, "%s anomaly from the anomaly detector", s.AnomalyType)
 	if s.Metric != "" {
 		fmt.Fprintf(&b, ", measured as %s", s.MetricDescription)
@@ -267,6 +276,9 @@ func (s AnomalySummary) Render() string {
 		fmt.Fprintf(&b, "Stored series: %s to %s.", s.SeriesStart, s.SeriesEnd)
 		if s.SeriesEndsBeforeWindow {
 			b.WriteString(" It ends before the evaluation window, so nothing stored confirms a value in that window: the reported value and the flagged points below are from earlier.")
+			if s.WindowCardHasData != nil && *s.WindowCardHasData {
+				fmt.Fprintf(&b, " The %s card has data for the window; the current value is there.", s.MetricCard)
+			}
 		}
 		b.WriteString("\n")
 	}
@@ -295,6 +307,58 @@ func parseSeriesTime(ts string) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+// NoteWindowCard records whether the event's metric card for the same metric
+// holds any data. That card queried the evaluation window, so with the detector's
+// series ending earlier it is the only evidence of the window.
+func (s *AnomalySummary) NoteWindowCard(cards []InvestigateDataInsight) {
+	if s.MetricCard == "" {
+		return
+	}
+	seen, has := false, false
+	for _, c := range cards {
+		if title, _ := c.AdditionalInfo["title"].(string); title != s.MetricCard {
+			continue
+		}
+		// A card that cannot be read (an error, a cut payload) says nothing
+		// about the window; only a readable result counts, and any one with
+		// data is enough.
+		if h, readable := cardHasData(c.Data); readable {
+			seen, has = true, has || h
+		}
+	}
+	if seen {
+		s.WindowCardHasData = &has
+	}
+}
+
+// cardHasData reports whether a metric card's series hold any finite number, and
+// whether the card could be read as a query result at all. Data is the decoded
+// card or its JSON text.
+func cardHasData(data any) (has, readable bool) {
+	m, ok := data.(map[string]any)
+	if !ok {
+		str, isStr := data.(string)
+		if !isStr || json.Unmarshal([]byte(str), &m) != nil {
+			return false, false
+		}
+	}
+	raw, present := m["series_list_result"]
+	if !present {
+		return false, false
+	}
+	series, _ := raw.([]any)
+	for _, sr := range series {
+		sm, _ := sr.(map[string]any)
+		values, _ := sm["values"].([]any)
+		for _, v := range values {
+			if f, ok := toFloat(v); ok && !math.IsNaN(f) && !math.IsInf(f, 0) {
+				return true, true
+			}
+		}
+	}
+	return false, true
 }
 
 // SetLabelValue records the event's anomaly_current label when it disagrees with

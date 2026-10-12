@@ -1367,6 +1367,12 @@ func previewTraces(traces events.InvestigateDataInsight) string {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "traces: %d spans in .traces.data.data[]; Duration is in nanoseconds", len(spans))
+	// An agent sorting on it hit a TypeError: the values arrive as strings.
+	if first, _ := spans[0].(map[string]any); first != nil {
+		if _, isStr := first["Duration"].(string); isStr {
+			b.WriteString(", stored as strings (convert before sorting)")
+		}
+	}
 	if len(all) > 0 {
 		b.WriteString("; slowest:")
 		for i, s := range all {

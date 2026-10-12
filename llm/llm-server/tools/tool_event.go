@@ -778,6 +778,10 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 			}
 		}
 
+		if investigateData.AnomalyDetection != nil {
+			investigateData.AnomalyDetection.NoteWindowCard(investigateData.MetricsData)
+		}
+
 		// Per-entry severity extraction (formatErrorLogLine) already filled
 		// ErrorLogData when the evidence carried structured severities; only
 		// fall back to mining the raw text when it did not.

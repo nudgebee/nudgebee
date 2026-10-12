@@ -240,3 +240,71 @@ func TestSetLabelValue(t *testing.T) {
 	assert.Equal(t, "1.62", s.LabelValue)
 	assert.Contains(t, s.Render(), "The event's anomaly_current label is 1.62, which does not match the reported value above.")
 }
+
+func TestNoteWindowCard(t *testing.T) {
+	stale := func() AnomalySummary {
+		ref := latencyReference()
+		ref["end_time"] = "2026-10-11T03:00:00Z"
+		ref["data"] = []any{map[string]any{"timestamp": "2026-10-08 09:06:00", "data": 4.75, "anomaly": true}}
+		s, ok := SummarizeAnomalyRecord(decodeEvidence(t, anomalyRecordJSON(t, "Latency", ref)))
+		require.True(t, ok)
+		require.True(t, s.SeriesEndsBeforeWindow)
+		return s
+	}
+	card := func(values ...any) InvestigateDataInsight {
+		return InvestigateDataInsight{AdditionalInfo: map[string]any{"title": "LATENCY Metric"}, Data: map[string]any{
+			"series_list_result": []any{map[string]any{"values": values}},
+		}}
+	}
+	other := InvestigateDataInsight{AdditionalInfo: map[string]any{"title": "CPU Metric"}, Data: map[string]any{
+		"series_list_result": []any{map[string]any{"values": []any{0.2}}},
+	}}
+
+	t.Run("empty card: unconfirmed, first line", func(t *testing.T) {
+		s := stale()
+		s.NoteWindowCard([]InvestigateDataInsight{other, card("NaN", nil)})
+		require.NotNil(t, s.WindowCardHasData)
+		assert.True(t, strings.HasPrefix(s.Render(), "Unconfirmed: no data in the evaluation window supports this anomaly. The detector's stored series ends before the window, and the LATENCY Metric card, which queried the window, returned no data.\n"))
+	})
+	t.Run("card with data: points at it", func(t *testing.T) {
+		s := stale()
+		s.NoteWindowCard([]InvestigateDataInsight{card("NaN", 0.31)})
+		assert.NotContains(t, s.Render(), "Unconfirmed")
+		assert.Contains(t, s.Render(), "The LATENCY Metric card has data for the window; the current value is there.")
+	})
+	t.Run("card as JSON text", func(t *testing.T) {
+		s := stale()
+		s.NoteWindowCard([]InvestigateDataInsight{{AdditionalInfo: map[string]any{"title": "LATENCY Metric"}, Data: `{"series_list_result":[{"values":["0.4"]}]}`}})
+		require.NotNil(t, s.WindowCardHasData)
+		assert.True(t, *s.WindowCardHasData)
+	})
+	t.Run("unreadable card: nothing claimed", func(t *testing.T) {
+		s := stale()
+		s.NoteWindowCard([]InvestigateDataInsight{{AdditionalInfo: map[string]any{"title": "LATENCY Metric"}, Data: "error: query timed out"}})
+		assert.Nil(t, s.WindowCardHasData)
+	})
+	t.Run("duplicate cards: any with data counts", func(t *testing.T) {
+		s := stale()
+		s.NoteWindowCard([]InvestigateDataInsight{card("NaN"), card(0.3)})
+		require.NotNil(t, s.WindowCardHasData)
+		assert.True(t, *s.WindowCardHasData)
+	})
+	t.Run("only infinite values: no data", func(t *testing.T) {
+		s := stale()
+		s.NoteWindowCard([]InvestigateDataInsight{card("+Inf", "-Inf")})
+		require.NotNil(t, s.WindowCardHasData)
+		assert.False(t, *s.WindowCardHasData)
+	})
+	t.Run("no matching card: nothing claimed", func(t *testing.T) {
+		s := stale()
+		s.NoteWindowCard([]InvestigateDataInsight{other})
+		assert.Nil(t, s.WindowCardHasData)
+		assert.NotContains(t, s.Render(), "Unconfirmed")
+	})
+	t.Run("series covers the window: not unconfirmed even if the card is empty", func(t *testing.T) {
+		s, ok := SummarizeAnomalyRecord(decodeEvidence(t, anomalyRecordJSON(t, "Latency", latencyReference())))
+		require.True(t, ok)
+		s.NoteWindowCard([]InvestigateDataInsight{card("NaN")})
+		assert.NotContains(t, s.Render(), "Unconfirmed")
+	})
+}
