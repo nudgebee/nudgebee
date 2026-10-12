@@ -36,8 +36,20 @@ LOG = logging.getLogger(__name__)
 
 REFRESH_INTERVAL_SECONDS = 60
 FETCH_TIMEOUT_SECONDS = 5
+BRANDING_OVERRIDES_PATH = "/v1/branding/overrides"
 
 OverrideMap = Dict[str, Dict[str, Any]]
+
+
+class BrandingEndpointAbsent(Exception):
+    """services-server serves no /v1/branding/overrides.
+
+    Branding overrides are EE-only; an OSS services-server does not register the
+    route. That is the expected state of an OSS install, not a failure, so it is
+    logged once rather than warned about on every refresh.
+    """
+
+
 Fetcher = Callable[[], Awaitable[OverrideMap]]
 
 # Row `email` field -> URLSettings attribute. Values are validated by
@@ -142,6 +154,7 @@ class BrandingOverrideRefresher:
         self._fetch = fetch
         self._baseline = Branding.from_urls(urls)
         self._host = deployment_host(urls.base_url)
+        self._absent_logged = False
 
     @property
     def host(self) -> str:
@@ -159,10 +172,20 @@ class BrandingOverrideRefresher:
             overrides = await self._fetch()
             row = overrides.get(self._host) if isinstance(overrides, dict) else None
             branding = resolve_branding(self._baseline, row, self._urls.base_url)
+        except BrandingEndpointAbsent:
+            if not self._absent_logged:
+                LOG.info(
+                    "%s returned 404, so this deployment serves no branding overrides (expected on OSS); "
+                    "keeping the bundled branding",
+                    BRANDING_OVERRIDES_PATH,
+                )
+                self._absent_logged = True
+            return False
         except Exception as exc:  # noqa: BLE001 — any failure keeps the last good values
             LOG.warning("Branding override refresh failed; keeping current branding: %s", exc)
             return False
         branding.apply_to(self._urls)
+        self._absent_logged = False
         return True
 
     async def run(self, interval: float = REFRESH_INTERVAL_SECONDS) -> None:
@@ -176,15 +199,17 @@ class BrandingOverrideRefresher:
 
 
 async def fetch_overrides_from_services_server() -> OverrideMap:
-    url = settings.services.api_server.rstrip("/") + "/v1/branding/overrides"
+    url = settings.services.api_server.rstrip("/") + BRANDING_OVERRIDES_PATH
     headers = {"Accept": "application/json"}
     if settings.action_api_server_token:
         headers["X-ACTION-TOKEN"] = settings.action_api_server_token
     timeout = aiohttp.ClientTimeout(total=FETCH_TIMEOUT_SECONDS)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(url, headers=headers) as resp:
+            if resp.status == 404:
+                raise BrandingEndpointAbsent()
             if resp.status != 200:
-                raise RuntimeError(f"/v1/branding/overrides returned {resp.status}")
+                raise RuntimeError(f"{BRANDING_OVERRIDES_PATH} returned {resp.status}")
             body = await resp.json()
     overrides = body.get("overrides") if isinstance(body, dict) else None
     if not isinstance(overrides, dict):

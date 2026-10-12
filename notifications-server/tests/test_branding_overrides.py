@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from notifications_server.configs.branding_overrides import (
+    BrandingEndpointAbsent,
     BrandingOverrideRefresher,
     deployment_host,
     normalize_host,
@@ -136,6 +137,16 @@ def test_failed_refresh_keeps_last_good_branding():
     refresh(refresher)
     assert refresh(refresher) is False
     assert urls.branding_name == "Calsoft"
+
+
+def test_oss_services_server_without_the_endpoint_keeps_bundled_branding_and_logs_once(caplog):
+    urls = make_urls()
+    refresher = refresher_with(urls, [BrandingEndpointAbsent(), BrandingEndpointAbsent()])
+    with caplog.at_level("INFO", logger="notifications_server.configs.branding_overrides"):
+        assert refresh(refresher) is False
+        assert refresh(refresher) is False
+    assert urls.branding_name == "Nudgebee"
+    assert [r.levelname for r in caplog.records] == ["INFO"]
 
 
 def test_removing_the_row_restores_bundled_branding():

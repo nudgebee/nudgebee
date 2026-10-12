@@ -93,10 +93,13 @@ const nextConfig = {
   output: 'standalone',
   // Ensure actions.yaml/.graphql (used by /api/rpc + /api/graphql bypass) are
   // included in the standalone build — read at runtime via fs, so Next's
-  // tracer can't infer the dependency.
+  // tracer can't infer the dependency. The EE overlay (src/ee/actions.yaml)
+  // is listed too: loadRpcRoutes skips it silently when absent, so a missed
+  // trace would drop its actions without any error. OSS strips the file, and
+  // the entry then matches nothing.
   outputFileTracingIncludes: {
-    '/api/rpc': ['./src/lib/actions.yaml', './src/lib/actions.graphql'],
-    '/api/graphql': ['./src/lib/actions.yaml', './src/lib/actions.graphql'],
+    '/api/rpc': ['./src/lib/actions.yaml', './src/lib/actions.graphql', './src/ee/actions.yaml'],
+    '/api/graphql': ['./src/lib/actions.yaml', './src/lib/actions.graphql', './src/ee/actions.yaml'],
   },
   // Environment variables (safe for Turbopack)
   env: {

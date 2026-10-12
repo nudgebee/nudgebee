@@ -177,19 +177,6 @@ func handleApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logger
 		handleAccountAction(&actionPayload, c, tracer, meter, logger)
 	})
 
-	groupV2.POST("/branding", func(c *gin.Context) {
-		common.MetricsApiRequestsTotal(c.Request.Context(), "branding")
-		var actionPayload ActionRequest
-		err := c.ShouldBindJSON(&actionPayload)
-		if err != nil {
-			common.MetricsApiRequestsFailedTotal(c.Request.Context(), "branding", "invalid_json")
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-
-		handleBrandingAction(&actionPayload, c, tracer, meter, logger)
-	})
-
 	groupV2.POST("/tenant", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal(c.Request.Context(), "tenant")
 		var actionPayload ActionRequest
