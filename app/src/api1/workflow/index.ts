@@ -825,14 +825,16 @@ const apiWorkflow = {
         variables.next_page_token = nextPageToken;
       }
 
-      // Only add name if provided and valid (non-empty string)
-      if (name && name.trim() !== '') {
-        variables.name = name;
+      // Name and tags arrive as typed (search box, URL, saved filters). Trim them:
+      // a pasted space would be part of the substring match and find nothing.
+      const trimmedName = name?.trim();
+      if (trimmedName) {
+        variables.name = trimmedName;
       }
 
-      // Only add tags if provided and valid (non-empty string)
-      if (tags && tags.trim() !== '') {
-        variables.tags = tags;
+      const trimmedTags = tags?.trim();
+      if (trimmedTags) {
+        variables.tags = trimmedTags;
       }
 
       // Only add created_by if provided and valid (non-empty string)
