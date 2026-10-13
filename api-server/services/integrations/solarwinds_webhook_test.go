@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -450,4 +451,43 @@ func TestSolarWindsWebhook_RejectsUnrecognisedPayloads(t *testing.T) {
 			assert.Empty(t, events)
 		})
 	}
+}
+
+// The alert's id in SolarWinds is the only handle Nudgebee ever gets on the rule:
+// SolarWinds has no API that lists alerts, so an alert it has not seen fire cannot
+// be looked up. Every delivery carries it, so every delivery must record it.
+func TestSolarWindsWebhook_EventConfigCarriesTheUpstreamAlertId(t *testing.T) {
+	var payload SolarWindsWebhookPayload
+	require.NoError(t, json.Unmarshal([]byte(swMultiEntityFiring), &payload))
+
+	cfg := buildSolarWindsEventConfig(payload, "K8s node memory saturated",
+		"A node has averaged over 85% memory for 10 minutes.", "CRITICAL", swTestAccount)
+
+	assert.Equal(t, "aaaaaaaa-0000-0000-0000-000000000001", cfg.ExternalRuleID)
+	assert.Equal(t, IntegrationSolarWindsWebhook, cfg.Source)
+	assert.Equal(t, "K8s node memory saturated", cfg.Alert)
+	assert.Equal(t, "critical", cfg.Severity)
+	assert.Equal(t, "k8s.node.memory.utilization > 85", cfg.Expr)
+}
+
+// A payload with no alertDefinitionId must leave the field empty rather than
+// inventing one; upsertEventRule's COALESCE then keeps whatever is already stored.
+func TestSolarWindsWebhook_EventConfigLeavesTheIdEmptyWhenAbsent(t *testing.T) {
+	var payload SolarWindsWebhookPayload
+	require.NoError(t, json.Unmarshal([]byte(swPodFiring), &payload))
+	payload.AlertDefinitionID = ""
+
+	cfg := buildSolarWindsEventConfig(payload, "K8s pod restarting repeatedly", "d", "CRITICAL", swTestAccount)
+	assert.Empty(t, cfg.ExternalRuleID)
+}
+
+// Severity is lower-cased for the rule row, and an absent one must not produce a
+// blank severity the rule tables cannot render.
+func TestSolarWindsWebhook_EventConfigSeverityFallsBackToWarning(t *testing.T) {
+	var payload SolarWindsWebhookPayload
+	require.NoError(t, json.Unmarshal([]byte(swPodFiring), &payload))
+
+	cfg := buildSolarWindsEventConfig(payload, "t", "d", "", swTestAccount)
+	assert.Equal(t, "warning", cfg.Severity)
+	assert.Equal(t, "warning", cfg.Labels.Severity)
 }

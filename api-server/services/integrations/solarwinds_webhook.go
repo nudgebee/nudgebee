@@ -341,42 +341,7 @@ func (m SolarWindsWebhook) ProcessEventWebook(sc *security.RequestContext, setti
 					sc.GetLogger().Error("solarwinds_webhook: panic in CreateEventRule goroutine", "panic", r)
 				}
 			}()
-			severityLabel := strings.ToLower(severityStr)
-			if severityLabel == "" {
-				severityLabel = "warning"
-			}
-			runbook := ""
-			if payload.Runbook != nil {
-				runbook = *payload.Runbook
-			}
-			expr := payload.Condition
-			if expr == "" {
-				expr = payload.Query
-			}
-			eventReq := eventrule.EventConfig{
-				Annotations: struct {
-					Description string `json:"description"`
-					Summary     string `json:"summary"`
-					Runbook     string `json:"runbook"`
-				}{
-					Description: description,
-					Summary:     title,
-					Runbook:     runbook,
-				},
-				Expr: expr,
-				Labels: struct {
-					Severity string `json:"severity"`
-				}{Severity: severityLabel},
-				Alert:         title,
-				Duration:      "0",
-				AccountID:     accountId,
-				Source:        "solarwinds_webhook",
-				Category:      "alert",
-				Severity:      severityLabel,
-				Enabled:       true,
-				TriggerParams: []map[string]any{},
-				ActionParams:  []map[string]any{},
-			}
+			eventReq := buildSolarWindsEventConfig(payload, title, description, severityStr, accountId)
 			if _, err := eventrule.CreateEventRule(sc, eventReq); err != nil {
 				sc.GetLogger().Error("solarwinds_webhook: CreateEventRule failed", "error", err)
 			}
@@ -384,6 +349,51 @@ func (m SolarWindsWebhook) ProcessEventWebook(sc *security.RequestContext, setti
 	}
 
 	return webhookEvents, nil
+}
+
+// buildSolarWindsEventConfig assembles the event_rules upsert for one delivery, so
+// the alert's name is selectable in the rule-management UI. Pure, so the shape can
+// be asserted without running the goroutine that sends it.
+func buildSolarWindsEventConfig(payload SolarWindsWebhookPayload, title, description, severityStr, accountId string) eventrule.EventConfig {
+	severityLabel := strings.ToLower(severityStr)
+	if severityLabel == "" {
+		severityLabel = "warning"
+	}
+	runbook := ""
+	if payload.Runbook != nil {
+		runbook = *payload.Runbook
+	}
+	expr := solarWindsConditionKey(payload)
+
+	return eventrule.EventConfig{
+		Annotations: struct {
+			Description string `json:"description"`
+			Summary     string `json:"summary"`
+			Runbook     string `json:"runbook"`
+		}{
+			Description: description,
+			Summary:     title,
+			Runbook:     runbook,
+		},
+		Expr: expr,
+		Labels: struct {
+			Severity string `json:"severity"`
+		}{Severity: severityLabel},
+		Alert:     title,
+		Duration:  "0",
+		AccountID: accountId,
+		Source:    IntegrationSolarWindsWebhook,
+		Category:  "alert",
+		Severity:  severityLabel,
+		Enabled:   true,
+		// The alert's own id in SolarWinds, which every delivery carries on both the
+		// firing and the cleared payload. Recording it is the only way a SWO rule is
+		// ever identified: SolarWinds has no API that lists alerts, so an alert
+		// Nudgebee has not seen fire cannot be looked up at all.
+		ExternalRuleID: payload.AlertDefinitionID,
+		TriggerParams:  []map[string]any{},
+		ActionParams:   []map[string]any{},
+	}
 }
 
 // solarWindsEventParts is the per-subject data the payload families compute

@@ -174,7 +174,11 @@ func upsertEventRule(dbms *database.DatabaseManager, annotations any, labels any
 			category = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN EXCLUDED.category ELSE event_rules.category END,
 			metric_provider = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN EXCLUDED.metric_provider ELSE event_rules.metric_provider END,
 			metric_provider_source = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN EXCLUDED.metric_provider_source ELSE event_rules.metric_provider_source END,
-			external_rule_id = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN EXCLUDED.external_rule_id ELSE event_rules.external_rule_id END,
+			-- COALESCE so an incoming write that carries no id keeps the one already
+			-- stored. Without it, any firing whose payload has no upstream id would
+			-- NULL the column on a webhook-sourced row (nilIfEmpty makes it NULL) and
+			-- silently un-manage a rule that an edit or disable could otherwise reach.
+			external_rule_id = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN COALESCE(EXCLUDED.external_rule_id, event_rules.external_rule_id) ELSE event_rules.external_rule_id END,
 			-- provider_config is merged, never replaced: other writers own keys in it (the
 			-- k8s-collector sync stores managed_by, which decides whether a Prometheus rule
 			-- may be changed), and a UI edit sends no provider_config at all.
@@ -461,7 +465,10 @@ func CreateEventRule(context *security.RequestContext, eventRequest EventConfig)
 
 	normalizeEventSource(&eventRequest)
 
-	externalRuleId := ""
+	// Seeded from the request so a parser that already knows the upstream id can
+	// record it; the external-provider branch below overwrites it with whatever
+	// the provider answers, so the providers that mint their own ids are unaffected.
+	externalRuleId := eventRequest.ExternalRuleID
 
 	// 1. Prometheus: sync via relay (existing path)
 	if eventRequest.Source == agentEventSourceName {
