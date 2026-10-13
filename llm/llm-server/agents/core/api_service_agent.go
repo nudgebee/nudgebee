@@ -1029,6 +1029,11 @@ func ListAgentsForTenant(context *security.RequestContext, allowOnlyEnabled bool
 	customAgents := ListCustomAgentsForTenant(context, allowOnlyEnabled)
 
 	for agent := range nbSystemAgents {
+		// Same alias skip as ListAgents: without it an agent registered with
+		// N aliases is listed N+1 times on the "All accounts" view.
+		if IsSystemAgentAlias(agent) {
+			continue
+		}
 		nbAgent, err := getSystemAgent(agent, "")
 		if err != nil {
 			agents = append(agents, AgentDto{

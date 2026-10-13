@@ -14,13 +14,12 @@ const (
 )
 
 func init() {
-	core.RegisterNBAgentFactoryAndTool(AgentDatadogOrchestratorName, func(accountId string) (core.NBAgent, error) {
+	// Legacy name "datadog_debug" is an alias so stored history and
+	// @datadog_debug invocations still resolve, but the agent list shows one
+	// entry and the legacy name is not offered as a second tool.
+	core.RegisterNBAgentFactoryAndToolWithAliases(AgentDatadogOrchestratorName, func(accountId string) (core.NBAgent, error) {
 		return NewDatadogOrchestratorAgent(accountId), nil
-	}, "An agent specialized in troubleshooting and debugging issues using Datadog Observability tool", "Provide a natural language query describing the Issue to be debugged.", "Markdown response with debugging steps and findings.")
-	// Legacy-name alias so stored history / @datadog_debug invocations still resolve.
-	core.RegisterNBAgentFactory("datadog_debug", func(accountId string) (core.NBAgent, error) {
-		return NewDatadogOrchestratorAgent(accountId), nil
-	})
+	}, "An agent specialized in troubleshooting and debugging issues using Datadog Observability tool", "Provide a natural language query describing the Issue to be debugged.", "Markdown response with debugging steps and findings.", "datadog_debug")
 }
 
 type DatadogOrchestratorAgent struct {
