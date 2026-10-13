@@ -18,3 +18,9 @@ func ClearMCPIntegrationToolCache(accountId string) {
 func GetMCPIntegrationToolCache(accountId string) ([]NBTool, bool) {
 	return mcpIntegrationToolCacheInstance.get(accountId)
 }
+
+// NewMCPIntegrationToolForTest returns an MCP integration tool of the given
+// integration, for tests outside this package.
+func NewMCPIntegrationToolForTest(integrationID, toolName string) NBTool {
+	return mcpIntegrationTool{config: mcpIntegrationConfig{IntegrationID: integrationID}, toolName: toolName}
+}

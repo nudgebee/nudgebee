@@ -1894,6 +1894,8 @@ func UpdateIntegrationStatusByPk(ctx *security.RequestContext, request Integrati
 		return IntegrationUpdateStatusByPkResponse{}, common.ErrorBadRequest("Integration not found")
 	}
 
+	// A status change resets integrations.health in the database (trigger,
+	// V1025, #40994).
 	_, err = manager.Db.Exec("UPDATE integrations SET status = $1 WHERE id = $2", request.Status, request.Id)
 	if err != nil {
 		ctx.GetLogger().Error("Error updating integration status", "error", err)

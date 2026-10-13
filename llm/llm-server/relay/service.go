@@ -74,9 +74,16 @@ func Execute(ctx context.Context, body ActionExecuteBody) (map[string]any, error
 
 	resp, err := common.HttpPost(fmt.Sprintf("%s/request", config.Config.RelayServerEndpoint), common.HttpWithContext(ctx), common.HttpWithHeaders(headers), common.HttpWithJsonBody(relayRequest), common.HttpWithTimeout(timeout))
 
+	logFailure := slog.Error
+	if body.Quiet {
+		logFailure = slog.Debug
+	}
+
 	if err != nil {
-		slog.Error("unable to access relay server", "error", err)
-		return data, fmt.Errorf("unable to access relay server %v", err)
+		logFailure("unable to access relay server", "error", err)
+		// %w keeps the transport error (timeout, dial failure, cancellation)
+		// matchable with errors.Is / errors.As.
+		return data, fmt.Errorf("unable to access relay server %w", err)
 	}
 
 	defer func() {
@@ -90,8 +97,8 @@ func Execute(ctx context.Context, body ActionExecuteBody) (map[string]any, error
 	}
 
 	if resp.StatusCode != 200 {
-		slog.Error("failed to fetch data from relay", "status", resp.StatusCode, "data", string(jsonBody))
-		return data, fmt.Errorf("relay error: %s", extractRelayErrorMessage(jsonBody, resp.Status))
+		logFailure("failed to fetch data from relay", "status", resp.StatusCode, "data", string(jsonBody))
+		return data, &StatusError{Code: resp.StatusCode, Message: extractRelayErrorMessage(jsonBody, resp.Status)}
 	}
 
 	responseData := map[string]any{}
@@ -111,6 +118,19 @@ func Execute(ctx context.Context, body ActionExecuteBody) (map[string]any, error
 	}
 
 	return responseData, err
+}
+
+// StatusError is a non-200 reply from the relay. Its text is the one Execute
+// has always returned ("relay error: <message>"), so callers matching on it are
+// unaffected; Code lets a caller tell 502 (upstream unreachable), 503 (agent not
+// connected) and 504 (timeout waiting for the agent) apart without parsing it.
+type StatusError struct {
+	Code    int
+	Message string
+}
+
+func (e *StatusError) Error() string {
+	return "relay error: " + e.Message
 }
 
 // extractRelayErrorMessage parses the relay's JSON error body to get the human-readable

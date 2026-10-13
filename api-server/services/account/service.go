@@ -2891,6 +2891,8 @@ func disableLLMIntegrations(tx *sql.Tx, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
+	// A status change resets integrations.health in the database (trigger,
+	// V1025, #40994).
 	if _, err := tx.Exec(`UPDATE integrations SET status = 'disabled', updated_at = now() WHERE id = ANY($1::uuid[])`, pq.Array(ids)); err != nil {
 		return fmt.Errorf("account: failed to disable LLM integrations left with no accounts: %w", err)
 	}

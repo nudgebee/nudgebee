@@ -15,18 +15,15 @@ import (
 )
 
 // mcpIntegrationToolCache caches MCP tools discovered from integrations (30min
-// TTL). A list in which an integration's discovery failed is kept for less: see
-// mcpDiscoveryRetryAfter.
+// TTL). A list holding an integration's placeholder is kept only until that
+// integration's next retry is due (mcpUnavailableTool.retryAfter), which comes
+// from its stored health so every pod follows the same clock (#40994).
 type mcpIntegrationToolCache struct {
 	mutex sync.RWMutex
 	data  map[string]struct {
 		tools  []NBTool
 		expiry time.Time
 	}
-	// failingSince records, per account and integration ID, when the current run
-	// of failed discoveries began. An integration is dropped from it as soon as
-	// one discovery succeeds.
-	failingSince map[string]map[string]time.Time
 }
 
 var mcpIntegrationToolCacheInstance = &mcpIntegrationToolCache{
@@ -34,7 +31,6 @@ var mcpIntegrationToolCacheInstance = &mcpIntegrationToolCache{
 		tools  []NBTool
 		expiry time.Time
 	}),
-	failingSince: make(map[string]map[string]time.Time),
 }
 
 // mcpDiscoveryRetryMin is how soon a failed discovery is tried again. An MCP
@@ -159,51 +155,84 @@ func (c *mcpIntegrationToolCache) get(accountId string) ([]NBTool, bool) {
 }
 
 // set stores the account's tool list and returns how long it will be kept:
-// defaultCacheTTL, or less when the list holds the placeholder of an
-// integration whose discovery failed (mcpDiscoveryRetryAfter).
+// defaultCacheTTL, or less when the list holds an integration's placeholder, which
+// is kept until that integration's retry is due.
 func (c *mcpIntegrationToolCache) set(accountId string, tools []NBTool) time.Duration {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	now := time.Now()
 	ttl := defaultCacheTTL
-	var failingSince map[string]time.Time
 	for _, t := range tools {
 		unavailable, ok := t.(mcpUnavailableTool)
 		if !ok {
 			continue
 		}
-		since, known := c.failingSince[accountId][unavailable.integrationID]
-		if !known {
-			since = now
+		retry := unavailable.retryAfter
+		if retry <= 0 {
+			retry = mcpDiscoveryRetryMin
 		}
-		if failingSince == nil {
-			failingSince = make(map[string]time.Time)
-		}
-		failingSince[unavailable.integrationID] = since
-		ttl = min(ttl, mcpDiscoveryRetryAfter(now.Sub(since)))
-	}
-	// Replacing the account's map, rather than updating it, also forgets
-	// integrations that recovered or were removed.
-	if failingSince == nil {
-		delete(c.failingSince, accountId)
-	} else {
-		c.failingSince[accountId] = failingSince
+		ttl = min(ttl, retry)
 	}
 	c.data[accountId] = struct {
 		tools  []NBTool
 		expiry time.Time
 	}{
 		tools:  tools,
-		expiry: now.Add(ttl),
+		expiry: time.Now().Add(ttl),
 	}
 	return ttl
+}
+
+// shorten makes the account's cached list expire within d, if it would
+// otherwise be kept longer.
+func (c *mcpIntegrationToolCache) shorten(accountId string, d time.Duration) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	item, ok := c.data[accountId]
+	if !ok {
+		return
+	}
+	if limit := time.Now().Add(d); item.expiry.After(limit) {
+		item.expiry = limit
+		c.data[accountId] = item
+	}
+}
+
+// deleteIntegration drops every cached list holding a tool or the placeholder of
+// the integration, restricted to accountIds when that is not empty.
+func (c *mcpIntegrationToolCache) deleteIntegration(integrationID string, accountIds []string) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	only := make(map[string]bool, len(accountIds))
+	for _, id := range accountIds {
+		only[id] = true
+	}
+	for accountId, item := range c.data {
+		if len(only) > 0 && !only[accountId] {
+			continue
+		}
+		for _, t := range item.tools {
+			if mcpToolIntegrationID(t) == integrationID {
+				delete(c.data, accountId)
+				break
+			}
+		}
+	}
+}
+
+func mcpToolIntegrationID(t NBTool) string {
+	switch v := t.(type) {
+	case mcpIntegrationTool:
+		return v.config.IntegrationID
+	case mcpUnavailableTool:
+		return v.integrationID
+	}
+	return ""
 }
 
 func (c *mcpIntegrationToolCache) delete(accountId string) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	delete(c.data, accountId)
-	delete(c.failingSince, accountId)
 }
 
 // mcpIntegrationConfig holds resolved config for an MCP integration.
@@ -328,8 +357,18 @@ func (m mcpIntegrationTool) Call(ctx NbToolContext, input NBToolCallRequest) (NB
 	}
 
 	response, err := executeMCPViaRelay(ctx.GoContext(), ctx.AccountId, m.config, "tools/call", callParams, sessionKey, time.Duration(config.Config.LlmServerMCPExecutionTimeoutSeconds)*time.Second)
+	// Record what the call says about the server (#40994). A call that timed
+	// out or got a 5xx starts a probe rather than counting as a failure: a slow
+	// or broken tool on a live server is not an outage.
+	outcome := classifyMCPOutcome(err, false)
+	if outcome.kind == mcpOutcomeSuspect {
+		probeSuspectMCPIntegration(ctx.AccountId, m.config)
+	} else {
+		recordMCPHealth(ctx.AccountId, m.config, outcome, false)
+	}
 	if err != nil {
-		log.Error("mcp-integration: tool call failed", "error", err)
+		// Debug: the integration's health logs once when it changes.
+		log.Debug("mcp-integration: tool call failed", "error", err)
 		// Emit the failure as JSON so the tool response is consistently JSON
 		// whether the call succeeds (MCP server JSON-RPC) or fails. This is an
 		// integration-layer error (not the MCP server's), so it is labelled as
@@ -527,6 +566,9 @@ func executeMCPViaRelay(ctx context.Context, accountID string, cfg mcpIntegratio
 		AgentType:    agentType,
 		NoAgent:      noAgent,
 		Timeout:      duration,
+		// Failures are recorded as the integration's health, which logs once
+		// when it changes; the relay client need not log every retry.
+		Quiet: true,
 	}
 
 	response, err := relay.Execute(ctx, body)
@@ -552,7 +594,7 @@ func parseMCPRelayResponse(response map[string]any) (string, error) {
 
 	statusCode, _ := response["status_code"].(float64)
 	if statusCode >= 400 {
-		return "", fmt.Errorf("MCP server returned status %d: %s", int(statusCode), dataStr)
+		return "", &mcpStatusError{Code: int(statusCode), Body: dataStr}
 	}
 
 	return dataStr, nil
@@ -628,7 +670,30 @@ func loadMCPIntegrationToolsFromDB(accountId string) []NBTool {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 10)
 
+	// An integration that is down is not discovered again until its retry is
+	// due on the shared clock in its stored health (#40994). Without the
+	// stored health every integration is discovered, as before.
+	ids := make([]string, 0, len(configs))
 	for _, cfg := range configs {
+		ids = append(ids, cfg.IntegrationID)
+	}
+	stored, err := mcpHealthStoreInstance.load(ids)
+	if err != nil {
+		slog.Warn("mcp-integration: unable to read integration health", "error", err, "account_id", accountId)
+	}
+	now := time.Now()
+
+	for _, cfg := range configs {
+		if entry, ok := stored[cfg.IntegrationID][mcpHealthScope(cfg, accountId)]; ok {
+			if wait, skip := mcpHealthSkip(entry, now); skip {
+				placeholder := newMCPUnavailableTool(cfg, entry.Status)
+				placeholder.retryAfter = wait
+				mu.Lock()
+				allTools = append(allTools, placeholder)
+				mu.Unlock()
+				continue
+			}
+		}
 		wg.Add(1)
 		go func(c mcpIntegrationConfig) {
 			defer wg.Done()
@@ -779,10 +844,25 @@ type mcpUnavailableTool struct {
 	integrationID   string
 	integrationName string
 	reason          string
+	// retryAfter is how long the account's list may keep this placeholder
+	// before the integration is tried again; zero means mcpDiscoveryRetryMin.
+	retryAfter time.Duration
 }
 
 func newMCPUnavailableTool(cfg mcpIntegrationConfig, reason string) mcpUnavailableTool {
 	return mcpUnavailableTool{integrationID: cfg.IntegrationID, integrationName: cfg.IntegrationName, reason: reason}
+}
+
+// unavailableAfterFailure is the placeholder for a discovery that just failed,
+// kept until the retry its stored health calls for. Without a stored verdict
+// (the health could not be written, or the relay itself was unreachable) it is
+// retried after mcpDiscoveryRetryMin.
+func unavailableAfterFailure(cfg mcpIntegrationConfig, reason string, health mcpHealthEntry, known bool) mcpUnavailableTool {
+	t := newMCPUnavailableTool(cfg, reason)
+	if known && health.FailingSince != nil {
+		t.retryAfter = mcpDiscoveryRetryAfter(time.Since(*health.FailingSince))
+	}
+	return t
 }
 
 func (t mcpUnavailableTool) Name() string {
@@ -823,10 +903,13 @@ func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 	if err != nil {
 		toolCircuitBreakerInstance.RecordFailure(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
 		common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "failure")
-		log.Error("mcp-integration: failed to discover tools", "error", err)
+		// Debug, as are the two failures below: the integration's health logs
+		// once when it changes (#40994), not on every retry.
+		log.Debug("mcp-integration: failed to discover tools", "error", err)
+		health, known := recordMCPHealth(accountId, cfg, classifyMCPOutcome(err, true), false)
 		// Keep the integration visible (and consistently reported) instead of
 		// silently vanishing, which makes the agent improvise. See A2 fix.
-		return []NBTool{newMCPUnavailableTool(cfg, classifyMCPError(err))}
+		return []NBTool{unavailableAfterFailure(cfg, classifyMCPError(err), health, known)}
 	}
 
 	// Parse JSON-RPC response
@@ -857,15 +940,18 @@ func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 	if err := json.Unmarshal([]byte(response), &rpcResp); err != nil {
 		toolCircuitBreakerInstance.RecordFailure(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
 		common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "parse_error")
-		log.Error("mcp-integration: failed to parse tools/list response", "error", err, "response", truncate(response, 500))
-		return []NBTool{newMCPUnavailableTool(cfg, "invalid_response")}
+		log.Debug("mcp-integration: failed to parse tools/list response", "error", err, "response", truncate(response, 500))
+		// The server answered, but with nothing usable: an error, not an outage.
+		health, known := recordMCPHealth(accountId, cfg, mcpFailure(mcpHealthError, "invalid tools/list response", true), false)
+		return []NBTool{unavailableAfterFailure(cfg, "invalid_response", health, known)}
 	}
 
 	if rpcResp.Error != nil {
 		toolCircuitBreakerInstance.RecordFailure(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
 		common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "json_rpc_error")
-		log.Error("mcp-integration: tools/list returned error", "code", rpcResp.Error.Code, "message", rpcResp.Error.Message)
-		return []NBTool{newMCPUnavailableTool(cfg, "discovery_error")}
+		log.Debug("mcp-integration: tools/list returned error", "code", rpcResp.Error.Code, "message", rpcResp.Error.Message)
+		health, known := recordMCPHealth(accountId, cfg, mcpFailure(mcpHealthError, fmt.Sprintf("tools/list returned error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message), true), false)
+		return []NBTool{unavailableAfterFailure(cfg, "discovery_error", health, known)}
 	}
 
 	tools := make([]NBTool, 0, len(rpcResp.Result.Tools))
@@ -923,6 +1009,7 @@ func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 
 	toolCircuitBreakerInstance.RecordSuccess(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
 	common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "success")
+	recordMCPHealth(accountId, cfg, mcpSuccess(true, len(tools)), false)
 	log.Info("mcp-integration: discovered tools", "count", len(tools))
 	return tools
 }

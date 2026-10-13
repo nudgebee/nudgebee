@@ -572,6 +572,8 @@ func CreateIntegrationConfig(
 			return IntegrationDto{}, errors.New("integrations: integration not found or access denied")
 		}
 
+		// A changed config value resets the MCP health verdict in the
+		// database (integration_config_values trigger, V1025, #40994).
 		_, err = tx.Exec(`
 			UPDATE integrations
 			SET name = $1, labels = $2, updated_at = $3, updated_by = $4
@@ -1999,6 +2001,8 @@ func UpdateIntegrationConfigStatus(
 		}
 	}
 
+	// A status change resets integrations.health in the database (trigger,
+	// V1025, #40994).
 	_, err = tx.Exec(`
         UPDATE integrations set status = $2
         WHERE id = $1
