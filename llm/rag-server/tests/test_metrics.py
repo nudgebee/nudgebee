@@ -1,7 +1,7 @@
 """Tests for Prometheus metrics processing and deduplication."""
 
 import json
-from rag.core.monitoring.metrics import _process_metrics_list, extract_metric_names
+from rag.core.monitoring.metrics import _process_metrics_list, extract_metric_names, parse_json_string
 
 
 def test_process_metrics_list_empty_and_falsy():
@@ -65,3 +65,44 @@ def test_extract_metric_names():
     ]
     result = extract_metric_names(documents)
     assert result == {"node_cpu_seconds_total", "http_requests_total"}
+
+
+def test_extract_metric_names_reads_the_name_out_of_a_nested_metric_object():
+    # Shape found in dev Qdrant: an LLM-generated example whose metric is the
+    # whole metadata object instead of the name. This used to raise
+    # "unhashable type: 'dict'" and abort the prometheus load for every account.
+    documents = [
+        {"metadata": {"metric": {"name": "process_major_pagefaults_total", "description": "...", "labels": []}}},
+        {"metadata": {"metric": "node_cpu_seconds_total"}},
+    ]
+    assert extract_metric_names(documents) == {"process_major_pagefaults_total", "node_cpu_seconds_total"}
+
+
+def test_extract_metric_names_skips_entries_without_a_usable_name():
+    documents = [
+        {"metadata": {"metric": {"description": "no name key"}}},
+        {"metadata": {"metric": None}},
+        {"metadata": {"metric": "   "}},
+        {"metadata": "not a dict"},
+        "not a dict at all",
+    ]
+    assert extract_metric_names(documents) == set()
+
+
+def test_process_metrics_list_dict_with_non_string_name_falls_back_to_serialised_dict():
+    metric = {"name": {"nested": "object"}}
+    assert _process_metrics_list([metric]) == [json.dumps(metric, sort_keys=True)]
+
+
+def test_parse_json_string_normalises_a_nested_name_to_the_metric_string():
+    response = json.dumps(
+        [{"question": "q", "answer": "a", "metadata": {"name": {"name": "up", "description": "d", "labels": []}}}]
+    )
+    parsed = parse_json_string(response)
+    assert parsed[0]["metadata"] == {"metric": "up"}
+
+
+def test_parse_json_string_drops_an_unusable_name():
+    response = json.dumps([{"question": "q", "answer": "a", "metadata": {"name": {"description": "only"}}}])
+    parsed = parse_json_string(response)
+    assert parsed[0]["metadata"] == {"metric": None}

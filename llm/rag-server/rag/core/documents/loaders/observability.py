@@ -202,9 +202,14 @@ def load_prom_json_docs(account_ids: Optional[List[str]] = None, force: bool = F
                     if account_ids and (str(account_id) not in account_ids):
                         logger.info(f"Skipping account_id: {account_id} as it is not in the provided list.")
                         continue
-                    handle_account_specific_docs(account_id, module)
+                    try:
+                        handle_account_specific_docs(account_id, module)
+                    except Exception:
+                        logger.exception(f"Failed to load prometheus documents for account_id: {account_id}")
+                        continue
+                    finally:
+                        gc.collect()
                     logger.info(f"Documents loaded successfully for account_id: {account_id}")
-                    gc.collect()
     finally:
         engine.dispose()
         gc.collect()
