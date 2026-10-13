@@ -25,7 +25,7 @@ import (
 // llm_tier_api_endpoint_decision (Cloudflare account id; an optional URL for
 // the others) and
 // llm_tier_min_confidence_decision (default 0.9). A configured decision model
-// is used by every decision in decisionPilotTasks.
+// is used by the decisions in decisionModes, each in its mode.
 //
 // It is read from the configuration the call's LLM fallback would use: the
 // conversation's pin, otherwise the account's LLM integration, otherwise ENV.
@@ -44,15 +44,44 @@ const (
 	decisionTimeout = 2 * time.Second
 )
 
-// decisionPilotTasks are the decisions that use a configured decision model.
-// The tool approval check (tool_request_type) is deliberately absent: a
-// confident wrong "read" would skip user approval, so it stays on the LLM until
-// a labelled set with injection cases shows no false "read" at a very high
-// threshold (#40902). Adding a decision here turns it on for every
-// configuration that has a decision model, so a riskier decision needs its own
-// opt-in first.
-var decisionPilotTasks = map[string]bool{
-	"workflow_turn_intent": true,
+// Decision modes, per decision: how Classify uses a configured decision model.
+const (
+	decisionModeOff = "off" // the LLM only
+	// decisionModeShadow: the LLM decides; the decision model is asked in the
+	// background and only logged (classification_shadow), adding no latency.
+	decisionModeShadow = "shadow"
+	// decisionModeOn: the decision model decides when it is confident enough;
+	// otherwise, or on an error, the LLM decides.
+	decisionModeOn = "on"
+)
+
+// decisionModes are the decisions that may use a decision model, with their
+// default mode; any other decision is off. A server setting
+// (llm_decision_mode_<task>, e.g. LLM_DECISION_MODE_TOOL_REQUEST_TYPE=on)
+// overrides the default. The tool approval check is on: a confident "read" from
+// the decision model runs the command without approval, so set it to shadow
+// (LLM decides, decision model only logged) wherever that risk is not wanted
+// until hand-labelled data shows no more false reads than the LLM (#40902).
+var decisionModes = map[string]string{
+	"workflow_turn_intent": decisionModeOn,
+	"tool_request_type":    decisionModeOn,
+}
+
+// decisionModeFor returns task's mode: the server setting if valid, else the default.
+func decisionModeFor(ctx *security.RequestContext, task ClassificationTask) string {
+	def, ok := decisionModes[task.Name]
+	if !ok || task.Multi {
+		return decisionModeOff
+	}
+	switch mode := strings.ToLower(strings.TrimSpace(config.Config.GetString("llm_decision_mode_"+task.Name, ""))); mode {
+	case "":
+		return def
+	case decisionModeOff, decisionModeShadow, decisionModeOn:
+		return mode
+	default:
+		ctx.GetLogger().Warn("classify: ignoring invalid decision mode", "task", task.Name, "mode", mode, "default", def)
+		return def
+	}
 }
 
 // ParseDecisionMinConfidence reads llm_tier_min_confidence_decision: empty means
@@ -135,9 +164,6 @@ func envDecisionConfig() map[string]string {
 
 // decisionBackendFor returns the decision model configured for task, if any.
 func decisionBackendFor(ctx *security.RequestContext, call ClassificationCall, task ClassificationTask) (*decisionBackend, bool) {
-	if task.Multi || !decisionPilotTasks[task.Name] {
-		return nil, false
-	}
 	cfg, source := decisionConfigSource(ctx, call.AccountId, call.ConversationId, classificationCallTier(ctx, call))
 	if len(cfg) == 0 {
 		return nil, false
@@ -288,4 +314,40 @@ func trackDecisionUsage(ctx *security.RequestContext, call ClassificationCall, b
 		}
 	}
 	trackFn()
+}
+
+// runShadow runs the shadow decision; a variable so tests can run it inline.
+var runShadow = func(f func()) { go f() }
+
+// shadowDecision asks the decision model after the LLM has decided and logs
+// both answers as classification_shadow. It never changes the decision; it runs
+// on a detached context so it outlives the request without delaying it.
+func shadowDecision(ctx *security.RequestContext, call ClassificationCall, task ClassificationTask, input string, b *decisionBackend, llm ClassificationDecision) {
+	bg := detachedRequestContext(ctx)
+	runShadow(func() {
+		// A background goroutine has no request recovery: a panic here must not
+		// take the server down.
+		defer func() {
+			if r := recover(); r != nil {
+				bg.GetLogger().Error("classify: shadow decision panicked", "task", task.Name, "panic", r)
+			}
+		}()
+		start := time.Now()
+		dd, accepted, err := classifyWithDecision(bg, call, task, input, b)
+		labels, valid := matchClassificationLabels(task, dd.Raw)
+		attrs := []any{
+			"task", task.Name, "llm_labels", strings.Join(llm.Labels, ","),
+			"decision_answer", truncateForLog(dd.Raw), "decision_model", dd.Model,
+			// would_use: confident enough that mode "on" would have used it.
+			"would_use", accepted, "agree", valid && labels[0] == llm.Label(),
+			"latency_ms", time.Since(start).Milliseconds(),
+		}
+		if dd.Confidence != nil {
+			attrs = append(attrs, "confidence", *dd.Confidence)
+		}
+		if err != nil {
+			attrs = append(attrs, "error", err.Error())
+		}
+		bg.GetLogger().Info("classification_shadow", attrs...)
+	})
 }

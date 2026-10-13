@@ -10,6 +10,7 @@ import (
 	"nudgebee/llm/llms/decision"
 	"nudgebee/llm/security"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
@@ -82,13 +83,6 @@ func TestDecisionBackendFor(t *testing.T) {
 	b, ok = decisionBackendFor(ctx, ClassificationCall{}, pilotTask())
 	require.True(t, ok)
 	assert.Equal(t, 0.8, b.minConfidence)
-
-	_, ok = decisionBackendFor(ctx, ClassificationCall{}, intentTask())
-	assert.False(t, ok, "only pilot decisions use a decision model")
-	multi := pilotTask()
-	multi.Multi = true
-	_, ok = decisionBackendFor(ctx, ClassificationCall{}, multi)
-	assert.False(t, ok, "decision models answer single-choice questions only")
 
 	chat := decisionSlot("")
 	chat["llm_tier_provider_decision"] = "googleai"
@@ -279,4 +273,67 @@ func TestGetLLMModel_RefusesDecisionProvider(t *testing.T) {
 		_, err := GetLLMModel(pm[0], pm[1], "", false, "")
 		assert.ErrorContains(t, err, "decision model and cannot serve LLM calls", pm[0])
 	}
+}
+
+func approvalTask() ClassificationTask {
+	return ClassificationTask{
+		Name:         "tool_request_type",
+		Instructions: "Classify the command.",
+		Options:      []ClassificationOption{{Label: "read"}, {Label: "create"}, {Label: "update"}, {Label: "delete"}},
+	}
+}
+
+// setDecisionMode sets the server setting llm_decision_mode_<task> for a test.
+func setDecisionMode(t *testing.T, task, mode string) {
+	t.Helper()
+	viper.Set("llm_decision_mode_"+task, mode)
+	t.Cleanup(func() { viper.Set("llm_decision_mode_"+task, "") })
+}
+
+func TestDecisionModeFor(t *testing.T) {
+	ctx := testRequestContext()
+	assert.Equal(t, decisionModeOn, decisionModeFor(ctx, pilotTask()), "the builder defaults to on")
+	assert.Equal(t, decisionModeOn, decisionModeFor(ctx, approvalTask()), "the approval check defaults to on")
+	assert.Equal(t, decisionModeOff, decisionModeFor(ctx, intentTask()), "a decision not listed is off")
+	multi := pilotTask()
+	multi.Multi = true
+	assert.Equal(t, decisionModeOff, decisionModeFor(ctx, multi), "decision models answer single-choice questions only")
+
+	setDecisionMode(t, "tool_request_type", " SHADOW ")
+	assert.Equal(t, decisionModeShadow, decisionModeFor(ctx, approvalTask()), "the server setting overrides the default")
+	setDecisionMode(t, "workflow_turn_intent", "off")
+	assert.Equal(t, decisionModeOff, decisionModeFor(ctx, pilotTask()))
+	setDecisionMode(t, "workflow_turn_intent", "sometimes")
+	assert.Equal(t, decisionModeOn, decisionModeFor(ctx, pilotTask()), "an invalid setting keeps the default")
+}
+
+// In shadow mode the LLM decides; the decision model is asked afterwards and
+// only logged, however confident it is.
+func TestClassify_ShadowModeNeverChangesTheDecision(t *testing.T) {
+	old := runShadow
+	runShadow = func(f func()) { f() }
+	t.Cleanup(func() { runShadow = old })
+	setDecisionMode(t, "tool_request_type", "shadow")
+
+	stubDecisionConfig(t, decisionSlot("0.8"))
+	states := stubDecisionChooser(t, decision.Choice{Choice: "read", Confidence: conf(0.99)}, nil)
+	llmCalls := stubGenerate(t, []string{"update"}, nil)
+	d, err := Classify(testRequestContext(), ClassificationCall{AccountId: "acct"}, approvalTask(), "kubectl get pods")
+	require.NoError(t, err)
+	assert.Equal(t, "llm", d.Backend)
+	assert.Equal(t, "update", d.Label(), "the LLM's answer is used, not the decision model's")
+	assert.False(t, d.FellBack)
+	assert.Len(t, *llmCalls, 1)
+	assert.Len(t, *states, 1, "the decision model is still asked, for the log")
+}
+
+func TestClassify_ModeOff(t *testing.T) {
+	setDecisionMode(t, "workflow_turn_intent", "off")
+	stubDecisionConfig(t, decisionSlot("0.8"))
+	states := stubDecisionChooser(t, decision.Choice{Choice: "EDIT", Confidence: conf(1)}, nil)
+	stubGenerate(t, []string{"CREATE"}, nil)
+	d, err := Classify(testRequestContext(), ClassificationCall{}, pilotTask(), "make one")
+	require.NoError(t, err)
+	assert.Equal(t, "llm", d.Backend)
+	assert.Empty(t, *states, "off never asks the decision model")
 }

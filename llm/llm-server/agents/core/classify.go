@@ -82,6 +82,9 @@ type ClassificationDecision struct {
 	Probabilities map[string]float64
 	Model         string // the provider's reported model version
 	FellBack      bool   // a decision model was asked but the LLM answered
+	// DecisionAnswer is the decision model's own answer when the LLM answered
+	// instead (FellBack), so logs can compare the two.
+	DecisionAnswer string
 }
 
 // Label returns the primary label, or "" when the decision is not valid.
@@ -98,8 +101,15 @@ func Classify(ctx *security.RequestContext, call ClassificationCall, task Classi
 		return ClassificationDecision{}, fmt.Errorf("classify: task needs a name and at least one option")
 	}
 	start := time.Now()
+	mode := decisionModeFor(ctx, task)
+	var backend *decisionBackend
+	if mode != decisionModeOff {
+		if b, ok := decisionBackendFor(ctx, call, task); ok {
+			backend = b
+		}
+	}
 	var tried *ClassificationDecision
-	if b, ok := decisionBackendFor(ctx, call, task); ok {
+	if b := backend; b != nil && mode == decisionModeOn {
 		dd, accepted, derr := classifyWithDecision(ctx, call, task, input, b)
 		if accepted {
 			dd.Latency = time.Since(start)
@@ -114,12 +124,15 @@ func Classify(ctx *security.RequestContext, call ClassificationCall, task Classi
 	d, err := classifyWithLLM(ctx, call, task, input)
 	if tried != nil {
 		d.FellBack = true
-		d.Confidence, d.Probabilities, d.Model = tried.Confidence, tried.Probabilities, tried.Model
+		d.Confidence, d.Probabilities, d.Model, d.DecisionAnswer = tried.Confidence, tried.Probabilities, tried.Model, tried.Raw
 	}
 	d.Latency = time.Since(start)
 	recordClassificationDecision(ctx, task, d, err)
 	if err != nil {
 		return d, fmt.Errorf("classify %s: %w", task.Name, err)
+	}
+	if backend != nil && mode == decisionModeShadow {
+		shadowDecision(ctx, call, task, input, backend, d)
 	}
 	return d, nil
 }
@@ -298,7 +311,7 @@ func recordClassificationDecision(ctx *security.RequestContext, task Classificat
 		attrs = append(attrs, "confidence", *d.Confidence, "decision_model", d.Model)
 	}
 	if d.FellBack {
-		attrs = append(attrs, "fell_back", true)
+		attrs = append(attrs, "fell_back", true, "decision_answer", truncateForLog(d.DecisionAnswer))
 	}
 	if err != nil {
 		attrs = append(attrs, "error", err.Error())
