@@ -66,6 +66,20 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
     go install github.com/cli/cli/v2/cmd/gh@v2.103.3
 
+# nbctl, Nubi's metrics and logs CLI in the workspace. It calls llm-server's
+# workspace nbctl proxy with the per-command execution token, never the
+# backend directly, and the proxy only serves read-only metrics and logs. Only
+# llm-server puts it to use, behind llm_server_workspace_nbctl_enabled. Built
+# from source like glab so the image builds for either architecture. The
+# commit is nbctl main with #120 (list-metrics, raw -o json,
+# NUDGEBEE_ENABLED_COMMANDS) and #122 (count series, truncation, label kinds);
+# switch to a release tag once nbctl cuts one.
+ARG NBCTL_VERSION=a6fd9f4d7b408a8defcbc8c5d3145d58acc4686b
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
+    go install github.com/nudgebee/nbctl@${NBCTL_VERSION}
+
 # Final stage
 FROM ghcr.io/nudgebee/alpine:3.23
 ARG IMAGE_VERSION=0.0.0
@@ -310,6 +324,7 @@ RUN echo 'CGO_ENABLED=0' >> /usr/local/go/go.env \
 COPY --from=builder /usr/local/bin/golangci-lint /usr/local/bin/golangci-lint
 COPY --from=glab-builder /usr/local/bin/glab /usr/local/bin/glab
 COPY --from=glab-builder /usr/local/bin/gh /usr/bin/gh
+COPY --from=glab-builder /usr/local/bin/nbctl /usr/local/bin/nbctl
 
 # Create a non-root user
 RUN adduser -D -g '' appuser

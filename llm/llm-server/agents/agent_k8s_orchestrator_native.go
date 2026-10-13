@@ -143,6 +143,9 @@ func (a *K8sNativeAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 	if nudge := memoryNudgeIfEnabled(); nudge != "" {
 		promptText += "\n\n" + nudge
 	}
+	if nudge := workspaceNbctlNudgeIfEnabled(query.AccountId); nudge != "" {
+		promptText += "\n\n" + nudge
+	}
 	return core.ParsePromptToNBAgentPrompt(promptText)
 }
 

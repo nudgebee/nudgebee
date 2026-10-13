@@ -108,5 +108,8 @@ func (a *AwsOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, que
 	if n := memoryNudgeIfEnabled(); n != "" {
 		promptText += "\n\n" + n
 	}
+	if n := workspaceNbctlNudgeIfEnabled(query.AccountId); n != "" {
+		promptText += "\n\n" + n
+	}
 	return core.ParsePromptToNBAgentPrompt(promptText)
 }

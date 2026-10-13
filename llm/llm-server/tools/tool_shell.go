@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -49,7 +50,18 @@ func (m ShellTool) GetType() core.NBToolType {
 }
 
 func (m ShellTool) Description() string {
-	return `Executes a shell command in an Alpine Linux workspace and returns the command output.
+	if config.Config.LlmServerWorkspaceNbctlEnabled {
+		return shellToolDescription + shellNbctlHint
+	}
+	return shellToolDescription
+}
+
+// shellNbctlHint lists nbctl when it is enabled in the workspace.
+const shellNbctlHint = `
+
+	**nbctl (raw metrics and logs):** ` + "`nbctl metrics query --query '<query>' --start-time <RFC3339> --end-time <RFC3339> [--step 5m] -o json > cpu.json`" + `, ` + "`nbctl logs query --query '<query>' --start-time ... --end-time ... --limit 5000 -o json > logs.json`" + `, and ` + "`nbctl metrics list-metrics` / `list-labels --metric <m>` / `list-label-values --label <l>`, `nbctl logs list-labels` / `list-label-values --label-name <l>`" + `. Reads this conversation's account through Nubi and runs the query as written, so write it in the query language of the account's provider (your instructions name it). Run ` + "`nbctl logs list-labels --fields-only`" + ` first for the provider's own log field names, and pass ` + "`--index`" + ` for another Elasticsearch index (in-cluster Elasticsearch needs it). If nbctl reports an authentication error, run the command again: each command gets a fresh token, so do not run ` + "`nbctl configure`" + `. Level or severity is often a field inside the line rather than a label. For counts, ask the provider to count instead of pulling lines: an Elasticsearch aggregation comes back as ` + "`series`" + ` in ` + "`-o json`" + `; a LogQL ` + "`count_over_time`" + ` comes back as entries whose ` + "`message`" + ` is the count. Warnings (lines cut off at --limit, groups left out, failed queries) go to stderr only, so keep stderr when scripting. Redirect to a file for large results. Only the commands listed here are available; any other nbctl command is refused. ` + "`nbctl <command> --help`" + ` lists every flag; do not inspect the binary.`
+
+var shellToolDescription = `Executes a shell command in an Alpine Linux workspace and returns the command output.
 
 	**Available CLIs:** ` + "`grep`, `awk`, `sed`, `jq`, `find`, `xargs`, `curl`, `tar`, `unzip`" + `, plus ` + "`kubectl`, `helm`, `psql`, `mysql`, `redis-cli`, `argocd`, `clickhouse-client`, `rabbitmqadmin`, `sqlcmd`, `sqlplus`, `ssh`, `aws`, `gcloud`, `az`, `gh`, `python3`" + `. Pipes (` + "`|`" + `), redirection (` + "`>`, `>>`, `<`" + `), command substitution (` + "`$()`" + `), env vars all work.
 
@@ -88,7 +100,6 @@ func (m ShellTool) Description() string {
 	* ` + "`ls -la`" + `
 	* ` + "`jq .key data.json`" + `
 	`
-}
 
 func (m ShellTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{

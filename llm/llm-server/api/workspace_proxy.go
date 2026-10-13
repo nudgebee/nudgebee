@@ -81,6 +81,9 @@ func handleWorkspaceApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter)
 
 	// Tool Execution
 	group.POST("/execute", func(c *gin.Context) { handleWorkspaceExecute(c, tracer, meter) })
+
+	// nbctl in the workspace (NUDGEBEE_ENDPOINT=<llm-server>/api/v1/workspace/nbctl)
+	group.POST("/nbctl/api/graphql", func(c *gin.Context) { handleWorkspaceNbctlGraphQL(c, tracer, meter) })
 }
 
 func handleWorkspaceFiles(c *gin.Context, tracer trace.Tracer, meter metric.Meter) {

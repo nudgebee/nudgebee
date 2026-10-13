@@ -7,6 +7,7 @@ import (
 	"maps"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -90,7 +91,29 @@ func (w *workspaceManager) commandEnv(ctx *security.RequestContext, accountId st
 		return nil, fmt.Errorf("workspace: %w", err)
 	}
 	out[ENV_NB_WORKSPACE_TOKEN] = token
+	if config.Config.LlmServerWorkspaceNbctlEnabled {
+		addNbctlEnv(out, token, accountId, target)
+	}
 	return out, nil
+}
+
+// addNbctlEnv points nbctl at llm-server's workspace proxy for this command,
+// authenticated with the command's execution token, reading the bound target
+// account if there is one, else the workspace account. Only the metrics and
+// logs command groups are shown.
+func addNbctlEnv(env map[string]string, token, accountId, target string) {
+	dataAccount := accountId
+	if target != "" {
+		dataAccount = target
+	}
+	env["NUDGEBEE_ENDPOINT"] = strings.TrimRight(config.Config.LlmServerUrl, "/") + "/api/v1/workspace/nbctl"
+	env["NUDGEBEE_API_KEY"] = token
+	env["NUDGEBEE_ACCOUNT_ID"] = dataAccount
+	env["NUDGEBEE_ENABLED_COMMANDS"] = "metrics,logs"
+	// Wait just past the proxy's 50s request timeout, so a slow query ends in
+	// the proxy's own message rather than nbctl's 30s default, whose error
+	// shows the proxy URL; the command itself is killed at 58s.
+	env["NUDGEBEE_HTTP_TIMEOUT"] = "52s"
 }
 
 // newPodToken returns the secret a workspace pod uses to check that calls

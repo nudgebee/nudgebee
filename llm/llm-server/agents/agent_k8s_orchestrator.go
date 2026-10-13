@@ -129,6 +129,9 @@ func (l *K8sLeanAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 	if nudge := memoryNudgeIfEnabled(); nudge != "" {
 		promptText += "\n\n" + nudge
 	}
+	if nudge := workspaceNbctlNudgeIfEnabled(query.AccountId); nudge != "" {
+		promptText += "\n\n" + nudge
+	}
 	if grounding := k8sGroundingIfEnabled(query); grounding != "" {
 		promptText += "\n\n" + grounding
 	}
@@ -261,6 +264,23 @@ func appendMemoryToolName(names []string) []string {
 	}
 	return names
 }
+
+// workspaceNbctlNudgeIfEnabled tells the orchestrator how to get raw metrics
+// and logs into a file for analysis in code when nbctl is enabled in the
+// workspace (#40463), followed by the account's providers. It is the one
+// scoped exception to "do not reproduce an observability tool through the
+// CLI": fetching raw data.
+func workspaceNbctlNudgeIfEnabled(accountId string) string {
+	if !config.Config.LlmServerWorkspaceNbctlEnabled {
+		return ""
+	}
+	if summary := tools.NbctlProviderSummary(accountId); summary != "" {
+		return workspaceNbctlNudge + " **This account:** " + summary
+	}
+	return workspaceNbctlNudge
+}
+
+const workspaceNbctlNudge = "**Raw metrics and logs for analysis in code:** when you need the data itself in a script (spikes, percentiles, correlations, counts over a window), fetch it in the workspace shell with `nbctl metrics query --query '<query>' --start-time <RFC3339> --end-time <RFC3339> [--step 5m] -o json > file.json` or `nbctl logs query --query '<query>' --start-time ... --end-time ... --limit <n> -o json > file.json`, then read the file with python or jq. nbctl runs the query as written, so write it in the query language of the account's provider and discover field names with `nbctl logs list-labels` / `nbctl metrics list-metrics`. Never call Prometheus, Elasticsearch, Loki or other metrics/log endpoints over HTTP from the shell: the workspace cannot reach them. For counts, ask the provider to count instead of pulling every line: an Elasticsearch aggregation comes back as `series`, a LogQL `count_over_time` as entries whose `message` is the count. nbctl prints its warnings (cut-off lines, failed queries) on stderr, so keep stderr when scripting. For questions that do not need code, keep using the `metrics` and `logs` tools."
 
 // memoryNudgeIfEnabled returns the memory-tools prompt nudge when the tools
 // are enabled.
