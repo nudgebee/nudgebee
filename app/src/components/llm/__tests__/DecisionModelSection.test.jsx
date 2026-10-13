@@ -4,6 +4,7 @@ import DecisionModelSection, {
   DECISION_PROVIDER,
   DEFAULT_MIN_CONFIDENCE,
   decisionConfigValues,
+  decisionProviderChange,
   decisionStateFromConfig,
   emptyDecisionState,
   validateDecisionState,
@@ -12,6 +13,7 @@ import DecisionModelSection, {
 const configured = () => ({
   ...emptyDecisionState(),
   provider: DECISION_PROVIDER,
+  savedProvider: DECISION_PROVIDER,
   model: 'clef-flash',
   endpoint: 'acct',
   apiKey: 'token',
@@ -63,12 +65,27 @@ describe('decision model settings', () => {
   });
 
   it('shows provider fields only once a provider is chosen', () => {
-    const props = { errors: {}, onChange: jest.fn(), renderSecretInput: () => <input aria-label='API token' /> };
+    const props = { errors: {}, onChange: jest.fn(), onProviderChange: jest.fn(), renderSecretInput: () => <input aria-label='API token' /> };
     const { rerender } = render(<DecisionModelSection state={emptyDecisionState()} {...props} />);
     expect(screen.queryByLabelText('API token')).toBeNull();
     expect(screen.queryByText(/data-retention terms/)).toBeNull();
     rerender(<DecisionModelSection state={configured()} {...props} />);
     expect(screen.getByLabelText('API token')).toBeTruthy();
     expect(screen.getByText(/data-retention terms/)).toBeTruthy();
+  });
+
+  it('switching provider picks its default model and needs a new token', () => {
+    const state = decisionProviderChange(configured(), 'openai');
+    expect(state.apiKey).toBe('');
+    expect(state).toMatchObject({ provider: 'openai', model: 'gpt-6-luna', endpoint: '' });
+    expect(validateDecisionState(state, true).apiKey).toBeTruthy();
+    expect(validateDecisionState({ ...state, apiKey: 'new' }, true)).toEqual({});
+  });
+
+  it('only Cloudflare needs and saves an account ID', () => {
+    const state = { ...emptyDecisionState(), provider: 'typesafe', savedProvider: 'typesafe', model: 'jev-latest', apiKey: 'k' };
+    expect(validateDecisionState(state, false)).toEqual({});
+    expect(decisionConfigValues(state).map((v) => v.name)).not.toContain('llm_tier_api_endpoint_decision');
+    expect(validateDecisionState({ ...configured(), endpoint: '' }, false).endpoint).toBeTruthy();
   });
 });

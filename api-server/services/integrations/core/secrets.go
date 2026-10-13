@@ -162,11 +162,39 @@ func augmentLLMConfigWithStoredSecrets(ctx context.Context, tenantId, integratio
 	if err != nil {
 		return incoming
 	}
+	return withStoredSecrets(incoming, incomingNames, stored)
+}
+
+// withStoredSecrets appends each stored secret the caller did not send.
+func withStoredSecrets(incoming []IntegrationConfigValue, incomingNames map[string]struct{}, stored []IntegrationConfigValue) []IntegrationConfigValue {
+	// A decision-model token belongs to the provider it was saved for: when a
+	// save changes the decision provider, the stored token is not carried
+	// forward, so validation asks for a new one instead of sending one
+	// vendor's key to another.
+	incomingDecisionProvider, providerSent := "", false
+	for _, v := range incoming {
+		if v.Name == "llm_tier_provider_decision" {
+			incomingDecisionProvider, providerSent = v.Value, true
+		}
+	}
+	decisionProviderChanged := false
+	if providerSent {
+		storedDecisionProvider := ""
+		for _, row := range stored {
+			if row.Name == "llm_tier_provider_decision" {
+				storedDecisionProvider = row.Value
+			}
+		}
+		decisionProviderChanged = !strings.EqualFold(strings.TrimSpace(incomingDecisionProvider), strings.TrimSpace(storedDecisionProvider))
+	}
 
 	augmented := make([]IntegrationConfigValue, 0, len(incoming))
 	augmented = append(augmented, incoming...)
 	for _, row := range stored {
 		if !IsLLMSecretFieldName(row.Name) {
+			continue
+		}
+		if row.Name == "llm_tier_api_key_decision" && decisionProviderChanged {
 			continue
 		}
 		if _, present := incomingNames[row.Name]; present {

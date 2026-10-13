@@ -15,6 +15,7 @@ import (
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,18 +40,22 @@ var llmProviders = []string{"anthropic", "azure", "bedrock", "googleai", "huggin
 
 // Decision models (#40902) pick one answer from a fixed list for a single AI
 // decision. They live in the "decision" slot (llm_tier_*_decision), which chat
-// never uses. Cloudflare is not a chat provider, so it is rejected in every chat
-// key. Keep in sync with llm-server's llms/decision package.
-const decisionProviderCloudflare = "cloudflare"
-
-// decisionModels are the decision models the decision slot accepts.
-var decisionModels = map[string]bool{"clef": true, "clef-flash": true}
+// never uses. Cloudflare and TypeSafe sell only decision models, so they are
+// rejected in every chat key. OpenAI's decision model (gpt-6-luna) is also a
+// chat model, so for OpenAI only the slot separates the two. Keep in sync with
+// llm-server's llms/decision package.
+var decisionModels = map[string][]string{
+	"cloudflare": {"clef", "clef-flash"},
+	"typesafe":   {"jev-latest"},
+	"openai":     {"gpt-6-luna"},
+}
 
 // cloudflareAccountID matches a Cloudflare account id (hex).
 var cloudflareAccountID = regexp.MustCompile(`^[A-Fa-f0-9]{16,64}$`)
 
-func isDecisionProvider(p string) bool {
-	return strings.EqualFold(strings.TrimSpace(p), decisionProviderCloudflare)
+func isDecisionOnlyProvider(p string) bool {
+	p = strings.ToLower(strings.TrimSpace(p))
+	return p == "cloudflare" || p == "typesafe"
 }
 
 // providerRequiredFields returns the base field names that must be non-empty
@@ -1170,38 +1175,45 @@ func checkDecisionModelsFeature(sc *security.SecurityContext, cfg map[string]str
 	return nil
 }
 
-// validateDecisionModel checks the decision slot, and that a decision-model
-// provider is not used by any chat key.
+// validateDecisionModel checks the decision slot, and that no chat key uses a
+// decision-only provider.
 func validateDecisionModel(cfg map[string]string) []error {
 	var errs []error
 	for name, value := range cfg {
-		if name == "llm_tier_provider_decision" || !isDecisionProvider(value) {
+		if name == "llm_tier_provider_decision" {
 			continue
 		}
-		if strings.HasPrefix(name, "llm_provider") || strings.HasPrefix(name, "llm_tier_provider_") || strings.HasPrefix(name, "llm_fallback_provider") {
+		isProviderKey := strings.HasPrefix(name, "llm_provider") || strings.HasPrefix(name, "llm_tier_provider_") || strings.HasPrefix(name, "llm_fallback_provider")
+		if isProviderKey && isDecisionOnlyProvider(value) {
 			errs = append(errs, fmt.Errorf("%s: %s is only available as a decision model and cannot be used for chat", name, value))
 		}
 	}
 
-	provider := cfg["llm_tier_provider_decision"]
+	provider := strings.ToLower(strings.TrimSpace(cfg["llm_tier_provider_decision"]))
 	if provider == "" {
 		if cfg["llm_tier_min_confidence_decision"] != "" {
 			errs = append(errs, fmt.Errorf("llm_tier_min_confidence_decision is set but no decision model is configured"))
 		}
 		return errs
 	}
-	if !isDecisionProvider(provider) {
-		errs = append(errs, fmt.Errorf("llm_tier_provider_decision %q is invalid; must be %s", provider, decisionProviderCloudflare))
+	models, ok := decisionModels[provider]
+	if !ok {
+		errs = append(errs, fmt.Errorf("llm_tier_provider_decision %q is invalid; must be cloudflare, typesafe or openai", provider))
 	}
-	for _, f := range []string{"llm_tier_model_decision", "llm_tier_api_key_decision", "llm_tier_api_endpoint_decision"} {
+	required := []string{"llm_tier_model_decision", "llm_tier_api_key_decision"}
+	if provider == "cloudflare" {
+		required = append(required, "llm_tier_api_endpoint_decision")
+	}
+	for _, f := range required {
 		if cfg[f] == "" {
 			errs = append(errs, fmt.Errorf("%s is required when llm_tier_provider_decision is set", f))
 		}
 	}
-	if m := cfg["llm_tier_model_decision"]; m != "" && !decisionModels[m] {
-		errs = append(errs, fmt.Errorf("llm_tier_model_decision %q is invalid; must be clef or clef-flash", m))
+	if m := cfg["llm_tier_model_decision"]; ok && m != "" && !slices.Contains(models, m) {
+		errs = append(errs, fmt.Errorf("llm_tier_model_decision %q is invalid for %s; must be one of %s", m, provider, strings.Join(models, ", ")))
 	}
-	if ep := cfg["llm_tier_api_endpoint_decision"]; ep != "" && !cloudflareAccountID.MatchString(ep) && !strings.HasPrefix(ep, "https://") {
+	// Only Cloudflare uses the endpoint (its account id); the others ignore it.
+	if ep := cfg["llm_tier_api_endpoint_decision"]; provider == "cloudflare" && ep != "" && !cloudflareAccountID.MatchString(ep) && !strings.HasPrefix(ep, "https://") {
 		errs = append(errs, fmt.Errorf("llm_tier_api_endpoint_decision must be a Cloudflare account id or an https URL"))
 	}
 	if raw := cfg["llm_tier_min_confidence_decision"]; raw != "" {

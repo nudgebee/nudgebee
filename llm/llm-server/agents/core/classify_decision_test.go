@@ -46,7 +46,7 @@ func stubDecisionChooser(t *testing.T, choice decision.Choice, err error) *[]str
 	t.Helper()
 	states := &[]string{}
 	old := decisionChooser
-	decisionChooser = func(_ context.Context, _ *decisionBackend, state, _ string, _ map[string]string) (decision.Choice, error) {
+	decisionChooser = func(_ context.Context, _ *decisionBackend, state, _ string, _ []decision.Option) (decision.Choice, error) {
 		*states = append(*states, state)
 		return choice, err
 	}
@@ -96,6 +96,21 @@ func TestDecisionBackendFor(t *testing.T) {
 	_, ok = decisionBackendFor(ctx, ClassificationCall{}, pilotTask())
 	assert.False(t, ok, "a chat provider in the decision slot is not a decision model")
 
+	openaiChat := decisionSlot("")
+	openaiChat["llm_tier_provider_decision"], openaiChat["llm_tier_model_decision"] = decision.ProviderOpenAI, "gpt-4o"
+	stubDecisionConfig(t, openaiChat)
+	_, ok = decisionBackendFor(ctx, ClassificationCall{}, pilotTask())
+	assert.False(t, ok, "an OpenAI chat model in the decision slot is not a decision model")
+
+	for provider, model := range map[string]string{decision.ProviderTypeSafe: "jev-latest", decision.ProviderOpenAI: "gpt-6-luna"} {
+		slot := decisionSlot("")
+		slot["llm_tier_provider_decision"], slot["llm_tier_model_decision"] = provider, model
+		stubDecisionConfig(t, slot)
+		b, ok = decisionBackendFor(ctx, ClassificationCall{}, pilotTask())
+		require.True(t, ok, provider)
+		assert.Equal(t, model, b.model)
+	}
+
 	stubDecisionConfig(t, decisionSlot("2"))
 	_, ok = decisionBackendFor(ctx, ClassificationCall{}, pilotTask())
 	assert.False(t, ok, "an invalid threshold switches the decision model off")
@@ -120,6 +135,7 @@ func TestClassify_DecisionBackend(t *testing.T) {
 		{"low confidence goes to the LLM", decision.Choice{Choice: "EDIT", Confidence: conf(0.6)}, nil, "llm", "ANSWER", true, 0.6},
 		{"an answer that is not an option goes to the LLM", decision.Choice{Choice: "DELETE", Confidence: conf(0.99)}, nil, "llm", "ANSWER", true, 0.99},
 		{"a provider error goes to the LLM", decision.Choice{}, errors.New("HTTP 401"), "llm", "ANSWER", true, 0},
+		{"a refusal goes to the LLM", decision.Choice{Refused: true, Model: "gpt-6-luna"}, nil, "llm", "ANSWER", true, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -256,6 +272,11 @@ func TestDecisionConfigSource_FollowsPins(t *testing.T) {
 
 // A decision-only provider can never serve an LLM call.
 func TestGetLLMModel_RefusesDecisionProvider(t *testing.T) {
-	_, err := GetLLMModel(decision.ProviderCloudflare, "clef", "", false, "")
-	assert.ErrorContains(t, err, "decision model and cannot serve LLM calls")
+	for _, pm := range [][2]string{
+		{decision.ProviderCloudflare, "clef"},
+		{decision.ProviderTypeSafe, "jev-latest"},
+	} {
+		_, err := GetLLMModel(pm[0], pm[1], "", false, "")
+		assert.ErrorContains(t, err, "decision model and cannot serve LLM calls", pm[0])
+	}
 }

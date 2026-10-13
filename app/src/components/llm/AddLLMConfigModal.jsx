@@ -26,6 +26,7 @@ import LLMDefaultsSummary, { needsLLMDefaultsConfirm } from './LLMDefaultsSummar
 import { useFeatureAccess } from '@hooks/useFeatureAccess';
 import DecisionModelSection, {
   decisionConfigValues,
+  decisionProviderChange,
   decisionStateFromConfig,
   emptyDecisionState,
   validateDecisionState,
@@ -3077,6 +3078,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                 errors={decisionErrors}
                 apiKeyConfigured={!!secretsConfigured.llm_tier_api_key_decision}
                 onChange={(field, value) => setDecisionCfg((prev) => ({ ...prev, [field]: value }))}
+                onProviderChange={(provider) => setDecisionCfg((prev) => decisionProviderChange(prev, provider))}
                 renderSecretInput={(props) => <SecretInput {...props} />}
               />
             </Box>

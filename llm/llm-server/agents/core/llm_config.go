@@ -235,6 +235,13 @@ func GetLLMModel(provider string, modelName string, agentName string, appendAgen
 	var model llms.Model
 	var err error
 
+	// A decision-only provider (classify_decision.go) never serves LLM calls.
+	// OpenAI's decision model is also a chat model, so the decision slot, not
+	// the model name, keeps it out of chat.
+	if decision.IsDecisionOnlyProvider(provider) {
+		return nil, fmt.Errorf("provider %s is only available as a decision model and cannot serve LLM calls", provider)
+	}
+
 	switch provider {
 	case "openai":
 		slog.Debug("Routing to OpenAI LLM provider")
@@ -272,9 +279,6 @@ func GetLLMModel(provider string, modelName string, agentName string, appendAgen
 		slog.Debug("Routing to Anthropic LLM provider")
 		model, err = getAnthropicLLM(provider, modelName, agentName, appendAgentName, accountId, res)
 	default:
-		if decision.IsProvider(provider) {
-			return nil, fmt.Errorf("provider %s is only available as a decision model and cannot serve LLM calls", provider)
-		}
 		slog.Error("Unknown LLM provider", "provider", provider)
 		return nil, errors.New("llm model not found - " + provider)
 	}

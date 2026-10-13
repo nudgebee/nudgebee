@@ -701,6 +701,18 @@ func TestLLMValidateConfig_DecisionModel(t *testing.T) {
 			wantSubstrs: []string{"llm_tier_min_confidence_decision must be a number above 0 and at most 1"}},
 		{name: "threshold without a decision model", cfg: base(map[string]string{"llm_tier_min_confidence_decision": "0.9"}),
 			wantSubstrs: []string{"no decision model is configured"}},
+		{name: "TypeSafe Jev needs no endpoint", cfg: base(map[string]string{"llm_tier_provider_decision": "typesafe", "llm_tier_model_decision": "jev-latest", "llm_tier_api_key_decision": "k"})},
+		{name: "OpenAI Decisions needs no endpoint", cfg: base(map[string]string{"llm_tier_provider_decision": "openai", "llm_tier_model_decision": "gpt-6-luna", "llm_tier_api_key_decision": "k"})},
+		{name: "OpenAI chat model in the decision slot", cfg: base(map[string]string{"llm_tier_provider_decision": "openai", "llm_tier_model_decision": "gpt-4o", "llm_tier_api_key_decision": "k"}),
+			wantSubstrs: []string{`llm_tier_model_decision "gpt-4o" is invalid for openai`}},
+		{name: "another provider's decision model", cfg: base(map[string]string{"llm_tier_provider_decision": "typesafe", "llm_tier_model_decision": "clef", "llm_tier_api_key_decision": "k"}),
+			wantSubstrs: []string{`llm_tier_model_decision "clef" is invalid for typesafe`}},
+		{name: "a leftover Cloudflare account id is ignored for TypeSafe", cfg: base(map[string]string{"llm_tier_provider_decision": "typesafe", "llm_tier_model_decision": "jev-latest", "llm_tier_api_key_decision": "k", "llm_tier_api_endpoint_decision": "0123456789abcdef0123456789abcdef"})},
+		{name: "an agent named decision is still a chat key", cfg: base(map[string]string{"llm_provider_decision": "cloudflare"}),
+			wantSubstrs: []string{"llm_provider_decision: cloudflare is only available as a decision model"}},
+		{name: "TypeSafe on a chat tier", cfg: base(map[string]string{"llm_tier_provider_summary": "typesafe"}),
+			wantSubstrs: []string{"llm_tier_provider_summary: typesafe is only available as a decision model"}},
+		{name: "gpt-6-luna stays allowed for chat", cfg: map[string]string{"llm_provider": "openai", "llm_model_name": "gpt-6-luna", "llm_provider_api_key": "k"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

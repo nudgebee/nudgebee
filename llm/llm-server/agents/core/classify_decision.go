@@ -20,9 +20,10 @@ import (
 // used, otherwise the decision goes to the LLM backend as before.
 //
 // Configuration lives in the LLM configuration (integration or ENV), in the
-// "decision" slot: llm_tier_provider_decision (e.g. cloudflare),
+// "decision" slot: llm_tier_provider_decision (cloudflare, typesafe or openai),
 // llm_tier_model_decision, llm_tier_api_key_decision,
-// llm_tier_api_endpoint_decision (Cloudflare account id or base URL) and
+// llm_tier_api_endpoint_decision (Cloudflare account id; an optional URL for
+// the others) and
 // llm_tier_min_confidence_decision (default 0.9). A configured decision model
 // is used by every decision in decisionPilotTasks.
 //
@@ -157,7 +158,7 @@ func decisionBackendFor(ctx *security.RequestContext, call ClassificationCall, t
 	if b.provider == "" {
 		return nil, false
 	}
-	if !decision.IsProvider(b.provider) || b.model == "" {
+	if !decision.IsDecisionModel(b.provider, b.model) {
 		ctx.GetLogger().Warn("classify: the decision slot has no usable decision model", "task", task.Name, "provider", b.provider, "source", source)
 		return nil, false
 	}
@@ -165,12 +166,12 @@ func decisionBackendFor(ctx *security.RequestContext, call ClassificationCall, t
 }
 
 // decisionChooser calls the decision model; a variable so tests can stub it.
-var decisionChooser = func(ctx context.Context, b *decisionBackend, state, instructions string, criteria map[string]string) (decision.Choice, error) {
+var decisionChooser = func(ctx context.Context, b *decisionBackend, state, instructions string, options []decision.Option) (decision.Choice, error) {
 	client, err := decision.New(decision.Config{Provider: b.provider, Model: b.model, APIKey: b.apiKey, Endpoint: b.endpoint})
 	if err != nil {
 		return decision.Choice{}, fmt.Errorf("decision backend (%s): %w", b.source, err)
 	}
-	return client.Choose(ctx, state, instructions, criteria)
+	return client.Choose(ctx, state, instructions, options)
 }
 
 // decisionModel adapts one decision question to llms.Model so the call passes
@@ -179,7 +180,7 @@ var decisionChooser = func(ctx context.Context, b *decisionBackend, state, instr
 type decisionModel struct {
 	backend      *decisionBackend
 	instructions string
-	criteria     map[string]string
+	options      []decision.Option
 	choice       decision.Choice
 }
 
@@ -195,7 +196,7 @@ func (m *decisionModel) GenerateContent(ctx context.Context, messages []llms.Mes
 			}
 		}
 	}
-	choice, err := decisionChooser(ctx, m.backend, state.String(), m.instructions, m.criteria)
+	choice, err := decisionChooser(ctx, m.backend, state.String(), m.instructions, m.options)
 	if err != nil {
 		return nil, fmt.Errorf("decision model %s: %w", m.backend.model, err)
 	}
@@ -211,11 +212,11 @@ func (m *decisionModel) Call(context.Context, string, ...llms.CallOption) (strin
 // is a valid option at or above the task's minimum confidence; otherwise the
 // caller falls back to the LLM and d carries what the decision model said.
 func classifyWithDecision(ctx *security.RequestContext, call ClassificationCall, task ClassificationTask, input string, b *decisionBackend) (d ClassificationDecision, accepted bool, err error) {
-	criteria := make(map[string]string, len(task.Options))
-	for _, opt := range task.Options {
-		criteria[opt.Label] = opt.Description
+	options := make([]decision.Option, len(task.Options))
+	for i, opt := range task.Options {
+		options[i] = decision.Option{Label: opt.Label, Description: opt.Description}
 	}
-	dm := &decisionModel{backend: b, instructions: strings.TrimSpace(task.Instructions), criteria: criteria}
+	dm := &decisionModel{backend: b, instructions: strings.TrimSpace(task.Instructions), options: options}
 	model := wrapOutboundModel(dm, b.provider, b.model)
 
 	parent := ctx.GetContext()
@@ -237,10 +238,10 @@ func classifyWithDecision(ctx *security.RequestContext, call ClassificationCall,
 	d.Raw = choice.Choice
 	d.Model = choice.Model
 	d.Probabilities = choice.Probabilities
-	conf := decisionConfidence(choice)
+	conf := decisionConfidence(choice) // 0 for a refusal
 	d.Confidence = &conf
 	labels, ok := matchClassificationLabels(task, choice.Choice)
-	if !ok || conf < b.minConfidence {
+	if choice.Refused || !ok || conf < b.minConfidence {
 		return d, false, nil
 	}
 	d.Labels, d.Valid = labels, true
@@ -265,7 +266,9 @@ func decisionConfidence(c decision.Choice) float64 {
 
 // trackDecisionUsage records the decision call on the token-usage table so its
 // volume and cost show next to the LLM calls. Cost is computed from
-// llm_model_pricing when the model has a row there.
+// llm_model_pricing when the model has a row there. It records the configured
+// model, not the version the provider reports (jev-1.13.0), so the price row
+// keeps matching across versions; the version is in the decision log.
 func trackDecisionUsage(ctx *security.RequestContext, call ClassificationCall, b *decisionBackend, choice decision.Choice, latency time.Duration) {
 	userId := call.UserId
 	if userId == "" {
@@ -276,7 +279,7 @@ func trackDecisionUsage(ctx *security.RequestContext, call ClassificationCall, b
 	source := "decision:" + b.source
 	trackFn := func() {
 		trackTokenUsage(bgCtx, call.ConversationId, call.MessageId, call.AgentId, call.AgentId,
-			b.provider, choice.Model, call.AccountId, userId, info, latency.Seconds(), 0, nil, nil,
+			b.provider, b.model, call.AccountId, userId, info, latency.Seconds(), 0, nil, nil,
 			false, "", nil, nil, nil, nil, false, &source)
 	}
 	if pool := GetMetricsWorkerPool(); pool != nil {

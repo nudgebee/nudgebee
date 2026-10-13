@@ -1,6 +1,10 @@
 package core
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
 
 func TestIsLLMSecretFieldName(t *testing.T) {
 	cases := []struct {
@@ -98,4 +102,39 @@ func TestIsLLMOverrideKeyForDelete(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWithStoredSecrets_DecisionTokenFollowsProvider(t *testing.T) {
+	stored := []IntegrationConfigValue{
+		{Name: "llm_tier_provider_decision", Value: "cloudflare"},
+		{Name: "llm_tier_api_key_decision", Value: "cf-token"},
+		{Name: "llm_provider_api_key", Value: "chat-key"},
+	}
+	names := func(in []IntegrationConfigValue) map[string]struct{} {
+		m := map[string]struct{}{}
+		for _, v := range in {
+			m[v.Name] = struct{}{}
+		}
+		return m
+	}
+	has := func(out []IntegrationConfigValue, name string) bool {
+		for _, v := range out {
+			if v.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	same := []IntegrationConfigValue{{Name: "llm_tier_provider_decision", Value: "cloudflare"}}
+	out := withStoredSecrets(same, names(same), stored)
+	assert.True(t, has(out, "llm_tier_api_key_decision"), "same provider keeps the stored token")
+
+	switched := []IntegrationConfigValue{{Name: "llm_tier_provider_decision", Value: "typesafe"}}
+	out = withStoredSecrets(switched, names(switched), stored)
+	assert.False(t, has(out, "llm_tier_api_key_decision"), "a new provider does not inherit the old token")
+	assert.True(t, has(out, "llm_provider_api_key"), "other secrets are still carried forward")
+
+	out = withStoredSecrets(nil, map[string]struct{}{}, stored)
+	assert.True(t, has(out, "llm_tier_api_key_decision"), "a save that does not send the provider keeps the token")
 }

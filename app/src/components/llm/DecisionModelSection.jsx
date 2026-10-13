@@ -12,18 +12,30 @@ export const DECISION_PROVIDER = 'cloudflare';
 
 const PROVIDER_OPTIONS = [
   { value: '', label: 'None' },
-  { value: DECISION_PROVIDER, label: 'Cloudflare Workers AI' },
+  { value: 'cloudflare', label: 'Cloudflare Workers AI' },
+  { value: 'typesafe', label: 'TypeSafe' },
+  { value: 'openai', label: 'OpenAI Decisions' },
 ];
 
-const MODEL_OPTIONS = [
-  { value: 'clef', label: 'clef (recommended)' },
-  { value: 'clef-flash', label: 'clef-flash (cheaper)' },
-];
+// The first model is the provider's default. Keep in sync with api-server's
+// integrations/llm.go decisionModels.
+const MODEL_OPTIONS = {
+  cloudflare: [
+    { value: 'clef', label: 'clef (recommended)' },
+    { value: 'clef-flash', label: 'clef-flash (cheaper)' },
+  ],
+  typesafe: [{ value: 'jev-latest', label: 'jev-latest' }],
+  openai: [{ value: 'gpt-6-luna', label: 'gpt-6-luna' }],
+};
+
+// Only Cloudflare needs an endpoint (the account ID); the others use a fixed URL.
+const needsAccountId = (provider) => provider === 'cloudflare';
 
 export const DEFAULT_MIN_CONFIDENCE = '0.9';
 
 export const emptyDecisionState = () => ({
   provider: '',
+  savedProvider: '',
   model: 'clef',
   endpoint: '',
   apiKey: '',
@@ -37,6 +49,7 @@ export const decisionStateFromConfig = (cfg) => {
     return state;
   }
   state.provider = cfg.llm_tier_provider_decision || '';
+  state.savedProvider = state.provider;
   state.model = cfg.llm_tier_model_decision || state.model;
   state.endpoint = cfg.llm_tier_api_endpoint_decision || '';
   state.minConfidence = cfg.llm_tier_min_confidence_decision || DEFAULT_MIN_CONFIDENCE;
@@ -48,6 +61,24 @@ const validThreshold = (raw) => {
   return raw !== '' && Number.isFinite(n) && n > 0 && n <= 1;
 };
 
+// tokenKept reports whether the saved API token still applies: it belongs to the
+// saved provider, so switching provider needs a new one.
+const tokenKept = (state, apiKeyConfigured) => apiKeyConfigured && state.provider === state.savedProvider;
+
+// decisionProviderChange returns the state after choosing a provider: its
+// default model, and no endpoint or typed token carried over from another
+// provider (a token is only valid for the vendor it was typed for).
+export const decisionProviderChange = (state, provider) => {
+  const same = provider === state.provider;
+  return {
+    ...state,
+    provider,
+    model: MODEL_OPTIONS[provider]?.[0]?.value || '',
+    endpoint: same ? state.endpoint : '',
+    apiKey: same ? state.apiKey : '',
+  };
+};
+
 // validateDecisionState returns field errors; an empty object means valid.
 export const validateDecisionState = (state, apiKeyConfigured) => {
   const errors = {};
@@ -57,10 +88,10 @@ export const validateDecisionState = (state, apiKeyConfigured) => {
   if (!state.model) {
     errors.model = 'Model is required';
   }
-  if (!state.endpoint.trim()) {
+  if (needsAccountId(state.provider) && !state.endpoint.trim()) {
     errors.endpoint = 'Cloudflare account ID is required';
   }
-  if (!state.apiKey.trim() && !apiKeyConfigured) {
+  if (!state.apiKey.trim() && !tokenKept(state, apiKeyConfigured)) {
     errors.apiKey = 'API token is required';
   }
   if (!validThreshold(String(state.minConfidence).trim())) {
@@ -74,19 +105,22 @@ export const decisionConfigValues = (state) => {
   if (!state.provider) {
     return [];
   }
+  // A key left out is deleted on save, so switching away from Cloudflare drops its account ID.
   const out = [
     { name: 'llm_tier_provider_decision', value: state.provider },
     { name: 'llm_tier_model_decision', value: state.model },
-    { name: 'llm_tier_api_endpoint_decision', value: state.endpoint.trim() },
     { name: 'llm_tier_min_confidence_decision', value: String(state.minConfidence).trim() },
   ];
+  if (needsAccountId(state.provider)) {
+    out.push({ name: 'llm_tier_api_endpoint_decision', value: state.endpoint.trim() });
+  }
   if (state.apiKey.trim()) {
     out.push({ name: 'llm_tier_api_key_decision', value: state.apiKey.trim(), is_encrypted: false });
   }
   return out;
 };
 
-const DecisionModelSection = ({ state, errors = {}, apiKeyConfigured = false, onChange, renderSecretInput }) => (
+const DecisionModelSection = ({ state, errors = {}, apiKeyConfigured = false, onChange, onProviderChange, renderSecretInput }) => (
   <Box>
     <Typography variant='subtitle2' sx={{ fontWeight: 'var(--ds-font-weight-semibold)', mb: 'var(--ds-space-2)' }}>
       Decision models (beta)
@@ -101,7 +135,7 @@ const DecisionModelSection = ({ state, errors = {}, apiKeyConfigured = false, on
         label='Decision model provider'
         size='sm'
         value={state.provider}
-        onChange={(v) => onChange('provider', v)}
+        onChange={(v) => onProviderChange(v)}
         options={PROVIDER_OPTIONS}
       />
       {state.provider && (
@@ -118,23 +152,25 @@ const DecisionModelSection = ({ state, errors = {}, apiKeyConfigured = false, on
             required
             value={state.model}
             onChange={(v) => onChange('model', v)}
-            options={MODEL_OPTIONS}
+            options={MODEL_OPTIONS[state.provider] || []}
             error={errors.model}
           />
-          <Input
-            id='llm-decision-account-id'
-            label='Cloudflare account ID'
-            size='sm'
-            required
-            value={state.endpoint}
-            onChange={(v) => onChange('endpoint', v)}
-            error={errors.endpoint}
-          />
+          {needsAccountId(state.provider) && (
+            <Input
+              id='llm-decision-account-id'
+              label='Cloudflare account ID'
+              size='sm'
+              required
+              value={state.endpoint}
+              onChange={(v) => onChange('endpoint', v)}
+              error={errors.endpoint}
+            />
+          )}
           {renderSecretInput({
             label: 'API token',
             value: state.apiKey,
             onChange: (v) => onChange('apiKey', v),
-            isConfigured: apiKeyConfigured,
+            isConfigured: tokenKept(state, apiKeyConfigured),
             required: true,
             helperText: errors.apiKey,
           })}
@@ -159,6 +195,7 @@ const DecisionModelSection = ({ state, errors = {}, apiKeyConfigured = false, on
 DecisionModelSection.propTypes = {
   state: PropTypes.shape({
     provider: PropTypes.string,
+    savedProvider: PropTypes.string,
     model: PropTypes.string,
     endpoint: PropTypes.string,
     apiKey: PropTypes.string,
@@ -167,6 +204,7 @@ DecisionModelSection.propTypes = {
   errors: PropTypes.object,
   apiKeyConfigured: PropTypes.bool,
   onChange: PropTypes.func.isRequired,
+  onProviderChange: PropTypes.func.isRequired,
   renderSecretInput: PropTypes.func.isRequired,
 };
 
