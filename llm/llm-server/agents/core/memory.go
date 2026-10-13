@@ -33,6 +33,15 @@ import (
 // feature-flag row for the tenant. Tenants not enrolled in MEMORY_MODULE
 // still take the legacy path even on EE binaries — unchanged from before
 // the seam was introduced.
+// memoryPromptParts is what composeMemoryV2BlockFn hands the executor. The
+// two halves land in different places in the human message: Memory becomes
+// the <user_memory> reference block; Style is the user's <user_style> answer
+// instruction, rendered on its own right before <question>.
+type memoryPromptParts struct {
+	Memory string
+	Style  string
+}
+
 var (
 	// isMemoryV2ActiveFn reports whether memory-v2 is enabled for this
 	// tenant. OSS default: always false.
@@ -64,18 +73,19 @@ var (
 	) {
 	}
 
-	// composeMemoryV2BlockFn returns the rendered <memory> block the
-	// executor injects into the agent prompt when memoryModuleActive is
-	// true. OSS default: empty string — the executor's !memoryModuleActive
-	// branch (legacy retrieveAndBuildMemoryNotebook path) is exclusively
-	// taken in OSS, so this hook is never actually reached in an OSS
-	// binary; the no-op is just what makes the file compile.
+	// composeMemoryV2BlockFn returns the memory block and the user-style
+	// block the executor injects into the human message, when
+	// memoryModuleActive is true. OSS default: empty —
+	// the executor's !memoryModuleActive branch (legacy
+	// retrieveAndBuildMemoryNotebook path) is exclusively taken in OSS, so
+	// this hook is never actually reached in an OSS binary; the no-op is
+	// just what makes the file compile.
 	composeMemoryV2BlockFn = func(
 		ctx *security.RequestContext,
 		request NBAgentRequest,
 		agent NBAgent,
-	) string {
-		return ""
+	) memoryPromptParts {
+		return memoryPromptParts{}
 	}
 
 	// loadTypedStoreDedupContextFn returns existing collective facts matching

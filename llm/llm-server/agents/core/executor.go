@@ -732,7 +732,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	memoryEnabled := ResolveAgentMemoryEnabled(agent)
 
 	memChan := make(chan string, 1)
-	memV2Chan := make(chan string, 1)
+	memV2Chan := make(chan memoryPromptParts, 1)
 	// Memory is composed once, at the top-level invocation; sub-agents skip the
 	// per-agent recompose (mirrors the eager KB retrieval above, which is already
 	// top-level-only) — each recompose re-ran the 3-layer memory Compose (~3-5s).
@@ -744,7 +744,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	if isSubAgentInvocation || !memoryEnabled {
 		// Empty sends keep the collectors below unblocked.
 		memChan <- ""
-		memV2Chan <- ""
+		memV2Chan <- memoryPromptParts{}
 	} else if memoryModuleActive {
 		memChan <- ""
 		go func() {
@@ -754,7 +754,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		go func(cf []string) {
 			memChan <- retrieveAndBuildMemoryNotebook(ctx, turnRequest, agent, cf)
 		}(convFacts)
-		memV2Chan <- ""
+		memV2Chan <- memoryPromptParts{}
 	}
 
 	// Collect results
@@ -764,8 +764,10 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		// Reference context, not working state: seeding the notebook handed
 		// every injected memory the authority of the agent's own prior
 		// findings. The planner frames it as <user_memory>; the notebook
-		// starts empty.
-		request.MemoryContext = <-memV2Chan
+		// starts empty. Style is rendered as its own block before <question>.
+		parts := <-memV2Chan
+		request.MemoryContext = parts.Memory
+		request.UserStyle = parts.Style
 		<-memChan // drain
 	} else {
 		initialNotebook = <-memChan

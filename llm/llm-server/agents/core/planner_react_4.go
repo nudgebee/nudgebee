@@ -1512,6 +1512,8 @@ const react4HumanPromptTemplate = `The current date and time is {{.today}}.
 {{.memory_context_block}}
 {{end}}{{if .channel_context_block}}
 {{.channel_context_block}}
+{{end}}{{if .user_style_block}}
+{{.user_style_block}}
 {{end}}{{end}}{{if .notebook}}
 <notebook>
 {{.notebook}}
@@ -1525,7 +1527,7 @@ func newReact4HumanPromptTemplate() prompts.PromptTemplate {
 	vars := []string{
 		"today", "kb_prestep_content", "rag_examples", "skill_lists_menu", "global_preferences_block",
 		"user_context_block", "execution_targets_block", "is_top_level", "orchestrator_mode", "conversation_context", "history",
-		"evidence_index", "memory_context_block", "channel_context_block", "notebook", "input",
+		"evidence_index", "memory_context_block", "channel_context_block", "user_style_block", "notebook", "input",
 	}
 	return prompts.NewPromptTemplate(react4HumanPromptTemplate, vars)
 }
@@ -1539,10 +1541,11 @@ func (o *NBReActPlanner4) humanText(input string) string {
 	}
 
 	isTopLevel := o.isTopLevel()
-	var memoryContextBlock, channelContextBlock string
+	var memoryContextBlock, channelContextBlock, userStyleBlock string
 	if isTopLevel {
 		memoryContextBlock = strings.TrimSpace(renderMemoryContextBlock(react4MemoryContext(o.request.MemoryContext)))
 		channelContextBlock = strings.TrimSpace(renderChannelContextBlock(o.request.ChannelContext))
+		userStyleBlock = strings.TrimSpace(renderUserStyleBlock(o.request.UserStyle))
 	}
 
 	out, err := tmpl.Format(map[string]any{
@@ -1560,6 +1563,7 @@ func (o *NBReActPlanner4) humanText(input string) string {
 		"evidence_index":           strings.TrimSpace(o.evidenceIndex),
 		"memory_context_block":     memoryContextBlock,
 		"channel_context_block":    channelContextBlock,
+		"user_style_block":         userStyleBlock,
 		"notebook":                 strings.TrimSpace(o.turnStartNotebookText()),
 		"input":                    input,
 	})

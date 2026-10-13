@@ -174,10 +174,15 @@ type NBAgentRequest struct {
 	// conversation reference for the UI's citation; never rendered into the
 	// prompt.
 	ChannelContextRefs map[string]any `json:"channel_context_refs,omitempty"`
-	// MemoryContext carries the composed memory slab (soul, preferences,
-	// patterns, decisions, collective, plus the <memory_index> audit footer).
+	// MemoryContext carries the composed memory slab (preferences, patterns,
+	// decisions, collective, plus the <memory_index> audit footer).
 	// Rendered as a reference-framed <user_memory> block in the human message.
 	MemoryContext string `json:"memory_context,omitempty"`
+	// UserStyle is the user's <user_style> block (tone, verbosity, format).
+	// It is an instruction on how to answer, so it is rendered as its own
+	// block right before <question> in the human message, never inside
+	// <user_memory> (see renderUserStyleBlock).
+	UserStyle string `json:"user_style,omitempty"`
 	// ReplyRef is an opaque per-question correlator echoed back unchanged on
 	// the /llm/response webhook — see ConversationApiRequest.ReplyRef. Never
 	// read by any agent; carried only for sendReplyToNotificationServer.

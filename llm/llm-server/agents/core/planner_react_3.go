@@ -2603,6 +2603,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 {{if .is_top_level}}
 {{.memory_context_block}}
 {{.channel_context_block}}
+{{.user_style_block}}
 {{end}}
 <question>{{.input}}</question>
 
@@ -2624,6 +2625,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"skill_lists_menu",
 		"memory_context_block",
 		"channel_context_block",
+		"user_style_block",
 		"is_top_level",
 		"orchestrator_mode",
 	}))
@@ -2662,11 +2664,12 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	}
 
 	evidenceIndex := ""
-	var memoryContextBlock, channelContextBlock string
+	var memoryContextBlock, channelContextBlock, userStyleBlock string
 	if isTopLevel {
 		evidenceIndex = fetchEvidenceIndex(ctx, request)
 		memoryContextBlock = renderMemoryContextBlock(request.MemoryContext)
 		channelContextBlock = renderChannelContextBlock(request.ChannelContext)
+		userStyleBlock = renderUserStyleBlock(request.UserStyle)
 	}
 
 	tmpl.PartialVariables = map[string]any{
@@ -2705,6 +2708,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"skill_lists_menu":      request.SkillListsMenu,
 		"memory_context_block":  memoryContextBlock,
 		"channel_context_block": channelContextBlock,
+		"user_style_block":      userStyleBlock,
 	}
 	return tmpl, tools, nil
 }
