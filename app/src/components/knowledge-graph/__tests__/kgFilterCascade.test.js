@@ -73,6 +73,7 @@ describe('formatTypeBadge', () => {
     expect(formatTypeBadge('KubernetesServiceAccount', 'k8s', true)).toBe('Service Account');
     expect(formatTypeBadge('AzureVirtualMachine', 'azure', true)).toBe('Virtual Machine');
     expect(formatTypeBadge('PagerDutyUser', 'pagerduty', true)).toBe('User');
+    expect(formatTypeBadge('SelfHostedVM', 'selfhosted', true)).toBe('VM');
   });
   it('keeps the prefix when no icon names the provider', () => {
     // Nudgebee's own identity nodes (provider "external") get no icon, so the

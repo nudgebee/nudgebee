@@ -190,6 +190,20 @@ When adding a guard, give it its **own** reason code rather than reusing a near-
 
 ---
 
+## Self-Hosted VM Accounts (`sources/selfhosted`)
+
+A VM account (`cloud_provider='SelfHosted'`, `account_type='vm'`) has no cloud API behind it: the forager proxy agent sweeps a network and vmpackage files one `cloud_resourses` row per host it scans, plus `vm_package` and `vm_scan_status`. The `selfhosted` source turns those into one `ComputeInstance` / `SelfHostedVM` node per host, owned by the VM account. Design record: `docs/architecture-decisions.md` ("Self-hosted VM accounts in the KG").
+
+- **Which hosts.** Active rows in the VM account, plus rows in the discovery-target account of each discovery datasource the VM account owns (`integrations_cloud_accounts` `own` / `discovery_target`). vmpackage files a host matched to a cloud instance under the target account, which by default is the VM account itself — so most rows in a VM account are EC2/GCE/Azure-shaped (`cloud_provider='AWS'`, …). Never filter them on `cloud_provider='SelfHosted'`.
+- **Freshness is the lifecycle.** A host is emitted only while its `vm_scan_status.scanned_at` is within `kg_selfhosted_scan_freshness` days (global config, default 7), and only while its account is active. vmpackage never writes `last_seen` and never retires rows, so a host that stops being scanned drops out and the ordinary static-source sweep tombstones it.
+- **Identity.** A host matched to a cloud instance carries the instance id in `instance_id` (+ `instance_provider`), **never** `resource_id`, so no `ComputeInstance`-by-`resource_id` index (`k8s_ec2_enricher`, the provider-identifier resolver) mistakes it for the cloud node. On-prem placeholders keep `resource_id = vm-<ip>`. `ResolveNodeByProviderIdentifier` falls back to `instance_id` on `SelfHostedVM` nodes only when `resource_id`/`arn` match nothing.
+- **Linking.** The `selfhosted_vm_same_as_{aws,gcp,azure}` rules in `default_relationships.json` join the node to every active cloud `ComputeInstance` with the same instance id, `SAME_AS` both ways. Nothing in this source writes to another source's node; scan data lives on the VM node and is reached through the edge.
+- **Traversal treats twins as one machine.** Every walk that starts from a node also starts from its `SAME_AS` twins: neighbours (`GetMultipleNodeNeighbors`), `kg_traverse` (`TraverseDirectional`) and blast radius (`GetImpactedServices`) seed `withSameAsTwins` at depth 0, so a walk from a VM node reaches what runs on its cloud instance, every twin gives the same dependents, and none is listed as one; `filterLayeredEdges` keeps the depth-0 `SAME_AS` link so it is still drawn. A twin met *mid-walk* is a leaf (`expandFrontier`: shown, not expanded). Identity `SAME_AS` (user nodes) is unaffected.
+- **Tenant filters.** A KG filter with an explicit `sources` list must include `selfhosted`, or VM accounts get "no applicable sources". The default filter created by `UpsertDefaultFilterForTenant` lists it.
+- **No change detection or per-resource patching** — the source has no patch policy; hourly tenant builds refresh it, which is enough for a daily scan.
+
+---
+
 ## Manual Nodes & Dependencies
 
 Users declare what the collectors cannot see. Both halves are run by the always-on `manual` flow source ([flow_sources/manual_flow_source.go](flow_sources/manual_flow_source.go)) every build.

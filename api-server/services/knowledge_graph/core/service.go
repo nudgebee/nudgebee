@@ -640,13 +640,14 @@ func (s *Service) shouldIncrementSyncVersion(sources []string, flowSources []str
 
 	// Define static sources that should increment version
 	staticSources := map[string]bool{
-		"aws":       true,
-		"k8s":       true,
-		"azure":     true,
-		"gcp":       true,
-		"github":    true,
-		"gitlab":    true,
-		"pagerduty": true,
+		"aws":        true,
+		"k8s":        true,
+		"azure":      true,
+		"gcp":        true,
+		"github":     true,
+		"gitlab":     true,
+		"pagerduty":  true,
+		"selfhosted": true,
 	}
 
 	// Check if any static source is present in sources list
@@ -670,6 +671,9 @@ func (s *Service) getApplicableSourcesForAccount(cloudProvider string, requested
 		"AWS":   {"aws"},   // AWS accounts can use AWS sources
 		"Azure": {"azure"}, // Azure accounts can use Azure sources
 		"GCP":   {"gcp"},   // GCP accounts can use GCP sources
+		// Self-hosted VM accounts (account_type 'vm') read the hosts their
+		// forager scanned; see sources/selfhosted.
+		"SelfHosted": {"selfhosted"},
 	}
 
 	applicableSources, exists := sourceMapping[cloudProvider]
@@ -3530,6 +3534,10 @@ func (s *Service) GetMultipleNodeNeighbors(reqCtx *security.RequestContext, node
 	// tenant-scoped, neighbour type filter). Also returns the edges the BFS walked
 	// and each node's minimum BFS depth, used by the spanning-tree edge filter when
 	// subgraph is false.
+	// A seed's SAME_AS twins (self-hosted VM ↔ cloud instance) are the same
+	// machine: start from all of them, or a walk from a VM node would stop at its
+	// twin and never reach what runs on the machine.
+	realSeeds = s.withSameAsTwins(tenantID, realSeeds)
 	discoveredNodeIDs, traversedEdgeIDs, nodeMinDepth, err := s.discoverBFS(realSeeds, traverseOptions{
 		Direction:        TraverseDirectionBoth,
 		Levels:           levels,
@@ -3677,6 +3685,13 @@ type traverseOptions struct {
 	IncludeNodeTypes  []NodeType
 	ExcludeNodeTypes  []NodeType
 	TenantID          string
+	// ExpandSameAsTwins walks on past a host's SAME_AS twin. By default a
+	// ComputeInstance reached from another ComputeInstance over SAME_AS (a
+	// self-hosted VM and its cloud instance, sources/selfhosted) is shown but
+	// not expanded: the twin is the same machine, so its own neighbourhood is
+	// not one hop further away, and expanding it would double every host's
+	// fan-out. Only sameAsClosure, which collects the twins themselves, sets it.
+	ExpandSameAsTwins bool
 }
 
 // discoverBFS is the single traversal engine behind every persisted-graph walk:
@@ -3789,17 +3804,30 @@ func (s *Service) fetchTraversalSeeds(ids []string, tenantID string) ([]string, 
 func (s *Service) expandFrontier(frontier []string, depth int, opts traverseOptions, nodeMinDepth map[string]int, edgeIDSet map[string]struct{}) ([]string, error) {
 	// Direction-specific incidence predicate + projection of the far endpoint.
 	// $1 is always the frontier array.
-	var incidence, otherEnd string
+	var incidence, otherEnd, nearEnd string
 	switch opts.Direction {
 	case TraverseDirectionDownstream:
 		incidence = "e.source_node_id = ANY($1::uuid[])"
 		otherEnd = "e.destination_node_id"
+		nearEnd = "e.source_node_id"
 	case TraverseDirectionUpstream:
 		incidence = "e.destination_node_id = ANY($1::uuid[])"
 		otherEnd = "e.source_node_id"
+		nearEnd = "e.destination_node_id"
 	default: // TraverseDirectionBoth
 		incidence = "(e.source_node_id = ANY($1::uuid[]) OR e.destination_node_id = ANY($1::uuid[]))"
 		otherEnd = "CASE WHEN e.source_node_id = ANY($1::uuid[]) THEN e.destination_node_id ELSE e.source_node_id END"
+		nearEnd = "CASE WHEN e.source_node_id = ANY($1::uuid[]) THEN e.source_node_id ELSE e.destination_node_id END"
+	}
+
+	// twin_leaf marks a far endpoint reached over a host-twin SAME_AS: both ends
+	// are ComputeInstance. Identity SAME_AS (GitHubUser -> NudgebeeUser) joins
+	// user nodes, so it never matches and keeps expanding.
+	twinLeaf := "false"
+	if !opts.ExpandSameAsTwins {
+		twinLeaf = fmt.Sprintf(`(e.relationship_type = '%s' AND n.node_type = '%s'
+			AND EXISTS (SELECT 1 FROM knowledge_graph_node nn WHERE nn.id = %s AND nn.node_type = '%s'))`,
+			RelationshipSameAs, NodeTypeComputeInstance, nearEnd, NodeTypeComputeInstance)
 	}
 
 	args := []interface{}{pq.Array(frontier)}
@@ -3832,12 +3860,12 @@ func (s *Service) expandFrontier(frontier []string, depth int, opts traverseOpti
 	}
 
 	query := fmt.Sprintf(`
-		SELECT e.id::text, (%s)::text AS other_id
+		SELECT e.id::text, (%s)::text AS other_id, %s AS twin_leaf
 		FROM knowledge_graph_edge e
 		JOIN knowledge_graph_node n ON n.id = %s
 		WHERE %s
 		  AND e.level = 'Tenant' AND e.is_active = true
-		  AND n.level = 'Tenant' AND n.is_active = true%s`, otherEnd, otherEnd, incidence, extra)
+		  AND n.level = 'Tenant' AND n.is_active = true%s`, otherEnd, twinLeaf, otherEnd, incidence, extra)
 
 	rows, err := s.dbManager.Query(query, args...)
 	if err != nil {
@@ -3849,20 +3877,40 @@ func (s *Service) expandFrontier(frontier []string, depth int, opts traverseOpti
 		}
 	}()
 
-	var next []string
+	type frontierRow struct {
+		edgeID, otherID string
+		twinLeaf        bool
+	}
+	var buffered []frontierRow
 	for rows.Next() {
-		var edgeID, otherID string
-		if scanErr := rows.Scan(&edgeID, &otherID); scanErr != nil {
+		var r frontierRow
+		if scanErr := rows.Scan(&r.edgeID, &r.otherID, &r.twinLeaf); scanErr != nil {
 			return nil, fmt.Errorf("failed to scan frontier row at depth %d: %w", depth, scanErr)
 		}
-		edgeIDSet[edgeID] = struct{}{}
-		if _, seen := nodeMinDepth[otherID]; !seen {
-			nodeMinDepth[otherID] = depth + 1
-			next = append(next, otherID)
-		}
+		buffered = append(buffered, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating frontier rows at depth %d: %w", depth, err)
+	}
+
+	// Two passes so row order cannot decide whether a node is expanded: a node
+	// reachable at this level both over a real edge and over a twin SAME_AS is
+	// registered by the real edge first and expanded. Twins are registered (and
+	// their edge recorded) but never queued for the next level.
+	var next []string
+	for _, leafPass := range []bool{false, true} {
+		for _, r := range buffered {
+			if r.twinLeaf != leafPass {
+				continue
+			}
+			edgeIDSet[r.edgeID] = struct{}{}
+			if _, seen := nodeMinDepth[r.otherID]; !seen {
+				nodeMinDepth[r.otherID] = depth + 1
+				if !leafPass {
+					next = append(next, r.otherID)
+				}
+			}
+		}
 	}
 	return next, nil
 }
@@ -5310,7 +5358,9 @@ func (s *Service) TraverseDirectional(tenantID string, params TraverseParams) (*
 	// Discover nodes via directional BFS. NodeTypes (include) is intentionally not
 	// passed to the walk — it is applied as a post-traversal filter below so the BFS
 	// can still reach targets through intermediate types.
-	discoveredIDs, traversedEdgeIDs, nodeMinDepth, err := s.discoverBFS(seedNodeIDs, traverseOptions{
+	// Walk from each seed's SAME_AS twins as well (see GetMultipleNodeNeighbors);
+	// the response still reports the seeds the caller asked for.
+	discoveredIDs, traversedEdgeIDs, nodeMinDepth, err := s.discoverBFS(s.withSameAsTwins(tenantID, seedNodeIDs), traverseOptions{
 		Direction:         params.Direction,
 		Levels:            params.MaxDepth,
 		RelationshipTypes: params.RelationshipTypes,
@@ -5504,7 +5554,9 @@ func filterLayeredEdges(edges []*DbEdge, nodeMinDepth map[string]int, direction 
 		if !sok || !dok {
 			continue
 		}
-		if keep(sd, dd) {
+		// Twins seeded together sit at depth 0; the SAME_AS link between them is
+		// the one same-layer edge worth drawing.
+		if keep(sd, dd) || (sd == 0 && dd == 0 && e.RelationshipType == RelationshipSameAs) {
 			filtered = append(filtered, e)
 		}
 	}

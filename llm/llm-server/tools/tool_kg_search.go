@@ -42,7 +42,7 @@ func (t KGSearchNodesTool) Description() string {
 		`ContainerRegistry, ContainerImage, Artifact, DNSZone, DNSRecord, CDN, NetworkGateway, PrivateEndpoint, APIGateway, SecretVault, EncryptionKey, MonitoringService, LogAggregator, ServerlessFunction, ManagedCluster, BackupVault, BackupPolicy, PublicIP, SecurityService, EmailService, AIService, ServiceIdentity; ` +
 		`K8sService, Ingress, NetworkPolicy, ConfigMap, K8sSecret, PersistentVolumeClaim, PersistentVolume; ` +
 		`HelmChart, HelmRelease, Configuration, Repository. ` +
-		`Input JSON: {"query":"redis% | exact", "node_types":["Workload"], "namespace":"...", "source":"k8s|aws|gcp|azure", "labels":"{\"app\":\"x\"}", "account_ids":["aws-prod"], "limit":20} — at least one filter is required (` + "`query`" + ` alone works, or ` + "`node_types`" + `/` + "`namespace`" + ` without a query). ` +
+		`Input JSON: {"query":"redis% | exact", "node_types":["Workload"], "namespace":"...", "source":"k8s|aws|gcp|azure|selfhosted", "labels":"{\"app\":\"x\"}", "account_ids":["aws-prod"], "limit":20} — at least one filter is required (` + "`query`" + ` alone works, or ` + "`node_types`" + `/` + "`namespace`" + ` without a query). ` +
 		"`account_ids`" + ` takes account NAMES or UUIDs, never the cloud provider's own account number.`
 }
 
@@ -65,7 +65,7 @@ func (t KGSearchNodesTool) InputSchema() core.ToolSchema {
 			},
 			"source": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Data source: k8s, aws, gcp, azure.",
+				Description: "Data source: k8s, aws, gcp, azure, selfhosted (hosts scanned through a self-hosted VM account).",
 			},
 			"labels": {
 				Type:        core.ToolSchemaTypeString,

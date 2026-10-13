@@ -741,7 +741,7 @@ func (r *FilterRepository) UpsertDefaultFilterForTenant(
 			TenantID:    tenantUUID,
 			FilterName:  "default",
 			AccountIDs:  accountIDs,
-			Sources:     []string{"aws", "k8s", "azure", "gcp"},
+			Sources:     []string{"aws", "k8s", "azure", "gcp", "selfhosted"},
 			FlowSources: flowSources,
 			Filters:     map[string]interface{}{},
 			IsDefault:   true,

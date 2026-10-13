@@ -314,7 +314,7 @@ const (
 	RelationshipRunsAs      RelationshipType = "RUNS_AS"       // Compute resource (Lambda/EC2/ECS) uses this IAM identity
 	RelationshipAssumes     RelationshipType = "ASSUMES"       // ServiceIdentity can assume another ServiceIdentity (trust policy)
 	RelationshipHasAccessTo RelationshipType = "HAS_ACCESS_TO" // ServiceIdentity is IAM-granted access to a data resource (BigQuery/Storage/SecretVault/…)
-	RelationshipSameAs      RelationshipType = "SAME_AS"       // Per-integration identity (GitHubUser, GitLabUser, …) → canonical NudgebeeUser
+	RelationshipSameAs      RelationshipType = "SAME_AS"       // Two nodes for one entity: per-integration identity (GitHubUser, …) → canonical NudgebeeUser, and a self-hosted VM ↔ its cloud instance (both directions)
 
 	// Deprecated - kept for reference (removed in favor of IS_ENCRYPTED_BY)
 	// RelationshipEncryptedBy RelationshipType = "ENCRYPTED_BY"

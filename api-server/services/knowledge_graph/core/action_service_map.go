@@ -452,11 +452,33 @@ func findNodesByProviderIdentifierInTable(dbManager *database.DatabaseManager, t
 	// planner answer each side of the OR from its own index; with a bare
 	// properties->>'arn' it could use neither and walked every node in the
 	// account. The exact comparison stays, so matching is still case-sensitive.
+	ids, err := queryNodesByProviderIdentifier(dbManager, table, `
+		  AND (properties->>'resource_id' = $2
+		       OR (lower(properties->>'arn') = lower($2) AND properties->>'arn' = $2))`,
+		tenantID, accountID, resourceID)
+	if err != nil || len(ids) > 0 {
+		return ids, err
+	}
+
+	// A host scanned through a self-hosted VM account keeps its cloud instance
+	// id in instance_id, never resource_id, so the lookup above cannot see it.
+	// Ask only when nothing else matched: OR-ing it in would make a tenant-wide
+	// lookup of an i-... id return both the EC2 node and its SelfHostedVM twin,
+	// which the caller treats as ambiguous. The specific_type filter lets the
+	// planner start from the few self-hosted nodes (idx_kg_node_specific_type),
+	// so a miss never walks the tenant.
+	return queryNodesByProviderIdentifier(dbManager, table, `
+		  AND specific_type = '`+SpecificTypeSelfHostedVM+`'
+		  AND properties->>'instance_id' = $2`,
+		tenantID, accountID, resourceID)
+}
+
+// queryNodesByProviderIdentifier runs one identifier predicate (which reads $2)
+// with the scoping every provider-identifier lookup shares.
+func queryNodesByProviderIdentifier(dbManager *database.DatabaseManager, table, identifierPredicate, tenantID, accountID, resourceID string) ([]string, error) {
 	query := `
 		SELECT id FROM ` + table + `
-		WHERE tenant_id = $1
-		  AND (properties->>'resource_id' = $2
-		       OR (lower(properties->>'arn') = lower($2) AND properties->>'arn' = $2))
+		WHERE tenant_id = $1` + identifierPredicate + `
 		  AND node_type = ANY($3)
 		  AND level = 'Tenant'
 		  AND is_active = true

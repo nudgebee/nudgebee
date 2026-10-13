@@ -275,6 +275,11 @@ type appConfig struct {
 	// event retention window so an event never outlives its own analysis.
 	NBRetentionDaysEventAnalysis int `mapstructure:"nb_retention_days_event_analysis"`
 
+	// KGSelfHostedScanFreshness is how many days a self-hosted VM may go
+	// unscanned before the knowledge graph drops its node. vmpackage never
+	// retires host rows, so the last scan time is the only sign a host is alive.
+	KGSelfHostedScanFreshness int `mapstructure:"kg_selfhosted_scan_freshness"`
+
 	KGEdgeStaleAfterDays           int `mapstructure:"kg_edge_stale_after_days"`
 	NBRetentionDaysKGInactiveEdges int `mapstructure:"nb_retention_days_kg_inactive_edges"`
 	// May be shorter than NBRetentionDaysKGInactiveEdges: an inactive edge can
@@ -629,6 +634,7 @@ func init() {
 	viper.SetDefault("nb_retention_days_rag_retrieval_trace", 30)
 	viper.SetDefault("nb_retention_days_event_analysis", 90)
 	viper.SetDefault("kg_edge_stale_after_days", 7)
+	viper.SetDefault("kg_selfhosted_scan_freshness", 7)
 	viper.SetDefault("nb_retention_days_kg_inactive_edges", 14)
 	viper.SetDefault("nb_retention_days_kg_inactive_nodes", 7)
 	viper.SetDefault("llm_token_usage_cleanup_short_term_hours", 3)

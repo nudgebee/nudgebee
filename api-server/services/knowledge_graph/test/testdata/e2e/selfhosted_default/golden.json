@@ -1,0 +1,347 @@
+{
+  "nodes": [
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:ComputeInstance::api-vm",
+      "node_type": "ComputeInstance",
+      "specific_type": "EC2Instance",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "i-0a1b2c3d4e5f60718",
+        "instance_state": "running",
+        "is_active": true,
+        "labels": null,
+        "name": "api-vm",
+        "nb_account_id": "test-account-aws-1",
+        "nb_resource_id": "ec2-row-test-account-aws-1",
+        "private_ip": "10.0.1.5",
+        "region": "us-east-1",
+        "resource_id": "i-0a1b2c3d4e5f60718",
+        "service_name": "AmazonEC2",
+        "source": "aws",
+        "status": "Active",
+        "subtype": "compute-instance",
+        "type": "compute-instance"
+      },
+      "labels": {},
+      "query_attributes": {
+        "instance_state": "running",
+        "name": "api-vm",
+        "private_ip": "10.0.1.5",
+        "subtype": "compute-instance"
+      },
+      "ontology_attributes": {
+        "name": "api-vm",
+        "private_ip_address": "10.0.1.5",
+        "region": "us-east-1",
+        "state": "running"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:batch-vm:batch-vm",
+      "node_type": "ComputeInstance",
+      "specific_type": "GCEInstance",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "6436163694725850158",
+        "gcp_project_id": "batch-vm",
+        "is_active": true,
+        "labels": null,
+        "meta": {
+          "status": "RUNNING"
+        },
+        "name": "batch-vm",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "gce-row-1",
+        "region": "us-central1",
+        "resource_id": "6436163694725850158",
+        "service_name": "Compute Engine",
+        "source": "gcp",
+        "status": "Active",
+        "subtype": "ComputeEngine",
+        "type": "compute.googleapis.com/Instance"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "batch-vm",
+        "subtype": "ComputeEngine"
+      },
+      "ontology_attributes": {
+        "name": "batch-vm",
+        "region": "us-central1",
+        "state": "Active"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1:us-east-1:Node::ip-10-0-1-5.ec2.internal",
+      "node_type": "Node",
+      "specific_type": "KubernetesNode",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "name": "ip-10-0-1-5.ec2.internal",
+        "providerID": "aws:///us-east-1a/i-0a1b2c3d4e5f60718",
+        "source": "k8s"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "ip-10-0-1-5.ec2.internal"
+      },
+      "ontology_attributes": {
+        "name": "ip-10-0-1-5.ec2.internal"
+      }
+    },
+    {
+      "unique_key": "selfhosted:test-account-vm-1:global:ComputeInstance::vm-192.168.10.5",
+      "node_type": "ComputeInstance",
+      "specific_type": "SelfHostedVM",
+      "cloud_account_id": "test-account-vm-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "selfhosted",
+      "properties": {
+        "finding_count": 93,
+        "host_kind": "on_prem",
+        "name": "192.168.10.5",
+        "nb_resource_id": "vm-row-onprem",
+        "os_family": "ubuntu",
+        "os_version": "22.04",
+        "package_count": 495,
+        "private_ip": "192.168.10.5",
+        "region": "global",
+        "resource_id": "vm-192.168.10.5",
+        "scan_status": "completed",
+        "scanned_at": "2026-10-13T10:00:00Z",
+        "source": "selfhosted"
+      },
+      "labels": {},
+      "query_attributes": {
+        "finding_count": 93,
+        "host_kind": "on_prem",
+        "name": "192.168.10.5",
+        "nb_resource_id": "vm-row-onprem",
+        "os_family": "ubuntu",
+        "os_version": "22.04",
+        "package_count": 495,
+        "private_ip": "192.168.10.5",
+        "scan_status": "completed",
+        "scanned_at": "2026-10-13T10:00:00Z"
+      },
+      "ontology_attributes": {
+        "name": "192.168.10.5",
+        "private_ip_address": "192.168.10.5",
+        "region": "global"
+      }
+    },
+    {
+      "unique_key": "selfhosted:test-account-vm-1:us-central1:ComputeInstance::6436163694725850158",
+      "node_type": "ComputeInstance",
+      "specific_type": "SelfHostedVM",
+      "cloud_account_id": "test-account-vm-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "selfhosted",
+      "properties": {
+        "finding_count": 93,
+        "host_kind": "cloud_identified",
+        "instance_id": "6436163694725850158",
+        "instance_provider": "gcp",
+        "name": "6436163694725850158",
+        "nb_resource_id": "vm-row-gce",
+        "os_family": "ubuntu",
+        "os_version": "22.04",
+        "package_count": 495,
+        "private_ip": "10.128.0.7",
+        "region": "us-central1",
+        "scan_status": "completed",
+        "scanned_at": "2026-10-13T10:00:00Z",
+        "source": "selfhosted"
+      },
+      "labels": {},
+      "query_attributes": {
+        "finding_count": 93,
+        "host_kind": "cloud_identified",
+        "instance_id": "6436163694725850158",
+        "instance_provider": "gcp",
+        "name": "6436163694725850158",
+        "nb_resource_id": "vm-row-gce",
+        "os_family": "ubuntu",
+        "os_version": "22.04",
+        "package_count": 495,
+        "private_ip": "10.128.0.7",
+        "scan_status": "completed",
+        "scanned_at": "2026-10-13T10:00:00Z"
+      },
+      "ontology_attributes": {
+        "name": "6436163694725850158",
+        "private_ip_address": "10.128.0.7",
+        "region": "us-central1"
+      }
+    },
+    {
+      "unique_key": "selfhosted:test-account-vm-1:us-east-1:ComputeInstance::i-0a1b2c3d4e5f60718",
+      "node_type": "ComputeInstance",
+      "specific_type": "SelfHostedVM",
+      "cloud_account_id": "test-account-vm-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "selfhosted",
+      "properties": {
+        "finding_count": 93,
+        "host_kind": "cloud_identified",
+        "instance_id": "i-0a1b2c3d4e5f60718",
+        "instance_provider": "aws",
+        "name": "i-0a1b2c3d4e5f60718",
+        "nb_resource_id": "vm-row-ec2",
+        "os_family": "ubuntu",
+        "os_version": "22.04",
+        "package_count": 495,
+        "private_ip": "10.0.1.5",
+        "region": "us-east-1",
+        "scan_status": "completed",
+        "scanned_at": "2026-10-13T10:00:00Z",
+        "source": "selfhosted"
+      },
+      "labels": {},
+      "query_attributes": {
+        "finding_count": 93,
+        "host_kind": "cloud_identified",
+        "instance_id": "i-0a1b2c3d4e5f60718",
+        "instance_provider": "aws",
+        "name": "i-0a1b2c3d4e5f60718",
+        "nb_resource_id": "vm-row-ec2",
+        "os_family": "ubuntu",
+        "os_version": "22.04",
+        "package_count": 495,
+        "private_ip": "10.0.1.5",
+        "scan_status": "completed",
+        "scanned_at": "2026-10-13T10:00:00Z"
+      },
+      "ontology_attributes": {
+        "name": "i-0a1b2c3d4e5f60718",
+        "private_ip_address": "10.0.1.5",
+        "region": "us-east-1"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:ComputeInstance::api-vm",
+      "dst_key": "selfhosted:test-account-vm-1:us-east-1:ComputeInstance::i-0a1b2c3d4e5f60718",
+      "relationship_type": "SAME_AS",
+      "cloud_account_id": "test-account-vm-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "cross_account",
+      "properties": {
+        "bidirectional": true,
+        "contributing_sources": [
+          "cross_account"
+        ],
+        "cross_account_rule": "selfhosted_vm_same_as_aws_instance",
+        "source_type": "aws",
+        "target_type": "selfhosted"
+      },
+      "contributing_sources": [
+        "cross_account"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:batch-vm:batch-vm",
+      "dst_key": "selfhosted:test-account-vm-1:us-central1:ComputeInstance::6436163694725850158",
+      "relationship_type": "SAME_AS",
+      "cloud_account_id": "test-account-vm-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "cross_account",
+      "properties": {
+        "bidirectional": true,
+        "contributing_sources": [
+          "cross_account"
+        ],
+        "cross_account_rule": "selfhosted_vm_same_as_gcp_instance",
+        "source_type": "gcp",
+        "target_type": "selfhosted"
+      },
+      "contributing_sources": [
+        "cross_account"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1:us-east-1:Node::ip-10-0-1-5.ec2.internal",
+      "dst_key": "aws:test-account-aws-1:us-east-1:ComputeInstance::api-vm",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s_ec2",
+      "properties": {
+        "connection_type": "ec2_provider_id",
+        "contributing_sources": [
+          "k8s_ec2",
+          "cross_account"
+        ],
+        "instance_id": "i-0a1b2c3d4e5f60718",
+        "provider_id": "aws:///us-east-1a/i-0a1b2c3d4e5f60718"
+      },
+      "contributing_sources": [
+        "cross_account",
+        "k8s_ec2"
+      ]
+    },
+    {
+      "src_key": "selfhosted:test-account-vm-1:us-central1:ComputeInstance::6436163694725850158",
+      "dst_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:batch-vm:batch-vm",
+      "relationship_type": "SAME_AS",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "cross_account",
+      "properties": {
+        "contributing_sources": [
+          "cross_account"
+        ],
+        "cross_account_rule": "selfhosted_vm_same_as_gcp_instance",
+        "source_type": "selfhosted",
+        "target_type": "gcp"
+      },
+      "contributing_sources": [
+        "cross_account"
+      ]
+    },
+    {
+      "src_key": "selfhosted:test-account-vm-1:us-east-1:ComputeInstance::i-0a1b2c3d4e5f60718",
+      "dst_key": "aws:test-account-aws-1:us-east-1:ComputeInstance::api-vm",
+      "relationship_type": "SAME_AS",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "cross_account",
+      "properties": {
+        "contributing_sources": [
+          "cross_account"
+        ],
+        "cross_account_rule": "selfhosted_vm_same_as_aws_instance",
+        "source_type": "selfhosted",
+        "target_type": "aws"
+      },
+      "contributing_sources": [
+        "cross_account"
+      ]
+    }
+  ]
+}

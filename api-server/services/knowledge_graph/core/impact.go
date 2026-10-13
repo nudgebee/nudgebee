@@ -475,7 +475,16 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 		criticality = map[string]string{}
 	}
 
-	discoveredIDs, _, nodeMinDepth, err := s.discoverBFS([]string{nodeID}, traverseOptions{
+	// A host's SAME_AS twins (a self-hosted VM and its cloud instance) are one
+	// machine, so they all seed the walk at depth 0: a blast radius started on
+	// any of them reaches the same dependents, and none of them is reported as
+	// a dependent of itself.
+	seeds := []string{nodeID}
+	if seed.NodeType == NodeTypeComputeInstance {
+		seeds = s.sameAsClosure(tenantID, nodeID)
+	}
+
+	discoveredIDs, _, nodeMinDepth, err := s.discoverBFS(seeds, traverseOptions{
 		Direction:         TraverseDirectionUpstream,
 		Levels:            maxDepth,
 		RelationshipTypes: relTypes,
@@ -564,7 +573,13 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 	// single-source tenant reach an honest "no callers" verdict instead of a
 	// permanent "low".
 	if summary.CoverageConfidence == CoverageLow {
-		observed := hasSeedFlowEvidence(nodeID, edges, summary.DownstreamDependencies)
+		observed := false
+		for _, id := range seeds {
+			if hasSeedFlowEvidence(id, edges, summary.DownstreamDependencies) {
+				observed = true
+				break
+			}
+		}
 		if !observed && seedAccountIsClusterScoped(seed) {
 			observed, err = s.accountHasFlowObservedEdges(tenantID, seed.CloudAccountID)
 			if err != nil {
@@ -576,6 +591,73 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 		}
 	}
 	return &summary, nil
+}
+
+// sameAsClosureCap bounds the twins added per seed. A host has one cloud
+// instance node per account it is onboarded in, plus one self-hosted VM node per
+// VM account that scanned it; anything near this size is a data problem.
+const sameAsClosureCap = 16
+
+// sameAsClosure returns the seed and every ComputeInstance joined to it by
+// SAME_AS, transitively: the self-hosted VM node and each cloud instance node
+// for the same machine (sources/selfhosted). The seed comes first.
+func (s *Service) sameAsClosure(tenantID, seedID string) []string {
+	return s.withSameAsTwins(tenantID, []string{seedID})
+}
+
+// withSameAsTwins returns the seeds, in order, followed by every ComputeInstance
+// joined to any of them by SAME_AS, transitively — a host's self-hosted VM node
+// and its cloud instance nodes are one machine, so a walk from any of them
+// starts from all of them. One batched walk for all seeds; a seed with no twins
+// costs one indexed edge lookup. A lookup failure degrades to the seeds alone,
+// the walk they had before twins.
+func (s *Service) withSameAsTwins(tenantID string, seeds []string) []string {
+	if len(seeds) == 0 {
+		return seeds
+	}
+	ids, _, depth, err := s.discoverBFS(seeds, traverseOptions{
+		Direction:         TraverseDirectionBoth,
+		Levels:            3,
+		RelationshipTypes: []string{string(RelationshipSameAs)},
+		IncludeNodeTypes:  []NodeType{NodeTypeComputeInstance},
+		TenantID:          tenantID,
+		ExpandSameAsTwins: true,
+	})
+	if err != nil {
+		s.logger.Warn("same-as closure failed; walking from the seeds alone",
+			"seed_count", len(seeds), "error", err)
+		return seeds
+	}
+	isSeed := make(map[string]bool, len(seeds))
+	for _, id := range seeds {
+		isSeed[id] = true
+	}
+	twins := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !isSeed[id] {
+			twins = append(twins, id)
+		}
+	}
+	if len(twins) == 0 {
+		return seeds
+	}
+	sort.Slice(twins, func(i, j int) bool {
+		if depth[twins[i]] != depth[twins[j]] {
+			return depth[twins[i]] < depth[twins[j]]
+		}
+		return twins[i] < twins[j]
+	})
+	if limit := sameAsClosureCap * len(seeds); len(twins) > limit {
+		twins = twins[:limit]
+	}
+	return append(append(make([]string, 0, len(seeds)+len(twins)), seeds...), twins...)
+}
+
+// isTraversalSeed reports whether discoverBFS started from id: seeds, and only
+// seeds, sit at depth 0.
+func isTraversalSeed(nodeMinDepth map[string]int, id string) bool {
+	d, ok := nodeMinDepth[id]
+	return ok && d == 0
 }
 
 // seedAccountIsClusterScoped reports whether the seed's cloud account maps to
@@ -877,7 +959,7 @@ func summarizeImpact(seedID string, seedType NodeType, nodes []*DbNode, edges []
 	attribution := attributeConnectingEdges(edges, nodeMinDepth, TraverseDirectionUpstream)
 	appHops := appHopDistances(seedID, nodes, edges, nodeMinDepth, TraverseDirectionUpstream, appDependentTypes)
 	for _, n := range nodes {
-		if n == nil || n.ID == seedID || !canBeImpacted(n.NodeType) {
+		if n == nil || n.ID == seedID || isTraversalSeed(nodeMinDepth, n.ID) || !canBeImpacted(n.NodeType) {
 			continue
 		}
 		summary.DependentsByType[n.NodeType]++

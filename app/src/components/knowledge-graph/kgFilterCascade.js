@@ -38,6 +38,7 @@ const PROVIDER_TYPE_PREFIX = {
   github: 'GitHub',
   gitlab: 'GitLab',
   pagerduty: 'PagerDuty',
+  selfhosted: 'SelfHosted',
 };
 
 // Type label for a node row's badge: the specific_type (or node_type) humanized from

@@ -933,6 +933,8 @@ var specificTypeLogoMap = map[string]string{
 	"GitLabGroup":        "gitlab",
 	"PagerDutyUser":      "pagerduty",
 	"PagerDutyTeam":      "pagerduty",
+	// Hosts scanned through a self-hosted VM account (sources/selfhosted).
+	SpecificTypeSelfHostedVM: "selfhosted",
 }
 
 // ComputeLogoID returns the icon identifier for a KG node so the frontend can render the correct logo.

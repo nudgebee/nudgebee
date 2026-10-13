@@ -1266,5 +1266,80 @@
     "relationship_type": "ROUTES_TO",
     "bidirectional": false,
     "cross_account": true
+  },
+  {
+    "name": "selfhosted_vm_same_as_aws_instance",
+    "enabled": true,
+    "source_type": "selfhosted",
+    "target_type": "aws",
+    "source_node_type": "ComputeInstance",
+    "target_node_type": "ComputeInstance",
+    "matching_rules": [
+      {
+        "source_property": "instance_id",
+        "target_property": "resource_id",
+        "match_type": "exact",
+        "case_sensitive": true
+      },
+      {
+        "source_property": "instance_provider",
+        "target_property": "cloud_provider",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "SAME_AS",
+    "bidirectional": true,
+    "cross_account": true
+  },
+  {
+    "name": "selfhosted_vm_same_as_gcp_instance",
+    "enabled": true,
+    "source_type": "selfhosted",
+    "target_type": "gcp",
+    "source_node_type": "ComputeInstance",
+    "target_node_type": "ComputeInstance",
+    "matching_rules": [
+      {
+        "source_property": "instance_id",
+        "target_property": "resource_id",
+        "match_type": "exact",
+        "case_sensitive": true
+      },
+      {
+        "source_property": "instance_provider",
+        "target_property": "cloud_provider",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "SAME_AS",
+    "bidirectional": true,
+    "cross_account": true
+  },
+  {
+    "name": "selfhosted_vm_same_as_azure_instance",
+    "enabled": true,
+    "source_type": "selfhosted",
+    "target_type": "azure",
+    "source_node_type": "ComputeInstance",
+    "target_node_type": "ComputeInstance",
+    "matching_rules": [
+      {
+        "source_property": "instance_id",
+        "target_property": "resource_id",
+        "match_type": "exact",
+        "case_sensitive": false
+      },
+      {
+        "source_property": "instance_provider",
+        "target_property": "cloud_provider",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "SAME_AS",
+    "bidirectional": true,
+    "cross_account": true
   }
 ]

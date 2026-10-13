@@ -785,7 +785,7 @@ function splitNodeTypeSelection(selectedValues, nodeTypes, specificTypesByNodeTy
 // tenant-scoped identity nodes) and anything else deliberately gets no icon —
 // CloudProviderIcon falls back to the AWS logo for unknown providers, which
 // would be misleading on an ExternalService/identity row with no real source.
-const KNOWN_CLOUD_PROVIDERS = new Set(['aws', 'k8s', 'gcp', 'azure', 'github', 'gitlab', 'pagerduty']);
+const KNOWN_CLOUD_PROVIDERS = new Set(['aws', 'k8s', 'gcp', 'azure', 'github', 'gitlab', 'pagerduty', 'selfhosted']);
 
 // parseUniqueKey and formatTypeBadge are imported from ./kgFilterCascade (shared with the
 // client-side cascade).
