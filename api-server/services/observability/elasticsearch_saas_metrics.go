@@ -583,6 +583,9 @@ func runESMetricsQueries(cfg *ElasticsearchConfig, index string, req FetchMetric
 		if note := esDocCapNote(stats, queryBody, req.StartTime, req.EndTime); note != "" && len(payload) > 0 {
 			qr.Note = esJoinNotes(qr.Note, note)
 		}
+		if note := esLabelFieldsNote(stats.LabelFields); note != "" && len(payload) > 0 {
+			qr.Note = esJoinNotes(qr.Note, note)
+		}
 		if note := esTimedOutNote(string(bodyBytes)); note != "" {
 			qr.Note = esJoinNotes(qr.Note, note)
 		}
@@ -1414,6 +1417,43 @@ var esDatasetParsers = map[string]func(src map[string]any) (points []esSeriesPoi
 	"aws.cloudwatch_metrics": awsCloudwatchMetricsetSeries,
 }
 
+// esDatasetLabelFields maps a label a dataset parser emits to the document field
+// it came from, for parsers whose labels are not field paths. Labels stay short
+// because dashboards, alerts and rightsizing store label keys; the mapping goes
+// to the caller in a note so a follow-up query filters on the real field (#39201).
+var esDatasetLabelFields = map[string]func(label string) string{
+	"aws.cloudwatch_metrics": func(label string) string {
+		switch label {
+		case "__name__":
+			return "metricset.metric_name"
+		case "unit":
+			return "metricset.unit"
+		case "statistic":
+			return "metricset.value.max / metricset.value.min / metricset.value.sum ÷ metricset.value.count (avg)"
+		default:
+			return "metricset.dimensions." + label
+		}
+	},
+}
+
+// esLabelFieldsNote lists each short label's source field, sorted, or "" when
+// no parser with short labels contributed.
+func esLabelFieldsNote(fields map[string]string) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(fields))
+	for l := range fields {
+		labels = append(labels, l)
+	}
+	sort.Strings(labels)
+	parts := make([]string, 0, len(labels))
+	for _, l := range labels {
+		parts = append(parts, l+" = "+fields[l])
+	}
+	return "The aws.cloudwatch_metrics series use short labels; to filter or group, use these document fields: " + strings.Join(parts, "; ") + "."
+}
+
 // awsCloudwatchMetricsetSeries reads the Elastic AWS "cloudwatch_metrics" shape:
 //
 //	metricset: {metric_name, dimensions{...}, unit, timestamp,
@@ -1907,6 +1947,9 @@ type esParseStats struct {
 	FirstTs, LastTs   int64
 	// HasAggregations: the response carried an aggregations section.
 	HasAggregations bool
+	// LabelFields maps short series labels to the document fields they came from
+	// (see esDatasetLabelFields); empty when every label is already a field path.
+	LabelFields map[string]string
 }
 
 func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
@@ -1968,6 +2011,7 @@ func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, 
 	// "matched nothing" and "matched but every hit was discarded" are the same
 	// observation. Tracked per reason so the log names which shape assumption failed.
 	var droppedNoTimestamp, droppedNonNumericValue int
+	labelFields := map[string]string{}
 	// fallbackHits counts documents only the generic numeric-leaf walk could read.
 	// A non-zero count names a shape that deserves an esDatasetParsers entry.
 	var fallbackHits int
@@ -2007,17 +2051,27 @@ func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, 
 		// projection cannot hide it. Datasets with no registered parser — and
 		// documents that do not match the shape their dataset implies — fall through
 		// to the detection chain below unchanged.
-		if parse, known := esDatasetParsers[esIndexDataset(hit.Index)]; known {
-			if points, datasetTs, matched := parse(src); matched {
-				// The shape carries its own observation time; the generic `ts` above
-				// is the ingest time for these documents.
-				if datasetTs > 0 {
-					ts = datasetTs
+		if dataset := esIndexDataset(hit.Index); dataset != "" {
+			if parse, known := esDatasetParsers[dataset]; known {
+				if points, datasetTs, matched := parse(src); matched {
+					// The shape carries its own observation time; the generic `ts` above
+					// is the ingest time for these documents.
+					if datasetTs > 0 {
+						ts = datasetTs
+					}
+					fieldOf := esDatasetLabelFields[dataset]
+					for _, pt := range points {
+						add(pt.Labels, ts, pt.Value)
+						if fieldOf != nil {
+							for l := range pt.Labels {
+								if _, seen := labelFields[l]; !seen {
+									labelFields[l] = fieldOf(l)
+								}
+							}
+						}
+					}
+					continue
 				}
-				for _, pt := range points {
-					add(pt.Labels, ts, pt.Value)
-				}
-				continue
 			}
 		}
 
@@ -2247,6 +2301,7 @@ func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, 
 		DroppedNoValue:     droppedNonNumericValue,
 		SampleSourceFields: sampleFields,
 		GenericTruncation:  esJoinNotes(esGenericTruncationNote(genericLeavesTruncated, genericSeriesTruncated), esTermsTruncationNote(termsDocsDropped)),
+		LabelFields:        labelFields,
 	}, nil
 }
 

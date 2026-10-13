@@ -284,3 +284,18 @@ func TestMetricsAnswerStatus(t *testing.T) {
 	assert.Equal(t, toolcore.NBToolResponseStatusSuccess, status)
 	assert.Equal(t, "Fields: a, b", data)
 }
+
+// #39201: a query the user pasted reaches the provider agent verbatim.
+func TestWithUserSuppliedQuery(t *testing.T) {
+	dsl := `{"query":{"term":{"metricset.dimensions.DBClusterIdentifier":"example-auroradb"}}}`
+	got := withUserSuppliedQuery("CPU of example-auroradb", map[string]any{"query": dsl})
+	assert.True(t, strings.HasPrefix(got, "CPU of example-auroradb"))
+	assert.Contains(t, got, "Run the following query exactly as given first")
+	assert.True(t, strings.HasSuffix(got, dsl), "the query is appended unchanged")
+	assert.Equal(t, "q", withUserSuppliedQuery("q", nil))
+	assert.Equal(t, "q", withUserSuppliedQuery("q", map[string]any{"query": "  "}))
+	// A DSL body passed as an object is kept, as JSON.
+	obj := withUserSuppliedQuery("q", map[string]any{"query": map[string]any{"size": 0}})
+	assert.True(t, strings.HasSuffix(obj, `{"size":0}`), obj)
+
+}

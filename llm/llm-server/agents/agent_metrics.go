@@ -435,6 +435,10 @@ func (m MetricsAgentTool) InputSchema() toolcore.ToolSchema {
 				Type:        toolcore.ToolSchemaTypeString,
 				Description: "Metrics Query Question",
 			},
+			"query": {
+				Type:        toolcore.ToolSchemaTypeString,
+				Description: "Optional: a query the user supplied (PromQL, Elasticsearch DSL JSON, …), copied exactly. It is run as given first.",
+			},
 			"output_file": {
 				Type:        toolcore.ToolSchemaTypeString,
 				Description: "Optional: Path in the workspace to save the raw metrics data (e.g., 'metrics.json'). Relative paths are saved in the conversation directory.",
@@ -463,6 +467,8 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 		// still name the target; tell it the target is already the scope.
 		input.Context = strings.TrimSpace(input.Context + "\n" + target.ScopeNote())
 	}
+
+	input.Command = withUserSuppliedQuery(input.Command, input.Arguments)
 
 	provider, err := tools.GetMetricsProvider(queryAccountId)
 	if target != nil {
@@ -708,4 +714,29 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// withUserSuppliedQuery appends a query the user gave, verbatim, to the command the
+// provider agent receives. Passed only as a paraphrased question, a pasted query or
+// field path was rewritten on the way and never run as given (#39201).
+//
+// The wording "Run the following query" is what explicitMetricsQuery
+// (agents/core/metrics_explicit_query.go) recognises, so on react4 a complete DSL
+// body with a named index is then executed first deterministically.
+func withUserSuppliedQuery(command string, args map[string]any) string {
+	var query string
+	switch q := args["query"].(type) {
+	case string:
+		query = q
+	case nil:
+	default:
+		// A model may pass a DSL body as a JSON object rather than a string.
+		if b, err := json.Marshal(q); err == nil {
+			query = string(b)
+		}
+	}
+	if strings.TrimSpace(query) == "" {
+		return command
+	}
+	return command + "\n\nThe user supplied a query. Run the following query exactly as given first; change it only if it fails or returns nothing, and say what you changed:\n" + query
 }
