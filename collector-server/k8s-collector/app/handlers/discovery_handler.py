@@ -34,6 +34,12 @@ def _version_where(table_name: str) -> str:
     )
 
 
+# Never SET a column of a cloud_resourses unique index (id, account,
+# external_resource_id, resourse_id, type, region, service_name). Naming one makes
+# ON CONFLICT lock the existing row FOR UPDATE even when the value is unchanged,
+# which blocks the FOR KEY SHARE that every foreign-key insert into
+# cloud_resource_metrics / spends takes, and the two deadlock. resourse_id needs
+# no update anyway: external_resource_id is a uuid5 of it plus the account.
 resources_on_conflict = (
     "ON CONFLICT(account,external_resource_id) DO UPDATE SET "
     "last_seen = EXCLUDED.last_seen, "
@@ -41,8 +47,7 @@ resources_on_conflict = (
     "is_active = EXCLUDED.is_active, "
     "tags = EXCLUDED.tags, "
     "first_seen = EXCLUDED.first_seen, "
-    "status = EXCLUDED.status, "
-    "resourse_id = EXCLUDED.resourse_id "
+    "status = EXCLUDED.status "
     f"WHERE {_version_where('cloud_resourses')}"
 )
 
