@@ -63,7 +63,7 @@ func TestDBSink_RecordInsertsRow(t *testing.T) {
 			"anthropic", "claude-haiku-4-5", // provider, model (resolved)
 			"", "", "", "", "", // requested_provider, requested_model, responded_model, routing_reason, routing_rule
 			"POST", "/v1/messages", false,
-			200, int64(1200), "req_test",
+			200, int64(1200), nil, "req_test", // status_code, latency_ms, ttft_ms (not streamed), request_id
 			14, 7, 21, 0, 0, "",
 			0.05, // cost_usd — snapshotted at write time
 			0.02, // cache_savings_usd — snapshotted with cost

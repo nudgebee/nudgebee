@@ -131,6 +131,14 @@ export interface GatewayLatencyPct {
   p99_seconds: number;
 }
 
+/** One provider's time to first streamed chunk over its streamed requests (ms). */
+export interface GatewayProviderTTFT {
+  provider: string;
+  requests: number;
+  p50_ms: number;
+  p95_ms: number;
+}
+
 /** One from→to substitution pair and how often it fired. */
 export interface GatewayRoute {
   from_provider: string;
@@ -160,6 +168,8 @@ export interface GatewayGovernance {
   latency?: GatewayLatencyPct;
   /** from→to pairs for routing_reason=substitute — where substitution reroutes. */
   substitution_routes?: GatewayRoute[];
+  /** Time to first streamed chunk per provider (streamed requests only). */
+  ttft_by_provider?: GatewayProviderTTFT[];
 }
 
 export interface GatewayUsageMetrics {
@@ -201,6 +211,8 @@ export interface GatewayRequestRow {
   output_tokens: number;
   cached_input_tokens: number;
   latency_ms: number;
+  /** Time to the first streamed chunk; absent for non-streamed requests. */
+  ttft_ms?: number;
   cost_usd: number;
   session_id: string;
   /** How session_id was resolved, most-authoritative first:

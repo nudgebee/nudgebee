@@ -311,12 +311,35 @@ type reqMeta struct {
 	failover       map[string]any // set when a transient primary failure fell over to a fallback
 	dlp            map[string]any // set when the egress filter detected/redacted a secret
 	start          time.Time
+	firstChunk     time.Time // when the first streamed chunk arrived; zero if none
+	attemptStart   time.Time // when a failover attempt began; zero when the primary served
 	sessionID      string
 	sessionSource  string
 	prefixFinger   string // stable-prefix fingerprint (cache-affinity key + inferred session id)
 	reqAttrs       map[string]any
 	identity       auth.Identity
 	decision       routing.Decision
+}
+
+// markFirstChunk records when the first streamed chunk arrived (first call wins).
+func (rm *reqMeta) markFirstChunk() {
+	if rm.firstChunk.IsZero() {
+		rm.firstChunk = time.Now()
+	}
+}
+
+// ttftMs is the time to the first streamed chunk, measured from the attempt that served it,
+// or nil for a request that streamed none.
+func (rm *reqMeta) ttftMs() *int64 {
+	if !rm.streaming || rm.firstChunk.IsZero() {
+		return nil
+	}
+	from := rm.start
+	if !rm.attemptStart.IsZero() {
+		from = rm.attemptStart
+	}
+	ms := rm.firstChunk.Sub(from).Milliseconds()
+	return &ms
 }
 
 // Surface values — the entrypoint a request arrived on, captured on every usage row
@@ -412,6 +435,7 @@ func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel fu
 		writeJSONError(c, http.StatusBadGateway, "upstream_error", "passthrough stream returned empty first chunk")
 		return
 	}
+	rm.markFirstChunk()
 	// Valid first chunk: from here the client receives head.StatusCode. Usage may
 	// arrive on this chunk or a later one; meter reflects the status the client got.
 	status = head.StatusCode
@@ -548,6 +572,7 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 		Streaming:  rm.streaming,
 		StatusCode: status,
 		LatencyMS:  time.Since(rm.start).Milliseconds(),
+		TTFTMs:     rm.ttftMs(),
 		Headers:    headers,
 		Usage:      usage,
 		SessionID:  rm.sessionID,

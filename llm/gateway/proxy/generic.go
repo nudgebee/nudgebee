@@ -416,6 +416,7 @@ func (h *handler) streamChatWith(c *gin.Context, bctx *schemas.BifrostContext, c
 		if cr == nil {
 			continue
 		}
+		rm.markFirstChunk()
 		if cr.Usage != nil {
 			usageResp = cr
 		}

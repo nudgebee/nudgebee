@@ -99,7 +99,12 @@ const H = {
       info='Input / output tokens. Cached input tokens (prompt-cache reads) are shown below when present.'
     />
   ),
-  latency: <HeaderLabel label='Latency' info='End-to-end latency for this request.' />,
+  latency: (
+    <HeaderLabel
+      label='Latency'
+      info='End-to-end latency for this request. For a streamed answer, "first" below it is how long until the first part of the answer arrived.'
+    />
+  ),
   cost: <HeaderLabel label='Cost' info='Cost of this request.' />,
   status: <HeaderLabel label='Status' info='HTTP status the gateway returned for this request.' />,
   body: <HeaderLabel label='Body' info='View the captured request and response body (when available for your own requests).' />,
@@ -343,7 +348,22 @@ function toRow(
         </Box>
       ),
     },
-    { align: 'right' as const, component: <Box sx={{ ...numCell, textAlign: 'right' }}>{fmtDuration(r.latency_ms)}</Box> },
+    {
+      align: 'right' as const,
+      component: (
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+          <Box sx={numCell}>{fmtDuration(r.latency_ms)}</Box>
+          {r.ttft_ms != null && (
+            <Box
+              title='Time to first token'
+              sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', fontVariantNumeric: 'tabular-nums' }}
+            >
+              first {fmtDuration(r.ttft_ms)}
+            </Box>
+          )}
+        </Box>
+      ),
+    },
     {
       align: 'right' as const,
       component: (

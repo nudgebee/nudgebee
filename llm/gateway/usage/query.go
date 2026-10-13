@@ -133,6 +133,15 @@ type LatencyPct struct {
 	P99Seconds float64 `json:"p99_seconds"`
 }
 
+// ProviderTTFT is one provider's time to first streamed chunk (ms) over its streamed
+// requests — how long users wait before an answer starts appearing.
+type ProviderTTFT struct {
+	Provider string  `json:"provider" db:"provider"`
+	Requests int64   `json:"requests" db:"requests"` // streamed requests with a recorded TTFT
+	P50Ms    float64 `json:"p50_ms" db:"p50_ms"`
+	P95Ms    float64 `json:"p95_ms" db:"p95_ms"`
+}
+
 // RouteCount is one from→to substitution pair and how often it fired — where the
 // gateway's cross-provider substitution actually sends traffic.
 type RouteCount struct {
@@ -153,6 +162,7 @@ type Governance struct {
 	OutcomesByProvider []ProviderOutcome `json:"outcomes_by_provider"`
 	OutcomeSeries      []OutcomeBucket   `json:"outcome_series"`
 	Latency            LatencyPct        `json:"latency"`
+	TTFTByProvider     []ProviderTTFT    `json:"ttft_by_provider"`    // streamed requests only
 	Rejects            []LabelCount      `json:"rejects"`             // by derived.reject_reason (edge rejections)
 	RoutingReasons     []LabelCount      `json:"routing_reasons"`     // by routing_reason (passthrough/substitute/…)
 	SubstitutionRoutes []RouteCount      `json:"substitution_routes"` // from→to pairs for routing_reason=substitute
@@ -622,6 +632,17 @@ func governance(db *common.DatabaseManager, req Request) (*Governance, error) {
 		g.Latency = LatencyPct{P50Seconds: latRows[0].P50 / 1000, P95Seconds: latRows[0].P95 / 1000, P99Seconds: latRows[0].P99 / 1000}
 	}
 
+	// Time to first streamed chunk, per provider (ttft_ms is NULL for unary requests).
+	g.TTFTByProvider = []ProviderTTFT{}
+	if err := db.QueryAndScan(&g.TTFTByProvider, `
+		SELECT provider, count(*) AS requests,
+		       percentile_cont(0.5) WITHIN GROUP (ORDER BY ttft_ms) AS p50_ms,
+		       percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms) AS p95_ms
+		FROM llm_gateway_usage WHERE `+win+` AND ttft_ms IS NOT NULL
+		GROUP BY provider ORDER BY requests DESC`, args...); err != nil {
+		return nil, fmt.Errorf("usage: governance ttft: %w", err)
+	}
+
 	// Substitution routes: where cross-provider substitution actually sends traffic.
 	var routeRows []routeScan
 	if err := db.QueryAndScan(&routeRows, `
@@ -716,6 +737,7 @@ type RequestRow struct {
 	OutputTokens      int64     `json:"output_tokens"`
 	CachedInputTokens int64     `json:"cached_input_tokens"`
 	LatencyMs         int64     `json:"latency_ms"`
+	TTFTMs            *int64    `json:"ttft_ms,omitempty"` // streamed requests only
 	CostUsd           float64   `json:"cost_usd"`
 	SessionID         string    `json:"session_id"`
 	SessionSource     string    `json:"session_source"` // header | metadata.user_id | inferred | ""
@@ -779,6 +801,7 @@ type reqScan struct {
 	CacheRead      int64     `db:"cache_read_tokens"`
 	CacheWrite     int64     `db:"cache_write_tokens"`
 	LatencyMs      int64     `db:"latency_ms"`
+	TTFTMs         *int64    `db:"ttft_ms"`
 	Cost           float64   `db:"cost_usd"`
 	SessionID      string    `db:"session_id"`
 	SessionSource  string    `db:"session_source"`
@@ -891,7 +914,7 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 		       COALESCE(g.status_code,0) AS status_code, COALESCE(g.streaming,false) AS streaming,
 		       COALESCE(g.input_tokens,0) AS input_tokens, COALESCE(g.output_tokens,0) AS output_tokens,
 		       COALESCE(g.cache_read_tokens,0) AS cache_read_tokens, COALESCE(g.cache_write_tokens,0) AS cache_write_tokens,
-		       COALESCE(g.latency_ms,0) AS latency_ms,
+		       COALESCE(g.latency_ms,0) AS latency_ms, g.ttft_ms,
 		       COALESCE(g.cost_usd,0) AS cost_usd,
 		       COALESCE(g.session_id,'') AS session_id,
 		       COALESCE(NULLIF(g.attributes,'')::jsonb #>> '{derived,session_source}','') AS session_source
@@ -926,6 +949,7 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 			StatusCode: r.StatusCode, Streaming: r.Streaming,
 			InputTokens: r.Input, OutputTokens: r.Output, CachedInputTokens: r.CacheRead,
 			LatencyMs: r.LatencyMs,
+			TTFTMs:    r.TTFTMs,
 			CostUsd:   r.Cost,
 			SessionID: r.SessionID, SessionSource: r.SessionSource,
 			Dlp: parseDLP(r.DlpJSON),

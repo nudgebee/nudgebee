@@ -60,9 +60,11 @@ type UsageEvent struct {
 	Streaming         bool   `db:"streaming"`
 
 	// Response.
-	StatusCode int    `db:"status_code"`
-	LatencyMS  int64  `db:"latency_ms"`
-	RequestID  string `db:"request_id"`
+	StatusCode int   `db:"status_code"`
+	LatencyMS  int64 `db:"latency_ms"`
+	// TTFTMs is the time to the first streamed chunk; nil (NULL) for a non-streaming request.
+	TTFTMs    *int64 `db:"ttft_ms"`
+	RequestID string `db:"request_id"`
 
 	// Usage (raw). Zero when core extracted no billable usage.
 	// InputTokens excludes cache reads and writes, which have their own columns.
@@ -92,6 +94,7 @@ type EventInput struct {
 	Streaming  bool
 	StatusCode int
 	LatencyMS  int64
+	TTFTMs     *int64            // time to the first streamed chunk; nil when not streamed
 	Headers    map[string]string // provider response headers (for request-id)
 	Usage      *schemas.BifrostPassthroughUsage
 	SessionID  string
@@ -130,6 +133,7 @@ func NewEvent(in EventInput) UsageEvent {
 		Streaming:  in.Streaming,
 		StatusCode: in.StatusCode,
 		LatencyMS:  in.LatencyMS,
+		TTFTMs:     in.TTFTMs,
 		RequestID:  requestIDFromHeaders(in.Headers),
 		SessionID:  in.SessionID,
 		Attributes: marshalAttributes(in.Attributes),
