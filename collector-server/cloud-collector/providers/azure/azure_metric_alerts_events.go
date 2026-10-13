@@ -106,7 +106,6 @@ func getAzureAlerts(ctx providers.CloudProviderContext, account providers.Accoun
 
 			page, err := pager.NextPage(ctx.GetContext())
 			if err != nil {
-				ctx.GetLogger().Error("azure:getAzureAlerts failed to get next page", "error", err, "subscriptionID", subID)
 				return providers.ListEventResponse{}, fmt.Errorf("failed to get next page: %w", err)
 			}
 

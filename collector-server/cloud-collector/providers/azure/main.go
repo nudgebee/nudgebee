@@ -1111,7 +1111,6 @@ func (a *azureProvider) ListEvents(ctx providers.CloudProviderContext, account p
 
 		alertEvents, err := getAzureAlerts(ctx, account, filter)
 		if err != nil {
-			ctx.GetLogger().Error("azure:ListEvents failed to get alerts", "error", err)
 			return providers.ListEventResponse{}, fmt.Errorf("failed to get alerts: %w", err)
 		}
 		allEvents = alertEvents.Items

@@ -53,13 +53,31 @@ func StoreEventsForAllAccounts(ctx *security.RequestContext) {
 
 	accountTenantIds := map[string]string{}
 	queryResponse := []map[string]any{}
-	err = dbms.QueryAndScan(&queryResponse, "select id::text, tenant::text from cloud_accounts where status = 'active' and lower(cloud_provider) IN ('aws', 'azure', 'gcp', 'cloudfoundry')")
+	// waiting marks an account whose credentials were rejected and whose back-off
+	// (see events_backoff.go) has not ended by this tick.
+	// It reads the same agent row previousEventsAuthFailures does, against the
+	// database clock so every replica agrees.
+	err = dbms.QueryAndScan(&queryResponse, `select c.id::text, c.tenant::text,
+			coalesce((select (a.connection_status->'events'->>'retry_after')::timestamptz > now() + make_interval(secs => $1)
+				from agent a where a.cloud_account_id = c.id and a.type != 'proxy'
+				order by a.updated_at desc limit 1), false) as waiting
+		from cloud_accounts c
+		where c.status = 'active' and lower(c.cloud_provider) IN ('aws', 'azure', 'gcp', 'cloudfoundry')`,
+		eventsSchedulerSlack.Seconds())
 	if err != nil {
 		ctx.GetLogger().Error("events: unable to fetch active accounts", "error", err)
 		return
 	}
+	waiting := 0
 	for _, qr := range queryResponse {
+		if w, _ := qr["waiting"].(bool); w {
+			waiting++
+			continue
+		}
 		accountTenantIds[qr["id"].(string)] = qr["tenant"].(string)
+	}
+	if waiting > 0 {
+		ctx.GetLogger().Info("events: skipping accounts whose credentials were rejected until their retry time", "count", waiting)
 	}
 
 	if len(accountTenantIds) == 0 {
@@ -132,6 +150,14 @@ func ConsumeCloudAccountEventsJobs(ctx *security.RequestContext, concurrency int
 		// Execute StoreEvents logic
 		_, err = StoreEvents(jobCtx, job.AccountId)
 		if err != nil {
+			// Rejected credentials: the account is backed off, so this is the one
+			// line the failed poll writes, and the message is acknowledged.
+			var rejected *credentialsRejectedError
+			if errors.As(err, &rejected) {
+				logger.Warn("events: cloud rejected the account's credentials, polling less often until they work",
+					"error", rejected.err, "consecutive_failures", rejected.failures, "next_poll_after", rejected.retryAfter)
+				return nil
+			}
 			// Check if the error indicates a permanent failure (e.g. HTTP 4xx from provider API, or account not found)
 			if isPermanentProviderError(err) || strings.Contains(err.Error(), "not found") {
 				logger.Error("events: permanent error, dropping message", "error", err)
@@ -358,12 +384,13 @@ func StoreEvents(ctx *security.RequestContext, accountId string) (StoreEventResp
 	})
 
 	if err != nil {
-		ctx.GetLogger().Error("unable to fetch events", "error", err)
+		eventsStatus, rejected := eventsStatusOnFailure(err, previousEventsAuthFailures(ctx, dbms, accountId), time.Now())
 		_ = updateOrCreateAgentStatus(ctx, accountId, AgentStatusConnected, err.Error(), true, map[string]any{
-			"events": map[string]any{
-				"err": err.Error(),
-			},
+			"events": eventsStatus,
 		})
+		if rejected != nil {
+			err = rejected
+		}
 		return StoreEventResponse{
 			Count:    0,
 			Duration: time.Since(t0),
