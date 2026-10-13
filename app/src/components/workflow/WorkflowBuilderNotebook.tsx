@@ -1618,7 +1618,21 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     setAutoFitViewport(viewport || null);
   }, [nodes, edges, workflowData, taskDefinitions]);
 
+  // The JSON panel is a drawer beside the canvas (currentMode stays 'editor'),
+  // so gate on the unapplied edits themselves, not on the mode. Opens the panel
+  // so the Apply banner the message points at is on screen.
+  const getUnappliedJsonError = useCallback((): string | null => {
+    if (!jsonHasUnsavedChanges) return null;
+    setJsonPanelVisible(true);
+    return jsonValid ? 'You have unapplied JSON changes. Click "Apply" first.' : 'JSON is invalid. Fix the errors in the JSON panel first.';
+  }, [jsonHasUnsavedChanges, jsonValid]);
+
   const runValidation = async (showSuccess: boolean = false): Promise<boolean> => {
+    const jsonError = getUnappliedJsonError();
+    if (jsonError) {
+      snackbar.error(`Cannot validate: ${jsonError}`);
+      return false;
+    }
     try {
       const { definition: workflowDefinition } = prepareWorkflowForSave(
         nodes,
@@ -1666,15 +1680,9 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   // Publish-confirm path can abort instead of snapshotting a stale draft.
   const handleSaveWorkflow = async (): Promise<boolean> => {
     try {
-      // Block if on JSON tab with invalid JSON
-      if (currentMode === 'json' && !jsonValid) {
-        snackbar.error('Cannot save: JSON is invalid. Please fix errors or switch to Editor tab.');
-        return false;
-      }
-
-      // Block if on JSON tab with unsaved changes
-      if (currentMode === 'json' && jsonHasUnsavedChanges) {
-        snackbar.error('Cannot save: You have unapplied JSON changes. Click "Apply" first.');
+      const jsonError = getUnappliedJsonError();
+      if (jsonError) {
+        snackbar.error(`Cannot save: ${jsonError}`);
         return false;
       }
 
@@ -2156,6 +2164,12 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
 
   const handleConfirmPublish = useCallback(async () => {
     if (!accountId || !workflowId) return;
+    // Checked here too: with a clean canvas the save below is skipped.
+    const jsonError = getUnappliedJsonError();
+    if (jsonError) {
+      snackbar.error(`Cannot publish: ${jsonError}`);
+      return;
+    }
     setPublishing(true);
     try {
       // Publish always implies "save + publish". The backend's PublishVersion
@@ -2214,7 +2228,17 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     // in sync with the latest closure every render), so it is intentionally NOT
     // a dependency here — the ref guarantees we never publish stale canvas state
     // without re-creating this callback on every edit.
-  }, [accountId, hasUnsavedChanges, publishDescription, publishName, publishSetLive, publishStatus, refreshVersions, workflowId]);
+  }, [
+    accountId,
+    hasUnsavedChanges,
+    publishDescription,
+    publishName,
+    publishSetLive,
+    publishStatus,
+    refreshVersions,
+    workflowId,
+    getUnappliedJsonError,
+  ]);
 
   // Per-version status mutation, fired from the dropdown on the live row in
   // the version-history drawer. Tracks which version is currently being
@@ -2404,15 +2428,15 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     (mode: 'run' | 'dryrun', _variant: 'current' | 'live' = 'current'): string | null => {
       if (mode === 'run' && isTestRunning) return 'Manual run already in progress';
       if (mode === 'dryrun' && (isDryRunning || isTestRunning)) return 'A run is already in progress';
-      if (currentMode === 'json' && !jsonValid) return 'JSON is invalid. Please fix errors or switch to Editor tab.';
-      if (currentMode === 'json' && jsonHasUnsavedChanges) return 'You have unapplied JSON changes. Click "Apply" first.';
+      const jsonError = getUnappliedJsonError();
+      if (jsonError) return jsonError;
       const validationErrors = validateWorkflowForSave(workflowDataRef.current, nodesRef.current, (nodes: Node[]) =>
         extractTasksFromWorkflowNodes(nodes, edges)
       );
       if (validationErrors.length > 0) return `Cannot execute: ${validationErrors.join(', ')}`;
       return null;
     },
-    [isTestRunning, isDryRunning, edges]
+    [isTestRunning, isDryRunning, edges, getUnappliedJsonError]
   );
 
   // Run button click: validate, save, then open trigger input modal.
@@ -2908,6 +2932,11 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   // Run all previous steps for a given task (dry-run up to but not including the task)
   const handleRunPreviousSteps = useCallback(
     async (currentTaskId: string): Promise<Record<string, any>> => {
+      const jsonError = getUnappliedJsonError();
+      if (jsonError) {
+        snackbar.error(jsonError);
+        return {};
+      }
       const currentNodes = nodesRef.current;
 
       // Get all tasks that are predecessors of the current task
@@ -2942,13 +2971,18 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
 
       return taskOutputs;
     },
-    [edges, taskDefinitions, prepareDryRunRequest, triggerAndAwaitDryRun]
+    [edges, taskDefinitions, prepareDryRunRequest, triggerAndAwaitDryRun, getUnappliedJsonError]
   );
 
   // Dry-run from start up to and including a specific task. For switch targets, also include
   // direct children so the chosen branch actually runs (the switch alone produces no useful trace).
   const handleDryRunToTask = useCallback(
     async (targetTaskId: string, unsavedConfig?: any): Promise<any> => {
+      const jsonError = getUnappliedJsonError();
+      if (jsonError) {
+        snackbar.error(jsonError);
+        return null;
+      }
       const currentNodes = nodesRef.current;
 
       const previousTasks = getPreviousTasksForNode(targetTaskId, currentNodes, edges, taskDefinitions);
@@ -2966,7 +3000,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       );
       return await triggerAndAwaitDryRun(request);
     },
-    [edges, taskDefinitions, prepareDryRunRequest, triggerAndAwaitDryRun]
+    [edges, taskDefinitions, prepareDryRunRequest, triggerAndAwaitDryRun, getUnappliedJsonError]
   );
 
   // Run a single task in isolation (real execution)
