@@ -1983,6 +1983,8 @@ func setInternalTaskParams(params map[string]any, wf *model.Workflow, eventID st
 	params[tasks.ParamWorkflowID] = wf.ID
 	params[tasks.ParamUserID] = wf.UpdatedBy
 	params[tasks.ParamWorkflowName] = wf.Name
+	// Only the run sets the principal: a step's own params must never
+	// name whose rights it acts with (e.g. an admin or a bee account).
 	if wf.PrincipalUserID != "" {
 		params[tasks.ParamRunAsUserID] = wf.PrincipalUserID
 	} else {
