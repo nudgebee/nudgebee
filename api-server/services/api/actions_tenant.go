@@ -640,12 +640,19 @@ func handleTenantAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
+		// A rejected create has no id yet; fall back to the name (or a sentinel,
+		// if even that is blank) so a failed attempt still carries a non-empty
+		// required EventTarget.
+		eventTarget := request.Name
+		if eventTarget == "" {
+			eventTarget = "unspecified"
+		}
 		auditEvent := audit.Audit{
 			UserId:        ctx.GetSecurityContext().GetUserId(),
 			TenantId:      ctx.GetSecurityContext().GetTenantId(),
 			EventTime:     time.Now().UTC(),
 			EventCategory: audit.EventCategoryGroup,
-			EventTarget:   "",
+			EventTarget:   eventTarget,
 			EventType:     audit.EventTypeGroupUserUpdate,
 			EventState:    request,
 			EventActor:    audit.EventActorUiService,
@@ -916,12 +923,19 @@ func handleTenantAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
+		// A rejected create has no id yet; fall back to the name (or a sentinel,
+		// if even that is blank) so a failed attempt still carries a non-empty
+		// required EventTarget.
+		eventTarget := request.Name
+		if eventTarget == "" {
+			eventTarget = "unspecified"
+		}
 		auditEvent := audit.Audit{
 			UserId:        ctx.GetSecurityContext().GetUserId(),
 			TenantId:      ctx.GetSecurityContext().GetTenantId(),
 			EventTime:     time.Now().UTC(),
 			EventCategory: audit.EventCategoryAccount,
-			EventTarget:   "",
+			EventTarget:   eventTarget,
 			EventType:     audit.EventTypeAccountUpdate,
 			EventState:    request,
 			EventActor:    audit.EventActorUiService,

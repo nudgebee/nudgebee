@@ -32,6 +32,11 @@ func handleEventAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 			return
 		}
 
+		if request.AccountId == "" || request.EventId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id and event_id are required"))
+			return
+		}
+
 		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
