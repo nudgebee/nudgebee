@@ -672,3 +672,74 @@ func getPrometheusUserConfig(sc *security.RequestContext, accountId string) (pro
 	}
 	return cfg, nil
 }
+
+// solarWindsConn holds the SolarWinds connection config for alert-rule management.
+//
+// Duplicated from integrations.GetSolarWindsConfigs rather than reused, for the
+// same reason cubeAPMConn is: this package cannot import integrations
+// (integrations → event → triage → alertrule is an import cycle).
+type solarWindsConn struct {
+	APIToken   string
+	DataCenter string
+}
+
+// SolarWinds data centers, mirroring integrations/solarwinds.go. An unknown one
+// is rejected rather than interpolated, because the result would be a hostname
+// that does not resolve and an error that blames the network.
+var solarWindsDataCenters = map[string]bool{
+	"na-01": true, "na-02": true, "eu-01": true, "ap-01": true,
+}
+
+// solarWindsDefaultDataCenter matches the integrations package's default for an
+// integration saved before the field existed.
+const solarWindsDefaultDataCenter = "na-01"
+
+// getSolarWindsConfigs returns the SolarWinds connection config for alert-rule
+// management.
+func getSolarWindsConfigs(sc *security.RequestContext, accountId string) (solarWindsConn, error) {
+	// listIntegrationConfigValues is always tenant-scoped, but its
+	// cloud_account_id filter is conditional and the query ends in LIMIT 1 — so an
+	// empty accountId returns an arbitrary SolarWinds integration from the tenant
+	// rather than none, and an alert would be read or written in the wrong
+	// account's SolarWinds organisation.
+	if accountId == "" {
+		return solarWindsConn{}, fmt.Errorf("account_id is required to resolve a SolarWinds integration")
+	}
+
+	configs, err := listIntegrationConfigValues(sc, accountId, "solarwinds")
+	if err != nil {
+		return solarWindsConn{}, fmt.Errorf("failed to list solarwinds integration configs: %w", err)
+	}
+
+	conn := solarWindsConn{DataCenter: solarWindsDefaultDataCenter}
+	for _, c := range configs {
+		value, err := decryptConfigValue(c)
+		if err != nil {
+			return solarWindsConn{}, fmt.Errorf("failed to decrypt solarwinds config %s: %w", c.Name, err)
+		}
+		switch c.Name {
+		case "api_token":
+			conn.APIToken = strings.TrimSpace(value)
+		case "data_center":
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				conn.DataCenter = trimmed
+			}
+		}
+	}
+
+	if conn.APIToken == "" {
+		return solarWindsConn{}, fmt.Errorf("the SolarWinds integration for account %s has no api_token", accountId)
+	}
+	if !solarWindsDataCenters[conn.DataCenter] {
+		return solarWindsConn{}, fmt.Errorf("unknown SolarWinds data center %q on the integration for account %s", conn.DataCenter, accountId)
+	}
+	return conn, nil
+}
+
+// graphQLURL is the /v1/tfproxy endpoint for this connection's data center.
+//
+// The base-URL shape is duplicated from integrations.SolarWindsAPIBaseURL for
+// the import-cycle reason above; keep the two in step.
+func (c solarWindsConn) graphQLURL() string {
+	return fmt.Sprintf("https://api.%s.cloud.solarwinds.com/v1/tfproxy", c.DataCenter)
+}

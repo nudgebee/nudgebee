@@ -3,6 +3,8 @@ package eventrule
 import (
 	"testing"
 
+	"nudgebee/services/observability/alertrule"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -105,4 +107,38 @@ func TestCubeAPMIsSyncable(t *testing.T) {
 	// The admin API returns the whole rule set in one call with no permission
 	// filtering, so an absent rule can be trusted to mean deleted upstream.
 	assert.True(t, entry.reconcileDeletions)
+}
+
+// SolarWinds is the first provider synced without an inventory call. Its API has
+// no list, search or enumerate operation, so the only rules it can answer for
+// are those Nudgebee already holds an id for — which a firing supplies.
+func TestSolarWindsIsSyncedByKnownIDs(t *testing.T) {
+	entry, ok := syncableProviders["solarwinds"]
+	assert.True(t, ok, "solarwinds must be syncable")
+	assert.Equal(t, "solarwinds", entry.provider)
+	assert.Equal(t, "user", entry.providerSource)
+	assert.Equal(t, "solarwinds_webhook", entry.ruleSource)
+	assert.True(t, entry.byKnownIDs,
+		"SolarWinds has no list operation, so it can only be synced by reading ids back")
+
+	// The provider must be able to answer a single read, and must not claim it
+	// can be listed — a listing would have to invent the inventory.
+	assert.True(t, alertrule.SupportsGet(entry.provider, entry.providerSource),
+		"sync by id needs AlertRuleGetter")
+	assert.False(t, alertrule.SupportsListing(entry.provider, entry.providerSource),
+		"listing is impossible for SolarWinds, not merely unimplemented")
+}
+
+// The id set for a byKnownIDs provider comes from our own rows, so "absent from
+// the result" only ever means "we never knew about it" — never "deleted
+// upstream". Reconciling deletions on that basis would disable a rule whose read
+// merely failed. This encodes the invariant for any provider added later.
+func TestByKnownIDsProvidersNeverReconcileDeletions(t *testing.T) {
+	for source, entry := range syncableProviders {
+		if !entry.byKnownIDs {
+			continue
+		}
+		assert.False(t, entry.reconcileDeletions,
+			"%s is synced by known ids, so an unreadable rule would look deleted and be disabled", source)
+	}
 }
