@@ -65,6 +65,7 @@ type UsageEvent struct {
 	RequestID  string `db:"request_id"`
 
 	// Usage (raw). Zero when core extracted no billable usage.
+	// InputTokens excludes cache reads and writes, which have their own columns.
 	InputTokens      int    `db:"input_tokens"`
 	OutputTokens     int    `db:"output_tokens"`
 	TotalTokens      int    `db:"total_tokens"`
@@ -153,6 +154,9 @@ func NewEvent(in EventInput) UsageEvent {
 			if d := l.PromptTokensDetails; d != nil {
 				ev.CacheReadTokens = d.CachedReadTokens
 				ev.CacheWriteTokens = d.CachedWriteTokens
+				// Core's PromptTokens includes cache reads and writes on every provider; keep
+				// only the fresh part so pricing doesn't bill cached tokens at the full rate too.
+				ev.InputTokens = max(l.PromptTokens-d.CachedReadTokens-d.CachedWriteTokens, 0)
 			}
 		}
 	}
