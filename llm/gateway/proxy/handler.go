@@ -580,14 +580,10 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 		h.sink.Record(ev)
 	}
 
-	// Reconcile token/cost usage against quotas (requests were counted pre-call).
+	// Reconcile token/cost usage against quotas (requests were counted pre-call), on the
+	// target actually served — rm is updated on failover and substitution.
 	if h.limiter.Enabled() && ev.TotalTokens > 0 {
-		h.limiter.Reconcile(ctx, ratelimit.Scope{
-			TenantID: rm.identity.TenantID,
-			UserID:   rm.identity.UserID,
-			APIKeyID: rm.identity.APIKeyID,
-			Model:    ev.RequestedModel,
-		}, ev.TotalTokens, ev.CostUsd)
+		h.limiter.Reconcile(ctx, quotaScope(rm.identity, rm.decision, string(rm.provider), rm.model), ev.TotalTokens, ev.CostUsd)
 	}
 
 	// Full-body logging (off by default). Linked to the usage row via reqID.

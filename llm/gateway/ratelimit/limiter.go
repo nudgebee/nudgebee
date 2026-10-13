@@ -68,12 +68,9 @@ func (l *Limiter) Check(ctx context.Context, s Scope) *Exceeded {
 	}
 	now := l.now()
 	for _, lim := range l.limits.LimitsFor(s.TenantID, s.UserID, s.APIKeyID, s.Model) {
-		if !lim.Enabled {
-			continue
-		}
 		// A model-scoped row only applies to that model. Guarding here (not only in the
 		// store) keeps the rule in one place and testable without the EE index.
-		if lim.Model != "" && lim.Model != s.Model {
+		if !lim.Enabled || !lim.appliesTo(s) {
 			continue
 		}
 		k := key(lim.TenantID, lim.UserID, lim.APIKeyID, lim.Model, lim.Metric, lim.Period, now)
@@ -110,10 +107,7 @@ func (l *Limiter) Reconcile(ctx context.Context, s Scope, tokens int, costUSD fl
 	}
 	now := l.now()
 	for _, lim := range l.limits.LimitsFor(s.TenantID, s.UserID, s.APIKeyID, s.Model) {
-		if !lim.Enabled {
-			continue
-		}
-		if lim.Model != "" && lim.Model != s.Model {
+		if !lim.Enabled || !lim.appliesTo(s) {
 			continue
 		}
 		var delta int64

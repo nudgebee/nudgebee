@@ -67,18 +67,10 @@ func (s ratelimitStage) Handle(rc *RequestContext) (bool, error) {
 	if !s.limiter.Enabled() {
 		return false, nil
 	}
-	// Quotas match the model the CLIENT asked for, as Reconcile does: routeStage has
-	// already rewritten rc.Model to the resolved one when a rule or alias matched.
-	model := rc.Decision.RequestedModel
-	if model == "" {
-		model = rc.Model
-	}
-	ex := s.limiter.Check(rc.Ctx, ratelimit.Scope{
-		TenantID: rc.Identity.TenantID,
-		UserID:   rc.Identity.UserID,
-		APIKeyID: rc.Identity.APIKeyID,
-		Model:    model,
-	})
+	// Quotas match the routed target, as policyStage judges it, or the name the client asked
+	// for: an alias to a capped model counts against that model (invariant 1).
+	provider, model := routedTarget(rc)
+	ex := s.limiter.Check(rc.Ctx, quotaScope(rc.Identity, rc.Decision, provider, model))
 	if ex == nil {
 		return false, nil
 	}
@@ -91,6 +83,20 @@ func (s ratelimitStage) Handle(rc *RequestContext) (bool, error) {
 		fmt.Sprintf("%s limit exceeded for %s (%s window); resets at %s UTC",
 			ex.Metric, ex.Scope, ex.Period, reset.Format("2006-01-02 15:04")))
 	return true, nil
+}
+
+// quotaScope is the scope a request's quotas are checked (pre-call) and reconciled
+// (post-call) against: the served provider/model plus what the client asked for.
+func quotaScope(id auth.Identity, d routing.Decision, provider, model string) ratelimit.Scope {
+	return ratelimit.Scope{
+		TenantID:          id.TenantID,
+		UserID:            id.UserID,
+		APIKeyID:          id.APIKeyID,
+		Provider:          provider,
+		Model:             model,
+		RequestedProvider: d.RequestedProvider,
+		RequestedModel:    d.RequestedModel,
+	}
 }
 
 // CredResolver resolves the provider credential for a specific request. ok=false

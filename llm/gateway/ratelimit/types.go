@@ -4,7 +4,10 @@
 // bucket key, no cron.
 package ratelimit
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Metric is what a limit counts.
 type Metric string
@@ -49,12 +52,37 @@ func (l Limit) intCap() int64 {
 	return int64(l.Value)
 }
 
-// Scope identifies the caller a request is limited against.
+// Scope identifies the caller a request is limited against. A model-scoped limit
+// applies when it names either the served target or the model the client asked for.
 type Scope struct {
 	TenantID string
 	UserID   string
 	APIKeyID string
-	Model    string // the model the CLIENT asked for, not the served/mapped one
+	Provider string // the provider the request is served by (after routing/failover)
+	Model    string // the model the request is served by (after routing/failover)
+
+	RequestedProvider string // the provider/model the CLIENT asked for, e.g. a tier alias
+	RequestedModel    string
+}
+
+// appliesTo reports whether a limit covers the scope. A model-scoped limit may be
+// written bare ("claude-haiku-4-5") or provider-pinned ("anthropic/claude-haiku-4-5").
+func (l Limit) appliesTo(s Scope) bool {
+	return l.Model == "" || modelMatches(l.Model, s.Provider, s.Model) ||
+		modelMatches(l.Model, s.RequestedProvider, s.RequestedModel)
+}
+
+// modelMatches compares a limit's model with (provider, model). A literal match wins (ids like
+// "Qwen/…" contain "/"); otherwise a "provider/" prefix must name the serving provider.
+func modelMatches(limitModel, provider, model string) bool {
+	if model == "" {
+		return false
+	}
+	if strings.EqualFold(limitModel, model) {
+		return true
+	}
+	p, name, ok := strings.Cut(limitModel, "/")
+	return ok && provider != "" && strings.EqualFold(p, provider) && strings.EqualFold(name, model)
 }
 
 // Exceeded describes a tripped limit (returned on rejection, for the 429 body).
