@@ -883,6 +883,10 @@ func (s *Server) resumeWorkflow(c *gin.Context) {
 }
 
 func (s *Server) listTasks(c *gin.Context) {
+	// The task catalogue is the static registry (no tenant data), and
+	// llm-server's capability catalogue fetches it with no user. Read-only;
+	// executing a task still needs the real user.
+	c.Set(ctxAllowSystemCaller, true)
 	sc, _, processRequest := s.getRequestDetails(c)
 	if !processRequest {
 		return
