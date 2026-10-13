@@ -116,6 +116,8 @@ export type GatewayAffinity = 'single' | 'prefix_hash';
 export const GATEWAY_AFFINITIES: GatewayAffinity[] = ['single', 'prefix_hash'];
 
 export const GATEWAY_METRICS: GatewayMetric[] = ['requests', 'tokens', 'cost'];
+/** Unit a limit value is metered in, for field labels; the gateway meters cost in USD. */
+export const GATEWAY_METRIC_UNIT: Record<GatewayMetric, string> = { requests: 'requests', tokens: 'tokens', cost: 'USD' };
 export const GATEWAY_PERIODS: GatewayPeriod[] = ['minute', 'hour', 'day', 'month'];
 
 // ─── Routing rules ─────────────────────────────────────────────────────────────

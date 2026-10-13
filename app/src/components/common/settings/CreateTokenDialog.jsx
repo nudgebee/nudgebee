@@ -9,6 +9,7 @@ import { Callout } from '@ui/Callout';
 import { ds } from 'src/utils/colors';
 import dayjs from 'dayjs';
 import { getTokenScopeCatalog } from '@api1/roles';
+import { GATEWAY_METRIC_UNIT } from '@api1/gateway-config';
 import { carriesGatewayTraffic, carriesPlatformTraffic, KIND_LABELS } from './keyKinds';
 import { permKey, PermissionMatrix, ScopeTabs } from './PermissionMatrix';
 import { EMPTY_RESTRICTIONS, GATEWAY_ACCESS_OPTIONS, GatewayRestrictionPicker, hasRestrictions, toGatewayPolicy } from './GatewayRestrictions';
@@ -45,7 +46,13 @@ const LimitEditor = ({ limits, onChange }) => {
         <Box key={i} sx={{ display: 'flex', gap: ds.space[2], alignItems: 'flex-end' }}>
           <Select label='Metric' value={l.metric} onChange={(v) => update(i, { metric: v })} options={METRICS} />
           <Select label='Per' value={l.period} onChange={(v) => update(i, { period: v })} options={PERIODS} />
-          <Input size='sm' label='Value' type='number' value={l.value} onChange={(v) => update(i, { value: v })} />
+          <Input
+            size='sm'
+            label={GATEWAY_METRIC_UNIT[l.metric] ? `Limit (${GATEWAY_METRIC_UNIT[l.metric]})` : 'Limit'}
+            type='number'
+            value={l.value}
+            onChange={(v) => update(i, { value: v })}
+          />
           <Input size='sm' label='Model (blank = any)' value={l.model} onChange={(v) => update(i, { model: v })} />
           <Button tone='secondary' size='sm' onClick={() => onChange(limits.filter((_, n) => n !== i))}>
             Remove

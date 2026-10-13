@@ -9,14 +9,17 @@ import dayjs from 'dayjs';
 import { ds } from 'src/utils/colors';
 import { carriesGatewayTraffic, KIND_LABELS } from './keyKinds';
 import { describeGatewayPolicy } from './GatewayRestrictions';
+import { GATEWAY_METRIC_UNIT } from '@api1/gateway-config';
 
 export const formatDate = (date) => dayjs(date).format('MMM DD, YYYY HH:mm');
 
 // 'all' takes the warm hue: it is the one kind that opens both the app API and the gateway.
 export const KIND_HUES = { platform: 'blue', gateway: 'violet', all: 'amber' };
 
-export const limitsText = (limits) =>
-  (limits || []).map((l) => `${l.value} ${l.metric}/${l.period}${l.model ? ` (${l.model})` : ''}`).join(', ') || '—';
+// Cost is metered in USD, so it reads as a dollar amount; counts keep their unit word.
+const limitAmount = (l) => (l.metric === 'cost' ? `$${l.value}` : `${l.value} ${GATEWAY_METRIC_UNIT[l.metric] ?? l.metric}`);
+
+export const limitsText = (limits) => (limits || []).map((l) => `${limitAmount(l)} / ${l.period}${l.model ? ` (${l.model})` : ''}`).join(', ') || '—';
 
 export const usageText = (usage) => (usage ? `$${(usage.cost_usd ?? 0).toFixed(2)} · ${usage.requests ?? 0} reqs` : '—');
 
