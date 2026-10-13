@@ -10,7 +10,8 @@ import VmSummary from '@components/vm/VmSummary';
 import VmInventory from '@components/vm/VmInventory';
 import VmVulnerabilities from '@components/vm/VmVulnerabilities';
 import VmPackages from '@components/vm/VmPackages';
-import { VmServerIcon, ApplicationsIcon, RecommendationIcon, OptimizeSummaryIcon } from '@assets';
+import VmTraces from '@components/vm/VmTraces';
+import { VmServerIcon, ApplicationsIcon, RecommendationIcon, OptimizeSummaryIcon, LogsTracesIcon } from '@assets';
 import { ds } from '@utils/colors';
 
 /**
@@ -42,9 +43,11 @@ const tabOptions = [
     iconSize: 18,
   },
   { name: 'Packages', id: 'vm-packages', fragment: 'packages', value: 3, disabled: false, icon: ApplicationsIcon },
+  { name: 'Traces', id: 'vm-traces', fragment: 'traces', value: 5, disabled: false, icon: LogsTracesIcon },
 ];
 
 const PACKAGES_TAB = 3;
+const TRACES_TAB = 5;
 
 /**
  * Deep-link params the Summary cards use to open the Vulnerabilities tab already
@@ -225,6 +228,7 @@ const VmPage = () => {
           />
         )}
         {accountId && selectedTab === PACKAGES_TAB && <VmPackages accountId={accountId} vmNames={vmNames} />}
+        {accountId && selectedTab === TRACES_TAB && <VmTraces accountId={accountId} />}
       </ErrorBoundary>
     </>
   );

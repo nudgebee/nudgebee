@@ -671,6 +671,23 @@ func logAgentLookupFailure(logger *slog.Logger, accountId string, err error) {
 	logger.Log(context.Background(), level, fmt.Sprintf("unable to get agent details, for account %s", accountId), "error", err)
 }
 
+// noTraceStoreOnSelfHostedVM reports whether agentErr only means that a self-hosted
+// VM account has no trace integration: such accounts have no agent, so the lookup
+// that finds an agent's own provider fails with ErrAgentNotConnected. Restricted to
+// traces and to self-hosted accounts; for a Kubernetes cluster that error is a real
+// outage and is still returned.
+func noTraceStoreOnSelfHostedVM(ctx *security.RequestContext, accountId, providerType string, agentErr error) bool {
+	if providerType != "traces" || !errors.Is(agentErr, account.ErrAgentNotConnected) {
+		return false
+	}
+	cp, err := cloud.GetCloudAccountProvider(accountId, ctx.GetSecurityContext().GetTenantId())
+	return err == nil && isSelfHostedProvider(cp)
+}
+
+func isSelfHostedProvider(cloudProvider string) bool {
+	return strings.EqualFold(cloudProvider, account.AccountProviderSelfHosted)
+}
+
 // isAgentOwnProvider tells the agent's own logs / metrics / traces provider, which
 // the collector registers under the provider's name, from a datasource the relay
 // registers with the same "agent" source under the datasource's own name. Only the
@@ -840,6 +857,12 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 						}
 					}
 					if err != nil {
+						// A self-hosted VM account has no agent by design, so "no agent"
+						// there means "no trace store connected", not a broken cluster.
+						// Answer with no provider and let the caller say so.
+						if noTraceStoreOnSelfHostedVM(ctx, accountId, providerType, err) {
+							return "", "", nil, nil
+						}
 						logAgentLookupFailure(ctx.GetLogger(), accountId, err)
 						return "", "", nil, err
 					}
