@@ -60,9 +60,9 @@ func getLogLevel() slog.Level {
 }
 
 var logger = slog.New(
-	slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	common.NewDedupeHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: getLogLevel(),
-	}),
+	})),
 )
 
 func authHandlerMiddleware() gin.HandlerFunc {
