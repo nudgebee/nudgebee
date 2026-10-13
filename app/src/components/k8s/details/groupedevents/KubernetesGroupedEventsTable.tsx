@@ -10,6 +10,7 @@ import Datetime from '@shared/format/Datetime';
 import SeverityIcon from '@ui/SeverityIcon';
 import ListingLayout from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
+import SearchInput from '@ui/SearchInput';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { ds } from 'src/utils/colors';
@@ -530,6 +531,13 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   );
   const [selectedServiceName, setSelectedServiceName] = useState('');
   const [selectedIssueType, setSelectedIssueType] = useState<string>((router?.query?.issueType as string) || 'all');
+  // Typed text vs the text the list is filtered by (applied on Enter). Same URL
+  // param as the Events tab's search, so the text carries across the tabs.
+  const [searchText, setSearchText] = useState<string>(() => {
+    const param = router?.query?.messageSearch;
+    return (Array.isArray(param) ? param[0] : param) ?? '';
+  });
+  const [appliedSearchText, setAppliedSearchText] = useState<string>(searchText);
 
   const sortByOptions = useMemo(() => {
     if (groupEventType === 'fingerprint') {
@@ -929,6 +937,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       nb_priority: groupEventType === 'fingerprint' ? selectedNbPriority : undefined,
       nb_status: selectedNBStatus.length > 0 ? selectedNBStatus.map((s) => s?.value || s) : undefined,
       is_new_issue: selectedIssueType === 'new' ? true : selectedIssueType === 'recurring' ? false : undefined,
+      search: appliedSearchText || undefined,
     };
 
     if (isK8sFilterVisible) {
@@ -1068,6 +1077,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     selectedNBStatus,
     selectedIssueType,
     selectedServiceName,
+    appliedSearchText,
     resolvedAccountType,
     isK8sFilterVisible,
     isCloudFilterVisible,
@@ -1176,6 +1186,12 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     setCurrentPage(1);
     applyFiltersOnRouter(router, { sortBy: next.name });
     writePersistedFilters(persistKey, { sortBy: next.name });
+  };
+
+  const applySearch = (text: string) => {
+    setAppliedSearchText(text);
+    setCurrentPage(1);
+    applyFiltersOnRouter(router, { messageSearch: text });
   };
 
   const onServiceNamesFilterChange = (e: any) => {
@@ -1395,6 +1411,21 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
             </Box>
           }
         >
+          <SearchInput
+            id='filter-search-grouped-events'
+            label='Search alert, resource or message'
+            value={searchText}
+            onChange={(next: string) => {
+              // Clearing the field by hand (not via the X) should drop the applied filter.
+              if (searchText.trim() !== '' && next.trim() === '') {
+                applySearch('');
+              }
+              setSearchText(next);
+            }}
+            onEnterPress={() => applySearch(searchText.trim())}
+            // SearchInput's X calls onChange('') first, which already drops the applied filter.
+            onClear={() => setSearchText('')}
+          />
           {filterDropdownsLegacyShape.map((opt: any, idx: number) => (
             <FilterDropdown
               key={`${opt.label || 'filter'}-${idx}`}

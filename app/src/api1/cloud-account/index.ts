@@ -1,4 +1,5 @@
 import { escapeLikePattern, gqlStringify, queryGraphQL } from '@lib/HttpService';
+import { eventSearchClause } from '@lib/eventSearch';
 import {
   getEndOfDay,
   getEndOfMonth,
@@ -1058,10 +1059,11 @@ const apiCloudAccount = {
 
       const andClauses: any[] = [{ starts_at: { _gte: startDate.toISOString() } }, { starts_at: { _lte: endDate.toISOString() } }];
 
-      if (query?.messageSearch?.trim()) {
+      const searchClause = eventSearchClause(query?.messageSearch);
+      if (searchClause) {
         // Pushed into `_and` so it composes with any existing exact-match
         // `title` filter set by a drilldown query rather than overwriting it.
-        andClauses.push({ title: { _ilike: `%${query.messageSearch.trim()}%` } });
+        andClauses.push(searchClause);
       }
 
       filterParams['_and'] = andClauses;

@@ -1574,6 +1574,7 @@ const KubernetesEventsTable = ({
         source: query.source,
         nb_status: query.nb_status,
         is_new_issue: query.is_new_issue,
+        search: query.messageSearch,
       };
       const groupingsPromise = k8sApi.getK8sEventGroupings(rowsPerPage, currentPage * rowsPerPage, uniqueQuery, UNIQUE_GROUP_BY, UNIQUE_COLS, {
         name: UNIQUE_SORT_MAP[selectedSortBy] || 'max_created_at',

@@ -1,4 +1,5 @@
 import { queryGraphQL, gqlStringify, unwrapGraphQL } from '@lib/HttpService';
+import { eventSearchClause } from '@lib/eventSearch';
 
 import {
   getStartOfYear,
@@ -929,10 +930,11 @@ function buildEventFilterParams(query: any) {
   if (query?.searchByLabel) {
     filterParams['labels'] = { _contains: query.searchByLabel };
   }
-  if (query?.messageSearch?.trim()) {
+  const searchClause = eventSearchClause(query?.messageSearch);
+  if (searchClause) {
     // Use `and` so we don't clobber an existing exact-match `title` filter
     // set by a drilldown defaultQuery.
-    and.push({ title: { _ilike: `%${query.messageSearch.trim()}%` } });
+    and.push(searchClause);
   }
   if (query?.resource_ids) {
     filterParams['resource_id'] = { _in: query.resource_ids };
@@ -1997,6 +1999,7 @@ query list_k8_issues_count {
       latest_priority?: string;
       nb_status?: string | string[];
       is_new_issue?: boolean;
+      search?: string;
     } = {
       account_id: 'demo',
       onlyGroupingCount: false,
@@ -2159,6 +2162,10 @@ query list_k8_issues_count {
       }
       if (query.is_new_issue !== undefined) {
         filterParams['is_new_issue'] = { _eq: query.is_new_issue };
+      }
+      const searchClause = eventSearchClause(query.search);
+      if (searchClause) {
+        filterParams['_and'] = [searchClause];
       }
 
       const endDate = query.end_date;
