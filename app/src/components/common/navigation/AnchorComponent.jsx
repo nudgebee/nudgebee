@@ -296,6 +296,16 @@ const AnchorComponent = ({
     }
   }, [activeDropdownTab, activeDropdownSubtab, filterOptions, showGroupedTabs]);
 
+  // Next's router leaves router.asPath unchanged when only the hash changes
+  // natively (address-bar edit, `location.hash = …`), so re-sync on hashchange too.
+  const [hashChangeCount, setHashChangeCount] = useState(0);
+  useEffect(() => {
+    if (!manageRoute) return undefined;
+    const onHashChange = () => setHashChangeCount((n) => n + 1);
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, [manageRoute]);
+
   // Sync internal state with URL Hash (Reactive Updates)
   useEffect(() => {
     if (manageRoute) {
@@ -328,7 +338,7 @@ const AnchorComponent = ({
         setActiveDropdownSubtab(getInitialState().subtab);
       }
     }
-  }, [router.asPath, filterOptions, manageRoute]);
+  }, [router.asPath, filterOptions, manageRoute, hashChangeCount]);
 
   // Trigger Parent onChange callback
   useEffect(() => {
