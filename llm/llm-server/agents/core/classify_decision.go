@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -255,7 +256,7 @@ func classifyWithDecision(ctx *security.RequestContext, call ClassificationCall,
 	_, err = model.GenerateContent(goCtx, []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, input)})
 	latency := time.Since(start)
 
-	d = ClassificationDecision{Backend: classificationBackendDecision, Model: b.model}
+	d = ClassificationDecision{Backend: classificationBackendDecision, Model: b.model, Latency: latency}
 	if err != nil {
 		return d, false, fmt.Errorf("classify %s with decision model: %w", task.Name, err)
 	}
@@ -300,11 +301,11 @@ func trackDecisionUsage(ctx *security.RequestContext, call ClassificationCall, b
 	if userId == "" {
 		userId = security.GetSystemUserId()
 	}
-	bgCtx := detachedRequestContext(ctx)
+	bgCtx := decisionUsageContext(ctx)
 	info := &TokenInfo{InputTokens: choice.InputTokens, TotalTokens: choice.InputTokens}
 	source := "decision:" + b.source
 	trackFn := func() {
-		trackTokenUsage(bgCtx, call.ConversationId, call.MessageId, call.AgentId, call.AgentId,
+		trackTokenUsage(bgCtx, call.ConversationId, call.MessageId, call.AgentId, decisionAgentName(call.AgentId),
 			b.provider, b.model, call.AccountId, userId, info, latency.Seconds(), 0, nil, nil,
 			false, "", nil, nil, nil, nil, false, &source)
 	}
@@ -314,6 +315,32 @@ func trackDecisionUsage(ctx *security.RequestContext, call ClassificationCall, b
 		}
 	}
 	trackFn()
+}
+
+// decisionUsageContext is the detached context the usage row is written with.
+// It carries the decision tier, so the row is not counted under the caller's
+// tier (the approval check runs inside a reasoning-tier turn).
+func decisionUsageContext(ctx *security.RequestContext) *security.RequestContext {
+	bg := detachedRequestContext(ctx)
+	if bg == nil || bg.GetContext() == nil {
+		return bg
+	}
+	return bg.WithContext(context.WithValue(bg.GetContext(), ContextKeyModelTier, ModelTierDecision))
+}
+
+// decisionAgentName is the agent name for the usage row, looked up from the
+// agent id the way LLM calls do, so the row groups with its agent's other calls.
+// It keeps the id when the lookup is not possible.
+func decisionAgentName(agentId string) string {
+	if _, err := uuid.Parse(agentId); err != nil {
+		return agentId
+	}
+	if dao := PeekConversationDao(); dao != nil {
+		if name, err := dao.GetAgentNameFromAgentId(agentId); err == nil && name != "" {
+			return name
+		}
+	}
+	return agentId
 }
 
 // runShadow runs the shadow decision; a variable so tests can run it inline.

@@ -85,6 +85,9 @@ type ClassificationDecision struct {
 	// DecisionAnswer is the decision model's own answer when the LLM answered
 	// instead (FellBack), so logs can compare the two.
 	DecisionAnswer string
+	// DecisionLatency is the decision model's own call time when it fell back;
+	// Latency then covers both calls.
+	DecisionLatency time.Duration
 }
 
 // Label returns the primary label, or "" when the decision is not valid.
@@ -125,6 +128,7 @@ func Classify(ctx *security.RequestContext, call ClassificationCall, task Classi
 	if tried != nil {
 		d.FellBack = true
 		d.Confidence, d.Probabilities, d.Model, d.DecisionAnswer = tried.Confidence, tried.Probabilities, tried.Model, tried.Raw
+		d.DecisionLatency = tried.Latency
 	}
 	d.Latency = time.Since(start)
 	recordClassificationDecision(ctx, task, d, err)
@@ -311,7 +315,8 @@ func recordClassificationDecision(ctx *security.RequestContext, task Classificat
 		attrs = append(attrs, "confidence", *d.Confidence, "decision_model", d.Model)
 	}
 	if d.FellBack {
-		attrs = append(attrs, "fell_back", true, "decision_answer", truncateForLog(d.DecisionAnswer))
+		attrs = append(attrs, "fell_back", true, "decision_answer", truncateForLog(d.DecisionAnswer),
+			"decision_latency_ms", d.DecisionLatency.Milliseconds())
 	}
 	if err != nil {
 		attrs = append(attrs, "error", err.Error())

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"nudgebee/llm/llms/decision"
 	"nudgebee/llm/security"
@@ -336,4 +337,57 @@ func TestClassify_ModeOff(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "llm", d.Backend)
 	assert.Empty(t, *states, "off never asks the decision model")
+}
+
+// agentNameDAO answers the agent-name lookup for decisionAgentName.
+type agentNameDAO struct {
+	IConversationDao
+	names map[string]string
+}
+
+func (d *agentNameDAO) GetAgentNameFromAgentId(agentId string) (string, error) {
+	if name, ok := d.names[agentId]; ok {
+		return name, nil
+	}
+	return "", errors.New("not found")
+}
+
+// The usage row is written on the decision tier even when the caller runs on
+// another one, so the decision call is not counted as that tier's usage.
+func TestDecisionUsageContext_UsesDecisionTier(t *testing.T) {
+	base := testRequestContext()
+	caller := base.WithContext(context.WithValue(base.GetContext(), ContextKeyModelTier, ModelTierReasoning))
+	tier, _ := tierAttributionForRecord(decisionUsageContext(caller))
+	require.NotNil(t, tier)
+	assert.Equal(t, string(ModelTierDecision), *tier)
+}
+
+func TestDecisionAgentName(t *testing.T) {
+	const known, unknown = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
+	previous := PeekConversationDao()
+	SetConversationDao(&agentNameDAO{names: map[string]string{known: "k8s_orchestrator"}})
+	t.Cleanup(func() { SetConversationDao(previous) })
+
+	assert.Equal(t, "k8s_orchestrator", decisionAgentName(known))
+	assert.Equal(t, unknown, decisionAgentName(unknown), "an unknown id is kept")
+	assert.Equal(t, "auth_agent", decisionAgentName("auth_agent"), "a name is kept")
+	assert.Equal(t, "", decisionAgentName(""))
+}
+
+// On a fallback the log reports the decision model's own time next to the total.
+func TestClassify_FallbackKeepsDecisionLatency(t *testing.T) {
+	stubDecisionConfig(t, decisionSlot("0.8"))
+	old := decisionChooser
+	decisionChooser = func(context.Context, *decisionBackend, string, string, []decision.Option) (decision.Choice, error) {
+		time.Sleep(5 * time.Millisecond)
+		return decision.Choice{Choice: "EDIT", Confidence: conf(0.5)}, nil
+	}
+	t.Cleanup(func() { decisionChooser = old })
+	stubGenerate(t, []string{"ANSWER"}, nil)
+
+	d, err := Classify(testRequestContext(), ClassificationCall{AccountId: "acct"}, pilotTask(), "fix it")
+	require.NoError(t, err)
+	require.True(t, d.FellBack)
+	assert.GreaterOrEqual(t, d.DecisionLatency, 5*time.Millisecond)
+	assert.LessOrEqual(t, d.DecisionLatency, d.Latency)
 }
