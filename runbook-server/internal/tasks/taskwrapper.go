@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context" // Add this import
+	"encoding/json"
 	"fmt"
 	"nudgebee/runbook/internal/model"
 	"nudgebee/runbook/internal/tasks/types"
@@ -9,6 +10,7 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/temporal"
 )
 
 // TaskWrapper adapts a Task to the Temporal activity signature.
@@ -46,6 +48,9 @@ const (
 	ParamDryRun          = "_dry_run"
 	ParamWorkflowName    = "_workflow_name"
 	ParamUserDisplayName = "_user_display_name"
+	// ParamMaxTier is the run's tier ceiling (the definition's max_tier): a
+	// step with a higher tier is refused. Absent or 0 means no ceiling.
+	ParamMaxTier = "_max_tier"
 )
 
 // Execute is the method registered with Temporal. It extracts workflow metadata from params,
@@ -70,6 +75,7 @@ func (tw *TaskWrapper) Execute(ctx context.Context, params map[string]any) (any,
 	if principal == "" {
 		principal = userID
 	}
+	maxTier, readable := tierParam(params[ParamMaxTier])
 
 	// Build TaskContext (includes logger, metadata, etc.). Its user is the
 	// principal, so outbound calls carry the identity the step was checked as.
@@ -89,6 +95,24 @@ func (tw *TaskWrapper) Execute(ctx context.Context, params map[string]any) (any,
 	delete(params, ParamDryRun)
 	delete(params, ParamWorkflowName)
 	delete(params, ParamUserDisplayName)
+	delete(params, ParamMaxTier)
+
+	// Checked before anything else about the step: it needs no lookups, and a
+	// step built at run time is exactly what the static check could not see.
+	// A ceiling that cannot be read refuses the step rather than lifting it.
+	if !readable {
+		return nil, temporal.NewNonRetryableApplicationError(
+			fmt.Sprintf("step %s has an unreadable tier ceiling", tw.Task.GetName()), "StepTierExceeded", nil)
+	}
+	if maxTier > 0 {
+		if tier, _ := TierFor(tw.Task.GetName()); tier > maxTier {
+			activity.GetLogger(ctx).Warn("step refused: above the run's tier",
+				"task", tw.Task.GetName(), "tier", tier, "max_tier", maxTier, "workflow_id", workflowID)
+			return nil, temporal.NewNonRetryableApplicationError(
+				fmt.Sprintf("step %s is tier %d, above this automation's tier %d", tw.Task.GetName(), tier, maxTier),
+				"StepTierExceeded", nil)
+		}
+	}
 
 	if schema := tw.Task.InputSchema(); schema != nil {
 		if err := schema.Process(params); err != nil {
@@ -114,4 +138,36 @@ func (tw *TaskWrapper) Execute(ctx context.Context, params map[string]any) (any,
 
 	result, err := tw.Task.Execute(taskCtx, params)
 	return result, scrubError(err, secrets)
+}
+
+// tierParam reads the tier ceiling from activity params, where a number
+// arrives as float64 after the JSON round trip and as an int when built in the
+// same process. Absent means no ceiling; anything else that is not a whole
+// number from 0 to TierUnrestricted is unreadable.
+func tierParam(v any) (int, bool) {
+	var n float64
+	switch x := v.(type) {
+	case nil:
+		return 0, true
+	case int:
+		n = float64(x)
+	case int32:
+		n = float64(x)
+	case int64:
+		n = float64(x)
+	case float64:
+		n = x
+	case json.Number:
+		f, err := x.Float64()
+		if err != nil {
+			return 0, false
+		}
+		n = f
+	default:
+		return 0, false
+	}
+	if n != float64(int(n)) || n < 0 || n > TierUnrestricted {
+		return 0, false
+	}
+	return int(n), true
 }

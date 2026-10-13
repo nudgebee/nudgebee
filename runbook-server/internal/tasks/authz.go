@@ -14,18 +14,51 @@ import (
 	"go.temporal.io/sdk/temporal"
 )
 
-// StepRequirement is the permission a principal needs, on the account a step
-// touches, for that step to run. Module and Class use the platform's permission
-// vocabulary (`<module>:<Read|Write|Execute>`, the same strings custom roles
-// grant). A zero StepRequirement means the step has no effect outside the run
-// (control flow, data shaping) and needs no check.
+// StepRequirement is what a step type needs and how much it can change.
+//
+// Module and Class are the permission a principal needs, on the account a step
+// touches, for that step to run. They use the platform's permission vocabulary
+// (`<module>:<Read|Write|Execute>`, the same strings custom roles grant). An
+// empty Module means the step has no effect outside the run (control flow,
+// data shaping) and needs no permission.
+//
+// Tier is how much the step can change, whoever runs it: see TierRead,
+// TierChange and TierUnrestricted. An automation's tier is the highest tier
+// among its steps; it decides how a packaged agent's automation may run
+// unattended, and a run that carries a tier ceiling refuses any step above it.
 type StepRequirement struct {
 	Module string
 	Class  string
+	Tier   int
 }
 
 // None reports whether the step needs no permission.
 func (r StepRequirement) None() bool { return r.Module == "" }
+
+// Tiers, lowest first.
+const (
+	// TierRead steps read, take notes, file and update tickets, or shape data.
+	// They run automatically by default.
+	TierRead = 1
+	// TierChange steps make a bounded change to a running system, or send a
+	// message outside the run. They ask first in production by default.
+	TierChange = 2
+	// TierUnrestricted steps take free-form input — a CLI command, a script, a
+	// query, an HTTP or SSH request — or start something whose steps cannot be
+	// seen. Their effect cannot be bounded, so they ask first everywhere by
+	// default.
+	TierUnrestricted = 3
+)
+
+// TierFor returns the tier of a task type. The second result is false for a
+// type that declares none; the tier returned is then the highest.
+func TierFor(taskName string) (int, bool) {
+	r, ok := stepRequirements[taskName]
+	if !ok || r.Tier == 0 {
+		return TierUnrestricted, false
+	}
+	return r.Tier, true
+}
 
 const (
 	classRead    = "Read"
@@ -33,118 +66,132 @@ const (
 	classExecute = "Execute"
 )
 
-func read(module string) StepRequirement    { return StepRequirement{module, classRead} }
-func write(module string) StepRequirement   { return StepRequirement{module, classWrite} }
-func execute(module string) StepRequirement { return StepRequirement{module, classExecute} }
+func read(module string) StepRequirement  { return StepRequirement{Module: module, Class: classRead} }
+func write(module string) StepRequirement { return StepRequirement{Module: module, Class: classWrite} }
+func execute(module string) StepRequirement {
+	return StepRequirement{Module: module, Class: classExecute}
+}
+
+// none is a step that needs no permission.
+func none(tier int) StepRequirement { return StepRequirement{Tier: tier} }
+
+// at sets the requirement's tier.
+func (r StepRequirement) at(tier int) StepRequirement {
+	r.Tier = tier
+	return r
+}
 
 // stepRequirements declares, for every registered task type, what a run's
-// principal must hold for the step to execute. Unlisted task types are refused
-// (fail closed); TestEveryRegisteredTaskDeclaresAStepRequirement keeps this
-// table complete.
+// principal must hold for the step to execute, and the step's tier. Unlisted
+// task types are refused (fail closed); TestEveryRegisteredTaskDeclaresAStepRequirement
+// keeps this table complete.
 //
 // Tasks whose effect depends on free-form input (CLIs, scripts, HTTP, SSH, DB
-// queries) are Write: a read-only command cannot be told apart from a write
-// without parsing it.
+// queries) are Write and TierUnrestricted: a read-only command cannot be told
+// apart from a write without parsing it. The source-control CLIs run their
+// command as a shell script with the integration's token in its environment;
+// core.call-workflow and the agent runs start steps this table never sees.
 var stepRequirements = map[string]StepRequirement{
 	// Control flow and pure data shaping: no effect outside the run.
-	"core.foreach":   {},
-	"core.group":     {},
-	"core.print":     {},
-	"core.switch":    {},
-	"core.wait":      {},
-	"crypto.decode":  {},
-	"crypto.decrypt": {},
-	"crypto.encode":  {},
-	"crypto.encrypt": {},
-	"crypto.hash":    {},
-	"data.filter":    {},
-	"data.transform": {},
+	"core.foreach":   none(TierRead),
+	"core.group":     none(TierRead),
+	"core.print":     none(TierRead),
+	"core.switch":    none(TierRead),
+	"core.wait":      none(TierRead),
+	"crypto.decode":  none(TierRead),
+	"crypto.decrypt": none(TierRead),
+	"crypto.encode":  none(TierRead),
+	"crypto.encrypt": none(TierRead),
+	"crypto.hash":    none(TierRead),
+	"data.filter":    none(TierRead),
+	"data.transform": none(TierRead),
 
 	// Posts the approval request to Slack/email.
-	"core.approval": write("notifications"),
+	"core.approval": write("notifications").at(TierRead),
 	// The callee's steps are checked one by one; calling it is running a workflow.
-	"core.call-workflow": execute("workflows"),
+	"core.call-workflow": execute("workflows").at(TierUnrestricted),
 
 	// Outbound network probes from the server. No account, no external change.
-	"network.dns":        execute("workflows"),
-	"network.ntp":        execute("workflows"),
-	"network.ping":       execute("workflows"),
-	"network.ssl":        execute("workflows"),
-	"network.tcp":        execute("workflows"),
-	"network.traceroute": execute("workflows"),
-	"network.whois":      execute("workflows"),
+	"network.dns":        execute("workflows").at(TierRead),
+	"network.ntp":        execute("workflows").at(TierRead),
+	"network.ping":       execute("workflows").at(TierRead),
+	"network.ssl":        execute("workflows").at(TierRead),
+	"network.tcp":        execute("workflows").at(TierRead),
+	"network.traceroute": execute("workflows").at(TierRead),
+	"network.whois":      execute("workflows").at(TierRead),
 
-	"k8s.cli":                    write("k8s"),
-	"k8s.continuous_rightsize":   write("k8s"),
-	"k8s.horizontal_rightsize":   write("k8s"),
-	"k8s.node_graceful_shutdown": write("k8s"),
-	"k8s.pod_delete":             write("k8s"),
-	"k8s.profile":                write("k8s"),
-	"k8s.pv_rightsize":           write("k8s"),
-	"k8s.vertical_rightsize":     write("k8s"),
-	"k8s.workload_restart":       write("k8s"),
-	"cloud.k8s.cli":              write("k8s"),
-	"cicd.argocd.cli":            write("k8s"),
+	"k8s.cli":                    write("k8s").at(TierUnrestricted),
+	"k8s.continuous_rightsize":   write("k8s").at(TierChange),
+	"k8s.horizontal_rightsize":   write("k8s").at(TierChange),
+	"k8s.node_graceful_shutdown": write("k8s").at(TierChange),
+	"k8s.pod_delete":             write("k8s").at(TierChange),
+	"k8s.profile":                write("k8s").at(TierChange),
+	"k8s.pv_rightsize":           write("k8s").at(TierChange),
+	"k8s.vertical_rightsize":     write("k8s").at(TierChange),
+	"k8s.workload_restart":       write("k8s").at(TierChange),
+	"cloud.k8s.cli":              write("k8s").at(TierUnrestricted),
+	"cicd.argocd.cli":            write("k8s").at(TierUnrestricted),
 
-	"aws.cli":         write("cloud"),
-	"azure.cli":       write("cloud"),
-	"gcp.cli":         write("cloud"),
-	"cloud.aws.cli":   write("cloud"),
-	"cloud.azure.cli": write("cloud"),
-	"cloud.gcp.cli":   write("cloud"),
+	"aws.cli":         write("cloud").at(TierUnrestricted),
+	"azure.cli":       write("cloud").at(TierUnrestricted),
+	"gcp.cli":         write("cloud").at(TierUnrestricted),
+	"cloud.aws.cli":   write("cloud").at(TierUnrestricted),
+	"cloud.azure.cli": write("cloud").at(TierUnrestricted),
+	"cloud.gcp.cli":   write("cloud").at(TierUnrestricted),
 
-	"dbms.query":     write("database"),
-	"dbms.redis.cli": write("database"),
+	"dbms.query":     write("database").at(TierUnrestricted),
+	"dbms.redis.cli": write("database").at(TierUnrestricted),
 
-	"integrations.http":    write("integrations"),
-	"integrations.ssh":     write("integrations"),
-	"mq.rabbitmqadmin.cli": write("integrations"),
-	"scm.github.cli":       write("integrations"),
-	"scm.gitlab.cli":       write("integrations"),
-	"llm.mcp_call":         write("integrations"),
-	"llm.a2a_call":         write("integrations"),
+	"integrations.http":    write("integrations").at(TierUnrestricted),
+	"integrations.ssh":     write("integrations").at(TierUnrestricted),
+	"mq.rabbitmqadmin.cli": write("integrations").at(TierUnrestricted),
+	"scm.github.cli":       write("integrations").at(TierUnrestricted),
+	"scm.gitlab.cli":       write("integrations").at(TierUnrestricted),
+	"llm.mcp_call":         write("integrations").at(TierUnrestricted),
+	"llm.a2a_call":         write("integrations").at(TierUnrestricted),
 
 	// Runs arbitrary code with the account's credentials: only someone who could
 	// have written the script may run it.
-	"scripting.run_script": write("workflows"),
+	"scripting.run_script": write("workflows").at(TierUnrestricted),
 
-	"llm.classify":          execute("llm"),
-	"llm.event_investigate": execute("llm"),
-	"llm.investigate":       execute("llm"),
-	"llm.nubi":              execute("llm"),
-	"llm.router":            execute("llm"),
-	"llm.summary":           execute("llm"),
+	"llm.classify":          execute("llm").at(TierRead),
+	"llm.event_investigate": execute("llm").at(TierUnrestricted),
+	"llm.investigate":       execute("llm").at(TierUnrestricted),
+	"llm.nubi":              execute("llm").at(TierUnrestricted),
+	"llm.router":            execute("llm").at(TierRead),
+	"llm.summary":           execute("llm").at(TierRead),
 
-	"events.add_evidence": write("events"),
-	"events.store":        write("events"),
+	"events.add_evidence": write("events").at(TierRead),
+	"events.store":        write("events").at(TierRead),
 
-	"observability.log_groups": read("logs"),
-	"observability.logs":       read("logs"),
-	"observability.metrics":    read("metrics"),
-	"observability.traces":     read("traces"),
+	"observability.log_groups": read("logs").at(TierRead),
+	"observability.logs":       read("logs").at(TierRead),
+	"observability.metrics":    read("metrics").at(TierRead),
+	"observability.traces":     read("traces").at(TierRead),
 
-	"notifications.add_channel_members": write("notifications"),
-	"notifications.add_reaction":        write("notifications"),
-	"notifications.create_channel":      write("notifications"),
-	"notifications.dm":                  write("notifications"),
-	"notifications.email":               write("notifications"),
-	"notifications.im":                  write("notifications"),
-	"notifications.read_thread":         read("notifications"),
-	"slack.join_channel":                write("notifications"),
-	"google_chat.join_space":            write("notifications"),
+	"notifications.add_channel_members": write("notifications").at(TierChange),
+	"notifications.add_reaction":        write("notifications").at(TierRead),
+	"notifications.create_channel":      write("notifications").at(TierChange),
+	"notifications.dm":                  write("notifications").at(TierChange),
+	"notifications.email":               write("notifications").at(TierChange),
+	"notifications.im":                  write("notifications").at(TierChange),
+	"notifications.read_thread":         read("notifications").at(TierRead),
+	"slack.join_channel":                write("notifications").at(TierChange),
+	"google_chat.join_space":            write("notifications").at(TierChange),
 
-	"tickets.acknowledge":  write("tickets"),
-	"tickets.add_comment":  write("tickets"),
-	"tickets.assign":       write("tickets"),
-	"tickets.create":       write("tickets"),
-	"tickets.escalate":     write("tickets"),
-	"tickets.get":          read("tickets"),
-	"tickets.get_comments": read("tickets"),
-	"tickets.resolve":      write("tickets"),
-	"tickets.transition":   write("tickets"),
-	"tickets.update":       write("tickets"),
+	"tickets.acknowledge":  write("tickets").at(TierRead),
+	"tickets.add_comment":  write("tickets").at(TierRead),
+	"tickets.assign":       write("tickets").at(TierRead),
+	"tickets.create":       write("tickets").at(TierRead),
+	"tickets.escalate":     write("tickets").at(TierRead),
+	"tickets.get":          read("tickets").at(TierRead),
+	"tickets.get_comments": read("tickets").at(TierRead),
+	"tickets.resolve":      write("tickets").at(TierChange),
+	"tickets.transition":   write("tickets").at(TierChange),
+	// Can set a ticket's status, the same effect as transition and resolve.
+	"tickets.update": write("tickets").at(TierChange),
 
-	"vertical_rightsize_generate": write("recommendations"),
+	"vertical_rightsize_generate": write("recommendations").at(TierRead),
 }
 
 // RequirementFor returns the declared requirement for a task type.

@@ -1355,6 +1355,15 @@ func processTaskLoop(
 				taskImpl, err := taskRegistry.GetTask(task.Type)
 				if err == nil {
 					if inlineTask, ok := taskImpl.(types.TaskInlineWorkflow); ok {
+						// An inline step never reaches the task wrapper, so the
+						// run's tier ceiling is checked for it here.
+						if ceiling := wf.Definition.MaxTier; ceiling > 0 {
+							if tier, _ := tasks.TierFor(task.Type); tier > ceiling {
+								return completedTasks, nil, temporal.NewNonRetryableApplicationError(
+									fmt.Sprintf("step %s is tier %d, above this automation's tier %d", task.Type, tier, ceiling),
+									"StepTierExceeded", nil)
+							}
+						}
 						// Determine execution strategy
 						executeAsChild := false
 						if strategy, ok := taskImpl.(types.TaskExecutionStrategy); ok {
@@ -1438,6 +1447,10 @@ func processTaskLoop(
 								UpdatedBy:           wf.UpdatedBy,
 								PrincipalUserID:     wf.PrincipalUserID,
 								LastExecutionStatus: model.WorkflowExecutionStatusRunning,
+							}
+							// A child never runs with a looser tier ceiling than its parent.
+							if ceiling := wf.Definition.MaxTier; ceiling > 0 && (childWf.Definition.MaxTier == 0 || childWf.Definition.MaxTier > ceiling) {
+								childWf.Definition.MaxTier = ceiling
 							}
 
 							childMemo := map[string]interface{}{
@@ -1989,6 +2002,11 @@ func setInternalTaskParams(params map[string]any, wf *model.Workflow, eventID st
 		params[tasks.ParamRunAsUserID] = wf.PrincipalUserID
 	} else {
 		delete(params, tasks.ParamRunAsUserID)
+	}
+	// Likewise the tier ceiling comes from the definition only.
+	delete(params, tasks.ParamMaxTier)
+	if wf.Definition.MaxTier > 0 {
+		params[tasks.ParamMaxTier] = wf.Definition.MaxTier
 	}
 
 	if eventID != "" {

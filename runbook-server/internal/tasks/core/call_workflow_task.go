@@ -391,6 +391,9 @@ func (t *CallWorkflowTask) ResolveChildWorkflow(taskCtx types.TaskContext, param
 		SetExecutionTags: liveDef.SetExecutionTags,
 		RetryPolicy:      liveDef.RetryPolicy,
 		Timeout:          liveDef.Timeout,
+		// The callee keeps its own tier ceiling; the executor tightens it to the
+		// caller's when that is lower.
+		MaxTier: liveDef.MaxTier,
 	}
 
 	return &types.ResolvedChildWorkflow{

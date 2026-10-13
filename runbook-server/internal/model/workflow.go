@@ -30,6 +30,12 @@ type WorkflowDefinition struct {
 	// content: it snapshots with a published version, so the AI sees what is live
 	// rather than a half-finished draft.
 	LLMDescription string `yaml:"llm_description,omitempty" json:"llm_description,omitempty"`
+	// MaxTier is the highest step tier (tasks.TierRead = 1 to TierUnrestricted
+	// = 3) a run of this automation may execute; 0 means no ceiling. It is set
+	// from the tier the automation's steps were checked at, so a step that only
+	// appears at run time — rendered from a template or an earlier step's
+	// output — is refused instead of run.
+	MaxTier int `yaml:"max_tier,omitempty" json:"max_tier,omitempty" validate:"min=0,max=3"`
 	// Presentation-only canvas layout (per-task coords live on Task.Layout / Trigger.Layout).
 	Layout *WorkflowDefinitionLayout `yaml:"layout,omitempty" json:"layout,omitempty"`
 }

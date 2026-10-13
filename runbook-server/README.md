@@ -527,6 +527,8 @@ Schedules are registered from the **live** version's triggers (cron and inputs),
 
 Before each step runs, [`internal/tasks/authz.go`](internal/tasks/authz.go) checks it against the principal: the principal must be active in the tenant, may run automations on the workflow's account, and must hold the step type's declared `<module>:<class>` (built-in account role, or custom grant) on the account the step targets (`account_id`, else the workflow's account). A refused step fails with a non-retryable `StepPermissionDenied` error naming the user, permission and account. Every registered task type must declare its requirement — `TestEveryRegisteredTaskDeclaresAStepRequirement` fails otherwise; free-form tasks (CLIs, scripts, HTTP, SSH, DB queries) are `Write`.
 
+The same table gives every task type a tier: how much the step can change, whoever runs it. **Read** (reads, notes, tickets, data shaping) runs automatically by default; **change** (a bounded change such as a restart or a scale, or a message sent outside the run) asks first in production; **unrestricted** (free-form input — a CLI command, script, query, HTTP or SSH request — or a step that starts others it cannot see) asks first everywhere. A definition's optional `max_tier` is a ceiling for its runs: the executor stamps it on every step and hook (and on child workflows), and the task wrapper refuses a step above it before any other check, so a step that only appears at run time cannot exceed it. Nothing sets `max_tier` yet; installing a packaged agent's automation will. `TestEveryStepDeclaresATier` fails for a task type without a tier.
+
 Not covered: the optimizer engine (`services/optimizer`) calls rightsize tasks directly, outside the step check.
 
 ---

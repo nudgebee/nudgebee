@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"nudgebee/runbook/internal/tasks/types"
@@ -87,4 +88,55 @@ func TestTaskWrapperRefusesBeforeTheTaskRuns(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "needs k8s:Write on account acct-a")
 	assert.Empty(t, ranAs, "a refused step must not execute")
+}
+
+func TestTaskWrapperRefusesAStepAboveTheRunsTier(t *testing.T) {
+	// recordingTask is k8s.pod_delete, a change-tier step.
+	for _, tc := range []struct {
+		name    string
+		ceiling any
+		refused bool
+	}{
+		{"no ceiling", nil, false},
+		{"a read-only run", float64(TierRead), true}, // numbers arrive as float64 after the JSON round trip
+		{"a run allowed changes", TierChange, false},
+		{"an unrestricted run", float64(TierUnrestricted), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			extra := map[string]any{ParamRunAsUserID: "owner"}
+			if tc.ceiling != nil {
+				extra[ParamMaxTier] = tc.ceiling
+			}
+			ranAs, checked, err := runStep(t, stepParams(extra), true)
+			if !tc.refused {
+				require.NoError(t, err)
+				assert.Equal(t, "owner", ranAs)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "step k8s.pod_delete is tier 2, above this automation's tier 1")
+			assert.Empty(t, ranAs, "a refused step must not execute")
+			assert.Empty(t, checked, "refused before any permission lookup")
+		})
+	}
+}
+
+func TestTaskWrapperRefusesAnUnreadableTierCeiling(t *testing.T) {
+	for _, ceiling := range []any{"1", -1, float64(7), 1.5, true, map[string]any{}} {
+		ranAs, checked, err := runStep(t, stepParams(map[string]any{ParamRunAsUserID: "owner", ParamMaxTier: ceiling}), true)
+		require.Error(t, err, "%v", ceiling)
+		assert.Contains(t, err.Error(), "unreadable tier ceiling")
+		assert.Empty(t, ranAs)
+		assert.Empty(t, checked)
+	}
+}
+
+func TestTierParam(t *testing.T) {
+	for v, want := range map[any]int{nil: 0, 0: 0, 2: 2, int32(1): 1, int64(3): 3, float64(1): 1, json.Number("2"): 2} {
+		got, ok := tierParam(v)
+		assert.True(t, ok, "%v", v)
+		assert.Equal(t, want, got, "%v", v)
+	}
+	_, ok := tierParam(json.Number("x"))
+	assert.False(t, ok)
 }

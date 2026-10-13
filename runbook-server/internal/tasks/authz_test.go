@@ -42,6 +42,57 @@ func TestEveryRegisteredTaskDeclaresAStepRequirement(t *testing.T) {
 	assert.Empty(t, stale, "stepRequirements lists task types that are no longer registered")
 }
 
+func TestEveryStepDeclaresATier(t *testing.T) {
+	// TierFor answers the highest tier for a type without one, so a step type
+	// can never be treated as safe by omission; this keeps omission from
+	// happening at all.
+	for name, req := range stepRequirements {
+		assert.GreaterOrEqualf(t, req.Tier, TierRead, "%s has no tier", name)
+		assert.LessOrEqualf(t, req.Tier, TierUnrestricted, "%s has an unknown tier", name)
+	}
+}
+
+func TestTierFor(t *testing.T) {
+	for name, want := range map[string]int{
+		"data.transform":       TierRead,
+		"tickets.create":       TierRead,
+		"observability.logs":   TierRead,
+		"k8s.workload_restart": TierChange,
+		"tickets.transition":   TierChange,
+		"tickets.update":       TierChange,
+		"notifications.email":  TierChange,
+		"notifications.im":     TierChange,
+		"cloud.k8s.cli":        TierUnrestricted,
+		"cicd.argocd.cli":      TierUnrestricted,
+		"scm.github.cli":       TierUnrestricted,
+		"dbms.query":           TierUnrestricted,
+		"scripting.run_script": TierUnrestricted,
+		"integrations.http":    TierUnrestricted,
+		"llm.mcp_call":         TierUnrestricted,
+		"core.call-workflow":   TierUnrestricted,
+	} {
+		got, ok := TierFor(name)
+		assert.True(t, ok, name)
+		assert.Equal(t, want, got, name)
+	}
+	got, ok := TierFor("not.a.task")
+	assert.False(t, ok)
+	assert.Equal(t, TierUnrestricted, got, "an unknown step type is never treated as safe")
+}
+
+func TestTiersAgreeWithPermissions(t *testing.T) {
+	// A step that needs no permission changes nothing outside the run; a write
+	// to a cluster, cloud account or database changes a live system.
+	for name, req := range stepRequirements {
+		if req.None() {
+			assert.Equalf(t, TierRead, req.Tier, "%s needs no permission but is not a read", name)
+		}
+		if req.Class == classWrite && (req.Module == "k8s" || req.Module == "cloud" || req.Module == "database") {
+			assert.GreaterOrEqualf(t, req.Tier, TierChange, "%s writes to a live system", name)
+		}
+	}
+}
+
 func TestDeclaredModulesExistInThePermissionVocabulary(t *testing.T) {
 	// Custom roles grant "<module>:<class>" for the modules the platform seeds.
 	// A module name here that is not in that set could never be granted, so the
