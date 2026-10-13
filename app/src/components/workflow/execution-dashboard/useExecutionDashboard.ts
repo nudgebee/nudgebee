@@ -6,7 +6,7 @@ import apiUser from '@api1/user';
 import type { AccountExecutionItem, AccountExecutionListRequest, ExecutionAggregateResponse } from '@api1/workflow/types';
 import { isExecutionCompleted } from '../utils/executionStatus';
 import { getUserSession, getCurrentTenant } from '@lib/auth';
-import { readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
+import { clearPersistedFilters, readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
 import { readPersistedAccounts, writePersistedAccounts } from '../utils/accountFilterPersistence';
 import {
   AUTOMATION_OPTIONS_LIMIT,
@@ -43,6 +43,14 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // page. Page size already comes from the shared table-page-size preference.
 const EXECUTIONS_FILTER_STORAGE_KEY = 'automation:executions:filters:v1';
 
+const executionFilterKey = (): string | null => {
+  const tenantId = getCurrentTenant()?.id;
+  return tenantId ? `${EXECUTIONS_FILTER_STORAGE_KEY}:${tenantId}` : null;
+};
+
+/** Forget saved filters before a link that promises an exact run count (Home Triggered (24h)). */
+export const clearSavedExecutionFilters = (): void => clearPersistedFilters(executionFilterKey());
+
 interface PersistedExecutionFilters {
   // Index signature so this satisfies the helpers' Record<string, unknown>.
   [key: string]: unknown;
@@ -71,10 +79,7 @@ const parseDate = (raw: unknown, fallback: Date): Date => {
 export function useExecutionDashboard() {
   const router = useRouter();
 
-  const persistKey = useMemo(() => {
-    const tenantId = getCurrentTenant()?.id;
-    return tenantId ? `${EXECUTIONS_FILTER_STORAGE_KEY}:${tenantId}` : null;
-  }, []);
+  const persistKey = useMemo(executionFilterKey, []);
   const [persisted] = useState<PersistedExecutionFilters>(() => readPersistedFilters<PersistedExecutionFilters>(persistKey));
 
   const [filters, setFilters] = useState<ExecutionDashboardFilters>(() => ({
@@ -486,6 +491,7 @@ export function useExecutionDashboard() {
     accounts,
     accountOptions,
     refresh,
+    seeded,
   };
 }
 

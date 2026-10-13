@@ -74,6 +74,7 @@ import PendingFollowUps from '@components/home/PendingFollowUps';
 import VmOverviewCard from '@components/home/VmOverviewCard';
 import { isSelfHostedProvider } from '@components/overview/providers';
 import { clearSavedWorkflowFilters } from '@components/workflow/utils/listingFilterPersistence';
+import { clearSavedExecutionFilters } from '@components/workflow/execution-dashboard/useExecutionDashboard';
 import { VmServerIcon, RecommendationIcon, OptimizeSummaryIcon } from '@assets';
 
 const replaceCurrencyInText = (text, targetCurrencySymbol) => {
@@ -584,8 +585,8 @@ SectionHeader.propTypes = {
   tone: PropTypes.oneOf(['critical', 'info', 'warning', 'success', 'agent', 'neutral']),
 };
 
-const AutomationsCard = ({ workflowData, accountId, onManage, onViewWorkflows }) => {
-  const { totalCount = 0, actionedCount = 0, configuredCount = 0 } = workflowData || {};
+export const AutomationsCard = ({ workflowData, accountId, onManage, onViewWorkflows, onViewRuns }) => {
+  const { totalCount = 0, actionedCount = 0, configuredCount = 0, windowStart, windowEnd } = workflowData || {};
 
   // Deep-link a stat to the automations listing with the matching filters.
   // `filters` maps to the URL query params WorkflowListing reads (status / type /
@@ -655,7 +656,9 @@ const AutomationsCard = ({ workflowData, accountId, onManage, onViewWorkflows })
           label='Triggered (24h)'
           value={String(actionedCount)}
           id='automations-triggered-stat'
-          onClick={actionedCount > 0 ? () => viewWorkflows({ status: 'All', last_execution_status: 'All' }) : undefined}
+          info={{ tooltip: 'Automation runs started in the last 24 hours, dry runs included' }}
+          // Counts runs, so open the Executions list for the exact window that was counted.
+          onClick={actionedCount > 0 ? () => onViewRuns?.({ accountId, from: windowStart, to: windowEnd }) : undefined}
         />
         <Stat
           size='sm'
@@ -674,6 +677,7 @@ AutomationsCard.propTypes = {
   accountId: PropTypes.string,
   onManage: PropTypes.func,
   onViewWorkflows: PropTypes.func,
+  onViewRuns: PropTypes.func,
 };
 
 const EMPTY_STATE_NO_DATA_THRESHOLD_MS = 48 * 60 * 60 * 1000;
@@ -1861,7 +1865,7 @@ const Home = () => {
       const [totalResponse, configuredResponse, actionedResponse] = await Promise.all([
         apiWorkflow.getWorkflowCount(accountId, { status: 'ACTIVE' }),
         apiWorkflow.getWorkflowCount(accountId, { status: 'ACTIVE', triggerType: 'event' }),
-        apiWorkflow.getWorkflowExecutionCount(accountId, { startDate: dateRange.startDate }),
+        apiWorkflow.getWorkflowExecutionCount(accountId, dateRange),
       ]);
 
       // Tolerate two response shapes: { data: { <field>: { count } } } or { <field>: { count } }
@@ -1874,6 +1878,9 @@ const Home = () => {
         totalCount: pickCount(totalResponse, 'workflows_count'),
         configuredCount: pickCount(configuredResponse, 'workflows_count'),
         actionedCount: pickCount(actionedResponse, 'workflows_count_executions'),
+        // The Triggered (24h) link replays this window so the runs list matches the count.
+        windowStart: dateRange.startDate.toISOString(),
+        windowEnd: dateRange.endDate.toISOString(),
       };
       setWorkflowData(next);
     } catch (error) {
@@ -2162,6 +2169,10 @@ const Home = () => {
             onViewWorkflows={(query) => {
               clearSavedWorkflowFilters();
               router.push({ pathname: '/automation', query });
+            }}
+            onViewRuns={(query) => {
+              clearSavedExecutionFilters();
+              router.push({ pathname: '/automation', query, hash: 'executions' });
             }}
           />
           <VmOverviewCard

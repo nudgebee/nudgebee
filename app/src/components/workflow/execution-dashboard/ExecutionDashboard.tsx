@@ -119,6 +119,7 @@ const ExecutionDashboard: React.FC = () => {
     accounts,
     accountOptions,
     refresh,
+    seeded,
   } = useExecutionDashboard();
 
   const [selectedExecution, setSelectedExecution] = useState<AccountExecutionItem | null>(null);
@@ -258,6 +259,9 @@ const ExecutionDashboard: React.FC = () => {
           actions={
             <>
               <CustomDateTimeRangePicker
+                // The picker copies its range once on mount; remount after the URL
+                // seed so a linked from/to shows here, not the default range.
+                key={seeded ? 'seeded' : 'default'}
                 passedSelectedDateTime={{
                   startTime: filters.startDate.getTime(),
                   endTime: filters.endDate.getTime(),
