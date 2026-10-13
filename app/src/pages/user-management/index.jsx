@@ -348,7 +348,7 @@ export default function UserManagement() {
   // re-evaluates access.
   useEffect(() => {
     if (session && !hasAdminSurfaceAccess()) {
-      router.replace('/home');
+      router.replace('/ask-nudgebee');
     }
   }, [session, router]);
 

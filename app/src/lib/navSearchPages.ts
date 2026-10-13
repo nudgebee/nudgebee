@@ -709,10 +709,9 @@ export const navSearchIgnoredFragments: string[] = [
   'auto-pilot/task#tasks',
   'auto-pilot/task#details',
 
-  // /home — src/pages/home/index.jsx. No fragment/tabOptions of its own (just
-  // shortcut cards linking into fragments already registered elsewhere); it's
-  // the default landing page, so nothing to search for in the first place.
-  // Confirmed intentional.
+  // /home — src/pages/home/index.jsx. No fragment/tabOptions of its own — just
+  // shortcut cards linking into fragments already registered elsewhere — so
+  // nothing to search for in the first place. Confirmed intentional.
   '/home',
 
   // /ask-nudgebee — src/pages/ask-nudgebee/index.jsx. No tabs of its own, and

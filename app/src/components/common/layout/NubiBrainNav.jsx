@@ -17,7 +17,8 @@
  *
  * Surface tinting:
  *   • surface='dark'  — white icons/labels for the main app rail (brand-600 bg).
- *   • surface='light' — grey icons/labels for the Ask-Nubi rail (light bg).
+ *   • surface='light' — grey icons/labels for Nubi's sub-nav (light bg), which
+ *     passes showBCortex={false} — b-Cortex stays on the main rail only.
  */
 import { useCallback, useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
@@ -84,7 +85,7 @@ RailButton.propTypes = {
   onClick: PropTypes.func,
 };
 
-const NubiBrainNav = ({ surface = 'dark', accountId }) => {
+const NubiBrainNav = ({ surface = 'dark', accountId, showBCortex = true }) => {
   const router = useRouter();
   const resolvedAccountId = accountId ?? router.query?.accountId ?? '';
 
@@ -127,7 +128,9 @@ const NubiBrainNav = ({ surface = 'dark', accountId }) => {
   const DEEP_LINKABLE_TABS = ['digests', 'knowledge-base'];
 
   useEffect(() => {
-    if (!router.isReady) return;
+    // Only the instance that shows b-Cortex answers the link — on /ask-nudgebee
+    // a second, b-Cortex-less instance sits in Nubi's sub-nav.
+    if (!showBCortex || !router.isReady) return;
     const tab = router.query?.bcortex;
     if (typeof tab !== 'string' || !DEEP_LINKABLE_TABS.includes(tab)) return;
 
@@ -143,7 +146,7 @@ const NubiBrainNav = ({ surface = 'dark', accountId }) => {
     // router identity changes on every navigation; keying on the param alone
     // keeps this from re-firing (and re-opening) on unrelated route changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router.isReady, router.query?.bcortex]);
+  }, [showBCortex, router.isReady, router.query?.bcortex]);
 
   // In-app trigger (e.g. a GlobalPageSearch.jsx pick) — opens the modal
   // directly on the tab requested, without a page navigation or URL change.
@@ -177,7 +180,7 @@ const NubiBrainNav = ({ surface = 'dark', accountId }) => {
           gap: 'var(--ds-space-2)',
         }}
       >
-        {!isOSSDeploymentMode() && (
+        {showBCortex && !isOSSDeploymentMode() && (
           <RailButton
             label='b-Cortex'
             testId='nav-bcortex-btn'
@@ -221,6 +224,8 @@ const NubiBrainNav = ({ surface = 'dark', accountId }) => {
 NubiBrainNav.propTypes = {
   surface: PropTypes.oneOf(['dark', 'light']),
   accountId: PropTypes.string,
+  // False on Nubi's sub-nav, which sits beside the main rail's own b-Cortex.
+  showBCortex: PropTypes.bool,
 };
 
 export default NubiBrainNav;

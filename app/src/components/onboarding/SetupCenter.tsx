@@ -2082,7 +2082,7 @@ const SetupCenter = () => {
                   disabled={!canGoToDashboard}
                   data-testid='setup-go-to-dashboard'
                   trailingAccent={<ArrowForwardIcon />}
-                  onClick={() => router.push('/home')}
+                  onClick={() => router.push('/ask-nudgebee')}
                 >
                   Go to dashboard
                 </Button>

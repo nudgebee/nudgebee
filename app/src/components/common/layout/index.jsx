@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { useTenantBranding } from '@hooks/useTenantBranding';
+import { useTenantBranding, toAssistantLabel } from '@hooks/useTenantBranding';
 import Box from '@mui/material/Box';
 import { Button, Container, Typography, Menu, MenuItem, IconButton, Popover } from '@mui/material';
 import { useRouter } from 'next/router';
@@ -71,10 +71,11 @@ import { useData } from '@context/DataContext';
 import { useSetupGate, SETUP_ROUTE } from '@context/SetupGateContext';
 import { createGetMenuItem, generateMenuItems } from './UserMenuItems';
 import NubiBrainNav from './NubiBrainNav';
+import { MAIN_RAIL_WIDTH } from './railWidths';
 import { ds } from 'src/utils/colors';
 import { isRenderedInIframe } from 'src/utils/common';
 
-const COLLAPSED_WIDTH = 76;
+const COLLAPSED_WIDTH = MAIN_RAIL_WIDTH;
 
 const FLYOUT_CLOSE_DELAY_MS = 150;
 const NAV_ITEM_HIGHLIGHT_BG = `color-mix(in srgb, ${ds.background[100]} 10%, transparent)`;
@@ -368,7 +369,14 @@ const PageLayout = ({ children }) => {
   // Derived Values
   const session = getUserSession();
   const { selectedCluster } = useData();
-  const { baseTitle, logoUrl: brandingLogoUrl, faviconUrl: brandingFaviconUrl, loading: brandingLoading } = useTenantBranding();
+  const {
+    baseTitle,
+    logoUrl: brandingLogoUrl,
+    faviconUrl: brandingFaviconUrl,
+    loading: brandingLoading,
+    assistantName,
+    nubiIconUrl,
+  } = useTenantBranding();
 
   // Logo and favicon come from the branding config, with no house-brand fallback.
   // The `!brandingLoading` gates below hold both until the config resolves, so
@@ -457,19 +465,31 @@ const PageLayout = ({ children }) => {
     ];
 
     const items = [
+      // Nubi sits above Home. /ask-nudgebee renders its own sub-nav (New chat,
+      // Chats, AI & Tools) docked to this rail — see AskNudgebeeLayoutV2.
+      {
+        path: '/ask-nudgebee',
+        icon: nubiIconUrl,
+        text: toAssistantLabel(assistantName),
+        id: 'nubi-sidenavbutton',
+        module: 'ai_conversations',
+      },
       {
         path: '/home',
-        // /overview belongs to no other rail item, so Home lights up for it.
-        activePaths: ['/overview'],
+        // /overview and /dashboards belong to no other rail item, so Home
+        // lights up for them.
+        activePaths: ['/overview', '/dashboards'],
         icon: homeIcon1,
         text: 'Home',
         id: 'home-sidenavbutton',
-        // Union of what the section's rows need, same reason Optimize declares
-        // one: gating the parent on `insights` alone greys it out for a holder
-        // of only `k8s:Read` or `cloud:Read`, and a disabled parent gets
-        // pointerEvents:'none' — its flyout never opens, so the row they ARE
-        // entitled to stays unreachable.
-        modules: ['insights', 'k8s', 'cloud'],
+        // No parent-level `modules` gate: unlike Optimize's rows, this section's
+        // rows don't share one module family — Dashboard List/Application
+        // Grouping need none at all (see their comment below) — so a parent gate
+        // would disable the whole flyout, and a disabled parent gets
+        // pointerEvents:'none', for a grants-only user who happens to hold none
+        // of insights/k8s/cloud even though the Dashboards rows stay reachable
+        // for everyone. Per-sub-item gating below is what actually decides each
+        // row, and the always-open Dashboards rows keep the parent open too.
         // Account Overview is the fleet-wide summary at /overview — one card per
         // connected account across every provider (K8s, AWS, Azure, GCP,
         // CloudFoundry, self-hosted VMs). It reads as a landing surface rather
@@ -487,17 +507,10 @@ const PageLayout = ({ children }) => {
             modules: ['k8s', 'cloud'],
             icon: KubernetesClusterIcon,
           },
-        ],
-      },
-      // No `module`: a dashboard panel may query any connected account, so the
-      // page itself gates on nothing — each panel's query is authorised per
-      // account by the backend it reads.
-      {
-        path: '/dashboards',
-        icon: dashboardIcon1,
-        text: 'Dashboards',
-        id: 'dashboards-sidenavbutton',
-        subItems: [
+          // Dashboards used to be its own rail item; folded in here to cut down
+          // the number of top-level icons. No `module`: a dashboard panel may
+          // query any connected account, so the page itself gates on nothing —
+          // each panel's query is authorised per account by the backend it reads.
           { text: 'Dashboard List', path: '/dashboards#list', id: 'sidenav-dashboards-list', icon: dashboardIcon1 },
           { text: 'Application Grouping', path: '/dashboards#groups', id: 'sidenav-dashboards-groups', icon: ApplicationsIcon },
         ],
@@ -684,7 +697,7 @@ const PageLayout = ({ children }) => {
         ? gated
         : { ...gated, disabled: true, disabledTooltip: subItems[0].disabledTooltip };
     });
-  }, [selectedCluster?.value, session, llmAnalyserEnabled]);
+  }, [selectedCluster?.value, session, llmAnalyserEnabled, assistantName, nubiIconUrl]);
 
   // Route/Page Type Detection
   const pageFlags = useMemo(
@@ -701,12 +714,13 @@ const PageLayout = ({ children }) => {
     [router.pathname]
   );
 
-  const isPlainLayout = pageFlags.isAskNudgebee || pageFlags.isWorkflow;
+  const isPlainLayout = pageFlags.isWorkflow;
   const isPaddedLayout = !(pageFlags.isAskNudgebee || pageFlags.isInvestigate || pageFlags.isAskNudgebeeV2);
 
   // Note: This one is still calculated on render as it's used for the top logo link
   // If you want to optimize this too, you'd need to make the logo a Button with onClick handler similar to above
-  const homeUrl = useMemo(() => getDynamicPath('/home', router), [router]);
+  // The logo goes to the default landing page, Nubi — the same place `/` sends a fresh sign-in.
+  const homeUrl = useMemo(() => getDynamicPath('/ask-nudgebee', router), [router]);
 
   // Handlers
   const handleSwitchAccountClose = () => setOpenSwitchAccount(false);
@@ -779,7 +793,7 @@ const PageLayout = ({ children }) => {
             }
           </Head>
           {/* Mounted here too so the AccountGuard "Switch Tenant" CTA works
-              on plain-layout pages (e.g. ask-nudgebee). */}
+              on plain-layout pages (e.g. the workflow builder). */}
           <LayoutHeaderActionSlot open={openSwitchAccount} title={'Switch Tenant'} onClose={handleSwitchAccountClose} />
           {children}
         </>
@@ -845,7 +859,9 @@ const PageLayout = ({ children }) => {
                           to stay a direct child of .inner-side-drawer to render at that position.
                           Wrapping the whole .map() output (separators included) in the dimming
                           Box below used to push every separator to the left edge instead. */}
-                      {['Troubleshoot', 'Infra', 'Tickets'].includes(item.text) && <Box sx={styles.subSeparator} />}
+                      {['troubleshoot-sidenavbutton', 'infra-sidenavbutton', 'tickets-sidenavbutton'].includes(item.id) && (
+                        <Box sx={styles.subSeparator} />
+                      )}
                       <Box sx={navLocked ? { pointerEvents: 'none', opacity: 0.35, filter: 'grayscale(1)' } : undefined}>
                         <SideDrawerButton
                           item={item}
@@ -965,15 +981,18 @@ const PageLayout = ({ children }) => {
             )}
 
             <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
-              {!isRenderedInIframe() && !pageFlags.isWorkflow && (
+              {/* Nubi's page has its own title bar and account picker in the composer. */}
+              {!isRenderedInIframe() && !pageFlags.isWorkflow && !pageFlags.isAskNudgebee && (
                 <ErrorBoundary resetKey={router.pathname}>
                   <Header1 />
                 </ErrorBoundary>
               )}
               <Box
                 sx={{
-                  maxWidth: `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 45)})`,
-                  width: `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 42)})`,
+                  // Nubi runs edge to edge beside its sub-nav, with no page gutter.
+                  maxWidth: pageFlags.isAskNudgebee ? 'none' : `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 45)})`,
+                  width: pageFlags.isAskNudgebee ? '100%' : `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 42)})`,
+                  minWidth: 0,
                   px: pageFlags.isAskNudgebee || pageFlags.isAskNudgebeeV2 ? 0 : ds.space.mul(1, 10),
                   backgroundColor:
                     pageFlags.isOptimize || pageFlags.isTroubleshoot || pageFlags.isAgentic
@@ -1007,8 +1026,11 @@ const PageLayout = ({ children }) => {
                           same account. The route is the one thing that stays true for as long
                           as the duplicate would.
 
-                          A page with a tab strip claims it and renders it below the tabs. */}
-                      {bannerClaims === 0 && router.pathname !== SETUP_ROUTE && (
+                          A page with a tab strip claims it and renders it below the tabs.
+
+                          Also off on Nubi's page: its header and composer are fixed-position
+                          and would sit over a banner stacked above the chat. */}
+                      {bannerClaims === 0 && router.pathname !== SETUP_ROUTE && !pageFlags.isAskNudgebee && (
                         <ErrorBoundary resetKey={router.asPath}>
                           <PendingAgentInstallBanner />
                         </ErrorBoundary>

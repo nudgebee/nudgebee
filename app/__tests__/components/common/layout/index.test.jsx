@@ -100,6 +100,7 @@ jest.mock('@hooks/useTenantBranding', () => ({
   })),
   DEFAULT_LOGO: '/default-logo.svg',
   DEFAULT_FAVICON: '/favicon.ico',
+  toAssistantLabel: jest.requireActual('@hooks/useTenantBranding').toAssistantLabel,
 }));
 
 // Mock @assets
@@ -962,10 +963,13 @@ describe('sub-section hover flyout', () => {
     expect(document.getElementById('sidenav-infra-cloud')).toBeInTheDocument();
   });
 
-  it('lists Home and Account Overview as the Home sections', async () => {
+  it('lists Home, Account Overview, Dashboard List and Application Grouping as the Home sections', async () => {
+    expect(document.getElementById('dashboards-sidenavbutton')).not.toBeInTheDocument();
     await renderAndHover('home-sidenavbutton');
     expect(document.getElementById('sidenav-home-home')).toBeInTheDocument();
     expect(document.getElementById('sidenav-home-account-overview')).toBeInTheDocument();
+    expect(document.getElementById('sidenav-dashboards-list')).toBeInTheDocument();
+    expect(document.getElementById('sidenav-dashboards-groups')).toBeInTheDocument();
   });
 
   it('navigates to the Account Overview page from the Home flyout', async () => {

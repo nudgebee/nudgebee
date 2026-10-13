@@ -116,7 +116,7 @@ export class NubiLocators {
     // floating panel (KubernetesLLMResponseGeneratorV2 keys it off `popup`).
     // Match either, so a caller does not have to know which mode it landed in.
     this.chatTextbox = page
-      .getByPlaceholder("Ask me about troubleshooting, error logs, resource usage, or optimizations.")
+      .getByPlaceholder("Ask about troubleshooting, logs or optimizations")
       .or(page.getByPlaceholder("Ask a question..."))
       .first();
     this.submitBtn = page.locator('#set-config-btn')

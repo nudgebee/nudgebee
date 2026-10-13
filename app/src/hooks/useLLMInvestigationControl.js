@@ -695,6 +695,8 @@ const initialState = {
   // disabled so the attach UI stays hidden until the backend confirms support.
   queueSupport: { enabled: false, maxMessages: 5 },
   imageSupport: { enabled: false, maxPerMessage: 0, maxSizeMb: 0, allowedMimeTypes: [] },
+  // True once ai_list_models has answered, so the composer can tell "still loading" from "none configured".
+  modelsLoaded: false,
 };
 
 function investigationReducer(state, action) {
@@ -758,6 +760,7 @@ function investigationReducer(state, action) {
           defaultModel: action.defaultModel,
           imageSupport: action.imageSupport ?? state.imageSupport,
           queueSupport: action.queueSupport ?? state.queueSupport,
+          modelsLoaded: true,
         },
         action.availableModels
       );
@@ -775,6 +778,7 @@ function investigationReducer(state, action) {
         defaultModel: state.defaultModel,
         imageSupport: state.imageSupport,
         queueSupport: state.queueSupport,
+        modelsLoaded: state.modelsLoaded,
       };
     default:
       return state;
@@ -1616,5 +1620,6 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
     setSelectedConfig: (cfg) => dispatch({ type: 'SET_SELECTED_CONFIG', payload: cfg }),
     clearModelConfig: () => dispatch({ type: 'SET_CONFIG_CLEARED', payload: true }),
     imageSupport,
+    modelsLoaded: state.modelsLoaded,
   };
 };

@@ -1765,7 +1765,11 @@ const api = {
     }
   },
   async listModels(accountId: string) {
-    if (accountId === 'demo') return null;
+    // The demo account has no real backend to query — skip the network call,
+    // but keep the same { data, errors } shape every other path returns.
+    // A bare null here reads as "fetch failed" to callers (they check
+    // `!res?.data`), which used to throw and spam the dev error overlay.
+    if (accountId === 'demo') return { data: {}, errors: [] };
     const LIST_MODELS = `
     query ListModels($request: AIListModelsRequest!) {
       ai_list_models(request: $request) {
