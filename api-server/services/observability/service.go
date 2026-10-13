@@ -758,6 +758,33 @@ func (e *BuiltInProviderDownError) Error() string {
 	return fmt.Sprintf("observability: the built-in %s provider (%s) is configured on this cluster but is not reachable right now", e.ProviderType, e.Provider)
 }
 
+// integrationKey identifies an integration by type and name, the way the relay's
+// auto-registration does (it upserts on source, type, name).
+func integrationKey(dto *core.IntegrationDto) string {
+	return strings.ToLower(dto.Type) + "|" + strings.ToLower(dto.Name)
+}
+
+// userIntegrationKeys collects the type+name of every user-sourced integration.
+func userIntegrationKeys(all []core.IntegrationDto) map[string]bool {
+	keys := map[string]bool{}
+	for i := range all {
+		if all[i].Source == "user" {
+			keys[integrationKey(&all[i])] = true
+		}
+	}
+	return keys
+}
+
+// isForagerEcho reports whether an agent-sourced row is a forager reporting a
+// user-sourced integration back. A forager lists every datasource it holds in its
+// inventory, including one pushed from a vm_agent integration, and the relay
+// registers each as an agent-sourced integration named after the datasource. The row
+// is therefore the same log store as the user one, not a second provider, and counting
+// it turns "one provider, use it" into the choose-a-default error.
+func isForagerEcho(dto *core.IntegrationDto, userKeys map[string]bool) bool {
+	return dto.Source == "agent" && userKeys[integrationKey(dto)]
+}
+
 // builtInHealthFlags lists the flags in an agent's connection_status that say its
 // own provider for a signal is up. Chronosphere serves traces from the metrics
 // backend and older agents report its traces as off, so either flag counts there.
@@ -926,9 +953,13 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 			if defaultProvider == "" {
 				var candidates []*core.IntegrationDto
 				if activeIntegrations, aErr := core.ListActiveIntegrationsForAccount(ctx, accountId); aErr == nil {
+					userNamed := userIntegrationKeys(activeIntegrations)
 					for i := range activeIntegrations {
 						dto := &activeIntegrations[i]
-						if !isAgentOwnProvider(dto) && isSupportedTelemetryProvider(dto.Type, dto.Source, providerType) &&
+						if isAgentOwnProvider(dto) || isForagerEcho(dto, userNamed) {
+							continue
+						}
+						if isSupportedTelemetryProvider(dto.Type, dto.Source, providerType) &&
 							!servesOnlyAsExplicitDefault(dto.Type, providerType) {
 							candidates = append(candidates, dto)
 						}

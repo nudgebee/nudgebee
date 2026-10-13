@@ -643,3 +643,54 @@ func TestGetTelemetrySourceForAccount_AmbiguousProviderError(t *testing.T) {
 	assert.Contains(t, err.Error(), "observability: multiple traces providers are configured (datadog-prod, jaeger-prod), but none is marked as default")
 	assert.Contains(t, err.Error(), "please specify trace_provider or choose a default in Settings")
 }
+
+// A vm_agent integration is echoed back by the forager as an agent-sourced row with the
+// same type and name. That row is the same log store, so it must not make the account
+// look like it has two providers.
+func TestGetTelemetrySourceForAccount_ForagerEchoIsNotASecondProvider(t *testing.T) {
+	patches := gomonkey.NewPatches()
+	defer patches.Reset()
+
+	patches.ApplyFunc(core.GetIntegrationByConfigNameValues,
+		func(_ *security.RequestContext, _, _, _ string) (*core.IntegrationDto, error) {
+			return nil, nil
+		})
+	patches.ApplyFunc(account.GetAgentConnectionDetails,
+		func(_ string) (account.AgentDetails, error) {
+			return account.AgentDetails{}, errors.New("no agent connected")
+		})
+	patches.ApplyFunc(core.GetIntegrationByTypePreferringDefault,
+		func(_ *security.RequestContext, _, _, _ string) (*core.IntegrationDto, error) {
+			return nil, nil
+		})
+	ctx := tenantCarryingContext("test-tenant")
+
+	t.Run("user row and its forager echo resolve to the user row", func(t *testing.T) {
+		patches.ApplyFunc(core.ListActiveIntegrationsForAccount,
+			func(_ *security.RequestContext, _ string) ([]core.IntegrationDto, error) {
+				return []core.IntegrationDto{
+					{Id: "agent-row", Name: "vm-loki", Type: "loki", Source: "agent"},
+					{Id: "user-row", Name: "vm-loki", Type: "loki", Source: "user"},
+				}, nil
+			})
+		provider, source, matched, err := resolveProviderForStatus(ctx, "acc-1", "", "logs", "")
+		require.NoError(t, err)
+		assert.Equal(t, "loki", provider)
+		assert.Equal(t, "user", source)
+		require.NotNil(t, matched)
+		assert.Equal(t, "user-row", matched.Id)
+	})
+
+	t.Run("a differently named agent row is still a second provider", func(t *testing.T) {
+		patches.ApplyFunc(core.ListActiveIntegrationsForAccount,
+			func(_ *security.RequestContext, _ string) ([]core.IntegrationDto, error) {
+				return []core.IntegrationDto{
+					{Id: "agent-row", Name: "team-b-loki", Type: "loki", Source: "agent"},
+					{Id: "user-row", Name: "vm-loki", Type: "loki", Source: "user"},
+				}, nil
+			})
+		_, _, _, err := resolveProviderForStatus(ctx, "acc-1", "", "logs", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "multiple logs providers are configured (team-b-loki, vm-loki), but none is marked as default")
+	})
+}

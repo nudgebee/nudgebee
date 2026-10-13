@@ -167,6 +167,7 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'VM', label: 'VM Traces', path: '/vm#traces' },
   { group: 'VM', label: 'VM Events', path: '/vm#alerts' },
   { group: 'VM', label: 'VM Metrics', path: '/vm#metrics' },
+  { group: 'VM', label: 'VM Logs', path: '/vm#logs' },
   // No VM Agents row: that tab moved to Agent Health → Proxy Agent, which is
   // already indexed as an account-scoped fragment below.
 

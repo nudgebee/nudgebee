@@ -15,8 +15,9 @@ import VmPackages from '@components/vm/VmPackages';
 import VmAlerts from '@components/vm/VmAlerts';
 import VmTraces from '@components/vm/VmTraces';
 import VmServiceMap from '@components/vm/VmServiceMap';
+import VmLogs from '@components/vm/VmLogs';
 import VmMetricsTab from '@components/vm/VmMetricsTab';
-import { VmServerIcon, ApplicationsIcon, RecommendationIcon, OptimizeSummaryIcon, ServiceMapIcon, LogsTracesIcon, AllEventsIcon } from '@assets';
+import { VmServerIcon, ApplicationsIcon, RecommendationIcon, OptimizeSummaryIcon, ServiceMapIcon, LogsTracesIcon, AllEventsIcon, QueryLogIcon } from '@assets';
 import { ds } from '@utils/colors';
 
 /**
@@ -52,6 +53,7 @@ const tabOptions = [
   { name: 'Traces', id: 'vm-traces', fragment: 'traces', value: 5, disabled: false, icon: LogsTracesIcon },
   { name: 'Events', id: 'vm-alerts', fragment: 'alerts', value: 6, disabled: false, icon: AllEventsIcon },
   { name: 'Metrics', id: 'vm-metrics', fragment: 'metrics', value: 7, disabled: false, icon: OptimizeSummaryIcon },
+  { name: 'Logs', id: 'vm-logs', fragment: 'logs', value: 8, disabled: false, icon: QueryLogIcon },
 ];
 
 const PACKAGES_TAB = 3;
@@ -59,6 +61,7 @@ const SERVICE_MAP_TAB = 4;
 const TRACES_TAB = 5;
 const ALERTS_TAB = 6;
 const METRICS_TAB = 7;
+const LOGS_TAB = 8;
 
 /**
  * Deep-link params the Summary cards use to open the Vulnerabilities tab already
@@ -253,6 +256,7 @@ const VmPage = () => {
         {canReadCloud && accountId && selectedTab === TRACES_TAB && <VmTraces accountId={accountId} />}
         {canReadCloud && accountId && selectedTab === ALERTS_TAB && <VmAlerts accountId={accountId} />}
         {canReadCloud && accountId && selectedTab === METRICS_TAB && <VmMetricsTab accountId={accountId} />}
+        {canReadCloud && accountId && selectedTab === LOGS_TAB && <VmLogs accountId={accountId} />}
       </ErrorBoundary>
     </>
   );
