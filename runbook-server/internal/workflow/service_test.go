@@ -636,6 +636,34 @@ func (m *MockTaskWithSchema) InputSchema() *types.Schema {
 // MockWorkflowStore is a mock of WorkflowStore
 type MockWorkflowStore struct {
 	mock.Mock
+	// runAs backs GetRunAsUserID/SetRunAsUserID without mock expectations, so
+	// existing tests that never think about owners keep working.
+	runAs    map[string]string
+	runAsErr error
+}
+
+func (m *MockWorkflowStore) hasExpectation(method string) bool {
+	for _, c := range m.ExpectedCalls {
+		if c.Method == method {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MockWorkflowStore) GetRunAsUserID(ctx context.Context, tenantID, workflowID string) (string, error) {
+	if m.runAsErr != nil {
+		return "", m.runAsErr
+	}
+	return m.runAs[workflowID], nil
+}
+
+func (m *MockWorkflowStore) SetRunAsUserID(ctx context.Context, tenantID, accountID, workflowID, userID string) error {
+	if m.runAs == nil {
+		m.runAs = map[string]string{}
+	}
+	m.runAs[workflowID] = userID
+	return nil
 }
 
 func (m *MockWorkflowStore) CreateWorkflowWithInitialVersion(ctx context.Context, tenantID, accountID string, wf model.Workflow) (string, *model.WorkflowVersion, error) {
@@ -808,6 +836,12 @@ func (m *MockWorkflowStore) GetWorkflowVersionByID(ctx context.Context, versionI
 }
 
 func (m *MockWorkflowStore) GetLiveWorkflowVersion(ctx context.Context, workflowID string) (*model.WorkflowVersion, error) {
+	// Trigger registration reads the live version on every call (schedules
+	// come from its triggers). Tests that don't stub it get "no live version",
+	// which registers no schedules.
+	if !m.hasExpectation("GetLiveWorkflowVersion") {
+		return nil, sql.ErrNoRows
+	}
 	args := m.Called(ctx, workflowID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
@@ -1115,6 +1149,9 @@ func TestWebhookTriggers(t *testing.T) {
 		}
 
 		mockStore.On("FindByName", mock.Anything, "test-tenant", "test-account", wf.Name).Return(nil, sql.ErrNoRows)
+		// Trigger registration reads the live version for its schedules.
+		mockStore.On("GetLiveWorkflowVersion", mock.Anything, mock.Anything).
+			Return(&model.WorkflowVersion{ID: "v1", VersionNumber: 1, IsLive: true, Definition: wf.Definition}, nil).Maybe()
 
 		// Mock create. We can't match exact ID because it's generated randomly.
 		mockStore.On("CreateWorkflowWithInitialVersion", mock.Anything, "test-tenant", "test-account", mock.Anything).

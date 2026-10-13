@@ -626,65 +626,42 @@ func (s *Service) CreateWorkflow(ctx *security.RequestContext, accountId string,
 	return storedId, token, nil
 }
 
+// hasScheduleTrigger reports whether any trigger is a schedule.
+func hasScheduleTrigger(triggers []model.Trigger) bool {
+	for _, t := range triggers {
+		if t.Type == model.WorkflowTriggerSchedule {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) handleWorkflowTrigger(ctx *security.RequestContext, id, tenantId, accountId string, wf *model.Workflow) (client.WorkflowRun, string, error) {
 	scheduleClient := s.temporalClient.ScheduleClient()
 
 	var webhookToken string
 	scheduleCount := 0
 
-	// Live execution snapshot for scheduled runs, resolved lazily on the first
-	// schedule trigger so webhook-only workflows skip the lookup. Scheduled runs
-	// must bake and execute the live version, not the draft (H1).
+	// Schedules run the live version as the workflow's owner, so their cron and
+	// inputs come from the live version's triggers too, not the draft. A draft
+	// save must not change what a schedule does with the owner's rights; only
+	// making a version live does (#41035).
 	var liveExecDef model.WorkflowDefinition
 	var liveVersionMemo map[string]any
+	liveLoaded := false
+	if d, m, rerr := s.resolveLiveExecution(ctx.GetContext(), id); rerr == nil {
+		liveExecDef, liveVersionMemo, liveLoaded = d, m, true
+	} else if hasScheduleTrigger(wf.Definition.Triggers) {
+		return nil, "", rerr
+	}
 
-	// Process all triggers
-	for i, trigger := range wf.Definition.Triggers {
-		switch trigger.Type {
-		case model.WorkflowTriggerSchedule:
-			if c, ok := trigger.Params["cron"].(string); ok && c != "" {
-				cron := c
-				var overlapPolicy string
-				var catchupWindow string
-				inputs := make(map[string]any)
-
-				// Extract schedule configuration params
-				if op, ok := trigger.Params["overlap_policy"].(string); ok {
-					overlapPolicy = op
-				}
-				if cw, ok := trigger.Params["catchup_window"].(string); ok {
-					catchupWindow = cw
-				}
-
-				// Extract workflow inputs from params (everything else)
-				for k, v := range trigger.Params {
-					if k != "cron" && k != "overlap_policy" && k != "catchup_window" {
-						inputs[k] = v
-					}
-				}
-
-				// If workflow is Inactive, ensure schedule is removed.
-				if wf.Status == model.WorkflowStatusInactive {
-					// Logic to remove schedules handled below
-				} else {
-					// Create or update this specific schedule. Resolve the live
-					// version once (the schedule executes it, not the draft) and
-					// reuse it across every schedule trigger on this workflow.
-					if liveVersionMemo == nil {
-						d, m, rerr := s.resolveLiveExecution(ctx.GetContext(), id)
-						if rerr != nil {
-							return nil, "", rerr
-						}
-						liveExecDef, liveVersionMemo = d, m
-					}
-					paused := wf.Status == model.WorkflowStatusPaused
-					err := s.createOrUpdateSchedule(ctx.GetContext(), id, tenantId, accountId, wf, scheduleCount, cron, overlapPolicy, catchupWindow, inputs, paused, liveExecDef, liveVersionMemo)
-					if err != nil {
-						return nil, "", fmt.Errorf("failed to create or update schedule index %d: %w", scheduleCount, err)
-					}
-					scheduleCount++
-				}
-			} else {
+	if liveLoaded {
+		for i, trigger := range liveExecDef.Triggers {
+			if trigger.Type != model.WorkflowTriggerSchedule {
+				continue
+			}
+			c, ok := trigger.Params["cron"].(string)
+			if !ok || c == "" {
 				// A schedule trigger with no cron registers nothing, so the workflow
 				// looks scheduled and active and never fires. Trigger.Validate now
 				// rejects this on create and update, which is where it can still be
@@ -694,7 +671,38 @@ func (s *Service) handleWorkflowTrigger(ctx *security.RequestContext, id, tenant
 				// unactivatable with no in-product repair, so log and carry on.
 				slog.Warn("schedule trigger has no cron expression; no schedule registered",
 					"workflowID", id, "accountID", accountId, "triggerIndex", i)
+				continue
 			}
+			// If workflow is Inactive, its schedules are removed below.
+			if wf.Status == model.WorkflowStatusInactive {
+				continue
+			}
+			var overlapPolicy, catchupWindow string
+			inputs := make(map[string]any)
+			if op, ok := trigger.Params["overlap_policy"].(string); ok {
+				overlapPolicy = op
+			}
+			if cw, ok := trigger.Params["catchup_window"].(string); ok {
+				catchupWindow = cw
+			}
+			// Workflow inputs are every other param.
+			for k, v := range trigger.Params {
+				if k != "cron" && k != "overlap_policy" && k != "catchup_window" {
+					inputs[k] = v
+				}
+			}
+			paused := wf.Status == model.WorkflowStatusPaused
+			if err := s.createOrUpdateSchedule(ctx.GetContext(), id, tenantId, accountId, wf, scheduleCount, c, overlapPolicy, catchupWindow, inputs, paused, liveExecDef, liveVersionMemo); err != nil {
+				return nil, "", fmt.Errorf("failed to create or update schedule index %d: %w", scheduleCount, err)
+			}
+			scheduleCount++
+		}
+	}
+
+	// Webhook triggers are registered from the draft: they only create the
+	// subscription and its secret; the run they start executes the live version.
+	for i, trigger := range wf.Definition.Triggers {
+		switch trigger.Type {
 		case model.WorkflowTriggerWebhook:
 			if trigger.Internal == nil || trigger.Internal.Name == "" {
 				return nil, "", common.ErrorBadRequest("webhook trigger requires params.integration_name")
@@ -834,6 +842,14 @@ func (s *Service) createOrUpdateSchedule(ctx context.Context, workflowID string,
 	wfCopy.Definition = execDef
 
 	ensureUpdatedByUser(&wfCopy)
+	// Scheduled runs have no requester: they act as the owner, baked here.
+	// Every path that changes the owner (create, publish-as-live, set-live)
+	// re-registers triggers, so the baked value follows it.
+	owner, err := s.workflowOwner(ctx, tenantId, &wfCopy)
+	if err != nil {
+		return err
+	}
+	wfCopy.PrincipalUserID = owner
 
 	// IMPORTANT: Deep copy Inputs slice because we will modify elements within it
 	if execDef.Inputs != nil {
@@ -903,7 +919,7 @@ func (s *Service) createOrUpdateSchedule(ctx context.Context, workflowID string,
 
 	// Check if schedule exists
 	handle := scheduleClient.GetHandle(ctx, scheduleID)
-	_, err := handle.Describe(ctx)
+	_, err = handle.Describe(ctx)
 	exists := err == nil
 
 	if exists {
@@ -969,6 +985,30 @@ func setTriggeredByUser(wf *model.Workflow, triggererID string) {
 		ID:          triggererID,
 		DisplayName: displayName,
 	}
+}
+
+// runPrincipal is whose rights every step of a run is checked against: the
+// requester when there is one (manual, retrigger, AI), else the workflow's
+// owner (event, webhook, optimization — these arrive with the system user).
+func (s *Service) runPrincipal(ctx *security.RequestContext, wf *model.Workflow) (string, error) {
+	if u := ctx.GetSecurityContext().GetUserId(); u != "" && u != security.GetSystemUserId() {
+		return u, nil
+	}
+	return s.workflowOwner(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), wf)
+}
+
+// workflowOwner reads the workflow's owner from the store. Always the store,
+// never wf.RunAsUserID: callers pass request-bound workflows (create, update),
+// and a client must not be able to name the user its schedule acts as. ""
+// (no owner) makes every effectful step refuse, which is the intended outcome
+// for an owner that was deleted. A read error is returned, not treated as "no
+// owner": the run is not started rather than started to be refused.
+func (s *Service) workflowOwner(ctx context.Context, tenantID string, wf *model.Workflow) (string, error) {
+	owner, err := s.store.GetRunAsUserID(ctx, tenantID, wf.ID)
+	if err != nil {
+		return "", fmt.Errorf("read owner of workflow %s: %w", wf.ID, err)
+	}
+	return owner, nil
 }
 
 // resolveLiveExecution loads a workflow's live version and returns the definition
@@ -1181,6 +1221,11 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	ensureUpdatedByUser(wf)
 	setTriggeredByUser(wf, ctx.GetSecurityContext().GetUserId())
 	wf.RestrictToAccountConfigs = !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead)
+	principal, err := s.runPrincipal(ctx, wf)
+	if err != nil {
+		return "", err
+	}
+	wf.PrincipalUserID = principal
 
 	// Thread the request context so the tracing.Propagator injects the
 	// caller's trace context into the workflow header (start call is a fast
@@ -1478,6 +1523,11 @@ func (s *Service) RetriggerWorkflowExecution(ctx *security.RequestContext, accou
 	ensureUpdatedByUser(&wfCopy)
 	setTriggeredByUser(&wfCopy, ctx.GetSecurityContext().GetUserId())
 	wfCopy.RestrictToAccountConfigs = !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead)
+	principal, err := s.runPrincipal(ctx, &wfCopy)
+	if err != nil {
+		return "", err
+	}
+	wfCopy.PrincipalUserID = principal
 
 	we, err := s.temporalClient.ExecuteWorkflow(ctx.GetContext(), options, s.workflowExecutor.ExecuteWorkflowInternal, &wfCopy, mergedInputs)
 	if err != nil {
@@ -1545,6 +1595,7 @@ func (s *Service) DryRunWorkflow(ctx *security.RequestContext, accountId string,
 		CreatedBy:                ctx.GetSecurityContext().GetUserId(),
 		UpdatedBy:                ctx.GetSecurityContext().GetUserId(),
 		RestrictToAccountConfigs: !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead),
+		PrincipalUserID:          ctx.GetSecurityContext().GetUserId(),
 	}
 
 	run, err := s.temporalClient.ExecuteWorkflow(context.Background(), options, s.workflowExecutor.ExecuteWorkflowInternal, &wf, request.Inputs)
@@ -1815,6 +1866,7 @@ func (s *Service) DryRunWorkflowAsync(ctx *security.RequestContext, accountId st
 		CreatedBy:                ctx.GetSecurityContext().GetUserId(),
 		UpdatedBy:                ctx.GetSecurityContext().GetUserId(),
 		RestrictToAccountConfigs: !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead),
+		PrincipalUserID:          ctx.GetSecurityContext().GetUserId(),
 	}
 
 	run, err := s.temporalClient.ExecuteWorkflow(context.Background(), options, s.workflowExecutor.ExecuteWorkflowInternal, &wf, request.Inputs)
@@ -4094,6 +4146,21 @@ func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType 
 		renderedParams = params
 	}
 
+	// The same per-step check a workflow step passes, against the requester.
+	// The requester's permissions are already loaded; only their status is read.
+	authz := tasks.StepAuthorizer{
+		LoadContext: func(context.Context, string, string) (*security.SecurityContext, error) { return sc, nil },
+		UserStatus:  tasks.DefaultStepAuthorizer.UserStatus,
+	}
+	if err := authz.Authorize(ctx.GetContext(), tasks.StepAuthInput{
+		TaskName:      taskType,
+		TenantID:      tenantId,
+		Principal:     sc.GetUserId(),
+		StepAccountID: tasks.StepAccount(renderedParams, accountId),
+	}); err != nil {
+		return nil, common.ErrorUnauthorized(err.Error())
+	}
+
 	// Isolated execution: real store/client, no fabricated workflow identity.
 	taskCtx := s.newIsolatedTaskContext(ctx, accountId)
 	result, err := task.Execute(taskCtx, renderedParams)
@@ -5470,6 +5537,9 @@ func (s *Service) PublishWorkflow(ctx *security.RequestContext, accountId, id st
 		v.IsLive = true
 		wf.Status = status
 		wf.LiveVersionStatus = status
+		if err := s.recordOwner(ctx, accountId, id, wf); err != nil {
+			return nil, err
+		}
 
 		// (Re)register triggers for the just-published definition. Re-registering
 		// on every publish (rather than only on status flips) keeps the system
@@ -5503,6 +5573,26 @@ func (s *Service) PublishWorkflow(ctx *security.RequestContext, accountId, id st
 	return v, nil
 }
 
+// recordOwner makes the caller the owner unattended runs of this workflow act
+// as. Called only when a version becomes live (publish-as-live, set-live) — the
+// deliberate "this is what runs now" act. Pause/resume and draft edits never
+// call it, so they cannot silently change whose rights an automation uses. A
+// system caller (no user) leaves the owner unchanged. wf, when given, is updated
+// in memory so trigger registration that follows bakes the new owner.
+func (s *Service) recordOwner(ctx *security.RequestContext, accountId, id string, wf *model.Workflow) error {
+	userID := ctx.GetSecurityContext().GetUserId()
+	if userID == "" || userID == security.GetSystemUserId() {
+		return nil
+	}
+	if err := s.store.SetRunAsUserID(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id, userID); err != nil {
+		return err
+	}
+	if wf != nil {
+		wf.RunAsUserID = userID
+	}
+	return nil
+}
+
 // SetLiveWorkflowVersion flips workflows.live_version_id to the given version.
 // This is a pointer-only change: it does NOT modify the draft (workflows.definition)
 // or the workflow's status, so unpublished edits are preserved across rollbacks.
@@ -5526,6 +5616,9 @@ func (s *Service) SetLiveWorkflowVersion(ctx *security.RequestContext, accountId
 			return nil, fmt.Errorf("workflow with ID %s not found: %w", id, sql.ErrNoRows)
 		}
 		return nil, fmt.Errorf("failed to set live workflow version: %w", err)
+	}
+	if err := s.recordOwner(ctx, accountId, id, nil); err != nil {
+		return nil, err
 	}
 	wf, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
 	if err != nil {

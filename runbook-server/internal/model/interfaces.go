@@ -21,6 +21,10 @@ type WorkflowStore interface {
 	CreateWorkflowWithInitialVersion(ctx context.Context, tenantID, accountID string, wf Workflow) (workflowID string, version *WorkflowVersion, err error)
 	List(ctx context.Context, tenantID string, accountIDs []string, request ListWorkflowRequest) ([]Workflow, int, error)
 	Find(ctx context.Context, tenantID, accountID, id string) (*Workflow, error)
+	// GetRunAsUserID returns the owner a workflow's unattended runs act as
+	// ("" when none is recorded); SetRunAsUserID records it.
+	GetRunAsUserID(ctx context.Context, tenantID, workflowID string) (string, error)
+	SetRunAsUserID(ctx context.Context, tenantID, accountID, workflowID, userID string) error
 	// FindAccountID returns the account a workflow belongs to (sql.ErrNoRows when absent).
 	FindAccountID(ctx context.Context, tenantID, id string) (string, error)
 	FindByName(ctx context.Context, tenantID, accountID, name string) (*Workflow, error)

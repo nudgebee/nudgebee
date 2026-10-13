@@ -84,9 +84,9 @@ func (s *WorkflowDao) CreateWorkflowWithInitialVersion(ctx context.Context, tena
 		status = model.WorkflowStatusPaused
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO workflows (id, tenant_id, account_id, name, description, definition, tags, status, ai_invocable, ai_auto_approve, created_by, updated_by, created_from_session_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-	`, id, tenantID, accountID, wf.Name, nullableString(wf.Description), wfBytes, tagBytes, status, wf.AIInvocable, wf.AIAutoApprove, wf.CreatedBy, wf.UpdatedBy, createdFromSessionID)
+		INSERT INTO workflows (id, tenant_id, account_id, name, description, definition, tags, status, ai_invocable, ai_auto_approve, created_by, updated_by, created_from_session_id, run_as_user_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULLIF($14::text, '')::uuid)
+	`, id, tenantID, accountID, wf.Name, nullableString(wf.Description), wfBytes, tagBytes, status, wf.AIInvocable, wf.AIAutoApprove, wf.CreatedBy, wf.UpdatedBy, createdFromSessionID, wf.CreatedBy)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to save workflow: %w", err)
 	}
@@ -416,6 +416,7 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	var draftVersionNumber sql.NullInt64
 	var draftVersionName sql.NullString
 	var draftDiffersFromLive bool
+	var runAsUserID sql.NullString
 
 	// draft_differs_from_live: JSONB semantic comparison (key order irrelevant)
 	// between the draft and the live snapshot. IS DISTINCT FROM makes a missing
@@ -425,7 +426,8 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 		SELECT w.id::text, w.name, w.description, w.ai_invocable, w.ai_auto_approve, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
 		       w.live_version_id::text, lv.version_number, lv.name, lv.status,
 		       w.draft_version_id::text, dv.version_number, dv.name,
-		       (w.definition IS DISTINCT FROM lv.definition) AS draft_differs_from_live
+		       (w.definition IS DISTINCT FROM lv.definition) AS draft_differs_from_live,
+		       w.run_as_user_id::text
 		FROM workflows w
 		LEFT JOIN workflow_versions lv ON lv.id = w.live_version_id
 		LEFT JOIN workflow_versions dv ON dv.id = w.draft_version_id
@@ -437,7 +439,7 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 		&createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
 		&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
 		&draftVersionID, &draftVersionNumber, &draftVersionName,
-		&draftDiffersFromLive,
+		&draftDiffersFromLive, &runAsUserID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve workflow: %w", err)
@@ -484,8 +486,41 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 		liveVersionID, liveVersionNumber, liveVersionName, liveVersionStatus,
 		draftVersionID, draftVersionNumber, draftVersionName)
 	wf.DraftDiffersFromLive = draftDiffersFromLive
+	wf.RunAsUserID = runAsUserID.String
 
 	return &wf, nil
+}
+
+// GetRunAsUserID returns the user a workflow's unattended runs act as, or ""
+// when none is recorded (the owner was deleted).
+func (s *WorkflowDao) GetRunAsUserID(ctx context.Context, tenantID, workflowID string) (string, error) {
+	var runAs sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT run_as_user_id::text FROM workflows WHERE tenant_id = $1 AND id = $2`,
+		tenantID, workflowID).Scan(&runAs)
+	if err != nil {
+		return "", fmt.Errorf("failed to read workflow owner: %w", err)
+	}
+	return runAs.String, nil
+}
+
+// SetRunAsUserID records the user a workflow's unattended runs act as. Called
+// on publish and make-live, which are the deliberate "this is now mine" acts;
+// pause/resume and draft edits never call it.
+func (s *WorkflowDao) SetRunAsUserID(ctx context.Context, tenantID, accountID, workflowID, userID string) error {
+	if userID == "" {
+		return fmt.Errorf("workflow owner must not be empty")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE workflows SET run_as_user_id = $1 WHERE id = $2 AND tenant_id = $3 AND account_id = $4`,
+		userID, workflowID, tenantID, accountID)
+	if err != nil {
+		return fmt.Errorf("failed to set workflow owner: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("workflow %s not found", workflowID)
+	}
+	return nil
 }
 
 // uuidsOnly drops the ids Postgres cannot cast to uuid.

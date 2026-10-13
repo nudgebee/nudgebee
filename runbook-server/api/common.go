@@ -162,6 +162,10 @@ func handleServiceError(c *gin.Context, err error, genericMessage string) bool {
 	return true
 }
 
+// ctxAllowSystemCaller marks a request (set by the webhook handlers) that may
+// proceed without a user.
+const ctxAllowSystemCaller = "runbook_allow_system_caller"
+
 func buildContextFromRequestPayload(ctx context.Context, c *gin.Context, request map[string]string, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) (*security.RequestContext, error) {
 	if c == nil || c.Request == nil {
 		return nil, errors.New("api: unable to identify user or tenant")
@@ -196,6 +200,12 @@ func buildContextFromRequestPayload(ctx context.Context, c *gin.Context, request
 
 	var securityContext *security.SecurityContext
 	if userId == "" || userId == uuid.Nil.String() {
+		// No user means no one to act as. Only the webhook routes, which carry
+		// their own credential and start runs that act as the workflow's owner,
+		// may proceed with the system user.
+		if !c.GetBool(ctxAllowSystemCaller) {
+			return nil, errors.New("api: request has no user")
+		}
 		userId = security.GetSystemUserId()
 		securityContext = security.NewSecurityContextForTenantAccountAdmin(tenantId, userId, []string{})
 	} else {
@@ -327,18 +337,14 @@ func buildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionReque
 		userId = actionRequestPayload["user_id"].(string)
 	}
 
-	role := sessionString(h.SessionVariables, "role")
-
+	// A caller's claimed role is never trusted, and a missing user is never
+	// upgraded to admin: permissions always come from the user's own roles.
 	var securityContext *security.SecurityContext
 	var err error
-	if role == "admin" && tenantId == "" && userId == "" {
-		securityContext = security.NewSecurityContextForSuperAdmin()
-	} else if role == "admin" && tenantId != "" {
-		securityContext = security.NewSecurityContextForTenantAccountAdmin(tenantId, userId, []string{})
-	} else if tenantId == "" {
+	if tenantId == "" {
 		return nil, errors.New("api: unable to identify tenant")
 	} else if userId == "" || userId == uuid.Nil.String() {
-		securityContext = security.NewSecurityContextForTenantAccountAdmin(tenantId, uuid.Nil.String(), []string{})
+		return nil, errors.New("api: request has no user")
 	} else {
 		securityContext, err = security.NewSecurityContext(tenantId, userId)
 		if err != nil {

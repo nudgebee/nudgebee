@@ -31,6 +31,7 @@ func (s *ActionWorkflowAccountTestSuite) call(action string, request map[string]
 	_, r := gin.CreateTestContext(w)
 	r.POST("/rpc", s.server.handleAction)
 	req, _ := http.NewRequest("POST", "/rpc", bytes.NewBuffer(body))
+	req.Header.Set(serviceTokenHeader, testServiceToken)
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 	return w

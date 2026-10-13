@@ -237,6 +237,10 @@ func (t *CallWorkflowTask) Execute(taskCtx types.TaskContext, params map[string]
 		Memo: memo,
 	}
 
+	// The child acts as the calling run's principal, not as the callee's owner:
+	// calling another automation must not borrow its owner's rights.
+	targetWf.PrincipalUserID = taskCtx.GetUserID()
+
 	// Use the registered workflow type name as a string (importing the workflow
 	// package here would create an import cycle: workflow → tasks → workflow).
 	run, err := temporalClient.ExecuteWorkflow(taskCtx.GetContext(), options, "ExecuteWorkflowInternal", targetWf, providedInputs)

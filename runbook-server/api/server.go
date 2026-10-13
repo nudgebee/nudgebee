@@ -66,6 +66,7 @@ func NewServer(workflowService workflow.WorkflowService, configService configSvc
 	router.Use(gin.Recovery())
 	router.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/health")))
 	router.Use(otelgin.Middleware(config.SERVICE_NAME))
+	router.Use(serviceTokenMiddleware())
 	s := &Server{
 		router:          router,
 		workflowService: workflowService,
@@ -92,6 +93,7 @@ func NewServerWithObservability(workflowService workflow.WorkflowService, config
 	router.Use(gin.Recovery())
 	router.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/health")))
 	router.Use(otelgin.Middleware(config.SERVICE_NAME))
+	router.Use(serviceTokenMiddleware())
 	s := &Server{
 		router:          router,
 		workflowService: workflowService,

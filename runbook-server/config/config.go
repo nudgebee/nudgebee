@@ -108,6 +108,10 @@ type appConfig struct {
 
 	NotificationServerUrl   string `mapstructure:"notification_service_url"`
 	NotificationServerToken string `mapstructure:"notification_server_token"`
+	// WorkflowServerToken is the X-ACTION-TOKEN every caller of this server
+	// must send (except health, docs, approval links and webhooks, which carry
+	// their own credential). The server refuses to start without it.
+	WorkflowServerToken string `mapstructure:"workflow_server_token"`
 
 	RunbookServerRelayCommandExecutionTimeoutSeconds int `mapstructure:"runbook_server_relay_command_execution_timeout_seconds"`
 	RunbookServerRelayPodExecutionTimeoutSeconds     int `mapstructure:"runbook_server_relay_pod_execution_timeout_seconds"`
@@ -242,6 +246,7 @@ func init() {
 
 	viper.SetDefault("notification_service_url", "http://notifications:8080")
 	viper.SetDefault("notification_server_token", "")
+	viper.SetDefault("workflow_server_token", "")
 
 	viper.SetDefault("runbook_server_llm_retry_attempts", 180)
 	viper.SetDefault("runbook_server_llm_initial_backoff_seconds", 5)

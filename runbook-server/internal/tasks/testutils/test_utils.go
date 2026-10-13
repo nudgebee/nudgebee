@@ -131,6 +131,12 @@ func (m *MockWorkflowStore) List(ctx context.Context, tenantID string, accountID
 func (m *MockWorkflowStore) Find(ctx context.Context, tenantID, accountID, id string) (*model.Workflow, error) {
 	return nil, nil
 }
+func (m *MockWorkflowStore) GetRunAsUserID(ctx context.Context, tenantID, workflowID string) (string, error) {
+	return "", nil
+}
+func (m *MockWorkflowStore) SetRunAsUserID(ctx context.Context, tenantID, accountID, workflowID, userID string) error {
+	return nil
+}
 func (m *MockWorkflowStore) FindAccountID(ctx context.Context, tenantID, id string) (string, error) {
 	return "", nil
 }

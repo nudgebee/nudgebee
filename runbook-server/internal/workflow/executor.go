@@ -326,7 +326,7 @@ func createActivityCtxForAction(ctx workflow.Context) workflow.Context {
 	return ctxWithOptions
 }
 
-func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string, future workflow.Future, globalContext *TemplateContext, taskMap map[string]model.Task, isDryRun bool, wf *model.Workflow) error {
+func handleTaskCompletion(ctx workflow.Context, wf *model.Workflow, workflowID string, taskID string, future workflow.Future, globalContext *TemplateContext, taskMap map[string]model.Task, isDryRun bool) error {
 	logger := workflow.GetLogger(ctx)
 	var result any
 	err := future.Get(ctx, &result)
@@ -1436,6 +1436,7 @@ func processTaskLoop(
 								Status:              model.WorkflowStatusActive,
 								CreatedBy:           wf.UpdatedBy,
 								UpdatedBy:           wf.UpdatedBy,
+								PrincipalUserID:     wf.PrincipalUserID,
 								LastExecutionStatus: model.WorkflowExecutionStatusRunning,
 							}
 
@@ -1867,7 +1868,7 @@ func processTaskLoop(
 							return
 						}
 
-						err := handleTaskCompletion(ctx, wf.ID, id, f, templateContext, taskMap, wf.DryRun, wf)
+						err := handleTaskCompletion(ctx, wf, wf.ID, id, f, templateContext, taskMap, wf.DryRun)
 						if err != nil {
 							logger.Error("Task completion error", "taskID", id, "error", err)
 							workflowError = err
@@ -1982,6 +1983,11 @@ func setInternalTaskParams(params map[string]any, wf *model.Workflow, eventID st
 	params[tasks.ParamWorkflowID] = wf.ID
 	params[tasks.ParamUserID] = wf.UpdatedBy
 	params[tasks.ParamWorkflowName] = wf.Name
+	if wf.PrincipalUserID != "" {
+		params[tasks.ParamRunAsUserID] = wf.PrincipalUserID
+	} else {
+		delete(params, tasks.ParamRunAsUserID)
+	}
 
 	if eventID != "" {
 		params[tasks.ParamEventID] = eventID
@@ -1995,6 +2001,9 @@ func setInternalTaskParams(params map[string]any, wf *model.Workflow, eventID st
 	}
 }
 
+// executeSimpleActions runs hook actions. wf supplies the run's identity
+// (tenant, account, workflow, principal): hooks are activities like any step and
+// pass the same per-step authorization, so they need the same metadata.
 func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *TemplateContext, wf *model.Workflow) error {
 	logger := workflow.GetLogger(ctx)
 	activityOptions := workflow.GetActivityOptions(ctx)

@@ -393,6 +393,7 @@ func (s *APITestSuite) TestGetWorkflowHistory() {
 	mockService.On("ListWorkflowExecutions", mock.Anything, "test-account", "test", mock.AnythingOfType("model.ListWorkflowExecutionRequest")).Return(model.ListWorkflowExecutionResponse{}, nil)
 
 	req, _ := http.NewRequest(http.MethodGet, "/workflows/test/runs", http.NoBody)
+	req.Header.Set(serviceTokenHeader, testServiceToken)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
 	req.Header.Set("X-Account-ID", "test-account")
 	w := httptest.NewRecorder()
@@ -410,6 +411,7 @@ func (s *APITestSuite) TestListTasks() {
 	mockService.On("ListAllTasks", mock.Anything).Return(model.ListTaskDefinitionResponse{Tasks: expectedTasks})
 
 	req, _ := http.NewRequest(http.MethodGet, "/tasks", http.NoBody)
+	req.Header.Set(serviceTokenHeader, testServiceToken)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
 	req.Header.Set("X-Account-ID", "test-account")
 	w := httptest.NewRecorder()
@@ -442,6 +444,7 @@ func (s *APITestSuite) TestValidateWorkflow() {
 			},
 		})
 		req, _ := http.NewRequest(http.MethodPost, "/workflows/validate", bytes.NewReader(body))
+		req.Header.Set(serviceTokenHeader, testServiceToken)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Account-ID", "test-account")
 		w := httptest.NewRecorder()
@@ -471,6 +474,7 @@ func (s *APITestSuite) TestValidateWorkflow() {
 			},
 		})
 		req, _ := http.NewRequest(http.MethodPost, "/workflows/validate", bytes.NewReader(body))
+		req.Header.Set(serviceTokenHeader, testServiceToken)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Account-ID", "test-account")
 		w := httptest.NewRecorder()
@@ -500,6 +504,7 @@ func (s *APITestSuite) TestValidateWorkflow() {
 
 		body, _ := json.Marshal(invalidWorkflow)
 		req, _ := http.NewRequest(http.MethodPost, "/workflows/validate", bytes.NewReader(body))
+		req.Header.Set(serviceTokenHeader, testServiceToken)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Account-ID", "test-account")
 		w := httptest.NewRecorder()
@@ -527,6 +532,7 @@ func (s *APITestSuite) TestCreateWorkflow() {
 
 		body, _ := json.Marshal(workflow)
 		req, _ := http.NewRequest(http.MethodPost, "/workflows", bytes.NewReader(body))
+		req.Header.Set(serviceTokenHeader, testServiceToken)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Tenant-ID", "test-tenant")
 		req.Header.Set("X-Account-ID", "test-account")
@@ -562,6 +568,7 @@ func (s *APITestSuite) TestCreateWorkflow() {
 
 		body, _ := json.Marshal(workflow)
 		req, _ := http.NewRequest(http.MethodPost, "/workflows", bytes.NewReader(body))
+		req.Header.Set(serviceTokenHeader, testServiceToken)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Tenant-ID", "test-tenant")
 		req.Header.Set("X-Account-ID", "test-account")
@@ -595,6 +602,7 @@ func (s *APITestSuite) TestUpdateWorkflow() {
 
 		body, _ := json.Marshal(workflow)
 		req, _ := http.NewRequest(http.MethodPut, "/workflows/existing-workflow-id", bytes.NewReader(body))
+		req.Header.Set(serviceTokenHeader, testServiceToken)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Tenant-ID", "test-tenant")
 		req.Header.Set("X-Account-ID", "test-account")
@@ -616,6 +624,7 @@ func (s *APITestSuite) TestTriggerWorkflow() {
 
 		body, _ := json.Marshal(inputs)
 		req, _ := http.NewRequest(http.MethodPost, "/workflows/existing-workflow-id/trigger", bytes.NewReader(body))
+		req.Header.Set(serviceTokenHeader, testServiceToken)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Tenant-ID", "test-tenant")
 		req.Header.Set("X-Account-ID", "test-account")
@@ -636,6 +645,7 @@ func (s *APITestSuite) TestGetWorkflowExecution() {
 			Return((*model.WorkflowExecutionDetails)(nil), common.ErrorNotFound("workflow execution not found")).Once()
 
 		req, _ := http.NewRequest(http.MethodGet, "/workflows/wf-id/executions/run-id", http.NoBody)
+		req.Header.Set(serviceTokenHeader, testServiceToken)
 		req.Header.Set("X-Tenant-ID", "test-tenant")
 		req.Header.Set("X-Account-ID", "test-account")
 		w := httptest.NewRecorder()
@@ -650,6 +660,7 @@ func (s *APITestSuite) TestGetWorkflowExecution() {
 			Return((*model.WorkflowExecutionDetails)(nil), fmt.Errorf("temporal unreachable")).Once()
 
 		req, _ := http.NewRequest(http.MethodGet, "/workflows/wf-2/executions/run-2", http.NoBody)
+		req.Header.Set(serviceTokenHeader, testServiceToken)
 		req.Header.Set("X-Tenant-ID", "test-tenant")
 		req.Header.Set("X-Account-ID", "test-account")
 		w := httptest.NewRecorder()
@@ -669,6 +680,7 @@ func (s *APITestSuite) TestExecuteTask() {
 
 	reqBody := `{"input": "value"}`
 	req, _ := http.NewRequest(http.MethodPost, "/tasks/"+taskType+"/execute", strings.NewReader(reqBody))
+	req.Header.Set(serviceTokenHeader, testServiceToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Account-ID", "test-account")
 	w := httptest.NewRecorder()
@@ -689,6 +701,7 @@ func (s *APITestSuite) TestWebhookFanOutSucceedsWithoutAccountID() {
 		Return(workflow.FanOutResult{Fired: 1, Subscribers: []workflow.FanOutSubscriberResult{}}, nil).Once()
 
 	req, _ := http.NewRequest(http.MethodPost, "/webhook/by-integration/my-integration", strings.NewReader(`{"event":"ping"}`))
+	req.Header.Set(serviceTokenHeader, testServiceToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-ID", "test-tenant")
 	// Deliberately no X-Account-ID — fan-out is tenant-scoped.
@@ -715,6 +728,7 @@ func (s *APITestSuite) TestWebhookFanOutRejectsMissingTenant() {
 	s.securityContextBuilder.On("BuildContextFromRequestPayload", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(noTenantCtx, nil).Once()
 
 	req, _ := http.NewRequest(http.MethodPost, "/webhook/by-integration/my-integration", strings.NewReader(`{}`))
+	req.Header.Set(serviceTokenHeader, testServiceToken)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.server.router.ServeHTTP(w, req)
@@ -744,6 +758,7 @@ func (s *APITestSuite) postGenericWebhook(body string, expectRun bool) (*httptes
 			Return("run-1", nil).Once()
 	}
 	req, _ := http.NewRequest(http.MethodPost, "/webhook/wf-hook", strings.NewReader(body))
+	req.Header.Set(serviceTokenHeader, testServiceToken)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
 	req.Header.Set("X-Account-ID", "test-account")
 	w := httptest.NewRecorder()

@@ -139,6 +139,16 @@ type Workflow struct {
 	// Identifies the user who triggered this run (manual/retrigger). Empty for
 	// scheduled/webhook/event-rule triggers.
 	TriggeredByUser *WorkflowUser `json:"triggered_by_user,omitempty" yaml:"triggered_by_user,omitempty"`
+	// RunAsUserID (workflows.run_as_user_id) is the owner unattended runs
+	// (schedule, event, webhook) act as, returned for display. Set server-side
+	// on create and make-live; never trusted from a request body — run starts
+	// read the owner from the store.
+	RunAsUserID string `json:"run_as_user_id,omitempty" yaml:"-"`
+	// PrincipalUserID is a transient field set when a run starts: whose rights
+	// every step of this run is checked against. The requester for manual and
+	// AI runs, RunAsUserID otherwise. Carried in the Temporal input, so it must
+	// serialize.
+	PrincipalUserID string `json:"principal_user_id,omitempty" yaml:"-"`
 	// RestrictToAccountConfigs is set when the triggering user lacks tenant read
 	// access. When true, FetchWorkflowConfigsActivity drops tenant-scoped configs
 	// from the run so a `{{ Configs.<tenant_key> }}` reference cannot resolve.

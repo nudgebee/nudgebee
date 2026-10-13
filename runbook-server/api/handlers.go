@@ -416,6 +416,10 @@ func (s *Server) getWorkflowExecution(c *gin.Context) {
 // DRAFT definition, while the AI must see the LIVE version's llm_description —
 // what is published, not what someone is still editing.
 func (s *Server) searchAIInvocableWorkflows(c *gin.Context) {
+	// llm-server enumerates an account's AI-invocable automations with no user
+	// (tool listing, not an action on anyone's behalf). Read-only; triggering one
+	// still needs the real user.
+	c.Set(ctxAllowSystemCaller, true)
 	sc, accountID, processRequest := s.getRequestDetails(c)
 	if !processRequest {
 		return
@@ -554,6 +558,7 @@ func (s *Server) updateWorkflowExecution(c *gin.Context) {
 }
 
 func (s *Server) handleGenericWebhook(c *gin.Context) {
+	c.Set(ctxAllowSystemCaller, true)
 	sc, accountID, processRequest := s.getRequestDetails(c)
 	if !processRequest {
 		return
@@ -679,6 +684,7 @@ func (s *Server) handleWebhookFanOut(c *gin.Context) {
 	// against. Each subscriber's workflow row carries its own accountID,
 	// and FanOutWebhookEvent resolves per-subscriber access downstream.
 	// See getTenantRequestDetails for the auth model.
+	c.Set(ctxAllowSystemCaller, true)
 	sc, processRequest := s.getTenantRequestDetails(c)
 	if !processRequest {
 		return
