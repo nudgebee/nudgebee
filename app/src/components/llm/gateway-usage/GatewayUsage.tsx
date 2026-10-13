@@ -6,7 +6,7 @@
  *
  * This component is the SHELL: it owns the shared filter state (date window +
  * granularity), fetches the aggregate metrics once via `useGatewayData`, and hosts
- * the sub-tab navigation (Overview · Models · Users · Requests) — mirroring the AI
+ * the sub-tab navigation (Overview · Models · Users · Keys · Requests) — mirroring the AI
  * Cost Analyser's `CostAnalyser` shell. Each tab is a self-contained view under
  * `./views`; the Overview / Models / Users views read the shared `metrics`, while
  * Requests owns its own paginated fetch (`useGatewayRequests`).
@@ -26,6 +26,7 @@ import RocketLaunchOutlinedIcon from '@mui/icons-material/RocketLaunchOutlined';
 import DashboardOutlinedIcon from '@mui/icons-material/DashboardOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import PeopleAltOutlinedIcon from '@mui/icons-material/PeopleAltOutlined';
+import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
 import ReceiptLongOutlinedIcon from '@mui/icons-material/ReceiptLongOutlined';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import HandymanOutlinedIcon from '@mui/icons-material/HandymanOutlined';
@@ -39,6 +40,7 @@ import ConnectView from './views/ConnectView';
 import OverviewView from './views/OverviewView';
 import ModelsView from './views/ModelsView';
 import UsersView from './views/UsersView';
+import KeysView from './views/KeysView';
 import RequestsView from './views/RequestsView';
 import SessionsView from './views/SessionsView';
 import ToolsView from './views/ToolsView';
@@ -75,7 +77,7 @@ const DATE_RANGE_SHORTCUTS = ['Last 24 Hours', 'Current Week', 'Current Month', 
 // Every sub-tab, and the source of truth for TabId — a new tab added here is
 // automatically deep-linkable, and one added only to `tabOptions` below fails to
 // type-check rather than silently resolving to the default.
-const TAB_IDS = ['connect', 'overview', 'models', 'users', 'requests', 'sessions', 'tools', 'governance'] as const;
+const TAB_IDS = ['connect', 'overview', 'models', 'users', 'keys', 'requests', 'sessions', 'tools', 'governance'] as const;
 
 type TabId = (typeof TAB_IDS)[number];
 
@@ -111,6 +113,8 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   const [tab, setTab] = React.useState<TabId>(() => subTabFromHash() ?? DEFAULT_TAB);
   // Users → Requests drill-in: when set, the Requests tab is scoped to this user.
   const [selectedUser, setSelectedUser] = React.useState<{ id: string; name: string } | null>(null);
+  // Keys → Requests drill-in: when set, the Requests tab is scoped to this API key.
+  const [selectedKey, setSelectedKey] = React.useState<{ id: string; name: string } | null>(null);
   // Governance → Requests drill-in: when set, the Requests tab is scoped to the
   // rows behind a governance count (a routing/reject reason, DLP, or error class).
   const [selectedGov, setSelectedGov] = React.useState<GovScope | null>(null);
@@ -212,6 +216,16 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   // The Requests tab's User dropdown reads/writes the same scope.
   const onChangeUser = React.useCallback((user: { id: string; name: string } | null) => setSelectedUser(user), []);
 
+  // Drill-in from the Keys tab: scope Requests to this key and jump to it.
+  // A key belongs to one user, so a user scope left over from an earlier drill-in
+  // could only narrow this to nothing; clear it.
+  const onSelectKey = React.useCallback((id: string, name: string) => {
+    setSelectedKey({ id, name });
+    setSelectedUser(null);
+    setTab('requests');
+  }, []);
+  const onChangeKey = React.useCallback((key: { id: string; name: string } | null) => setSelectedKey(key), []);
+
   // Drill-in from the Tools tab: scope Requests to this tool and jump to it.
   const onSelectTool = React.useCallback((tool: string) => {
     setSelectedTool(tool);
@@ -246,6 +260,7 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
     { value: 'overview', text: 'Overview', icon: DashboardOutlinedIcon, iconSize: 16 },
     { value: 'models', text: 'Models', icon: AutoAwesomeOutlinedIcon, iconSize: 16 },
     { value: 'users', text: 'Users', icon: PeopleAltOutlinedIcon, iconSize: 16 },
+    { value: 'keys', text: 'Keys', icon: VpnKeyOutlinedIcon, iconSize: 16 },
     { value: 'requests', text: 'Requests', icon: ReceiptLongOutlinedIcon, iconSize: 16 },
     { value: 'sessions', text: 'Sessions', icon: ForumOutlinedIcon, iconSize: 16 },
     { value: 'tools', text: 'Tools', icon: HandymanOutlinedIcon, iconSize: 16 },
@@ -300,6 +315,7 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
       {tab === 'overview' && <OverviewView metrics={metrics} filters={filters} loading={loading} error={error} onSelectDay={onSelectDay} />}
       {tab === 'models' && <ModelsView metrics={metrics} loading={loading} error={error} />}
       {tab === 'users' && <UsersView metrics={metrics} loading={loading} error={error} onSelectUser={onSelectUser} />}
+      {tab === 'keys' && <KeysView metrics={metrics} loading={loading} error={error} onSelectKey={onSelectKey} />}
       {tab === 'requests' && (
         <RequestsView
           filters={filters}
@@ -307,6 +323,8 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
           metricsLoading={loading}
           userFilter={selectedUser}
           onChangeUser={onChangeUser}
+          keyFilter={selectedKey}
+          onChangeKey={onChangeKey}
           toolFilter={selectedTool}
           onClearTool={onClearTool}
           govFilter={selectedGov}

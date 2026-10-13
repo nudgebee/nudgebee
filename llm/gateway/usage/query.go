@@ -48,7 +48,8 @@ type Totals struct {
 // GroupRow is one breakdown bucket (e.g. a provider, model, or user).
 type GroupRow struct {
 	Key               string  `json:"key"`
-	ID                string  `json:"id,omitempty"` // stable id for drill-down (user_id on the user breakdown)
+	ID                string  `json:"id,omitempty"`    // stable id for drill-down (user_id on the user breakdown)
+	Owner             string  `json:"owner,omitempty"` // the key's owner, on the api_key breakdown only
 	CostUsd           float64 `json:"cost_usd"`
 	Requests          int64   `json:"requests"`
 	InputTokens       int64   `json:"input_tokens"`
@@ -161,7 +162,7 @@ type Governance struct {
 // Metrics is the full aggregation result.
 type Metrics struct {
 	Totals     Totals                `json:"totals"`
-	Breakdowns map[string][]GroupRow `json:"breakdowns"` // "provider", "model", "user"
+	Breakdowns map[string][]GroupRow `json:"breakdowns"` // "provider", "model", "user", "api_key"
 	Tools      []ToolRow             `json:"tools"`
 	Governance *Governance           `json:"governance,omitempty"`
 	TimeSeries *TimeSeries           `json:"time_series,omitempty"`
@@ -226,7 +227,7 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*M
 	if req.EndDate.Before(req.StartDate) {
 		return nil, fmt.Errorf("usage: end_date must be >= start_date")
 	}
-	m := &Metrics{Breakdowns: map[string][]GroupRow{"provider": {}, "model": {}, "user": {}}}
+	m := &Metrics{Breakdowns: map[string][]GroupRow{"provider": {}, "model": {}, "user": {}, "api_key": {}}}
 
 	// (provider, model) grouping → totals + by-provider + by-model. Cost is summed
 	// from the per-row snapshot stored at write time (no runtime pricing catalog join).
@@ -295,6 +296,12 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*M
 		return nil, err
 	}
 	m.Breakdowns["user"] = users
+
+	keys, err := byAPIKey(db, req)
+	if err != nil {
+		return nil, err
+	}
+	m.Breakdowns["api_key"] = keys
 
 	tools, err := byTool(db, req)
 	if err != nil {
@@ -373,6 +380,57 @@ func byUser(db *common.DatabaseManager, req Request) ([]GroupRow, error) {
 		g.AvgLatencySeconds = avgLatencySeconds(latency[uid], g.Requests)
 		g.CacheHitRatePct = cacheHitPct(g.CachedInputTokens, g.InputTokens)
 		out = append(out, *g)
+	}
+	sortByRequests(out)
+	return out, nil
+}
+
+type keyRow struct {
+	APIKeyID   string  `db:"api_key_id"`
+	KeyName    string  `db:"key_name"`
+	Owner      string  `db:"owner"`
+	Requests   int64   `db:"requests"`
+	Input      int64   `db:"input_tokens"`
+	Output     int64   `db:"output_tokens"`
+	CacheRead  int64   `db:"cache_read_tokens"`
+	LatencySum int64   `db:"latency_ms_sum"`
+	Cost       float64 `db:"cost_usd"`
+}
+
+// byAPIKey breaks usage down by API key. A revoked key's user_auths row is deleted, so
+// the name falls back to token_id (the key's name when the request ran), then the id.
+func byAPIKey(db *common.DatabaseManager, req Request) ([]GroupRow, error) {
+	const q = `
+		SELECT g.api_key_id,
+		       COALESCE(NULLIF(ua.name,''), NULLIF(g.token_name,''), g.api_key_id) AS key_name,
+		       COALESCE(NULLIF(u.display_name,''), NULLIF(u.username::text,''), g.user_id, '') AS owner,
+		       g.requests, g.input_tokens, g.output_tokens, g.cache_read_tokens, g.latency_ms_sum, g.cost_usd
+		FROM (
+			SELECT api_key_id, max(token_id) AS token_name, max(user_id) AS user_id, count(*) AS requests,
+			       COALESCE(sum(input_tokens),0) AS input_tokens,
+			       COALESCE(sum(output_tokens),0) AS output_tokens,
+			       COALESCE(sum(cache_read_tokens),0) AS cache_read_tokens,
+			       COALESCE(sum(latency_ms),0) AS latency_ms_sum,
+			       COALESCE(sum(cost_usd),0) AS cost_usd
+			FROM llm_gateway_usage
+			WHERE ` + aggWindow + ` AND api_key_id <> ''
+			GROUP BY api_key_id
+		) g
+		LEFT JOIN user_auths ua ON ua.id::text = g.api_key_id
+		LEFT JOIN users u ON u.id::text = g.user_id`
+	var rows []keyRow
+	if err := db.QueryAndScan(&rows, q, req.aggArgs()...); err != nil {
+		return nil, fmt.Errorf("usage: by-key aggregation: %w", err)
+	}
+	out := make([]GroupRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, GroupRow{
+			Key: r.KeyName, ID: r.APIKeyID, Owner: r.Owner,
+			CostUsd: r.Cost, Requests: r.Requests,
+			InputTokens: r.Input, OutputTokens: r.Output, CachedInputTokens: r.CacheRead,
+			CacheHitRatePct:   cacheHitPct(r.CacheRead, r.Input),
+			AvgLatencySeconds: avgLatencySeconds(r.LatencySum, r.Requests),
+		})
 	}
 	sortByRequests(out)
 	return out, nil
@@ -623,6 +681,7 @@ type ListRequest struct {
 	StartDate     time.Time
 	EndDate       time.Time
 	UserID        string
+	APIKeyID      string   // filter to one API key (drill-down from the Keys tab or the Key filter)
 	Providers     []string // filter to these providers (empty = all)
 	Models        []string // filter to these routed models (empty = all)
 	Status        string   // "" (all) | "success" (2xx) | "error" (everything else)
@@ -643,6 +702,8 @@ type RequestRow struct {
 	ID                string    `json:"id"` // usage row id; the key to fetch the captured body
 	CreatedAt         time.Time `json:"created_at"`
 	User              string    `json:"user"`
+	APIKeyID          string    `json:"api_key_id"`
+	APIKey            string    `json:"api_key"` // the key's name ("" for traffic not sent with an API key)
 	Provider          string    `json:"provider"`
 	Model             string    `json:"model"`
 	RequestedModel    string    `json:"requested_model"`
@@ -702,6 +763,8 @@ type reqScan struct {
 	UserID         string    `db:"user_id"`
 	DisplayName    string    `db:"display_name"`
 	Username       string    `db:"username"`
+	APIKeyID       string    `db:"api_key_id"`
+	KeyName        string    `db:"key_name"`
 	Provider       string    `db:"provider"`
 	Model          string    `db:"model"`
 	RequestedModel string    `db:"requested_model"`
@@ -730,6 +793,10 @@ func listRequestsFilter(req ListRequest) (string, []any) {
 	if req.UserID != "" {
 		where += fmt.Sprintf(" AND g.user_id = $%d", len(args)+1)
 		args = append(args, req.UserID)
+	}
+	if req.APIKeyID != "" {
+		where += fmt.Sprintf(" AND g.api_key_id = $%d", len(args)+1)
+		args = append(args, req.APIKeyID)
 	}
 	if len(req.Providers) > 0 {
 		where += inClause("g.provider", req.Providers, &args)
@@ -812,7 +879,10 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 
 	q := fmt.Sprintf(`
 		SELECT g.id, g.created_at, g.user_id, COALESCE(u.display_name,'') AS display_name,
-		       COALESCE(u.username::text,'') AS username, g.provider, g.model,
+		       COALESCE(u.username::text,'') AS username,
+		       COALESCE(g.api_key_id,'') AS api_key_id,
+		       COALESCE(NULLIF(ua.name,''), NULLIF(g.token_id,''), COALESCE(g.api_key_id,'')) AS key_name,
+		       g.provider, g.model,
 		       COALESCE(g.requested_model,'') AS requested_model,
 		       COALESCE(g.responded_model,'') AS responded_model,
 		       COALESCE(g.routing_reason,'') AS routing_reason,
@@ -827,6 +897,7 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 		       COALESCE(NULLIF(g.attributes,'')::jsonb #>> '{derived,session_source}','') AS session_source
 		FROM llm_gateway_usage g
 		LEFT JOIN users u ON u.id::text = g.user_id
+		LEFT JOIN user_auths ua ON g.api_key_id <> '' AND ua.id::text = g.api_key_id
 		WHERE %s
 		ORDER BY g.created_at DESC
 		LIMIT %d OFFSET %d`, where, limit, offset)
@@ -849,7 +920,8 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 		}
 		out = append(out, RequestRow{
 			ID:        r.ID,
-			CreatedAt: r.CreatedAt, User: user, Provider: r.Provider, Model: r.Model,
+			CreatedAt: r.CreatedAt, User: user, APIKeyID: r.APIKeyID, APIKey: r.KeyName,
+			Provider: r.Provider, Model: r.Model,
 			RequestedModel: r.RequestedModel, RespondedModel: r.RespondedModel, RoutingReason: r.RoutingReason, Surface: r.Surface,
 			StatusCode: r.StatusCode, Streaming: r.Streaming,
 			InputTokens: r.Input, OutputTokens: r.Output, CachedInputTokens: r.CacheRead,
