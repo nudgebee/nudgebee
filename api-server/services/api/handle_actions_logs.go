@@ -6,6 +6,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/observability"
+	"nudgebee/services/query"
 	"nudgebee/services/security"
 	"time"
 
@@ -44,6 +45,12 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 	}
 	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "logs") {
 		c.JSON(403, common.ErrorActionForbidden("access denied for account: "+accountId))
+		return
+	}
+	// Field conditions written without their _binary wrapper would be dropped by the
+	// decoder and the query would run unfiltered; move them under _binary instead.
+	if err := query.NormalizeQueryRequestWhere(reqInput); err != nil {
+		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 		return
 	}
 
