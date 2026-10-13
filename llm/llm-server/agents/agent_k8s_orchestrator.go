@@ -276,18 +276,12 @@ func memoryNudgeIfEnabled() string {
 // enough to survive across LLM providers. Deliberately terse and example-
 // heavy: models converge on the shape from patterns better than from
 // abstract rules. Ordered "read first, write when appropriate" because the
-// model is more likely to over-write than over-read.
+// model is more likely to over-write than over-read. The shapes and type
+// definitions come from toolcore.MemoryWriteShapes, shared with the tool's
+// own description.
 const memoryReadWriteNudge = "**memory_read before running live tools** when a resource id, subject, or preference key could plausibly be in memory. Pass `filters` with a specific field (resource_id, subject, or key) — at least one field is required. Only add `query` when you don't know the exact key and want a semantic broaden.\n\n" +
-	"**Call memory_write when the user's turn is clearly telling you something to remember going forward**, in one of these four shapes:\n" +
-	"- Imperative: 'remember', 'note', 'save this', 'don't forget', 'keep this in mind', 'store'\n" +
-	"- Declarative preference: 'I prefer X', 'I use X', 'my default X is Y', 'always do X', 'never do Y'\n" +
-	"- Declarative fact: 'X is at Y', 'X lives in Y', 'X runs on Y'\n" +
-	"- Declarative playbook / flow: 'for X, my flow is: A → B → C', 'when X happens I do Y', 'here's how I investigate X'\n\n" +
-	"**DO NOT save pass-through context during an unrelated investigation.** If the user drops a fact while asking about something else ('the OOM started at 2pm — by the way, checkout runs on node pool B — can you check limits?'), answer the question; do not save 'checkout runs on node pool B'. Save only when the durable statement is the point of the turn, or when the user explicitly asked you to remember.\n\n" +
-	"Pick the type from the shape:\n" +
-	"- **type=preference** — a rule the user wants you to follow going forward (log source, default namespace, output format). `key` is a short snake_case identifier; `value` is what they said.\n" +
-	"- **type=fact** — a truth about their infra (where a service runs, what it depends on, a config invariant). `subject` names the resource; `body` is the assertion.\n" +
-	"- **type=playbook** — an ordered sequence for handling a specific problem. `problem` names the trigger; `steps` is the ordered list.\n\n" +
+	"**Call memory_write when the user's turn is clearly telling you something to remember going forward.** " +
+	toolcore.MemoryWriteShapes + "\n" +
 	"Pass the user's own words verbatim as `evidence` (min 15 chars). For type=playbook the evidence must appear verbatim in a recent user turn — the runtime refuses agent-fabricated playbooks.\n\n" +
 	"**When both apply in one user turn** — read first (recall what's known), then write (persist what's new). Call memory_write on the same turn the user stated the durable content; do not defer to a later turn.\n\n" +
 	"**Do NOT call memory_write for** your own methodology or interim findings during an investigation. That path is auto-consolidated when investigations resolve. And do NOT call it for questions the user asks (\"what are the pods?\" is a query, not a save-intent)."
