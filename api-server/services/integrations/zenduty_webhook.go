@@ -160,6 +160,12 @@ func (z ZenDutyWebhook) ConfigSchema() core.IntegrationSchema {
 				Default:          "",
 				AutoGenerateFunc: "",
 			},
+			ZenDutyConfigUrl: {
+				Type:        core.ToolSchemaTypeString,
+				DisplayName: "Account URL",
+				Description: "Your ZenDuty (Xurrent IMR) account domain. Most accounts use www.zenduty.com — EU-region accounts use a domain like imr.eu.xurrent.com instead. Used to build incident links when ZenDuty's own payload omits one.",
+				Default:     ZenDutyDefaultHost,
+			},
 		},
 	}
 }
@@ -258,7 +264,7 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	if incident.HTMLURL != "" {
 		parsedPayload.EventUrl = incident.HTMLURL
 	} else {
-		parsedPayload.EventUrl = fmt.Sprintf("https://www.zenduty.com/incidents/%s", incident.UniqueID)
+		parsedPayload.EventUrl = ZenDutyDashboardURL(core.ConfigValue(settings, ZenDutyConfigUrl), incident.UniqueID)
 	}
 
 	parsedPayload.EventTags = incident.Tags

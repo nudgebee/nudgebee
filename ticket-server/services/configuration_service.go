@@ -356,7 +356,7 @@ func quickValidateZenDuty(ctx context.Context, configuration models.TicketConfig
 	if configuration.Password == "" {
 		return fmt.Errorf("zenduty api token is required")
 	}
-	client := clients.CreateZenDutyClient(configuration.Password)
+	client := clients.CreateZenDutyClient(configuration.Password, configuration.URL)
 	if _, err := client.ListTeams(ctx); err != nil {
 		return fmt.Errorf("zenduty auth failed: %w", err)
 	}
@@ -731,7 +731,7 @@ func validatePagerDutyConfigurationAndReturnMetadata(ctx context.Context, config
 }
 
 func validateZenDutyConfigurationAndReturnMetadata(ctx context.Context, configuration models.TicketConfigurations) ([]map[string]interface{}, error) {
-	client := clients.CreateZenDutyClient(configuration.Password)
+	client := clients.CreateZenDutyClient(configuration.Password, configuration.URL)
 
 	services, teams, err := client.ListAllServicesWithTeams(ctx)
 	if err != nil {
