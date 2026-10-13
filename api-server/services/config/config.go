@@ -414,6 +414,11 @@ type appConfig struct {
 	KGInventoryChangeCandidateCap     int  `mapstructure:"kg_inventory_change_candidate_cap"`
 	KGInventoryChangeCreatesEnabled   bool `mapstructure:"kg_inventory_change_creates_enabled"`
 	KGResourcePatchEnabled            bool `mapstructure:"kg_resource_patch_enabled"`
+	// Size fuse for one knowledge-graph build (knowledge_graph/core/build_size_guard.go).
+	// A build whose graph grows past either cap is aborted before it saves, so one
+	// oversized tenant fails on its own instead of OOMKilling the pod (#40937).
+	KGBuildMaxNodes int `mapstructure:"kg_build_max_nodes"`
+	KGBuildMaxEdges int `mapstructure:"kg_build_max_edges"`
 
 	// Event post-process queue configuration
 	RabbitMqEventPostProcessExchange    string `mapstructure:"rabbit_mq_event_post_process_exchange"`
@@ -704,6 +709,11 @@ func init() {
 	// waiting for could not happen. It stays a switch, so turning it off restores
 	// account rebuilds without a deploy.
 	viper.SetDefault("kg_resource_patch_enabled", true)
+	// Keep in step with defaultBuildMaxNodes / defaultBuildMaxEdges in
+	// knowledge_graph/core/build_size_guard.go, which is where the calibration lives.
+	// Raise either per environment to let a legitimately large tenant through.
+	viper.SetDefault("kg_build_max_nodes", 68000)
+	viper.SetDefault("kg_build_max_edges", 340000)
 
 	// Event post-process queue configuration
 	viper.SetDefault("rabbit_mq_event_post_process_exchange", "event_post_process_exchange")

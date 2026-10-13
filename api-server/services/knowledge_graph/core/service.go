@@ -830,6 +830,10 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 		GeneratedAt: time.Now(),
 	}
 
+	// What each source added to unifiedGraph, so a build stopped by the size fuse
+	// can say which account and source to look at (see build_size_guard.go).
+	var contributions []sourceContribution
+
 	// ========================================================================
 	// PHASE 1: Build account-specific graphs (AWS, K8s)
 	// ========================================================================
@@ -931,6 +935,15 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 				"nodes", len(graph.Nodes),
 				"edges", len(graph.Edges),
 				"duration", time.Since(startTime).Seconds())
+
+			contributions = append(contributions, sourceContribution{
+				AccountID: account.Id, AccountName: account.AccountName, Source: sourceName,
+				Nodes: len(graph.Nodes), Edges: len(graph.Edges),
+			})
+			if err := s.enforceBuildSize(ctx, req.TenantID, "phase 1 source "+sourceName,
+				len(unifiedGraph.Nodes), len(unifiedGraph.Edges), contributions); err != nil {
+				return nil, err
+			}
 		}
 
 		accountMetadata.NodeCount = accountNodeCount
@@ -1050,6 +1063,15 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 				"nodes", len(graph.Nodes),
 				"edges", len(graph.Edges),
 				"duration", time.Since(startTime).Seconds())
+
+			contributions = append(contributions, sourceContribution{
+				AccountID: instance.ID, AccountName: instance.Name, Source: sourceName,
+				Nodes: len(graph.Nodes), Edges: len(graph.Edges),
+			})
+			if err := s.enforceBuildSize(ctx, req.TenantID, "phase 1b source "+sourceName,
+				len(unifiedGraph.Nodes), len(unifiedGraph.Edges), contributions); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -1074,6 +1096,14 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 			"scope_account_ids", req.AccountIDs,
 			"context_nodes", len(contextNodes),
 			"total_nodes", len(unifiedGraph.Nodes))
+
+		contributions = append(contributions, sourceContribution{
+			Source: "context nodes from other accounts", Nodes: len(contextNodes),
+		})
+		if err := s.enforceBuildSize(ctx, req.TenantID, "phase 2.0 context load",
+			len(unifiedGraph.Nodes), len(unifiedGraph.Edges), contributions); err != nil {
+			return nil, err
+		}
 	}
 
 	// ========================================================================
@@ -1107,6 +1137,7 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 				continue
 			}
 
+			newNodeCount := len(enrichedNodes) - len(unifiedGraph.Nodes)
 			newEdgeCount := len(enrichedEdges) - len(unifiedGraph.Edges)
 			unifiedGraph.Nodes = enrichedNodes
 			unifiedGraph.Edges = enrichedEdges
@@ -1116,8 +1147,22 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 				"enricher", enricher.GetName(),
 				"new_edges", newEdgeCount,
 				"duration", time.Since(startTime).Seconds())
+
+			if newNodeCount > 0 || newEdgeCount > 0 {
+				contributions = append(contributions, sourceContribution{
+					Source: "enricher " + enricher.GetName(), Nodes: newNodeCount, Edges: newEdgeCount,
+				})
+			}
+			// Phase 2.5 is not checked directly: buildFlowRelationships hands the whole
+			// node set back inside its result, so a length taken right after it counts
+			// most nodes twice. The next check is after the final dedup, before save.
+			if err := s.enforceBuildSize(ctx, req.TenantID, "phase 2.1 enricher "+enricher.GetName(),
+				len(unifiedGraph.Nodes), len(unifiedGraph.Edges), contributions); err != nil {
+				return nil, err
+			}
 		}
 	}
+	nodesBeforeFlow, edgesBeforeFlow := len(unifiedGraph.Nodes), len(unifiedGraph.Edges)
 
 	// ========================================================================
 	// PHASE 2.5: Build flow relationships from flow sources
@@ -1263,6 +1308,21 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 		unifiedGraph.Nodes, unifiedGraph.Edges, s.logger,
 	)
 	unifiedGraph.Edges = DeduplicateEdgesWithPriority(unifiedGraph.Edges)
+
+	// Last fuse check, before the two largest allocations of the build: the
+	// KnowledgeGraph copy below and the save. Counts are exact again here — the
+	// Phase 2.5 double-count is gone after dedup — and this is the only check that
+	// sees what flow sources and the cross-account rules added, which is where an
+	// edge fan-out from a bad rule would show up.
+	if addedNodes, addedEdges := len(unifiedGraph.Nodes)-nodesBeforeFlow, len(unifiedGraph.Edges)-edgesBeforeFlow; addedNodes > 0 || addedEdges > 0 {
+		contributions = append(contributions, sourceContribution{
+			Source: "flow sources and cross-account rules", Nodes: max(addedNodes, 0), Edges: max(addedEdges, 0),
+		})
+	}
+	if err := s.enforceBuildSize(ctx, req.TenantID, "before save",
+		len(unifiedGraph.Nodes), len(unifiedGraph.Edges), contributions); err != nil {
+		return nil, err
+	}
 
 	// Calculate metadata for unified graph
 	unifiedGraph.Metadata = s.calculateMetadata(unifiedGraph)

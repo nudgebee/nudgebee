@@ -69,6 +69,7 @@ var (
 	metricsPlaybookActionFailed     metric.Int64Counter
 	metricsSubjectResolutionTotal   metric.Int64Counter
 	metricsKGEndpointCollision      metric.Int64Counter
+	metricsKGBuildAborted           metric.Int64Counter
 	metricsKGRoute53Unmatched       metric.Int64Counter
 	metricsPRFollowupDispatchTotal  metric.Int64Counter
 	metricsPRFollowupOutcomeTotal   metric.Int64Counter
@@ -199,6 +200,12 @@ func InitMetrics() {
 		meter,
 		"nb_services_kg_endpoint_collision",
 		"Knowledge graph cloud-resource endpoint collisions during in-memory index build (first-write-wins)",
+	)
+
+	metricsKGBuildAborted = mustCreateInt64Counter(
+		meter,
+		"nb_services_kg_build_aborted",
+		"Knowledge graph builds aborted before saving, by tenant and reason (too_large: the graph exceeded kg_build_max_nodes or kg_build_max_edges)",
 	)
 
 	metricsKGRoute53Unmatched = mustCreateInt64Counter(
@@ -510,6 +517,20 @@ func MetricsKGEndpointCollision(ctx context.Context, tenantId, nodeType string) 
 	metricsKGEndpointCollision.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(MetricKeyTenantID, tenantId),
 		attribute.String(MetricKeyNodeType, nodeType),
+	))
+}
+
+// MetricsKGBuildAborted counts a knowledge-graph build that was stopped before
+// it saved. The tenant keeps its previous graph, so nothing looks wrong in the UI
+// until behavioural edges age out (kg_edge_stale_after_days) — this counter is
+// what makes a repeatedly-aborting tenant visible before then.
+func MetricsKGBuildAborted(ctx context.Context, tenantId, reason string) {
+	if metricsKGBuildAborted == nil {
+		return
+	}
+	metricsKGBuildAborted.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(MetricKeyTenantID, tenantId),
+		attribute.String(MetricKeyReason, reason),
 	))
 }
 
