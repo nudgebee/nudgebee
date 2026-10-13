@@ -565,6 +565,9 @@ func doRunbookTasksRequest(ctx *security.RequestContext, accountId, tenantId, us
 	if userId != "" {
 		req.Header.Set("X-User-ID", userId)
 	}
+	if config.Config.WorkflowServerToken != "" {
+		req.Header.Set("X-ACTION-TOKEN", config.Config.WorkflowServerToken)
+	}
 
 	resp, err := common.HttpClient().Do(req)
 	if err != nil {

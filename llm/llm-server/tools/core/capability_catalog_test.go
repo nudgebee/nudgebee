@@ -428,3 +428,23 @@ func TestClassifyCapability_UnconfirmedStayUnclassified(t *testing.T) {
 		assert.Equal(t, CapabilityScopeUnclassified, scope, "capability %q", name)
 	}
 }
+
+func TestListWorkflowTaskCapabilities_SendsTheServiceToken(t *testing.T) {
+	// The workflow server is moving to reject callers without its service token.
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-ACTION-TOKEN")
+		_, _ = w.Write([]byte(`{"tasks": [{"name": "k8s.workload_restart", "description": "Rolling restart"}]}`))
+	}))
+	defer server.Close()
+
+	oldURL, oldToken := config.Config.WorkflowServerEndpoint, config.Config.WorkflowServerToken
+	config.Config.WorkflowServerEndpoint, config.Config.WorkflowServerToken = server.URL, "test-token"
+	t.Cleanup(func() {
+		config.Config.WorkflowServerEndpoint, config.Config.WorkflowServerToken = oldURL, oldToken
+	})
+
+	_, err := listWorkflowTaskCapabilities(security.NewRequestContextForSuperAdmin(), "acct-1")
+	require.NoError(t, err)
+	assert.Equal(t, "test-token", got)
+}

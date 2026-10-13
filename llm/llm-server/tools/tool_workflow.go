@@ -196,6 +196,9 @@ func DoRunbookRequestWithContext(reqCtx context.Context, method, path string, bo
 	// Assuming authentication via token or account ID headers is handled similarly to other services
 	req.Header.Set("X-Account-ID", accountId)
 	req.Header.Set("X-Tenant-ID", tenantId)
+	if config.Config.WorkflowServerToken != "" {
+		req.Header.Set("X-ACTION-TOKEN", config.Config.WorkflowServerToken)
+	}
 	if userId != "" && userId != uuid.Nil.String() {
 		req.Header.Set("X-User-ID", userId)
 	}

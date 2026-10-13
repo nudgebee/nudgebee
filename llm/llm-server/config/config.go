@@ -89,6 +89,8 @@ type appConfig struct {
 	ServiceApiServerTimeoutSeconds int `mapstructure:"service_api_server_timeout_seconds"`
 
 	WorkflowServerEndpoint string `mapstructure:"workflow_server_url"`
+	// WorkflowServerToken is sent as X-ACTION-TOKEN on every call to the workflow server.
+	WorkflowServerToken string `mapstructure:"workflow_server_token"`
 
 	LlmServerTokenHeader     string `mapstructure:"llm_server_token_header"`
 	LlmServerToken           string `mapstructure:"llm_server_token"`
@@ -1461,6 +1463,7 @@ func init() {
 	viper.SetDefault("CLOUD_COLLECTOR_SERVER_TOKEN", "")
 
 	viper.SetDefault("WORKFLOW_SERVER_URL", "http://workflow-server:8000")
+	viper.SetDefault("WORKFLOW_SERVER_TOKEN", "")
 
 	viper.SetDefault("rabbit_mq_username", "user")
 	viper.SetDefault("rabbit_mq_password", "password")
