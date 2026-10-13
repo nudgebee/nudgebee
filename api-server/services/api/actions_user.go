@@ -167,6 +167,24 @@ func handleUserAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			ctx.GetLogger().Error("failed to publish audit event", "error", err)
 		}
 		return
+	case "users_create_bee":
+		var request user.BeeCreateRequest
+		if err := common.UnmarshalMapToStruct(tenantRequest, &request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		resp, err := user.CreateBeeUser(ctx, request)
+		if err != nil {
+			c.JSON(tokenActionStatus(err), common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, resp)
+		return
 	case "users_create_token":
 		var request user.UserTokenCreateRequest
 		var err error

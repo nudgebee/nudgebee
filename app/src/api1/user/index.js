@@ -404,6 +404,9 @@ const apiUser = {
     if (bodyData.status) {
       params.status = bodyData.status;
     }
+    if (bodyData.includeBees) {
+      params.includeBees = true;
+    }
     let cachedUserList = cache.getWithSuffix('user.listUsers', null, params);
     if (!cachedUserList) {
       let response = await getUsers(params);

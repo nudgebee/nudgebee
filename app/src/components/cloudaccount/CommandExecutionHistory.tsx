@@ -128,7 +128,7 @@ const CommandExecutionHistory: React.FC<CommandExecutionHistoryProps> = ({ accou
   // Fetch users once on mount — not re-fetched on pagination changes.
   useEffect(() => {
     apiUser
-      .listUsers({ limit: 1000 })
+      .listUsers({ limit: 1000, includeBees: true })
       .then((r: any) => setUserMap(buildUserMap(r?.data || [])))
       .catch(() => {});
   }, []);

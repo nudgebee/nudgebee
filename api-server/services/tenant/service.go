@@ -649,7 +649,7 @@ func UpsertTenantUserRole(ctx *security.RequestContext, request TenantUserRoleUp
 		_, err := manager.Db.Exec("INSERT INTO user_roles (created_by, entity_id, entity_type, role, user_id, tenant_id) VALUES ($1, $2, $3, $4, $5, $6)", ctx.GetSecurityContext().GetUserId(), ctx.GetSecurityContext().GetTenantId(), "tenant", request.Role, request.UserId, ctx.GetSecurityContext().GetTenantId())
 		if err != nil {
 			ctx.GetLogger().Error("Error inserting user role", "error", err)
-			return TenantUserRoleUpsertResponse{}, common.ErrorInternal("Error updating user role")
+			return TenantUserRoleUpsertResponse{}, common.ErrorRefusedOr(err, "Error updating user role")
 		}
 		audit.LogChange(ctx, audit.ChangeInput{
 			EventCategory: audit.EventCategoryRole,
@@ -922,7 +922,7 @@ func UpsertAccountUserRole(ctx *security.RequestContext, request AccountUserRole
 	_, err = manager.Db.NamedExec("INSERT INTO user_roles (created_by, entity_id, entity_type, role, user_id, tenant_id) VALUES (:created_by, :entity_id, :entity_type, :role, :user_id, :tenant_id)", rolesToInsert)
 	if err != nil {
 		ctx.GetLogger().Error("Error inserting user role", "error", err)
-		return AccountUserRoleUpsertResponse{}, common.ErrorInternal("Error updating user role")
+		return AccountUserRoleUpsertResponse{}, common.ErrorRefusedOr(err, "Error updating user role")
 	}
 	for _, role := range request.AccountRoles {
 		audit.LogChange(ctx, audit.ChangeInput{
@@ -1156,7 +1156,7 @@ func UpsertK8sAccountNamespaceUserRole(ctx *security.RequestContext, request K8s
 	_, err = manager.Db.NamedExec("INSERT INTO user_roles (created_by, entity_id, entity_type, role, user_id, tenant_id) VALUES (:created_by, :entity_id, :entity_type, :role, :user_id, :tenant_id)", rolesToInsert)
 	if err != nil {
 		ctx.GetLogger().Error("Error inserting user role", "error", err)
-		return AccountUserRoleUpsertResponse{}, common.ErrorInternal("Error updating user role")
+		return AccountUserRoleUpsertResponse{}, common.ErrorRefusedOr(err, "Error updating user role")
 	}
 	for _, role := range request.K8sAccountNamespaceRoles {
 		audit.LogChange(ctx, audit.ChangeInput{
@@ -1338,7 +1338,7 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 		_, err = manager.Db.NamedExec("INSERT INTO usergroup_users (\"group\", \"user\", \"created_by\", \"updated_by\") VALUES (:group_id, :user_id, :created_by, :updated_by) ON CONFLICT (\"user\", \"group\") DO NOTHING", userGroupObjs)
 		if err != nil {
 			ctx.GetLogger().Error("Error inserting user group users", "error", err)
-			return ManageGroupUsersResponse{}, common.ErrorInternal("Error adding users to group")
+			return ManageGroupUsersResponse{}, common.ErrorRefusedOr(err, "Error adding users to group")
 		}
 		for _, userId := range addUserIds {
 			// Invalidate security cache for affected users (replaces pre_audit_hook)

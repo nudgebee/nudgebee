@@ -36,11 +36,12 @@ query ListUsersAndAccount {
       cloud_provider
     }
   }
-  users: users_list_by_tenant(order_by: [{column: "username", order: asc}]) {
+  users: users_list_by_tenant_with_bees(order_by: [{column: "username", order: asc}]) {
     rows {
       id
       username
       display_name
+      kind
     }
   }
 }

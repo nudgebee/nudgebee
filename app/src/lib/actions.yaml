@@ -131,6 +131,30 @@ actions:
     permissions:
       - role: tenant_admin
       - role: tenant_admin_readonly
+  - name: users_list_by_tenant_with_bees
+    comment: List tenant users including bee accounts (users_list_by_tenant lists people only)
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+  - name: users_aggregate_by_tenant_with_bees
+    comment: Aggregate tenant user counts including bee accounts
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
   - name: agents_list_playbooks
     comment: List agent automation playbooks for the account
     definition:
@@ -6326,6 +6350,17 @@ actions:
       - role: account_admin
   - name: users_create
     comment: Create a user in the tenant
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+  - name: users_create_bee
+    comment: Create a bee account (an AI worker's user) in the tenant; it cannot sign in
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'

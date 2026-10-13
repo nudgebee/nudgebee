@@ -1534,7 +1534,7 @@ const WorkflowListing: React.FC = () => {
     if (!canFilterByCreatedBy) return;
     const fetchActiveUsers = async () => {
       try {
-        const response = await apiUser.listUsers({ status: 'active' });
+        const response = await apiUser.listUsers({ status: 'active', includeBees: true });
         const users = response?.data || [];
         // Two users can share a display_name — the backend filter already matches
         // every user with that name, so dedup here rather than listing the same

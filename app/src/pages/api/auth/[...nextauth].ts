@@ -33,6 +33,15 @@ import {
   getUserSuperAdminRole,
   getTenantIdByName,
 } from '@lib/UserService';
+import { isBeeAccount } from '@lib/userKind';
+
+async function isBeeUsername(username: string | null | undefined): Promise<boolean> {
+  if (!username) {
+    return false;
+  }
+  const found = await getUserByUsername({ username });
+  return isBeeAccount(found?.data?.users?.[0]);
+}
 import { adapterUserUpdateDataOnUserRoles, groupBelongsToTenant } from '@lib/userPermissionMapper';
 import { pickDefaultTenant } from '@lib/defaultTenant';
 import { findTenantByDomain } from '@lib/tenantLookup';
@@ -1376,6 +1385,14 @@ export const authOptions: NextAuthOptions = {
           if (revoked) {
             return {};
           }
+        }
+
+        // A bee account (an AI worker) never gets a session, whichever provider
+        // asserted it. This is the one place every NextAuth sign-in passes before
+        // a token exists; SAML and API keys mint theirs elsewhere and check there.
+        if (user && (await isBeeUsername(user.email))) {
+          console.warn('[auth] refusing a session for a bee account');
+          return {};
         }
 
         //firsttime login flow for email

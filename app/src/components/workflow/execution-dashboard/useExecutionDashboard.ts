@@ -388,7 +388,7 @@ export function useExecutionDashboard() {
     if (!roles.includes('tenant_admin') && !roles.includes('tenant_admin_readonly')) return;
     let cancelled = false;
     apiUser
-      .listUsers({ status: 'active' })
+      .listUsers({ status: 'active', includeBees: true })
       .then((response: any) => {
         if (cancelled || !isMountedRef.current) return;
         const rows = Array.isArray(response?.data) ? response.data : [];

@@ -40,24 +40,32 @@ const GatewayTokenPrefix = "sk-nb-gw-"
 // future prefix. See TestLongestTokenFitsBcryptLimit, which guards this bound.
 const TokenRandomBytes = 28
 
-// createOrGetUser inserts a user or returns the existing one if username conflicts.
-// Returns the user model and whether it was newly created.
+// ErrBeeAccount refuses a sign-in, invitation, onboarding or credential for a bee
+// account: a bee acts only through the runs it is given, never as a logged-in user.
+var ErrBeeAccount = common.ErrorUnauthorized("a bee account cannot sign in, be invited or hold credentials")
+
+// createOrGetUser inserts a person or returns the existing user if username conflicts.
+// Returns the user model and whether it was newly created. An existing bee is refused,
+// so invitations and onboarding never reach a bee account.
 func createOrGetUser(dbms *database.DatabaseManager, displayName, status, username string, createdBy *string) (models.User, bool, error) {
 	var user models.User
 	err := dbms.Db.QueryRowx(
 		`INSERT INTO users (display_name, status, username, created_by, updated_by)
 		VALUES ($1, $2, $3, $4, $4)
 		ON CONFLICT ON CONSTRAINT users_username_key DO NOTHING
-		RETURNING id, username, display_name, status, created_at, updated_at, created_by, updated_by`,
+		RETURNING id, username, display_name, status, kind, created_at, updated_at, created_by, updated_by`,
 		displayName, status, username, createdBy,
 	).StructScan(&user)
 	if err == sql.ErrNoRows {
 		// User already exists, fetch it
 		err = dbms.Db.QueryRowx(
-			`SELECT id, username, display_name, status FROM users WHERE username = $1`, username,
+			`SELECT id, username, display_name, status, kind FROM users WHERE username = $1`, username,
 		).StructScan(&user)
 		if err != nil {
 			return models.User{}, false, err
+		}
+		if user.Kind == models.UserKindBee {
+			return models.User{}, false, ErrBeeAccount
 		}
 		return user, false, nil
 	}
@@ -65,6 +73,21 @@ func createOrGetUser(dbms *database.DatabaseManager, displayName, status, userna
 		return models.User{}, false, err
 	}
 	return user, true, nil
+}
+
+// refuseBee returns ErrBeeAccount when userId is a bee account.
+func refuseBee(dbms *database.DatabaseManager, userId string) error {
+	var kind string
+	if err := dbms.Db.Get(&kind, `SELECT kind FROM users WHERE id = $1`, userId); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if kind == models.UserKindBee {
+		return ErrBeeAccount
+	}
+	return nil
 }
 
 // createUserTenant creates a tenant_users association, ignoring if already exists.
@@ -457,7 +480,7 @@ func GetUserById(context *security.RequestContext, id string) (models.User, erro
 	if err != nil {
 		return models.User{}, err
 	}
-	row := manager.Db.QueryRowx("SELECT id, username, display_name, status, created_at, updated_at, created_by, updated_by FROM users WHERE id = $1", id)
+	row := manager.Db.QueryRowx("SELECT id, username, display_name, status, kind, created_at, updated_at, created_by, updated_by FROM users WHERE id = $1", id)
 	if row.Err() != nil {
 		return models.User{}, row.Err()
 	}
@@ -469,6 +492,7 @@ func GetUserById(context *security.RequestContext, id string) (models.User, erro
 	return tenant, nil
 }
 
+// GetUserByTenant returns the tenant's active people (report recipients); bees are left out.
 func GetUserByTenant(context *security.RequestContext, tenantId string) ([]models.User, error) {
 	users := []models.User{}
 	manager, err := database.GetDatabaseManager(database.Metastore)
@@ -476,9 +500,10 @@ func GetUserByTenant(context *security.RequestContext, tenantId string) ([]model
 		return users, err
 	}
 	rows, err := manager.Db.Queryx(`
-        SELECT u.id, u.username, u.display_name, u.status, u.created_at, u.updated_at, u.created_by, u.updated_by
+        SELECT u.id, u.username, u.display_name, u.status, u.kind, u.created_at, u.updated_at, u.created_by, u.updated_by
         FROM users u
         WHERE u.status = 'active'
+        AND u.kind = 'person'
         AND u.id IN (
             SELECT tu.user
             FROM tenant_users tu
@@ -537,6 +562,9 @@ func CreateUserAuthToken(context *security.RequestContext, tokenCreateRequest Us
 
 	if user.Status != "active" {
 		return UserTokenCreateResponse{}, common.ErrorUnauthorized("User is not active")
+	}
+	if user.Kind == models.UserKindBee {
+		return UserTokenCreateResponse{}, ErrBeeAccount
 	}
 
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
@@ -1200,6 +1228,10 @@ func CreateUserAuth(context *security.RequestContext, request UserCreateAuthRequ
 		return UserCreateAuthResponse{}, err
 	}
 
+	if err := refuseBee(manager, request.UserId); err != nil {
+		return UserCreateAuthResponse{}, err
+	}
+
 	tenantId := context.GetSecurityContext().GetTenantId()
 
 	var authId string
@@ -1580,6 +1612,13 @@ func OnboardUser(context *security.RequestContext, request UserOnboardRequest) (
 	// 1. Create or resolve existing user
 	var userId string
 	if request.ExistingUserId != "" {
+		dbms, err := database.GetDatabaseManager(database.Metastore)
+		if err != nil {
+			return UserOnboardResponse{}, err
+		}
+		if err := refuseBee(dbms, request.ExistingUserId); err != nil {
+			return UserOnboardResponse{}, err
+		}
 		userId = request.ExistingUserId
 	} else {
 		nameParts := strings.SplitN(request.DisplayName, " ", 2)

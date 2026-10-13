@@ -25,6 +25,7 @@ import {
 } from 'src/utils/common';
 import apiUser from '@api1/user';
 import { Link } from '@ui/Link';
+import { beeLabel, isBeeAccount } from '@lib/userKind';
 import Tooltip from '@ui/Tooltip';
 import CodeMirrorDiffViewer from '@shared/viewers/DiffViewer';
 import { CategoryListing, EventListing, parseAuditLogParams } from './common';
@@ -165,6 +166,12 @@ export const AuditsTable = () => {
         let displayNameMapData = {};
         let users =
           res?.data?.users?.rows?.map((item) => {
+            if (isBeeAccount(item)) {
+              // A bee shows as `<name>[bee]`, its display name in the tooltip.
+              usersMapData[item.id] = item.display_name || item.username;
+              displayNameMapData[item.id] = beeLabel(item);
+              return { value: item.username, label: beeLabel(item) };
+            }
             usersMapData[item.id] = item.username;
             displayNameMapData[item.id] = item.display_name || item.username;
             return { value: item.username, label: item.username };
