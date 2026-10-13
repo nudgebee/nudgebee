@@ -3792,6 +3792,18 @@ actions:
       - role: tenant_admin_readonly
       - role: account_admin
       - role: account_admin_readonly
+  - name: integrations_execute_mcp_health_check
+    comment: Check an MCP integration's health now, through the path Nubi uses (llm-server discovery via relay); records the result and returns the stored health
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/mcp-integrations/health-check'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 120
+    permissions:
+      - role: tenant_admin
   - name: integrations_check_connection_config
     comment: Test connectivity of integration settings before saving
     definition:

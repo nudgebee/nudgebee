@@ -7578,6 +7578,8 @@ var table_metadata = map[string]TableDefinition{
 				i.source,
 				i.status,
 				i.labels,
+				-- MCP verdicts written by llm-server (#40994); NULL = not checked yet.
+				i.health,
 				i.created_at,
 				i.updated_at,
 				i.created_by::text as created_by,
@@ -7656,6 +7658,10 @@ var table_metadata = map[string]TableDefinition{
 			"labels": {
 				Type: ColumnDefinitionTypeJson,
 				Def:  "labels",
+			},
+			"health": {
+				Type: ColumnDefinitionTypeJson,
+				Def:  "health",
 			},
 			"created_at": {
 				Type: ColumnDefinitionTypeDatetime,

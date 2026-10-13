@@ -1,32 +1,39 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Stack, Box } from '@mui/material';
+import { Stack } from '@mui/material';
+import dayjs from 'dayjs';
+import relativeTime from 'dayjs/plugin/relativeTime';
 import { ListingLayout } from '@ui/ListingLayout';
-import { Banner } from '@ui/Banner';
 import { Chip } from '@ui/Chip';
 import { Label } from '@ui/Label';
-import FilterDropdown from '@shared/FilterDropdownButton';
-import CustomSearch from '@shared/CustomSearch';
-import CustomTable from '@shared/tables/CustomTable2';
+import { Button } from '@ui/Button';
+import Tooltip from '@ui/Tooltip';
+import Text from '@shared/format/Text';
+import FilterDropdown from '@ui/FilterDropdown';
+import SearchInput from '@ui/SearchInput';
+import CustomTable from '@shared/tables/CustomTable';
 import { toast as snackbar } from '@ui/Toast';
 import apiIntegrations from '@api1/integrations';
 import { parseIntegrationItem } from '@api1/integrations/helpers';
-import { useRouter } from 'next/router';
+import { canManage } from '@lib/auth';
+import { summarizeMCPHealth } from './mcpHealthSummary';
+
+dayjs.extend(relativeTime);
 
 const STATUS_OPTIONS = [
   { label: 'Enabled', value: 'enabled' },
   { label: 'Disabled', value: 'disabled' },
 ];
 
-const HEADERS = ['Name', 'Connection', 'Account', 'Created By', 'Status'];
+const HEADERS = ['Name', 'Connection', 'Account', 'Created By', 'Status', 'Health'];
 
 /**
- * Read-only MCP Servers listing inside the Nubi Settings modal. All
- * management actions (add / edit / enable / disable / delete) live on the
- * Admin → Integrations page; this view is a quick what's-configured glance
- * with a Banner pointing to the canonical management surface.
+ * MCP Servers listing inside the Nubi Settings modal. All management actions
+ * (add / edit / enable / disable / delete) live on the Admin → Integrations
+ * page; this view is a what's-configured glance plus each enabled server's
+ * health as Nubi last saw it, with Check now for integrations:Execute holders
+ * (#40994).
  */
-const MCPConfigList = () => {
-  const router = useRouter();
+const MCPConfigList = ({ stickyTable = false }) => {
   const [integrations, setIntegrations] = useState([]);
   const [loading, setLoading] = useState(false);
 
@@ -36,6 +43,9 @@ const MCPConfigList = () => {
   const [currentPage, setCurrentPage] = useState(0);
   const [recordsPerPage, setRecordsPerPage] = useState(10);
   const [totalCount, setTotalCount] = useState(0);
+  const [checkingId, setCheckingId] = useState(null);
+  // Check now is integrations:Execute; account-scoped grants can't reach it (v1).
+  const canCheck = canManage('integrations', 'Execute');
 
   const fetchIntegrations = useCallback(async () => {
     setLoading(true);
@@ -46,6 +56,7 @@ const MCPConfigList = () => {
         offset: currentPage * recordsPerPage,
         name: selectedNameFilter || undefined,
         status: selectedStatusFilter || undefined,
+        withHealth: true,
       });
       // Fail-closed on GraphQL errors — same rationale as LLMConfigList.
       const gqlErrors = response?.data?.errors;
@@ -98,6 +109,66 @@ const MCPConfigList = () => {
     );
   };
 
+  const checkNow = useCallback(async (item) => {
+    setCheckingId(item.id);
+    try {
+      const result = await apiIntegrations.checkMCPIntegrationHealth(item.id);
+      if (result?.error) {
+        snackbar.error(result.error);
+        return;
+      }
+      const updated = { ...item, health: result.health };
+      setIntegrations((rows) => rows.map((row) => (row.id === item.id ? updated : row)));
+      const summary = summarizeMCPHealth(updated);
+      const message = `${item.name}: ${summary.label}${summary.scopeNote ? ` (${summary.scopeNote})` : ''}`;
+      if (summary.tone === 'critical') {
+        snackbar.error(message);
+      } else {
+        snackbar.success(message);
+      }
+    } finally {
+      setCheckingId(null);
+    }
+  }, []);
+
+  const healthCell = (item) => {
+    // Disabling resets the health, and a disabled server is never checked.
+    if (item.status !== 'enabled') {
+      return <span>-</span>;
+    }
+    const summary = summarizeMCPHealth(item);
+    const pill = <Label tone={summary.tone}>{summary.label}</Label>;
+    const details = [
+      summary.scopeNote,
+      summary.toolCount !== null ? `${summary.toolCount} ${summary.toolCount === 1 ? 'tool' : 'tools'}` : '',
+      summary.checkedAt ? `checked ${dayjs(summary.checkedAt).fromNow()}` : '',
+    ].filter(Boolean);
+    return (
+      <Stack direction='row' alignItems='center' spacing={1} useFlexGap flexWrap='wrap'>
+        {summary.reason ? (
+          <Tooltip title={summary.reason}>
+            <span>{pill}</span>
+          </Tooltip>
+        ) : (
+          pill
+        )}
+        {details.length > 0 && <Text value={details.join(' · ')} secondaryText />}
+        {canCheck && (
+          <Button
+            id={`mcp-config-check-now-${item.id}`}
+            tone='secondary'
+            size='xs'
+            loading={checkingId === item.id}
+            disabled={checkingId !== null}
+            onClick={() => checkNow(item)}
+          >
+            Check now
+          </Button>
+        )}
+      </Stack>
+    );
+  };
+
   const tableData = useMemo(
     () =>
       integrations.map((item) => [
@@ -106,33 +177,15 @@ const MCPConfigList = () => {
         { component: accountChips(item) },
         { text: item?.created_by_display_name || '-' },
         { component: <Label text={item.status || '-'} /> },
+        { component: healthCell(item) },
       ]),
-    [integrations]
+    [integrations, checkingId, canCheck]
   );
 
   const selectedStatusOption = STATUS_OPTIONS.find((o) => o.value === selectedStatusFilter) ?? null;
 
   return (
     <>
-      <Box sx={{ mb: 2 }}>
-        <Banner
-          tone='info'
-          surface='section'
-          actionsPlacement='inline'
-          message={
-            <>
-              This view is read-only. Manage <strong>MCP Servers</strong> from <strong>Admin → Integrations → MCP</strong>.
-            </>
-          }
-          actions={[
-            {
-              label: 'Manage in Admin',
-              onClick: () => router.push('/accounts/account-form?cloudProvider=mcp'),
-            },
-          ]}
-        />
-      </Box>
-
       <ListingLayout id='mcp-config-list'>
         <ListingLayout.Toolbar>
           <Stack direction='row' alignItems='center' spacing={1}>
@@ -146,7 +199,7 @@ const MCPConfigList = () => {
                 setCurrentPage(0);
               }}
             />
-            <CustomSearch
+            <SearchInput
               id='mcp-config-name-search'
               value={nameInput}
               onChange={(next) => {
@@ -184,6 +237,8 @@ const MCPConfigList = () => {
               setCurrentPage(page - 1);
               setRecordsPerPage(limit);
             }}
+            stickyHeader={stickyTable}
+            sx={stickyTable ? { maxHeight: 'calc(90vh - 340px)', overflowY: 'auto' } : undefined}
           />
         </ListingLayout.Body>
       </ListingLayout>

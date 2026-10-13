@@ -1571,6 +1571,12 @@ type Mutation {
 }
 
 type Mutation {
+  integrations_execute_mcp_health_check(
+    request: IntegrationMCPHealthCheckRequest!
+  ): IntegrationMCPHealthCheckResponse
+}
+
+type Mutation {
   integrations_check_connection_config(
     request: IntegrationTestConnectionConfigRequest!
   ): IntegrationTestConnectionResponse
@@ -4651,6 +4657,10 @@ input DeleteIntegrationConfigRequest {
 }
 
 input IntegrationTestConnectionRequest {
+  integration_id: String!
+}
+
+input IntegrationMCPHealthCheckRequest {
   integration_id: String!
 }
 
@@ -8323,6 +8333,11 @@ type IntegrationTestConnectionResponse {
   error: String
 }
 
+type IntegrationMCPHealthCheckResponse {
+  integration_id: String!
+  health: jsonb
+}
+
 type AnomalyTemplateListResponse {
   data: [AnomalyTemplateResponse!]
 }
@@ -10691,6 +10706,7 @@ type Integration {
   source: String
   status: String
   labels: jsonb
+  health: jsonb
   created_at: Datetime
   updated_at: Datetime
   created_by: String

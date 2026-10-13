@@ -36,6 +36,7 @@ func ConfigureRoutes(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 	handleAgentsApis(r, tracer, meter)
 	handleFunctionsApis(r, tracer, meter)
 	handleToolsApis(r, tracer, meter)
+	handleMCPIntegrationApis(r, tracer, meter)
 	handleAnalysisApis(r, tracer, meter)
 	handleSyncConversationStatusApi(r)
 	handleAiCostDailyReportApi(r)

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 )
 
 // mcpIntegrationToolCache caches MCP tools discovered from integrations (30min
@@ -754,6 +756,17 @@ func loadMCPIntegrationConfigs(accountId string) ([]mcpIntegrationConfig, bool) 
 		}
 	}()
 
+	configs, err := scanMCPIntegrationConfigs(rows)
+	if err != nil {
+		slog.Error("mcp-integration: error iterating integration rows", "error", err, "account_id", accountId)
+		return nil, false
+	}
+	return configs, true
+}
+
+// scanMCPIntegrationConfigs reads rows of (integration id, name, config name,
+// config value, config encrypted) into one config per integration, in row order.
+func scanMCPIntegrationConfigs(rows *sqlx.Rows) ([]mcpIntegrationConfig, error) {
 	configMap := make(map[string]*mcpIntegrationConfig)
 	configOrder := []string{}
 
@@ -825,15 +838,14 @@ func loadMCPIntegrationConfigs(accountId string) ([]mcpIntegrationConfig, bool) 
 		}
 	}
 	if err := rows.Err(); err != nil {
-		slog.Error("mcp-integration: error iterating integration rows", "error", err, "account_id", accountId)
-		return nil, false
+		return nil, err
 	}
 
 	configs := make([]mcpIntegrationConfig, 0, len(configOrder))
 	for _, id := range configOrder {
 		configs = append(configs, *configMap[id])
 	}
-	return configs, true
+	return configs, nil
 }
 
 // mcpUnavailableTool is a sentinel returned in place of an enabled MCP
@@ -893,6 +905,13 @@ func (t mcpUnavailableTool) Call(_ NbToolContext, _ NBToolCallRequest) (NBToolRe
 
 // discoverMCPTools calls tools/list on an MCP server via relay and returns NBTools.
 func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
+	tools, _ := runMCPDiscovery(accountId, cfg, false)
+	return tools
+}
+
+// runMCPDiscovery is discoverMCPTools that also returns the outcome it
+// recorded. authoritative (Check now) skips the hold.
+func runMCPDiscovery(accountId string, cfg mcpIntegrationConfig, authoritative bool) ([]NBTool, mcpOutcome) {
 	log := slog.With("integration_id", cfg.IntegrationID, "integration_name", cfg.IntegrationName, "account_id", accountId)
 	start := time.Now()
 	defer func() {
@@ -906,10 +925,11 @@ func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 		// Debug, as are the two failures below: the integration's health logs
 		// once when it changes (#40994), not on every retry.
 		log.Debug("mcp-integration: failed to discover tools", "error", err)
-		health, known := recordMCPHealth(accountId, cfg, classifyMCPOutcome(err, true), false)
+		o := classifyMCPOutcome(err, true)
+		health, known := recordMCPHealth(accountId, cfg, o, authoritative)
 		// Keep the integration visible (and consistently reported) instead of
 		// silently vanishing, which makes the agent improvise. See A2 fix.
-		return []NBTool{unavailableAfterFailure(cfg, classifyMCPError(err), health, known)}
+		return []NBTool{unavailableAfterFailure(cfg, classifyMCPError(err), health, known)}, o
 	}
 
 	// Parse JSON-RPC response
@@ -942,16 +962,18 @@ func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 		common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "parse_error")
 		log.Debug("mcp-integration: failed to parse tools/list response", "error", err, "response", truncate(response, 500))
 		// The server answered, but with nothing usable: an error, not an outage.
-		health, known := recordMCPHealth(accountId, cfg, mcpFailure(mcpHealthError, "invalid tools/list response", true), false)
-		return []NBTool{unavailableAfterFailure(cfg, "invalid_response", health, known)}
+		o := mcpFailure(mcpHealthError, "invalid tools/list response", true)
+		health, known := recordMCPHealth(accountId, cfg, o, authoritative)
+		return []NBTool{unavailableAfterFailure(cfg, "invalid_response", health, known)}, o
 	}
 
 	if rpcResp.Error != nil {
 		toolCircuitBreakerInstance.RecordFailure(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
 		common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "json_rpc_error")
 		log.Debug("mcp-integration: tools/list returned error", "code", rpcResp.Error.Code, "message", rpcResp.Error.Message)
-		health, known := recordMCPHealth(accountId, cfg, mcpFailure(mcpHealthError, fmt.Sprintf("tools/list returned error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message), true), false)
-		return []NBTool{unavailableAfterFailure(cfg, "discovery_error", health, known)}
+		o := mcpFailure(mcpHealthError, fmt.Sprintf("tools/list returned error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message), true)
+		health, known := recordMCPHealth(accountId, cfg, o, authoritative)
+		return []NBTool{unavailableAfterFailure(cfg, "discovery_error", health, known)}, o
 	}
 
 	tools := make([]NBTool, 0, len(rpcResp.Result.Tools))
@@ -1009,9 +1031,10 @@ func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 
 	toolCircuitBreakerInstance.RecordSuccess(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
 	common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "success")
-	recordMCPHealth(accountId, cfg, mcpSuccess(true, len(tools)), false)
+	o := mcpSuccess(true, len(tools))
+	recordMCPHealth(accountId, cfg, o, authoritative)
 	log.Info("mcp-integration: discovered tools", "count", len(tools))
-	return tools
+	return tools, o
 }
 
 // sanitizeToolPrefix creates a valid tool name prefix from an integration name.
