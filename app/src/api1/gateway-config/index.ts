@@ -79,6 +79,11 @@ export interface GatewayRateLimit {
   id: string;
   /** Empty string = tenant-wide scope; otherwise a specific user_id. */
   user_id: string;
+  /** Set when the quota belongs to one API key; such rows are edited on the key. */
+  api_key_id?: string;
+  api_key_name?: string;
+  /** Set when the quota caps one model only. */
+  model?: string;
   metric: GatewayMetric;
   period: GatewayPeriod;
   limit_value: number;
