@@ -66,11 +66,13 @@ func TestDBSink_RecordInsertsRow(t *testing.T) {
 			200, int64(1200), "req_test",
 			14, 7, 21, 0, 0, "",
 			0.05, // cost_usd — snapshotted at write time
+			0.02, // cache_savings_usd — snapshotted with cost
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	ev := sampleEvent()
 	ev.CostUsd = 0.05
+	ev.CacheSavingsUsd = 0.02
 	s.Record(ev)
 	require.NoError(t, s.Close()) // drains + flushes before returning
 

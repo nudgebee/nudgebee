@@ -35,16 +35,18 @@ const H = {
   tokens: <HeaderLabel label='Tokens' secondary='(in/out)' info='Input / output tokens across this model’s requests.' />,
   requests: <HeaderLabel label='Requests' info='Requests routed to this model in range.' />,
   cache: <HeaderLabel label='Cache hit' info='Share of input tokens served from the prompt cache (higher is cheaper).' />,
+  savings: <HeaderLabel label='Saved' info='What prompt caching saved on this model, after the extra cost of writing the cache.' />,
   latency: <HeaderLabel label='Avg latency' info='Request-weighted average end-to-end latency for this model.' />,
 };
 
 const HEADERS = [
-  { name: 'Model', width: '26%', sortEnabled: true, component: H.model },
-  { name: 'Cost', width: '13%', align: 'right' as const, sortEnabled: true, component: H.cost },
-  { name: 'Tokens', width: '16%', align: 'right' as const, sortEnabled: true, component: H.tokens },
-  { name: 'Requests', width: '12%', align: 'right' as const, sortEnabled: true, component: H.requests },
-  { name: 'Cache hit', width: '12%', align: 'right' as const, sortEnabled: true, component: H.cache },
-  { name: 'Avg latency', width: '15%', align: 'right' as const, sortEnabled: true, component: H.latency },
+  { name: 'Model', width: '24%', sortEnabled: true, component: H.model },
+  { name: 'Cost', width: '12%', align: 'right' as const, sortEnabled: true, component: H.cost },
+  { name: 'Tokens', width: '14%', align: 'right' as const, sortEnabled: true, component: H.tokens },
+  { name: 'Requests', width: '11%', align: 'right' as const, sortEnabled: true, component: H.requests },
+  { name: 'Cache hit', width: '11%', align: 'right' as const, sortEnabled: true, component: H.cache },
+  { name: 'Saved', width: '12%', align: 'right' as const, sortEnabled: true, component: H.savings },
+  { name: 'Avg latency', width: '16%', align: 'right' as const, sortEnabled: true, component: H.latency },
 ];
 
 // Header name → the value a column sorts on (client-side reorder of loaded rows).
@@ -54,6 +56,7 @@ const SORT_VALUE: Record<string, (r: GatewayGroupRow) => number | string> = {
   Tokens: (r) => r.input_tokens,
   Requests: (r) => r.requests,
   'Cache hit': (r) => r.cache_hit_rate_pct,
+  Saved: (r) => r.cache_savings_usd ?? 0,
   'Avg latency': (r) => r.avg_latency_seconds,
 };
 
@@ -95,6 +98,15 @@ function toRow(r: GatewayGroupRow, costSev: (v: number) => Severity, latSev: (v:
       align: 'right' as const,
       data: r.cache_hit_rate_pct,
       component: <Box sx={{ ...numCell, textAlign: 'right' }}>{fmtPct((r.cache_hit_rate_pct ?? 0) / 100, 0)}</Box>,
+    },
+    {
+      align: 'right' as const,
+      data: r.cache_savings_usd ?? 0,
+      component: (
+        <Box sx={{ display: 'inline-flex', justifyContent: 'flex-end', width: '100%' }}>
+          <CostCallout value={r.cache_savings_usd ?? 0} size='sm' tone='neutral' fractionDigits={3} />
+        </Box>
+      ),
     },
     {
       align: 'right' as const,

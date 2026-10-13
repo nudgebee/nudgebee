@@ -26,6 +26,8 @@ export interface GatewayTotals {
   cache_hit_rate_pct: number;
   /** Request-weighted average end-to-end latency, in seconds. */
   avg_latency_seconds: number;
+  /** What prompt caching saved, net of cache-write premiums. Absent on an older gateway. */
+  cache_savings_usd?: number;
 }
 
 /** One breakdown row (per provider / per model / per user). */
@@ -42,6 +44,8 @@ export interface GatewayGroupRow {
   cache_hit_rate_pct: number;
   /** Request-weighted average latency for this bucket, in seconds. */
   avg_latency_seconds: number;
+  /** What prompt caching saved for this bucket (provider / model breakdowns only). */
+  cache_savings_usd?: number;
 }
 
 /** One (bucket, key) cell of the over-time series. */

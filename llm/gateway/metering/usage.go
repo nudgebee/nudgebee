@@ -78,6 +78,8 @@ type UsageEvent struct {
 	// retroactively rewrites it. Set by the handler from the pricer. Read paths sum
 	// this column instead of re-joining the pricing catalog.
 	CostUsd float64 `db:"cost_usd"`
+	// CacheSavingsUsd is what prompt caching saved on this request, snapshotted like CostUsd.
+	CacheSavingsUsd float64 `db:"cache_savings_usd"`
 }
 
 // EventInput is what the edge knows at capture time, independent of core internals.

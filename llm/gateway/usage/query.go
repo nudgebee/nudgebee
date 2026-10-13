@@ -41,6 +41,8 @@ type Totals struct {
 	TotalCachedInputTokens int64   `json:"total_cached_input_tokens"`
 	CacheHitRatePct        float64 `json:"cache_hit_rate_pct"`
 	AvgLatencySeconds      float64 `json:"avg_latency_seconds"`
+	// CacheSavingsUsd is what prompt caching saved, net of cache-write premiums.
+	CacheSavingsUsd float64 `json:"cache_savings_usd"`
 }
 
 // GroupRow is one breakdown bucket (e.g. a provider, model, or user).
@@ -54,6 +56,7 @@ type GroupRow struct {
 	CachedInputTokens int64   `json:"cached_input_tokens"`
 	CacheHitRatePct   float64 `json:"cache_hit_rate_pct"`
 	AvgLatencySeconds float64 `json:"avg_latency_seconds"`
+	CacheSavingsUsd   float64 `json:"cache_savings_usd"`
 }
 
 // TimeSeriesRow is one point of the overall time series.
@@ -190,6 +193,7 @@ type pmRow struct {
 	CacheWrite int64   `db:"cache_write_tokens"`
 	LatencySum int64   `db:"latency_ms_sum"`
 	Cost       float64 `db:"cost_usd"`
+	Savings    float64 `db:"cache_savings_usd"`
 }
 
 type tsRow struct {
@@ -233,7 +237,8 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*M
 		       COALESCE(sum(cache_read_tokens),0) AS cache_read_tokens,
 		       COALESCE(sum(cache_write_tokens),0) AS cache_write_tokens,
 		       COALESCE(sum(latency_ms),0) AS latency_ms_sum,
-		       COALESCE(sum(cost_usd),0) AS cost_usd
+		       COALESCE(sum(cost_usd),0) AS cost_usd,
+		       COALESCE(sum(cache_savings_usd),0) AS cache_savings_usd
 		FROM llm_gateway_usage
 		WHERE ` + aggWindow + `
 		GROUP BY provider, model`
@@ -252,6 +257,7 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*M
 		m.Totals.TotalOutputTokens += r.Output
 		m.Totals.TotalCachedInputTokens += r.CacheRead
 		m.Totals.TotalCostUsd += cost
+		m.Totals.CacheSavingsUsd += r.Savings
 		totalLatency += r.LatencySum
 
 		m.Breakdowns["model"] = append(m.Breakdowns["model"], GroupRow{
@@ -259,6 +265,7 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*M
 			InputTokens: r.Input, OutputTokens: r.Output, CachedInputTokens: r.CacheRead,
 			CacheHitRatePct:   cacheHitPct(r.CacheRead, r.Input),
 			AvgLatencySeconds: avgLatencySeconds(r.LatencySum, r.Requests),
+			CacheSavingsUsd:   r.Savings,
 		})
 		p := byProvider[r.Provider]
 		if p == nil {
@@ -266,6 +273,7 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*M
 			byProvider[r.Provider] = p
 		}
 		p.CostUsd += cost
+		p.CacheSavingsUsd += r.Savings
 		p.Requests += r.Requests
 		p.InputTokens += r.Input
 		p.OutputTokens += r.Output
