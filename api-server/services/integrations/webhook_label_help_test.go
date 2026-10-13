@@ -190,7 +190,7 @@ var webhookLabelHelpProducers = map[string]func(t *testing.T) map[string]string{
 		var entityAlert, logAlert SolarWindsWebhookPayload
 		require.NoError(t, json.Unmarshal([]byte(`{
 			"type": "entity-metric-raw", "name": "High CPU", "severity": "CRITICAL", "priority": "HIGH",
-			"condition": "cpu > 90",
+			"condition": "cpu > 90", "alertDefinitionId": "def-1",
 			"entities": [{"type": "KubernetesPod", "entityId": "e-1", "displayName": "api-0"}]
 		}`), &entityAlert))
 		require.NoError(t, json.Unmarshal([]byte(`{
@@ -198,7 +198,8 @@ var webhookLabelHelpProducers = map[string]func(t *testing.T) map[string]string{
 			"events": [{"hostName": "node-1", "applicationName": "api"}]
 		}`), &logAlert))
 
-		_, _, _, labels := extractSolarWindsEntityInfo(entityAlert)
+		// One event per entity, so the help describes a single entity's labels.
+		labels := extractSolarWindsEntityLabels(entityAlert, entityAlert.Entities[0])
 		for k, v := range extractSolarWindsGenericEventInfo(logAlert) {
 			if _, exists := labels[k]; !exists {
 				labels[k] = v
