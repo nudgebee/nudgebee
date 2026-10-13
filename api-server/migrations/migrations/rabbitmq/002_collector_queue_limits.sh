@@ -21,6 +21,13 @@
 # exist, needs no redeclare, and covers queues created later -- including on
 # installs that never get the code change.
 #
+# The policy also names the dead-letter exchange, so rejected and expired
+# messages on those older queues reach the .dlq without the queue being
+# recreated. Dead-lettered messages keep their routing key, which is the queue
+# name and is what each .dlq is bound with. Queues created by the collector
+# since the fix carry their own x-arguments, which take precedence; the values
+# are the same.
+#
 # Safe to re-run: PUT on a policy is a full replace, so re-running converges.
 
 BASE="http://${RABBIT_MQ_HOST}:15672/api"
@@ -50,6 +57,8 @@ echo "--- 002_collector_queue_limits: start ---"
 
 # Agent ingest queues. 1h expiry restores the bound the declare intended;
 # 512MB is the hard stop for a burst that arrives faster than 1h of drain.
+# The collector declares all three on the default k8s_agent_exchange, whose
+# dead-letter exchange is k8s_agent_exchange_dlx.
 # drop-head sheds the oldest first, which is the right end for these: the
 # reconcile is gated on a complete batch sequence (batch_reconcile.py), so an
 # incomplete snapshot fails closed -- it skips its cleanup rather than
@@ -61,14 +70,12 @@ put_policy "nb-collector-agent-queues" '{
   "definition": {
     "message-ttl": 3600000,
     "max-length-bytes": 536870912,
-    "overflow": "drop-head"
+    "overflow": "drop-head",
+    "dead-letter-exchange": "k8s_agent_exchange_dlx"
   }
 }'
 
-# The .dlq queues are unreachable today (no dead-letter-exchange is set on the
-# queues that would feed them). Bounding them now means that whenever the
-# declare is fixed and dead-lettering starts working, the graveyard is capped
-# from its first message rather than after the next incident.
+# Bound the .dlq queues so the graveyard is capped from its first message.
 put_policy "nb-collector-dlq" '{
   "pattern": "^k8s_agent_.*\\.dlq$",
   "apply-to": "queues",
