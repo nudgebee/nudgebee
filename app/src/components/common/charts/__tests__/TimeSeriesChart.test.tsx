@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { TimeSeriesChart, type TimeSeriesChartProps } from '../TimeSeriesChart';
 
 // Capture the Chart.js options the wrapper hands to the canvas primitives.
@@ -38,5 +38,22 @@ describe('TimeSeriesChart y-axis ticks', () => {
     const { tick, precision } = yAxis({});
     expect(tick(2_000)).toMatch(/^\$/);
     expect(precision).toBeUndefined();
+  });
+});
+
+describe('TimeSeriesChart legend totals', () => {
+  const series = [{ key: 'Tokens', data: [9_000_000, 6_302_648] }];
+  const full = (v: number) => v.toLocaleString('en-US');
+
+  it('shows the legend formatter total when given, full value on hover', () => {
+    render(<TimeSeriesChart labels={['Mon', 'Tue']} series={series} format={full} legendFormat={toMillions} />);
+    const total = screen.getByText('15M');
+    expect(total).toHaveAttribute('title', '15,302,648');
+    expect(screen.queryByText('15,302,648')).toBeNull();
+  });
+
+  it('keeps the full formatter when no legend formatter is given', () => {
+    render(<TimeSeriesChart labels={['Mon', 'Tue']} series={series} format={full} compactFormat={toMillions} />);
+    expect(screen.getByText('15,302,648')).toBeInTheDocument();
   });
 });

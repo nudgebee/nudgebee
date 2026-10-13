@@ -228,6 +228,7 @@ export function OverviewView({ metrics, filters, loading, error, onSelectDay }: 
             shape='bar'
             format={metric === 'cost' ? fmtCost : fmtCount}
             compactFormat={metric === 'cost' ? undefined : fmtCountCompact}
+            legendFormat={metric === 'cost' ? undefined : fmtTokens}
             integerY={metric !== 'cost'}
             onSelectPoint={handleSelectPoint}
             id='gateway-usage-over-time'

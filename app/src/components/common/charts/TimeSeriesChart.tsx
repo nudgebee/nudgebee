@@ -39,6 +39,8 @@ export interface TimeSeriesChartProps {
   format?: (value: number) => string;
   /** Compact formatter — y-axis ticks, on-bar totals, average line. Default: compactCurrency. */
   compactFormat?: (value: number) => string;
+  /** Legend-total formatter; the full `format` value moves to a hover title. Default: `format`. */
+  legendFormat?: (value: number) => string;
   /** Integer y-axis (e.g. call counts): whole-number tick steps; labels use `compactFormat` when given. */
   integerY?: boolean;
   /** Colour per series key. Default: built-in categorical ramp by index. */
@@ -88,6 +90,7 @@ export function TimeSeriesChart({
   shape = 'bar',
   format = roundedFormat,
   compactFormat: compactFormatProp,
+  legendFormat,
   integerY = false,
   colorFor = paletteColorFor,
   showLegend = true,
@@ -217,8 +220,12 @@ export function TimeSeriesChart({
             >
               <Box sx={{ width: 9, height: 9, borderRadius: swatchRadius, backgroundColor: colorFor(key, i), flexShrink: 0 }} />
               <Box component='span'>{key}</Box>
-              <Box component='span' sx={{ color: 'var(--ds-gray-400)', fontVariantNumeric: 'tabular-nums' }}>
-                {format(seriesTotals[key] ?? 0)}
+              <Box
+                component='span'
+                title={legendFormat ? format(seriesTotals[key] ?? 0) : undefined}
+                sx={{ color: 'var(--ds-gray-400)', fontVariantNumeric: 'tabular-nums' }}
+              >
+                {(legendFormat ?? format)(seriesTotals[key] ?? 0)}
               </Box>
             </Box>
           ))}
