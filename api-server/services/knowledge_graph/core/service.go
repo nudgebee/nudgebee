@@ -1301,7 +1301,14 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 	unifiedGraph.Nodes, unifiedGraph.Edges, _ = ResolveGCPManagedServiceCalls(
 		unifiedGraph.Nodes, unifiedGraph.Edges, s.logger,
 	)
-	// Phase 3.7: Drop CALLS edges that point back along a routing edge. Last of
+	// Phase 3.7: Drop AWS regional control-plane ExternalService leaves (e.g.
+	// elasticache.sa-east-1.amazonaws.com) whose only caller is Nudgebee's own
+	// cloud-collector-server. Runs after 3.5/3.6 so it only sees the ES nodes
+	// that survived real-resource matching (#40703).
+	unifiedGraph.Nodes, unifiedGraph.Edges, _ = DropCollectorOnlyAWSEndpoints(
+		unifiedGraph.Nodes, unifiedGraph.Edges, s.logger,
+	)
+	// Phase 3.8: Drop CALLS edges that point back along a routing edge. Last of
 	// the rewriting passes on purpose — both 3.5 and 3.6 repoint CALLS edges, so
 	// running earlier would miss the ones they create. Once a load balancer's own
 	// addresses resolve onto the balancer, the backend's reply traffic becomes
