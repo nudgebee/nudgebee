@@ -1575,6 +1575,8 @@ func UpdateUserAccessed(context *security.RequestContext, request UserUpdateAcce
 			`UPDATE user_auths SET accessed_at = NOW(), tenant_id = CASE WHEN provider = 'token' THEN tenant_id ELSE $1 END, token_sha256 = COALESCE(token_sha256, NULLIF($2, '')) WHERE id = $3`,
 			request.TenantId, request.TokenSha256, request.AuthId)
 	} else {
+		// API keys (provider 'token') keep the tenant they were created in; moving them made them
+		// spend, bill and obey rules in whichever tenant their owner last opened (#40623).
 		result, err = manager.Db.Exec(
 			`UPDATE user_auths SET accessed_at = NOW(), tenant_id = $1 WHERE "user" IN (SELECT id FROM users WHERE username = $2) AND provider <> 'token'`,
 			request.TenantId, request.Username)
