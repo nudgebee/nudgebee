@@ -102,7 +102,8 @@ func (m GitlabCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 
 	// Use the encapsulated lazy creation/execution logic
 	// Use nbRequestContext.AccountId as it is guaranteed to be populated from the session
-	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, env)
+	execCommand, execEnv := withPipelineStatus(command, env)
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, execCommand, execEnv)
 
 	// The command reaches a real shell unfiltered, so a stray `printenv` (or
 	// `glab config get token`) would otherwise echo the PAT back into the

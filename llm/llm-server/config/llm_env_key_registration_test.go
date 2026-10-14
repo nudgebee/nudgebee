@@ -34,8 +34,15 @@ func TestLLMEnvKeysAreRegisteredWithViper(t *testing.T) {
 		"llm_provider_deployment_name",
 		"llm_fallback_ref_source",
 		"llm_fallback_ref_model",
+		"llm_server_cli_pipeline_status_enabled",
 	} {
 		assert.True(t, known[key],
 			"%s has no viper.SetDefault, so its environment variable will never reach Config", key)
 	}
+}
+
+// The pipeline-status fix is on unless an operator turns it off; a default left
+// unregistered reads as false and silently disables it.
+func TestCliPipelineStatusDefaultsOn(t *testing.T) {
+	assert.True(t, viper.GetBool("llm_server_cli_pipeline_status_enabled"))
 }

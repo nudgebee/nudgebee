@@ -138,7 +138,8 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 
 	// Use the encapsulated lazy creation/execution logic
 	// Use nbRequestContext.AccountId as it is guaranteed to be populated from the session
-	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, env)
+	execCommand, execEnv := withPipelineStatus(command, env)
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, execCommand, execEnv)
 
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("github: unable to execute shell script", "error", err.Error(), "command", command)

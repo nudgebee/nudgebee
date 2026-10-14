@@ -406,6 +406,12 @@ type appConfig struct {
 	LLMServerAgentMaxParallel                int `mapstructure:"llm_server_agent_max_parallel"`
 	LLMServerAgentReActMaxIterations         int `mapstructure:"llm_server_agent_react_max_iterations"`
 	LLMServerAgentReActSubAgentMaxIterations int `mapstructure:"llm_server_agent_react_sub_agent_max_iterations"`
+	// LlmServerCliPipelineStatusEnabled makes a gh/glab pipeline whose first stage
+	// failed exit non-zero (a shell reports only the last stage, so a failed gh
+	// piped into grep or head looked like success). Turn off to send commands as
+	// the model wrote them.
+	LlmServerCliPipelineStatusEnabled bool `mapstructure:"llm_server_cli_pipeline_status_enabled"`
+
 	// LlmServerNoProgressBrakeEnabled gates the stats-based no-progress convergence
 	// brake: when N consecutive planner iterations produce only no-progress steps
 	// (empty/no-match results, failures, or duplicate cache-hits — i.e. no new
@@ -1303,6 +1309,7 @@ func init() {
 	// baking it in preserves that behavior now that orchestrating agents always run as ReAct3.
 	viper.SetDefault("llm_server_agent_react_max_iterations", 50)
 	viper.SetDefault("llm_server_no_progress_brake_enabled", false)
+	viper.SetDefault("llm_server_cli_pipeline_status_enabled", true)
 	viper.SetDefault("llm_server_no_progress_brake_threshold", 3)
 	viper.SetDefault("llm_server_agent_react_sub_agent_max_iterations", 10)
 	viper.SetDefault("llm_server_agent_max_parallel", 4)
