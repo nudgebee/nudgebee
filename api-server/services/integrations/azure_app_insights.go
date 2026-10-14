@@ -89,6 +89,16 @@ func (m AzureAppInsights) BaseURL(config AzureAppInsightsConfig) string {
 
 }
 
+// AppInsightsQueryURL returns the App Insights query endpoint used by the trace
+// and metric sources. It errors when no App ID is configured, which is valid for
+// a logs-only integration.
+func AppInsightsQueryURL(cfg AzureAppInsightsConfig) (string, error) {
+	if cfg.AzureAppInsightsAppID == "" {
+		return "", fmt.Errorf("%s is not configured on the azure integration; it is required for traces and metrics", AzureAppInsightsAppID)
+	}
+	return "https://api.applicationinsights.io/v1/apps/" + cfg.AzureAppInsightsAppID + "/query", nil
+}
+
 func (m AzureAppInsights) TokenBaseURL(config AzureAppInsightsConfig) string {
 	return fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/token", config.AppTenantID)
 
@@ -96,13 +106,15 @@ func (m AzureAppInsights) TokenBaseURL(config AzureAppInsightsConfig) string {
 
 func (m AzureAppInsights) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
-		Type:     core.ToolSchemaTypeObject,
-		Required: []string{AzureAppInsightsAppID, AppClientID, AppSecret, AppTenantID},
+		Type: core.ToolSchemaTypeObject,
+		// The App Insights App ID is only needed for traces and metrics; a
+		// logs-only integration reads the Log Analytics workspace directly.
+		Required: []string{AppClientID, AppSecret, AppTenantID},
 		Testable: true,
 		Properties: map[string]core.IntegrationSchemaProperty{
 			AzureAppInsightsAppID: {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Azure App Insights App ID",
+				Description: "Azure App Insights App ID (required for traces and metrics)",
 				IsEncrypted: false,
 				Priority:    88,
 				IsTestable:  true,
@@ -359,9 +371,10 @@ func (m *AzureAppInsights) ValidateMetricsIntegration(cfg AzureAppInsightsConfig
 }
 
 // ValidateAzureAppInsightsConfig always probes the OAuth token endpoint to
-// confirm the four core credentials work, then runs log/trace probes if their
+// confirm the core credentials work, then runs log/trace probes if their
 // provider flags are on, then a cheap App Insights /metadata probe to round
-// out the credential test when the trace probe wasn't already run.
+// out the credential test when an App ID is set and the trace probe wasn't
+// already run.
 func (m *AzureAppInsights) ValidateAzureAppInsightsConfig(cfg AzureAppInsightsConfig) error {
 	// Baseline: OAuth token works for App Insights resource. If this fails,
 	// nothing else will work, so short-circuit with the clearest possible error.
@@ -378,7 +391,7 @@ func (m *AzureAppInsights) ValidateAzureAppInsightsConfig(cfg AzureAppInsightsCo
 		if err := m.ValidateTracesIntegration(cfg); err != nil {
 			return err
 		}
-	} else {
+	} else if cfg.AzureAppInsightsAppID != "" {
 		// Trace probe wasn't run; do a cheap /metadata probe to confirm the
 		// App Insights app id exists and the token can read it.
 		if err := m.ValidateMetricsIntegration(cfg); err != nil {
@@ -473,9 +486,6 @@ func (m AzureAppInsights) ValidateConfig(sc *security.SecurityContext, config []
 	// Required-field validation before any network call so users see all
 	// missing-field errors in one save round-trip instead of "OAuth failed".
 	var errs []error
-	if cfg.AzureAppInsightsAppID == "" {
-		errs = append(errs, requiredFieldErr(AzureAppInsightsAppID))
-	}
 	if cfg.AppTenantID == "" {
 		errs = append(errs, requiredFieldErr(AppTenantID))
 	}
@@ -493,8 +503,13 @@ func (m AzureAppInsights) ValidateConfig(sc *security.SecurityContext, config []
 			errs = append(errs, fmt.Errorf("%s is required when default_log_provider is enabled", LogsWorkbookID))
 		}
 	}
-	if cfg.EnableTracesIngestion && cfg.TracesTableName == "" {
-		errs = append(errs, fmt.Errorf("%s is required when default_trace_provider is enabled", TracesTableName))
+	if cfg.EnableTracesIngestion {
+		if cfg.AzureAppInsightsAppID == "" {
+			errs = append(errs, fmt.Errorf("%s is required when default_trace_provider is enabled", AzureAppInsightsAppID))
+		}
+		if cfg.TracesTableName == "" {
+			errs = append(errs, fmt.Errorf("%s is required when default_trace_provider is enabled", TracesTableName))
+		}
 	}
 	if len(errs) > 0 {
 		return errs

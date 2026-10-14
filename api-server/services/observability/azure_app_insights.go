@@ -133,7 +133,10 @@ func (s *AzureAppInsightsTraceSource) CountTraces(sc *security.RequestContext, t
 		sc.GetLogger().Error("CountTraces: failed to get azure configs", "error", err)
 		return common.OpenTelemetryTraceCount{}, err
 	}
-	tracesAnalyticsURL := "https://api.applicationinsights.io/v1/apps/" + azureConf.AzureAppInsightsAppID + "/query"
+	tracesAnalyticsURL, err := integrations.AppInsightsQueryURL(azureConf)
+	if err != nil {
+		return common.OpenTelemetryTraceCount{}, err
+	}
 	headers, err := azureInsightsObj.GetHeader(azureConf, map[string]string{"Content-Type": "application/json"}, integrations.AzureApplicationInsightURL)
 	if err != nil {
 		sc.GetLogger().Error("CountTraces: failed to get azure headers", "error", err)
@@ -207,7 +210,10 @@ func (s *AzureAppInsightsTraceSource) GetLabelValues(sc *security.RequestContext
 		sc.GetLogger().Error("GetLabelValues: failed to get azure configs", "error", err)
 		return common.OpenTelemetryTraceLabelValues{}, err
 	}
-	tracesAnalyticsURL := "https://api.applicationinsights.io/v1/apps/" + azureConf.AzureAppInsightsAppID + "/query"
+	tracesAnalyticsURL, err := integrations.AppInsightsQueryURL(azureConf)
+	if err != nil {
+		return common.OpenTelemetryTraceLabelValues{}, err
+	}
 	headers, err := azureInsightsObj.GetHeader(azureConf, map[string]string{"Content-Type": "application/json"}, integrations.AzureApplicationInsightURL)
 	if err != nil {
 		sc.GetLogger().Error("GetLabelValues: failed to get azure headers", "error", err)
@@ -341,7 +347,10 @@ func (s *AzureAppInsightsTraceSource) QueryTraces(sc *security.RequestContext, t
 		sc.GetLogger().Error("QueryTraces: failed to get azure configs", "error", err)
 		return nil, err
 	}
-	tracesAnalyticsURL := "https://api.applicationinsights.io/v1/apps/" + azureConf.AzureAppInsightsAppID + "/query"
+	tracesAnalyticsURL, err := integrations.AppInsightsQueryURL(azureConf)
+	if err != nil {
+		return nil, err
+	}
 	headers, err := azureInsightsObj.GetHeader(azureConf, map[string]string{"Content-Type": "application/json"}, integrations.AzureApplicationInsightURL)
 	if err != nil {
 		sc.GetLogger().Error("QueryTraces: failed to get azure headers", "error", err)

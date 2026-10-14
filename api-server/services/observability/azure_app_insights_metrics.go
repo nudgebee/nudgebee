@@ -45,7 +45,10 @@ func (s *AzureAppInsightsMetricSource) exec(ctx *security.RequestContext, conf i
 	}
 
 	azureInsightsObj := integrations.AzureAppInsights{}
-	url := "https://api.applicationinsights.io/v1/apps/" + conf.AzureAppInsightsAppID + "/query"
+	url, err := integrations.AppInsightsQueryURL(conf)
+	if err != nil {
+		return AzureResponse{}, err
+	}
 	headers, err := azureInsightsObj.GetHeader(conf, map[string]string{"Content-Type": "application/json"}, integrations.AzureApplicationInsightURL)
 	if err != nil {
 		return AzureResponse{}, fmt.Errorf("failed to get azure headers: %w", err)

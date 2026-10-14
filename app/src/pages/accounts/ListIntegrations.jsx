@@ -123,6 +123,10 @@ const getConnectionInfo = (integrationName, configValues) => {
   const key = integrationConnectionKey[integrationName];
   if (!key || !configValues) return '-';
   const entry = configValues.find((c) => c.name === key);
+  // A logs-only Azure integration has no App Insights App ID; show its workspace instead.
+  if (!entry?.value && integrationName === 'azure_app_insights') {
+    return configValues.find((c) => c.name === 'log_workbook_id')?.value || '-';
+  }
   return entry?.value || '-';
 };
 
