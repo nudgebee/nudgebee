@@ -89,14 +89,61 @@ func (m AzureAppInsights) BaseURL(config AzureAppInsightsConfig) string {
 
 }
 
-// AppInsightsQueryURL returns the App Insights query endpoint used by the trace
-// and metric sources. It errors when no App ID is configured, which is valid for
-// a logs-only integration.
+// UsesAppInsightsAPI reports whether traces and metrics are read through the
+// older App Insights API (api.applicationinsights.io/v1/apps/<id>). That is only
+// the case for integrations saved with an App ID; everything else reads the same
+// telemetry from the Log Analytics workspace, where App Insights stores it.
+func (c AzureAppInsightsConfig) UsesAppInsightsAPI() bool {
+	return c.AzureAppInsightsAppID != ""
+}
+
+// AppInsightsQueryURL returns the endpoint the trace and metric sources query:
+// the App Insights API when an App ID is set, otherwise the Log Analytics
+// workspace.
 func AppInsightsQueryURL(cfg AzureAppInsightsConfig) (string, error) {
-	if cfg.AzureAppInsightsAppID == "" {
-		return "", fmt.Errorf("%s is not configured on the azure integration; it is required for traces and metrics", AzureAppInsightsAppID)
+	if cfg.UsesAppInsightsAPI() {
+		return "https://api.applicationinsights.io/v1/apps/" + cfg.AzureAppInsightsAppID + "/query", nil
 	}
-	return "https://api.applicationinsights.io/v1/apps/" + cfg.AzureAppInsightsAppID + "/query", nil
+	if cfg.LogsWorkbookID == "" {
+		return "", fmt.Errorf("%s is not configured on the azure integration; it is required for traces and metrics", LogsWorkbookID)
+	}
+	return "https://api.loganalytics.io/v1/workspaces/" + cfg.LogsWorkbookID + "/query", nil
+}
+
+// AppInsightsTokenResource is the OAuth resource for AppInsightsQueryURL.
+func AppInsightsTokenResource(cfg AzureAppInsightsConfig) string {
+	if cfg.UsesAppInsightsAPI() {
+		return AzureApplicationInsightURL
+	}
+	return AzureAnalyticsURL
+}
+
+// appInsightsWorkspaceTables maps App Insights API table names to the names the
+// same data has in a Log Analytics workspace.
+var appInsightsWorkspaceTables = map[string]string{
+	"requests":            "AppRequests",
+	"dependencies":        "AppDependencies",
+	"traces":              "AppTraces",
+	"exceptions":          "AppExceptions",
+	"customEvents":        "AppEvents",
+	"customMetrics":       "AppMetrics",
+	"pageViews":           "AppPageViews",
+	"availabilityResults": "AppAvailabilityResults",
+	"browserTimings":      "AppBrowserTimings",
+	"performanceCounters": "AppPerformanceCounters",
+}
+
+// AppInsightsTable returns the table name to query for this integration: the
+// App Insights API name as configured, or its workspace equivalent. Names that
+// are already workspace names (or unknown) pass through unchanged.
+func AppInsightsTable(cfg AzureAppInsightsConfig, table string) string {
+	if cfg.UsesAppInsightsAPI() {
+		return table
+	}
+	if ws, ok := appInsightsWorkspaceTables[table]; ok {
+		return ws
+	}
+	return table
 }
 
 func (m AzureAppInsights) TokenBaseURL(config AzureAppInsightsConfig) string {
@@ -107,14 +154,15 @@ func (m AzureAppInsights) TokenBaseURL(config AzureAppInsightsConfig) string {
 func (m AzureAppInsights) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type: core.ToolSchemaTypeObject,
-		// The App Insights App ID is only needed for traces and metrics; a
-		// logs-only integration reads the Log Analytics workspace directly.
+		// Logs, traces and metrics are all read from the Log Analytics
+		// workspace; the App Insights App ID is only kept for integrations
+		// that were saved with one.
 		Required: []string{AppClientID, AppSecret, AppTenantID},
 		Testable: true,
 		Properties: map[string]core.IntegrationSchemaProperty{
 			AzureAppInsightsAppID: {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Azure App Insights App ID (required for traces and metrics)",
+				Description: "Legacy: Azure App Insights App ID. Leave empty to read traces and metrics from the Log Analytics workspace.",
 				IsEncrypted: false,
 				Priority:    88,
 				IsTestable:  true,
@@ -156,7 +204,7 @@ func (m AzureAppInsights) ConfigSchema() core.IntegrationSchema {
 			},
 			LogsWorkbookID: {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Azure logs workbook id",
+				Description: "Log Analytics workspace ID (logs, traces and metrics are read from it)",
 				IsEncrypted: false,
 				Priority:    50,
 				IsTestable:  true,
@@ -274,7 +322,8 @@ func (m AzureAppInsights) GetAzureToken(azureConfig AzureAppInsightsConfig, reso
 }
 
 func (m *AzureAppInsights) GetHeader(cnf AzureAppInsightsConfig, header map[string]string, resource string) (map[string]string, error) {
-	if cnf.AzureAppInsightsApiSecret != "" && cnf.EnableTracesIngestion {
+	// The API key only authenticates the App Insights API, never Log Analytics.
+	if cnf.AzureAppInsightsApiSecret != "" && cnf.EnableTracesIngestion && resource == AzureApplicationInsightURL {
 		header["x-api-key"] = cnf.AzureAppInsightsApiSecret
 		return header, nil
 	}
@@ -333,8 +382,11 @@ func (m *AzureAppInsights) ValidateLogIntegration(cfg AzureAppInsightsConfig) er
 }
 
 func (m *AzureAppInsights) ValidateTracesIntegration(cfg AzureAppInsightsConfig) error {
-	queryURL := "https://api.applicationinsights.io/v1/apps/" + cfg.AzureAppInsightsAppID + "/query"
-	return m.probeKQL(cfg, AzureApplicationInsightURL, queryURL, cfg.TracesTableName, "traces")
+	queryURL, err := AppInsightsQueryURL(cfg)
+	if err != nil {
+		return err
+	}
+	return m.probeKQL(cfg, AppInsightsTokenResource(cfg), queryURL, AppInsightsTable(cfg, cfg.TracesTableName), "traces")
 }
 
 // ValidateMetricsIntegration confirms the OAuth token has read access to App
@@ -376,9 +428,10 @@ func (m *AzureAppInsights) ValidateMetricsIntegration(cfg AzureAppInsightsConfig
 // out the credential test when an App ID is set and the trace probe wasn't
 // already run.
 func (m *AzureAppInsights) ValidateAzureAppInsightsConfig(cfg AzureAppInsightsConfig) error {
-	// Baseline: OAuth token works for App Insights resource. If this fails,
-	// nothing else will work, so short-circuit with the clearest possible error.
-	if _, err := m.FetchAzureToken(cfg, AzureApplicationInsightURL); err != nil {
+	// Baseline: OAuth token works for the resource traces and metrics use. If
+	// this fails, nothing else will work, so short-circuit with the clearest
+	// possible error.
+	if _, err := m.FetchAzureToken(cfg, AppInsightsTokenResource(cfg)); err != nil {
 		return fmt.Errorf("OAuth token request failed (check app_tenant_id, app_client_id, app_secret): %w", err)
 	}
 
@@ -504,8 +557,8 @@ func (m AzureAppInsights) ValidateConfig(sc *security.SecurityContext, config []
 		}
 	}
 	if cfg.EnableTracesIngestion {
-		if cfg.AzureAppInsightsAppID == "" {
-			errs = append(errs, fmt.Errorf("%s is required when default_trace_provider is enabled", AzureAppInsightsAppID))
+		if !cfg.UsesAppInsightsAPI() && cfg.LogsWorkbookID == "" {
+			errs = append(errs, fmt.Errorf("%s is required when default_trace_provider is enabled", LogsWorkbookID))
 		}
 		if cfg.TracesTableName == "" {
 			errs = append(errs, fmt.Errorf("%s is required when default_trace_provider is enabled", TracesTableName))

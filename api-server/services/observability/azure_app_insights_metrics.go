@@ -27,8 +27,32 @@ type AzureAppInsightsMetricSource struct {
 	execQuery  func(*security.RequestContext, integrations.AzureAppInsightsConfig, string) (AzureResponse, error)
 }
 
-// azureMetricsTable is the default KQL table for named custom metrics.
-const azureMetricsTable = "customMetrics"
+// azureMetricSchema names the table and columns custom metrics live in. The
+// App Insights API and a Log Analytics workspace hold the same data under
+// different names, and the workspace stores pre-aggregated Sum/ItemCount rather
+// than a single value, so its bucket average is weighted by ItemCount.
+type azureMetricSchema struct {
+	Table string
+	Time  string
+	Name  string
+	Dims  string
+	// Aggregation computes each time bucket's value.
+	Aggregation string
+}
+
+var (
+	// azureAppInsightsMetricSchema is the App Insights API customMetrics table.
+	azureAppInsightsMetricSchema = azureMetricSchema{Table: "customMetrics", Time: "timestamp", Name: "name", Dims: "customDimensions", Aggregation: "avg(value)"}
+	// azureWorkspaceMetricSchema is the Log Analytics workspace AppMetrics table.
+	azureWorkspaceMetricSchema = azureMetricSchema{Table: "AppMetrics", Time: "TimeGenerated", Name: "Name", Dims: "Properties", Aggregation: "sum(Sum) / sum(ItemCount)"}
+)
+
+func azureMetricSchemaFor(conf integrations.AzureAppInsightsConfig) azureMetricSchema {
+	if conf.UsesAppInsightsAPI() {
+		return azureAppInsightsMetricSchema
+	}
+	return azureWorkspaceMetricSchema
+}
 
 func (s *AzureAppInsightsMetricSource) configs(ctx *security.RequestContext, accountId string) (integrations.AzureAppInsightsConfig, error) {
 	if s.getConfigs != nil {
@@ -49,7 +73,7 @@ func (s *AzureAppInsightsMetricSource) exec(ctx *security.RequestContext, conf i
 	if err != nil {
 		return AzureResponse{}, err
 	}
-	headers, err := azureInsightsObj.GetHeader(conf, map[string]string{"Content-Type": "application/json"}, integrations.AzureApplicationInsightURL)
+	headers, err := azureInsightsObj.GetHeader(conf, map[string]string{"Content-Type": "application/json"}, integrations.AppInsightsTokenResource(conf))
 	if err != nil {
 		return AzureResponse{}, fmt.Errorf("failed to get azure headers: %w", err)
 	}
@@ -79,11 +103,15 @@ func (s *AzureAppInsightsMetricSource) GetSupportedOperators() []string {
 	return []string{"_eq", "_neq", "_contains", "_like"}
 }
 
-func (s *AzureAppInsightsMetricSource) GetQuery(_ *security.RequestContext, req FetchMetricsRequest) (string, error) {
+func (s *AzureAppInsightsMetricSource) GetQuery(ctx *security.RequestContext, req FetchMetricsRequest) (string, error) {
+	conf, err := s.configs(ctx, req.AccountId)
+	if err != nil {
+		return "", fmt.Errorf("failed to get azure app insights configs: %w", err)
+	}
 	startMs, endMs := azureMetricsTimeRangeMs(req.StartTime, req.EndTime)
 	step := azureMetricsStepMinutes(req.StepInterval, startMs, endMs)
 	for _, rawQuery := range req.Queries {
-		return buildAzureMetricKql(rawQuery, startMs, endMs, step, req.Labels, req.LabelMatchers)
+		return buildAzureMetricKql(azureMetricSchemaFor(conf), rawQuery, startMs, endMs, step, req.Labels, req.LabelMatchers)
 	}
 	return "", nil
 }
@@ -101,7 +129,7 @@ func (s *AzureAppInsightsMetricSource) FetchMetricsQuery(ctx *security.RequestCo
 
 	results := OutputMetricQuery{Results: []QueryResult{}}
 	for queryKey, rawQuery := range req.Queries {
-		kql, buildErr := buildAzureMetricKql(rawQuery, startMs, endMs, step, req.Labels, req.LabelMatchers)
+		kql, buildErr := buildAzureMetricKql(azureMetricSchemaFor(conf), rawQuery, startMs, endMs, step, req.Labels, req.LabelMatchers)
 		if buildErr != nil {
 			msg := buildErr.Error()
 			results.Results = append(results.Results, QueryResult{QueryKey: queryKey, Error: &msg})
@@ -128,11 +156,12 @@ func (s *AzureAppInsightsMetricSource) FetchMetricList(ctx *security.RequestCont
 		return nil, fmt.Errorf("failed to get azure app insights configs: %w", err)
 	}
 
-	kql := fmt.Sprintf("%s\n| where timestamp > ago(1d)", azureMetricsTable)
+	ms := azureMetricSchemaFor(conf)
+	kql := fmt.Sprintf("%s\n| where %s > ago(1d)", ms.Table, ms.Time)
 	if req.Metric != "" {
-		kql += fmt.Sprintf("\n| where name contains '%s'", escapeKqlValue(req.Metric))
+		kql += fmt.Sprintf("\n| where %s contains '%s'", ms.Name, escapeKqlValue(req.Metric))
 	}
-	kql += "\n| distinct name\n| limit 1000"
+	kql += fmt.Sprintf("\n| distinct %s\n| limit 1000", ms.Name)
 
 	resp, err := s.exec(ctx, conf, kql)
 	if err != nil {
@@ -152,11 +181,12 @@ func (s *AzureAppInsightsMetricSource) FetchMetricsLabels(ctx *security.RequestC
 		return nil, fmt.Errorf("failed to get azure app insights configs: %w", err)
 	}
 
-	kql := fmt.Sprintf("%s\n| where timestamp > ago(1d)", azureMetricsTable)
+	ms := azureMetricSchemaFor(conf)
+	kql := fmt.Sprintf("%s\n| where %s > ago(1d)", ms.Table, ms.Time)
 	if req.MetricName != "" {
-		kql += fmt.Sprintf("\n| where name == '%s'", escapeKqlValue(req.MetricName))
+		kql += fmt.Sprintf("\n| where %s == '%s'", ms.Name, escapeKqlValue(req.MetricName))
 	}
-	kql += "\n| extend nb_dim_key = bag_keys(customDimensions)\n| mv-expand nb_dim_key to typeof(string)\n| distinct nb_dim_key\n| limit 200"
+	kql += fmt.Sprintf("\n| extend nb_dim_key = bag_keys(%s)\n| mv-expand nb_dim_key to typeof(string)\n| distinct nb_dim_key\n| limit 200", ms.Dims)
 
 	resp, err := s.exec(ctx, conf, kql)
 	if err != nil {
@@ -182,14 +212,15 @@ func (s *AzureAppInsightsMetricSource) FetchMetricLabelValues(ctx *security.Requ
 			metricName = v
 		}
 	}
-	kql := fmt.Sprintf("%s\n| where timestamp > ago(7d)", azureMetricsTable)
+	ms := azureMetricSchemaFor(conf)
+	kql := fmt.Sprintf("%s\n| where %s > ago(7d)", ms.Table, ms.Time)
 	if metricName != "" {
-		kql += fmt.Sprintf("\n| where name == '%s'", escapeKqlValue(metricName))
+		kql += fmt.Sprintf("\n| where %s == '%s'", ms.Name, escapeKqlValue(metricName))
 	}
 	// Project the dimension value into an explicitly named column rather than
 	// relying on KQL's auto-generated `Column1`, which would break the
 	// isnotempty() filter if the engine's naming changed.
-	kql += fmt.Sprintf("\n| project nb_dim_val = tostring(customDimensions['%s'])\n| distinct nb_dim_val\n| where isnotempty(nb_dim_val)\n| limit 200", escapeKqlValue(req.Label))
+	kql += fmt.Sprintf("\n| project nb_dim_val = tostring(%s['%s'])\n| distinct nb_dim_val\n| where isnotempty(nb_dim_val)\n| limit 200", ms.Dims, escapeKqlValue(req.Label))
 
 	resp, err := s.exec(ctx, conf, kql)
 	if err != nil {
@@ -207,38 +238,43 @@ func (s *AzureAppInsightsMetricSource) FetchMetricLabelValues(ctx *security.Requ
 // buildAzureMetricKql builds a time-series KQL query. A rawQuery that already
 // looks like KQL (contains a pipe or starts with a known verb) is passed
 // through with only a time-range guard; otherwise it is treated as a metric
-// name against customMetrics with avg(value) bucketed by bin(timestamp, step).
-func buildAzureMetricKql(rawQuery string, startMs, endMs int64, stepMinutes int, labels map[string]string, matchers []LabelMatcher) (string, error) {
-	timeFilter := fmt.Sprintf("| where timestamp between (datetime('%s') .. datetime('%s'))",
-		azureMsToRFC3339(startMs), azureMsToRFC3339(endMs))
+// name against the schema's table with the average value bucketed by time.
+// The output columns are always `timestamp` and `value`.
+func buildAzureMetricKql(ms azureMetricSchema, rawQuery string, startMs, endMs int64, stepMinutes int, labels map[string]string, matchers []LabelMatcher) (string, error) {
+	timeFilter := fmt.Sprintf("| where %s between (datetime('%s') .. datetime('%s'))",
+		ms.Time, azureMsToRFC3339(startMs), azureMsToRFC3339(endMs))
 
 	if isAzureRawKql(rawQuery) {
-		if strings.Contains(strings.ToLower(rawQuery), "where timestamp") {
+		if strings.Contains(strings.ToLower(rawQuery), "where "+strings.ToLower(ms.Time)) {
 			return rawQuery, nil
 		}
 		return injectAzureKqlAfterTable(rawQuery, timeFilter), nil
 	}
 
-	whereClauses, err := azureWhereClauses(labels, matchers)
+	whereClauses, err := azureWhereClauses(ms.Dims, labels, matchers)
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
-	b.WriteString(azureMetricsTable)
+	b.WriteString(ms.Table)
 	b.WriteString("\n")
 	b.WriteString(timeFilter)
-	fmt.Fprintf(&b, "\n| where name == '%s'", escapeKqlValue(rawQuery))
+	fmt.Fprintf(&b, "\n| where %s == '%s'", ms.Name, escapeKqlValue(rawQuery))
 	for _, c := range whereClauses {
 		b.WriteString("\n| where ")
 		b.WriteString(c)
 	}
-	fmt.Fprintf(&b, "\n| summarize value = avg(value) by bin(timestamp, %dm)\n| order by timestamp asc", stepMinutes)
+	bucket := fmt.Sprintf("bin(%s, %dm)", ms.Time, stepMinutes)
+	if ms.Time != "timestamp" {
+		bucket = "timestamp = " + bucket
+	}
+	fmt.Fprintf(&b, "\n| summarize value = %s by %s\n| order by timestamp asc", ms.Aggregation, bucket)
 	return b.String(), nil
 }
 
 // azureWhereClauses renders eq-only labels and operator-aware matchers into KQL
-// predicates over customDimensions, sorted for deterministic output.
-func azureWhereClauses(labels map[string]string, matchers []LabelMatcher) ([]string, error) {
+// predicates over the dimensions bag, sorted for deterministic output.
+func azureWhereClauses(dims string, labels map[string]string, matchers []LabelMatcher) ([]string, error) {
 	clauses := []string{}
 	keys := make([]string, 0, len(labels))
 	for k := range labels {
@@ -246,7 +282,7 @@ func azureWhereClauses(labels map[string]string, matchers []LabelMatcher) ([]str
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		clauses = append(clauses, fmt.Sprintf("tostring(customDimensions['%s']) == '%s'", escapeKqlValue(k), escapeKqlValue(labels[k])))
+		clauses = append(clauses, fmt.Sprintf("tostring(%s['%s']) == '%s'", dims, escapeKqlValue(k), escapeKqlValue(labels[k])))
 	}
 
 	sorted := make([]LabelMatcher, len(matchers))
@@ -261,7 +297,7 @@ func azureWhereClauses(labels map[string]string, matchers []LabelMatcher) ([]str
 		return sorted[i].Value < sorted[j].Value
 	})
 	for _, m := range sorted {
-		field := fmt.Sprintf("tostring(customDimensions['%s'])", escapeKqlValue(m.Label))
+		field := fmt.Sprintf("tostring(%s['%s'])", dims, escapeKqlValue(m.Label))
 		val := escapeKqlValue(m.Value)
 		switch m.Operator {
 		case "_eq":

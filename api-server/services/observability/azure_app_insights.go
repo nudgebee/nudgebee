@@ -10,6 +10,7 @@ import (
 	"nudgebee/services/integrations"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
+	"strings"
 	"time"
 )
 
@@ -88,6 +89,88 @@ var AzureTraceTableDefinition = map[string]query.ColumnDefinition{
 	},
 }
 
+// appInsightsWorkspaceColumns maps App Insights API column names to the names
+// the same columns have in a Log Analytics workspace (AppDependencies etc.).
+var appInsightsWorkspaceColumns = map[string]string{
+	"operation_Id":       "OperationId",
+	"operation_ParentId": "ParentId",
+	"id":                 "Id",
+	"name":               "Name",
+	"timestamp":          "TimeGenerated",
+	"duration":           "DurationMs",
+	"resultCode":         "ResultCode",
+	"customDimensions":   "Properties",
+	"customMeasurements": "Measurements",
+}
+
+// workspaceToAppInsightsColumns is the reverse map, used to read workspace
+// responses with the App Insights column names the row converters expect.
+var workspaceToAppInsightsColumns = func() map[string]string {
+	m := make(map[string]string, len(appInsightsWorkspaceColumns))
+	for k, v := range appInsightsWorkspaceColumns {
+		m[v] = k
+	}
+	return m
+}()
+
+// workspaceBagReplacer renames the App Insights property bags to their
+// workspace names inside a column expression.
+var workspaceBagReplacer = strings.NewReplacer("customDimensions", "Properties", "customMeasurements", "Measurements")
+
+// azureWorkspaceTraceTableDefinition is AzureTraceTableDefinition with every
+// column expression rewritten to its workspace name.
+var azureWorkspaceTraceTableDefinition = func() map[string]query.ColumnDefinition {
+	defs := make(map[string]query.ColumnDefinition, len(AzureTraceTableDefinition))
+	for label, def := range AzureTraceTableDefinition {
+		if ws, ok := appInsightsWorkspaceColumns[def.Def]; ok {
+			def.Def = ws
+		} else {
+			def.Def = workspaceBagReplacer.Replace(def.Def)
+		}
+		defs[label] = def
+	}
+	return defs
+}()
+
+// azureTraceTableDefinition returns the column definitions for the endpoint
+// this integration's traces are read from.
+func azureTraceTableDefinition(cfg integrations.AzureAppInsightsConfig) map[string]query.ColumnDefinition {
+	if cfg.UsesAppInsightsAPI() {
+		return AzureTraceTableDefinition
+	}
+	return azureWorkspaceTraceTableDefinition
+}
+
+// azureTraceLabelExpr resolves a label to the KQL expression behind it: a
+// Nudgebee label (span_name, resource, ...) through the table definition, and a
+// raw App Insights column name to its workspace name when reading a workspace.
+// Anything else is used as given.
+func azureTraceLabelExpr(cfg integrations.AzureAppInsightsConfig, label string) string {
+	if def, ok := azureTraceTableDefinition(cfg)[label]; ok {
+		return def.Def
+	}
+	if !cfg.UsesAppInsightsAPI() {
+		if ws, ok := appInsightsWorkspaceColumns[label]; ok {
+			return ws
+		}
+		return workspaceBagReplacer.Replace(label)
+	}
+	return label
+}
+
+// normalizeAzureTraceColumns renames workspace columns (OperationId, Properties,
+// ...) to their App Insights names so one row converter handles both endpoints.
+func normalizeAzureTraceColumns(columns []Column) []Column {
+	out := make([]Column, len(columns))
+	for i, c := range columns {
+		if name, ok := workspaceToAppInsightsColumns[c.Name]; ok {
+			c.Name = name
+		}
+		out[i] = c
+	}
+	return out
+}
+
 type AzureResponse struct {
 	Tables []Table `json:"tables"`
 }
@@ -137,12 +220,12 @@ func (s *AzureAppInsightsTraceSource) CountTraces(sc *security.RequestContext, t
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
-	headers, err := azureInsightsObj.GetHeader(azureConf, map[string]string{"Content-Type": "application/json"}, integrations.AzureApplicationInsightURL)
+	headers, err := azureInsightsObj.GetHeader(azureConf, map[string]string{"Content-Type": "application/json"}, integrations.AppInsightsTokenResource(azureConf))
 	if err != nil {
 		sc.GetLogger().Error("CountTraces: failed to get azure headers", "error", err)
 		return common.OpenTelemetryTraceCount{}, err
 	}
-	query := fmt.Sprintf("%s | count", azureConf.TracesTableName)
+	query := fmt.Sprintf("%s | count", integrations.AppInsightsTable(azureConf, azureConf.TracesTableName))
 	traceApiRequest := map[string]string{
 		"query": query,
 	}
@@ -214,7 +297,7 @@ func (s *AzureAppInsightsTraceSource) GetLabelValues(sc *security.RequestContext
 	if err != nil {
 		return common.OpenTelemetryTraceLabelValues{}, err
 	}
-	headers, err := azureInsightsObj.GetHeader(azureConf, map[string]string{"Content-Type": "application/json"}, integrations.AzureApplicationInsightURL)
+	headers, err := azureInsightsObj.GetHeader(azureConf, map[string]string{"Content-Type": "application/json"}, integrations.AppInsightsTokenResource(azureConf))
 	if err != nil {
 		sc.GetLogger().Error("GetLabelValues: failed to get azure headers", "error", err)
 		return common.OpenTelemetryTraceLabelValues{}, err
@@ -237,7 +320,7 @@ func (s *AzureAppInsightsTraceSource) GetLabelValues(sc *security.RequestContext
 		return common.OpenTelemetryTraceLabelValues{}, err
 	}
 	traceApiRequest := map[string]string{
-		"query": fmt.Sprintf("%s | distinct %s", partialQuery, tracesRequest.Label),
+		"query": fmt.Sprintf("%s | project nb_label = %s | distinct nb_label", partialQuery, azureTraceLabelExpr(azureConf, tracesRequest.Label)),
 	}
 
 	body, err := common.HttpPost(tracesAnalyticsURL, common.HttpWithHeaders(headers), common.HttpWithJsonBody(traceApiRequest))
@@ -305,8 +388,8 @@ func (s *AzureAppInsightsTraceSource) injectTimeFilter(req *TracesV3Request) {
 
 func (s *AzureAppInsightsTraceSource) generateKql(sc *security.RequestContext, azureConf integrations.AzureAppInsightsConfig, traceQueryBuilderRequest TracesQueryBuilderRequest) (string, error) {
 	var tableDef query.TableDefinition
-	tableDef.Columns = AzureTraceTableDefinition
-	tableDef.Def = azureConf.TracesTableName
+	tableDef.Columns = azureTraceTableDefinition(azureConf)
+	tableDef.Def = integrations.AppInsightsTable(azureConf, azureConf.TracesTableName)
 	generateKqlQuery := query.KqlGenerator{}
 	queryRequest := getQueryRequest(sc, traceQueryBuilderRequest, tableDef, "trace_v2")
 	kqlQuery, err := generateKqlQuery.GenerateKqlQuery(queryRequest, tableDef)
@@ -351,7 +434,7 @@ func (s *AzureAppInsightsTraceSource) QueryTraces(sc *security.RequestContext, t
 	if err != nil {
 		return nil, err
 	}
-	headers, err := azureInsightsObj.GetHeader(azureConf, map[string]string{"Content-Type": "application/json"}, integrations.AzureApplicationInsightURL)
+	headers, err := azureInsightsObj.GetHeader(azureConf, map[string]string{"Content-Type": "application/json"}, integrations.AppInsightsTokenResource(azureConf))
 	if err != nil {
 		sc.GetLogger().Error("QueryTraces: failed to get azure headers", "error", err)
 		return nil, err
@@ -397,14 +480,15 @@ func (s *AzureAppInsightsTraceSource) QueryTraces(sc *security.RequestContext, t
 	}
 	otelTraces := []common.OpenTelemetryTrace{}
 	for _, table := range azureAppInsightsLogs.Tables {
+		columns := normalizeAzureTraceColumns(table.Columns)
 		for _, row := range table.Rows {
 			rowMap := make(map[string]any)
-			for i, col := range table.Columns {
+			for i, col := range columns {
 				if i < len(row) {
 					rowMap[col.Name] = row[i]
 				}
 			}
-			trace := s.convertAzureTraceToOpenteleMetry(rowMap, table.Columns)
+			trace := s.convertAzureTraceToOpenteleMetry(rowMap, columns)
 			otelTraces = append(otelTraces, trace)
 		}
 	}

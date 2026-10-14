@@ -22,11 +22,11 @@ func TestAzureAppInsights_AppIDNotGloballyRequired(t *testing.T) {
 
 // The required-field checks return before any network call, so leaving one
 // credential blank keeps these tests offline while still exercising the rules.
-func TestAzureAppInsights_ValidateConfig_AppIDOnlyRequiredForTraces(t *testing.T) {
+func TestAzureAppInsights_ValidateConfig_TracesNeedAWorkspaceOrAppID(t *testing.T) {
 	tests := []struct {
-		name        string
-		values      map[string]string
-		wantAppIDEr bool
+		name       string
+		values     map[string]string
+		wantErrFor string
 	}{
 		{
 			name: "logs only, no app id",
@@ -34,15 +34,28 @@ func TestAzureAppInsights_ValidateConfig_AppIDOnlyRequiredForTraces(t *testing.T
 				AppClientID: "client", AppTenantID: "tenant",
 				core.DefaultLogProvider: "true", LogsTableName: "ContainerLogV2", LogsWorkbookID: "ws",
 			},
-			wantAppIDEr: false,
 		},
 		{
-			name: "traces enabled, no app id",
+			name: "traces enabled, workspace only",
+			values: map[string]string{
+				AppClientID: "client", AppTenantID: "tenant",
+				core.DefaultTraceProvider: "true", TracesTableName: "dependencies", LogsWorkbookID: "ws",
+			},
+		},
+		{
+			name: "traces enabled, legacy app id only",
+			values: map[string]string{
+				AppClientID: "client", AppTenantID: "tenant",
+				core.DefaultTraceProvider: "true", TracesTableName: "dependencies", AzureAppInsightsAppID: "app",
+			},
+		},
+		{
+			name: "traces enabled, neither",
 			values: map[string]string{
 				AppClientID: "client", AppTenantID: "tenant",
 				core.DefaultTraceProvider: "true", TracesTableName: "dependencies",
 			},
-			wantAppIDEr: true,
+			wantErrFor: LogsWorkbookID,
 		},
 	}
 	for _, tt := range tests {
@@ -54,10 +67,11 @@ func TestAzureAppInsights_ValidateConfig_AppIDOnlyRequiredForTraces(t *testing.T
 				joined += e.Error() + "\n"
 			}
 			assert.Contains(t, joined, requiredFieldErr(AppSecret).Error())
-			if tt.wantAppIDEr {
-				assert.Contains(t, joined, AzureAppInsightsAppID)
+			assert.NotContains(t, joined, AzureAppInsightsAppID)
+			if tt.wantErrFor != "" {
+				assert.Contains(t, joined, tt.wantErrFor+" is required")
 			} else {
-				assert.NotContains(t, joined, AzureAppInsightsAppID)
+				assert.NotContains(t, joined, LogsWorkbookID)
 			}
 		})
 	}
@@ -65,9 +79,21 @@ func TestAzureAppInsights_ValidateConfig_AppIDOnlyRequiredForTraces(t *testing.T
 
 func TestAppInsightsQueryURL(t *testing.T) {
 	_, err := AppInsightsQueryURL(AzureAppInsightsConfig{})
-	assert.ErrorContains(t, err, AzureAppInsightsAppID)
+	assert.ErrorContains(t, err, LogsWorkbookID)
 
-	u, err := AppInsightsQueryURL(AzureAppInsightsConfig{AzureAppInsightsAppID: "app"})
+	legacy := AzureAppInsightsConfig{AzureAppInsightsAppID: "app", LogsWorkbookID: "ws"}
+	u, err := AppInsightsQueryURL(legacy)
 	require.NoError(t, err)
 	assert.Equal(t, "https://api.applicationinsights.io/v1/apps/app/query", u)
+	assert.Equal(t, AzureApplicationInsightURL, AppInsightsTokenResource(legacy))
+	assert.Equal(t, "dependencies", AppInsightsTable(legacy, "dependencies"))
+
+	workspace := AzureAppInsightsConfig{LogsWorkbookID: "ws"}
+	u, err = AppInsightsQueryURL(workspace)
+	require.NoError(t, err)
+	assert.Equal(t, "https://api.loganalytics.io/v1/workspaces/ws/query", u)
+	assert.Equal(t, AzureAnalyticsURL, AppInsightsTokenResource(workspace))
+	assert.Equal(t, "AppDependencies", AppInsightsTable(workspace, "dependencies"))
+	assert.Equal(t, "AppMetrics", AppInsightsTable(workspace, "customMetrics"))
+	assert.Equal(t, "AppDependencies", AppInsightsTable(workspace, "AppDependencies"), "workspace names pass through")
 }
