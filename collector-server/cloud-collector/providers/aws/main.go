@@ -326,7 +326,11 @@ func (a *awsProvider) QueryLogs(ctx providers.CloudProviderContext, account prov
 	// When a metric filter pattern is provided, use FilterLogEvents API
 	// which natively supports the same pattern syntax as CloudWatch metric filters.
 	if query.FilterPattern != "" {
-		return a.queryLogsWithFilterPattern(ctx, logsSvc, query, streamPrefix)
+		resp, err := a.queryLogsWithFilterPattern(ctx, logsSvc, query, streamPrefix)
+		if err == nil && len(resp.Results) > 0 {
+			resp.LogGroupName, resp.LogStreamPrefix = query.LogGroupName, streamPrefix
+		}
+		return resp, err
 	}
 
 	if query.QueryString == "" {
@@ -413,10 +417,12 @@ func (a *awsProvider) QueryLogs(ctx providers.CloudProviderContext, account prov
 			}
 
 			return providers.QueryLogsResponse{
-					QueryId:    queryId,
-					Results:    logMessages,
-					Status:     string(status),
-					Statistics: stats,
+					QueryId:         queryId,
+					Results:         logMessages,
+					Status:          string(status),
+					Statistics:      stats,
+					LogGroupName:    query.LogGroupName,
+					LogStreamPrefix: streamPrefix,
 				},
 				nil
 		case logstypes.QueryStatusFailed, logstypes.QueryStatusCancelled, logstypes.QueryStatusTimeout:

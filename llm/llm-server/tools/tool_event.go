@@ -220,6 +220,15 @@ func appendLogCoverageNote(note string, additionalInfo map[string]any) string {
 			parts = append(parts, strings.TrimSpace(truncationNote))
 		}
 	}
+	// Last: readers cut this note from the end, and the span and truncation
+	// sentences say more about what the lines can show.
+	if group, _ := additionalInfo["log_group_name"].(string); strings.TrimSpace(group) != "" {
+		source := fmt.Sprintf("The collected log lines were read from log group %s", strings.TrimSpace(group))
+		if prefix, _ := additionalInfo["log_stream_prefix"].(string); strings.TrimSpace(prefix) != "" {
+			source += fmt.Sprintf(", streams starting with %s", strings.TrimSpace(prefix))
+		}
+		parts = append(parts, source+".")
+	}
 	if len(parts) == 0 {
 		return note
 	}

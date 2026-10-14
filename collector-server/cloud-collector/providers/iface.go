@@ -631,6 +631,11 @@ type QueryLogsResponse struct {
 	Results    []LogMessage       `json:"results"`
 	Status     string             `json:"status"` // e.g., Complete, Failed, Cancelled, Running, Scheduled
 	Statistics LogQueryStatistics `json:"statistics"`
+	// LogGroupName and LogStreamPrefix say where the results were read from,
+	// when the provider resolved that itself (a group detected from the
+	// resource, read through the resource's own streams).
+	LogGroupName    string `json:"log_group_name,omitempty"`
+	LogStreamPrefix string `json:"log_stream_prefix,omitempty"`
 }
 
 // QueryDeploymentDiffRequest defines the input for fetching a resource's recent

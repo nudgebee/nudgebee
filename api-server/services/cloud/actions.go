@@ -1981,6 +1981,14 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 	if title, ok := rawParams["title"].(string); ok && title != "" {
 		additionalInfo["title"] = title
 	}
+	// Name the source, so a reader of the lines knows which log group (and
+	// which of its streams) they came from and can query it further.
+	if resourceResp.LogGroupName != "" {
+		additionalInfo["log_group_name"] = resourceResp.LogGroupName
+		if resourceResp.LogStreamPrefix != "" {
+			additionalInfo["log_stream_prefix"] = resourceResp.LogStreamPrefix
+		}
+	}
 
 	response := playbooks.NewPlaybookActionResponseJson(map[string]any{"data": logoutput}, additionalInfo, insights, metadata)
 	response.Labels = labels
