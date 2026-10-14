@@ -464,6 +464,11 @@ func isNoMatchExit(err error, originalCommand string) bool {
 	if !workspace.IsExitStatus1Failure(err) {
 		return false
 	}
+	// In a chain (`a && b | grep x`, `a; b | grep x`) the exit 1 may come from
+	// an earlier command, so it is a real failure, not an empty match.
+	if len(splitShellCommandSegments(originalCommand)) > 1 {
+		return false
+	}
 	tail := lastPipelineSegment(originalCommand)
 	first := firstShellToken(strings.ToLower(tail))
 	return noMatchExitCommands[first]

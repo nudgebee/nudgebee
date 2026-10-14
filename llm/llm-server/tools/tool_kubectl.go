@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"net/url"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -211,6 +212,9 @@ var kubectlBlockedResourceKinds = map[string]bool{
 	"secretstore": true, "secretstores": true, "ss": true,
 }
 
+// kubectlBlockedShortNames are the short names in kubectlBlockedResourceKinds.
+var kubectlBlockedShortNames = map[string]bool{"es": true, "ss": true, "css": true, "spc": true, "spcs": true}
+
 // kubectlBlockResourceVerbs are the subcommands we scan for a blocked
 // resource kind after. We intentionally include both read verbs
 // (get/describe/...) and mutation verbs (create/delete/edit/apply/...).
@@ -298,6 +302,19 @@ func kubectlBlockedKind(command string) string {
 	tokens := strings.Fields(cmd)
 
 	for i, tok := range tokens {
+		var rawPath string
+		switch {
+		case tok == "--raw" && i+1 < len(tokens):
+			rawPath = tokens[i+1]
+		case strings.HasPrefix(tok, "--raw="):
+			rawPath = strings.TrimPrefix(tok, "--raw=")
+		}
+		if blocked := kubectlRawPathBlockedKind(rawPath); blocked != "" {
+			return blocked
+		}
+	}
+
+	for i, tok := range tokens {
 		if strings.HasPrefix(tok, "-") {
 			continue
 		}
@@ -323,6 +340,36 @@ func kubectlBlockedKind(command string) string {
 			}
 		}
 		return ""
+	}
+	return ""
+}
+
+// kubectlRawPathBlockedKind returns the blocked kind named by a segment of a
+// `--raw` API path (`kubectl get --raw /api/v1/namespaces/x/secrets`), or "".
+// The path is URL-decoded until stable, lowercased and cleaned, so `%73ecrets`,
+// `Secrets/`, `//secrets` and `/x/../secrets` all match. Any segment counts, not
+// only the resource one, which also covers watch paths and subresources; a
+// namespace or object named exactly `secrets` is falsely blocked. Short names
+// (`es`, `ss`, `css`, `spc`) are skipped: the API server only routes plural
+// and singular names, and those short names are common namespace names.
+func kubectlRawPathBlockedKind(rawPath string) string {
+	if rawPath == "" {
+		return ""
+	}
+	p := rawPath
+	for range 3 {
+		decoded, err := url.PathUnescape(p)
+		if err != nil || decoded == p {
+			break
+		}
+		p = decoded
+	}
+	p, _, _ = strings.Cut(p, "?")
+	p = path.Clean("/" + strings.ToLower(p))
+	for _, segment := range strings.Split(p, "/") {
+		if kubectlBlockedResourceKinds[segment] && !kubectlBlockedShortNames[segment] {
+			return segment
+		}
 	}
 	return ""
 }
@@ -735,7 +782,7 @@ func (m KubectlExecuteTool) Description() string {
 		**Usage:**
 
 		* **Routing:** Availability does not make this tool the default for every Kubernetes command. Follow the active agent's system prompt when choosing between this direct tool and a workspace shell. If that prompt assigns Kubernetes reads to the workspace shell, do not use this tool for those reads; keep this direct path for mutations and commands with uncertain effects so approval and resume behavior is preserved.
-		* **Input:** Provide a valid, 'kubectl' command as input. Shell piping (|) is supported when the active agent routes the operation here; this support does not override its tool-routing policy. Reads of Secret-bearing kinds (secrets, sealedsecrets, externalsecrets) are blocked. kubectl cp is also blocked because its local path would resolve outside the conversation workspace.
+		* **Input:** Provide a valid, 'kubectl' command as input. The command runs in the conversation workspace shell, so pipes, '&&'/'||' fallbacks, loops and '$(...)' work, as long as every Kubernetes call goes through kubectl; this does not override the active agent's tool-routing policy. Reads of Secret-bearing kinds (secrets, sealedsecrets, externalsecrets) are blocked. kubectl cp is also blocked because its local path would resolve outside the conversation workspace.
 		* **Output:** The tool will return the output of the executed command.
 		* **Cluster:** By default the command runs on the conversation's current cluster. To run it on another connected cluster, pass its name in 'cluster' (or use '--context <name>'). Shell-safe names returned by 'kubectl config get-contexts' are accepted here too; copy them exactly rather than inventing a normalized name. An unknown name returns the list of available clusters. If the conversation has no current cluster yet, the first cluster you name becomes its current cluster. Helm and resource search have their own per-call cluster argument; logs, events, and metrics are not switched by a kubectl call. Output from another cluster carries a "cluster" field; cite it.
 
@@ -834,88 +881,6 @@ func hasShellExpansion(command string) bool {
 	return false
 }
 
-// describeShellMetachar names the rejected construct in terms the caller can put
-// in front of a model: "a redirection ('>')" repairs; "blocked" does not.
-func describeShellMetachar(char byte) string {
-	switch char {
-	case ';', '&':
-		return fmt.Sprintf("a shell operator (%q)", string(char))
-	case '<', '>':
-		return fmt.Sprintf("a redirection (%q)", string(char))
-	case '(', ')', '{', '}':
-		return fmt.Sprintf("a subshell or command group (%q)", string(char))
-	case '\n', '\r':
-		return "a newline (multiple commands)"
-	}
-	return fmt.Sprintf("an unsupported shell character (%q)", string(char))
-}
-
-// kubectlCommandHasUnsafeShellStructure permits one direct kubectl invocation
-// with optional stdout-only filters. Compound commands, redirections, and
-// downstream executors can manufacture a blocked resource name after static
-// validation, so they fail closed at the relay boundary.
-//
-// It reports whether the command is rejected and, when it is, a short reason
-// naming the offending construct. That reason is surfaced to the calling agent:
-// a bare refusal gives a model nothing to repair against, so it either gives up
-// or burns turns guessing.
-func kubectlCommandHasUnsafeShellStructure(command string) (bool, string) {
-	var stages []string
-	start := 0
-	var singleQuoted, doubleQuoted, escaped bool
-	for i := 0; i < len(command); i++ {
-		char := command[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		if char == '\\' && !singleQuoted {
-			escaped = true
-			continue
-		}
-		if char == '\'' && !doubleQuoted {
-			singleQuoted = !singleQuoted
-			continue
-		}
-		if char == '"' && !singleQuoted {
-			doubleQuoted = !doubleQuoted
-			continue
-		}
-		if singleQuoted || doubleQuoted {
-			continue
-		}
-		if strings.ContainsRune(";&<>\n\r(){}", rune(char)) {
-			return true, "the command contains " + describeShellMetachar(char)
-		}
-		if char == '|' {
-			stages = append(stages, command[start:i])
-			start = i + 1
-		}
-	}
-	if singleQuoted || doubleQuoted || escaped {
-		return true, "the command has an unbalanced quote or a trailing backslash"
-	}
-	stages = append(stages, command[start:])
-
-	first, ok := splitShellWords(stages[0])
-	if !ok {
-		return true, "the command could not be parsed as shell words"
-	}
-	if len(first) == 0 || first[0] != "kubectl" {
-		return true, "the command does not start with kubectl"
-	}
-	for _, stage := range stages[1:] {
-		parts, ok := splitShellWords(stage)
-		if !ok {
-			return true, "a pipeline stage could not be parsed as shell words"
-		}
-		if len(parts) == 0 {
-			return true, "an empty pipeline stage is not an allowed filter"
-		}
-	}
-	return false, ""
-}
-
 func splitShellWords(input string) ([]string, bool) {
 	var words []string
 	var word strings.Builder
@@ -960,18 +925,6 @@ func splitShellWords(input string) ([]string, bool) {
 	flush()
 	return words, !singleQuoted && !doubleQuoted && !escaped
 }
-
-// isSafeKubectlPipelineFilter accepts only filters whose arguments cannot name
-// an input file. grep/jq get one positional expression; head/tail/wc get none
-// and therefore must consume stdin. This intentionally rejects richer option
-// forms when their operand roles are ambiguous.
-// kubectlCommandGrammarHint states what IS accepted. It is appended to every
-// rejection so the agent can repair on the next turn instead of retrying the
-// same shape or abandoning the step. Keep it in sync with
-const kubectlCommandGrammarHint = "Send exactly one kubectl command, " +
-	"optionally piped into stdout filters. Loops, subshells, redirections, command substitution and " +
-	"multiple kubectl calls are not accepted. To aggregate across namespaces or resources, " +
-	"issue one kubectl call per target and combine the results yourself."
 
 // ValidateKubectlRelayCommand applies the kubectl hard-deny policy at the final
 // relay execution boundary. Callers reaching relay (workspace shims, remediation,
@@ -1060,13 +1013,13 @@ func hasUnquotedRelayMetachars(command string) bool {
 	return false
 }
 
-// validateKubectlCommandAccess applies the tool-level policy for kubectl_execute.
-// Piped stdout stream filters are allowed (they execute in the workspace shell),
-// but secret access, shell operators, and non-kubectl commands are rejected upfront.
+// validateKubectlCommandAccess fails fast on the secret and cp commands the
+// relay would refuse anyway. Like aws_execute, it does not police the shell
+// shape of the command: pipes, chains and loops run in the conversation
+// workspace, and every kubectl call they make is checked again at the relay
+// (ValidateKubectlRelayCommand) and the workspace proxy after the shell has
+// expanded it.
 func validateKubectlCommandAccess(command string) error {
-	if unsafe, reason := kubectlCommandHasUnsafeShellStructure(command); unsafe {
-		return fmt.Errorf("kubectl: blocked because %s. %s", reason, kubectlCommandGrammarHint)
-	}
 	words, ok := splitShellWords(command)
 	if !ok {
 		return errors.New("kubectl: command has unbalanced quotes or invalid shell syntax")
@@ -1081,9 +1034,6 @@ func validateKubectlCommandAccess(command string) error {
 		if strings.Contains(normalizedCommand, path) {
 			return errors.New("kubectl: reading mounted secret filesystem paths is blocked")
 		}
-	}
-	if hasShellExpansion(command) {
-		return errors.New("kubectl: shell variable and command expansion ($, $(), and backticks) is blocked")
 	}
 	if kubectlUsesTopLevelCommand(command, "cp") {
 		return errors.New("kubectl: cp is blocked because local paths resolve on the relay or cluster agent, not in the conversation workspace")
@@ -1129,10 +1079,11 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 		return core.NBToolResponse{}, err
 	}
 
-	command1 := strings.ToLower(command)
-
-	// Safety net: auto-inject --tail for kubectl logs if not already limited
-	if strings.Contains(command1, " logs ") || strings.HasPrefix(command1, "kubectl logs") {
+	// Safety net: auto-inject --tail for kubectl logs if not already limited.
+	// Only for a single command whose kubectl call (before any pipe) is the
+	// logs call: in a chain or loop the first pipe need not belong to it.
+	kubectlStage := strings.ToLower(splitShellPipeline(command)[0]) + " "
+	if strings.Contains(kubectlStage, " logs ") && len(splitShellCommandSegments(command)) == 1 {
 		if !strings.Contains(command, "--tail") && !strings.Contains(command, "--since") && !strings.Contains(command, " -f") {
 			// Insert --tail before any pipe to avoid breaking piped commands
 			if pipeIdx := strings.Index(command, "|"); pipeIdx > 0 {

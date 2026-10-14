@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"nudgebee/llm/tools/core"
+	"nudgebee/llm/workspace"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -410,13 +411,8 @@ func TestValidateKubectlCommandAccess(t *testing.T) {
 		`kubectl get secret -n nudgebee -o json | jq '.items[].metadata.name'`,
 		`kubectl get pods && kubectl get secrets -A`,
 		`kubectl exec api -- cat /var/run/secrets/kubernetes.io/serviceaccount/token`,
-		`sec=secrets && kubectl get $sec`,
-		`kubectl get $(printf secrets)`,
-		"kubectl get `printf secrets`",
 		`kubectl exec api -- cat /var/run/./secrets/token`,
 		`kubectl exec api -- sh -c "cat /var/run/se*rets/token"`,
-		`printf secrets | xargs kubectl get`,
-		`kubectl get pods >/dev/null; printf '\163ecrets' | xargs kubectl get`,
 		`kubectl get pods | cat /var/run/secrets/kubernetes.io/serviceaccount/token`,
 		`kubectl get pods | grep -e. /var/run/./secrets/kubernetes.io/serviceaccount/token`,
 		`kubectl cp local.txt api:/tmp/local.txt`,
@@ -573,6 +569,51 @@ func TestValidateKubectlRelayCommand(t *testing.T) {
 	}
 }
 
+// A --raw API path reaches Secrets without naming the kind as a positional,
+// so the path itself is checked.
+func TestValidateKubectlRelayCommandRawAPIPaths(t *testing.T) {
+	blocked := []string{
+		`kubectl get --raw /api/v1/namespaces/x/secrets`,
+		`kubectl get --raw /api/v1/namespaces/x/secrets/db-creds`,
+		`kubectl get --raw=/api/v1/namespaces/x/secrets`,
+		`kubectl get --raw /api/v1/secrets`,
+		`kubectl get --raw /api/v1/watch/namespaces/x/secrets`,
+		`kubectl get --raw /api/v1/namespaces/x/secrets/`,
+		`kubectl get --raw //api//v1//namespaces/x//secrets`,
+		`kubectl get --raw /api/v1/namespaces/x/pods/../secrets`,
+		`kubectl get --raw /api/v1/namespaces/x/%73ecrets`,
+		`kubectl get --raw /api/v1/namespaces/x/%2573ecrets`,
+		`kubectl get --raw /api/v1/namespaces/x/Secrets`,
+		`kubectl get --raw "/api/v1/namespaces/x/secrets?limit=1"`,
+		`kubectl get --raw '/api/v1/namespaces/x/sec""rets'`,
+		`kubectl --context dev get --raw /api/v1/namespaces/x/secrets`,
+		`kubectl get --raw /apis/bitnami.com/v1alpha1/namespaces/x/sealedsecrets`,
+		`kubectl get --raw /apis/external-secrets.io/v1beta1/namespaces/x/externalsecrets`,
+		`kubectl get --raw /apis/external-secrets.io/v1beta1/namespaces/x/secretstores`,
+		`kubectl get --raw /apis/external-secrets.io/v1beta1/clustersecretstores`,
+		`kubectl get --raw /apis/secrets-store.csi.x-k8s.io/v1/namespaces/x/secretproviderclasses`,
+		`kubectl create --raw /api/v1/namespaces/x/secrets -f secret.json`,
+		`kubectl delete --raw /api/v1/namespaces/x/secrets/db-creds`,
+	}
+	for _, command := range blocked {
+		require.Error(t, ValidateKubectlRelayCommand(command), command)
+	}
+
+	allowed := []string{
+		`kubectl get --raw /api/v1/namespaces/x/pods`,
+		`kubectl get --raw /healthz`,
+		`kubectl get --raw /metrics`,
+		`kubectl get --raw /apis/apps/v1/namespaces/x/deployments`,
+		`kubectl get --raw /apis/secrets-store.csi.x-k8s.io/v1`,
+		// Short names are not API path segments; namespaces often use them.
+		`kubectl get --raw /api/v1/namespaces/es/pods`,
+		`kubectl get --raw /api/v1/namespaces/ss/pods`,
+	}
+	for _, command := range allowed {
+		require.NoError(t, ValidateKubectlRelayCommand(command), command)
+	}
+}
+
 func TestKubectlCopyIsBlockedAtToolAndRelayBoundaries(t *testing.T) {
 	commands := []string{
 		`kubectl cp local.txt api:/tmp/local.txt`,
@@ -707,36 +748,31 @@ func TestWrapKubectlError_EnvelopeShape(t *testing.T) {
 	})
 }
 
-// TestKubectlBlockMessageGivesTheAgentARepairPath pins that a rejection names the
-// offending construct and states the accepted grammar. The fixture is the exact
-// command an agent sent in a real investigation: the old message said only that
-// the command was "blocked", and the agent abandoned the step rather than
-// retrying with one kubectl call per namespace.
-func TestKubectlBlockMessageGivesTheAgentARepairPath(t *testing.T) {
-	realWorldCommand := `kubectl get namespaces --no-headers -o custom-columns='NAME:.metadata.name' | ` +
-		`grep -i nudgebee | while read ns; do printf '%s\t' "$ns"; ` +
-		`kubectl get pods -n "$ns" --no-headers 2>/dev/null | wc -l; done`
-
-	err := validateKubectlCommandAccess(realWorldCommand)
-	require.Error(t, err)
-	// Names what was wrong...
-	require.Contains(t, err.Error(), "blocked because")
-	// ...and what to send instead, or the agent has nothing to act on.
-	require.Contains(t, err.Error(), "exactly one kubectl command")
-	require.Contains(t, err.Error(), "one kubectl call per target")
-
-	for _, tc := range []struct{ command, wants string }{
-		{`kubectl get pods > /tmp/out`, "a redirection"},
-		{`kubectl get pods; rm -rf /`, "a shell operator"},
-		{`kubectl get pods $(whoami)`, "a subshell or command group"},
-		{`kubectl get pods | `, "an empty pipeline stage is not an allowed filter"},
-		{`kubectl get pods | grep 'unterminated`, "unbalanced quote"},
-		{`helm list`, "does not start with kubectl"},
+// kubectl_execute takes the shell shapes agents actually send, as aws_execute
+// does. The fixtures were rejected on dev before; each kubectl call they make
+// is still checked at the relay once the shell has expanded it.
+func TestValidateKubectlCommandAccessAllowsShellShapes(t *testing.T) {
+	for _, command := range []string{
+		`kubectl get cm -n kube-system -l "app.kubernetes.io/name=ama-logs" -o name || kubectl get cm -n kube-system | grep -i ama`,
+		`kubectl get pods -A | grep -iE "e2e|gateway" || true`,
+		`kubectl get events -n shop --sort-by=.lastTimestamp 2>/dev/null | grep -i oom | tail -20`,
+		`kubectl describe resourcequota/q -n shop && kubectl describe replicaset/r -n shop`,
+		`kubectl get namespaces --no-headers -o custom-columns='NAME:.metadata.name' | grep -i nudgebee | ` +
+			`while read ns; do printf '%s\t' "$ns"; kubectl get pods -n "$ns" --no-headers 2>/dev/null | wc -l; done`,
+		`kubectl exec -n shop $(kubectl get pod -n shop -l app=api -o name) -c nginx -- nginx -V`,
 	} {
-		err := validateKubectlCommandAccess(tc.command)
-		require.Error(t, err, tc.command)
-		require.Contains(t, err.Error(), tc.wants, tc.command)
-		require.Contains(t, err.Error(), "exactly one kubectl command", tc.command)
+		require.NoError(t, validateKubectlCommandAccess(command), command)
+	}
+}
+
+// Building a secret read at runtime no longer fails at the tool, so pin that
+// the call it expands to is still refused where the workspace sends it.
+func TestRelayRefusesSecretReadsBuiltAtRuntime(t *testing.T) {
+	for _, expanded := range []string{
+		`kubectl get secrets`,
+		`kubectl get secret -n shop db -o json`,
+	} {
+		require.Error(t, ValidateKubectlRelayCommand(expanded), expanded)
 	}
 }
 
@@ -754,4 +790,13 @@ func TestKubectlTargetKind(t *testing.T) {
 	for cmd, want := range cases {
 		require.Equal(t, want, KubectlTargetKind(cmd), cmd)
 	}
+}
+
+// A chain's exit 1 may come from an earlier command, so only a single
+// command ending in grep is reclassified as an empty match.
+func TestIsNoMatchExitIgnoresChains(t *testing.T) {
+	exit1 := &workspace.CommandFailure{StdErr: "exit status 1"}
+	require.True(t, isNoMatchExit(exit1, `kubectl get pods | grep foo`))
+	require.False(t, isNoMatchExit(exit1, `kubectl get ns nosuch 2>/dev/null && kubectl get pods | grep foo`))
+	require.False(t, isNoMatchExit(exit1, `kubectl get pods | grep foo; kubectl delete pod x 2>/dev/null`))
 }

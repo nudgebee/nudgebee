@@ -2065,6 +2065,12 @@ func (r K8sResourceSearchTool) runKubectlCommand(command string, nbRequestContex
 		nbRequestContext.Ctx.GetLogger().Error("resource-search: kubectl command rejected", "error", err.Error(), "command", command)
 		return ""
 	}
+	// Resource search builds its own commands from sanitized input; a chain or
+	// an expansion here means that input escaped the sanitizer.
+	if len(splitShellCommandSegments(command)) > 1 || hasShellExpansion(command) {
+		nbRequestContext.Ctx.GetLogger().Error("resource-search: kubectl command rejected", "error", "chained command or shell expansion", "command", command)
+		return ""
+	}
 
 	relayStart := time.Now()
 	// wm (tool_shell.go) is the package-wide WorkspaceManager; reuse it rather than
