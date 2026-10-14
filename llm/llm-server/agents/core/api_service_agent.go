@@ -523,6 +523,25 @@ func convertToAgentUpdateDto(agent AgentDto) AgentUpdateDto {
 	}
 }
 
+// verifyCustomAgentOwnedByAccount returns an error unless agentId is a custom
+// agent installed in accountId.
+func verifyCustomAgentOwnedByAccount(tx *sqlx.Tx, accountId string, agentId string) error {
+	var exists bool
+	err := tx.Get(&exists, `
+		select exists(
+			select 1 from llm_agents a
+			join llm_agents_installation i on i.agent_id = a.id::text
+			where i.agent_id = $1 and i.account_id = $2 and a.type = 'custom'
+		)`, agentId, accountId)
+	if err != nil {
+		return fmt.Errorf("agent: failed to verify agent ownership: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("agent not found or not owned by account - %s", agentId)
+	}
+	return nil
+}
+
 func UpdateCustomAgent(context *security.RequestContext, accountId string, agent AgentUpdateDto) (AgentUpdateDto, error) {
 	// Input validation
 	if accountId == "" {
@@ -583,6 +602,12 @@ func UpdateCustomAgent(context *security.RequestContext, accountId string, agent
 
 	// Execute database operations in a transaction
 	resultAny, err := dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
+		// The access check above is on the request's account; the agent itself
+		// is addressed by id, so it must be a custom agent installed in that account.
+		if err := verifyCustomAgentOwnedByAccount(tx, accountId, agent.Id); err != nil {
+			return nil, err
+		}
+
 		// Fetch the original agent values before updating for auditing purposes
 		originalQuery := "SELECT id, name, description, status, system_prompt, system_prompt_variables, tools, config, created_at, created_by, updated_at, updated_by FROM llm_agents WHERE id = $1"
 		originalRow := tx.QueryRowx(originalQuery, agent.Id)
