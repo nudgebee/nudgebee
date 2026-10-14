@@ -1329,7 +1329,12 @@ const apiTriage = {
       git_branch: data.git_branch,
       reference_link: data.reference_link,
     });
-    return response?.data?.data?.event_apply_threshold_suggestion ?? null;
+    const result = response?.data?.data?.event_apply_threshold_suggestion;
+    if (result) {
+      return result;
+    }
+    const message = response?.data?.errors?.[0]?.message;
+    return message ? { status: 'failed', error: message } : null;
   },
 
   /**
@@ -1343,7 +1348,12 @@ const apiTriage = {
       alert_rule_key: data.alert_rule_key,
       cloud_account_id: data.cloud_account_id,
     });
-    return response?.data?.data?.event_revert_threshold_suggestion ?? null;
+    const result = response?.data?.data?.event_revert_threshold_suggestion;
+    if (result) {
+      return result;
+    }
+    const message = response?.data?.errors?.[0]?.message;
+    return message ? { status: 'failed', error: message } : null;
   },
 };
 

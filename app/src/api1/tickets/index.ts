@@ -30,6 +30,7 @@ query ListTicketConfigsForCreate {
       name
       tool
       status
+      url
       projects {
         name
         key
@@ -313,11 +314,12 @@ const apiIntegrations = {
     }
   },
 
-  // Used by the create-ticket form only. Unlike listTicketConfigurations (which
-  // hits the admin-only integrations_list action), this routes through the
-  // ticket-server's read-level tickets_list_configs so readonly users can pick a
-  // config. Shape matches what TicketFormSection consumes (id, name, tool,
-  // projects); no credentials are returned.
+  // Used by the create-ticket form and other read-level Git-integration pickers.
+  // Unlike listTicketConfigurations (which hits the admin-only integrations_list
+  // action), this routes through the ticket-server's read-level tickets_list_configs
+  // so readonly users can pick a config. Shape matches what callers consume
+  // (id, name, tool, url, projects); url is plain metadata (e.g. a self-hosted
+  // GitLab base URL), not a credential.
   listTicketConfigsForCreate: async function (query?: { tool?: string; status?: string }) {
     try {
       const response = await queryGraphQL(LIST_TICKET_CONFIGS_FOR_CREATE, 'ListTicketConfigsForCreate');
@@ -334,6 +336,7 @@ const apiIntegrations = {
         tool: c.tool,
         status: c.status,
         is_active: c.status === 'enabled',
+        url: c.url,
         projects: c.projects || [],
       }));
       return {

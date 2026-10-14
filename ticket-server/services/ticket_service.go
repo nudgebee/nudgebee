@@ -259,10 +259,11 @@ func fetchIntegrationWithConfigValues(dbManager *database.DatabaseManager, integ
 }
 
 // ListTicketConfigsForTenant returns the enabled ticketing integrations for a
-// tenant with only the fields the create-ticket form needs to pick a config
-// and project (id, name, tool, status, projects). It never returns URLs or
-// credentials, so it is safe to expose at read level to roles that can create
-// tickets but not manage integrations (see ListTicketConfigs / NB-32822).
+// tenant with only the fields the create-ticket form (and other read-level
+// pickers) need (id, name, tool, status, url, projects). url is plain
+// metadata (e.g. a self-hosted GitLab base URL), not a credential, so it is
+// safe to expose at read level to roles that can create tickets but not
+// manage integrations (see ListTicketConfigs / NB-32822).
 func ListTicketConfigsForTenant(tenantId string) ([]models.TicketConfigOption, error) {
 	dbManager, err := database.GetDatabaseManager()
 	if err != nil {
@@ -275,20 +276,24 @@ func ListTicketConfigsForTenant(tenantId string) ([]models.TicketConfigOption, e
 		Name              string  `db:"name"`
 		Tool              string  `db:"tool"`
 		Status            string  `db:"status"`
+		URL               *string `db:"url"`
 		Projects          *string `db:"projects"`
 		ProjectsEncrypted bool    `db:"projects_encrypted"`
 	}
 
 	var rows []configRow
-	// LEFT JOIN the single 'projects' config value so configs without projects
-	// still appear in the dropdown. Only metadata is selected — no secrets.
+	// LEFT JOIN the 'url' and 'projects' config values so configs missing
+	// either still appear in the dropdown. Only metadata is selected — no secrets.
 	err = dbManager.Select(&rows, `
 		SELECT i.id, i.name, i.type AS tool, i.status,
+		       urlcv.value AS url,
 		       cv.value AS projects,
 		       COALESCE(cv.is_encrypted, false) AS projects_encrypted
 		FROM integrations i
 		LEFT JOIN integration_config_values cv
 		  ON cv.integration_id = i.id AND cv.name = 'projects'
+		LEFT JOIN integration_config_values urlcv
+		  ON urlcv.integration_id = i.id AND urlcv.name = 'url'
 		WHERE i.tenant_id = $1
 		  AND i.status = 'enabled'
 		  AND i.type IN ('jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk')
@@ -307,6 +312,9 @@ func ListTicketConfigsForTenant(tenantId string) ([]models.TicketConfigOption, e
 			Tool:     r.Tool,
 			Status:   r.Status,
 			Projects: []models.Project{},
+		}
+		if r.URL != nil {
+			opt.URL = *r.URL
 		}
 		if r.Projects != nil && *r.Projects != "" {
 			value := *r.Projects

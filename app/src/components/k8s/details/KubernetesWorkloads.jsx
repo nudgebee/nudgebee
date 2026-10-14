@@ -64,7 +64,7 @@ import Dashboard from '@components/dashboards/AppDashboard';
 import KubernetesPodYaml from '@components/k8s/details/KubernetesPodYaml';
 import KubernetesRightSizing from '@components/recommendations/KubernetesRightSizing';
 import { toast as snackbar } from '@ui/Toast';
-import apiIntegrations from '@api1/integrations';
+import apiTickets from '@api1/tickets';
 import KubernetesLogsPattern from './KubernetesLogsPattern';
 import KubernetesPodsTable from './KubernetesPods';
 import BulkAssignOwnerModal from '@components/ownership/BulkAssignOwnerModal';
@@ -361,31 +361,29 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
     setSelectedCiGitIntegration('');
     setCiReposFromIntegration([]);
 
-    // Fetch both GitHub and GitLab integrations in parallel
-    Promise.all([
-      apiIntegrations.listTicketConfigurationsByTool({ status: 'enabled', tool: 'github' }),
-      apiIntegrations.listTicketConfigurationsByTool({ status: 'enabled', tool: 'gitlab' }),
-    ])
-      .then(([githubRes, gitlabRes]) => {
-        const githubData =
-          githubRes?.data?.length > 0
-            ? githubRes.data.map((g) => ({
-                name: g.name,
-                type: 'github',
-                url: 'https://github.com',
-                projects: Array.isArray(g.projects) ? g.projects : [],
-              }))
-            : [];
+    // listTicketConfigsForCreate is read-level (unlike listTicketConfigurationsByTool)
+    // and returns both GitHub and GitLab integrations in one call.
+    apiTickets
+      .listTicketConfigsForCreate({ status: 'enabled' })
+      .then((res) => {
+        const configs = res?.data || [];
+        const githubData = configs
+          .filter((g) => g.tool === 'github')
+          .map((g) => ({
+            name: g.name,
+            type: 'github',
+            url: 'https://github.com',
+            projects: Array.isArray(g.projects) ? g.projects : [],
+          }));
 
-        const gitlabData =
-          gitlabRes?.data?.length > 0
-            ? gitlabRes.data.map((g) => ({
-                name: g.name,
-                type: 'gitlab',
-                url: g.url || 'https://gitlab.com',
-                projects: Array.isArray(g.projects) ? g.projects : [],
-              }))
-            : [];
+        const gitlabData = configs
+          .filter((g) => g.tool === 'gitlab')
+          .map((g) => ({
+            name: g.name,
+            type: 'gitlab',
+            url: g.url || 'https://gitlab.com',
+            projects: Array.isArray(g.projects) ? g.projects : [],
+          }));
 
         // Combine for dropdown with type prefix for unique identification
         const combined = [
