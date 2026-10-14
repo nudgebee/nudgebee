@@ -607,7 +607,7 @@ func handleTenantAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			EventTime:     time.Now().UTC(),
 			EventCategory: audit.EventCategoryTenant,
 			EventTarget:   ctx.GetSecurityContext().GetTenantId(),
-			EventType:     audit.EventTypeTenantUpdate,
+			EventType:     audit.EventTypeTenantFeature,
 			EventState:    request,
 			EventActor:    audit.EventActorUiService,
 			EventAction:   audit.EventActionUpdate,

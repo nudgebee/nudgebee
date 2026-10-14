@@ -352,6 +352,13 @@ export const AuditsTable = () => {
       return <Text value={`${verb} ${kind} ${id}${result ? ` → ${result}` : ''}`} showAutoEllipsis />;
     }
 
+    if (item.event_type == 'TENANT_FEATURE') {
+      // event_state: { features: [{ feature_id, status, account_id }] }
+      const features = Array.isArray(data.features) ? data.features.filter((f) => f && typeof f === 'object' && f.feature_id) : [];
+      const summary = features.map((f) => `${f.feature_id}${f.status ? ` ${capitalize(f.status)}` : ''}`).join(', ');
+      return <Text value={`Feature Flag${features.length > 1 ? 's' : ''}${summary ? ` ${summary}` : ''} Updated`} showAutoEllipsis />;
+    }
+
     if (item.event_type == 'TICKET_CONFIGURATION_UPDATE') {
       return <Text value={`Ticket Configuration With Name ${data.name || data.account_name} Updated`} showAutoEllipsis />;
     } else if (item.event_type == 'NOTIFICATION_SLACK_CONFIGURATION_CREATE') {

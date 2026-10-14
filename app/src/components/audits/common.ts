@@ -84,6 +84,7 @@ export const EventListing: string[] = [
   'TENANT_CREATE',
   'TENANT_UPDATE',
   'TENANT_DELETE',
+  'TENANT_FEATURE',
   'TENANT_USER_CREATE',
   'TENANT_USER_UPDATE',
   'TENANT_USER_DELETE',
