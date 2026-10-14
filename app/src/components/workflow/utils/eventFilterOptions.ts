@@ -27,7 +27,9 @@ export const mergeFilterOptions = (
   byAccount: FilterValuesByAccount,
   picked: string[],
   formatLabel: (value: string) => string = (v) => v
-): { label: string; value: string }[] => {
+): { label: string; value: string; searchText?: string }[] => {
+  // A reformatted label hides the raw value users type (`job_failure` shows as JobFailure).
+  const raw = (value: string) => (formatLabel(value) !== value ? { searchText: value } : {});
   const loaded = accounts.filter((a) => byAccount[a.id]);
   const seenIn = new Map<string, string[]>();
   for (const account of loaded) {
@@ -40,11 +42,12 @@ export const mergeFilterOptions = (
   const options = Array.from(seenIn, ([value, where]) => ({
     value,
     label: loaded.length > 1 && where.length < loaded.length ? `${formatLabel(value)} · ${seenInTag(where, loaded.length)}` : formatLabel(value),
+    ...raw(value),
   }));
   options.sort((a, b) => a.label.localeCompare(b.label));
   const unseen = picked
     .filter((v) => !seenIn.has(v))
-    .map((value) => ({ value, label: loaded.length > 0 ? `${formatLabel(value)} · not seen` : formatLabel(value) }));
+    .map((value) => ({ value, label: loaded.length > 0 ? `${formatLabel(value)} · not seen` : formatLabel(value), ...raw(value) }));
   return [...unseen, ...options];
 };
 

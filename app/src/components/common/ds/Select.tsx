@@ -69,6 +69,8 @@ export interface SelectOption {
   disabled?: boolean;
   /** Section this option renders under when `grouped` is set. Missing ⇒ 'Other'. */
   group?: string;
+  /** Extra text the search also matches, e.g. a raw key behind a formatted label. */
+  searchText?: string;
 }
 
 /** Options may be plain strings (label and value the same) or SelectOption objects. */
@@ -377,13 +379,13 @@ export function Select(props: SelectProps) {
     }
   }, [open]);
 
-  // Case-insensitive substring match on the option's label (or value).
+  // Case-insensitive substring match on the option's label (or value), and its searchText.
   const filteredOptions = React.useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return options;
     return options.filter((o) => {
       const labelStr = typeof o.label === 'string' ? o.label : String(o.value);
-      return labelStr.toLowerCase().includes(q);
+      return labelStr.toLowerCase().includes(q) || !!o.searchText?.toLowerCase().includes(q);
     });
   }, [options, search]);
 

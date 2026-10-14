@@ -189,3 +189,27 @@ describe('Select multi select-all', () => {
     expect(screen.queryByText('Select All')).not.toBeInTheDocument();
   });
 });
+
+// #40526: a label that reformats a raw key must still be found by that key.
+describe('Select searchText', () => {
+  const options = [
+    { value: 'job_failure', label: 'JobFailure', searchText: 'job_failure' },
+    { value: 'node_not_ready', label: 'NodeNotReady', searchText: 'node_not_ready' },
+  ];
+  const search = (q: string) => {
+    render(<Select multiple searchable value={[]} options={options} onChange={jest.fn()} label='Types' />);
+    fireEvent.click(screen.getByLabelText('Types', { selector: 'button' }));
+    fireEvent.change(screen.getByPlaceholderText('Search…'), { target: { value: q } });
+  };
+
+  it('matches the raw key', () => {
+    search('job_failure');
+    expect(screen.getByText('JobFailure')).toBeInTheDocument();
+    expect(screen.queryByText('NodeNotReady')).not.toBeInTheDocument();
+  });
+
+  it('still matches the shown label', () => {
+    search('jobfail');
+    expect(screen.getByText('JobFailure')).toBeInTheDocument();
+  });
+});

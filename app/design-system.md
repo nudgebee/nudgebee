@@ -1111,7 +1111,7 @@ Form-field value picker. Single by default; `multiple` discriminates a union. Bu
 
 **Single** (`multiple` omitted/`false`): `value: string \| null` (✓), `onChange: (next: string) => void` (✓).
 **Multi** (`multiple: true`): `value: string[]` (✓), `onChange: (next: string[]) => void` (✓), `maxChips?` (default 2), `hideOptionCheckbox?`.
-`SelectOption`: `{ value (✓), label?, icon?, disabled? }`.
+`SelectOption`: `{ value (✓), label?, icon?, disabled?, group?, searchText? }`. `searchText` is extra text the search matches besides the label — use it when the label reformats a raw key users may type.
 **Don't:** use for actions (use `DropdownMenu`); inside a toolbar filter (use `FilterDropdown`); for binary choices (use `Switch`/`ToggleGroup`).
 
 #### `Checkbox` — `import { Checkbox } from '@ui/Checkbox'`

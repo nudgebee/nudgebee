@@ -24,7 +24,7 @@ import {
   structuredCoversFilter,
   type FilterValues,
 } from '../utils/eventFilter';
-import { EVENT_ACCOUNT_TEMPLATE, accessibleAccountOptions, triggerListenAccounts } from '../utils/listenAccounts';
+import { EVENT_ACCOUNT_TEMPLATE, listenAccountPickerOptions, triggerListenAccounts } from '../utils/listenAccounts';
 import { isOptimizationCategoryAllowedFor, optimizationCategoryOptionsFor } from '../utils/optimizationCategories';
 import {
   type AccountFilterValues,
@@ -295,14 +295,10 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   const shownListenAccounts = listenAccounts.length > 0 ? listenAccounts : workflowAccountId ? [workflowAccountId] : [];
   // Only accounts the user can access are offered. One already saved but out of reach stays
   // visible so it can be removed — the server refuses to save it.
-  const listenAccountOptions = useMemo(() => {
-    const accessible = accessibleAccountOptions(accountOptions);
-    const unreachable = shownListenAccounts
-      .filter((id) => id !== workflowAccountId && !accessible.some((o) => o.value === id))
-      .map((id) => ({ label: id, value: id, cloud_provider: '', group: 'No access' }));
-    const own = accountOptions.find((o) => o.value === workflowAccountId);
-    return [...(own && !accessible.includes(own) ? [own] : []), ...accessible, ...unreachable];
-  }, [accountOptions, shownListenAccounts.join(','), workflowAccountId]);
+  const listenAccountOptions = useMemo(
+    () => listenAccountPickerOptions(accountOptions, shownListenAccounts, workflowAccountId, isLoadingAccounts),
+    [accountOptions, shownListenAccounts.join(','), workflowAccountId, isLoadingAccounts]
+  );
   // Filter options come from every listened account the user can reach. Without an account list
   // there is nothing to check reach against, so every listened account counts.
   const filterScopeAccounts: ScopeAccount[] = useMemo(() => {
@@ -394,6 +390,11 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     const nodeIdChanged = nodeId !== lastLoadedNodeIdRef.current;
     const currentPendingStr = pendingTriggerConfig ? JSON.stringify(pendingTriggerConfig) : '';
     if (!nodeIdChanged && currentPendingStr && currentPendingStr !== committedSnapshot) {
+      return;
+    }
+    // Our own Save coming back on the node: the form already shows it, so don't reset mode or errors.
+    const incoming = JSON.stringify({ type: triggerType || '', params: { ...(selectedNode?.data?.trigger?.params || {}) } });
+    if (!nodeIdChanged && incoming === committedSnapshot) {
       return;
     }
     lastLoadedNodeIdRef.current = nodeId;

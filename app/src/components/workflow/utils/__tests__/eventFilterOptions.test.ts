@@ -43,7 +43,16 @@ describe('mergeFilterOptions', () => {
 
   it('formats labels without changing values', () => {
     const [first] = mergeFilterOptions('event_type', accounts, byAccount, [], (v) => v.toLowerCase());
-    expect(first).toEqual({ value: 'KubePodCrashLooping', label: 'kubepodcrashlooping' });
+    expect(first).toEqual({ value: 'KubePodCrashLooping', label: 'kubepodcrashlooping', searchText: 'KubePodCrashLooping' });
+  });
+
+  // #40526: `job_failure` showed as JobFailure, so searching the real name found nothing.
+  it('keeps the raw event type searchable when the label reformats it', () => {
+    const jobs = { a: { event_type: ['job_failure'], namespace: [], source: [] } };
+    expect(mergeFilterOptions('event_type', accounts, jobs, ['image_pull_backoff'], eventTypeLabel)).toEqual([
+      { value: 'image_pull_backoff', label: 'ImagePullBackoff · not seen', searchText: 'image_pull_backoff' },
+      { value: 'job_failure', label: 'JobFailure', searchText: 'job_failure' },
+    ]);
   });
 });
 
@@ -137,8 +146,8 @@ describe('eventTypeLabel', () => {
       a: { event_type: [arn('web-alb'), 'KubePodCrashLooping', arn('api-alb')], namespace: [], source: [] },
     };
     expect(mergeFilterOptions('event_type', [accounts[0]], byAccount, [], eventTypeLabel)).toEqual([
-      { value: arn('api-alb'), label: 'AwsAlbHttpErrorRateAlarmMissing · api-alb' },
-      { value: arn('web-alb'), label: 'AwsAlbHttpErrorRateAlarmMissing · web-alb' },
+      { value: arn('api-alb'), label: 'AwsAlbHttpErrorRateAlarmMissing · api-alb', searchText: arn('api-alb') },
+      { value: arn('web-alb'), label: 'AwsAlbHttpErrorRateAlarmMissing · web-alb', searchText: arn('web-alb') },
       { value: 'KubePodCrashLooping', label: 'KubePodCrashLooping' },
     ]);
   });

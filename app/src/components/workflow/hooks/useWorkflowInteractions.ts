@@ -227,25 +227,27 @@ export const useWorkflowInteractions = (categories: NodeCategories, taskDefiniti
       // Validate the trigger config
       const validation = validateTriggerData(triggerConfig.type, triggerConfig.params);
 
-      setNodes((nds) =>
-        nds.map((n) =>
-          n.id === nodeId
-            ? {
-                ...n,
-                data: {
-                  ...n.data,
-                  trigger: {
-                    ...triggerConfig,
-                    valid: validation.isValid,
-                    errors: validation.errors,
-                  },
-                  triggerType: triggerConfig.type,
-                  triggerParams: triggerConfig.params,
+      const withConfig = (n: any) =>
+        n.id === nodeId
+          ? {
+              ...n,
+              data: {
+                ...n.data,
+                trigger: {
+                  ...triggerConfig,
+                  valid: validation.isValid,
+                  errors: validation.errors,
                 },
-              }
-            : n
-        )
-      );
+                triggerType: triggerConfig.type,
+                triggerParams: triggerConfig.params,
+              },
+            }
+          : n;
+
+      setNodes((nds) => nds.map(withConfig));
+      // The trigger sidebar re-seeds from selectedNode (e.g. after Publish), so it must not stay
+      // the pre-save snapshot, or the panel shows and re-saves the previous config.
+      setSelectedNode((sel) => (sel ? withConfig(sel) : sel));
     },
     []
   );
