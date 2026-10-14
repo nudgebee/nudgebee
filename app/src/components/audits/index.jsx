@@ -25,6 +25,7 @@ import {
 } from 'src/utils/common';
 import apiUser from '@api1/user';
 import { Link } from '@ui/Link';
+import Tooltip from '@ui/Tooltip';
 import CodeMirrorDiffViewer from '@shared/viewers/DiffViewer';
 import { CategoryListing, EventListing, parseAuditLogParams } from './common';
 import { toast as snackbar } from '@ui/Toast';
@@ -140,6 +141,7 @@ export const AuditsTable = () => {
   const [userFilter, setUserFilter] = useState([]);
   const [usersLoaded, setUsersLoaded] = useState(false);
   const [usersMap, setUsersMap] = useState({});
+  const [displayNameMap, setDisplayNameMap] = useState({});
   const [selectedUser, setSelectedUser] = useState('');
   const [accountFilter, setAccountFilter] = useState([]);
   const [selectedAccount, setSelectedAccount] = useState(linked.accountId);
@@ -160,14 +162,18 @@ export const AuditsTable = () => {
         setAccountFilter(accounts);
 
         let usersMapData = {};
+        let displayNameMapData = {};
         let users =
           res?.data?.users?.rows?.map((item) => {
             usersMapData[item.id] = item.username;
+            displayNameMapData[item.id] = item.display_name || item.username;
             return { value: item.username, label: item.username };
           }) || [];
         usersMapData['00000000-0000-0000-0000-000000000000'] = 'SYSTEM';
+        displayNameMapData['00000000-0000-0000-0000-000000000000'] = 'SYSTEM';
         users.push({ value: 'SYSTEM', label: 'SYSTEM' });
         setUsersMap(usersMapData);
+        setDisplayNameMap(displayNameMapData);
         setUserFilter(users);
         setUsersLoaded(true);
       })
@@ -504,7 +510,8 @@ export const AuditsTable = () => {
             let data = res.data?.audits?.map((item) => {
               // Machine/service-initiated audits (e.g. agent-run K8s tasks) carry no
               // user_id — fall back to the humanized actor so the column isn't blank.
-              let userName = usersMap[item.user_id] || item.user_id || formatAuditActor(item.event_actor);
+              let userEmail = usersMap[item.user_id] || item.user_id || formatAuditActor(item.event_actor);
+              let userName = displayNameMap[item.user_id] || userEmail;
               let accountName = item.account_id;
               let targetName = item.event_target;
               for (let account of accountFilter) {
@@ -521,7 +528,15 @@ export const AuditsTable = () => {
                 {
                   component: (
                     <>
-                      <Text value={userName} showAutoEllipsis />
+                      {userName !== userEmail ? (
+                        <Tooltip title={userEmail} placement='top' arrow>
+                          <span style={{ display: 'inline-block', width: 'fit-content', maxWidth: '100%' }}>
+                            <Text value={userName} showAutoEllipsis />
+                          </span>
+                        </Tooltip>
+                      ) : (
+                        <Text value={userName} showAutoEllipsis />
+                      )}
                       {item.account_id && (
                         <Box
                           display={'flex'}

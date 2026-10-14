@@ -40,6 +40,7 @@ query ListUsersAndAccount {
     rows {
       id
       username
+      display_name
     }
   }
 }
