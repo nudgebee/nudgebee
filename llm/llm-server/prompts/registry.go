@@ -61,6 +61,7 @@ const (
 	PromptLogAnalysisCodediffGenerateRequest = "log_analysis_codediff_generate_request"
 	PromptLogAnalysisFileExtractor           = "log_analysis_file_extractor"
 	PromptMemoryExtractor                    = "memory_extractor"
+	PromptMemoryPrestep                      = "memory_prestep"
 	PromptAgentLlm                           = "agent_llm"
 	PromptAnswerConfidence                   = "answer_confidence"
 	PromptResponseFormatter                  = "response_formatter"
@@ -121,6 +122,7 @@ var promptCategories = map[string]PromptCategory{
 	PromptLogAnalysisCodediffGenerateRequest: CategoryUtilities,
 	PromptLogAnalysisFileExtractor:           CategoryUtilities,
 	PromptMemoryExtractor:                    CategoryUtilities,
+	PromptMemoryPrestep:                      CategoryUtilities,
 	PromptAgentLlm:                           CategoryUtilities,
 	PromptResponseFormatter:                  CategoryUtilities,
 	PromptResponseFormatterSlack:             CategoryUtilities,

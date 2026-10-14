@@ -1151,7 +1151,13 @@ type appConfig struct {
 	// appendMemoryToolName. On a turn where memory_write saved something, the
 	// post-turn extractor skips that turn so the row is not saved twice.
 	// See llm/llm-server/ee/memory/docs/memory-tools-plan.md.
-	MemoryToolsEnabled           bool `mapstructure:"llm_memory_tools_enabled"`
+	MemoryToolsEnabled bool `mapstructure:"llm_memory_tools_enabled"`
+	// MemoryPrestepEnabled makes the chat path inject memory only when a small
+	// pre-step model says the question needs it (style and session notes stay
+	// always-on). Off: every consented layer is injected on every turn, as
+	// before. See docs/memory-prompt-prestep-spec.md.
+	MemoryPrestepEnabled         bool `mapstructure:"llm_memory_prestep_enabled"`
+	MemoryPrestepTimeoutSeconds  int  `mapstructure:"llm_memory_prestep_timeout_seconds"`
 	MemoryRagProjectorBatchSize  int  `mapstructure:"llm_memory_rag_projector_batch_size"`
 	MemoryRagProjectorIntervalMs int  `mapstructure:"llm_memory_rag_projector_interval_ms"`
 	MemoryRagProjectorWorkers    int  `mapstructure:"llm_memory_rag_projector_workers"`
@@ -1751,6 +1757,8 @@ func init() {
 	viper.SetDefault("llm_memory_rerank_threshold", 0.6)
 	viper.SetDefault("llm_memory_inject_enabled", false)
 	viper.SetDefault("llm_memory_tools_enabled", false)
+	viper.SetDefault("llm_memory_prestep_enabled", false)
+	viper.SetDefault("llm_memory_prestep_timeout_seconds", 5)
 	viper.SetDefault("llm_memory_rag_timeout_ms", 800)
 	viper.SetDefault("llm_memory_rag_overfetch_multiplier", 3)
 	viper.SetDefault("llm_memory_rag_projector_batch_size", 50)

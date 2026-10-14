@@ -160,7 +160,10 @@ func NewReActAgent4(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 	tools, agentAdditionalPrompt := resolveReact4Tools(ctx, request, nbAgent, systemMessage)
 	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
 	llmTools := withReact4ThoughtSchemas(nbToolsToLlmTools(tools))
-	if isTopLevel && hasMemoryIndex(request.MemoryContext) {
+	// With the pre-step on, the memory index comes and goes per turn; keep the
+	// attribution schemas on for every top-level turn so the tool definitions
+	// (part of the cached prompt prefix) don't flip with it.
+	if isTopLevel && (hasMemoryIndex(request.MemoryContext) || config.Config.MemoryPrestepEnabled) {
 		llmTools = withReact4MemoryAttributionSchemas(llmTools)
 	}
 

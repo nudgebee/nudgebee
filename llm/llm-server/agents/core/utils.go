@@ -616,6 +616,32 @@ func renderMemoryContextBlock(memoryContext string) string {
 		memoryContext + "\n</user_memory>"
 }
 
+// memoryPrestepMaxHistory is how much rendered history the memory pre-step
+// sees; defined here (not in the EE-only pre-step file) because executor.go
+// fills it in the OSS build too.
+const memoryPrestepMaxHistory = 1500
+
+// recentHistoryTail keeps the newest n characters of a rendered history so a
+// small pre-step call sees the latest turns without the whole conversation.
+func recentHistoryTail(history string, n int) string {
+	history = strings.TrimSpace(history)
+	if n <= 0 {
+		return ""
+	}
+	if len(history) <= n { // bytes ≥ runes, so this is within the limit
+		return history
+	}
+	i := len(history) // walk back n runes from the end
+	for ; n > 0 && i > 0; n-- {
+		_, size := utf8.DecodeLastRuneInString(history[:i])
+		i -= size
+	}
+	if i == 0 {
+		return history
+	}
+	return "…" + history[i:]
+}
+
 // renderUserStyleBlock frames the user's style profile as an answer-format
 // instruction. It is placed in the human message right before <question>,
 // outside <user_memory>: the memory wrapper says "reference material, not

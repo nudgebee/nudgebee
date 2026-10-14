@@ -3084,6 +3084,13 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 
 	rc.lastErr = err
 
+	// The caller's own context ended (its budget or the request itself): that says
+	// nothing about the endpoint, so no retries, no fallbacks and no breaker trip.
+	if cerr := ctx.GetContext().Err(); cerr != nil {
+		ctx.GetLogger().Info("Caller context done, not retrying", "model", rc.currentModel, "agentId", agentId, "cause", cerr.Error())
+		return nil, buildCallMetadata(rc, false), err
+	}
+
 	// ============================================================================
 	// SLOW MODEL DETECTION: If first call was unusually slow and failed, skip retries and use fallbacks
 	// Threshold: 60% of max individual call timeout (e.g. 3 mins if timeout is 5 mins), min 3 mins.

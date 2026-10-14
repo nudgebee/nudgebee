@@ -665,6 +665,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	}
 	// Used up here; it must not travel with anything built from this request.
 	request.TopLevelResume = false
+	turnRequest.RecentHistory = recentHistoryTail(historyStr, memoryPrestepMaxHistory)
 
 	kbChan := make(chan kbAssemblyResult, 1)
 	go func(prompt NBAgentPrompt) {

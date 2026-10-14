@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 	"nudgebee/llm/config"
+	"nudgebee/llm/security"
 )
 
 // One configured fallback per integration (#36339): either a reference to an
@@ -550,4 +552,27 @@ func TestGetAllConfiguredModels_CategoryWithoutOwnModelIsNotReferenceable(t *tes
 	}
 	assert.True(t, sources["db:int-1:tier:reasoning"], "a category with its own model is referenceable")
 	assert.False(t, sources["db:int-1:tier:summary"], "a category without its own model is not")
+}
+
+// A deadline the caller set is not an endpoint outage: the call returns the
+// error as is, no fallback client is built and the breaker stays closed.
+func TestCallerDeadlineDoesNotTripBreakerOrRunFallbacks(t *testing.T) {
+	ResetCircuitBreakers()
+	const acct = "acct-caller-deadline"
+	res := seedAccount(t, acct, geminiIntegration(nil))
+	built := recordingSeam(t, map[string]llms.Model{})
+
+	parent, cancel := context.WithTimeout(context.WithValue(context.Background(), ContextKeyModelTier, ModelTier("")), time.Nanosecond)
+	defer cancel()
+	<-parent.Done()
+	ctx := security.NewRequestContext(parent, security.NewSecurityContextForSuperAdmin(), slog.Default(), nil, nil)
+
+	primary := &fakeLLMModel{err: context.DeadlineExceeded}
+	_, _, err := generateLLMContentWithRetry(ctx, primary,
+		[]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hi")}, nil,
+		"", "", acct, "", "", false, "", res)
+	require.Error(t, err)
+	assert.LessOrEqual(t, primary.calls, 1, "no same-model retry")
+	assert.Empty(t, *built, "no fallback client is built for a caller-side deadline")
+	assert.False(t, IsModelCircuitOpen(res.Provider, res.Model), "breaker stays closed")
 }

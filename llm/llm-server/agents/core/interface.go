@@ -178,6 +178,9 @@ type NBAgentRequest struct {
 	// decisions, collective, plus the <memory_index> audit footer).
 	// Rendered as a reference-framed <user_memory> block in the human message.
 	MemoryContext string `json:"memory_context,omitempty"`
+	// RecentHistory is the tail of the rendered conversation history, set by
+	// the executor for the memory pre-step only. Never serialised.
+	RecentHistory string `json:"-"`
 	// UserStyle is the user's <user_style> block (tone, verbosity, format).
 	// It is an instruction on how to answer, so it is rendered as its own
 	// block right before <question> in the human message, never inside
