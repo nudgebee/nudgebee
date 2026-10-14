@@ -48,6 +48,11 @@ const nextConfig = {
         source: '/api/:gateway(graphql|rpc)',
         headers: [{ key: 'Cache-Control', value: 'no-store, no-cache, must-revalidate, private' }],
       },
+      {
+        // Service worker script must never be cached by browsers/proxies to ensure updates apply immediately
+        source: '/sw.js',
+        headers: [{ key: 'Cache-Control', value: 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0' }],
+      },
     ];
   },
   async redirects() {

@@ -25,7 +25,45 @@ import '../styles/tour.css';
 import '../styles/nubi-animation.css';
 import { useThemeProvider } from '@hooks/useThemeProvider';
 import { useEffect } from 'react';
+import Head from 'next/head';
+import { usePwaFeatureEnabled, usePwaThemeColor } from '@hooks/useTenantBranding';
 import { reportClientError } from '@lib/clientErrorReporter';
+
+function PwaController() {
+  const pwaEnabled = usePwaFeatureEnabled();
+  const themeColor = usePwaThemeColor();
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return;
+
+    if (pwaEnabled) {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn('PWA service worker registration failed:', err);
+      });
+    } else {
+      // Proactively clean up any previous PWA registrations if PWA is disabled
+      navigator.serviceWorker.getRegistrations().then((registrations) => {
+        for (const registration of registrations) {
+          const script = registration.active?.scriptURL || registration.installing?.scriptURL || registration.waiting?.scriptURL || '';
+          if (script.endsWith('/sw.js')) {
+            registration.unregister();
+          }
+        }
+      });
+    }
+  }, [pwaEnabled]);
+
+  if (!pwaEnabled) return null;
+
+  return (
+    <Head>
+      <link rel='manifest' href='/manifest.json' />
+      <link rel='apple-touch-icon' href='/logo192.png' />
+      <meta name='theme-color' content={themeColor} />
+    </Head>
+  );
+}
 
 // Use of the <SessionProvider> is mandatory to allow components that call
 // `useSession()` anywhere in your application to access the `session` object.
@@ -63,6 +101,7 @@ export default function App({ Component, pageProps }: AppProps<{ session: Sessio
 
   return (
     <ThemeProvider theme={theme}>
+      <PwaController />
       <AppErrorBoundary>
         <SessionProvider
           session={pageProps.session}

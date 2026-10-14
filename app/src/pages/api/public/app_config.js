@@ -1,4 +1,4 @@
-import { awaitServerBrandingReady, brandHostFromHeaders, resolveServerBranding } from '@lib/serverBranding';
+import { awaitServerBrandingReady, brandHostFromHeaders, resolvePwaThemeColor, resolveServerBranding } from '@lib/serverBranding';
 
 // Public runtime config. This route must live in OSS (the pages-router maps
 // this file path to /api/public/app_config) because it serves the agent-
@@ -42,5 +42,7 @@ export default async function handler(req, res) {
     // UI polls the watch-list endpoint solely when this is true, so the route's
     // absence never produces a 404.
     watchEnabled: process.env.LLM_SERVER_WATCH_ENABLED === 'true',
+    pwaEnabled: !branding.isWhiteLabel && (process.env.ENABLE_PWA === 'true' || process.env.NEXT_PUBLIC_ENABLE_PWA === 'true'),
+    pwaThemeColor: resolvePwaThemeColor(branding),
   });
 }
