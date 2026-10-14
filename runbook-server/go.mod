@@ -30,6 +30,7 @@ require (
 	github.com/robfig/cron v1.2.0
 	github.com/samber/lo v1.53.0
 	github.com/samber/slog-gin v1.21.1
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.12.1
 	github.com/swaggo/files v1.0.1

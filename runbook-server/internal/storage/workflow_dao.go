@@ -143,8 +143,8 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID string, accountIDs []st
 
 	// Build the base WHERE clause with filters (shared by both queries)
 	// Note: Main query uses 'w.' prefix, count query uses no prefix
-	whereClause := "WHERE tenant_id = $1 AND account_id = ANY($2)"
-	whereClauseWithAlias := "WHERE w.tenant_id = $1 AND w.account_id = ANY($2)"
+	whereClause := "WHERE tenant_id = $1 AND account_id = ANY($2) AND " + notHiddenBoundTrigger("")
+	whereClauseWithAlias := "WHERE w.tenant_id = $1 AND w.account_id = ANY($2) AND " + notHiddenBoundTrigger("w.")
 	baseArgs := []any{tenantID, pq.Array(accountIDs)}
 	argId := 3
 
@@ -417,6 +417,7 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	var draftVersionName sql.NullString
 	var draftDiffersFromLive bool
 	var runAsUserID sql.NullString
+	var beeBytes []byte
 
 	// draft_differs_from_live: JSONB semantic comparison (key order irrelevant)
 	// between the draft and the live snapshot. IS DISTINCT FROM makes a missing
@@ -427,7 +428,7 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 		       w.live_version_id::text, lv.version_number, lv.name, lv.status,
 		       w.draft_version_id::text, dv.version_number, dv.name,
 		       (w.definition IS DISTINCT FROM lv.definition) AS draft_differs_from_live,
-		       w.run_as_user_id::text
+		       w.run_as_user_id::text, w.bee
 		FROM workflows w
 		LEFT JOIN workflow_versions lv ON lv.id = w.live_version_id
 		LEFT JOIN workflow_versions dv ON dv.id = w.draft_version_id
@@ -439,7 +440,7 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 		&createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
 		&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
 		&draftVersionID, &draftVersionNumber, &draftVersionName,
-		&draftDiffersFromLive, &runAsUserID,
+		&draftDiffersFromLive, &runAsUserID, &beeBytes,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve workflow: %w", err)
@@ -487,8 +488,32 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 		draftVersionID, draftVersionNumber, draftVersionName)
 	wf.DraftDiffersFromLive = draftDiffersFromLive
 	wf.RunAsUserID = runAsUserID.String
+	if wf.Binding, err = decodeBinding(beeBytes); err != nil {
+		return nil, err
+	}
 
 	return &wf, nil
+}
+
+// notHiddenBoundTrigger is the condition that keeps an agent's trigger
+// automations out of automation lists and counts. They still fire: trigger
+// matching reads every ACTIVE workflow. Bound automations stay listed (they are
+// ordinary automations), but never in the AI assistant's search
+// (ListAIInvocableWorkflows).
+func notHiddenBoundTrigger(alias string) string {
+	return "(" + alias + "bee IS NULL OR COALESCE(" + alias + "bee->>'role', '') <> '" + model.BindingRoleTrigger + "')"
+}
+
+// decodeBinding reads workflows.bee; NULL is no binding.
+func decodeBinding(raw []byte) (*model.WorkflowBinding, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var b model.WorkflowBinding
+	if err := json.Unmarshal(raw, &b); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal workflow binding: %w", err)
+	}
+	return &b, nil
 }
 
 // GetRunAsUserID returns the user a workflow's unattended runs act as, or ""
@@ -591,7 +616,7 @@ func (s *WorkflowDao) ListWorkflowIDNames(ctx context.Context, tenantID string, 
 		return nil, fmt.Errorf("tenantID and at least one accountID are required")
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id::text, name FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) ORDER BY id LIMIT $3`,
+		`SELECT id::text, name FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) AND `+notHiddenBoundTrigger("")+` ORDER BY id LIMIT $3`,
 		tenantID, pq.Array(accountIDs), limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workflow names: %w", err)
@@ -672,6 +697,7 @@ func (s *WorkflowDao) ListAIInvocableWorkflows(ctx context.Context, tenantID, ac
 		WHERE w.tenant_id = $1 AND w.account_id = $2
 		  AND w.ai_invocable
 		  AND w.status = $3
+		  AND w.bee IS NULL
 		ORDER BY w.name
 	`
 
@@ -797,11 +823,12 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 	var draftVersionID sql.NullString
 	var draftVersionNumber sql.NullInt64
 	var draftVersionName sql.NullString
+	var beeBytes []byte
 
 	query := `
 		SELECT w.id::text, w.name, w.description, w.ai_invocable, w.ai_auto_approve, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
 		       w.live_version_id::text, lv.version_number, lv.name, lv.status,
-		       w.draft_version_id::text, dv.version_number, dv.name
+		       w.draft_version_id::text, dv.version_number, dv.name, w.bee
 		FROM workflows w
 		LEFT JOIN workflow_versions lv ON lv.id = w.live_version_id
 		LEFT JOIN workflow_versions dv ON dv.id = w.draft_version_id
@@ -812,7 +839,7 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 		&lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime, &lastExecutionVersion,
 		&createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
 		&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
-		&draftVersionID, &draftVersionNumber, &draftVersionName,
+		&draftVersionID, &draftVersionNumber, &draftVersionName, &beeBytes,
 	)
 	if err != nil {
 		return nil, err // sql.ErrNoRows will be returned here if not found
@@ -858,6 +885,9 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 	applyVersionRefs(&wf,
 		liveVersionID, liveVersionNumber, liveVersionName, liveVersionStatus,
 		draftVersionID, draftVersionNumber, draftVersionName)
+	if wf.Binding, err = decodeBinding(beeBytes); err != nil {
+		return nil, err
+	}
 
 	return &wf, nil
 }
@@ -1609,7 +1639,7 @@ func (s *WorkflowDao) CountWorkflows(ctx context.Context, tenantID string, accou
 	}
 
 	// Build the query with dynamic filters
-	query := `SELECT COUNT(*) FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2)`
+	query := `SELECT COUNT(*) FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) AND ` + notHiddenBoundTrigger("")
 	args := []any{tenantID, pq.Array(accountIDs)}
 	argID := 3
 

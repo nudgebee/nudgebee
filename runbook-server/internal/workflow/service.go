@@ -126,6 +126,9 @@ type Service struct {
 	taskRegistry     *tasks.TaskRegistry
 	workflowExecutor *WorkflowExecutor
 	configService    configSvc.ConfigService
+	// runGate decides runs of automations bound to an agent; nil (no extension
+	// registered) refuses them all.
+	runGate RunGate
 
 	// Temporal namespace retention, read lazily and cached once known. It is
 	// the hard ceiling on how far back the execution dashboard can look.
@@ -144,6 +147,9 @@ func NewService(temporalClient client.Client, store model.WorkflowStore, dataCon
 	}
 	if len(templateStore) > 0 {
 		s.templateStore = templateStore[0]
+	}
+	if runGateFactory != nil {
+		s.runGate = runGateFactory(RunGateDeps{Store: store, TaskRegistry: taskRegistry})
 	}
 	return s
 }
@@ -809,6 +815,17 @@ func (s *Service) createOrUpdateSchedule(ctx context.Context, workflowID string,
 		return fmt.Errorf("tenantId and accountId are required for scheduling")
 	}
 
+	// Scheduled runs start on Temporal without passing runWorkflow, so the run
+	// gate never sees them: a bound automation must not get a schedule. Read
+	// from the store, never from wf, which may be bound from a request.
+	if s.runGate != nil {
+		if b, err := s.runGate.Binding(ctx, tenantId, workflowID); err != nil {
+			return fmt.Errorf("read binding of workflow %s before scheduling: %w", workflowID, err)
+		} else if b.IsAutomation() {
+			return common.ErrorBadRequest("a bound automation cannot have a schedule: only its agent starts it")
+		}
+	}
+
 	scheduleClient := s.temporalClient.ScheduleClient()
 	scheduleID := fmt.Sprintf("workflow-schedule-%s-%d", workflowID, index)
 
@@ -1081,7 +1098,10 @@ func (s *Service) ExecuteWorkflow(ctx *security.RequestContext, accountId, id st
 	// AI-originated runs face extra restrictions on top of the caller's own
 	// permissions. Checked after the live definition is resolved so the gate
 	// inspects what will actually run, not the draft.
-	if ctx.IsAITriggered() {
+	//
+	// A bound automation is not opted in to the assistant at large: the run
+	// gate in runWorkflow decides instead (only its agent).
+	if ctx.IsAITriggered() && !wf.Binding.IsAutomation() {
 		if err := s.assertAIInvocationAllowed(ctx, accountId, wf); err != nil {
 			return "", err
 		}
@@ -1144,6 +1164,20 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	// 1. Validate provided inputs against workflow definition
 	if err := s.validateWorkflowInputs(wf.Definition.Inputs, inputs); err != nil {
 		return "", err // Return validation error
+	}
+
+	// A bound automation runs only when the run gate allows it. Checked on
+	// this shared tail so no execution path skips it.
+	var boundRunStarted func(executionID string)
+	if wf.Binding.IsAutomation() {
+		if s.runGate == nil {
+			return "", errBoundAutomationUnavailable()
+		}
+		started, err := s.runGate.CheckRun(ctx, accountId, wf, memo, triggerType, inputs)
+		if err != nil {
+			return "", err
+		}
+		boundRunStarted = started
 	}
 
 	var runWorkflowID string
@@ -1233,6 +1267,9 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	we, err := s.temporalClient.ExecuteWorkflow(ctx.GetContext(), options, s.workflowExecutor.ExecuteWorkflowInternal, wf, inputs)
 	if err != nil {
 		return "", err
+	}
+	if boundRunStarted != nil {
+		boundRunStarted(we.GetRunID())
 	}
 	if triggerType == model.WorkflowTriggerManual {
 		emitWorkflowAudit(
@@ -1410,6 +1447,10 @@ func (s *Service) RetriggerWorkflowExecution(ctx *security.RequestContext, accou
 
 	if wf.Status != model.WorkflowStatusActive && wf.Status != model.WorkflowStatusPaused {
 		return "", fmt.Errorf("workflow %s is not active or paused", workflowId)
+	}
+	// A bound automation runs only when its agent starts it.
+	if wf.Binding.IsAutomation() {
+		return "", errBoundAutomationUnavailable()
 	}
 
 	// 3b. Prefer the EXACT version the original execution ran, and re-run that

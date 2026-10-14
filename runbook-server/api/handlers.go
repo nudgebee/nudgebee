@@ -480,7 +480,11 @@ func (s *Server) triggerWorkflow(c *gin.Context) {
 	if err != nil {
 		var commonErr common.Error
 		if errors.As(err, &commonErr) {
-			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
+			body := gin.H{"error": commonErr.Message}
+			if commonErr.Reason != "" {
+				body["code"] = commonErr.Reason
+			}
+			c.JSON(commonErr.Code, body)
 			return
 		} else {
 			s.logger.Error("failed to trigger workflow", "id", id, "error", err)

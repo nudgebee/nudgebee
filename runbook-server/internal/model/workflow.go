@@ -150,6 +150,10 @@ type Workflow struct {
 	// on create and make-live; never trusted from a request body — run starts
 	// read the owner from the store.
 	RunAsUserID string `json:"run_as_user_id,omitempty" yaml:"-"`
+	// Binding (workflows.bee) is set when the workflow is bound to an agent.
+	// Returned for display; set only by an install path, never from a request
+	// body.
+	Binding *WorkflowBinding `json:"bee,omitempty" yaml:"-"`
 	// PrincipalUserID is a transient field set when a run starts: whose rights
 	// every step of this run is checked against. The requester for manual and
 	// AI runs, RunAsUserID otherwise. Carried in the Temporal input, so it must

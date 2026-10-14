@@ -152,7 +152,7 @@ func TestWorkflowDaoList_BindsTagKeyAsParameter(t *testing.T) {
 	defer func() { _ = mockDB.Close() }()
 	dao := &WorkflowDao{db: sqlx.NewDb(mockDB, "sqlmock")}
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) AND tags->>$3 = $4")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) AND (bee IS NULL OR COALESCE(bee->>'role', '') <> 'trigger') AND tags->>$3 = $4")).
 		WithArgs("t1", sqlmock.AnyArg(), "team", "payments").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(regexp.QuoteMeta("AND w.tags->>$3 = $4")).

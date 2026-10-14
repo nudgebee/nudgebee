@@ -189,6 +189,10 @@ func (s *Server) setupRoutes() {
 	}
 
 	s.setupSwagger()
+
+	for _, hook := range routeHooks {
+		hook(s.router, s.getRequestDetails)
+	}
 }
 
 // HealthResponse is the body returned by the liveness endpoint.

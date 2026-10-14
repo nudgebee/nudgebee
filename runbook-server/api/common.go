@@ -219,6 +219,8 @@ func buildContextFromRequestPayload(ctx context.Context, c *gin.Context, request
 	childLogger := logger.With("trace_id", span.SpanContext().TraceID().String())
 	rc := security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter)
 	rc.SetAITriggered(isAITriggeredRequest(c))
+	rc.SetBeeRunID(beeRunIDFromRequest(c))
+	rc.SetBeeConversationID(headerValue(c, HeaderBeeConversationID))
 	return rc, nil
 }
 
@@ -233,6 +235,28 @@ const (
 	HeaderTriggerSource = "X-Trigger-Source"
 	TriggerSourceAI     = "ai"
 )
+
+// HeaderBeeRunID names the bee run an AI-originated request belongs to.
+// llm-server sets it when a bee's agent runs one of the bee's automations.
+const HeaderBeeRunID = "X-Bee-Run-ID"
+
+// HeaderBeeConversationID names the llm-server conversation a bee's call comes
+// from; it must match the conversation the bee run recorded.
+const HeaderBeeConversationID = "X-Bee-Conversation-ID"
+
+func headerValue(c *gin.Context, name string) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.Request.Header.Get(name))
+}
+
+func beeRunIDFromRequest(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.Request.Header.Get(HeaderBeeRunID))
+}
 
 func isAITriggeredRequest(c *gin.Context) bool {
 	if c == nil || c.Request == nil {
@@ -370,5 +394,7 @@ func buildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionReque
 	childLogger := logger.With("tenant_id", tenantId, "user_id", userId, "trace_id", span.SpanContext().TraceID().String())
 	rc := security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter)
 	rc.SetAITriggered(isAITriggeredRequest(c))
+	rc.SetBeeRunID(beeRunIDFromRequest(c))
+	rc.SetBeeConversationID(headerValue(c, HeaderBeeConversationID))
 	return rc, nil
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/testsuite"
@@ -634,6 +635,28 @@ func (s *APITestSuite) TestTriggerWorkflow() {
 
 		assert.Equal(t, http.StatusOK, w.Code)
 		mockService.AssertExpectations(t)
+	})
+
+	s.T().Run("A refusal with a reason returns it as code", func(t *testing.T) {
+		refusal := common.ErrorUnauthorized("restart_workload is off in this environment")
+		refusal.Reason = "mode_off"
+		mockService.On("ExecuteWorkflow", mock.Anything, "test-account", "bee-automation-id", model.WorkflowTriggerManual, map[string]any{}).
+			Return("", refusal).Once()
+
+		req, _ := http.NewRequest(http.MethodPost, "/workflows/bee-automation-id/trigger", bytes.NewReader([]byte(`{}`)))
+		req.Header.Set(serviceTokenHeader, testServiceToken)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Tenant-ID", "test-tenant")
+		req.Header.Set("X-Account-ID", "test-account")
+		req.Header.Set("X-User-ID", "test-user")
+		w := httptest.NewRecorder()
+		s.server.router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+		assert.Equal(t, "mode_off", body["code"])
+		assert.Equal(t, "restart_workload is off in this environment", body["error"])
 	})
 }
 

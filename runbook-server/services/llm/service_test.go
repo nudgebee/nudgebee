@@ -416,3 +416,43 @@ func TestProcessRequest_StopsWhenConversationTerminated(t *testing.T) {
 		})
 	}
 }
+
+// chatGetServer answers chat_get with status and counts the polls.
+func chatGetServer(t *testing.T, status int) (*int, func()) {
+	t.Helper()
+	polls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		polls++
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"api: user does not have access"}]}`))
+	}))
+	oldURL := config.Config.LlmServerUrl
+	config.Config.LlmServerUrl = server.URL
+	return &polls, func() { config.Config.LlmServerUrl = oldURL; server.Close() }
+}
+
+// WaitForChat stops at the first 401 or 403: waiting does not grant access.
+func TestWaitForChat_RefusalEndsTheWait(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		polls, done := chatGetServer(t, status)
+		sc, _, _ := newTestSecurityContext(t)
+		reqCtx := security.NewRequestContext(context.Background(), sc, nil, nil, nil)
+		_, err := WaitForChat(reqCtx, "conv-1", "acc-1", time.Now().Add(time.Minute), time.Millisecond, nil)
+		done()
+		assert.ErrorIs(t, err, ErrChatRefused, status)
+		assert.Contains(t, err.Error(), "user does not have access")
+		assert.Equal(t, 1, *polls, status)
+	}
+}
+
+// ProcessRequest's polling (refusalEnds false) keeps going through a
+// refusal, as it always has.
+func TestPollChatWithoutRefusalEndsKeepsPolling(t *testing.T) {
+	polls, done := chatGetServer(t, http.StatusForbidden)
+	defer done()
+	sc, _, _ := newTestSecurityContext(t)
+	reqCtx := security.NewRequestContext(context.Background(), sc, nil, nil, nil)
+	_, err := pollChat(reqCtx, "conv-1", "acc-1", time.Millisecond, false, func(attempt int) bool { return attempt < 2 })
+	assert.ErrorIs(t, err, ErrChatStillRunning)
+	assert.Equal(t, 2, *polls)
+}

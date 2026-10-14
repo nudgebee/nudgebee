@@ -185,6 +185,10 @@ func (t *CallWorkflowTask) Execute(taskCtx types.TaskContext, params map[string]
 	if targetWf == nil {
 		return nil, fmt.Errorf("workflow '%s' not found", workflowName)
 	}
+	// Same rule as the inline path (ResolveChildWorkflow).
+	if targetWf.Binding != nil {
+		return nil, fmt.Errorf("workflow '%s' is bound to an agent and cannot be called by core.call-workflow", workflowName)
+	}
 	targetVersion, err := resolveTargetVersion(taskCtx.GetContext(), taskCtx.GetStore(), targetWf.ID, workflowName, params)
 	if err != nil {
 		return nil, err
@@ -360,6 +364,12 @@ func (t *CallWorkflowTask) ResolveChildWorkflow(taskCtx types.TaskContext, param
 	}
 	if wf == nil {
 		return nil, fmt.Errorf("workflow '%s' referenced by core.call-workflow task not found", workflowName)
+	}
+	// A bound automation runs only when its agent starts it, and a bound trigger
+	// only from its trigger rule; another automation calling either would get
+	// round both.
+	if wf.Binding != nil {
+		return nil, fmt.Errorf("workflow '%s' is bound to an agent and cannot be called by core.call-workflow", workflowName)
 	}
 	targetVersion, err := resolveTargetVersion(taskCtx.GetContext(), taskCtx.GetStore(), wf.ID, workflowName, params)
 	if err != nil {

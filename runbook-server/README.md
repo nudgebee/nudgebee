@@ -567,6 +567,8 @@ Use `GET /tasks` to see the live list, parameter schemas, and descriptions.
 
 ---
 
+---
+
 ## Workers and background processes
 
 When `cmd/main.go` boots, these all start in the same process:
