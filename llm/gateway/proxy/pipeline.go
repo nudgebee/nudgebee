@@ -39,6 +39,9 @@ type RequestContext struct {
 	Endpoint   string
 	Generative bool
 
+	// FilterModelList cuts a provider's model list to what a restricted caller may use.
+	FilterModelList bool
+
 	// Generic marks the provider-agnostic /v1 surface, whose clients always speak
 	// OpenAI's error shape whichever provider serves the request.
 	Generic bool

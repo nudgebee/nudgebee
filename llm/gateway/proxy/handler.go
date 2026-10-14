@@ -257,6 +257,12 @@ func (h *handler) handle(c *gin.Context) {
 
 	// Fingerprint the stable prompt prefix (system+tools+first-user): the cache-affinity
 	// key + the inferred session id when the client supplies none. Uses the ORIGINAL body.
+	// A model list is never a stream, and only the unary path filters it: a body
+	// "stream":true on the GET must not route a restricted caller around the filter.
+	if rc.FilterModelList {
+		streaming = false
+	}
+
 	fingerprint := prefixFingerprint(rc.Identity, rc.Body)
 	sessionID, sessionSource := resolveSession(c, rc.Body, fingerprint)
 	rm := &reqMeta{
@@ -276,6 +282,7 @@ func (h *handler) handle(c *gin.Context) {
 		reqAttrs:      extractRequestAttributes(provider, rc.Body),
 		identity:      identity,
 		decision:      rc.Decision,
+		filterModels:  rc.FilterModelList,
 	}
 
 	// Cross-provider substitution (P2): a rule resolved a different provider. Translate
@@ -320,6 +327,7 @@ type reqMeta struct {
 	reqAttrs       map[string]any
 	identity       auth.Identity
 	decision       routing.Decision
+	filterModels   bool // cut a provider model list to what identity may use
 }
 
 // markFirstChunk records when the first streamed chunk arrived (first call wins).
@@ -368,6 +376,18 @@ func (h *handler) unary(c *gin.Context, bctx *schemas.BifrostContext, req *schem
 	// fail over before forwarding it to the client.
 	if isRetryable(resp.StatusCode) && h.tryFailoverUnary(c, bctx, rm, resp.StatusCode) {
 		return
+	}
+	if rm.filterModels && resp.StatusCode == http.StatusOK {
+		filtered, err := filterModelList(rm.provider, resp.Body, func(id string) bool {
+			return targetAllowed(rm.identity, string(rm.provider), id)
+		})
+		if err != nil {
+			slog.Warn("proxy: provider model list unreadable, not forwarded", "provider", rm.provider, "error", err)
+			edgeerr.Write(c, string(rm.provider), http.StatusBadGateway, "upstream_error", "the provider's model list could not be read")
+			h.meter(context.WithoutCancel(c.Request.Context()), rm, http.StatusBadGateway, nil, nil, nil)
+			return
+		}
+		resp.Body = filtered
 	}
 	for k, v := range resp.Headers {
 		if _, hop := hopByHopResponseHeaders[strings.ToLower(k)]; !hop {
