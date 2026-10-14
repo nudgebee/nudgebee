@@ -96,28 +96,15 @@ const ExpandedProviderGroup = ({ group }) => {
   return (
     <Box>
       <SectionHeading>Configurations on {group.label}</SectionHeading>
-      <CustomTable
-        id={`llm-provider-configs-${group.type}`}
-        tableData={configRows}
-        headers={CONFIG_HEADERS}
-        totalRows={configRows.length}
-        rowsPerPage={Math.max(configRows.length, 10)}
-        pageNumber={1}
-        onPageChange={() => {}}
-      />
+      {/* No onPageChange/pageNumber: CustomTable self-paginates client-side when
+          rows exceed its threshold, and renders no footer when they don't — a
+          controlled handler here would show an inert Rows selector. */}
+      <CustomTable id={`llm-provider-configs-${group.type}`} tableData={configRows} headers={CONFIG_HEADERS} />
       <SectionHeading>Models priced for {group.label}</SectionHeading>
       {modelRows.length === 0 ? (
         <Box sx={{ color: ds.gray[500], mb: ds.space[2] }}>No pricing entries for this provider yet. Rates can be added under Model Pricing.</Box>
       ) : (
-        <CustomTable
-          id={`llm-provider-models-${group.type}`}
-          tableData={modelRows}
-          headers={MODEL_HEADERS}
-          totalRows={modelRows.length}
-          rowsPerPage={Math.max(modelRows.length, 10)}
-          pageNumber={1}
-          onPageChange={() => {}}
-        />
+        <CustomTable id={`llm-provider-models-${group.type}`} tableData={modelRows} headers={MODEL_HEADERS} />
       )}
     </Box>
   );
@@ -213,14 +200,36 @@ const ProvidersTable = ({ stickyTable = false }) => {
         const total = group.integrations.length;
         const credentialTone = configured === total ? 'success' : configured === 0 ? 'warning' : 'info';
         const credentialText = configured === total ? 'Configured' : `${configured} of ${total} configured`;
+        // Show the connection names inline, as their own chips, so a provider's
+        // configurations are identifiable at a glance without expanding the row.
+        // Capped — a provider with many connections (e.g. Custom) would otherwise
+        // flood the cell; the full list is in the expanded detail.
+        // Keep the integration objects so chips key on the stable id — two
+        // configs can share a name across different accounts (the unique index
+        // is on name+account), so the name alone is not a safe React key.
+        const named = group.integrations.filter((i) => i.name);
+        const shownConns = named.slice(0, 3);
+        const extraCount = named.length - shownConns.length;
         return [
           {
             component: (
-              <Stack direction='row' spacing={0.5} alignItems='center' useFlexGap flexWrap='wrap'>
-                <span>{group.label}</span>
-                <Chip size='sm' variant='tag' tone='neutral'>
-                  {group.type}
-                </Chip>
+              <Stack direction='column' spacing={0.75}>
+                <Stack direction='row' spacing={0.5} alignItems='center' useFlexGap flexWrap='wrap'>
+                  <span>{group.label}</span>
+                  <Chip size='sm' variant='tag' tone='neutral'>
+                    {group.type}
+                  </Chip>
+                </Stack>
+                {shownConns.length > 0 && (
+                  <Stack direction='row' spacing={0.5} alignItems='center' useFlexGap flexWrap='wrap'>
+                    {shownConns.map((conn) => (
+                      <Chip key={conn.id} size='micro' variant='tag' tone='subtle'>
+                        {conn.name}
+                      </Chip>
+                    ))}
+                    {extraCount > 0 && <Box sx={{ color: ds.gray[500], fontSize: ds.text.caption }}>+{extraCount} more</Box>}
+                  </Stack>
+                )}
               </Stack>
             ),
             drilldownQuery: { data: { providerType: group.type } },
