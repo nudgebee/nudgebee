@@ -613,6 +613,43 @@ func TestEventEvidencePreview_InlinesInsightsWorstFirst(t *testing.T) {
 	assert.NotContains(t, out, "[pod_events]", "pod_events insights are carried by rootCauseSlice")
 }
 
+// A CI failure's only evidence is a markdown job-log excerpt. The preview used
+// to list it by size alone, so the summary never saw the error line.
+func TestEventEvidencePreview_InlinesMarkdownStart(t *testing.T) {
+	jobLog := "Repository: nudgebee/example  |  Job: 1  |  Failed step: Run tests  |  Log lines: 900\n\n" +
+		"**Error lines**\n\n```\n812:12:01:09 --- FAIL: TestRetryBudget (0.02s)\n```\n\n" +
+		"**Log context (lines 700-900)**\n\n```\n" + strings.Repeat("12:01:08 noise line\n", 400) + "```\n"
+	id := events.InvestigateData{
+		Markdowns: []events.InvestigateDataInsight{{Title: "markdown", Data: jobLog, AdditionalInfo: map[string]any{"title": "GitHub Actions job log", "action_name": "github_actions_job_log"}}},
+		Others:    []events.InvestigateDataInsight{{Data: "{}", Insight: []events.Insight{{Message: "No merged pull requests found", Severity: "warning"}}}},
+	}
+	out := buildEventEvidencePreview(id)
+
+	assert.Contains(t, out, `markdown_data "GitHub Actions job log" (start):`)
+	assert.Contains(t, out, "Failed step: Run tests")
+	assert.Contains(t, out, "--- FAIL: TestRetryBudget")
+	assert.LessOrEqual(t, len(out), eventEvidencePreviewBytes)
+	assert.Contains(t, out, "markdown_data[evidence_type=markdowns]=", "the section list still points at the full log")
+}
+
+func TestPreviewMarkdowns_CapsSectionsAndSkipsNonText(t *testing.T) {
+	long := strings.Repeat("y", previewMarkdownChars*2)
+	out := previewMarkdowns([]events.InvestigateDataInsight{
+		{Title: "a", Data: map[string]any{"not": "text"}},
+		{Title: "b", Data: long},
+		{Title: "c", Data: "  "},
+		{Title: "d", Data: "second"},
+		{Title: "e", Data: "third"},
+	})
+
+	assert.NotContains(t, out, `"a"`)
+	assert.NotContains(t, out, `"c"`)
+	assert.Contains(t, out, `"b"`)
+	assert.Contains(t, out, `"d"`)
+	assert.NotContains(t, out, `"e"`, "at most previewMarkdownSections sections")
+	assert.Less(t, len(out), previewMarkdownChars*2)
+}
+
 func TestInsightHighlights_StaysWithinBudget(t *testing.T) {
 	var items []events.InvestigateDataInsight
 	for i := 0; i < 50; i++ {
