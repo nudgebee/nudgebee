@@ -131,12 +131,31 @@ func TestGetLogsMetricsTracesProvider_SingleActiveProviderDefault(t *testing.T) 
 			expectedSource:     "user",
 		},
 		{
-			name:               "agent provider down, two hand-added providers -> choice error naming only those",
+			// Saying only "choose a default" here sent users to make Datadog or New
+			// Relic the default for a cluster neither monitors.
+			name:               "agent provider down, two hand-added providers -> error leads with the agent provider being down",
 			activeIntegrations: []core.IntegrationDto{agentProm, userDatadog, userNewRelic},
 			agentDetails:       &connectedAgent,
 			builtIn:            down,
 			expectErr:          true,
-			expectedErrSubstr:  "multiple metrics providers are configured (datadog-user, newrelic-user)",
+			expectedErrSubstr:  "the built-in metrics provider (prometheus) is configured on this cluster but is not reachable right now; the other metrics providers (datadog-user, newrelic-user) are not used because none is marked as default",
+		},
+		{
+			name:               "agent provider is the account default but down, two hand-added providers -> error leads with the agent provider being down",
+			defaultIntegration: &agentProm,
+			activeIntegrations: []core.IntegrationDto{agentProm, userDatadog, userNewRelic},
+			agentDetails:       &connectedAgent,
+			builtIn:            down,
+			expectErr:          true,
+			expectedErrSubstr:  "the built-in metrics provider (prometheus) is configured on this cluster but is not reachable right now; the other metrics providers (datadog-user, newrelic-user)",
+		},
+		{
+			name:               "agent provider not configured, two hand-added providers -> choice error naming both",
+			activeIntegrations: []core.IntegrationDto{userDatadog, userNewRelic},
+			agentDetails:       &connectedAgent,
+			builtIn:            notConfigured,
+			expectErr:          true,
+			expectedErrSubstr:  "multiple metrics providers are configured (datadog-user, newrelic-user), but none is marked as default",
 		},
 		{
 			name:               "agent provider down, nothing else -> error says it is configured but not reachable",

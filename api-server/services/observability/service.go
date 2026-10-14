@@ -883,6 +883,12 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 						}
 					}
 					sort.Strings(names)
+					// The agent's own provider is this cluster's source and only it is
+					// down. Lead with that: "choose a default" alone sends the reader to
+					// make one of the others the default, which do not monitor the cluster.
+					if builtInDown != "" {
+						return "", "", nil, fmt.Errorf("observability: the built-in %s provider (%s) is configured on this cluster but is not reachable right now; the other %s providers (%s) are not used because none is marked as default", providerType, builtInDown, providerType, strings.Join(names, ", "))
+					}
 					paramName := providerType
 					switch providerType {
 					case "logs":
