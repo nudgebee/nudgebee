@@ -98,6 +98,15 @@ func (a *auditedAwsService) IsGlobal() bool {
 	return a.inner.IsGlobal()
 }
 
+// LogStreamPrefix forwards the optional logStreamScoper interface; without it a
+// type assertion on the wrapper would never see the inner service's method.
+func (a *auditedAwsService) LogStreamPrefix(resourceId string) string {
+	if scoper, ok := a.inner.(logStreamScoper); ok {
+		return scoper.LogStreamPrefix(resourceId)
+	}
+	return ""
+}
+
 func (a *auditedAwsService) DescribeResource(ctx providers.CloudProviderContext, account providers.Account, region, resourceId string) (*ResourceMetadata, error) {
 	enrichedCtx := a.enrichContext(ctx, account)
 	resp, err := a.inner.DescribeResource(enrichedCtx, account, region, resourceId)

@@ -8,6 +8,7 @@ import (
 	"math"
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1911,6 +1912,21 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 	recommendations = append(recommendations, a.diskPerformanceRecommendations(ctx, account, filter, existingResources)...)
 
 	return recommendations, nil
+}
+
+// ec2InstanceIDRegex matches an instance id, the only resource id that is safe
+// to put into a Logs Insights regex as a stream prefix.
+var ec2InstanceIDRegex = regexp.MustCompile(`^i-[0-9a-f]{8,17}$`)
+
+// LogStreamPrefix scopes a detected log group to the instance's own streams.
+// GetLogGroupName picks the group because it holds a stream named after the
+// instance, and the CloudWatch agent's default groups hold one such stream per
+// instance, so the group alone would return every instance's logs.
+func (a *amazonEc2) LogStreamPrefix(resourceId string) string {
+	if !ec2InstanceIDRegex.MatchString(resourceId) {
+		return ""
+	}
+	return resourceId
 }
 
 func (a *amazonEc2) GetLogGroupName(ctx providers.CloudProviderContext, account providers.Account, region, resourceId string) (string, error) {
