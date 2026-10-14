@@ -32,7 +32,7 @@ const isValidCustomDuration = (value) => {
   return value !== '' && Number.isFinite(n) && n > 0;
 };
 
-const METRICS = ['requests', 'tokens', 'cost'];
+const METRICS = ['requests', 'tokens', 'cost', 'concurrent'];
 const PERIODS = ['minute', 'hour', 'day', 'month'];
 const EMPTY_LIMIT = { metric: 'cost', period: 'month', value: '', model: '' };
 
@@ -44,8 +44,14 @@ const LimitEditor = ({ limits, onChange }) => {
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
       {limits.map((l, i) => (
         <Box key={i} sx={{ display: 'flex', gap: ds.space[2], alignItems: 'flex-end' }}>
-          <Select label='Metric' value={l.metric} onChange={(v) => update(i, { metric: v })} options={METRICS} />
-          <Select label='Per' value={l.period} onChange={(v) => update(i, { period: v })} options={PERIODS} />
+          <Select
+            label='Metric'
+            value={l.metric}
+            // concurrent caps requests in flight and has no window.
+            onChange={(v) => update(i, { metric: v, period: v === 'concurrent' ? '' : l.period || 'month' })}
+            options={METRICS}
+          />
+          {l.metric !== 'concurrent' && <Select label='Per' value={l.period} onChange={(v) => update(i, { period: v })} options={PERIODS} />}
           <Input
             size='sm'
             label={GATEWAY_METRIC_UNIT[l.metric] ? `Limit (${GATEWAY_METRIC_UNIT[l.metric]})` : 'Limit'}

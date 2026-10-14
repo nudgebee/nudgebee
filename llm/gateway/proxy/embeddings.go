@@ -94,6 +94,7 @@ func (h *handler) handleEmbeddings(c *gin.Context) {
 		DirectKey: mappedKey,
 		Endpoint:  auth.EndpointEmbeddings, Generative: true, Generic: true,
 	}
+	defer rc.ReleaseSlots()
 	rc.MappedModel = mappedModel
 	if stop, err := h.pipeline.Run(rc); err != nil {
 		slog.Error("proxy: embeddings pipeline error", "error", err, "provider", provider, "model", model)

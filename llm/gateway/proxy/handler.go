@@ -223,6 +223,7 @@ func (h *handler) handle(c *gin.Context) {
 		Model: model, Path: path, Body: body, Streaming: streaming,
 		Endpoint: endpoint, Generative: generative,
 	}
+	defer rc.ReleaseSlots()
 	if stop, err := h.pipeline.Run(rc); err != nil {
 		cancel()
 		slog.Error("proxy: request pipeline error", "error", err, "provider", provider, "path", path)

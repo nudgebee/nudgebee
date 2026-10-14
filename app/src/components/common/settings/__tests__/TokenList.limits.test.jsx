@@ -9,3 +9,7 @@ it('shows a cost limit in dollars and keeps the unit word for counts', () => {
   expect(limitsText(limits)).toBe('$2 / month, 100 requests / minute (gpt-4o), 5000 tokens / day');
   expect(limitsText([])).toBe('—');
 });
+
+it('shows a concurrent limit without a window', () => {
+  expect(limitsText([{ metric: 'concurrent', period: '', value: 5 }])).toBe('5 requests at once');
+});

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"nudgebee/llm-gateway/auth"
@@ -70,10 +71,23 @@ func (s ratelimitStage) Handle(rc *RequestContext) (bool, error) {
 	// Quotas match the routed target, as policyStage judges it, or the name the client asked
 	// for: an alias to a capped model counts against that model (invariant 1).
 	provider, model := routedTarget(rc)
-	ex := s.limiter.Check(rc.Ctx, quotaScope(rc.Identity, rc.Decision, provider, model))
+	scope := quotaScope(rc.Identity, rc.Decision, provider, model)
+	// Slots first: a request refused for being one too many in flight must not also use
+	// up a requests-per-window unit, which can't be given back.
+	release, ex := s.limiter.Acquire(rc.Ctx, scope, uuid.NewString())
+	if ex != nil {
+		rc.RejectReason = "rate_limited"
+		rc.Gin.Header("Retry-After", "1")
+		edgeerr.Write(rc.Gin, rc.errorShape(), http.StatusTooManyRequests, "rate_limit_exceeded",
+			fmt.Sprintf("too many requests in flight for %s (limit %d at once); retry when one finishes", ex.Scope, int64(ex.Limit)))
+		return true, nil
+	}
+	rc.releaseSlots = release
+	ex = s.limiter.Check(rc.Ctx, scope)
 	if ex == nil {
 		return false, nil
 	}
+	rc.ReleaseSlots()
 	reset := ratelimit.ResetAt(ex.Period, time.Now())
 	if secs := int(time.Until(reset).Seconds()) + 1; secs > 0 {
 		rc.Gin.Header("Retry-After", strconv.Itoa(secs))

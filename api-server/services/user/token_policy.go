@@ -3,6 +3,7 @@ package user
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"unicode"
@@ -27,13 +28,17 @@ func carriesGatewayTraffic(kind string) bool {
 
 // TokenLimit is one quota on a key, and the shape tenant/user ceilings are read back in.
 type TokenLimit struct {
-	Metric string  `json:"metric" mapstructure:"metric"` // requests | tokens | cost
-	Period string  `json:"period" mapstructure:"period"` // minute | hour | day | month
+	Metric string  `json:"metric" mapstructure:"metric"` // requests | tokens | cost | concurrent
+	Period string  `json:"period" mapstructure:"period"` // minute | hour | day | month; "" for concurrent
 	Value  float64 `json:"value" mapstructure:"value"`
 	Model  string  `json:"model" mapstructure:"model"` // "" = any model
 }
 
-var validMetrics = map[string]bool{"requests": true, "tokens": true, "cost": true}
+var validMetrics = map[string]bool{"requests": true, "tokens": true, "cost": true, metricConcurrent: true}
+
+// metricConcurrent caps requests in flight at once; it has no period.
+const metricConcurrent = "concurrent"
+
 var validPeriods = map[string]bool{"minute": true, "hour": true, "day": true, "month": true}
 
 // An empty kind mints an all key: older clients omit the field, and a PAT has always
@@ -68,7 +73,16 @@ func validateLimitsForKind(kind string, limits []TokenLimit) error {
 		}
 		seen[k] = true
 		if !validMetrics[l.Metric] {
-			return common.ErrorBadRequest(fmt.Sprintf("unknown limit metric %q (expected requests, tokens or cost)", l.Metric))
+			return common.ErrorBadRequest(fmt.Sprintf("unknown limit metric %q (expected requests, tokens, cost or concurrent)", l.Metric))
+		}
+		if l.Metric == metricConcurrent {
+			if l.Period != "" {
+				return common.ErrorBadRequest("a concurrent limit has no period")
+			}
+			if l.Value < 1 || l.Value != math.Trunc(l.Value) {
+				return common.ErrorBadRequest("a concurrent limit must be a whole number of at least 1")
+			}
+			continue
 		}
 		if !validPeriods[l.Period] {
 			return common.ErrorBadRequest(fmt.Sprintf("unknown limit period %q (expected minute, hour, day or month)", l.Period))
@@ -322,6 +336,9 @@ func validateDeleteRequest(r UserTokenDeleteRequest) error {
 func validateLimitsAgainstCeilings(ceilings []TokenLimit, limits []TokenLimit) error {
 	for _, l := range limits {
 		if ceiling, ok := tightestCeiling(ceilings, l.Metric, l.Period); ok && l.Value > ceiling {
+			if l.Metric == metricConcurrent {
+				return common.ErrorBadRequest(fmt.Sprintf("concurrent limit exceeds the configured ceiling of %g at once", ceiling))
+			}
 			return common.ErrorBadRequest(
 				fmt.Sprintf("%s limit per %s exceeds the configured ceiling of %g", l.Metric, l.Period, ceiling))
 		}

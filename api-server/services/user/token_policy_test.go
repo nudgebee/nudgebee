@@ -78,6 +78,19 @@ func TestValidateLimitsForKind(t *testing.T) {
 	}))
 }
 
+func TestValidateLimitsForKind_Concurrent(t *testing.T) {
+	assert.Nil(t, validateLimitsForKind("gateway", []TokenLimit{{Metric: "concurrent", Value: 5}}))
+	assert.NotNil(t, validateLimitsForKind("gateway", []TokenLimit{{Metric: "concurrent", Period: "minute", Value: 5}}))
+	assert.NotNil(t, validateLimitsForKind("gateway", []TokenLimit{{Metric: "concurrent", Value: 2.5}}))
+	assert.NotNil(t, validateLimitsForKind("gateway", []TokenLimit{{Metric: "concurrent", Value: 0}}))
+	// A user's concurrent ceiling caps their keys' concurrent limits.
+	ceil := []TokenLimit{{Metric: "concurrent", Value: 3}}
+	assert.NotNil(t, validateLimitsAgainstCeilings(ceil, []TokenLimit{{Metric: "concurrent", Value: 5}}))
+	assert.Nil(t, validateLimitsAgainstCeilings(ceil, []TokenLimit{{Metric: "concurrent", Value: 3}}))
+	// Two concurrent rows for the same model share one slot set.
+	assert.NotNil(t, validateLimitsForKind("gateway", []TokenLimit{{Metric: "concurrent", Value: 5}, {Metric: "concurrent", Value: 3}}))
+}
+
 func TestDeleteRequestNeedsAnIdentifier(t *testing.T) {
 	assert.NotNil(t, validateDeleteRequest(UserTokenDeleteRequest{}))
 	assert.Nil(t, validateDeleteRequest(UserTokenDeleteRequest{Id: "key-uuid-1"}))

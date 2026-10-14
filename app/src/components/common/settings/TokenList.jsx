@@ -18,8 +18,11 @@ export const KIND_HUES = { platform: 'blue', gateway: 'violet', all: 'amber' };
 
 // Cost is metered in USD, so it reads as a dollar amount; counts keep their unit word.
 const limitAmount = (l) => (l.metric === 'cost' ? `$${l.value}` : `${l.value} ${GATEWAY_METRIC_UNIT[l.metric] ?? l.metric}`);
+// concurrent has no window, so its unit ("requests at once") stands alone.
+const limitWindow = (l) => (l.metric === 'concurrent' ? '' : ` / ${l.period}`);
 
-export const limitsText = (limits) => (limits || []).map((l) => `${limitAmount(l)} / ${l.period}${l.model ? ` (${l.model})` : ''}`).join(', ') || '—';
+export const limitsText = (limits) =>
+  (limits || []).map((l) => `${limitAmount(l)}${limitWindow(l)}${l.model ? ` (${l.model})` : ''}`).join(', ') || '—';
 
 export const usageText = (usage) => (usage ? `$${(usage.cost_usd ?? 0).toFixed(2)} · ${usage.requests ?? 0} reqs` : '—');
 

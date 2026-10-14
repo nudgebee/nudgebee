@@ -76,6 +76,18 @@ type RequestContext struct {
 	// DLP is set by the egress-filter stage when a secret is detected: the mode taken
 	// and the rule ids that fired. Recorded on the usage row and signalled to the client.
 	DLP map[string]any
+
+	// releaseSlots frees the concurrent-request slots the ratelimit stage took.
+	releaseSlots func()
+}
+
+// ReleaseSlots frees any concurrent-request slots this request holds. Handlers defer it
+// before running the pipeline, so it runs however the request ends.
+func (rc *RequestContext) ReleaseSlots() {
+	if rc.releaseSlots != nil {
+		rc.releaseSlots()
+		rc.releaseSlots = nil
+	}
 }
 
 // errorShape is the error envelope the caller's SDK parses: the addressed provider's on a

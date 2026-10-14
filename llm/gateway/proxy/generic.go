@@ -100,6 +100,7 @@ func (h *handler) handleChat(c *gin.Context) {
 		DirectKey: mappedKey, DirectKeyURLPath: mappedKeyPath,
 		Endpoint: auth.EndpointChat, Generative: true, Generic: true,
 	}
+	defer rc.ReleaseSlots()
 	rc.MappedModel = mappedModel
 	if stop, err := h.pipeline.Run(rc); err != nil {
 		cancel()

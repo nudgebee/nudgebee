@@ -16,6 +16,9 @@ const (
 	MetricRequests Metric = "requests"
 	MetricTokens   Metric = "tokens"
 	MetricCost     Metric = "cost" // USD; tracked internally as micro-dollars (int)
+	// MetricConcurrent caps requests in flight at once. It has no period: a slot is held
+	// from admission to the end of the request, in a LeaseStore rather than a counter.
+	MetricConcurrent Metric = "concurrent"
 )
 
 // Period is the calendar window a limit applies to.
