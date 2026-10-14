@@ -1,12 +1,14 @@
 package agents
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
 	"nudgebee/code-analysis-agent/config"
+	"nudgebee/code-analysis-agent/tools"
 )
 
 // shouldSuppressReply mirrors the reply-loop guard in Execute: automation only
@@ -323,6 +325,28 @@ func TestParseSubmitAnalysisData(t *testing.T) {
 			t.Fatalf("files_modified not parsed: %v", parsed.FilesModified)
 		}
 		if len(parsed.CommentResponses) != 1 || parsed.CommentResponses[0].CommentID != 3819075107 {
+			t.Fatalf("comment_responses not parsed: %+v", parsed.CommentResponses)
+		}
+	})
+
+	// The model sent comment_responses JSON-encoded as a string. Before
+	// submit_analysis decoded it, this payload failed to parse, the run
+	// recorded nothing, and the PR was re-run every cycle (#39995).
+	t.Run("parses what submit_analysis returns for a string-encoded comment_responses", func(t *testing.T) {
+		resp := tools.NewSubmitAnalysisTool().Execute(context.Background(), map[string]any{
+			"execution_status":  "success",
+			"execution_summary": "Review comments addressed.",
+			"comment_responses": "\n[{\"action\": \"fixed\", \"comment_id\": 101, \"reply\": \"Applied.\", \"should_reply\": true}, {\"action\": \"acknowledged\", \"comment_id\": 102, \"reply\": \"Confirmed.\", \"should_reply\": false}]\n",
+		})
+		if resp.Status == "error" {
+			t.Fatalf("submit_analysis rejected the payload: %s", resp.Error)
+		}
+		parsed, err := parseSubmitAnalysisData(resp.Data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(parsed.CommentResponses) != 2 || parsed.CommentResponses[0].CommentID != 101 ||
+			parsed.CommentResponses[1].ShouldReply == nil || *parsed.CommentResponses[1].ShouldReply {
 			t.Fatalf("comment_responses not parsed: %+v", parsed.CommentResponses)
 		}
 	})
