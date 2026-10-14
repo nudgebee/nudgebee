@@ -1642,6 +1642,16 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 
 	//run auto discovery actions
 	for _, actionName := range playbooks.ListActions() {
+		// Same deadline as the configured actions above: the event is handed on
+		// with what was collected so far rather than waiting on more cloud
+		// round-trips (CanAutoExecute itself may look things up).
+		if playbookBudgetExpired(event) {
+			context.GetLogger().Warn("eventrule: playbook budget exhausted, skipping remaining auto actions",
+				"event_id", event.EventId, "next_action", actionName,
+				"deadline", event.Deadline.Format(time.RFC3339))
+			common.MetricsPlaybookBudgetExhausted(context.GetContext())
+			break
+		}
 		if slices.Contains(executedAction, actionName) {
 			continue
 		}
