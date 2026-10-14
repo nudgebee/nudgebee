@@ -24,6 +24,7 @@ from slack_sdk.errors import SlackApiError
 
 from notifications_server.configs import settings
 from notifications_server.services.cache import Cache
+from notifications_server.services.common import CommonService
 
 LOG = logging.getLogger(__name__)
 
@@ -230,11 +231,19 @@ def _turn_still_running(message_statuses):
 
 def _run_poller(common_service, entry, thread_ts):
     global _active_pollers
+    poller_service = None
     try:
-        _poll(common_service, entry, thread_ts)
+        # The request closes its own session when it returns, and a closed
+        # session reopens on its next query with nothing left to close it, so
+        # this thread gets a session of its own.
+        poller_service = CommonService(common_service.engine, common_service.slack_app, common_service.teams_app)
+        poller_service.app_id = common_service.app_id
+        _poll(poller_service, entry, thread_ts)
     except Exception as e:
         LOG.warning("thinking steps: poller for %s died: %s", thread_ts, e)
     finally:
+        if poller_service is not None:
+            poller_service.close()
         with _pollers_lock:
             _active_pollers -= 1
 
@@ -246,6 +255,9 @@ def _poll(common_service, entry, thread_ts):
         LOG.info("thinking steps: no Slack installation for team %s, no panel for %s", entry["team_id"], thread_ts)
         return
     token = bot.token
+    # Nothing reads the database again until the stream closes, so don't keep
+    # this read's transaction open for the whole poll.
+    common_service.session.close()
 
     # Fixed for the whole turn (never advanced): the settle handler's final
     # catch-up flush re-fetches from this same point, not the poller's own

@@ -1061,6 +1061,13 @@ def _run_event_analysis_poller(engine, slack_app, teams_app, context, user_id, t
             _active_event_analysis_pollers -= 1
 
 
+def _end_db_transactions(service):
+    """The poller only reads installations; ending its transactions before each
+    wait keeps them from holding table locks for the whole analysis."""
+    service.session.close()
+    service.common_service.session.close()
+
+
 def _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, stream_ts):
     """regenerate is always False here, so /v1/analyze/event is idempotent --
     this only ever reports current DB state, never dispatches new work.
@@ -1102,6 +1109,7 @@ def _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, 
                         # We stopped watching -- llm-server didn't report a failure.
                         _finalize_card_after_analysis(service, context, outcome="in_progress")
                         return
+                    _end_db_transactions(service)
                     time.sleep(settings.slack.event_analysis_poll_seconds)
                     continue
                 failures = 0
@@ -1153,6 +1161,7 @@ def _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, 
                     LOG.warning("event analysis poller: llm-server reported FAILED for event %s", context.event_id)
                     return
 
+                _end_db_transactions(service)
                 time.sleep(settings.slack.event_analysis_poll_seconds)
 
             LOG.warning("event analysis poller: timed out for event %s", context.event_id)

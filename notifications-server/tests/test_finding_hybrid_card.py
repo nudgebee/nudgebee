@@ -893,7 +893,7 @@ def _run_poller(monkeypatch, poll_results, context=None):
     in production -- _poll_event_analysis itself only advances/closes it.
     Returns the list of thread messages posted (in order), the final card
     attachments update if any, and the panel's append/stop calls."""
-    calls = {"posted": [], "update": None, "stream_append": [], "stream_stop": None, "released": None}
+    calls = {"posted": [], "update": None, "stream_append": [], "stream_stop": None, "released": None, "db": []}
     slack_client = SimpleNamespace(
         append_stream=lambda **k: calls["stream_append"].append(k),
         stop_stream=lambda **k: calls.__setitem__("stream_stop", k),
@@ -904,12 +904,16 @@ def _run_poller(monkeypatch, poll_results, context=None):
         slack_reply_in_thread=lambda ch, team, ts, msg: calls["posted"].append(msg),
         slack_app=SimpleNamespace(client=slack_client),
         app_id="A0BMNEUDJMA",
+        session=SimpleNamespace(close=lambda: calls["db"].append("common_closed")),
     )
     fake_service = SimpleNamespace(
-        common_service=common_service, event_service=None, close=lambda: calls.setdefault("closed", True)
+        common_service=common_service,
+        event_service=None,
+        session=SimpleNamespace(close=lambda: calls["db"].append("service_closed")),
+        close=lambda: calls.setdefault("closed", True),
     )
     monkeypatch.setattr(actions_common, "SlackActionsBaseService", lambda engine, slack_app, teams_app: fake_service)
-    monkeypatch.setattr(actions_common.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(actions_common.time, "sleep", lambda seconds: calls["db"].append("sleep"))
     # Release goes through the module-level singleton, not service.event_service.cache.
     monkeypatch.setattr(
         actions_common,
@@ -1040,6 +1044,17 @@ class TestEventAnalysisPoller:
 
         assert calls["posted"] == []
         assert "Analyzing" in calls["update"][0]["text"]
+
+    def test_ends_db_transactions_before_every_wait(self, monkeypatch):
+        # An open read between polls blocks schema changes on the tables it
+        # read for the whole analysis.
+        calls = _run_poller(
+            monkeypatch,
+            [None, {"status": "RUNNING", "task_statuses": {}}, {"status": "FAILED", "task_statuses": {}}],
+        )
+
+        assert calls["db"].count("sleep") == 2
+        assert calls["db"] == ["service_closed", "common_closed", "sleep"] * 2
 
     def test_panel_failure_does_not_break_content_posting_or_card_flip(self, monkeypatch):
         # The panel is a visual layer on top of the plain-text messages, never
