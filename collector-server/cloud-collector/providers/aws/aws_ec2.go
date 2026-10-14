@@ -21,6 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 )
 
 func ec2StatusToNbStatus(status string) providers.ResourceStatus {
@@ -385,11 +386,15 @@ func (a *amazonEc2) GetApplyStatus(ctx providers.CloudProviderContext, account p
 	modsOut, err := client.DescribeVolumesModifications(ctx.GetContext(), &ec2.DescribeVolumesModificationsInput{
 		VolumeIds: []string{volumeID},
 	})
-	if err != nil {
+	// A volume that was never modified is an error, not an empty list; fall
+	// through to its current type.
+	if err != nil && !isVolumeModificationNotFound(err) {
 		return providers.ApplyStatusResult{}, fmt.Errorf("failed to describe modifications for volume %s: %w", volumeID, err)
 	}
-	if result, found := ebsGp3ApplyStatus(modsOut.VolumesModifications); found {
-		return result, nil
+	if modsOut != nil {
+		if result, found := ebsGp3ApplyStatus(modsOut.VolumesModifications); found {
+			return result, nil
+		}
 	}
 
 	// No gp3 modification on record: settle from the volume's current type instead.
@@ -403,6 +408,11 @@ func (a *amazonEc2) GetApplyStatus(ctx providers.CloudProviderContext, account p
 	// Describe calls are eventually consistent, so a modification started moments ago
 	// may not be listed yet. Report that as unknown rather than failed.
 	return providers.ApplyStatusResult{}, fmt.Errorf("no gp3 modification is on record yet for volume %s and it is not gp3", volumeID)
+}
+
+func isVolumeModificationNotFound(err error) bool {
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "InvalidVolumeModification.NotFound"
 }
 
 // ebsGp3ApplyStatus reads the outcome of the most recent gp3 modification. The new type

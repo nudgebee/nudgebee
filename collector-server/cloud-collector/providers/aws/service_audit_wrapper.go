@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"errors"
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/security"
 	"time"
@@ -63,6 +64,22 @@ func (a *auditedAwsService) ApplyCommand(ctx providers.CloudProviderContext, acc
 	enrichedCtx := a.enrichContext(ctx, account)
 	resp, err := a.inner.ApplyCommand(enrichedCtx, account, command)
 	a.checkAndRecord(ctx, account, command.Region, "ApplyCommand", err)
+	return resp, err
+}
+
+// GetApplyStatus forwards the optional providers.ApplyStatusChecker interface.
+// The service map hands out this wrapper, so without it a type assertion never
+// saw the inner service's method and every status check came back unsupported.
+func (a *auditedAwsService) GetApplyStatus(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) (providers.ApplyStatusResult, error) {
+	checker, ok := a.inner.(providers.ApplyStatusChecker)
+	if !ok {
+		return providers.ApplyStatusResult{}, errors.ErrUnsupported
+	}
+	enrichedCtx := a.enrichContext(ctx, account)
+	resp, err := checker.GetApplyStatus(enrichedCtx, account, recommendation)
+	if !errors.Is(err, errors.ErrUnsupported) {
+		a.checkAndRecord(ctx, account, recommendation.ResourceRegion, "GetApplyStatus", err)
+	}
 	return resp, err
 }
 
