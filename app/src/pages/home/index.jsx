@@ -1817,13 +1817,22 @@ const Home = () => {
         if (recommendation.length > 0) {
           const allRecommendations = recommendation.map((r) => r.recommendation);
           const parsedArray = allRecommendations.map((r) => safeJSONParse(r)).filter(Boolean);
-          const expiringSoon = parsedArray?.filter((item) => {
-            const expiry = new Date(item.expiry_date);
-            return expiry.getTime() - new Date().getTime() <= 30 * 24 * 60 * 60 * 1000;
-          })?.length;
-          if (expiringSoon) {
-            setCertificateData({ expiringSoon });
-          }
+          // Split by real-time expiry. The old filter had no lower bound, so a
+          // negative difference (a cert already past its expiry_date) still
+          // satisfied "<= 30 days" and got counted — and labelled — as expiring.
+          const now = new Date().getTime();
+          const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+          let expiringSoon = 0;
+          let expired = 0;
+          parsedArray.forEach((item) => {
+            const diff = new Date(item.expiry_date).getTime() - now;
+            if (diff < 0) expired += 1;
+            else if (diff <= THIRTY_DAYS_MS) expiringSoon += 1;
+          });
+          const next = {};
+          if (expiringSoon) next.expiringSoon = expiringSoon;
+          if (expired) next.expired = expired;
+          setCertificateData(next);
         }
       })
       .finally(() => {
@@ -1930,7 +1939,16 @@ const Home = () => {
       ),
     [insightData, selectedCluster?.cloud_provider]
   );
-  const opsItems = useMemo(() => insightData.filter((g) => g.type == 'Ops' || g.rule?.category == 'Ops'), [insightData]);
+  // Certificate expiry is surfaced by the dedicated getCertificate path (which
+  // reads each cert's expiry_date and splits expiring vs expired). The insight
+  // engine can't see expiry_date — it lives inside the recommendation JSON, not
+  // a column — so its row counts every open cert rec regardless of date and
+  // contradicts that path. Drop it here so the card shows one consistent number.
+  const isCertificateInsight = (o) => o.rule?.filters?.some((f) => f.column === 'rule_name' && f.value === 'certificate_expiry');
+  const opsItems = useMemo(
+    () => insightData.filter((g) => (g.type == 'Ops' || g.rule?.category == 'Ops') && !isCertificateInsight(g)),
+    [insightData]
+  );
 
   const securityHasExternal =
     Object.keys(imageScanData).length > 0 ||
@@ -1963,9 +1981,10 @@ const Home = () => {
     const parts = [];
     if (imageScanData?.totalCritical) parts.push(`${imageScanData.totalCritical} critical CVEs`);
     if (certificateData?.expiringSoon) parts.push(`${certificateData.expiringSoon} certs expiring`);
+    if (certificateData?.expired) parts.push(`${certificateData.expired} certs expired`);
     if (opsItems.length) parts.push(`${opsItems.length} ops issues`);
     return parts.length ? parts.join(' · ') : 'Vulnerabilities, certificates, image scans';
-  }, [imageScanData?.totalCritical, certificateData?.expiringSoon, opsItems.length]);
+  }, [imageScanData?.totalCritical, certificateData?.expiringSoon, certificateData?.expired, opsItems.length]);
 
   return (
     <>
@@ -2103,48 +2122,55 @@ const Home = () => {
                         </Box>
                       </Box>
                     ) : null}
-                    {certificateData && Object.keys(certificateData).length > 0 ? (
-                      <Box
-                        onClick={() =>
+                    {[
+                      certificateData?.expiringSoon && {
+                        key: 'expiring',
+                        label: `${certificateData.expiringSoon} ${
+                          certificateData.expiringSoon === 1 ? 'certificate' : 'certificates'
+                        } expiring within 30 days`,
+                      },
+                      certificateData?.expired && {
+                        key: 'expired',
+                        label: `${certificateData.expired} ${certificateData.expired === 1 ? 'certificate' : 'certificates'} expired`,
+                      },
+                    ]
+                      .filter(Boolean)
+                      .map((row) => {
+                        const openSslTab = () =>
                           selectedCluster?.value &&
-                          window.open(`/kubernetes/details/${selectedCluster.value}#security/ssl-certificate-issues`, '_blank')
-                        }
-                        sx={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 'var(--ds-space-3)',
-                          py: 'var(--ds-space-2)',
-                          px: 'var(--ds-space-3)',
-                          mx: 'var(--ds-space-2)',
-                          borderBottom: '1px solid var(--ds-gray-100)',
-                          '&:last-child': { borderBottom: 'none' },
-                          cursor: 'pointer',
-                          transition: 'background-color 120ms ease',
-                          '&:hover': { backgroundColor: 'var(--ds-background-200)' },
-                        }}
-                      >
-                        <Box sx={{ flexShrink: 0 }}>
-                          <InsightIcon severity='high' icon={LockOutlinedIcon} />
-                        </Box>
-                        <Typography sx={{ flex: 1, minWidth: 0, fontSize: 'var(--ds-text-body)', lineHeight: 1.5, color: 'var(--ds-gray-800)' }}>
-                          {`${certificateData.expiringSoon} certificates expiring in less than 30 days`}
-                        </Typography>
-                        <Box sx={{ flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
-                          <Button
-                            tone='ghost'
-                            size='xs'
-                            icon={<AgentSparkleIcon />}
-                            iconPlacement='start'
-                            onClick={() =>
-                              selectedCluster?.value &&
-                              window.open(`/kubernetes/details/${selectedCluster.value}#security/ssl-certificate-issues`, '_blank')
-                            }
+                          window.open(`/kubernetes/details/${selectedCluster.value}?severity=High#security/ssl-certificate-issues`, '_blank');
+                        return (
+                          <Box
+                            key={row.key}
+                            onClick={openSslTab}
+                            sx={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 'var(--ds-space-3)',
+                              py: 'var(--ds-space-2)',
+                              px: 'var(--ds-space-3)',
+                              mx: 'var(--ds-space-2)',
+                              borderBottom: '1px solid var(--ds-gray-100)',
+                              '&:last-child': { borderBottom: 'none' },
+                              cursor: 'pointer',
+                              transition: 'background-color 120ms ease',
+                              '&:hover': { backgroundColor: 'var(--ds-background-200)' },
+                            }}
                           >
-                            Review
-                          </Button>
-                        </Box>
-                      </Box>
-                    ) : null}
+                            <Box sx={{ flexShrink: 0 }}>
+                              <InsightIcon severity='high' icon={LockOutlinedIcon} />
+                            </Box>
+                            <Typography sx={{ flex: 1, minWidth: 0, fontSize: 'var(--ds-text-body)', lineHeight: 1.5, color: 'var(--ds-gray-800)' }}>
+                              {row.label}
+                            </Typography>
+                            <Box sx={{ flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                              <Button tone='ghost' size='xs' icon={<AgentSparkleIcon />} iconPlacement='start' onClick={openSslTab}>
+                                Review
+                              </Button>
+                            </Box>
+                          </Box>
+                        );
+                      })}
                   </>
                 }
               />
