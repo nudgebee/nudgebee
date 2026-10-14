@@ -107,6 +107,14 @@ func readStatusReply(body []byte, budget *statusPollBudget) (reply map[string]an
 // pr_creation_status when the work itself failed, inside an otherwise normal reply.
 const codeAnalysisFailedStatus = "failed"
 
+// codeAnalysisSuccessStatus is the execution_status of a run that did its job.
+// The service's contract (ExecutionStatusFailed in llm/code-analysis) is that a
+// caller treats any execution_status other than success or no_op as a failure.
+const codeAnalysisSuccessStatus = "success"
+
+// maxMalformedResultChars bounds how much of a non-JSON result is echoed back.
+const maxMalformedResultChars = 2000
+
 // A no-op carries the reason it happened. Mirrors NoOpBasisKey in
 // llm/code-analysis (orchestrator_agent.go): only a specialist verdict is a
 // finding about the file, so only it may be read back as "already present".
@@ -1909,9 +1917,7 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 		if repoSetAside {
 			rawResponse = repoSetAsideNote(callerRepo, codeAgentRequest.GitRepo) + "\n\n" + rawResponse
 		}
-		return core.NBAgentResponse{
-			Response: []string{rawResponse},
-		}, nil
+		return malformedAnalysisResult(rawResponse), nil
 	}
 	// A JSON null decodes without error and leaves the map nil; the writes below
 	// need a map to write to.
@@ -1949,13 +1955,32 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 
 // codeAnalysisResultStatus reports a failed step when the service says the analysis
 // or the pull request failed; otherwise it leaves the status for the executor.
+// A present execution_status fails closed: only success and no_op are not failures,
+// so partial_success, skipped and any value the service adds later count as failed.
+// An absent one is an analysis-only answer and is left to the executor.
 func codeAnalysisResultStatus(result map[string]any) core.ConversationStatus {
-	for _, key := range []string{"execution_status", "pr_creation_status"} {
-		if v, _ := result[key].(string); strings.EqualFold(strings.TrimSpace(v), codeAnalysisFailedStatus) {
+	if v, _ := result["execution_status"].(string); strings.TrimSpace(v) != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case codeAnalysisSuccessStatus, codeAnalysisNoOpStatus:
+		default:
 			return core.ConversationStatusFailed
 		}
 	}
+	if v, _ := result["pr_creation_status"].(string); strings.EqualFold(strings.TrimSpace(v), codeAnalysisFailedStatus) {
+		return core.ConversationStatusFailed
+	}
 	return ""
+}
+
+// malformedAnalysisResult is the failed step for a result that is not JSON. A
+// finished analysis is always JSON, so plain text is an error message or a broken
+// reply, never an answer; what came back is kept, bounded, so the cause is visible.
+func malformedAnalysisResult(raw string) core.NBAgentResponse {
+	return core.NBAgentResponse{
+		Response: []string{"Code analysis returned a result that is not JSON, so it was not used as an answer. What came back: " +
+			core.TruncateHead(strings.TrimSpace(raw), maxMalformedResultChars)},
+		Status: core.ConversationStatusFailed,
+	}
 }
 
 // handleAnalysisResult inspects the analysis result, maintains the message-scoped
