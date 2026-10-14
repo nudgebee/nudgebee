@@ -2337,6 +2337,52 @@ func (s *Service) MarkStaleExternalServiceNodesInactive() (int64, error) {
 	return rowsAffected, nil
 }
 
+// MarkStaleVMServiceNodesInactive flips is_active=false on Service nodes the
+// VM service-map flow source created (source = VMServiceMapSourceName) whose
+// updated_at is older than KGEdgeStaleAfterDays.
+//
+// Unlike K8s workloads (which k8s_source pre-creates and markInactiveNodes
+// tombstones on its own sync), a VM systemd unit or container has no other,
+// authoritative source to merge with — this flow source's node for it is the
+// only record of it existing, so nothing else ever retires it. A decommissioned
+// VM or a removed unit simply stops being emitted by the forager and would
+// accumulate here forever without this sweep.
+//
+// Scoped to source = VMServiceMapSourceName (not every NodeTypeService node)
+// deliberately: a node this flow source *matched* rather than created keeps
+// whichever source created it (createOrGetServiceNode never calls this flow
+// source's matcher for Service nodes — see its doc comment — so in practice
+// every NodeTypeService node this flow source touches is its own), and other
+// flow sources' orphan Service nodes (e.g. ebpf's) are a separate, pre-existing
+// gap this does not fix.
+func (s *Service) MarkStaleVMServiceNodesInactive() (int64, error) {
+	staleDays := config.Config.KGEdgeStaleAfterDays
+	if staleDays <= 0 {
+		staleDays = 7
+	}
+	query := `
+		UPDATE knowledge_graph_node
+		SET is_active = false
+		WHERE is_active = true
+		  AND level = 'Tenant'
+		  AND node_type = $2
+		  AND source = $3
+		  AND updated_at < NOW() - ($1 * interval '1 day')
+	`
+	result, err := s.dbManager.Exec(query, staleDays, string(NodeTypeService), VMServiceMapSourceName)
+	if err != nil {
+		return 0, fmt.Errorf("failed to mark stale VM service nodes inactive: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf(errRowsAffected, err)
+	}
+	s.logger.Info("kg: marked stale VM service nodes inactive",
+		"rows", rowsAffected,
+		"stale_days", staleDays)
+	return rowsAffected, nil
+}
+
 // GetGraph retrieves a knowledge graph from a specific source
 func (s *Service) GetGraph(reqCtx *security.RequestContext, req *QueryRequest) (*QueryResponse, error) {
 	if req.Source == "" {

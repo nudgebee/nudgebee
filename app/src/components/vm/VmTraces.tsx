@@ -5,6 +5,7 @@ import { Banner } from '@ui/Banner';
 import { EmptyState } from '@ui/EmptyState';
 import Loader from '@shared/Loader';
 import apiAccount from '@api1/account';
+import apiVm from '@api1/vm';
 import KubernetesTracesListing from '@components/k8s/details/KubernetesTracesListing';
 
 /**
@@ -22,10 +23,35 @@ interface VmTracesProps {
   accountId: string;
 }
 
+// Node kinds the service map gives to something running on a VM that a reader calls a
+// service: systemd units, containers and other processes the node-agent tracks.
+const SERVICE_KINDS = new Set(['SystemdService', 'DockerContainer', 'Process']);
+
 const VmTraces = ({ accountId }: VmTracesProps) => {
   const router = useRouter();
   const [state, setState] = useState<'loading' | 'ready' | 'none' | 'failed'>('loading');
   const [failure, setFailure] = useState('');
+  const [vmServices, setVmServices] = useState<string[]>([]);
+
+  // The VM's active systemd units and containers, for the Service filter. A store knows
+  // only services that sent spans; the VM knows what is running. Best effort: without
+  // it the filter still lists what the store holds.
+  useEffect(() => {
+    let cancelled = false;
+    apiVm
+      .getServiceMap(accountId, 3600)
+      .then((apps: any[]) => {
+        if (cancelled) return;
+        const names = apps.filter((app) => SERVICE_KINDS.has(app?.Id?.kind) && app?.Id?.name).map((app) => app.Id.name as string);
+        setVmServices(Array.from(new Set(names)).sort((a, b) => a.localeCompare(b)));
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) console.error('Failed to list the VM services for the Service filter:', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,7 +111,7 @@ const VmTraces = ({ accountId }: VmTracesProps) => {
 
   return (
     <Box sx={{ width: '100%', overflowX: 'auto' }}>
-      <KubernetesTracesListing accountId={accountId} showNamespaceFilter={false} showWorkloadFilter={false} />
+      <KubernetesTracesListing accountId={accountId} showNamespaceFilter={false} showWorkloadFilter={false} serviceOptions={vmServices} />
     </Box>
   );
 };

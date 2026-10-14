@@ -4,6 +4,9 @@ import (
 	"log/slog"
 	"nudgebee/services/application"
 	"nudgebee/services/common"
+	"nudgebee/services/security"
+	"nudgebee/services/vmservicemap"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -119,6 +122,48 @@ func handleApplicationEvent(actionPayload *ActionRequest, c *gin.Context, tracer
 		}
 
 		resp, err := application.GetProfileStatus(ctx, &applicationprofileRequest)
+		if handleError(c, err, 500) {
+			return
+		}
+
+		c.JSON(200, map[string]any{"data": resp})
+		return
+	case "vm_get_service_map":
+		var vmServiceMapRequest struct {
+			AccountID     string `json:"account_id"`
+			WindowSeconds int    `json:"window_seconds"`
+		}
+
+		err := common.UnmarshalMapToStruct(request, &vmServiceMapRequest)
+		if handleError(c, err, 400) {
+			return
+		}
+		if vmServiceMapRequest.AccountID == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+			return
+		}
+
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if handleError(c, err, 500) {
+			return
+		}
+		if !ctx.GetSecurityContext().HasAccountAccess(vmServiceMapRequest.AccountID, security.SecurityAccessTypeRead) {
+			c.JSON(403, common.ErrorActionForbidden("unauthorized"))
+			return
+		}
+
+		started := time.Now()
+		resp, err := vmservicemap.Get(vmServiceMapRequest.AccountID, ctx.GetSecurityContext().GetTenantId(),
+			time.Duration(vmServiceMapRequest.WindowSeconds)*time.Second, started)
+		if err != nil {
+			// handleError sends the reason to the client only; keep it in the log too.
+			slog.Error("vm_get_service_map failed", "account_id", vmServiceMapRequest.AccountID,
+				"window_seconds", vmServiceMapRequest.WindowSeconds, "duration", time.Since(started), "error", err)
+		} else {
+			slog.Info("vm_get_service_map built", "account_id", vmServiceMapRequest.AccountID,
+				"window_seconds", vmServiceMapRequest.WindowSeconds, "duration", time.Since(started),
+				"nodes", len(resp.Applications))
+		}
 		if handleError(c, err, 500) {
 			return
 		}

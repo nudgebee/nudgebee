@@ -11,7 +11,8 @@ import VmInventory from '@components/vm/VmInventory';
 import VmVulnerabilities from '@components/vm/VmVulnerabilities';
 import VmPackages from '@components/vm/VmPackages';
 import VmTraces from '@components/vm/VmTraces';
-import { VmServerIcon, ApplicationsIcon, RecommendationIcon, OptimizeSummaryIcon, LogsTracesIcon } from '@assets';
+import VmServiceMap from '@components/vm/VmServiceMap';
+import { VmServerIcon, ApplicationsIcon, RecommendationIcon, OptimizeSummaryIcon, ServiceMapIcon, LogsTracesIcon } from '@assets';
 import { ds } from '@utils/colors';
 
 /**
@@ -43,10 +44,12 @@ const tabOptions = [
     iconSize: 18,
   },
   { name: 'Packages', id: 'vm-packages', fragment: 'packages', value: 3, disabled: false, icon: ApplicationsIcon },
+  { name: 'Service Map', id: 'vm-service-map', fragment: 'service-map', value: 4, disabled: false, icon: ServiceMapIcon },
   { name: 'Traces', id: 'vm-traces', fragment: 'traces', value: 5, disabled: false, icon: LogsTracesIcon },
 ];
 
 const PACKAGES_TAB = 3;
+const SERVICE_MAP_TAB = 4;
 const TRACES_TAB = 5;
 
 /**
@@ -228,6 +231,7 @@ const VmPage = () => {
           />
         )}
         {accountId && selectedTab === PACKAGES_TAB && <VmPackages accountId={accountId} vmNames={vmNames} />}
+        {accountId && selectedTab === SERVICE_MAP_TAB && <VmServiceMap accountId={accountId} />}
         {accountId && selectedTab === TRACES_TAB && <VmTraces accountId={accountId} />}
       </ErrorBoundary>
     </>

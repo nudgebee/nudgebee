@@ -1,0 +1,53 @@
+{
+  "result": {
+    "window": {"start": "2026-10-13T10:00:00Z", "end": "2026-10-13T10:15:00Z"},
+    "hosts": [
+      {"instance_id": "i-0web", "hostname": "orders-web-host", "ips": ["172.31.1.10"], "listeners": []},
+      {"instance_id": "i-0api", "hostname": "orders-api-host", "ips": ["172.31.1.149"], "listeners": []}
+    ],
+    "services": [
+      {"instance_id": "i-0web", "hostname": "orders-web-host", "container_id": "/system.slice/orders-web.service",
+       "name": "orders-web.service", "kind": "systemd", "image": "", "application_types": ["nodejs"],
+       "listeners": [{"addr": "0.0.0.0:80", "port": 80}]},
+      {"instance_id": "i-0api", "hostname": "orders-api-host", "container_id": "/system.slice/orders-api.service",
+       "name": "orders-api.service", "kind": "systemd", "image": "", "application_types": ["golang"],
+       "listeners": [{"addr": "0.0.0.0:8080", "port": 8080}]},
+      {"instance_id": "i-0api", "hostname": "orders-api-host", "container_id": "/docker/orders-cache",
+       "name": "orders-cache", "kind": "docker", "image": "redis:7", "application_types": ["redis"],
+       "listeners": [{"addr": "127.0.0.1:6379", "port": 6379}]}
+    ],
+    "edges": [
+      {"source_host": "orders-web-host", "source_instance_id": "i-0web", "source_service": "orders-web.service",
+       "source_container_id": "/system.slice/orders-web.service",
+       "destination": "172.31.1.149:8080", "destination_kind": "private", "destination_name": "",
+       "destination_host": "orders-api-host", "destination_instance_id": "i-0api",
+       "destination_service": "orders-api.service", "destination_container_id": "/system.slice/orders-api.service",
+       "protocol": "http", "requests": 1000, "errors": 10, "latency_ms": 40, "bytes_sent": 1000, "bytes_received": 5000},
+      {"source_host": "orders-web-host", "source_instance_id": "i-0web", "source_service": "orders-web.service",
+       "source_container_id": "/system.slice/orders-web.service",
+       "destination": "172.31.1.149:8080", "destination_kind": "private", "destination_name": "",
+       "destination_host": "orders-api-host", "destination_instance_id": "i-0api",
+       "destination_service": "orders-api.service", "destination_container_id": "/system.slice/orders-api.service",
+       "protocol": "tcp", "requests": 5, "errors": 0, "latency_ms": 1, "bytes_sent": 0, "bytes_received": 0},
+      {"source_host": "orders-api-host", "source_instance_id": "i-0api", "source_service": "orders-api.service",
+       "source_container_id": "/system.slice/orders-api.service",
+       "destination": "127.0.0.1:6379", "destination_kind": "private", "destination_name": "",
+       "destination_host": "orders-api-host", "destination_instance_id": "i-0api",
+       "destination_service": "orders-cache", "destination_container_id": "/docker/orders-cache",
+       "protocol": "redis", "requests": 300, "errors": 0, "latency_ms": 1, "bytes_sent": 10, "bytes_received": 20},
+      {"source_host": "orders-api-host", "source_instance_id": "i-0api", "source_service": "orders-api.service",
+       "source_container_id": "/system.slice/orders-api.service",
+       "destination": "orders-db.abc.us-east-1.rds.amazonaws.com:5432", "destination_kind": "external",
+       "destination_name": "orders-db.abc.us-east-1.rds.amazonaws.com",
+       "protocol": "postgres", "requests": 200, "errors": 3, "latency_ms": 5, "bytes_sent": 10, "bytes_received": 20},
+      {"source_host": "orders-api-host", "source_instance_id": "i-0api", "source_service": "orders-api.service",
+       "source_container_id": "/system.slice/orders-api.service",
+       "destination": "172.31.9.9:9000", "destination_kind": "private", "destination_name": "",
+       "protocol": "http", "requests": 50, "errors": 0, "latency_ms": 2, "bytes_sent": 1, "bytes_received": 1},
+      {"source_host": "orders-api-host", "source_instance_id": "i-0api", "source_service": "orders-api.service",
+       "source_container_id": "/system.slice/orders-api.service",
+       "destination": "52.1.2.3:443", "destination_kind": "external", "destination_name": "api.stripe.com",
+       "protocol": "http", "requests": 20, "errors": 0, "latency_ms": 90, "bytes_sent": 1, "bytes_received": 1}
+    ]
+  }
+}

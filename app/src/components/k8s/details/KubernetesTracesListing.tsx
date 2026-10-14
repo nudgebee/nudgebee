@@ -81,6 +81,10 @@ interface KubernetesTracesListingProps {
   // account default — so a group's drilldown queries the index the group was built
   // from. Undefined = this listing owns the index (its own picker).
   passedEsIndex?: string;
+  // Services the caller knows exist, offered in the Service filter next to the ones the
+  // trace store reports. A VM account passes its active systemd units and containers:
+  // the store only knows services that already sent spans.
+  serviceOptions?: string[];
 }
 
 interface SourceDestinationViewProps {
@@ -185,6 +189,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   displaySideFilters = true,
   traceIds = [],
   passedEsIndex,
+  serviceOptions,
 }) => {
   const router = useRouter();
   const { assistantName } = useTenantBranding();
@@ -323,6 +328,11 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   const { openWithContext: openNubiChat } = useNubiGlobalChat();
   const [traceProvider, setTraceProvider] = useState('');
   const [services, setServices] = useState<string[]>([]);
+  // The store's services plus any the caller supplied, deduplicated and sorted.
+  const serviceChoices = useMemo(
+    () => Array.from(new Set([...(serviceOptions || []), ...services])).sort((a, b) => a.localeCompare(b)),
+    [serviceOptions, services]
+  );
   // ES-only trace index picker: the chosen index (default resolved from the
   // per-account mapping / top-level trace_index), plus the cluster's trace index
   // options for the dropdown.
@@ -1328,7 +1338,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                   <>
                     <FilterDropdown
                       label='Service'
-                      options={services}
+                      options={serviceChoices}
                       value={selectedWorkload}
                       onSelect={(e: any) => {
                         setSelectedWorkload(e?.target?.value);

@@ -346,6 +346,32 @@ query ListVmScanDatasources($accountId: String!) {
   }
 }`;
 
+const GET_VM_SERVICE_MAP = `
+query VmServiceMap($accountId: String!, $windowSeconds: Int) {
+  vm_get_service_map(request: {
+    account_id: $accountId
+    window_seconds: $windowSeconds
+  }) {
+    data {
+      labels
+      applications {
+        Id { kind name namespace }
+        Category { category }
+        Labels
+        Type
+        Status
+        IsHealthy
+        HealthReason
+        DesiredInstances
+        FailedInstances
+        Instances { Id { kind name namespace } IsFailed }
+        Upstreams { Id RequestCount FailureCount Latency Protocol Stats Status Weight BytesSent BytesReceived }
+        Downstreams { Id RequestCount FailureCount Latency Protocol Stats Status Weight BytesSent BytesReceived }
+      }
+    }
+  }
+}`;
+
 const safeParse = (value: any) => {
   if (typeof value !== 'string') return value;
   try {
@@ -1004,6 +1030,20 @@ const apiVm = {
     const status = response?.data?.data?.metrics_check_vm_status;
     if (!status) throw new Error('Failed to check VM metrics');
     return { ...status, reporting: status.reporting || [] };
+  },
+
+  /**
+   * The account's service map, built by its forager from node-agent metrics and
+   * named against inventory on the server. Same application shape as the K8s
+   * map, so the K8s node and edge components render it unchanged.
+   */
+  async getServiceMap(accountId: string, windowSeconds: number): Promise<any[]> {
+    const response = await queryGraphQL(GET_VM_SERVICE_MAP, 'VmServiceMap', { accountId, windowSeconds });
+    const errors = response?.data?.errors;
+    if (errors?.length) {
+      throw new Error(errors[0]?.message || 'Failed to load the service map');
+    }
+    return response?.data?.data?.vm_get_service_map?.data?.applications || [];
   },
 };
 

@@ -2346,6 +2346,12 @@ type Mutation {
 }
 
 type Query {
+  vm_get_service_map(
+    request: VmServiceMapRequest!
+  ): ServiceMapResponse
+}
+
+type Query {
   traces_v2(
     where: TraceWhereRequest
     limit: Int
@@ -5032,6 +5038,11 @@ input TraceServiceMapRequest {
   start_time: String
   end_time: String
   label_filter: [TraceServiceMapLabelFilter]
+}
+
+input VmServiceMapRequest {
+  account_id: String!
+  window_seconds: Int
 }
 
 input DefaultProviderRequest {

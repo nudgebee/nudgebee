@@ -320,6 +320,12 @@ const (
 	// RelationshipEncryptedBy RelationshipType = "ENCRYPTED_BY"
 )
 
+// VMServiceMapSourceName is the flow-source name stamped on nodes/edges the
+// VM service-map flow source creates (flow_sources.VMServiceMapFlowSource).
+// Shared with the stale-node sweep (MarkStaleVMServiceNodesInactive) here in
+// core, which flow_sources cannot stamp itself since it imports core.
+const VMServiceMapSourceName = "vm_service_map"
+
 type KnowledgeGraph struct {
 	Nodes       []KgNode  `json:"nodes"`
 	Edges       []KgEdge  `json:"edges"`

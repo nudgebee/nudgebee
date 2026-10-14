@@ -5754,6 +5754,24 @@ actions:
       - role: tenant_admin
       - role: tenant_admin_readonly
       - role: tenant_usage
+  - name: vm_get_service_map
+    comment: Get the service dependency map of a self-hosted VM account, built by its forager from node-agent metrics
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/application'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: tenant_admin
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_usage
+      - role: tenant_admin_readonly
   - name: traces_get_service_map
     comment: Get the service dependency map derived from traces
     definition:
@@ -7901,6 +7919,7 @@ custom_types:
     - name: TenantTokenListRequest
     - name: TenantTokenDeleteRequest
     - name: TraceServiceMapRequest
+    - name: VmServiceMapRequest
     - name: DefaultProviderRequest
     - name: FetchMetricsListRequest
     - name: UserHistoryInput
