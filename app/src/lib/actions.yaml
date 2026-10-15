@@ -6385,17 +6385,6 @@ actions:
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
       - role: tenant_admin
-  - name: users_create_bee
-    comment: Create a bee account (an AI worker's user) in the tenant; it cannot sign in
-    definition:
-      kind: synchronous
-      handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'
-      forward_client_headers: true
-      headers:
-        - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_admin
   - name: users_list_token
     comment: List a user's API access tokens
     definition:
