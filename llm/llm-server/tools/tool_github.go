@@ -158,11 +158,19 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 		response = strings.Join(processedLines, "\n")
 	}
 
-	return core.NBToolResponse{
+	return githubReply(nbRequestContext, response), nil
+}
+
+// githubReply judges a gh reply that exited 0 by its fields: a JSON object with
+// a non-empty top-level "error"/"errors" (a `gh api graphql` failure prints one
+// and still exits 0). Plain text and JSON arrays are never judged. Counted only
+// until github_execute is listed in LlmServerToolReportedFailureEnforceTools.
+func githubReply(nbCtx core.NbToolContext, response string) core.NBToolResponse {
+	return withReportedFailure(nbCtx, ToolExecuteGithubCliCommand, core.NBToolResponse{
 		Data:   response,
 		Type:   core.NBToolResponseTypeText,
 		Status: core.NBToolResponseStatusSuccess,
-	}, nil
+	}, core.FailureRules{})
 }
 
 // githubErrorHint returns an actionable recovery hint for the two gh CLI
