@@ -448,3 +448,34 @@ func TestListWorkflowTaskCapabilities_SendsTheServiceToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "test-token", got)
 }
+
+// Executors of arbitrary tasks, workflows, code, commands or tool-using agents
+// must never be narrow, whatever their typed fields look like.
+func TestClassifyCapability_ExecutorsAreNeverNarrow(t *testing.T) {
+	for _, name := range []string{
+		"workflow_task_execute", "workflow_trigger", "workflow_create", "workflow_update",
+		"workflow_dry_run", "workflow_execution_retrigger", "delegate_agent", "vm_execute",
+		"server_command_executor", "recommendation_execute_cli", "watch_resource",
+		"core.call-workflow", "core.foreach", "core.group", "llm.router", "llm.mcp_call",
+		"integrations.http", "integrations.ssh", "data.transform", "dbms.query",
+	} {
+		scope, found := ClassifyCapability(name)
+		assert.True(t, found, "expected %q to be classified", name)
+		assert.Equal(t, CapabilityScopePassThrough, scope, "capability %q", name)
+	}
+}
+
+// Capabilities whose reach could not be confirmed from source stay out of the
+// table, so they resolve to unclassified (treated as a gap), never narrow.
+func TestClassifyCapability_UnconfirmedStayUnclassified(t *testing.T) {
+	for _, name := range []string{
+		"ticket_master_v2", "recommendation_apply", "workflow_config_save", "workflow_validate",
+		"workflow_publish", "workflow_make_version_live", "workflow_restore_version",
+		"standard_diagnostic_grep", "automation_builder", "search_tools", "websearch",
+		"llm.classify", "llm.summary", "llm.event_investigate",
+	} {
+		scope, found := ClassifyCapability(name)
+		assert.False(t, found, "%q must stay unclassified until its reach is confirmed", name)
+		assert.Equal(t, CapabilityScopeUnclassified, scope, "capability %q", name)
+	}
+}
