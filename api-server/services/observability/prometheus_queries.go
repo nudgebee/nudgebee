@@ -651,7 +651,13 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		case KeyCPUReal:
 			queries[metricKey] = fmt.Sprintf(`sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s])) or sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))`, rangeW, rangeW)
 		case KeyCPUTotal:
-			queries[metricKey] = `sum(machine_cpu_cores{__CLUSTER__}) or sum(node_resources_cpu_logical_cores{__CLUSTER__})`
+			// machine_cpu_cores is a cAdvisor metric that managed Prometheus services
+			// (Azure Managed Prometheus's default profile) do not scrape, which left the
+			// cluster CPU gauge with no denominator. Fall back to node-exporter's
+			// per-core idle series (the same family as KeyCPUReal) and then to
+			// kube-state-metrics' node capacity. Both collapse duplicate exporter
+			// copies first so a node scraped twice is not counted twice.
+			queries[metricKey] = `sum(machine_cpu_cores{__CLUSTER__}) or sum(node_resources_cpu_logical_cores{__CLUSTER__}) or count(count by (instance, cpu) (node_cpu_seconds_total{__CLUSTER__ mode="idle"})) or sum(max by (node) (kube_node_status_capacity{__CLUSTER__ resource="cpu"}))`
 		case KeyMemReal:
 			queries[metricKey] = `sum(node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemAvailable_bytes{__CLUSTER__}) or sum(node_resources_memory_total_bytes{__CLUSTER__} - node_resources_memory_available_bytes{__CLUSTER__})`
 		case KeyMemTotal:
