@@ -1793,6 +1793,12 @@ type Query {
 }
 
 type Query {
+  logs_check_vm_status(
+    request: LogsCheckVmStatusRequest!
+  ): VMLogsStatus
+}
+
+type Query {
   logs_list_labels(
     request: FetchLogLabelRequest!
   ): [OutputLogLabel]
@@ -9115,6 +9121,18 @@ type AiDeleteFunctionResponse {
 
 input MetricsCheckVmStatusRequest {
   account_id: String!
+}
+
+input LogsCheckVmStatusRequest {
+  account_id: String!
+}
+
+type VMLogsStatus {
+  state: String!
+  provider: String
+  integration_id: String
+  integration_name: String
+  error: String
 }
 
 type VMReportingAgent {

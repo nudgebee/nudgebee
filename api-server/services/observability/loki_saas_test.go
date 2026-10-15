@@ -2,6 +2,7 @@ package observability
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -539,4 +540,69 @@ func TestGetLokiConfig_LegacyAnonymousRow(t *testing.T) {
 	cfg, err := GetLokiConfig(newLokiSaasCtx(), "acc-1")
 	require.NoError(t, err)
 	assert.Equal(t, LokiAuthNone, cfg.AuthType)
+}
+
+// A vm_agent Loki is reached through the account's forager: the server must not dial
+// loki_url itself, must hand the forager a path (never an absolute URL), and must carry
+// the tenant id and extra headers per request.
+func TestLokiSaasQueryLogs_ViaForager(t *testing.T) {
+	var gotAccount, gotAction, gotDS, gotAgent string
+	var gotParams map[string]any
+
+	patchLokiIntegration(t, lokiIntegrationDto(map[string]string{
+		"connection_mode": "vm_agent",
+		"loki_url":        "http://10.0.0.9:3100",
+		"loki_tenant_id":  "org-7",
+		"loki_headers":    `{"X-Extra":"yes"}`,
+		"agent_type":      "proxy-b",
+	}))
+	patches := gomonkey.NewPatches()
+	patches.ApplyFunc(relay.ExecuteProxyWithAgentTypeContext,
+		func(_ context.Context, account, action, ds string, params map[string]any, _ int, agent string) (map[string]any, error) {
+			gotAccount, gotAction, gotDS, gotAgent, gotParams = account, action, ds, agent, params
+			body := `{"status":"success","data":{"resultType":"streams","result":[` +
+				`{"stream":{"host":"vm-1"},"values":[["1700000000000000000","boom failed"]]}]}}`
+			return map[string]any{
+				"status_code": float64(200),
+				"body":        base64.StdEncoding.EncodeToString([]byte(body)),
+			}, nil
+		})
+	t.Cleanup(patches.Reset)
+
+	logs, err := (&LokiSaasSource{}).QueryLogs(newLokiSaasCtx(), FetchLogRequest{
+		AccountId: "acc-1",
+		Query:     `{host="vm-1"}`,
+		StartTime: 1_700_000_000_000,
+		EndTime:   1_700_000_600_000,
+	})
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+
+	assert.Equal(t, "acc-1", gotAccount)
+	assert.Equal(t, "http_request", gotAction)
+	assert.Equal(t, "int-loki", gotDS, "the datasource key defaults to the integration id")
+	assert.Equal(t, "proxy-b", gotAgent)
+	assert.Equal(t, "GET", gotParams["method"])
+	assert.True(t, strings.HasPrefix(gotParams["url"].(string), "/loki/api/v1/query_range?"),
+		"the forager owns the base URL and rejects absolute URLs: %v", gotParams["url"])
+	header, _ := gotParams["header"].(map[string][]string)
+	assert.Equal(t, []string{"org-7"}, header["X-Scope-Orgid"])
+	assert.Equal(t, []string{"yes"}, header["X-Extra"])
+}
+
+func TestLokiSaasQueryLabels_ViaForager_PropagatesError(t *testing.T) {
+	patchLokiIntegration(t, lokiIntegrationDto(map[string]string{
+		"connection_mode": "vm_agent",
+		"loki_url":        "http://10.0.0.9:3100",
+	}))
+	patches := gomonkey.NewPatches()
+	patches.ApplyFunc(relay.ExecuteProxyWithAgentTypeContext,
+		func(context.Context, string, string, string, map[string]any, int, string) (map[string]any, error) {
+			return nil, assert.AnError
+		})
+	t.Cleanup(patches.Reset)
+
+	_, err := (&LokiSaasSource{}).QueryLabels(newLokiSaasCtx(), FetchLogLabelRequest{AccountId: "acc-1", StartTime: 1, EndTime: 2})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "via forager")
 }

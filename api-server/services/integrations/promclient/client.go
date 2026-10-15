@@ -119,12 +119,42 @@ var emptyPayloadHash = func() string {
 	return hex.EncodeToString(sum[:])
 }()
 
-// ProxyTransport carries one request to a Prometheus that only a forager can
-// reach. relPath is the API path plus query, relative to the base URL the
-// forager holds; the forager applies the stored credentials itself. header
-// carries the extra headers and Content-Type. It returns the upstream HTTP
-// status, headers and body.
+// ProxyTransport carries one HTTP request to an endpoint only a forager can reach.
+// relPath is the API path plus query, relative to the base URL the forager holds;
+// the forager applies the stored credentials itself. It returns the upstream status,
+// headers and body.
 type ProxyTransport func(ctx context.Context, method, relPath string, header http.Header, body []byte) (status int, respHeader http.Header, respBody []byte, err error)
+
+// RoundTrip makes a ProxyTransport an http.RoundTripper, so a client written
+// against *http.Client (signozclient) can reach a forager-held endpoint unchanged.
+// The forager owns the base URL and rejects absolute URLs, so only the path and
+// query of req.URL are sent.
+func (t ProxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	var body []byte
+	if req.Body != nil {
+		var err error
+		body, err = io.ReadAll(req.Body)
+		_ = req.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("reading request body: %w", err)
+		}
+	}
+	status, respHeader, respBody, err := t(req.Context(), req.Method, req.URL.RequestURI(), req.Header, body)
+	if err != nil {
+		return nil, err
+	}
+	if respHeader == nil {
+		respHeader = make(http.Header)
+	}
+	return &http.Response{
+		Status:        fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		StatusCode:    status,
+		Header:        respHeader,
+		Body:          io.NopCloser(bytes.NewReader(respBody)),
+		ContentLength: int64(len(respBody)),
+		Request:       req,
+	}, nil
+}
 
 // PrometheusUserConfig is the resolved connection for a user-configured
 // (direct, non-agent) Prometheus-compatible endpoint.

@@ -44,9 +44,15 @@ func NewTransport(accountID, datasourceKey, agentType string) promclient.ProxyTr
 		if !ok {
 			return 0, nil, nil, fmt.Errorf("forager response has no status_code")
 		}
-		respBody, err := base64.StdEncoding.DecodeString(fmt.Sprint(result["body"]))
-		if err != nil {
-			return 0, nil, nil, fmt.Errorf("decoding forager response body: %w", err)
+		// A 204, or a forager that omits the field, has no "body" string; fmt.Sprint(nil)
+		// would give "<nil>", which is not base64.
+		var respBody []byte
+		if encoded, ok := result["body"].(string); ok && encoded != "" {
+			var err error
+			respBody, err = base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return 0, nil, nil, fmt.Errorf("decoding forager response body: %w", err)
+			}
 		}
 		respHeader := make(http.Header)
 		if raw, ok := result["header"].(map[string]any); ok {

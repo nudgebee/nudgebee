@@ -55,6 +55,18 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 	}
 
 	switch actionPayload.Action.Name {
+	case "logs_check_vm_status":
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityStatusActionTimeout, func() (observability.VMLogsStatus, error) {
+			return observability.CheckVMLogsStatus(ctx, accountId)
+		})
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		c.JSON(200, resp)
+		return
+
 	case "logs_query", "logs_list":
 		var request observability.FetchLogRequest
 		err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request)

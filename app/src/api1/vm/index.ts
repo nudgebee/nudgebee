@@ -1031,6 +1031,18 @@ const apiVm = {
     if (!status) throw new Error('Failed to check VM metrics');
     return { ...status, reporting: status.reporting || [] };
   },
+  /**
+   * Whether this account's log store is connected and holding recent logs. Probes the
+   * store through the forager, so it can take a few seconds: call it on demand.
+   */
+  async getLogsStatus(accountId: string): Promise<VmLogsStatus> {
+    const response = await queryGraphQL(LOGS_CHECK_VM_STATUS, 'LogsCheckVmStatus', { accountId });
+    const errors = response?.data?.errors;
+    if (errors?.length) throw new Error(errors[0]?.message || 'Failed to check VM logs');
+    const status = response?.data?.data?.logs_check_vm_status;
+    if (!status) throw new Error('Failed to check VM logs');
+    return status;
+  },
 
   /**
    * The account's service map, built by its forager from node-agent metrics and
@@ -1064,6 +1076,28 @@ export interface VmMetricsStatus {
   /** node-agents seen writing to the account's metrics store recently. */
   reporting: Array<{ instance: string; hostname?: string }>;
 }
+
+export type VmLogsState = VmMetricsState;
+
+export interface VmLogsStatus {
+  state: VmLogsState;
+  provider?: string;
+  integration_id?: string;
+  integration_name?: string;
+  error?: string;
+}
+
+const LOGS_CHECK_VM_STATUS = `
+  query LogsCheckVmStatus($accountId: String!) {
+    logs_check_vm_status(request: {account_id: $accountId}) {
+      state
+      provider
+      integration_id
+      integration_name
+      error
+    }
+  }
+`;
 
 const METRICS_CHECK_VM_STATUS = `
   query MetricsCheckVmStatus($accountId: String!) {

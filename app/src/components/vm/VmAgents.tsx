@@ -9,6 +9,7 @@ import Datetime from '@shared/format/Datetime';
 import apiVm, { VmAgent } from '@api1/vm';
 import { CellText, useLatestRequest } from './common';
 import VmMetricsStatusCard from './VmMetricsStatusCard';
+import VmLogsStatusCard from './VmLogsStatusCard';
 import { ds } from '@utils/colors';
 
 const AGENT_HEADERS = ['Agent', 'Connection', 'Configuration', 'Version', 'Last Connected'];
@@ -74,6 +75,7 @@ const VmAgents = ({ accountId }: { accountId: string }) => {
   return (
     <>
       <VmMetricsStatusCard accountId={accountId} />
+      <VmLogsStatusCard accountId={accountId} />
       <Box sx={{ mt: 4 }}>
         <ListingLayout id='vm-agents'>
           <ListingLayout.Toolbar

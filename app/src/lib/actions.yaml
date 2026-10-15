@@ -4479,6 +4479,20 @@ actions:
       - role: tenant_admin_readonly
       - role: tenant_usage
     comment: Fetch Log Label Values
+  - name: logs_check_vm_status
+    comment: Check whether a self-hosted VM account has a log store connected and holding recent logs
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/logs'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
   - name: logs_list_labels
     definition:
       kind: "synchronous"

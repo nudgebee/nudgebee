@@ -82,3 +82,34 @@ func TestTransportPropagatesContext(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, ctx, got)
 }
+
+// A 204 (or a forager that omits "body") must come back as an empty body, not a
+// base64 decode error on the string "<nil>".
+func TestTransport_EmptyBody(t *testing.T) {
+	orig := executeProxy
+	defer func() { executeProxy = orig }()
+
+	for name, result := range map[string]map[string]any{
+		"body omitted": {"status_code": float64(204)},
+		"body null":    {"status_code": float64(204), "body": nil},
+		"body empty":   {"status_code": float64(204), "body": ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			executeProxy = func(context.Context, string, string, string, map[string]any, int, string) (map[string]any, error) {
+				return result, nil
+			}
+			status, _, body, err := NewTransport("a", "d", "")(context.Background(), "GET", "/x", nil, nil)
+			require.NoError(t, err)
+			assert.Equal(t, 204, status)
+			assert.Empty(t, body)
+		})
+	}
+
+	t.Run("invalid base64 is still an error", func(t *testing.T) {
+		executeProxy = func(context.Context, string, string, string, map[string]any, int, string) (map[string]any, error) {
+			return map[string]any{"status_code": float64(200), "body": "!!not-base64!!"}, nil
+		}
+		_, _, _, err := NewTransport("a", "d", "")(context.Background(), "GET", "/x", nil, nil)
+		require.Error(t, err)
+	})
+}

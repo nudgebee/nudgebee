@@ -34,19 +34,23 @@ var dualModeProxyMapping = map[string]struct {
 	"ssh":        {ProxyType: "ssh-proxy", DbType: ""},
 	"mcp":        {ProxyType: "mcp-proxy", DbType: ""},
 	"rabbitmq":   {ProxyType: "rabbitmq-proxy", DbType: ""},
-	// prometheus rides the forager's generic http proxy; the datasource type
-	// stays "prometheus" so the forager applies its Prometheus health check.
+	// prometheus, loki and signoz ride the forager's generic http proxy. The datasource
+	// type stays the integration type, so the forager applies its Prometheus health check.
 	"prometheus": {ProxyType: "http-proxy", DbType: ""},
+	"loki":       {ProxyType: "http-proxy", DbType: ""},
+	"signoz":     {ProxyType: "http-proxy", DbType: ""},
 }
 
 // singleInstanceDualModeTypes are dual-mode types that keep the one-per-account
 // rule in their default mode. Postgres, Redis and the rest address a distinct
 // backend each, so IsProxyIntegrationType exempts them from the duplicate check
-// regardless of connection_mode; a direct Prometheus has no such per-row
-// target, and two of them would make the user-row pick ambiguous. Only
+// regardless of connection_mode; a direct Prometheus, Loki or SigNoz has no such
+// per-row target, and two of them would make the user-row pick ambiguous. Only
 // vm_agent rows (IsProxyIntegration) are proxy integrations.
 var singleInstanceDualModeTypes = map[string]bool{
 	"prometheus": true,
+	"loki":       true,
+	"signoz":     true,
 }
 
 // prometheusProxyAuthTypes maps the integration's auth_type values to the
@@ -136,6 +140,54 @@ func mergeJSON(dst, v any) {
 	}
 	if err := json.Unmarshal(raw, dst); err != nil {
 		slog.Error("prometheus proxy config merge failed", "error", err)
+	}
+}
+
+// normalizeLokiProxyDatasource is the Loki counterpart. The tenant id is dropped: the
+// forager applies a custom header only for auth_type=custom_header, so the server sends
+// X-Scope-OrgID per request (lokiRequestViaForager). loki_headers and the ruler URL stay
+// server-side.
+func normalizeLokiProxyDatasource(configMap map[string]any, credentials map[string]string) {
+	take := func(key string) string {
+		v, _ := configMap[key].(string)
+		delete(configMap, key)
+		return v
+	}
+
+	if u := strings.TrimRight(strings.TrimSpace(take("loki_url")), "/"); u != "" {
+		configMap["base_url"] = u
+	}
+	if v := take("loki_username"); v != "" {
+		credentials["username"] = v
+	}
+	if v := take("loki_password"); v != "" {
+		credentials["password"] = v
+	}
+	if v := take("loki_bearer_token"); v != "" {
+		credentials["bearer_token"] = v
+	}
+	take("loki_tenant_id")
+
+	authType := take("loki_auth_type")
+	if mapped := prometheusProxyAuthTypes[authType]; mapped != "" {
+		configMap["auth_type"] = mapped
+	}
+
+	for _, key := range []string{"loki_headers", "loki_rules_url", DefaultLogProvider} {
+		delete(configMap, key)
+	}
+}
+
+// normalizeSignozProxyDatasource maps signoz_url to base_url and drops everything else.
+// The forager's datasource is unauthenticated on purpose: SigNoz authenticates with a
+// login JWT or an API key, which the forager's static auth cannot do, so those stay on
+// the server and are sent per request.
+func normalizeSignozProxyDatasource(configMap map[string]any) {
+	if u, _ := configMap["signoz_url"].(string); strings.TrimSpace(u) != "" {
+		configMap["base_url"] = strings.TrimRight(strings.TrimSpace(u), "/")
+	}
+	for _, key := range []string{"signoz_url", "signoz_username", "signoz_password", "signoz_api_key", "signoz_auth_type", "signoz_mode", DefaultLogProvider} {
+		delete(configMap, key)
 	}
 }
 
@@ -239,6 +291,12 @@ func BuildSingleDatasourceConfig(integrationType string, configValues []Integrat
 	}
 	if strings.EqualFold(integrationType, "prometheus") {
 		normalizePrometheusProxyDatasource(configMap, credentials)
+	}
+	if strings.EqualFold(integrationType, "loki") {
+		normalizeLokiProxyDatasource(configMap, credentials)
+	}
+	if strings.EqualFold(integrationType, "signoz") {
+		normalizeSignozProxyDatasource(configMap)
 	}
 
 	return relay.ProxyDatasourceConfig{
@@ -433,6 +491,12 @@ func queryProxyDatasources(accountID string) ([]relay.ProxyDatasourceConfig, err
 		}
 		if strings.EqualFold(integrationType, "prometheus") {
 			normalizePrometheusProxyDatasource(configMap, credentials)
+		}
+		if strings.EqualFold(integrationType, "loki") {
+			normalizeLokiProxyDatasource(configMap, credentials)
+		}
+		if strings.EqualFold(integrationType, "signoz") {
+			normalizeSignozProxyDatasource(configMap)
 		}
 
 		datasources = append(datasources, relay.ProxyDatasourceConfig{

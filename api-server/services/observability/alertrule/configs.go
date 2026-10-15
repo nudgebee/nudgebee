@@ -308,6 +308,12 @@ func getLokiConfigs(sc *security.RequestContext, accountId string) (*lokiRulerCo
 			return nil, fmt.Errorf("failed to decrypt loki config %s: %w", c.Name, err)
 		}
 		switch c.Name {
+		case "connection_mode":
+			// Rules are read and written over Loki's ruler API from this process; a Loki
+			// behind a forager is not reachable here, and the forager carries no rules API.
+			if value == "vm_agent" {
+				return nil, fmt.Errorf("loki alert rules are not supported for a Loki reached through a forager")
+			}
 		case "loki_url":
 			cfg.Url = strings.TrimRight(strings.TrimSpace(value), "/")
 		case "loki_rules_url":

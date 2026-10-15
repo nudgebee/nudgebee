@@ -100,6 +100,10 @@ type Credentials struct {
 	Password string
 	Mode     string
 	APIKey   string
+
+	// CacheScope separates the token cache of SigNozs that share a URL, such as a
+	// private address behind two customers' foragers. Empty when dialled directly.
+	CacheScope string
 }
 
 func (c Credentials) usesAPIKey() bool {
@@ -503,7 +507,7 @@ var (
 // this cache — keep it that way, or keys would share cached tokens.
 func cacheKey(c Credentials) string {
 	sum := sha256.Sum256([]byte(c.Password))
-	return strings.Join([]string{strings.TrimRight(c.BaseURL, "/"), c.Email, c.Mode, hex.EncodeToString(sum[:])}, "|")
+	return strings.Join([]string{c.CacheScope, strings.TrimRight(c.BaseURL, "/"), c.Email, c.Mode, hex.EncodeToString(sum[:])}, "|")
 }
 
 func cachedToken(key string) (Token, bool) {
