@@ -734,17 +734,33 @@ func (o *NBReActPlanner4) refinementMessages(answer, feedback string) []llms.Mes
 	}
 }
 
-// containsActionGrammar reports whether text carries react_3's XML tool-call
-// protocol. Used only when the turn produced NO native tool call, to tell a
-// text-protocol attempt apart from a genuine prose answer that merely mentions
-// these tags (hence the opening-tag match rather than a substring search).
+// containsActionGrammar reports a react_3 XML or <function=name> call written as text, not prose naming the tags.
 func containsActionGrammar(text string) bool {
 	for _, tag := range []string{"thought_action", "action", "tool_name", "tool_input", "actions"} {
 		if strings.Contains(text, "<"+tag+">") || strings.Contains(text, "</"+tag+">") {
 			return true
 		}
 	}
-	return false
+	return strings.Contains(text, "<function=") && slices.ContainsFunc(functionCallRe.FindAllString(text, -1), isFunctionCall)
+}
+
+// qwen3_coder calls Nemotron leaks as text (#38236); inline code matches first, so a quoted call is prose, not a call.
+var (
+	functionCallRe  = regexp.MustCompile("(?s)`[^`\n]*`|<function=[^>\\s]+>.*?(</function>|<parameter=)")
+	functionBlockRe = regexp.MustCompile("(?s)`[^`\n]*`|<function=[^>\\s]+>.*?</function>")
+)
+
+func isFunctionCall(match string) bool { return match[0] != '`' }
+
+// stripFunctionCalls removes closed <function=> blocks outside inline code and the stray </tool_call> vLLM leaves behind.
+func stripFunctionCalls(text string) string {
+	text = functionBlockRe.ReplaceAllStringFunc(text, func(m string) string {
+		if isFunctionCall(m) {
+			return ""
+		}
+		return m
+	})
+	return strings.ReplaceAll(text, "</tool_call>", "")
 }
 
 // geminiTextToolCallMarker is the prefix Gemini writes when it serializes a
@@ -861,9 +877,10 @@ var (
 	callResidueLine = regexp.MustCompile(`(?m)^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*(json\.(dumps|loads)\(['"]?['"]?\)?)?[ \t]*$`)
 )
 
-// stripTextToolCalls removes Hermes blocks & JSON call objects from text, keeping the prose around them.
+// stripTextToolCalls removes Hermes, <function=> & JSON calls from text, keeping the prose around them.
 func stripTextToolCalls(text string) string {
 	text = hermesBlockRe.ReplaceAllString(text, "")
+	text = stripFunctionCalls(text)
 	var b strings.Builder
 	last := 0
 	for _, span := range jsonToolCallSpans(text) {
@@ -1149,6 +1166,7 @@ current <question>. Attribution is per sibling function call.`
 }
 
 func stripLegacyActionGrammar(text string) string {
+	text = stripFunctionCalls(text)
 	for _, tag := range []string{"thought_action", "actions", "action"} {
 		text = stripXMLBlocks(text, tag)
 		text = strings.ReplaceAll(text, "</"+tag+">", "")

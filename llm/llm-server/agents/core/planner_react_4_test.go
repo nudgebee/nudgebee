@@ -340,6 +340,27 @@ func TestReAct4_ParseCompletion_PreservesProseAroundLegacyActionXML(t *testing.T
 	assert.Equal(t, "Checking pod health now.", actions[0].Log)
 }
 
+// A native call wins over leaked <function=> text: prose before a closed leak stays, an unclosed leak drops it.
+func TestReAct4_ParseCompletion_FunctionCallTextAlongsideNativeToolCall(t *testing.T) {
+	for name, tc := range map[string]struct{ content, wantLog string }{
+		"closed leak":   {"Checking the S3 buckets now. " + nemotronFunctionCall, "Checking the S3 buckets now."},
+		"unclosed leak": {"Checking the S3 buckets now. <function=cloud_resource_search_execute> <parameter=service> S3", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			actions, finish, err := (&NBReActPlanner4{}).parseCompletion(&llms.ContentChoice{
+				Content:   tc.content,
+				ToolCalls: []llms.ToolCall{toolCall("call_1", "cloud_resource_search_execute", `{"service":"S3"}`)},
+			})
+			assert.NoError(t, err)
+			assert.Nil(t, finish)
+			require.Len(t, actions, 1)
+			assert.Equal(t, "cloud_resource_search_execute", actions[0].Tool)
+			assert.JSONEq(t, `{"service":"S3"}`, actions[0].ToolInput)
+			assert.Equal(t, tc.wantLog, actions[0].Log)
+		})
+	}
+}
+
 func TestReAct4_ParseCompletion_StripsEncodedActionXMLInsideThought(t *testing.T) {
 	o := &NBReActPlanner4{}
 	choice := &llms.ContentChoice{
@@ -752,9 +773,13 @@ func TestReAct4_ParseCompletion_TextToolCallShapesAreParseFailures(t *testing.T)
 		"tool as tag": "<update_notebook>Confirmed the root cause.</update_notebook>",
 		"gemini default_api": "Click on Troubleshoot in the sidebarcall:default_api:qa_browser_click" +
 			`{_thought:Click on Troubleshoot in the sidebar,element:link Troubleshoot,target:link "Troubleshoot" [ref=f5e71]}`,
-		"gemini unregistered tool": "Checking the pod.call:default_api:shell_execute{command:kubectl get pods}",
-		"brace call":               `Next step: qa_browser_click{"element":"link Troubleshoot"}`,
-		"paren call":               `qa_browser_click(element="link Troubleshoot")`,
+		"gemini unregistered tool":   "Checking the pod.call:default_api:shell_execute{command:kubectl get pods}",
+		"brace call":                 `Next step: qa_browser_click{"element":"link Troubleshoot"}`,
+		"paren call":                 `qa_browser_click(element="link Troubleshoot")`,
+		"qwen3_coder function form":  nemotronFunctionCall,
+		"function form in tool_call": "<tool_call>\n" + nemotronFunctionCall,
+		"unclosed function form":     "<function=cloud_resource_search_execute>\n<parameter=service>\nS3",
+		"function form in a fence":   "```\n" + nemotronFunctionCall + "\n```",
 	} {
 		t.Run(name, func(t *testing.T) {
 			actions, finish, err := o.parseCompletion(&llms.ContentChoice{Content: raw})
@@ -775,11 +800,14 @@ func TestReAct4_ParseCompletion_ToolNameWithoutCallSyntaxStillAnswers(t *testing
 		"The qa_browser_click (second call) succeeded.",
 		"my_qa_browser_click(x) is unrelated.",
 		"Clicking failed: qa_browser_click_v2{} is not a tool here.",
+		"vLLM's qwen3_coder parser expects each call to open with `<function=name>`.",
+		"qwen3_coder calls look like `<function=name><parameter=x>value</parameter></function>`.",
 	} {
 		t.Run(raw, func(t *testing.T) {
 			_, finish, err := o.parseCompletion(&llms.ContentChoice{Content: raw})
 			assert.NoError(t, err)
 			assert.NotNil(t, finish)
+			assert.Equal(t, raw, stripTextToolCalls(raw), "the summary fallback must not cut prose")
 		})
 	}
 }
@@ -1231,3 +1259,6 @@ func TestReact4RefinementMessageAsksForSelfContainedAnswer(t *testing.T) {
 	assert.Contains(t, msg, "The user never saw the previous answer")
 	assert.Contains(t, msg, "do not mention a previous answer")
 }
+
+// nemotronFunctionCall is Nemotron Nano's leaked final answer on an S3 question (#38236).
+const nemotronFunctionCall = "<function=cloud_resource_search_execute> <parameter=service> S3 </parameter> </function> </tool_call>"

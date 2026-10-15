@@ -2144,6 +2144,10 @@ func TestSummarizeConversation_TextToolCallInsideAnswer(t *testing.T) {
 		"only a call":                    {"metrics = " + call, true},
 		"only a call with a short intro": {"I will check the logs next.\n\nlogs = json.dumps(" + call + ")\nprint(logs)", true},
 		"hermes block after an answer":   {analysis + "\n<tool_call>\n" + call + "\n</tool_call>", false},
+		"function call after an answer":  {analysis + "\n" + nemotronFunctionCall, false},
+		"only a function call":           {nemotronFunctionCall, true},
+		"answer naming the syntax":       {analysis + "\nNemotron's tool calls open with `<function=name>`.", false},
+		"unclosed call before more text": {analysis + "\n<function=logs>\n<parameter=command>\ntail\nRaise the limit to 512Mi.", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			withFakeLLMModel(t, &fakeLLMModel{response: tc.summary})
