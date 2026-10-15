@@ -95,6 +95,53 @@ func archiveRecommendationsForInactiveResources(ctx *security.RequestContext, db
 	return nil
 }
 
+// archiveRecommendationsForDisabledAccounts archives Open recommendations on
+// accounts that are no longer active. Every producer selects only active
+// accounts, so a disabled account never runs the per-account archive step again
+// and its last batch would stay Open forever; its resources also keep
+// is_active = true, so archiveRecommendationsForInactiveResources misses them.
+// Re-enabling needs no counterpart here: the producers' upsert moves a re-emitted
+// Archive row back to Open. InProgress, Assigned, Closed and Dismissed rows are
+// left alone.
+func archiveRecommendationsForDisabledAccounts(ctx *security.RequestContext, dbms *database.DatabaseManager) error {
+	count, err := archiveOpenRecommendationsOnDisabledAccounts(ctx.GetContext(), dbms.Db, "recommendation", "cloud_accounts")
+	if count > 0 {
+		ctx.GetLogger().Info("archived recommendations for disabled accounts", "count", count)
+	}
+	return err
+}
+
+// archiveOpenRecommendationsOnDisabledAccounts runs one UPDATE per account so
+// each statement's row locks are bounded by a single account's backlog, rather
+// than one transaction over every disabled account's rows at once. A failure on
+// one account does not stop the others.
+func archiveOpenRecommendationsOnDisabledAccounts(ctx context.Context, db *sqlx.DB, recommendationTable, accountTable string) (int64, error) {
+	var accountIds []string
+	err := db.SelectContext(ctx, &accountIds, fmt.Sprintf(`select ca.id::text
+		from %[2]s ca
+		where ca.status <> 'active'
+		  and exists (select 1 from %[1]s r where r.cloud_account_id = ca.id and r.status = $1)`,
+		recommendationTable, accountTable), models.RecommendationStatusOpen)
+	if err != nil {
+		return 0, fmt.Errorf("list disabled accounts with open recommendations: %w", err)
+	}
+
+	var archived int64
+	var errs []error
+	for _, accountId := range accountIds {
+		res, err := db.ExecContext(ctx, fmt.Sprintf(`update %s set status = $1 where cloud_account_id = $2 and status = $3`, recommendationTable),
+			models.RecommendationStatusArchive, accountId, models.RecommendationStatusOpen)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("archive recommendations for account %s: %w", accountId, err))
+			continue
+		}
+		if count, err := res.RowsAffected(); err == nil {
+			archived += count
+		}
+	}
+	return archived, errors.Join(errs...)
+}
+
 // upsertRecommendationData UPSERTs a producer's rows. The status column is
 // guarded by a CASE: a re-scan may move a row between the scanner-owned
 // Open/Archive states, but never out of a user-owned one (Dismissed/snoozed,
@@ -1010,6 +1057,9 @@ func GenerateRecommendation(ctx *security.RequestContext, request GenerateRecomm
 	if len(request.AccountId) == 0 {
 		if err := archiveRecommendationsForInactiveResources(ctx, dbms); err != nil {
 			ctx.GetLogger().Error("error archiving recommendations for inactive resources", "error", err)
+		}
+		if err := archiveRecommendationsForDisabledAccounts(ctx, dbms); err != nil {
+			ctx.GetLogger().Error("error archiving recommendations for disabled accounts", "error", err)
 		}
 		if err := archiveImageScanFindingsForDepartedImages(ctx, dbms); err != nil {
 			ctx.GetLogger().Error("error archiving image scan findings for departed images", "error", err)
