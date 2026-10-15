@@ -31,6 +31,13 @@ TIMEOUT, EMPTY, SCAN = "timeout", "empty", "scan"
 RECOMMENDATION = {resource: SimpleNamespace(request=1, limit=None, info=None, config=None) for resource in ResourceType}
 
 
+class _Workload(int):
+    """A workload index that the scan can release like a real workload."""
+
+    def release_pods(self) -> None:
+        pass
+
+
 def _service(workload_count: int, outcome, **config_overrides) -> tuple[RecommendationService, list]:
     """A service over `workload_count` workloads; `outcome(index)` decides each fetch.
 
@@ -39,7 +46,7 @@ def _service(workload_count: int, outcome, **config_overrides) -> tuple[Recommen
     config = Config(strategy="nudgebee", other_args={}, max_workers=BATCH_SIZE, **config_overrides)
     with patch(CLUSTER_ENGINE, return_value=MagicMock()):
         svc = RecommendationService("acct", config, tenant_id="tenant-1")
-    svc._k8s_loader.list_scannable_objects = AsyncMock(return_value=list(range(workload_count)))
+    svc._k8s_loader.list_scannable_objects = AsyncMock(return_value=[_Workload(i) for i in range(workload_count)])
     fetched: list = []
 
     async def fake_fetch(k8s_object):
