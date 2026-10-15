@@ -220,62 +220,6 @@ func truncateForLog(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-func StoreUsageReport(ctx *security.RequestContext, usageReportRequest StoreUsageRequest) (map[string]any, error) {
-
-	if usageReportRequest.AccountId == "" {
-		return map[string]any{}, errors.New("account_id is required")
-	}
-
-	if usageReportRequest.Month == 0 || usageReportRequest.Year == 0 {
-		return map[string]any{}, errors.New("month/year is required")
-	}
-
-	if ctx.GetSecurityContext().GetTenantId() == "" {
-		return map[string]any{}, errors.New("tenant is required")
-	}
-
-	if ctx.GetSecurityContext().GetUserId() == "" {
-		return map[string]any{}, errors.New("user is required")
-	}
-
-	resp, err := common.HttpPost(config.Config.CloudCollectorServerUrl+"/v1/cloud/store_usage", common.HttpWithJsonBody(map[string]any{
-		"account_id": usageReportRequest.AccountId,
-		"month":      usageReportRequest.Month,
-		"year":       usageReportRequest.Year,
-		"backfill":   usageReportRequest.Backfill,
-	}), common.HttpWithHeaders(map[string]string{
-		config.Config.CloudCollectorServerTokenHeader: config.Config.CloudCollectorServerToken,
-		"x-tenant-id": ctx.GetSecurityContext().GetTenantId(),
-		"x-user-id":   ctx.GetSecurityContext().GetUserId(),
-	}))
-
-	if err != nil {
-		return map[string]any{}, err
-	}
-
-	var data []byte
-	if resp.Body != nil {
-		defer func() {
-			if err := resp.Body.Close(); err != nil {
-				slog.Error("unable to close body", "error", err)
-			}
-		}()
-		data, err = io.ReadAll(resp.Body)
-		if err != nil {
-			return map[string]any{}, err
-		}
-	}
-
-	if resp.StatusCode != 200 {
-		ctx.GetLogger().Error("cloud: unable to send request", "body", string(data), "status", resp.StatusCode)
-		return map[string]any{}, errors.New(string(data))
-	}
-
-	return map[string]any{
-		"data": string(data),
-	}, nil
-}
-
 type queryMetricsResponse struct {
 	Data QueryMetricsResponse `json:"data"`
 }

@@ -134,6 +134,15 @@ type appConfig struct {
 	BaseUrl                                      string `mapstructure:"base_url"`
 	BrandingName                                 string `mapstructure:"branding_name"`
 
+	// Same exchange/queue collector-server's ConsumeCloudAccountCostReportJobs
+	// already consumes (cloud-collector/account/etl_usage_report.go) — the
+	// daily cron publishes here instead of calling store_usage synchronously.
+	// account.CreateAccount's first-sync-on-onboarding publishes here too
+	// (#41116), rather than blocking on an HTTP call bound to the request's
+	// own client timeout.
+	RabbitMqCloudAccountCostReportExchange string `mapstructure:"rabbit_mq_cloud_account_cost_report_exchange"`
+	RabbitMqCloudAccountCostReportQueue    string `mapstructure:"rabbit_mq_cloud_account_cost_report_queue"`
+
 	RabbitMqTroubleshootExchange string `mapstructure:"rabbit_mq_troubleshoot_exchange"`
 	RabbitMqTroubleshootQueue    string `mapstructure:"rabbit_mq_troubleshoot_queue"`
 
@@ -531,6 +540,11 @@ func init() {
 	viper.SetDefault("rabbit_mq_services_cloudaccount_onboarding_queue", "cloudaccount_onboarding")
 	viper.SetDefault("rabbit_mq_services_anomaly_processing_queue", "anomaly_processing")
 	viper.SetDefault("rabbit_mq_services_anomaly_processing_concurrency", "1")
+
+	// Must match collector-server's own defaults for the same two keys
+	// (cloud-collector/config/config.go) — same physical queue, two services.
+	viper.SetDefault("rabbit_mq_cloud_account_cost_report_exchange", "cloud_account_cost_report_exchange")
+	viper.SetDefault("rabbit_mq_cloud_account_cost_report_queue", "cloud_account_cost_report")
 	viper.SetDefault("base_url", "http://nudgebee")
 	viper.SetDefault("branding_name", "Nudgebee")
 

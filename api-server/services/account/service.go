@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"nudgebee/services/audit"
-	"nudgebee/services/cloud"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
@@ -27,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 
@@ -760,6 +760,19 @@ func insertCloudAccountOnboardingError(tenantId string, createdBy string, cloudP
 	return nil, nil
 }
 
+// Wire-compatible with collector-server's own CloudAccountCostReportJob
+// (cloud-collector/account/etl_usage_report.go) — same exchange/queue, same
+// consumer (ConsumeCloudAccountCostReportJobs), two Go modules that can't
+// share the type directly.
+type cloudAccountCostReportJob struct {
+	JobId     string `json:"job_id"`
+	AccountId string `json:"account_id"`
+	TenantId  string `json:"tenant_id"`
+	Month     int    `json:"month"`
+	Year      int    `json:"year"`
+	Backfill  bool   `json:"backfill"`
+}
+
 func CreateAccount(context *security.RequestContext, query AccountCreateRequest) (AccountCreateResponse, error) {
 	err := common.ValidateStruct(query)
 	if err != nil {
@@ -1183,30 +1196,44 @@ func CreateAccount(context *security.RequestContext, query AccountCreateRequest)
 
 	//load initial data
 	if query.CloudProvider == "AWS" || query.CloudProvider == "Azure" || query.CloudProvider == "GCP" || query.CloudProvider == "CloudFoundry" {
-		go func() {
-			context.GetLogger().Info("account: triggering intial load for account", "account", newAccountId)
-			// Backfill: this is the account's first sync, so the current month on
-			// its own is whatever fraction of it has elapsed. An account connected
-			// on the 20th would otherwise show 20 days of spend and no history at
-			// all — no month-on-month comparison, an empty trend chart, and no
-			// baseline for spend-anomaly detection to work from. The organisation
-			// auto-registration path already asks for this; account creation from
-			// the UI never did.
-			// UTC, not local: billing periods are UTC, so a server west of it would
-			// ask for the previous month during the first hours of a new UTC month.
-			// That month is also what the backfill skips as already-processed, so a
-			// local-time answer would skip the wrong one.
-			now := time.Now().UTC()
-			_, err := cloud.StoreUsageReport(context, cloud.StoreUsageRequest{
-				AccountId: newAccountId,
-				Month:     now.Month(),
-				Year:      now.Year(),
-				Backfill:  true,
-			})
-			if err != nil {
-				context.GetLogger().Error("failed to hit store_usage", "error", err)
-			}
-		}()
+		context.GetLogger().Info("account: triggering intial load for account", "account", newAccountId)
+		// Backfill: this is the account's first sync, so the current month on
+		// its own is whatever fraction of it has elapsed. An account connected
+		// on the 20th would otherwise show 20 days of spend and no history at
+		// all — no month-on-month comparison, an empty trend chart, and no
+		// baseline for spend-anomaly detection to work from. The organisation
+		// auto-registration path already asks for this; account creation from
+		// the UI never did.
+		// UTC, not local: billing periods are UTC, so a server west of it would
+		// ask for the previous month during the first hours of a new UTC month.
+		// That month is also what the backfill skips as already-processed, so a
+		// local-time answer would skip the wrong one.
+		now := time.Now().UTC()
+		// #41116: this used to call cloud.StoreUsageReport synchronously in a
+		// goroutine — a plain HTTP POST with no explicit timeout, so it
+		// inherited common.HttpPost's 30s default. The collector runs the
+		// actual billing read bound to that same request's context, so a
+		// slow BigQuery export got its read cancelled at 30s: written up as
+		// a failed first sync, history backfill skipped, even though the
+		// account and every other sync were fine. The daily cron never hits
+		// this — it publishes a CloudAccountCostReportJob to this same
+		// queue instead of calling store_usage directly
+		// (etl_usage_report.go, StoreDailyUsageReportForAllAccounts), so a
+		// worker with no HTTP deadline does the read. Onboarding now does
+		// the same: publish and return, don't block the account-create
+		// response on it.
+		job := cloudAccountCostReportJob{
+			JobId:     uuid.New().String(),
+			AccountId: newAccountId,
+			TenantId:  context.GetSecurityContext().GetTenantId(),
+			Month:     int(now.Month()),
+			Year:      now.Year(),
+			Backfill:  true,
+		}
+		if err := common.MqPublish(config.Config.RabbitMqCloudAccountCostReportExchange, config.Config.RabbitMqCloudAccountCostReportQueue, job,
+			common.MqPublishWithContext(context.GetContext())); err != nil {
+			context.GetLogger().Error("account: failed to publish cost report job for initial load", "account", newAccountId, "error", err)
+		}
 	}
 
 	audit.LogChange(context, audit.ChangeInput{
