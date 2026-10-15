@@ -710,6 +710,10 @@ type appConfig struct {
 	// ClaimCritiqueFeedbackEnabled, ClaimCritiqueActionableFeedbackEnabled and
 	// CritiqueContinuationEnabled are set from it at load time; the code reads those.
 	CritiqueMode string `mapstructure:"llm_critique_mode"`
+	// ClaimCritiqueTimeoutSeconds is the budget for each claim-review model call
+	// (audit and guidance). 0 means the default, 60s; values are kept within
+	// 10–120s so a slow model cannot hold an answer back indefinitely.
+	ClaimCritiqueTimeoutSeconds int `mapstructure:"llm_claim_critique_timeout_seconds"`
 	// CritiqueContinuationEnabled is derived from CritiqueMode (continuation); not set directly.
 	CritiqueContinuationEnabled bool `mapstructure:"-"`
 	// PremiseVerificationEnabled gates the "confirm the symptom before diagnosing it"
@@ -1546,6 +1550,7 @@ func init() {
 	viper.SetDefault("llm_premise_verification_enabled", true)
 	// The default also registers the key: viper.Unmarshal ignores env vars for keys it does not know.
 	viper.SetDefault("llm_critique_mode", CritiqueModeContinuation)
+	viper.SetDefault("llm_claim_critique_timeout_seconds", 60)
 	viper.SetDefault("llm_server_workspace_port", 8080)
 	viper.SetDefault("llm_server_workspace_local_url", "")   // e.g. http://localhost:8080 for local dev
 	viper.SetDefault("llm_server_workspace_local_token", "") // must match NB_WORKSPACE_TOKEN on the local code-analysis process

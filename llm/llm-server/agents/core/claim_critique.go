@@ -17,7 +17,36 @@ import (
 )
 
 const claimCritiqueInputLimit = 256 * 1024
-const claimCritiqueTimeout = 20 * time.Second
+
+// claimCritiqueTimeout is the budget for one claim-review model call (the audit,
+// and separately the guidance step). Slower models need longer than the 20s
+// this used to be: on Qwen most reviews timed out and the answer went out
+// unreviewed. Set with llm_claim_critique_timeout_seconds, kept within
+// [claimCritiqueMinTimeout, claimCritiqueMaxTimeout] so a review cannot hold an
+// answer back indefinitely.
+func claimCritiqueTimeout() time.Duration {
+	return clampClaimCritiqueTimeout(config.Config.ClaimCritiqueTimeoutSeconds)
+}
+
+const (
+	claimCritiqueDefaultTimeout = 60 * time.Second
+	claimCritiqueMinTimeout     = 10 * time.Second
+	claimCritiqueMaxTimeout     = 120 * time.Second
+)
+
+func clampClaimCritiqueTimeout(seconds int) time.Duration {
+	if seconds <= 0 {
+		return claimCritiqueDefaultTimeout
+	}
+	d := time.Duration(seconds) * time.Second
+	switch {
+	case d < claimCritiqueMinTimeout:
+		return claimCritiqueMinTimeout
+	case d > claimCritiqueMaxTimeout:
+		return claimCritiqueMaxTimeout
+	}
+	return d
+}
 
 type critiqueClaim struct {
 	Claim          string `json:"claim"`
@@ -242,7 +271,7 @@ func generateClaimShadow(ctx *security.RequestContext, request NBAgentRequest, d
 // and a fresh usage id (an explicit id belongs to a single attempt), which the
 // record then points at because its verdict is the one used.
 func generateClaimFallback(ctx *security.RequestContext, request NBAgentRequest, record *ClaimCritiqueAuditRecord) claimShadowResult {
-	bounded, cancel := context.WithTimeout(ctx.GetContext(), claimCritiqueTimeout)
+	bounded, cancel := context.WithTimeout(ctx.GetContext(), claimCritiqueTimeout())
 	defer cancel()
 	record.TokenUsageID = uuid.NewString()
 	bounded = context.WithValue(bounded, ContextKeyModelTier, ModelTierReasoning)
@@ -256,7 +285,7 @@ func generateClaimFallback(ctx *security.RequestContext, request NBAgentRequest,
 // request: same messages, tools and model, so the provider cache covers them.
 // Evidence references are the planner's E-numbers rather than packet ids.
 func generateClaimContinuation(conv *critiqueConversation, usageID string, request NBAgentRequest, detail claimCaptureDetail) claimShadowResult {
-	bounded, cancel := context.WithTimeout(conv.ctx.GetContext(), claimCritiqueTimeout)
+	bounded, cancel := context.WithTimeout(conv.ctx.GetContext(), claimCritiqueTimeout())
 	defer cancel()
 	ctx := conv.derive(context.WithValue(bounded, contextKeyClaimUsageID, usageID))
 	instruction := conv.instruction(detail.Prompt)
@@ -316,7 +345,7 @@ func runClaimCritiqueShadow(ctx *security.RequestContext, request NBAgentRequest
 		baseline = "unknown"
 	}
 	started := time.Now()
-	bounded, cancel := context.WithTimeout(ctx.GetContext(), claimCritiqueTimeout)
+	bounded, cancel := context.WithTimeout(ctx.GetContext(), claimCritiqueTimeout())
 	defer cancel()
 	bounded = context.WithValue(bounded, ContextKeyModelTier, ModelTierReasoning)
 	bounded = context.WithValue(bounded, contextKeyPreserveInput, true)

@@ -55,7 +55,7 @@ func TestClaimCritiqueLiveReplay(t *testing.T) {
 			Observations []claimObservation `json:"observations"`
 		}
 		require.NoError(t, json.Unmarshal(c.Packet, &packet))
-		ctx, cancel := context.WithTimeout(context.Background(), claimCritiqueTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), claimCritiqueTimeout())
 		start := time.Now()
 		response, callErr := client.GenerateContent(ctx, []llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, prompt),

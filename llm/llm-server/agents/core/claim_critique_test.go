@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"nudgebee/llm/config"
 	nbprompts "nudgebee/llm/prompts"
@@ -248,4 +249,25 @@ func TestClaimFeedbackBothPlannersValidateAudit(t *testing.T) {
 			})
 		}
 	}
+}
+
+// The review budget is configurable but bounded: 0 means the default, and
+// values outside 10–120s are clamped so a review cannot hold an answer back.
+func TestClaimCritiqueTimeoutIsBounded(t *testing.T) {
+	cases := map[int]time.Duration{
+		0:   60 * time.Second,
+		-5:  60 * time.Second,
+		3:   10 * time.Second,
+		30:  30 * time.Second,
+		90:  90 * time.Second,
+		600: 120 * time.Second,
+	}
+	for seconds, want := range cases {
+		require.Equal(t, want, clampClaimCritiqueTimeout(seconds), seconds)
+	}
+
+	previous := config.Config.ClaimCritiqueTimeoutSeconds
+	t.Cleanup(func() { config.Config.ClaimCritiqueTimeoutSeconds = previous })
+	config.Config.ClaimCritiqueTimeoutSeconds = 45
+	require.Equal(t, 45*time.Second, claimCritiqueTimeout())
 }
