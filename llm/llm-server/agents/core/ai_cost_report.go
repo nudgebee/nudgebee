@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"sync"
 	"time"
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 
 	"github.com/lib/pq"
+	"golang.org/x/sync/errgroup"
 )
 
 // ai_cost_report.go computes the daily + month-to-date AI cost report,
@@ -362,85 +362,73 @@ func (chat *ConversationDao) GetAiCostAccountReport(accountIDs []string, referen
 		dailyByModel, dailyBySource, mtdByModel, mtdBySource []accountDimScan
 		prevMonthTotals                                      []accountTotalScan
 		topModels, topSources                                []dimCostBreakdownScan
-		mu                                                   sync.Mutex // guards firstErr only — each goroutine below owns a distinct result variable, and wg.Wait() happens-after every Done(), so those writes need no lock.
-		firstErr                                             error
-		wg                                                   sync.WaitGroup
 	)
-	fail := func(err error) {
-		mu.Lock()
-		if firstErr == nil {
-			firstErr = err
-		}
-		mu.Unlock()
-	}
 
-	wg.Add(7)
-	go func() {
-		defer wg.Done()
+	// SetLimit(3): these 7 queries are each a heavy join + aggregation over
+	// llm_conversation_token_usage. Firing all 7 at once saturated dev's small
+	// Cloud SQL instance, pushing every one of them past 10s and tripping the
+	// ">5 slow queries in 10 min" alert — capping concurrency cuts contention
+	// so the individual queries run faster too, not just more spread out.
+	var g errgroup.Group
+	g.SetLimit(3)
+	g.Go(func() error {
 		rows, err := chat.runAccountDimensionCost(accountIDs, dayStart, dayEnd, "t.llm_model")
 		if err != nil {
-			fail(err)
-			return
+			return err
 		}
 		dailyByModel = rows
-	}()
-	go func() {
-		defer wg.Done()
+		return nil
+	})
+	g.Go(func() error {
 		rows, err := chat.runAccountDimensionCost(accountIDs, dayStart, dayEnd, "c.source")
 		if err != nil {
-			fail(err)
-			return
+			return err
 		}
 		dailyBySource = rows
-	}()
-	go func() {
-		defer wg.Done()
+		return nil
+	})
+	g.Go(func() error {
 		rows, err := chat.runAccountDimensionCost(accountIDs, monthStart, dayEnd, "t.llm_model")
 		if err != nil {
-			fail(err)
-			return
+			return err
 		}
 		mtdByModel = rows
-	}()
-	go func() {
-		defer wg.Done()
+		return nil
+	})
+	g.Go(func() error {
 		rows, err := chat.runAccountDimensionCost(accountIDs, monthStart, dayEnd, "c.source")
 		if err != nil {
-			fail(err)
-			return
+			return err
 		}
 		mtdBySource = rows
-	}()
-	go func() {
-		defer wg.Done()
+		return nil
+	})
+	g.Go(func() error {
 		rows, err := chat.runAccountTotalCost(accountIDs, prevMonthStart, prevMonthEnd)
 		if err != nil {
-			fail(err)
-			return
+			return err
 		}
 		prevMonthTotals = rows
-	}()
-	go func() {
-		defer wg.Done()
+		return nil
+	})
+	g.Go(func() error {
 		rows, err := chat.runTopDimensionCostBreakdown(accountIDs, monthStart, dayEnd, "t.llm_model", topModelsLimit)
 		if err != nil {
-			fail(err)
-			return
+			return err
 		}
 		topModels = rows
-	}()
-	go func() {
-		defer wg.Done()
+		return nil
+	})
+	g.Go(func() error {
 		rows, err := chat.runTopDimensionCostBreakdown(accountIDs, monthStart, dayEnd, "c.source", topSourcesLimit)
 		if err != nil {
-			fail(err)
-			return
+			return err
 		}
 		topSources = rows
-	}()
-	wg.Wait()
-	if firstErr != nil {
-		return AiCostAccountReport{}, firstErr
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return AiCostAccountReport{}, err
 	}
 
 	prevByAccount := make(map[string]accountTotalScan, len(prevMonthTotals))
