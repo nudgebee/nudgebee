@@ -52,6 +52,13 @@ func TestRedactToolOutput(t *testing.T) {
 			"secretName: app-tls\nLLM_SERVER_TOKEN_HEADER=Authorization\ntokenUrl: https://auth.example.com/token"},
 		{"references and placeholders kept", "PGPASSWORD=$DB_PASS\nAPI_KEY=${API_KEY}\npassword: <your-password>\ntoken: true",
 			"PGPASSWORD=$DB_PASS\nAPI_KEY=${API_KEY}\npassword: <your-password>\ntoken: true"},
+		{"erlang cookie in env", "RABBITMQ_ERL_COOKIE=FAKEcookie0123456789abcdefABCDEF\nRABBITMQ_USERNAME=user",
+			"RABBITMQ_ERL_COOKIE=[REDACTED]\nRABBITMQ_USERNAME=user"},
+		{"erlang cookie in kubectl describe", "      RABBITMQ_ERL_COOKIE:        FAKEcookie0123456789abcdefABCDEF\n      RABBITMQ_LOAD_DEFINITIONS:  no",
+			"      RABBITMQ_ERL_COOKIE:        [REDACTED]\n      RABBITMQ_LOAD_DEFINITIONS:  no"},
+		{"cookie k8s env entry", "- name: SESSION_COOKIE\n  value: fakeSessionCookie42",
+			"- name: SESSION_COOKIE\n  value: [REDACTED]"},
+		{"passphrase in env", "SSH_KEY_PASSPHRASE=fake-Pass-Phrase-9", "SSH_KEY_PASSPHRASE=[REDACTED]"},
 		{"aws key", "found AKIAABCDEFGHIJKLMNOP in config", "found [REDACTED] in config"},
 		{"google oauth secret", "x GOCSPX-Abcdefghijklmnopqrstuvw y", "x [REDACTED] y"},
 		{"bearer header", "Authorization: Bearer abc.def.ghi-123456", "Authorization: Bearer [REDACTED]"},
@@ -125,6 +132,8 @@ func TestRedactToolOutputKeepsNonSecrets(t *testing.T) {
 		"api_key=secrets[name]",
 		"GOOGLE_APPLICATION_CREDENTIALS: /var/run/secrets/gcp/key.json",
 		"token: GITHUB_TOKEN_KEY",
+		"COOKIE_DOMAIN=.example.com\nSESSION_COOKIE_SECURE=true",
+		"cookie_name: app_session",
 	} {
 		assert.Equal(t, in, redactToolOutput(context.Background(), "t", in), in)
 	}
