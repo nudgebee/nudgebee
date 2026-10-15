@@ -10,6 +10,8 @@ import (
 	"nudgebee/services/integrations"
 	"nudgebee/services/security"
 	"strconv"
+	"strings"
+	"time"
 )
 
 // PrometheusSaasMetricSource queries a user-configured Prometheus-compatible
@@ -119,14 +121,34 @@ func (s *PrometheusSaasMetricSource) FetchMetricsLabels(ctx *security.RequestCon
 	return labels, nil
 }
 
+// prometheusSaasLabelValuesWindow is the look-back used for label values when
+// the caller gives no time range.
+const prometheusSaasLabelValuesWindow = 24 * time.Hour
+
 func (s *PrometheusSaasMetricSource) FetchMetricLabelValues(ctx *security.RequestContext, req FetchMetricsLabelValueRequest) ([]OutputMetricsLabelValues, error) {
 	if req.Label == "" {
 		return nil, fmt.Errorf("prometheus: label is required")
 	}
 
 	params := url.Values{}
-	prometheusSaasTimeParams(params, req.StartTime, req.EndTime)
-	if metric, ok := req.Request["metric"].(string); ok && metric != "" {
+	// Callers such as the query builder send no window. Azure Managed
+	// Prometheus rejects label values without both bounds (max 32 days), and
+	// for other backends it bounds an otherwise all-time lookup.
+	startMs, endMs := req.StartTime, req.EndTime
+	if endMs == 0 {
+		endMs = time.Now().UnixMilli()
+	}
+	if startMs == 0 {
+		startMs = endMs - prometheusSaasLabelValuesWindow.Milliseconds()
+	}
+	prometheusSaasTimeParams(params, startMs, endMs)
+	// metric_name is what the UI and the agent source use; metric is kept for
+	// older callers.
+	metric := requestedMetricName(req)
+	if metric == "" {
+		metric, _ = req.Request["metric"].(string)
+	}
+	if metric != "" {
 		params.Add("match[]", fmt.Sprintf(`{__name__="%s"}`, escapePromQLString(metric)))
 	}
 	if limit, ok := req.Request["limit"].(int); ok && limit > 0 {
@@ -138,6 +160,10 @@ func (s *PrometheusSaasMetricSource) FetchMetricLabelValues(ctx *security.Reques
 	apiPath := "/api/v1/label/" + url.PathEscape(req.Label) + "/values"
 	payload, err := prometheusSaasGetJSON(ctx, req.AccountId, apiPath, params)
 	if err != nil {
+		// Azure Managed Prometheus lists a label's values only for one metric.
+		if metric == "" && strings.Contains(err.Error(), "Exactly one metric name must be specified") {
+			return nil, fmt.Errorf("prometheus: this endpoint lists %q values only for a selected metric; choose a metric first", req.Label)
+		}
 		return nil, err
 	}
 
