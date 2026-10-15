@@ -1,8 +1,11 @@
 package scan_orchestrator
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"nudgebee/services/internal/database"
@@ -32,7 +35,7 @@ func RunCertificateScan(ctx *security.RequestContext, account ScanAccount) error
 	}
 	logger.Info("certificate_scanner: fetched", "cert_count", len(certs))
 
-	recs, err := ParseCertificates(certs, account, time.Now())
+	recs, err := ParseCertificates(certs, account, time.Now(), certExpiryWarningDays(ctx, account.AccountID))
 	if err != nil {
 		return fmt.Errorf("certificate_scanner: parse: %w", err)
 	}
@@ -41,6 +44,39 @@ func RunCertificateScan(ctx *security.RequestContext, account ScanAccount) error
 	// have a ScannerCatalog entry (it isn't Job-based), so call the
 	// archive-then-upsert path directly.
 	return persistCertificates(ctx, account, recs)
+}
+
+// certExpiryWarningDays returns the account's configured warning window. A
+// missing, unreadable or invalid setting yields DefaultCertExpiryWarningDays,
+// so a bad value never stops the scan.
+func certExpiryWarningDays(ctx *security.RequestContext, accountID string) int {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		ctx.GetLogger().Error("certificate_scanner: db unavailable for warning window, using default",
+			"account_id", accountID, "error", err)
+		return DefaultCertExpiryWarningDays
+	}
+	var raw sql.NullString
+	err = dbms.Db.Get(&raw,
+		`SELECT value FROM cloud_account_attrs WHERE cloud_account_id = $1 AND name = $2`,
+		accountID, certExpiryWarningDaysAttr)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			ctx.GetLogger().Error("certificate_scanner: reading warning window, using default",
+				"account_id", accountID, "error", err)
+		}
+		return DefaultCertExpiryWarningDays
+	}
+	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
+		return DefaultCertExpiryWarningDays
+	}
+	days, ok := parseCertExpiryWarningDays(raw.String)
+	if !ok {
+		ctx.GetLogger().Warn("certificate_scanner: invalid warning window, using default",
+			"account_id", accountID, "value", raw.String)
+		return DefaultCertExpiryWarningDays
+	}
+	return days
 }
 
 // fetchCertManagerCertificates calls the agent's get_resource primitive for
