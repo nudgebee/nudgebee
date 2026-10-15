@@ -1390,11 +1390,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 						if err != nil {
 							ctx.GetLogger().Error("conversation: unable to unmarshal message config from previous message", "error", err, "data", *v.MessageConfig, "id", v.ID)
 						}
-						// Skipping history is a property of the turn that asked for it; a
-						// user's follow-up after an automated re-analysis needs the history.
-						prevConfig.SkipConversationHistory = false
-						prevConfig.ReadOnlyRun = false
-						request.QueryConfig.MergeFrom(prevConfig)
+						request.QueryConfig.MergeFrom(inheritableMessageConfig(prevConfig))
 						break
 					}
 				}
@@ -2053,4 +2049,17 @@ func HandleConversationMessageRequest(ctx *security.RequestContext, accountId, c
 		return response, err
 	}
 	return response, nil
+}
+
+// inheritableMessageConfig is the part of the previous message's config a new
+// message carries over. Skipping history and read-only belong to the turn that
+// asked for them: a user's follow-up after an automated re-analysis needs the
+// history and may ask for a change. Approvals belong to the request they were
+// given in: a "yes" to one change must not run a different change on the same
+// cluster in a later message.
+func inheritableMessageConfig(prev toolcore.NBQueryConfig) toolcore.NBQueryConfig {
+	prev.SkipConversationHistory = false
+	prev.ReadOnlyRun = false
+	prev.ToolConfirmations = nil
+	return prev
 }

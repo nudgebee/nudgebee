@@ -128,3 +128,35 @@ func TestFollowupTypeOf(t *testing.T) {
 	assert.Equal(t, FollowupType(""), followupTypeOf(""))
 	assert.Equal(t, FollowupType(""), followupTypeOf("not json"))
 }
+
+func TestInheritableMessageConfig_NewMessageDropsApprovals(t *testing.T) {
+	// A "yes" given in one message must not run a different change in a later
+	// one; the cluster the person picked still carries over.
+	prev := toolcore.NBQueryConfig{
+		ToolConfigs:             map[string]string{"kubectl_execute": "c1"},
+		ToolConfirmations:       map[string]string{"kubectl_execute": "yes"},
+		SkipConversationHistory: true,
+		ReadOnlyRun:             true,
+	}
+
+	var next toolcore.NBQueryConfig
+	next.MergeFrom(inheritableMessageConfig(prev))
+
+	assert.Equal(t, map[string]string{"kubectl_execute": "c1"}, next.ToolConfigs)
+	assert.Empty(t, next.ToolConfirmations)
+	assert.False(t, next.SkipConversationHistory)
+	assert.False(t, next.ReadOnlyRun)
+	assert.Equal(t, "yes", prev.ToolConfirmations["kubectl_execute"], "the stored message keeps its own approvals")
+}
+
+func TestMergeLatestMessageConfig_ResumeKeepsApprovals(t *testing.T) {
+	// Answering a second approval in the same request resumes that message:
+	// the first approval, saved on it, must still be there.
+	dao := &storedConfigDao{config: `{"tool_confirmations":{"kubectl_execute":"yes"}}`}
+
+	merged := mergeLatestMessageConfig(dao, "m", "a", "c",
+		toolcore.NBQueryConfig{ToolConfirmations: map[string]string{"helm_execute": "yes"}},
+		security.NewRequestContextForSuperAdmin().GetLogger(), "test")
+
+	assert.Equal(t, map[string]string{"kubectl_execute": "yes", "helm_execute": "yes"}, merged.ToolConfirmations)
+}

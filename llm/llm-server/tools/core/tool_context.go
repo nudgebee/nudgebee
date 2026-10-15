@@ -37,6 +37,9 @@ type TierModelPick struct {
 // NBQueryConfig holds structured configuration for agent requests and tool contexts.
 // It replaces the previous map[string]any with compile-time type safety.
 // JSON tags match the original map keys to preserve backward compatibility with DB-stored configs.
+// A new message inherits every field from the previous message's config unless
+// core.inheritableMessageConfig clears it; add a field there if it belongs to
+// one request only.
 type NBQueryConfig struct {
 	// Observability/event context
 	EventId          string `json:"event_id,omitempty"`
@@ -133,9 +136,13 @@ type NBQueryConfig struct {
 	ToolConfigs map[string]string `json:"tool_configs,omitempty"`
 	// DelegatedTarget is scoped to one child agent invocation. It is saved on
 	// the agent row for resume, never in the conversation's message_config.
-	DelegatedTarget    *ExecutionTarget  `json:"delegated_target,omitempty"`
-	ClientTools        []NBToolCommand   `json:"client_tools,omitempty"`
-	Capabilities       AgentCapabilities `json:"capabilities,omitzero"`
+	DelegatedTarget *ExecutionTarget  `json:"delegated_target,omitempty"`
+	ClientTools     []NBToolCommand   `json:"client_tools,omitempty"`
+	Capabilities    AgentCapabilities `json:"capabilities,omitzero"`
+	// ToolConfirmations holds the approval answers for this request, keyed
+	// per tool and target account, or per action for tools implementing
+	// ToolConfirmationScope. A new message does not inherit them
+	// (core.inheritableMessageConfig); a resume of the same request does.
 	ToolConfirmations  map[string]string `json:"tool_confirmations,omitempty"`
 	ToolConfigMetadata map[string]any    `json:"tool_config_metadata,omitempty"`
 	DiscoveredTools    []string          `json:"discovered_tools,omitempty"`
