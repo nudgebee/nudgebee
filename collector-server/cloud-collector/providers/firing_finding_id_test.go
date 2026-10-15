@@ -21,7 +21,7 @@ import (
 // test — the two paths agreeing is the entire dedup mechanism, because there is
 // no separate reconciliation step downstream.
 func TestFiringFindingIDAgreesAcrossIngestionPaths(t *testing.T) {
-	const alarmARN = "arn:aws:cloudwatch:us-east-1:864186153326:alarm:nudgebee-scenario-services-order-down"
+	const alarmARN = "arn:aws:cloudwatch:us-east-1:888888888888:alarm:nudgebee-scenario-services-order-down"
 	transition := time.Date(2026, 9, 5, 10, 4, 56, 0, time.UTC)
 
 	// EventBridge: the rule supplies the alarm ARN as the fingerprint, and the

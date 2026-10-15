@@ -24,7 +24,7 @@ func syncIdentityOf(accountNumber string, item providers.Resource) (resourceId, 
 // other services ended up with one row whose external_resource_id flip-flopped. These
 // tests pin the agreement.
 func TestRealtimeIdentityMatchesSync(t *testing.T) {
-	const accountNumber = "864186153326"
+	const accountNumber = "888888888888"
 
 	tests := []struct {
 		name string
@@ -38,14 +38,14 @@ func TestRealtimeIdentityMatchesSync(t *testing.T) {
 	}{
 		{
 			name:      "ecs standalone task (lookup key is an ARN)",
-			lookupKey: "arn:aws:ecs:us-east-1:864186153326:task/ecs-task-testing/d3e151b10c8a402884d0726183843012",
+			lookupKey: "arn:aws:ecs:us-east-1:888888888888:task/ecs-task-testing/d3e151b10c8a402884d0726183843012",
 			resource: providers.Resource{
 				Id:          "d3e151b10c8a402884d0726183843012",
 				Name:        "d3e151b10c8a402884d0726183843012",
 				ServiceName: ServiceNameECS,
 				Type:        getAwsServiceResourceType(ServiceNameECS, "task"),
 				Region:      "us-east-1",
-				Arn:         "arn:aws:ecs:us-east-1:864186153326:task/ecs-task-testing/d3e151b10c8a402884d0726183843012",
+				Arn:         "arn:aws:ecs:us-east-1:888888888888:task/ecs-task-testing/d3e151b10c8a402884d0726183843012",
 			},
 		},
 		{
@@ -57,7 +57,7 @@ func TestRealtimeIdentityMatchesSync(t *testing.T) {
 				ServiceName: ServiceNameEc2,
 				Type:        getAwsServiceResourceType(ServiceNameEc2, "compute-instance"),
 				Region:      "us-east-1",
-				Arn:         "arn:aws:ec2:us-east-1:864186153326:instance/i-0abc123def4567890",
+				Arn:         "arn:aws:ec2:us-east-1:888888888888:instance/i-0abc123def4567890",
 			},
 		},
 	}
@@ -89,11 +89,11 @@ func TestRealtimeIdentityMatchesSync(t *testing.T) {
 // would run BuildExternalResourceId over a lookup key that may itself be an ARN and
 // produce a doubly-prefixed pseudo-ARN, so the pre-existing behaviour is kept.
 func TestRealtimeIdentityFallsBackWhenLookupFailed(t *testing.T) {
-	const arn = "arn:aws:ecs:us-east-1:864186153326:task/ecs-task-testing/d3e151b10c8a402884d0726183843012"
+	const arn = "arn:aws:ecs:us-east-1:888888888888:task/ecs-task-testing/d3e151b10c8a402884d0726183843012"
 
 	gotId, gotErid := resolveResourceIdentity(
 		"", arn, arn,
-		"864186153326", "us-east-1", ServiceNameECS, "task")
+		"888888888888", "us-east-1", ServiceNameECS, "task")
 
 	if gotId != arn {
 		t.Errorf("resourse_id = %q, want the lookup key %q", gotId, arn)

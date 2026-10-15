@@ -113,19 +113,19 @@ describe('eventTypeLabel', () => {
   it('splits a cloud alarm key into the alert name and the load balancer name', () => {
     expect(
       eventTypeLabel(
-        'AwsAlbHttpErrorRateAlarmMissing-arn:aws:elasticloadbalancing:us-east-1:864186153326:loadbalancer/app/e05-catalog-alb/edf4ec342a2e3034'
+        'AwsAlbHttpErrorRateAlarmMissing-arn:aws:elasticloadbalancing:us-east-1:888888888888:loadbalancer/app/e05-catalog-alb/edf4ec342a2e3034'
       )
     ).toBe('AwsAlbHttpErrorRateAlarmMissing · e05-catalog-alb');
   });
 
   it('names a target group rather than its random id', () => {
-    expect(eventTypeLabel('AwsTgUnhealthyHosts-arn:aws:elasticloadbalancing:us-east-1:864186153326:targetgroup/orders-tg/7315f04ab47543d1')).toBe(
+    expect(eventTypeLabel('AwsTgUnhealthyHosts-arn:aws:elasticloadbalancing:us-east-1:888888888888:targetgroup/orders-tg/7315f04ab47543d1')).toBe(
       'AwsTgUnhealthyHosts · orders-tg'
     );
   });
 
   it('uses the last ARN segment for other resource shapes', () => {
-    expect(eventTypeLabel('aws_rds_cpu_alarm_missing-arn:aws:rds:us-east-1:864186153326:db:orders-db')).toBe('AwsRdsCpuAlarmMissing · orders-db');
+    expect(eventTypeLabel('aws_rds_cpu_alarm_missing-arn:aws:rds:us-east-1:888888888888:db:orders-db')).toBe('AwsRdsCpuAlarmMissing · orders-db');
   });
 
   it('handles ARNs with an empty or non-numeric account field', () => {

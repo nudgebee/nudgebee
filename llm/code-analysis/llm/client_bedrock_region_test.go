@@ -18,7 +18,7 @@ func TestRegionFromModelARN(t *testing.T) {
 	}{
 		{
 			name:  "inference profile ARN",
-			model: "arn:aws:bedrock:us-west-2:864186153326:inference-profile/us.meta.llama4-maverick-17b-instruct-v1:0",
+			model: "arn:aws:bedrock:us-west-2:888888888888:inference-profile/us.meta.llama4-maverick-17b-instruct-v1:0",
 			want:  "us-west-2",
 		},
 		{

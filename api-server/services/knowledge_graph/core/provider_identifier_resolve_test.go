@@ -59,7 +59,7 @@ func TestFindNodesByProviderIdentifier_DB(t *testing.T) {
 		tenant  = "t-1"
 		account = "a-1"
 		instID  = "i-0dcee3621b8456783"
-		arn     = "arn:aws:ec2:us-east-1:864186153326:instance/" + instID
+		arn     = "arn:aws:ec2:us-east-1:888888888888:instance/" + instID
 	)
 	insert := func(id, acct, nodeType, level string, active bool, props string) {
 		mustExec(fmt.Sprintf(
