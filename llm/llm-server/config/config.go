@@ -1155,7 +1155,7 @@ type appConfig struct {
 	// MemoryPrestepEnabled makes the chat path inject memory only when a small
 	// pre-step model says the question needs it (style and session notes stay
 	// always-on). Off: every consented layer is injected on every turn, as
-	// before. See docs/memory-prompt-prestep-spec.md.
+	// before. Spec: issue #41234.
 	MemoryPrestepEnabled         bool `mapstructure:"llm_memory_prestep_enabled"`
 	MemoryPrestepTimeoutSeconds  int  `mapstructure:"llm_memory_prestep_timeout_seconds"`
 	MemoryRagProjectorBatchSize  int  `mapstructure:"llm_memory_rag_projector_batch_size"`

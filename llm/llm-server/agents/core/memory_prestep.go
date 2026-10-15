@@ -27,7 +27,7 @@ var memoryPrestepFn = memoryPrestepSearches
 // memoryPrestepSearches asks a small model for the search phrases the memory
 // lookups should run ("default namespace", "checkout"). ok=false means the
 // call failed, timed out or never produced usable JSON; the caller then falls
-// back to the stated preferences instead of guessing. An empty list with
+// back to the memory the flag-off path injects. An empty list with
 // ok=true is a real verdict: the question is self-contained.
 func memoryPrestepSearches(ctx *security.RequestContext, req NBAgentRequest) ([]string, bool) {
 	system, err := nbprompts.GetPromptStrict(ctx.GetContext(), nbprompts.PromptMemoryPrestep, req.AccountId)
@@ -60,7 +60,7 @@ func memoryPrestepSearches(ctx *security.RequestContext, req NBAgentRequest) ([]
 
 	// The LLM client keeps trying fallback models past the context deadline,
 	// so the budget is enforced here: after the timeout the turn proceeds
-	// with the stated preferences and the deferred cancel abandons the call.
+	// with the flag-off memory and the deferred cancel abandons the call.
 	type outcome struct {
 		searches []string
 		ok       bool
@@ -100,7 +100,7 @@ func memoryPrestepSearches(ctx *security.RequestContext, req NBAgentRequest) ([]
 		if ctx.GetContext().Err() != nil { // the request itself was cancelled, not our budget
 			return nil, false
 		}
-		ctx.GetLogger().Warn("memory prestep: timed out, using stated preferences", "conversation", req.ConversationId,
+		ctx.GetLogger().Warn("memory prestep: timed out, using flag-off memory", "conversation", req.ConversationId,
 			"timeout_ms", timeout.Milliseconds(), "tier", tier)
 		return nil, false
 	}

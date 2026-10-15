@@ -99,6 +99,9 @@ func (a *WebhookSubjectExtractorAgent) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
 }
 
+// GetMemoryEnabled is false: a single-shot classifier has no use for memory.
+func (a *WebhookSubjectExtractorAgent) GetMemoryEnabled() bool { return false }
+
 // GetSupportedTools returns none: this is a pure single-shot classifier.
 func (a *WebhookSubjectExtractorAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	return nil
