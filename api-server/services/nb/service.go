@@ -92,6 +92,9 @@ type dataCleanupJob struct {
 	Metastore database.DatabaseManagerType
 	Query     string
 	Batched   bool // when true, execute in 10K batches up to 100K per cron run
+	// MaxBatches overrides cleanupMaxBatches for batched jobs whose daily inflow
+	// is close to 100K, so a backlog would otherwise never drain.
+	MaxBatches int
 }
 
 func CleanupData(ctx *security.RequestContext, job ...string) {
@@ -123,6 +126,10 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 				Query:     fmt.Sprintf(`alter table nudgebee.agent_audit_log_shard on cluster 'default' delete WHERE created_at < now() - interval %d day`, config.Config.NBRetentionDaysAgentConnectLogs),
 			},
 			{
+				// Events cascade-delete to event_classification, but
+				// event_bulk_operations(classification_id) has no ON DELETE, so one
+				// event behind a bulk operation fails the whole batch every run.
+				// Skip those events (applies to events_high too).
 				Name:      "events_normal",
 				Metastore: database.Metastore,
 				Batched:   true,
@@ -132,6 +139,11 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 						AND e.priority IN ('DEBUG', 'INFO', 'LOW', 'MEDIUM')
 						AND NOT EXISTS (SELECT 1 FROM event_log_analysis ela WHERE ela.event_id = e.id)
 						AND NOT EXISTS (SELECT 1 FROM llm_conversation_feedback lcf WHERE lcf.session_id = e.id::text AND lcf.module = 'investigate')
+						AND NOT EXISTS (
+							SELECT 1 FROM event_classification ec
+							JOIN event_bulk_operations ebo ON ebo.classification_id = ec.id
+							WHERE ec.event_id = e.id
+						)
 					LIMIT %d
 				) DELETE FROM events WHERE id IN (SELECT id FROM to_del)`, config.Config.NBRetentionDaysEventsNormal, cleanupBatchSize),
 			},
@@ -150,6 +162,11 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 						AND e.priority IN ('HIGH')
 						AND NOT EXISTS (SELECT 1 FROM event_log_analysis ela WHERE ela.event_id = e.id)
 						AND NOT EXISTS (SELECT 1 FROM llm_conversation_feedback lcf WHERE lcf.session_id = e.id::text AND lcf.module = 'investigate')
+						AND NOT EXISTS (
+							SELECT 1 FROM event_classification ec
+							JOIN event_bulk_operations ebo ON ebo.classification_id = ec.id
+							WHERE ec.event_id = e.id
+						)
 					LIMIT %d
 				) DELETE FROM events WHERE id IN (SELECT id FROM to_del)`, config.Config.NBRetentionDaysEventsCritical, cleanupBatchSize),
 			},
@@ -386,9 +403,12 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 			{
 				// Granular telemetry metric points accumulated by collectors, OpenCost,
 				// and ETL. Dashboards and anomaly rules only query recent windows (24h-30d).
-				Name:      "cloud_resource_metrics",
-				Metastore: database.Metastore,
-				Batched:   true,
+				// ~50K rows/day age past retention, so the default 100K cap drains a large backlog
+				// only ~50K/day net; 50 batches (500K) clears it in days instead of months.
+				Name:       "cloud_resource_metrics",
+				Metastore:  database.Metastore,
+				Batched:    true,
+				MaxBatches: 50,
 				Query: fmt.Sprintf(`WITH to_del AS (
 					SELECT id FROM cloud_resource_metrics
 					WHERE timestamp < now() - interval '%d days'
@@ -411,9 +431,11 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 				// - k8s_pods, k8s_workloads, k8s_nodes, insight, workload_criticality: no FK, so
 				//   deleting would leave dangling resource id links. k8s rows age out via the
 				//   k8s_* sweeps above, after which the resource becomes eligible on a later run.
-				Name:      "cloud_resources_inactive",
-				Metastore: database.Metastore,
-				Batched:   true,
+				// 50 batches (500K) clears a multi-million-row backlog in days instead of weeks.
+				Name:       "cloud_resources_inactive",
+				Metastore:  database.Metastore,
+				Batched:    true,
+				MaxBatches: 50,
 				Query: fmt.Sprintf(`WITH to_del AS (
 					SELECT cr.id FROM cloud_resourses cr
 					WHERE (cr.is_active = false OR cr.status IN ('Deleted', 'Inactive'))
@@ -470,7 +492,7 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 		case database.Metastore:
 			var err error
 			if cj.Batched {
-				err = executeBatchedMetastoreJob(ctx, cj.Name, cj.Query)
+				err = executeBatchedMetastoreJob(ctx, cj.Name, cj.Query, cj.MaxBatches)
 			} else {
 				err = executeMetastoreJob(ctx, cj.Name, cj.Query)
 			}
@@ -506,15 +528,18 @@ func executeMetastoreJob(ctx *security.RequestContext, jobName, query string) er
 	return nil
 }
 
-func executeBatchedMetastoreJob(ctx *security.RequestContext, jobName, query string) error {
+func executeBatchedMetastoreJob(ctx *security.RequestContext, jobName, query string, maxBatches int) error {
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("nb: failed to get database manager", "error", err, "job", jobName)
 		return err
 	}
 
+	if maxBatches <= 0 {
+		maxBatches = cleanupMaxBatches
+	}
 	var totalDeleted int64
-	for batch := 1; batch <= cleanupMaxBatches; batch++ {
+	for batch := 1; batch <= maxBatches; batch++ {
 		// Honor context cancellation/deadline between batches so a caller-imposed
 		// timeout actually bounds the run (e.g. the detached cron goroutines wrap
 		// this in a context.WithTimeout). Harmless for callers whose context never
