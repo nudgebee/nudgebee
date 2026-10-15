@@ -6,14 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
-	"nudgebee/services/tenant"
 	"regexp"
 	"slices"
 	"sort"
@@ -533,9 +531,6 @@ func (m LLM) ValidateConfig(securityContext *security.SecurityContext, integrati
 
 	errs = append(errs, validateConfiguredFallback(securityContext, cfg, accountId)...)
 	errs = append(errs, validateDecisionModel(cfg)...)
-	if err := checkDecisionModelsFeature(securityContext, cfg); err != nil {
-		errs = append(errs, err)
-	}
 
 	// Summarization model contract.
 	if cfg["add_model_for_summarization"] == "true" {
@@ -1151,28 +1146,6 @@ func apiStyleSlotProvider(cfg map[string]string, name string) string {
 		return ""
 	}
 	return cfg["llm_provider"]
-}
-
-// decisionModelsFeature gates decision-model settings: decision inputs go to a
-// new provider, so only tenants with this feature may save them.
-const decisionModelsFeature = "LLM_DECISION_MODELS"
-
-// decisionModelsEnabled is tenant.IsFeatureEnabled; a var so tests can stub it.
-var decisionModelsEnabled = func(sc *security.SecurityContext) bool {
-	rc := security.NewRequestContext(context.Background(), sc, slog.Default(), nil, nil)
-	return tenant.IsFeatureEnabled(rc, sc.GetTenantId(), decisionModelsFeature)
-}
-
-// checkDecisionModelsFeature rejects decision-model settings for a tenant
-// without the feature. Without a tenant context (internal callers) it is skipped.
-func checkDecisionModelsFeature(sc *security.SecurityContext, cfg map[string]string) error {
-	if sc == nil || cfg["llm_tier_provider_decision"] == "" {
-		return nil
-	}
-	if !decisionModelsEnabled(sc) {
-		return fmt.Errorf("decision models are not enabled for this organisation (%s)", decisionModelsFeature)
-	}
-	return nil
 }
 
 // validateDecisionModel checks the decision slot, and that no chat key uses a

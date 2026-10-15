@@ -23,7 +23,6 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { computeTierDefaults } from '@utils/tierDefaults';
 import { getIntegrationDescription } from '@lib/integrationDescriptions';
 import LLMDefaultsSummary, { needsLLMDefaultsConfirm } from './LLMDefaultsSummary';
-import { useFeatureAccess } from '@hooks/useFeatureAccess';
 import DecisionModelSection, {
   decisionConfigValues,
   decisionProviderChange,
@@ -1026,8 +1025,6 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
 
   // Decision model (#40902): the integration's decision slot and per-decision settings.
   const [decisionCfg, setDecisionCfg] = useState(emptyDecisionState);
-  // Hidden until the tenant has LLM_DECISION_MODELS; saved settings are kept either way.
-  const decisionModelsEnabled = useFeatureAccess('LLM_DECISION_MODELS') === true;
 
   // Free-text filter applied to agent override cards. Only shown when there
   // are more than 3 rows — at small counts the filter just adds noise.
@@ -2042,7 +2039,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       creds: validateOverrideCreds(row, (c) => `llm_provider_${c}_${row.agent || ''}`),
     })),
   };
-  const decisionErrors = decisionModelsEnabled ? validateDecisionState(decisionCfg, !!secretsConfigured.llm_tier_api_key_decision) : {};
+  const decisionErrors = validateDecisionState(decisionCfg, !!secretsConfigured.llm_tier_api_key_decision);
   const hasAnyError =
     Object.keys(decisionErrors).length > 0 ||
     !!errors.model ||
@@ -3070,22 +3067,18 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         <Divider />
 
         {/* ---------- Decision models ---------- */}
-        {decisionModelsEnabled && (
-          <>
-            <Box sx={{ mb: 'var(--ds-space-4)' }}>
-              <DecisionModelSection
-                state={decisionCfg}
-                errors={decisionErrors}
-                apiKeyConfigured={!!secretsConfigured.llm_tier_api_key_decision}
-                onChange={(field, value) => setDecisionCfg((prev) => ({ ...prev, [field]: value }))}
-                onProviderChange={(provider) => setDecisionCfg((prev) => decisionProviderChange(prev, provider))}
-                renderSecretInput={(props) => <SecretInput {...props} />}
-              />
-            </Box>
+        <Box sx={{ mb: 'var(--ds-space-4)' }}>
+          <DecisionModelSection
+            state={decisionCfg}
+            errors={decisionErrors}
+            apiKeyConfigured={!!secretsConfigured.llm_tier_api_key_decision}
+            onChange={(field, value) => setDecisionCfg((prev) => ({ ...prev, [field]: value }))}
+            onProviderChange={(provider) => setDecisionCfg((prev) => decisionProviderChange(prev, provider))}
+            renderSecretInput={(props) => <SecretInput {...props} />}
+          />
+        </Box>
 
-            <Divider />
-          </>
-        )}
+        <Divider />
 
         {/* ---------- Agent Overrides ---------- */}
         <Typography variant='subtitle2' sx={{ fontWeight: 'var(--ds-font-weight-semibold)', mb: 'var(--ds-space-2)' }}>

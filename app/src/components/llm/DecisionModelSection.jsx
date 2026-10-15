@@ -126,8 +126,9 @@ const DecisionModelSection = ({ state, errors = {}, apiKeyConfigured = false, on
       Decision models (beta)
     </Typography>
     <Typography variant='caption' sx={{ display: 'block', mb: 'var(--ds-space-3)', color: 'var(--ds-gray-500)' }}>
-      A fast model for simple fixed choices, such as what the automation builder should do with a message. When it is less sure than the minimum
-      confidence, your LLM decides as usual. It is never used for chat.
+      A fast model for simple fixed choices, such as what the automation builder should do with a message or whether a command only reads. Commands it
+      confidently judges read-only run without asking for approval. When it is less sure than the minimum confidence, your LLM decides as usual. It is
+      never used for chat.
     </Typography>
     <Stack spacing='var(--ds-space-2)'>
       <Select

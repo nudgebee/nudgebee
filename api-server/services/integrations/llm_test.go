@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"nudgebee/services/config"
 	"nudgebee/services/integrations/core"
-	"nudgebee/services/security"
 	"sort"
 	"strings"
 	"testing"
@@ -733,19 +732,4 @@ func TestValidateFallbackRef_RejectsDecisionSlot(t *testing.T) {
 	assert.ErrorContains(t, err, "cannot be a fallback")
 	err = validateFallbackRef(nil, "env:tier:decision", "clef-flash", "llm_fallback_ref_model", "")
 	assert.ErrorContains(t, err, "cannot be a fallback")
-}
-
-// Decision-model settings save only for tenants with LLM_DECISION_MODELS.
-func TestCheckDecisionModelsFeature(t *testing.T) {
-	old := decisionModelsEnabled
-	t.Cleanup(func() { decisionModelsEnabled = old })
-	sc := &security.SecurityContext{}
-	slot := map[string]string{"llm_tier_provider_decision": "cloudflare"}
-
-	decisionModelsEnabled = func(*security.SecurityContext) bool { return false }
-	assert.ErrorContains(t, checkDecisionModelsFeature(sc, slot), "LLM_DECISION_MODELS")
-	assert.NoError(t, checkDecisionModelsFeature(sc, map[string]string{"llm_provider": "googleai"}), "no decision settings, no check")
-
-	decisionModelsEnabled = func(*security.SecurityContext) bool { return true }
-	assert.NoError(t, checkDecisionModelsFeature(sc, slot))
 }
