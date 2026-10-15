@@ -1,7 +1,7 @@
 import dynamic from 'next/dynamic';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import ErrorBoundary from '@shared/ErrorBoundary';
-import KubernetesEventsTable, { TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY } from '@components/events/KubernetesEvents';
+import KubernetesEventsTable, { getTroubleshootEventsFilterStorageKey } from '@components/events/KubernetesEvents';
 import KubernetesGroupedEventsTable from '@components/k8s/details/groupedevents/KubernetesGroupedEventsTable';
 import TroubleshootSummary from '@components/troubleshoot/TroubleshootSummary';
 import NubiBriefing from '@components/troubleshoot/briefing/NubiBriefing';
@@ -30,7 +30,7 @@ import ThresholdSuggestionsManager from '@components/triage/ThresholdSuggestions
 import { useRouter } from 'next/router';
 import { clearPersistedFilters } from '@hooks/usePersistedFilters';
 import { getLast24Hrs } from '@lib/datetime';
-import { isGrantsOnlyUser, hasPermission, missingPermissionMessage } from '@lib/auth';
+import { isGrantsOnlyUser, hasPermission, missingPermissionMessage, getCurrentTenant } from '@lib/auth';
 
 // Knowledge Graph pulls in reactflow and only renders under the third tab, so a
 // static import shipped the graph bundle in this page's chunk for every visitor
@@ -179,7 +179,7 @@ const TroubleshootPage = () => {
     // a KPI is an explicit "show me this metric's population" action, so reset
     // the persisted Events filters first; combined with the clean URL push below
     // (only the widget's own filter), the list then matches the card exactly.
-    clearPersistedFilters(TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY);
+    clearPersistedFilters(getTroubleshootEventsFilterStorageKey(getCurrentTenant()?.id));
 
     // Pin the clicked widget's own window onto the drill-down. The briefing
     // sends the window it counted over (it has a range picker of its own, so a

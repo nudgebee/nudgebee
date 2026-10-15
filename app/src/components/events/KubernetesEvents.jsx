@@ -79,6 +79,12 @@ import WorkflowIcon from '@assets/WorkflowIcon';
 // shape of persisted filter values changes so old entries are ignored.
 export const TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY = 'troubleshoot:events:filters:v1';
 
+// Scoped by tenant: cached filters (namespace, account, etc.) from one tenant
+// are meaningless after switching to another. Exported so callers clearing
+// this storage (e.g. the widget drill-down reset) build the same key this
+// component reads/writes, instead of drifting from it.
+export const getTroubleshootEventsFilterStorageKey = (tenantId) => (tenantId ? `${TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY}:${tenantId}` : null);
+
 // A rolling shortcut ("Last 24 Hours", ...) is rehydrated by recomputing from `now`
 // instead of restoring stale absolute timestamps. `isRollingShortcut` is the picker's
 // own test, so this never drifts from it. Calendar shortcuts (Current Week, Current
@@ -364,7 +370,7 @@ const KubernetesEventsTable = ({
   // withAuth (the shared PageLayout every page is wrapped in) blocks rendering
   // until the session resolves, so getCurrentTenant() is already populated here.
   const tenantId = getCurrentTenant()?.id;
-  const persistKey = isTroubleshootPage && tenantId ? `${TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY}:${tenantId}` : null;
+  const persistKey = isTroubleshootPage ? getTroubleshootEventsFilterStorageKey(tenantId) : null;
   // Read once on mount; precedence is URL query > localStorage > component default.
   const persisted = useMemo(() => readPersistedFilters(persistKey), [persistKey]);
 
