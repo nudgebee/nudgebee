@@ -287,6 +287,9 @@ type NBToolResponseMetadata struct {
 	// the prompt is built, so Data, the stored response and the UI keep the
 	// tool's own output shape.
 	SavedOutputNote string `json:"saved_output_note,omitempty"`
+	// FailureReason is set by a tool that judged its own OK reply to be a
+	// failure; the executor only carries it.
+	FailureReason FailureReason `json:"failure_reason,omitempty"`
 	// DBQueries/DBMs and RelayCalls/RelayMs split a tool's wall-clock time by
 	// where it went. ExecutionDurationMs alone can't answer the question that
 	// actually matters for resource lookups — "did this hit the inventory DB or

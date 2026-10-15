@@ -19,6 +19,7 @@ var (
 	metricsAgentOperationsTotal       metric.Int64Counter
 	metricsAgentLatencySeconds        metric.Float64Histogram
 	metricsToolOperationsTotal        metric.Int64Counter
+	metricsToolReportedFailure        metric.Int64Counter
 	metricsToolLatencySeconds         metric.Float64Histogram
 	metricsLLMRequestsTotal           metric.Int64Counter
 	metricsLLMTokensTotal             metric.Int64Counter
@@ -175,6 +176,14 @@ func InitMetrics() {
 		)
 		if err != nil {
 			slog.Error("metrics: failed to create nb_llm_tool_operations metric", "error", err)
+		}
+
+		metricsToolReportedFailure, err = meter.Int64Counter(
+			"nb_llm_tool_reported_failure",
+			metric.WithDescription("Tool replies that came back OK but say they failed; outcome is would_fail (logged only) or enforced"),
+		)
+		if err != nil {
+			slog.Error("metrics: failed to create nb_llm_tool_reported_failure metric", "error", err)
 		}
 
 		metricsToolLatencySeconds, err = meter.Float64Histogram(
@@ -496,6 +505,22 @@ func MetricsToolOperationsTotal(toolType, tool, status, accountID string) {
 		attribute.String("type", toolType),
 		attribute.String("tool", tool),
 		attribute.String("status", status),
+		attribute.String("account_id", accountID),
+	))
+}
+
+// MetricsToolReportedFailure counts a tool reply that came back OK but says it
+// failed. outcome is "would_fail" (only logged) or "enforced" (recorded as failed).
+func MetricsToolReportedFailure(tool, reason, outcome, accountID string) {
+	InitMetrics()
+	if metricsToolReportedFailure == nil {
+		slog.Warn("metrics: metricsToolReportedFailure is not initialized")
+		return
+	}
+	metricsToolReportedFailure.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("tool", tool),
+		attribute.String("reason", reason),
+		attribute.String("outcome", outcome),
 		attribute.String("account_id", accountID),
 	))
 }

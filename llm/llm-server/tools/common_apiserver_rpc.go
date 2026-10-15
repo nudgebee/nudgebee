@@ -104,6 +104,14 @@ func doApiServerActionRequest(nbCtx core.NbToolContext, rpcPath string, actionNa
 		return "", fmt.Errorf("%s: %s unexpected response shape: %s", errPrefix, actionName, string(jsonBody))
 	}
 
+	if !reportedFailureDisabled() {
+		logger := slog.Default()
+		if nbCtx.Ctx != nil {
+			logger = nbCtx.Ctx.GetLogger()
+		}
+		logResponseShape(logger, errPrefix, actionName, jsonBody)
+	}
+
 	return string(jsonBody), nil
 }
 

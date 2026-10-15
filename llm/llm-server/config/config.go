@@ -406,6 +406,21 @@ type appConfig struct {
 	LLMServerAgentMaxParallel                int `mapstructure:"llm_server_agent_max_parallel"`
 	LLMServerAgentReActMaxIterations         int `mapstructure:"llm_server_agent_react_max_iterations"`
 	LLMServerAgentReActSubAgentMaxIterations int `mapstructure:"llm_server_agent_react_sub_agent_max_iterations"`
+
+	// LlmServerToolReportedFailureMode is "log" or "off". "log" judges an OK reply
+	// from an opted-in tool by its fields and only logs and counts a "would fail";
+	// it never changes the recorded status. "off" also stops the per-reply shape
+	// log in the api-server RPC helper. That log is a temporary baseline for the
+	// enforce-list rollout (#40545); drop it, with this coupling, once the first
+	// tools are enforced.
+	LlmServerToolReportedFailureMode string `mapstructure:"llm_server_tool_reported_failure_mode"`
+	// LlmServerToolReportedFailureEnforceTools is a comma-separated list of tool
+	// names whose reply that says it failed is recorded as failed. Rollback for
+	// one tool is removing it from the list. Before listing a tool that WRITES
+	// (recommendation_apply), check what the planner does after the failure: a
+	// recorded approval for the same input is honoured again, so it may retry.
+	LlmServerToolReportedFailureEnforceTools string `mapstructure:"llm_server_tool_reported_failure_enforce_tools"`
+
 	// LlmServerCliPipelineStatusEnabled makes a gh/glab pipeline whose first stage
 	// failed exit non-zero (a shell reports only the last stage, so a failed gh
 	// piped into grep or head looked like success). Turn off to send commands as
@@ -1317,6 +1332,8 @@ func init() {
 	// baking it in preserves that behavior now that orchestrating agents always run as ReAct3.
 	viper.SetDefault("llm_server_agent_react_max_iterations", 50)
 	viper.SetDefault("llm_server_no_progress_brake_enabled", false)
+	viper.SetDefault("llm_server_tool_reported_failure_mode", "log")
+	viper.SetDefault("llm_server_tool_reported_failure_enforce_tools", "")
 	viper.SetDefault("llm_server_cli_pipeline_status_enabled", true)
 	viper.SetDefault("llm_server_no_progress_brake_threshold", 3)
 	viper.SetDefault("llm_server_agent_react_sub_agent_max_iterations", 10)

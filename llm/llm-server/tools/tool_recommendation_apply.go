@@ -261,9 +261,21 @@ func (m RecommendationApplyTool) Call(nbCtx core.NbToolContext, input core.NBToo
 		nbCtx.Ctx.GetLogger().Error("recommendation_apply: apply failed", "error", err, "recommendation_id", recommendationId)
 		return errNBLLMToolResponse(err), nil
 	}
-	return core.NBToolResponse{
+	return withReportedFailure(nbCtx, ToolRecommendationApply, core.NBToolResponse{
 		Data:   resp,
 		Type:   core.NBToolResponseTypeJson,
 		Status: core.NBToolResponseStatusSuccess,
-	}, nil
+	}, recommendationApplyFailureRules), nil
+}
+
+// A failed apply is a 200 whose resolution.status is "Failed" (api-server
+// settles it into the reply). The default rules in core.ClassifyResponse still
+// run first, so a top-level status of fail/failed/failure/error or a non-empty
+// error/errors also counts; the recommendation lifecycle values (Open, Archive,
+// Closed, Dismissed, Assigned, InProgress) never match them. The transport
+// already rejects a non-JSON body, and the status set belongs to api-server, so
+// neither is re-declared here.
+var recommendationApplyFailureRules = core.FailureRules{
+	StatusPath:      "resolution.status",
+	FailingStatuses: []string{"Failed"},
 }

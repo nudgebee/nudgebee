@@ -34,6 +34,9 @@ func TestLLMEnvKeysAreRegisteredWithViper(t *testing.T) {
 		"llm_provider_deployment_name",
 		"llm_fallback_ref_source",
 		"llm_fallback_ref_model",
+		"llm_server_tool_reported_failure_mode",
+		"llm_server_tool_reported_failure_enforce_tools",
+
 		"llm_server_cli_pipeline_status_enabled",
 	} {
 		assert.True(t, known[key],

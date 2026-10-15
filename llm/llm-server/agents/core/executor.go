@@ -52,7 +52,7 @@ func guessAgentStatusFromResponse(plannerResponse NBAgentPlannerExecutorResponse
 
 	// A structured answer is judged by its shape, not its prose: a complete
 	// payload that quotes a log line ("unable to fetch …") is not a failure.
-	if structured, failed := structuredResponseFailed(response); structured {
+	if structured, failed := toolcore.StructuredResponseFailed(response); structured {
 		if failed {
 			return AgentExecutionStatusFail
 		}
@@ -81,42 +81,6 @@ func guessAgentStatusFromResponse(plannerResponse NBAgentPlannerExecutorResponse
 	}
 
 	return AgentExecutionStatusSuccess
-}
-
-// structuredResponseFailed reports whether response is a JSON object and, if
-// so, whether it says it failed: a non-empty top-level "error" or "errors", or
-// a top-level "status" of failed. Nested keys are ignored on purpose — complete
-// code-analysis answers carry empty "error" fields inside build steps.
-func structuredResponseFailed(response string) (structured, failed bool) {
-	response = strings.TrimSpace(response)
-	if !strings.HasPrefix(response, "{") {
-		return false, false
-	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(response), &obj); err != nil {
-		return false, false
-	}
-	for _, key := range []string{"error", "errors"} {
-		if v, ok := obj[key]; ok && !isEmptyJSONValue(v) {
-			return true, true
-		}
-	}
-	var status string
-	if v, ok := obj["status"]; ok && json.Unmarshal(v, &status) == nil {
-		switch strings.TrimSpace(status) {
-		case "fail", "failed", "failure", "error":
-			return true, true
-		}
-	}
-	return true, false
-}
-
-func isEmptyJSONValue(v json.RawMessage) bool {
-	switch strings.TrimSpace(string(v)) {
-	case "null", `""`, "false", "[]", "{}":
-		return true
-	}
-	return false
 }
 
 // normalizeAgentStatus maps an agent's status to the stored value, so the metric

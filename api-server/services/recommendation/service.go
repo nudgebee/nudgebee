@@ -492,6 +492,9 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 	// no re-scan can reopen, so an IAM denial or a throttled call silently
 	// deleted a live savings opportunity. The coordinator hands a failed attempt
 	// back for retry instead.
+	// What the caller and the notification are told: the settled outcome when
+	// the settle was applied, otherwise the resolution as it was created.
+	responseResolution := resolution
 	if resp.Status == adapter.RecommendationResolutionStatusSuccess || resp.Status == adapter.RecommendationResolutionStatusFailed {
 		settled, err := coordinator.SettleResolution(ctx, resolution.Id,
 			models.RecommendationResolutionStatus(string(resp.Status)), resp.StatusMessage, coordinator.SourceUser)
@@ -504,6 +507,10 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 		recommendationStatus = settled.RecommendationStatus
 		if recommendationStatus == "" {
 			recommendationStatus = r.Status
+		}
+
+		if settled.Applied {
+			responseResolution = withSettledStatus(resolution, resp.Status)
 		}
 
 		if userId != "" && settled.Applied {
@@ -531,19 +538,26 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 	}
 
 	// trigger notification
-	err = notification.TriggerNotificationForRecommendationResolution(ctx, r, resolution)
+	err = notification.TriggerNotificationForRecommendationResolution(ctx, r, responseResolution)
 	if err != nil {
 		ctx.GetLogger().Error("error triggering notification", "error", err)
 	}
 	applyResponse := RecommendationApplyResponse{
 		Data:       []any{resp.Data},
-		Resolution: resolution,
+		Resolution: responseResolution,
 		Status:     models.RecommendationStatus(string(recommendationStatus)),
 	}
 	if resolutionType == models.RecommendationResolutionTypePullRequest {
 		applyResponse.PRAction = PRActionCreated
 	}
 	return applyResponse, nil
+}
+
+// withSettledStatus is the resolution as it now stands after a terminal apply
+// outcome, so a failed apply no longer reads as InProgress in its own reply.
+func withSettledStatus(resolution models.RecommendationResolution, outcome adapter.RecommendationResolutionStatus) models.RecommendationResolution {
+	resolution.Status = models.RecommendationResolutionStatus(string(outcome))
+	return resolution
 }
 
 // RetryRecommendationResolution retries a failed recommendation resolution
