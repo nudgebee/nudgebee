@@ -38,14 +38,15 @@ func clampClaimCritiqueTimeout(seconds int) time.Duration {
 	if seconds <= 0 {
 		return claimCritiqueDefaultTimeout
 	}
-	d := time.Duration(seconds) * time.Second
+	// Compare seconds before converting, so a huge value cannot overflow the
+	// nanosecond Duration and slip past the upper bound.
 	switch {
-	case d < claimCritiqueMinTimeout:
+	case seconds < int(claimCritiqueMinTimeout/time.Second):
 		return claimCritiqueMinTimeout
-	case d > claimCritiqueMaxTimeout:
+	case seconds > int(claimCritiqueMaxTimeout/time.Second):
 		return claimCritiqueMaxTimeout
 	}
-	return d
+	return time.Duration(seconds) * time.Second
 }
 
 type critiqueClaim struct {
