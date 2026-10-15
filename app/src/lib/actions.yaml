@@ -2595,6 +2595,19 @@ actions:
       - role: tenant_admin
       - role: account_admin
     comment: action to change status of auto optimize
+  - name: autooptimize_update_approval
+    definition:
+      kind: synchronous
+      handler: '{{WORKFLOW_SERVER_URL}}/autopilot/approval'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: tenant_admin
+      - role: account_admin
+    comment: approve or reject an auto optimize run that is waiting for approval
   - name: autooptimize_aggregate
     comment: Aggregate auto-pilot optimization records by status and category
     definition:
@@ -7891,6 +7904,7 @@ custom_types:
     - name: event_resolve_input
     - name: auto_optimize_workload_input
     - name: auto_optimize_update_status_request
+    - name: auto_optimize_update_approval_request
     - name: TraceHeatMapWhereRequest
     - name: auto_optimize_skip_request
     - name: AgentRegenerateTokenInput
@@ -8365,6 +8379,7 @@ custom_types:
     - name: RecommendationMissConfigRowResponse
     - name: event_resolve_output
     - name: auto_optimize_update_status_response
+    - name: auto_optimize_update_approval_response
     - name: AIResponse
     - name: TracesHeatMapResponse
     - name: TraceHeatMapRowResponse

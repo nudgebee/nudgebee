@@ -336,6 +336,48 @@ func (s *Server) autoOptimizerTrigger(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "auto optimize triggered successfully"})
 }
 
+func (s *Server) autoOptimizerDecideApproval(c *gin.Context) {
+	sc, args, accountID, processRequest := s.getActionRequestDetails(c)
+	if !processRequest {
+		return
+	}
+	accUUID, err := uuid.Parse(accountID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid account id"})
+		return
+	}
+
+	if !sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized to decide auto optimize approvals"})
+		return
+	}
+
+	var input struct {
+		ID               string `json:"id" mapstructure:"id"`
+		Status           string `json:"status" mapstructure:"status"`
+		ReviewerComments string `json:"reviewer_comments" mapstructure:"reviewer_comments"`
+	}
+	if err := common.DecodeMapToStruct(args, &input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input format: " + err.Error()})
+		return
+	}
+
+	approvalID, err := uuid.Parse(input.ID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid approval id"})
+		return
+	}
+
+	msg, err := s.optimizerService.DecideApproval(c.Request.Context(), sc, accUUID, approvalID, optimizer.ApprovalDecision(input.Status), input.ReviewerComments)
+	if err != nil {
+		s.logger.Error("failed to decide auto optimize approval", "error", err)
+		handleServiceError(c, err, "failed to decide approval")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"id": approvalID.String(), "status": input.Status, "message": msg})
+}
+
 // Register these routes in server.go
 func (s *Server) setupOptimizerRoutes() {
 	// Group /autopilot
@@ -349,6 +391,7 @@ func (s *Server) setupOptimizerRoutes() {
 		ap.POST("", s.autoOptimizerCreate)
 		ap.POST("/status", s.autoOptimizerChangeStatus)
 		ap.POST("/trigger", s.autoOptimizerTrigger)
+		ap.POST("/approval", s.autoOptimizerDecideApproval)
 	}
 }
 

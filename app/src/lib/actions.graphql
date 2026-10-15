@@ -784,6 +784,9 @@ type Mutation {
   autooptimize_update_status(
     arg1: auto_optimize_update_status_request!
   ): auto_optimize_update_status_response
+  autooptimize_update_approval(
+    arg1: auto_optimize_update_approval_request!
+  ): auto_optimize_update_approval_response
 }
 
 type Query {
@@ -3748,6 +3751,7 @@ input autooptimize_create {
   dryrun: Boolean!
   gitops: auto_optimize_gitops_config
   ticket_config: auto_optimize_ticket_config
+  require_approval: Boolean
 }
 
 input auto_runbook_skip_request {
@@ -3997,6 +4001,7 @@ input autooptimize_update {
   dryrun: Boolean!
   gitops: auto_optimize_gitops_config
   ticket_config: auto_optimize_ticket_config
+  require_approval: Boolean
 }
 
 input PlaybookGroupWhereRequest {
@@ -4403,6 +4408,13 @@ input auto_optimize_update_status_request {
   id: uuid!
   status: String!
   account_id: uuid!
+}
+
+input auto_optimize_update_approval_request {
+  id: uuid!
+  account_id: uuid!
+  status: String!
+  reviewer_comments: String
 }
 
 input TraceHeatMapWhereRequest {
@@ -8041,6 +8053,12 @@ type EventRollbackCheckResponse {
 
 type auto_optimize_update_status_response {
   status: String!
+}
+
+type auto_optimize_update_approval_response {
+  id: uuid!
+  status: String!
+  message: String
 }
 
 type AIResponse {

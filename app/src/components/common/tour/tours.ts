@@ -1768,7 +1768,7 @@ const optimizeAutoOptimizeTour: TourDef = {
     {
       element: '[role="tab"]#approvals',
       title: 'The approvals queue',
-      description: 'Automations can ask before they act. Anything waiting on a human decision lands here. Let’s look.',
+      description: 'Turn on Require approval and an automation asks before it acts. Each run waiting on a human decision lands here. Let’s look.',
       side: 'bottom',
       align: 'start',
       optional: true,
@@ -1779,7 +1779,7 @@ const optimizeAutoOptimizeTour: TourDef = {
     {
       element: '#autopilot-approvals-listing-box',
       title: 'Approve or reject',
-      description: 'Each pending change, what it would do, and the call you need to make — nothing here is applied until you say so.',
+      description: 'Each waiting run, the changes it would make, and the call you need to make — nothing in it is applied until you approve.',
       side: 'top',
       align: 'center',
       optional: true,

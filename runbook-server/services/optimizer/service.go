@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/model"
 	"nudgebee/runbook/internal/workflow"
 	"nudgebee/runbook/services/security"
@@ -23,6 +24,7 @@ type Service interface {
 	SkipExecution(ctx context.Context, sc *security.RequestContext, accountID uuid.UUID, autoOptimizeID uuid.UUID, byMinutes int) (string, error)
 	UpdateAutoOptimize(ctx context.Context, sc *security.RequestContext, accountID uuid.UUID, req model.AutoOptimizeRequestModel) (*string, error)
 	CreateAutoOptimize(ctx context.Context, sc *security.RequestContext, accountID uuid.UUID, req model.AutoOptimizeRequestModel) (*string, error)
+	DecideApproval(ctx context.Context, sc *security.RequestContext, accountID, approvalID uuid.UUID, decision ApprovalDecision, comments string) (string, error)
 	ChangeStatus(ctx context.Context, sc *security.RequestContext, accountID uuid.UUID, autoOptimizeID uuid.UUID, status model.AutoOptimizeStatus) error
 	GetActiveAutoOptimizes(ctx context.Context) ([]model.AutoOptimize, error)
 	GenerateTasks(ctx context.Context, autoOptimizeID uuid.UUID) ([]model.AutoOptimizeTask, error)
@@ -104,6 +106,17 @@ func (s *optimizerService) ExecuteAutoOptimize(ctx context.Context, autoOptimize
 
 	if ao.Status != model.AutoOptimizeStatusActive && ao.Status != model.AutoOptimizeStatusDryrun {
 		return fmt.Errorf("auto optimize must be in Active or Dryrun status to execute, current status: %s", ao.Status)
+	}
+
+	pending, err := s.dao.GetPendingAutoOptimizeApprovals(ctx, ao.ID)
+	if err != nil {
+		return err
+	}
+	now := approvalNow()
+	for _, a := range pending {
+		if a.Attributes.ExpiresAt.After(now) {
+			return common.Error{Code: 409, Message: "This automation has a run waiting for approval. Approve or reject it in the Approvals tab first."}
+		}
 	}
 
 	workflowOptions := client.StartWorkflowOptions{
@@ -421,10 +434,20 @@ func (s *optimizerService) UpdateAutoOptimize(ctx context.Context, sc *security.
 	}
 	ao.Attributes.GitOpsConfig = req.GitOps
 	ao.Attributes.TicketConfig = req.Ticket
+	if req.RequireApproval != nil {
+		ao.Attributes.RequireApproval = *req.RequireApproval
+	}
+	ao.ResourceFilters = req.ResourceFilter
 
 	err = s.dao.SaveAutoOptimize(ctx, ao)
 	if err != nil {
 		return nil, err
+	}
+
+	// A parked plan was made under the old settings. Keep it only if this edit
+	// left the plan-affecting settings alone (a new notification channel, say).
+	if !ao.RequiresApproval() || ao.PlanFingerprint() != oldAO.PlanFingerprint() {
+		s.cancelPendingApprovals(ctx, &ao)
 	}
 
 	err = s.dao.DeleteResourceFilters(ctx, ao.ID)
@@ -518,6 +541,9 @@ func (s *optimizerService) CreateAutoOptimize(ctx context.Context, sc *security.
 	}
 	ao.Attributes.GitOpsConfig = req.GitOps
 	ao.Attributes.TicketConfig = req.Ticket
+	if req.RequireApproval != nil {
+		ao.Attributes.RequireApproval = *req.RequireApproval
+	}
 
 	err = s.dao.SaveAutoOptimize(ctx, ao)
 	if err != nil {
@@ -584,6 +610,7 @@ func (s *optimizerService) ChangeStatus(ctx context.Context, sc *security.Reques
 		if err := s.dao.DeleteScheduledTasks(ctx, autoOptimizeID); err != nil {
 			return fmt.Errorf("failed to cleanup scheduled tasks: %w", err)
 		}
+		s.cancelPendingApprovals(ctx, ao)
 
 		err = s.temporalClient.ScheduleClient().GetHandle(ctx, s.scheduleID(ao.ID)).Pause(ctx, client.SchedulePauseOptions{
 			Note: "Disabled by user",

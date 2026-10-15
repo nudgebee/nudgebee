@@ -201,6 +201,26 @@ func (s *optimizerService) GenerateTasks(ctx context.Context, autoOptimizeID uui
 		return nil, fmt.Errorf("failed to prioritize tasks: %w", err)
 	}
 
+	if ao.RequiresApproval() {
+		recContent := make(map[uuid.UUID]map[string]any, len(filteredRecs))
+		for _, r := range filteredRecs {
+			recContent[r.ID] = r.Recommendation.Recommendation
+		}
+		parked, err := s.parkForApproval(ctx, ao, tasks, recContent)
+		if err != nil {
+			return nil, err
+		}
+		if parked {
+			// Nothing was applied, so the run hands back no tasks to execute and
+			// does not count as an execution.
+			ao.ExecutionStatus = string(model.AutopilotExecutionStatusIdle)
+			if err := s.updateExecutionState(ctx, ao, false); err != nil {
+				return nil, fmt.Errorf("failed to update execution state: %w", err)
+			}
+			return nil, nil
+		}
+	}
+
 	if len(tasks) > 0 {
 		slog.Info("Generated tasks", "count", len(tasks), "auto_optimize_id", ao.ID)
 		if err := s.dao.SaveAutoOptimizeTasks(ctx, tasks); err != nil {
@@ -341,7 +361,23 @@ func (s *optimizerService) checkPreFlight(ctx context.Context, ao *model.AutoOpt
 		if err != nil {
 			slog.Error("failed to pause schedule for expired auto optimize", "id", ao.ID, "error", err)
 		}
+		s.cancelPendingApprovals(ctx, ao)
 
+		return true, nil
+	}
+
+	waiting, err := s.settleApprovalsBeforeRun(ctx, ao)
+	if err != nil {
+		return false, fmt.Errorf("failed to check pending approvals for %s: %w", ao.ID, err)
+	}
+	if waiting {
+		// The parked run's changes go out when it is approved; planning again now
+		// would only file a second approval for the same work. Still move the next
+		// run time forward so the schedule never shows a time in the past.
+		slog.Info("Auto optimize has a run waiting for approval, skipping", "id", ao.ID)
+		if err := s.updateExecutionState(ctx, ao, false); err != nil {
+			return false, fmt.Errorf("failed to update execution state: %w", err)
+		}
 		return true, nil
 	}
 
