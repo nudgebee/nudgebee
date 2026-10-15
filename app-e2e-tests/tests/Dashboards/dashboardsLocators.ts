@@ -114,7 +114,8 @@ export class DashboardsLocators extends CommonLocators {
     this.exitDialogSaveBtn = page.locator("#dashboard-exit-save-btn");
 
     this.dialog = page.getByRole("dialog");
-    this.dialogTitle = page.locator("#alert-dialog-title");
+    // The closed "Create a New Dashboard" chooser stays mounted with its own #alert-dialog-title, so the newest (last-portaled) dialog's title is the one read.
+    this.dialogTitle = page.locator("#alert-dialog-title:visible").last();
     this.dialogCancelBtn = this.dialog.locator("#cancel");
     this.dialogConfirmBtn = this.dialog.locator("#submit");
 

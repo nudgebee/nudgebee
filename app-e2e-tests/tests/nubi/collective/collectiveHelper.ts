@@ -165,7 +165,7 @@ export async function requireCollectiveRows(locators: CollectiveLocators, minimu
 //
 // Returns the read at `seen` — the FIRST read after the action — not the most recent one.
 // The two differ only when the action produced more than one read, and then the first is
-// the honest answer: for the debounce case a second read means the collapse failed, and
+// the honest answer: for the Enter-to-search case a second read means a keystroke searched, and
 // reporting the last one would quietly hand back the full query and hide exactly that.
 export async function waitForNewRead(log: CollectiveReadLog, seen: number): Promise<string> {
   await expect
@@ -174,11 +174,10 @@ export async function waitForNewRead(log: CollectiveReadLog, seen: number): Prom
   return log.reads[seen];
 }
 
-// Types a query into the search box one character at a time and waits for the read it
-// triggers. pressSequentially with no delay rather than fill(): the debounce case needs the
-// per-character input events a real user produces, and firing them back-to-back keeps the
-// whole burst well inside CollectiveTab's 250ms window on any runner — a fixed inter-key
-// delay close to that window would make the collapse itself a race.
+// Types a query into the search box one character at a time, presses Enter and waits for the
+// read it triggers. CollectiveTab only commits the query on Enter (#40743), and pressSequentially
+// produces the per-character input events a real user does, so a search fired per keystroke
+// would show up in the log as extra reads.
 export async function searchFor(
   locators: CollectiveLocators,
   log: CollectiveReadLog,
@@ -188,13 +187,14 @@ export async function searchFor(
   await locators.searchInput.click();
   await locators.searchInput.pressSequentially(query);
   await expect(locators.searchInput).toHaveValue(query, { timeout: 15000 });
+  await locators.searchInput.press("Enter");
   const readQ = await waitForNewRead(log, readsBefore);
   await waitForCollectiveSettled(locators);
   return { readQ, readsBefore };
 }
 
 // Empties the search box, which CollectiveTab treats as a browse and fetches immediately
-// rather than on the debounce.
+// without waiting for Enter.
 export async function clearSearch(locators: CollectiveLocators, log: CollectiveReadLog): Promise<string> {
   const readsBefore = log.reads.length;
   await locators.searchInput.fill("");

@@ -14,6 +14,7 @@ export class CollectiveLocators extends CommonLocators {
   readonly memoryGroupTab: Locator;
   readonly collectiveTab: Locator;
   readonly patternsTab: Locator;
+  readonly decisionsTab: Locator;
   readonly bCortexDialog: Locator;
   readonly tabDescription: Locator;
   readonly searchInput: Locator;
@@ -39,10 +40,11 @@ export class CollectiveLocators extends CommonLocators {
     // locators is what keeps one surface's rename from editing another surface's file.
     this.memoryGroupTab = page.getByRole("tab", { name: "Memory", exact: true });
     this.collectiveTab = page.getByRole("tab", { name: "Collective", exact: true });
-    // Patterns is the Memory group's default sub-tab (DEFAULT_TAB_STATE in
-    // BCortexModal.jsx) and, unlike Collective, carries no `usesAccount` flag — which is
-    // what makes it the contrast case for the account-picker assertion.
+    // Patterns is the Memory group's default sub-tab (DEFAULT_TAB_STATE in BCortexModal.jsx).
     this.patternsTab = page.getByRole("tab", { name: "Patterns", exact: true });
+    // Decisions carries `usesAccount` while tenant-wide Collective does not (#40743), so it is
+    // the contrast case for the account-picker assertion.
+    this.decisionsTab = page.getByRole("tab", { name: "Decisions", exact: true });
 
     // Everything below scopes to the b-Cortex dialog so a matching string on the page
     // behind the modal cannot satisfy it. Filtered on "b-Cortex" — the ds/Modal title —
@@ -78,7 +80,8 @@ export class CollectiveLocators extends CommonLocators {
     // came back empty and was mislabelled as a filtered miss.
     this.noKnowledgeEmptyState = this.bCortexDialog.getByText("No collective knowledge yet", { exact: true }).first();
     this.noMatchEmptyState = this.bCortexDialog.getByText("No matching insights", { exact: true }).first();
-    this.noMatchHint = this.bCortexDialog.getByText("Try a different query.", { exact: true }).first();
+    // Copy widened to name the module/type filters too (#40743).
+    this.noMatchHint = this.bCortexDialog.getByText("Try a different query or filter.", { exact: true }).first();
 
     // One per module group card: ds/Chip variant='tag' holding that group's row count.
     // Anchored with ^$ on digits so it cannot also collect a row's kind chip, which is

@@ -107,9 +107,12 @@ export class NubiLocators {
 
   constructor(page: Page) {
     this.page = page;
+    // Main-rail Nubi item renders on every page; the header "Ask nubi" button is absent on /ask-nudgebee, the landing page.
     this.askNudgebeeBtn = page
-      .getByRole("button", { name: "Ask nubi" })
-      .or(page.locator('img[alt="Ask nubi"]'));
+      .locator("#nubi-sidenavbutton")
+      .or(page.locator("#global-search-trigger-ask-ai"))
+      .or(page.getByRole("button", { name: "Ask nubi" }))
+      .first();
     this.newChatBtn = page.locator('img[src*="plus-icon"]');
     // The same chat renders with two different placeholders: the long one on the
     // full /ask-nudgebee page, and "Ask a question..." when Nubi is opened as the

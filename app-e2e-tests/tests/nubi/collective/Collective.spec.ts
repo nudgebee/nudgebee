@@ -12,8 +12,8 @@ import {
 } from "./collectiveHelper";
 
 // Nubi > b-Cortex > Memory > Collective (app/src/ee/components/memory2/CollectiveTab.jsx).
-// The tab browses the tenant's shared agent memory, grouped by module, with a debounced
-// full-text search over it. Its one mutating control is a per-row Delete, and Collective
+// The tab browses the tenant's shared agent memory, grouped by module, with an
+// enter-to-search full-text search over it. Its one mutating control is a per-row Delete, and Collective
 // rows are tenant-wide memory the agents wrote from real conversations — injected into
 // everyone's future prompts, with no create path on this tab to put one back — so nothing
 // here confirms a delete. The two delete cases open the confirmation, assert what it says,
@@ -160,8 +160,7 @@ test.describe("Nubi Collective Tab", () => {
 
       const readQ = await clearSearch(locators, log);
       // An empty box is a browse, not a search for the empty string — CollectiveTab calls
-      // collectiveList, which sends no q at all, and takes the immediate path rather than
-      // the 250ms debounce.
+      // collectiveList, which sends no q at all, and fetches without waiting for Enter.
       expect(readQ).toBe("");
 
       await expect(locators.noMatchEmptyState).toHaveCount(0);
@@ -171,7 +170,7 @@ test.describe("Nubi Collective Tab", () => {
   );
 
   test(
-    "Nubi Collective - type a multi-character query into the search box in one burst, verify the debounce collapses it into a single collective search for the whole query",
+    "Nubi Collective - type a multi-character query into the search box and press Enter, verify the keystrokes send no search and Enter sends a single collective search for the whole query",
     { tag: ["@dev", "@regression", "@search", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
@@ -185,7 +184,7 @@ test.describe("Nubi Collective Tab", () => {
       const { readQ, readsBefore } = await searchFor(locators, log, term);
       expect(readQ).toBe(term);
 
-      // The debounce is what stops a typed word firing a search per character against a
+      // Enter-to-search is what stops a typed word firing a search per character against a
       // full-text query on shared memory. Read after the results settled, so a per-keystroke
       // request would already have been issued and logged by now.
       expect(log.reads.length - readsBefore).toBe(1);
@@ -248,26 +247,25 @@ test.describe("Nubi Collective Tab", () => {
   );
 
   test(
-    "Nubi Collective - leave Collective for the Patterns sub-tab and come back, verify the account filter is offered on Collective and withdrawn on Patterns",
+    "Nubi Collective - leave Collective for the Decisions sub-tab and come back, verify the account filter is withheld on tenant-wide Collective and offered on Decisions",
     { tag: ["@dev", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators } = await openCollectiveTab(page);
 
-      // Collective carries usesAccount, so BCortexModal renders the filter beside the
-      // Memory sub-tab strip while it is the active tab.
-      await expect(locators.accountSelect).toBeVisible({ timeout: 20000 });
-
-      await locators.patternsTab.click();
-      await locators.tabDescription.waitFor({ state: "detached", timeout: 30000 });
-      // Patterns carries no usesAccount, and the node is rendered behind that flag rather
-      // than hidden with CSS, so it leaves the DOM entirely.
+      // Collective is tenant-wide and carries no usesAccount, and the node is rendered behind
+      // that flag rather than hidden with CSS, so it is absent from the DOM.
       await expect(locators.accountSelect).toHaveCount(0, { timeout: 20000 });
+
+      await locators.decisionsTab.click();
+      await locators.tabDescription.waitFor({ state: "detached", timeout: 30000 });
+      // Decisions carries usesAccount, so BCortexModal renders the filter beside the strip.
+      await expect(locators.accountSelect).toBeVisible({ timeout: 20000 });
 
       await locators.collectiveTab.click();
       await expect(locators.tabDescription).toBeVisible({ timeout: 40000 });
       await waitForCollectiveSettled(locators);
-      await expect(locators.accountSelect).toBeVisible({ timeout: 20000 });
+      await expect(locators.accountSelect).toHaveCount(0, { timeout: 20000 });
     }
   );
 });

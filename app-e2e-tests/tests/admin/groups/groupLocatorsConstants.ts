@@ -12,6 +12,12 @@ export const Groups = [
   { name: "K8 Readonly" },
 ];
 
+// First line of a caught error for best-effort cleanup warnings; logging the raw error dumps its matcherResult and page snapshot (~300 lines) into CI.
+export function errorSummary(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.split("\n")[0];
+}
+
 // Groups cannot be deleted in the product, so these fixtures are created once and reused by every later run.
 // Each key names the one thing that mutates its group; read-only tests may share a group with its mutator.
 // "E2E" prefix on purpose: the tenant already has real groups called "New Test Group 1..7" and
@@ -404,7 +410,7 @@ export class GroupLocators extends CommonLocators {
       await this.expectSectionToast(GROUP_TOASTS.accountUpdated);
       await this.closeModal();
     } catch (error) {
-      console.warn(`Could not clear account roles on "${groupName}":`, error);
+      console.warn(`Could not clear account roles on "${groupName}":`, errorSummary(error));
     }
   }
 
@@ -972,6 +978,6 @@ export async function restoreGroup(
 
     console.warn(`Restore skipped - group not found under: ${candidateNames.join(", ")}`);
   } catch (error) {
-    console.warn(`Restore of group "${original.name}" failed - may need manual cleanup:`, error);
+    console.warn(`Restore of group "${original.name}" failed - may need manual cleanup:`, errorSummary(error));
   }
 }

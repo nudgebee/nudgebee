@@ -48,7 +48,7 @@ export const FILTER_LABEL: Record<keyof typeof FILTER, string> = {
 };
 
 // The tabs CustomTable builds from InstancesView's `expandable.tabs`, in order.
-export const DRILLDOWN_TABS = ["Details", "Monitoring", "Events", "Vulnerabilities", "Action History"];
+export const DRILLDOWN_TABS = ["Details", "Monitoring", "Events", "Action History"];
 
 // EC2_ACTIONS in app/src/components/cloudaccount/resourceActions.ts. Ordered least
 // destructive first; the suite only ever opens their confirmation and cancels it.
