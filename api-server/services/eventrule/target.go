@@ -186,9 +186,12 @@ var promMuteSources = []string{
 	"zenduty_webhook",
 }
 
+// A pushed CloudWatch alarm was stored under AWS_EventBridge until the collector
+// stored it as AWS_CloudWatch_Alarm. Rules and mutes written under the old source
+// still describe those alarms, so an AWS_EventBridge rule covers both.
 var muteEventSources = map[string][]string{
 	"AWS_CloudWatch_Alarm":            {"AWS_CloudWatch_Alarm", "AWS_EventBridge"},
-	"AWS_EventBridge":                 {"AWS_EventBridge"},
+	"AWS_EventBridge":                 {"AWS_EventBridge", "AWS_CloudWatch_Alarm"},
 	"GCP_Metric_Alert":                {"GCP_Metric_Alert"},
 	"Azure_Monitor_Alert":             {"Azure_Monitor_Alert"},
 	agentEventSourceName:              promMuteSources,

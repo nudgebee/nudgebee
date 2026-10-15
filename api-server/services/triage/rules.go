@@ -32,6 +32,9 @@ var triageSourceGroups = map[string][]string{
 	"prometheus": {"prometheus", "prometheus_alertmanager_webhook", "nudgebee", "prometheus_user"},
 	"pagerduty":  {"pagerduty_webhook"},
 	"datadog":    {"datadog_webhook"},
+	// Pushed CloudWatch alarms were stored as AWS_EventBridge before they were
+	// stored as AWS_CloudWatch_Alarm; a rule or mute written then still covers them.
+	"AWS_EventBridge": {"AWS_EventBridge", "AWS_CloudWatch_Alarm"},
 }
 
 // triageMatchSources expands a rule's Source filter value into the raw event

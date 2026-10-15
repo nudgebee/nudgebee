@@ -142,6 +142,11 @@ func TestMatchesRule_SourceGroups(t *testing.T) {
 		{"prometheus rule matches the agent's prometheus event", "prometheus", "prometheus", true},
 		{"prometheus rule matches the alertmanager webhook event", "prometheus", "prometheus_alertmanager_webhook", true},
 		{"an unmapped literal source still matches itself", "AWS_CloudWatch_Alarm", "AWS_CloudWatch_Alarm", true},
+		// A rule or mute written while pushed alarms were stored as EventBridge
+		// events still covers them now they are stored as alarms.
+		{"EventBridge rule matches an EventBridge event", "AWS_EventBridge", "AWS_EventBridge", true},
+		{"EventBridge rule matches a CloudWatch alarm event", "AWS_EventBridge", "AWS_CloudWatch_Alarm", true},
+		{"CloudWatch alarm rule does not match other EventBridge events", "AWS_CloudWatch_Alarm", "AWS_EventBridge", false},
 	}
 
 	for _, tc := range testCases {

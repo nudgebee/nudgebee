@@ -2786,6 +2786,16 @@ func (p *TemplatedEventBridgeProcessor) Process(ctx providers.CloudProviderConte
 				}
 				setAlarmFiring(&provEvent, alarmArn, stateChangedAt)
 
+				// An alarm is stored as an alarm, however it was delivered: the
+				// features built for alarms read this source.
+				provEvent.EventSource = cloudWatchAlarmEventSource
+				// The push carries the threshold and period the alarm fired with
+				// in the state's reason data, not in its configuration.
+				evaluation := extractAlarmEvaluation(ebEvent)
+				if evaluation.HasThreshold {
+					alarmInfo.Threshold = strconv.FormatFloat(evaluation.Threshold, 'f', -1, 64)
+				}
+
 				var awsCfg *aws.Config
 				cfg, cfgErr := getAwsConfigFromAccount(ctx.GetContext(), account)
 				if cfgErr == nil {
@@ -2799,6 +2809,15 @@ func (p *TemplatedEventBridgeProcessor) Process(ctx providers.CloudProviderConte
 				provEvent.ResourceLookupIds = enrichment.ResourceLookupIds
 				for k, v := range enrichment.Labels {
 					provEvent.Labels[k] = v
+				}
+				// Readers of a polled alarm find these at the top of the raw event.
+				if provEvent.Raw != nil {
+					if evaluation.HasThreshold {
+						provEvent.Raw["threshold"] = evaluation.Threshold
+					}
+					if evaluation.PeriodSeconds > 0 {
+						provEvent.Raw["period"] = evaluation.PeriodSeconds
+					}
 				}
 				// An alarm entering ALARM is a condition that lasts, not a moment.
 				// Whether it is stored open is decided where it is stored, by

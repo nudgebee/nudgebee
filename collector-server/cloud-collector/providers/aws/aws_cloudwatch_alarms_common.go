@@ -1208,10 +1208,23 @@ func extractCloudWatchAlarmInfoFromEB(ebEvent EventBridgeEvent) (CloudWatchAlarm
 			metricName, _ = innerMetric["name"].(string)
 			metricNamespace, _ = innerMetric["namespace"].(string)
 			rawDims, _ := innerMetric["dimensions"].(map[string]any)
-			for k, v := range rawDims {
-				if vStr, ok := v.(string); ok {
-					dims = append(dims, AlarmDimension{Name: k, Value: vStr})
+			// The event can name one dimension twice in different letter case
+			// ("LoadBalancer" and "loadBalancer"). CloudWatch dimension names are
+			// case-sensitive and a metric query with both matches nothing, so the
+			// name is kept once; sorted, the capitalised spelling AWS uses comes first.
+			names := make([]string, 0, len(rawDims))
+			for k := range rawDims {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+			seen := make(map[string]bool, len(names))
+			for _, k := range names {
+				vStr, ok := rawDims[k].(string)
+				if !ok || seen[strings.ToLower(k)] {
+					continue
 				}
+				seen[strings.ToLower(k)] = true
+				dims = append(dims, AlarmDimension{Name: k, Value: vStr})
 			}
 			break // use first metric with metricStat
 		}
