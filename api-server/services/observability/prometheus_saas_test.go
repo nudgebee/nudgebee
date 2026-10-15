@@ -320,6 +320,21 @@ func TestPrometheusSaas_FetchMetricLabelValues_OnlyEndGiven(t *testing.T) {
 	assert.Equal(t, "1699913600", q.Get("start"))
 }
 
+// Label names for a metric get the same default window (Azure needs one).
+func TestPrometheusSaas_FetchMetricsLabels_DefaultWindow(t *testing.T) {
+	recorder := newPrometheusSaasServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"success","data":["namespace"]}`))
+	})
+	_, err := (&PrometheusSaasMetricSource{}).FetchMetricsLabels(testRequestContext(), FetchMetricLabelsRequest{AccountId: "acc", MetricName: "kube_pod_info"})
+	require.NoError(t, err)
+	q := recorder.first(t).URL.Query()
+	start, err := strconv.ParseInt(q.Get("start"), 10, 64)
+	require.NoError(t, err)
+	end, err := strconv.ParseInt(q.Get("end"), 10, 64)
+	require.NoError(t, err)
+	assert.Equal(t, int64(prometheusSaasLabelValuesWindow.Seconds()), end-start)
+}
+
 // Azure Managed Prometheus answers 501 when no metric is named.
 func TestPrometheusSaas_FetchMetricLabelValues_NoMetricOnAzure(t *testing.T) {
 	newPrometheusSaasServer(t, func(w http.ResponseWriter, _ *http.Request) {

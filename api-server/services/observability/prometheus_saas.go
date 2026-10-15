@@ -100,7 +100,7 @@ func prometheusSaasTimeParams(params url.Values, startMs, endMs int64) {
 
 func (s *PrometheusSaasMetricSource) FetchMetricsLabels(ctx *security.RequestContext, req FetchMetricLabelsRequest) ([]OutputMetricLabels, error) {
 	params := url.Values{}
-	prometheusSaasTimeParams(params, req.StartTime, req.EndTime)
+	prometheusSaasLabelTimeParams(params, req.StartTime, req.EndTime)
 	if req.MetricName != "" {
 		params.Add("match[]", fmt.Sprintf(`{__name__="%s"}`, escapePromQLString(req.MetricName)))
 	}
@@ -121,20 +121,15 @@ func (s *PrometheusSaasMetricSource) FetchMetricsLabels(ctx *security.RequestCon
 	return labels, nil
 }
 
-// prometheusSaasLabelValuesWindow is the look-back used for label values when
-// the caller gives no time range.
+// prometheusSaasLabelValuesWindow is the look-back used for label names and
+// values when the caller gives no time range.
 const prometheusSaasLabelValuesWindow = 24 * time.Hour
 
-func (s *PrometheusSaasMetricSource) FetchMetricLabelValues(ctx *security.RequestContext, req FetchMetricsLabelValueRequest) ([]OutputMetricsLabelValues, error) {
-	if req.Label == "" {
-		return nil, fmt.Errorf("prometheus: label is required")
-	}
-
-	params := url.Values{}
-	// Callers such as the query builder send no window. Azure Managed
-	// Prometheus rejects label values without both bounds (max 32 days), and
-	// for other backends it bounds an otherwise all-time lookup.
-	startMs, endMs := req.StartTime, req.EndTime
+// prometheusSaasLabelTimeParams sets start/end for label lookups, filling a
+// missing bound. Callers such as the query builder send no window; Azure
+// Managed Prometheus rejects metric-scoped label lookups without both bounds
+// (max 32 days), and for other backends it bounds an otherwise all-time lookup.
+func prometheusSaasLabelTimeParams(params url.Values, startMs, endMs int64) {
 	if endMs == 0 {
 		endMs = time.Now().UnixMilli()
 	}
@@ -142,6 +137,15 @@ func (s *PrometheusSaasMetricSource) FetchMetricLabelValues(ctx *security.Reques
 		startMs = endMs - prometheusSaasLabelValuesWindow.Milliseconds()
 	}
 	prometheusSaasTimeParams(params, startMs, endMs)
+}
+
+func (s *PrometheusSaasMetricSource) FetchMetricLabelValues(ctx *security.RequestContext, req FetchMetricsLabelValueRequest) ([]OutputMetricsLabelValues, error) {
+	if req.Label == "" {
+		return nil, fmt.Errorf("prometheus: label is required")
+	}
+
+	params := url.Values{}
+	prometheusSaasLabelTimeParams(params, req.StartTime, req.EndTime)
 	// metric_name is what the UI and the agent source use; metric is kept for
 	// older callers.
 	metric := requestedMetricName(req)
