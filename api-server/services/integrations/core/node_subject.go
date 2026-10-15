@@ -312,20 +312,7 @@ func nodeFromExporterPod(sc *security.RequestContext, tenantId, accountId string
 // autoscalers, so only a node that is still active counts — a stale match would
 // name the wrong machine.
 func nodeFromInstanceIP(sc *security.RequestContext, tenantId, accountId string, labels map[string]string) string {
-	if labels == nil {
-		return ""
-	}
-	instance := strings.TrimSpace(labels["instance"])
-	if instance == "" {
-		return ""
-	}
-	// net.SplitHostPort rather than cutting at the first colon: an IPv6 target is
-	// "[fe80::1]:9100", which a naive cut turns into "[fe80". A value with no port
-	// at all errors here and is used as-is.
-	ip := instance
-	if host, _, err := net.SplitHostPort(instance); err == nil {
-		ip = host
-	}
+	ip := instanceHost(labels)
 	if ip == "" {
 		return ""
 	}
@@ -347,4 +334,20 @@ func nodeFromInstanceIP(sc *security.RequestContext, tenantId, accountId string,
 		return ""
 	}
 	return nodeName
+}
+
+// instanceHost returns the host part of the `instance` scrape target
+// (`<host>:<port>`), or "" when the label is absent.
+func instanceHost(labels map[string]string) string {
+	instance := strings.TrimSpace(labels["instance"])
+	if instance == "" {
+		return ""
+	}
+	// net.SplitHostPort rather than cutting at the first colon: an IPv6 target is
+	// "[fe80::1]:9100", which a naive cut turns into "[fe80". A value with no port
+	// at all errors here and is used as-is.
+	if host, _, err := net.SplitHostPort(instance); err == nil {
+		return host
+	}
+	return instance
 }

@@ -1045,6 +1045,31 @@ const apiVm = {
   },
 
   /**
+   * Whether this account can receive Alertmanager alerts and when one last did. The
+   * webhook is push-only, so there is no connection to probe: the status is the
+   * integration's own state plus the newest event it produced.
+   */
+  async getAlertWebhookStatus(accountId: string): Promise<VmAlertWebhookStatus> {
+    const integrations = await listAccountIntegrations(accountId, ALERTMANAGER_WEBHOOK_INTEGRATION);
+    if (!integrations.length) return { state: 'not_configured' };
+    const enabled = integrations.filter((row: any) => row.status === 'enabled');
+    if (!enabled.length) return { state: 'disabled', integration_name: integrations[0].name };
+
+    const res: any = await k8sApi.getK8sEvents(
+      1,
+      0,
+      { account_id: accountId, source: [ALERTMANAGER_WEBHOOK_INTEGRATION], sort_by: 'updated_at', timeFilter: false },
+      ['updated_at']
+    );
+    const events = res?.data?.events;
+    if (!Array.isArray(events)) throw new Error('Failed to read received alerts');
+    const lastReceived = events[0]?.updated_at;
+    return lastReceived
+      ? { state: 'receiving', integration_name: enabled[0].name, last_received_at: lastReceived }
+      : { state: 'no_alerts', integration_name: enabled[0].name };
+  },
+
+  /**
    * The account's service map, built by its forager from node-agent metrics and
    * named against inventory on the server. Same application shape as the K8s
    * map, so the K8s node and edge components render it unchanged.
@@ -1058,6 +1083,17 @@ const apiVm = {
     return response?.data?.data?.vm_get_service_map?.data?.applications || [];
   },
 };
+
+export type VmAlertWebhookState = 'not_configured' | 'disabled' | 'no_alerts' | 'receiving';
+
+export interface VmAlertWebhookStatus {
+  state: VmAlertWebhookState;
+  integration_name?: string;
+  /** When the most recent alert (or a repeat of one) reached the account. */
+  last_received_at?: string;
+}
+
+const ALERTMANAGER_WEBHOOK_INTEGRATION = 'prometheus_alertmanager_webhook';
 
 export type VmMetricsState = 'not_configured' | 'check_failed' | 'unreachable' | 'no_data' | 'connected';
 

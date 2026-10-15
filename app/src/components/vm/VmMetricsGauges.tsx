@@ -14,12 +14,18 @@ export const gaugeTone = (pct: number) => (pct >= CRITICAL_AT ? ds.red[500] : pc
 const ARC = 'M 6 26 A 20 20 0 0 1 46 26';
 
 /** One half-circle gauge: the share in the middle, what it measures underneath. */
-export const Gauge = ({ label, value }: { label: string; value?: number }) => {
+export const Gauge = ({ label, value, scale = 1 }: { label: string; value?: number; scale?: number }) => {
   const known = value !== undefined;
   const clamped = known ? Math.min(100, Math.max(0, value as number)) : 0;
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1 }} data-testid={`gauge-${label.toLowerCase()}`}>
-      <svg width='52' height='30' viewBox='0 0 52 30' role='img' aria-label={known ? `${label} ${Math.round(clamped)}%` : `${label} unknown`}>
+      <svg
+        width={52 * scale}
+        height={30 * scale}
+        viewBox='0 0 52 30'
+        role='img'
+        aria-label={known ? `${label} ${Math.round(clamped)}%` : `${label} unknown`}
+      >
         <path d={ARC} fill='none' stroke={ds.gray[200]} strokeWidth='5' strokeLinecap='round' />
         {known && clamped > 0 ? (
           <path

@@ -3305,6 +3305,7 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 		// merge in repeatDeliveryUpdateSQL needs: a nil map marshals to null.
 		applySubjectFallbacks(&webhookEvent)
 		applyNodeSubjectCorrection(sc, dbms, tenantId, &webhookEvent)
+		applyVMSubject(sc, &webhookEvent)
 		// The correction can miss on a repeat where the first delivery resolved it
 		// (the exporter pod was rescheduled and its row is gone). The delivery then
 		// still names the exporter pod, and writing that would move a corrected
@@ -3375,6 +3376,7 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 		// rewritten by an enricher.
 		applySubjectFallbacks(&webhookEvent)
 		applyNodeSubjectCorrection(sc, dbms, tenantId, &webhookEvent)
+		applyVMSubject(sc, &webhookEvent)
 
 		if webhookEvent.CreatedAt == nil {
 			webhookEvent.CreatedAt = &start
@@ -3553,6 +3555,24 @@ func applyNodeSubjectCorrection(sc *security.RequestContext, dbms *database.Data
 	webhookEvent.ServiceKey = ""
 	webhookEvent.CloudResourceId = ""
 	linkK8sCloudResourceId(sc, dbms, tenantId, webhookEvent)
+}
+
+// applyVMSubject links an alert on a VM account to the VM it is about. An alert
+// whose subject fell back to the raw `instance` label is renamed to the VM; one
+// that already names a service keeps that name and only gains the link.
+func applyVMSubject(sc *security.RequestContext, webhookEvent *Event) {
+	if webhookEvent.CloudResourceId != "" {
+		return
+	}
+	vm, ok := integrationcore.ResolveVMSubject(sc, webhookEvent.AccountId, integrationcore.VMSubjectInput{Labels: webhookEvent.Labels})
+	if !ok {
+		return
+	}
+	webhookEvent.CloudResourceId = vm.CloudResourceID
+	if strings.EqualFold(webhookEvent.SubjectType, "instance") {
+		webhookEvent.SubjectType = "vm"
+		webhookEvent.SubjectName = vm.Name
+	}
 }
 
 // runPlaybookEnrichment executes the event's playbook and applies every

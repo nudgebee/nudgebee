@@ -10,6 +10,7 @@ import apiVm, { VmAgent } from '@api1/vm';
 import { CellText, useLatestRequest } from './common';
 import VmMetricsStatusCard from './VmMetricsStatusCard';
 import VmLogsStatusCard from './VmLogsStatusCard';
+import VmAlertsStatusCard from './VmAlertsStatusCard';
 import { ds } from '@utils/colors';
 
 const AGENT_HEADERS = ['Agent', 'Connection', 'Configuration', 'Version', 'Last Connected'];
@@ -76,6 +77,7 @@ const VmAgents = ({ accountId }: { accountId: string }) => {
     <>
       <VmMetricsStatusCard accountId={accountId} />
       <VmLogsStatusCard accountId={accountId} />
+      <VmAlertsStatusCard accountId={accountId} />
       <Box sx={{ mt: 4 }}>
         <ListingLayout id='vm-agents'>
           <ListingLayout.Toolbar

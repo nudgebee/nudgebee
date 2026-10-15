@@ -63,6 +63,14 @@ interface KubernetesGroupedEventsTableProps {
   groupEventType: string;
   isTroubleshootPage: boolean;
   hideScopeFilters?: boolean;
+  /** Narrow to one cloud resource (a VM), by its cloud_resourses id. */
+  cloudResourceId?: string;
+  /** Drop the Namespace / Workload dropdowns, which mean nothing outside Kubernetes. */
+  hideK8sFilters?: boolean;
+  /** Rows per page, overriding the user's saved page size (for an embedded preview). */
+  pageSize?: number;
+  /** Omit the search and filter toolbar (for an embedded preview). */
+  hideToolbar?: boolean;
 }
 
 interface DateRange {
@@ -130,7 +138,8 @@ const transformTableData = (
   onCreateTicket?: (item: any) => void,
   onClassify?: (item: any, classificationType: string) => void,
   ticketMap?: Map<string, any>,
-  nbStatus?: string[]
+  nbStatus?: string[],
+  cloudResourceId?: string
 ) => {
   if (!eventGroupings || !Array.isArray(eventGroupings)) {
     return [];
@@ -181,6 +190,7 @@ const transformTableData = (
       aggregationKey: item.aggregation_key,
       hasAlertGroup: Boolean((item.incident_group_size ?? 0) > 0 || item.is_incident_child),
       ...(nbStatus && nbStatus.length > 0 ? { nb_status: nbStatus } : {}),
+      ...(cloudResourceId ? { resource_ids: [cloudResourceId] } : {}),
     };
 
     const existingTicket = ticketMap?.get(item.fingerprint);
@@ -362,6 +372,7 @@ const transformTableData = (
         endTime: dateRange.endDate,
         accountId: item.account_id,
         ...(nbStatus && nbStatus.length > 0 ? { nb_status: nbStatus } : {}),
+        ...(cloudResourceId ? { resource_ids: [cloudResourceId] } : {}),
       };
       return [
         {
@@ -402,6 +413,7 @@ const transformTableData = (
       endTime: dateRange.endDate,
       accountId: item.account_id,
       ...(nbStatus && nbStatus.length > 0 ? { nb_status: nbStatus } : {}),
+      ...(cloudResourceId ? { resource_ids: [cloudResourceId] } : {}),
     };
     return [
       {
@@ -478,6 +490,10 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   isTroubleshootPage = false,
   // Account + date live in the page-level scope bar on Troubleshoot.
   hideScopeFilters = false,
+  cloudResourceId,
+  hideK8sFilters = false,
+  pageSize,
+  hideToolbar = false,
 }) => {
   const componentId = 'Grouped Events';
   const router = useRouter();
@@ -495,7 +511,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   const [rawEventGroupings, setRawEventGroupings] = useState<any[]>([]);
   const [ticketReferenceMap, setTicketReferenceMap] = useState<Map<string, any>>(new Map());
   const [loading, setLoading] = useState<boolean>(false);
-  const [perPage, setPerPage] = useState(apiUser.getUserPreferencesTablePageSize() ?? 10);
+  const [perPage, setPerPage] = useState(pageSize ?? apiUser.getUserPreferencesTablePageSize() ?? 10);
 
   // Filters
   const [selectedDateRange, setSelectedDateRange] = useState<DateRange>(() => {
@@ -560,7 +576,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       isTroubleshootPage,
       enableFilters: true,
       disabledFilters: ['subjectType', ...(isTroubleshootPage && !selectedAccountId.length ? ['workload', 'namespace'] : [])],
-      resource_ids: [],
+      resource_ids: cloudResourceId ? [cloudResourceId] : [],
       selectedNamespace,
       selectedWorkload,
       startTime: new Date(selectedDateRange.startDate).toISOString(),
@@ -583,10 +599,10 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     return account?.cloud_provider ?? accountType;
   }, [accounts, selectedAccountId, accountType]);
 
-  const isK8sFilterVisible = resolvedAccountType === 'K8s' && (!isTroubleshootPage || selectedAccountId.length > 0);
+  const isK8sFilterVisible = !hideK8sFilters && resolvedAccountType === 'K8s' && (!isTroubleshootPage || selectedAccountId.length > 0);
   const isCloudFilterVisible = ['AWS', 'GCP', 'Azure'].includes(resolvedAccountType) && (!isTroubleshootPage || selectedAccountId.length > 0);
   // Workload filter is only rendered on non-troubleshoot pages.
-  const isWorkloadFilterVisible = !isTroubleshootPage;
+  const isWorkloadFilterVisible = !isTroubleshootPage && !hideK8sFilters;
 
   useEffect(() => {
     const raw = accountId || (router.query.accountIds as string);
@@ -922,6 +938,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
 
     const query: any = {
       account_id: selectedAccountId.length ? selectedAccountId : undefined,
+      resource_ids: cloudResourceId ? [cloudResourceId] : undefined,
       start_date: new Date(selectedDateRange.startDate),
       end_date: new Date(selectedDateRange.endDate),
       aggregation_key: selectedAggregationKey?.map((e: any) => e.value) || [],
@@ -1083,6 +1100,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     isCloudFilterVisible,
     isWorkloadFilterVisible,
     sortConfig,
+    cloudResourceId,
   ]);
 
   useEffect(() => {
@@ -1108,7 +1126,8 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
         },
         handleClassifySelect,
         ticketReferenceMap,
-        selectedNBStatus.length > 0 ? selectedNBStatus.map((s) => s.value) : undefined
+        selectedNBStatus.length > 0 ? selectedNBStatus.map((s) => s.value) : undefined,
+        cloudResourceId
       ),
     [
       rawEventGroupings,
@@ -1123,6 +1142,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
       handleClassifySelect,
       ticketReferenceMap,
       selectedNBStatus,
+      cloudResourceId,
     ]
   );
 
@@ -1231,7 +1251,7 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
         ]
       : []),
 
-    ...(!isTroubleshootPage
+    ...(!isTroubleshootPage && !hideK8sFilters
       ? [
           {
             type: 'dropdown',
@@ -1392,56 +1412,58 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
   return (
     <>
       <ListingLayout id='Grouped Applications'>
-        <ListingLayout.Toolbar
-          actions={
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
-              {!hideScopeFilters && (
-                <CustomDateTimeRangePicker
-                  passedSelectedDateTime={{
-                    startTime: selectedDateRange.startDate,
-                    endTime: selectedDateRange.endDate,
-                    shortcutClickTime: 0,
-                  }}
-                  onChange={({ selection }: { selection: { startTime: number; endTime: number; shortcutClickTime: number } }) =>
-                    handleDateRangeChange(selection)
-                  }
-                />
-              )}
-              <DownloadButton id='triage-inbox-download' size='sm' onClick={() => ({ tableId: componentId, fileName: `${componentId}.csv` })} />
-            </Box>
-          }
-        >
-          <SearchInput
-            id='filter-search-grouped-events'
-            label='Search alert, resource or message'
-            value={searchText}
-            onChange={(next: string) => {
-              // Clearing the field by hand (not via the X) should drop the applied filter.
-              if (searchText.trim() !== '' && next.trim() === '') {
-                applySearch('');
-              }
-              setSearchText(next);
-            }}
-            onEnterPress={() => applySearch(searchText.trim())}
-            // SearchInput's X calls onChange('') first, which already drops the applied filter.
-            onClear={() => setSearchText('')}
-          />
-          {filterDropdownsLegacyShape.map((opt: any, idx: number) => (
-            <FilterDropdown
-              key={`${opt.label || 'filter'}-${idx}`}
-              id={`filter-${(opt.label || `filter-${idx}`).toString().replace(/\s+/g, '-').toLowerCase()}`}
-              label={opt.label}
-              multiple={opt.type === 'multi-dropdown'}
-              grouped={!!opt.grouped}
-              groupIcon={opt.groupIcon}
-              selectionWithinGroup={!!opt.selectionWithinGroup}
-              options={opt.options || []}
-              value={opt.value}
-              onSelect={opt.onSelect}
-              isOptionsLoading={opt.isOptionsLoading}
+        {!hideToolbar && (
+          <ListingLayout.Toolbar
+            actions={
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+                {!hideScopeFilters && (
+                  <CustomDateTimeRangePicker
+                    passedSelectedDateTime={{
+                      startTime: selectedDateRange.startDate,
+                      endTime: selectedDateRange.endDate,
+                      shortcutClickTime: 0,
+                    }}
+                    onChange={({ selection }: { selection: { startTime: number; endTime: number; shortcutClickTime: number } }) =>
+                      handleDateRangeChange(selection)
+                    }
+                  />
+                )}
+                <DownloadButton id='triage-inbox-download' size='sm' onClick={() => ({ tableId: componentId, fileName: `${componentId}.csv` })} />
+              </Box>
+            }
+          >
+            <SearchInput
+              id='filter-search-grouped-events'
+              label='Search alert, resource or message'
+              value={searchText}
+              onChange={(next: string) => {
+                // Clearing the field by hand (not via the X) should drop the applied filter.
+                if (searchText.trim() !== '' && next.trim() === '') {
+                  applySearch('');
+                }
+                setSearchText(next);
+              }}
+              onEnterPress={() => applySearch(searchText.trim())}
+              // SearchInput's X calls onChange('') first, which already drops the applied filter.
+              onClear={() => setSearchText('')}
             />
-          ))}
-        </ListingLayout.Toolbar>
+            {filterDropdownsLegacyShape.map((opt: any, idx: number) => (
+              <FilterDropdown
+                key={`${opt.label || 'filter'}-${idx}`}
+                id={`filter-${(opt.label || `filter-${idx}`).toString().replace(/\s+/g, '-').toLowerCase()}`}
+                label={opt.label}
+                multiple={opt.type === 'multi-dropdown'}
+                grouped={!!opt.grouped}
+                groupIcon={opt.groupIcon}
+                selectionWithinGroup={!!opt.selectionWithinGroup}
+                options={opt.options || []}
+                value={opt.value}
+                onSelect={opt.onSelect}
+                isOptionsLoading={opt.isOptionsLoading}
+              />
+            ))}
+          </ListingLayout.Toolbar>
+        )}
         <ListingLayout.Body>
           <KubernetesTable
             id={componentId}

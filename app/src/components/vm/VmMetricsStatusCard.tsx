@@ -6,14 +6,11 @@ import { Button } from '@ui/Button';
 import { Banner } from '@ui/Banner';
 import ListingLayout from '@ui/ListingLayout';
 import apiVm, { VmMetricsState, VmMetricsStatus } from '@api1/vm';
-import { useLatestRequest } from './common';
+import { OBSERVABILITY_INTEGRATIONS_URL, useLatestRequest } from './common';
 import { ds } from '@utils/colors';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 
 const MAX_LISTED = 10;
-
-/** The Observability tab of the integrations page, where Prometheus is listed. */
-const CONNECT_URL = '/user-management?integration=observability#integrations';
 
 const BADGE: Record<VmMetricsState, { tone: 'success' | 'warning' | 'critical' | 'neutral'; text: string }> = {
   connected: { tone: 'success', text: 'Connected' },
@@ -137,7 +134,7 @@ const VmMetricsStatusCard = ({ accountId }: { accountId: string }) => {
         actions={
           <Box sx={{ display: 'flex', gap: ds.space[2] }}>
             {status?.state === 'not_configured' ? (
-              <Button id='vm-metrics-connect' tone='secondary' size='sm' onClick={() => router.push(CONNECT_URL)}>
+              <Button id='vm-metrics-connect' tone='secondary' size='sm' onClick={() => router.push(OBSERVABILITY_INTEGRATIONS_URL)}>
                 Connect
               </Button>
             ) : null}

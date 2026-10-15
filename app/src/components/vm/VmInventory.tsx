@@ -17,6 +17,7 @@ import ScanAccountDialog from './ScanAccountDialog';
 import VmMetricsDialog from './VmMetricsDialog';
 import { VmMetricsCell } from './VmMetricsGauges';
 import VmPackages from './VmPackages';
+import VmAlerts from './VmAlerts';
 import VmVulnerabilities from './VmVulnerabilities';
 import { ds } from '@utils/colors';
 
@@ -333,6 +334,12 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
                   value: 1,
                   key: 'vm-row-packages',
                   componentFn: (_opt: any, vm: VmResource) => <VmPackages accountId={accountId} cloudResourceId={vm.id} embedded />,
+                },
+                {
+                  text: 'Alerts',
+                  value: 2,
+                  key: 'vm-row-alerts',
+                  componentFn: (_opt: any, vm: VmResource) => <VmAlerts accountId={accountId} cloudResourceId={vm.id} />,
                 },
               ],
             }}
