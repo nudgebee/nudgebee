@@ -373,8 +373,44 @@ func signozLeaf(field string, op query.BinaryWhereClauseType, value any) (Flatte
 			return FlattenedClause{}, fmt.Errorf("value for '%s' operator must be an array", signozOp)
 		}
 	}
-	return FlattenedClause{Key: map[string]string{"key": field}, Value: value, Op: signozOp}, nil
+	return FlattenedClause{Key: signozFilterKey(field), Value: value, Op: signozOp}, nil
 }
+
+// signozFilterKey is the filter-item key for field: typed as a string resource
+// attribute when field is one of signozResourceKeys, untyped otherwise.
+func signozFilterKey(field string) map[string]string {
+	key := map[string]string{"key": field}
+	if signozResourceKeys[field] {
+		key["type"] = "resource"
+		key["dataType"] = "string"
+	}
+	return key
+}
+
+// signozResourceKeys are the keys signozFilterKey sends typed as string resource
+// attributes: every key our own mapping produces (see signozLabelValueParams —
+// all are OTel resource attributes except body and severity_text, which are
+// columns) plus the per-kind workload keys. Other keys stay untyped.
+//
+// An untyped key is resolved by SigNoz from its attribute metadata, and a key
+// registered as both a resource and a log attribute resolves to the log
+// attribute. k8s.namespace.name is one: Kubernetes event logs carry it as a log
+// attribute. Measured on v0.145 over one hour of a Deployment's logs:
+// `k8s.deployment.name = X AND k8s.namespace.name = Y` untyped returned 0 rows,
+// typed "resource" returned 50+; `k8s.namespace.name = Y` alone returned 42
+// untyped and 100 typed. Typing them "tag" (log attribute) returned 0.
+var signozResourceKeys = func() map[string]bool {
+	keys := map[string]bool{signozNamespaceKey: true, signozPodKey: true}
+	for _, k := range signozLogLabelMapping {
+		if k != "body" && k != signozSeverityKey {
+			keys[k] = true
+		}
+	}
+	for _, k := range signozWorkloadKeys {
+		keys[k] = true
+	}
+	return keys
+}()
 
 // signozILikeRegex turns a LIKE pattern into the case-insensitive regex SigNoz runs
 // for _ilike. SigNoz v0.51 has no ilike operator (HTTP 400, measured), while regex
@@ -996,14 +1032,14 @@ func (s *SignozSource) buildLogGroupFilters(req FetchLogGroupRequest) []map[stri
 
 	if selectedNamespace != "" {
 		filters = append(filters, map[string]any{
-			"key":   map[string]string{"key": signozNamespaceKey},
+			"key":   signozFilterKey(signozNamespaceKey),
 			"value": selectedNamespace,
 			"op":    "=",
 		})
 	}
 	if selectedWorkload != "" {
 		filters = append(filters, map[string]any{
-			"key":   map[string]string{"key": signozPodKey},
+			"key":   signozFilterKey(signozPodKey),
 			"value": selectedWorkload,
 			"op":    "contains",
 		})

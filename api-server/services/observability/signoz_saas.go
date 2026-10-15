@@ -587,14 +587,14 @@ func buildSignozSaasLogGroupFilters(req FetchLogGroupRequest) []map[string]any {
 
 	if selectedNamespace != "" {
 		filters = append(filters, map[string]any{
-			"key":   map[string]string{"key": signozNamespaceKey},
+			"key":   signozFilterKey(signozNamespaceKey),
 			"value": selectedNamespace,
 			"op":    "=",
 		})
 	}
 	if selectedWorkload != "" {
 		filters = append(filters, map[string]any{
-			"key":   map[string]string{"key": signozPodKey},
+			"key":   signozFilterKey(signozPodKey),
 			"value": selectedWorkload,
 			"op":    "contains",
 		})
