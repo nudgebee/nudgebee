@@ -49,13 +49,25 @@ func (s *Server) getRequestDetails(c *gin.Context) (*security.RequestContext, st
 		return nil, "", false
 	}
 
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !mayReachAccount(sc.GetSecurityContext(), accountId) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return nil, "", false
 	}
 
 	return sc, accountId, true
 
+}
+
+// mayReachAccount is the account gate in front of the workflow endpoints: a
+// built-in role with read access to the account, or a custom-role workflows
+// grant covering it (tenant-wide grants only reach accounts in the caller's
+// tenant). It only lets the request reach the endpoint; each operation still
+// makes its own check, and those already accept the same grants. Built-in roles
+// alone used to be required here, which refused every principal holding only
+// custom roles before those checks ran.
+func mayReachAccount(sc *security.SecurityContext, accountId string) bool {
+	return sc.HasAccountAccess(accountId, security.SecurityAccessTypeRead) ||
+		workflow.HasWorkflowsGrant(sc, accountId)
 }
 
 // getTenantRequestDetails is like getRequestDetails but does not require an
