@@ -11,6 +11,8 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
+
+	"github.com/lib/pq"
 )
 
 // DiscoveryLabels is the shape forager's own metadata reporting writes into
@@ -353,6 +355,19 @@ func ScanDiscoveryDatasource(ctx *security.RequestContext, dbms *database.Databa
 		}
 	}()
 
+	// Everything below writes under ds.AccountID or ds.TargetAccountID, and the
+	// findings upsert moves an archived row back to Open. An account that is not
+	// active is skipped before the first relay call, not after it.
+	active, err := accountsActive(dbms, ds.AccountID, ds.TargetAccountID)
+	if err != nil {
+		tenantCtx.GetLogger().Error("vmpackage: read account status failed, skipping", "error", err)
+		return
+	}
+	if !active {
+		tenantCtx.GetLogger().Info("vmpackage: account not active, skipping", "target_account_id", ds.TargetAccountID)
+		return
+	}
+
 	datasourceKey, err := resolveDiscoveryDatasourceKey(dbms, ds.IntegrationID)
 	if err != nil {
 		tenantCtx.GetLogger().Warn("vmpackage: resolve datasource_key failed, skipping", "error", err)
@@ -399,6 +414,27 @@ func ScanDiscoveryDatasource(ctx *security.RequestContext, dbms *database.Databa
 	for _, target := range targets {
 		scanTargetSafely(tenantCtx, dbms, ds, target, resolved[target.Host])
 	}
+}
+
+// accountsActive reports whether every non-empty id names a cloud account with
+// status 'active'. An id with no cloud_accounts row counts as not active.
+func accountsActive(dbms *database.DatabaseManager, accountIDs ...string) (bool, error) {
+	ids := make([]string, 0, len(accountIDs))
+	for _, id := range accountIDs {
+		if id != "" && !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return false, nil
+	}
+	var active int
+	if err := dbms.Db.Get(&active,
+		`SELECT count(*) FROM cloud_accounts WHERE id::text = ANY($1) AND status = 'active'`,
+		pq.Array(ids)); err != nil {
+		return false, fmt.Errorf("vmpackage: read account status: %w", err)
+	}
+	return active == len(ids), nil
 }
 
 func scanTargetSafely(tenantCtx *security.RequestContext, dbms *database.DatabaseManager, ds DiscoveryDatasource, target discoveryTarget, res resolvedTarget) {

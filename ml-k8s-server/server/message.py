@@ -12,7 +12,14 @@ from server.recommendation.vertical_rightsizing import generate_and_process_reco
 from server.recommendation.volume_rightsizing import generate_volume_rightsizing_recommendations
 import asyncio
 from server.utils import rabbitmq
-from server.utils.utils import DBConfig, QueueConfig, RecommendationConfig, get_trace, handle_df_for_nan
+from server.utils.utils import (
+    DBConfig,
+    QueueConfig,
+    RecommendationConfig,
+    get_trace,
+    handle_df_for_nan,
+    is_account_active,
+)
 from server.exception import CancelPrediction
 
 logger = logging.getLogger(__name__)
@@ -233,6 +240,9 @@ class VerticalRightsizingRequest(MlMessageAbstract):
     queue: str = QueueConfig.ML_RECOMMENDATION_QUEUE
 
     def process_message(self):
+        if not is_account_active(self.account_id):
+            logger.info(f"Skipping vertical rightsizing for account {self.account_id}: account is not active")
+            return
         logger.info(
             f"Processing vertical rightsizing request for account {self.account_id}, "
             f"tenant {self.tenant_id}, namespace {self.namespace}"
@@ -301,6 +311,9 @@ class VolumeRightsizingRequest(MlMessageAbstract):
     queue: str = QueueConfig.ML_RECOMMENDATION_QUEUE
 
     def process_message(self):
+        if not is_account_active(self.account):
+            logger.info(f"Skipping volume rightsizing for account {self.account}: account is not active")
+            return
         logger.info(
             f"Processing volume rightsizing request for account {self.account}, "
             f"tenant {self.tenant}, namespace {self.namespace}"

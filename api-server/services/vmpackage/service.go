@@ -38,6 +38,9 @@ func ScanPackages(ctx *security.RequestContext, req ScanRequest) (ScanResponse, 
 	if a.Tenant != ctx.GetSecurityContext().GetTenantId() {
 		return ScanResponse{}, fmt.Errorf("vmpackage: account not found in tenant - %s", req.AccountId)
 	}
+	if a.Status != "active" {
+		return ScanResponse{}, common.ErrorBadRequest(fmt.Sprintf("vmpackage: account %s is not active", req.AccountId))
+	}
 
 	ip, err := verifyCloudResource(req.CloudResourceId, req.AccountId, a.Tenant)
 	if err != nil {
