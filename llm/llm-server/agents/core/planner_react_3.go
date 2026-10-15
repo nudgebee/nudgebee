@@ -2532,13 +2532,11 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	// this prompt path attach the combined AccountContext + AccountPrompt to
 	// their own LLM calls explicitly.
 
-	agentAdditionalPrompt, configuredTools, _ := AgentAdditionalInstructionsAndToolsAndConfigs(ctx, request.AccountId, agent.GetName())
-	if agentAdditionalPrompt != "" {
-		additionalAdditionalPrompt := fmt.Sprintf(`
-		<additional_agent_prompt>
-		%s
-		</additional_agent_prompt>`, agentAdditionalPrompt)
-		messageFormatters = append(messageFormatters, LiteralSystemMessage{Content: additionalAdditionalPrompt})
+	// Always-on text (always-load skills) is resolved once per agent run by the
+	// executor; extensions now carry tools only (#40899).
+	_, configuredTools, _ := AgentAdditionalInstructionsAndToolsAndConfigs(ctx, request.AccountId, agent.GetName())
+	if block := AgentInstructionsBlock(request); block != "" {
+		messageFormatters = append(messageFormatters, LiteralSystemMessage{Content: block})
 	}
 
 	if len(configuredTools) > 0 {

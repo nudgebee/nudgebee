@@ -94,8 +94,9 @@ Built in `planner_react_3.go`. Base template: `planner_react_3_base.txt`.
 │ 3. <account_context>{AccountContext}</account_context>      │
 │    (optional, stable account-wide GlobalContext)            │
 ├─────────────────────────────────────────────────────────────┤
-│ 4. <additional_agent_prompt>{additionalPrompt}              │
-│    </additional_agent_prompt> (optional, from DB config)    │
+│ 4. <additional_agent_prompt>{AgentInstructions}             │
+│    </additional_agent_prompt> (optional: skills linked with │
+│    "always load", resolved per agent run)                   │
 ├─────────────────────────────────────────────────────────────┤
 │ 5. Agent prompt (agentPrompt — full agent system prompt,    │
 │    e.g., k8s_debug orchestrator instructions)               │

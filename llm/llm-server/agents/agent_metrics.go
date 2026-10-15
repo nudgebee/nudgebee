@@ -114,6 +114,7 @@ func (f *metricsAgent) Execute(ctx *security.RequestContext, query core.NBAgentR
 	nbRequestContext := toolcore.NbToolContext{
 		Ctx:            ctx,
 		AccountId:      f.accountId,
+		AccountContext: delegatedAccountContext(ctx, query, f.accountId),
 		ConversationId: query.ConversationId,
 		ParentAgentId:  nestedAgentParentID(query),
 		MessageId:      query.MessageId,
@@ -265,6 +266,7 @@ func (m *metricsQueryAgent) Execute(ctx *security.RequestContext, query core.NBA
 	nbRequestContext := toolcore.NbToolContext{
 		Ctx:                     ctx,
 		AccountId:               m.accountId,
+		AccountContext:          delegatedAccountContext(ctx, query, m.accountId),
 		ConversationId:          query.ConversationId,
 		ParentAgentId:           nestedAgentParentID(query),
 		MessageId:               query.MessageId,

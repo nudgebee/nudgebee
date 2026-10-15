@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import ListAgents from '@components/llm/ListAgents';
+import ListAgents, { alwaysLoadDisabledReason } from '@components/llm/ListAgents';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiKnowledgeBase from '@api1/knowledge-base';
 import { hasWriteAccess } from '@lib/auth';
@@ -11,6 +11,7 @@ jest.mock('@api1/ask-nudgebee', () => ({
 jest.mock('@api1/knowledge-base', () => ({
   __esModule: true,
   KB_AGENT_WILDCARD: '*',
+  ALWAYS_LOAD_MAX_CHARS: 4000,
   default: {
     getAgentsWithKbCounts: jest.fn(),
     getKnowledgeBases: jest.fn(),
@@ -165,5 +166,89 @@ describe('ListAgents tenant-wide Action column', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(apiAskNudgebee.deleteAgent).toHaveBeenCalledWith('acct-1', 'my-agent'));
+  });
+});
+
+describe('ListAgents always-load switch (#40899)', () => {
+  const manualKb = { id: 'kb-1', name: 'Runbooks', kb_type: 'manual', format: 'text', content: 'short text' };
+
+  it.each([
+    ['a connected source', { ...manualKb, kb_type: 'integration' }, { isSelected: true }, /user-written skills/],
+    ['a PDF skill', { ...manualKb, format: 'pdf' }, { isSelected: true }, /PDF/],
+    ['an oversized skill', { ...manualKb, content: 'x'.repeat(4001) }, { isSelected: true }, /longer than/],
+    ['an unlinked skill', manualKb, { isSelected: false }, /Prioritize this skill/],
+  ])('is disabled for %s', (_label, kb, flags, reason) => {
+    expect(alwaysLoadDisabledReason(kb, flags)).toMatch(reason);
+  });
+
+  it('is enabled for a linked user-written text skill within the cap', () => {
+    expect(alwaysLoadDisabledReason({ ...manualKb, content: 'x'.repeat(4000) }, { isSelected: true })).toBe('');
+  });
+
+  it('marks an existing link and sends the flag on save', async () => {
+    apiKnowledgeBase.getKnowledgeBases.mockResolvedValue({
+      data: [manualKb, { id: 'kb-2', name: 'Confluence', kb_type: 'integration' }],
+    });
+    apiKnowledgeBase.getAgentKnowledgeBases.mockImplementation((_acct, name) =>
+      Promise.resolve({
+        data:
+          name === '*'
+            ? []
+            : [
+                { id: 'kb-1', always_load: false },
+                { id: 'kb-2', always_load: false },
+              ],
+      })
+    );
+    apiKnowledgeBase.mapKnowledgeBaseToAgent.mockResolvedValue({});
+    renderList('');
+
+    fireEvent.click(within(await screen.findByTestId('actions-my-agent')).getByText('Prioritize knowledge'));
+
+    const runbooks = await screen.findByRole('checkbox', { name: 'Always load Runbooks' });
+    await waitFor(() => expect(runbooks).not.toBeDisabled());
+    expect(screen.getByRole('checkbox', { name: 'Always load Confluence' })).toBeDisabled();
+
+    fireEvent.click(runbooks);
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() => expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).toHaveBeenCalledWith('acct-9', 'kb-1', 'my-agent', true));
+    expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).toHaveBeenCalledTimes(1);
+    expect(apiKnowledgeBase.unmapKnowledgeBaseFromAgent).not.toHaveBeenCalled();
+  });
+
+  it("marks a skill linked to All agents by adding this agent's own link", async () => {
+    apiKnowledgeBase.getKnowledgeBases.mockResolvedValue({ data: [manualKb] });
+    apiKnowledgeBase.getAgentKnowledgeBases.mockImplementation((_acct, name) => Promise.resolve({ data: name === '*' ? [{ id: 'kb-1' }] : [] }));
+    apiKnowledgeBase.mapKnowledgeBaseToAgent.mockResolvedValue({});
+    renderList('');
+
+    fireEvent.click(within(await screen.findByTestId('actions-my-agent')).getByText('Prioritize knowledge'));
+
+    const runbooks = await screen.findByRole('checkbox', { name: 'Always load Runbooks' });
+    await waitFor(() => expect(runbooks).not.toBeDisabled());
+    fireEvent.click(runbooks);
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() => expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).toHaveBeenCalledWith('acct-9', 'kb-1', 'my-agent', true));
+    expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).not.toHaveBeenCalledWith('acct-9', 'kb-1', '*', true);
+  });
+
+  it('shows an existing mark as checked and unmarks it on save', async () => {
+    apiKnowledgeBase.getKnowledgeBases.mockResolvedValue({ data: [manualKb] });
+    apiKnowledgeBase.getAgentKnowledgeBases.mockImplementation((_acct, name) =>
+      Promise.resolve({ data: name === '*' ? [] : [{ id: 'kb-1', always_load: true }] })
+    );
+    apiKnowledgeBase.mapKnowledgeBaseToAgent.mockResolvedValue({});
+    renderList('');
+
+    fireEvent.click(within(await screen.findByTestId('actions-my-agent')).getByText('Prioritize knowledge'));
+
+    const runbooks = await screen.findByRole('checkbox', { name: 'Always load Runbooks' });
+    await waitFor(() => expect(runbooks).toBeChecked());
+    fireEvent.click(runbooks);
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() => expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).toHaveBeenCalledWith('acct-9', 'kb-1', 'my-agent', false));
   });
 });

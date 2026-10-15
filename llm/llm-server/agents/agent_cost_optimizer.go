@@ -60,7 +60,7 @@ func (a AgentCostOptimizer) Execute(ctx *security.RequestContext, request core.N
 	// request.ConversationId / MessageId are THIS optimizer conversation
 	// (session=optimizer-<target>); the analysis call's token usage is tracked
 	// against them. sessionID is the TARGET conversation being analyzed.
-	opt, err := core.GenerateConversationOptimization(ctx, sessionID, request.AccountId, userID, request.ConversationId, request.MessageId)
+	opt, err := core.GenerateConversationOptimization(ctx, sessionID, request.AccountId, userID, request.ConversationId, request.MessageId, request.AgentInstructions)
 	if err != nil {
 		return core.NBAgentResponse{}, err
 	}

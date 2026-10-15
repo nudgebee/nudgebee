@@ -159,8 +159,10 @@ for react_3, so a react_4 agent runs with an identical tool surface (`resolveRea
 client tools → account-configured tools (`AgentAdditionalInstructionsAndToolsAndConfigs`) →
 `FilterAndInjectDefaultTools` (injects `load_skills` on KB-mapped agents, plus shell/watch) →
 `FilterTools(capabilities)` → then the `update_notebook` tool (added last so capability
-filtering never drops it). The stable account-wide `AccountContext` and account-configured
-`<additional_agent_prompt>` are placed in the system prefix. The human message carries the
+filtering never drops it). The stable account-wide `AccountContext` and the agent's
+always-on text (`request.AgentInstructions` — skills linked with "always load", resolved once
+per agent run by the executor, #40899) in `<additional_agent_prompt>` are placed
+in the system prefix. The human message carries the
 request-specific `AccountPrompt` as global preferences, plus KB-prestep / skill-lists blocks —
 matching react_3's context split so KB/skill flows behave identically without cache churn.
 

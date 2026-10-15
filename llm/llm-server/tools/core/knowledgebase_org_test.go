@@ -312,7 +312,7 @@ func TestOrganisationKBsCountAsMappedToAllAgents(t *testing.T) {
 
 	join := KBMappingsJoin(1, 3, []string{"org-kb"})
 	assert.Contains(t, join, "FROM llm_kb_agent_mappings WHERE account_id = $1")
-	assert.Contains(t, join, "SELECT id, '*', $1::uuid FROM llm_knowledgebases WHERE id = ANY($3::uuid[]) AND integration_id IS NULL",
+	assert.Contains(t, join, "SELECT id, '*', $1::uuid, FALSE FROM llm_knowledgebases WHERE id = ANY($3::uuid[]) AND integration_id IS NULL",
 		"each visible manual organisation KB is a wildcard mapping row for the account; an integration's (#40605) is "+
 			"reached only through the account's own mappings, as before")
 }

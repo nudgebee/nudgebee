@@ -38,8 +38,9 @@ var kbEmbeddingWorkerPool *common.WorkerPool
 // have made every KB look switched off for up to the 30-minute TTL. Bump this
 // suffix again if the cached value shape ever changes in a way old entries
 // cannot satisfy. v5: #40605 folded integration KBs into organisation rows, so
-// cached menus can name deleted per-account KB ids.
-const CacheNamespaceLlmKbMapping = "llm_kb_mapping_v5"
+// cached menus can name deleted per-account KB ids. v6: #40899 added the link's
+// always_load flag, which v5 entries lack.
+const CacheNamespaceLlmKbMapping = "llm_kb_mapping_v6"
 
 // CacheNamespaceLlmSkillContent caches individual skill content fetched by load_skills.
 // Declared here (in tools/core) so KB update/delete paths can invalidate it.
@@ -99,6 +100,7 @@ func invalidateSkillContentCache(accountId string, names ...string) {
 // invalidateKBMappingCache drops the cached per-agent skill menu (the
 // `<skill-lists>` block built from ListAgentKBs) for each supplied agent.
 func invalidateKBMappingCache(accountId string, agentIds ...string) {
+	invalidateAlwaysLoadCache(accountId)
 	for _, agentId := range agentIds {
 		if agentId == "" {
 			continue
@@ -208,6 +210,9 @@ type Knowledgebase struct {
 	// Only ListKnowledgebases sets it; such a KB is listed so the account can
 	// switch it back on, and no other read returns it.
 	SwitchedOff bool `json:"switched_off,omitempty" db:"-"`
+	// AlwaysLoad is the agent link's always-load flag. Only the per-agent read
+	// (ListAgentKBs) selects it; other reads leave it false.
+	AlwaysLoad bool `json:"always_load" db:"always_load"`
 	// Merged in by attachCapabilitySummaries after the main query, not by
 	// StructScan.
 	Kinds        []string `json:"kinds,omitempty"`
@@ -255,13 +260,16 @@ type KBLoadHistoryEntry struct {
 
 // KBAgentMapping represents a many-to-many mapping between KB and agents
 type KBAgentMapping struct {
-	KbId      string    `json:"kb_id" db:"kb_id"`
-	AgentId   string    `json:"agent_id" db:"agent_id"`
-	AccountId string    `json:"account_id" db:"account_id"`
-	CreatedBy string    `json:"created_by,omitempty" db:"created_by"` // Display name, not UUID
-	UpdatedBy string    `json:"updated_by,omitempty" db:"updated_by"` // Display name, not UUID
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
+	KbId      string `json:"kb_id" db:"kb_id"`
+	AgentId   string `json:"agent_id" db:"agent_id"`
+	AccountId string `json:"account_id" db:"account_id"`
+	// AlwaysLoad puts the skill's full text into the agent's prompt on every
+	// run instead of leaving it to search (#40899).
+	AlwaysLoad bool      `json:"always_load" db:"always_load"`
+	CreatedBy  string    `json:"created_by,omitempty" db:"created_by"` // Display name, not UUID
+	UpdatedBy  string    `json:"updated_by,omitempty" db:"updated_by"` // Display name, not UUID
+	CreatedAt  time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // KnowledgebaseStatus represents the processing status
@@ -825,6 +833,7 @@ func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, up
 		       kb.data, kb.data_format, kb.data_filename,
 		       COALESCE(kb.data_size_bytes, 0) as data_size_bytes,
 		       kb.status, kb.enabled, kb.context_tags,
+		       COALESCE(kb.kb_type, 'manual') as kb_type,
 		       kb.created_at, kb.updated_at,
 		       kb.document_count, kb.last_loaded_at,
 		       COALESCE(cu.display_name, '') as created_by,
@@ -881,6 +890,10 @@ func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, up
 			return sizeErr
 		}
 		updates.DataSizeBytes = dataSize
+
+		if err := validateAlwaysLoadEdit(dbms, kbId, existingKB.KBType, updates.DataFormat, updates.Data); err != nil {
+			return err
+		}
 	} else {
 		// Keep existing data fields
 		updates.Data = existingKB.Data
@@ -1938,7 +1951,8 @@ func ListAgentKBs(sc *security.RequestContext, accountId, agentId string) ([]Kno
 		       kb.created_at, kb.updated_at,
 		       kb.document_count, kb.last_loaded_at,
 		       COALESCE(cu.display_name, '') as created_by,
-		       COALESCE(uu.display_name, '') as updated_by
+		       COALESCE(uu.display_name, '') as updated_by,
+		       m.always_load
 		FROM llm_knowledgebases kb
 		`+KBMappingsJoin(1, 3, orgIDs)+`
 		LEFT JOIN users cu ON kb.created_by = cu.id
@@ -2269,8 +2283,11 @@ func LoadActiveAgentSkillContents(sc *security.RequestContext, accountId string,
 	return block, references, nil
 }
 
-// MapKBToAgent maps a knowledge base to an agent (creates junction table entry)
-func MapKBToAgent(sc *security.RequestContext, accountId, kbId, agentId string) (*KBAgentMapping, error) {
+// MapKBToAgent maps a knowledge base to an agent (creates junction table entry).
+// alwaysLoad nil keeps an existing link's flag (false for a new link); non-nil
+// sets it. Marking is refused for links the always-load rules exclude — see
+// validateAlwaysLoad.
+func MapKBToAgent(sc *security.RequestContext, accountId, kbId, agentId string, alwaysLoad *bool) (*KBAgentMapping, error) {
 	if accountId == "" {
 		return nil, errors.New("account ID is required")
 	}
@@ -2309,15 +2326,22 @@ func MapKBToAgent(sc *security.RequestContext, accountId, kbId, agentId string) 
 		return nil, errors.New("Knowledgebase not found or access denied")
 	}
 
+	if alwaysLoad != nil && *alwaysLoad {
+		if err := validateAlwaysLoad(dbms, kbId, agentId); err != nil {
+			return nil, err
+		}
+	}
+
 	// Insert mapping (or update if already exists)
 	result, err := dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
 		userId := sc.GetSecurityContext().GetUserId()
 		_, err := tx.Exec(`
-			INSERT INTO llm_kb_agent_mappings (kb_id, agent_id, account_id, created_by, updated_by, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $4, NOW(), NOW())
+			INSERT INTO llm_kb_agent_mappings (kb_id, agent_id, account_id, created_by, updated_by, created_at, updated_at, always_load)
+			VALUES ($1, $2, $3, $4, $4, NOW(), NOW(), COALESCE($6, FALSE))
 			ON CONFLICT (kb_id, agent_id, account_id) DO UPDATE
-			SET updated_at = NOW(), updated_by = $5`,
-			kbId, agentId, accountId, userId, userId)
+			SET updated_at = NOW(), updated_by = $5,
+			    always_load = COALESCE($6, llm_kb_agent_mappings.always_load)`,
+			kbId, agentId, accountId, userId, userId, alwaysLoad)
 
 		if err != nil {
 			slog.Error("kb: failed to create agent mapping", "error", err, "kb_id", kbId, "agent_id", agentId)
@@ -2327,7 +2351,7 @@ func MapKBToAgent(sc *security.RequestContext, accountId, kbId, agentId string) 
 		// Fetch the mapping
 		var mapping KBAgentMapping
 		err = tx.Get(&mapping, `
-			SELECT m.kb_id, m.agent_id, m.account_id, m.created_at, m.updated_at,
+			SELECT m.kb_id, m.agent_id, m.account_id, m.always_load, m.created_at, m.updated_at,
 			       COALESCE(cu.display_name, '') as created_by,
 			       COALESCE(uu.display_name, '') as updated_by
 			FROM llm_kb_agent_mappings m
@@ -2349,11 +2373,8 @@ func MapKBToAgent(sc *security.RequestContext, accountId, kbId, agentId string) 
 
 	mapping := result.(KBAgentMapping)
 
-	// Invalidate cache
-	cacheKey := fmt.Sprintf("kb_mapping:%s:%s", accountId, agentId)
-	if err := common.CacheDelete(CacheNamespaceLlmKbMapping, cacheKey); err != nil {
-		slog.Error("kb: failed to invalidate cache", "error", err, "key", cacheKey)
-	}
+	// Invalidate cache: the agent's skill menu and the account's always-load links.
+	invalidateKBMappingCache(accountId, agentId)
 
 	// Create audit log
 	go func() {
@@ -2370,7 +2391,7 @@ func MapKBToAgent(sc *security.RequestContext, accountId, kbId, agentId string) 
 					EventAction:   audit.EventActionUpdate,
 					EventStatus:   audit.EventStatusSuccess,
 					TransactionId: sc.GetTraceId(),
-					EventAttr:     map[string]any{"kb_id": kbId, "agent_id": agentId},
+					EventAttr:     map[string]any{"kb_id": kbId, "agent_id": agentId, "always_load": mapping.AlwaysLoad},
 					TenantId:      sc.GetSecurityContext().GetTenantId(),
 					UserId:        sc.GetSecurityContext().GetUserId(),
 				},
@@ -2434,11 +2455,8 @@ func UnmapKBFromAgent(sc *security.RequestContext, accountId, kbId, agentId stri
 		return err
 	}
 
-	// Invalidate cache
-	cacheKey := fmt.Sprintf("kb_mapping:%s:%s", accountId, agentId)
-	if err := common.CacheDelete(CacheNamespaceLlmKbMapping, cacheKey); err != nil {
-		slog.Error("kb: failed to invalidate cache", "error", err, "key", cacheKey)
-	}
+	// Invalidate cache: the agent's skill menu and the account's always-load links.
+	invalidateKBMappingCache(accountId, agentId)
 
 	// Create audit log
 	go func() {
@@ -2511,14 +2529,15 @@ func ListAgentsWithKBCounts(sc *security.RequestContext, accountId string) ([]Ag
 
 // KBAgentMappingDetail represents a KB-agent mapping with full details
 type KBAgentMappingDetail struct {
-	KbId      string    `json:"kb_id" db:"kb_id"`
-	KbName    string    `json:"kb_name" db:"kb_name"`
-	AgentId   string    `json:"agent_id" db:"agent_id"`
-	AccountId string    `json:"account_id" db:"account_id"`
-	CreatedBy string    `json:"created_by,omitempty" db:"created_by"` // Display name, not UUID
-	UpdatedBy string    `json:"updated_by,omitempty" db:"updated_by"` // Display name, not UUID
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
+	KbId       string    `json:"kb_id" db:"kb_id"`
+	KbName     string    `json:"kb_name" db:"kb_name"`
+	AgentId    string    `json:"agent_id" db:"agent_id"`
+	AccountId  string    `json:"account_id" db:"account_id"`
+	AlwaysLoad bool      `json:"always_load" db:"always_load"`
+	CreatedBy  string    `json:"created_by,omitempty" db:"created_by"` // Display name, not UUID
+	UpdatedBy  string    `json:"updated_by,omitempty" db:"updated_by"` // Display name, not UUID
+	CreatedAt  time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // ListKBAgentMappings returns all KB-agent mappings for an account
@@ -2541,7 +2560,7 @@ func ListKBAgentMappings(sc *security.RequestContext, accountId string) ([]KBAge
 
 	var mappings []KBAgentMappingDetail
 	err = dbms.Db.Select(&mappings, `
-		SELECT m.kb_id, kb.name as kb_name, m.agent_id, m.account_id,
+		SELECT m.kb_id, kb.name as kb_name, m.agent_id, m.account_id, m.always_load,
 		       m.created_at, m.updated_at,
 		       COALESCE(cu.display_name, '') as created_by,
 		       COALESCE(uu.display_name, '') as updated_by

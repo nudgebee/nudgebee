@@ -166,7 +166,7 @@ func (l *VisualizationAgent) Execute(ctx *security.RequestContext, request core.
 	`
 
 	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, systemPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf("Please visualize the following information:\n\n%s", request.Query)),
 	}
 

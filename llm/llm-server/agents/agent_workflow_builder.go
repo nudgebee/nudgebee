@@ -1341,7 +1341,7 @@ func (a *WorkflowBuilderAgent) generateClarifyingQuestions(ctx *security.Request
 	systemPrompt := getClarificationSystemPrompt(envContext, configsContext, intent)
 
 	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, systemPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
 
@@ -1385,7 +1385,7 @@ func (a *WorkflowBuilderAgent) generateEditClarifyingQuestions(ctx *security.Req
 	systemPrompt := getEditClarificationSystemPrompt(envContext, configsContext, workflowDefinition)
 
 	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, systemPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
 
@@ -2726,7 +2726,7 @@ Output: {
 Return ONLY the JSON object.`, taskTypeNames, envContext)
 
 	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, systemPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
 
@@ -3271,7 +3271,7 @@ SAFETY:
 NOTE: In all user-facing text, refer to these as "automations" (not "workflows"). The product uses the term "Automation".`, intent, clarificationContext, taskTypesInfo, configsInfo, envContext, planningContext)
 
 	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, systemPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
 
@@ -3334,7 +3334,7 @@ RULES:
 - Do NOT generate JSON`, intent, previousPlan, feedback, taskTypesInfo, configsInfo, envContext, planningContext)
 
 	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, systemPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf("Original request: %s\n\nPlease update the plan based on my feedback: %s", request.Query, feedback)),
 	}
 
@@ -5391,7 +5391,7 @@ RULES:
 - Call finalize to return the completed workflow — put the JSON inside <content>.`, systemPrompt, toolDescriptions)
 
 	messages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, fullSystemPrompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, fullSystemPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, userMessage),
 	}
 

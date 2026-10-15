@@ -739,7 +739,9 @@ type llmOptResponse struct {
 // usage is recorded — the optimizer conversation (session=optimizer-<target>),
 // NOT the conversation being analyzed. They come from the /chat flow that hosts
 // the cost_optimizer agent. Empty (e.g. tests) → the call isn't tracked.
-func GenerateConversationOptimization(ctx *security.RequestContext, sessionID, accountID, userID, trackConversationID, trackMessageID string) (ConversationOptimization, error) {
+// agentInstructions is the cost_optimizer agent's always-on text (#40899),
+// appended to the analysis system prompt; "" when there is none.
+func GenerateConversationOptimization(ctx *security.RequestContext, sessionID, accountID, userID, trackConversationID, trackMessageID, agentInstructions string) (ConversationOptimization, error) {
 	if sessionID == "" || accountID == "" {
 		return ConversationOptimization{}, fmt.Errorf("GenerateConversationOptimization: session_id and account_id are required")
 	}
@@ -770,7 +772,7 @@ func GenerateConversationOptimization(ctx *security.RequestContext, sessionID, a
 		return ConversationOptimization{}, fmt.Errorf("GenerateConversationOptimization: loading prompt: %w", err)
 	}
 	messages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, optimizerPrompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, WithAgentInstructions(NBAgentRequest{AgentInstructions: agentInstructions}, optimizerPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, string(profileJSON)),
 	}
 	// Track this analysis call's token usage against the OPTIMIZER conversation

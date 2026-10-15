@@ -205,8 +205,9 @@ func NewReActAgent4(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 // filtering — so a ReAct4 agent runs with the identical tool surface as its
 // ReAct3 counterpart. It additionally injects the update_notebook control tool
 // (after FilterTools, so capability filtering never drops it). Returns the tool
-// list and the account-configured additional agent prompt (surfaced separately
-// so the caller can place it in the system message). See docs/planner_react_4.md.
+// list and the agent's always-on instructions (request.AgentInstructions,
+// surfaced separately so the caller can place it in the system message). See
+// docs/planner_react_4.md.
 func resolveReact4Tools(ctx *security.RequestContext, request NBAgentRequest, nbAgent NBAgent, systemMessage string) ([]toolcore.NBTool, string) {
 	// Defensive copy: GetSupportedTools may return a slice backed by a shared
 	// array (e.g. custom_agent's per-instance tool cache). The append operations
@@ -225,8 +226,9 @@ func resolveReact4Tools(ctx *security.RequestContext, request NBAgentRequest, nb
 		tools = append(clientTools, tools...)
 	}
 
-	// Account-configured additional prompt + tools.
-	agentAdditionalPrompt, configuredTools, _ := AgentAdditionalInstructionsAndToolsAndConfigs(ctx, request.AccountId, nbAgent.GetName())
+	// Account-configured tools. The always-on text is resolved once per agent
+	// run by the executor into request.AgentInstructions (#40899).
+	_, configuredTools, _ := AgentAdditionalInstructionsAndToolsAndConfigs(ctx, request.AccountId, nbAgent.GetName())
 	for _, ct := range configuredTools {
 		if t, ok := toolcore.GetNBTool(request.AccountId, ct); ok {
 			tools = append(tools, t)
@@ -250,7 +252,7 @@ func resolveReact4Tools(ctx *security.RequestContext, request NBAgentRequest, nb
 		tools = ensureNotebookTool(ctx, request.AccountId, tools)
 	}
 
-	return tools, agentAdditionalPrompt
+	return tools, request.AgentInstructions
 }
 
 // composeReact4SystemMessage assembles the ReAct4 system prefix: the react_4

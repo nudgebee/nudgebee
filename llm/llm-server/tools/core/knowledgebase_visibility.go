@@ -225,9 +225,12 @@ func KBMappingsJoin(accountParam, orgParam int, orgIDs []string) string {
 	if len(orgIDs) == 0 {
 		return "INNER JOIN llm_kb_agent_mappings m ON kb.id = m.kb_id"
 	}
+	// always_load is carried so callers can read m.always_load either way;
+	// organisation KBs reach agents through the All-agents wildcard, which can
+	// never be always-loaded.
 	return fmt.Sprintf(`INNER JOIN (
-			SELECT kb_id, agent_id, account_id FROM llm_kb_agent_mappings WHERE account_id = $%d
+			SELECT kb_id, agent_id, account_id, always_load FROM llm_kb_agent_mappings WHERE account_id = $%d
 			UNION
-			SELECT id, '%s', $%d::uuid FROM llm_knowledgebases WHERE id = ANY($%d::uuid[]) AND integration_id IS NULL
+			SELECT id, '%s', $%d::uuid, FALSE FROM llm_knowledgebases WHERE id = ANY($%d::uuid[]) AND integration_id IS NULL
 		) m ON kb.id = m.kb_id`, accountParam, KBAgentWildcard, accountParam, orgParam)
 }

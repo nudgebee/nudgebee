@@ -107,6 +107,15 @@ type NBAgentRequest struct {
 	// SelectedSkillIds when question-aware selection is enabled. The custom Execute()
 	// reads this field and prepends the block to its LLM prompt.
 	SkillsContext string `json:"skills_context,omitempty"`
+	// AgentInstructions is the text this agent always gets: skills linked to it
+	// with "always load" set (#40899). The executor
+	// resolves it per agent run (resolveAgentInstructions); it is not forwarded
+	// to sub-agents, which resolve their own.
+	AgentInstructions string `json:"agent_instructions,omitempty"`
+	// AlwaysLoadedKBIDs are the skills already in full in AgentInstructions.
+	// Knowledge discovery leaves them out so the model doesn't see them twice;
+	// a skill cut at the size cap is not listed, so search can find the rest.
+	AlwaysLoadedKBIDs []string `json:"always_loaded_kb_ids,omitempty"`
 	// InheritSkillsFromAgents lists ancestor agent names whose mapped KBs should be
 	// surfaced to this agent in addition to its own. Custom-planner delegators
 	// (metrics, traces, logs, logs_default) append their own name when invoking a

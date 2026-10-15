@@ -827,6 +827,12 @@ func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextContent{Text: summarizationPrompt}},
 	})
+	// This call writes the agent's answer when it runs out of steps, without
+	// the agent's system prompt — carry its always-on instructions (#40899) so
+	// answer rules ("report latency in ms") still apply.
+	if block := AgentInstructionsBlock(e.agentRequest); block != "" {
+		mclist = append([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeSystem, block)}, mclist...)
+	}
 
 	// Use Lite model for summarization to improve performance.
 	// WithoutCancel ensures summarization completes even if the parent context

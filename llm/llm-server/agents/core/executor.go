@@ -639,6 +639,13 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// every agent resolves them by looking the sentinel up alongside its own names.
 	// Appended last so ownSkillNames[0] stays the canonical name for logging.
 	ownSkillNames = toolcore.WithKBAgentWildcard(ownSkillNames)
+
+	// Text this agent always gets (skills linked with "always load"),
+	// resolved here for every planner type and for this request's account. Not
+	// forwarded: a delegated provider resolves its own, with the delegator's
+	// name in InheritSkillsFromAgents (#40899).
+	request.AgentInstructions, request.AlwaysLoadedKBIDs = resolveAgentInstructions(ctx, request.AccountId, ownSkillNames, request.InheritSkillsFromAgents)
+
 	knowledgeMode := AgentKnowledgeDisabled
 	switch agent.GetPlannerType() {
 	case AgentPlannerTypeReAct, AgentPlannerTypeOrchestrating:
@@ -1456,7 +1463,7 @@ func createAgentPlanner(ctx *security.RequestContext, agent NBAgent, request NBA
 		if multiAgent, ok := agent.(NBMultiOptionClassificationAgent); ok {
 			multi = multiAgent.AllowsMultipleOptions()
 		}
-		nbAgentPlanner, err = NewClassificationPlanner(ctx, request, agent, systemMessage, classificationAgent.GetOptions(), multi)
+		nbAgentPlanner, err = NewClassificationPlanner(ctx, request, agent, WithAgentInstructions(request, systemMessage), classificationAgent.GetOptions(), multi)
 	} else if agent.GetPlannerType() == AgentPlannerTypeCustom {
 		customAgent, ok := agent.(NBCustomAgent)
 		if !ok {

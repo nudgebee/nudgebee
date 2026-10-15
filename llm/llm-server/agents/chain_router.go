@@ -469,7 +469,7 @@ func (l HelpAgent) Execute(ctx *security.RequestContext, request core.NBAgentReq
 	}
 
 	routerPromptMessage := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemtMessages),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, systemtMessages)),
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
 	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, routerPromptMessage, true)

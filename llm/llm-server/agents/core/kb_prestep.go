@@ -231,6 +231,9 @@ func retrieveRelevantKB(ctx *security.RequestContext, request NBAgentRequest, kb
 	if query == "" {
 		return kbDiscoveryResult{}
 	}
+	// Skills always loaded on this agent are already in its prompt in full;
+	// offering them again as search results would show them twice (#40899).
+	kbs = withoutKBs(kbs, request.AlwaysLoadedKBIDs)
 
 	// Account-wide and mapped searches share one deadline and result collector.
 	timeout := kbPrestepTimeout()
@@ -268,6 +271,7 @@ func retrieveRelevantKB(ctx *security.RequestContext, request NBAgentRequest, kb
 	// model, so it cannot follow them. Best-scored copy wins; docs stay in
 	// rank order.
 	kept = dedupRAGDocs(kept)
+	kept = withoutDocsFromKBs(kept, request.AlwaysLoadedKBIDs)
 
 	// Judge the merged set, not each search. The account-wide and mapped searches
 	// run concurrently and their results are concatenated above, so judging inside
@@ -630,6 +634,46 @@ func docCollection(doc toolcore.RAGSearchResult) (string, bool) {
 	name, _ := doc.Metadata["collection"].(string)
 	name = strings.TrimSpace(name)
 	return name, name != ""
+}
+
+// withoutKBs drops the knowledge bases whose ids are in exclude.
+func withoutKBs(kbs []toolcore.Knowledgebase, exclude []string) []toolcore.Knowledgebase {
+	if len(exclude) == 0 || len(kbs) == 0 {
+		return kbs
+	}
+	drop := make(map[string]bool, len(exclude))
+	for _, id := range exclude {
+		drop[id] = true
+	}
+	out := make([]toolcore.Knowledgebase, 0, len(kbs))
+	for _, kb := range kbs {
+		if !drop[kb.Id] {
+			out = append(out, kb)
+		}
+	}
+	return out
+}
+
+// withoutDocsFromKBs drops search hits from the knowledge bases whose ids are
+// in exclude. A hit's knowledge base is known only from its collection name.
+func withoutDocsFromKBs(docs toolcore.RAGSearchResults, exclude []string) toolcore.RAGSearchResults {
+	if len(exclude) == 0 || len(docs) == 0 {
+		return docs
+	}
+	drop := make(map[string]bool, len(exclude))
+	for _, id := range exclude {
+		drop[id] = true
+	}
+	out := make(toolcore.RAGSearchResults, 0, len(docs))
+	for _, d := range docs {
+		if name, ok := docCollection(d); ok {
+			if kbID, _ := classifyCollection(name); kbID != "" && drop[kbID] {
+				continue
+			}
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 // classifyCollection splits a collection name into (kbID, integrationID). Both

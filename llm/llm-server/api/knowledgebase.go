@@ -105,6 +105,17 @@ type kbMapToAgentRequest struct {
 	AccountId string `json:"account_id"`
 	KbId      string `json:"kb_id"`
 	AgentId   string `json:"agent_id"`
+	// AlwaysLoad nil keeps the link's current flag; see core.MapKBToAgent.
+	AlwaysLoad *bool `json:"always_load,omitempty"`
+}
+
+// kbAlwaysLoadStatus is 400 for a refused always-load request (#40899) and
+// 500 for anything else.
+func kbAlwaysLoadStatus(err error) int {
+	if core.IsAlwaysLoadRuleError(err) {
+		return 400
+	}
+	return 500
 }
 
 type kbUnmapFromAgentRequest struct {
@@ -379,7 +390,7 @@ func kbUpdate(c *gin.Context, context *security.RequestContext, payload map[stri
 	err = core.UpdateKnowledgebase(context, request.AccountId, request.Knowledgebase.Id, updates)
 	if err != nil {
 		slog.Error("kb: failed to update", "error", err, "kb_id", request.Knowledgebase.Id)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(kbAlwaysLoadStatus(err), buildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
@@ -557,10 +568,10 @@ func kbMapToAgent(c *gin.Context, context *security.RequestContext, payload map[
 		return
 	}
 
-	resp, err := core.MapKBToAgent(context, request.AccountId, request.KbId, request.AgentId)
+	resp, err := core.MapKBToAgent(context, request.AccountId, request.KbId, request.AgentId, request.AlwaysLoad)
 	if err != nil {
 		slog.Error("kb: failed to map KB to agent", "error", err, "kb_id", request.KbId, "agent_id", request.AgentId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(kbAlwaysLoadStatus(err), buildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return

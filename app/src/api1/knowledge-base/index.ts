@@ -50,6 +50,12 @@ interface KnowledgeBaseOutput {
  */
 export const KB_AGENT_WILDCARD = '*';
 export const KB_DOCUMENTS_PAGE_SIZE = 50;
+/**
+ * Longest skill text that can be marked "Always load" on an agent link. The
+ * llm-server enforces the same cap when marking and on every later edit of a
+ * marked skill (#40899); the UI uses it only to disable the switch and explain.
+ */
+export const ALWAYS_LOAD_MAX_CHARS = 4000;
 
 interface CreateKnowledgeBasePayload {
   name: string;
@@ -561,9 +567,12 @@ const apiKnowledgeBase = {
   },
 
   /**
-   * Map a knowledge base to an agent
+   * Map a knowledge base to an agent. It is an upsert: `alwaysLoad` set to
+   * true/false marks or unmarks the link (the agent then gets the full text on
+   * every run); left out, an existing link keeps its flag and a new one starts
+   * unmarked.
    */
-  mapKnowledgeBaseToAgent: async (accountId: string, kbId: string, agentId: string) => {
+  mapKnowledgeBaseToAgent: async (accountId: string, kbId: string, agentId: string, alwaysLoad?: boolean) => {
     const MAP_KB_TO_AGENT = `
       mutation MapKBToAgent($request: MapKBToAgentRequest!) {
         ai_create_kb_mapping(request: $request) {
@@ -587,6 +596,7 @@ const apiKnowledgeBase = {
           account_id: accountId,
           kb_id: kbId,
           agent_id: agentId,
+          ...(alwaysLoad === undefined ? {} : { always_load: alwaysLoad }),
         },
       });
 

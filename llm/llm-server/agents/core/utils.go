@@ -557,10 +557,11 @@ func renderAccountContextBlock(accountContext string) string {
 }
 
 // CombinedAccountPrompt preserves the legacy combined view for custom planners
-// that make their own LLM calls. ReAct planners consume the two fields
-// separately so only AccountContext enters the cacheable system prefix.
+// that make their own LLM calls, plus the agent's always-on instructions.
+// ReAct planners consume the fields separately so only AccountContext and the
+// instructions enter the cacheable system prefix.
 func CombinedAccountPrompt(request NBAgentRequest) string {
-	return mergeAccountPrompts(request.AccountPrompt, request.AccountContext)
+	return mergeAccountPrompts(request.AgentInstructions, request.AccountPrompt, request.AccountContext)
 }
 
 // renderUserContextBlock surfaces the caller's first name (from the security-context

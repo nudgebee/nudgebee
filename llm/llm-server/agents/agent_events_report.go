@@ -208,6 +208,9 @@ Context
 		return "", formatErr
 	}
 	mc := []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, finalMessage)}
+	if block := core.AgentInstructionsBlock(request); block != "" {
+		mc = append([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeSystem, block)}, mc...)
+	}
 
 	completion, err := core.GenerateAndTrackLLMContent(ctx, ctx.GetSecurityContext().GetUserId(), request.AccountId, request.ConversationId, request.MessageId, AgentEventReportName, false, mc, false, llms.WithTemperature(0.5))
 	if err != nil {

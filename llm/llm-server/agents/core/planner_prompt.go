@@ -158,7 +158,7 @@ func (o *PromptPlanner) parseOutputInternal(contentResp *llms.ContentResponse) (
 	}, nil, nil
 }
 
-func createPrompt(ctx *security.RequestContext, systemMessage string, tools []toolcore.NBTool, accountId string, agentName string, conversationContext string, extraMessages []prompts.MessageFormatter) prompts.ChatPromptTemplate {
+func createPrompt(systemMessage string, tools []toolcore.NBTool, accountId string, agentName string, agentInstructions string, conversationContext string, extraMessages []prompts.MessageFormatter) prompts.ChatPromptTemplate {
 	messageFormatters := []prompts.MessageFormatter{prompts.NewSystemMessagePromptTemplate(systemMessage, nil)}
 	if IsSLMEnabled(accountId, agentName) {
 		messageFormatters = append(messageFormatters, prompts.NewHumanMessagePromptTemplate(`Question: {{.input}}`, []string{"input"}))
@@ -197,8 +197,6 @@ func createPrompt(ctx *security.RequestContext, systemMessage string, tools []to
 		VariableName: agentScratchpad,
 	})
 
-	additionalInstructions, _, _ := AgentAdditionalInstructionsAndToolsAndConfigs(ctx, accountId, agentName)
-
 	previousMessageStr := messageFormatterToString(extraMessages)
 	tmpl := prompts.NewChatPromptTemplate(messageFormatters)
 	tmpl.PartialVariables = map[string]any{
@@ -207,7 +205,7 @@ func createPrompt(ctx *security.RequestContext, systemMessage string, tools []to
 		"history":                 previousMessageStr,
 		"query_context":           "",
 		"conversation_context":    conversationContext,
-		"additional_agent_prompt": additionalInstructions,
+		"additional_agent_prompt": agentInstructions,
 	}
 	return tmpl
 }
@@ -219,7 +217,7 @@ func NewPromptAgent(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 	tools := FilterTools(nbAgent.GetSupportedTools(ctx), request.Capabilities)
 	return &PromptPlanner{
 		ctx:     ctx,
-		prompt:  createPrompt(ctx, systemMessage, tools, request.AccountId, nbAgent.GetName(), request.ConversationContext, extraMessages),
+		prompt:  createPrompt(systemMessage, tools, request.AccountId, nbAgent.GetName(), request.AgentInstructions, request.ConversationContext, extraMessages),
 		nbAgent: nbAgent,
 		request: request,
 		tools:   tools,

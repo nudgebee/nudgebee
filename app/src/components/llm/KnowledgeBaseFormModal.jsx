@@ -39,7 +39,19 @@ Describe the situation this applies to — e.g. "When auth-svc returns 5xx and a
 Mention agents that should use this, e.g. @k8s_ops
 
 ## Tool usage
-Mention tools relevant to this, e.g. #query_logs`;
+Mention tools relevant to this, e.g. #query_logs
+
+## About our environment
+Facts the agent can't discover reliably — e.g. index names, time fields, units.
+
+## Names we use
+How people refer to things vs how they're stored.
+
+## Always / never
+Team rules — e.g. "Report latency in ms."
+
+## Examples
+One or two worked queries or answers.`;
 
 /**
  * Create/edit form for a single knowledge base — self-contained: takes the

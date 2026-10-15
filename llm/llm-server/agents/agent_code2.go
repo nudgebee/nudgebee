@@ -515,6 +515,11 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	if len(knowledgeFiles) > 0 {
 		analyzeRequest["knowledge_files"] = knowledgeFiles
 	}
+	// The agent's always-on instructions ride in the skills field, which every
+	// code-analysis agent template renders (#40899).
+	if block := core.AgentInstructionsBlock(agentRequest); block != "" {
+		skillsBlock = strings.TrimSpace(block + "\n\n" + skillsBlock)
+	}
 	if skillsBlock != "" {
 		analyzeRequest["skills"] = skillsBlock
 	}
@@ -3415,6 +3420,9 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		return core.NBAgentResponse{}, err
 	}
 	analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
+	if block := core.AgentInstructionsBlock(query); block != "" {
+		analyzeRequest["skills"] = block
+	}
 	logger.Info("code followup: forwarding resolved LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
 
 	// Pre-flight: verify workspace pod is reachable

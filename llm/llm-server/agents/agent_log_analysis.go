@@ -235,7 +235,7 @@ func (l LogAnalysisAgent) Execute(ctx *security.RequestContext, query core.NBAge
 		return core.NBAgentResponse{}, err
 	}
 	systemPrompt := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemMessage),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(query, systemMessage)),
 	}
 	summaryMsg := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, PROMPT_CHAIN_LOKI_SUMMARY_USER_MSG),
@@ -419,6 +419,9 @@ func (l LogAnalysisAgent) Execute(ctx *security.RequestContext, query core.NBAge
 	}
 	messageHistory := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, messageContent),
+	}
+	if block := core.AgentInstructionsBlock(query); block != "" {
+		messageHistory = append([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeSystem, block)}, messageHistory...)
 	}
 	token := core.GetLLMNumTokensFromMessages(ctx, messageHistory, provider, model)
 	if token > maxTokens {

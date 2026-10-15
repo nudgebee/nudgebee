@@ -170,6 +170,9 @@ func (l LogGithubAgent) Execute(ctx *security.RequestContext, query core.NBAgent
 	}
 
 	messageHistory := []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, systemMessage)}
+	if block := core.AgentInstructionsBlock(query); block != "" {
+		messageHistory = append([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeSystem, block)}, messageHistory...)
+	}
 
 	completion, err := core.GenerateAndTrackLLMContent(ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId, query.AgentId, false, messageHistory, true, llms.WithTemperature(0.0))
 	if err != nil {

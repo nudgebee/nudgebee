@@ -485,7 +485,7 @@ Output JSON format:
 }`
 
 	messages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, prompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, prompt)),
 	}
 
 	if request.ConversationContext != "" {
@@ -549,7 +549,7 @@ func (a UnifiedSearchAgent) synthesizeAnswer(ctx *security.RequestContext, reque
 - Be concise and direct.`
 
 	messages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, prompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, prompt)),
 		llms.TextParts(llms.ChatMessageTypeSystem, fmt.Sprintf("Context:\n%s", context)),
 	}
 

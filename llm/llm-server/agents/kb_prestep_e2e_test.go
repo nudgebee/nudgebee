@@ -130,7 +130,7 @@ func runSkillLifecycle(t *testing.T, delegated bool) {
 	require.NoError(t, indexingErr, "read indexing status")
 	require.Equal(t, "active", status, "KB indexing failed")
 	if delegated || os.Getenv("TEST_SKILL_UNMAPPED") != "true" {
-		_, err = toolcore.MapKBToAgent(sc, accountID, kb.Id, mappedAgent)
+		_, err = toolcore.MapKBToAgent(sc, accountID, kb.Id, mappedAgent, nil)
 		require.NoError(t, err, "map test KB")
 		mapped = true
 	}

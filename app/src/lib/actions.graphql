@@ -5799,6 +5799,7 @@ input MapKBToAgentRequest {
   account_id: String!
   kb_id: String!
   agent_id: String!
+  always_load: Boolean
 }
 
 input UnmapKBFromAgentRequest {
