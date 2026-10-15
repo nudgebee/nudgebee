@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/jmoiron/sqlx"
@@ -50,49 +53,71 @@ func TestBuildLimitedQuery(t *testing.T) {
 		query    string
 		limit    int
 		expected string
+		rowCap   int
 	}{
 		{
 			name:     "Plain SELECT gets subquery limit wrapping",
 			query:    "select * from events where status = 'error'",
 			limit:    100,
-			expected: "select * from (select * from events where status = 'error') as ql limit 100;",
+			expected: "select * from (select * from events where status = 'error') as ql limit 101;",
+			rowCap:   100,
 		},
 		{
 			name:     "DISTINCT query gets subquery limit wrapping",
 			query:    "select distinct service_name from events",
 			limit:    100,
-			expected: "select * from (select distinct service_name from events) as ql limit 100;",
+			expected: "select * from (select distinct service_name from events) as ql limit 101;",
+			rowCap:   100,
 		},
 		{
 			name:     "GROUP BY query gets subquery limit wrapping",
 			query:    "select service_name, count(*) from events group by service_name",
 			limit:    100,
-			expected: "select * from (select service_name, count(*) from events group by service_name) as ql limit 100;",
+			expected: "select * from (select service_name, count(*) from events group by service_name) as ql limit 101;",
+			rowCap:   100,
 		},
 		{
-			name:     "Query with existing LIMIT is not re-wrapped",
+			name:     "Query with its own LIMIT is capped at the hard maximum",
 			query:    "select * from events limit 10",
 			limit:    100,
-			expected: "select * from events limit 10;",
+			expected: "select * from (select * from events limit 10) as ql limit 101;",
+			rowCap:   sqlToolMaxRows,
 		},
 		{
-			name:     "Query with existing LIMIT and semicolon is unchanged",
-			query:    "select * from events limit 10;",
-			limit:    100,
-			expected: "select * from events limit 10;",
+			name:     "A large LIMIT and a semicolon still stop at the hard maximum",
+			query:    "select * from events order by starts_at desc limit 100000 offset 200;",
+			limit:    10,
+			expected: "select * from (select * from events order by starts_at desc limit 100000 offset 200) as ql limit 101;",
+			rowCap:   sqlToolMaxRows,
+		},
+		{
+			name:     "A tool limit above the hard maximum is lowered to it",
+			query:    "select * from events",
+			limit:    5000,
+			expected: "select * from (select * from events) as ql limit 101;",
+			rowCap:   sqlToolMaxRows,
+		},
+		{
+			name:     "A non-positive limit falls back to 5 rows",
+			query:    "select * from events",
+			limit:    0,
+			expected: "select * from (select * from events) as ql limit 6;",
+			rowCap:   5,
 		},
 		{
 			name:     "LIMIT only inside a single-line comment is ignored",
 			query:    "select * from events -- LIMIT 5\nwhere status = 'error'",
 			limit:    100,
-			expected: "select * from (select * from events -- LIMIT 5\nwhere status = 'error') as ql limit 100;",
+			expected: "select * from (select * from events -- LIMIT 5\nwhere status = 'error') as ql limit 101;",
+			rowCap:   100,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := buildLimitedQuery(tc.query, tc.limit)
+			result, rowCap := buildLimitedQuery(tc.query, tc.limit)
 			assert.Equal(t, tc.expected, result)
+			assert.Equal(t, tc.rowCap, rowCap)
 		})
 	}
 }
@@ -398,10 +423,10 @@ func TestSqlExecuteQueryCapsOnTheCallersSQL(t *testing.T) {
 	ctx := security.NewRequestContext(context.Background(), nil, nil, nil, nil)
 
 	view := "SELECT e.id FROM events e WHERE e.id = (SELECT id FROM events LIMIT 1)"
-	expectToolQuery(mock, `^select \* from \(SELECT id FROM \(.*LIMIT 1.*\) as events\) as ql limit 10;$`).
+	expectToolQuery(mock, `^select \* from \(SELECT id FROM \(.*LIMIT 1.*\) as events\) as ql limit 11;$`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
-	_, err := sqlExecuteQuery(ctx, "SELECT id FROM events", "550e8400-e29b-41d4-a716-446655440000", "events", view, 0)
+	_, _, err := sqlExecuteQuery(ctx, "SELECT id FROM events", "550e8400-e29b-41d4-a716-446655440000", "events", view, 0)
 	require.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -417,7 +442,7 @@ func TestSqlExecuteQueryRunsReadOnlyWithTimeoutAndWorkMem(t *testing.T) {
 	mock.ExpectPrepare("select").WillBeClosed().ExpectQuery().WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("evt-1"))
 	mock.ExpectRollback()
 
-	data, err := sqlExecuteQuery(ctx, "SELECT id FROM events", "550e8400-e29b-41d4-a716-446655440000", "events", "", 0)
+	data, _, err := sqlExecuteQuery(ctx, "SELECT id FROM events", "550e8400-e29b-41d4-a716-446655440000", "events", "", 0)
 	require.NoError(t, err)
 	assert.Len(t, data, 1)
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -457,4 +482,80 @@ func TestSqlToolCallTimeoutIsAnActionableError(t *testing.T) {
 		assert.NotContains(t, err.Error(), "did not finish")
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
+}
+
+// A result the row cap or the size budget cut says so, and names the OFFSET
+// for the next page; one that fit stays a plain array (#40194).
+func TestSqlToolCallDisclosesRowCap(t *testing.T) {
+	// Each subtest gets its own mock: a cut cancels its query, and the
+	// connection is released asynchronously after that.
+	newMock := func(t *testing.T) sqlmock.Sqlmock {
+		db, mock := mockMetastore(t)
+		t.Cleanup(func() {
+			// database/sql rolls a cancelled transaction back from its own goroutine.
+			assert.Eventually(t, func() bool { return mock.ExpectationsWereMet() == nil }, time.Second, 5*time.Millisecond)
+			_ = db.Close()
+		})
+		return mock
+	}
+	nbCtx := core.NbToolContext{
+		AccountId: "550e8400-e29b-41d4-a716-446655440000",
+		Ctx:       security.NewRequestContext(context.Background(), nil, nil, nil, nil),
+	}
+	rows := func(n int, value string) *sqlmock.Rows {
+		r := sqlmock.NewRows([]string{"id"})
+		for i := range n {
+			r.AddRow(fmt.Sprintf("evt-%d%s", i, value))
+		}
+		return r
+	}
+	type cutResult struct {
+		Rows     []map[string]any `json:"rows"`
+		Returned int              `json:"returned"`
+		HasMore  bool             `json:"has_more"`
+		Note     string           `json:"note"`
+	}
+	heavy := strings.Repeat("x", 3<<20) // the second row passes the 4 MB budget
+
+	for _, tc := range []struct {
+		name, query, match  string
+		limit, served, want int
+		value               string
+	}{
+		{"tool cap, no LIMIT", "SELECT id FROM events", `as ql limit 3;$`, 2, 3, 2, ""},
+		{"hard max under a large model LIMIT", "SELECT id FROM events ORDER BY id LIMIT 5000", `LIMIT 5000\) as ql limit 101;$`, 10, 101, sqlToolMaxRows, ""},
+		{"size budget", "SELECT id FROM events LIMIT 10", `as ql limit 101;$`, 10, 4, 1, heavy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			expectToolQuery(newMock(t), tc.match).WillReturnRows(rows(tc.served, tc.value))
+			resp, data, err := sqlToolCall(nbCtx, tc.query, "events", "", tc.limit, nil)
+			require.NoError(t, err)
+			assert.Len(t, data, tc.want)
+			var got cutResult
+			require.NoError(t, json.Unmarshal([]byte(resp.Data), &got))
+			assert.Len(t, got.Rows, tc.want)
+			assert.Equal(t, tc.want, got.Returned)
+			assert.True(t, got.HasMore)
+			assert.Contains(t, got.Note, "COUNT(*)")
+			assert.Contains(t, got.Note, fmt.Sprintf("OFFSET = your current OFFSET (0 if none) + %d", tc.want))
+			assert.Contains(t, got.Note, "unique column")
+		})
+	}
+
+	for _, tc := range []struct {
+		name, query, match string
+		n                  int
+	}{
+		{"fit", "SELECT id FROM events", `as ql limit 3;$`, 2},
+		{"own limit", "SELECT id FROM events LIMIT 5", `LIMIT 5\) as ql limit 101;$`, 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			expectToolQuery(newMock(t), tc.match).WillReturnRows(rows(tc.n, ""))
+			resp, _, err := sqlToolCall(nbCtx, tc.query, "events", "", 2, nil)
+			require.NoError(t, err)
+			var parsed []map[string]any
+			require.NoError(t, json.Unmarshal([]byte(resp.Data), &parsed))
+			assert.Len(t, parsed, tc.n)
+		})
+	}
 }

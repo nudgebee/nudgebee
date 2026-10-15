@@ -988,12 +988,12 @@ func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 	references := []core.NBToolResponseReference{}
 	if len(data) > 0 {
 		m.enrichData(data)
-		bytesData, marshalErr := common.MarshalJson(data)
+		enriched, marshalErr := sqlResultData(resp, data)
 		if marshalErr != nil {
 			slog.Error("events: failed to marshal enriched data", "error", marshalErr)
 			return core.NBToolResponse{}, marshalErr
 		}
-		resp.Data = string(bytesData)
+		resp.Data = enriched
 
 		for _, e := range data {
 			if idStr, ok := e["id"].(string); ok {

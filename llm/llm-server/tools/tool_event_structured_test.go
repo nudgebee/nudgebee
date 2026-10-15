@@ -332,12 +332,14 @@ func TestBuildAggregateEventsQuery(t *testing.T) {
 }
 
 // The cap holds even when a filter value contains the word "limit", which
-// makes buildLimitedQuery skip its own LIMIT.
+// buildLimitedQuery reads as the query's own LIMIT.
 func TestBuildAggregateEventsQueryKeepsItsLimit(t *testing.T) {
-	q, err := buildAggregateEventsQuery([]string{"title"}, false, []string{"(title ILIKE '%rate limit%' OR description ILIKE '%rate limit%')"}, 200)
+	q, err := buildAggregateEventsQuery([]string{"title"}, false, []string{"(title ILIKE '%rate limit%' OR description ILIKE '%rate limit%')"}, maxAggregateEventsRows)
 	require.NoError(t, err)
-	assert.True(t, strings.HasSuffix(q, " LIMIT 200"))
-	assert.Equal(t, q+";", buildLimitedQuery(q, 200), "no second wrapper is needed")
+	assert.True(t, strings.HasSuffix(q, " LIMIT 100"))
+	got, rowCap := buildLimitedQuery(q, maxAggregateEventsRows)
+	assert.Equal(t, "select * from ("+q+") as ql limit 101;", got)
+	assert.Equal(t, maxAggregateEventsRows, rowCap, "every group aggregate_events asks for fits under the hard maximum")
 }
 
 func TestBuildManifestOnlyEvidenceDropsEmptyEvidence(t *testing.T) {

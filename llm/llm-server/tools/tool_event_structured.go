@@ -820,11 +820,11 @@ func (t ListEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequ
 	}
 	buildManifestOnlyEvidence(data)
 
-	bytesData, marshalErr := common.MarshalJson(data)
+	listed, marshalErr := sqlResultData(resp, data)
 	if marshalErr != nil {
 		return core.NBToolResponse{}, marshalErr
 	}
-	resp.Data = string(bytesData)
+	resp.Data = listed
 	resp.References = eventReferences(nbCtx, dataAccountID, data)
 	return resp, nil
 }
@@ -937,8 +937,8 @@ func (t AggregateEventsTool) InputSchema() core.ToolSchema {
 }
 
 // maxAggregateEventsRows caps the groups returned: grouping by title or
-// subject_name can make thousands.
-const maxAggregateEventsRows = 200
+// subject_name can make thousands. Kept at sqlToolMaxRows so the cap never cuts it.
+const maxAggregateEventsRows = sqlToolMaxRows
 
 func (t AggregateEventsTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
 	return core.ToolRequestTypeRead, nil

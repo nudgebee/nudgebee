@@ -59,10 +59,10 @@ func TestSqlExecuteQueryCannotEscapeReadOnly(t *testing.T) {
 		return n
 	}
 
-	data, err := sqlExecuteQuery(ctx, "select id from events order by id", account, "events", "", 0)
+	data, _, err := sqlExecuteQuery(ctx, "select id from events order by id", account, "events", "", 0)
 	require.NoError(t, err, "a plain select still runs")
 	assert.Len(t, data, 2)
-	data, err = sqlExecuteQuery(ctx, "select id from events limit 1;", account, "events", "", 0)
+	data, _, err = sqlExecuteQuery(ctx, "select id from events limit 1;", account, "events", "", 0)
 	require.NoError(t, err, "a trailing semicolon is still one statement")
 	assert.Len(t, data, 1)
 
@@ -72,12 +72,12 @@ func TestSqlExecuteQueryCannotEscapeReadOnly(t *testing.T) {
 		"select * from events; commit; delete from events",
 		"select * from events limit 1; commit; drop table events",
 	} {
-		_, err := sqlExecuteQuery(ctx, q, account, "events", "", 0)
+		_, _, err := sqlExecuteQuery(ctx, q, account, "events", "", 0)
 		assert.Error(t, err, q)
 		assert.Equal(t, 2, count(), "rows must survive %q", q)
 	}
 
-	_, err = sqlExecuteQuery(ctx, "with d as (delete from events returning *) select * from events", account, "events", "", 0)
+	_, _, err = sqlExecuteQuery(ctx, "with d as (delete from events returning *) select * from events", account, "events", "", 0)
 	assert.Error(t, err, "DML in a CTE is still refused by the read-only transaction")
 	assert.Equal(t, 2, count())
 }
