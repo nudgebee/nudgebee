@@ -232,3 +232,28 @@ func TestFirstPickTakesTheInstanceTheCallNames(t *testing.T) {
 	_, ok = tools.IntegrationNamedIn(configs, toolcore.ParseNBToolCallRequestFromInput(`{"query":"select 1"}`))
 	require.False(t, ok, "a call naming nothing picks as before")
 }
+
+// An automatic alert investigation has nobody to pick a configuration: the
+// question would only stop the run until the waiting expiry. It gets a failed
+// step that names the options and says how to carry on, and no followup.
+func TestReadOnlyRunDoesNotAskForConfiguration(t *testing.T) {
+	const account = "read-only-config-choice-test"
+	const ticketTool = "ticket_master_v2"
+	seedConfigs(t, account, ticketTool, "jira-primary", "servicenow-eu")
+
+	ticket := &MockConfigurableTool{MockContextCapturingTool{NameVal: ticketTool}}
+	e := plannerExecutor{
+		ctx:          WithReadOnlyRun(security.NewRequestContextForSuperAdmin()),
+		agent:        &MockAgent{SupportedTools: []toolcore.NBTool{ticket}},
+		agentRequest: NBAgentRequest{AccountId: account, AgentId: uuid.NewString()},
+	}
+
+	steps, finish, err := e.followupForMultipleToolConfigs(ticket, NBAgentPlannerToolAction{Tool: ticketTool, ToolID: "call-1"})
+	require.NoError(t, err)
+	require.Nil(t, finish, "a read-only run must not pause on a question")
+	require.Len(t, steps, 1)
+	require.Equal(t, ToolStatusFailure, steps[0].Status)
+	require.Contains(t, steps[0].Observation, "no one available to answer questions")
+	require.Contains(t, steps[0].Observation, "jira-primary")
+	require.Contains(t, steps[0].Observation, "servicenow-eu")
+}

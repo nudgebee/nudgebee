@@ -1789,6 +1789,16 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 				}
 			}
 
+			// An automatic alert investigation has nobody to pick a repository:
+			// say so and let the investigation carry on instead of waiting.
+			if codeAgentRequest.GitRepo == "" && core.IsReadOnlyRun(ctx) {
+				ctx.GetLogger().Info("code: repository choice not asked in read-only run", "count", len(allProjectURLs))
+				return core.NBAgentResponse{
+					Response: []string{core.ReadOnlyChoiceRefusal("repository", allProjectURLs)},
+					Status:   core.ConversationStatusFailed,
+				}, nil
+			}
+
 			// If auto-detection failed, ask the user via followup
 			if codeAgentRequest.GitRepo == "" {
 				ctx.GetLogger().Info("code: asking user to select repository", "count", len(allProjectURLs))

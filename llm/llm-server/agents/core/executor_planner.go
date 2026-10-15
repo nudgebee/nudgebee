@@ -2625,8 +2625,12 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				Status: ConversationStatusFailed,
 			}, nil
 		}
-		if followupFinish != nil {
-			e.ctx.GetLogger().Info("plannerexecutor: generated followup for multiple tool configs", "tool", tool.Name(), "followup", slog.AnyValue(followupFinish))
+		// A step without a finish is a refusal (no target matches the subject,
+		// or a read-only run that cannot ask): the call must not run. Only the
+		// shell branch above honoured it; here it was dropped and the tool ran
+		// with no target chosen.
+		if followupFinish != nil || len(followupSteps) > 0 {
+			e.ctx.GetLogger().Info("plannerexecutor: generated followup for multiple tool configs", "tool", tool.Name(), "followup", slog.AnyValue(followupFinish), "steps", len(followupSteps))
 			var fupStep NBAgentPlannerToolActionStep
 			if len(followupSteps) > 0 {
 				fupStep = followupSteps[0]
@@ -3805,6 +3809,14 @@ func (e *plannerExecutor) followupForMultipleToolConfigs(tool toolcore.NBTool, a
 	if err != nil {
 		return nil, nil, err
 	}
+	if len(followupRequest.Question) > 0 && IsReadOnlyRun(e.ctx) {
+		e.ctx.GetLogger().Info("plannerexecutor: configuration choice not asked in read-only run", "tool", tool.Name(), "options", len(followupRequest.FollowupOptions))
+		return []NBAgentPlannerToolActionStep{{
+			Action:      action,
+			Observation: ReadOnlyChoiceRefusal("configuration of "+tool.Name(), followupRequest.FollowupOptions),
+			Status:      ToolStatusFailure,
+		}}, nil, nil
+	}
 	if len(followupRequest.Question) > 0 {
 		followupId, err := GenerateFollowup(e.ctx, e.agentRequest, followupRequest)
 		if err != nil {
@@ -3858,6 +3870,14 @@ func (e *plannerExecutor) followupForTargetIntegration(tool toolcore.NBTool, act
 	names := tools.UniqueConfigNames(configs)
 	if len(names) < 2 {
 		return nil, nil, nil
+	}
+	if IsReadOnlyRun(e.ctx) {
+		e.ctx.GetLogger().Info("plannerexecutor: target integration choice not asked in read-only run", "tool", tool.Name(), "options", len(names))
+		return []NBAgentPlannerToolActionStep{{
+			Action:      action,
+			Observation: ReadOnlyChoiceRefusal(fmt.Sprintf("%s integration for %s %s", tool.Name(), target.Kind(), target.Name), names),
+			Status:      ToolStatusFailure,
+		}}, nil, nil
 	}
 	followupRequest := FollowupRequest{
 		Question:        fmt.Sprintf("%s %s has several integrations for %s. Which one should be used?", target.Kind(), target.Name, tool.Name()),

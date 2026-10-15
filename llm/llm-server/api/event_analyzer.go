@@ -668,10 +668,15 @@ func shouldForceFreshAnalysis(ctx *security.RequestContext, repo *events.EventAn
 // in-progress row and mapping. Without them, a stage the run never reached
 // (e.g. it failed after the log stage) has no mapping, and a later non-forced
 // request would read the related event's completed result for it through
-// GetEventAnalysis's fingerprint fallback. Errors are logged, not returned: the
-// run itself is already claimed and proceeds either way.
-func bindStagesToEvent(ctx *security.RequestContext, repo *events.EventAnalysisRepository, eventId, fingerprint, accountId, aggKey string) {
-	for _, aType := range []events.EventAnalysisType{events.AnalysisTypeSummary, events.AnalysisTypeInvestigation, events.AnalysisTypeDetailedResponse} {
+// GetEventAnalysis's fingerprint fallback. With stages given, only those are
+// bound (the investigation stage binds itself before its agent runs). Errors
+// are logged, not returned: the run itself is already claimed and proceeds
+// either way.
+func bindStagesToEvent(ctx *security.RequestContext, repo *events.EventAnalysisRepository, eventId, fingerprint, accountId, aggKey string, stages ...events.EventAnalysisType) {
+	if len(stages) == 0 {
+		stages = []events.EventAnalysisType{events.AnalysisTypeSummary, events.AnalysisTypeInvestigation, events.AnalysisTypeDetailedResponse}
+	}
+	for _, aType := range stages {
 		if err := repo.UpsertEventAnalysisInProgress(ctx, eventId, fingerprint, accountId, aggKey, aType); err != nil {
 			ctx.GetLogger().Warn("analyzer: failed to bind stage to forced-fresh event", "error", err, "event_id", eventId, "analysis_type", aType)
 		}
@@ -2817,6 +2822,10 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		if hasSummary {
 			ctx.GetLogger().Info("analyzer: recovered summary from conversation history", "session_id", parentConversationId)
 		} else {
+			// Same as the investigation stage below: the summary this run writes
+			// is this event's, so a pause or failure must not land on an older
+			// firing's row.
+			bindStagesToEvent(ctx, eventAnalysisRepo, request.EventId, eventFingerprint, request.AccountId, eventAggregationKey, events.AnalysisTypeSummary)
 			summaryQuery := buildEventSummaryQuery(eventData.Id)
 			summaryResp, err := core.HandleConversationSessionRequest(ctx, eventSummaryAgent, request.UserId, request.AccountId, parentConversationId, summaryQuery, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithEnableCritique(false), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels}), core.ConversationSessionRequestWithoutConversationHistory())
 			if err != nil {
@@ -2833,13 +2842,13 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 				hasSummary = true
 			} else if summaryResp.Status == core.ConversationStatusWaiting || summaryResp.Status == core.ConversationStatusWaitingForClientTool {
 				ctx.GetLogger().Info("analyzer: summary paused awaiting approval or client tool", "session_id", parentConversationId, "status", summaryResp.Status)
-				if upErr := eventAnalysisRepo.UpsertEventAnalysisStatus(ctx, request.EventId, eventData.Fingerprint, request.AccountId, eventData.AggregationKey, string(events.AnalysisStatusInProgress), "summary paused awaiting approval", events.AnalysisTypeSummary, false); upErr != nil {
+				if upErr := eventAnalysisRepo.UpdateEventAnalysisStatusForEvent(ctx, request.EventId, events.AnalysisTypeSummary, string(events.AnalysisStatusInProgress), "summary paused awaiting approval"); upErr != nil {
 					ctx.GetLogger().Warn("failed to update summary status on pause", "error", upErr)
 				}
 				return EventAnalysisResponse{Status: string(events.AnalysisStatusInProgress), StatusReason: "summary paused awaiting approval"}, nil
 			} else {
 				ctx.GetLogger().Warn("analyzer: summary returned without completion", "event_id", request.EventId, "session_id", parentConversationId, "status", summaryResp.Status)
-				if upErr := eventAnalysisRepo.UpsertEventAnalysisStatus(ctx, request.EventId, eventData.Fingerprint, request.AccountId, eventData.AggregationKey, string(events.AnalysisStatusFailed), "summary returned without completion", events.AnalysisTypeSummary, false); upErr != nil {
+				if upErr := eventAnalysisRepo.UpdateEventAnalysisStatusForEvent(ctx, request.EventId, events.AnalysisTypeSummary, string(events.AnalysisStatusFailed), "summary returned without completion"); upErr != nil {
 					ctx.GetLogger().Warn("failed to update summary status on failure", "error", upErr)
 				}
 				return EventAnalysisResponse{Status: string(events.AnalysisStatusFailed), StatusReason: "summary returned without completion"}, errors.New("summary returned without completion")
@@ -2915,9 +2924,16 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		}
 		ctx.GetLogger().Info("analyzer: using existing investigation", "event_id", request.EventId)
 	} else {
+		// This run's investigation gets its own row before anything is written
+		// about it, and its pause/failure writes below target that row only.
+		// They used to go to the fingerprint's latest row: an older firing's
+		// finished investigation was marked in progress, and once this turn's
+		// approval expired the stuck-analysis reaper re-ran the old event and
+		// its report was stored as this one's (dev 10-06, db3acbce / b266129a).
+		bindStagesToEvent(ctx, eventAnalysisRepo, request.EventId, eventFingerprint, request.AccountId, eventAggregationKey, events.AnalysisTypeInvestigation)
 		rootcauseAgent, ok := core.GetNBAgent(ctx, agents.GetDebugAgentName(request.AccountId), request.AccountId, core.AgentStatusEnabled)
 		if !ok || rootcauseAgent == nil {
-			if updateErr := eventAnalysisRepo.UpdateEventAnalysisStatus(ctx, eventData.Fingerprint, request.AccountId, eventData.AggregationKey, string(events.AnalysisStatusFailed), "investigation agent not found", events.AnalysisTypeInvestigation); updateErr != nil {
+			if updateErr := eventAnalysisRepo.UpdateEventAnalysisStatusForEvent(ctx, request.EventId, events.AnalysisTypeInvestigation, string(events.AnalysisStatusFailed), "investigation agent not found"); updateErr != nil {
 				ctx.GetLogger().Warn("failed to update event analysis status on investigation agent missing", "error", updateErr)
 			}
 			return response, errors.New("investigation agent not found")
@@ -2978,7 +2994,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 					return EventAnalysisResponse{Status: string(events.AnalysisStatusInProgress)}, nil
 				}
 				ctx.GetLogger().Error("analyzer: unable to generate rootcause analysis", "event_id", request.EventId, "session_id", parentConversationId, "error", err)
-				if updateErr := eventAnalysisRepo.UpdateEventAnalysisStatus(ctx, eventData.Fingerprint, request.AccountId, eventData.AggregationKey, string(events.AnalysisStatusFailed), "investigation failed - "+err.Error(), events.AnalysisTypeInvestigation); updateErr != nil {
+				if updateErr := eventAnalysisRepo.UpdateEventAnalysisStatusForEvent(ctx, request.EventId, events.AnalysisTypeInvestigation, string(events.AnalysisStatusFailed), "investigation failed - "+err.Error()); updateErr != nil {
 					ctx.GetLogger().Warn("failed to update event analysis status on investigation failure", "error", updateErr)
 				}
 			} else if len(rootcauseAnalysis.Response) > 0 && rootcauseAnalysis.Status == core.ConversationStatusCompleted {
@@ -2994,13 +3010,13 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 				logInvestigationToolUsage(ctx, dbManager, rootcauseAnalysis.ConversationId, request.EventId)
 			} else if rootcauseAnalysis.Status == core.ConversationStatusWaiting || rootcauseAnalysis.Status == core.ConversationStatusWaitingForClientTool {
 				ctx.GetLogger().Info("analyzer: investigation paused awaiting approval or client tool", "event_id", request.EventId, "session_id", parentConversationId, "status", rootcauseAnalysis.Status)
-				if updateErr := eventAnalysisRepo.UpdateEventAnalysisStatus(ctx, eventData.Fingerprint, request.AccountId, eventData.AggregationKey, string(events.AnalysisStatusInProgress), "investigation paused awaiting tool approval", events.AnalysisTypeInvestigation); updateErr != nil {
+				if updateErr := eventAnalysisRepo.UpdateEventAnalysisStatusForEvent(ctx, request.EventId, events.AnalysisTypeInvestigation, string(events.AnalysisStatusInProgress), "investigation paused awaiting tool approval"); updateErr != nil {
 					ctx.GetLogger().Warn("failed to update event analysis status on investigation pause", "error", updateErr)
 				}
 				return EventAnalysisResponse{Status: string(events.AnalysisStatusInProgress), StatusReason: "investigation paused awaiting tool approval"}, nil
 			} else {
 				ctx.GetLogger().Warn("analyzer: investigation returned without findings or completion", "event_id", request.EventId, "session_id", parentConversationId, "status", rootcauseAnalysis.Status)
-				if updateErr := eventAnalysisRepo.UpdateEventAnalysisStatus(ctx, eventData.Fingerprint, request.AccountId, eventData.AggregationKey, string(events.AnalysisStatusFailed), "investigation returned without completion", events.AnalysisTypeInvestigation); updateErr != nil {
+				if updateErr := eventAnalysisRepo.UpdateEventAnalysisStatusForEvent(ctx, request.EventId, events.AnalysisTypeInvestigation, string(events.AnalysisStatusFailed), "investigation returned without completion"); updateErr != nil {
 					ctx.GetLogger().Warn("failed to update event analysis status on empty investigation", "error", updateErr)
 				}
 				return EventAnalysisResponse{Status: string(events.AnalysisStatusFailed), StatusReason: "investigation returned without completion"}, errors.New("investigation returned without completion")

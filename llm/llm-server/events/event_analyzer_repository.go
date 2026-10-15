@@ -968,6 +968,25 @@ func (r *EventAnalysisRepository) UpdateEventAnalysisStatusById(ctx *security.Re
 	return nil
 }
 
+// UpdateEventAnalysisStatusForEvent sets the status of eventId's own row for a
+// stage, found through event_analysis_mapping. Unlike UpdateEventAnalysisStatus
+// it never touches another event's row: a pause or failure belongs to this
+// run, and writing it to the fingerprint's latest row marked an older firing's
+// finished analysis in progress, which the stuck-analysis reaper then re-ran.
+// No mapping means nothing is updated.
+func (r *EventAnalysisRepository) UpdateEventAnalysisStatusForEvent(ctx *security.RequestContext, eventId string, analysisType EventAnalysisType, status, statusReason string) error {
+	_, err := r.dbManager.Db.Exec(
+		`UPDATE event_log_analysis a SET status=$3, status_reason=$4, updated_at=NOW()
+		 FROM event_analysis_mapping m
+		 WHERE m.analysis_id = a.id AND m.event_id = $1 AND m.analysis_type = $2`,
+		eventId, analysisType, status, statusReason,
+	)
+	if err != nil {
+		return fmt.Errorf("update %s status for event %s: %w", analysisType, eventId, err)
+	}
+	return nil
+}
+
 // UpdateEventAnalysisStatus updates the status and status reason for the latest log analysis entry.
 func (r *EventAnalysisRepository) UpdateEventAnalysisStatus(ctx *security.RequestContext, eventFingerprint string, cloudAccountId string, aggregationKey string, status string, statusReason string, analysisType EventAnalysisType) error {
 	ctx.GetLogger().Info("analyzer: updating event analysis entry", "event_fingerprint", eventFingerprint, "account_id", cloudAccountId, "event_aggregation_key", aggregationKey, "analysis_type", analysisType, "status", status)

@@ -183,3 +183,46 @@ func (readOnlyLoopDao) LoadLongTermMemories(_ string, _ string, _ int) ([]string
 func (readOnlyLoopDao) UpdateConversationMessage(_, _ string, _ ConversationStatus) error { return nil }
 
 func (readOnlyLoopDao) GetConversation(_ string) (Conversation, error) { return Conversation{}, nil }
+
+func TestReadOnlyChoiceRefusalNamesOptionsAndNextStep(t *testing.T) {
+	msg := ReadOnlyChoiceRefusal("repository", []string{"https://example.com/a.git", "https://example.com/b.git"})
+	assert.Contains(t, msg, "which repository to use (https://example.com/a.git, https://example.com/b.git)")
+	assert.Contains(t, msg, "naming it explicitly")
+	assert.Contains(t, msg, `"Not checked"`)
+	assert.NotContains(t, ReadOnlyChoiceRefusal("repository", nil), "()")
+}
+
+// countingConfigurableTool records whether it ran, so a test can prove a
+// refused call never reached the tool.
+type countingConfigurableTool struct {
+	MockConfigurableTool
+	calls int
+}
+
+func (m *countingConfigurableTool) Call(ctx toolcore.NbToolContext, request toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
+	m.calls++
+	return m.MockConfigurableTool.Call(ctx, request)
+}
+
+// A read-only run calling a tool with several configurations and nothing to
+// pick one gets the refusal as its step, does not pause, and the tool does not
+// run with no configuration chosen (doAction used to drop a refusal step that
+// came without a finish and call the tool anyway).
+func TestReadOnlyRunConfigurationChoiceRefusedThroughDoAction(t *testing.T) {
+	const account = "read-only-doaction-config-test"
+	const toolName = "ticket_master_v2"
+	seedConfigs(t, account, toolName, "jira-primary", "servicenow-eu")
+
+	tool := &countingConfigurableTool{MockConfigurableTool: MockConfigurableTool{MockContextCapturingTool{NameVal: toolName}}}
+	request := NBAgentRequest{AccountId: account, AgentId: uuid.NewString()}
+	ctx := WithReadOnlyRun(security.NewRequestContextForSuperAdmin())
+	executor := newPlannerExecutor(ctx, &mockNBAgentPlanner{}, &MockAgent{SupportedTools: []toolcore.NBTool{tool}}, request, 3)
+	action := NBAgentPlannerToolAction{ToolID: "call-1", Tool: toolName, ToolInput: "list open tickets"}
+
+	step, finish, err := executor.doAction(getNameToTool([]toolcore.NBTool{tool}), action, "")
+	require.NoError(t, err)
+	assert.Nil(t, finish, "no question and no pause in a read-only run")
+	assert.Equal(t, ToolStatusFailure, step.Status)
+	assert.Contains(t, step.Observation, "no one available to answer questions")
+	assert.Equal(t, 0, tool.calls, "the tool must not run without a chosen configuration")
+}

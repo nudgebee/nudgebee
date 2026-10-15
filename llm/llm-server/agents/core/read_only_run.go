@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
@@ -52,6 +53,27 @@ func readOnlyRefusal(requestType toolcore.ToolRequestType, refusals int) string 
 		"the logs and metrics tools instead of commands on the host. "+
 		"If there is no read-only way, do not retry: list it under \"Not checked (needs write access)\" in your answer with what it would have shown, and continue.", requestType)
 }
+
+// ReadOnlyChoiceRefusal is what a read-only run gets instead of asking a person
+// to choose (which configuration, account or repository to use). Nobody answers
+// in such a run, so the question would only stop it until the waiting expiry.
+// It sends the model to name the choice itself when the alert or evidence
+// settles it, and otherwise to carry on without it and report the gap, the way
+// readOnlyRefusal does for writes.
+func ReadOnlyChoiceRefusal(what string, options []string) string {
+	choices := ""
+	if len(options) > 0 {
+		choices = " (" + strings.Join(options, ", ") + ")"
+	}
+	return fmt.Sprintf("Not asked: this is an automatic investigation with no one available to answer questions, so I can't ask which %s to use%s. "+
+		"If the alert or the evidence so far identifies one, call again naming it explicitly. "+
+		"Otherwise continue without it, and list it under \"Not checked\" in your answer with what it would have shown.", what, choices)
+}
+
+// ReadOnlyQuestionRefusal is what a read-only run gets instead of asking a
+// person an open question: nobody is there to answer it.
+const ReadOnlyQuestionRefusal = "Not asked: this is an automatic investigation with no one available to answer questions. " +
+	"Continue with what the evidence shows, and state any assumption or open question in your answer."
 
 // messageRanReadOnly reports whether a stored message was saved by a
 // read-only run (see NBQueryConfig.ReadOnlyRun). Only the run's own messages
