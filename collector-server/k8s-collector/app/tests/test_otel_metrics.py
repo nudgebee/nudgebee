@@ -24,13 +24,13 @@ from metrics import otel_metrics
 
 HISTOGRAM = "k8s_collector_handler_processing_duration_seconds"
 COUNTER = "k8s_collector_handler_processing_total"
+ERRORS = "k8s_collector_handler_errors_total"
 
 # Every View is matched to its instrument by name, so a rename on either side
 # silently orphans the View and the histogram falls back to OTel default buckets.
 BUCKETED = [
     (HISTOGRAM, otel_metrics._DURATION_BUCKETS),
     ("rabbitmq_message_processing_duration_seconds", otel_metrics._DURATION_BUCKETS),
-    ("k8s_collector_database_operation_duration_seconds", otel_metrics._DB_DURATION_BUCKETS),
     ("rabbitmq_message_size_bytes", otel_metrics._SIZE_BUCKETS),
 ]
 
@@ -46,7 +46,11 @@ def collected():
     otel_metrics.set_consumer_health("queue-a", True)
     otel_metrics.record_message_processed("queue-a", 0.25)
     otel_metrics.record_message_received("queue-a", 2048)
-    otel_metrics.record_database_operation("insert", "events", 0.02, True)
+    with otel_metrics.track_handler("spend", "t1", "a1", "spend"):
+        pass
+    with pytest.raises(KeyError):
+        with otel_metrics.track_handler("spend", "t1", "a1", "spend"):
+            raise KeyError("boom")
 
     tasks = otel_metrics.get_consumer_active_tasks_gauge("queue-a")
     tasks.inc()
@@ -72,11 +76,22 @@ def test_observable_gauge_reports_stored_value(collected):
 
 
 def test_view_bounds_histogram_cardinality(collected):
-    histogram = list(collected[HISTOGRAM].data.data_points)
+    histogram = [p for p in collected[HISTOGRAM].data.data_points if p.attributes["handler_type"] == "discovery"]
     assert len(histogram) == 1, "View must collapse 3 tenants x 2 accounts into one histogram series"
     assert dict(histogram[0].attributes) == {"handler_type": "discovery", "action": "sync"}
-    counter = list(collected[COUNTER].data.data_points)
+    counter = [p for p in collected[COUNTER].data.data_points if p.attributes["handler_type"] == "discovery"]
     assert len(counter) == 6, "counter must keep tenant_id/account_id (one series per tenant/account pair)"
+
+
+def test_track_handler_records_outcome_and_error(collected):
+    statuses = {
+        p.attributes["status"]: p.value
+        for p in collected[COUNTER].data.data_points
+        if p.attributes["handler_type"] == "spend"
+    }
+    assert statuses == {"success": 1, "failed": 1}
+    errors = [(dict(p.attributes), p.value) for p in collected[ERRORS].data.data_points]
+    assert errors == [({"handler_type": "spend", "tenant_id": "t1", "account_id": "a1", "error_type": "KeyError"}, 1)]
 
 
 @pytest.mark.parametrize("name,buckets", BUCKETED, ids=[n for n, _ in BUCKETED])

@@ -694,21 +694,7 @@ def run_event_handler_async(content: str | dict) -> None:
 
     cloud_account_name = account_details[0][1]
 
-    handlers = {
-        "krr_report": handle_krr_report,
-        "popeye_report": handle_popeye_report,
-        "kube_bench_report": handle_kube_bench,
-        "abandoned_pv_report": handle_abandoned_pv,
-        "volume_size_analyzer": handle_pv_rightsize,
-        "image_scanner_report": handle_image_scan,
-        "k8s_version_upgrade": handle_k8s_version_upgrade_report,
-        "certificate_scanner_report": handle_certificate_scanner_report,
-        "helm_chart_upgrade_report": handle_helm_chart_upgrade_report,
-        "trivy_cis_report": handle_trivy_cis_scan,
-        "k8s_helm_compatibility": handle_k8s_helm_compatibility_report,
-    }
-
-    handler = handlers.get(finding["aggregation_key"])
+    handler = REPORT_HANDLERS.get(finding["aggregation_key"])
     if handler:
         handler(data, tenant, cloud_account_id, cloud_account_name)
         return
@@ -3893,3 +3879,21 @@ def check_neighboring_workload_health(evidence: Dict[str, Any], config: Dict[str
             insights.append(insight)
 
     return insights
+
+
+# Report findings dispatched to a dedicated handler instead of the alert path.
+# Defined last so every handler above is in scope; rabbitmq_consumers also reads
+# the keys to label handler metrics without one series per alert name.
+REPORT_HANDLERS = {
+    "krr_report": handle_krr_report,
+    "popeye_report": handle_popeye_report,
+    "kube_bench_report": handle_kube_bench,
+    "abandoned_pv_report": handle_abandoned_pv,
+    "volume_size_analyzer": handle_pv_rightsize,
+    "image_scanner_report": handle_image_scan,
+    "k8s_version_upgrade": handle_k8s_version_upgrade_report,
+    "certificate_scanner_report": handle_certificate_scanner_report,
+    "helm_chart_upgrade_report": handle_helm_chart_upgrade_report,
+    "trivy_cis_report": handle_trivy_cis_scan,
+    "k8s_helm_compatibility": handle_k8s_helm_compatibility_report,
+}

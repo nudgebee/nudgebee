@@ -282,6 +282,24 @@ def run_async_discovery_handler(content) -> None:
             _process_discovery(data)
 
 
+# The message types _process_discovery acts on; any other type is a silent no-op.
+# rabbitmq_consumers labels handler metrics with these and collapses the rest, so
+# an agent sending arbitrary types cannot add metric series.
+DISCOVERY_TYPES = frozenset(
+    {
+        "service",
+        "node",
+        "job",
+        "status",
+        "resolved_services",
+        "resolved_node_issue",
+        "resolved_namespace",
+        "namespace",
+        "alert_rules",
+    }
+)
+
+
 def _process_discovery(data) -> None:
     """Process discovery data. Must be called under per-account lock."""
     data_type = data["type"].lower()
