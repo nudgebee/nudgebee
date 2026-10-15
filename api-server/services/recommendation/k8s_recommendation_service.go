@@ -16,7 +16,6 @@ import (
 	"nudgebee/services/observability"
 	"nudgebee/services/scan_orchestrator"
 	"nudgebee/services/security"
-	"strconv"
 	"sync"
 	"time"
 
@@ -175,34 +174,6 @@ func upsertRecommendationData(ctx *security.RequestContext, dbms *database.Datab
 	return nil
 }
 
-func getRecommendationSettings(ctx *security.RequestContext, dbms *database.DatabaseManager, accountId string, recommendationName string) (map[string]string, error) {
-	rows, err := dbms.Db.Queryx(`select name, value from cloud_account_attrs where cloud_account_id = $1 and name like $2`, accountId, "recommendations:"+recommendationName+":%")
-	if err != nil {
-		ctx.GetLogger().Error("error getting recommendation settings", "error", err)
-		return nil, err
-	}
-
-	defer func() {
-		err := rows.Close()
-		if err != nil {
-			ctx.GetLogger().Error("error closing rows", "error", err)
-		}
-	}()
-
-	settings := make(map[string]string)
-	for rows.Next() {
-		var name string
-		var value string
-		err = rows.Scan(&name, &value)
-		if err != nil {
-			ctx.GetLogger().Error("error scanning recommendation settings", "error", err)
-			return nil, err
-		}
-		settings[name] = value
-	}
-	return settings, nil
-}
-
 func processAbandonedRecommendations(ctx *security.RequestContext, accountId string, dbms *database.DatabaseManager) error {
 	runningAccountJobsKey := fmt.Sprintf("abanadoned_resource:%s", accountId)
 	if !tryStartAccountJob(runningAccountJobsKey, "abanadoned_resource") {
@@ -216,29 +187,13 @@ func processAbandonedRecommendations(ctx *security.RequestContext, accountId str
 	}()
 	recommendationName := "abandoned_resource"
 
-	settings, err := getRecommendationSettings(ctx, dbms, accountId, recommendationName)
+	settings, err := getAbandonedResourceSettings(ctx, dbms, accountId)
 	if err != nil {
-		ctx.GetLogger().Error("error getting recommendation settings", "error", err)
+		ctx.GetLogger().Error("error getting abandoned resource settings", "error", err)
 		return err
 	}
-	networkThreshold := abandonedResourceNetworkThresholdDefault
-	observationPeriodDays := abandonedResourceObservationPeriodDaysDefault
-
-	if val, ok := settings["network_threshold"]; ok {
-		networkThreshold, err = strconv.Atoi(val)
-		if err != nil {
-			ctx.GetLogger().Error("error converting network threshold to int", "error", err, "value", val)
-			networkThreshold = abandonedResourceNetworkThresholdDefault
-		}
-	}
-
-	if val, ok := settings["observation_days"]; ok {
-		observationPeriodDays, err = strconv.Atoi(val)
-		if err != nil {
-			ctx.GetLogger().Error("error converting observation days to int", "error", err, "value", val)
-			observationPeriodDays = abandonedResourceObservationPeriodDaysDefault
-		}
-	}
+	networkThreshold := settings.NetworkThreshold
+	observationPeriodDays := settings.ObservationDays
 
 	ctx.GetLogger().Info("Processing abandoned recommendations", "account_id", accountId)
 	err = clearRecommendationData(ctx, dbms, accountId, "RightSizing", recommendationName)
