@@ -25,7 +25,7 @@ var AzureTraceTableDefinition = map[string]query.ColumnDefinition{
 	},
 	"http_status_code": {
 		Type: query.ColumnDefinitionTypeString,
-		Def:  "tostring(customMeasurements[\"http.status_code\"])",
+		Def:  "resultCode",
 	},
 	"span_id": {
 		Type: query.ColumnDefinitionTypeString,
@@ -39,9 +39,11 @@ var AzureTraceTableDefinition = map[string]query.ColumnDefinition{
 		Type: query.ColumnDefinitionTypeString,
 		Def:  "operation_ParentId",
 	},
+	// App Insights stores milliseconds; filters and sorting compare nanoseconds,
+	// matching what the converter returns.
 	"duration_ns": {
-		Type: query.ColumnDefinitionTypeString,
-		Def:  "duration",
+		Type: query.ColumnDefinitionTypeFloat,
+		Def:  "duration * 1000000",
 	},
 	"status_code": {
 		Type: query.ColumnDefinitionTypeString,
@@ -51,9 +53,11 @@ var AzureTraceTableDefinition = map[string]query.ColumnDefinition{
 		Type: query.ColumnDefinitionTypeString,
 		Def:  "name",
 	},
+	// The endpoint or statement called, as for other trace sources. Requests
+	// tables have a url instead of data.
 	"resource": {
 		Type: query.ColumnDefinitionTypeString,
-		Def:  "tostring(customDimensions[\"service.name\"])",
+		Def:  `column_ifexists("data", column_ifexists("url", ""))`,
 	},
 	"destination_workload_name": {
 		Type: query.ColumnDefinitionTypeString,
@@ -101,6 +105,10 @@ var appInsightsWorkspaceColumns = map[string]string{
 	"resultCode":         "ResultCode",
 	"customDimensions":   "Properties",
 	"customMeasurements": "Measurements",
+	"data":               "Data",
+	"url":                "Url",
+	"target":             "Target",
+	"cloud_RoleName":     "AppRoleName",
 }
 
 // workspaceToAppInsightsColumns is the reverse map, used to read workspace
@@ -117,12 +125,21 @@ var workspaceToAppInsightsColumns = func() map[string]string {
 // workspace names inside a column expression.
 var workspaceBagReplacer = strings.NewReplacer("customDimensions", "Properties", "customMeasurements", "Measurements")
 
+// azureWorkspaceTraceExpressions holds the workspace form of definitions that
+// are expressions rather than a single column or property bag.
+var azureWorkspaceTraceExpressions = map[string]string{
+	"duration_ns": "DurationMs * 1000000",
+	"resource":    `column_ifexists("Data", column_ifexists("Url", ""))`,
+}
+
 // azureWorkspaceTraceTableDefinition is AzureTraceTableDefinition with every
 // column expression rewritten to its workspace name.
 var azureWorkspaceTraceTableDefinition = func() map[string]query.ColumnDefinition {
 	defs := make(map[string]query.ColumnDefinition, len(AzureTraceTableDefinition))
 	for label, def := range AzureTraceTableDefinition {
-		if ws, ok := appInsightsWorkspaceColumns[def.Def]; ok {
+		if expr, ok := azureWorkspaceTraceExpressions[label]; ok {
+			def.Def = expr
+		} else if ws, ok := appInsightsWorkspaceColumns[def.Def]; ok {
 			def.Def = ws
 		} else {
 			def.Def = workspaceBagReplacer.Replace(def.Def)
@@ -575,10 +592,12 @@ func (s *AzureAppInsightsTraceSource) convertAzureTraceToOpenteleMetry(azureTrac
 		case "resultCode":
 			if strVal, ok := value.(string); ok {
 				otelTrace.StatusCode = strVal
+				otelTrace.HTTPStatusCode = strVal
 			}
 		case "duration":
+			// App Insights reports duration in milliseconds.
 			if floatVal, ok := value.(float64); ok {
-				otelTrace.DurationNs = int64(floatVal)
+				otelTrace.DurationNs = int64(floatVal * float64(time.Millisecond))
 			}
 		case "timestamp":
 			if strVal, ok := value.(string); ok {
@@ -593,6 +612,15 @@ func (s *AzureAppInsightsTraceSource) convertAzureTraceToOpenteleMetry(azureTrac
 			otelTrace.SpanAttributes[col.Name] = fmt.Sprintf("%v", value)
 		}
 	}
+	// Fill the columns the traces table reads (source, destination, resource)
+	// from what App Insights recorded on the span.
+	attrs := otelTrace.SpanAttributes
+	otelTrace.WorkloadName = firstNonEmpty(attrs["source.workload_name"], otelTrace.ServiceName, attrs["cloud_RoleName"])
+	otelTrace.WorkloadNamespace = attrs["source.workload_namespace"]
+	otelTrace.DestinationWorkload = attrs["destination.workload_name"]
+	otelTrace.DestinationNamespace = attrs["destination.workload_namespace"]
+	otelTrace.DestinationName = firstNonEmpty(otelTrace.DestinationWorkload, attrs["target"])
+	otelTrace.Resource = firstNonEmpty(attrs["data"], attrs["url"])
 	return otelTrace
 
 }

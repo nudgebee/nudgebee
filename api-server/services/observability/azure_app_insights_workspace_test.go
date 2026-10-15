@@ -17,9 +17,10 @@ func TestAzureTraceTableDefinition_WorkspaceNames(t *testing.T) {
 	assert.Equal(t, "OperationId", ws["trace_id"].Def)
 	assert.Equal(t, "TimeGenerated", ws["timestamp"].Def)
 	assert.Equal(t, "ParentId", ws["parent_span_id"].Def)
-	assert.Equal(t, "DurationMs", ws["duration_ns"].Def)
-	assert.Equal(t, `tostring(Properties["service.name"])`, ws["resource"].Def)
-	assert.Equal(t, `tostring(Measurements["http.status_code"])`, ws["http_status_code"].Def)
+	assert.Equal(t, "DurationMs * 1000000", ws["duration_ns"].Def)
+	assert.Equal(t, `column_ifexists("Data", column_ifexists("Url", ""))`, ws["resource"].Def)
+	assert.Equal(t, `tostring(Properties["service.name"])`, ws["service_name"].Def)
+	assert.Equal(t, "ResultCode", ws["http_status_code"].Def)
 	assert.Len(t, ws, len(AzureTraceTableDefinition))
 	for label, def := range ws {
 		assert.NotContains(t, def.Def, "customDimensions", label)
@@ -67,4 +68,32 @@ func TestAzureTraceLabelExpr(t *testing.T) {
 	assert.Equal(t, `tostring(customDimensions["k8s.pod"])`, azureTraceLabelExpr(legacy, `tostring(customDimensions["k8s.pod"])`))
 	assert.Equal(t, `tostring(Properties["k8s.pod"])`, azureTraceLabelExpr(ws, `tostring(customDimensions["k8s.pod"])`))
 	assert.Equal(t, "Target", azureTraceLabelExpr(ws, "Target"))
+}
+
+func TestConvertAzureTrace_FillsTableColumns(t *testing.T) {
+	s := &AzureAppInsightsTraceSource{}
+	cols := normalizeAzureTraceColumns([]Column{{Name: "OperationId"}, {Name: "Id"}, {Name: "Name"}, {Name: "ResultCode"}, {Name: "DurationMs"}, {Name: "Target"}, {Name: "Data"}, {Name: "AppRoleName"}, {Name: "Properties"}})
+	row := []any{"trace1", "span1", "POST /payments", "200", 41.0, "payments-api", "http://payments-api/pay", "orders-role",
+		`{"service.name":"orders-api","source.workload_name":"orders","source.workload_namespace":"poc-orders","destination.workload_name":"payments","destination.workload_namespace":"poc-payments"}`}
+	m := map[string]any{}
+	for i, c := range cols {
+		m[c.Name] = row[i]
+	}
+	got := s.convertAzureTraceToOpenteleMetry(m, cols)
+	assert.Equal(t, int64(41_000_000), got.DurationNs, "milliseconds converted to nanoseconds")
+	assert.Equal(t, "200", got.HTTPStatusCode)
+	assert.Equal(t, "orders", got.WorkloadName)
+	assert.Equal(t, "poc-orders", got.WorkloadNamespace)
+	assert.Equal(t, "payments", got.DestinationWorkload)
+	assert.Equal(t, "poc-payments", got.DestinationNamespace)
+	assert.Equal(t, "payments", got.DestinationName)
+	assert.Equal(t, "http://payments-api/pay", got.Resource)
+
+	// Without Kubernetes attributes: service name, then the dependency target.
+	bare := map[string]any{"name": "GET /x", "target": "db-host", "cloud_RoleName": "role-a", "duration": 2.5}
+	bareCols := []Column{{Name: "name"}, {Name: "target"}, {Name: "cloud_RoleName"}, {Name: "duration"}}
+	got = s.convertAzureTraceToOpenteleMetry(bare, bareCols)
+	assert.Equal(t, "role-a", got.WorkloadName)
+	assert.Equal(t, "db-host", got.DestinationName)
+	assert.Equal(t, int64(2_500_000), got.DurationNs)
 }
