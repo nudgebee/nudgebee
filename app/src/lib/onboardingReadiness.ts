@@ -39,14 +39,20 @@ export interface OnboardingAccount {
   account_name?: string;
   cloud_provider?: string;
   status?: string;
-  /** Used only to grandfather tenants that pre-date the setup gate — see useSetupGate. */
+  /** Used only to tell a fresh account's agent-still-installing state from an
+   *  established one's real agent outage — see `isEstablished` in SetupGateContext. */
   created_at?: string;
 }
 
 export interface OnboardingIntegration {
+  id?: string;
   type?: string;
   status?: string;
   name?: string;
+  /** `'agent'` for a row the cluster agent created on its own; anything else
+   *  (or absent) was added by a person. */
+  source?: string;
+  /** Per linked account, carrying the `default_*_provider` flags. */
   integrations_cloud_accounts?: unknown;
 }
 
@@ -55,25 +61,10 @@ export interface OnboardingMessagingPlatform {
   channels?: unknown;
 }
 
-/**
- * Telemetry signals the agent resolved on its own, keyed by signal id
- * (`metrics` | `logs` | `traces`), each carrying the provider name.
- *
- * Sourced from `observability_list_provider_capabilities`, which is per-account
- * and returns an entry *only* for a signal that actually resolves — so presence
- * in this map is the whole auto-detect signal. It cannot report a failure: the
- * backend swallows lookup errors, so an absent signal means "not configured or
- * we could not tell", never "broken". Do not synthesise an error state from a
- * gap here.
- */
-export type DetectedSignals = Record<string, string | undefined>;
-
 export interface EvaluateOnboardingInput {
   accounts?: OnboardingAccount[] | null;
   integrations?: OnboardingIntegration[] | null;
   messagingPlatforms?: OnboardingMessagingPlatform[] | null;
-  /** Agent-detected telemetry. Omit when the capabilities call has not resolved. */
-  detectedSignals?: DetectedSignals | null;
   /**
    * Module ids the customer selected, e.g. `['ts', 'opt']`. Absent or empty
    * behaves as **every module selected**, so the card is never mysteriously
@@ -81,15 +72,19 @@ export interface EvaluateOnboardingInput {
    */
   selectedModules?: string[] | null;
   /**
-   * Kubernetes agent-connection status, keyed by account id — `true` once
-   * `listK8sAccAgentHealth` reports the agent `CONNECTED` for that account,
-   * `false` once the health table has been checked and says otherwise. A
-   * `cloud_accounts` row exists the instant the account is created; the agent
-   * still has to check in before there is anything to watch, so a K8s account
-   * is not `done` on `status` alone. Omit (or omit an id from the map) when the
-   * health lookup has not resolved — that account then falls back to `status`
-   * alone, the same as every other provider, rather than being stuck at
-   * `partial` on a lookup that never ran.
+   * Agent-connection status for K8s clusters *and* self-hosted VM fleets,
+   * keyed by account id — `true` once `listK8sAccAgentHealth(ids, null)`
+   * reports the agent `CONNECTED` for that account, `false` once the health
+   * table has been checked and says otherwise. A `cloud_accounts` row exists
+   * the instant the account is created; the agent (in-cluster, or a forager
+   * on a self-hosted fleet) still has to check in before there is anything
+   * to watch, so neither kind of account is `done` on `status` alone (#41115
+   * for self-hosted — it used to read `done` with no forager ever started).
+   * Omit (or omit an id from the map) when the health lookup has not
+   * resolved — that account then falls back to `status` alone, the same as
+   * every other provider, rather than being stuck at `partial` on a lookup
+   * that never ran. The name predates self-hosted coverage; kept to avoid
+   * a mechanical rename across every file that threads it through.
    */
   k8sAgentConnected?: Record<string, boolean> | null;
   /**
@@ -100,6 +95,27 @@ export interface EvaluateOnboardingInput {
    * connected on an assumption.
    */
   hasKnowledgeBase?: boolean | null;
+  /**
+   * Whether any alert-webhook integration has ever received an event, checked
+   * tenant-wide across every connected alert-type integration row — see
+   * `useOnboardingReadiness`'s own fetch. Omit when the check has not
+   * resolved or no alert integration is connected; `null`/absent reads as
+   * "unknown" and the `alerts` item falls back to its connection status
+   * alone, same as `k8sAgentConnected` when that lookup hasn't run.
+   */
+  hasReceivedAlert?: boolean | null;
+  /**
+   * First-cost-sync phase for AWS/GCP/Azure accounts, keyed by account id —
+   * see `useOnboardingReadiness`'s own fetch, which reduces
+   * `listCloudAccountFirstSync` with `evaluateCloudFirstSync` (the same
+   * function `CloudFirstSync.tsx`'s own wait screen uses) per account,
+   * `startedAt: 0` so any past result counts rather than only one newer than
+   * some attempt that never happened here. Omit an id (or the whole map) when
+   * unresolved — that account then falls back to `status` alone, same as
+   * every other provider, rather than being stuck at `partial` forever on a
+   * lookup that never ran.
+   */
+  cloudSyncState?: Record<string, 'waiting' | 'done' | 'failed'> | null;
 }
 
 /** Essential panels gate the product's core loop; recommended panels widen it. */
@@ -225,8 +241,11 @@ export interface OnboardingItemStatus extends Omit<OnboardingItemDef, 'need'> {
    *  color its healthy sibling's chip, known issue #23). Absent, not empty,
    *  where an evaluator has only one aggregate state to give (e.g. Skills). */
   connectedByState?: Record<string, OnboardingState>;
-  /** True when the agent resolved this on its own — renders a chip, not a state. */
+  /** True when every connected provider was created by the agent, none by a
+   *  person — renders a chip, not a state. */
   autoDetected: boolean;
+  /** The `connectedBy` labels flagged as the default provider for this signal. */
+  defaultBy?: string[];
   /** The real account rows behind `connectedBy` — populated only on the
    *  `account` item. See `ItemAccountRow`. */
   accounts?: ItemAccountRow[];
@@ -372,11 +391,27 @@ const stateOfStatus = (status: unknown): OnboardingState => {
   return 'done';
 };
 
+/** Providers whose account row needs its own agent to have checked in before
+ *  counting as connected, not just added — K8s's in-cluster agent and a
+ *  self-hosted account's forager (#41115: the row used to read `done` the
+ *  instant it was created, with nothing collected and no agent in sight).
+ *  Every other provider's status is the whole answer, since there is no
+ *  separate agent of its own to wait on. */
+const AGENT_CHECKED_PROVIDERS = new Set(['k8s', 'selfhosted']);
+
+/** Providers whose account row needs its first cost sync to have reported
+ *  before counting as fully connected — the sync is what the row's own
+ *  `status` cannot see for itself (it goes `done` the instant the account is
+ *  created, same gap #41115 closed for the agent-backed providers above, just
+ *  on a background job instead of an agent). */
+const CLOUD_SYNC_CHECKED_PROVIDERS = new Set(['aws', 'gcp', 'azure']);
+
 /**
  * Whether one account row counts as actually connected — not merely added.
- * A K8s row needs its in-cluster agent to have checked in; every other
- * provider's status is the whole answer (the agent has no "installing"
- * step of its own to wait on).
+ * A K8s or self-hosted row needs its own agent (in-cluster, or a forager on
+ * a self-hosted VM fleet) to have checked in; an AWS/GCP/Azure row needs its
+ * first cost sync to have reported; every other provider's status is the
+ * whole answer (nothing else has an "installing" step of its own to wait on).
  *
  * Exported so there is exactly one definition of "is this account row
  * done", not two that can quietly disagree: `accountEvaluator`
@@ -384,15 +419,35 @@ const stateOfStatus = (status: unknown): OnboardingState => {
  * aggregate state, and `SetupGateContext` uses it for the `/setup` lock
  * itself.
  *
- * `k8sAgentConnected` absent (the health lookup failed, or was never
- * asked) falls back to trusting `status` alone, same as `stateOfStatus`
- * on its own — a flaky health check must not strand every K8s account at
- * `partial` forever.
+ * `cloudSyncState` is deliberately NOT symmetric with `agentConnected` here:
+ * `SetupGateContext` calls this with two positional args, never a third, so
+ * a cloud account mid-first-sync still unlocks the app — only the agent-
+ * backed providers above hold the gate shut. Unlike a K8s/VM agent, a cloud
+ * account's resource and event collection runs independently of the cost
+ * sync and isn't blocked by it, so there is nothing to protect the lock
+ * against; this only has to stop the Setup checklist's own chip claiming
+ * "done" before the sync has actually finished.
+ *
+ * Both lookups absent (the health/sync check failed, or was never asked)
+ * fall back to trusting `status` alone, same as `stateOfStatus` on its own —
+ * a flaky check must not strand every account at `partial` forever. Agent
+ * health is keyed by account id only, not by agent type: the lookup behind it
+ * (`listK8sAccAgentHealth(ids, null)`) already covers both kinds in one call,
+ * and an account only ever carries agents of its own kind.
  */
-export const accountRowState = (a: OnboardingAccount, k8sAgentConnected: Record<string, boolean> | null | undefined): OnboardingState => {
+export const accountRowState = (
+  a: OnboardingAccount,
+  agentConnected: Record<string, boolean> | null | undefined,
+  cloudSyncState?: Record<string, 'waiting' | 'done' | 'failed'> | null
+): OnboardingState => {
   let s = stateOfStatus(a.status);
-  if (s === 'done' && k8sAgentConnected && a.id && normalize(a.cloud_provider) === 'k8s' && k8sAgentConnected[a.id] !== true) {
+  if (s === 'done' && agentConnected && a.id && AGENT_CHECKED_PROVIDERS.has(normalize(a.cloud_provider)) && agentConnected[a.id] !== true) {
     s = 'partial';
+  }
+  if (s === 'done' && cloudSyncState && a.id && CLOUD_SYNC_CHECKED_PROVIDERS.has(normalize(a.cloud_provider))) {
+    const sync = cloudSyncState[a.id];
+    if (sync === 'waiting') s = 'partial';
+    else if (sync === 'failed') s = 'error';
   }
   return s;
 };
@@ -425,6 +480,13 @@ export function needOf(item: OnboardingItemDef, selectedModules: string[]): Need
   }, 'na');
 }
 
+/** `integrations_cloud_accounts` flag → the telemetry item id it makes the default for. */
+const DEFAULT_FLAG_SIGNAL: Record<string, string> = {
+  default_metrics_provider: 'metrics',
+  default_log_provider: 'logs',
+  default_traces_provider: 'traces',
+};
+
 const CLOUD_PROVIDER_BY_NORMALIZED = new Map(ONBOARDING_CLOUD_PROVIDERS.map((p) => [normalize(p.provider), p]));
 
 /**
@@ -439,9 +501,10 @@ export function evaluateOnboarding(input: EvaluateOnboardingInput = {}): Onboard
   const accounts = Array.isArray(input.accounts) ? input.accounts : [];
   const integrations = Array.isArray(input.integrations) ? input.integrations : [];
   const messagingPlatforms = Array.isArray(input.messagingPlatforms) ? input.messagingPlatforms : [];
-  const detected = input.detectedSignals && typeof input.detectedSignals === 'object' ? input.detectedSignals : {};
   const k8sAgentConnected = input.k8sAgentConnected && typeof input.k8sAgentConnected === 'object' ? input.k8sAgentConnected : null;
+  const cloudSyncState = input.cloudSyncState && typeof input.cloudSyncState === 'object' ? input.cloudSyncState : null;
   const hasKnowledgeBase = typeof input.hasKnowledgeBase === 'boolean' ? input.hasKnowledgeBase : null;
+  const hasReceivedAlert = typeof input.hasReceivedAlert === 'boolean' ? input.hasReceivedAlert : null;
   const selectedModules = Array.isArray(input.selectedModules) ? input.selectedModules.filter((m) => typeof m === 'string') : [];
 
   // The demo account is injected client-side by `apiHome.getCloudAccounts` and
@@ -460,21 +523,59 @@ export function evaluateOnboarding(input: EvaluateOnboardingInput = {}): Onboard
   // appear in only one of them, so the sets are unioned. The platform list
   // carries no status, so anything in it is treated as connected.
   const stateByType = new Map<string, OnboardingState>();
+  // Types with at least one row a person added — from either source: an
+  // `integrations` row with `source !== 'agent'`, or any row in
+  // `messagingPlatforms` (install is always a deliberate action there). A
+  // type backed only by `source: 'agent'` integration rows, with nothing in
+  // `messagingPlatforms` either, is what the Setup page calls "auto-detected".
+  const userManagedTypes = new Set<string>();
+  // Per telemetry signal, the types whose row is flagged default on a linked account.
+  const defaultTypesBySignal: Record<string, Set<string>> = {};
   integrations.forEach((i) => {
     const type = i && normalize(i.type);
     if (!type) return;
     const state = stateOfStatus(i.status);
     if (state === 'blank') return;
     stateByType.set(type, worst(stateByType.get(type) ?? 'done', state));
+    if (i.source !== 'agent') userManagedTypes.add(type);
+    if (Array.isArray(i.integrations_cloud_accounts)) {
+      (i.integrations_cloud_accounts as Array<Record<string, unknown>>).forEach((link) => {
+        Object.entries(DEFAULT_FLAG_SIGNAL).forEach(([flag, signal]) => {
+          if (link?.[flag] === true) (defaultTypesBySignal[signal] ??= new Set()).add(type);
+        });
+      });
+    }
   });
   messagingPlatforms.forEach((m) => {
     const platform = m && normalize(m.platform);
-    if (platform && !stateByType.has(platform)) stateByType.set(platform, 'done');
+    if (!platform) return;
+    if (!stateByType.has(platform)) stateByType.set(platform, 'done');
+    // Installing a messaging app (Slack's "Add to Slack", Teams) is always a
+    // deliberate action — unlike a telemetry source, there is no agent path
+    // that can install one on its own. This list carries no `source` field to
+    // prove that per row the way `integrations` does above, so it's asserted
+    // here instead of silently defaulting to "no proof of a person" →
+    // "Auto-detected" (review finding: Slack/Teams always read auto-detected,
+    // no matter who actually installed them).
+    userManagedTypes.add(platform);
   });
 
   // Everything an evaluator may look at. Built once and shared, so no evaluator
   // can reach past it into the raw payload.
-  const ctx = { realAccounts, connectedProviders, stateByType, detected, k8sAgentConnected, hasKnowledgeBase, worst, stateOfStatus, normalize };
+  const ctx = {
+    realAccounts,
+    connectedProviders,
+    stateByType,
+    userManagedTypes,
+    defaultTypesBySignal,
+    k8sAgentConnected,
+    cloudSyncState,
+    hasKnowledgeBase,
+    hasReceivedAlert,
+    worst,
+    stateOfStatus,
+    normalize,
+  };
 
   const evaluateItem = (item: OnboardingItemDef): OnboardingItemStatus => {
     // Planned items have nothing behind them yet. They render so the shape of
@@ -522,7 +623,24 @@ export function evaluateOnboarding(input: EvaluateOnboardingInput = {}): Onboard
   // whose items are all `planned` now contributes nothing on its own, because
   // planned items are excluded here. No panel has to be held out of a
   // denominator to stop the bar stranding short of 100%.
-  const requiredItems = panels.flatMap((p) => p.items).filter((i) => i.need === 'req' && !i.planned);
+  //
+  // An `alt` item (e.g. the AI gateway) never itself carries `need: 'req'` —
+  // by design, see its own registry entry — so it's never in this list on its
+  // own. Left alone, that means connecting only the alt path satisfies the
+  // panel (`satisfied`/`state` above already handle that) but this count
+  // stays stuck on the required sibling it replaced, which never becomes
+  // `done` on its own (Mayank Pande's review: AI reads "required" forever
+  // once only the gateway is connected). Credit that sibling as done here —
+  // in the copies this list holds, not in `panels` itself — whenever the
+  // panel's alt path is done, so the item's own row stays honest about what
+  // is actually connected while the global tally reflects what's actually
+  // outstanding.
+  const requiredItems = panels.flatMap((p) => {
+    const altSatisfied = p.anyOf && p.items.some((i) => i.alt && i.state === 'done');
+    return p.items
+      .filter((i) => i.need === 'req' && !i.planned)
+      .map((i) => (altSatisfied && i.required && i.state !== 'done' ? { ...i, state: 'done' as OnboardingState } : i));
+  });
   const done = requiredItems.filter((i) => i.state === 'done').length;
   const total = requiredItems.length;
 

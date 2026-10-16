@@ -469,6 +469,58 @@ describe('IntegrationDynamicFormModal', () => {
     expect(mockListIntegrations).not.toHaveBeenCalled();
   });
 
+  // The one-time "here's your token" screen (handleSubmit's `isNewCreation`
+  // branch) only ever fires right after creation — reopening an existing
+  // webhook integration later has to surface its URL some other way, or it's
+  // gone for good from this form's point of view (the value is still sitting
+  // in integration_config_values; nothing else here ever shows it again).
+  test('shows the webhook URL again when reopening an existing webhook integration', async () => {
+    const editData = {
+      id: 'pd-1',
+      name: 'My PagerDuty',
+      source: 'user',
+      integration_config_values: { integration_config_name: 'My PagerDuty', token: 'secret-token' },
+    };
+
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'pagerduty_webhook', title: 'Edit PagerDuty', editData });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('existing-webhook-url')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('existing-webhook-url')).toHaveTextContent('/api/webhooks/pagerduty?token=secret-token');
+  });
+
+  test('does not show a webhook URL box for a brand-new webhook integration', async () => {
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'pagerduty_webhook', title: 'Add PagerDuty', editData: null });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('modal')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('existing-webhook-url')).not.toBeInTheDocument();
+  });
+
+  test('does not show a webhook URL box for a non-webhook integration being edited', async () => {
+    const editData = {
+      id: 'dd-1',
+      name: 'existing-config',
+      source: 'user',
+      integration_config_values: { integration_config_name: 'existing-config', api_token: 'secret' },
+    };
+
+    await act(async () => {
+      renderModal({ openModal: true, editData });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('modal')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('existing-webhook-url')).not.toBeInTheDocument();
+  });
+
   // Advanced Settings used to show Per-Account Index but NOT Default Log Filters for
   // Elasticsearch, while every other log integration showed the filter editor. The
   // backend applies a saved default_filters value provider-agnostically in FetchLogs,

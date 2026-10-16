@@ -29,9 +29,11 @@ query list_account {
   }
   integrations: integrations_list(where: __WHERE_INTEGRATIONS__) {
     rows {
+      id
       type
       status
       name
+      source
       integrations_cloud_accounts
     }
   }

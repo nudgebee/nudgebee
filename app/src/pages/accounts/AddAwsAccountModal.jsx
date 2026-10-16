@@ -43,6 +43,13 @@ const KEYS_INSTRUCTIONS = `### Access Keys
   Only the STS check is required: without a usable CUR the account still connects, but cost data stays empty until you attach one via **Edit Billing Config**.`;
 
 const POLL_INTERVAL_MS = 7000;
+// #41117: the backend only ever reports pending/completed for a CloudFormation
+// stack — a failed, rolled-back or never-run stack just leaves the dialog
+// polling forever with no error. Absent a real failure signal from the
+// backend, stop auto-polling after a time limit and say so, rather than
+// holding the user indefinitely — the same tradeoff CloudFirstSync already
+// makes for the first-sync wait.
+const CF_TIMEOUT_MS = 5 * 60 * 1000;
 const ROLE_ARN_REGEX = /^arn:aws:iam::\d{12}:role\/.+$/;
 const AWS_ACCESS_KEY_REGEX = /^[A-Z0-9]{16,128}$/;
 
@@ -75,6 +82,8 @@ const AddAwsAccountModal = ({ open, onClose, onAccountCreated }) => {
   const [isFetchingCloudFormationUrl, setIsFetchingCloudFormationUrl] = useState(false);
   const [externalId, setExternalId] = useState('');
   const [isPolling, setIsPolling] = useState(false);
+  const [cfTimedOut, setCfTimedOut] = useState(false);
+  const pollStartRef = useRef(null);
   const [accessMode, setAccessMode] = useState('readwrite');
   const [ssmAccess, setSsmAccess] = useState(false);
   const [showManualInput, setShowManualInput] = useState(false);
@@ -119,6 +128,7 @@ const AddAwsAccountModal = ({ open, onClose, onAccountCreated }) => {
     setValidationResult(null);
     setActiveTab(TAB_CLOUDFORMATION);
     setSyncAccount(null);
+    setCfTimedOut(false);
     stopPolling();
   }, [stopPolling]);
 
@@ -164,6 +174,8 @@ const AddAwsAccountModal = ({ open, onClose, onAccountCreated }) => {
 
   const startPolling = (reqId) => {
     setIsPolling(true);
+    setCfTimedOut(false);
+    pollStartRef.current = Date.now();
     pollingRef.current = setInterval(async () => {
       try {
         const res = await apiAccount.awsOnboardStatus(reqId);
@@ -176,6 +188,15 @@ const AddAwsAccountModal = ({ open, onClose, onAccountCreated }) => {
             snackbar.success(`AWS Account "${statusData.account_name}" connected successfully.`);
           }
           startFirstSyncWait(statusData.account_id, statusData.account_name);
+          return;
+        }
+        // #41117: the backend never reports a failure for this stack — a
+        // failed, rolled-back or never-run one looks identical to a slow
+        // one. With no failure signal to react to, give up waiting after a
+        // time limit instead of holding the dialog open forever.
+        if (Date.now() - pollStartRef.current >= CF_TIMEOUT_MS) {
+          stopPolling();
+          setCfTimedOut(true);
         }
       } catch {
         // Keep polling on transient errors
@@ -391,9 +412,9 @@ const AddAwsAccountModal = ({ open, onClose, onAccountCreated }) => {
 
   const renderCloudFormationTab = () => (
     <Grid container direction='column'>
-      {(isPolling || showManualInput) && (
+      {(isPolling || cfTimedOut || showManualInput) && (
         <Grid container direction='column' mt={2} mb={2}>
-          {isPolling && (
+          {isPolling && !cfTimedOut && (
             <Grid container alignItems='center' spacing={1} mb={1}>
               <Grid item>
                 <CircularProgress size={20} />
@@ -406,10 +427,19 @@ const AddAwsAccountModal = ({ open, onClose, onAccountCreated }) => {
             </Grid>
           )}
 
-          {!showManualInput && isPolling && (
+          {cfTimedOut && !showManualInput && (
+            <Grid item sx={{ mb: ds.space[2] }}>
+              <Banner
+                tone='warning'
+                message="Still waiting after 5 minutes. The stack may have failed, rolled back, or never run — check its status in the AWS CloudFormation console, or connect manually below using the Role ARN from the stack's outputs. You can also close this window; a stack that does complete will still connect automatically."
+              />
+            </Grid>
+          )}
+
+          {!showManualInput && (isPolling || cfTimedOut) && (
             <Grid item sx={{ mt: 1 }}>
               <Button tone='link' size='sm' onClick={() => setShowManualInput(true)}>
-                Having trouble? Connect manually using Role ARN
+                {cfTimedOut ? 'Connect manually using Role ARN' : 'Having trouble? Connect manually using Role ARN'}
               </Button>
             </Grid>
           )}
@@ -571,7 +601,9 @@ const AddAwsAccountModal = ({ open, onClose, onAccountCreated }) => {
     <Modal
       width='md'
       open={open}
-      handleClose={isPolling || isSubmitting ? () => {} : () => handleCloseModal(false)}
+      // #41117: Cancel already worked during polling — only X/backdrop were
+      // trapped, the one way out the ticket's repro found. Now consistent.
+      handleClose={isSubmitting ? () => {} : () => handleCloseModal(false)}
       title={'Add AWS Account'}
       subtitle={getIntegrationDescription('AWS')}
       loader={isSubmitting}

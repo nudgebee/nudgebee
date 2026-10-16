@@ -38,7 +38,7 @@ export interface CloudFirstSyncIssue {
   message: string;
 }
 
-type ConnectionStatus = { spends?: { err?: string } };
+type ConnectionStatus = { spends?: { err?: string; updated_at?: string } };
 
 const parseConnectionStatus = (value: unknown): ConnectionStatus => {
   if (typeof value === 'string') {
@@ -52,13 +52,33 @@ interface CloudFirstSyncState {
   issues: CloudFirstSyncIssue[];
 }
 
-export const evaluateCloudFirstSync = (accountIds: string[], rows: CloudFirstSyncRow[]): { allReported: boolean; issues: CloudFirstSyncIssue[] } => {
+// #41117: `connection_status` is `agent.connection_status || excluded` on the
+// agent row, which already existed for a reconnected account — so a `spends`
+// key alone can be the PREVIOUS sync's, satisfying the very first poll of a
+// brand-new wait. `spends.updated_at` (written fresh by every StoreUsage run)
+// is what tells this run's result apart from an old one. A small grace
+// window absorbs clock skew between this browser and the server that wrote
+// the timestamp — a genuinely stale key is virtually always hours or days
+// old, never a few seconds.
+const STALE_GRACE_MS = 60 * 1000;
+
+export const evaluateCloudFirstSync = (
+  accountIds: string[],
+  rows: CloudFirstSyncRow[],
+  startedAt: number
+): { allReported: boolean; issues: CloudFirstSyncIssue[] } => {
   const issues: CloudFirstSyncIssue[] = [];
   let reportedCount = 0;
   accountIds.forEach((accountId) => {
     const row = rows.find((r) => r?.cloud_account_id === accountId);
     const spends = row ? parseConnectionStatus(row.connection_status)?.spends : undefined;
     if (!row || !spends) {
+      return;
+    }
+    // No/unparseable timestamp (an older backend wrote this row without one)
+    // is trusted rather than waited on forever.
+    const updatedAtMs = spends.updated_at ? Date.parse(spends.updated_at) : NaN;
+    if (!Number.isNaN(updatedAtMs) && updatedAtMs < startedAt - STALE_GRACE_MS) {
       return;
     }
     reportedCount += 1;
@@ -97,7 +117,7 @@ export const useCloudFirstSync = (accountIds: string[], provider: string): Cloud
       if (cancelled) {
         return;
       }
-      const { allReported, issues } = evaluateCloudFirstSync(ids, rows);
+      const { allReported, issues } = evaluateCloudFirstSync(ids, rows, startedAt);
       if (allReported) {
         setState({ phase: issues.length > 0 ? 'attention' : 'done', issues });
         return;

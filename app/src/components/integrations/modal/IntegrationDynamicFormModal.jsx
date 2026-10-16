@@ -35,6 +35,7 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import apiTicketIntegrations from '@api1/tickets';
 import cache from '@lib/cache';
 import VmAgentCredentialsDialog from './VmAgentCredentialsDialog';
+import { buildWebhookUrl } from '@lib/webhookUrl';
 import { docsUrl } from '@lib/externalUrls';
 import ModelAliasList from '@components/common/forms/ModelAliasList';
 import LabelMappingCards, { parseLogLabelMappings, serializeLogLabelMappings } from './LabelMappingCards';
@@ -1950,6 +1951,21 @@ const IntegrationDynamicFormModal = ({
     },
   };
 
+  // Lets a user reopen an already-created webhook integration and get its URL
+  // back — the one-time "here's your token" screen above only ever fires on
+  // first creation (`isNewCreation` in handleSubmit), so this is the only
+  // other place that URL is reachable in-form. `editData?.id` (not just
+  // `editData`, which the Add flow passes as `{}`) is what tells an edit row
+  // apart from a fresh one. `integration_config_values` here is already the
+  // flattened field=>value map `toDynamicFormEditData` builds, not the raw
+  // array `getWebhookToken` (ListIntegrations' table) reads — so the token is
+  // read directly rather than through that helper.
+  const existingWebhookUrl = useMemo(() => {
+    if (!editData?.id || !integrationName?.endsWith('_webhook')) return '';
+    const token = editData?.integration_config_values?.token;
+    return typeof token === 'string' ? buildWebhookUrl(integrationName, token) : '';
+  }, [editData, integrationName]);
+
   // List rows carry integrations_cloud_accounts / integration_config_values as
   // JSON strings; the edit row arrives already parsed. Accept either.
   const asList = (value) => {
@@ -2332,6 +2348,24 @@ const IntegrationDynamicFormModal = ({
                 </Box>
               ) : (
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[5] }}>
+                  {existingWebhookUrl && (
+                    <Box
+                      data-testid='existing-webhook-url'
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: ds.space[2],
+                        border: `1px solid ${ds.brand[200]}`,
+                        borderRadius: ds.radius.lg,
+                        p: ds.space[4],
+                      }}
+                    >
+                      <Typography sx={{ flex: 1, color: ds.gray[600], fontSize: 'var(--ds-text-body)', wordBreak: 'break-all' }}>
+                        {existingWebhookUrl}
+                      </Typography>
+                      <CopyButton text={existingWebhookUrl} size='sm' />
+                    </Box>
+                  )}
                   {webhookConfig[integrationName]?.learnMore && (
                     <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400] }}>
                       Learn more about{' '}

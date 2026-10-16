@@ -8,20 +8,14 @@
  *
  * `ITEM_EVALUATORS` holds the exceptions: items whose connectedness cannot be
  * derived that way. Today that is `account` alone, which reads cloud accounts
- * and the K8s agent-health table rather than the integrations map.
+ * and the K8s/self-hosted agent-health table rather than the integrations map.
  *
  * A guard test enforces the invariant that matters: every live item is
  * evaluatable — it either names an evaluator here, or declares providers the
  * default can match. An item that does neither would render permanently blank
  * with no way to satisfy it.
  */
-import {
-  accountRowState,
-  type DetectedSignals,
-  type OnboardingAccount,
-  type OnboardingItemDef,
-  type OnboardingState,
-} from '@lib/onboardingReadiness';
+import { accountRowState, type OnboardingAccount, type OnboardingItemDef, type OnboardingState } from '@lib/onboardingReadiness';
 import { ONBOARDING_CLOUD_PROVIDERS } from './setupRegistry';
 
 /** Everything an evaluator is allowed to look at. */
@@ -32,14 +26,28 @@ export interface EvaluatorContext {
   connectedProviders: string[];
   /** Integration type → its state, unioned with the messaging-platform list. */
   stateByType: Map<string, OnboardingState>;
-  /** Telemetry the agent resolved on its own, keyed by signal id. */
-  detected: DetectedSignals;
-  /** K8s agent health by account id; null until the lookup resolves. */
+  /** Integration types with at least one row a person added (not `source: 'agent'`). */
+  userManagedTypes: Set<string>;
+  /** Per telemetry item id, the integration types flagged as its default provider. */
+  defaultTypesBySignal: Record<string, Set<string>>;
+  /** K8s and self-hosted-VM agent health by account id; null until the
+   * lookup resolves. See `accountRowState`'s own doc comment for why the
+   * name stayed `k8sAgentConnected` after self-hosted coverage (#41115). */
   k8sAgentConnected: Record<string, boolean> | null;
+  /** AWS/GCP/Azure first-cost-sync phase by account id; null until the
+   * lookup resolves. See `accountRowState`'s own doc comment — unlike
+   * `k8sAgentConnected`, this one never reaches `SetupGateContext`'s lock. */
+  cloudSyncState: Record<string, 'waiting' | 'done' | 'failed'> | null;
   /** Whether the tenant has at least one knowledge base, tenant-wide. `null`
    * until the lookup resolves — never inferred from AI/LLM being connected,
    * which is a prerequisite panel, not the same fact. */
   hasKnowledgeBase: boolean | null;
+  /** Whether any connected alert-webhook integration has ever received an
+   * event, tenant-wide. `null` until the lookup resolves or no alert
+   * integration is connected — the `alerts` item then falls back to
+   * connection status alone, the same anti-flakiness fallback
+   * `accountRowState` uses for `k8sAgentConnected`. */
+  hasReceivedAlert: boolean | null;
   /** Worst-wins comparison, so one failure is never hidden by a healthy sibling. */
   worst: (a: OnboardingState, b: OnboardingState) => OnboardingState;
   /** Maps a raw status string to a state; shared so the rules stay in one place. */
@@ -56,6 +64,8 @@ export interface ItemVerdict {
   connectedByState?: Record<string, OnboardingState>;
   /** True when the agent found it without the user configuring anything. */
   autoDetected: boolean;
+  /** `connectedBy` labels flagged as the default provider for this item. */
+  defaultBy?: string[];
   /** The real account rows behind `connectedBy` — populated only by
    *  `accountEvaluator`. A provider-label chip can't tell two AWS accounts
    *  apart, or say which one is still waiting on its agent; this can. */
@@ -90,29 +100,38 @@ export const providerMatchEvaluator: ItemEvaluator = (ctx, item) => {
     connectedByState[p.label] = stateOfProvider(p);
   });
 
-  // An agent-resolved signal is `done` carrying a chip — never a fifth state,
-  // and never an error, because the capabilities call cannot report one. But
-  // it still goes through `worst()` against a manually-added sibling on the
-  // same item, same as any other pair of providers: otherwise a broken manual
-  // integration goes invisible the moment auto-detection also fires, which is
-  // exactly the masking this function's own doc comment above promises never
-  // happens.
-  const detectedProvider = ctx.detected[item.id];
-  if (detectedProvider) {
-    const state = ctx.worst('done', matchedState);
-    if (state === 'done') return { state, connectedBy: [detectedProvider], connectedByState: { [detectedProvider]: 'done' }, autoDetected: true };
-    // Something else on this item needs attention — show it instead of
-    // claiming "nothing to configure", same as any other matched provider.
-    return {
-      state,
-      connectedBy: [...matched.map((p) => p.label), detectedProvider],
-      connectedByState: { ...connectedByState, [detectedProvider]: 'done' },
-      autoDetected: false,
-    };
-  }
-
   if (matched.length === 0) return { state: 'blank', connectedBy: [], autoDetected: false };
-  return { state: matchedState, connectedBy: matched.map((p) => p.label), connectedByState, autoDetected: false };
+
+  // "Auto-detected" is what the agent created, read off the row's own `source`
+  // — never inferred from the account's resolved default, which also reports a
+  // person's own Prometheus/Loki/Datadog. It holds only while no matched
+  // provider has a person-added row, so a manual source is always listed.
+  const isUserManaged = (p: (typeof matched)[number]) => (p.types || []).some((t) => ctx.userManagedTypes.has(ctx.normalize(t)));
+  const autoDetected = !matched.some(isUserManaged);
+
+  const defaultTypes = ctx.defaultTypesBySignal[item.id];
+  const defaultBy = defaultTypes ? matched.filter((p) => (p.types || []).some((t) => defaultTypes.has(ctx.normalize(t)))).map((p) => p.label) : [];
+
+  return { state: matchedState, connectedBy: matched.map((p) => p.label), connectedByState, autoDetected, defaultBy };
+};
+
+/**
+ * Alerts is `providerMatchEvaluator` plus one more fact it cannot see: a
+ * webhook URL existing (even one GCP creates on its own with zero user
+ * action) is not the same as anything having actually been POSTed to it.
+ * Reusing the base evaluator keeps the matching/label/auto-detected logic in
+ * one place; this only ever moves a `done` down to `partial` once, and only
+ * when the webhook-events lookup has positively confirmed zero.
+ *
+ * `hasReceivedAlert === null` (lookup unresolved, or nothing to check yet)
+ * leaves `done` as `done` rather than stranding it at `partial` forever —
+ * the same anti-flakiness fallback `accountRowState` uses for a K8s agent
+ * health check that never ran.
+ */
+export const alertsEvaluator: ItemEvaluator = (ctx, item) => {
+  const base = providerMatchEvaluator(ctx, item);
+  if (base.state !== 'done' || ctx.hasReceivedAlert !== false) return base;
+  return { ...base, state: 'partial' };
 };
 
 /**
@@ -120,9 +139,11 @@ export const providerMatchEvaluator: ItemEvaluator = (ctx, item) => {
  *
  * The item's own `state` answers "has an account actually finished
  * connecting" — the setup milestone. A row existing is not enough on its
- * own: a K8s account whose in-cluster agent has never checked in is not a
- * milestone reached, so it must not check the whole item off (this was this
- * function's own earlier, wrong answer — see known-issues.md).
+ * own: a K8s account whose in-cluster agent, or a self-hosted account whose
+ * forager, has never checked in is not a milestone reached, so it must not
+ * check the whole item off (this was this function's own earlier, wrong
+ * answer for K8s — see known-issues.md; #41115 is the same gap for
+ * self-hosted).
  *
  * `state` is `done` the moment *any one* account's own `rowState` is `done`
  * — not every account. A second account still pending or broken is real and
@@ -138,8 +159,10 @@ export const accountEvaluator: ItemEvaluator = (ctx) => {
   // Per-row — feeds the per-account chip, the provider tile's "Connected"
   // badge, and now the aggregate `state` above too (all three must agree on
   // what "this one account" actually is). `accountRowState` is shared with
-  // `SetupGateContext`'s own lock, so there is exactly one such definition.
-  const rowState = (a: OnboardingAccount): OnboardingState => accountRowState(a, ctx.k8sAgentConnected);
+  // `SetupGateContext`'s own lock, so there is exactly one such definition —
+  // though `cloudSyncState` itself never reaches the lock (see its own
+  // comment in `onboardingReadiness.ts`).
+  const rowState = (a: OnboardingAccount): OnboardingState => accountRowState(a, ctx.k8sAgentConnected, ctx.cloudSyncState);
 
   const state = ctx.realAccounts.some((a) => rowState(a) === 'done')
     ? 'done'
@@ -195,6 +218,7 @@ export const skillsEvaluator: ItemEvaluator = (ctx) => {
 export const ITEM_EVALUATORS: Record<string, ItemEvaluator> = {
   account: accountEvaluator,
   skills: skillsEvaluator,
+  alerts: alertsEvaluator,
 };
 
 export const evaluatorFor = (itemId: string): ItemEvaluator => ITEM_EVALUATORS[itemId] ?? providerMatchEvaluator;

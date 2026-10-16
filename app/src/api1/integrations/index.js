@@ -330,6 +330,36 @@ const apiIntegrations = {
     }
   },
 
+  // Tenant-wide "has anything ever arrived" check for the Setup Center's
+  // alerts item — whether ANY of the given alert-webhook integrations has
+  // received at least one event. One aggregate call across every id, not a
+  // per-row Activity Log fetch. Unlike listWebhookEvents, a failed lookup
+  // must stay distinguishable from a real zero (`undefined` vs `false`), so
+  // Setup never downgrades a connected signal to "waiting" on a query that
+  // simply errored.
+  hasReceivedWebhookEvents: async function (integrationIds) {
+    if (!Array.isArray(integrationIds) || integrationIds.length === 0) return undefined;
+    const where = gqlStringify({ integration_id: { _in: integrationIds } });
+    const HAS_RECEIVED_WEBHOOK_EVENTS = `
+    query HasReceivedWebhookEvents {
+      total: integrations_aggregate_webhook_events(where: ${where}) {
+        rows {
+          count
+        }
+      }
+    }
+    `;
+    try {
+      const response = await queryGraphQL(HAS_RECEIVED_WEBHOOK_EVENTS, 'HasReceivedWebhookEvents', {});
+      if (response?.data?.errors?.length) return undefined;
+      const count = response?.data?.data?.total?.rows?.[0]?.count;
+      return typeof count === 'number' ? count > 0 : undefined;
+    } catch (err) {
+      console.log('failed to check webhook events-', err);
+      return undefined;
+    }
+  },
+
   addIntegrations: async function (data) {
     const ADD_INTEGRATION = `
     mutation AddIntegrations($data: CreateIntegrationConfigRequest!) {

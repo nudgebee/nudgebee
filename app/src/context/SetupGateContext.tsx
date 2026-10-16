@@ -17,8 +17,9 @@ import { accountRowState, type OnboardingAccount } from '@lib/onboardingReadines
  * `accountRowState`'s own answer — the exact same per-row check
  * `accountEvaluator` uses for the Setup Center card and `Go to dashboard`'s
  * own enabled state, so there is exactly one definition of "still
- * connecting" across the whole feature. A K8s row whose agent has not
- * checked in is `partial`; a `done` row obviously isn't; neither is a
+ * connecting" across the whole feature. A K8s or self-hosted row whose
+ * agent has not checked in is `partial` (#41115 added self-hosted to what
+ * used to be a K8s-only check); a `done` row obviously isn't; neither is a
  * `blank` one (never connected, or deliberately deactivated — an
  * established tenant who paused their only cluster is not back in
  * first-run) or an `error` one (a connection attempt that is over, not one
@@ -42,10 +43,11 @@ import { accountRowState, type OnboardingAccount } from '@lib/onboardingReadines
  * - **Locking requires positive evidence.** Anything unknown — a failed
  *   lookup, a session that has not resolved — leaves the product open.
  *   Wrongly unlocking shows someone an empty dashboard they can navigate
- *   out of; wrongly locking takes a paying customer's product away. A K8s
+ *   out of; wrongly locking takes a paying customer's product away. An
  *   agent-health lookup that itself fails falls back to trusting `status`
  *   alone (`accountRowState`'s own contract), the same as everywhere else
- *   that lookup is used, rather than stranding every K8s row at `partial`.
+ *   that lookup is used, rather than stranding every K8s or self-hosted row
+ *   at `partial`.
  * - **A non-admin reaches a page here too now, but never a checklist.**
  *   `locked` used to also require `canManageSetup`, on the theory that
  *   holding someone on a page whose only exit is an action they lack
@@ -155,6 +157,46 @@ type AgentHealthResult =
  */
 const countsAsAccountRow = (a?: OnboardingAccount | null): boolean => !!a && a.id !== 'demo' && a.status !== 'deleted';
 
+/**
+ * How long a K8s/self-hosted account gets the benefit of the doubt that its
+ * agent is still mid-install, not actually down. Mayank Pande's review
+ * finding: an *established* tenant whose only account is a cluster, hit by a
+ * real agent outage later, used to get walled onto `/setup` for the
+ * duration — exactly when they'd most want the rest of the app. An account
+ * old enough that a normal install would long since have finished is far
+ * more likely a working tenant hit by a live blip than one still being set
+ * up, and the file's own rule is to lock only on positive evidence of
+ * "still setting up" (see the doc comment above: wrongly locking costs more
+ * than wrongly unlocking). A day is generous enough that a genuinely fresh,
+ * still-in-progress install is never cut off early.
+ */
+const AGENT_GRACE_MS = 24 * 60 * 60 * 1000;
+
+const isEstablished = (a: OnboardingAccount): boolean => {
+  const createdAt = a.created_at ? Date.parse(a.created_at) : NaN;
+  // Unknown age defaults to "just added", the safer side of this check —
+  // a row with no (or unparseable) `created_at` still gates like it always
+  // has, rather than a missing field being what unlocks the nav early.
+  if (Number.isNaN(createdAt)) return false;
+  return Date.now() - createdAt > AGENT_GRACE_MS;
+};
+
+/**
+ * Whether this row's current state is actual evidence of "still connecting",
+ * worth holding the gate shut for. `accountRowState` alone can't tell two
+ * different `partial` causes apart: a row still `pending`/`connecting` on
+ * `status` itself (always blocks, any age), versus a `done`-on-status row
+ * the live agent-health check alone demoted (blocks only while the account
+ * is still young enough to plausibly be mid-install — see `isEstablished`).
+ * Calling `accountRowState` a second time with no agent-health input isolates
+ * which case this is, without needing a second definition of either state.
+ */
+const blocksGate = (a: OnboardingAccount, agentConnected: Record<string, boolean> | undefined): boolean => {
+  if (accountRowState(a, agentConnected) !== 'partial') return false;
+  const demotedByAgentHealthAlone = accountRowState(a, null) !== 'partial';
+  return !demotedByAgentHealthAlone || !isEstablished(a);
+};
+
 export const SetupGateProvider = ({ children }: { children: React.ReactNode }): React.ReactElement => {
   const router = useRouter();
   const { data: session, status: sessionStatus } = useSession();
@@ -212,12 +254,17 @@ export const SetupGateProvider = ({ children }: { children: React.ReactNode }): 
 
       const rows = (raw.data.all_accounts || []).filter(countsAsAccountRow);
 
-      // Only K8s rows have an agent-health concept — everyone else's status
-      // is the whole answer, so this is skipped entirely (no added request)
-      // for a tenant with no K8s accounts at all.
-      const k8sIds = rows.filter((a) => (a.cloud_provider || '').toLowerCase() === 'k8s' && a.id).map((a) => a.id as string);
+      // Only K8s and self-hosted rows have an agent-health concept — a
+      // forager is self-hosted's own agent, same gap as K8s had (#41115) —
+      // everyone else's status is the whole answer, so this is skipped
+      // entirely (no added request) for a tenant with neither.
+      const agentCheckedIds = rows
+        .filter((a) => ['k8s', 'selfhosted'].includes((a.cloud_provider || '').toLowerCase()) && a.id)
+        .map((a) => a.id as string);
       const agentHealthResult =
-        k8sIds.length > 0 ? ((await apiKubernetes1.listK8sAccAgentHealth(k8sIds).catch(() => undefined)) as AgentHealthResult) : undefined;
+        agentCheckedIds.length > 0
+          ? ((await apiKubernetes1.listK8sAccAgentHealth(agentCheckedIds, null).catch(() => undefined)) as AgentHealthResult)
+          : undefined;
       if (cancelled) return;
 
       let k8sAgentConnected: Record<string, boolean> | undefined;
@@ -230,7 +277,7 @@ export const SetupGateProvider = ({ children }: { children: React.ReactNode }): 
         });
       }
 
-      setHasConnectedAccount(rows.some((a) => accountRowState(a, k8sAgentConnected) !== 'partial'));
+      setHasConnectedAccount(rows.some((a) => !blocksGate(a, k8sAgentConnected)));
       setAccountsLoading(false);
     };
 
