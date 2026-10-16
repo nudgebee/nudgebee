@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/config"
+	"strings"
 	"sync"
 	"time"
 
@@ -271,6 +272,46 @@ func (sc *SecurityContext) CanReadAccountData(accountId string, module string) b
 	return sc.HasAccountAccess(accountId, SecurityAccessTypeRead) ||
 		sc.HasScopedPermission(accountId, module, "Read") ||
 		sc.HasScopedPermission(accountId, module, "Write")
+}
+
+// Can reports whether the caller holds `module:class` on accountId: a built-in
+// account role that allows the class (Read: read, Execute: create, Write:
+// update), or a custom grant for the module on that account. A Write grant
+// implies Read and Execute. The llm-server helper of the same name answers the
+// same (testdata/can_cases.json).
+func (sc *SecurityContext) Can(accountId string, module string, class string) bool {
+	switch class {
+	case "Read":
+		return sc.CanReadAccountData(accountId, module)
+	case "Execute":
+		return sc.HasAccountAccess(accountId, SecurityAccessTypeCreate) ||
+			sc.HasScopedPermission(accountId, module, "Execute") ||
+			sc.HasScopedPermission(accountId, module, "Write")
+	case "Write":
+		return sc.HasAccountAccess(accountId, SecurityAccessTypeUpdate) ||
+			sc.HasScopedPermission(accountId, module, "Write")
+	}
+	return false
+}
+
+// IntegrationModule is the custom-role module that governs integrations of
+// one stored type: "integrations.<type>", lower-cased.
+func IntegrationModule(integrationType string) string {
+	return "integrations." + strings.ToLower(strings.TrimSpace(integrationType))
+}
+
+// MayUseIntegration reports whether a principal whose integration use is
+// granted per type (a bee) may use an integration of integrationType on
+// accountId: Read lets it read through the integration, Execute also lets it
+// make changes. Write on the module is the right to manage the integration and
+// does not let the holder use it. The llm-server helper of the same name
+// answers the same (testdata/can_cases.json).
+func (sc *SecurityContext) MayUseIntegration(accountId string, integrationType string, write bool) bool {
+	module := IntegrationModule(integrationType)
+	if sc.HasScopedPermission(accountId, module, "Execute") {
+		return true
+	}
+	return !write && sc.HasScopedPermission(accountId, module, "Read")
 }
 
 // HasScopedRole reports whether the user holds `role` scoped to `entityId`

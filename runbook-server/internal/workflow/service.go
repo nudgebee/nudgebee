@@ -4198,6 +4198,7 @@ func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType 
 		TenantID:      tenantId,
 		Principal:     sc.GetUserId(),
 		StepAccountID: tasks.StepAccount(renderedParams, accountId),
+		Integrations:  tasks.IntegrationUses(task.InputSchema(), renderedParams),
 	}); err != nil {
 		return nil, common.ErrorUnauthorized(err.Error())
 	}

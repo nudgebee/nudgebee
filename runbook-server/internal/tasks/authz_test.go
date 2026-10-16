@@ -145,7 +145,7 @@ func principalContext(t *testing.T, roles []string, scoped map[string][]string, 
 func stubAuthorizer(sc *security.SecurityContext, active bool) StepAuthorizer {
 	return StepAuthorizer{
 		LoadContext: func(context.Context, string, string) (*security.SecurityContext, error) { return sc, nil },
-		UserStatus:  func(context.Context, string, string) (bool, error) { return active, nil },
+		UserStatus:  func(context.Context, string, string) (UserState, error) { return UserState{Active: active}, nil },
 	}
 }
 
@@ -236,7 +236,7 @@ func TestAuthorizeLoadFailureIsRetryableNotADenial(t *testing.T) {
 		LoadContext: func(context.Context, string, string) (*security.SecurityContext, error) {
 			return nil, errors.New("services server down")
 		},
-		UserStatus: func(context.Context, string, string) (bool, error) { return true, nil },
+		UserStatus: func(context.Context, string, string) (UserState, error) { return UserState{Active: true}, nil },
 	}
 	err := authz.Authorize(context.Background(), stepInput("k8s.pod_delete", "acct-a"))
 	require.Error(t, err)

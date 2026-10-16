@@ -44,7 +44,7 @@ func runStep(t *testing.T, params map[string]any, allow bool) (ranAs, checked st
 			// May run automations, may not change the cluster.
 			return principalContext(t, nil, nil, map[string]map[string]bool{"acct-a": {"workflows:Execute": true}}), nil
 		},
-		UserStatus: func(context.Context, string, string) (bool, error) { return true, nil },
+		UserStatus: func(context.Context, string, string) (UserState, error) { return UserState{Active: true}, nil },
 	}
 	tw := &TaskWrapper{Task: recordingTask{ranAs: &ranAs}, Authorizer: &authz}
 

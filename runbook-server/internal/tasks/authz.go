@@ -223,6 +223,9 @@ type StepAuthInput struct {
 	RunAccountID  string
 	StepAccountID string
 	CheckRunRight bool
+	// Integrations are the integrations the step will use (IntegrationUses).
+	// A bee needs a grant for each one's type.
+	Integrations []IntegrationUse
 }
 
 // StepAuthorizer checks a step against its run's principal. The loaders are
@@ -230,10 +233,18 @@ type StepAuthInput struct {
 type StepAuthorizer struct {
 	// LoadContext returns the principal's permissions (roles + custom grants).
 	LoadContext func(ctx context.Context, tenantID, userID string) (*security.SecurityContext, error)
-	// UserStatus reports whether the user is active and still a member of the
-	// tenant. Read directly rather than from the cached security context, so a
-	// suspension takes effect on the next step.
-	UserStatus func(ctx context.Context, tenantID, userID string) (active bool, err error)
+	// UserStatus reads the user's state. Read directly rather than from the
+	// cached security context, so a suspension takes effect on the next step.
+	UserStatus func(ctx context.Context, tenantID, userID string) (UserState, error)
+}
+
+// UserState is what Authorize reads about a principal from the metastore.
+type UserState struct {
+	// Active: the user is active and still a member of the tenant.
+	Active bool
+	// Bee: the user is a bee account (users.kind = 'bee'), which uses an
+	// integration only with a grant for that integration's type.
+	Bee bool
 }
 
 // DefaultStepAuthorizer loads contexts from the services server (through a
@@ -293,20 +304,21 @@ func (c *contextCache) load(_ context.Context, tenantID, userID string) (*securi
 	return sc, nil
 }
 
-func activeTenantMember(ctx context.Context, tenantID, userID string) (bool, error) {
+func activeTenantMember(ctx context.Context, tenantID, userID string) (UserState, error) {
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		return false, err
+		return UserState{}, err
 	}
-	var active bool
+	var state UserState
 	err = dbManager.Db.QueryRowContext(ctx, `
 		SELECT u.status = 'active'
-		   AND EXISTS (SELECT 1 FROM tenant_users tu WHERE tu."user" = u.id AND tu.tenant = $2)
-		FROM users u WHERE u.id = $1`, userID, tenantID).Scan(&active)
+		   AND EXISTS (SELECT 1 FROM tenant_users tu WHERE tu."user" = u.id AND tu.tenant = $2),
+		       u.kind = 'bee'
+		FROM users u WHERE u.id = $1`, userID, tenantID).Scan(&state.Active, &state.Bee)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		return UserState{}, nil
 	}
-	return active, err
+	return state, err
 }
 
 // ErrTypeStepPermissionDenied is the Temporal error type of a refused step. It
@@ -333,11 +345,11 @@ func (a StepAuthorizer) Authorize(ctx context.Context, in StepAuthInput) error {
 		return denied("permission denied: this run has no user to act as (the automation's owner may have been deleted); make a version live again to set an owner")
 	}
 
-	active, err := a.UserStatus(ctx, in.TenantID, in.Principal)
+	state, err := a.UserStatus(ctx, in.TenantID, in.Principal)
 	if err != nil {
 		return fmt.Errorf("authorization unavailable: could not read user %s: %w", in.Principal, err)
 	}
-	if !active {
+	if !state.Active {
 		return denied("permission denied: this run acts as user %s, who is not active in this organisation", in.Principal)
 	}
 
@@ -353,26 +365,45 @@ func (a StepAuthorizer) Authorize(ctx context.Context, in StepAuthInput) error {
 		return denied("permission denied: user %s may not run automations on account %s", in.Principal, in.RunAccountID)
 	}
 
-	if !holds(sc, in.StepAccountID, req) {
+	// The same rule the platform's own routes use: a built-in account role, or
+	// a custom grant for the module on that account.
+	if !sc.Can(in.StepAccountID, req.Module, req.Class) {
 		return denied("permission denied: user %s needs %s:%s on account %s for step type %s",
 			in.Principal, req.Module, req.Class, in.StepAccountID, in.TaskName)
+	}
+
+	if state.Bee {
+		return authorizeIntegrations(ctx, sc, in, req.Class != classRead)
 	}
 	return nil
 }
 
-// holds applies the same rule the platform's own routes use: a built-in
-// account role, or a custom grant for the module on that account. Write grants
-// imply Read and Execute.
-func holds(sc *security.SecurityContext, accountID string, req StepRequirement) bool {
-	switch req.Class {
-	case classRead:
-		return sc.CanReadAccountData(accountID, req.Module)
-	case classExecute:
-		return sc.HasAccountAccess(accountID, security.SecurityAccessTypeCreate) ||
-			sc.HasScopedPermission(accountID, req.Module, classExecute) ||
-			sc.HasScopedPermission(accountID, req.Module, classWrite)
-	default:
-		return sc.HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) ||
-			sc.HasScopedPermission(accountID, req.Module, classWrite)
+// authorizeIntegrations refuses a bee's step that uses an integration whose
+// type the bee holds no use grant for on the step's account
+// (SecurityContext.MayUseIntegration). A step that names an integration this
+// organisation does not have is refused too.
+func authorizeIntegrations(ctx context.Context, sc *security.SecurityContext, in StepAuthInput, write bool) error {
+	class := classRead
+	if write {
+		class = classExecute
 	}
+	for _, use := range in.Integrations {
+		types, err := integrationTypes(ctx, in.TenantID, use)
+		if errors.Is(err, errIntegrationNotFound) && use.Optional {
+			continue
+		}
+		if errors.Is(err, errIntegrationNotFound) {
+			return denied("permission denied: step type %s uses integration %q, which this organisation does not have", in.TaskName, use.Ref)
+		}
+		if err != nil {
+			return fmt.Errorf("authorization unavailable: could not read integration %q: %w", use.Ref, err)
+		}
+		for _, typ := range types {
+			if !sc.MayUseIntegration(in.StepAccountID, typ, write) {
+				return denied("permission denied: user %s needs %s:%s on account %s to use %s integration %q for step type %s",
+					in.Principal, security.IntegrationModule(typ), class, in.StepAccountID, typ, use.Ref, in.TaskName)
+			}
+		}
+	}
+	return nil
 }

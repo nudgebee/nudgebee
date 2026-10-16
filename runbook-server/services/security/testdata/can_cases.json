@@ -1,0 +1,419 @@
+{
+  "_comment": "SecurityContext.Can and MayUseIntegration cases. runbook-server and llm-server both read this file, so the two copies answer the same. Every context is in tenant t with accounts acct-a and acct-b.",
+  "cases": [
+    {
+      "name": "account admin may write its account",
+      "context": {
+        "Roles": [
+          "account_admin"
+        ],
+        "ScopedEntityIds": {
+          "account_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Write",
+      "want": true
+    },
+    {
+      "name": "account admin may not write another account",
+      "context": {
+        "Roles": [
+          "account_admin"
+        ],
+        "ScopedEntityIds": {
+          "account_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-b",
+      "module": "k8s",
+      "class": "Write",
+      "want": false
+    },
+    {
+      "name": "read-only account admin may read",
+      "context": {
+        "Roles": [
+          "account_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "account_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Read",
+      "want": true
+    },
+    {
+      "name": "read-only account admin may not execute",
+      "context": {
+        "Roles": [
+          "account_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "account_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Execute",
+      "want": false
+    },
+    {
+      "name": "tenant admin may write any tenant account",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-b",
+      "module": "integrations.jira",
+      "class": "Write",
+      "want": true
+    },
+    {
+      "name": "tenant admin may not touch an account outside the tenant",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-x",
+      "module": "k8s",
+      "class": "Read",
+      "want": false
+    },
+    {
+      "name": "scoped Read grant reads",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "k8s:Read": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Read",
+      "want": true
+    },
+    {
+      "name": "scoped Read grant does not execute",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "k8s:Read": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Execute",
+      "want": false
+    },
+    {
+      "name": "scoped Read grant covers only its account",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "k8s:Read": true
+          }
+        }
+      },
+      "account": "acct-b",
+      "module": "k8s",
+      "class": "Read",
+      "want": false
+    },
+    {
+      "name": "scoped Execute grant executes",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "integrations.jira",
+      "class": "Execute",
+      "want": true
+    },
+    {
+      "name": "scoped Execute grant does not read",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "integrations.jira",
+      "class": "Read",
+      "want": false
+    },
+    {
+      "name": "scoped Execute grant does not write",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "integrations.jira",
+      "class": "Write",
+      "want": false
+    },
+    {
+      "name": "scoped Write grant implies Read",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "k8s:Write": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Read",
+      "want": true
+    },
+    {
+      "name": "scoped Write grant implies Execute",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "k8s:Write": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Execute",
+      "want": true
+    },
+    {
+      "name": "a grant covers only its module",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Write": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "integrations.github",
+      "class": "Read",
+      "want": false
+    },
+    {
+      "name": "tenant-wide grant covers every tenant account",
+      "context": {
+        "CustomPermissions": {
+          "integrations.mcp:Read": true
+        }
+      },
+      "account": "acct-b",
+      "module": "integrations.mcp",
+      "class": "Read",
+      "want": true
+    },
+    {
+      "name": "tenant-wide grant does not cover an account outside the tenant",
+      "context": {
+        "CustomPermissions": {
+          "integrations.mcp:Read": true
+        }
+      },
+      "account": "acct-x",
+      "module": "integrations.mcp",
+      "class": "Read",
+      "want": false
+    },
+    {
+      "name": "no role, no grant",
+      "context": {},
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Read",
+      "want": false
+    },
+    {
+      "name": "unknown class",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Admin",
+      "want": false
+    }
+  ],
+  "use_cases": [
+    {
+      "name": "Read grant reads",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Read": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "Read grant does not change",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Read": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "Execute grant changes",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "Execute grant also reads",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "Write (manage) grant does not let the holder use it",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Write": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": false
+    },
+    {
+      "name": "a grant covers only its type",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "github",
+      "write": false,
+      "want": false
+    },
+    {
+      "name": "a grant covers only its account",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-b",
+      "type": "jira",
+      "write": false,
+      "want": false
+    },
+    {
+      "name": "the stored type is matched lower-cased",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.es:Read": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "ES",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "tenant-wide use grant covers every tenant account",
+      "context": {
+        "CustomPermissions": {
+          "integrations.mcp:Execute": true
+        }
+      },
+      "account": "acct-b",
+      "type": "mcp",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "a built-in role is not a use grant",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": false
+    },
+    {
+      "name": "the integrations module alone is not a use grant",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations:Write": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": false
+    }
+  ]
+}
