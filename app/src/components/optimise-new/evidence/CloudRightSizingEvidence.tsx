@@ -15,6 +15,7 @@ import Chart from '@ui/Chart';
 import { formatMemory } from '@lib/formatter';
 import { formatBytes } from 'src/utils/common';
 import { safeParseJSON } from '@components/optimise-new/utils';
+import { cloudMetricsTarget } from './cloudMetricsTarget';
 
 interface CloudRightSizingEvidenceProps {
   recommendation: any;
@@ -33,31 +34,41 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
   useEffect(() => {
     if (!fullRecommendation) return;
     const accountId = fullRecommendation.account_id;
-    const resourceId = fullRecommendation.resource_id || fullRecommendation.cloud_resourse?.id;
+    // The cloud_resourses row's UUID; metrics are keyed by the provider's id, resolved below.
+    const rowId = fullRecommendation.resource_id || fullRecommendation.cloud_resourse?.id;
     // Try multiple paths for service name
-    const serviceName =
+    const fallbackServiceName =
       rec?.service_name ||
       fullRecommendation.cloud_resourse?.meta?.config?.serviceName ||
       fullRecommendation.cloud_resourse?.meta?.serviceName ||
       fullRecommendation.service_name ||
       '';
 
-    if (!accountId || !resourceId) return;
+    if (!accountId || !rowId) return;
 
+    let cancelled = false;
     setMetricsLoading(true);
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - 7);
 
     apiCloudAccount
-      .getCloudResourceMetrics({
-        account_id: accountId,
-        serviceName: serviceName || undefined,
-        resourceId,
-        startDate,
-        endDate: new Date(),
+      .getCloudResourceIdentity(accountId, rowId)
+      .then((resource: any) => {
+        const target = cloudMetricsTarget(resource);
+        if (cancelled || !target) return null;
+        const serviceName = target.serviceName || fallbackServiceName;
+        return apiCloudAccount.getCloudResourceMetrics({
+          account_id: accountId,
+          serviceName: serviceName || undefined,
+          resourceId: target.resourceId,
+          regionName: target.region || undefined,
+          startDate,
+          endDate: new Date(),
+        });
       })
       .then((res: any) => {
-        const metricsData = res?.data?.data?.cloud_metric_groupings_v2?.rows || [];
+        if (cancelled) return;
+        const metricsData = res?.data?.data?.cloud_metric_groupings_v2?.rows ?? [];
         if (metricsData.length > 0) {
           // Group by metric name
           const grouped = metricsData.reduce((acc: Record<string, any[]>, curr: any) => {
@@ -70,9 +81,15 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
         }
       })
       .catch((err: any) => {
+        if (cancelled) return;
         console.error('[CloudRightSizingEvidence] Failed to fetch cloud resource metrics:', err);
       })
-      .finally(() => setMetricsLoading(false));
+      .finally(() => {
+        if (!cancelled) setMetricsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [fullRecommendation]);
 
   if (!rec) return null;
