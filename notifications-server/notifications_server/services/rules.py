@@ -90,7 +90,8 @@ def is_valid_string(s):
 #   daily_recap        — one nightly digest per tenant
 #   weekly_digest      — the weekly event-analysis digest, one per tenant-week
 #   ai_cost            — the AI Cost Daily Report digest, one per tenant-day
-TENANT_WIDE_SOURCES = ("daily_recap", "weekly_digest", "ai_cost")
+#   llm_budget         — AI Gateway budget alerts, one per quota threshold per window
+TENANT_WIDE_SOURCES = ("daily_recap", "weekly_digest", "ai_cost", "llm_budget")
 
 # Automation and optimize messages carry an account, but a rule may cover every account.
 AUTOMATION_SOURCE = "automation"
@@ -100,8 +101,21 @@ ACCOUNT_OPTIONAL_SOURCES = TENANT_WIDE_SOURCES + (AUTOMATION_SOURCE, OPTIMIZE_SO
 # Every type a rule can cover. The singletons are each managed as the tenant's
 # only rule of its kind, so they are never combined with other types and an
 # all-types rule leaves them out.
-RULE_SOURCES = ("troubleshoot", "slo", "cloud", "optimize", "automation", "weekly_digest", "daily_recap", "ai_cost")
-SINGLETON_SOURCES = ("daily_recap", "ai_cost")
+RULE_SOURCES = (
+    "troubleshoot",
+    "slo",
+    "cloud",
+    "optimize",
+    "automation",
+    "weekly_digest",
+    "daily_recap",
+    "ai_cost",
+    "llm_budget",
+)
+SINGLETON_SOURCES = ("daily_recap", "ai_cost", "llm_budget")
+# Delivered only where the tenant has a rule for them: with none, they drop instead of
+# going to the default channel.
+OPT_IN_SOURCES = ("llm_budget",)
 ALL_TYPES_SOURCES = tuple(s for s in RULE_SOURCES if s not in SINGLETON_SOURCES)
 SOURCE_MODE_ALL = "all"
 SOURCE_MODE_LIST = "list"
@@ -266,7 +280,7 @@ def _resolve_sources(rule_data, existing_rule):
     if unknown:
         raise InvalidRuleError(Err.OS0011.value[0] % f"sources: {', '.join(map(str, unknown))}")
     if len(sources) > 1 and any(s in SINGLETON_SOURCES for s in sources):
-        raise InvalidRuleError(Err.OS0011.value[0] % "sources: daily_recap and ai_cost cannot be combined")
+        raise InvalidRuleError(Err.OS0011.value[0] % f"sources: {', '.join(SINGLETON_SOURCES)} cannot be combined")
     return SOURCE_MODE_LIST, sources, sources[0]
 
 
@@ -605,12 +619,15 @@ class NotificationRulesService:
 
     async def get_default_policy(self, tenant_id, source):
         """The type's own default, else the all-types default. The singletons
-        (daily email, AI cost report) never follow the all-types default."""
+        (daily email, AI cost report, budget alerts) never follow the all-types default;
+        an opt-in type with no row of its own drops."""
         policies = await self.get_default_policies(tenant_id)
         if source in policies:
             return policies[source]
         if source in ALL_TYPES_SOURCES:
             return policies.get(DEFAULT_ALL_SOURCES)
+        if source in OPT_IN_SOURCES:
+            return {"action": DEFAULT_DROP, "mappings": []}
         return None
 
     async def list_default_policies(self, **kwargs):

@@ -287,7 +287,7 @@ const Notifications = () => {
         <Box component='span' sx={{ flex: 1, minWidth: 220, lineHeight: 1.7 }}>
           <FallbackSentence fallbacks={fallbacks} type={filterType} />
         </Box>
-        {canWrite && filterType !== 'daily_recap' && (
+        {canWrite && filterType !== 'daily_recap' && filterType !== 'llm_budget' && (
           // Puts the pencil directly above the rows' edit buttons in the actions column.
           <Box sx={{ mr: '18px' }}>
             <DsButton

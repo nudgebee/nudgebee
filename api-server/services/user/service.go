@@ -867,18 +867,9 @@ func UpdateUserAuthToken(context *security.RequestContext, request UserTokenUpda
 	}
 	// Omitted (nil) leaves the limits alone; a present list, even [], replaces them all.
 	if request.Limits != nil {
-		if _, err := tx.Exec(`DELETE FROM llm_gateway_rate_limits WHERE api_key_id = $1 AND tenant_id = $2`,
-			key.KeyID, context.GetSecurityContext().GetTenantId()); err != nil {
+		if err := replaceKeyLimits(tx, context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId(),
+			key.KeyID, request.Limits); err != nil {
 			return UserTokenUpdateResponse{}, err
-		}
-		for _, l := range request.Limits {
-			if _, err := tx.Exec(
-				`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled, soft_pct)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8)`,
-				context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId(),
-				key.KeyID, l.Model, l.Metric, l.Period, l.Value, l.SoftPct); err != nil {
-				return UserTokenUpdateResponse{}, err
-			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -1761,4 +1752,43 @@ func OnboardUser(context *security.RequestContext, request UserOnboardRequest) (
 		Status:  "Ok",
 		Message: "User onboarded successfully",
 	}, nil
+}
+
+// replaceKeyLimits swaps a key's quota rows for limits. A row whose metric, period, model,
+// value and warn level are unchanged keeps its budget-alert state (alerted_window/_pct), so
+// re-saving the key does not resend this window's alerts; a changed row may alert again.
+func replaceKeyLimits(tx *sqlx.Tx, tenantID, userID, keyID string, limits []TokenLimit) error {
+	type alertState struct {
+		Metric        string     `db:"metric"`
+		Period        string     `db:"period"`
+		Model         string     `db:"model"`
+		Value         float64    `db:"limit_value"`
+		SoftPct       *int       `db:"soft_pct"`
+		AlertedWindow *time.Time `db:"alerted_window"`
+		AlertedPct    *int       `db:"alerted_pct"`
+	}
+	var old []alertState
+	if err := tx.Select(&old,
+		`DELETE FROM llm_gateway_rate_limits WHERE api_key_id = $1 AND tenant_id = $2
+		 RETURNING metric, period, model, limit_value, soft_pct, alerted_window, alerted_pct`, keyID, tenantID); err != nil {
+		return err
+	}
+	samePct := func(a, b *int) bool { return (a == nil && b == nil) || (a != nil && b != nil && *a == *b) }
+	for _, l := range limits {
+		var kept alertState
+		for _, o := range old {
+			if o.Metric == l.Metric && o.Period == l.Period && o.Model == l.Model && o.Value == l.Value && samePct(o.SoftPct, l.SoftPct) {
+				kept = o
+				break
+			}
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled,
+			     soft_pct, alerted_window, alerted_pct)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10)`,
+			tenantID, userID, keyID, l.Model, l.Metric, l.Period, l.Value, l.SoftPct, kept.AlertedWindow, kept.AlertedPct); err != nil {
+			return err
+		}
+	}
+	return nil
 }

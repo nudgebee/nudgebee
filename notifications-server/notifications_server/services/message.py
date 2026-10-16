@@ -46,6 +46,7 @@ from notifications_server.services.response_helpers import not_sent_response, su
 from notifications_server.services.rules import (
     DEFAULT_CHANNELS,
     DEFAULT_DELIVER,
+    OPT_IN_SOURCES,
     OPTIMIZE_EVENT_BY_MESSAGE_TYPE,
     OPTIMIZE_SOURCE,
     NotificationRulesService,
@@ -253,7 +254,11 @@ def resolve_outcome(matched_rules, source=None, event_type=None, honour_batch=Tr
     targets = [entry for entry in delivering if entry.get("platform")]
     policy_action = (default_policy or {}).get("action", DEFAULT_DELIVER)
     if delivering:
-        return RuleOutcome(None, targets, policy_action == DEFAULT_DELIVER)
+        # An opt-in type uses default channels only for a matched rule that names no platform.
+        use_defaults = policy_action == DEFAULT_DELIVER or (
+            source in OPT_IN_SOURCES and any(not entry.get("platform") for entry in delivering)
+        )
+        return RuleOutcome(None, targets, use_defaults)
     if policy_action == DEFAULT_DELIVER or (non_suppressible and policy_action != DEFAULT_CHANNELS):
         return RuleOutcome(None, [], True)
     if policy_action == DEFAULT_CHANNELS:
