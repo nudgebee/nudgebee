@@ -7,6 +7,7 @@ import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
+import SearchIcon from '@mui/icons-material/Search';
 import TenantAccountCommonSettings from '@shared/settings/TenantAccountCommonSettings';
 import {
   EMPTY_TRACE_LABEL_SETTINGS,
@@ -43,6 +44,7 @@ import { toast as snackbar } from '@ui/Toast';
 import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
 import { canEditTenantSettings, fetchFeatureFlagsForTenant, missingPermissionMessage } from '@lib/auth';
 import { HIDDEN_FEATURES, displayedFromStored, effectiveFeatureChoice } from '@lib/featureFlags';
+import { fuzzyTokenMatches, MIN_FUZZY_TOKEN_LENGTH, wordsOf } from '@lib/navSearchPages';
 import { useSession } from 'next-auth/react';
 import apiUserManagement from '@api1/user';
 
@@ -356,6 +358,36 @@ const storedFromDisplayed = (choice, inverted) => {
   return (inverted ? !on : on) ? 'enabled' : 'disabled';
 };
 
+// Same ranking tiers as the header's global search (fuzzyTokenMatches) -- exact/prefix/substring
+// beats a fuzzy, typo-tolerant match. Returns null when the query doesn't match at all.
+const rankFeatureSearchMatch = (label, full, query, queryTokens) => {
+  if (label === query) return 0;
+  if (label.startsWith(query)) return 1;
+  if (label.includes(query)) return 2;
+  if (full.includes(query)) return 3;
+  if (queryTokens.length === 0) return null;
+  // One missed token is tolerated for 3+ token queries only.
+  let missedCount = 0;
+  let usedFuzzy = false;
+  let words = null;
+  for (const token of queryTokens) {
+    if (full.includes(token)) continue;
+    if (token.length >= MIN_FUZZY_TOKEN_LENGTH) {
+      words = words ?? wordsOf(full);
+      if (fuzzyTokenMatches(token, words)) {
+        usedFuzzy = true;
+        continue;
+      }
+    }
+    missedCount += 1;
+    if (missedCount > 1 || queryTokens.length < 3) {
+      return null;
+    }
+  }
+  if (missedCount === 1) return 6;
+  return usedFuzzy ? 5 : 4;
+};
+
 // Synthetic id for the "All" tab ahead of the per-category feature tabs.
 const ALL_FEATURES_GROUP_ID = 'all';
 
@@ -381,6 +413,7 @@ const TenantSettings = () => {
   const [activeTab, setActiveTab] = useState('general');
   const [activeLabelTab, setActiveLabelTab] = useState('log');
   const [activeFeatureGroup, setActiveFeatureGroup] = useState(ALL_FEATURES_GROUP_ID);
+  const [featureSearch, setFeatureSearch] = useState('');
 
   // Admin Overview quick-links land here with ?action=settings-<tab> and select
   // the matching inner tab (identity/self-onboarding → General, labels → Label
@@ -755,6 +788,35 @@ const TenantSettings = () => {
     return featureGroups.find((g) => g.id === activeFeatureGroup) || featureGroups[0] || null;
   };
 
+  // Scoped to the active group tab (switch to "All" to search across every flag).
+  const filteredFeatureItems = useMemo(() => {
+    const items = currentFeatureGroup()?.items || [];
+    const query = featureSearch.trim().toLowerCase();
+    if (!query) {
+      return items;
+    }
+    // wordsOf (not a whitespace split) so underscore_joined flag ids tokenize per-word.
+    const queryTokens = wordsOf(query);
+    const recommendedContent = featureRecommendedContent(baseTitle, assistantName);
+    const ranked = [];
+    items.forEach((f, i) => {
+      const content = recommendedContent[f.value];
+      const label = (f.display_name || f.value || '').toLowerCase();
+      const extra = [f.value, f.description, content?.description, content?.whenToTurnOn, content?.why, f.category_label]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      const full = extra ? `${label} ${extra}` : label;
+      const rank = rankFeatureSearchMatch(label, full, query, queryTokens);
+      if (rank !== null) {
+        ranked.push({ f, rank, i });
+      }
+    });
+    ranked.sort((a, b) => a.rank - b.rank || a.i - b.i);
+    return ranked.map((r) => r.f);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- currentFeatureGroup() closes over these same deps
+  }, [featureSearch, activeFeatureGroup, featureGroups, allFeaturesGroup, baseTitle, assistantName]);
+
   if (initialLoading) {
     return <Loader />;
   }
@@ -978,24 +1040,39 @@ const TenantSettings = () => {
               }
             >
               <Box display='flex' flexDirection='column' gap={ds.space[4]}>
-                <Tabs
-                  options={{
-                    tabOptions: [
-                      { value: allFeaturesGroup.id, text: allFeaturesGroup.label, count: allFeaturesGroup.items.length },
-                      ...featureGroups.map((g) => ({ value: g.id, text: g.label, count: g.items.length })),
-                    ],
-                  }}
-                  value={currentFeatureGroup()?.id || ''}
-                  onChange={(next) => setActiveFeatureGroup(next)}
-                  smallSize
-                  behavior='filter'
-                  variant='secondary'
-                  ariaLabel='Feature groups'
-                />
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[3], flexWrap: 'wrap' }}>
+                  <Tabs
+                    options={{
+                      tabOptions: [
+                        { value: allFeaturesGroup.id, text: allFeaturesGroup.label, count: allFeaturesGroup.items.length },
+                        ...featureGroups.map((g) => ({ value: g.id, text: g.label, count: g.items.length })),
+                      ],
+                    }}
+                    value={currentFeatureGroup()?.id || ''}
+                    onChange={(next) => setActiveFeatureGroup(next)}
+                    smallSize
+                    behavior='filter'
+                    variant='secondary'
+                    ariaLabel='Feature groups'
+                  />
+                  <Box sx={{ width: ds.space.mul(0, 280), flexShrink: 0 }}>
+                    <Input
+                      id='tenant-features-search-input'
+                      size='sm'
+                      value={featureSearch}
+                      onChange={setFeatureSearch}
+                      placeholder='Search feature flags...'
+                      leadingIcon={<SearchIcon sx={{ fontSize: 16 }} />}
+                    />
+                  </Box>
+                </Box>
                 <CustomTable
                   id='tenant-features-table'
                   headers={FEATURE_TABLE_HEADERS}
-                  tableData={(currentFeatureGroup()?.items || []).map(buildFeatureRow)}
+                  tableData={filteredFeatureItems.map(buildFeatureRow)}
+                  {...(featureSearch.trim()
+                    ? { emptyHeading: `No feature flags match "${featureSearch.trim()}"`, emptySubHeading: 'Try a different search term.' }
+                    : {})}
                 />
               </Box>
             </Card>
