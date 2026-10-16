@@ -99,6 +99,48 @@ The design avoids inserting every account KB or every mapped KB into prompts:
   prompts stable. Custom chunk consumers currently vary: log-fetch/log-analysis
   use human content; unified-search adds a system context message.
 
+## Tool instructions for the code agent
+
+Account-specific conventions for a tool the code-fix agent runs (Terraform
+workspace/state layout, Atlas config) are authored as ordinary KB skills; there
+is no separate setting.
+
+Setup: on the Knowledge Base tab of an account, **Add tool instructions** opens
+the note form with a starter (SOP, sections for when it applies, how to run the
+tool, what to avoid). Name the note after the tool (`terraform`, `atlas`). Saving
+maps it to the code agent only (`code_analyzer`; its aliases resolve to the same
+mapping) and marks the mapping **always load**. Not shown in the tenant-wide view.
+
+Convention:
+
+- One short note per tool, at most `AlwaysLoadMaxChars` (4000) characters. If the
+  always-load mark is refused (too long), the note is still saved and a message
+  says so.
+- State where it applies in the text ("for repos with a `terraform/` dir ...").
+  KBs are scoped to an account and agent, never to a repo.
+- The same result can be had by hand: create a text note, map it to the code
+  agent, and tick always load on the Agents page. Always-load cannot be set on
+  the "All agents" mapping.
+
+Delivery: `resolveAgentInstructions` collects the always-load skills, and
+`evaluateCodeUsingWorkspace` forwards them as `skills` to code-analysis. They
+render in `<operator-skills>`, ahead of the repo's own AGENTS.md/CLAUDE.md and
+repo skills, which stay advisory. On a conflict the account note wins.
+
+Limits to know about:
+
+- Always-load text is not affected by `knowledge_policy`: `disabled` and
+  `llm_only` clear retrieved knowledge but not `AgentInstructions`
+  (`applyKnowledgePolicy` does not touch it, and it is resolved after the policy
+  is applied).
+- A note over 4000 characters cannot be always-load; it falls back to top-K
+  retrieval, which may not select it.
+- A note changes how the agent uses a tool, not whether it is installed. If the
+  binary is missing from the workspace (for example `atlas`), the agent still
+  cannot run it; that is tracked in #40544.
+- Notes are not versioned against the tool. Stale text is followed with the
+  same authority as fresh text, so the owner has to keep it current.
+
 ## Configuration
 
 ### Account knowledge policy

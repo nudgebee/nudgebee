@@ -41,10 +41,14 @@ jest.mock('@components/llm/KBDocumentsModal', () => ({
 }));
 jest.mock('@components/llm/KnowledgeBaseFormModal', () => ({
   __esModule: true,
-  default: ({ open, onSubmit, scopeOptions }) =>
+  default: ({ open, onSubmit, scopeOptions, preset }) =>
     open ? (
       <div>
         <span>{`scopes:${(scopeOptions || []).map((o) => o.value).join(',')}`}</span>
+        <span>{`preset:${preset?.title || 'none'}`}</span>
+        <button type='button' onClick={() => onSubmit({ name: 'terraform', agentIds: ['code_analyzer'] })}>
+          Submit tool instructions form
+        </button>
         <button type='button' onClick={() => onSubmit({ name: 'Runbooks', agentIds: [] })}>
           Submit KB form
         </button>
@@ -352,6 +356,41 @@ describe('KnowledgeBaseTab organisation KBs', () => {
 
     await waitFor(() => expect(apiKnowledgeBase.updateKnowledgeBaseVisibility).toHaveBeenCalledWith('kb-o', 'account', [], 'acct-1'));
     await waitFor(() => expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).toHaveBeenCalledWith('acct-1', 'kb-o', '*'));
+  });
+
+  it('saves tool instructions for the code agent only and marks them always load', async () => {
+    isTenantAdmin.mockReturnValue(true);
+    apiKnowledgeBase.mapKnowledgeBaseToAgent.mockResolvedValue(ok());
+    render(<KnowledgeBaseTab accountId='acct-1' />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add tool instructions' }));
+    expect(await screen.findByText('preset:Add tool instructions')).toBeInTheDocument();
+    expect(screen.getByText('scopes:')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Submit tool instructions form'));
+
+    await waitFor(() => expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).toHaveBeenCalledWith('acct-1', 'kb-new', 'code_analyzer', true));
+    expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).toHaveBeenCalledTimes(1);
+    expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).not.toHaveBeenCalledWith('acct-1', 'kb-new', '*');
+  });
+
+  it('does not carry the tool-instructions preset into a plain Add Knowledge Base', async () => {
+    render(<KnowledgeBaseTab accountId='acct-1' />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add tool instructions' }));
+    fireEvent.click(await screen.findByText('Submit tool instructions form'));
+    await waitFor(() => expect(apiKnowledgeBase.createKnowledgeBase).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByText('Submit tool instructions form')).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Knowledge Base' }));
+    expect(await screen.findByText('preset:none')).toBeInTheDocument();
+  });
+
+  it('hides Add tool instructions in the tenant-wide view', async () => {
+    isTenantAdmin.mockReturnValue(true);
+    render(<KnowledgeBaseTab accountId='' />);
+
+    await screen.findByTestId('row-Runbooks');
+    expect(screen.queryByRole('button', { name: 'Add tool instructions' })).not.toBeInTheDocument();
   });
 });
 

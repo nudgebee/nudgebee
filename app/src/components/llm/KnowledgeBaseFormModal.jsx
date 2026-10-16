@@ -80,6 +80,9 @@ const KnowledgeBaseFormModal = ({
   scopeOptions = null,
   initialVisibility = 'account',
   initialAccountIds = [],
+  // Seeds a new note ({ title, name, description, content, noteCategory }), e.g. the
+  // "Add tool instructions" starter. Ignored when editing.
+  preset = null,
 }) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -117,10 +120,10 @@ const KnowledgeBaseFormModal = ({
       setNoteCategory(editKnowledgeBase.note_category || DEFAULT_NOTE_CATEGORY);
       setContextTags(editKnowledgeBase.context_tags || []);
     } else {
-      setName('');
-      setDescription('');
-      setContent('');
-      setNoteCategory(DEFAULT_NOTE_CATEGORY);
+      setName(preset?.name || '');
+      setDescription(preset?.description || '');
+      setContent(preset?.content || '');
+      setNoteCategory(preset?.noteCategory || DEFAULT_NOTE_CATEGORY);
       setContextTags([]);
     }
     setSelectedFile(null);
@@ -327,7 +330,7 @@ const KnowledgeBaseFormModal = ({
     <Modal
       open={open}
       handleClose={onClose}
-      title={editKnowledgeBase ? 'Edit Knowledge Base' : 'Create Knowledge Base'}
+      title={editKnowledgeBase ? 'Edit Knowledge Base' : preset?.title || 'Create Knowledge Base'}
       subtitle={
         showScope && visibility !== 'account'
           ? 'Provide organisation-wide knowledge that the AI uses for more precise responses in the accounts that can see it.'
@@ -893,6 +896,13 @@ KnowledgeBaseFormModal.propTypes = {
   scopeOptions: PropTypes.arrayOf(PropTypes.shape({ value: PropTypes.string, label: PropTypes.string })),
   initialVisibility: PropTypes.string,
   initialAccountIds: PropTypes.arrayOf(PropTypes.string),
+  preset: PropTypes.shape({
+    title: PropTypes.string,
+    name: PropTypes.string,
+    description: PropTypes.string,
+    content: PropTypes.string,
+    noteCategory: PropTypes.string,
+  }),
 };
 
 export default KnowledgeBaseFormModal;

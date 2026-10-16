@@ -35,6 +35,7 @@ import { formatTrigger, formatDuration, formatDocuments } from '@components/llm/
 import { isKbRetriggerDisabled } from '@components/llm/kbRetrigger';
 import KBDocumentsModal from '@components/llm/KBDocumentsModal';
 import KnowledgeBaseFormModal from '@components/llm/KnowledgeBaseFormModal';
+import { CODE_AGENT_NAME, TOOL_INSTRUCTIONS_PRESET } from '@components/llm/toolInstructionsPreset';
 import KnowledgeBaseSharingModal from '@components/llm/KnowledgeBaseSharingModal';
 import SkillSourcesSection, { SkillDetailsModal, shortCommit } from '@components/llm/SkillSourcesSection';
 
@@ -624,6 +625,8 @@ const KnowledgeBaseTab = ({ accountId }) => {
   const [knowledgeBases, setKnowledgeBases] = useState([]);
   const [error, setError] = useState(null);
   const [formModalOpen, setFormModalOpen] = useState(false);
+  // Set while the form was opened from "Add tool instructions".
+  const [formPreset, setFormPreset] = useState(null);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [selectedKnowledgeBase, setSelectedKnowledgeBase] = useState(null);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
@@ -896,6 +899,7 @@ const KnowledgeBaseTab = ({ accountId }) => {
   }, [accountId, isTenantWide]);
 
   const handleCreate = () => {
+    setFormPreset(null);
     setSelectedKnowledgeBase(null);
     setFormAgentIds([]);
     setFormScopeAccountIds([]);
@@ -903,7 +907,17 @@ const KnowledgeBaseTab = ({ accountId }) => {
     setFormModalOpen(true);
   };
 
+  // Starts a note for the code agent only; saving also marks it always load.
+  const handleCreateToolInstructions = () => {
+    setFormPreset(TOOL_INSTRUCTIONS_PRESET);
+    setSelectedKnowledgeBase(null);
+    setFormAgentIds([CODE_AGENT_NAME]);
+    setFormScopeAccountIds([]);
+    setFormModalOpen(true);
+  };
+
   const handleEdit = async (knowledgeBase) => {
+    setFormPreset(null);
     const kbAccount = kbAccountId(knowledgeBase);
     // Tenant-wide: point the form's agent / tool / tag loaders at this KB's account.
     if (isTenantWide) setEditAccountId(kbAccount);
@@ -1465,7 +1479,16 @@ const KnowledgeBaseTab = ({ accountId }) => {
       // Organisation KBs are used by all agents in every account that sees
       // them, so only account KBs carry agent mappings.
       if (kbId && !toOrg && !wasOrg && formAccountId) {
-        await syncAgentMappings(kbId, agentIds, formAgentIds);
+        // A new note has no mappings yet, even when the form opened with some picked.
+        // The preset maps the code agent below with always-load set, in one call.
+        const toSync = formPreset ? agentIds.filter((id) => id !== CODE_AGENT_NAME) : agentIds;
+        await syncAgentMappings(kbId, toSync, selectedKnowledgeBase ? formAgentIds : []);
+        if (formPreset && agentIds.includes(CODE_AGENT_NAME)) {
+          const marked = await apiKnowledgeBase.mapKnowledgeBaseToAgent(formAccountId, kbId, CODE_AGENT_NAME, true);
+          if (marked?.errors?.length > 0) {
+            snackbar.error(`Saved, but not set to always load: ${marked.errors[0]?.message || 'unknown error'}`);
+          }
+        }
       } else if (kbId && wasOrg && visibility === 'account' && formAccountId) {
         // Moved back to one account: it loses the implicit all-agents use, so
         // map it to all agents there to keep it working.
@@ -1473,6 +1496,7 @@ const KnowledgeBaseTab = ({ accountId }) => {
       }
 
       setFormModalOpen(false);
+      setFormPreset(null);
       setSelectedKnowledgeBase(null);
       setFormAgentIds([]);
       fetchKnowledgeBases();
@@ -1597,6 +1621,11 @@ const KnowledgeBaseTab = ({ accountId }) => {
           <Button tone='secondary' size='sm' onClick={() => setRetrievalOpen((open) => !open)} aria-expanded={retrievalOpen}>
             Test retrieval
           </Button>
+          {canCreate && !isTenantWide && (
+            <Button tone='secondary' size='sm' onClick={handleCreateToolInstructions} data-testid='kb-add-tool-instructions-btn'>
+              Add tool instructions
+            </Button>
+          )}
           {canCreate && (
             <Button tone='primary' size='sm' onClick={handleCreate} data-testid='kb-add-btn'>
               Add Knowledge Base
@@ -1693,10 +1722,12 @@ const KnowledgeBaseTab = ({ accountId }) => {
         open={formModalOpen}
         onClose={() => {
           setFormModalOpen(false);
+          setFormPreset(null);
           setSelectedKnowledgeBase(null);
           setFormAgentIds([]);
         }}
         onSubmit={handleFormSubmit}
+        preset={formPreset}
         editKnowledgeBase={selectedKnowledgeBase}
         loading={submitting}
         agents={agents}
@@ -1706,7 +1737,9 @@ const KnowledgeBaseTab = ({ accountId }) => {
         contextTagOptions={contextTagOptions}
         contextTagsLoading={contextTagsLoading}
         initialAgentIds={formAgentIds}
-        scopeOptions={formScopeOptions}
+        // Tool instructions are always account-scoped: an organisation or shared note has no
+        // per-agent mapping, so it could not be tied to the code agent or marked always load.
+        scopeOptions={formPreset ? null : formScopeOptions}
         initialVisibility={selectedKnowledgeBase?.visibility || (isTenantWide ? 'organisation' : 'account')}
         initialAccountIds={formScopeAccountIds}
       />
