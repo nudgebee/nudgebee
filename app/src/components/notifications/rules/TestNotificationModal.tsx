@@ -59,9 +59,6 @@ const Answer: React.FC<{ answer: NotificationRouteCheck; type: RuleTypeKey; onSh
   } else if (answer.result === 'held') {
     head = 'Held for the hourly summary';
     why = 'A rule groups these into one Slack message per hour, in Slack’s default channel.';
-  } else if (answer.reason === 'severity') {
-    head = 'Not sent right away';
-    why = 'Only High alerts are sent as they happen. Lower ones go to the digest, unless a rule chooses their severity.';
   } else if (answer.stopped_by) {
     head = answer.result === 'paused' ? 'Not sent for now' : 'Not sent';
     why = (
@@ -105,7 +102,6 @@ const TestNotificationModal: React.FC<Props> = ({ open, defaultType, accounts, o
   const [event, setEvent] = useState<string>('');
   const [account, setAccount] = useState<string>('');
   const [namespace, setNamespace] = useState<string>('');
-  const [severity, setSeverity] = useState<string>('high');
   const [namespaces, setNamespaces] = useState<{ value: string; label: string }[]>([]);
   const [answer, setAnswer] = useState<NotificationRouteCheck | null>(null);
   const [error, setError] = useState('');
@@ -156,7 +152,7 @@ const TestNotificationModal: React.FC<Props> = ({ open, defaultType, accounts, o
         event: def.events ? event || def.events[0].id : null,
         account_id: def.accounts ? account || null : null,
         namespace: def.workloads ? namespace || null : null,
-        severity: def.alerts ? severity : null,
+        severity: def.alerts ? 'high' : null,
       })
       .then((res) => {
         if (current !== request.current) return;
@@ -164,7 +160,7 @@ const TestNotificationModal: React.FC<Props> = ({ open, defaultType, accounts, o
         setAnswer(res.answer || null);
         setError(res.error || '');
       });
-  }, [open, type, event, account, namespace, severity]);
+  }, [open, type, event, account, namespace]);
 
   if (!open) return null;
 
@@ -230,22 +226,12 @@ const TestNotificationModal: React.FC<Props> = ({ open, defaultType, accounts, o
               onChange={(value) => setNamespace(value || '')}
             />
           )}
-          {def.alerts && (
-            <Select
-              id='test-severity'
-              clearable={false}
-              label='Severity'
-              size='sm'
-              value={severity}
-              options={[
-                { value: 'high', label: 'High' },
-                { value: 'medium', label: 'Medium' },
-                { value: 'low', label: 'Low' },
-              ]}
-              onChange={setSeverity}
-            />
-          )}
         </Box>
+        {def.alerts && (
+          <Typography id='test-severity-note' sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>
+            Checked as a High alert. Medium and Low alerts are never sent to chat.
+          </Typography>
+        )}
         {error ? (
           <Typography role='alert' sx={{ fontSize: ds.text.body, color: ds.red[600] }}>
             {error}
