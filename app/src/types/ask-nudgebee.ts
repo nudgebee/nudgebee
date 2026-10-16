@@ -231,6 +231,8 @@ export interface ListAgentsRequest {
 
 export interface ListToolsRequest {
   accountId: string | number;
+  /** Only entries of this type; omitted returns tools and agents. */
+  nbToolType?: 'tool' | 'agent';
 }
 
 export interface ListFunctionsRequest {

@@ -33,6 +33,8 @@ export interface ToolApprovalRule {
 export interface ToolApprovalConfig {
   enabled: boolean;
   rules: ToolApprovalRule[];
+  /** Integration id to name, to show a rule pinned to an integration by name. */
+  integration_names?: Record<string, string>;
 }
 
 export interface ToolApprovalAccountOptions {
@@ -61,6 +63,8 @@ export interface ToolApprovalToolOption {
   target_kind: ToolApprovalTargetKind;
   /** Input fields an argument condition can test (command-like fields excluded). */
   fields: ToolApprovalToolField[];
+  /** "mcp" for an MCP server's tool, whose calls have no CLI command. */
+  source?: 'mcp';
 }
 
 export interface ToolApprovalIntegration {
@@ -128,7 +132,12 @@ export const listToolApprovalOptions = (
 
 /** Tools a rule can name, across the organisation; independent of the accounts chosen. */
 export const listToolApprovalTools = (signal?: AbortSignal) =>
-  call<{ tools: ToolApprovalToolOption[] }>('toolapproval_list_tools', 'ListToolApprovalTools', {}, signal);
+  call<{ tools: ToolApprovalToolOption[]; unmarked_mcp_integrations?: Array<{ id: string; name: string }> }>(
+    'toolapproval_list_tools',
+    'ListToolApprovalTools',
+    {},
+    signal
+  );
 
 export async function listToolApprovalAccounts(signal?: AbortSignal): Promise<Array<{ id: string; account_name: string; cloud_provider: string }>> {
   const query = `query ListToolApprovalAccounts { accounts_list(where: {status: {_eq: "active"}}, order_by: [{column: "account_name", order: asc}]) { rows { id account_name cloud_provider } } }`;

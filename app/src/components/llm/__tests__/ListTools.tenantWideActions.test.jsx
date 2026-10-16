@@ -37,7 +37,7 @@ jest.mock('@shared/tables/CustomTable', () => ({
   ),
 }));
 
-const systemTool = { name: 'k8s_logs', type: 'system', status: 'enabled', nb_tool_type: 'tool', description: 'System tool' };
+const systemTool = { name: 'k8s_logs', type: 'system', status: 'enabled', nb_tool_type: 'tool', description: 'System tool', approval: 'never' };
 const customTool = {
   name: 'my_tool',
   type: 'custom',
@@ -46,6 +46,7 @@ const customTool = {
   description: 'Custom tool',
   account_id: 'acct-9',
   account_name: 'Prod',
+  approval: 'always',
 };
 
 const renderList = (accountId) => render(<ListTools accountId={accountId} />);
@@ -62,10 +63,19 @@ describe('ListTools tenant-wide Actions column', () => {
     renderList('');
 
     const customRow = await screen.findByTestId('row-my_tool');
-    expect(screen.getAllByTestId('header').map((h) => h.textContent)).toEqual(['Name', 'Description', 'Status', 'Account', 'Actions']);
+    expect(screen.getAllByTestId('header').map((h) => h.textContent)).toEqual(['Name', 'Description', 'Status', 'Approval', 'Account', 'Actions']);
     expect(within(customRow).getByRole('button', { name: 'Edit tool' })).toBeInTheDocument();
     expect(within(customRow).getByRole('button', { name: 'Delete tool' })).toBeInTheDocument();
     expect(within(screen.getByTestId('row-k8s_logs')).queryByRole('button', { name: 'Edit tool' })).not.toBeInTheDocument();
+  });
+
+  it('shows when each tool asks for approval (#40399)', async () => {
+    renderList('');
+
+    expect(within(await screen.findByTestId('row-my_tool')).getByText('Always asks')).toBeInTheDocument();
+    expect(within(screen.getByTestId('row-k8s_logs')).getByText('Never asks')).toBeInTheDocument();
+    // Agents are on the Agents tab, so the list asks the API for tools only.
+    expect(apiAskNudgebee.listTools).toHaveBeenCalledWith({ accountId: '', nbToolType: 'tool' });
   });
 
   it("hides Edit / Delete when the caller cannot write to the tool's account", async () => {

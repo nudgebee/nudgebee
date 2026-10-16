@@ -15,6 +15,7 @@ import { Textarea } from '@components/k8s/common/TextArea';
 import { snakeToTitleCase } from 'src/utils/common';
 import SigNozQueryAutocomplete from '@components/events/SigNozQueryAutocomplete';
 import ModelAliasList from '@components/common/forms/ModelAliasList';
+import McpWriteToolsField from '@components/common/forms/McpWriteToolsField';
 import SafeIcon from '@shared/icons/SafeIcon';
 
 const errorBorderStyle = {
@@ -501,6 +502,16 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
         // A string field can opt into a structured pair-editor (client-facing name →
         // served model) so the alias isn't hidden inside a comma-joined `alias=served`
         // string. It serializes back to that exact string, so the stored value is unchanged.
+        if (field.widget === 'mcp_write_tools') {
+          return fieldWrapper(
+            <McpWriteToolsField
+              key={currentPath}
+              value={currentValue || ''}
+              onChange={(next) => handleChange(currentPath, next)}
+              disabled={field.is_editable === false || isLoading}
+            />
+          );
+        }
         if (field.widget === 'model_alias_list') {
           return fieldWrapper(
             <ModelAliasList

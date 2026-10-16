@@ -25,6 +25,65 @@ type Integration struct {
 	Name string `json:"name"`
 }
 
+// MCPIntegration is an enabled MCP integration and its write_tools setting:
+// the server's tool names, comma separated, whose calls ask for approval.
+type MCPIntegration struct {
+	ID         string
+	Name       string
+	WriteTools string
+}
+
+// ListTenantMCPIntegrations returns the tenant's enabled MCP integrations with
+// their saved write_tools, read from the database without contacting the
+// servers. write_tools is a plain setting, never a secret.
+func ListTenantMCPIntegrations(ctx context.Context, tenantID uuid.UUID) ([]MCPIntegration, error) {
+	db, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("toolapproval.ListTenantMCPIntegrations: db: %w", err)
+	}
+	rows, err := db.Db.QueryContext(ctx, `SELECT i.id::text, i.name::text, COALESCE(icv.value, '')
+		FROM public.integrations i
+		LEFT JOIN public.integration_config_values icv
+			ON icv.integration_id = i.id AND icv.name = 'write_tools' AND NOT COALESCE(icv.is_encrypted, false)
+		WHERE i.tenant_id=$1 AND i.type='mcp' AND i.status='enabled' ORDER BY i.name`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("toolapproval.ListTenantMCPIntegrations: query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	integrations := []MCPIntegration{}
+	for rows.Next() {
+		var integration MCPIntegration
+		if err := rows.Scan(&integration.ID, &integration.Name, &integration.WriteTools); err != nil {
+			return nil, fmt.Errorf("toolapproval.ListTenantMCPIntegrations: scan: %w", err)
+		}
+		integrations = append(integrations, integration)
+	}
+	return integrations, rows.Err()
+}
+
+// TenantIntegrationNames maps each of the tenant's integrations, of any type or
+// status, to its name, so a rule pinned to one can be shown by name.
+func TenantIntegrationNames(ctx context.Context, tenantID uuid.UUID) (map[string]string, error) {
+	db, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("toolapproval.TenantIntegrationNames: db: %w", err)
+	}
+	rows, err := db.Db.QueryContext(ctx, `SELECT id::text, name::text FROM public.integrations WHERE tenant_id=$1`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("toolapproval.TenantIntegrationNames: query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	names := map[string]string{}
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("toolapproval.TenantIntegrationNames: scan: %w", err)
+		}
+		names[id] = name
+	}
+	return names, rows.Err()
+}
+
 // ListTenantIntegrations returns the tenant's enabled integrations of the given
 // types, by id and name only (never their configuration values).
 func ListTenantIntegrations(ctx context.Context, tenantID uuid.UUID, types []string) ([]Integration, error) {

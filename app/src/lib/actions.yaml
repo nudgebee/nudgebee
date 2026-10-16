@@ -3778,6 +3778,17 @@ actions:
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
       - role: tenant_admin
+  - name: integrations_update_mcp_write_tools
+    comment: Set which of an MCP integration's tools ask for approval before running
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/integration'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
   - name: integrations_check_connection
     comment: Test connectivity of a saved integration
     definition:
@@ -7940,6 +7951,7 @@ custom_types:
     - name: CreateIntegrationConfigRequest
     - name: IntegrationConfigValueInput
     - name: DeleteIntegrationConfigRequest
+    - name: UpdateMCPWriteToolsRequest
     - name: AnomalyTemplateListRequest
     - name: TriggerAnomalyExecuteRequest
     - name: ListAnomalyWhereRequest

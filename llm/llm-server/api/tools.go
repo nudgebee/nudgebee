@@ -48,8 +48,8 @@ func toolListTool(c *gin.Context, context *security.RequestContext, payload map[
 	// omitted from the tenant-wide view — they're already shown on the
 	// Agents tab and duplicating them here would be confusing.
 	if payload["account_id"] == nil || payload["account_id"] == "" {
-		resp := core.ListToolsForTenant(context)
-		c.JSON(200, buildApiResponse(resp, nil))
+		resp := append(core.ListToolsForTenant(context), tenantMCPWriteToolDtos(context)...)
+		c.JSON(200, buildApiResponse(filterToolsByType(resp, payload), nil))
 		return
 	}
 	accountIdPayload, ok := payload["account_id"].(string)
@@ -87,7 +87,61 @@ func toolListTool(c *gin.Context, context *security.RequestContext, payload map[
 			},
 		})
 	}
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, buildApiResponse(filterToolsByType(resp, payload), nil))
+}
+
+// tenantMCPWriteToolDtos lists, for the tenant-wide view, the MCP tools their
+// integrations mark as needing approval, from saved settings: listing every MCP
+// tool would mean contacting every server of every account (#40399).
+func tenantMCPWriteToolDtos(context *security.RequestContext) []core.ToolDto {
+	// Integrations are tenant-wide, so only callers who see every account get
+	// them, as with custom tools in this view.
+	sc := context.GetSecurityContext()
+	if !sc.IsTenantAdmin() && !sc.IsTenantReadAdmin() && !sc.IsSuperAdmin() && !sc.IsSuperAdminReadonly() {
+		return nil
+	}
+	tenantID, err := toolApprovalTenantID(context)
+	if err != nil {
+		return nil
+	}
+	tools, _, err := toolApprovalMCPWriteTools(context, tenantID)
+	if err != nil {
+		context.GetLogger().Warn("tools: failed to list MCP tools that need approval", "error", err)
+		return nil
+	}
+	dtos := make([]core.ToolDto, 0, len(tools))
+	for _, tool := range tools {
+		dtos = append(dtos, core.ToolDto{
+			Id:           tool.Integration.ID + ":" + tool.Name,
+			Name:         tool.Name,
+			Description:  "MCP tool of " + tool.Integration.Name,
+			Type:         core.ToolTypeCustom,
+			Status:       core.ToolStatusEnabled,
+			ExecutorType: core.ToolExecutorTypeMCP,
+			NBToolType:   core.NBToolTypeTool,
+			Config:       map[string]any{"integration_id": tool.Integration.ID},
+			Approval:     core.ToolApprovalAlways,
+		})
+	}
+	return dtos
+}
+
+// filterToolsByType keeps the entries of the requested nb_tool_type ("tool" or
+// "agent"), so the Tools list can leave out agents the Agents tab already
+// shows; without it every entry is returned, as pickers that offer agents need.
+func filterToolsByType(tools []core.ToolDto, payload map[string]any) []core.ToolDto {
+	wanted, _ := payload["nb_tool_type"].(string)
+	if wanted = strings.TrimSpace(wanted); wanted == "" {
+		return tools
+	}
+	// A new slice: the list can share its array with the tool cache.
+	kept := make([]core.ToolDto, 0, len(tools))
+	for _, tool := range tools {
+		if string(tool.NBToolType) == wanted {
+			kept = append(kept, tool)
+		}
+	}
+	return kept
 }
 
 func toolCreateTool(c *gin.Context, context *security.RequestContext, payload map[string]any) {

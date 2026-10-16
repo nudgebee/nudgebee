@@ -97,8 +97,6 @@ export const AI_TOOLS_SUB_TABS = [
     icon: SecurityIcon,
     Body: SecurityAdminTab,
     module: 'egressfilter',
-    // Tool Approvals inside is new; Beta leaves room to change it.
-    betaIcon: true,
     // EE-only body (app/src/ee/), stripped on OSS — callers drop the tab there. enterprise#37063.
     eeOnly: true,
   },

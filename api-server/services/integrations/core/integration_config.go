@@ -1784,6 +1784,9 @@ func DeleteIntegrationConfig(
 						"integration_id", intID, "error", execErr)
 					return execErr
 				}
+				if execErr := deleteToolApprovalRulesForIntegration(ctx, tx, tenantId, intID); execErr != nil {
+					return execErr
+				}
 				if _, execErr := tx.Exec(`DELETE FROM integrations WHERE id = $1`, intID); execErr != nil {
 					slog.Error("integrations: failed to delete linked datasource",
 						"integration_id", intID, "error", execErr)
@@ -1802,6 +1805,10 @@ func DeleteIntegrationConfig(
     `, integrationId)
 	if err != nil {
 		slog.Error("integrations: failed to delete from integration_config_values", "error", err)
+		return err
+	}
+
+	if err = deleteToolApprovalRulesForIntegration(ctx, tx, tenantId, integrationId); err != nil {
 		return err
 	}
 

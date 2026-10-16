@@ -839,6 +839,7 @@ const api = {
     `;
     const query: any = {};
     query.account_id = data.accountId;
+    if (data.nbToolType) query.nb_tool_type = data.nbToolType;
     try {
       const response = await queryGraphQL(LIST_TOOLS.replaceAll('__WHERE__', gqlStringify(query)), 'ListTools', {});
       return response;

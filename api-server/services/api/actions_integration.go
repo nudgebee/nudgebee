@@ -452,6 +452,31 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		}
 		return
 
+	case "integrations_update_mcp_write_tools":
+		// Which of an MCP server's tools ask for approval (#40399), saved on
+		// its own so the MCP Servers view needn't re-submit the integration.
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		integrationID, _ := requestInput["integration_id"].(string)
+		writeTools, _ := requestInput["write_tools"].(string)
+		if err := core.UpdateMCPWriteTools(ctx, integrationID, writeTools); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, map[string]string{"status": "success"})
+		// Each llm-server replica rebuilds the integration's tools, so the
+		// change applies to the next call.
+		if ids, lerr := core.ListLinkedCloudAccountIDsByIntegrationID(ctx, integrationID); lerr != nil {
+			ctx.GetLogger().Error("integrations: failed to list affected accounts after write_tools update (best-effort, cache will stay stale until TTL)",
+				"error", lerr, "integration_id", integrationID)
+		} else {
+			onIntegrationConfigChanged(ctx, ids)
+		}
+		return
+
 	case "integrations_test_connection", "integrations_check_connection":
 		request := map[string]string{}
 		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})

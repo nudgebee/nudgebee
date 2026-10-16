@@ -79,7 +79,7 @@ const EMPTY_RULE: ToolApprovalRule = {
 };
 
 const matchOptions = [
-  { value: 'exact_command', label: 'Exact command' },
+  { value: 'exact_command', label: 'Exact CLI command' },
   { value: 'command_regex', label: 'Regular expression (RE2, advanced)' },
   { value: 'arguments', label: 'Argument conditions' },
   { value: 'tool', label: 'Entire tool (broad)' },
@@ -151,6 +151,7 @@ export function parseCondition(condition: ConditionDraft): ToolApprovalCondition
 const ToolApprovalsAdminTab: React.FC = () => {
   const canWrite = isTenantAdmin() || !!getUserSession()?.isSuperAdmin;
   const [rules, setRules] = React.useState<ToolApprovalRule[]>([]);
+  const [integrationNames, setIntegrationNames] = React.useState<Record<string, string>>({});
   const [accounts, setAccounts] = React.useState<Account[]>([]);
   const [featureEnabled, setFeatureEnabled] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
@@ -179,6 +180,7 @@ const ToolApprovalsAdminTab: React.FC = () => {
     try {
       const [config, accountRows] = await Promise.all([listToolApprovalRules(signal), listToolApprovalAccounts(signal)]);
       setRules(config.rules || []);
+      setIntegrationNames(config.integration_names || {});
       setFeatureEnabled(config.enabled);
       setAccounts(accountRows);
     } catch (e) {
@@ -226,6 +228,9 @@ const ToolApprovalsAdminTab: React.FC = () => {
 
   // The tool list is the same for every rule, so it loads once per editor.
   const editorOpen = !!editing;
+  // MCP integrations that mark no tool as needing approval: all their tools
+  // run without asking, so none of them can be picked here (#40399).
+  const [unmarkedMcp, setUnmarkedMcp] = React.useState<string[]>([]);
   React.useEffect(() => {
     if (!editorOpen) {
       setToolOptions([]);
@@ -239,7 +244,10 @@ const ToolApprovalsAdminTab: React.FC = () => {
     void (async () => {
       try {
         const result = await listToolApprovalTools(controller.signal);
-        if (!controller.signal.aborted) setToolOptions(result.tools || []);
+        if (!controller.signal.aborted) {
+          setToolOptions(result.tools || []);
+          setUnmarkedMcp((result.unmarked_mcp_integrations || []).map((integration) => integration.name));
+        }
       } catch (e) {
         if (!controller.signal.aborted) {
           setToolOptions([]);
@@ -426,6 +434,15 @@ const ToolApprovalsAdminTab: React.FC = () => {
   };
 
   const accountName = (id: string | null) => (id ? accounts.find((a) => a.id === id)?.account_name || id : 'Organisation');
+  // A rule's target by name: an integration (MCP, GitHub, databases…) or a
+  // cluster/cloud account, whose configuration id is the account id.
+  // A target that no longer exists (deleted integration or account) matches
+  // nothing, so the rule waives nothing until it is re-pinned.
+  const targetLabel = (id: string) => {
+    if (integrationNames[id]) return `Integration: ${integrationNames[id]}`;
+    const account = accounts.find((a) => a.id === id);
+    return account ? `Target: ${account.account_name}` : 'Target removed, so this rule matches nothing';
+  };
   const missingRequiredConfig = configOptions.some(
     (row) => !!row.error || (row.configuration_required && !row.configuration_pending && !configIDs[row.account_id])
   );
@@ -436,7 +453,9 @@ const ToolApprovalsAdminTab: React.FC = () => {
       value: option.name,
       label: snakeToTitleCase(option.name),
       group:
-        option.configuration_mode === 'required'
+        option.source === 'mcp'
+          ? 'MCP tools'
+          : option.configuration_mode === 'required'
           ? 'Uses execution target'
           : option.configuration_mode === 'command'
           ? 'Target depends on command'
@@ -487,13 +506,9 @@ const ToolApprovalsAdminTab: React.FC = () => {
                   <Typography fontWeight={ds.weight.semibold}>{rule.name}</Typography>
                   <Typography variant='caption' color='text.secondary'>
                     {rule.tool_name} · {accountName(rule.account_id)} · revision {rule.revision}
+                    {rule.tool_config_id ? ` · ${targetLabel(rule.tool_config_id)}` : ''}
                     {rule.allow_unattended ? ' · also background runs' : ''}
                   </Typography>
-                  {rule.tool_config_id && (
-                    <Typography variant='caption' color='text.secondary'>
-                      Execution target: {rule.tool_config_id}
-                    </Typography>
-                  )}
                 </Box>
                 <Switch
                   checked={rule.enabled}
@@ -575,11 +590,28 @@ const ToolApprovalsAdminTab: React.FC = () => {
                 setConfigOptions([]);
                 setSelectedIntegrationIDs([]);
                 if (!editing.id) setScope('all');
-                setEditing({ ...editing, tool_name });
+                // An MCP tool has no CLI command, so it starts as an entire-tool rule.
+                const mcpTool = toolOptions.find((option) => option.name === tool_name)?.source === 'mcp';
+                setEditing({
+                  ...editing,
+                  tool_name,
+                  match_kind:
+                    mcpTool && (editing.match_kind === 'exact_command' || editing.match_kind === 'command_regex') ? 'tool' : editing.match_kind,
+                });
               }}
               options={renderedToolOptions}
               placeholder='Select a tool…'
-              instructionText='The rule only matches calls to this tool.'
+              instructionText={
+                <>
+                  Lists only tools that ask for approval, since a rule skips that ask: built-in tools that can change something (decided per call),
+                  MCP tools marked as needing approval, and custom tools that are not read-only. Other MCP tools run without asking, so they are not
+                  listed{unmarkedMcp.length > 0 ? ` (none marked yet in ${unmarkedMcp.join(', ')})` : ''}. Mark MCP tools in{' '}
+                  <Link href='/user-management#ai-tools/tools-mcp' openInNew>
+                    AI &amp; Tools → Tools &amp; MCP → MCP Servers
+                  </Link>
+                  .
+                </>
+              }
               loading={loadingTools}
               disabled={!!toolOptionsError}
               searchable
@@ -689,14 +721,18 @@ const ToolApprovalsAdminTab: React.FC = () => {
               value={editing.match_kind}
               onChange={(match_kind) => setEditing({ ...editing, match_kind: match_kind as ToolApprovalMatchKind })}
               instructionText={MATCH_HELP[editing.match_kind]}
-              options={matchOptions}
+              options={
+                selectedTool?.source === 'mcp'
+                  ? matchOptions.filter((option) => option.value === 'tool' || option.value === 'arguments')
+                  : matchOptions
+              }
               required
             />
             {(editing.match_kind === 'exact_command' || editing.match_kind === 'command_regex') && (
               <>
                 <Input
                   type='textarea'
-                  label={editing.match_kind === 'exact_command' ? 'Command' : 'Command regular expression (RE2)'}
+                  label={editing.match_kind === 'exact_command' ? 'CLI command' : 'CLI command regular expression (RE2)'}
                   help={
                     editing.match_kind === 'command_regex' ? (
                       <>
@@ -780,7 +816,7 @@ const ToolApprovalsAdminTab: React.FC = () => {
                   tone='warning'
                   surface='section'
                   title='Only the fields you list are checked'
-                  message='Every other field, including any command the tool runs, is approved with whatever value the assistant sends. To limit commands, use Exact command or Regular expression, or add a condition on the CLI command field: a chain then matches only when every command in it does, and a command substitution always asks.'
+                  message='Every other field, including any command the tool runs, is approved with whatever value the assistant sends. To limit commands, use Exact CLI command or Regular expression, or add a condition on the CLI command field: a chain then matches only when every command in it does, and a command substitution always asks.'
                 />
                 <Box>
                   <Typography fontWeight={ds.weight.semibold}>Argument conditions</Typography>

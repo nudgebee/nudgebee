@@ -19,6 +19,7 @@ import { snakeToTitleCase } from 'src/utils/common';
 import { toast as snackbar } from '@ui/Toast';
 import { Box, Stack, Typography } from '@mui/material';
 import Tooltip from '@ui/Tooltip';
+import { Chip } from '@ui/Chip';
 import { ds } from 'src/utils/colors';
 import { TOOL_CONFIGURATION_WARNING } from '@data/constants';
 import { HybridScopeChips } from '@components/llm/ScopeChip';
@@ -29,6 +30,42 @@ const CREATED_BY_OPTIONS = [
   { label: 'System Generated', value: 'system' },
   { label: 'User Created', value: 'custom' },
 ];
+
+// When a tool's calls ask for approval (#40399), from the tool list's `approval`.
+const APPROVAL_OPTIONS = [
+  { label: 'Always asks', value: 'always' },
+  { label: 'Auto (per call)', value: 'auto' },
+  { label: 'Never asks', value: 'never' },
+];
+const APPROVAL_DISPLAY = {
+  always: {
+    label: 'Always asks',
+    tone: 'warning',
+    help: 'Every call asks for approval: an MCP or custom tool marked as changing something. Tool Approvals rules can skip it.',
+  },
+  auto: {
+    label: 'Auto (per call)',
+    tone: 'info',
+    help: 'Decided per call from the command: reads run, writes ask for approval. Tool Approvals rules can skip it.',
+  },
+  never: { label: 'Never asks', tone: 'neutral', help: 'Calls run without asking for approval.' },
+};
+
+const ApprovalChip = ({ approval }) => {
+  const display = APPROVAL_DISPLAY[approval];
+  if (!display) return <Text value='—' />;
+  return (
+    <Tooltip title={display.help} placement='top'>
+      <Box component='span' sx={{ display: 'inline-flex' }}>
+        <Chip variant='tag' size='xs' tone={display.tone}>
+          {display.label}
+        </Chip>
+      </Box>
+    </Tooltip>
+  );
+};
+
+ApprovalChip.propTypes = { approval: PropTypes.string };
 
 const ListTools = ({ accountId, stickyTable = false }) => {
   // Tenant-wide read-only mode: when the Settings modal is opened from the
@@ -51,6 +88,7 @@ const ListTools = ({ accountId, stickyTable = false }) => {
   const [searchToolByName, setSearchToolByName] = React.useState('');
   const [createdByFilter, setCreatedByFilter] = React.useState(null);
   const [statusFilter, setStatusFilter] = React.useState(null);
+  const [approvalFilter, setApprovalFilter] = React.useState(null);
   const [deleteModal, setDeleteModal] = React.useState(false);
   const [isDeleting, setIsDeleting] = React.useState(false);
   const [toolToDelete, setToolToDelete] = React.useState(null);
@@ -90,11 +128,12 @@ const ListTools = ({ accountId, stickyTable = false }) => {
 
       const createdByMatches = !createdByFilter || raw.type === createdByFilter;
       const statusMatches = !statusFilter || raw.status === statusFilter;
+      const approvalMatches = !approvalFilter || raw.approval === approvalFilter;
 
-      return nameMatches && createdByMatches && statusMatches;
+      return nameMatches && createdByMatches && statusMatches && approvalMatches;
     });
     setData(filteredData);
-  }, [searchToolByName, createdByFilter, statusFilter, originalData]);
+  }, [searchToolByName, createdByFilter, statusFilter, approvalFilter, originalData]);
 
   const handleSearchEnter = () => {
     listTools();
@@ -137,7 +176,8 @@ const ListTools = ({ accountId, stickyTable = false }) => {
   const listTools = () => {
     setLoading(true);
     apiAskNudgebee
-      .listTools({ accountId })
+      // Agents are listed on the Agents tab, so the Tools list asks for tools only.
+      .listTools({ accountId, nbToolType: 'tool' })
       .then((res) => {
         const listToolsResponse = res?.data?.data?.ai_list_tools?.data ?? [];
         const allTools = listToolsResponse.map((tool) => tool);
@@ -185,13 +225,16 @@ const ListTools = ({ accountId, stickyTable = false }) => {
                     <OwnerTypeBadge type={tool.type} systemSuffix='System' userLabel='User Created' />
                   </Box>
                 ),
-                rawData: { name: tool.name, type: tool.type, status: tool.status },
+                rawData: { name: tool.name, type: tool.type, status: tool.status, approval: tool.approval },
               },
               {
                 component: <Text value={tool.description || '-'} showAutoEllipsis requiredToolTip lineClamp={2} />,
               },
               {
                 component: <Label text={tool.status} />,
+              },
+              {
+                component: <ApprovalChip approval={tool.approval} />,
               },
               // Tenant-wide swaps NB Tool Type for an Account column. System
               // tools never have an account; show '—'.
@@ -342,6 +385,13 @@ const ListTools = ({ accountId, stickyTable = false }) => {
               onSelect={(_e, item) => setCreatedByFilter(item?.value ?? null)}
             />
             <FilterDropdown
+              id='tool-approval-filter'
+              label='Approval'
+              options={APPROVAL_OPTIONS}
+              value={approvalFilter}
+              onSelect={(_e, item) => setApprovalFilter(item?.value ?? null)}
+            />
+            <FilterDropdown
               id='tool-status-filter'
               label='Status'
               options={statusOptions}
@@ -363,15 +413,17 @@ const ListTools = ({ accountId, stickyTable = false }) => {
               isTenantWide
                 ? [
                     { name: 'Name', width: '20%' },
-                    { name: 'Description', width: '40%' },
-                    { name: 'Status', width: '15%' },
+                    { name: 'Description', width: '30%' },
+                    { name: 'Status', width: '12%' },
+                    { name: 'Approval', width: '13%' },
                     { name: 'Account', width: '15%' },
                     { name: 'Actions', width: '10%' },
                   ]
                 : [
                     { name: 'Name', width: '20%' },
-                    { name: 'Description', width: '40%' },
-                    { name: 'Status', width: '15%' },
+                    { name: 'Description', width: '30%' },
+                    { name: 'Status', width: '12%' },
+                    { name: 'Approval', width: '13%' },
                     { name: 'NB Tool Type', width: '15%' },
                     { name: 'Actions', width: '10%' },
                   ]

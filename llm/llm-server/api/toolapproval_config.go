@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -90,6 +91,8 @@ type toolApprovalToolOption struct {
 	TargetKind string `json:"target_kind"`
 	// Fields are the tool's input fields an argument condition can test.
 	Fields []toolApprovalToolField `json:"fields"`
+	// Source is "mcp" for an MCP server's tool, whose calls have no command.
+	Source string `json:"source,omitempty"`
 }
 
 type toolApprovalToolField struct {
@@ -296,6 +299,26 @@ func validateToolApprovalIdentity(ctx *security.RequestContext, rule *toolapprov
 	if strings.EqualFold(toolName, "shell") {
 		toolName = toolcore.ToolExecuteShellCommand
 	}
+	// An MCP tool belongs to one integration and is checked from saved
+	// settings, without contacting its server. A built-in tool of the same name
+	// wins, and the rule is always pinned to the MCP tool's own integration, so
+	// it never covers a same-named tool of another integration.
+	if _, builtIn := toolcore.GetNBTool("", toolName); !builtIn {
+		if mcpTool, found, err := findMCPWriteTool(ctx, rule.TenantID, toolName); err != nil {
+			return err
+		} else if found {
+			rule.ToolName = mcpTool.Name
+			if !rule.AllAccounts() {
+				return errors.New("tool approval: an MCP tool's rule applies to its integration; choose All integrations or Selected integrations")
+			}
+			if rule.ToolConfigID != nil && *rule.ToolConfigID != mcpTool.Integration.ID {
+				return errors.New("tool approval: an MCP tool's rule can only be pinned to its own integration")
+			}
+			integrationID := mcpTool.Integration.ID
+			rule.ToolConfigID = &integrationID
+			return nil
+		}
+	}
 	resolvedTool, err := resolveToolApprovalTool(rule, toolName)
 	if err != nil {
 		return err
@@ -424,12 +447,60 @@ func toolApprovalConfigOptions(ctx *security.RequestContext, accountID, toolName
 	return true, false, options, nil
 }
 
+// mcpWriteTool is an MCP server's tool that its integration marks as a write,
+// under the name the planner sees it by.
+type mcpWriteTool struct {
+	Name        string
+	Integration toolapproval.Integration
+}
+
+// toolApprovalMCPWriteTools reads, from saved integration settings and without
+// contacting the servers, the MCP tools marked as writes, and the MCP
+// integrations that mark none (all their tools run without asking).
+func toolApprovalMCPWriteTools(ctx *security.RequestContext, tenantID uuid.UUID) ([]mcpWriteTool, []toolapproval.Integration, error) {
+	integrations, err := toolapproval.ListTenantMCPIntegrations(ctx.GetContext(), tenantID)
+	if err != nil {
+		return nil, nil, err
+	}
+	tools := []mcpWriteTool{}
+	unmarked := []toolapproval.Integration{}
+	for _, integration := range integrations {
+		identity := toolapproval.Integration{ID: integration.ID, Name: integration.Name}
+		names := toolcore.ParseToolNameList(integration.WriteTools)
+		if len(names) == 0 {
+			unmarked = append(unmarked, identity)
+		}
+		for _, name := range names {
+			tools = append(tools, mcpWriteTool{Name: toolcore.MCPToolName(integration.Name, name), Integration: identity})
+		}
+	}
+	return tools, unmarked, nil
+}
+
+// findMCPWriteTool finds a write-marked MCP tool by the name a rule uses.
+func findMCPWriteTool(ctx *security.RequestContext, tenantID uuid.UUID, name string) (mcpWriteTool, bool, error) {
+	tools, _, err := toolApprovalMCPWriteTools(ctx, tenantID)
+	if err != nil {
+		return mcpWriteTool{}, false, fmt.Errorf("tool approval: list MCP integrations: %w", err)
+	}
+	for _, tool := range tools {
+		if strings.EqualFold(tool.Name, strings.TrimSpace(name)) {
+			return tool, true, nil
+		}
+	}
+	return mcpWriteTool{}, false, nil
+}
+
 // toolApprovalTenantTools lists the tools a rule can name: the tenant-wide
 // system and custom tools. It is read once per form, independent of the
 // accounts chosen, and does no per-account MCP discovery; whether a tool is
 // available in each selected account is checked when the rule is saved.
 func toolApprovalTenantTools(ctx *security.RequestContext) []toolApprovalToolOption {
-	candidates := toolcore.ListToolsForTenant(ctx)
+	candidates := slices.DeleteFunc(toolcore.ListToolsForTenant(ctx), func(tool toolcore.ToolDto) bool {
+		// A custom tool asks for approval only when marked as a write, so a
+		// rule on a read-only one would waive nothing.
+		return tool.Type == toolcore.ToolTypeCustom && !toolcore.CustomToolWrites(tool.Config)
+	})
 	kinds := make(map[string]string, len(candidates))
 	fields := make(map[string][]toolApprovalToolField, len(candidates))
 	for i := range candidates {
@@ -450,6 +521,15 @@ func toolApprovalTenantTools(ctx *security.RequestContext) []toolApprovalToolOpt
 		if options[i].TargetKind == "" {
 			options[i].TargetKind = toolApprovalTargetNone
 		}
+	}
+	return options
+}
+
+// toolApprovalMCPToolOptions are the picker entries for write-marked MCP tools.
+func toolApprovalMCPToolOptions(tools []mcpWriteTool) []toolApprovalToolOption {
+	options := make([]toolApprovalToolOption, 0, len(tools))
+	for _, tool := range tools {
+		options = append(options, toolApprovalToolOption{Name: tool.Name, ConfigurationMode: "none", TargetKind: toolApprovalTargetIntegration, Fields: []toolApprovalToolField{}, Source: "mcp"})
 	}
 	return options
 }
@@ -498,7 +578,19 @@ func toolApprovalListTools(c *gin.Context, ctx *security.RequestContext) {
 	if !requireToolApprovalTenantReader(c, ctx) {
 		return
 	}
-	c.JSON(http.StatusOK, buildApiResponse(gin.H{"tools": toolApprovalTenantTools(ctx)}, nil))
+	tenantID, err := toolApprovalTenantID(ctx)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{err}))
+		return
+	}
+	mcpTools, unmarked, err := toolApprovalMCPWriteTools(ctx, tenantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		return
+	}
+	options := append(toolApprovalTenantTools(ctx), toolApprovalMCPToolOptions(mcpTools)...)
+	sort.Slice(options, func(i, j int) bool { return options[i].Name < options[j].Name })
+	c.JSON(http.StatusOK, buildApiResponse(gin.H{"tools": options, "unmarked_mcp_integrations": unmarked}, nil))
 }
 
 func toolApprovalOptions(c *gin.Context, ctx *security.RequestContext, payload map[string]any) {
@@ -520,6 +612,19 @@ func toolApprovalOptions(c *gin.Context, ctx *security.RequestContext, payload m
 		return
 	}
 	if request.Organisation {
+		// An MCP tool can only be pinned to its own integration; a built-in tool
+		// of the same name wins.
+		if _, builtIn := toolcore.GetNBTool("", strings.TrimSpace(request.ToolName)); !builtIn {
+			mcpTool, found, err := findMCPWriteTool(ctx, tenantID, request.ToolName)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+				return
+			}
+			if found {
+				c.JSON(http.StatusOK, buildApiResponse(gin.H{"target_kind": toolApprovalTargetIntegration, "integrations": []toolapproval.Integration{mcpTool.Integration}}, nil))
+				return
+			}
+		}
 		// The integrations an organisation rule for this tool can be pinned to.
 		probe := &toolapproval.Rule{TenantID: tenantID}
 		tool, err := resolveToolApprovalTool(probe, strings.TrimSpace(request.ToolName))
@@ -579,7 +684,13 @@ func toolApprovalList(c *gin.Context, ctx *security.RequestContext) {
 		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
-	c.JSON(200, buildApiResponse(gin.H{"enabled": config.Config.LlmServerToolApprovalPolicyEnabled, "rules": rules}, nil))
+	// Integration names let a rule pinned to an integration show its name.
+	integrationNames, err := toolapproval.TenantIntegrationNames(c.Request.Context(), tenantID)
+	if err != nil {
+		ctx.GetLogger().Warn("tool approval: failed to load integration names", "error", err)
+		integrationNames = map[string]string{}
+	}
+	c.JSON(200, buildApiResponse(gin.H{"enabled": config.Config.LlmServerToolApprovalPolicyEnabled, "rules": rules, "integration_names": integrationNames}, nil))
 }
 
 func toolApprovalUpsert(c *gin.Context, ctx *security.RequestContext, payload map[string]any) {

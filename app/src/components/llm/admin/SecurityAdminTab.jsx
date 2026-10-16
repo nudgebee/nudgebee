@@ -4,6 +4,8 @@ import ShieldOutlinedIcon from '@mui/icons-material/ShieldOutlined';
 import RuleOutlinedIcon from '@mui/icons-material/RuleOutlined';
 import { useRouter } from 'next/router';
 import { ToggleGroup } from '@ui/ToggleGroup';
+import SafeIcon from '@shared/icons/SafeIcon';
+import { BetaIcon } from '@assets';
 import { getUserSession } from '@lib/auth';
 import { ds } from '@utils/colors';
 import EgressFilterAdminTab from './EgressFilterAdminTab';
@@ -21,7 +23,23 @@ const SecurityAdminTab = () => {
   const tab = routed && canReadToolApprovals && router.asPath.split('#')[1]?.endsWith('/tool-approvals') ? 'tool-approvals' : modalTab;
   const options = [
     { value: 'egress', label: 'Egress Filter', icon: <ShieldOutlinedIcon sx={{ fontSize: 14 }} /> },
-    ...(canReadToolApprovals ? [{ value: 'tool-approvals', label: 'Tool Approvals', icon: <RuleOutlinedIcon sx={{ fontSize: 14 }} /> }] : []),
+    ...(canReadToolApprovals
+      ? [
+          {
+            value: 'tool-approvals',
+            // New; Beta leaves room to change it.
+            label: (
+              <Box component='span' sx={{ display: 'inline-flex', alignItems: 'flex-start', gap: ds.space[1] }}>
+                Tool Approvals
+                <Box component='span' sx={{ display: 'inline-flex', marginTop: ds.space.mul(0, -5) }}>
+                  <SafeIcon src={BetaIcon} alt='Beta icon' style={{ height: ds.space.mul(0, 10), width: ds.space.mul(0, 12) }} />
+                </Box>
+              </Box>
+            ),
+            icon: <RuleOutlinedIcon sx={{ fontSize: 14 }} />,
+          },
+        ]
+      : []),
   ];
 
   const handleTabChange = (next) => {

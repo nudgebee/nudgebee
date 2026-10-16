@@ -6,6 +6,8 @@ import apiAskNudgebee from '@api1/ask-nudgebee';
 import { Button } from '@ui/Button';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
+import { Switch } from '@ui/Switch';
+import { isSuperAdmin, isTenantAdmin } from '@lib/auth';
 import { toast as snackbar } from '@ui/Toast';
 import { getLlmIdentifierValidationMessage } from 'src/utils/common';
 import { ds } from '@utils/colors';
@@ -24,6 +26,12 @@ const CreateTool = ({ accountId, handleClose, allTools, editMode = false, toolDa
   const [containerImage, setContainerImage] = React.useState(
     editMode && toolData && (toolData.executor_type || '').toLowerCase() === 'container' ? toolData.config?.image || '' : ''
   );
+  // Off marks the tool as a write: Nubi asks for approval before running it.
+  // Turning a write tool back to read-only removes that, so only a tenant
+  // admin or super admin can (the server enforces the same).
+  const savedAsWrite = editMode && toolData?.config?.read_only === false;
+  const [readOnly, setReadOnly] = React.useState(!savedAsWrite);
+  const canMarkReadOnly = isTenantAdmin() || isSuperAdmin();
   const [containerCommand, setContainerCommand] = React.useState(
     editMode && toolData && (toolData.executor_type || '').toLowerCase() === 'container' && toolData.config?.command?.length
       ? toolData.config.command[0]
@@ -98,6 +106,7 @@ const CreateTool = ({ accountId, handleClose, allTools, editMode = false, toolDa
         config: {
           image: containerImage,
           command: containerCommand ? [containerCommand.trim()] : [],
+          read_only: readOnly,
         },
       };
     }
@@ -186,6 +195,18 @@ const CreateTool = ({ accountId, handleClose, allTools, editMode = false, toolDa
               onChange={(next) => setContainerCommand(next)}
               placeholder='e.g., /bin/sh or printenv (overrides image ENTRYPOINT)'
             />
+            <Box data-testid='tool-read-only-field'>
+              <Switch
+                checked={readOnly}
+                onChange={(_event, checked) => setReadOnly(checked)}
+                disabled={savedAsWrite && !readOnly && !canMarkReadOnly}
+                label='Read-only'
+              />
+              <Typography variant='caption' color='text.secondary' component='div'>
+                On: the tool runs without asking. Off: it changes something, so Nubi asks for approval first and alert investigations never run it.
+                {savedAsWrite && !canMarkReadOnly ? ' Only a tenant admin or super admin can turn it back to read-only.' : ''}
+              </Typography>
+            </Box>
           </>
         )}
       </Box>

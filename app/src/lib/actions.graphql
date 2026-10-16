@@ -1568,6 +1568,12 @@ type Mutation {
 }
 
 type Mutation {
+  integrations_update_mcp_write_tools(
+    request: UpdateMCPWriteToolsRequest!
+  ): DeleteIntegrationConfigResponse
+}
+
+type Mutation {
   integrations_check_connection(
     request: IntegrationTestConnectionRequest!
   ): IntegrationTestConnectionResponse
@@ -4565,6 +4571,8 @@ input ListAgentRequest {
 
 input ListToolRequest {
   account_id: String!
+  "Only entries of this type (tool or agent); omitted returns both."
+  nb_tool_type: String
 }
 
 input AIListModelsRequest {
@@ -5301,6 +5309,8 @@ input WorkflowListRequest {
   type: String
   created_by: String
   next_page_token: String
+  "Only automations Nubi can (true) or cannot (false) run as tools."
+  ai_invocable: Boolean
 }
 
 input WorkflowGetRequest {
@@ -8344,6 +8354,12 @@ type CreateIntegrationConfigResponse {
   schema: jsonb
 }
 
+input UpdateMCPWriteToolsRequest {
+  integration_id: String!
+  "The MCP server's tool names that ask for approval, comma separated; empty for none."
+  write_tools: String!
+}
+
 type DeleteIntegrationConfigResponse {
   status: String!
 }
@@ -9348,6 +9364,10 @@ type Workflow {
   created_from_session_id: String
   description: String
   ai_invocable: Boolean
+  "The author allowed Nubi to run it without asking."
+  ai_auto_approve: Boolean
+  "Set when the automation belongs to an agent; Nubi never runs those as tools."
+  bee: jsonb
 }
 
 type WorkflowDefinition {

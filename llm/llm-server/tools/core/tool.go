@@ -2,6 +2,7 @@ package core
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -258,13 +259,15 @@ type ToolType string
 
 // Error messages
 const (
-	errAccountIDRequired  = "accountId is required"
-	errToolNameRequired   = "tool.name is required"
-	errToolIDRequired     = "tool.id is required"
-	errToolStatusRequired = "tool.status is required"
-	errUserIDRequired     = "userId is required"
-	errUnauthorized       = "auth: unauthorized"
-	errToolNameNotValid   = "tool.name doesnt follow naming guidelines"
+	errAccountIDRequired        = "accountId is required"
+	errToolNameRequired         = "tool.name is required"
+	errToolIDRequired           = "tool.id is required"
+	errToolStatusRequired       = "tool.status is required"
+	errUserIDRequired           = "userId is required"
+	errUnauthorized             = "auth: unauthorized"
+	errToolNameNotValid         = "tool.name doesnt follow naming guidelines"
+	errReadOnlyNeedsTenantAdmin = "tool: only a tenant admin or super admin can mark a write tool as read-only"
+	errToolNameTaken            = "tools: a built-in tool or agent already has this name"
 )
 
 // Log messages
@@ -323,6 +326,8 @@ type ToolDto struct {
 	NeedsConfig  bool              `json:"needs_config"`
 	IsConfigured bool              `json:"is_configured"`
 	ConfigSchema *ToolConfigSchema `json:"config_schema,omitempty"`
+	// Approval is when the tool's calls ask for approval (#40399).
+	Approval ToolApproval `json:"approval,omitempty"`
 	// AccountId / AccountName are populated only by ListToolsForTenant —
 	// the per-account list path leaves them empty (the page already knows
 	// which account it's on). The b-Cortex tenant-wide view uses them to
@@ -352,6 +357,7 @@ func getSystemToolDto(context *security.RequestContext, accountId string, toolNa
 		Config:       map[string]any{},
 		InputSchema:  ModelInputSchema(nbTool),
 		NBToolType:   nbTool.GetType(),
+		Approval:     ApprovalMode(nbTool),
 	}
 
 	if configTool, ok := nbTool.(NBToolConfig); ok {
@@ -410,6 +416,9 @@ func ListTools(context *security.RequestContext, accountId string) []ToolDto {
 	for _, t := range ListCustomTools(accountId) {
 		if t.ExecutorType == ToolExecutorTypeMCP {
 			continue
+		}
+		if t.NBToolType == NBToolTypeTool {
+			t.Approval = customToolApproval(t.Config)
 		}
 		finalTools = append(finalTools, t)
 	}
@@ -569,6 +578,9 @@ func CreateCustomTool(context *security.RequestContext, accountId string, tool T
 		return ToolDto{}, errors.New(errUnauthorized)
 	}
 
+	if isSystemToolName(tool.Name) {
+		return ToolDto{}, errors.New(errToolNameTaken)
+	}
 	// check if tool exists with same name
 	toolIds, err := getCustomToolIdByNameAndAccountId(accountId, tool.Name)
 	if err != nil {
@@ -844,6 +856,9 @@ func UpdateCustomTool(context *security.RequestContext, accountId, name string, 
 	if tool.Status == "" {
 		return errors.New(errToolStatusRequired)
 	}
+	if !strings.EqualFold(tool.Name, name) && isSystemToolName(tool.Name) {
+		return errors.New(errToolNameTaken)
+	}
 
 	userId := context.GetSecurityContext().GetUserId()
 	if userId == "" {
@@ -877,6 +892,18 @@ func UpdateCustomTool(context *security.RequestContext, accountId, name string, 
 		}
 		if !exists {
 			return nil, errors.New("tool not found or not owned by account - " + toolId)
+		}
+		// Marking a write tool read-only removes its approval prompt, so only a
+		// tenant admin or super admin may do it; anyone who can edit the tool may mark it write.
+		var stored string
+		if err := tx.GetContext(context.GetContext(), &stored, `select coalesce(config::text, '{}') from llm_tools where id = $1`, toolId); err != nil {
+			return nil, fmt.Errorf("tool: failed to read tool config: %w", err)
+		}
+		var previous map[string]any
+		_ = json.Unmarshal([]byte(stored), &previous)
+		sc := context.GetSecurityContext()
+		if CustomToolWrites(previous) && !CustomToolWrites(tool.Config) && !sc.IsTenantAdmin() && !sc.IsSuperAdmin() {
+			return nil, errors.New(errReadOnlyNeedsTenantAdmin)
 		}
 		return nil, nil
 	})
@@ -1151,12 +1178,18 @@ func ListToolsForTenant(context *security.RequestContext) []ToolDto {
 			Config:       map[string]any{},
 			InputSchema:  ModelInputSchema(nbTool),
 			NBToolType:   nbTool.GetType(),
+			Approval:     ApprovalMode(nbTool),
 			// NeedsConfig / IsConfigured / ConfigSchema deliberately left
 			// at zero values — per-account config doesn't apply in the
 			// tenant-wide view.
 		})
 	}
-	tools = append(tools, ListCustomToolsForTenant(context)...)
+	for _, custom := range ListCustomToolsForTenant(context) {
+		if custom.NBToolType == NBToolTypeTool {
+			custom.Approval = customToolApproval(custom.Config)
+		}
+		tools = append(tools, custom)
+	}
 	return tools
 }
 

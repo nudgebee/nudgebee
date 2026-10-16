@@ -8,6 +8,8 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/relay"
+	"nudgebee/llm/security"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -249,6 +251,9 @@ type mcpIntegrationConfig struct {
 	URL             string
 	AuthType        string
 	LLMInstructions string
+	// WriteTools are the server's own tool names whose calls change something,
+	// so they ask for approval. Every other tool runs as before.
+	WriteTools []string
 	// Auth credentials (decrypted)
 	BearerToken       string
 	Username          string
@@ -301,6 +306,28 @@ func mcpReadOnlyHint(annotations json.RawMessage) bool {
 
 func (m mcpIntegrationTool) Name() string {
 	return m.toolName
+}
+
+// InferToolRequestType reports a write for the tools the integration lists
+// in write_tools, so they ask for approval; others stay unclassified, as before.
+func (m mcpIntegrationTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (ToolRequestType, error) {
+	if slices.Contains(m.config.WriteTools, m.mcpToolName) {
+		return ToolRequestTypeUpdate, nil
+	}
+	return "", nil
+}
+
+// approvalMark: an MCP tool asks only when its integration lists it.
+func (m mcpIntegrationTool) approvalMark() ToolApproval {
+	if slices.Contains(m.config.WriteTools, m.mcpToolName) {
+		return ToolApprovalAlways
+	}
+	return ToolApprovalNever
+}
+
+// IntegrationID is the MCP integration the tool belongs to.
+func (m mcpIntegrationTool) IntegrationID() string {
+	return m.config.IntegrationID
 }
 
 func (m mcpIntegrationTool) Description() string {
@@ -679,7 +706,8 @@ func ListMCPIntegrationToolDtos(accountId string) []ToolDto {
 			ExecutorType: ToolExecutorTypeMCP,
 			NBToolType:   NBToolTypeTool,
 			InputSchema:  mcpTool.toolSchema,
-			Config:       map[string]any{"integration_id": mcpTool.config.IntegrationID},
+			Config:       map[string]any{"integration_id": mcpTool.config.IntegrationID, "mcp_tool_name": mcpTool.mcpToolName},
+			Approval:     ApprovalMode(mcpTool),
 			IsConfigured: true,
 		})
 	}
@@ -855,6 +883,8 @@ func scanMCPIntegrationConfigs(rows *sqlx.Rows) ([]mcpIntegrationConfig, error) 
 			cfg.CustomHeaderValue = val
 		case "llm_instructions":
 			cfg.LLMInstructions = val
+		case "write_tools":
+			cfg.WriteTools = ParseToolNameList(val)
 		case "oauth_token_url":
 			cfg.OAuthTokenURL = val
 		case "oauth_client_id":
@@ -1010,7 +1040,6 @@ func runMCPDiscovery(accountId string, cfg mcpIntegrationConfig, authoritative b
 	}
 
 	tools := make([]NBTool, 0, len(rpcResp.Result.Tools))
-	prefix := sanitizeToolPrefix(cfg.IntegrationName)
 
 	for _, t := range rpcResp.Result.Tools {
 		if t.Name == "" {
@@ -1047,7 +1076,7 @@ func runMCPDiscovery(accountId string, cfg mcpIntegrationConfig, authoritative b
 		}
 
 		// Prefix tool name with integration name for uniqueness
-		toolName := prefix + "_" + t.Name
+		toolName := MCPToolName(cfg.IntegrationName, t.Name)
 
 		tools = append(tools, mcpIntegrationTool{
 			config:       cfg,
@@ -1063,12 +1092,45 @@ func runMCPDiscovery(accountId string, cfg mcpIntegrationConfig, authoritative b
 		})
 	}
 
+	discovered := make([]string, 0, len(rpcResp.Result.Tools))
+	for _, t := range rpcResp.Result.Tools {
+		discovered = append(discovered, t.Name)
+	}
+	warnMissingWriteTools(log, cfg.WriteTools, discovered)
 	toolCircuitBreakerInstance.RecordSuccess(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
 	common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "success")
 	o := mcpSuccess(true, len(tools))
 	recordMCPHealth(accountId, cfg, o, authoritative)
 	log.Info("mcp-integration: discovered tools", "count", len(tools))
 	return tools, o
+}
+
+// MCPToolName is the name an MCP server's tool is offered under: the
+// integration's name as a prefix, then the server's own tool name.
+func MCPToolName(integrationName, serverTool string) string {
+	return sanitizeToolPrefix(integrationName) + "_" + serverTool
+}
+
+// ParseToolNameList reads write_tools: tool names separated by commas, as the
+// integration form saves list fields.
+func ParseToolNameList(value string) []string {
+	var names []string
+	for _, name := range strings.Split(value, ",") {
+		if name = strings.TrimSpace(name); name != "" && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// warnMissingWriteTools logs write_tools entries the server no longer offers,
+// e.g. after a rename, since the renamed tool would no longer ask.
+func warnMissingWriteTools(log *slog.Logger, writeTools []string, discovered []string) {
+	for _, name := range writeTools {
+		if !slices.Contains(discovered, name) {
+			log.Warn("mcp-integration: write tool not offered by the server; it will not ask for approval", "write_tool", name)
+		}
+	}
 }
 
 // sanitizeToolPrefix creates a valid tool name prefix from an integration name.

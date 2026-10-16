@@ -40,6 +40,7 @@ import VmAgentCredentialsDialog from './VmAgentCredentialsDialog';
 import { buildWebhookUrl } from '@lib/webhookUrl';
 import { docsUrl } from '@lib/externalUrls';
 import ModelAliasList from '@components/common/forms/ModelAliasList';
+import McpWriteToolsField from '@components/common/forms/McpWriteToolsField';
 import LabelMappingCards, { parseLogLabelMappings, serializeLogLabelMappings } from './LabelMappingCards';
 import WebhookLabelHelpTooltip from './WebhookLabelHelpTooltip';
 import useLogFieldOptions, { fieldOptionsKey, indexForAccount } from './useLogFieldOptions';
@@ -2619,7 +2620,44 @@ const IntegrationDynamicFormModal = ({
                             break;
 
                           case 'string':
-                            if (field.widget === 'model_alias_list') {
+                            if (field.widget === 'mcp_write_tools') {
+                              inputComponent = (
+                                <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
+                                  <Typography
+                                    sx={{
+                                      fontFamily: 'var(--ds-font-display)',
+                                      fontSize: 'var(--ds-text-body)',
+                                      fontWeight: ds.weight.semibold,
+                                      color: ds.gray[800],
+                                      mb: ds.space[1],
+                                      pl: ds.space[1],
+                                    }}
+                                  >
+                                    Security
+                                  </Typography>
+                                  <Typography
+                                    variant='body2'
+                                    sx={{
+                                      color: ds.gray[400],
+                                      fontSize: 'var(--ds-text-small)',
+                                      lineHeight: 1.5,
+                                      mb: ds.space[2],
+                                      pl: ds.space[1],
+                                    }}
+                                  >
+                                    {field.description}
+                                  </Typography>
+                                  <McpWriteToolsField
+                                    label={field.display_name || 'Tools that need approval'}
+                                    value={formValues[key] || ''}
+                                    onChange={(value) => handleChange(key, value)}
+                                    disabled={field.disabled || field.allow_edit === false}
+                                    integrationId={editData?.id}
+                                    accountId={editData?.integrations_cloud_accounts?.[0]?.cloud_account_id}
+                                  />
+                                </Box>
+                              );
+                            } else if (field.widget === 'model_alias_list') {
                               inputComponent = (
                                 <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
                                   <Typography

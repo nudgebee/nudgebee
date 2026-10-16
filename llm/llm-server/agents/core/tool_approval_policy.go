@@ -131,6 +131,14 @@ func (e *plannerExecutor) toolApprovalTarget(tool toolcore.NBTool, action NBAgen
 	if owner == nil {
 		return unresolved
 	}
+	// An MCP server's tools belong to one integration, so a rule can be pinned
+	// to it; the call runs on the conversation's account.
+	if scoped, ok := owner.(toolcore.IntegrationTool); ok {
+		if id := scoped.IntegrationID(); id != "" {
+			return toolApprovalTarget{ConfigID: id, AccountID: conversation}
+		}
+		return unresolved
+	}
 	if _, configurable := owner.(toolcore.NBToolConfig); !configurable {
 		return toolApprovalTarget{AccountID: conversation}
 	}

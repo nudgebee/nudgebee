@@ -77,7 +77,6 @@ const AIToolsModal = ({ open, onClose }) => {
         text: t.text,
         icon: t.icon,
         iconSize: 16,
-        betaIcon: t.betaIcon,
         disabled: lacksPermission,
         disabledTooltip: t.module && lacksPermission ? missingPermissionMessage(`${t.module}:Read`) : undefined,
       };

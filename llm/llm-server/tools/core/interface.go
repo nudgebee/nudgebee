@@ -359,6 +359,12 @@ type ToolRequestInference interface {
 	InferToolRequestType(ctx *security.RequestContext, toolName, input string) (ToolRequestType, error)
 }
 
+// IntegrationTool is implemented by tools that belong to one integration, such
+// as an MCP server's tools, so an approval rule can be pinned to it.
+type IntegrationTool interface {
+	IntegrationID() string
+}
+
 // ReadOnlyTool is embedded by tools that only ever read (observability
 // queries, searches, read-only views, skills, the notebook). It classifies every
 // call as a read, so the approval check does not log it as unchecked (#39880
@@ -368,6 +374,44 @@ type ReadOnlyTool struct{}
 
 func (ReadOnlyTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (ToolRequestType, error) {
 	return ToolRequestTypeRead, nil
+}
+
+// ReadOnly marks a tool that embeds ReadOnlyTool, so lists can show it never
+// asks for approval.
+func (ReadOnlyTool) ReadOnly() bool { return true }
+
+// ToolApproval says when calls of a tool ask for approval, as tool lists show it.
+type ToolApproval string
+
+const (
+	// ToolApprovalAlways: every call asks (an MCP or custom tool marked as a write).
+	ToolApprovalAlways ToolApproval = "always"
+	// ToolApprovalAuto: decided per call; reads run, writes ask.
+	ToolApprovalAuto ToolApproval = "auto"
+	// ToolApprovalNever: calls run without asking.
+	ToolApprovalNever ToolApproval = "never"
+)
+
+// ApprovalMode is when calls of the tool ask for approval. Agents have none:
+// the tools they call decide.
+func ApprovalMode(tool NBTool) ToolApproval {
+	if tool == nil || tool.GetType() != NBToolTypeTool {
+		return ""
+	}
+	if marked, ok := tool.(interface{ ReadOnly() bool }); ok && marked.ReadOnly() {
+		return ToolApprovalNever
+	}
+	// An interface, not a type switch, so a value or a pointer both match.
+	if marked, ok := tool.(interface{ approvalMark() ToolApproval }); ok {
+		return marked.approvalMark()
+	}
+	_, static := tool.(ToolRequestInference)
+	_, prompt := tool.(ToolRequestInferencePrompt)
+	if static || prompt {
+		return ToolApprovalAuto
+	}
+	// Unclassified calls run as reads.
+	return ToolApprovalNever
 }
 
 // ResultCanChangeTool is implemented by tools whose result for the same input

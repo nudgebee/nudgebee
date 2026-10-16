@@ -622,6 +622,21 @@ const apiIntegrations = {
     }
   },
 
+  // Which of an MCP integration's tools ask for approval (#40399): the
+  // server's tool names, comma separated. Saves only this setting.
+  updateMcpWriteTools: async function (integrationId, writeTools) {
+    const UPDATE_MCP_WRITE_TOOLS = `
+    mutation UpdateMcpWriteTools($data: UpdateMCPWriteToolsRequest!) {
+      integrations_update_mcp_write_tools(request: $data) {
+        status
+      }
+    }
+    `;
+    return queryGraphQL(UPDATE_MCP_WRITE_TOOLS, 'UpdateMcpWriteTools', {
+      data: { integration_id: integrationId, write_tools: writeTools },
+    });
+  },
+
   getWebhookIntegrationByWorkflowId: async function (workflowId) {
     const where = {
       type: { _eq: 'workflow_webhook' },
