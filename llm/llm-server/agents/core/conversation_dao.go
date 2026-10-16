@@ -995,6 +995,8 @@ func PeekConversationDao() IConversationDao {
 }
 
 func SetConversationDao(dao IConversationDao) {
+	conversationDaoMutex.Lock()
+	defer conversationDaoMutex.Unlock()
 	conversationDao = dao
 }
 

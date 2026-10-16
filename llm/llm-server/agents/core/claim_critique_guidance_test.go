@@ -123,14 +123,8 @@ func TestClaimGuidanceBothPlanners(t *testing.T) {
 	})
 	config.Config.ClaimCritiqueFeedbackEnabled = true
 	previousDAO := GetConversationDao()
-	conversationDaoMutex.Lock()
 	SetConversationDao(&claimTestDAO{IConversationDao: previousDAO})
-	conversationDaoMutex.Unlock()
-	t.Cleanup(func() {
-		conversationDaoMutex.Lock()
-		defer conversationDaoMutex.Unlock()
-		SetConversationDao(previousDAO)
-	})
+	t.Cleanup(func() { SetConversationDao(previousDAO) })
 	accepted := strings.Replace(validClaimAudit, `"inferred"`, `"observed"`, 1)
 	cases := []struct {
 		name            string

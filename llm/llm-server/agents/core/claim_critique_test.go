@@ -212,14 +212,8 @@ func TestClaimFeedbackBothPlannersValidateAudit(t *testing.T) {
 	t.Cleanup(func() { config.Config.ClaimCritiqueFeedbackEnabled = previous })
 	config.Config.ClaimCritiqueFeedbackEnabled = true
 	previousDAO := GetConversationDao()
-	conversationDaoMutex.Lock()
 	SetConversationDao(&claimTestDAO{IConversationDao: previousDAO})
-	conversationDaoMutex.Unlock()
-	t.Cleanup(func() {
-		conversationDaoMutex.Lock()
-		defer conversationDaoMutex.Unlock()
-		SetConversationDao(previousDAO)
-	})
+	t.Cleanup(func() { SetConversationDao(previousDAO) })
 	for _, planner := range []string{"react3", "react4"} {
 		for _, output := range []string{validClaimAudit, `{"claims":[`} {
 			t.Run(planner+output, func(t *testing.T) {

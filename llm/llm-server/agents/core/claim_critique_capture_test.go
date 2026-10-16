@@ -70,10 +70,8 @@ func installClaimCaptureDAO(t *testing.T, d *claimCaptureDAO) {
 	t.Helper()
 	previous := GetConversationDao()
 	d.IConversationDao = previous
-	conversationDaoMutex.Lock()
 	SetConversationDao(d)
-	conversationDaoMutex.Unlock()
-	t.Cleanup(func() { conversationDaoMutex.Lock(); defer conversationDaoMutex.Unlock(); SetConversationDao(previous) })
+	t.Cleanup(func() { SetConversationDao(previous) })
 }
 
 func TestClaimCapturePersistsWithTracingDisabled(t *testing.T) {

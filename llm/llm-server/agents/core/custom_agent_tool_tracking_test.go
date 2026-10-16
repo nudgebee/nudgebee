@@ -64,9 +64,9 @@ func (s trackingStubTool) Call(_ toolcore.NbToolContext, _ toolcore.NBToolCallRe
 func installTrackingDao(t *testing.T) *trackingFakeDao {
 	t.Helper()
 	dao := &trackingFakeDao{}
-	prev := conversationDao
+	prev := PeekConversationDao()
 	SetConversationDao(dao)
-	t.Cleanup(func() { conversationDao = prev })
+	t.Cleanup(func() { SetConversationDao(prev) })
 	return dao
 }
 

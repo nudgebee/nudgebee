@@ -671,9 +671,9 @@ func TestResolveLLMConfig_ConversationLookupErrorSkipsLayer(t *testing.T) {
 	setEnvKey(t, "llm_provider_agentx", "anthropic")
 	setEnvKey(t, "llm_model_name_agentx", "claude-agent")
 
-	prev := conversationDao
-	conversationDao = erroringConversationDao{}
-	t.Cleanup(func() { conversationDao = prev })
+	prev := PeekConversationDao()
+	SetConversationDao(erroringConversationDao{})
+	t.Cleanup(func() { SetConversationDao(prev) })
 
 	// conv-missing is not in the override cache → GetConversationOverride hits
 	// the DAO → error → ResolveLLMConfig must skip the conversation layer.
