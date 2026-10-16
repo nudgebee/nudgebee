@@ -195,6 +195,8 @@ const K8S_TABLE_NAMES = [
   'over-commitment',
   'requests by namespace',
   'Autoscaler status',
+  // Control-plane-down alerts (KubeletDown, KubeSchedulerDown, …): one title per component.
+  'Control plane health',
 ];
 
 const CLOUD_TABLE_NAMES = [

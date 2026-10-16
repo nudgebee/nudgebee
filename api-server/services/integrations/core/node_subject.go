@@ -178,7 +178,7 @@ func isNodeScopedAlert(sc *security.RequestContext, accountId string, in NodeSub
 	if in.Labels != nil && isNodeScopedExporterJob(in.Labels["job"]) {
 		return true
 	}
-	expr := fetchEventRuleExpr(sc, accountId, in.AlertName)
+	expr := FetchEventRuleExpr(sc, accountId, in.AlertName)
 	if expr == "" {
 		return false
 	}
