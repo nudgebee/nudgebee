@@ -94,6 +94,11 @@ func publishCompletionUnconditional(ctx context.Context, env investigationComple
 	}
 }
 
+// publishAutoCompletion: a workflow request sends it only if this worker ran the analysis (#39009).
+func publishAutoCompletion(taskToken string, ranAnalysis bool) bool {
+	return taskToken == "" || ranAnalysis
+}
+
 func init() {
 	// do not connect with RabbitMQ while doing testing
 	if testing.Testing() {
@@ -133,6 +138,7 @@ func processTroubleshootingEventFromMqWithRegister(msgCtx context.Context, data 
 		taskToken    string
 		publishState investigationCompletedEnvelope
 		skipPublish  bool
+		ranAnalysis  bool
 		// The message body with credentials masked, computed once for every
 		// log line below (and by the panic handler if it fires first).
 		loggedData string
@@ -156,6 +162,7 @@ func processTroubleshootingEventFromMqWithRegister(msgCtx context.Context, data 
 					if confirmed, ok := getConfirmedTerminalAnalysis(ctx, check, dbManager); ok {
 						skipPublish = false
 						processErr = nil
+						ranAnalysis = true
 						fillPublishStateFromResponse(&publishState, confirmed, confirmed.Status)
 						publishState.Error = confirmed.StatusReason
 					}
@@ -192,15 +199,13 @@ func processTroubleshootingEventFromMqWithRegister(msgCtx context.Context, data 
 			}
 		}
 
-		// 3. Unconditional callback for the non-workflow (no-token) path.
+		// 3. Callback for the non-workflow (no-token) path.
 		//    api-server's llm.ProcessEvent defers its downstream event
 		//    processors (notification / workflow / pagerduty-comment) until
 		//    the investigation finishes; this envelope is how it learns the
-		//    analysis is done. Published on every terminal, non-skip path
-		//    (COMPLETED or FAILED). For token-bearing requests this is an
-		//    additional empty-token envelope — runbook-server drops it and
-		//    api-server dedups by event_id — so it is safe to always emit.
-		if !skipPublish && publishState.EventID != "" {
+		//    analysis is done. Published on terminal, non-skip paths
+		//    (COMPLETED or FAILED).
+		if !skipPublish && publishState.EventID != "" && publishAutoCompletion(taskToken, ranAnalysis) {
 			autoEnv := publishState
 			autoEnv.TaskToken = ""
 			publishCompletionUnconditional(msgCtx, autoEnv)
@@ -405,6 +410,7 @@ func processTroubleshootingEventFromMqWithRegister(msgCtx context.Context, data 
 			skipPublish = true
 			return fmt.Errorf("eventasync: budget failure not persisted for event %s", eventAnalysisRequest.EventId)
 		}
+		ranAnalysis = true
 		fillPublishStateFromResponse(&publishState, confirmed, confirmed.Status)
 		publishState.Error = confirmed.StatusReason
 		return nil
@@ -421,6 +427,7 @@ func processTroubleshootingEventFromMqWithRegister(msgCtx context.Context, data 
 		// Only a persisted terminal outcome can complete workflow listeners. The
 		// error may precede pipeline ownership, leaving the claim recoverable.
 		if confirmed, terminal := getConfirmedTerminalAnalysis(ctx, eventAnalysisRequest, dbManager); terminal {
+			ranAnalysis = true
 			fillPublishStateFromResponse(&publishState, confirmed, confirmed.Status)
 			if confirmed.Status == string(events.AnalysisStatusFailed) {
 				publishState.Error = confirmed.StatusReason
@@ -483,6 +490,7 @@ func processTroubleshootingEventFromMqWithRegister(msgCtx context.Context, data 
 			}
 		}
 		common.MetricsEventAnalysisOperationsTotal("mq_investigation", "success", eventAnalysisRequest.AccountId)
+		ranAnalysis = true
 		fillPublishStateFromResponse(&publishState, confirmed, confirmed.Status)
 		if confirmed.Status == string(events.AnalysisStatusFailed) {
 			publishState.Error = confirmed.StatusReason
