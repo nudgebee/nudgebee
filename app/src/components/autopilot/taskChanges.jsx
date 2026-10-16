@@ -1,5 +1,6 @@
 import { titleCase } from '@lib/formatter';
 import Memory from '@shared/format/Memory';
+import { formatClockCompact } from '@shared/format/Datetime';
 
 // Turns an auto optimize task's meta into [property, current, proposed] rows,
 // for the Tasks page and the run approval review.
@@ -63,7 +64,11 @@ export const parseRecommendationMeta = (meta) => {
 
   // Replica and volume tasks carry the value they will apply, fixed when the run was planned.
   if (meta?.change_to !== undefined && meta?.change_to !== null) {
-    return [[{ text: 'Replicas' }, { text: 'current' }, { text: String(meta.change_to) }]];
+    // A forecast target is right for the hour it was forecast for, which can be
+    // well before an approved plan applies.
+    const forecastFor = formatClockCompact(meta.forecast_for);
+    const target = forecastFor ? `${meta.change_to} (forecast for ${forecastFor})` : String(meta.change_to);
+    return [[{ text: 'Replicas' }, { text: 'current' }, { text: target }]];
   }
   if (meta?.change_by) {
     return [[{ text: 'Storage size' }, { text: 'current' }, { text: `+${meta.change_by}` }]];
