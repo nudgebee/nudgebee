@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"database/sql"
@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
 )
 
@@ -118,13 +119,8 @@ type ConversationTree struct {
 	ToolCalls    []TreeToolCall          `json:"tool_calls"`
 }
 
-// convScopeCTE scopes every tree query to the conversation row(s) for this
-// session within the caller's account.
-const convScopeCTE = `conversation_id IN (
-	SELECT id FROM llm_conversations WHERE session_id = $1 AND account_id = $2::uuid)`
-
 // GetConversationTree assembles the full tree for one session within an account.
-func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (ConversationTree, error) {
+func (chat *Store) GetConversationTree(sessionID, accountID string) (ConversationTree, error) {
 	if sessionID == "" || accountID == "" {
 		return ConversationTree{}, fmt.Errorf("GetConversationTree: session_id and account_id are required")
 	}
@@ -205,13 +201,13 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 			created_at, cost_usd
 		FROM llm_conversation_token_usage
 		WHERE %s
-		ORDER BY created_at`, convScopeCTE)
+		ORDER BY created_at`, core.ConvScopeCTE)
 	if err := chat.dbManager.Db.Select(&mcScans, mcQuery, args...); err != nil {
 		slog.Error("GetConversationTree: model_calls query failed", "error", err)
 		return ConversationTree{}, fmt.Errorf("GetConversationTree model_calls: %w", err)
 	}
 
-	pricing, err := chat.GetConversationCosts(nil, TenantForPricing(accountID))
+	pricing, err := core.NewConversationDao(chat.dbManager).GetConversationCosts(nil, core.TenantForPricing(accountID))
 	if err != nil {
 		return ConversationTree{}, fmt.Errorf("GetConversationTree pricing: %w", err)
 	}
@@ -243,7 +239,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 			if nonCached < 0 {
 				nonCached = 0
 			}
-			cost = CalculateTotalCost(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
+			cost = core.CalculateTotalCost(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
 		}
 
 		if m.AgentID != "" {
@@ -294,7 +290,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 			created_at, updated_at
 		FROM llm_conversation_messages
 		WHERE %s
-		ORDER BY created_at`, convScopeCTE)
+		ORDER BY created_at`, core.ConvScopeCTE)
 	if err := chat.dbManager.Db.Select(&msgScans, msgQuery, args...); err != nil {
 		slog.Error("GetConversationTree: messages query failed", "error", err)
 		return ConversationTree{}, fmt.Errorf("GetConversationTree messages: %w", err)
@@ -339,7 +335,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 			COALESCE(EXTRACT(EPOCH FROM (updated_at - created_at)), 0) AS duration_seconds
 		FROM llm_conversation_agent
 		WHERE %s
-		ORDER BY created_at`, convScopeCTE)
+		ORDER BY created_at`, core.ConvScopeCTE)
 	if err := chat.dbManager.Db.Select(&agentScans, agentQuery, args...); err != nil {
 		slog.Error("GetConversationTree: agents query failed", "error", err)
 		return ConversationTree{}, fmt.Errorf("GetConversationTree agents: %w", err)
@@ -390,7 +386,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 			COALESCE(EXTRACT(EPOCH FROM (updated_at - created_at)), 0) AS duration_seconds
 		FROM llm_conversation_tool_calls
 		WHERE %s AND metadata->>'parent_tool_call_id' IS NULL
-		ORDER BY created_at`, convScopeCTE)
+		ORDER BY created_at`, core.ConvScopeCTE)
 	if err := chat.dbManager.Db.Select(&toolScans, toolQuery, args...); err != nil {
 		slog.Error("GetConversationTree: tool_calls query failed", "error", err)
 		return ConversationTree{}, fmt.Errorf("GetConversationTree tool_calls: %w", err)
@@ -532,5 +528,5 @@ func HandleConversationTreeApi(ctx *security.RequestContext, request Conversatio
 	if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
 		return ConversationTree{}, fmt.Errorf("HandleConversationTreeApi: forbidden account_id")
 	}
-	return GetConversationDao().GetConversationTree(request.ConversationId, request.AccountId)
+	return GetStore().GetConversationTree(request.ConversationId, request.AccountId)
 }

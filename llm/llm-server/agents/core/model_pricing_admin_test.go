@@ -15,7 +15,7 @@ func f(v float64) *float64 { return &v }
 func i64(v int64) *int64   { return &v }
 
 // The long-context tier only fires when the threshold AND the long input rate
-// are both set (modelPricing.useLongCtx). A half-configured tier is therefore
+// are both set (ModelPricing.useLongCtx). A half-configured tier is therefore
 // worse than none: it reads as tiered in the UI but bills every long prompt at
 // the short rate, under-reporting spend on exactly the calls that cost most.
 func TestModelPriceInput_LongContextTierIsAllOrNothing(t *testing.T) {

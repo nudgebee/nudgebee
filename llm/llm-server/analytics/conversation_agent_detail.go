@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"database/sql"
@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
 )
 
@@ -27,23 +28,6 @@ import (
 // (CalculateTotalCost / CalculateCostBreakdown), so SUM(model_call.cost_usd)
 // equals the agent's cost in the overview and the per-component breakdown sums
 // back to each model call's cost_usd.
-
-// CostComponent is one priced slice of a model call: a token category billed at
-// one rate. cost_usd = tokens × that rate; the components of a call sum to its
-// cost_usd. Unit rates are intentionally not exposed.
-type CostComponent struct {
-	Kind    string  `json:"kind"` // input | cached_input | cache_creation | output
-	Tokens  int64   `json:"tokens"`
-	CostUsd float64 `json:"cost_usd"`
-}
-
-// CostBreakdown justifies one model call's cost: which tier's rate table applied
-// and how the cost splits across token categories. Invariant: the components'
-// cost_usd sum to the model call's cost_usd.
-type CostBreakdown struct {
-	Tier       string          `json:"tier"` // standard | long_context
-	Components []CostComponent `json:"components"`
-}
 
 // AgentDetailNode is the agent being inspected, with its full execution content.
 type AgentDetailNode struct {
@@ -87,25 +71,25 @@ type DetailToolCall struct {
 // DetailModelCall is one billable LLM API call under the agent, with its cost
 // justification and error/success detail.
 type DetailModelCall struct {
-	ID                  string        `json:"id"`
-	Model               string        `json:"model"`
-	Provider            string        `json:"provider"`
-	Status              string        `json:"status"`
-	IsError             bool          `json:"is_error"`
-	ErrorMessage        string        `json:"error_message"`
-	StopReason          string        `json:"stop_reason"`
-	IsCacheHit          bool          `json:"is_cache_hit"`
-	RetryAttempt        int           `json:"retry_attempt"`
-	InputTokens         int64         `json:"input_tokens"`
-	OutputTokens        int64         `json:"output_tokens"`
-	CachedInputTokens   int64         `json:"cached_input_tokens"`
-	CacheCreationTokens int64         `json:"cache_creation_tokens"`
-	ThinkingTokens      int64         `json:"thinking_tokens"`
-	CostUsd             float64       `json:"cost_usd"`
-	CostBreakdown       CostBreakdown `json:"cost_breakdown"`
-	LatencySeconds      float64       `json:"latency_seconds"`
-	TtftMs              int           `json:"ttft_ms"`
-	CreatedAt           time.Time     `json:"created_at"`
+	ID                  string             `json:"id"`
+	Model               string             `json:"model"`
+	Provider            string             `json:"provider"`
+	Status              string             `json:"status"`
+	IsError             bool               `json:"is_error"`
+	ErrorMessage        string             `json:"error_message"`
+	StopReason          string             `json:"stop_reason"`
+	IsCacheHit          bool               `json:"is_cache_hit"`
+	RetryAttempt        int                `json:"retry_attempt"`
+	InputTokens         int64              `json:"input_tokens"`
+	OutputTokens        int64              `json:"output_tokens"`
+	CachedInputTokens   int64              `json:"cached_input_tokens"`
+	CacheCreationTokens int64              `json:"cache_creation_tokens"`
+	ThinkingTokens      int64              `json:"thinking_tokens"`
+	CostUsd             float64            `json:"cost_usd"`
+	CostBreakdown       core.CostBreakdown `json:"cost_breakdown"`
+	LatencySeconds      float64            `json:"latency_seconds"`
+	TtftMs              int                `json:"ttft_ms"`
+	CreatedAt           time.Time          `json:"created_at"`
 	// HasTrace is true when the stored prompt/response trace exists for this call
 	// (LLM_TRACE_ENABLED was on). Always returned (cheap) so the UI can show a
 	// "view prompt" action without transferring the (large) trace text.
@@ -125,39 +109,6 @@ type AgentDetail struct {
 	ModelCalls []DetailModelCall `json:"model_calls"`
 }
 
-// CalculateCostBreakdown splits a single model call's cost into its priced token
-// components, using the SAME tier-aware effective rates as CalculateTotalCost, so
-// the components sum exactly to CalculateTotalCost(...). The output component
-// folds in thinking tokens (billed at the output rate), matching the formula.
-func CalculateCostBreakdown(p *modelPricing, nonCachedInputTokens, cachedInputTokens, cacheCreationTokens, outputTokens, thinkingTokens int) CostBreakdown {
-	if p == nil {
-		return CostBreakdown{Tier: "standard", Components: []CostComponent{}}
-	}
-
-	totalPrompt := nonCachedInputTokens + cachedInputTokens + cacheCreationTokens
-	tier := "standard"
-	if p.useLongCtx(totalPrompt) {
-		tier = "long_context"
-	}
-
-	const million = 1_000_000.0
-	inputRate := p.effectiveInputRate(totalPrompt)
-	cachedRate := p.effectiveCachedInputRate(totalPrompt)
-	creationRate := p.effectiveCacheCreationRate(totalPrompt)
-	outputRate := p.effectiveOutputRate(totalPrompt)
-
-	outputBilled := outputTokens + thinkingTokens
-	return CostBreakdown{
-		Tier: tier,
-		Components: []CostComponent{
-			{Kind: "input", Tokens: int64(nonCachedInputTokens), CostUsd: float64(nonCachedInputTokens) / million * inputRate},
-			{Kind: "cached_input", Tokens: int64(cachedInputTokens), CostUsd: float64(cachedInputTokens) / million * cachedRate},
-			{Kind: "cache_creation", Tokens: int64(cacheCreationTokens), CostUsd: float64(cacheCreationTokens) / million * creationRate},
-			{Kind: "output", Tokens: int64(outputBilled), CostUsd: float64(outputBilled) / million * outputRate},
-		},
-	}
-}
-
 // agentScopeWhere scopes a detail query to one agent within the session+account.
 // $1 = session_id, $2 = account_id, $3 = agent_id. The conversation_id IN (...)
 // subquery is the same scope guard the tree uses, so an agent_id from another
@@ -168,7 +119,7 @@ const agentScopeWhere = `agent_id = $3::uuid AND conversation_id IN (
 // GetConversationAgentDetail returns one agent's execution content + its tool and
 // model calls with cost justification. Returns an empty AgentDetail (no error) if
 // the agent does not exist within the caller's session/account scope.
-func (chat *ConversationDao) GetConversationAgentDetail(sessionID, accountID, agentID, modelCallID string) (AgentDetail, error) {
+func (chat *Store) GetConversationAgentDetail(sessionID, accountID, agentID, modelCallID string) (AgentDetail, error) {
 	if sessionID == "" || accountID == "" || agentID == "" {
 		return AgentDetail{}, fmt.Errorf("GetConversationAgentDetail: session_id, account_id and agent_id are required")
 	}
@@ -266,7 +217,7 @@ func (chat *ConversationDao) GetConversationAgentDetail(sessionID, accountID, ag
 			ToolID:          t.ToolID,
 			ToolType:        t.ToolType,
 			Status:          t.Status,
-			IsError:         isToolError(t.Status),
+			IsError:         core.IsToolError(t.Status),
 			Parameters:      t.Parameters,
 			Response:        t.Response,
 			Thought:         t.Thought,
@@ -331,7 +282,7 @@ func (chat *ConversationDao) GetConversationAgentDetail(sessionID, accountID, ag
 		return AgentDetail{}, fmt.Errorf("GetConversationAgentDetail model_calls: %w", err)
 	}
 
-	pricing, err := chat.GetConversationCosts(nil, TenantForPricing(accountID))
+	pricing, err := core.NewConversationDao(chat.dbManager).GetConversationCosts(nil, core.TenantForPricing(accountID))
 	if err != nil {
 		return AgentDetail{}, fmt.Errorf("GetConversationAgentDetail pricing: %w", err)
 	}
@@ -344,15 +295,15 @@ func (chat *ConversationDao) GetConversationAgentDetail(sessionID, accountID, ag
 		if nonCached < 0 {
 			nonCached = 0
 		}
-		cost := CalculateTotalCost(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
-		breakdown := CalculateCostBreakdown(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
+		cost := core.CalculateTotalCost(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
+		breakdown := core.CalculateCostBreakdown(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
 
 		detail.ModelCalls = append(detail.ModelCalls, DetailModelCall{
 			ID:                  m.ID,
 			Model:               m.Model,
 			Provider:            m.Provider,
 			Status:              m.RequestStatus,
-			IsError:             isModelError(m.RequestStatus, m.ErrorMessage),
+			IsError:             core.IsModelError(m.RequestStatus, m.ErrorMessage),
 			ErrorMessage:        m.ErrorMessage,
 			StopReason:          m.StopReason,
 			IsCacheHit:          m.IsCacheHit,
@@ -387,18 +338,6 @@ func (chat *ConversationDao) GetConversationAgentDetail(sessionID, accountID, ag
 	return detail, nil
 }
 
-// isToolError maps a stored tool status to a simple error flag. Terminal
-// non-success states (ERROR / TERMINATED) are errors; SUCCESS and the various
-// pending states (WAITING / IN_PROGRESS) are not.
-func isToolError(status string) bool {
-	switch status {
-	case "ERROR", "TERMINATED":
-		return true
-	default:
-		return false
-	}
-}
-
 // isAgentError maps a stored agent execution status to an error flag.
 func isAgentError(status string) bool {
 	switch status {
@@ -406,20 +345,6 @@ func isAgentError(status string) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-// isModelError treats a non-success request_status, or any populated
-// error_message, as an error.
-func isModelError(requestStatus, errorMessage string) bool {
-	if errorMessage != "" {
-		return true
-	}
-	switch requestStatus {
-	case "", "success", "SUCCESS", "completed", "COMPLETED":
-		return false
-	default:
-		return true
 	}
 }
 
@@ -445,5 +370,5 @@ func HandleConversationAgentDetailApi(ctx *security.RequestContext, request Conv
 	if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_agents") {
 		return AgentDetail{}, fmt.Errorf("HandleConversationAgentDetailApi: forbidden account_id")
 	}
-	return GetConversationDao().GetConversationAgentDetail(request.ConversationId, request.AccountId, request.AgentId, request.ModelCallId)
+	return GetStore().GetConversationAgentDetail(request.ConversationId, request.AccountId, request.AgentId, request.ModelCallId)
 }

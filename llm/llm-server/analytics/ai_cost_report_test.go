@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"testing"
@@ -100,7 +100,7 @@ func TestGetAiCostAccountReport_ComputesRowsAndOmitsZeroCost(t *testing.T) {
 	// The seven scans run as concurrent goroutines — order is non-deterministic.
 	mock.MatchExpectationsInOrder(false)
 
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	// referenceDate = 2026-08-10 -> 10 days elapsed this month.
 	referenceDate := time.Date(2026, 8, 10, 15, 0, 0, 0, time.UTC)
@@ -198,7 +198,7 @@ func TestGetAiCostAccountReport_WindowAnchoredToSendHour(t *testing.T) {
 
 	mock.MatchExpectationsInOrder(false)
 
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	const sendHourUTC = 14
 	referenceDate := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
@@ -254,7 +254,7 @@ func TestGetAiCostAccountReport_NegligiblePrevMonthBaselineYieldsZeroDelta(t *te
 
 	mock.MatchExpectationsInOrder(false)
 
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	referenceDate := time.Date(2026, 8, 10, 15, 0, 0, 0, time.UTC)
 	dayStart := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
@@ -314,7 +314,7 @@ func TestGetAiCostAccountReport_KeepsPrevMonthOnlyDropToZero(t *testing.T) {
 
 	mock.MatchExpectationsInOrder(false)
 
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	referenceDate := time.Date(2026, 8, 10, 15, 0, 0, 0, time.UTC)
 	dayStart := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
@@ -371,7 +371,7 @@ func TestGetAiCostAccountReport_PopulatesTopModels(t *testing.T) {
 
 	mock.MatchExpectationsInOrder(false)
 
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	referenceDate := time.Date(2026, 8, 10, 15, 0, 0, 0, time.UTC)
 	dayStart := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
@@ -429,7 +429,7 @@ func TestGetAiCostAccountReport_PopulatesTopSources(t *testing.T) {
 
 	mock.MatchExpectationsInOrder(false)
 
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	referenceDate := time.Date(2026, 8, 10, 15, 0, 0, 0, time.UTC)
 	dayStart := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
@@ -479,7 +479,7 @@ func TestGetAiCostAccountReport_PopulatesTopSources(t *testing.T) {
 // TestGetAiCostAccountReport_EmptyAccountIDs short-circuits without touching
 // the DB — mirrors GetUsageMetrics' empty-scope guard.
 func TestGetAiCostAccountReport_EmptyAccountIDs(t *testing.T) {
-	dao := &ConversationDao{}
+	dao := &Store{}
 	report, err := dao.GetAiCostAccountReport(nil, time.Now(), 0)
 	require.NoError(t, err)
 	assert.Empty(t, report.Accounts)

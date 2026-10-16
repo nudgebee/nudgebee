@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"testing"
@@ -42,7 +42,7 @@ func TestListToolUsage_MergeAndCostAttribution(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 
 	// The two scans run concurrently, so match them by content, not order.
@@ -87,7 +87,7 @@ func TestListToolUsage_SortByCost(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 
 	mock.MatchExpectationsInOrder(false)
@@ -117,7 +117,7 @@ func TestListToolUsage_UserFilter(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 
 	mock.MatchExpectationsInOrder(false)
@@ -157,7 +157,7 @@ func TestListToolUsage_ScansRunConcurrently(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 
 	const each = 500 * time.Millisecond
@@ -177,7 +177,7 @@ func TestListToolUsage_ScansRunConcurrently(t *testing.T) {
 
 // TestListToolUsage_NoAccounts short-circuits to an empty list (no query issued).
 func TestListToolUsage_NoAccounts(t *testing.T) {
-	dao := &ConversationDao{}
+	dao := &Store{}
 	out, err := dao.ListToolUsage(UsageMetricsFilter{}, "calls", 100)
 	require.NoError(t, err)
 	assert.Empty(t, out.Rows)
@@ -195,7 +195,7 @@ func TestListToolCalls_FailuresFilter(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 
 	mock.ExpectQuery("FROM llm_conversation_tool_calls tc").WillReturnRows(
@@ -220,7 +220,7 @@ func TestListToolCalls_FailuresFilter(t *testing.T) {
 
 // TestListToolCalls_NoToolName short-circuits without a query.
 func TestListToolCalls_NoToolName(t *testing.T) {
-	dao := &ConversationDao{}
+	dao := &Store{}
 	out, err := dao.ListToolCalls(UsageMetricsFilter{AccountIDs: []string{"acc-1"}}, "", nil, 100)
 	require.NoError(t, err)
 	assert.Empty(t, out.Rows)

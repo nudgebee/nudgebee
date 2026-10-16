@@ -322,7 +322,7 @@ type IConversationDao interface {
 	MarkInProgressConversationAsKilled() error
 	GetConversationTokenUsage(conversationId, accountId string) ([]TokenMetrics, error)
 	GetConversationCost(provider string, model string, nonCachedInputTokens, cachedInputTokens, cacheCreationTokens, outputTokens, thinkingTokens int, tenantId string) (float64, error)
-	GetConversationCosts(models []string, tenantId string) (map[string]modelPricing, error)
+	GetConversationCosts(models []string, tenantId string) (map[string]ModelPricing, error)
 	GetImageSupportCatalog(tenantId string) (map[string]bool, error)
 	GetConversationTokenUsageDetailed(conversationId, accountId string) ([]TokenUsageDetailedRecord, error)
 	GetConversationLifecycleStorageCost(conversationId string, tenantId string) (float64, error)
@@ -331,16 +331,7 @@ type IConversationDao interface {
 	ResolveSessionId(idOrSessionId string) string
 	GetConversationTimeBreakdown(conversationId, accountId string) (TimeBreakdown, error)
 	GetConversationTimeAggregates(filter ConversationTimeAggregatesFilter) (ConversationTimeAggregates, error)
-	GetUsageMetrics(filter UsageMetricsFilter, dims []string, topN int, granularity string, skipStorage bool) (UsageMetrics, error)
-	GetAiCostAccountReport(accountIDs []string, referenceDate time.Time, sendHourUTC int) (AiCostAccountReport, error)
-	GetUsageFilters(filter UsageMetricsFilter, readableAccountIDs, selectedAccountIDs []string) (UsageFilters, error)
-	ListConversationCosts(filter UsageMetricsFilter, sortBy, sortDir string, limit, offset int) (ConversationCostList, error)
-	GetConversationTree(sessionID, accountID string) (ConversationTree, error)
-	GetConversationAgentDetail(sessionID, accountID, agentID, modelCallID string) (AgentDetail, error)
 	GetConversationOptimizationProfile(sessionID, accountID string) (OptimizationProfile, *optSavingsIndex, error)
-	ListAgentCalls(filter UsageMetricsFilter, sortBy string, limit, latencyPercentile int) (AgentCallList, error)
-	ListToolUsage(filter UsageMetricsFilter, sortBy string, limit int) (ToolUsageList, error)
-	ListToolCalls(filter UsageMetricsFilter, toolName string, statuses []string, limit int) (ToolCallList, error)
 	InsertTokenUsage(record *TokenUsageRecord) error
 	SaveClaimCritiqueAudit(ctx context.Context, record *ClaimCritiqueAuditRecord) error
 	InsertCacheLifecycle(ctx context.Context, record *CacheLifecycleRecord) error
@@ -349,9 +340,6 @@ type IConversationDao interface {
 	GetLatestConversationBySessionIDWithMessages(sessionID string, accountId string) (*ConversationWithMessages, error)
 	ListConversations(accountId string, userId string, queryLike string, source string, limit int, offset int) ([]Conversation, error)
 	SaveCritique(critique *ConversationCritique) error
-	GetCritiqueSummary(filter CritiqueFilter) (CritiqueSummary, error)
-	GetCritiqueTrend(filter CritiqueFilter, granularity string) (CritiqueTrend, error)
-	GetCritiqueList(filter CritiqueFilter, limit, offset int) (CritiqueList, error)
 	SaveLongTermMemory(accountId, conversationId, messageId, content string, memoryType MemoryType) (string, error)
 	LoadLongTermMemories(accountId string, query string, limit int) ([]string, error)
 	ListLongTermMemories(accountId string, conversationId string, messageIds []string, memoryType string, query string, limit int, offset int) ([]LongTermMemory, error)
@@ -981,6 +969,13 @@ func GetConversationDao() IConversationDao {
 	}
 
 	return conversationDao
+}
+
+// NewConversationDao returns a ConversationDao backed by dbManager. It is for
+// packages that run their own queries on the same database and still need a
+// DAO method, such as the pricing lookup.
+func NewConversationDao(dbManager *common.DatabaseManager) *ConversationDao {
+	return &ConversationDao{dbManager: dbManager}
 }
 
 // PeekConversationDao returns the currently-set conversation DAO singleton,
@@ -3188,7 +3183,7 @@ type TokenMetrics struct {
 	ConversationId       string          `json:"conversation_id"`
 }
 
-// modelPricing captures all rate dimensions billed by an LLM provider.
+// ModelPricing captures all rate dimensions billed by an LLM provider.
 // Standard rates apply when total prompt ≤ ContextThresholdTokens (or when
 // the threshold is NULL → no tiering). LongCtx rates apply above that.
 //
@@ -3199,7 +3194,7 @@ type TokenMetrics struct {
 // CacheCostPerMillionTokensPerHour is the legacy column kept for backward
 // compatibility with old data. It will be dropped after backfill into
 // CostPerMillionCachedStoragePerHour.
-type modelPricing struct {
+type ModelPricing struct {
 	CostPerMillionInput  float64
 	CostPerMillionOutput float64
 
@@ -3220,7 +3215,7 @@ type modelPricing struct {
 // effectiveInputRate returns the input rate for the given total prompt size,
 // applying the long-ctx tier when the threshold is configured AND exceeded
 // AND a long-ctx rate is populated.
-func (p *modelPricing) effectiveInputRate(totalPrompt int) float64 {
+func (p *ModelPricing) effectiveInputRate(totalPrompt int) float64 {
 	if p.useLongCtx(totalPrompt) {
 		return p.CostPerMillionInputLongCtx.Float64
 	}
@@ -3228,7 +3223,7 @@ func (p *modelPricing) effectiveInputRate(totalPrompt int) float64 {
 }
 
 // effectiveOutputRate is the rate billed for output tokens AND thinking tokens.
-func (p *modelPricing) effectiveOutputRate(totalPrompt int) float64 {
+func (p *ModelPricing) effectiveOutputRate(totalPrompt int) float64 {
 	if p.useLongCtx(totalPrompt) {
 		return p.CostPerMillionOutputLongCtx.Float64
 	}
@@ -3238,7 +3233,7 @@ func (p *modelPricing) effectiveOutputRate(totalPrompt int) float64 {
 // effectiveCachedInputRate is the rate billed for tokens served from cache.
 // NULL means we don't know — fall back to input rate (overestimates slightly,
 // conservative for cost reporting).
-func (p *modelPricing) effectiveCachedInputRate(totalPrompt int) float64 {
+func (p *ModelPricing) effectiveCachedInputRate(totalPrompt int) float64 {
 	if p.useLongCtx(totalPrompt) {
 		return nullableFloatOr(p.CostPerMillionCachedInputLongCtx, p.CostPerMillionInputLongCtx.Float64)
 	}
@@ -3248,14 +3243,14 @@ func (p *modelPricing) effectiveCachedInputRate(totalPrompt int) float64 {
 // effectiveCacheCreationRate is the rate billed when tokens are written into
 // the cache for the first time. NULL → fall back to the input rate (matches
 // Vertex/Gemini); Anthropic populates this column with 1.25x input.
-func (p *modelPricing) effectiveCacheCreationRate(totalPrompt int) float64 {
+func (p *ModelPricing) effectiveCacheCreationRate(totalPrompt int) float64 {
 	if p.useLongCtx(totalPrompt) {
 		return nullableFloatOr(p.CostPerMillionCacheCreationLongCtx, p.CostPerMillionInputLongCtx.Float64)
 	}
 	return nullableFloatOr(p.CostPerMillionCacheCreation, p.CostPerMillionInput)
 }
 
-func (p *modelPricing) useLongCtx(totalPrompt int) bool {
+func (p *ModelPricing) useLongCtx(totalPrompt int) bool {
 	return p.ContextThresholdTokens.Valid &&
 		int64(totalPrompt) > p.ContextThresholdTokens.Int64 &&
 		p.CostPerMillionInputLongCtx.Valid
@@ -3284,7 +3279,7 @@ func nullableFloatOr(v sql.NullFloat64, fallback float64) float64 {
 // long-ctx rate is used for every component of this call.
 //
 // Returns 0 if pricing is nil so callers don't have to nil-check.
-func CalculateTotalCost(p *modelPricing, nonCachedInputTokens, cachedInputTokens, cacheCreationTokens, outputTokens, thinkingTokens int) float64 {
+func CalculateTotalCost(p *ModelPricing, nonCachedInputTokens, cachedInputTokens, cacheCreationTokens, outputTokens, thinkingTokens int) float64 {
 	if p == nil {
 		return 0
 	}
@@ -3304,6 +3299,56 @@ func CalculateTotalCost(p *modelPricing, nonCachedInputTokens, cachedInputTokens
 		(float64(outputTokens+thinkingTokens)/million)*outputRate
 }
 
+// CostComponent is one priced slice of a model call: a token category billed at
+// one rate. cost_usd = tokens × that rate; the components of a call sum to its
+// cost_usd. Unit rates are intentionally not exposed.
+type CostComponent struct {
+	Kind    string  `json:"kind"` // input | cached_input | cache_creation | output
+	Tokens  int64   `json:"tokens"`
+	CostUsd float64 `json:"cost_usd"`
+}
+
+// CostBreakdown justifies one model call's cost: which tier's rate table applied
+// and how the cost splits across token categories. Invariant: the components'
+// cost_usd sum to the model call's cost_usd.
+type CostBreakdown struct {
+	Tier       string          `json:"tier"` // standard | long_context
+	Components []CostComponent `json:"components"`
+}
+
+// CalculateCostBreakdown splits a single model call's cost into its priced token
+// components, using the SAME tier-aware effective rates as CalculateTotalCost, so
+// the components sum exactly to CalculateTotalCost(...). The output component
+// folds in thinking tokens (billed at the output rate), matching the formula.
+func CalculateCostBreakdown(p *ModelPricing, nonCachedInputTokens, cachedInputTokens, cacheCreationTokens, outputTokens, thinkingTokens int) CostBreakdown {
+	if p == nil {
+		return CostBreakdown{Tier: "standard", Components: []CostComponent{}}
+	}
+
+	totalPrompt := nonCachedInputTokens + cachedInputTokens + cacheCreationTokens
+	tier := "standard"
+	if p.useLongCtx(totalPrompt) {
+		tier = "long_context"
+	}
+
+	const million = 1_000_000.0
+	inputRate := p.effectiveInputRate(totalPrompt)
+	cachedRate := p.effectiveCachedInputRate(totalPrompt)
+	creationRate := p.effectiveCacheCreationRate(totalPrompt)
+	outputRate := p.effectiveOutputRate(totalPrompt)
+
+	outputBilled := outputTokens + thinkingTokens
+	return CostBreakdown{
+		Tier: tier,
+		Components: []CostComponent{
+			{Kind: "input", Tokens: int64(nonCachedInputTokens), CostUsd: float64(nonCachedInputTokens) / million * inputRate},
+			{Kind: "cached_input", Tokens: int64(cachedInputTokens), CostUsd: float64(cachedInputTokens) / million * cachedRate},
+			{Kind: "cache_creation", Tokens: int64(cacheCreationTokens), CostUsd: float64(cacheCreationTokens) / million * creationRate},
+			{Kind: "output", Tokens: int64(outputBilled), CostUsd: float64(outputBilled) / million * outputRate},
+		},
+	}
+}
+
 // tenantForPricing resolves the tenant whose price overrides apply to an
 // account's usage. Pricing is tenant-scoped (V843): a tenant's own row for a
 // (model, provider) beats the built-in one.
@@ -3311,9 +3356,9 @@ func CalculateTotalCost(p *modelPricing, nonCachedInputTokens, cachedInputTokens
 // A failure degrades to "" — built-in pricing only — rather than failing the
 // read: a cost display that falls back to list prices is far better than a
 // conversation view that will not load.
-// pricingTenantFromContext is the request-context form of tenantForPricing:
+// PricingTenantFromContext is the request-context form of tenantForPricing:
 // the tenant is already on the security context, so no lookup is needed.
-func pricingTenantFromContext(ctx *security.RequestContext) string {
+func PricingTenantFromContext(ctx *security.RequestContext) string {
 	if ctx == nil || ctx.GetSecurityContext() == nil {
 		return ""
 	}
@@ -3333,7 +3378,7 @@ func TenantForPricing(accountId string) string {
 	return tenantId
 }
 
-func (chat *ConversationDao) fetchModelPricing(tenantId string) (map[string]modelPricing, error) {
+func (chat *ConversationDao) fetchModelPricing(tenantId string) (map[string]ModelPricing, error) {
 	return chat.GetConversationCosts(nil, tenantId)
 }
 
@@ -3344,8 +3389,8 @@ func (chat *ConversationDao) fetchModelPricing(tenantId string) (map[string]mode
 // built-in only. Pricing became tenant-scoped in V843 so that two tenants
 // running the same model name at different negotiated rates stop overwriting
 // each other — see the migration for why the key is two partial indexes.
-func (chat *ConversationDao) GetConversationCosts(models []string, tenantId string) (map[string]modelPricing, error) {
-	pricingMap := make(map[string]modelPricing)
+func (chat *ConversationDao) GetConversationCosts(models []string, tenantId string) (map[string]ModelPricing, error) {
+	pricingMap := make(map[string]ModelPricing)
 
 	// V726 onwards: pricing has explicit cached_input / creation / storage rates
 	// plus tiered (long_ctx) variants for Gemini-style threshold pricing.
@@ -3442,7 +3487,7 @@ func (chat *ConversationDao) GetConversationCosts(models []string, tenantId stri
 			storage = legacyCacheStorage
 		}
 
-		pricingMap[provider+":"+model] = modelPricing{
+		pricingMap[provider+":"+model] = ModelPricing{
 			CostPerMillionInput:                input,
 			CostPerMillionOutput:               output,
 			CostPerMillionCachedInput:          cachedInput,
@@ -3512,7 +3557,7 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 	if err != nil {
 		slog.Error("Failed to fetch model pricing", "error", err)
 		// Proceed with empty map, costs will be 0
-		pricingMap = make(map[string]modelPricing)
+		pricingMap = make(map[string]ModelPricing)
 	}
 
 	// Query the new llm_conversation_token_usage table at its native
@@ -3868,14 +3913,14 @@ type TimeBreakdown struct {
 	ToolTimeSeconds        float64
 }
 
-// maxMeasuredDurationSeconds caps any single wall / agent / tool duration in
+// MaxMeasuredDurationSeconds caps any single wall / agent / tool duration in
 // the time rollup. These tables record no end-of-work timestamp, so a duration
 // is (updated_at - created_at) — row mtime, which anything touching the row
 // later re-stamps. Uncapped, one such row buries the sum: on dev the median
 // root-agent duration is 42 seconds while a single re-touched row measured
 // 4,460 hours. One hour is far above any real investigation and far below the
 // re-stamp artifacts, so it discards the artifacts without truncating real work.
-const maxMeasuredDurationSeconds = 3600
+const MaxMeasuredDurationSeconds = 3600
 
 // escapeLikePattern neutralises the LIKE metacharacters in a literal prefix so
 // it matches only itself. Postgres LIKE uses backslash as the default escape
@@ -4094,7 +4139,7 @@ func (chat *ConversationDao) GetConversationTimeBreakdown(conversationId, accoun
 // negative. created_at cannot be re-stamped, so the population is stable.
 //
 // For the same reason every per-row duration below is capped at
-// maxMeasuredDurationSeconds: the only end-of-work timestamp these tables carry
+// MaxMeasuredDurationSeconds: the only end-of-work timestamp these tables carry
 // is updated_at, so a single re-touched row would otherwise dominate a SUM.
 //
 // All three time totals (wall / agent / tool) are scoped to COMPLETED
@@ -4204,7 +4249,7 @@ func (chat *ConversationDao) GetConversationTimeAggregates(filter ConversationTi
 			(SELECT seconds FROM wall_time) AS wall_time,
 			(SELECT seconds FROM agent_time) AS agent_time,
 			(SELECT seconds FROM tool_time) AS tool_time;`,
-		sourceClause, excludedTitleClause, eventScopedClause, maxMeasuredDurationSeconds)
+		sourceClause, excludedTitleClause, eventScopedClause, MaxMeasuredDurationSeconds)
 
 	var result struct {
 		CompletedCount int     `db:"completed_count"`

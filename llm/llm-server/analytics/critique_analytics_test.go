@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"context"
@@ -44,7 +44,7 @@ func TestGetCritiqueList_ConversationLink(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -76,7 +76,7 @@ func TestGetCritiqueSummary_ByAgentAcceptedCount(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 
 	mock.ExpectQuery("judged").WillReturnRows(sqlmock.NewRows([]string{"judged", "refined"}).AddRow(10, 4))

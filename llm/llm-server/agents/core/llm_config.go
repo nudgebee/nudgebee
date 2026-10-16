@@ -17,7 +17,7 @@ package core
 // It covers layers 2-4 only, by short-circuiting getLLMIntegrationConfig. Layer
 // 1 still reads the DB through two paths that fetch independently of it:
 // GetConversationOverride (reads llm_conversations) and integrationConfigForPin
-// (a pinned llm_config_source=db:<uuid>, via getLLMIntegrationsForAccount). So
+// (a pinned llm_config_source=db:<uuid>, via GetLLMIntegrationsForAccount). So
 // resuming a stored conversation still resolves that conversation's model even
 // with the flag set.
 //
@@ -796,7 +796,7 @@ func configuredFallback(ctx *security.RequestContext, accountId string, res *LLM
 	}
 	label := strings.TrimSuffix("db-fallback:"+string(scope), ":")
 	fbRes := &LLMConfigResolution{Source: label, AccountId: accountId, Tier: tier, PinnedConfigSource: label}
-	if _, err := readDbSlotInto(fbRes, cfg, &parsedConfigSource{Layer: "db", Scope: "fallback", Name: string(scope)}); err != nil {
+	if _, err := readDbSlotInto(fbRes, cfg, &ParsedConfigSource{Layer: "db", Scope: "fallback", Name: string(scope)}); err != nil {
 		return nil, fmt.Errorf("configured fallback is incomplete: %w", err)
 	}
 	return &FallbackModel{Model: fbRes.Model, Provider: fbRes.Provider, Resolution: fbRes}, nil
@@ -807,7 +807,7 @@ func configuredFallback(ctx *security.RequestContext, accountId string, res *LLM
 // the slot's primary or one of its same-provider fallbacks. tenantId is used only
 // when accountId is empty.
 func resolveFallbackRef(ctx *security.RequestContext, sourceId, model, accountId, tenantId string, tier ModelTier) (*LLMConfigResolution, error) {
-	parsed, err := parseConfigSourceId(sourceId)
+	parsed, err := ParseConfigSourceId(sourceId)
 	if err != nil {
 		return nil, err
 	}
@@ -2829,8 +2829,8 @@ func modelTierFromContext(ctx *security.RequestContext) ModelTier {
 // dynamic (env-var suffix scan) so newly-registered agents don't need to be
 // added to a hardcoded list.
 func GetAllConfiguredModels(accountId string) ([]ModelConfig, error) {
-	return buildConfiguredModels(true, accountId, func() ([]llmIntegration, error) {
-		return getLLMIntegrationsForAccount(nil, accountId)
+	return buildConfiguredModels(true, accountId, func() ([]LLMIntegration, error) {
+		return GetLLMIntegrationsForAccount(nil, accountId)
 	})
 }
 
@@ -2839,12 +2839,12 @@ func GetAllConfiguredModels(accountId string) ([]ModelConfig, error) {
 // saved with no accounts may reference as an existing-model fallback. ENV slots
 // are left out because a fallback reference is always db:<uuid>.
 func GetTenantWideConfiguredModels(tenantId string) ([]ModelConfig, error) {
-	return buildConfiguredModels(false, tenantId, func() ([]llmIntegration, error) {
+	return buildConfiguredModels(false, tenantId, func() ([]LLMIntegration, error) {
 		return getTenantWideLLMIntegrations(nil, tenantId)
 	})
 }
 
-func buildConfiguredModels(withEnv bool, logId string, loadIntegrations func() ([]llmIntegration, error)) ([]ModelConfig, error) {
+func buildConfiguredModels(withEnv bool, logId string, loadIntegrations func() ([]LLMIntegration, error)) ([]ModelConfig, error) {
 	var models []ModelConfig
 	seen := make(map[string]bool)
 
@@ -3259,19 +3259,19 @@ func pinnedConfigSourceFromContext(ctx *security.RequestContext) string {
 	return v
 }
 
-// parsedConfigSource is the decoded form of a source-id string.
-type parsedConfigSource struct {
+// ParsedConfigSource is the decoded form of a source-id string.
+type ParsedConfigSource struct {
 	Layer           string // "env" | "db"
 	Scope           string // "global" | "tier" | "agent"
 	Name            string // tier name or agent name (empty for global)
 	IntegrationUuid string // db only
 }
 
-// parseConfigSourceId splits a source-id string into (layer, scope, name,
+// ParseConfigSourceId splits a source-id string into (layer, scope, name,
 // integration_uuid). Returns an error if malformed. The caller must still
 // validate that the parsed slot actually has data — parsing succeeds even for
 // slots that reference a tier/agent that isn't configured.
-func parseConfigSourceId(sourceId string) (*parsedConfigSource, error) {
+func ParseConfigSourceId(sourceId string) (*ParsedConfigSource, error) {
 	// Trim before splitting: the id is client-supplied, and stray whitespace
 	// would otherwise fail as an unknown layer or an unavailable integration —
 	// errors that point at the wrong thing. Messages keep the raw value.
@@ -3279,7 +3279,7 @@ func parseConfigSourceId(sourceId string) (*parsedConfigSource, error) {
 	if len(parts) < 2 {
 		return nil, fmt.Errorf("invalid llm_config_source %q: expected {layer}:{scope}[:{name}]", sourceId)
 	}
-	p := &parsedConfigSource{Layer: parts[0]}
+	p := &ParsedConfigSource{Layer: parts[0]}
 	switch p.Layer {
 	case "env":
 		// env:global | env:all | env:tier:<t> | env:agent:<a>
@@ -3375,7 +3375,7 @@ func wholeConfigChoiceFor(ctx *security.RequestContext, sourceId, pinnedModel, a
 // Returns a copy — the caller's parsed source must keep naming ":all" so
 // PinnedConfigSource, cache keys and audit logs still record what was pinned
 // rather than the slot it happened to land on for this call.
-func slotForWholeConfig(p *parsedConfigSource, tier ModelTier, tierDefinesModel func(string) bool) *parsedConfigSource {
+func slotForWholeConfig(p *ParsedConfigSource, tier ModelTier, tierDefinesModel func(string) bool) *ParsedConfigSource {
 	out := *p
 	if tier != "" && tierDefinesModel(string(tier)) {
 		out.Scope, out.Name = "tier", string(tier)
@@ -3400,7 +3400,7 @@ func slotForWholeConfig(p *parsedConfigSource, tier ModelTier, tierDefinesModel 
 //     endpoint / api-key while picking a fallback model. Mismatches return an
 //     error — no silent slot-primary substitution, no wrong endpoint drift.
 func resolveFromPinnedSource(ctx *security.RequestContext, sourceId, accountId, agentName string, tier ModelTier) (*LLMConfigResolution, error) {
-	parsed, err := parseConfigSourceId(sourceId)
+	parsed, err := ParseConfigSourceId(sourceId)
 	if err != nil {
 		return nil, err
 	}
@@ -3473,7 +3473,7 @@ func resolveFromPinnedSource(ctx *security.RequestContext, sourceId, accountId, 
 // reconciliation), shared by pinned requests & referenced fallbacks. Also returns the
 // slot's same-provider fallback models and, for db slots, the integration config.
 // tenantId is used only when accountId is empty (see integrationConfigForPin).
-func readPinnedSlot(ctx *security.RequestContext, sourceId string, parsed *parsedConfigSource, accountId, tenantId string, tier ModelTier) (*LLMConfigResolution, []string, map[string]string, error) {
+func readPinnedSlot(ctx *security.RequestContext, sourceId string, parsed *ParsedConfigSource, accountId, tenantId string, tier ModelTier) (*LLMConfigResolution, []string, map[string]string, error) {
 	res := &LLMConfigResolution{
 		Source:             "pinned:" + sourceId,
 		AccountId:          accountId,
@@ -3517,13 +3517,13 @@ func readPinnedSlot(ctx *security.RequestContext, sourceId string, parsed *parse
 
 // integrationConfigForPin returns the config map of the integration a db:<uuid>
 // source names, or an error if the account can't see it. Tenant isolation comes
-// from getLLMIntegrationsForAccount's visibility filter — an integration
+// from GetLLMIntegrationsForAccount's visibility filter — an integration
 // belonging to another tenant is never in the returned list, so an unrecognised
 // uuid is rejected here rather than silently resolving to someone else's
 // credentials. With no account, only tenantId's organisation-wide configs are
 // visible.
 func integrationConfigForPin(ctx *security.RequestContext, accountId, tenantId, integrationUuid string) (map[string]string, error) {
-	var integrations []llmIntegration
+	var integrations []LLMIntegration
 	var err error
 	if accountId == "" {
 		if tenantId == "" {
@@ -3531,14 +3531,14 @@ func integrationConfigForPin(ctx *security.RequestContext, accountId, tenantId, 
 		}
 		integrations, err = tenantWideLLMIntegrations(ctx, tenantId)
 	} else {
-		integrations, err = getLLMIntegrationsForAccount(ctx, accountId)
+		integrations, err = GetLLMIntegrationsForAccount(ctx, accountId)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("llm_config_source db:%s: unable to load LLM integrations: %w", integrationUuid, err)
 	}
 	for _, integ := range integrations {
 		if integ.Id == integrationUuid {
-			// Safe to hand out: getLLMIntegrationsForAccount already returns a
+			// Safe to hand out: GetLLMIntegrationsForAccount already returns a
 			// deep copy, so this map is not the cached one.
 			return integ.Config, nil
 		}
@@ -3578,7 +3578,7 @@ func containsString(xs []string, s string) bool {
 // readEnvSlotInto populates res with credentials read from an env: slot and
 // returns the slot's fallback model list (empty if none configured). The caller
 // has already parsed sourceId; this function only touches ENV.
-func readEnvSlotInto(res *LLMConfigResolution, p *parsedConfigSource) ([]string, error) {
+func readEnvSlotInto(res *LLMConfigResolution, p *ParsedConfigSource) ([]string, error) {
 	var fallbackStr string
 	switch p.Scope {
 	case "global":
@@ -3646,7 +3646,7 @@ func readEnvSlotInto(res *LLMConfigResolution, p *parsedConfigSource) ([]string,
 // tenant-configured LLM integration's config map. integration_config_values
 // stores the same key names as the ENV formats, lowercased, so the slot shapes
 // line up one-for-one with the env branch above.
-func readDbSlotInto(res *LLMConfigResolution, cfg map[string]string, p *parsedConfigSource) ([]string, error) {
+func readDbSlotInto(res *LLMConfigResolution, cfg map[string]string, p *ParsedConfigSource) ([]string, error) {
 	var fallbackStr string
 	switch p.Scope {
 	case "fallback":
@@ -3837,7 +3837,7 @@ type slotDefaults struct {
 // finishSlotRead validates that a slot read produced a servable (provider,
 // model) pair and splits its comma-separated fallback list. Shared by the env
 // and db readers so both reject empty slots identically.
-func finishSlotRead(res *LLMConfigResolution, p *parsedConfigSource, fallbackStr string) ([]string, error) {
+func finishSlotRead(res *LLMConfigResolution, p *ParsedConfigSource, fallbackStr string) ([]string, error) {
 	if res.Provider == "" {
 		return nil, fmt.Errorf("pinned llm_config_source has no provider set for %s:%s:%s", p.Layer, p.Scope, p.Name)
 	}
@@ -3878,7 +3878,7 @@ func deriveConfigSource(source string, isFallback bool) string {
 	if isFallback {
 		id = strings.TrimSuffix(id, ":fallback")
 	}
-	if _, err := parseConfigSourceId(id); err != nil {
+	if _, err := ParseConfigSourceId(id); err != nil {
 		return ""
 	}
 	return id
@@ -4016,7 +4016,7 @@ func BuildCredentialsFrom(accountId string, models []ModelConfig) []LLMCredentia
 // a tenant-configured integration and read as "<integration name> · <scope>",
 // so integrationName must be supplied for db ids (ignored for env ids).
 func ConfigNameFor(sourceId, integrationName string) string {
-	p, err := parseConfigSourceId(sourceId)
+	p, err := ParseConfigSourceId(sourceId)
 	if err != nil {
 		return sourceId // fall back to raw id so the UI still shows something
 	}

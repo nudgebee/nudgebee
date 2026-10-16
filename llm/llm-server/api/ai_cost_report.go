@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"nudgebee/llm/agents/core"
+	"nudgebee/llm/analytics"
 	"nudgebee/llm/common"
 
 	"github.com/gin-gonic/gin"
@@ -18,7 +18,7 @@ import (
 func handleAiCostDailyReportApi(r *gin.Engine) {
 	r.POST("/v1/cost/ai-cost-daily-report", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal("ai_cost_daily_report_cron")
-		if err := core.RunAiCostReportDispatch(time.Now().UTC()); err != nil {
+		if err := analytics.RunAiCostReportDispatch(time.Now().UTC()); err != nil {
 			slog.Error("ai_cost_daily_report: dispatch run failed", "error", err)
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},

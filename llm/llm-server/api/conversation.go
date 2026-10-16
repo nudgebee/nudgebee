@@ -5,7 +5,9 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/analytics"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
@@ -425,7 +427,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		sendHourUTC, err := core.GetAiCostReportSchedule(dbManager, sc.GetTenantId())
+		sendHourUTC, err := analytics.GetAiCostReportSchedule(dbManager, sc.GetTenantId())
 		if err != nil {
 			agentContext.GetLogger().Error("api: error reading cost report schedule", "error", err)
 			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
@@ -457,7 +459,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		if err := core.UpsertAiCostReportSchedule(dbManager, sc.GetTenantId(), sc.GetUserId(), request.SendHourUTC); err != nil {
+		if err := analytics.UpsertAiCostReportSchedule(dbManager, sc.GetTenantId(), sc.GetUserId(), request.SendHourUTC); err != nil {
 			agentContext.GetLogger().Error("api: error saving cost report schedule", "error", err)
 			// Validation failures (out-of-range hour) are the caller's fault —
 			// 400 with the message intact, not a blanket 500.

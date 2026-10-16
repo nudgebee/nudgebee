@@ -218,8 +218,8 @@ type optSavingsIndex struct {
 	callsByType   map[string]int
 	// per (agentName \x00 model): token sums + current cost (model_downgrade basis)
 	byTypeModel map[string]optTok
-	pricing     map[string]modelPricing // key provider:model
-	byModelName map[string]modelPricing // key model name (for suggested_model lookup)
+	pricing     map[string]ModelPricing // key provider:model
+	byModelName map[string]ModelPricing // key model name (for suggested_model lookup)
 
 	// granular per-group data for verifiable evidence (token distribution, backing
 	// instance ids, exemplar calls). Keyed the same way findings are grouped.
@@ -296,7 +296,7 @@ func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accou
 			retry_attempt, request_status,
 			COALESCE(error_message, '') AS error_message
 		FROM llm_conversation_token_usage
-		WHERE %s`, convScopeCTE)
+		WHERE %s`, ConvScopeCTE)
 	if err := chat.dbManager.Db.Select(&mcScans, mcQuery, args...); err != nil {
 		slog.Error("GetConversationOptimizationProfile: model_calls query failed", "error", err)
 		return OptimizationProfile{}, nil, fmt.Errorf("GetConversationOptimizationProfile model_calls: %w", err)
@@ -319,7 +319,7 @@ func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accou
 			COALESCE(response_summary, '') AS response_summary,
 			COALESCE(response, '') AS response
 		FROM llm_conversation_agent
-		WHERE %s`, convScopeCTE)
+		WHERE %s`, ConvScopeCTE)
 	if err := chat.dbManager.Db.Select(&agentScans, agentQuery, args...); err != nil {
 		slog.Error("GetConversationOptimizationProfile: agents query failed", "error", err)
 		return OptimizationProfile{}, nil, fmt.Errorf("GetConversationOptimizationProfile agents: %w", err)
@@ -340,7 +340,7 @@ func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accou
 			COALESCE(child_agent_id::text, '') AS child_agent_id,
 			COALESCE(EXTRACT(EPOCH FROM (updated_at - created_at)), 0) AS duration_seconds
 		FROM llm_conversation_tool_calls
-		WHERE %s AND metadata->>'parent_tool_call_id' IS NULL`, convScopeCTE)
+		WHERE %s AND metadata->>'parent_tool_call_id' IS NULL`, ConvScopeCTE)
 	if err := chat.dbManager.Db.Select(&toolScans, toolQuery, args...); err != nil {
 		slog.Error("GetConversationOptimizationProfile: tool_calls query failed", "error", err)
 		return OptimizationProfile{}, nil, fmt.Errorf("GetConversationOptimizationProfile tool_calls: %w", err)
@@ -364,7 +364,7 @@ func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accou
 		callsByType:      map[string]int{},
 		byTypeModel:      map[string]optTok{},
 		pricing:          pricing,
-		byModelName:      map[string]modelPricing{},
+		byModelName:      map[string]ModelPricing{},
 		granByType:       map[string]*optGroupGran{},
 		granByTypeModel:  map[string]*optGroupGran{},
 		taskByAgentID:    map[string]string{},
@@ -463,7 +463,7 @@ func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accou
 			t.retries++
 			idx.retryByType[name] += cost
 		}
-		if isModelError(m.RequestStatus, m.ErrorMessage) {
+		if IsModelError(m.RequestStatus, m.ErrorMessage) {
 			t.errors++
 			idx.failureByType[name] += cost
 		}
@@ -582,7 +582,7 @@ func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accou
 			continue
 		}
 		flag := "ok"
-		if isToolError(tc.Status) {
+		if IsToolError(tc.Status) {
 			flag = "error"
 		} else if isToolNoData(tc.Response) {
 			flag = "no_data"
@@ -1212,7 +1212,7 @@ func parseToolFlags(tools []string) (ok, noData, errc int) {
 }
 
 // fmtRate renders a model's price as "in / out per Mtok".
-func fmtRate(p modelPricing) string {
+func fmtRate(p ModelPricing) string {
 	return fmt.Sprintf("$%.2f in / $%.2f out per Mtok", p.CostPerMillionInput, p.CostPerMillionOutput)
 }
 
@@ -1320,3 +1320,34 @@ func plural(n int) string {
 // message the token-usage rows require (both NOT NULL) so the analysis cost is
 // tracked. A standalone read-only endpoint can't satisfy that, so it was removed;
 // GenerateConversationOptimization above is the shared engine the agent calls.
+
+// ConvScopeCTE scopes every tree query to the conversation row(s) for this
+// session within the caller's account.
+const ConvScopeCTE = `conversation_id IN (
+	SELECT id FROM llm_conversations WHERE session_id = $1 AND account_id = $2::uuid)`
+
+// IsToolError maps a stored tool status to a simple error flag. Terminal
+// non-success states (ERROR / TERMINATED) are errors; SUCCESS and the various
+// pending states (WAITING / IN_PROGRESS) are not.
+func IsToolError(status string) bool {
+	switch status {
+	case "ERROR", "TERMINATED":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsModelError treats a non-success request_status, or any populated
+// error_message, as an error.
+func IsModelError(requestStatus, errorMessage string) bool {
+	if errorMessage != "" {
+		return true
+	}
+	switch requestStatus {
+	case "", "success", "SUCCESS", "completed", "COMPLETED":
+		return false
+	default:
+		return true
+	}
+}

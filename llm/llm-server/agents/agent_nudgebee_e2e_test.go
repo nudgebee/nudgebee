@@ -3,12 +3,14 @@
 package agents
 
 import (
-	agentasserts "nudgebee/llm/agents/asserts"
-	"nudgebee/llm/agents/core"
-	"nudgebee/llm/security"
 	"os"
 	"strings"
 	"testing"
+
+	agentasserts "nudgebee/llm/agents/asserts"
+	"nudgebee/llm/agents/core"
+	"nudgebee/llm/analytics"
+	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -162,7 +164,7 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 				assert.NotEmpty(t, resp.References[0].Url)
 			}
 
-			detail, err := core.GetConversationDao().GetConversationAgentDetail(tc.SessionId, tc.AccountId, resp.AgentId, "")
+			detail, err := analytics.GetStore().GetConversationAgentDetail(tc.SessionId, tc.AccountId, resp.AgentId, "")
 			require.NoError(t, err)
 			require.NotEmpty(t, detail.ToolCalls, "Nubi must ground live-state answers in a tool call")
 			assert.LessOrEqual(t, len(detail.ToolCalls), tc.MaxToolCalls)
@@ -229,7 +231,7 @@ func TestNudgebeeAgent_AgentlessHealthPrecedence(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, resp.Response)
 
-	detail, err := core.GetConversationDao().GetConversationAgentDetail(sessionID, accountID, resp.AgentId, "")
+	detail, err := analytics.GetStore().GetConversationAgentDetail(sessionID, accountID, resp.AgentId, "")
 	require.NoError(t, err)
 	require.Len(t, detail.ToolCalls, 1)
 	call := detail.ToolCalls[0]

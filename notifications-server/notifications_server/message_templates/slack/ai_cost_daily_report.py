@@ -171,7 +171,7 @@ def _table_cell(text: str) -> Dict[str, Any]:
     return {"type": "raw_text", "text": text}
 
 
-# Mirrors llm-server's negligibleCostUsd (agents/core/ai_cost_report.go) — the
+# Mirrors llm-server's negligibleCostUsd (analytics/ai_cost_report.go) — the
 # Go payload already zeroes pct_delta_avg_daily below this per-day baseline
 # (no meaningful prior average to divide into), but a bare "(→ 0%)" then reads
 # as "flat month over month" instead of "no baseline to compare against".

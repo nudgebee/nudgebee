@@ -74,7 +74,7 @@ var (
 	// Per-integration view of the same rows, keyed by accountId. Shares the TTL
 	// and the invalidation path with the caches above.
 	llmIntegrationsCache = make(map[string]struct {
-		integrations []llmIntegration
+		integrations []LLMIntegration
 		ts           time.Time
 	})
 	llmIntegrationsCacheMutex sync.RWMutex
@@ -89,12 +89,12 @@ func llmIntegrationConfigCacheTTL() time.Duration {
 	return time.Duration(config.Config.LlmServerLlmConfigCacheTTLMinutes) * time.Minute
 }
 
-// llmIntegration is one enabled LLM integration visible to an account, with its
+// LLMIntegration is one enabled LLM integration visible to an account, with its
 // config values already decrypted. getLLMIntegrationConfig merges every visible
 // integration into a single map for the layered resolver, which loses the
 // integration id; pinning needs each integration addressable on its own, so
 // this keeps them separate. See NBQueryConfig.LlmConfigSource ("db:<uuid>").
-type llmIntegration struct {
+type LLMIntegration struct {
 	Id     string
 	Name   string
 	Config map[string]string
@@ -153,7 +153,7 @@ func InvalidateLLMIntegrationConfigCache(accountId string) {
 	llmIntegrationsCacheMutex.Unlock()
 
 	// Sibling accounts still see this tenant's unmapped integrations in their
-	// pickable list (getLLMIntegrationsForAccount), so their caches go too.
+	// pickable list (GetLLMIntegrationsForAccount), so their caches go too.
 	if tenantId, err := security.GetTenantIdFromAccountId(accountId); err == nil && tenantId != "" {
 		// Clear account-level cache entries for all accounts under this tenant
 		// so they re-resolve on next call.
@@ -3888,7 +3888,7 @@ func trackTokenUsage(
 	// tier, which holds for every built-in Anthropic pricing row.
 	pricedNonCached := nonCachedInputTokens + tokenInfo.CacheCreation1hTokens*3/4
 	var costUsd *float64
-	if cost, err := dao.GetConversationCost(provider, model, pricedNonCached, tokenInfo.CacheReadTokens, tokenInfo.CacheCreationTokens, tokenInfo.OutputTokens, tokenInfo.ThinkingTokens, pricingTenantFromContext(ctx)); err == nil {
+	if cost, err := dao.GetConversationCost(provider, model, pricedNonCached, tokenInfo.CacheReadTokens, tokenInfo.CacheCreationTokens, tokenInfo.OutputTokens, tokenInfo.ThinkingTokens, PricingTenantFromContext(ctx)); err == nil {
 		costUsd = &cost
 	} else {
 		ctx.GetLogger().Debug("trackTokenUsage: no pricing data for cost calc", "provider", provider, "model", model, "error", err)
@@ -4061,7 +4061,7 @@ func cloneConfigMap(src map[string]string) map[string]string {
 	return out
 }
 
-// getLLMIntegrationsForAccount returns every enabled LLM integration the account
+// GetLLMIntegrationsForAccount returns every enabled LLM integration the account
 // can see, one entry per integration, with encrypted values decrypted. Backs the
 // db:<uuid> source ids: GetAllConfiguredModels emits a pickable row per slot per
 // integration, and resolveFromPinnedSource accepts only ids present in this list.
@@ -4076,10 +4076,10 @@ func cloneConfigMap(src map[string]string) map[string]string {
 // goroutine reads is a fatal concurrent-map panic, not a subtle bug. Copying
 // here rather than at each call site means callers can't get it wrong, and the
 // cost is trivial: a handful of integrations, read a few times per request.
-func cloneIntegrations(src []llmIntegration) []llmIntegration {
-	out := make([]llmIntegration, len(src))
+func cloneIntegrations(src []LLMIntegration) []LLMIntegration {
+	out := make([]LLMIntegration, len(src))
 	for i, integ := range src {
-		out[i] = llmIntegration{
+		out[i] = LLMIntegration{
 			Id:     integ.Id,
 			Name:   integ.Name,
 			Config: make(map[string]string, len(integ.Config)),
@@ -4091,7 +4091,7 @@ func cloneIntegrations(src []llmIntegration) []llmIntegration {
 	return out
 }
 
-func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string) ([]llmIntegration, error) {
+func GetLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string) ([]LLMIntegration, error) {
 	if accountId == "" {
 		return nil, nil
 	}
@@ -4135,7 +4135,7 @@ func getLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string
 
 	llmIntegrationsCacheMutex.Lock()
 	llmIntegrationsCache[accountId] = struct {
-		integrations []llmIntegration
+		integrations []LLMIntegration
 		ts           time.Time
 	}{integrations: integrations, ts: time.Now()}
 	llmIntegrationsCacheMutex.Unlock()
@@ -4164,7 +4164,7 @@ const llmIntegrationRowsSelect = `SELECT i.id AS integration_id, i.name AS integ
 // integrations `keep` accepts, decrypted and sorted by name then id so lists
 // built from them are stable.
 func queryLLMIntegrations(ctx *security.RequestContext, dbManager *common.DatabaseManager, query string,
-	params map[string]any, keep func(llmCandidate) bool, logId string) ([]llmIntegration, error) {
+	params map[string]any, keep func(llmCandidate) bool, logId string) ([]LLMIntegration, error) {
 	var rows *sqlx.Rows
 	var err error
 	if ctx != nil {
@@ -4181,7 +4181,7 @@ func queryLLMIntegrations(ctx *security.RequestContext, dbManager *common.Databa
 		}
 	}()
 
-	byId := map[string]*llmIntegration{}
+	byId := map[string]*LLMIntegration{}
 	for rows.Next() {
 		var id string
 		var integrationName, key, value sql.NullString
@@ -4209,7 +4209,7 @@ func queryLLMIntegrations(ctx *security.RequestContext, dbManager *common.Databa
 		}
 		integ, ok := byId[id]
 		if !ok {
-			integ = &llmIntegration{Id: id, Name: integrationName.String, Config: map[string]string{}}
+			integ = &LLMIntegration{Id: id, Name: integrationName.String, Config: map[string]string{}}
 			byId[id] = integ
 		}
 		integ.Config[key.String] = plain
@@ -4218,7 +4218,7 @@ func queryLLMIntegrations(ctx *security.RequestContext, dbManager *common.Databa
 		return nil, fmt.Errorf("failed iterating rows for %s: %w", logId, err)
 	}
 
-	integrations := make([]llmIntegration, 0, len(byId))
+	integrations := make([]LLMIntegration, 0, len(byId))
 	for _, integ := range byId {
 		integrations = append(integrations, *integ)
 	}
@@ -4237,7 +4237,7 @@ var tenantWideLLMIntegrations = getTenantWideLLMIntegrations
 // getTenantWideLLMIntegrations returns a tenant's enabled integrations that a
 // config saved with no accounts may reference: those linked to no account, and
 // the tenant default.
-func getTenantWideLLMIntegrations(ctx *security.RequestContext, tenantId string) ([]llmIntegration, error) {
+func getTenantWideLLMIntegrations(ctx *security.RequestContext, tenantId string) ([]LLMIntegration, error) {
 	if tenantId == "" {
 		return nil, nil
 	}

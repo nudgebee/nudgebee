@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"database/sql"
@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
 )
 
@@ -147,32 +148,32 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	// All metrics queries key off session_id, but callers may pass a conversation id
 	// (e.g. workflow/autopilot conversations opened by conversation_id, whose session_id is
 	// a wf__… id). Normalize once here so every downstream lookup resolves either way.
-	request.ConversationId = GetConversationDao().ResolveSessionId(request.ConversationId)
+	request.ConversationId = core.GetConversationDao().ResolveSessionId(request.ConversationId)
 
 	// Get aggregated token usage (for backward compatibility)
-	agents, err := GetConversationDao().GetConversationTokenUsage(request.ConversationId, request.AccountId)
+	agents, err := core.GetConversationDao().GetConversationTokenUsage(request.ConversationId, request.AccountId)
 	if err != nil {
 		return ConversationUsageMetricsResponse{}, err
 	}
 
 	// Get detailed token usage records for new metrics
-	detailedRecords, err := GetConversationDao().GetConversationTokenUsageDetailed(request.ConversationId, request.AccountId)
+	detailedRecords, err := core.GetConversationDao().GetConversationTokenUsageDetailed(request.ConversationId, request.AccountId)
 	if err != nil {
 		return ConversationUsageMetricsResponse{}, err
 	}
 
 	// Get tool calls statistics
-	toolStats, err := GetConversationDao().GetConversationToolCallsStats(request.ConversationId, request.AccountId)
+	toolStats, err := core.GetConversationDao().GetConversationToolCallsStats(request.ConversationId, request.AccountId)
 	if err != nil {
 		// Log error but don't fail - tool stats are optional
-		toolStats = ToolCallsStats{}
+		toolStats = core.ToolCallsStats{}
 	}
 
 	// Get time breakdown
-	timeBreakdown, err := GetConversationDao().GetConversationTimeBreakdown(request.ConversationId, request.AccountId)
+	timeBreakdown, err := core.GetConversationDao().GetConversationTimeBreakdown(request.ConversationId, request.AccountId)
 	if err != nil {
 		// Log error but don't fail - time breakdown is optional
-		timeBreakdown = TimeBreakdown{}
+		timeBreakdown = core.TimeBreakdown{}
 	}
 
 	// Organize data into hierarchical structure
@@ -232,7 +233,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	// at/after it. This makes a tool's details show only the reasoning that led to that
 	// call (slices sum to the agent total) instead of repeating the agent total on each.
 	reasoningByToolCall := make(map[string]ToolReasoning)
-	toolAgents, taErr := GetConversationDao().GetConversationToolCallAgents(request.ConversationId, request.AccountId)
+	toolAgents, taErr := core.GetConversationDao().GetConversationToolCallAgents(request.ConversationId, request.AccountId)
 	if taErr != nil {
 		// Non-fatal: the response is still correct without reasoning attribution.
 		// But it must be visible — this query failed on every call for as long as
@@ -241,7 +242,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 			"error", taErr, "conversation_id", request.ConversationId)
 	} else {
 		// Tool calls grouped by agent, each list already chronological (query ORDER BY).
-		toolsByAgent := make(map[string][]ToolCallAgent)
+		toolsByAgent := make(map[string][]core.ToolCallAgent)
 		for _, ta := range toolAgents {
 			toolsByAgent[ta.AgentID] = append(toolsByAgent[ta.AgentID], ta)
 		}
@@ -338,21 +339,21 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	}
 
 	// Calculate model usage statistics
-	modelUsage := calculateModelUsageStats(detailedRecords, pricingTenantFromContext(ctx))
+	modelUsage := calculateModelUsageStats(detailedRecords, core.PricingTenantFromContext(ctx))
 
 	// Fetch costs for cache savings calculation
 	modelNames := []string{}
 	for _, record := range detailedRecords {
 		modelNames = append(modelNames, record.LLMModel)
 	}
-	costs, _ := GetConversationDao().GetConversationCosts(modelNames, pricingTenantFromContext(ctx))
+	costs, _ := core.GetConversationDao().GetConversationCosts(modelNames, core.PricingTenantFromContext(ctx))
 
 	// Add per-hour storage cost for conversation-scoped caches owned by this
 	// conversation. Account/tenant/global-scoped caches are excluded — their
 	// storage rolls up into account/tenant budgets, not conversation metrics.
 	// tenant_id pulled from security context for defense-in-depth tenant isolation.
 	tenantId := ctx.GetSecurityContext().GetTenantId()
-	if storageCost, scErr := GetConversationDao().GetConversationLifecycleStorageCost(request.ConversationId, tenantId); scErr == nil {
+	if storageCost, scErr := core.GetConversationDao().GetConversationLifecycleStorageCost(request.ConversationId, tenantId); scErr == nil {
 		totalCost += storageCost
 	}
 
@@ -439,7 +440,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 }
 
 // calculateModelUsageStats aggregates statistics by model
-func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId string) []ModelUsageStat {
+func calculateModelUsageStats(records []core.TokenUsageDetailedRecord, tenantId string) []ModelUsageStat {
 	if len(records) == 0 {
 		return []ModelUsageStat{}
 	}
@@ -455,9 +456,9 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId strin
 
 	// Fetch costs in batch. Tolerate a nil DAO (unit tests) — without pricing,
 	// CostUsd stays zero and only the per-model token aggregates are populated.
-	var costs map[string]modelPricing
+	var costs map[string]core.ModelPricing
 	pricingLoaded := false
-	if dao := GetConversationDao(); dao != nil {
+	if dao := core.GetConversationDao(); dao != nil {
 		var err error
 		costs, err = dao.GetConversationCosts(modelNames, tenantId)
 		// A failed lookup says nothing about whether a price exists, so no call is flagged unpriced.
@@ -508,7 +509,7 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId strin
 			if nonCachedTokens < 0 {
 				nonCachedTokens = 0
 			}
-			stat.CostUsd += CalculateTotalCost(
+			stat.CostUsd += core.CalculateTotalCost(
 				&pricing,
 				nonCachedTokens,
 				record.CachedInputTokens,
@@ -551,7 +552,7 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId strin
 // Then sum and subtract the actual cost. The difference is what caching
 // saved (or, if negative, cost) for the period — accounting for both the
 // cached-read discount and any cache-write premium (e.g. Anthropic 1.25x).
-func calculateCacheSavings(records []TokenUsageDetailedRecord, actualCost float64, costs map[string]modelPricing) CacheSavingsInfo {
+func calculateCacheSavings(records []core.TokenUsageDetailedRecord, actualCost float64, costs map[string]core.ModelPricing) CacheSavingsInfo {
 	totalCachedTokens := 0
 	totalPromptTokens := 0
 	estimatedCostWithoutCache := 0.0
@@ -563,7 +564,7 @@ func calculateCacheSavings(records []TokenUsageDetailedRecord, actualCost float6
 		if pricing, ok := costs[record.LLMProvider+":"+record.LLMModel]; ok {
 			// "Without cache" hypothetical: all input tokens billed at the
 			// non-cached rate, no cache creation, same output and thinking.
-			estimatedCostWithoutCache += CalculateTotalCost(
+			estimatedCostWithoutCache += core.CalculateTotalCost(
 				&pricing,
 				record.InputTokens, // all input as non-cached
 				0,                  // no cached read
@@ -596,7 +597,7 @@ func calculateCacheSavings(records []TokenUsageDetailedRecord, actualCost float6
 }
 
 // calculateSuccessRate computes success rate and request counts
-func calculateSuccessRate(records []TokenUsageDetailedRecord) (*float64, int, int, int) {
+func calculateSuccessRate(records []core.TokenUsageDetailedRecord) (*float64, int, int, int) {
 	totalRequests := len(records)
 	successfulRequests := 0
 	failedRequests := 0
@@ -623,7 +624,7 @@ func calculateSuccessRate(records []TokenUsageDetailedRecord) (*float64, int, in
 // calculateStreamingLatencyStats averages ttft_ms and itl_ms_avg over the calls
 // that recorded them. Non-streaming and legacy rows carry NULL and are skipped
 // rather than counted as zero, which would drag both averages toward 0.
-func calculateStreamingLatencyStats(records []TokenUsageDetailedRecord) (avgTtftMs *float64, avgItlMs *float64) {
+func calculateStreamingLatencyStats(records []core.TokenUsageDetailedRecord) (avgTtftMs *float64, avgItlMs *float64) {
 	var ttftSum, itlSum float64
 	var ttftN, itlN int
 	for _, r := range records {
@@ -647,7 +648,7 @@ func calculateStreamingLatencyStats(records []TokenUsageDetailedRecord) (avgTtft
 	return
 }
 
-func calculateLatencyStats(records []TokenUsageDetailedRecord) (*float64, *float64) {
+func calculateLatencyStats(records []core.TokenUsageDetailedRecord) (*float64, *float64) {
 	totalLatency := 0.0
 	latencyCount := 0
 
@@ -678,7 +679,7 @@ func calculateLatencyStats(records []TokenUsageDetailedRecord) (*float64, *float
 // 100% (#38129). CreatedAt is the call's completion time (see
 // InsertTokenUsage), so each call's interval is approximated as
 // [CreatedAt-LatencySeconds, CreatedAt].
-func calculateMergedApiTimeSeconds(records []TokenUsageDetailedRecord) *float64 {
+func calculateMergedApiTimeSeconds(records []core.TokenUsageDetailedRecord) *float64 {
 	type span struct{ start, end time.Time }
 
 	spans := make([]span, 0, len(records))
@@ -738,7 +739,7 @@ var resolutionLayerLabels = map[string]string{
 // back to showing the raw source rather than an empty cell.
 func configSourceDisplayNames(ctx *security.RequestContext, accountId string, sources map[string]struct{}) map[string]string {
 	names := make(map[string]string, len(sources))
-	var integrations []llmIntegration
+	var integrations []core.LLMIntegration
 	loaded := false
 
 	for src := range sources {
@@ -752,7 +753,7 @@ func configSourceDisplayNames(ctx *security.RequestContext, accountId string, so
 			names[src] = label
 			continue
 		}
-		parsed, err := parseConfigSourceId(src)
+		parsed, err := core.ParseConfigSourceId(src)
 		if err != nil {
 			continue
 		}
@@ -766,7 +767,7 @@ func configSourceDisplayNames(ctx *security.RequestContext, accountId string, so
 			var err error
 			// Naming is cosmetic: a lookup failure costs the config label, not the
 			// token and latency figures, so degrade rather than fail the panel.
-			if integrations, err = getLLMIntegrationsForAccount(ctx, accountId); err != nil {
+			if integrations, err = core.GetLLMIntegrationsForAccount(ctx, accountId); err != nil {
 				ctx.GetLogger().Warn("usage metrics: unable to load LLM integrations, config names will be omitted", "error", err, "account_id", accountId)
 			}
 			loaded = true

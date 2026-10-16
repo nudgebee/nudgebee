@@ -19,13 +19,13 @@ import (
 
 // seedLLMIntegrations primes the per-integration cache so db-slot tests exercise
 // the real resolution path without a database. The cache is what
-// getLLMIntegrationsForAccount consults first, so only the SQL is bypassed —
+// GetLLMIntegrationsForAccount consults first, so only the SQL is bypassed —
 // grouping, slot reads, and the visibility check all run for real.
-func seedLLMIntegrations(t *testing.T, accountId string, integrations ...llmIntegration) {
+func seedLLMIntegrations(t *testing.T, accountId string, integrations ...LLMIntegration) {
 	t.Helper()
 	llmIntegrationsCacheMutex.Lock()
 	llmIntegrationsCache[accountId] = struct {
-		integrations []llmIntegration
+		integrations []LLMIntegration
 		ts           time.Time
 	}{integrations: integrations, ts: time.Now()}
 	llmIntegrationsCacheMutex.Unlock()
@@ -37,10 +37,10 @@ func seedLLMIntegrations(t *testing.T, accountId string, integrations ...llmInte
 }
 
 // seedTenantWideLLMIntegrations stands in for the tenant's organisation-wide configs.
-func seedTenantWideLLMIntegrations(t *testing.T, tenantId string, integrations ...llmIntegration) {
+func seedTenantWideLLMIntegrations(t *testing.T, tenantId string, integrations ...LLMIntegration) {
 	t.Helper()
 	orig := tenantWideLLMIntegrations
-	tenantWideLLMIntegrations = func(_ *security.RequestContext, id string) ([]llmIntegration, error) {
+	tenantWideLLMIntegrations = func(_ *security.RequestContext, id string) ([]LLMIntegration, error) {
 		if id != tenantId {
 			return nil, nil
 		}
@@ -52,18 +52,18 @@ func seedTenantWideLLMIntegrations(t *testing.T, tenantId string, integrations .
 func TestParseConfigSourceId_Valid(t *testing.T) {
 	cases := []struct {
 		in   string
-		want parsedConfigSource
+		want ParsedConfigSource
 	}{
-		{"env:global", parsedConfigSource{Layer: "env", Scope: "global"}},
-		{"env:tier:reasoning", parsedConfigSource{Layer: "env", Scope: "tier", Name: "reasoning"}},
-		{"env:tier:summary", parsedConfigSource{Layer: "env", Scope: "tier", Name: "summary"}},
-		{"env:agent:soul_consolidate", parsedConfigSource{Layer: "env", Scope: "agent", Name: "soul_consolidate"}},
-		{"db:6f2c-1a2b", parsedConfigSource{Layer: "db", Scope: "global", IntegrationUuid: "6f2c-1a2b"}},
-		{"db:abc:tier:reasoning", parsedConfigSource{Layer: "db", Scope: "tier", Name: "reasoning", IntegrationUuid: "abc"}},
-		{"db:xyz:agent:memory_rerank", parsedConfigSource{Layer: "db", Scope: "agent", Name: "memory_rerank", IntegrationUuid: "xyz"}},
+		{"env:global", ParsedConfigSource{Layer: "env", Scope: "global"}},
+		{"env:tier:reasoning", ParsedConfigSource{Layer: "env", Scope: "tier", Name: "reasoning"}},
+		{"env:tier:summary", ParsedConfigSource{Layer: "env", Scope: "tier", Name: "summary"}},
+		{"env:agent:soul_consolidate", ParsedConfigSource{Layer: "env", Scope: "agent", Name: "soul_consolidate"}},
+		{"db:6f2c-1a2b", ParsedConfigSource{Layer: "db", Scope: "global", IntegrationUuid: "6f2c-1a2b"}},
+		{"db:abc:tier:reasoning", ParsedConfigSource{Layer: "db", Scope: "tier", Name: "reasoning", IntegrationUuid: "abc"}},
+		{"db:xyz:agent:memory_rerank", ParsedConfigSource{Layer: "db", Scope: "agent", Name: "memory_rerank", IntegrationUuid: "xyz"}},
 	}
 	for _, c := range cases {
-		got, err := parseConfigSourceId(c.in)
+		got, err := ParseConfigSourceId(c.in)
 		assert.NoError(t, err, "parse %q", c.in)
 		assert.Equal(t, c.want, *got, "parsed shape for %q", c.in)
 	}
@@ -86,7 +86,7 @@ func TestParseConfigSourceId_Invalid(t *testing.T) {
 		"env:global:extra",    // env:global takes no name
 	}
 	for _, in := range cases {
-		_, err := parseConfigSourceId(in)
+		_, err := ParseConfigSourceId(in)
 		assert.Error(t, err, "should fail on %q", in)
 	}
 }
@@ -156,7 +156,7 @@ func TestDeriveConfigSource_AgentNamedFallback_PrimaryIsIntact(t *testing.T) {
 }
 
 func TestDeriveConfigSource_MalformedIsSkipped(t *testing.T) {
-	// Any label that fails parseConfigSourceId (typos, incomplete refactors)
+	// Any label that fails ParseConfigSourceId (typos, incomplete refactors)
 	// falls through to "" rather than being emitted as a pickable row.
 	assert.Equal(t, "", deriveConfigSource("garbage", false))
 	assert.Equal(t, "", deriveConfigSource("env:global:extra", false))     // extra segment
@@ -280,13 +280,13 @@ func TestResolveFromPinnedSource_TierProviderInheritsGlobal(t *testing.T) {
 // ─── db-scoped slots ───────────────────────────────────────────────────────
 
 // Note on coverage: these seed the integration cache, so the SQL visibility
-// filter in getLLMIntegrationsForAccount (and the common.Decrypt call on
+// filter in GetLLMIntegrationsForAccount (and the common.Decrypt call on
 // is_encrypted rows) is not exercised here — it needs a live metastore. What is
 // exercised is everything built on top: uuid → integration lookup, rejection of
 // ids the account can't see, and the per-slot key shapes.
 
 func TestResolveFromPinnedSource_DbSlot(t *testing.T) {
-	seedLLMIntegrations(t, "acct-1", llmIntegration{
+	seedLLMIntegrations(t, "acct-1", LLMIntegration{
 		Id:   "int-1",
 		Name: "Acme Azure",
 		Config: map[string]string{
@@ -333,7 +333,7 @@ func TestResolveFromPinnedSource_DbSlot_ForeignIntegrationRejected(t *testing.T)
 	// Tenant A's account can only see its own integrations, so pinning a uuid
 	// that belongs to someone else must fail rather than resolve. This is the
 	// last line of defence behind the query's visibility filter.
-	seedLLMIntegrations(t, "acct-a", llmIntegration{
+	seedLLMIntegrations(t, "acct-a", LLMIntegration{
 		Id:     "int-a",
 		Name:   "Tenant A LLM",
 		Config: map[string]string{"llm_provider": "azure", "llm_model_name": "gpt-4o"},
@@ -354,7 +354,7 @@ func TestResolveFromPinnedSource_DbSlot_RequiresAccount(t *testing.T) {
 
 func TestResolveFromPinnedSource_DbSlot_EmptySlotErrors(t *testing.T) {
 	// Visible integration, but the requested tier isn't configured on it.
-	seedLLMIntegrations(t, "acct-1", llmIntegration{
+	seedLLMIntegrations(t, "acct-1", LLMIntegration{
 		Id:     "int-1",
 		Name:   "Acme Azure",
 		Config: map[string]string{"llm_provider": "azure", "llm_model_name": "gpt-4o"},
@@ -623,7 +623,7 @@ func TestGetAllConfiguredModels_EmitsDbRows(t *testing.T) {
 	config.Config.LlmModel = ""
 
 	seedLLMIntegrations(t, "acct-1",
-		llmIntegration{
+		LLMIntegration{
 			Id:   "int-1",
 			Name: "Acme Azure",
 			Config: map[string]string{
@@ -636,7 +636,7 @@ func TestGetAllConfiguredModels_EmitsDbRows(t *testing.T) {
 				"llm_tier_model_reasoning": "o3-mini",
 			},
 		},
-		llmIntegration{
+		LLMIntegration{
 			Id:   "int-2",
 			Name: "Acme Bedrock",
 			Config: map[string]string{
@@ -750,7 +750,7 @@ func TestBuildCredentials_ModelIsNotPartOfIdentity(t *testing.T) {
 	// place to send requests — the model is a request parameter, not part of
 	// the credential — so it must collapse to a single credential carrying
 	// every model.
-	seedLLMIntegrations(t, "acct-1", llmIntegration{
+	seedLLMIntegrations(t, "acct-1", LLMIntegration{
 		Id:   "int-1",
 		Name: "piyush-llm",
 		Config: map[string]string{
@@ -780,7 +780,7 @@ func TestBuildCredentials_ModelIsNotPartOfIdentity(t *testing.T) {
 func TestBuildCredentials_SeparateKeysAreSeparateCredentials(t *testing.T) {
 	// The case that motivated all of this: a second api key added on one tier
 	// of the SAME integration is a genuinely different credential.
-	seedLLMIntegrations(t, "acct-1", llmIntegration{
+	seedLLMIntegrations(t, "acct-1", LLMIntegration{
 		Id:   "int-1",
 		Name: "piyush-llm",
 		Config: map[string]string{
@@ -808,7 +808,7 @@ func TestBuildCredentials_SeparateKeysAreSeparateCredentials(t *testing.T) {
 func TestBuildCredentials_AwsCredentialsCount(t *testing.T) {
 	// access/secret/session are part of the destination — two tiers differing
 	// only in AWS identity must not be folded together.
-	seedLLMIntegrations(t, "acct-1", llmIntegration{
+	seedLLMIntegrations(t, "acct-1", LLMIntegration{
 		Id:   "int-1",
 		Name: "Acme Bedrock",
 		Config: map[string]string{
@@ -835,7 +835,7 @@ func TestBuildCredentials_AwsCredentialsCount(t *testing.T) {
 func TestBuildCredentials_ProviderWhitespaceDoesNotSplit(t *testing.T) {
 	// Dev data contains providers stored as "googleai " — cosmetic dirt must
 	// not read as a separate credential.
-	seedLLMIntegrations(t, "acct-1", llmIntegration{
+	seedLLMIntegrations(t, "acct-1", LLMIntegration{
 		Id:     "int-1",
 		Name:   "Acme",
 		Config: map[string]string{"llm_provider": "googleai", "llm_model_name": "gemini-pro", "llm_provider_api_key": "k"},
@@ -855,7 +855,7 @@ func TestBuildCredentials_NameNeverCarriesFallbackSuffix(t *testing.T) {
 	// A fallback row's ConfigName ends in " (fallback)" but names the same slot
 	// as its primary. Whichever row the walk reaches first must not leave the
 	// credential called "Acme (fallback)".
-	seedLLMIntegrations(t, "acct-1", llmIntegration{
+	seedLLMIntegrations(t, "acct-1", LLMIntegration{
 		Id:     "int-1",
 		Name:   "Acme",
 		Config: map[string]string{"llm_provider": "googleai", "llm_model_name": "gemini-pro", "llm_provider_api_key": "k"},
@@ -917,9 +917,9 @@ func TestResolveLLMConfig_TierPickCredentialBeatsConversationPin(t *testing.T) {
 	// credential, and a reasoning pick naming another. The pick must win for
 	// the reasoning-tagged call.
 	seedLLMIntegrations(t, "acct-1",
-		llmIntegration{Id: "int-1", Name: "A", Config: map[string]string{
+		LLMIntegration{Id: "int-1", Name: "A", Config: map[string]string{
 			"llm_provider": "googleai", "llm_model_name": "model-a", "llm_provider_api_key": "key-a"}},
-		llmIntegration{Id: "int-2", Name: "B", Config: map[string]string{
+		LLMIntegration{Id: "int-2", Name: "B", Config: map[string]string{
 			"llm_provider": "googleai", "llm_model_name": "model-b", "llm_provider_api_key": "key-b"}},
 	)
 
@@ -947,7 +947,7 @@ func TestResolveFromPinnedSource_UntrimmedProviderStillMatches(t *testing.T) {
 	// one credential; the request-vs-slot check has to trim too or it rejects a
 	// request for the credential it just offered.
 	seedLLMIntegrations(t, "acct-ws",
-		llmIntegration{Id: "int-ws", Name: "Whitespace", Config: map[string]string{
+		LLMIntegration{Id: "int-ws", Name: "Whitespace", Config: map[string]string{
 			"llm_provider": "googleai ", "llm_model_name": "gemini-2.5-pro",
 			"llm_provider_api_key": "key-ws"}},
 	)
@@ -967,7 +967,7 @@ func TestResolveFromPinnedSource_UntrimmedProviderStillMatches(t *testing.T) {
 func TestResolveFromPinnedSource_GenuineProviderMismatchStillRejected(t *testing.T) {
 	// Trimming must not weaken the check itself.
 	seedLLMIntegrations(t, "acct-mm",
-		llmIntegration{Id: "int-mm", Name: "Mismatch", Config: map[string]string{
+		LLMIntegration{Id: "int-mm", Name: "Mismatch", Config: map[string]string{
 			"llm_provider": "googleai", "llm_model_name": "gemini-2.5-pro",
 			"llm_provider_api_key": "key-mm"}},
 	)
@@ -988,7 +988,7 @@ func TestParseConfigSourceId_TrimsSurroundingWhitespace(t *testing.T) {
 	// layer" or "not an integration available to this account", both of which
 	// point at the wrong problem.
 	for _, raw := range []string{" env:global", "env:global ", "  db:int-1  "} {
-		p, err := parseConfigSourceId(raw)
+		p, err := ParseConfigSourceId(raw)
 		require.NoError(t, err, "raw=%q", raw)
 		assert.NotEmpty(t, p.Layer, "raw=%q", raw)
 	}
@@ -998,7 +998,7 @@ func TestIntegrationConfigForPin_DoesNotAliasTheCache(t *testing.T) {
 	// The returned map must not be the cached one: a caller writing to it would
 	// corrupt every other request on the account and race with readers.
 	seedLLMIntegrations(t, "acct-alias",
-		llmIntegration{Id: "int-alias", Name: "A", Config: map[string]string{
+		LLMIntegration{Id: "int-alias", Name: "A", Config: map[string]string{
 			"llm_provider": "googleai", "llm_model_name": "model-a"}},
 	)
 	ctx := security.NewRequestContextForSuperAdmin()
@@ -1018,16 +1018,16 @@ func TestGetLLMIntegrationsForAccount_ReturnsDeepCopy(t *testing.T) {
 	// write racing another goroutine's read would be a fatal panic, not a
 	// subtle bug.
 	seedLLMIntegrations(t, "acct-copy",
-		llmIntegration{Id: "int-copy", Name: "Orig", Config: map[string]string{"llm_provider": "googleai"}},
+		LLMIntegration{Id: "int-copy", Name: "Orig", Config: map[string]string{"llm_provider": "googleai"}},
 	)
 
-	first, err := getLLMIntegrationsForAccount(nil, "acct-copy")
+	first, err := GetLLMIntegrationsForAccount(nil, "acct-copy")
 	require.NoError(t, err)
 	require.Len(t, first, 1)
 	first[0].Name = "mutated"
 	first[0].Config["llm_provider"] = "mutated"
 
-	second, err := getLLMIntegrationsForAccount(nil, "acct-copy")
+	second, err := GetLLMIntegrationsForAccount(nil, "acct-copy")
 	require.NoError(t, err)
 	require.Len(t, second, 1)
 	assert.Equal(t, "Orig", second[0].Name, "cached struct must be unaffected")
@@ -1039,7 +1039,7 @@ func TestResolveFromPinnedSource_ForeignProviderSlotDoesNotInheritGlobalCreds(t 
 	// global must not gap-fill credentials from the global slot: pairing an
 	// azure tier with the openai endpoint/key is the leak behind #35000/#34834.
 	seedLLMIntegrations(t, "acct-mixed",
-		llmIntegration{Id: "int-mixed", Name: "Mixed", Config: map[string]string{
+		LLMIntegration{Id: "int-mixed", Name: "Mixed", Config: map[string]string{
 			"llm_provider":                "openai",
 			"llm_model_name":              "gpt-4o",
 			"llm_provider_api_key":        "sk-openai-global",
@@ -1063,7 +1063,7 @@ func TestResolveFromPinnedSource_SameProviderSlotStillInheritsGlobalCreds(t *tes
 	// The gap-fill must keep working when the providers agree — that's the
 	// common case (a tier overriding only the model).
 	seedLLMIntegrations(t, "acct-same",
-		llmIntegration{Id: "int-same", Name: "Same", Config: map[string]string{
+		LLMIntegration{Id: "int-same", Name: "Same", Config: map[string]string{
 			"llm_provider":                "openai",
 			"llm_model_name":              "gpt-4o",
 			"llm_provider_api_key":        "sk-openai-global",
@@ -1085,7 +1085,7 @@ func TestResolveFromPinnedSource_SlotWithNoProviderInheritsGlobalAndItsCreds(t *
 	// A tier that sets only a model inherits the global provider, so its
 	// credentials are compatible by construction.
 	seedLLMIntegrations(t, "acct-noprov",
-		llmIntegration{Id: "int-noprov", Name: "NoProv", Config: map[string]string{
+		LLMIntegration{Id: "int-noprov", Name: "NoProv", Config: map[string]string{
 			"llm_provider":             "openai",
 			"llm_model_name":           "gpt-4o",
 			"llm_provider_api_key":     "sk-openai-global",
@@ -1109,20 +1109,20 @@ func TestResolveFromPinnedSource_SlotWithNoProviderInheritsGlobalAndItsCreds(t *
 func TestParseConfigSourceId_AllScope(t *testing.T) {
 	cases := []struct {
 		in   string
-		want parsedConfigSource
+		want ParsedConfigSource
 	}{
-		{"env:all", parsedConfigSource{Layer: "env", Scope: "all"}},
-		{"db:int-1:all", parsedConfigSource{Layer: "db", Scope: "all", IntegrationUuid: "int-1"}},
+		{"env:all", ParsedConfigSource{Layer: "env", Scope: "all"}},
+		{"db:int-1:all", ParsedConfigSource{Layer: "db", Scope: "all", IntegrationUuid: "int-1"}},
 	}
 	for _, c := range cases {
-		got, err := parseConfigSourceId(c.in)
+		got, err := ParseConfigSourceId(c.in)
 		require.NoError(t, err, "parse %q", c.in)
 		assert.Equal(t, c.want, *got, "parsed shape for %q", c.in)
 	}
 
 	// ":all" takes no name — the tier comes from the call, not the id.
 	for _, in := range []string{"env:all:reasoning", "db:int-1:all:reasoning"} {
-		_, err := parseConfigSourceId(in)
+		_, err := ParseConfigSourceId(in)
 		assert.Error(t, err, "should fail on %q", in)
 	}
 }
@@ -1135,7 +1135,7 @@ func TestConfigNameFor_AllScope(t *testing.T) {
 }
 
 func TestResolveFromPinnedSource_AllScope_UsesTheCallersTier(t *testing.T) {
-	seedLLMIntegrations(t, "acct-all", llmIntegration{
+	seedLLMIntegrations(t, "acct-all", LLMIntegration{
 		Id:   "int-all",
 		Name: "Tiered Config",
 		Config: map[string]string{
@@ -1174,7 +1174,7 @@ func TestResolveFromPinnedSource_AllScope_FallsBackWhenTierUndefined(t *testing.
 	// A config with no tier slots is the common case. ":all" on it must behave
 	// exactly like a plain config pin — resolving an empty tier slot would send
 	// a request with no model at all.
-	seedLLMIntegrations(t, "acct-flat", llmIntegration{
+	seedLLMIntegrations(t, "acct-flat", LLMIntegration{
 		Id:   "int-flat",
 		Name: "Flat Config",
 		Config: map[string]string{
@@ -1194,7 +1194,7 @@ func TestResolveFromPinnedSource_AllScope_FallsBackWhenTierUndefined(t *testing.
 
 func TestResolveFromPinnedSource_AllScope_PartialTiersFallBackPerTier(t *testing.T) {
 	// Only summary is configured. Reasoning must not silently borrow it.
-	seedLLMIntegrations(t, "acct-partial", llmIntegration{
+	seedLLMIntegrations(t, "acct-partial", LLMIntegration{
 		Id:   "int-partial",
 		Name: "Summary Only",
 		Config: map[string]string{
@@ -1219,7 +1219,7 @@ func TestResolveFromPinnedSource_AllScope_RejectsAModelSentAlongside(t *testing.
 	// The two intents contradict: ":all" says the config picks the model. Worse,
 	// honouring both would validate against a different slot per tier, so the
 	// same request would pass on one call and fail on the next.
-	seedLLMIntegrations(t, "acct-rej", llmIntegration{
+	seedLLMIntegrations(t, "acct-rej", LLMIntegration{
 		Id:     "int-rej",
 		Name:   "Tiered Config",
 		Config: map[string]string{"llm_provider": "azure", "llm_model_name": "gpt-4o", "llm_provider_api_key": "k"},

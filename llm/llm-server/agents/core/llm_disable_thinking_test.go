@@ -40,7 +40,7 @@ func TestReadDbSlotInto_CarriesDisableThinking(t *testing.T) {
 				"llm_disable_thinking":      "true",
 			}
 			res := &LLMConfigResolution{}
-			if _, err := readDbSlotInto(res, cfg, &parsedConfigSource{Scope: scope, Name: "summary"}); err != nil {
+			if _, err := readDbSlotInto(res, cfg, &ParsedConfigSource{Scope: scope, Name: "summary"}); err != nil {
 				t.Fatal(err)
 			}
 			if !res.PinnedDisableThinking {
@@ -59,7 +59,7 @@ func TestReadDbSlotInto_DisableThinkingDefaultsOff(t *testing.T) {
 		if val != "" {
 			cfg["llm_disable_thinking"] = val
 		}
-		if _, err := readDbSlotInto(res, cfg, &parsedConfigSource{Scope: "global"}); err != nil {
+		if _, err := readDbSlotInto(res, cfg, &ParsedConfigSource{Scope: "global"}); err != nil {
 			t.Fatal(err)
 		}
 		if res.PinnedDisableThinking {

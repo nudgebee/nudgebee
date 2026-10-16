@@ -345,7 +345,7 @@ func isCustomerLLMConfig(res *LLMConfigResolution) bool {
 	if strings.HasPrefix(res.Source, "db-") {
 		return true
 	}
-	if parsed, err := parseConfigSourceId(res.PinnedConfigSource); err == nil && parsed != nil {
+	if parsed, err := ParseConfigSourceId(res.PinnedConfigSource); err == nil && parsed != nil {
 		return parsed.Layer == "db"
 	}
 	return false
@@ -391,7 +391,7 @@ func llmConfigName(ctx *security.RequestContext, accountId string, res *LLMConfi
 		return ""
 	}
 	integrationId := ""
-	if parsed, perr := parseConfigSourceId(res.PinnedConfigSource); perr == nil && parsed != nil && parsed.Layer == "db" {
+	if parsed, perr := ParseConfigSourceId(res.PinnedConfigSource); perr == nil && parsed != nil && parsed.Layer == "db" {
 		integrationId = parsed.IntegrationUuid
 	} else if accountId != "" && ctx != nil {
 		integrationId, _ = selectAccountLLMIntegration(ctx, dbManager, accountId)

@@ -204,10 +204,10 @@ func (s scrubbingModel) Call(context.Context, string, ...llms.CallOption) (strin
 
 func TestParseConfigSourceId_RejectsDecisionSlot(t *testing.T) {
 	for _, id := range []string{"env:tier:decision", "db:11111111-1111-1111-1111-111111111111:tier:decision"} {
-		_, err := parseConfigSourceId(id)
+		_, err := ParseConfigSourceId(id)
 		assert.ErrorContains(t, err, "cannot be pinned", id)
 	}
-	_, err := parseConfigSourceId("env:tier:classification")
+	_, err := ParseConfigSourceId("env:tier:classification")
 	assert.NoError(t, err)
 }
 

@@ -184,7 +184,7 @@ func TestReadDbSlotInto_PartialTierOAuthOverride(t *testing.T) {
 		// Token URL deliberately NOT tier-scoped: inherits the shared issuer.
 	}
 	res := &LLMConfigResolution{}
-	_, err := readDbSlotInto(res, cfg, &parsedConfigSource{Layer: "db", Scope: "tier", Name: "reasoning"})
+	_, err := readDbSlotInto(res, cfg, &ParsedConfigSource{Layer: "db", Scope: "tier", Name: "reasoning"})
 	require.NoError(t, err)
 	assert.Equal(t, "tier-id", res.PinnedOAuthClientID, "tier client id must survive the global fallback")
 	assert.Equal(t, "tier-secret", res.PinnedOAuthClientSecret, "tier client secret must survive the global fallback")

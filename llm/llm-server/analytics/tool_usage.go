@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"fmt"
@@ -106,7 +106,7 @@ type toolCostScan struct {
 // ListToolUsage returns the per-tool usage/reliability/latency leaderboard for the
 // filter, with downstream LLM cost attributed to sub-agent-spawn tools, ranked by
 // the chosen metric and capped at limit.
-func (chat *ConversationDao) ListToolUsage(filter UsageMetricsFilter, sortBy string, limit int) (ToolUsageList, error) {
+func (chat *Store) ListToolUsage(filter UsageMetricsFilter, sortBy string, limit int) (ToolUsageList, error) {
 	if len(filter.AccountIDs) == 0 {
 		return ToolUsageList{Rows: []ToolUsageRow{}}, nil
 	}
@@ -302,7 +302,7 @@ func HandleListToolUsageApi(ctx *security.RequestContext, request ListToolUsageR
 		Sources:    request.Sources,
 		UserID:     request.UserId,
 	}
-	return GetConversationDao().ListToolUsage(filter, request.SortBy, request.Limit)
+	return GetStore().ListToolUsage(filter, request.SortBy, request.Limit)
 }
 
 // --- Per-tool invocation explorer (drill-in / failures) --------------------
@@ -366,7 +366,7 @@ type toolCallRowScan struct {
 // optionally restricted to a set of statuses (e.g. the failure statuses for the
 // "view failures" drill-in; empty = all). Scoped by the same account + date +
 // source filters as the leaderboard so the list reconciles with the row it opened.
-func (chat *ConversationDao) ListToolCalls(filter UsageMetricsFilter, toolName string, statuses []string, limit int) (ToolCallList, error) {
+func (chat *Store) ListToolCalls(filter UsageMetricsFilter, toolName string, statuses []string, limit int) (ToolCallList, error) {
 	if len(filter.AccountIDs) == 0 || toolName == "" {
 		return ToolCallList{ToolName: toolName, Statuses: statuses, Rows: []ToolCallRow{}}, nil
 	}
@@ -484,5 +484,5 @@ func HandleListToolCallsApi(ctx *security.RequestContext, request ListToolCallsR
 		Sources:    request.Sources,
 		UserID:     request.UserId,
 	}
-	return GetConversationDao().ListToolCalls(filter, request.ToolName, request.Statuses, request.Limit)
+	return GetStore().ListToolCalls(filter, request.ToolName, request.Statuses, request.Limit)
 }

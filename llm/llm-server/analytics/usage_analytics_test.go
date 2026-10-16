@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"database/sql/driver"
@@ -170,7 +170,7 @@ func TestListConversationCosts_ModelBreakdown(t *testing.T) {
 	// match expectations by content, not sequence.
 	mock.MatchExpectationsInOrder(false)
 
-	dao := &ConversationDao{
+	dao := &Store{
 		dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")},
 	}
 
@@ -246,7 +246,7 @@ func TestUserBreakdown_IncludesSystemUser(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 
 	// Matching this regex is only possible against the new CASE-mapped query —
@@ -285,7 +285,7 @@ func TestUserBreakdown_NullUserIDFallsBackToUnknown(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 
 	// Asserts the outer COALESCE guard is present in the generated SQL, then
@@ -340,7 +340,7 @@ func TestGetUsageFilters_AccountsScopedToWindowNotSelection(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	dao := &ConversationDao{
+	dao := &Store{
 		dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")},
 	}
 
@@ -383,7 +383,7 @@ func TestGetUsageFilters_IncludesSystemUser(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	dao := &ConversationDao{
+	dao := &Store{
 		dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")},
 	}
 

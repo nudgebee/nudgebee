@@ -118,7 +118,7 @@ type decisionBackend struct {
 var decisionConfigSource = func(ctx *security.RequestContext, accountId, conversationId string, tier ModelTier) (map[string]string, string) {
 	pin, _ := effectivePin(ctx, conversationId, tier)
 	if pin != "" {
-		p, err := parseConfigSourceId(pin)
+		p, err := ParseConfigSourceId(pin)
 		if err != nil {
 			return nil, "pin-invalid"
 		}

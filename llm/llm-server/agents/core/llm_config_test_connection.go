@@ -644,7 +644,7 @@ func fallbackProbeTargets(cfg map[string]string, accountIds []string, tenantId s
 			continue
 		}
 		res := &LLMConfigResolution{}
-		if _, err := readDbSlotInto(res, cfg, &parsedConfigSource{Layer: "db", Scope: "fallback", Name: string(scope)}); err != nil {
+		if _, err := readDbSlotInto(res, cfg, &ParsedConfigSource{Layer: "db", Scope: "fallback", Name: string(scope)}); err != nil {
 			add(probeTarget{provider: cfg[fallbackKey(llmFallbackProviderKey, scope)], model: cfg[fallbackKey(llmFallbackModelKey, scope)], source: source, err: err})
 			continue
 		}

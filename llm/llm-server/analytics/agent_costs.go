@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"fmt"
@@ -133,7 +133,7 @@ type agentCallScan struct {
 // chosen metric. cost is DIRECT per invocation (its own model calls). error_count
 // counts failed model calls; the agent's own status is surfaced separately so an
 // orchestration-only failure (status=fail, 0 failed calls) is still visible.
-func (chat *ConversationDao) ListAgentCalls(filter UsageMetricsFilter, sortBy string, limit, latencyPercentile int) (AgentCallList, error) {
+func (chat *Store) ListAgentCalls(filter UsageMetricsFilter, sortBy string, limit, latencyPercentile int) (AgentCallList, error) {
 	if len(filter.AccountIDs) == 0 {
 		return AgentCallList{Rows: []AgentCallRow{}}, nil
 	}
@@ -256,7 +256,7 @@ func (chat *ConversationDao) ListAgentCalls(filter UsageMetricsFilter, sortBy st
 // agentLatencyProfiles returns the per-agent-name latency distribution (p50/p90/p99
 // of per-invocation total latency) over the given report-range where/args, top-N by
 // p90 for chart legibility. Powers the agent-wise latency graph.
-func (chat *ConversationDao) agentLatencyProfiles(where string, args []any) ([]AgentLatencyProfile, error) {
+func (chat *Store) agentLatencyProfiles(where string, args []any) ([]AgentLatencyProfile, error) {
 	query := fmt.Sprintf(`
 		SELECT
 			agent_name,
@@ -288,7 +288,7 @@ func (chat *ConversationDao) agentLatencyProfiles(where string, args []any) ([]A
 // per-invocation TOTAL model latency over the trailing baseline window, scoped by
 // the same account/dimension filters as the leaderboard (the date range is
 // overridden to the last 24h). Returns 0 when no invocations exist in the window.
-func (chat *ConversationDao) agentLatencyThreshold(filter UsageMetricsFilter, frac float64) (float64, error) {
+func (chat *Store) agentLatencyThreshold(filter UsageMetricsFilter, frac float64) (float64, error) {
 	base := filter
 	now := time.Now().UTC()
 	base.StartDate = now.Add(-agentLatencyBaselineWindow)
@@ -366,5 +366,5 @@ func HandleListAgentCostsApi(ctx *security.RequestContext, request ListAgentCall
 		Statuses:   request.Statuses,
 		UserID:     request.UserId,
 	}
-	return GetConversationDao().ListAgentCalls(filter, request.SortBy, request.Limit, request.LatencyPctile)
+	return GetStore().ListAgentCalls(filter, request.SortBy, request.Limit, request.LatencyPctile)
 }

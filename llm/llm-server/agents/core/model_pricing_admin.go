@@ -40,7 +40,7 @@ type ModelPriceRow struct {
 	// Long-context tier. Providers like Gemini charge a higher rate once a
 	// prompt crosses a threshold; when ContextThresholdTokens is set and the
 	// long-ctx input rate is populated, CalculateTotalCost switches every
-	// component of the call to the long rates (see modelPricing.useLongCtx).
+	// component of the call to the long rates (see ModelPricing.useLongCtx).
 	ContextThresholdTokens *int64   `json:"context_threshold_tokens,omitempty"`
 	InputPerMLongCtx       *float64 `json:"cost_per_million_input_tokens_long_ctx,omitempty"`
 	OutputPerMLongCtx      *float64 `json:"cost_per_million_output_tokens_long_ctx,omitempty"`
@@ -109,7 +109,7 @@ func (in ModelPriceInput) Validate() error {
 	}
 
 	// The long-context tier only takes effect when the threshold AND the
-	// long input rate are both present (modelPricing.useLongCtx requires
+	// long input rate are both present (ModelPricing.useLongCtx requires
 	// both). Accepting one without the other would store a tier that never
 	// fires and silently bill long prompts at the short rate — the exact
 	// failure this validation exists to prevent.

@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"fmt"
@@ -170,7 +170,7 @@ type critiqueAgentScan struct {
 }
 
 // GetCritiqueSummary computes totals, per-agent refine rate, and themes.
-func (chat *ConversationDao) GetCritiqueSummary(filter CritiqueFilter) (CritiqueSummary, error) {
+func (chat *Store) GetCritiqueSummary(filter CritiqueFilter) (CritiqueSummary, error) {
 	if filter.EndDate.Before(filter.StartDate) {
 		return CritiqueSummary{}, fmt.Errorf("GetCritiqueSummary: end_date must be >= start_date")
 	}
@@ -233,7 +233,7 @@ func (chat *ConversationDao) GetCritiqueSummary(filter CritiqueFilter) (Critique
 }
 
 // runCritiqueThemes counts refine rows matching each theme's patterns.
-func (chat *ConversationDao) runCritiqueThemes(where string, args []any) ([]CritiqueThemeRow, error) {
+func (chat *Store) runCritiqueThemes(where string, args []any) ([]CritiqueThemeRow, error) {
 	n := len(args) + 1
 	queryArgs := append([]any{}, args...)
 	selects := make([]string, 0, len(critiqueThemes))
@@ -272,7 +272,7 @@ func (chat *ConversationDao) runCritiqueThemes(where string, args []any) ([]Crit
 }
 
 // fetchThemeExamples returns recent critiques matching patterns — the real text behind a theme count.
-func (chat *ConversationDao) fetchThemeExamples(where string, args []any, patterns []string) ([]CritiqueThemeExample, error) {
+func (chat *Store) fetchThemeExamples(where string, args []any, patterns []string) ([]CritiqueThemeExample, error) {
 	n := len(args) + 1
 	queryArgs := append([]any{}, args...)
 	ors := make([]string, 0, len(patterns))
@@ -315,7 +315,7 @@ type CritiqueTrend struct {
 }
 
 // GetCritiqueTrend buckets judged/refined counts by day/week/month.
-func (chat *ConversationDao) GetCritiqueTrend(filter CritiqueFilter, granularity string) (CritiqueTrend, error) {
+func (chat *Store) GetCritiqueTrend(filter CritiqueFilter, granularity string) (CritiqueTrend, error) {
 	if filter.EndDate.Before(filter.StartDate) {
 		return CritiqueTrend{}, fmt.Errorf("GetCritiqueTrend: end_date must be >= start_date")
 	}
@@ -375,7 +375,7 @@ const (
 )
 
 // GetCritiqueList returns a paginated, filtered page of raw critique rows.
-func (chat *ConversationDao) GetCritiqueList(filter CritiqueFilter, limit, offset int) (CritiqueList, error) {
+func (chat *Store) GetCritiqueList(filter CritiqueFilter, limit, offset int) (CritiqueList, error) {
 	if filter.EndDate.Before(filter.StartDate) {
 		return CritiqueList{}, fmt.Errorf("GetCritiqueList: end_date must be >= start_date")
 	}
@@ -446,7 +446,7 @@ func HandleCritiqueSummaryApi(request CritiqueSummaryRequest, scope CritiqueScop
 	if err != nil {
 		return CritiqueSummary{}, fmt.Errorf("HandleCritiqueSummaryApi: invalid end_date: %w", err)
 	}
-	return GetConversationDao().GetCritiqueSummary(CritiqueFilter{
+	return GetStore().GetCritiqueSummary(CritiqueFilter{
 		StartDate:  startDate,
 		EndDate:    endDate,
 		AgentNames: request.Agents,
@@ -476,7 +476,7 @@ func HandleCritiqueTrendApi(request CritiqueTrendRequest, scope CritiqueScope) (
 	if granularity == "" {
 		granularity = "day"
 	}
-	return GetConversationDao().GetCritiqueTrend(CritiqueFilter{
+	return GetStore().GetCritiqueTrend(CritiqueFilter{
 		StartDate:  startDate,
 		EndDate:    endDate,
 		AgentNames: request.Agents,
@@ -511,7 +511,7 @@ func HandleCritiqueListApi(request CritiqueListRequest, scope CritiqueScope) (Cr
 			return CritiqueList{}, fmt.Errorf("HandleCritiqueListApi: unknown theme %q", request.Theme)
 		}
 	}
-	return GetConversationDao().GetCritiqueList(CritiqueFilter{
+	return GetStore().GetCritiqueList(CritiqueFilter{
 		StartDate:  startDate,
 		EndDate:    endDate,
 		AgentNames: request.Agents,

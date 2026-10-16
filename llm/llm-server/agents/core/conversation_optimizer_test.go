@@ -24,7 +24,7 @@ func TestAssembleFindings_DeterministicAndDeconflicted(t *testing.T) {
 		byTypeModel: map[string]optTok{
 			tmKey("a", "pro"): {nonCached: 1_000_000, output: 0, calls: 10, cost: 50},
 		},
-		byModelName: map[string]modelPricing{
+		byModelName: map[string]ModelPricing{
 			"flash": {CostPerMillionInput: 1.0, CostPerMillionOutput: 1.0},
 		},
 	}

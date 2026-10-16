@@ -1,18 +1,20 @@
 //go:build e2e
 
-package core
+package analytics
 
 import (
-	"nudgebee/llm/security"
 	"os"
 	"testing"
+
+	"nudgebee/llm/agents/core"
+	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
 )
 
 func TestConversationUsageMetricsApi(t *testing.T) {
 	// Skip if database is not available
-	if GetConversationDao() == nil {
+	if core.GetConversationDao() == nil {
 		t.Skip("Skipping test: database not available")
 	}
 
@@ -194,7 +196,7 @@ func TestConversationUsageMetricsApi(t *testing.T) {
 
 func TestConversationUsageMetricsWithNoData(t *testing.T) {
 	// Skip if database is not available
-	if GetConversationDao() == nil {
+	if core.GetConversationDao() == nil {
 		t.Skip("Skipping test: database not available")
 	}
 

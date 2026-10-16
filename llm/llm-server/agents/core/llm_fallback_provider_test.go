@@ -33,7 +33,7 @@ func geminiIntegration(extra map[string]string) map[string]string {
 
 // openaiGateway is a separate integration a fallback can reference; its key and
 // endpoint differ from the primary's.
-var openaiGateway = llmIntegration{
+var openaiGateway = LLMIntegration{
 	Id:   "int-openai-gw",
 	Name: "gateway-openai",
 	Config: map[string]string{
@@ -47,7 +47,7 @@ var openaiGateway = llmIntegration{
 
 // seedAccount makes cfg the integration serving acct at runtime and lists the
 // integrations acct can see (what a db: reference resolves against).
-func seedAccount(t *testing.T, acct string, cfg map[string]string, visible ...llmIntegration) *LLMConfigResolution {
+func seedAccount(t *testing.T, acct string, cfg map[string]string, visible ...LLMIntegration) *LLMConfigResolution {
 	t.Helper()
 	pinGlobalModel(t, "", "")
 	seedDBConfig(t, acct, cfg)
@@ -93,12 +93,12 @@ func TestConfiguredFallback_ReferenceUsesReferencedSlotCredentials(t *testing.T)
 func TestConfiguredFallback_BrokenReferenceIsRejectedByName(t *testing.T) {
 	cases := map[string]struct {
 		ref, model string
-		visible    []llmIntegration
+		visible    []LLMIntegration
 		want       string
 	}{
 		"referenced integration disabled or deleted (not visible)": {"db:int-openai-gw", "gpt-5.6-terra", nil, "int-openai-gw"},
-		"slot no longer serves the model":                          {"db:int-openai-gw", "gpt-4o", []llmIntegration{openaiGateway}, `no longer serves model "gpt-4o"`},
-		"whole-config source":                                      {"db:int-openai-gw:all", "gpt-5.6-terra", []llmIntegration{openaiGateway}, "whole-config"},
+		"slot no longer serves the model":                          {"db:int-openai-gw", "gpt-4o", []LLMIntegration{openaiGateway}, `no longer serves model "gpt-4o"`},
+		"whole-config source":                                      {"db:int-openai-gw:all", "gpt-5.6-terra", []LLMIntegration{openaiGateway}, "whole-config"},
 		"malformed source":                                         {"nonsense", "x", nil, "nonsense"},
 	}
 	for name, c := range cases {
@@ -538,7 +538,7 @@ func TestGetAllConfiguredModels_CategoryWithoutOwnModelIsNotReferenceable(t *tes
 	t.Cleanup(func() { config.Config.LlmProvider, config.Config.LlmModel = origProvider, origModel })
 	config.Config.LlmProvider, config.Config.LlmModel = "", ""
 
-	seedLLMIntegrations(t, "acct-1", llmIntegration{Id: "int-1", Name: "gateway-openai", Config: map[string]string{
+	seedLLMIntegrations(t, "acct-1", LLMIntegration{Id: "int-1", Name: "gateway-openai", Config: map[string]string{
 		"llm_provider": "openai", "llm_model_name": "gpt-5.6-terra",
 		"llm_tier_model_reasoning":  "gpt-5.6-sol",
 		"llm_tier_provider_summary": "openai", // provider only: inherits the primary's model

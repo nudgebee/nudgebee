@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"database/sql"
@@ -66,7 +66,7 @@ func HandleAiCostAccountReportApi(ctx *security.RequestContext, request AiCostAc
 	if err != nil {
 		return AiCostAccountReport{}, fmt.Errorf("HandleAiCostAccountReportApi: failed to read cost report schedule: %w", err)
 	}
-	return GetConversationDao().GetAiCostAccountReport(accountIDs, referenceDate, sendHourUTC)
+	return GetStore().GetAiCostAccountReport(accountIDs, referenceDate, sendHourUTC)
 }
 
 // AiCostReportFeatureFlag gates both the daily digest cron (this file — the
@@ -175,7 +175,7 @@ func accountReportWhere(accountIDs []string, start, end time.Time) (string, []an
 // runAccountDimensionCost aggregates cost by (account, dimExpr) over a
 // window. dimExpr is a trusted SQL expression (never caller input) — only
 // "t.llm_model" and "c.source" are passed by callers below.
-func (chat *ConversationDao) runAccountDimensionCost(accountIDs []string, start, end time.Time, dimExpr string) ([]accountDimScan, error) {
+func (chat *Store) runAccountDimensionCost(accountIDs []string, start, end time.Time, dimExpr string) ([]accountDimScan, error) {
 	if len(accountIDs) == 0 {
 		return nil, nil
 	}
@@ -202,7 +202,7 @@ func (chat *ConversationDao) runAccountDimensionCost(accountIDs []string, start,
 
 // runAccountTotalCost aggregates cost per account over a window, with no
 // dimension breakdown — used for the prev-month total (no drivers needed).
-func (chat *ConversationDao) runAccountTotalCost(accountIDs []string, start, end time.Time) ([]accountTotalScan, error) {
+func (chat *Store) runAccountTotalCost(accountIDs []string, start, end time.Time) ([]accountTotalScan, error) {
 	if len(accountIDs) == 0 {
 		return nil, nil
 	}
@@ -257,7 +257,7 @@ type dimCostBreakdownScan struct {
 // text, and this query's WHERE/args are otherwise indistinguishable from the
 // daily/MTD-by-dimension scans', so an accidental substring match would
 // route this query's response into the wrong mock (and the wrong Go struct).
-func (chat *ConversationDao) runTopDimensionCostBreakdown(accountIDs []string, start, end time.Time, dimExpr string, limit int) ([]dimCostBreakdownScan, error) {
+func (chat *Store) runTopDimensionCostBreakdown(accountIDs []string, start, end time.Time, dimExpr string, limit int) ([]dimCostBreakdownScan, error) {
 	if len(accountIDs) == 0 {
 		return nil, nil
 	}
@@ -336,7 +336,7 @@ func sumForAccount(rows []accountDimScan, accountID string) float64 {
 // account with prior-month spend but nothing since IS kept even though daily
 // and MTD are both zero, so a cost drop-to-zero (something got turned off, or
 // billing/ingestion broke) stays visible instead of silently disappearing.
-func (chat *ConversationDao) GetAiCostAccountReport(accountIDs []string, referenceDate time.Time, sendHourUTC int) (AiCostAccountReport, error) {
+func (chat *Store) GetAiCostAccountReport(accountIDs []string, referenceDate time.Time, sendHourUTC int) (AiCostAccountReport, error) {
 	report := AiCostAccountReport{ReferenceDate: referenceDate.UTC().Format("2006-01-02"), Accounts: []AiCostAccountRow{}}
 	if len(accountIDs) == 0 {
 		return report, nil
@@ -571,7 +571,7 @@ func listAiCostReportEnabledTenantSchedules() ([]TenantCostReportSchedule, error
 
 // GetAiCostAccountReportForTenant resolves a tenant's active accounts and
 // computes its report. Used by the digest cron (RunAiCostReportDispatch) only —
-// the dashboard's Accounts tab calls GetConversationDao().GetAiCostAccountReport
+// the dashboard's Accounts tab calls getStore().GetAiCostAccountReport
 // directly (via HandleAiCostAccountReportApi), scoped to the caller's own
 // accessible accounts rather than every account in the tenant.
 func GetAiCostAccountReportForTenant(tenantID string, referenceDate time.Time, sendHourUTC int) (AiCostAccountReport, error) {
@@ -583,7 +583,7 @@ func GetAiCostAccountReportForTenant(tenantID string, referenceDate time.Time, s
 	for _, a := range accounts {
 		accountIDs = append(accountIDs, a.ID)
 	}
-	report, err := GetConversationDao().GetAiCostAccountReport(accountIDs, referenceDate, sendHourUTC)
+	report, err := GetStore().GetAiCostAccountReport(accountIDs, referenceDate, sendHourUTC)
 	if err != nil {
 		return AiCostAccountReport{}, err
 	}

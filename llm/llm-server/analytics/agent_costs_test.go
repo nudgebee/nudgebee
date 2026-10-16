@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"testing"
@@ -30,7 +30,7 @@ func TestListAgentCalls_PerInvocationGrain(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 
 	cols := []string{
@@ -87,7 +87,7 @@ func TestListAgentCalls_LatencyPercentile(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 	now := time.Now()
 
 	// 1) agent-wise latency profile (graph) query.
@@ -124,7 +124,7 @@ func TestListAgentCalls_LatencyPercentile(t *testing.T) {
 
 // TestListAgentCalls_NoAccounts short-circuits to an empty list (no query).
 func TestListAgentCalls_NoAccounts(t *testing.T) {
-	dao := &ConversationDao{}
+	dao := &Store{}
 	out, err := dao.ListAgentCalls(UsageMetricsFilter{}, "cost", 100, 0)
 	require.NoError(t, err)
 	assert.Empty(t, out.Rows)

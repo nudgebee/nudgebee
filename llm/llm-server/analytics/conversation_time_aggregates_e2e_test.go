@@ -1,30 +1,32 @@
 //go:build e2e
 
-package core
+package analytics
 
 import (
 	"os"
 	"testing"
 	"time"
 
+	"nudgebee/llm/agents/core"
+
 	"github.com/stretchr/testify/assert"
 )
 
 func TestGetConversationTimeAggregates_RollupShape(t *testing.T) {
-	if GetConversationDao() == nil {
+	if core.GetConversationDao() == nil {
 		t.Skip("Skipping test: database not available")
 	}
 	RequireEnv(t, "TEST_ACCOUNT")
 	accountID := os.Getenv("TEST_ACCOUNT")
 
-	filter := ConversationTimeAggregatesFilter{
+	filter := core.ConversationTimeAggregatesFilter{
 		AccountIDs:            []string{accountID},
 		StartDate:             time.Now().Add(-7 * 24 * time.Hour),
 		EndDate:               time.Now(),
 		ExcludedTitles:        []string{EventDetailsRetrievalTitle},
 		ExcludedTitlePrefixes: []string{EventDetailsRetrievalTitlePrefix},
 	}
-	result, err := GetConversationDao().GetConversationTimeAggregates(filter)
+	result, err := core.GetConversationDao().GetConversationTimeAggregates(filter)
 
 	assert.Nil(t, err)
 	assert.GreaterOrEqual(t, result.CompletedCount, 0)
@@ -49,22 +51,22 @@ func TestGetConversationTimeAggregates_RollupShape(t *testing.T) {
 	// window and swamp every real investigation in it.
 	assert.LessOrEqual(t,
 		result.TotalWallTimeSeconds,
-		float64(result.CompletedCount*maxMeasuredDurationSeconds),
+		float64(result.CompletedCount*core.MaxMeasuredDurationSeconds),
 		"wall time must stay within maxMeasuredDurationSeconds per completed conversation")
 }
 
 func TestGetConversationTimeAggregates_NoAccounts(t *testing.T) {
-	if GetConversationDao() == nil {
+	if core.GetConversationDao() == nil {
 		t.Skip("Skipping test: database not available")
 	}
 
-	filter := ConversationTimeAggregatesFilter{
+	filter := core.ConversationTimeAggregatesFilter{
 		AccountIDs: nil,
 		StartDate:  time.Now().Add(-24 * time.Hour),
 		EndDate:    time.Now(),
 	}
-	result, err := GetConversationDao().GetConversationTimeAggregates(filter)
+	result, err := core.GetConversationDao().GetConversationTimeAggregates(filter)
 
 	assert.Nil(t, err)
-	assert.Equal(t, ConversationTimeAggregates{}, result, "empty accountIDs must return zero without touching the DB")
+	assert.Equal(t, core.ConversationTimeAggregates{}, result, "empty accountIDs must return zero without touching the DB")
 }

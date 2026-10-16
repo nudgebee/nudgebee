@@ -7,9 +7,15 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
+	"strings"
+	"sync"
+	"time"
+
 	"nudgebee/llm/agents"
 	"nudgebee/llm/agents/core"
 	_ "nudgebee/llm/agents/signoz"
+	"nudgebee/llm/analytics"
 	"nudgebee/llm/audit"
 	"nudgebee/llm/budget"
 	"nudgebee/llm/common"
@@ -18,10 +24,6 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
 	toolcore "nudgebee/llm/tools/core"
-	"runtime/debug"
-	"strings"
-	"sync"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -2228,7 +2230,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}))
 			return
 		}
-		var request core.ConversationUsageMetricsRequest
+		var request analytics.ConversationUsageMetricsRequest
 		var actionRequest ActionRequest
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
@@ -2274,7 +2276,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleConversationUsageMetricsApi(agentContext, request)
+		data, err := analytics.HandleConversationUsageMetricsApi(agentContext, request)
 
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
@@ -2300,7 +2302,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		var request core.ConversationTimeAggregatesRequest
+		var request analytics.ConversationTimeAggregatesRequest
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
@@ -2347,7 +2349,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleConversationTimeAggregatesApi(agentContext, request)
+		data, err := analytics.HandleConversationTimeAggregatesApi(agentContext, request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -2374,7 +2376,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		var request core.UsageMetricsRequest
+		var request analytics.UsageMetricsRequest
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
@@ -2413,7 +2415,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleUsageMetricsApi(agentContext, request)
+		data, err := analytics.HandleUsageMetricsApi(agentContext, request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -2439,7 +2441,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		var request core.AiCostAccountReportRequest
+		var request analytics.AiCostAccountReportRequest
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
@@ -2478,7 +2480,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleAiCostAccountReportApi(agentContext, request)
+		data, err := analytics.HandleAiCostAccountReportApi(agentContext, request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -2503,7 +2505,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		var request core.UsageFiltersRequest
+		var request analytics.UsageFiltersRequest
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
@@ -2540,7 +2542,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleUsageFiltersApi(agentContext, request)
+		data, err := analytics.HandleUsageFiltersApi(agentContext, request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -2565,7 +2567,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		var request core.ListConversationCostsRequest
+		var request analytics.ListConversationCostsRequest
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
@@ -2604,7 +2606,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleListConversationCostsApi(agentContext, request)
+		data, err := analytics.HandleListConversationCostsApi(agentContext, request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -2629,7 +2631,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		var request core.ConversationTreeRequest
+		var request analytics.ConversationTreeRequest
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
@@ -2668,7 +2670,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleConversationTreeApi(agentContext, request)
+		data, err := analytics.HandleConversationTreeApi(agentContext, request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -2694,7 +2696,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		var request core.ConversationAgentDetailRequest
+		var request analytics.ConversationAgentDetailRequest
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
@@ -2733,7 +2735,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleConversationAgentDetailApi(agentContext, request)
+		data, err := analytics.HandleConversationAgentDetailApi(agentContext, request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -2811,7 +2813,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		var request core.ListAgentCallsRequest
+		var request analytics.ListAgentCallsRequest
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
@@ -2852,7 +2854,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleListAgentCostsApi(agentContext, request)
+		data, err := analytics.HandleListAgentCostsApi(agentContext, request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -2878,7 +2880,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		var request core.ListToolUsageRequest
+		var request analytics.ListToolUsageRequest
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
@@ -2918,7 +2920,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleListToolUsageApi(agentContext, request)
+		data, err := analytics.HandleListToolUsageApi(agentContext, request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -2943,7 +2945,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		var request core.ListToolCallsRequest
+		var request analytics.ListToolCallsRequest
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
@@ -2988,7 +2990,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleListToolCallsApi(agentContext, request)
+		data, err := analytics.HandleListToolCallsApi(agentContext, request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -3000,7 +3002,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 	// Critique Analytics routes, gated by requireTenantReadAdmin. A platform
 	// super admin reads every tenant; a tenant admin reads only their own
-	// tenant's accounts (core.CritiqueScopeFor).
+	// tenant's accounts (analytics.CritiqueScopeFor).
 
 	// Like requireTenantAdmin but also accepts tenant_admin_readonly. Kept
 	// separate — requireTenantAdmin's other call sites gate writes.
@@ -3027,7 +3029,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		var request core.CritiqueSummaryRequest
+		var request analytics.CritiqueSummaryRequest
 		var actionRequest ActionRequest
 		if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
@@ -3066,7 +3068,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleCritiqueSummaryApi(request, core.CritiqueScopeFor(agentContext.GetSecurityContext()))
+		data, err := analytics.HandleCritiqueSummaryApi(request, analytics.CritiqueScopeFor(agentContext.GetSecurityContext()))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -3087,7 +3089,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		var request core.CritiqueTrendRequest
+		var request analytics.CritiqueTrendRequest
 		var actionRequest ActionRequest
 		if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
@@ -3126,7 +3128,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleCritiqueTrendApi(request, core.CritiqueScopeFor(agentContext.GetSecurityContext()))
+		data, err := analytics.HandleCritiqueTrendApi(request, analytics.CritiqueScopeFor(agentContext.GetSecurityContext()))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
@@ -3147,7 +3149,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		var request core.CritiqueListRequest
+		var request analytics.CritiqueListRequest
 		var actionRequest ActionRequest
 		if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
@@ -3186,7 +3188,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		data, err := core.HandleCritiqueListApi(request, core.CritiqueScopeFor(agentContext.GetSecurityContext()))
+		data, err := analytics.HandleCritiqueListApi(request, analytics.CritiqueScopeFor(agentContext.GetSecurityContext()))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},

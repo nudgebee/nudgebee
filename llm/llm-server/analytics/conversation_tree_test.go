@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"testing"
@@ -23,7 +23,7 @@ func TestGetConversationTree_PrefersStoredCostUsd(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	now := time.Now()
 

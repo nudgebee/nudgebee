@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"database/sql"
@@ -347,7 +347,7 @@ func cacheHitPct(cached, input int64) float64 {
 // is computed too, in its own concurrent scan. skipStorage skips the (separate)
 // cache-lifecycle storage-cost scan for callers that only read totals/breakdowns —
 // e.g. a totals-only comparison window whose result.Storage would be discarded.
-func (chat *ConversationDao) GetUsageMetrics(filter UsageMetricsFilter, dims []string, topN int, granularity string, skipStorage bool) (UsageMetrics, error) {
+func (chat *Store) GetUsageMetrics(filter UsageMetricsFilter, dims []string, topN int, granularity string, skipStorage bool) (UsageMetrics, error) {
 	result := UsageMetrics{Breakdowns: map[string][]UsageGroupRow{}}
 	if len(filter.AccountIDs) == 0 {
 		return result, nil
@@ -531,7 +531,7 @@ type gsScan struct {
 // (model/provider/source/agent/status) in a SINGLE scan via GROUP BY GROUPING
 // SETS. Returns the totals (the grand-total set) and a map dim→rows (unordered;
 // caller sorts + applies top_n). Replaces 1 totals + up to 5 breakdown scans.
-func (chat *ConversationDao) runGroupedUsageSets(where string, args []any) (UsageTotals, map[string][]UsageGroupRow, error) {
+func (chat *Store) runGroupedUsageSets(where string, args []any) (UsageTotals, map[string][]UsageGroupRow, error) {
 	query := fmt.Sprintf(`
 		SELECT
 			GROUPING(t.llm_model)      AS g_model,
@@ -617,7 +617,7 @@ func (chat *ConversationDao) runGroupedUsageSets(where string, args []any) (Usag
 // (user/account). The join-free dims (model/provider/source/agent/status) are
 // computed by runGroupedUsageSets instead. `dim` only selects a branch; the SQL
 // column/expression is hard-coded, never interpolated from caller input.
-func (chat *ConversationDao) breakdownForDimension(dim, where string, args []any, limit int) ([]UsageGroupRow, error) {
+func (chat *Store) breakdownForDimension(dim, where string, args []any, limit int) ([]UsageGroupRow, error) {
 	switch dim {
 	case "user":
 		// The synthetic system user has no row in `users`, so previously this
@@ -650,7 +650,7 @@ func (chat *ConversationDao) breakdownForDimension(dim, where string, args []any
 }
 
 // runUsageTotals computes the filter-wide KPI block (no grouping).
-func (chat *ConversationDao) runUsageTotals(where string, args []any) (UsageTotals, error) {
+func (chat *Store) runUsageTotals(where string, args []any) (UsageTotals, error) {
 	query := fmt.Sprintf(`
 		SELECT
 			COALESCE(SUM(%s), 0)                              AS cost_usd,
@@ -686,7 +686,7 @@ func (chat *ConversationDao) runUsageTotals(where string, args []any) (UsageTota
 // [start,end] — overlap = LEAST(alive_end, end) − GREATEST(created_at, start),
 // where alive_end = invalidated_at, else min(now, expires_at). Grouped by scope.
 // Pricing's per-hour storage column (with the legacy fallback) supplies the rate.
-func (chat *ConversationDao) runCacheStorageCost(filter UsageMetricsFilter) (*CacheStorage, error) {
+func (chat *Store) runCacheStorageCost(filter UsageMetricsFilter) (*CacheStorage, error) {
 	where, args := filter.buildCacheStorageWhere()
 	query := fmt.Sprintf(`
 		SELECT
@@ -725,7 +725,7 @@ func (chat *ConversationDao) runCacheStorageCost(filter UsageMetricsFilter) (*Ca
 // applies). extraJoins / extraWhere let callers resolve display names
 // (users / cloud_accounts) or exclude rows; both must be trusted SQL — never
 // raw caller input. limit <= 0 means no LIMIT. Ordered by cost desc.
-func (chat *ConversationDao) runUsageBreakdown(keyExpr, extraJoins, extraWhere, where string, args []any, limit int) ([]UsageGroupRow, error) {
+func (chat *Store) runUsageBreakdown(keyExpr, extraJoins, extraWhere, where string, args []any, limit int) ([]UsageGroupRow, error) {
 	limitClause := ""
 	if limit > 0 {
 		limitClause = fmt.Sprintf(" LIMIT %d", limit)
@@ -794,7 +794,7 @@ type tsScan struct {
 // every other value comes from the shared where/args. Bucketed on t.created_at
 // (when the call ran) so the series reconciles with the KPI totals, which
 // filter on the same column.
-func (chat *ConversationDao) runUsageTimeSeries(where string, args []any, granularity string) (*UsageTimeSeries, error) {
+func (chat *Store) runUsageTimeSeries(where string, args []any, granularity string) (*UsageTimeSeries, error) {
 	bucketExpr := fmt.Sprintf("date_trunc('%s', t.created_at)", granularity)
 	query := fmt.Sprintf(`
 		SELECT
@@ -911,7 +911,7 @@ func HandleUsageMetricsApi(ctx *security.RequestContext, request UsageMetricsReq
 		UserID:     request.UserId,
 	}
 
-	metrics, err := GetConversationDao().GetUsageMetrics(filter, request.GroupBy, request.TopN, request.Granularity, request.SkipStorage)
+	metrics, err := GetStore().GetUsageMetrics(filter, request.GroupBy, request.TopN, request.Granularity, request.SkipStorage)
 	if err != nil {
 		return UsageMetricsResponse{}, err
 	}
@@ -985,7 +985,7 @@ type UsageFilters struct {
 // readableAccountIDs. selectedAccountIDs is what the caller explicitly asked for
 // (empty = all) and only keeps an active selection visible when it has no data in
 // the window; see the account query below.
-func (chat *ConversationDao) GetUsageFilters(filter UsageMetricsFilter, readableAccountIDs, selectedAccountIDs []string) (UsageFilters, error) {
+func (chat *Store) GetUsageFilters(filter UsageMetricsFilter, readableAccountIDs, selectedAccountIDs []string) (UsageFilters, error) {
 	result := UsageFilters{
 		Sources:   []string{},
 		Models:    []string{},
@@ -1125,7 +1125,7 @@ func HandleUsageFiltersApi(ctx *security.RequestContext, request UsageFiltersReq
 		}
 	}
 
-	return GetConversationDao().GetUsageFilters(UsageMetricsFilter{
+	return GetStore().GetUsageFilters(UsageMetricsFilter{
 		AccountIDs: accountIDs,
 		StartDate:  startDate,
 		EndDate:    endDate,
@@ -1239,7 +1239,7 @@ type conversationCostScan struct {
 // (DISTINCT message_id / agent_id in token usage) — i.e. billable structure,
 // not every transcript row. GROUP BY c.id relies on c.id being the PK, so all
 // other c.* columns are functionally dependent and selectable.
-func (chat *ConversationDao) ListConversationCosts(filter UsageMetricsFilter, sortBy, sortDir string, limit, offset int) (ConversationCostList, error) {
+func (chat *Store) ListConversationCosts(filter UsageMetricsFilter, sortBy, sortDir string, limit, offset int) (ConversationCostList, error) {
 	if len(filter.AccountIDs) == 0 {
 		return ConversationCostList{Rows: []ConversationCostRow{}}, nil
 	}
@@ -1404,7 +1404,7 @@ type conversationModelStatScan struct {
 // It reuses the page's where/args and constrains to the page via c.id = ANY($N).
 // perCallCostExpr is identical to the row query so the per-model costs sum back
 // to ConversationCostRow.CostUsd.
-func (chat *ConversationDao) modelBreakdownForConversations(where string, args []any, ids []string) (map[string][]ConversationModelStat, error) {
+func (chat *Store) modelBreakdownForConversations(where string, args []any, ids []string) (map[string][]ConversationModelStat, error) {
 	n := len(args)
 	query := fmt.Sprintf(`
 		SELECT
@@ -1492,5 +1492,5 @@ func HandleListConversationCostsApi(ctx *security.RequestContext, request ListCo
 		UserID:     request.UserId,
 	}
 
-	return GetConversationDao().ListConversationCosts(filter, request.SortBy, request.SortDir, request.Limit, request.Offset)
+	return GetStore().ListConversationCosts(filter, request.SortBy, request.SortDir, request.Limit, request.Offset)
 }

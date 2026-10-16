@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"database/sql"
