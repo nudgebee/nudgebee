@@ -227,6 +227,7 @@ Configure the Google Cloud project's OAuth redirect to `${BASE_URL}/api/integrat
 | `AUTO_PILOT_URL` | `http://auto-pilot-server:9988` | Skip scheduled optimize executions |
 | `LLM_SERVER_URL` | `http://llm-server:8000` | LLM completions |
 | `WORKFLOW_SERVER_URL` | `http://workflow-server:8000` | Workflow approvals |
+| `WORKFLOW_SERVER_TOKEN` | — | `X-ACTION-TOKEN` for deciding Auto Optimize approvals from Slack / Teams buttons (shared `nudgebee` secret) |
 
 ## Branding
 

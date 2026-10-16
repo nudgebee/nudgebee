@@ -409,9 +409,29 @@ func (s *optimizerService) notifyApprovalRequested(ao *model.AutoOptimize, a mod
 			parked = append(parked, t)
 		}
 	}
-	s.sendToConfiguredChannels(ao, notification.EventApprovalRequested, func(platform string) string {
+	s.sendToConfiguredChannelsWithParams(ao, notification.EventApprovalRequested, func(platform string) string {
 		return buildApprovalRequest(ao, a, parked, platform)
+	}, func(platform string) map[string]any {
+		return approvalButtonParams(ao, a, platform)
 	})
+}
+
+// chatApprovalTokenPrefix marks an approval token as an Auto Optimize approval,
+// so notifications-server decides it through POST /autopilot/approval as the
+// clicking user instead of resolving a workflow approval task.
+const chatApprovalTokenPrefix = "auto_optimize:"
+
+// approvalButtonParams adds Approve / Reject to the request on the platforms
+// whose buttons notifications-server can answer (Slack and MS Teams). The
+// token only names the approval; the clicker's own access decides it.
+func approvalButtonParams(ao *model.AutoOptimize, a model.AutoOptimizeApproval, platform string) map[string]any {
+	if platform != "slack" && platform != "ms_teams" {
+		return nil
+	}
+	return map[string]any{
+		"approval_token":   fmt.Sprintf("%s%s:%s:%s", chatApprovalTokenPrefix, a.ID, ao.AccountID, ao.TenantID),
+		"approval_options": []string{"approve", "reject"},
+	}
 }
 
 func buildApprovalRequest(ao *model.AutoOptimize, a model.AutoOptimizeApproval, parked []model.AutoOptimizeTask, platform string) string {

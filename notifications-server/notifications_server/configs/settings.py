@@ -833,6 +833,10 @@ class Settings(BaseSettings):
         "", validation_alias=AliasChoices("NOTIFICATION_SERVER_TOKEN", "notification_server_token")
     )
     llm_server_token: str = Field("", validation_alias=AliasChoices("LLM_SERVER_TOKEN", "llm_server_token"))
+    # X-ACTION-TOKEN for the workflow server's service-token routes.
+    workflow_server_token: str = Field(
+        "", validation_alias=AliasChoices("WORKFLOW_SERVER_TOKEN", "workflow_server_token")
+    )
     llm_server_token_header: str = Field(
         "X-ACTION-TOKEN",
         validation_alias=AliasChoices("LLM_SERVER_TOKEN_HEADER", "llm_server_token_header"),

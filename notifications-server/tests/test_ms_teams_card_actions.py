@@ -987,3 +987,63 @@ def test_teams_analysis_claims_dont_touch_slacks():
     assert store[teams_key] == "worker-2", "nor takes over another's"
     cache.release_teams_analysis("event-1", "worker-2")
     assert teams_key not in store
+
+
+# ------------------------------- Auto Optimize approvals -------------------------------
+
+AO_TOKEN = f"auto_optimize:11111111-1111-4111-8111-111111111111:{ACCOUNT}:{NB_TENANT}"
+
+
+@pytest.fixture
+def ao_approval_store(store):
+    from sqlalchemy.orm import Session
+
+    from notifications_server.message_templates.ms_teams.generic import get_ms_teams_generic_message_template
+    from notifications_server.models.models import SentNotifications
+
+    params = _approval_params(token=AO_TOKEN)
+    card = ca.with_approval_buttons(get_ms_teams_generic_message_template(params), params, NB_TENANT)
+    row = ca.card_row(uuid.UUID(NB_TENANT), None, None, "19:ops", "1800", card, "approval")
+    row.id = uuid.uuid4()
+    with Session(store.engine) as session:
+        session.add(row)
+        session.commit()
+
+    def stored():
+        with Session(store.engine) as session:
+            row = session.query(SentNotifications).filter(SentNotifications.teams_message_id == "1800").one()
+            return json.loads(row.teams_metadata)
+
+    return SimpleNamespace(card=card, stored=stored)
+
+
+def _run_ao_approval(activity, outcome):
+    from notifications_server.services import auto_optimize_approval as aoa
+
+    with mock.patch.object(aoa, "decide", return_value=outcome) as decide:
+        result = _run_approval(activity)
+    return SimpleNamespace(**vars(result), decide=decide)
+
+
+def test_an_auto_optimize_approval_is_decided_as_the_clicker(ao_approval_store):
+    from notifications_server.services import auto_optimize_approval as aoa
+
+    result = _run_ao_approval(
+        _approval_click(ao_approval_store.card), aoa.Outcome("Approved. Applying 2 change(s).", True)
+    )
+    result.decide.assert_called_once_with(AO_TOKEN, "approve", "dana@example.com")
+    result.post.assert_not_called()
+    last = result.sender.update.call_args_list[-1].args[3].attachments[0].content
+    assert last["body"][-1]["text"] == "Dana: Approved. Applying 2 change(s)."
+    assert not ca.has_actions(last)
+    assert result.replies == ["Dana: Approved. Applying 2 change(s)."]
+    assert ao_approval_store.stored()["actions"][ca.APPROVE]["state"] == ca.DONE
+
+
+def test_an_auto_optimize_click_that_did_not_decide_keeps_the_buttons(ao_approval_store):
+    from notifications_server.services import auto_optimize_approval as aoa
+
+    result = _run_ao_approval(_approval_click(ao_approval_store.card), aoa.Outcome(aoa.NO_ACCESS, False))
+    assert result.replies == [aoa.NO_ACCESS]
+    assert ao_approval_store.stored()["actions"] == {}
+    assert ca.has_actions(ao_approval_store.stored()["card"]), "someone with access can still decide"

@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from notifications_server import sync_engine
 from notifications_server.configs.settings import URLRoutes, settings
 from notifications_server.models.models import SentNotifications
+from notifications_server.services import auto_optimize_approval
 from notifications_server.services.cache import Cache
 from notifications_server.services.messaging_installations import ms_teams_aad_tenant_owner
 from notifications_server.services.ms_teams.bot_sender import TeamsBotError, card_activity, get_sender
@@ -715,19 +716,29 @@ async def _approve_claimed(activity, reply, card_ref, params, user_email) -> Non
     if started is not None:
         await _show(activity, started)
 
-    status_code = await asyncio.to_thread(_post_approval, params["token"], params["status"])
     clicker = (activity.from_property.name if activity.from_property else None) or user_email
-    if status_code is not None and status_code < 300:
-        outcome = f"{clicker} chose **{_label(params['status'])}**"
-    elif status_code == 409:
-        outcome = APPROVAL_ANSWERED
-    elif status_code == 404:
-        outcome = APPROVAL_EXPIRED
+    not_decided = None
+    if auto_optimize_approval.is_auto_optimize_token(params["token"]):
+        decided = await asyncio.to_thread(auto_optimize_approval.decide, params["token"], params["status"], user_email)
+        if decided.settled:
+            outcome = f"{clicker}: {decided.message}"
+        else:
+            not_decided = decided.message
     else:
+        status_code = await asyncio.to_thread(_post_approval, params["token"], params["status"])
+        if status_code is not None and status_code < 300:
+            outcome = f"{clicker} chose **{_label(params['status'])}**"
+        elif status_code == 409:
+            outcome = APPROVAL_ANSWERED
+        elif status_code == 404:
+            outcome = APPROVAL_EXPIRED
+        else:
+            not_decided = APPROVAL_FAILED
+    if not_decided:
         card = await asyncio.to_thread(finish, card_ref, APPROVE, None, lambda c: with_status(c, None))
         if card:
             await _show(activity, card)
-        return await reply(APPROVAL_FAILED)
+        return await reply(not_decided)
 
     card = await asyncio.to_thread(finish, card_ref, APPROVE, DONE, lambda c: with_status(without_approval(c), outcome))
     if card:

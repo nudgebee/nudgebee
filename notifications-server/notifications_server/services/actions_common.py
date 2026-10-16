@@ -25,6 +25,7 @@ from notifications_server.message_templates.slack.finding import (
     SUPPRESS_ACTION_NAME,
 )
 from notifications_server.models.db_base import BaseDB
+from notifications_server.services import auto_optimize_approval
 from notifications_server.services.actions import (
     Actions,
     validate_and_get_user_id,
@@ -418,7 +419,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
         )
         return json.dumps(self.action_service.skip_auto_optimize_execution(params=params))
 
-    def handle_approval_action(self, channel_id, team_id, _slack_user_id, _user_email, data, action_params):
+    def handle_approval_action(self, channel_id, team_id, slack_user_id, user_email, data, action_params):
         try:
             message = data.get("message", {})
             message_ts = message.get("ts")
@@ -434,6 +435,10 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
                     "Missing token or status in approval action: token present=%s, status=%s", bool(token), status
                 )
                 return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
+            if auto_optimize_approval.is_auto_optimize_token(token):
+                return self.handle_auto_optimize_approval(
+                    channel_id, team_id, slack_user_id, user_email, message, token, status
+                )
             params = ApprovalParams(
                 channel_id=channel_id,
                 team_id=team_id,
@@ -448,6 +453,22 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             LOG.exception(f"Error in handle_approval_action: {e}")
             message_ts = data.get("message", {}).get("ts")
             return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
+
+    def handle_auto_optimize_approval(self, channel_id, team_id, slack_user_id, user_email, message, token, status):
+        """Decides an Auto Optimize approval as the clicking user. Once it's settled
+        the buttons are replaced by the outcome; otherwise they stay for someone
+        else, and only the reply says why this click didn't decide it."""
+        message_ts = message.get("ts")
+        outcome = auto_optimize_approval.decide(token, status, user_email)
+        text = outcome.message
+        if outcome.settled:
+            text = f"<@{slack_user_id}>: {outcome.message}"
+            blocks = [b for b in message.get("blocks") or [] if b.get("type") != "actions"]
+            if blocks:
+                blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": text}]})
+                self.common_service.update_slack_message_with_blocks(channel_id, team_id, message_ts, blocks)
+        self.common_service.slack_reply_in_thread(channel_id, team_id, message_ts, text)
+        return json.dumps({"status": "settled" if outcome.settled else "not_decided"})
 
     def handle_workflow_approval_selection(self, channel_id, team_id, _, action, data):
         try:

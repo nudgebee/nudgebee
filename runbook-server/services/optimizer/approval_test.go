@@ -494,3 +494,17 @@ func TestDecideApproval_NothingMovedStartsNothing(t *testing.T) {
 	f.temporal.AssertNotCalled(t, "ExecuteWorkflow", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	f.repo.AssertNotCalled(t, "SetAutoOptimizeExecutionStatus", mock.Anything, mock.Anything, mock.Anything)
 }
+
+func TestApprovalButtonParams(t *testing.T) {
+	ao := gatedAutoOptimize()
+	a := model.AutoOptimizeApproval{ID: uuid.New()}
+
+	for _, platform := range []string{"slack", "ms_teams"} {
+		params := approvalButtonParams(ao, a, platform)
+		// notifications-server splits this token on ":" into approval, account and tenant.
+		assert.Equal(t, "auto_optimize:"+a.ID.String()+":"+ao.AccountID.String()+":"+ao.TenantID.String(), params["approval_token"], platform)
+		assert.Equal(t, []string{"approve", "reject"}, params["approval_options"], platform)
+	}
+	// Google Chat has no handler for approval buttons.
+	assert.Nil(t, approvalButtonParams(ao, a, "google_chat"))
+}

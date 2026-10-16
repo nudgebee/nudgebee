@@ -254,6 +254,12 @@ func isControllerType(kind string) bool {
 // logged, not returned. Reused by the completion summary and PR-ready follow-up.
 // eventType is the notification-rule event the message represents.
 func (s *optimizerService) sendToConfiguredChannels(ao *model.AutoOptimize, eventType string, buildBody func(platform string) string) {
+	s.sendToConfiguredChannelsWithParams(ao, eventType, buildBody, nil)
+}
+
+// sendToConfiguredChannelsWithParams is sendToConfiguredChannels with extra
+// template parameters per platform; buildParams may be nil or return nil.
+func (s *optimizerService) sendToConfiguredChannelsWithParams(ao *model.AutoOptimize, eventType string, buildBody func(platform string) string, buildParams func(platform string) map[string]any) {
 	sc := security.NewRequestContextForTenantAdmin(ao.TenantID.String())
 
 	for platform, config := range ao.Notification {
@@ -286,6 +292,9 @@ func (s *optimizerService) sendToConfiguredChannels(ao *model.AutoOptimize, even
 			Body:      body,
 			AccountID: ao.AccountID.String(),
 			EventType: eventType,
+		}
+		if buildParams != nil {
+			req.Parameters = buildParams(platform)
 		}
 
 		resp, err := notification.SendNotification(sc, req)
