@@ -54,6 +54,10 @@ type LLMRequest struct {
 	// established authority for this run (an approved ticket, an approval task)
 	// names the tools that authority covers. Tools not listed still prompt.
 	ToolConfirmations map[string]string `json:"tool_confirmations,omitempty"`
+	// Headers are extra request headers for llm-server (a run claim, which
+	// llm-server honours only from a caller with the service token). Never
+	// part of the request body.
+	Headers map[string]string `json:"-"`
 }
 
 type LLMEventRequest struct {
@@ -173,6 +177,9 @@ func StartChat(ctx *security.RequestContext, request LLMRequest) (string, error)
 	}
 
 	headersMap := llmHeaders(ctx)
+	for name, value := range request.Headers {
+		headersMap[name] = value
+	}
 
 	var capabilities map[string]any
 	if len(request.Tools) > 0 {

@@ -456,3 +456,29 @@ func TestPollChatWithoutRefusalEndsKeepsPolling(t *testing.T) {
 	assert.ErrorIs(t, err, ErrChatStillRunning)
 	assert.Equal(t, 2, *polls)
 }
+
+// Extra headers (a run claim) go on the chat request as headers, never in
+// its body.
+func TestStartChat_SendsExtraHeaders(t *testing.T) {
+	var gotClaim string
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotClaim = r.Header.Get("X-NB-Run-Ref")
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(llmChatResponse{Data: llmAgentResponse{ConversationId: "conv-1", Status: "IN_PROGRESS"}})
+	}))
+	defer server.Close()
+	oldURL := config.Config.LlmServerUrl
+	config.Config.LlmServerUrl = server.URL
+	defer func() { config.Config.LlmServerUrl = oldURL }()
+	sc, _, _ := newTestSecurityContext(t)
+	reqCtx := security.NewRequestContext(context.Background(), sc, nil, nil, nil)
+
+	convID, err := StartChat(reqCtx, LLMRequest{Message: "@bee hi", AccountId: "acc-1", Headers: map[string]string{"X-NB-Run-Ref": "run-1"}})
+	assert.NoError(t, err)
+	assert.Equal(t, "conv-1", convID)
+	assert.Equal(t, "run-1", gotClaim)
+	assert.NotContains(t, gotBody, "run-1", "the claim is not in the body")
+}
