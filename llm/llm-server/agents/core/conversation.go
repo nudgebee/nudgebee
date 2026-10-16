@@ -1144,7 +1144,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 				return NBAgentResponse{}, err
 			}
 			ctx = WithRunProfile(ctx, conversation.RunProfile)
-			ctx, err = policyFor(ctx).ConversationTurn(ctx, agent, conversation, request.UserId)
+			ctx, err = policyFor(ctx).ConversationTurn(ctx, agent, conversation, ActingUser(ctx, request.UserId))
 			if err != nil {
 				return NBAgentResponse{}, err
 			}
@@ -1301,7 +1301,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 				return NBAgentResponse{}, err
 			}
 			ctx = WithRunProfile(ctx, conversation.RunProfile)
-			ctx, err = policyFor(ctx).ConversationTurn(ctx, agent, conversation, request.UserId)
+			ctx, err = policyFor(ctx).ConversationTurn(ctx, agent, conversation, ActingUser(ctx, request.UserId))
 			if err != nil {
 				return NBAgentResponse{}, err
 			}

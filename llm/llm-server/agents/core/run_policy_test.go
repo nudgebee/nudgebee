@@ -582,3 +582,16 @@ func TestBoundAgentRefusedBeforeTheConversationIsWritten(t *testing.T) {
 	assert.Contains(t, err.Error(), `runs only in runs of the "test_ext" extension`)
 	assert.Zero(t, saves, "no conversation row is written for a refused agent")
 }
+
+// A run's owner judges the caller the security context identifies; only a
+// context that identifies nobody falls back to the user the request names.
+func TestActingUser(t *testing.T) {
+	caller, named := uuid.NewString(), uuid.NewString()
+	signedIn := security.NewRequestContextForTenantAccountAdmin(uuid.NewString(), caller, []string{uuid.NewString()})
+	assert.Equal(t, caller, ActingUser(signedIn, named), "a caller acting as another user stays the caller")
+	assert.Equal(t, caller, ActingUser(signedIn, ""))
+	assert.Equal(t, named, ActingUser(security.NewRequestContextForSuperAdmin(), named), "an internal context names nobody")
+	system := security.NewRequestContextForTenantAccountAdmin(uuid.NewString(), security.GetSystemUserId(), []string{uuid.NewString()})
+	assert.Equal(t, named, ActingUser(system, named), "nor does the system user")
+	assert.Equal(t, named, ActingUser(nil, named))
+}

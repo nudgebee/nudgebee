@@ -47,7 +47,7 @@ func handleFollowupCancel(ctx *security.RequestContext, request ConversationApiR
 	}
 	// The run policy may keep a conversation's follow-ups to one user:
 	// dismissing resumes the run.
-	if !core.MayActOnConversation(conversation, request.UserId) {
+	if !core.MayActOnConversation(conversation, core.ActingUser(ctx, request.UserId)) {
 		return nil, http.StatusForbidden, errors.New(errorUserAccessMessage)
 	}
 

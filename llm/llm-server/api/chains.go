@@ -831,7 +831,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				}
 				// A governed run takes turns only from whom its owner allows,
 				// refused here before a queued row is written.
-				if conversation.RunProfile != nil && !core.MayActOnConversation(conversation, request.UserId) {
+				if conversation.RunProfile != nil && !core.MayActOnConversation(conversation, core.ActingUser(agentContext, request.UserId)) {
 					c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 					return
 				}
@@ -3434,6 +3434,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		// Check if conversation is already in progress to prevent race conditions
 		conv, err := core.GetConversationDao().GetConversation(request.ConversationId)
+		// A governed run takes results only from whom its owner allows,
+		// refused before any result is written.
+		if err == nil && !core.MayActOnConversation(conv, core.ActingUser(agentContext, "")) {
+			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			return
+		}
 		if err == nil && conv.Status == core.ConversationStatusInProgress {
 			logger.Warn("api: conversation already in progress, rejecting tool result submission")
 			c.JSON(http.StatusConflict, buildApiResponse(nil, []error{

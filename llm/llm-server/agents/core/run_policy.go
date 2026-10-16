@@ -284,6 +284,22 @@ func PrepareRun(ctx *security.RequestContext, claim RunClaim, accountId string) 
 	return profile, nil
 }
 
+// ActingUser is the user a run's owner judges a turn or an action by: the
+// caller the security context identifies, never a user the request names
+// for it (a super admin taking a turn as another user stays the super
+// admin). Only a context that identifies nobody, such as the system user's,
+// falls back to userId.
+func ActingUser(ctx *security.RequestContext, userId string) string {
+	if ctx == nil || ctx.GetSecurityContext() == nil {
+		return userId
+	}
+	caller := strings.TrimSpace(ctx.GetSecurityContext().GetUserId())
+	if caller == "" || caller == security.GetSystemUserId() {
+		return userId
+	}
+	return caller
+}
+
 // MayActOnConversation reports whether userId may act on conversation outside
 // a turn (see AgentRunPolicy.MayActOnConversation), by the policy of the
 // conversation's owner.

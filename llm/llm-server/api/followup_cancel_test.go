@@ -106,6 +106,13 @@ func TestHandleFollowupCancel_RowOwnerDecidesWhoMayDismiss(t *testing.T) {
 	assert.Equal(t, http.StatusOK, status)
 	assert.Equal(t, true, resp["idempotent"])
 
+	// The owner judges the caller, not the user the request names: another
+	// signed-in user naming the starter is still refused.
+	other := security.NewRequestContextForTenantAccountAdmin(uuid.NewString(), uuid.NewString(), []string{account.String()})
+	_, status, err = handleFollowupCancel(other, request)
+	assert.Equal(t, http.StatusForbidden, status, "a caller acting as the starter is not the starter")
+	assert.Error(t, err)
+
 	// Any user may still dismiss on an ordinary conversation, even on a
 	// session id that looks like a governed run's.
 	conversation.RunProfile = nil
