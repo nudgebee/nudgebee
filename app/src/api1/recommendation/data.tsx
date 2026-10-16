@@ -6399,7 +6399,7 @@ az vmss create \\
       mitigations: [
         `**AWS CLI command to upgrade EBS volume generation:**
 \`\`\`
-        aws ec2 modify-volume --volume-type {{recommendation.recommendded_volume_type}} --volume-id {{recommendation.volume_id}}
+        aws ec2 modify-volume --volume-id {{recommendation.volume_id}} --volume-type {{recommendation.recommendded_volume_type}} --region {{recommendation.volume_region || resource_region || region}}
 \`\`\`
 `,
       ],
