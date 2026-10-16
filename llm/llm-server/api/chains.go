@@ -502,7 +502,9 @@ func dispatchQueuedMessage(parent *security.RequestContext, conversation core.Co
 			source = *conversation.Source
 		}
 		var agent core.NBAgent
-		if msg.AgentName != nil && *msg.AgentName != "" {
+		if profile := conversation.RunProfile; profile != nil {
+			agent, err = pinRunAgent(ctx, profile, msg.AccountID.String(), nil)
+		} else if msg.AgentName != nil && *msg.AgentName != "" {
 			agent, _ = core.GetNBAgent(ctx, *msg.AgentName, msg.AccountID.String(), core.AgentStatusEnabled)
 		} else {
 			agent, err = agents.InferAgentOrHelp(ctx, msg.UserID.String(), msg.AccountID.String(), msg.ConversationID.String(), msg.Message, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConfig(msgConfig))
@@ -641,6 +643,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}
 		}
 
+		// The conversation this request continues, when there is one: its
+		// stored run profile decides whether the turn is a governed run.
+		var existingConversation *core.Conversation
 		if conversationId.Valid {
 			conversation, err := core.GetConversationDao().GetConversation(request.ConversationId)
 			if err != nil {
@@ -651,6 +656,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				}))
 				return
 			}
+			existingConversation = &conversation
 
 			if conversation.AccountID.String() != request.AccountId {
 				c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{
@@ -743,6 +749,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 				if conv.ID != uuid.Nil {
 					request.ConversationId = conv.ID.String()
+					existingConversation = &conv
 					// Check if we can reuse the last agent from the pre-loaded history
 					if len(chatHistory) > 0 && chatHistory[0]["response"] != "" {
 						lastAgentName := strings.TrimSpace(chatHistory[0]["response"])
@@ -822,6 +829,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 					c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 					return
 				}
+				// A governed run takes turns only from whom its owner allows,
+				// refused here before a queued row is written.
+				if conversation.RunProfile != nil && !core.MayActOnConversation(conversation, request.UserId) {
+					c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+					return
+				}
 				if config.Config.QueuedMessagesEnabled && queueAdmits(conversation, &request) {
 					if tryQueueConversationMessage(c, conversation, &request, "") {
 						return
@@ -835,6 +848,25 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		if rejectUnfulfilledQueueRequest(c, &request) {
 			return
+		}
+
+		// A governed run: the conversation's stored profile, or, for a new
+		// conversation, the profile a valid run claim asks for. The run is
+		// pinned to the profile's agent instead of being routed.
+		runProfile, newRunProfile, claimErr := chatRunProfile(c, agentContext, existingConversation, request.AccountId)
+		if claimErr != nil {
+			logger.Warn("api: run claim refused", "error", claimErr)
+			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{claimErr}))
+			return
+		}
+		if runProfile != nil && request.AgentId == "" {
+			pinned, err := pinRunAgent(agentContext, runProfile, request.AccountId, agent)
+			if err != nil {
+				logger.Warn("api: governed run's agent not found", "agent_name", runProfile.Agent, "extension", runProfile.Extension)
+				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{errors.New("api: agent not found")}))
+				return
+			}
+			agent = pinned
 		}
 
 		//TODO validate message_id and agent_id and if they are applicable && correct
@@ -946,7 +978,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// via @<name>. LLM-routed agents can be picked tentatively and the
 		// planner already has its own missing-config error path; the @-mention
 		// path is the one where the user expects a definitive yes/no upfront.
-		if config.Config.AgentIntegrationPrecheckEnabled &&
+		if config.Config.AgentIntegrationPrecheckEnabled && runProfile == nil &&
 			strings.HasPrefix(strings.TrimSpace(request.Query), "@") {
 			if err := agents.EnsureAgentIntegrations(agentContext, agent, request.AccountId); err != nil {
 				var missing *agents.MissingIntegrationError
@@ -966,6 +998,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 					return
 				}
 			}
+		}
+
+		// An agent bound to an extension runs only in that extension's runs.
+		// Refused here, before any conversation or message row is written.
+		if err := core.CheckAgentInRun(agent, runProfile); err != nil {
+			logger.Warn("api: agent refused outside its run", "agent", agent.GetName(), "error", err)
+			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{err}))
+			return
 		}
 
 		// Audit follow-up answers. Emit strictly when a follow-up is actually
@@ -1010,7 +1050,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		timer.mark("routing")
 		// Execute the agent
 		handleRequestExecution(c, agentContext, request.Async, request.UserId, "chains_chat", logger, func(ctx *security.RequestContext) (core.NBAgentResponse, error) {
-			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images), core.ConversationSessionRequestWithChannelContext(request.ChannelContext), core.ConversationSessionRequestWithChannelContextRefs(request.ChannelContextRefs), core.ConversationSessionRequestWithReplyRef(request.ReplyRef))
+			return core.HandleConversationSessionRequest(ctx, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithImages(request.Images), core.ConversationSessionRequestWithChannelContext(request.ChannelContext), core.ConversationSessionRequestWithChannelContextRefs(request.ChannelContextRefs), core.ConversationSessionRequestWithReplyRef(request.ReplyRef), core.ConversationSessionRequestWithRunProfile(newRunProfile))
 		}, core.NBAgentResponse{
 			Response:       []string{"Your request has been received and will be processed asynchronously."},
 			Query:          request.Query,

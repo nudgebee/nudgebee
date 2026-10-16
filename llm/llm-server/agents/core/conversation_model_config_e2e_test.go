@@ -62,6 +62,7 @@ func TestModelConfigRoundTrip(t *testing.T) {
 		"", "round-trip-test",
 		ConversationStatusCompleted, ConversationSourceUserInvestigation,
 		"", "", nil, "",
+		nil,
 	)
 	require.NoError(t, err, "seed conversation")
 	// Cleanup unless KEEP_TEST_CONVERSATION=true — useful when the operator

@@ -181,10 +181,17 @@ func (a *nbCustomAgent) GetSupportedTools(ctx *security.RequestContext) []toolco
 	if len(a.tools) > 0 {
 		return a.tools
 	}
+	// The run policy may shape the set, so only the stored list goes in the
+	// 30-minute cache.
+	a.tools = policyFor(ctx).AgentTools(ctx, a, a.configuredTools(ctx))
+	return a.tools
+}
+
+// configuredTools resolves the tools on the agent's stored list.
+func (a *nbCustomAgent) configuredTools(ctx *security.RequestContext) []toolcore.NBTool {
 	// Module-level TTL cache shared across requests for this account+agent.
 	if cached, ok := customAgentToolsCacheInst.get(a.accountId, a.agent.Name); ok {
-		a.tools = cached
-		return a.tools
+		return cached
 	}
 
 	nbTools := make([]toolcore.NBTool, 0, len(a.agent.Tools))
@@ -221,8 +228,7 @@ func (a *nbCustomAgent) GetSupportedTools(ctx *security.RequestContext) []toolco
 	if allResolved {
 		customAgentToolsCacheInst.set(a.accountId, a.agent.Name, nbTools)
 	}
-	a.tools = nbTools
-	return a.tools
+	return nbTools
 }
 
 func (a *nbCustomAgent) GetSystemPrompt(ctx *security.RequestContext, query NBAgentRequest) NBAgentPrompt {
@@ -404,6 +410,12 @@ func (a *nbCustomAgent) GetSystemPrompt(ctx *security.RequestContext, query NBAg
 				prompt.Instructions = append(prompt.Instructions, u)
 			}
 		}
+	}
+
+	// Answer instructions from the run policy. Added before the escaping
+	// below, which also covers them.
+	if format := policyFor(ctx).AnswerInstructions(ctx, a); format != "" {
+		prompt.Instructions = append(prompt.Instructions, format)
 	}
 
 	// The prompt is later rendered as a Go template (GetPromptTemplate), and a

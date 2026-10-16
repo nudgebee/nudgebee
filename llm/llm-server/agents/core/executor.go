@@ -432,6 +432,18 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// and side-effect-free — attribution only, does not change model or prompt.
 	ctx = applyTaskTypeAttribution(ctx, request)
 
+	// An agent bound to an extension runs only in that extension's runs; the
+	// run's policy then sets up (or refuses) the run.
+	err = CheckAgentInRun(agent, RunProfileOf(ctx))
+	if err == nil {
+		ctx, request, err = policyFor(ctx).StartAgent(ctx, agent, request)
+	}
+	if err != nil {
+		common.MetricsAgentOperationsTotal(agentName, "fail", accountID)
+		common.MetricsAgentLatencySeconds(agentName, accountID, time.Since(start).Seconds())
+		return NBAgentResponse{}, err
+	}
+
 	// get history and use it as context - PARALLELIZED
 	var messageHistoryFomatter []prompts.MessageFormatter
 	var historyErr error

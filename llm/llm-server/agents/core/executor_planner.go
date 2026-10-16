@@ -539,9 +539,22 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 
 	consecutiveFailedIters := 0
 	consecutiveDuplicateIters := 0
+	// Whether the run ended on a cap rather than a finish; see the end.
+	budgetStopped := false
+	var budgetUsed, budgetLimit int64
+	// A resumed run already at its turn cap runs no iteration at all.
+	ranOutOfTurns := e.currentIteration >= e.maxIterations
 	for i := e.currentIteration; i < e.maxIterations; i++ {
 		if ctx.Err() != nil {
 			e.ctx.GetLogger().Warn("plannerexecutor: context deadline exceeded, breaking loop", "agent", e.agent.GetName(), "iteration", i)
+			break
+		}
+		// A run over the token budget its policy set calls no more tools and
+		// answers with what it has, the same way as when it runs out of turns.
+		if used, limit, spent := policyFor(e.ctx).BudgetSpent(e.ctx); spent {
+			e.ctx.GetLogger().Warn("plannerexecutor: run token budget reached, stopping tools and answering with what it has",
+				"agent", e.agent.GetName(), "iteration", i, "tokens_used", used, "token_budget", limit)
+			budgetStopped, budgetUsed, budgetLimit = true, used, limit
 			break
 		}
 		e.currentIteration = i
@@ -630,11 +643,17 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 				break
 			}
 		}
+		// Reached only when no break above fired.
+		ranOutOfTurns = i == e.maxIterations-1
 	}
 
 	result, err := e.summarizeConversation()
 	if err == nil && result != nil && len(result) > 0 {
 		e.recordUncritiquedSummary(inputs["input"], result)
+		// The run policy may mark an answer a cap cut short.
+		if output, ok := result["output"].(string); ok && (budgetStopped || ranOutOfTurns) {
+			result["output"] = policyFor(e.ctx).FinishCutShort(e.ctx, e.agent, output, budgetUsed, budgetLimit, budgetStopped)
+		}
 		return result, err
 	} else if err != nil {
 		e.ctx.GetLogger().Error("plannerexecutor: unable to summarize conversation", "error", err)
@@ -822,6 +841,11 @@ func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
 			"\n  1. Clearly state what could NOT be investigated and why." +
 			"\n  2. Under a '**Recommended Next Steps**' section, provide specific CLI commands or manual steps the user can run to gather the missing information." +
 			"\n  3. Do NOT fabricate findings for the missing data."
+	}
+	// This summary is the final answer when the run stops on a cap, so it
+	// carries the run policy's answer instructions too.
+	if format := policyFor(e.ctx).AnswerInstructions(e.ctx, e.agent); format != "" {
+		summarizationPrompt += "\n\n" + format
 	}
 	mclist = append(mclist, llms.MessageContent{
 		Role:  llms.ChatMessageTypeHuman,
@@ -2417,8 +2441,13 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	var tool toolcore.NBTool
 	var ok bool
 
+	// The run policy may limit a run to the tools its agent was given (its
+	// planner's tool set): no client tool from the request, no registry or
+	// custom-agent fallback for other names.
+	ownToolsOnly := policyFor(e.ctx).OwnToolsOnly(e.ctx)
+
 	// check if it's a client tool first
-	for _, ct := range e.agentRequest.ClientTools {
+	for _, ct := range lo.Ternary(ownToolsOnly, nil, e.agentRequest.ClientTools) {
 		if strings.EqualFold(ct.Name, action.Tool) {
 			tool = toolcore.NewClientToolWrapper(ct)
 			ok = true
@@ -2441,9 +2470,12 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	if !ok {
 		tool, ok = nameToTool[strings.ToUpper(action.Tool)]
 	}
+	if !ok && ownToolsOnly {
+		tool, ok = nameToTool[strings.ToUpper(toolcore.ResolveNBToolAlias(action.Tool))]
+	}
 
 	// Handle common aliases and prioritize system tools over custom agents/tools
-	if !ok {
+	if !ok && !ownToolsOnly {
 		resolvedToolName := toolcore.ResolveNBToolAlias(action.Tool)
 		if strings.EqualFold(resolvedToolName, "shell") {
 			resolvedToolName = toolcore.ToolExecuteShellCommand
@@ -2534,6 +2566,18 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	finish2, requestType, err2 := authorizeToolRequest(e.ctx, e.agent, e.agentRequest, action, func() []string {
 		return writeAccountOf(e.agentRequest.AccountId, e.writeTargetOf(tool, action), config.Config.LlmServerTargetWriteAccess)
 	})
+	var refused *ToolRefusedError
+	if errors.As(err2, &refused) {
+		// Refused as a step, before the write-confirmation branch below, which
+		// a call with no request type would skip.
+		e.ctx.GetLogger().Info("plannerexecutor: run policy refused an unclassified tool call", "tool", action.Tool, "toolId", action.ToolID, "agent", e.agent.GetName())
+		common.MetricsToolOperationsTotal(implType, toolName, "read_only_refused", accountID)
+		return NBAgentPlannerToolActionStep{
+			Action:      action,
+			Observation: refused.Observation,
+			Status:      ToolStatusFailure,
+		}, nil, nil
+	}
 	if err2 != nil {
 		// Metrics: record fail
 		common.MetricsToolOperationsTotal(implType, toolName, "fail", accountID)
@@ -2648,8 +2692,31 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	// Set when an approval rule waived this call's confirmation; recorded on
 	// the step so the conversation shows it ran without asking.
 	var approvedByRule map[string]any
+	// The run policy decides first, before any recorded approval or approval
+	// rule is consulted below: it may refuse the call, or let it run without
+	// the approval prompt and the read-only refusal.
+	verdict := ToolVerdict{}
+	if tool.GetType() == toolcore.NBToolTypeTool && requestType != nil {
+		verdict = policyFor(e.ctx).CheckTool(e.ctx, toolCallOf(e.agent, e.agentRequest, tool, action, *requestType))
+	}
+	switch verdict.Kind {
+	case ToolCallRefuse, ToolCallRefuseReadOnly:
+		observation := verdict.Observation
+		refusals := 0
+		if verdict.Kind == ToolCallRefuseReadOnly || observation == "" {
+			refusals = e.countReadOnlyRefusal()
+			observation = readOnlyRefusal(*requestType, refusals)
+		}
+		e.ctx.GetLogger().Info("plannerexecutor: run policy refused a tool call", "tool", action.Tool, "toolId", action.ToolID, logRequestType, requestType, "refusals", refusals)
+		common.MetricsToolOperationsTotal(toolcore.ImplTypeFor(tool), tool.Name(), "read_only_refused", e.agentRequest.AccountId)
+		return NBAgentPlannerToolActionStep{
+			Action:      action,
+			Observation: observation,
+			Status:      ToolStatusFailure,
+		}, nil, nil
+	}
 	// confirmation if tehre is write operation
-	if tool.GetType() == toolcore.NBToolTypeTool {
+	if tool.GetType() == toolcore.NBToolTypeTool && verdict.Kind != ToolCallRun {
 		if writeConfirmationRequired(tool, requestType, action) {
 			// A write on another account is approved for that account; every
 			// write's card says where it lands.
@@ -4930,6 +4997,10 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 
 	ctx.GetLogger().Info("agentexecutor: making Run call to agent", "agent", agent.GetName())
 	maxIter := resolveMaxIterations(agent, request)
+	// The run's policy may cap the agent lower still.
+	if policyMax := policyFor(ctx).MaxTurns(ctx, agent); policyMax > 0 && policyMax < maxIter {
+		maxIter = policyMax
+	}
 	ctx.GetLogger().Info("agentexecutor: resolved max iterations", "agent", agent.GetName(), "maxIterations", maxIter)
 	executor := newPlannerExecutor(ctx, nbAgentPlanner, agent, request, maxIter)
 	if previousState != "" {

@@ -178,6 +178,15 @@ func authorizeToolRequest(ctx *security.RequestContext, agent NBAgent, request N
 		// Neither the static rules nor an LLM prompt decided: the call runs as
 		// a read below. Logged so these calls can be reviewed (#39880 C7).
 		if requestType == "" {
+			// The run policy may refuse a call nothing classified rather than
+			// let it run as a read.
+			if verdict := policyFor(ctx).CheckTool(ctx, toolCallOf(agent, request, tool, action, "")); verdict.Kind == ToolCallRefuse || verdict.Kind == ToolCallRefuseReadOnly {
+				observation := verdict.Observation
+				if verdict.Kind == ToolCallRefuseReadOnly || observation == "" {
+					observation = readOnlyRefusal("unclassified", 1)
+				}
+				return nil, nil, &ToolRefusedError{Tool: toolName, Observation: observation}
+			}
 			ctx.GetLogger().Info("auth: no classifier decided, running as read", "tool", toolName, "input", egressfilter.RedactForLogPrefix(action.ToolInput, 500), "agent", agent.GetName())
 		}
 

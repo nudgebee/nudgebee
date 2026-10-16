@@ -426,3 +426,34 @@ func TestMCPTools_ResultCanChange(t *testing.T) {
 	assert.False(t, ResultCanChange(nil))
 	assert.False(t, ResultCanChange(newMCPUnavailableTool(mcpIntegrationConfig{}, "x")))
 }
+
+// Discovery keeps each tool's readOnlyHint, true only when the server says
+// so.
+func TestDiscoverMCPTools_KeepsReadOnlyHint(t *testing.T) {
+	relayStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status_code": 200,
+			"data": `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"get_page","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}},` +
+				`{"name":"click","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":false,"destructiveHint":true}},` +
+				`{"name":"no_annotations","inputSchema":{"type":"object"}},` +
+				`{"name":"hint_as_string","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":"true"}},` +
+				`{"name":"annotations_as_string","inputSchema":{"type":"object"},"annotations":"read-only"}]}}`,
+		})
+	}))
+	defer relayStub.Close()
+	orig := config.Config.RelayServerEndpoint
+	config.Config.RelayServerEndpoint = relayStub.URL
+	defer func() { config.Config.RelayServerEndpoint = orig }()
+
+	tools := discoverMCPTools("acct-mcp-hint", mcpIntegrationConfig{IntegrationID: "int-hint", IntegrationName: "browser"})
+	hints := map[string]bool{}
+	for _, tool := range tools {
+		hinter, ok := tool.(MCPReadOnlyHinter)
+		require.True(t, ok, tool.Name())
+		hints[tool.Name()] = hinter.MCPReadOnlyHint()
+	}
+	// Off-spec shapes count as not read-only and keep the rest of the list.
+	assert.Equal(t, map[string]bool{"browser_get_page": true, "browser_click": false, "browser_no_annotations": false,
+		"browser_hint_as_string": false, "browser_annotations_as_string": false}, hints)
+}

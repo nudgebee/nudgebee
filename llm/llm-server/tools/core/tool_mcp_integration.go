@@ -61,6 +61,9 @@ func mcpDiscoveryRetryAfter(failingFor time.Duration) time.Duration {
 // future tool types can add their own constants alongside.
 const mcpImplType = "mcp"
 
+// ToolImplTypeMCP is ImplTypeFor's value for an MCP integration tool.
+const ToolImplTypeMCP = mcpImplType
+
 // mcpDiscoveryImplType is a circuit-breaker toolType distinct from
 // mcpImplType, used only for discoverMCPTools' RecordSuccess/RecordFailure
 // bookkeeping. Deliberately separate from the Call breaker: a successful
@@ -267,6 +270,33 @@ type mcpIntegrationTool struct {
 	mcpToolName string // Original name as known by the MCP server (e.g. "list_users")
 	toolDesc    string
 	toolSchema  ToolSchema
+	// readOnlyHint is the server's own annotations.readOnlyHint for the tool:
+	// true only when the server says the tool does not change anything.
+	readOnlyHint bool
+}
+
+// MCPReadOnlyHinter is an MCP tool that reports whether its server marks it
+// read-only (annotations.readOnlyHint). It is a hint from the server, not a
+// classification: core does not act on it; a run policy may.
+type MCPReadOnlyHinter interface {
+	MCPReadOnlyHint() bool
+}
+
+// MCPReadOnlyHint reports the server's readOnlyHint for the tool.
+func (m mcpIntegrationTool) MCPReadOnlyHint() bool { return m.readOnlyHint }
+
+// mcpReadOnlyHint reads a tool's annotations.readOnlyHint: true only for an
+// object whose readOnlyHint is the boolean true. Any other shape (annotations
+// not an object, readOnlyHint a string) counts as not read-only.
+func mcpReadOnlyHint(annotations json.RawMessage) bool {
+	var parsed struct {
+		ReadOnlyHint any `json:"readOnlyHint"`
+	}
+	if len(annotations) == 0 || json.Unmarshal(annotations, &parsed) != nil {
+		return false
+	}
+	hint, _ := parsed.ReadOnlyHint.(bool)
+	return hint
 }
 
 func (m mcpIntegrationTool) Name() string {
@@ -943,6 +973,9 @@ func runMCPDiscovery(accountId string, cfg mcpIntegrationConfig, authoritative b
 					Properties map[string]map[string]interface{} `json:"properties"`
 					Required   []string                          `json:"required"`
 				} `json:"inputSchema"`
+				// Raw, and read by mcpReadOnlyHint: a server that sends it in
+				// another shape must not fail the whole tool list.
+				Annotations json.RawMessage `json:"annotations"`
 			} `json:"tools"`
 		} `json:"result"`
 		Error *struct {
@@ -1017,10 +1050,11 @@ func runMCPDiscovery(accountId string, cfg mcpIntegrationConfig, authoritative b
 		toolName := prefix + "_" + t.Name
 
 		tools = append(tools, mcpIntegrationTool{
-			config:      cfg,
-			toolName:    toolName,
-			mcpToolName: t.Name,
-			toolDesc:    t.Description,
+			config:       cfg,
+			toolName:     toolName,
+			mcpToolName:  t.Name,
+			toolDesc:     t.Description,
+			readOnlyHint: mcpReadOnlyHint(t.Annotations),
 			toolSchema: ToolSchema{
 				Type:       schemaType,
 				Properties: props,

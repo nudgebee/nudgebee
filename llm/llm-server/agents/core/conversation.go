@@ -387,6 +387,7 @@ type additionalConversationSessionRequestConfig struct {
 	isNewConversation     bool
 	isResume              bool
 	isQueuedDispatch      bool
+	runProfile            *RunProfile
 	images                []ImageAttachment
 	channelContext        string
 	channelContextRefs    map[string]any
@@ -633,6 +634,20 @@ func ConversationSessionRequestWithQueuedDispatch() ConversationSessionRequestCo
 	return sessionRequestWithQueuedDispatch{}
 }
 
+type sessionRequestWithRunProfile struct{ profile *RunProfile }
+
+func (h sessionRequestWithRunProfile) apply(c *additionalConversationSessionRequestConfig) {
+	c.runProfile = h.profile
+}
+
+// ConversationSessionRequestWithRunProfile makes the request create the
+// conversation of the governed run profile (from a validated run claim). It
+// is used only when the conversation is created; an existing conversation
+// keeps the profile it has.
+func ConversationSessionRequestWithRunProfile(profile *RunProfile) ConversationSessionRequestConfig {
+	return sessionRequestWithRunProfile{profile: profile}
+}
+
 type sessionRequestWithImages struct {
 	images []ImageAttachment
 }
@@ -787,6 +802,7 @@ func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgen
 		PreviousState:         defaultConfig.previousState,
 		IsResume:              defaultConfig.isResume,
 		IsQueuedDispatch:      defaultConfig.isQueuedDispatch,
+		RunProfile:            defaultConfig.runProfile,
 		Images:                defaultConfig.images,
 		ChannelContext:        defaultConfig.channelContext,
 		ChannelContextRefs:    defaultConfig.channelContextRefs,
@@ -1100,6 +1116,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	}
 
 	newConversation := false
+	turnPolicyApplied := false
 	var conversation Conversation
 	if request.ConversationId != "" {
 		conversation, err = GetConversationDao().GetConversation(request.ConversationId)
@@ -1116,6 +1133,22 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			if sessionId != "" && sessionId != conversation.SessionID {
 				return NBAgentResponse{}, errors.New("conversation: sessionId doesnt match with existing conversation")
 			}
+
+			// Before anything is written for this turn, the follow-up resume
+			// below included.
+			// The run's profile comes with the row: every later step of this
+			// turn, and every agent it starts, is governed by its owner. An
+			// agent bound to another extension is refused before anything is
+			// written for the turn.
+			if err := CheckAgentInRun(agent, conversation.RunProfile); err != nil {
+				return NBAgentResponse{}, err
+			}
+			ctx = WithRunProfile(ctx, conversation.RunProfile)
+			ctx, err = policyFor(ctx).ConversationTurn(ctx, agent, conversation, request.UserId)
+			if err != nil {
+				return NBAgentResponse{}, err
+			}
+			turnPolicyApplied = true
 
 			if request.IsQueuedDispatch {
 				// Reject a superseded claim before writing sticky model settings.
@@ -1196,6 +1229,12 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 
 		// create new conversation
 		if conversation.ID == uuid.Nil {
+			// Refused before the conversation is written: an agent bound to an
+			// extension starts only that extension's runs, from every entry
+			// point (chat, auto chat, queued dispatch, event analysis).
+			if err := CheckAgentInRun(agent, request.RunProfile); err != nil {
+				return NBAgentResponse{}, err
+			}
 			newConversation = true
 			tenantId, err := security.GetTenantIdFromAccountId(request.AccountId)
 			if err != nil {
@@ -1234,7 +1273,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 				llmProvider = ""
 				llmModel = ""
 			}
-			id, err := GetConversationDao().SaveConversation(request.ConversationId, sessionId, tenantId, request.AccountId, request.UserId, "", title, ConversationStatusInProgress, source, llmProvider, llmModel, saveTierOverrides, request.QueryConfig.LlmConfigSource)
+			id, err := GetConversationDao().SaveConversation(request.ConversationId, sessionId, tenantId, request.AccountId, request.UserId, "", title, ConversationStatusInProgress, source, llmProvider, llmModel, saveTierOverrides, request.QueryConfig.LlmConfigSource, request.RunProfile)
 			if err != nil {
 				ctx.GetLogger().Error("conversation: unable to save conversation to DB", "error", err)
 				return NBAgentResponse{}, err
@@ -1255,6 +1294,17 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			// Mirror of the conversation-id gate above: don't accept a fresh
 			// generation while the prior turn is still waiting on a followup.
 			return NBAgentResponse{}, ErrConversationPendingFollowup
+		}
+
+		if !turnPolicyApplied {
+			if err := CheckAgentInRun(agent, conversation.RunProfile); err != nil {
+				return NBAgentResponse{}, err
+			}
+			ctx = WithRunProfile(ctx, conversation.RunProfile)
+			ctx, err = policyFor(ctx).ConversationTurn(ctx, agent, conversation, request.UserId)
+			if err != nil {
+				return NBAgentResponse{}, err
+			}
 		}
 
 		// Handle existing conversation found by session ID - update model if needed

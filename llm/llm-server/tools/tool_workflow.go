@@ -176,6 +176,24 @@ func DoRunbookRequest(method, path string, body any, accountId, tenantId, userId
 // callers can bound a request that the shared (timeout-less) HTTP client would
 // otherwise let block indefinitely — notably the synchronous dry-run endpoint.
 func DoRunbookRequestWithContext(reqCtx context.Context, method, path string, body any, accountId, tenantId, userId string) ([]byte, error) {
+	return doRunbookRequestWithHeaders(reqCtx, method, path, body, accountId, tenantId, userId, nil)
+}
+
+// runbookStatusError is a response from runbook-server with an error status.
+// Its text is what DoRunbookRequest has always returned; the fields let a
+// caller act on the status and body.
+type runbookStatusError struct {
+	status int
+	body   string
+}
+
+func (e *runbookStatusError) Error() string {
+	return fmt.Sprintf("runbook server returned error (status %d): %s", e.status, e.body)
+}
+
+// doRunbookRequestWithHeaders is DoRunbookRequestWithContext with extra
+// request headers, set after the standard ones.
+func doRunbookRequestWithHeaders(reqCtx context.Context, method, path string, body any, accountId, tenantId, userId string, headers map[string]string) ([]byte, error) {
 	url := getRunbookServerURL(path)
 
 	var reqBody io.Reader
@@ -210,6 +228,9 @@ func DoRunbookRequestWithContext(reqCtx context.Context, method, path string, bo
 	// trigger + feature flag) to workflow execution. Reads and non-execution
 	// endpoints ignore it.
 	req.Header.Set(headerTriggerSource, triggerSourceAI)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 
 	client := common.HttpClient()
 	resp, err := client.Do(req)
@@ -226,7 +247,7 @@ func DoRunbookRequestWithContext(reqCtx context.Context, method, path string, bo
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("runbook server returned error (status %d): %s", resp.StatusCode, string(respBytes))
+		return nil, &runbookStatusError{status: resp.StatusCode, body: string(respBytes)}
 	}
 
 	return respBytes, nil

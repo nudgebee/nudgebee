@@ -154,6 +154,10 @@ type NBAgentRequest struct {
 	TopLevelResume bool `json:"-" mapstructure:"-"`
 	// IsQueuedDispatch is internal: the queue claim owns this fresh message.
 	IsQueuedDispatch bool `json:"-" mapstructure:"-"`
+	// RunProfile is internal: the profile of a governed run this request
+	// creates (from a validated run claim), written on the new conversation.
+	// Never decoded from a request body.
+	RunProfile *RunProfile `json:"-" mapstructure:"-"`
 	// KBPrestepContent holds relevant knowledge retrieved before planning. The
 	// planner renders it into the human message, not the cacheable system prefix.
 	KBPrestepContent string `json:"kb_prestep_content,omitempty"`

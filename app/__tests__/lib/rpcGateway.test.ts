@@ -454,6 +454,38 @@ describe('tryBypassGraphQL', () => {
     });
   });
 
+  // llm-server honours run claims (X-NB-Run-*) only from service callers: the
+  // gateway must never send them, whatever a browser puts on its request.
+  // Pinning the exact header set means any new forwarded header (a client
+  // header passthrough included) fails here and gets a deliberate review.
+  it('sends upstream only its fixed header set, never a run claim header', async () => {
+    const fetchMock = mockFetchOnce({ items: [] });
+    await tryBypassGraphQL({
+      query: 'query A { integrations_list(limit: 1) { items { id } } }',
+      variables: undefined,
+      jwt: adminJwt,
+      clientAuthorization: 'Bearer abc',
+      traceparent: 'tp',
+      requestId: 'rid',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const headerNames = Object.keys(fetchMock.mock.calls[0][1].headers).map((h) => h.toLowerCase());
+    expect(headerNames.filter((h) => h.startsWith('x-nb-run-'))).toEqual([]);
+    const allowed = new Set([
+      'content-type',
+      'traceparent',
+      'x-request-id',
+      'x-tenant-id',
+      'x-user-id',
+      'x-user-role',
+      'x-user-roles',
+      'authorization',
+      // per-action service tokens declared in actions.yaml `headers:`
+      'x-action-token',
+    ]);
+    expect(headerNames.filter((h) => !allowed.has(h))).toEqual([]);
+  });
+
   it('coerces a single value into a list when the schema declares the arg as a list', async () => {
     // recommendations_list.order_by is `[QuerySortByRequest!]` in actions.graphql,
     // but frontend callers pass a single object relying on GraphQL coercion.

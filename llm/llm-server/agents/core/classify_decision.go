@@ -302,6 +302,7 @@ func trackDecisionUsage(ctx *security.RequestContext, call ClassificationCall, b
 		userId = security.GetSystemUserId()
 	}
 	bgCtx := decisionUsageContext(ctx)
+	policyFor(ctx).AddTokens(ctx, choice.InputTokens)
 	info := &TokenInfo{InputTokens: choice.InputTokens, TotalTokens: choice.InputTokens}
 	source := "decision:" + b.source
 	trackFn := func() {

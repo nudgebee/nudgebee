@@ -827,6 +827,9 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 	}
 
 	ctx.GetLogger().Info("Successfully generated complete content", "model", model, "provider", provider, "agent", agentName, "agentId", agentId, "totalTokens", totalTokenInfo.TotalTokens)
+	// Counted here, in the call's own goroutine: the usage row below is
+	// written later by a background task, too late for a budget check.
+	policyFor(ctx).AddTokens(ctx, totalTokenInfo.InputTokens+totalTokenInfo.OutputTokens)
 
 	// Token metrics
 	if totalTokenInfo.InputTokens > 0 {

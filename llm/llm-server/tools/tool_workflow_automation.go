@@ -523,19 +523,33 @@ func automationInputSchemaType(t string) core.ToolSchemaType {
 }
 
 func (t *automationTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	inputs, reason, err := t.triggerInputs(ctx, input)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+
+	ctx.Ctx.GetLogger().Info("automation tool: running automation",
+		"workflow_id", t.id, "tool", t.toolName, "account_id", t.accountId,
+		"reason", reason, "input_count", len(inputs))
+
+	return t.runAndWait(ctx, inputs, nil)
+}
+
+// triggerInputs checks a call's arguments and returns the inputs to trigger
+// the automation with, and the stated reason.
+func (t *automationTool) triggerInputs(ctx core.NbToolContext, input core.NBToolCallRequest) (map[string]any, string, error) {
 	reason, _ := input.Arguments[t.reasonArg].(string)
 	if strings.TrimSpace(reason) == "" {
-		return core.NBToolResponse{}, fmt.Errorf(
+		return nil, "", fmt.Errorf(
 			"%s is required: state what you believe the problem is and what that is based on before running an automation", t.reasonArg)
 	}
 
-	tenantId := ctx.Ctx.GetSecurityContext().GetTenantId()
 	userId := ctx.Ctx.GetSecurityContext().GetUserId()
 	// Same refusal workflow_trigger makes: runbook-server reads a missing user
 	// as a system call and grants tenant-account-admin, so an unidentified run
 	// would execute with more authority than whoever asked for it.
 	if userId == "" || userId == security.GetSystemUserId() {
-		return core.NBToolResponse{}, fmt.Errorf("cannot run an automation without an identified user")
+		return nil, "", fmt.Errorf("cannot run an automation without an identified user")
 	}
 
 	inputs := map[string]any{}
@@ -573,7 +587,7 @@ func (t *automationTool) Call(ctx core.NbToolContext, input core.NBToolCallReque
 		if len(accepted) > 0 {
 			accepts = "this automation accepts: " + strings.Join(accepted, ", ")
 		}
-		return core.NBToolResponse{}, fmt.Errorf(
+		return nil, "", fmt.Errorf(
 			"%s: unknown parameter(s) %s — %s (plus the required %s). Re-issue the call using those exact names",
 			t.toolName, strings.Join(unknown, ", "), accepts, t.reasonArg)
 	}
@@ -585,18 +599,22 @@ func (t *automationTool) Call(ctx core.NbToolContext, input core.NBToolCallReque
 	if ctx.QueryConfig.EventId != "" {
 		inputs["event"] = map[string]any{"id": ctx.QueryConfig.EventId}
 	}
+	return inputs, reason, nil
+}
 
-	ctx.Ctx.GetLogger().Info("automation tool: running automation",
-		"workflow_id", t.id, "tool", t.toolName, "account_id", t.accountId,
-		"reason", reason, "input_count", len(inputs))
+// runAndWait triggers the automation as the calling user, with any extra
+// request headers, and waits for the run's outcome.
+func (t *automationTool) runAndWait(ctx core.NbToolContext, inputs map[string]any, headers map[string]string) (core.NBToolResponse, error) {
+	tenantId := ctx.Ctx.GetSecurityContext().GetTenantId()
+	userId := ctx.Ctx.GetSecurityContext().GetUserId()
 
 	// The trigger endpoint binds the request body *directly* as the inputs map —
 	// it is not wrapped in an "inputs" key. Wrapping it means every declared
 	// input arrives unset: a required one fails the run outright, and an
 	// automation with only optional inputs runs silently on its defaults, which
 	// is worse. workflow_trigger sends it flat for the same reason.
-	raw, err := DoRunbookRequestWithContext(ctx.GoContext(), "POST",
-		fmt.Sprintf("workflows/%s/trigger", t.id), inputs, t.accountId, tenantId, userId)
+	raw, err := doRunbookRequestWithHeaders(ctx.GoContext(), "POST",
+		fmt.Sprintf("workflows/%s/trigger", t.id), inputs, t.accountId, tenantId, userId, headers)
 	if err != nil {
 		return core.NBToolResponse{}, fmt.Errorf("failed to run automation %q: %w", t.name, err)
 	}

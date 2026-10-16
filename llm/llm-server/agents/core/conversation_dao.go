@@ -64,6 +64,9 @@ type Conversation struct {
 	// above: a conversation can pin a slot with or without also pinning a
 	// provider/model, so the blanket/tier mutual exclusivity doesn't apply.
 	LlmConfigSource *string `json:"llm_config_source,omitempty" db:"llm_config_source"`
+	// RunProfile is the identity of a governed run (see RunProfile), set once
+	// when the conversation is created; nil for an ordinary conversation.
+	RunProfile *RunProfile `json:"run_profile,omitempty" db:"run_profile"`
 }
 
 type TierModelPick struct {
@@ -250,7 +253,7 @@ type IConversationDao interface {
 	UpdateMessageAcknowledgement(messageId, accountId, ackMessage string) error
 	UpdateConversationContext(conversationId string, context map[string]any) error
 	GetConversation(conversationId string) (Conversation, error)
-	SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *ConversationTierOverrides, llmConfigSource string) (uuid.UUID, error)
+	SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *ConversationTierOverrides, llmConfigSource string, runProfile *RunProfile) (uuid.UUID, error)
 	UpdateConversationStatus(conversationId string, status ConversationStatus) error
 	ListConversationMessages(status ConversationStatus, workerName string, conversationId string, deadWorker bool) ([]ConversationMessage, error)
 	SaveConversationMessage(id, conversationId, accountID, userId string, role MessageRole, messageType MessageType, message, response, agentName string, parentAgentId uuid.UUID, messageConfig any, messageContext string, llmProvider, llmModel string, status ConversationStatus) (uuid.UUID, error)
@@ -1152,20 +1155,23 @@ func (chat *ConversationDao) UpdateConversationModel(conversationId, provider, m
 }
 
 const saveConversationQueryWithUser = `
-    INSERT INTO llm_conversations (id, session_id, tenant_id, account_id, user_id, context, status, source, title, updated_at, llm_provider, llm_model, llm_tier_overrides, llm_config_source)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10, $11, $12, $13)
+    INSERT INTO llm_conversations (id, session_id, tenant_id, account_id, user_id, context, status, source, title, updated_at, llm_provider, llm_model, llm_tier_overrides, llm_config_source, run_profile)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10, $11, $12, $13, $14)
     ON CONFLICT (session_id, user_id, account_id)
     DO UPDATE SET context = EXCLUDED.context, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at, llm_provider = EXCLUDED.llm_provider, llm_model = EXCLUDED.llm_model, llm_tier_overrides = EXCLUDED.llm_tier_overrides, llm_config_source = EXCLUDED.llm_config_source RETURNING llm_conversations.id;`
 
+// run_profile is written on INSERT only: it is in neither DO UPDATE SET list,
+// so no later save sets, changes or clears a run's identity.
+//
 // Postgres treats NULL <> NULL, so a NULL user_id needs its own conflict
 // target: the partial unique index from migration V904 (GH #37367).
 const saveConversationQueryNullUser = `
-    INSERT INTO llm_conversations (id, session_id, tenant_id, account_id, user_id, context, status, source, title, updated_at, llm_provider, llm_model, llm_tier_overrides, llm_config_source)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10, $11, $12, $13)
+    INSERT INTO llm_conversations (id, session_id, tenant_id, account_id, user_id, context, status, source, title, updated_at, llm_provider, llm_model, llm_tier_overrides, llm_config_source, run_profile)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10, $11, $12, $13, $14)
     ON CONFLICT (session_id, account_id) WHERE user_id IS NULL
     DO UPDATE SET context = EXCLUDED.context, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at, llm_provider = EXCLUDED.llm_provider, llm_model = EXCLUDED.llm_model, llm_tier_overrides = EXCLUDED.llm_tier_overrides, llm_config_source = EXCLUDED.llm_config_source RETURNING llm_conversations.id;`
 
-func (chat *ConversationDao) SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *ConversationTierOverrides, llmConfigSource string) (uuid.UUID, error) {
+func (chat *ConversationDao) SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *ConversationTierOverrides, llmConfigSource string, runProfile *RunProfile) (uuid.UUID, error) {
 	if accountID == "" || tenantId == "" {
 		return uuid.Nil, errors.New("history: accountID and tenantId are required")
 	}
@@ -1208,7 +1214,11 @@ func (chat *ConversationDao) SaveConversation(id, sessionID, tenantId, accountID
 		query = saveConversationQueryNullUser
 	}
 	var lastId uuid.UUID
-	err := chat.dbManager.Db.QueryRow(query, id, sessionID, tenantId, accountID, userIdSql, context, status, source, title, llmProviderSql, llmModelSql, tierOverridesArg, llmConfigSourceSql).Scan(&lastId)
+	var runProfileArg any
+	if runProfile != nil {
+		runProfileArg = *runProfile
+	}
+	err := chat.dbManager.Db.QueryRow(query, id, sessionID, tenantId, accountID, userIdSql, context, status, source, title, llmProviderSql, llmModelSql, tierOverridesArg, llmConfigSourceSql, runProfileArg).Scan(&lastId)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("history: failed to save conversation: %w", err)
 	}
@@ -1628,7 +1638,7 @@ func (chat *ConversationDao) GetConversationBySession(accountID, sessionID strin
 	if accountID == "" {
 		return Conversation{}, errors.New("history: accountID is required")
 	}
-	query := `SELECT id, user_id, session_id, account_id, context::text, status, tenant_id::text, title, source, llm_provider, llm_model, llm_tier_overrides, llm_config_source FROM llm_conversations
+	query := `SELECT id, user_id, session_id, account_id, context::text, status, tenant_id::text, title, source, llm_provider, llm_model, llm_tier_overrides, llm_config_source, run_profile FROM llm_conversations
 	WHERE session_id = $1 AND account_id = $2
 	ORDER BY updated_at DESC LIMIT 1`
 	rows, err := chat.dbManager.Db.Queryx(query, sessionID, accountID)
@@ -1649,8 +1659,9 @@ func (chat *ConversationDao) GetConversationBySession(accountID, sessionID strin
 	var cntxt sql.NullString
 	var llmProvider, llmModel, llmConfigSource *string
 	var tierOverrides ConversationTierOverrides
+	var runProfile nullRunProfile
 	for rows.Next() {
-		if err := rows.Scan(&id, &userId, &sessionId, &accoundId, &cntxt, &status, &tenantId, &title, &source, &llmProvider, &llmModel, &tierOverrides, &llmConfigSource); err != nil {
+		if err := rows.Scan(&id, &userId, &sessionId, &accoundId, &cntxt, &status, &tenantId, &title, &source, &llmProvider, &llmModel, &tierOverrides, &llmConfigSource, &runProfile); err != nil {
 			return Conversation{}, fmt.Errorf("history: failed to scan conversation: %w", err)
 		}
 		var context map[string]any
@@ -1682,6 +1693,7 @@ func (chat *ConversationDao) GetConversationBySession(accountID, sessionID strin
 			to := tierOverrides
 			conversation.LlmTierOverrides = &to
 		}
+		conversation.RunProfile = runProfile.profile()
 	}
 	if err := rows.Err(); err != nil {
 		return Conversation{}, fmt.Errorf("history: failed to iterate over rows: %w", err)
@@ -1691,7 +1703,7 @@ func (chat *ConversationDao) GetConversationBySession(accountID, sessionID strin
 }
 
 func (chat *ConversationDao) GetConversation(conversationId string) (Conversation, error) {
-	query := `SELECT id::text, user_id, session_id, account_id, context::text, status, tenant_id::text, title, source, llm_provider, llm_model, llm_tier_overrides, llm_config_source FROM llm_conversations WHERE id = $1`
+	query := `SELECT id::text, user_id, session_id, account_id, context::text, status, tenant_id::text, title, source, llm_provider, llm_model, llm_tier_overrides, llm_config_source, run_profile FROM llm_conversations WHERE id = $1`
 	rows, err := chat.dbManager.Db.Queryx(query, conversationId)
 	if err != nil {
 		return Conversation{}, fmt.Errorf("history: failed to load conversation: %w", err)
@@ -1709,8 +1721,9 @@ func (chat *ConversationDao) GetConversation(conversationId string) (Conversatio
 	var cntxt sql.NullString
 	var llmProvider, llmModel, llmConfigSource *string
 	var tierOverrides ConversationTierOverrides
+	var runProfile nullRunProfile
 	for rows.Next() {
-		if err := rows.Scan(&id, &userId, &sessionId, &accoundId, &cntxt, &status, &tenantId, &title, &source, &llmProvider, &llmModel, &tierOverrides, &llmConfigSource); err != nil {
+		if err := rows.Scan(&id, &userId, &sessionId, &accoundId, &cntxt, &status, &tenantId, &title, &source, &llmProvider, &llmModel, &tierOverrides, &llmConfigSource, &runProfile); err != nil {
 			return Conversation{}, fmt.Errorf("history: failed to scan conversation: %w", err)
 		}
 		var context map[string]any
@@ -1743,6 +1756,7 @@ func (chat *ConversationDao) GetConversation(conversationId string) (Conversatio
 			to := tierOverrides
 			conversation.LlmTierOverrides = &to
 		}
+		conversation.RunProfile = runProfile.profile()
 	}
 
 	if err := rows.Err(); err != nil {
@@ -4338,7 +4352,7 @@ func nullableUUID(s string) any {
 }
 
 func (chat *ConversationDao) GetLatestConversationBySessionID(sessionID string, accountId string) (Conversation, error) {
-	query := `SELECT id::text, user_id, session_id, account_id, context::text, status, tenant_id::text, title, source FROM llm_conversations WHERE session_id = $1 AND account_id = $2 ORDER BY updated_at DESC LIMIT 1`
+	query := `SELECT id::text, user_id, session_id, account_id, context::text, status, tenant_id::text, title, source, run_profile FROM llm_conversations WHERE session_id = $1 AND account_id = $2 ORDER BY updated_at DESC LIMIT 1`
 	rows, err := chat.dbManager.Db.Queryx(query, sessionID, accountId)
 	if err != nil {
 		return Conversation{}, fmt.Errorf("history: failed to load conversation: %w", err)
@@ -4354,8 +4368,9 @@ func (chat *ConversationDao) GetLatestConversationBySessionID(sessionID string, 
 	var status ConversationStatus
 	var source *ConversationSource
 	var cntxt sql.NullString
+	var runProfile nullRunProfile
 	for rows.Next() {
-		if err := rows.Scan(&id, &userId, &sessionId, &accoundId, &cntxt, &status, &tenantId, &title, &source); err != nil {
+		if err := rows.Scan(&id, &userId, &sessionId, &accoundId, &cntxt, &status, &tenantId, &title, &source, &runProfile); err != nil {
 			return Conversation{}, fmt.Errorf("history: failed to scan conversation: %w", err)
 		}
 		var context map[string]any
@@ -4371,15 +4386,16 @@ func (chat *ConversationDao) GetLatestConversationBySessionID(sessionID string, 
 			userIdUUID = uuid.MustParse(*userId)
 		}
 		conversation = Conversation{
-			ID:        uuid.MustParse(id),
-			SessionID: sessionId,
-			AccountID: uuid.MustParse(accoundId),
-			UserID:    userIdUUID,
-			Context:   context,
-			Status:    status,
-			TenantID:  uuid.MustParse(tenantId),
-			Title:     title,
-			Source:    source,
+			ID:         uuid.MustParse(id),
+			SessionID:  sessionId,
+			AccountID:  uuid.MustParse(accoundId),
+			UserID:     userIdUUID,
+			Context:    context,
+			Status:     status,
+			TenantID:   uuid.MustParse(tenantId),
+			Title:      title,
+			Source:     source,
+			RunProfile: runProfile.profile(),
 		}
 	}
 
