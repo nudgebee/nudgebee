@@ -15,11 +15,13 @@ import (
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"nudgebee/services/user"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 	"github.com/samber/lo"
 	"golang.org/x/sync/errgroup"
@@ -1086,10 +1088,60 @@ func batchRuleMatchesPriority(ruleSeverity, priority string) bool {
 	return ruleSeverity == "" || strings.EqualFold(ruleSeverity, priority)
 }
 
+// hourlyBatchWindow is the last whole hour before now. The job runs a few
+// minutes past each hour, so each hour is reported once.
+func hourlyBatchWindow(now time.Time) (time.Time, time.Time) {
+	end := now.UTC().Truncate(time.Hour)
+	return end.Add(-time.Hour), end
+}
+
+type batchAccountRules struct {
+	TenantID    string
+	AccountName string
+	Severities  []string
+}
+
+// queryBatchRuleAccounts returns the batch rules covering each account. A rule
+// scoped to all accounts covers every active account of its tenant.
+func queryBatchRuleAccounts(db *sqlx.DB) (map[string]*batchAccountRules, error) {
+	var rows []struct {
+		AccountID   string `db:"account_id"`
+		AccountName string `db:"account_name"`
+		Severity    string `db:"severity"`
+		TenantID    string `db:"tenant_id"`
+	}
+	err := db.Select(&rows, `
+		SELECT nra.account_id, COALESCE(ca.account_name, '') AS account_name, COALESCE(nr.severity, '') AS severity, nr.tenant_id
+		FROM notification_rules nr
+		JOIN notification_rule_accounts nra ON nra.rule_id = nr.id
+		JOIN cloud_accounts ca ON ca.id = nra.account_id
+		WHERE nr.delivery_mode = 'batch' AND nr.is_active = true AND nr.is_suppressed = false
+		  AND nr.scope_mode = 'accounts'
+		UNION ALL
+		SELECT ca.id, COALESCE(ca.account_name, ''), COALESCE(nr.severity, ''), nr.tenant_id
+		FROM notification_rules nr
+		JOIN cloud_accounts ca ON ca.tenant = nr.tenant_id AND ca.status = 'active'
+		WHERE nr.delivery_mode = 'batch' AND nr.is_active = true AND nr.is_suppressed = false
+		  AND nr.scope_mode = 'all'
+	`)
+	if err != nil {
+		return nil, err
+	}
+	accountRules := make(map[string]*batchAccountRules, len(rows))
+	for _, r := range rows {
+		rules, ok := accountRules[r.AccountID]
+		if !ok {
+			rules = &batchAccountRules{TenantID: r.TenantID, AccountName: r.AccountName}
+			accountRules[r.AccountID] = rules
+		}
+		rules.Severities = append(rules.Severities, r.Severity)
+	}
+	return accountRules, nil
+}
+
 func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 	startTime := time.Now()
-	end := startTime
-	start := end.Add(-12 * time.Hour)
+	start, end := hourlyBatchWindow(startTime)
 
 	dbManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -1097,55 +1149,16 @@ func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 		return err
 	}
 
-	const rulesQuery = `
-		SELECT nr.id, nr.name, nra.account_id, ca.account_name, COALESCE(nr.frequency, ''), COALESCE(nr.severity, ''), nr.tenant_id
-		FROM notification_rules nr
-		JOIN notification_rule_accounts nra ON nra.rule_id = nr.id
-		JOIN cloud_accounts ca ON ca.id = nra.account_id
-		WHERE nr.delivery_mode = 'batch' AND nr.is_active = true AND nr.is_suppressed = false
-	`
-	rulesRows, err := dbManager.Query(rulesQuery)
-	defer func() {
-		if rulesRows != nil {
-			if cerr := rulesRows.Close(); cerr != nil {
-				ctx.GetLogger().Error("error closing rows", "error", cerr)
-			}
-		}
-	}()
+	accountRules, err := queryBatchRuleAccounts(dbManager.Db)
 	if err != nil {
 		ctx.GetLogger().Error("error querying notification rules", "error", err)
 		return err
 	}
-
-	type AccountRule struct {
-		TenantID string
-		Cluster  string
-		Severity string
-	}
-
-	accountRules := make(map[string]AccountRule, 64)
-	allowedAccountIDs := make([]string, 0, 64)
-
-	for rulesRows.Next() {
-		var ruleID, name, accountID, cluster, frequency, severity, tenantID string
-		if err := rulesRows.Scan(&ruleID, &name, &accountID, &cluster, &frequency, &severity, &tenantID); err != nil {
-			ctx.GetLogger().Error("error scanning notification rule row", "error", err)
-			continue
-		}
-		accountRules[accountID] = AccountRule{
-			TenantID: tenantID,
-			Cluster:  cluster,
-			Severity: severity,
-		}
-		allowedAccountIDs = append(allowedAccountIDs, accountID)
-	}
-	if err := rulesRows.Err(); err != nil {
-		return err
-	}
-	if len(allowedAccountIDs) == 0 {
+	if len(accountRules) == 0 {
 		ctx.GetLogger().Info("No active notification rules found")
 		return nil
 	}
+	allowedAccountIDs := lo.Keys(accountRules)
 
 	const eventQuery = `
 		SELECT 
@@ -1190,7 +1203,9 @@ func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 			continue
 		}
 
-		if !batchRuleMatchesPriority(rule.Severity, priority) {
+		if !slices.ContainsFunc(rule.Severities, func(severity string) bool {
+			return batchRuleMatchesPriority(severity, priority)
+		}) {
 			continue
 		}
 
@@ -1249,7 +1264,7 @@ func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 	for accountID, rule := range accountRules {
 		accountsMap[rule.TenantID] = append(accountsMap[rule.TenantID], Account{
 			ID:          accountID,
-			AccountName: rule.Cluster,
+			AccountName: rule.AccountName,
 		})
 	}
 
