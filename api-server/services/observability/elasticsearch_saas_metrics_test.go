@@ -883,6 +883,20 @@ func TestESUnknownQueryFields_FlagsTheSilentNoOp(t *testing.T) {
 		assert.Empty(t, esUnknownQueryFields(fields, dsl))
 	})
 
+	// Seen on dev (conversation fdc67af3): every aggregation query was told it named the
+	// missing fields "field" and "size", read off the terms aggregation's own settings.
+	t.Run("aggregation settings are not field names; aggregation fields are checked", func(t *testing.T) {
+		dsl := `{"size":0,"query":{"bool":{"filter":[{"term":{"kubernetes.namespace":"default"}}]}},
+		  "aggs":{"by_ns":{"terms":{"field":"kubernetes.namespace","size":50},
+		    "aggs":{"cpu":{"avg":{"field":"kubernetes.pod.cpu.usage.nanocores"}},
+		      "hour":{"date_histogram":{"field":"@timestamp","fixed_interval":"1h"}},
+		      "errors":{"filter":{"term":{"level":"error"}}},
+		      "by_kind":{"filters":{"filters":{"oom":{"match":{"reason":"OOMKilled"}},"other":{"exists":{"field":"kubernetes.pod.name"}}}}},
+		      "gone":{"sum":{"field":"no.such.field"}},
+		      "by_index":{"terms":{"field":"_index"},"meta":{"field":"not.a.field"}}}}}}`
+		assert.Equal(t, []string{"kubernetes.pod.name", "level", "no.such.field", "reason"}, esUnknownQueryFields(fields, dsl))
+	})
+
 	t.Run("unparseable query says nothing rather than warning wrongly", func(t *testing.T) {
 		assert.Empty(t, esUnknownQueryFields(fields, "not json"))
 	})

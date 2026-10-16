@@ -307,12 +307,17 @@ func esDefaultNewestFirst(body map[string]any) {
 // esQueryFieldNames extracts the field names a DSL query filters on. Walks the parsed
 // body looking for the leaf clauses that name a field — {"term":{"<field>":…}},
 // {"exists":{"field":"<field>"}}, and friends — at any depth, so nested bool/must_not
-// structures are covered.
+// structures are covered. Aggregations are read as aggregations, by esAggFieldNames:
+// a terms aggregation's {"field": …, "size": …} is not a terms query on fields named
+// "field" and "size".
 func esQueryFieldNames(node any, out map[string]bool) {
 	switch v := node.(type) {
 	case map[string]any:
 		for k, child := range v {
 			switch k {
+			case "aggs", "aggregations":
+				esAggFieldNames(child, out)
+				continue
 			case "term", "terms", "match", "match_phrase", "wildcard", "prefix", "regexp", "range", "fuzzy":
 				// {"term": {"<field>": <value>}}
 				if m, ok := child.(map[string]any); ok {
@@ -333,6 +338,41 @@ func esQueryFieldNames(node any, out map[string]bool) {
 	case []any:
 		for _, child := range v {
 			esQueryFieldNames(child, out)
+		}
+	}
+}
+
+// esAggFieldNames extracts the fields an aggregation definition ({"<name>": {"<type>":
+// {"field": …}, "aggs": {…}}}) reads. An absent field there is as silent as in a
+// filter: its buckets are simply empty. Filter-type aggregations hold queries, which
+// esQueryFieldNames reads.
+func esAggFieldNames(node any, out map[string]bool) {
+	aggs, ok := node.(map[string]any)
+	if !ok {
+		return
+	}
+	for _, def := range aggs {
+		body, ok := def.(map[string]any)
+		if !ok {
+			continue
+		}
+		for kind, params := range body {
+			switch kind {
+			case "aggs", "aggregations":
+				esAggFieldNames(params, out)
+			case "filter", "filters":
+				esQueryFieldNames(params, out)
+			case "meta":
+				// Caller's own annotations, not settings.
+			default:
+				// Metadata fields such as _index are valid in an aggregation but are
+				// not in the index's field list, so they are left out.
+				if m, ok := params.(map[string]any); ok {
+					if f, ok := m["field"].(string); ok && !strings.HasPrefix(f, "_") {
+						out[f] = true
+					}
+				}
+			}
 		}
 	}
 }

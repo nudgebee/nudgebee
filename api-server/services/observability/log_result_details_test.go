@@ -170,8 +170,24 @@ func TestEsLogQueryDetails(t *testing.T) {
 		def := decodeJSONMap(t, `{"lat": {"percentiles": {"field": "latency"}}}`)
 		d := esLogQueryDetails([]byte(`{"hits": {"total": {"value": 3, "relation": "eq"}}, "aggregations": {"lat": {"values": {"50.0": 12}}}}`), def, float64(0), 0, true)
 		assert.True(t, d.HasCounts)
+		assert.True(t, d.CountsUnfit)
 		assert.Empty(t, d.Series)
 		assert.NotEmpty(t, d.AggregationsRaw)
+	})
+
+	// A pod-by-hour count over a window with no matching lines: the shape fits series,
+	// there are just no buckets. Seen on dev (conversation 6490b47e): the "do not fit"
+	// note sent Nubi to -o raw for an answer that was simply zero.
+	t.Run("counts that fit but matched nothing are not unfit", func(t *testing.T) {
+		def := decodeJSONMap(t, `{"pod": {"terms": {"field": "kubernetes.pod_name", "size": 50}, "aggs": {"hour": {"date_histogram": {"field": "@timestamp", "fixed_interval": "1h"}}}}}`)
+		d := esLogQueryDetails([]byte(`{"hits": {"total": {"value": 0, "relation": "eq"}}, "aggregations": {"pod": {"doc_count_error_upper_bound": 0, "sum_other_doc_count": 0, "buckets": []}}}`), def, float64(0), 0, false)
+		assert.True(t, d.HasCounts)
+		assert.False(t, d.CountsUnfit)
+		assert.Empty(t, d.Series)
+
+		r := FetchLogsResult{}
+		applyLogQueryDetails(&r, d, 100, 0, false, false)
+		assert.Empty(t, r.SeriesNote)
 	})
 }
 
@@ -213,6 +229,7 @@ func TestApplyLogQueryDetails_Truncation(t *testing.T) {
 func TestApplyLogQueryDetails_SeriesAndRaw(t *testing.T) {
 	details := LogQueryDetails{
 		HasCounts:       true,
+		CountsUnfit:     true,
 		AggregationsRaw: json.RawMessage(`{"lat": {}}`),
 		TotalRaw:        json.RawMessage(`3`),
 	}
