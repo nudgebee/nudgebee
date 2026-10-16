@@ -1286,6 +1286,13 @@ func buildCodeAnalysisUsageRecord(query core.NBAgentRequest, agentUUID *string, 
 	} else {
 		slog.Debug("code: no pricing data for cost calc", "provider", provider, "model", model, "error", err)
 	}
+	// Same formula as trackTokenUsage: percentage (0-100) of prompt tokens
+	// served from cache, NULL when nothing was cached.
+	var cacheHitRate *float64
+	if promptTokens > 0 && cachedTokens > 0 {
+		rate := (float64(cachedTokens) / float64(promptTokens)) * 100
+		cacheHitRate = &rate
+	}
 
 	record := &core.TokenUsageRecord{
 		ConversationID:      query.ConversationId,
@@ -1302,6 +1309,7 @@ func buildCodeAnalysisUsageRecord(query core.NBAgentRequest, agentUUID *string, 
 		CacheCreationTokens: creationTokens,
 		CostUsd:             costUsd,
 		IsCacheHit:          cachedTokens > 0,
+		CacheHitRate:        cacheHitRate,
 		LatencySeconds:      latencySeconds,
 		RequestStatus:       "success",
 		ModelTier:           modelTier,
