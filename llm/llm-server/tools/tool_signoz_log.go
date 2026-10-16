@@ -16,7 +16,10 @@ func init() {
 	})
 }
 
-type SignozExecuteTool struct{}
+type SignozExecuteTool struct {
+	// Only reads: every call is a query, so it is classified as a read.
+	core.ReadOnlyTool
+}
 
 func (m SignozExecuteTool) Name() string { return ToolSignozLogExecute }
 

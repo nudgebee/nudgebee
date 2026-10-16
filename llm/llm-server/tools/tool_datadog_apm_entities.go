@@ -19,7 +19,10 @@ func init() {
 	})
 }
 
-type DatadogAPMEntitiesExecuteTool struct{}
+type DatadogAPMEntitiesExecuteTool struct {
+	// Only reads: every call is a query, so it is classified as a read.
+	core.ReadOnlyTool
+}
 
 func (m DatadogAPMEntitiesExecuteTool) Name() string { return ToolDatadogAPMEntities }
 

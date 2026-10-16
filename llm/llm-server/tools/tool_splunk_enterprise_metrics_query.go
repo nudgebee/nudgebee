@@ -37,7 +37,10 @@ func init() {
 // Enterprise metrics index. It exists because prometheus_execute validates PromQL before
 // sending anything, while the Splunk metric source only accepts SPL — so no query could
 // satisfy both.
-type SplunkMetricsQueryTool struct{}
+type SplunkMetricsQueryTool struct {
+	// Only reads: every call is a query, so it is classified as a read.
+	core.ReadOnlyTool
+}
 
 func (m SplunkMetricsQueryTool) Name() string {
 	return ToolSplunkMetricsQuery
