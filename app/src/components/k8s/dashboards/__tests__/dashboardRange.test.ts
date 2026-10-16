@@ -12,6 +12,7 @@ const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 const SEP_1 = Date.UTC(2026, 8, 1);
 const OCT_1 = Date.UTC(2026, 9, 1);
+const MON = Date.UTC(2026, 9, 5); // Monday of CLICK's week — CLICK is Wed Oct 7, 2026.
 const CLICK = Date.UTC(2026, 9, 7, 15, 0);
 const NOW = CLICK + 10 * 60 * 1000;
 
@@ -38,9 +39,9 @@ describe('refreshedRange', () => {
     expect(refreshedRange(range, NOW)).toBe(range);
   });
 
-  it('treats Current Week as the picker does — the last seven days', () => {
-    const range = { startDate: CLICK - 7 * DAY, endDate: CLICK, shortcutClickTime: 7 * DAY };
-    expect(refreshedRange(range, NOW)).toEqual({ startDate: NOW - 7 * DAY, endDate: NOW, shortcutClickTime: 7 * DAY });
+  it('keeps Current Week starting on Monday and runs it to now — a calendar window, like Current Month', () => {
+    const range = { startDate: MON, endDate: CLICK, shortcutClickTime: CLICK - MON };
+    expect(refreshedRange(range, NOW)).toEqual({ ...range, endDate: NOW });
   });
 });
 

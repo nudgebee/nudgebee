@@ -164,9 +164,9 @@ function CustomDateTimeRangePicker({
     } else {
       switch (shortcut) {
         case 'Current Week': {
-          const currentDayOfWeek = now.getDay();
+          const daysSinceMonday = (now.getDay() + 6) % 7;
           const startOfWeek = new Date(now);
-          startOfWeek.setDate(now.getDate() - currentDayOfWeek);
+          startOfWeek.setDate(now.getDate() - daysSinceMonday);
           startOfWeek.setHours(0, 0, 0, 0);
           date = Math.max(startOfWeek.getTime(), minDateValue.getTime());
           break;
@@ -215,7 +215,6 @@ function CustomDateTimeRangePicker({
         [6 * 60 * 60 * 1000]: 'Last 6 Hours',
         [12 * 60 * 60 * 1000]: 'Last 12 Hours',
         [24 * 60 * 60 * 1000]: 'Last 24 Hours',
-        [7 * 24 * 60 * 60 * 1000]: 'Current Week',
       };
 
       const shortcutName = shortcutMap[passedSelectedDateTime.shortcutClickTime];
