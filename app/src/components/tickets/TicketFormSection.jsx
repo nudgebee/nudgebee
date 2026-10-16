@@ -155,6 +155,12 @@ const TicketFormSection = ({
     let isValid = true;
     const errors = {};
 
+    // selectedIssueTypeTicketMetadata's fields map drives both the static
+    // Subject/Description requiredness below and the generic dynamic-field
+    // loop (e.g. a GitHub issue-form's Summary question, aliased onto the
+    // "description" key - see FetchGitHubIssueCreateMeta/staticFields).
+    const currentMeta = selectedIssueTypeTicketMetadata?.[0]?.fields;
+
     // 1. Validate Static Fields
     if (!selectedConfig) {
       isValid = false;
@@ -172,18 +178,25 @@ const TicketFormSection = ({
       isValid = false;
       errors.subject = 'Subject is required';
     }
+    // Description is optional by default, but a metadata-aliased field (e.g.
+    // GitHub's Summary standing in for Description) can mark it required -
+    // its value lives in ticketDetails.description, not formData, so it is
+    // checked here rather than by the generic formData-keyed loop below.
+    if (!ignoreFields.includes('description') && currentMeta?.description?.required && !ticketDetails?.description?.trim()) {
+      isValid = false;
+      errors.description = 'Description is required';
+    }
     // Freshdesk's requester is a required dynamic field (see freshdeskBaseFields /
     // GetCreateMeta), enforced generically below alongside every other
     // metadata-driven required field - no tool-specific check needed here.
 
     // 2. Validate Dynamic Fields (based on Jira/System metadata)
     // We check the fields definition currently loaded
-    const currentMeta = selectedIssueTypeTicketMetadata?.[0]?.fields;
-
     if (currentMeta) {
       Object.entries(currentMeta).forEach(([fieldKey, fieldConfig]) => {
-        // Check if the field is marked as required in the metadata
-        if (fieldKey == 'summary') {
+        // summary/description are covered by the static Subject/Description
+        // checks above - their values live in ticketDetails, not formData.
+        if (fieldKey == 'summary' || fieldKey == 'description') {
           return;
         }
         if (fieldConfig.required) {
@@ -333,10 +346,12 @@ const TicketFormSection = ({
    * Different actions based on ticket system type (Jira, GitHub, ServiceNow, etc)
    */
   useEffect(() => {
-    if ((selectedConfig?.tool === 'jira' || selectedConfig?.tool === 'freshdesk') && selectedProject) {
+    if ((selectedConfig?.tool === 'jira' || selectedConfig?.tool === 'freshdesk' || selectedConfig?.tool === 'github') && selectedProject) {
       // Jira ships one template per issue type; Freshdesk ships one per Ticket
-      // Form (Admin > Ticket Forms) - both fetch and derive the dropdown from
-      // the same create-meta shape.
+      // Form (Admin > Ticket Forms); GitHub ships one per issue-form YAML in
+      // .github/ISSUE_TEMPLATE/ (or a single plain "Issue" template when the
+      // repo has none) - all three fetch and derive the dropdown from the
+      // same create-meta shape.
       setLoadingIssueTypes(true);
       apiTickets
         .getTicketMeta(selectedConfig.id, selectedProject.key)
@@ -358,9 +373,6 @@ const TicketFormSection = ({
         setTicketMetadata(metadata);
         setSelectedIssueTypeTicketMetadata(metadata);
       });
-    } else if (selectedConfig?.tool === 'github') {
-      // For GitHub, use predefined issue types
-      setIssueTypes(['bug']);
     } else if (selectedConfig?.tool === 'gitlab') {
       // For GitLab, use predefined issue types
       setIssueTypes(['issue']);
@@ -376,7 +388,7 @@ const TicketFormSection = ({
   useEffect(() => {
     if (selectedIssueType && selectedConfig?.tool === 'servicenow') {
       setSelectedIssueTypeTicketMetadata(ticketMetadata);
-    } else if (selectedIssueType && (selectedConfig?.tool === 'jira' || selectedConfig?.tool === 'freshdesk')) {
+    } else if (selectedIssueType && (selectedConfig?.tool === 'jira' || selectedConfig?.tool === 'freshdesk' || selectedConfig?.tool === 'github')) {
       const getMetadataOfIssueType = ticketMetadata?.filter((n) => n.name === selectedIssueType);
       if (getMetadataOfIssueType && getMetadataOfIssueType.length > 0) {
         setSelectedIssueTypeTicketMetadata(getMetadataOfIssueType);
@@ -503,6 +515,7 @@ const TicketFormSection = ({
         <TicketFormComponent
           configurationId={selectedConfig?.id}
           fields={selectedIssueTypeTicketMetadata[0].fields || {}}
+          fieldOrder={selectedIssueTypeTicketMetadata[0].order}
           initialValues={formData}
           onChanges={updateFormValue}
           forceValidate={forceValidate}
