@@ -361,6 +361,10 @@ func GetToolConfigByName(context *security.RequestContext, accountId string, too
 	return ToolConfig{}, errors.New("tools: tool config not found")
 }
 
+// TicketAllIntegrationTypes are the integration types a ticket_all tool picks
+// from per call (the i.type list of its query below).
+var TicketAllIntegrationTypes = []string{"jira", "github", "gitlab", "servicenow", "pagerduty", "zenduty", "freshdesk"}
+
 func ListToolConfigs(context *security.RequestContext, accountId string, tool NBTool) ([]ToolConfig, error) {
 	configs := []ToolConfig{}
 

@@ -5,6 +5,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
+	"nudgebee/llm/tools"
 	"regexp"
 	"strings"
 
@@ -191,8 +192,10 @@ func authorizeToolRequest(ctx *security.RequestContext, agent NBAgent, request N
 		}
 
 		// Enforce write access check on confirmed mutations, on the account
-		// the write lands on.
-		if requestType != "" && requestType != toolcore.ToolRequestTypeRead {
+		// the write lands on. A call the run policy runs itself (a bee's own
+		// automation, which its runbook-server gate decides) skips it.
+		if requestType != "" && requestType != toolcore.ToolRequestTypeRead &&
+			policyFor(ctx).CheckTool(ctx, toolCallOf(agent, request, tool, action, requestType)).Kind != ToolCallRun {
 			accounts := []string{request.AccountId}
 			if writeAccounts != nil {
 				accounts = writeAccounts()
@@ -200,7 +203,7 @@ func authorizeToolRequest(ctx *security.RequestContext, agent NBAgent, request N
 			for _, account := range accounts {
 				// An empty or blank account names no account the user can write.
 				account = strings.TrimSpace(account)
-				if account == "" || !ctx.GetSecurityContext().HasAccountAccess(account, security.SecurityAccessTypeCreate) {
+				if account == "" || !mayWrite(ctx, tool, account) {
 					ctx.GetLogger().Error("auth: agent is trying to execute command, but user doesnt have access to update", "tool", toolName, "input", egressfilter.RedactForLog(action.ToolInput), "agent", agent.GetName(), "user", ctx.GetSecurityContext().GetUserId(), "account", account, "conversation_account", request.AccountId)
 					return &NBAgentPlannerFinishAction{
 						Data: fmt.Sprintf("auth: agent is trying to execute - %s, but user doesnt have access to update", action.ToolInput),
@@ -215,6 +218,26 @@ func authorizeToolRequest(ctx *security.RequestContext, agent NBAgent, request N
 		requestType = toolcore.ToolRequestTypeRead
 	}
 	return nil, &requestType, nil
+}
+
+// mayWrite reports whether the caller may make a tool's change on account. A
+// run that acts only through its grants (a bee's) needs Execute on the module
+// the tool changes, k8s for clusters and cloud for cloud accounts; a tool that
+// uses an integration is left to the integration check where the call
+// resolves it (callNbTool), and any other tool is refused. Anyone else needs
+// a built-in role that may create on the account.
+func mayWrite(ctx *security.RequestContext, tool toolcore.NBTool, account string) bool {
+	if ctx == nil || ctx.GetSecurityContext() == nil {
+		return false
+	}
+	if !security.IsGrantScopedRun(ctx) {
+		return ctx.GetSecurityContext().HasAccountAccess(account, security.SecurityAccessTypeCreate)
+	}
+	if toolcore.UsesIntegration(ctx, tool) {
+		return true
+	}
+	module := tools.TargetModule(tool.Name())
+	return module != "" && ctx.GetSecurityContext().Can(account, module, "Execute")
 }
 
 func inferToolRequestTypeFromPrompt(ctx *security.RequestContext, request NBAgentRequest, agent NBAgent, toolName string, action NBAgentPlannerToolAction, toolValidator toolcore.ToolRequestInferencePrompt) (toolcore.ToolRequestType, error) {

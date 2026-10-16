@@ -1055,3 +1055,23 @@ func TestWorkspaceBoundIntegration_PerCallJobs(t *testing.T) {
 		assert.Equal(t, "prod-id/db-2", got.ToolConfig.Id, "%s: the target's integration of that name", job)
 	}
 }
+
+// A bee's command carries its run's grant scope: the proxy reads the target
+// through the bee's k8s grant, as the run itself did.
+func TestWorkspaceTokenCarriesAGrantScopedRun(t *testing.T) {
+	config.Config.LlmServerJwtSecret = "test-secret"
+	security.SetTenantIdCacheForTest("bee-workspace", "bee-tenant")
+	stubTenantAccounts(t, "bee-workspace", "bee-target")
+	var sc security.SecurityContext
+	require.NoError(t, json.Unmarshal([]byte(`{"TenantId":"bee-tenant","UserId":"bee","AccountIds":["bee-workspace","bee-target"],"ScopedCustomPermissions":{"bee-target":{"k8s:Read":true}}}`), &sc))
+	person := security.NewRequestContext(context.Background(), &sc, slog.Default(), nil, nil)
+
+	_, err := workspace.ExecutionToken(person, "bee-workspace", "bee-target", time.Minute)
+	require.ErrorContains(t, err, "access denied", "outside a bee run a grant does not reach the target")
+
+	token, err := workspace.ExecutionToken(security.WithGrantScopedRun(person), "bee-workspace", "bee-target", time.Minute)
+	require.NoError(t, err)
+	ctx, err := authorizeWorkspaceRequest(workspaceTokenRequest(token), "bee-workspace", nil, nil)
+	require.NoError(t, err)
+	assert.True(t, security.IsGrantScopedRun(ctx))
+}

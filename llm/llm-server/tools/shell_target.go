@@ -59,7 +59,7 @@ func ShellTargetConfigs(ctx *security.RequestContext, accountID string, tool cor
 	allowed := make([]core.ToolConfig, 0, len(configs))
 	for _, c := range configs {
 		for _, v := range c.Values {
-			if v.Name == "id" && ctx.GetSecurityContext().HasAccountAccess(v.Value, security.SecurityAccessTypeRead) {
+			if v.Name == "id" && security.ToolPathAccountAccess(ctx, v.Value, TargetModule(tool.Name()), security.SecurityAccessTypeRead) {
 				allowed = append(allowed, c)
 				break
 			}
@@ -96,7 +96,7 @@ func ResolveShellTarget(ctx core.NbToolContext, owner string) (core.ToolConfig, 
 // CheckShellTargetWriteAccess keeps source-workspace permissions from authorizing target writes.
 func CheckShellTargetWriteAccess(ctx *security.RequestContext, selected core.ToolConfig) error {
 	for _, v := range selected.Values {
-		if v.Name == "id" && ctx.GetSecurityContext().HasAccountAccess(v.Value, security.SecurityAccessTypeCreate) {
+		if v.Name == "id" && security.ToolPathAccountAccess(ctx, v.Value, targetConfigModule(selected), security.SecurityAccessTypeCreate) {
 			return nil
 		}
 	}
@@ -108,7 +108,7 @@ func CheckShellTargetWriteAccess(ctx *security.RequestContext, selected core.Too
 func KubernetesTargetEnv(ctx core.NbToolContext, selected core.ToolConfig) (map[string]string, error) {
 	for _, v := range selected.Values {
 		if v.Name == "id" && v.Value != "" {
-			if !ctx.Ctx.GetSecurityContext().HasAccountAccess(v.Value, security.SecurityAccessTypeRead) {
+			if !security.ToolPathAccountAccess(ctx.Ctx, v.Value, "k8s", security.SecurityAccessTypeRead) {
 				return nil, fmt.Errorf("target cluster access denied")
 			}
 			return map[string]string{workspace.ENV_NB_TOOL_CONFIG_NAME: selected.Name, workspace.ENV_NB_TARGET_ACCOUNT_ID: v.Value}, nil
@@ -424,7 +424,7 @@ func AccountTargetByName(ctx *security.RequestContext, accountID, toolName, requ
 	names := make([]string, 0, len(all))
 	var byNumber []core.ToolConfig
 	for _, c := range all {
-		if !ctx.GetSecurityContext().HasAccountAccess(TargetAccountID(c), security.SecurityAccessTypeRead) {
+		if !security.ToolPathAccountAccess(ctx, TargetAccountID(c), TargetModule(toolName), security.SecurityAccessTypeRead) {
 			continue
 		}
 		if strings.EqualFold(c.Name, requested) {
@@ -580,7 +580,7 @@ func ListAccountTargets(ctx *security.RequestContext, accountID, toolName string
 	}
 	readable := make([]core.ToolConfig, 0, len(all))
 	for _, candidate := range all {
-		if ctx.GetSecurityContext().HasAccountAccess(TargetAccountID(candidate), security.SecurityAccessTypeRead) {
+		if security.ToolPathAccountAccess(ctx, TargetAccountID(candidate), TargetModule(toolName), security.SecurityAccessTypeRead) {
 			readable = append(readable, candidate)
 		}
 	}
@@ -625,6 +625,37 @@ func TargetAccountID(selected core.ToolConfig) string {
 
 // KubernetesTargetAccountID is retained for existing Kubernetes callers.
 func KubernetesTargetAccountID(selected core.ToolConfig) string { return TargetAccountID(selected) }
+
+// TargetModule is the custom-role module that governs an account-sourced
+// tool's targets: k8s for clusters (kubectl, helm), cloud for cloud accounts
+// (the cloud CLIs). "" for any other tool, which only a built-in role reaches.
+func TargetModule(toolName string) string {
+	switch toolName {
+	case ToolExecuteKubectlCommand, ToolExecuteHelmCommand:
+		return "k8s"
+	case ToolExecuteAwsCliCommand, ToolExecuteGcpCliCommand, ToolExecuteAzureCliCommand:
+		return "cloud"
+	}
+	return ""
+}
+
+// targetConfigModule is TargetModule for a selected target, from the kind of
+// account its tool lists.
+func targetConfigModule(selected core.ToolConfig) string {
+	kind := selected.Schema.ConfigType
+	for _, v := range selected.Values {
+		if v.Name == "cloud_provider" && v.Value != "" {
+			kind = v.Value
+		}
+	}
+	switch strings.ToLower(kind) {
+	case "k8s", "kubernetes":
+		return "k8s"
+	case "aws", "gcp", "azure":
+		return "cloud"
+	}
+	return ""
+}
 
 // sortNames orders names case-insensitively, as a person would read them.
 func sortNames(names []string) {

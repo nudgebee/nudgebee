@@ -38,7 +38,7 @@ func TestOriginalQueryFromUser_ReachesToolCalls(t *testing.T) {
 			OriginalQuery:         "what happened in the last 30m",
 			OriginalQueryFromUser: fromUser,
 			// A sub-agent's request: the conversation source is not carried down.
-		}, "logs", tool, `{"command":"all logs for app api last 24h, limit 5000"}`, nil, "", "tool-call-1", "")
+		}, "logs", tool, `{"command":"all logs for app api last 24h, limit 5000"}`, nil, "", "tool-call-1", "", toolcore.ToolRequestTypeRead)
 		require.NoError(t, err)
 		assert.Equal(t, "what happened in the last 30m", tool.got.OriginalQuery)
 		assert.Equal(t, fromUser, tool.got.OriginalQueryFromUser)

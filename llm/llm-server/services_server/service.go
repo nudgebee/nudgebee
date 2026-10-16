@@ -318,6 +318,9 @@ func GetServiceDependencyGraph(ctx security.RequestContext, accountId, namespace
 }
 
 func QueryLogs(ctx security.RequestContext, request LogQueryRequest) (core.ObservabilityLogResponse, error) {
+	if err := checkObservabilityUse(ctx, request.AccountId, "logs", request.LogProvider, request.LogProviderSource); err != nil {
+		return core.ObservabilityLogResponse{}, err
+	}
 	if request.Limit == 0 {
 		request.Limit = 1000
 	}
@@ -514,6 +517,9 @@ func GetLogsQuery(ctx security.RequestContext, request LogQueryRequest) (OutputL
 }
 
 func QueryTraces(ctx security.RequestContext, request core.ObservabilityTracesV3Request) (core.ObservabilityTraceResponse, error) {
+	if err := checkObservabilityUse(ctx, request.AccountId, "traces", request.ProviderType, request.ProviderSource); err != nil {
+		return core.ObservabilityTraceResponse{}, err
+	}
 	queryPayload := map[string]any{
 		"action": map[string]any{
 			"name": "traces_query",
@@ -654,6 +660,9 @@ func firstNonSpaceByte(b []byte) byte {
 }
 
 func QueryLogLabels(ctx security.RequestContext, accountId string, provider ObservabilityProvider) (core.ObservabilityLogLabelResponse, error) {
+	if err := checkObservabilityUse(ctx, accountId, "logs", provider.Provider, provider.IntegrationSource); err != nil {
+		return core.ObservabilityLogLabelResponse{}, err
+	}
 
 	if provider.IntegrationSource == "" {
 		provider.IntegrationSource = "agent"
@@ -748,6 +757,9 @@ func QueryLogLabels(ctx security.RequestContext, accountId string, provider Obse
 // Mirrors QueryLogLabels; the v2 traces agent uses it for live, per-account field
 // discovery (the trace counterpart of the log agent's get_labels call).
 func QueryTraceLabels(ctx security.RequestContext, accountId string, provider ObservabilityProvider) ([]string, error) {
+	if err := checkObservabilityUse(ctx, accountId, "traces", provider.Provider, provider.IntegrationSource); err != nil {
+		return nil, err
+	}
 	if provider.IntegrationSource == "" {
 		provider.IntegrationSource = "agent"
 	}
@@ -968,6 +980,9 @@ func CreateIntegrationConfig(ctx security.RequestContext, serviceRequest Integra
 }
 
 func ListMetricsSeries(ctx security.RequestContext, accountId, provider, filter string) (core.ObservabilityMetricsSeriesResponse, error) {
+	if err := checkObservabilityUse(ctx, accountId, "metrics", provider, ""); err != nil {
+		return core.ObservabilityMetricsSeriesResponse{}, err
+	}
 	queryPayload := map[string]any{
 		"action": map[string]any{
 			"name": "metrics_list_names",
@@ -1046,6 +1061,9 @@ func ListMetricsSeries(ctx security.RequestContext, accountId, provider, filter 
 }
 
 func ListMetricsSeriesLabels(ctx security.RequestContext, accountId, provider, seriesName string) (core.ObservabilityMetricsSeriesLabelsResponse, error) {
+	if err := checkObservabilityUse(ctx, accountId, "metrics", provider, ""); err != nil {
+		return core.ObservabilityMetricsSeriesLabelsResponse{}, err
+	}
 	queryPayload := map[string]any{
 		"action": map[string]any{
 			"name": "metrics_list_labels",
@@ -1126,6 +1144,9 @@ func ListMetricsSeriesLabels(ctx security.RequestContext, accountId, provider, s
 func ListMetricsSeriesMatch(ctx security.RequestContext, accountId, provider, namespace, workload string, startTime, endTime int64) (core.ObservabilityMetricSeriesMatchResponse, error) {
 	if accountId == "" {
 		return core.ObservabilityMetricSeriesMatchResponse{}, errors.New("account id is empty")
+	}
+	if err := checkObservabilityUse(ctx, accountId, "metrics", provider, ""); err != nil {
+		return core.ObservabilityMetricSeriesMatchResponse{}, err
 	}
 	request := map[string]any{
 		"account_id":      accountId,
@@ -1216,6 +1237,9 @@ var metricsLabelValuesRequestTimeout = 60 * time.Second
 // ListMetricsSeriesLabelValues fetches values for a given label. For ES/Opensearch, pass
 // request with metric_name set to the index pattern (e.g. {"metric_name": "metrics-*"}).
 func ListMetricsSeriesLabelValues(ctx security.RequestContext, accountId, provider, label string, request ...map[string]any) (core.ObservabilityMetricsLabelValuesResponse, error) {
+	if err := checkObservabilityUse(ctx, accountId, "metrics", provider, ""); err != nil {
+		return core.ObservabilityMetricsLabelValuesResponse{}, err
+	}
 	reqMap := map[string]any{
 		"account_id":      accountId,
 		"metric_provider": provider,
@@ -1299,6 +1323,9 @@ func ListMetricsSeriesLabelValues(ctx security.RequestContext, accountId, provid
 
 // QueryMetrics executes a metrics_query action against api-server (e.g. Elasticsearch DSL aggregation).
 func QueryMetrics(ctx security.RequestContext, req core.ObservabilityMetricsQueryRequest) (core.ObservabilityMetricsQueryResponse, error) {
+	if err := checkObservabilityUse(ctx, req.AccountId, "metrics", req.MetricProvider, ""); err != nil {
+		return core.ObservabilityMetricsQueryResponse{}, err
+	}
 	queryPayload := map[string]any{
 		"action": map[string]any{
 			"name": "metrics_query",

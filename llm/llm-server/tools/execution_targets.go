@@ -75,7 +75,7 @@ func executionTargets(ctx *security.RequestContext, accountID string, saved map[
 		if strings.EqualFold(c.Name, current.Name) {
 			continue
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(KubernetesTargetAccountID(c), security.SecurityAccessTypeRead) {
+		if !security.ToolPathAccountAccess(ctx, KubernetesTargetAccountID(c), TargetModule(toolName), security.SecurityAccessTypeRead) {
 			continue
 		}
 		others = append(others, c)

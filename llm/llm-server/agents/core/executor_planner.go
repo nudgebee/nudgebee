@@ -2914,7 +2914,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			err = summaryErr
 		}
 	} else {
-		observation, err = callNbTool(actionCtx, e.agentRequest, e.agent.GetName(), tool, action.ToolInput, nil, queryContext, action.ToolID, action.FollowupAnswer)
+		observation, err = callNbTool(actionCtx, e.agentRequest, e.agent.GetName(), tool, action.ToolInput, nil, queryContext, action.ToolID, action.FollowupAnswer, lo.FromPtr(requestType))
 	}
 	var dt []string
 	if val, ok := observation.AdditionalDetails["discovered_tools"]; ok && val != nil {
@@ -4729,7 +4729,7 @@ func delegationSkillScope(parentInherited []string, parentAgentName string) []st
 	return scope
 }
 
-func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentRequest, parentAgentName string, tool toolcore.NBTool, input string, previousHistory []llms.MessageContent, queryContext string, toolId string, followupAnswer string) (resp toolcore.NBToolResponse, err error) {
+func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentRequest, parentAgentName string, tool toolcore.NBTool, input string, previousHistory []llms.MessageContent, queryContext string, toolId string, followupAnswer string, requestType toolcore.ToolRequestType) (resp toolcore.NBToolResponse, err error) {
 	// Recover from panics and convert to proper error responses
 	defer func() {
 		if r := recover(); r != nil {
@@ -4874,6 +4874,25 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	toolContext, targetErr := tools.ResolveToolCallTarget(toolContext, tool, request)
 	if targetErr != nil {
 		return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: targetErr.Error()}, nil
+	}
+
+	// A run that acts only through its grants (a bee's) uses an integration
+	// only with a grant for its type, checked on the integration the call
+	// resolved. A call nothing classified counts as a change, unless it is an
+	// MCP tool its server marks read-only.
+	if security.IsGrantScopedRun(nbRequestContext) && toolcore.UsesIntegration(nbRequestContext, tool) {
+		account := toolContext.AccountId
+		if toolContext.TargetAccountId != "" {
+			account = toolContext.TargetAccountId
+		}
+		write := requestType != toolcore.ToolRequestTypeRead
+		if hinter, ok := tool.(toolcore.MCPReadOnlyHinter); ok && requestType == "" && hinter.MCPReadOnlyHint() {
+			write = false
+		}
+		if useErr := security.CheckIntegrationUse(nbRequestContext, account, toolcore.BoundIntegrationType(tool, toolContext.ToolConfig), write); useErr != nil {
+			nbRequestContext.GetLogger().Info("plannerexecutor: integration use refused", "tool", tool.Name(), "account_id", account, "error", useErr)
+			return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: useErr.Error() + ". Do not retry this call; answer with what you have, or list what you could not check."}, nil
+		}
 	}
 
 	// Circuit-breaker pre-check. A tool opts in by implementing

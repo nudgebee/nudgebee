@@ -249,13 +249,17 @@ func authorizeWorkspaceRequest(c *gin.Context, requestedAccountId string, tracer
 	if err != nil {
 		return nil, fmt.Errorf("invalid token grants: %w", err)
 	}
-	if claims.TargetAccountId != "" && !sc.HasAccountAccess(claims.TargetAccountId, security.SecurityAccessTypeRead) {
+	ctx := security.NewRequestContext(c.Request.Context(), sc, slog.Default(), tracer, meter)
+	if claims.Grants.GrantScoped {
+		ctx = security.WithGrantScopedRun(ctx)
+	}
+	if claims.TargetAccountId != "" && !security.ToolPathTargetReadable(ctx, claims.TargetAccountId) {
 		return nil, fmt.Errorf("token does not permit its target")
 	}
 	if claims.TargetAccountId != "" {
 		c.Set("workspace_allowed_target", claims.TargetAccountId)
 	}
-	return security.NewRequestContext(c.Request.Context(), sc, slog.Default(), tracer, meter), nil
+	return ctx, nil
 }
 
 func handleWorkspaceListFilesWithPayload(c *gin.Context, payload map[string]any, ctx *security.RequestContext) {

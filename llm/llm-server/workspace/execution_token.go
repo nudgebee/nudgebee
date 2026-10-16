@@ -47,13 +47,14 @@ func ExecutionToken(ctx *security.RequestContext, workspaceAccount, targetAccoun
 	if ctx != nil {
 		sc = ctx.GetSecurityContext()
 	}
-	if targetAccount != "" && (sc == nil || !sc.HasAccountAccess(targetAccount, security.SecurityAccessTypeRead)) {
+	if targetAccount != "" && (sc == nil || !security.ToolPathTargetReadable(ctx, targetAccount)) {
 		return "", fmt.Errorf("target cluster access denied")
 	}
 	grants, err := security.WorkspaceGrantsFor(sc, tenantId)
 	if err != nil {
 		return "", fmt.Errorf("execution token: %w", err)
 	}
+	grants.GrantScoped = security.IsGrantScopedRun(ctx)
 	now := time.Now()
 	claims := WorkspaceTokenClaims{
 		AccountId:       workspaceAccount,
