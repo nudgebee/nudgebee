@@ -607,6 +607,25 @@ func FetchTicketAttachment(ctx *gin.Context, ticket models.Ticket) (contentType 
 		return "", nil, fmt.Errorf("unable to fetch configuration for integration %s: %w", ticket.IntegrationID, err)
 	}
 
+	// Mirrors the Projects[0] override in FetchTicketComments above - an integration
+	// can have multiple repos, and the attachment isn't necessarily in the first one.
+	tool := strings.ToLower(configuration.Tool)
+	if ticket.ProjectKey == "" && (tool == "github" || tool == "gitlab") {
+		ticket.ProjectKey = lookupStoredProjectKey(ticket, configuration.Tenant)
+	}
+	if ticket.ProjectKey != "" {
+		projects := make([]models.Project, len(configuration.Projects))
+		copy(projects, configuration.Projects)
+		configuration.Projects = projects
+		if len(configuration.Projects) > 0 {
+			configuration.Projects[0].Key = ticket.ProjectKey
+		} else {
+			configuration.Projects = []models.Project{{Key: ticket.ProjectKey}}
+		}
+	} else if tool == "github" || tool == "gitlab" {
+		return "", nil, fmt.Errorf("project_key (owner/repo) is required for %s — set it in the request or configure it in the integration", configuration.Tool)
+	}
+
 	manager, ok := ticketmgr.GetTicketManager(configuration.Tool)
 	if !ok {
 		return "", nil, fmt.Errorf("unsupported platform %s", configuration.Tool)
