@@ -379,7 +379,7 @@ const Notifications = () => {
                 />
               </Box>
               <DsButton id='test-notification' tone='secondary' size='md' onClick={() => setTestOpen(true)}>
-                Test a notification
+                Check where it goes
               </DsButton>
               {canWrite && (
                 <DropdownMenu

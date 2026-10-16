@@ -172,7 +172,7 @@ const TestNotificationModal: React.FC<Props> = ({ open, defaultType, accounts, o
     : [];
 
   return (
-    <Modal open={open} handleClose={onClose} title='Test a notification' subtitle='Where would it go with today’s rules?' width='sm'>
+    <Modal open={open} handleClose={onClose} title='Where would it go?' subtitle='Checks today’s rules. Nothing is sent.' width='sm'>
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[3], padding: ds.space[1] }}>
         <Select
           id='test-type'
