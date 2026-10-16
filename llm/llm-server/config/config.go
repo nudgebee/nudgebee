@@ -213,6 +213,7 @@ type appConfig struct {
 	LlmOAuthScope             string `mapstructure:"llm_oauth_scope"`
 	LlmExtraHeaders           string `mapstructure:"llm_extra_headers"`
 	LlmProviderDeploymentName string `mapstructure:"llm_provider_deployment_name"` // Azure deployment when it differs from the model name
+	LlmProviderApiStyle       string `mapstructure:"llm_provider_api_style"`       // Azure OpenAI wire style: v1 (default) or classic
 	// Configured fallback, reference form only: name a slot ENV or DB already
 	// defines (e.g. "env:tier:summary") rather than restating a whole provider
 	// config in environment variables. The owned-slot form stays DB-only.
@@ -1304,6 +1305,7 @@ func init() {
 	viper.SetDefault("llm_oauth_scope", "")
 	viper.SetDefault("llm_extra_headers", "")
 	viper.SetDefault("llm_provider_deployment_name", "")
+	viper.SetDefault("llm_provider_api_style", "")
 	viper.SetDefault("llm_fallback_ref_source", "")
 	viper.SetDefault("llm_fallback_ref_model", "")
 	viper.SetDefault("llm_provider_api_endpoint", "") // https://api.openai.com/v1 | https://nudgebee-slm.services.ai.azure.com | https://api-inference.huggingface.co

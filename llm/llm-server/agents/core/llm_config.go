@@ -40,7 +40,6 @@ import (
 	"log/slog"
 	"net/http"
 	"nudgebee/llm/config"
-	"nudgebee/llm/llms/azure"
 	"nudgebee/llm/llms/bedrock"
 	"nudgebee/llm/llms/googleai"
 	"nudgebee/llm/llms/googleai/vertex"
@@ -172,6 +171,7 @@ func resolveCredsFingerprint(accountId, provider, agentName string, appendAgentN
 		getLLMAccessKey(accountId, provider, agentName, appendAgentName, resolution...),
 		getLLMSecretKey(accountId, provider, agentName, appendAgentName, resolution...),
 		getLLMSessionToken(accountId, provider, agentName, appendAgentName, resolution...),
+		resolveLLMApiStyle(accountId, provider, agentName, appendAgentName, res),
 		auth.AuthType,
 		auth.OAuth.TokenURL,
 		auth.OAuth.ClientID,
@@ -243,8 +243,8 @@ func GetLLMModel(provider string, modelName string, agentName string, appendAgen
 		slog.Debug("Routing to Hugging Face LLM provider")
 		model, err = getHuggingFaceLLM(provider, modelName, agentName, appendAgentName, accountId, res)
 	case "azure":
-		slog.Debug("Routing to Azure AI LLM provider")
-		model, err = getAzureAILLM(provider, modelName, agentName, appendAgentName, accountId, res)
+		slog.Debug("Routing to Azure OpenAI LLM provider")
+		model, err = getAzureOpenAILLM(provider, modelName, agentName, appendAgentName, accountId, res)
 	case "googleai":
 		slog.Debug("Routing to Google AI LLM provider")
 		model, err = getGoogleAILLM(provider, modelName, agentName, appendAgentName, accountId, res)
@@ -1764,53 +1764,6 @@ func getGoogleAILLM(provider, modelName, agentName string, appendAgentName bool,
 	return llm, nil
 }
 
-func getAzureAILLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {
-	slog.Debug("Initializing Azure AI LLM", "provider", provider, "modelName", modelName, "agentName", agentName, "appendAgentName", appendAgentName, "accountId", accountId)
-
-	var res *LLMConfigResolution
-	if len(resolution) > 0 {
-		res = resolution[0]
-	}
-
-	adapterName := getLLMModelAdapterName(agentName)
-	adapterSupport := checkLLMModelAdapterSupport(agentName)
-	slog.Debug("Azure adapter settings", "adapterName", adapterName, "adapterSupport", adapterSupport)
-
-	token := getLLMApiKey(accountId, provider, agentName, appendAgentName, res)
-	if token == "" {
-		slog.Error("LLM_PROVIDER_API_KEY environment variable is not set for Azure LLM provider. Please set this variable to authenticate with the Azure LLM service.")
-	}
-
-	apiVersion := getLLMApiVersion(accountId, provider, agentName, appendAgentName, res)
-	baseURL := getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, res)
-	slog.Debug("Azure configuration", "apiVersion", apiVersion, "baseURL", baseURL)
-
-	opts := []azure.Option{
-		azure.WithToken(token),
-		azure.WithAPIVersion(apiVersion),
-		azure.WithBaseURL(baseURL),
-		azure.WithModel(modelName),
-	}
-
-	// Only add WithAdapter if needed
-	if adapterName != "" && adapterSupport {
-		slog.Debug("Using adapter for Azure model", "adapterName", adapterName, "modelName", modelName)
-		opts = append(opts, azure.WithAdapter(adapterName))
-	} else if adapterSupport {
-		slog.Warn("Adapter is supported but not provided for Azure model", "modelName", modelName)
-	} else {
-		slog.Debug("Adapter is not supported for Azure model", "modelName", modelName)
-	}
-
-	llm, err := azure.New(opts...)
-	if err != nil {
-		slog.Error("Failed to create Azure AI LLM", "error", err, "modelName", modelName)
-		return nil, err
-	}
-	slog.Info("Using Azure AI LLM", "model", modelName, "agentName", agentName)
-	return llm, nil
-}
-
 func getHuggingFaceLLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {
 	slog.Debug("Initializing Hugging Face LLM", "provider", provider, "modelName", modelName, "agentName", agentName, "appendAgentName", appendAgentName, "accountId", accountId)
 
@@ -1992,6 +1945,124 @@ func getCustomLLM(provider, modelName, agentName string, appendAgentName bool, a
 	return getOpenAILLM(provider, modelName, agentName, appendAgentName, accountId, resolution...)
 }
 
+// Azure OpenAI (provider "azure") speaks two wire styles on the same resource,
+// picked by llm_provider_api_style:
+//
+//	v1      {endpoint}/openai/v1/chat/completions, model in the body (default)
+//	classic {endpoint}/openai/deployments/{model}/chat/completions?api-version=X
+//
+// The model name is the Azure deployment name. Auth is the resource key, or a
+// Microsoft Entra ID token from the shared OAuth client-credentials transport
+// (llm_oauth.go).
+
+const (
+	azureAPIStyleV1      = "v1"
+	azureAPIStyleClassic = "classic"
+)
+
+type azureOpenAIParams struct {
+	Endpoint   string
+	APIStyle   string
+	APIVersion string
+	Model      string
+	Token      string
+	OAuth      bool
+	AuthClient *http.Client
+}
+
+// normalizeAzureEndpoint reduces a pasted endpoint to the resource root, so
+// "https://x.openai.azure.com/", ".../openai" and ".../openai/v1" all work.
+func normalizeAzureEndpoint(endpoint string) string {
+	ep := strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	for _, suffix := range []string{"/openai/v1", "/openai"} {
+		if strings.HasSuffix(strings.ToLower(ep), suffix) {
+			return ep[:len(ep)-len(suffix)]
+		}
+	}
+	return ep
+}
+
+func newAzureOpenAIModel(p azureOpenAIParams) (llms.Model, error) {
+	endpoint := normalizeAzureEndpoint(p.Endpoint)
+	if endpoint == "" {
+		return nil, errors.New("azure provider requires llm_provider_api_endpoint (e.g. https://<resource>.openai.azure.com)")
+	}
+	if strings.TrimSpace(p.Model) == "" {
+		return nil, errors.New("azure provider requires a model name")
+	}
+	token := p.Token
+	if p.OAuth && token == "" {
+		// The OAuth transport owns the Authorization header; the client
+		// constructor only needs a non-empty placeholder.
+		token = "oauth-managed"
+	}
+	if token == "" {
+		return nil, errors.New("azure provider requires llm_provider_api_key or Entra ID (llm_auth_type=oauth_client_credentials) settings")
+	}
+	style := strings.ToLower(strings.TrimSpace(p.APIStyle))
+	if style == "" {
+		style = azureAPIStyleV1
+	}
+	apiVersion := strings.TrimSpace(p.APIVersion)
+	switch {
+	case style != azureAPIStyleV1 && style != azureAPIStyleClassic:
+		return nil, fmt.Errorf("azure provider: llm_provider_api_style %q is invalid; must be v1 or classic", p.APIStyle)
+	case style == azureAPIStyleClassic && apiVersion == "":
+		return nil, errors.New("azure provider: llm_provider_api_version is required when llm_provider_api_style is classic")
+	}
+	opts := []openai.Option{
+		openai.WithResponseFormat(&openai.ResponseFormat{Type: "text"}),
+		openai.WithToken(token),
+		openai.WithModel(p.Model),
+	}
+	if style == azureAPIStyleClassic {
+		opts = append(opts,
+			openai.WithAPIType(openai.APITypeAzure),
+			openai.WithAPIVersion(apiVersion),
+			openai.WithBaseURL(endpoint),
+		)
+	} else {
+		opts = append(opts,
+			openai.WithAPIType(openai.APITypeOpenAI),
+			openai.WithBaseURL(endpoint+"/openai/v1"),
+		)
+	}
+	opts = append(opts, openai.WithHTTPClient(newOpenAIHTTPClient(p.AuthClient)))
+
+	llm, err := openai.New(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("azure: failed to create client: %w", err)
+	}
+	return wrapStripInternalThinkingMetadata(llm), nil
+}
+
+func getAzureOpenAILLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {
+	var res *LLMConfigResolution
+	if len(resolution) > 0 {
+		res = resolution[0]
+	}
+	authClient, oauthMode, err := buildLLMAuthHTTPClient(accountId, res)
+	if err != nil {
+		return nil, fmt.Errorf("azure: failed to resolve auth settings: %w", err)
+	}
+	p := azureOpenAIParams{
+		Endpoint:   getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, res),
+		APIStyle:   resolveLLMApiStyle(accountId, provider, agentName, appendAgentName, res),
+		APIVersion: getLLMApiVersion(accountId, provider, agentName, appendAgentName, res),
+		Model:      modelName,
+		Token:      getLLMApiKey(accountId, provider, agentName, appendAgentName, res),
+		OAuth:      oauthMode,
+		AuthClient: authClient,
+	}
+	llm, err := newAzureOpenAIModel(p)
+	if err != nil {
+		slog.Error("Failed to create Azure OpenAI LLM", "error", err, "model", modelName, "agentName", agentName)
+		return nil, err
+	}
+	slog.Info("Using Azure OpenAI LLM", "model", modelName, "agentName", agentName, "apiStyle", p.APIStyle, "oauth", oauthMode)
+	return llm, nil
+}
+
 func getBedrockLLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {
 	slog.Debug("Initializing Bedrock LLM", "provider", provider, "modelName", modelName, "agentName", agentName, "appendAgentName", appendAgentName, "accountId", accountId)
 
@@ -2128,6 +2199,8 @@ type LLMConfigResolution struct {
 	// Azure-shaped gateways behind `custom`: URL deployment segment when it
 	// differs from the body's model name (see openai_deployment.go).
 	PinnedDeploymentName string `json:"-"`
+	// Azure OpenAI wire style: "v1" (default) or "classic".
+	PinnedApiStyle string `json:"-"`
 }
 
 // credentialIdentity fingerprints every field that decides where a request goes
@@ -2144,7 +2217,7 @@ func credentialIdentity(res *LLMConfigResolution) string {
 			res.PinnedAccessKey, res.PinnedSecretKey, res.PinnedSessionToken,
 			res.PinnedAuthType, res.PinnedOAuthTokenURL, res.PinnedOAuthClientID,
 			res.PinnedOAuthClientSecret, res.PinnedOAuthScope, res.PinnedExtraHeaders,
-			res.PinnedDeploymentName) + "|" +
+			res.PinnedDeploymentName, res.PinnedApiStyle) + "|" +
 		strings.TrimSpace(res.PinnedApiType) + "|" + strings.TrimSpace(res.PinnedAdapterId)
 }
 
@@ -3377,6 +3450,7 @@ func readEnvSlotInto(res *LLMConfigResolution, p *parsedConfigSource) ([]string,
 		res.PinnedApiKey = config.Config.LlmProviderApiKey
 		res.PinnedApiType = config.Config.LlmProviderApiType
 		res.PinnedApiVersion = config.Config.LlmProviderApiVersion
+		res.PinnedApiStyle = config.Config.LlmProviderApiStyle
 		res.PinnedRegion = config.Config.LlmProviderRegion
 		res.PinnedAccessKey = config.Config.LlmProviderAccessKey
 		res.PinnedSecretKey = config.Config.LlmProviderSecretKey
@@ -3389,6 +3463,7 @@ func readEnvSlotInto(res *LLMConfigResolution, p *parsedConfigSource) ([]string,
 		res.PinnedApiKey = config.Config.GetString(fmt.Sprintf(llmTierApiKeyFormat, p.Name), "")
 		res.PinnedApiType = config.Config.GetString(fmt.Sprintf(llmTierApiTypeFormat, p.Name), "")
 		res.PinnedApiVersion = config.Config.GetString(fmt.Sprintf(llmTierApiVersionFormat, p.Name), "")
+		res.PinnedApiStyle = config.Config.GetString(fmt.Sprintf(llmTierApiStyleFormat, p.Name), "")
 		res.PinnedRegion = config.Config.GetString(fmt.Sprintf(llmTierRegionFormat, p.Name), "")
 		res.PinnedAccessKey = config.Config.GetString(fmt.Sprintf(llmTierAccessKeyFormat, p.Name), "")
 		res.PinnedSecretKey = config.Config.GetString(fmt.Sprintf(llmTierSecretKeyFormat, p.Name), "")
@@ -3401,6 +3476,7 @@ func readEnvSlotInto(res *LLMConfigResolution, p *parsedConfigSource) ([]string,
 		res.PinnedApiKey = config.Config.GetString(fmt.Sprintf(llmProviderApiKeyFormat, p.Name), "")
 		res.PinnedApiType = config.Config.GetString(fmt.Sprintf(llmProviderApiTypeFormat, p.Name), "")
 		res.PinnedApiVersion = config.Config.GetString(fmt.Sprintf(llmProviderApiVersionFormat, p.Name), "")
+		res.PinnedApiStyle = config.Config.GetString(fmt.Sprintf(llmProviderApiStyleFormat, p.Name), "")
 		res.PinnedRegion = config.Config.GetString(fmt.Sprintf(llmProviderRegionFormat, p.Name), "")
 		res.PinnedAccessKey = config.Config.GetString(fmt.Sprintf(llmProviderAccessKeyFormat, p.Name), "")
 		res.PinnedSecretKey = config.Config.GetString(fmt.Sprintf(llmProviderSecretKeyFormat, p.Name), "")
@@ -3419,7 +3495,8 @@ func readEnvSlotInto(res *LLMConfigResolution, p *parsedConfigSource) ([]string,
 	if p.Scope != "global" {
 		inheritSlotDefaults(res, slotDefaults{
 			provider: config.Config.LlmProvider, endpoint: config.Config.LlmProviderApiEndpoint, apiKey: config.Config.LlmProviderApiKey,
-			apiType: config.Config.LlmProviderApiType, apiVersion: config.Config.LlmProviderApiVersion, region: config.Config.LlmProviderRegion,
+			apiType: config.Config.LlmProviderApiType, apiVersion: config.Config.LlmProviderApiVersion, apiStyle: config.Config.LlmProviderApiStyle,
+			region:    config.Config.LlmProviderRegion,
 			accessKey: config.Config.LlmProviderAccessKey, secretKey: config.Config.LlmProviderSecretKey, sessionToken: config.Config.LlmProviderSessionToken,
 		})
 	}
@@ -3444,6 +3521,7 @@ func readDbSlotInto(res *LLMConfigResolution, cfg map[string]string, p *parsedCo
 		res.PinnedApiKey = k("llm_fallback_api_key")
 		res.PinnedApiType = k("llm_fallback_api_type")
 		res.PinnedApiVersion = k("llm_fallback_api_version")
+		res.PinnedApiStyle = k("llm_fallback_api_style")
 		res.PinnedRegion = k("llm_fallback_region")
 		res.PinnedAccessKey = k("llm_fallback_access_key")
 		res.PinnedSecretKey = k("llm_fallback_secret_key")
@@ -3458,6 +3536,7 @@ func readDbSlotInto(res *LLMConfigResolution, cfg map[string]string, p *parsedCo
 		res.PinnedApiKey = cfg["llm_provider_api_key"]
 		res.PinnedApiType = cfg["llm_provider_api_type"]
 		res.PinnedApiVersion = cfg["llm_provider_api_version"]
+		res.PinnedApiStyle = cfg[llmApiStyleKey]
 		res.PinnedRegion = cfg["llm_provider_region"]
 		res.PinnedAccessKey = cfg["llm_provider_access_key"]
 		res.PinnedSecretKey = cfg["llm_provider_secret_key"]
@@ -3507,6 +3586,10 @@ func readDbSlotInto(res *LLMConfigResolution, cfg map[string]string, p *parsedCo
 		res.PinnedOAuthScope = cfg["llm_tier_oauth_scope_"+p.Name]
 		res.PinnedExtraHeaders = cfg["llm_tier_extra_headers_"+p.Name]
 		res.PinnedDeploymentName = cfg["llm_tier_deployment_name_"+p.Name]
+		res.PinnedApiStyle = cfg[fmt.Sprintf(llmTierApiStyleFormat, p.Name)]
+	}
+	if p.Scope == "agent" {
+		res.PinnedApiStyle = cfg[fmt.Sprintf(llmProviderApiStyleFormat, p.Name)]
 	}
 	// Per-field global fallback, matching inheritSlotDefaults and the
 	// non-pinned resolver: a tier may override just the client id/secret
@@ -3543,7 +3626,8 @@ func readDbSlotInto(res *LLMConfigResolution, cfg map[string]string, p *parsedCo
 	if p.Scope != "global" {
 		inheritSlotDefaults(res, slotDefaults{
 			provider: cfg["llm_provider"], endpoint: cfg["llm_provider_api_endpoint"], apiKey: cfg["llm_provider_api_key"],
-			apiType: cfg["llm_provider_api_type"], apiVersion: cfg["llm_provider_api_version"], region: cfg["llm_provider_region"],
+			apiType: cfg["llm_provider_api_type"], apiVersion: cfg["llm_provider_api_version"], apiStyle: cfg[llmApiStyleKey],
+			region:    cfg["llm_provider_region"],
 			accessKey: cfg["llm_provider_access_key"], secretKey: cfg["llm_provider_secret_key"], sessionToken: cfg["llm_provider_session_token"],
 		})
 	}
@@ -3580,6 +3664,9 @@ func inheritSlotDefaults(res *LLMConfigResolution, g slotDefaults) {
 	if res.PinnedApiVersion == "" {
 		res.PinnedApiVersion = g.apiVersion
 	}
+	if res.PinnedApiStyle == "" {
+		res.PinnedApiStyle = g.apiStyle
+	}
 	if res.PinnedRegion == "" {
 		res.PinnedRegion = g.region
 	}
@@ -3598,8 +3685,8 @@ func inheritSlotDefaults(res *LLMConfigResolution, g slotDefaults) {
 // tier/agent slot. Grouped into a struct because passing nine positional
 // strings is how you end up silently swapping the secret and the session token.
 type slotDefaults struct {
-	provider, endpoint, apiKey, apiType, apiVersion, region string
-	accessKey, secretKey, sessionToken                      string
+	provider, endpoint, apiKey, apiType, apiVersion, apiStyle, region string
+	accessKey, secretKey, sessionToken                                string
 }
 
 // finishSlotRead validates that a slot read produced a servable (provider,
@@ -3872,6 +3959,60 @@ func resolveLLMDeploymentName(accountId string, res *LLMConfigResolution) string
 		}
 	}
 	return deployment
+}
+
+const (
+	llmApiStyleKey            = "llm_provider_api_style"
+	llmTierApiStyleFormat     = "llm_tier_api_style_%s"
+	llmProviderApiStyleFormat = "llm_provider_api_style_%s"
+)
+
+// resolveLLMApiStyle returns the Azure OpenAI wire style ("v1" or "classic")
+// with the same layers as getLLMApiVersion — global, tier and agent, ENV then
+// DB, each only when that layer's provider matches — so a tier, agent or
+// fallback slot can pick its own style.
+func resolveLLMApiStyle(accountId, provider, agentName string, appendAgentName bool, res *LLMConfigResolution) string {
+	if res != nil && res.PinnedConfigSource != "" {
+		return strings.ToLower(strings.TrimSpace(res.PinnedApiStyle))
+	}
+	var dbConfig map[string]string
+	var tier ModelTier
+	if res != nil {
+		dbConfig = res.dbConfig
+		tier = res.Tier
+	}
+	if accountId != "" {
+		if cfg, err := getLLMIntegrationConfig(nil, accountId, dbConfig); err == nil && cfg != nil {
+			dbConfig = cfg
+		}
+	}
+	style := ""
+	if config.Config.LlmProvider == provider {
+		style = config.Config.LlmProviderApiStyle
+	}
+	if v := readENVTierCredential(tier, provider, llmTierApiStyleFormat); v != "" {
+		style = v
+	}
+	agentProviderKey := fmt.Sprintf(llmProviderFormat, agentName)
+	if appendAgentName && agentName != "" && config.Config.GetString(agentProviderKey, "") == provider {
+		if v := config.Config.GetString(fmt.Sprintf(llmProviderApiStyleFormat, agentName), ""); v != "" {
+			style = v
+		}
+	}
+	if dbConfig["llm_provider"] == provider {
+		if v := dbConfig[llmApiStyleKey]; v != "" {
+			style = v
+		}
+	}
+	if v := readDBTierCredential(tier, provider, llmTierApiStyleFormat, dbConfig); v != "" {
+		style = v
+	}
+	if appendAgentName && agentName != "" && dbConfig[agentProviderKey] == provider {
+		if v := dbConfig[fmt.Sprintf(llmProviderApiStyleFormat, agentName)]; v != "" {
+			style = v
+		}
+	}
+	return strings.ToLower(strings.TrimSpace(style))
 }
 
 // deploymentBodyModelTransport rewrites the JSON body's "model" field on chat
