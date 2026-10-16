@@ -110,6 +110,7 @@ const emptyConfig = () => ({
   provider: '',
   apiKey: '',
   apiEndpoint: '',
+  apiStyle: 'v1',
   apiVersion: '',
   apiType: '',
   region: '',
@@ -146,7 +147,13 @@ const showsDisableThinking = (p) => p === 'custom';
 // Providers that can authenticate through an OAuth2 client-credentials
 // gateway — llm-server injects the bearer token only on the azure / openai /
 // custom client paths, so the selector is hidden for every other provider.
-const OAUTH_PROVIDERS = ['custom'];
+const OAUTH_PROVIDERS = ['custom', 'azure'];
+const AZURE_API_STYLE_OPTIONS = [
+  { value: 'v1', label: 'v1 (recommended)' },
+  { value: 'classic', label: 'Classic (api-version)' },
+];
+const AZURE_MODEL_HELP =
+  'Azure: enter the deployment name. Name the deployment after its model (e.g. gpt-5-mini); with a custom name, temperature, pricing and token limits are not detected for that model.';
 const AUTH_TYPE_OPTIONS = [
   { value: 'api_key', label: 'API key' },
   { value: 'oauth_client_credentials', label: 'OAuth2 client credentials' },
@@ -189,6 +196,7 @@ const loadFallback = (cfg, scope) => {
         provider: k('llm_fallback_provider'),
         model: k('llm_fallback_model'),
         apiEndpoint: k('llm_fallback_api_endpoint'),
+        apiStyle: k('llm_fallback_api_style') || 'v1',
         apiVersion: k('llm_fallback_api_version'),
         apiType: k('llm_fallback_api_type'),
         region: k('llm_fallback_region'),
@@ -214,6 +222,10 @@ const fallbackRefIsAvailable = (state, options) => {
   return options.some((m) => fallbackOptionValue(m.llm_config_source, m.model) === value);
 };
 
+// Tier, agent and fallback rows pick their own Azure API style; only classic
+// takes an API version.
+const rowNeedsApiVersion = (row) => row.provider === 'azure' && row.apiStyle === 'classic';
+
 // Connection fields a new fallback's provider cannot work without, beyond the
 // secrets validateOverrideCreds checks — mirrors providerRequiredFields in
 // api-server integrations/llm.go.
@@ -221,8 +233,8 @@ const requiredConnFieldError = (row) => {
   if (['azure', 'custom', 'sagemaker'].includes(row.provider) && !(row.apiEndpoint || '').trim()) {
     return 'API Endpoint is required for the selected provider';
   }
-  if (row.provider === 'azure' && !(row.apiVersion || '').trim()) {
-    return 'API Version is required for Azure';
+  if (rowNeedsApiVersion(row) && !(row.apiVersion || '').trim()) {
+    return 'API Version is required for the Azure classic API style';
   }
   if (['bedrock', 'sagemaker'].includes(row.provider) && !(row.region || '').trim()) {
     return 'Region is required for the selected provider';
@@ -236,7 +248,7 @@ const requiredConnFieldError = (row) => {
 const providerFieldShape = (p) => ({
   showsApiKey: ['anthropic', 'azure', 'googleai', 'huggingface', 'openai', 'custom', 'vertexai'].includes(p),
   showsApiEndpoint: ['azure', 'openai', 'custom', 'sagemaker', 'anthropic', 'huggingface'].includes(p),
-  showsApiVersion: p === 'azure',
+  showsApiStyle: p === 'azure',
   showsRegion: ['bedrock', 'sagemaker'].includes(p),
   showsBedrockKeys: p === 'bedrock',
   showsApiType: ['openai', 'custom', 'huggingface'].includes(p),
@@ -390,6 +402,7 @@ const FallbackModelEditor = ({
             data-testid={idFor('llm-fallback-new-model')}
             placeholder={state.new.provider ? `e.g. ${(PROVIDER_EXAMPLES[state.new.provider] || {}).retrieval || 'model name'}` : undefined}
             onChange={(value) => onUpdateNew('model', value)}
+            help={state.new.provider === 'azure' ? AZURE_MODEL_HELP : undefined}
             error={state.new.provider ? errors.model || undefined : undefined}
           />
           {state.new.provider && errors.creds && <Box sx={{ color: 'var(--ds-red-600)', fontSize: 'var(--ds-text-caption)' }}>✗ {errors.creds}</Box>}
@@ -418,7 +431,16 @@ const FallbackModelEditor = ({
               }
             />
           )}
-          {shape.showsApiVersion && (
+          {shape.showsApiStyle && (
+            <Select
+              label='API Style'
+              size='sm'
+              value={state.new.apiStyle}
+              onChange={(value) => onUpdateNew('apiStyle', value)}
+              options={AZURE_API_STYLE_OPTIONS}
+            />
+          )}
+          {rowNeedsApiVersion(state.new) && (
             <Input label='API Version' size='sm' required value={state.new.apiVersion} onChange={(value) => onUpdateNew('apiVersion', value)} />
           )}
           {shape.showsRegion && (
@@ -555,6 +577,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const [secretKey, setSecretKey] = useState('');
   const [apiType, setApiType] = useState('');
   const [deploymentName, setDeploymentName] = useState('');
+  const [apiStyle, setApiStyle] = useState('v1');
   const [adapterId, setAdapterId] = useState('');
   const [requireAdapterId, setRequireAdapterId] = useState('');
 
@@ -894,6 +917,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setSecretKey('');
       setApiType(cfg.llm_provider_api_type || '');
       setDeploymentName(cfg.llm_provider_deployment_name || '');
+      setApiStyle(cfg.llm_provider_api_style || 'v1');
       setAdapterId(cfg.llm_provider_adapter_id || '');
       setRequireAdapterId(cfg.llm_provider_require_adapter_id || '');
       setAuthType(cfg.llm_auth_type || 'api_key');
@@ -947,6 +971,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           provider: isInherit ? '' : savedProvider,
           apiKey: '', // secret — always blank in form; secretsConfigured tracks "✓"
           apiEndpoint: cfg[`llm_tier_api_endpoint_${t}`] || '',
+          apiStyle: cfg[`llm_tier_api_style_${t}`] || 'v1',
           apiVersion: cfg[`llm_tier_api_version_${t}`] || '',
           apiType: cfg[`llm_tier_api_type_${t}`] || '',
           region: cfg[`llm_tier_region_${t}`] || '',
@@ -983,6 +1008,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
             provider: isInherit ? '' : savedProvider,
             apiKey: '',
             apiEndpoint: cfg[`llm_provider_api_endpoint_${agentKey}`] || '',
+            apiStyle: cfg[`llm_provider_api_style_${agentKey}`] || 'v1',
             apiVersion: cfg[`llm_provider_api_version_${agentKey}`] || '',
             apiType: cfg[`llm_provider_api_type_${agentKey}`] || '',
             region: cfg[`llm_provider_region_${agentKey}`] || '',
@@ -1087,6 +1113,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setSecretKey('');
       setApiType('');
       setDeploymentName('');
+      setApiStyle('v1');
       setAdapterId('');
       setRequireAdapterId('');
       setAuthType('api_key');
@@ -1170,6 +1197,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     setSecretKey('');
     setApiType('');
     setDeploymentName('');
+    setApiStyle('v1');
     setAdapterId('');
     setRequireAdapterId('');
     setAuthType('api_key');
@@ -1222,6 +1250,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const credResetForProvider = {
     apiKey: '',
     apiEndpoint: '',
+    apiStyle: 'v1',
     apiVersion: '',
     apiType: '',
     region: '',
@@ -1345,6 +1374,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         provider: '',
         apiKey: '',
         apiEndpoint: '',
+        apiStyle: 'v1',
         apiVersion: '',
         apiType: '',
         region: '',
@@ -1373,11 +1403,11 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const showsApiKey = ['anthropic', 'azure', 'googleai', 'huggingface', 'openai', 'custom', 'vertexai'].includes(provider);
   const showsApiEndpoint = ['azure', 'openai', 'custom', 'sagemaker', 'anthropic', 'huggingface'].includes(provider);
   const azureShapedCustom = provider === 'custom' && ['azure', 'azure_ad'].includes((apiType || '').toLowerCase());
-  const showsApiVersion = provider === 'azure' || azureShapedCustom;
+  const showsApiVersion = provider === 'azure' ? apiStyle === 'classic' : azureShapedCustom;
   const showsRegion = ['bedrock', 'sagemaker'].includes(provider);
   const showsBedrockKeys = provider === 'bedrock';
   const showsApiType = ['openai', 'custom', 'huggingface'].includes(provider);
-  const showsAdapter = ['azure', 'huggingface'].includes(provider);
+  const showsAdapter = provider === 'huggingface';
   const showsOAuthOption = OAUTH_PROVIDERS.includes(provider);
   const oauthSelected = showsOAuthOption && authType === 'oauth_client_credentials';
 
@@ -1410,6 +1440,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       if (!hasSecret(row.secretKey || '', credKeyFor('secret_key'))) {
         return 'AWS Secret Key is required for Bedrock';
       }
+    }
+    if (rowNeedsApiVersion(row) && !(row.apiVersion || '').trim()) {
+      return 'API Version is required for the Azure classic API style';
     }
     return null;
   };
@@ -1665,6 +1698,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     pushSecret(showsBedrockKeys, 'llm_provider_secret_key', secretKey);
     pushPlain(showsApiType, 'llm_provider_api_type', apiType);
     pushPlain(azureShapedCustom, 'llm_provider_deployment_name', deploymentName);
+    pushPlain(provider === 'azure', 'llm_provider_api_style', apiStyle);
     pushPlain(showsAdapter, 'llm_provider_adapter_id', adapterId);
     pushPlain(showsAdapter, 'llm_provider_require_adapter_id', requireAdapterId);
     // Configured fallbacks (integration + each category): a reference (credentials stay
@@ -1683,7 +1717,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         out.push({ name: k('llm_fallback_model'), value: n.model.trim() });
         pushSecret(shape.showsApiKey, k('llm_fallback_api_key'), n.apiKey);
         pushPlain(shape.showsApiEndpoint, k('llm_fallback_api_endpoint'), n.apiEndpoint);
-        pushPlain(shape.showsApiVersion, k('llm_fallback_api_version'), n.apiVersion);
+        pushPlain(shape.showsApiStyle, k('llm_fallback_api_style'), n.apiStyle);
+        pushPlain(rowNeedsApiVersion(n), k('llm_fallback_api_version'), n.apiVersion);
         pushPlain(shape.showsRegion, k('llm_fallback_region'), n.region);
         pushSecret(shape.showsBedrockKeys, k('llm_fallback_access_key'), n.accessKey);
         pushSecret(shape.showsBedrockKeys, k('llm_fallback_secret_key'), n.secretKey);
@@ -1715,7 +1750,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         const shape = providerFieldShape(t.provider);
         pushSecret(shape.showsApiKey, `llm_tier_api_key_${tier}`, t.apiKey);
         pushPlain(shape.showsApiEndpoint, `llm_tier_api_endpoint_${tier}`, t.apiEndpoint);
-        pushPlain(shape.showsApiVersion, `llm_tier_api_version_${tier}`, t.apiVersion);
+        pushPlain(shape.showsApiStyle, `llm_tier_api_style_${tier}`, t.apiStyle);
+        pushPlain(rowNeedsApiVersion(t), `llm_tier_api_version_${tier}`, t.apiVersion);
         pushPlain(shape.showsRegion, `llm_tier_region_${tier}`, t.region);
         pushSecret(shape.showsBedrockKeys, `llm_tier_access_key_${tier}`, t.accessKey);
         pushSecret(shape.showsBedrockKeys, `llm_tier_secret_key_${tier}`, t.secretKey);
@@ -1739,7 +1775,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         const shape = providerFieldShape(row.provider);
         pushSecret(shape.showsApiKey, `llm_provider_api_key_${row.agent}`, row.apiKey);
         pushPlain(shape.showsApiEndpoint, `llm_provider_api_endpoint_${row.agent}`, row.apiEndpoint);
-        pushPlain(shape.showsApiVersion, `llm_provider_api_version_${row.agent}`, row.apiVersion);
+        pushPlain(shape.showsApiStyle, `llm_provider_api_style_${row.agent}`, row.apiStyle);
+        pushPlain(rowNeedsApiVersion(row), `llm_provider_api_version_${row.agent}`, row.apiVersion);
         pushPlain(shape.showsRegion, `llm_provider_region_${row.agent}`, row.region);
         pushSecret(shape.showsBedrockKeys, `llm_provider_access_key_${row.agent}`, row.accessKey);
         pushSecret(shape.showsBedrockKeys, `llm_provider_secret_key_${row.agent}`, row.secretKey);
@@ -2166,7 +2203,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
             onChange={setConnField(setModel)}
             onBlur={trimOnBlur(model, setModel)}
             error={errors.model}
-            help='Name of the primary model (e.g., gpt-4, claude-opus-4-7, gemini-3.1-pro-preview).'
+            help={provider === 'azure' ? AZURE_MODEL_HELP : 'Name of the primary model (e.g., gpt-4, claude-opus-4-7, gemini-3.1-pro-preview).'}
             required
           />
 
@@ -2204,7 +2241,11 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               value={authType}
               onChange={setConnField(setAuthType)}
               options={AUTH_TYPE_OPTIONS}
-              help="API key sends a static key with each request. OAuth2 client credentials fetches a bearer token from your gateway's token endpoint and refreshes it automatically — for corporate AI gateways that reject static keys."
+              help={
+                provider === 'azure'
+                  ? 'API key sends the resource key. OAuth2 client credentials signs in as a Microsoft Entra ID service principal (needs the Cognitive Services OpenAI User role) and refreshes the token automatically.'
+                  : "API key sends a static key with each request. OAuth2 client credentials fetches a bearer token from your gateway's token endpoint and refreshes it automatically — for corporate AI gateways that reject static keys."
+              }
             />
           )}
           {showsApiKey && !oauthSelected && (
@@ -2227,7 +2268,12 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                 onChange={setConnField(setOauthTokenUrl)}
                 onBlur={trimOnBlur(oauthTokenUrl, setOauthTokenUrl)}
                 error={errors.oauthTokenUrl}
-                help='Token endpoint the client-credentials grant is POSTed to (e.g. https://api.example.com/oauth2/token).'
+                placeholder={provider === 'azure' ? 'https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token' : undefined}
+                help={
+                  provider === 'azure'
+                    ? 'Microsoft Entra ID token endpoint for your tenant: https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token.'
+                    : 'Token endpoint the client-credentials grant is POSTed to (e.g. https://api.example.com/oauth2/token).'
+                }
                 required
               />
               <Input
@@ -2254,7 +2300,12 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                 value={oauthScope}
                 onChange={setConnField(setOauthScope)}
                 onBlur={trimOnBlur(oauthScope, setOauthScope)}
-                help='Scope(s) requested with the token, space-separated (e.g. https://api.example.com/.default). Optional.'
+                placeholder={provider === 'azure' ? 'https://cognitiveservices.azure.com/.default' : undefined}
+                help={
+                  provider === 'azure'
+                    ? 'Use https://cognitiveservices.azure.com/.default for Azure OpenAI.'
+                    : 'Scope(s) requested with the token, space-separated (e.g. https://api.example.com/.default). Optional.'
+                }
               />
             </>
           )}
@@ -2268,6 +2319,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               help={
                 provider === 'custom'
                   ? 'Base URL including the version segment — e.g. https://openrouter.ai/api/v1. "/chat/completions" is appended to it, so omitting /v1 will 404.'
+                  : provider === 'azure'
+                  ? 'Your Azure OpenAI resource endpoint, e.g. https://<resource>.openai.azure.com.'
                   : 'Custom API endpoint for the LLM provider.'
               }
               required={['azure', 'sagemaker', 'huggingface', 'anthropic', 'custom'].includes(provider)}
@@ -2326,6 +2379,16 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               help='Type of the API. Optional. Use "azure" or "azure_ad" for Azure-shaped gateways.'
             />
           )}
+          {provider === 'azure' && (
+            <Select
+              label='API Style'
+              size='sm'
+              value={apiStyle}
+              onChange={setConnField(setApiStyle)}
+              options={AZURE_API_STYLE_OPTIONS}
+              help='v1 calls {endpoint}/openai/v1 and needs no API version. Classic calls {endpoint}/openai/deployments/{model} with an api-version.'
+            />
+          )}
           {showsApiVersion && (
             <Input
               label='API Version'
@@ -2334,7 +2397,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               onChange={setConnField(setApiVersion)}
               help={
                 provider === 'azure'
-                  ? 'API version of the LLM provider (Azure).'
+                  ? 'api-version sent with every classic request (e.g. 2024-10-21).'
                   : 'api-version query parameter sent with every request (e.g. 2025-01-01-preview). Most Azure-shaped gateways require it.'
               }
               required={provider === 'azure'}
@@ -2588,6 +2651,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                     value={t.model}
                     placeholder={model || `e.g. ${tierExample}`}
                     onChange={(value) => updateTier(tierKey, 'model', value)}
+                    help={overrideProvider === 'azure' ? AZURE_MODEL_HELP : undefined}
                     error={errors.tierModels[tierKey] || errors.tierProviderModel[tierKey]}
                   />
                   {legacyFallbacksPresent[tierKey] && (
@@ -2674,8 +2738,23 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                       {overrideProvider && shape.showsApiEndpoint && (
                         <Input label='API Endpoint' size='sm' value={t.apiEndpoint} onChange={(value) => updateTier(tierKey, 'apiEndpoint', value)} />
                       )}
-                      {overrideProvider && shape.showsApiVersion && (
-                        <Input label='API Version' size='sm' value={t.apiVersion} onChange={(value) => updateTier(tierKey, 'apiVersion', value)} />
+                      {overrideProvider && shape.showsApiStyle && (
+                        <Select
+                          label='API Style'
+                          size='sm'
+                          value={t.apiStyle}
+                          onChange={(value) => updateTier(tierKey, 'apiStyle', value)}
+                          options={AZURE_API_STYLE_OPTIONS}
+                        />
+                      )}
+                      {overrideProvider && rowNeedsApiVersion(t) && (
+                        <Input
+                          label='API Version'
+                          size='sm'
+                          required
+                          value={t.apiVersion}
+                          onChange={(value) => updateTier(tierKey, 'apiVersion', value)}
+                        />
                       )}
                       {overrideProvider && shape.showsRegion && (
                         <Input label='Region' size='sm' value={t.region} onChange={(value) => updateTier(tierKey, 'region', value)} />
@@ -2843,6 +2922,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                           value={row.model}
                           placeholder={`e.g. ${providerExample.reasoning}`}
                           onChange={(value) => updateAgentRow(idx, 'model', value)}
+                          help={overrideProvider === 'azure' ? AZURE_MODEL_HELP : undefined}
                           error={errors.agentRows[idx]?.model || errors.agentRows[idx]?.providerModel}
                         />
                         <Input
@@ -2921,10 +3001,20 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                                 onChange={(value) => updateAgentRow(idx, 'apiEndpoint', value)}
                               />
                             )}
-                            {overrideProvider && shape.showsApiVersion && (
+                            {overrideProvider && shape.showsApiStyle && (
+                              <Select
+                                label='API Style'
+                                size='sm'
+                                value={row.apiStyle}
+                                onChange={(value) => updateAgentRow(idx, 'apiStyle', value)}
+                                options={AZURE_API_STYLE_OPTIONS}
+                              />
+                            )}
+                            {overrideProvider && rowNeedsApiVersion(row) && (
                               <Input
                                 label='API Version'
                                 size='sm'
+                                required
                                 value={row.apiVersion}
                                 onChange={(value) => updateAgentRow(idx, 'apiVersion', value)}
                               />

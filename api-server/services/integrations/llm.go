@@ -45,7 +45,9 @@ func providerRequiredFields(provider string) []string {
 	case "sagemaker":
 		return []string{"llm_provider_region", "llm_provider_api_endpoint"}
 	case "azure":
-		return []string{"llm_provider_api_key", "llm_provider_api_endpoint", "llm_provider_api_version"}
+		// llm_provider_api_version is only needed for the classic API style;
+		// validated separately below.
+		return []string{"llm_provider_api_key", "llm_provider_api_endpoint"}
 	case "anthropic", "googleai", "huggingface", "openai", "vertexai":
 		return []string{"llm_provider_api_key"}
 	case "custom":
@@ -69,7 +71,7 @@ func providerRequiredSummaryFields(provider string) []string {
 	case "sagemaker":
 		return []string{"llm_provider_region_summary_agent", "llm_provider_api_endpoint_summary_agent"}
 	case "azure":
-		return []string{"llm_provider_api_key_summary_agent", "llm_provider_api_endpoint_summary_agent", "llm_provider_api_version_summary_agent"}
+		return []string{"llm_provider_api_key_summary_agent", "llm_provider_api_endpoint_summary_agent"}
 	case "anthropic", "googleai", "huggingface", "openai", "vertexai":
 		return []string{"llm_provider_api_key_summary_agent"}
 	case "custom":
@@ -165,7 +167,7 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				Default:     "api_key",
 				Priority:    18,
 				ShowWhen: map[string]any{
-					"llm_provider": []string{"custom"},
+					"llm_provider": []string{"custom", "azure"},
 				},
 			},
 			"llm_oauth_token_url": {
@@ -207,7 +209,7 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				Description: `Extra HTTP headers sent with every LLM request, as a JSON object (e.g. {"projectId": "abc-123"}). Authorization and api-key are managed by the auth settings and cannot be set here. Optional.`,
 				Priority:    16,
 				ShowWhen: map[string]any{
-					"llm_provider": []string{"custom"},
+					"llm_provider": []string{"custom", "azure"},
 				},
 			},
 			"llm_provider_api_endpoint": {
@@ -221,12 +223,23 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 					"llm_provider": []string{"azure", "openai", "custom", "sagemaker"},
 				},
 			},
+			"llm_provider_api_style": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Azure OpenAI API style. v1 calls {endpoint}/openai/v1/... and needs no api-version; classic calls {endpoint}/openai/deployments/{model}/...?api-version=... . In both, the model name is the Azure deployment name.",
+				Enum:        []any{"v1", "classic"},
+				Default:     "v1",
+				Priority:    16,
+				ShowWhen: map[string]any{
+					"llm_provider": []string{"azure"},
+				},
+			},
 			"llm_provider_api_version": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "API version of the LLM provider. Required for azure; for custom it is the api-version query parameter Azure-shaped gateways expect (e.g. 2025-01-01-preview).",
+				Description: "API version of the LLM provider. Required for azure when llm_provider_api_style is classic; for custom it is the api-version query parameter Azure-shaped gateways expect (e.g. 2025-01-01-preview).",
 				Priority:    16,
 				RequiredWhen: map[string]any{
-					"llm_provider": []string{"azure"},
+					"llm_provider":           []string{"azure"},
+					"llm_provider_api_style": []string{"classic"},
 				},
 				ShowWhen: map[string]any{
 					"llm_provider": []string{"azure", "custom"},
@@ -297,7 +310,7 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				Description: "The adapter ID for a fine-tuned model. Optional.",
 				Priority:    13,
 				ShowWhen: map[string]any{
-					"llm_provider": []string{"azure", "huggingface"},
+					"llm_provider": []string{"huggingface"},
 				},
 			},
 			"llm_provider_require_adapter_id": {
@@ -305,7 +318,7 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				Description: "Specifies whether an adapter ID is required for the selected provider. Optional.",
 				Priority:    12,
 				ShowWhen: map[string]any{
-					"llm_provider": []string{"azure", "huggingface"},
+					"llm_provider": []string{"huggingface"},
 				},
 			},
 			"llm_model_fallbacks": {
@@ -372,9 +385,8 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				Type:        core.ToolSchemaTypeString,
 				Description: "API version of the LLM provider to be used. Optional, used for version-specific compatibility.",
 				Priority:    5,
-				RequiredWhen: map[string]any{
+				ShowWhen: map[string]any{
 					"add_model_for_summarization": true,
-					"llm_provider_summary_agent":  []string{"azure"},
 				},
 			},
 			"llm_provider_region_summary_agent": {
@@ -401,7 +413,7 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				Priority:    2,
 				ShowWhen: map[string]any{
 					"add_model_for_summarization": true,
-					"llm_provider_summary_agent":  []string{"azure", "huggingface"},
+					"llm_provider_summary_agent":  []string{"huggingface"},
 				},
 			},
 			"llm_provider_require_adapter_id_summary_agent": {
@@ -410,7 +422,7 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 				Priority:    1,
 				ShowWhen: map[string]any{
 					"add_model_for_summarization": true,
-					"llm_provider_summary_agent":  []string{"azure", "huggingface"},
+					"llm_provider_summary_agent":  []string{"huggingface"},
 				},
 			},
 			"llm_model_fallbacks_summary_agent": {
@@ -452,8 +464,8 @@ func (m LLM) ValidateConfig(securityContext *security.SecurityContext, integrati
 		errs = append(errs, fmt.Errorf("llm_auth_type %q is invalid; must be api_key or oauth_client_credentials", authType))
 	}
 	if oauthMode {
-		if provider != "" && provider != "custom" {
-			errs = append(errs, fmt.Errorf("llm_auth_type oauth_client_credentials is only supported for the custom provider"))
+		if provider != "" && provider != "custom" && provider != "azure" {
+			errs = append(errs, fmt.Errorf("llm_auth_type oauth_client_credentials is only supported for the custom and azure providers"))
 		}
 		for _, f := range []string{"llm_oauth_token_url", "llm_oauth_client_id", "llm_oauth_client_secret"} {
 			if cfg[f] == "" {
@@ -469,10 +481,10 @@ func (m LLM) ValidateConfig(securityContext *security.SecurityContext, integrati
 	// rejected here (not just silently dropped by llm-server) so the user
 	// learns at save time instead of debugging a header that never arrives.
 	if eh := cfg["llm_extra_headers"]; eh != "" {
-		// llm-server only attaches the header transport on the custom
-		// provider, so reject rather than silently ignore elsewhere.
-		if provider != "" && provider != "custom" {
-			errs = append(errs, fmt.Errorf("llm_extra_headers is only supported for the custom provider"))
+		// llm-server only attaches the header transport on the custom and
+		// azure providers, so reject rather than silently ignore elsewhere.
+		if provider != "" && provider != "custom" && provider != "azure" {
+			errs = append(errs, fmt.Errorf("llm_extra_headers is only supported for the custom and azure providers"))
 		}
 		headers := map[string]string{}
 		if err := json.Unmarshal([]byte(eh), &headers); err != nil {
@@ -485,6 +497,8 @@ func (m LLM) ValidateConfig(securityContext *security.SecurityContext, integrati
 			}
 		}
 	}
+
+	errs = append(errs, validateAzureAPIStyles(cfg)...)
 
 	// Provider enum + provider-specific contracts.
 	if provider != "" {
@@ -1048,6 +1062,59 @@ func (m LLM) AllowsDynamicKey(name string) bool {
 		}
 	}
 	return false
+}
+
+// validateAzureAPIStyles checks every Azure API style key (global, tier, agent
+// and fallback slots) whose slot runs on azure: v1 or classic, and classic needs
+// its slot's api version. A stale style left on a slot that moved to another
+// provider is ignored.
+func validateAzureAPIStyles(cfg map[string]string) []error {
+	var names []string
+	for name := range cfg {
+		if strings.Contains(name, "api_style") {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	var errs []error
+	for _, name := range names {
+		if apiStyleSlotProvider(cfg, name) != "azure" {
+			continue
+		}
+		switch style := cfg[name]; style {
+		case "", "v1":
+		case "classic":
+			versionKey := strings.Replace(name, "api_style", "api_version", 1)
+			if cfg[versionKey] == "" {
+				errs = append(errs, fmt.Errorf("%s is required when %s is classic", versionKey, name))
+			}
+		default:
+			errs = append(errs, fmt.Errorf("%s %q is invalid; must be v1 or classic", name, style))
+		}
+	}
+	return errs
+}
+
+// apiStyleSlotProvider is the provider of the slot an api style key belongs to.
+// Tier and agent slots without their own provider inherit the global one.
+func apiStyleSlotProvider(cfg map[string]string, name string) string {
+	switch {
+	case name == "llm_provider_api_style":
+		return cfg["llm_provider"]
+	case strings.HasPrefix(name, "llm_fallback_api_style"):
+		return cfg["llm_fallback_provider"+strings.TrimPrefix(name, "llm_fallback_api_style")]
+	case strings.HasPrefix(name, "llm_tier_api_style_"):
+		if p := cfg["llm_tier_provider_"+strings.TrimPrefix(name, "llm_tier_api_style_")]; p != "" {
+			return p
+		}
+	case strings.HasPrefix(name, "llm_provider_api_style_"):
+		if p := cfg["llm_provider_"+strings.TrimPrefix(name, "llm_provider_api_style_")]; p != "" {
+			return p
+		}
+	default:
+		return ""
+	}
+	return cfg["llm_provider"]
 }
 
 // llmFallbackRefConfig is core.LLMFallbackRefConfig; a var so tests can stub the DB.

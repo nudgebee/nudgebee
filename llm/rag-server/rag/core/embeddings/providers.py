@@ -94,56 +94,35 @@ class OpenAIEmbeddings(_HttpxClientRefreshMixin, Embeddings):
 
 
 class AzureOpenAIEmbeddings(_HttpxClientRefreshMixin, Embeddings):
-    """Azure OpenAI embeddings using the openai SDK with azure config."""
+    """Azure OpenAI embeddings over the v1 or classic wire (see rag.core.llm.azure).
 
-    def __init__(self, api_key: str, model: str, api_version: str, azure_endpoint: str, **kwargs: Any):
+    ``model`` is the deployment name.
+    """
+
+    def __init__(self, api_key: str, model: str, api_version: str, azure_endpoint: str, api_style: str = "v1"):
         self._api_key = api_key
         self._api_version = api_version
         self._azure_endpoint = azure_endpoint
+        self._api_style = api_style
         self.model = model
         self.model_id = model
         self._call_count = 0
         self._create_client()
 
     def _create_client(self):
-        import openai
+        from rag.core.llm.azure import build_azure_openai_client
 
-        self._client = openai.AzureOpenAI(
-            api_key=self._api_key,
+        self._client = build_azure_openai_client(
+            endpoint=self._azure_endpoint,
+            api_style=self._api_style,
             api_version=self._api_version,
-            azure_endpoint=self._azure_endpoint,
+            api_key=self._api_key,
         )
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         self._maybe_refresh_client()
         resp = self._client.embeddings.create(input=texts, model=self.model)
         return [item.embedding for item in resp.data]
-
-    def embed_query(self, text: str) -> List[float]:
-        return self.embed_documents([text])[0]
-
-
-class AzureAIEmbeddings(_HttpxClientRefreshMixin, Embeddings):
-    """Azure AI embeddings using azure-ai-inference SDK."""
-
-    def __init__(self, endpoint: str, credential: str, model_name: str, api_version: str = ""):
-        self._endpoint = endpoint
-        self._credential = credential
-        self.model = model_name
-        self.model_id = model_name
-        self._call_count = 0
-        self._create_client()
-
-    def _create_client(self):
-        from azure.ai.inference import EmbeddingsClient
-        from azure.core.credentials import AzureKeyCredential
-
-        self._client = EmbeddingsClient(endpoint=self._endpoint, credential=AzureKeyCredential(self._credential))
-
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        self._maybe_refresh_client()
-        resp = self._client.embed(input=texts, model=self.model)
-        return [[float(x) for x in item.embedding] for item in resp.data]
 
     def embed_query(self, text: str) -> List[float]:
         return self.embed_documents([text])[0]
