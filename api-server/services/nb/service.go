@@ -470,6 +470,37 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 				) DELETE FROM application_profile WHERE id IN (SELECT id FROM to_del)`,
 					config.Config.NBRetentionDaysApplicationProfiles, cleanupBatchSize),
 			},
+			{
+				// One row per anomaly detection; no table references anomaly, and readers
+				// (UI list, anomaly_execute tool) look back at most a month. Metric anomalies
+				// link to their event by fingerprint and have a NULL anomaly_status.
+				// Cloud-spend anomalies stay OPEN while the spend stays high and their event's
+				// finding_id is the row id, so an OPEN row is kept regardless of age: deleting
+				// it would leave its event FIRING forever and re-open a duplicate.
+				Name:      "anomaly",
+				Metastore: database.Metastore,
+				Batched:   true,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT id FROM anomaly
+					WHERE created_at < now() - interval '%d days'
+					  AND anomaly_status IS DISTINCT FROM 'OPEN'
+					LIMIT %d
+				) DELETE FROM anomaly WHERE id IN (SELECT id FROM to_del)`,
+					config.Config.NBRetentionDaysAnomalies, cleanupBatchSize),
+			},
+			{
+				// Periodic SLO measurements. slo_report only references slo_config, and
+				// nothing references slo_report.
+				Name:      "slo_report",
+				Metastore: database.Metastore,
+				Batched:   true,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT id FROM slo_report
+					WHERE created_at < now() - interval '%d days'
+					LIMIT %d
+				) DELETE FROM slo_report WHERE id IN (SELECT id FROM to_del)`,
+					config.Config.NBRetentionDaysSloReports, cleanupBatchSize),
+			},
 		}
 
 	jobsToRemove := []dataCleanupJob{}

@@ -24,4 +24,6 @@ func TestJobCleanup(t *testing.T) {
 	CleanupData(ctx, "cloud_resource_metrics")
 	CleanupData(ctx, "cloud_resources_inactive")
 	CleanupData(ctx, "application_profile")
+	CleanupData(ctx, "anomaly")
+	CleanupData(ctx, "slo_report")
 }

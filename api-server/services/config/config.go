@@ -259,6 +259,12 @@ type appConfig struct {
 	// Retention window for workload CPU/memory profile dumps in application_profile.
 	NBRetentionDaysApplicationProfiles int `mapstructure:"nb_retention_days_application_profiles"`
 
+	// Retention window for anomaly detection rows. Readers look back at most a month.
+	NBRetentionDaysAnomalies int `mapstructure:"nb_retention_days_anomalies"`
+
+	// Retention window for slo_report rows. The SLO views read the last 30 days.
+	NBRetentionDaysSloReports int `mapstructure:"nb_retention_days_slo_reports"`
+
 	// Oldest stuck webhook delivery the recovery cron will re-drive. Older ones
 	// are marked skipped: replaying a stale alert re-runs analysis on today's data.
 	StuckWebhookRecoveryMaxAgeMinutes int `mapstructure:"stuck_webhook_recovery_max_age_minutes"`
@@ -630,6 +636,8 @@ func init() {
 	viper.SetDefault("nb_retention_days_inactive_cloud_resources", 30)
 	viper.SetDefault("nb_retention_days_cloud_resource_metrics", 60)
 	viper.SetDefault("nb_retention_days_application_profiles", 30)
+	viper.SetDefault("nb_retention_days_anomalies", 90)
+	viper.SetDefault("nb_retention_days_slo_reports", 90)
 	viper.SetDefault("stuck_webhook_recovery_max_age_minutes", 60)
 	viper.SetDefault("nb_retention_days_rag_retrieval_trace", 30)
 	viper.SetDefault("nb_retention_days_event_analysis", 90)
