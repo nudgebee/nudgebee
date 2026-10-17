@@ -280,6 +280,9 @@ func (sc *SecurityContext) CanReadAccountData(accountId string, module string) b
 // implies Read and Execute. The llm-server helper of the same name answers the
 // same (testdata/can_cases.json).
 func (sc *SecurityContext) Can(accountId string, module string, class string) bool {
+	if sc == nil {
+		return false
+	}
 	switch class {
 	case "Read":
 		return sc.CanReadAccountData(accountId, module)
@@ -300,13 +303,26 @@ func IntegrationModule(integrationType string) string {
 	return "integrations." + strings.ToLower(strings.TrimSpace(integrationType))
 }
 
-// MayUseIntegration reports whether a principal whose integration use is
-// granted per type (a bee) may use an integration of integrationType on
-// accountId: Read lets it read through the integration, Execute also lets it
-// make changes. Write on the module is the right to manage the integration and
-// does not let the holder use it. The llm-server helper of the same name
+// MayUseIntegration reports whether the principal may use an integration of
+// integrationType on accountId: write to make changes through it, else to read
+// through it. A built-in account role that allows the change (create) or the
+// read on the account allows any integration, as it allows any module (Can);
+// otherwise it takes a use grant on integrations.<type>: Read reads through
+// the integration, Execute also makes changes. Write on that module is the
+// right to manage the integration and does not let the holder use it. A bee
+// holds no built-in role, so for a bee only its grants count. The llm-server helper of the same name
 // answers the same (testdata/can_cases.json).
 func (sc *SecurityContext) MayUseIntegration(accountId string, integrationType string, write bool) bool {
+	if sc == nil {
+		return false
+	}
+	access := SecurityAccessTypeRead
+	if write {
+		access = SecurityAccessTypeCreate
+	}
+	if sc.HasAccountAccess(accountId, access) {
+		return true
+	}
 	module := IntegrationModule(integrationType)
 	if sc.HasScopedPermission(accountId, module, "Execute") {
 		return true

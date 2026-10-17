@@ -1,0 +1,1478 @@
+{
+  "_comment": "StepNeeds answers: the grants a principal needs on the step's account to run each step type with these params. 'types' is what each integration ref resolves to (a ref not listed is not in the tenant). runbook-server's TestStepNeedsCases runs this table; the bee install's grant computation should run it too.",
+  "cases": [
+    {
+      "name": "core.foreach: needs nothing",
+      "task": "core.foreach",
+      "want": []
+    },
+    {
+      "name": "core.group: needs nothing",
+      "task": "core.group",
+      "want": []
+    },
+    {
+      "name": "core.print: needs nothing",
+      "task": "core.print",
+      "want": []
+    },
+    {
+      "name": "core.switch: needs nothing",
+      "task": "core.switch",
+      "want": []
+    },
+    {
+      "name": "core.wait: needs nothing",
+      "task": "core.wait",
+      "want": []
+    },
+    {
+      "name": "crypto.decode: needs nothing",
+      "task": "crypto.decode",
+      "want": []
+    },
+    {
+      "name": "crypto.decrypt: needs nothing",
+      "task": "crypto.decrypt",
+      "want": []
+    },
+    {
+      "name": "crypto.encode: needs nothing",
+      "task": "crypto.encode",
+      "want": []
+    },
+    {
+      "name": "crypto.encrypt: needs nothing",
+      "task": "crypto.encrypt",
+      "want": []
+    },
+    {
+      "name": "crypto.hash: needs nothing",
+      "task": "crypto.hash",
+      "want": []
+    },
+    {
+      "name": "data.filter: needs nothing",
+      "task": "data.filter",
+      "want": []
+    },
+    {
+      "name": "data.transform: needs nothing",
+      "task": "data.transform",
+      "want": []
+    },
+    {
+      "name": "core.approval: notifications:Write",
+      "task": "core.approval",
+      "want": [
+        {
+          "module": "notifications",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "core.call-workflow: workflows:Execute",
+      "task": "core.call-workflow",
+      "want": [
+        {
+          "module": "workflows",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "network.dns: workflows:Execute",
+      "task": "network.dns",
+      "want": [
+        {
+          "module": "workflows",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "network.ntp: workflows:Execute",
+      "task": "network.ntp",
+      "want": [
+        {
+          "module": "workflows",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "network.ping: workflows:Execute",
+      "task": "network.ping",
+      "want": [
+        {
+          "module": "workflows",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "network.ssl: workflows:Execute",
+      "task": "network.ssl",
+      "want": [
+        {
+          "module": "workflows",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "network.tcp: workflows:Execute",
+      "task": "network.tcp",
+      "want": [
+        {
+          "module": "workflows",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "network.traceroute: workflows:Execute",
+      "task": "network.traceroute",
+      "want": [
+        {
+          "module": "workflows",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "network.whois: workflows:Execute",
+      "task": "network.whois",
+      "want": [
+        {
+          "module": "workflows",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.cli: k8s:Execute",
+      "task": "k8s.cli",
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.continuous_rightsize: k8s:Execute",
+      "task": "k8s.continuous_rightsize",
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.node_graceful_shutdown: k8s:Execute",
+      "task": "k8s.node_graceful_shutdown",
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.pod_delete: k8s:Execute",
+      "task": "k8s.pod_delete",
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.profile: k8s:Execute",
+      "task": "k8s.profile",
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.workload_restart: k8s:Execute",
+      "task": "k8s.workload_restart",
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "cloud.k8s.cli: k8s:Execute",
+      "task": "cloud.k8s.cli",
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "aws.cli: cloud:Execute",
+      "task": "aws.cli",
+      "want": [
+        {
+          "module": "cloud",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "azure.cli: cloud:Execute",
+      "task": "azure.cli",
+      "want": [
+        {
+          "module": "cloud",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "gcp.cli: cloud:Execute",
+      "task": "gcp.cli",
+      "want": [
+        {
+          "module": "cloud",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "cloud.aws.cli: cloud:Execute",
+      "task": "cloud.aws.cli",
+      "want": [
+        {
+          "module": "cloud",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "cloud.azure.cli: cloud:Execute",
+      "task": "cloud.azure.cli",
+      "want": [
+        {
+          "module": "cloud",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "cloud.gcp.cli: cloud:Execute",
+      "task": "cloud.gcp.cli",
+      "want": [
+        {
+          "module": "cloud",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "integrations.http: integrations:Write",
+      "task": "integrations.http",
+      "want": [
+        {
+          "module": "integrations",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "llm.a2a_call: integrations:Write",
+      "task": "llm.a2a_call",
+      "want": [
+        {
+          "module": "integrations",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "llm.classify: llm:Execute",
+      "task": "llm.classify",
+      "want": [
+        {
+          "module": "llm",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "llm.event_investigate: llm:Execute",
+      "task": "llm.event_investigate",
+      "want": [
+        {
+          "module": "llm",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "llm.investigate: llm:Execute",
+      "task": "llm.investigate",
+      "want": [
+        {
+          "module": "llm",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "llm.nubi: llm:Execute",
+      "task": "llm.nubi",
+      "want": [
+        {
+          "module": "llm",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "llm.router: llm:Execute",
+      "task": "llm.router",
+      "want": [
+        {
+          "module": "llm",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "llm.summary: llm:Execute",
+      "task": "llm.summary",
+      "want": [
+        {
+          "module": "llm",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "events.add_evidence: events:Write",
+      "task": "events.add_evidence",
+      "want": [
+        {
+          "module": "events",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "events.store: events:Write",
+      "task": "events.store",
+      "want": [
+        {
+          "module": "events",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "observability.log_groups: logs:Read",
+      "task": "observability.log_groups",
+      "want": [
+        {
+          "module": "logs",
+          "class": "Read"
+        }
+      ]
+    },
+    {
+      "name": "observability.logs: logs:Read",
+      "task": "observability.logs",
+      "want": [
+        {
+          "module": "logs",
+          "class": "Read"
+        }
+      ]
+    },
+    {
+      "name": "observability.metrics: metrics:Read",
+      "task": "observability.metrics",
+      "want": [
+        {
+          "module": "metrics",
+          "class": "Read"
+        }
+      ]
+    },
+    {
+      "name": "observability.traces: traces:Read",
+      "task": "observability.traces",
+      "want": [
+        {
+          "module": "traces",
+          "class": "Read"
+        }
+      ]
+    },
+    {
+      "name": "notifications.add_channel_members: notifications:Write",
+      "task": "notifications.add_channel_members",
+      "want": [
+        {
+          "module": "notifications",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "notifications.add_reaction: notifications:Write",
+      "task": "notifications.add_reaction",
+      "want": [
+        {
+          "module": "notifications",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "notifications.create_channel: notifications:Write",
+      "task": "notifications.create_channel",
+      "want": [
+        {
+          "module": "notifications",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "notifications.dm: notifications:Write",
+      "task": "notifications.dm",
+      "want": [
+        {
+          "module": "notifications",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "notifications.email: notifications:Write",
+      "task": "notifications.email",
+      "want": [
+        {
+          "module": "notifications",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "notifications.im: notifications:Write",
+      "task": "notifications.im",
+      "want": [
+        {
+          "module": "notifications",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "notifications.read_thread: notifications:Read",
+      "task": "notifications.read_thread",
+      "want": [
+        {
+          "module": "notifications",
+          "class": "Read"
+        }
+      ]
+    },
+    {
+      "name": "slack.join_channel: notifications:Write",
+      "task": "slack.join_channel",
+      "want": [
+        {
+          "module": "notifications",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "google_chat.join_space: notifications:Write",
+      "task": "google_chat.join_space",
+      "want": [
+        {
+          "module": "notifications",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "vertical_rightsize_generate: recommendations:Execute",
+      "task": "vertical_rightsize_generate",
+      "want": [
+        {
+          "module": "recommendations",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "cicd.argocd.cli: the argocd integration it names",
+      "task": "cicd.argocd.cli",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "argocd"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.argocd",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "cicd.argocd.cli: none named, its one type",
+      "task": "cicd.argocd.cli",
+      "params": {},
+      "want": [
+        {
+          "module": "integrations.argocd",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "dbms.redis.cli: the redis integration it names",
+      "task": "dbms.redis.cli",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "redis"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.redis",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "dbms.redis.cli: none named, its one type",
+      "task": "dbms.redis.cli",
+      "params": {},
+      "want": [
+        {
+          "module": "integrations.redis",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "integrations.ssh: the ssh integration it names",
+      "task": "integrations.ssh",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "ssh"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.ssh",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "integrations.ssh: none named, its one type",
+      "task": "integrations.ssh",
+      "params": {},
+      "want": [
+        {
+          "module": "integrations.ssh",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "mq.rabbitmqadmin.cli: the rabbitmq integration it names",
+      "task": "mq.rabbitmqadmin.cli",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "rabbitmq"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.rabbitmq",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "mq.rabbitmqadmin.cli: none named, its one type",
+      "task": "mq.rabbitmqadmin.cli",
+      "params": {},
+      "want": [
+        {
+          "module": "integrations.rabbitmq",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "scm.github.cli: the github integration it names",
+      "task": "scm.github.cli",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "github"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.github",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "scm.github.cli: none named, its one type",
+      "task": "scm.github.cli",
+      "params": {},
+      "want": [
+        {
+          "module": "integrations.github",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "scm.gitlab.cli: the gitlab integration it names",
+      "task": "scm.gitlab.cli",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "gitlab"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.gitlab",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "scm.gitlab.cli: none named, its one type",
+      "task": "scm.gitlab.cli",
+      "params": {},
+      "want": [
+        {
+          "module": "integrations.gitlab",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "dbms.query: a mysql integration",
+      "task": "dbms.query",
+      "params": {
+        "integration_id": "I",
+        "dbms_type": "mysql"
+      },
+      "types": {
+        "I": [
+          "mysql"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.mysql",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "dbms.query: a postgresql integration",
+      "task": "dbms.query",
+      "params": {
+        "integration_id": "I",
+        "dbms_type": "postgresql"
+      },
+      "types": {
+        "I": [
+          "postgresql"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.postgresql",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "dbms.query: a clickhouse integration",
+      "task": "dbms.query",
+      "params": {
+        "integration_id": "I",
+        "dbms_type": "clickhouse"
+      },
+      "types": {
+        "I": [
+          "clickhouse"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.clickhouse",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "dbms.query: a mssql integration",
+      "task": "dbms.query",
+      "params": {
+        "integration_id": "I",
+        "dbms_type": "mssql"
+      },
+      "types": {
+        "I": [
+          "mssql"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.mssql",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "dbms.query: a oracle integration",
+      "task": "dbms.query",
+      "params": {
+        "integration_id": "I",
+        "dbms_type": "oracle"
+      },
+      "types": {
+        "I": [
+          "oracle"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.oracle",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "dbms.query: none named",
+      "task": "dbms.query",
+      "params": {
+        "dbms_type": "mysql"
+      },
+      "error": "names no integration"
+    },
+    {
+      "name": "tickets.acknowledge: a pagerduty integration",
+      "task": "tickets.acknowledge",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "pagerduty"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.pagerduty",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "tickets.escalate: a pagerduty integration",
+      "task": "tickets.escalate",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "pagerduty"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.pagerduty",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "tickets.resolve: a pagerduty integration",
+      "task": "tickets.resolve",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "pagerduty"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.pagerduty",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "tickets.add_comment: a jira integration",
+      "task": "tickets.add_comment",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "jira"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.jira",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "tickets.assign: a jira integration",
+      "task": "tickets.assign",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "jira"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.jira",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "tickets.create: a jira integration",
+      "task": "tickets.create",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "jira"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.jira",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "tickets.transition: a jira integration",
+      "task": "tickets.transition",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "jira"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.jira",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "tickets.update: a jira integration",
+      "task": "tickets.update",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "jira"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.jira",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "tickets.get: a jira integration",
+      "task": "tickets.get",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "jira"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.jira",
+          "class": "Read"
+        }
+      ]
+    },
+    {
+      "name": "tickets.get_comments: a jira integration",
+      "task": "tickets.get_comments",
+      "params": {
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "jira"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.jira",
+          "class": "Read"
+        }
+      ]
+    },
+    {
+      "name": "tickets.create: a name matching a Jira and a GitHub integration",
+      "task": "tickets.create",
+      "params": {
+        "integration_id": "prod"
+      },
+      "types": {
+        "prod": [
+          "jira",
+          "github"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.jira",
+          "class": "Execute"
+        },
+        {
+          "module": "integrations.github",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "tickets.create: an integration the tenant does not have",
+      "task": "tickets.create",
+      "params": {
+        "integration_id": "nope"
+      },
+      "error": "integration not found"
+    },
+    {
+      "name": "tickets.create: none named",
+      "task": "tickets.create",
+      "params": {},
+      "error": "names no integration"
+    },
+    {
+      "name": "llm.mcp_call: through an MCP integration",
+      "task": "llm.mcp_call",
+      "params": {
+        "connection_mode": "integration",
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "mcp"
+        ]
+      },
+      "want": [
+        {
+          "module": "integrations.mcp",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "llm.mcp_call: straight to a URL",
+      "task": "llm.mcp_call",
+      "params": {
+        "connection_mode": "direct",
+        "url": "https://example.com/mcp"
+      },
+      "want": [
+        {
+          "module": "integrations",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "scripting.run_script: no SSH",
+      "task": "scripting.run_script",
+      "params": {
+        "executor_type": "kubernetes"
+      },
+      "want": [
+        {
+          "module": "workflows",
+          "class": "Write"
+        }
+      ]
+    },
+    {
+      "name": "scripting.run_script: over an SSH integration",
+      "task": "scripting.run_script",
+      "params": {
+        "executor_type": "ssh",
+        "integration_id": "I"
+      },
+      "types": {
+        "I": [
+          "ssh"
+        ]
+      },
+      "want": [
+        {
+          "module": "workflows",
+          "class": "Write"
+        },
+        {
+          "module": "integrations.ssh",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.vertical_rightsize: patches the cluster",
+      "task": "k8s.vertical_rightsize",
+      "params": {},
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.vertical_rightsize: GitOps off",
+      "task": "k8s.vertical_rightsize",
+      "params": {
+        "gitops_config": {
+          "enabled": false,
+          "integration_id": "I"
+        }
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.vertical_rightsize: GitOps through a GitHub integration",
+      "task": "k8s.vertical_rightsize",
+      "params": {
+        "gitops_config": {
+          "enabled": true,
+          "integration_id": "I"
+        }
+      },
+      "types": {
+        "I": [
+          "github"
+        ]
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Read"
+        },
+        {
+          "module": "integrations.github",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.vertical_rightsize: GitOps naming no integration",
+      "task": "k8s.vertical_rightsize",
+      "params": {
+        "gitops_config": {
+          "enabled": true
+        }
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Read"
+        },
+        {
+          "module": "integrations.github",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.horizontal_rightsize: patches the cluster",
+      "task": "k8s.horizontal_rightsize",
+      "params": {},
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.horizontal_rightsize: GitOps off",
+      "task": "k8s.horizontal_rightsize",
+      "params": {
+        "gitops_config": {
+          "enabled": false,
+          "integration_id": "I"
+        }
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.horizontal_rightsize: GitOps through a GitHub integration",
+      "task": "k8s.horizontal_rightsize",
+      "params": {
+        "gitops_config": {
+          "enabled": true,
+          "integration_id": "I"
+        }
+      },
+      "types": {
+        "I": [
+          "github"
+        ]
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Read"
+        },
+        {
+          "module": "integrations.github",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.horizontal_rightsize: GitOps naming no integration",
+      "task": "k8s.horizontal_rightsize",
+      "params": {
+        "gitops_config": {
+          "enabled": true
+        }
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Read"
+        },
+        {
+          "module": "integrations.github",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.pv_rightsize: patches the cluster",
+      "task": "k8s.pv_rightsize",
+      "params": {},
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.pv_rightsize: GitOps off",
+      "task": "k8s.pv_rightsize",
+      "params": {
+        "gitops_config": {
+          "enabled": false,
+          "integration_id": "I"
+        }
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.pv_rightsize: GitOps through a GitHub integration",
+      "task": "k8s.pv_rightsize",
+      "params": {
+        "gitops_config": {
+          "enabled": true,
+          "integration_id": "I"
+        }
+      },
+      "types": {
+        "I": [
+          "github"
+        ]
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Read"
+        },
+        {
+          "module": "integrations.github",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.pv_rightsize: GitOps naming no integration",
+      "task": "k8s.pv_rightsize",
+      "params": {
+        "gitops_config": {
+          "enabled": true
+        }
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Read"
+        },
+        {
+          "module": "integrations.github",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.vertical_rightsize: GitOps on a GitLab provider",
+      "task": "k8s.vertical_rightsize",
+      "params": {
+        "gitops_config": {
+          "enabled": true,
+          "provider": "gitlab"
+        }
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Read"
+        },
+        {
+          "module": "integrations.gitlab",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.vertical_rightsize: GitOps repository_name that names no integration",
+      "task": "k8s.vertical_rightsize",
+      "params": {
+        "gitops_config": {
+          "enabled": true,
+          "repository_name": "org/repo"
+        }
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Read"
+        },
+        {
+          "module": "integrations.github",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.vertical_rightsize: a ticket in place of the change",
+      "task": "k8s.vertical_rightsize",
+      "params": {
+        "ticket_config": {
+          "enabled": true,
+          "configuration_id": "J"
+        }
+      },
+      "types": {
+        "J": [
+          "jira"
+        ]
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Read"
+        },
+        {
+          "module": "integrations.jira",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.vertical_rightsize: a ticket setting naming no integration",
+      "task": "k8s.vertical_rightsize",
+      "params": {
+        "ticket_config": {
+          "enabled": true
+        }
+      },
+      "error": "names no integration"
+    },
+    {
+      "name": "k8s.horizontal_rightsize: GitOps on a GitLab provider",
+      "task": "k8s.horizontal_rightsize",
+      "params": {
+        "gitops_config": {
+          "enabled": true,
+          "provider": "gitlab"
+        }
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Read"
+        },
+        {
+          "module": "integrations.gitlab",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.horizontal_rightsize: GitOps repository_name that names no integration",
+      "task": "k8s.horizontal_rightsize",
+      "params": {
+        "gitops_config": {
+          "enabled": true,
+          "repository_name": "org/repo"
+        }
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Read"
+        },
+        {
+          "module": "integrations.github",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.horizontal_rightsize: a ticket in place of the change",
+      "task": "k8s.horizontal_rightsize",
+      "params": {
+        "ticket_config": {
+          "enabled": true,
+          "configuration_id": "J"
+        }
+      },
+      "types": {
+        "J": [
+          "jira"
+        ]
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Read"
+        },
+        {
+          "module": "integrations.jira",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "k8s.horizontal_rightsize: a ticket setting naming no integration",
+      "task": "k8s.horizontal_rightsize",
+      "params": {
+        "ticket_config": {
+          "enabled": true
+        }
+      },
+      "error": "names no integration"
+    },
+    {
+      "name": "k8s.pv_rightsize: a ticket setting is ignored",
+      "task": "k8s.pv_rightsize",
+      "params": {
+        "ticket_config": {
+          "enabled": true,
+          "configuration_id": "J"
+        }
+      },
+      "types": {
+        "J": [
+          "jira"
+        ]
+      },
+      "want": [
+        {
+          "module": "k8s",
+          "class": "Execute"
+        }
+      ]
+    },
+    {
+      "name": "unknown step type",
+      "task": "made.up",
+      "params": {},
+      "error": "declares no permission requirement"
+    }
+  ]
+}

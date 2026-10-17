@@ -140,7 +140,7 @@ func (tw *TaskWrapper) Execute(ctx context.Context, params map[string]any) (any,
 		RunAccountID:  accountID,
 		StepAccountID: stepAccount,
 		CheckRunRight: true,
-		Integrations:  IntegrationUses(tw.Task.InputSchema(), params),
+		Params:        params,
 	})
 	activity.GetLogger(ctx).Info("step authorization",
 		"task", tw.Task.GetName(), "principal", principal, "account_id", stepAccount,

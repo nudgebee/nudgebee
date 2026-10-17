@@ -35,15 +35,25 @@ func IntegrationModule(integrationType string) string {
 	return "integrations." + strings.ToLower(strings.TrimSpace(integrationType))
 }
 
-// MayUseIntegration reports whether a principal whose integration use is
-// granted per type (a bee) may use an integration of integrationType on
-// accountId: Read lets it read through the integration, Execute also lets it
-// make changes. Write on the module is the right to manage the integration and
-// does not let the holder use it. runbook-server's helper of the same name
+// MayUseIntegration reports whether the principal may use an integration of
+// integrationType on accountId: write to make changes through it, else to read
+// through it. A built-in account role that allows the change (create) or the
+// read on the account allows any integration, as it allows any module (Can);
+// otherwise it takes a use grant on integrations.<type>: Read reads through
+// the integration, Execute also makes changes. Write on that module is the
+// right to manage the integration and does not let the holder use it. A bee
+// holds no built-in role, so for a bee only its grants count. runbook-server's helper of the same name
 // answers the same.
 func (sc *SecurityContext) MayUseIntegration(accountId string, integrationType string, write bool) bool {
 	if sc == nil {
 		return false
+	}
+	access := SecurityAccessTypeRead
+	if write {
+		access = SecurityAccessTypeCreate
+	}
+	if sc.HasAccountAccess(accountId, access) {
+		return true
 	}
 	module := IntegrationModule(integrationType)
 	if sc.HasScopedPermission(accountId, module, "Execute") {

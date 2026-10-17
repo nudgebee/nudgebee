@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"nudgebee/runbook/common"
+	"nudgebee/runbook/internal/tasks/tickets"
 	"nudgebee/runbook/services/security"
 
 	"go.temporal.io/sdk/temporal"
@@ -16,24 +18,55 @@ import (
 
 // StepRequirement is what a step type needs and how much it can change.
 //
-// Module and Class are the permission a principal needs, on the account a step
-// touches, for that step to run. They use the platform's permission vocabulary
-// (`<module>:<Read|Write|Execute>`, the same strings custom roles grant). An
-// empty Module means the step has no effect outside the run (control flow,
-// data shaping) and needs no permission.
+// A step needs exactly the grant for what it acts on, on the account it
+// touches, in the platform's permission vocabulary (`<module>:<class>`, the
+// same strings custom roles grant):
+//   - Module and Class: a step that acts on a platform area (a cluster, a cloud
+//     account, notifications) needs <Module>:<Class>.
+//   - Through: a step that acts through an integration (a ticket, an SSH host,
+//     a database, an MCP server, a source-control CLI) needs the use grant for
+//     that integration's stored type, integrations.<type>:<Class>, and nothing
+//     else. Read uses it read-only; Execute also makes changes.
+//   - needs: a step whose effect depends on its params (a cluster change that
+//     GitOps turns into a pull request) works its needs out from them.
+//
+// A step with none of these has no effect outside the run (control flow, data
+// shaping) and needs no permission. People and bees are held to the same
+// needs; StepNeeds lists them.
 //
 // Tier is how much the step can change, whoever runs it: see TierRead,
 // TierChange and TierUnrestricted. An automation's tier is the highest tier
 // among its steps; it decides how a packaged agent's automation may run
 // unattended, and a run that carries a tier ceiling refuses any step above it.
 type StepRequirement struct {
-	Module string
-	Class  string
-	Tier   int
+	Module  string
+	Class   string
+	Tier    int
+	Through *IntegrationParam
+	// needs works the step's needs out from its params; fields lists the
+	// integration params it reads (TestEveryIntegrationFieldIsChecked).
+	needs  func(params map[string]any) []need
+	fields []string
+}
+
+// IntegrationParam is the param a through step names its integration in (a
+// dotted path into the params), and the stored types the task accepts there.
+type IntegrationParam struct {
+	Param string
+	Types []string
 }
 
 // None reports whether the step needs no permission.
-func (r StepRequirement) None() bool { return r.Module == "" }
+func (r StepRequirement) None() bool { return r.Module == "" && r.Through == nil && r.needs == nil }
+
+// IntegrationFields are the params naming an integration that the step is
+// checked on.
+func (r StepRequirement) IntegrationFields() []string {
+	if r.Through != nil {
+		return []string{r.Through.Param}
+	}
+	return r.fields
+}
 
 // Tiers, lowest first.
 const (
@@ -72,6 +105,17 @@ func execute(module string) StepRequirement {
 	return StepRequirement{Module: module, Class: classExecute}
 }
 
+// through is a step that acts only through the integration named in param,
+// one of types: it needs integrations.<type>:class.
+func through(class, param string, types ...string) StepRequirement {
+	return StepRequirement{Class: class, Through: &IntegrationParam{Param: param, Types: types}}
+}
+
+// dynamic is a step whose needs depend on its params.
+func dynamic(needs func(map[string]any) []need, fields ...string) StepRequirement {
+	return StepRequirement{needs: needs, fields: fields}
+}
+
 // none is a step that needs no permission.
 func none(tier int) StepRequirement { return StepRequirement{Tier: tier} }
 
@@ -81,16 +125,29 @@ func (r StepRequirement) at(tier int) StepRequirement {
 	return r
 }
 
+// dbmsTypes are the integration types dbms.query accepts, as it resolves them.
+var dbmsTypes = []string{"mysql", "postgresql", "clickhouse", "mssql", "oracle"}
+
 // stepRequirements declares, for every registered task type, what a run's
 // principal must hold for the step to execute, and the step's tier. Unlisted
 // task types are refused (fail closed); TestEveryRegisteredTaskDeclaresAStepRequirement
-// keeps this table complete.
+// keeps this table complete, and TestEveryIntegrationFieldIsChecked keeps every
+// integration a task can be pointed at checked.
+//
+// A step that changes something needs Execute on its module, the right to run,
+// which Write (manage) also covers. Steps on the notifications and events
+// modules stay on Write: Execute there is the class the role editor offers for
+// narrow actions (a channel watch, an analysis digest), and a role holding it
+// for those must not start sending messages. A step that calls an endpoint of
+// its own choosing with no integration behind it (HTTP, A2A, an MCP URL) needs
+// integrations:Write.
 //
 // Tasks whose effect depends on free-form input (CLIs, scripts, HTTP, SSH, DB
-// queries) are Write and TierUnrestricted: a read-only command cannot be told
-// apart from a write without parsing it. The source-control CLIs run their
-// command as a shell script with the integration's token in its environment;
-// core.call-workflow and the agent runs start steps this table never sees.
+// queries) need the change class and are TierUnrestricted: a read-only command
+// cannot be told apart from a write without parsing it. The source-control CLIs
+// run their command as a shell script with the integration's token in its
+// environment; core.call-workflow and the agent runs start steps this table
+// never sees.
 var stepRequirements = map[string]StepRequirement{
 	// Control flow and pure data shaping: no effect outside the run.
 	"core.foreach":   none(TierRead),
@@ -120,39 +177,45 @@ var stepRequirements = map[string]StepRequirement{
 	"network.traceroute": execute("workflows").at(TierRead),
 	"network.whois":      execute("workflows").at(TierRead),
 
-	"k8s.cli":                    write("k8s").at(TierUnrestricted),
-	"k8s.continuous_rightsize":   write("k8s").at(TierChange),
-	"k8s.horizontal_rightsize":   write("k8s").at(TierChange),
-	"k8s.node_graceful_shutdown": write("k8s").at(TierChange),
-	"k8s.pod_delete":             write("k8s").at(TierChange),
-	"k8s.profile":                write("k8s").at(TierChange),
-	"k8s.pv_rightsize":           write("k8s").at(TierChange),
-	"k8s.vertical_rightsize":     write("k8s").at(TierChange),
-	"k8s.workload_restart":       write("k8s").at(TierChange),
-	"cloud.k8s.cli":              write("k8s").at(TierUnrestricted),
-	"cicd.argocd.cli":            write("k8s").at(TierUnrestricted),
+	"k8s.cli":                    execute("k8s").at(TierUnrestricted),
+	"k8s.continuous_rightsize":   execute("k8s").at(TierChange),
+	"k8s.node_graceful_shutdown": execute("k8s").at(TierChange),
+	"k8s.pod_delete":             execute("k8s").at(TierChange),
+	"k8s.profile":                execute("k8s").at(TierChange),
+	"k8s.workload_restart":       execute("k8s").at(TierChange),
+	"cloud.k8s.cli":              execute("k8s").at(TierUnrestricted),
+	// With GitOps (or a ticket) on, the change becomes a pull request (or a
+	// ticket) and the cluster is only read: see rightsizeNeeds.
+	"k8s.horizontal_rightsize": dynamic(rightsizeNeeds(true), gitOpsFields...).at(TierChange),
+	"k8s.vertical_rightsize":   dynamic(rightsizeNeeds(true), gitOpsFields...).at(TierChange),
+	"k8s.pv_rightsize":         dynamic(rightsizeNeeds(false), "gitops_config.integration_id").at(TierChange),
 
-	"aws.cli":         write("cloud").at(TierUnrestricted),
-	"azure.cli":       write("cloud").at(TierUnrestricted),
-	"gcp.cli":         write("cloud").at(TierUnrestricted),
-	"cloud.aws.cli":   write("cloud").at(TierUnrestricted),
-	"cloud.azure.cli": write("cloud").at(TierUnrestricted),
-	"cloud.gcp.cli":   write("cloud").at(TierUnrestricted),
+	"aws.cli":         execute("cloud").at(TierUnrestricted),
+	"azure.cli":       execute("cloud").at(TierUnrestricted),
+	"gcp.cli":         execute("cloud").at(TierUnrestricted),
+	"cloud.aws.cli":   execute("cloud").at(TierUnrestricted),
+	"cloud.azure.cli": execute("cloud").at(TierUnrestricted),
+	"cloud.gcp.cli":   execute("cloud").at(TierUnrestricted),
 
-	"dbms.query":     write("database").at(TierUnrestricted),
-	"dbms.redis.cli": write("database").at(TierUnrestricted),
+	// Steps that act through the integration they name.
+	"cicd.argocd.cli":      through(classExecute, "integration_id", "argocd").at(TierUnrestricted),
+	"dbms.query":           through(classExecute, "integration_id", dbmsTypes...).at(TierUnrestricted),
+	"dbms.redis.cli":       through(classExecute, "integration_id", "redis").at(TierUnrestricted),
+	"integrations.ssh":     through(classExecute, "integration_id", "ssh").at(TierUnrestricted),
+	"mq.rabbitmqadmin.cli": through(classExecute, "integration_id", "rabbitmq").at(TierUnrestricted),
+	"scm.github.cli":       through(classExecute, "integration_id", "github").at(TierUnrestricted),
+	"scm.gitlab.cli":       through(classExecute, "integration_id", "gitlab").at(TierUnrestricted),
+	// Through the MCP integration it names, or straight to a URL.
+	"llm.mcp_call": dynamic(mcpCallNeeds, "integration_id").at(TierUnrestricted),
 
-	"integrations.http":    write("integrations").at(TierUnrestricted),
-	"integrations.ssh":     write("integrations").at(TierUnrestricted),
-	"mq.rabbitmqadmin.cli": write("integrations").at(TierUnrestricted),
-	"scm.github.cli":       write("integrations").at(TierUnrestricted),
-	"scm.gitlab.cli":       write("integrations").at(TierUnrestricted),
-	"llm.mcp_call":         write("integrations").at(TierUnrestricted),
-	"llm.a2a_call":         write("integrations").at(TierUnrestricted),
+	// Free-form endpoints with no integration behind them.
+	"integrations.http": write("integrations").at(TierUnrestricted),
+	"llm.a2a_call":      write("integrations").at(TierUnrestricted),
 
 	// Runs arbitrary code with the account's credentials: only someone who could
-	// have written the script may run it.
-	"scripting.run_script": write("workflows").at(TierUnrestricted),
+	// have written the script may run it, and over SSH only through an SSH
+	// integration they may use.
+	"scripting.run_script": dynamic(runScriptNeeds, "integration_id").at(TierUnrestricted),
 
 	"llm.classify":          execute("llm").at(TierRead),
 	"llm.event_investigate": execute("llm").at(TierUnrestricted),
@@ -179,19 +242,226 @@ var stepRequirements = map[string]StepRequirement{
 	"slack.join_channel":                write("notifications").at(TierChange),
 	"google_chat.join_space":            write("notifications").at(TierChange),
 
-	"tickets.acknowledge":  write("tickets").at(TierRead),
-	"tickets.add_comment":  write("tickets").at(TierRead),
-	"tickets.assign":       write("tickets").at(TierRead),
-	"tickets.create":       write("tickets").at(TierRead),
-	"tickets.escalate":     write("tickets").at(TierRead),
-	"tickets.get":          read("tickets").at(TierRead),
-	"tickets.get_comments": read("tickets").at(TierRead),
-	"tickets.resolve":      write("tickets").at(TierChange),
-	"tickets.transition":   write("tickets").at(TierChange),
+	"tickets.acknowledge":  through(classExecute, "integration_id", tickets.IncidentPlatforms()...).at(TierRead),
+	"tickets.add_comment":  through(classExecute, "integration_id", tickets.TicketPlatforms()...).at(TierRead),
+	"tickets.assign":       through(classExecute, "integration_id", tickets.TicketPlatforms()...).at(TierRead),
+	"tickets.create":       through(classExecute, "integration_id", tickets.TicketPlatforms()...).at(TierRead),
+	"tickets.escalate":     through(classExecute, "integration_id", tickets.IncidentPlatforms()...).at(TierRead),
+	"tickets.get":          through(classRead, "integration_id", tickets.TicketPlatforms()...).at(TierRead),
+	"tickets.get_comments": through(classRead, "integration_id", tickets.TicketPlatforms()...).at(TierRead),
+	"tickets.resolve":      through(classExecute, "integration_id", tickets.IncidentPlatforms()...).at(TierChange),
+	"tickets.transition":   through(classExecute, "integration_id", tickets.TicketPlatforms()...).at(TierChange),
 	// Can set a ticket's status, the same effect as transition and resolve.
-	"tickets.update": write("tickets").at(TierChange),
+	"tickets.update": through(classExecute, "integration_id", tickets.TicketPlatforms()...).at(TierChange),
 
-	"vertical_rightsize_generate": write("recommendations").at(TierRead),
+	"vertical_rightsize_generate": execute("recommendations").at(TierRead),
+}
+
+// need is one grant a step needs: <module>:<class>, or, when use is set, the
+// use grant (class Read or Execute) for the integration it names.
+type need struct {
+	module string
+	class  string
+	use    *integrationUse
+}
+
+// integrationUse is an integration a step acts through.
+type integrationUse struct {
+	// param is where the step names it, ref what it names there (an id or a
+	// name; empty when the step names none).
+	param string
+	ref   string
+	// types are the stored types the task accepts. With no ref and one type,
+	// that type is the integration's.
+	types []string
+	// optional: ref may name a repository rather than an integration; one the
+	// tenant does not have counts as naming none.
+	optional bool
+}
+
+func useOf(class, param, ref string, types []string) need {
+	return need{class: class, use: &integrationUse{param: param, ref: ref, types: types}}
+}
+
+// gitOpsFields are the GitOps and ticket settings rightsizeNeeds reads.
+var gitOpsFields = []string{"gitops_config.integration_id", "gitops_config.name", "gitops_config.repository_name", "ticket_config.configuration_id"}
+
+// rightsizeNeeds is a rightsize step's needs. With GitOps on, the change
+// becomes a pull request (vertical, horizontal: HandleGitOpsOrTicket) or an
+// issue (pv) through a source-control integration, and the workload's spec is
+// read from the cluster into it: Execute on that integration and Read on k8s.
+// With a ticket setting on (vertical, horizontal), the same through the ticket
+// integration. Otherwise the cluster is patched: Execute on k8s.
+func rightsizeNeeds(ticketSetting bool) func(map[string]any) []need {
+	return func(params map[string]any) []need {
+		if cfg, ok := enabledConfig(params, "gitops_config"); ok {
+			return append([]need{{module: "k8s", class: classRead}}, gitOpsUses(cfg, ticketSetting)...)
+		}
+		if cfg, ok := enabledConfig(params, "ticket_config"); ticketSetting && ok {
+			return []need{
+				{module: "k8s", class: classRead},
+				useOf(classExecute, "ticket_config.configuration_id", stringParam(cfg, "configuration_id"), tickets.TicketPlatforms()),
+			}
+		}
+		return []need{{module: "k8s", class: classExecute}}
+	}
+}
+
+// gitOpsUses are the integrations a GitOps setting opens its pull request (or
+// issue) through. HandleGitOpsOrTicket picks the integration by
+// repository_name, name or integration_id, pv_rightsize by integration_id
+// only, so each one given is checked. repository_name may name a repository
+// instead. With none named, the integration is one of the provider's type
+// (GitHub unless set), whose grant is then needed.
+func gitOpsUses(cfg map[string]any, byName bool) []need {
+	provider := stringParam(cfg, "provider")
+	if provider == "" || !byName {
+		provider = "github"
+	}
+	types := []string{strings.ToLower(provider)}
+	keys := []string{"integration_id"}
+	if byName {
+		keys = append(keys, "name")
+	}
+	var uses []need
+	for _, key := range keys {
+		if ref := stringParam(cfg, key); ref != "" {
+			uses = append(uses, useOf(classExecute, "gitops_config."+key, ref, types))
+		}
+	}
+	if ref := stringParam(cfg, "repository_name"); byName && ref != "" {
+		u := useOf(classExecute, "gitops_config.repository_name", ref, types)
+		u.use.optional = true
+		uses = append(uses, u)
+	}
+	if len(uses) == 0 {
+		uses = append(uses, useOf(classExecute, "gitops_config.provider", "", types))
+	}
+	return uses
+}
+
+// mcpCallNeeds: an MCP call with an integration_id goes through that MCP
+// integration (MCPTask.Execute); without one it calls the URL it is given.
+func mcpCallNeeds(params map[string]any) []need {
+	if ref := stringParam(params, "integration_id"); ref != "" {
+		return []need{useOf(classExecute, "integration_id", ref, []string{"mcp"})}
+	}
+	return []need{{module: "integrations", class: classWrite}}
+}
+
+// scriptExecutorsWithoutIntegration are the run_script executors that do not
+// use integration_id (only the SSH executor does).
+var scriptExecutorsWithoutIntegration = map[string]bool{
+	"kubernetes": true, "agent": true, "aws_ssm": true, "azure_run_command": true, "gcp_compute_ssh": true,
+}
+
+// runScriptNeeds: Write on workflows, and over SSH, the use grant for the SSH
+// integration the script runs on.
+func runScriptNeeds(params map[string]any) []need {
+	needs := []need{{module: "workflows", class: classWrite}}
+	executor := stringParam(params, "executor_type")
+	if ref := stringParam(params, "integration_id"); ref != "" && !scriptExecutorsWithoutIntegration[executor] {
+		needs = append(needs, useOf(classExecute, "integration_id", ref, []string{"ssh"}))
+	}
+	return needs
+}
+
+// stepNeeds lists what a step with these params needs.
+func (r StepRequirement) stepNeeds(params map[string]any) []need {
+	switch {
+	case r.needs != nil:
+		return r.needs(params)
+	case r.Through != nil:
+		return []need{useOf(r.Class, r.Through.Param, paramAt(params, r.Through.Param), r.Through.Types)}
+	case r.Module != "":
+		return []need{{module: r.Module, class: r.Class}}
+	}
+	return nil
+}
+
+// paramAt reads a string param by dotted path.
+func paramAt(params map[string]any, path string) string {
+	keys := strings.Split(path, ".")
+	for _, key := range keys[:len(keys)-1] {
+		nested, ok := params[key].(map[string]any)
+		if !ok {
+			return ""
+		}
+		params = nested
+	}
+	return stringParam(params, keys[len(keys)-1])
+}
+
+// Grant is one `<module>:<class>` a principal holds.
+type Grant struct {
+	Module string `json:"module"`
+	Class  string `json:"class"`
+}
+
+// IntegrationResolver returns the stored types of the integration ref names:
+// the type of the integration with that id, or of every enabled integration of
+// one of accepted with that name. It returns ErrIntegrationNotFound when there
+// is none.
+type IntegrationResolver func(ctx context.Context, ref string, accepted []string) ([]string, error)
+
+var (
+	// ErrIntegrationNotFound: the step names an integration the tenant does not have.
+	ErrIntegrationNotFound = errors.New("integration not found")
+	// errNoIntegrationNamed: the step names no integration and accepts more than
+	// one type, so which grant it needs cannot be told.
+	errNoIntegrationNamed = errors.New("names no integration")
+)
+
+// grants resolves an integration use to the grants it needs: Read or
+// Execute on integrations.<type> for each type it may be.
+func (u integrationUse) grants(ctx context.Context, class string, resolve IntegrationResolver) ([]Grant, error) {
+	types := u.types
+	if u.ref != "" {
+		found, err := resolve(ctx, u.ref, u.types)
+		switch {
+		case errors.Is(err, ErrIntegrationNotFound) && u.optional:
+		case err != nil:
+			return nil, err
+		default:
+			types = found
+		}
+	}
+	if u.ref == "" && len(types) != 1 {
+		return nil, errNoIntegrationNamed
+	}
+	if len(types) == 0 {
+		return nil, ErrIntegrationNotFound
+	}
+	grants := make([]Grant, 0, len(types))
+	for _, t := range types {
+		grants = append(grants, Grant{Module: security.IntegrationModule(t), Class: class})
+	}
+	return grants, nil
+}
+
+// StepNeeds is every grant a principal needs, on the step's account, to run a
+// step of taskName with params; resolve answers which integration a param
+// names. Authorize checks these, and a bee's install grants them. A type
+// with no requirement declared is an error; a step that needs nothing returns
+// none.
+func StepNeeds(ctx context.Context, taskName string, params map[string]any, resolve IntegrationResolver) ([]Grant, error) {
+	req, ok := RequirementFor(taskName)
+	if !ok {
+		return nil, fmt.Errorf("step type %q declares no permission requirement", taskName)
+	}
+	var grants []Grant
+	for _, n := range req.stepNeeds(params) {
+		if n.use == nil {
+			grants = append(grants, Grant{Module: n.module, Class: n.class})
+			continue
+		}
+		g, err := n.use.grants(ctx, n.class, resolve)
+		if err != nil {
+			return nil, fmt.Errorf("step type %s, %s %q: %w", taskName, n.use.param, n.use.ref, err)
+		}
+		grants = append(grants, g...)
+	}
+	return grants, nil
 }
 
 // RequirementFor returns the declared requirement for a task type.
@@ -223,9 +493,9 @@ type StepAuthInput struct {
 	RunAccountID  string
 	StepAccountID string
 	CheckRunRight bool
-	// Integrations are the integrations the step will use (IntegrationUses).
-	// A bee needs a grant for each one's type.
-	Integrations []IntegrationUse
+	// Params are the step's params, rendered: they name the integrations a
+	// step acts through and turn some changes into pull requests.
+	Params map[string]any
 }
 
 // StepAuthorizer checks a step against its run's principal. The loaders are
@@ -242,9 +512,6 @@ type StepAuthorizer struct {
 type UserState struct {
 	// Active: the user is active and still a member of the tenant.
 	Active bool
-	// Bee: the user is a bee account (users.kind = 'bee'), which uses an
-	// integration only with a grant for that integration's type.
-	Bee bool
 }
 
 // DefaultStepAuthorizer loads contexts from the services server (through a
@@ -312,9 +579,8 @@ func activeTenantMember(ctx context.Context, tenantID, userID string) (UserState
 	var state UserState
 	err = dbManager.Db.QueryRowContext(ctx, `
 		SELECT u.status = 'active'
-		   AND EXISTS (SELECT 1 FROM tenant_users tu WHERE tu."user" = u.id AND tu.tenant = $2),
-		       u.kind = 'bee'
-		FROM users u WHERE u.id = $1`, userID, tenantID).Scan(&state.Active, &state.Bee)
+		   AND EXISTS (SELECT 1 FROM tenant_users tu WHERE tu."user" = u.id AND tu.tenant = $2)
+		FROM users u WHERE u.id = $1`, userID, tenantID).Scan(&state.Active)
 	if errors.Is(err, sql.ErrNoRows) {
 		return UserState{}, nil
 	}
@@ -329,10 +595,17 @@ func denied(format string, args ...any) error {
 	return temporal.NewNonRetryableApplicationError(fmt.Sprintf(format, args...), ErrTypeStepPermissionDenied, nil)
 }
 
+// builtInAccess is the built-in role access a class needs, as SecurityContext.Can maps it.
+var builtInAccess = map[string]security.SecurityAccessType{
+	classRead:    security.SecurityAccessTypeRead,
+	classExecute: security.SecurityAccessTypeCreate,
+	classWrite:   security.SecurityAccessTypeUpdate,
+}
+
 // Authorize returns nil when the step may run as in.Principal. A refusal is a
 // non-retryable error whose message names the principal, the missing
-// permission and the account. A failure to load the principal's permissions is
-// a plain (retryable) error.
+// permission and the account. A failure to load the principal's permissions,
+// or to read an integration, is a plain (retryable) error.
 func (a StepAuthorizer) Authorize(ctx context.Context, in StepAuthInput) error {
 	req, ok := RequirementFor(in.TaskName)
 	if !ok {
@@ -365,44 +638,55 @@ func (a StepAuthorizer) Authorize(ctx context.Context, in StepAuthInput) error {
 		return denied("permission denied: user %s may not run automations on account %s", in.Principal, in.RunAccountID)
 	}
 
-	// The same rule the platform's own routes use: a built-in account role, or
-	// a custom grant for the module on that account.
-	if !sc.Can(in.StepAccountID, req.Module, req.Class) {
-		return denied("permission denied: user %s needs %s:%s on account %s for step type %s",
-			in.Principal, req.Module, req.Class, in.StepAccountID, in.TaskName)
-	}
-
-	if state.Bee {
-		return authorizeIntegrations(ctx, sc, in, req.Class != classRead)
+	for _, n := range req.stepNeeds(in.Params) {
+		if n.use == nil {
+			// The same rule the platform's own routes use: a built-in account
+			// role, or a custom grant for the module on that account.
+			if !sc.Can(in.StepAccountID, n.module, n.class) {
+				return denied("permission denied: user %s needs %s:%s on account %s for step type %s",
+					in.Principal, n.module, n.class, in.StepAccountID, in.TaskName)
+			}
+			continue
+		}
+		if err := a.authorizeUse(ctx, sc, in, n); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-// authorizeIntegrations refuses a bee's step that uses an integration whose
-// type the bee holds no use grant for on the step's account
-// (SecurityContext.MayUseIntegration). A step that names an integration this
-// organisation does not have is refused too.
-func authorizeIntegrations(ctx context.Context, sc *security.SecurityContext, in StepAuthInput, write bool) error {
-	class := classRead
-	if write {
-		class = classExecute
+// authorizeUse checks a step's use of an integration: a built-in account role
+// allows any integration, as it allowed the step's module before; otherwise
+// the principal needs the use grant for each type the integration may be.
+func (a StepAuthorizer) authorizeUse(ctx context.Context, sc *security.SecurityContext, in StepAuthInput, n need) error {
+	if sc.HasAccountAccess(in.StepAccountID, builtInAccess[n.class]) {
+		return nil
 	}
-	for _, use := range in.Integrations {
-		types, err := integrationTypes(ctx, in.TenantID, use)
-		if errors.Is(err, errIntegrationNotFound) && use.Optional {
-			continue
-		}
-		if errors.Is(err, errIntegrationNotFound) {
-			return denied("permission denied: step type %s uses integration %q, which this organisation does not have", in.TaskName, use.Ref)
-		}
-		if err != nil {
-			return fmt.Errorf("authorization unavailable: could not read integration %q: %w", use.Ref, err)
-		}
-		for _, typ := range types {
-			if !sc.MayUseIntegration(in.StepAccountID, typ, write) {
-				return denied("permission denied: user %s needs %s:%s on account %s to use %s integration %q for step type %s",
-					in.Principal, security.IntegrationModule(typ), class, in.StepAccountID, typ, use.Ref, in.TaskName)
+	if strings.Contains(n.use.ref, "{{") {
+		return denied("permission denied: step type %s names its integration in %s by a template (%s), so which integration it uses cannot be checked yet",
+			in.TaskName, n.use.param, n.use.ref)
+	}
+	resolve := func(ctx context.Context, ref string, accepted []string) ([]string, error) {
+		return integrationTypes(ctx, in.TenantID, ref, accepted)
+	}
+	grants, err := n.use.grants(ctx, n.class, resolve)
+	switch {
+	case errors.Is(err, ErrIntegrationNotFound):
+		return denied("permission denied: step type %s uses integration %q, which this organisation does not have", in.TaskName, n.use.ref)
+	case errors.Is(err, errNoIntegrationNamed):
+		return denied("permission denied: step type %s names no integration in %s, so which one it uses cannot be checked", in.TaskName, n.use.param)
+	case err != nil:
+		return fmt.Errorf("authorization unavailable: could not read integration %q: %w", n.use.ref, err)
+	}
+	for _, g := range grants {
+		typ := strings.TrimPrefix(g.Module, "integrations.")
+		if !sc.MayUseIntegration(in.StepAccountID, typ, n.class != classRead) {
+			named := ""
+			if n.use.ref != "" {
+				named = fmt.Sprintf(" %q", n.use.ref)
 			}
+			return denied("permission denied: user %s needs %s:%s on account %s to use %s integration%s for step type %s",
+				in.Principal, g.Module, g.Class, in.StepAccountID, typ, named, in.TaskName)
 		}
 	}
 	return nil

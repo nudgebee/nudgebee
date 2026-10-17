@@ -87,7 +87,7 @@ func TestTiersAgreeWithPermissions(t *testing.T) {
 		if req.None() {
 			assert.Equalf(t, TierRead, req.Tier, "%s needs no permission but is not a read", name)
 		}
-		if req.Class == classWrite && (req.Module == "k8s" || req.Module == "cloud" || req.Module == "database") {
+		if req.Class == classExecute && (req.Module == "k8s" || req.Module == "cloud" || req.Module == "database") {
 			assert.GreaterOrEqualf(t, req.Tier, TierChange, "%s writes to a live system", name)
 		}
 	}
@@ -110,11 +110,16 @@ func TestDeclaredModulesExistInThePermissionVocabulary(t *testing.T) {
 	require.NotEmpty(t, known)
 
 	for name, req := range stepRequirements {
-		if req.None() {
-			continue
+		for _, params := range paramVariants(req) {
+			for _, n := range req.stepNeeds(params) {
+				if n.use != nil {
+					assert.Containsf(t, []string{classRead, classExecute}, n.class, "%s: an integration is used with Read or Execute", name)
+					continue
+				}
+				assert.Truef(t, known[n.module], "%s declares unknown module %q", name, n.module)
+				assert.Containsf(t, []string{classRead, classWrite, classExecute}, n.class, "%s declares unknown class", name)
+			}
 		}
-		assert.Truef(t, known[req.Module], "%s declares unknown module %q", name, req.Module)
-		assert.Containsf(t, []string{classRead, classWrite, classExecute}, req.Class, "%s declares unknown class", name)
 	}
 }
 
@@ -177,7 +182,7 @@ func TestAuthorizeExecuteOnlyCustomRoleIsRefusedAWriteStep(t *testing.T) {
 	sc := principalContext(t, nil, nil, grants)
 	authz := stubAuthorizer(sc, true)
 
-	assertDenied(t, authz.Authorize(context.Background(), stepInput("k8s.pod_delete", "acct-a")), "needs k8s:Write on account acct-a")
+	assertDenied(t, authz.Authorize(context.Background(), stepInput("k8s.pod_delete", "acct-a")), "needs k8s:Execute on account acct-a")
 	// Steps with no outside effect still run.
 	assert.NoError(t, authz.Authorize(context.Background(), stepInput("data.transform", "acct-a")))
 	// So do steps that need only the right to run automations.
@@ -194,10 +199,12 @@ func TestAuthorizeReadOnlyAdminMayReadButNotWrite(t *testing.T) {
 	sc := principalContext(t, []string{security.AUTH_ACCOUNT_READ_ADMIN_ROLE, security.AUTH_ACCOUNT_ADMIN_ROLE},
 		map[string][]string{security.AUTH_ACCOUNT_ADMIN_ROLE: {"acct-a"}, security.AUTH_ACCOUNT_READ_ADMIN_ROLE: {"acct-b"}}, nil)
 	authz := stubAuthorizer(sc, true)
+	stubIntegrationTypes(t)
 	in := stepInput("tickets.get", "acct-b")
+	in.Params = id(jiraID)
 	assert.NoError(t, authz.Authorize(context.Background(), in))
 	in.TaskName = "tickets.create"
-	assertDenied(t, authz.Authorize(context.Background(), in), "needs tickets:Write on account acct-b")
+	assertDenied(t, authz.Authorize(context.Background(), in), "needs integrations.jira:Execute on account acct-b")
 }
 
 func TestAuthorizeChecksTheStepsAccountNotTheRunsAccount(t *testing.T) {
@@ -270,4 +277,52 @@ func TestContextCacheDoesNotCacheFailures(t *testing.T) {
 	require.Error(t, err)
 	_, _ = cache.load(context.Background(), "t", "u")
 	assert.Equal(t, 2, calls)
+}
+
+// A step that changes something needs Execute on its module, the right to run;
+// Write (manage) still covers it. The approval step and the steps on the
+// notifications and events modules keep Write, as do the steps that call a
+// free-form endpoint (integrations:Write). A step that acts through an
+// integration needs its use grant: Execute, or Read for a read step.
+func TestChangeStepsNeedExecute(t *testing.T) {
+	for name, req := range stepRequirements {
+		switch {
+		case req.Through != nil:
+			want := classExecute
+			if name == "tickets.get" || name == "tickets.get_comments" {
+				want = classRead
+			}
+			assert.Equalf(t, want, req.Class, "%s acts through its integration", name)
+		case name == "core.approval", req.needs != nil:
+		case req.Class == classRead || req.None():
+		case req.Module == "integrations", req.Module == "notifications", req.Module == "events":
+			assert.Equalf(t, classWrite, req.Class, "%s keeps Write: Execute on %s is granted for narrow actions", name, req.Module)
+		default:
+			assert.Equalf(t, classExecute, req.Class, "%s changes something: it needs Execute, Write is the right to manage", name)
+		}
+	}
+
+	execute := principalContext(t, nil, nil, map[string]map[string]bool{"acct-a": {"workflows:Execute": true, "k8s:Execute": true}})
+	assert.NoError(t, stubAuthorizer(execute, true).Authorize(context.Background(), stepInput("k8s.pod_delete", "acct-a")))
+	write := principalContext(t, nil, nil, map[string]map[string]bool{"acct-a": {"workflows:Execute": true, "k8s:Write": true}})
+	assert.NoError(t, stubAuthorizer(write, true).Authorize(context.Background(), stepInput("k8s.pod_delete", "acct-a")), "Write implies Execute")
+}
+
+// Execute on the notifications or events module alone, the class granted for
+// narrow actions there, runs none of their change steps (integrations:
+// TestBareIntegrationsExecuteRunsNoStep).
+func TestBareExecuteOnNarrowModulesRunsNoChangeStep(t *testing.T) {
+	cases := map[string]string{
+		"notifications": "notifications.im",
+		"events":        "events.store",
+	}
+	for module, step := range cases {
+		grants := map[string]bool{"workflows:Execute": true, module + ":Execute": true}
+		authz := stubAuthorizer(principalContext(t, nil, nil, map[string]map[string]bool{"acct-a": grants}), true)
+		assertDenied(t, authz.Authorize(context.Background(), stepInput(step, "acct-a")), "needs "+module+":Write on account acct-a")
+
+		write := map[string]bool{"workflows:Execute": true, module + ":Write": true}
+		authz = stubAuthorizer(principalContext(t, nil, nil, map[string]map[string]bool{"acct-a": write}), true)
+		assert.NoErrorf(t, authz.Authorize(context.Background(), stepInput(step, "acct-a")), "%s:Write runs %s", module, step)
+	}
 }

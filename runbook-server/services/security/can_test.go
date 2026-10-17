@@ -69,3 +69,9 @@ func caseContext(t *testing.T, fields map[string]any) *SecurityContext {
 	require.NoError(t, json.Unmarshal(raw, &sc))
 	return &sc
 }
+
+func TestGrantChecksRefuseANilContext(t *testing.T) {
+	var sc *SecurityContext
+	assert.False(t, sc.Can("acct-a", "k8s", "Read"))
+	assert.False(t, sc.MayUseIntegration("acct-a", "jira", false))
+}

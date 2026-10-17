@@ -3,6 +3,7 @@ package tickets
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"nudgebee/runbook/common"
@@ -20,6 +21,14 @@ var incidentPlatforms = []string{"pagerduty", "zenduty"}
 // can target — the registered ticket and incident managers in
 // ticket-server/services/tools.
 var ticketPlatforms = []string{"jira", "github", "gitlab", "pagerduty", "zenduty", "servicenow", "freshdesk"}
+
+// TicketPlatforms is the integration types ticket-flavored tasks act through,
+// and IncidentPlatforms those incident-only tasks accept: the step permission
+// table checks a use grant for one of them.
+func TicketPlatforms() []string { return slices.Clone(ticketPlatforms) }
+
+// IncidentPlatforms: see TicketPlatforms.
+func IncidentPlatforms() []string { return slices.Clone(incidentPlatforms) }
 
 // resolveTicketIntegrationID converts a frontend-supplied integration_id (which
 // may be a UUID or a name produced by template substitution like

@@ -86,7 +86,7 @@ func TestTaskWrapperFallsBackToTheLegacyUserForInFlightRuns(t *testing.T) {
 func TestTaskWrapperRefusesBeforeTheTaskRuns(t *testing.T) {
 	ranAs, _, err := runStep(t, stepParams(map[string]any{ParamRunAsUserID: "owner"}), false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "needs k8s:Write on account acct-a")
+	assert.Contains(t, err.Error(), "needs k8s:Execute on account acct-a")
 	assert.Empty(t, ranAs, "a refused step must not execute")
 }
 
