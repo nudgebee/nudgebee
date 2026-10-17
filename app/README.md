@@ -73,6 +73,8 @@ The App is a frontend application built with **Next.js** (v16) and **React** (v1
 
 The app supports per-deployment white-labeling — logo, favicon, app title, AI assistant name, signin imagery/carousel, MUI palette, and the full `--nb-*` CSS variable token set — driven by a single JSON file at runtime. No code changes or rebuilds are required to onboard a new partner.
 
+**Enterprise only.** Everything that reads or writes the table — the frontend provider (`src/ee/branding/`), the `branding_*` actions (`src/ee/actions.yaml`), and services-server's `ee/branding` package with `GET /v1/branding/overrides` — is stripped from the OSS build. OSS renders the house brand everywhere, and its notifications-server keeps the bundled `theme.json` branding.
+
 ### How it works
 
 1. The runtime endpoint [`/api/public/app_config`](src/pages/api/public/app_config.js) resolves branding for the **request's hostname** via [`resolveServerBranding`](src/lib/serverBranding.ts). The EE provider ([`serverInit.ts`](src/ee/branding/serverInit.ts)) picks the theme file: `TENANT_BRANDING_HOST_MAP` (JSON `{host: slug}`) → `branding/<slug>/theme.json`, else `TENANT_BRANDING_FILE`, else `branding/default/theme.json`.
