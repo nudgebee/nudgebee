@@ -15,6 +15,7 @@ import Chart from '@ui/Chart';
 import { formatMemory } from '@lib/formatter';
 import { formatBytes } from 'src/utils/common';
 import { safeParseJSON } from '@components/optimise-new/utils';
+import { TrendRangeToggle, trendRangeFor, useTrendRange } from './TrendRange';
 import { cloudMetricsTarget } from './cloudMetricsTarget';
 
 interface CloudRightSizingEvidenceProps {
@@ -30,33 +31,42 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
   // Hooks must be called before any conditional returns (Rules of Hooks)
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [cloudMetrics, setCloudMetrics] = useState<Record<string, any[]>>({});
+  // Cloud payloads name no lookback window, so the default stays a week.
+  const [rangeDays, setRangeDays] = useTrendRange(fullRecommendation?.id, trendRangeFor(null));
+  // The query is keyed on the fields it is built from, not on the
+  // recommendation object, so a parent handing down a fresh but equal object
+  // never clears and refetches the charts.
+  const accountId = fullRecommendation?.account_id;
+  // The cloud_resourses row's UUID; metrics are keyed by the provider's id, resolved below.
+  const resourceId = fullRecommendation?.resource_id || fullRecommendation?.cloud_resourse?.id;
+  // Try multiple paths for service name
+  const metricsServiceName =
+    rec?.service_name ||
+    fullRecommendation?.cloud_resourse?.meta?.config?.serviceName ||
+    fullRecommendation?.cloud_resourse?.meta?.serviceName ||
+    fullRecommendation?.service_name ||
+    '';
+  const canFetchMetrics = Boolean(accountId && resourceId);
 
   useEffect(() => {
-    if (!fullRecommendation) return;
-    const accountId = fullRecommendation.account_id;
-    // The cloud_resourses row's UUID; metrics are keyed by the provider's id, resolved below.
-    const rowId = fullRecommendation.resource_id || fullRecommendation.cloud_resourse?.id;
-    // Try multiple paths for service name
-    const fallbackServiceName =
-      rec?.service_name ||
-      fullRecommendation.cloud_resourse?.meta?.config?.serviceName ||
-      fullRecommendation.cloud_resourse?.meta?.serviceName ||
-      fullRecommendation.service_name ||
-      '';
-
-    if (!accountId || !rowId) return;
+    // Series never outlive the recommendation, or the range, they were fetched for.
+    setCloudMetrics((m) => (Object.keys(m).length ? {} : m));
+    if (!accountId || !resourceId) {
+      setMetricsLoading(false);
+      return;
+    }
 
     let cancelled = false;
     setMetricsLoading(true);
     const startDate = new Date();
-    startDate.setDate(startDate.getDate() - 7);
+    startDate.setDate(startDate.getDate() - rangeDays);
 
     apiCloudAccount
-      .getCloudResourceIdentity(accountId, rowId)
+      .getCloudResourceIdentity(accountId, resourceId)
       .then((resource: any) => {
         const target = cloudMetricsTarget(resource);
         if (cancelled || !target) return null;
-        const serviceName = target.serviceName || fallbackServiceName;
+        const serviceName = target.serviceName || metricsServiceName;
         return apiCloudAccount.getCloudResourceMetrics({
           account_id: accountId,
           serviceName: serviceName || undefined,
@@ -69,16 +79,14 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
       .then((res: any) => {
         if (cancelled) return;
         const metricsData = res?.data?.data?.cloud_metric_groupings_v2?.rows ?? [];
-        if (metricsData.length > 0) {
-          // Group by metric name
-          const grouped = metricsData.reduce((acc: Record<string, any[]>, curr: any) => {
-            const metric = curr.metric;
-            if (!acc[metric]) acc[metric] = [];
-            acc[metric].push(curr);
-            return acc;
-          }, {});
-          setCloudMetrics(grouped);
-        }
+        // Group by metric name
+        const grouped = metricsData.reduce((acc: Record<string, any[]>, curr: any) => {
+          const metric = curr.metric;
+          if (!acc[metric]) acc[metric] = [];
+          acc[metric].push(curr);
+          return acc;
+        }, {});
+        setCloudMetrics(grouped);
       })
       .catch((err: any) => {
         if (cancelled) return;
@@ -90,7 +98,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
     return () => {
       cancelled = true;
     };
-  }, [fullRecommendation]);
+  }, [accountId, resourceId, metricsServiceName, rangeDays]);
 
   if (!rec) return null;
 
@@ -300,7 +308,12 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
         </>
       )}
 
-      {/* Cloud resource monitoring metrics (7-day trend from CloudWatch / Azure Monitor / GCP) */}
+      {/* Cloud resource monitoring metrics (CloudWatch / Azure Monitor / GCP) over the picked range */}
+      {canFetchMetrics && (
+        <Box sx={{ mb: ds.space[2] }}>
+          <TrendRangeToggle value={rangeDays} onChange={setRangeDays} />
+        </Box>
+      )}
       {metricsLoading && (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: ds.space[4] }}>
           <CircularProgress size={24} />
@@ -328,7 +341,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
         )}
       {Object.keys(cloudMetrics).length > 0 && (
         <>
-          <SectionTitle title='Resource Monitoring (7d)' muiIcon={<TimelineIcon sx={{ fontSize: ds.text.title }} />} />
+          <SectionTitle title={`Resource Monitoring (${rangeDays}d)`} muiIcon={<TimelineIcon sx={{ fontSize: ds.text.title }} />} />
           {Object.entries(cloudMetrics).map(([metricName, dataPoints], idx) => {
             // Sort by timestamp
             const sorted = [...dataPoints].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());

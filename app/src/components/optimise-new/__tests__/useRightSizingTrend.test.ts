@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import k8sApi from '@api1/kubernetes';
 import { useRightSizingTrend } from '@hooks/useRightSizingTrend';
 
@@ -11,13 +11,21 @@ const fetchTrend = k8sApi.getK8sPodGroupings2 as jest.Mock;
 
 const MB = 1024 * 1024;
 
-const entry = (resource: string, allocated: number, recommended: number) => ({
+const entry = (resource: string, allocated: number, recommended: number, historyHours?: number) => ({
   resource,
   allocated: { request: allocated, limit: allocated },
   recommended: { request: recommended, limit: recommended },
+  ...(historyHours ? { strategy: { settings: { history_duration: historyHours } } } : {}),
 });
 
-const rightSizingRec = (id = 'rec-1') => ({
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Days between the start and end the n-th fetch asked for.
+const fetchedDays = (call = 0) => {
+  const [, query] = fetchTrend.mock.calls[call];
+  return Math.round((query.endDate.getTime() - query.startDate.getTime()) / DAY_MS);
+};
+
+const rightSizingRec = (id = 'rec-1', historyHours?: number) => ({
   id,
   account_id: 'acct-1',
   rule_name: 'pod_right_sizing',
@@ -25,7 +33,7 @@ const rightSizingRec = (id = 'rec-1') => ({
   resource_name: 'api',
   resource_k8s_namespace: 'payments',
   cloud_resourse: { type: 'Deployment', name: 'api', meta: { total_pods: 2 } },
-  recommendation: { api: [entry('cpu', 1, 0.5), entry('memory', 2048 * MB, 512 * MB)] },
+  recommendation: { api: [entry('cpu', 1, 0.5, historyHours), entry('memory', 2048 * MB, 512 * MB, historyHours)] },
 });
 
 const rows = (n: number) =>
@@ -120,5 +128,44 @@ describe('useRightSizingTrend', () => {
     const { result } = renderHook(() => useRightSizingTrend(rec));
     expect(fetchTrend).not.toHaveBeenCalled();
     expect(result.current.loading).toBe(false);
+  });
+
+  it('starts the range at the window the recommendation was computed over', async () => {
+    fetchTrend.mockResolvedValue({ data: { k8s_pod_groupings: rows(1) } });
+    const { result } = renderHook(() => useRightSizingTrend(rightSizingRec('rec-1', 336)));
+    await waitFor(() => expect(result.current.hasData).toBe(true));
+    expect(result.current.rangeDays).toBe(14);
+    expect(fetchedDays()).toBe(14);
+  });
+
+  it('reads the window off the replica summary when the strategy settings are missing', () => {
+    fetchTrend.mockResolvedValue({ data: { k8s_pod_groupings: [] } });
+    const rec = rightSizingRec();
+    rec.recommendation.api[0] = { ...rec.recommendation.api[0], add_info: { replicas: { avg: 2, min: 2, max: 2, window_hours: 720 } } } as any;
+    const { result } = renderHook(() => useRightSizingTrend(rec));
+    expect(result.current.rangeDays).toBe(30);
+  });
+
+  it('keeps the week for a recommendation that stamps no window', () => {
+    fetchTrend.mockResolvedValue({ data: { k8s_pod_groupings: [] } });
+    const { result } = renderHook(() => useRightSizingTrend(rightSizingRec()));
+    expect(result.current.rangeDays).toBe(7);
+    expect(fetchedDays()).toBe(7);
+  });
+
+  it('refetches over a picked range, and the next recommendation starts from its own window', async () => {
+    fetchTrend.mockResolvedValue({ data: { k8s_pod_groupings: rows(1) } });
+    const { result, rerender } = renderHook(({ rec }) => useRightSizingTrend(rec), { initialProps: { rec: rightSizingRec('rec-1', 336) } });
+    await waitFor(() => expect(result.current.hasData).toBe(true));
+
+    act(() => result.current.setRangeDays(30));
+    expect(result.current.rangeDays).toBe(30);
+    await waitFor(() => expect(fetchTrend).toHaveBeenCalledTimes(2));
+    expect(fetchedDays(1)).toBe(30);
+
+    rerender({ rec: rightSizingRec('rec-2', 168) });
+    expect(result.current.rangeDays).toBe(7);
+    await waitFor(() => expect(fetchTrend).toHaveBeenCalledTimes(3));
+    expect(fetchedDays(2)).toBe(7);
   });
 });
