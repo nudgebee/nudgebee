@@ -1,4 +1,4 @@
-h1:68hncUDarLVUKx3QF0xWzsOFmd9RK3ASQKXf8Sk4S7U=
+h1:q98JfE6aQiAZE46oL35UmQO8JUWCFAQdCXv2YegJ6vM=
 1665080411172_V0.up.sql h1:u69osJjPb3FctiXmgk+fpiFMTDQTnGpqDRH45K0pUdc=
 1665211266851_V1.up.sql h1:AGUExFXk9BDw9lpD7Cu1Bu5wn3mQA/Ul+5/jny32xYc=
 1665218608952_V2.up.sql h1:dWrFXuJESbVByq7iXDF7tFbOc1bgbwgCc0Fd8QETHwo=
@@ -1226,3 +1226,4 @@ h1:68hncUDarLVUKx3QF0xWzsOFmd9RK3ASQKXf8Sk4S7U=
 1791799263882_V1015_usage_report_stream_columns.up.sql h1:9tFqa1Nd3A56wDeUkgj4CI80TuCAl0rWCPPkKXoz6s0=
 1792062387225_V1028_add_signoz_metrics_query_history_modules.up.sql h1:/2hd9hHX4FQ90oLuQ5FQmms99T+hfdexyUZS9PtAMlg=
 1792068677779_V1029_signoz_webhook_integration.up.sql h1:Bh1H8e2UM9wWfL4YzPxraAocRz2E7p0lVTe4hYoSrxQ=
+1792265564984_V1038_reseed_missing_model_pricing.up.sql h1:l+rQMweHeIJCE+KC2tdCb80nGgOzEeIR+p0mrX9rixs=

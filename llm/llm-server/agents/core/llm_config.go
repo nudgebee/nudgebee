@@ -3086,6 +3086,16 @@ func IsOpenAIModelWithoutStopSupport(provider, model string) bool {
 	return false
 }
 
+// claudeFamiliesWithoutTemperature are the Claude models whose API returns a 400 for a
+// non-default temperature (Anthropic's per-model thinking table). Dotted and dashed
+// spellings are both listed because model IDs reach us in either form.
+var claudeFamiliesWithoutTemperature = []string{
+	"claude-opus-4-7", "claude-opus-4.7",
+	"claude-opus-4-8", "claude-opus-4.8",
+	"claude-sonnet-5", "claude-opus-5", "claude-haiku-5",
+	"claude-fable-5", "claude-mythos-5", "claude-5",
+}
+
 // ModelSupportsTemperature checks if the model supports the 'temperature' parameter.
 // Anthropic reasoning models (claude-sonnet-5, claude-opus-5, claude-5 series) and OpenAI
 // reasoning model families (o1, o3, gpt-5) reject explicit / non-default temperature on the wire.
@@ -3095,10 +3105,10 @@ func ModelSupportsTemperature(provider, model string) bool {
 
 	// Check Anthropic reasoning models
 	if pLower == "anthropic" || strings.Contains(modelLower, "claude") {
-		if strings.Contains(modelLower, "claude-sonnet-5") ||
-			strings.Contains(modelLower, "claude-opus-5") ||
-			strings.Contains(modelLower, "claude-5") {
-			return false
+		for _, family := range claudeFamiliesWithoutTemperature {
+			if strings.Contains(modelLower, family) {
+				return false
+			}
 		}
 	}
 

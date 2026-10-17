@@ -39,6 +39,14 @@ func TestModelSupportsTemperature(t *testing.T) {
 		{"anthropic claude-opus-5", "anthropic", "claude-opus-5", false},
 		{"anthropic claude-5-sonnet", "anthropic", "claude-5-sonnet", false},
 		{"anthropic claude-5-opus", "anthropic", "claude-5-opus", false},
+		{"anthropic claude-haiku-5-5", "anthropic", "claude-haiku-5-5", false},
+		{"anthropic claude-sonnet-5-5", "anthropic", "claude-sonnet-5-5", false},
+		{"anthropic claude-fable-5-1", "anthropic", "claude-fable-5-1", false},
+		{"anthropic claude-opus-4-8", "anthropic", "claude-opus-4-8", false},
+		{"anthropic claude-opus-4.7", "anthropic", "claude-opus-4.7", false},
+		{"bedrock claude-haiku-5-5", "bedrock", "us.anthropic.claude-haiku-5-5", false},
+		{"anthropic claude-opus-4-6", "anthropic", "claude-opus-4-6", true},
+		{"anthropic claude-haiku-4-5", "anthropic", "claude-haiku-4-5", true},
 
 		// Anthropic standard models (support temperature)
 		{"anthropic claude-sonnet-4-6", "anthropic", "claude-sonnet-4-6", true},
