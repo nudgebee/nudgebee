@@ -890,7 +890,7 @@ const InstancesView = (props: {
                         {drilldownQuery.meta.VpcId && <DataBlock title={'VPC'} data={drilldownQuery.meta.VpcId} />}
                         {drilldownQuery.meta.RootDeviceType && <DataBlock title={'Root device name'} data={drilldownQuery.meta.RootDeviceName} />}
                         {drilldownQuery.meta.EbsOptimized !== undefined && (
-                          <DataBlock title={'Ebs optimization'} isCopyable={false} data={drilldownQuery.meta.EbsOptimized ? 'enabled' : 'disabled'} />
+                          <DataBlock title={'EBS Optimization'} isCopyable={false} data={drilldownQuery.meta.EbsOptimized ? 'enabled' : 'disabled'} />
                         )}
                         {drilldownQuery.meta.RootDeviceType && (
                           <DataBlock title={'Root device type'} isCopyable={false} data={drilldownQuery.meta.RootDeviceType} />

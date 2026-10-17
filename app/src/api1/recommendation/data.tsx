@@ -3974,12 +3974,12 @@ az vmss update \\
       references: ['https://docs.aws.amazon.com/AmazonElastiCache/latest/red-ug/in-transit-encryption.html'],
     },
     aws_ec2_ebs_encrypt: {
-      title: 'Ec2 EBS Volumes Should be Encrypted',
+      title: 'EC2 EBS Volumes Should be Encrypted',
       description:
         'When working with production and confidential data it is strongly recommended to implement encryption in order to protect your data from unauthorized access and fulfill compliance requirements for data-at-rest and in-transit encryption within your organization. For example, a compliance requirement is to protect sensitive data that could potentially identify a specific individual such as Personally Identifiable Information (PII), usually used in Financial Services, Healthcare, and Telecommunications sectors.',
       serviceName: 'AmazonEC2',
       recommendations: [
-        `Ensure that your EBS Volumes are encrypted in order to meet security and compliance requirements. Encryption helps prevent unauthorized users from reading sensitive data available on your Ec2 Instance. This includes data saved to persistent media, known as data at-rest, and data that can be intercepted as it travels through the network, between clients and cache servers, known as data in-transit.`,
+        `Ensure that your EBS Volumes are encrypted in order to meet security and compliance requirements. Encryption helps prevent unauthorized users from reading sensitive data available on your EC2 Instance. This includes data saved to persistent media, known as data at-rest, and data that can be intercepted as it travels through the network, between clients and cache servers, known as data in-transit.`,
       ],
       mitigations: [
         `**By Default Enable Encryption for EBS Volumes**
@@ -4051,7 +4051,7 @@ az vmss update \\
       references: ['https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-instance-addressing.html'],
     },
     aws_ec2_instance_generation_upgrade: {
-      title: 'Ec2 Instance generation Upgrade',
+      title: 'EC2 Instance Generation Upgrade',
       description:
         'Using the current (latest) generation of EC2 instance types instead of the previous generation has multiple advantages such as better hardware performance (faster CPUs, increased memory and network throughput), better virtualization technology (HVM), and lower costs.',
       serviceName: 'AmazonEC2',
