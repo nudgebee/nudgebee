@@ -27,7 +27,7 @@ func handleSyncConversationStatusApi(r *gin.Engine) {
 		dao := core.GetConversationDao()
 		if dao == nil {
 			slog.Error("sync: conversation dao is not initialized")
-			c.JSON(500, buildApiResponse(nil, []error{
+			c.JSON(500, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "conversation dao is not initialized",
 				},
@@ -37,7 +37,7 @@ func handleSyncConversationStatusApi(r *gin.Engine) {
 		err := dao.MarkInProgressConversationAsKilled()
 		if err != nil {
 			slog.Error("sync: error syncing conversation status", "error", err)
-			c.JSON(500, buildApiResponse(nil, []error{
+			c.JSON(500, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},

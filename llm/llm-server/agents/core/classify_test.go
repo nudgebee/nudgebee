@@ -138,7 +138,7 @@ func TestClassificationTier(t *testing.T) {
 		"pinned:abc":            ModelTierSummary,
 	} {
 		stubClassificationTier(t, source)
-		assert.Equal(t, want, classificationTier(ctx, call), source)
+		assert.Equal(t, want, ClassificationTier(ctx, call), source)
 	}
 
 	old := classificationTierResolve
@@ -146,7 +146,7 @@ func TestClassificationTier(t *testing.T) {
 		return nil, errors.New("db down")
 	}
 	t.Cleanup(func() { classificationTierResolve = old })
-	assert.Equal(t, ModelTierSummary, classificationTier(ctx, call), "resolution error falls back to summary")
+	assert.Equal(t, ModelTierSummary, ClassificationTier(ctx, call), "resolution error falls back to summary")
 }
 
 func TestClassify_StampsTier(t *testing.T) {
@@ -192,7 +192,7 @@ func TestClassificationRetryPrompt(t *testing.T) {
 	assert.NotContains(t, p, "ONLY one of:")
 }
 
-// TestClassificationTier_RealResolver runs classificationTier against the real
+// TestClassificationTier_RealResolver runs ClassificationTier against the real
 // ResolveLLMConfig, so renaming one of the tier-layer Source labels it relies on
 // fails here instead of silently routing every decision to summary.
 func TestClassificationTier_RealResolver(t *testing.T) {
@@ -200,13 +200,13 @@ func TestClassificationTier_RealResolver(t *testing.T) {
 	pinGlobalModel(t, "googleai", "global-model")
 
 	t.Run("nothing configured resolves as summary", func(t *testing.T) {
-		assert.Equal(t, ModelTierSummary, classificationTier(ctx, ClassificationCall{}))
+		assert.Equal(t, ModelTierSummary, ClassificationTier(ctx, ClassificationCall{}))
 	})
 
 	t.Run("server config defines the tier", func(t *testing.T) {
 		setEnvKey(t, "llm_tier_provider_classification", "googleai")
 		setEnvKey(t, "llm_tier_model_classification", "classification-model")
-		assert.Equal(t, ModelTierClassification, classificationTier(ctx, ClassificationCall{}))
+		assert.Equal(t, ModelTierClassification, ClassificationTier(ctx, ClassificationCall{}))
 	})
 
 	t.Run("account config defines the tier", func(t *testing.T) {
@@ -214,7 +214,7 @@ func TestClassificationTier_RealResolver(t *testing.T) {
 			"llm_tier_provider_classification": "googleai",
 			"llm_tier_model_classification":    "classification-model",
 		})
-		assert.Equal(t, ModelTierClassification, classificationTier(ctx, ClassificationCall{AccountId: "acct-classification-db-tier"}))
+		assert.Equal(t, ModelTierClassification, ClassificationTier(ctx, ClassificationCall{AccountId: "acct-classification-db-tier"}))
 	})
 
 	t.Run("server-only tier does not override an account's own global model", func(t *testing.T) {
@@ -224,7 +224,7 @@ func TestClassificationTier_RealResolver(t *testing.T) {
 			"llm_provider":   "googleai",
 			"llm_model_name": "account-global-model",
 		})
-		assert.Equal(t, ModelTierSummary, classificationTier(ctx, ClassificationCall{AccountId: "acct-classification-db-global"}))
+		assert.Equal(t, ModelTierSummary, ClassificationTier(ctx, ClassificationCall{AccountId: "acct-classification-db-global"}))
 	})
 }
 

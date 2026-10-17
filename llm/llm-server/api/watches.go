@@ -83,7 +83,7 @@ func handleWatchesApi(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		}
 
 		logger := slog.With("conversation_id", request.ConversationID)
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
 			actionError(c, 401, err.Error())
 			return
@@ -169,7 +169,7 @@ func handleWatchesApi(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		}
 
 		logger := slog.With("watch_id", request.WatchID)
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
 			actionError(c, 401, err.Error())
 			return

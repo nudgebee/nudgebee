@@ -1,15 +1,17 @@
-package core
+package bootstrap
 
 import (
 	"context"
 	"fmt"
+	"strings"
+	"text/template"
+	"time"
+
+	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/watch"
-	"strings"
-	"text/template"
-	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/tmc/langchaingo/llms"
@@ -80,7 +82,7 @@ func (s *llmSummarizer) Summarize(ctx *security.RequestContext, w watch.Watch, s
 	if w.UserID != nil {
 		userID = w.UserID.String()
 	}
-	resp, err := GenerateAndTrackLLMContent(
+	resp, err := core.GenerateAndTrackLLMContent(
 		ctx,
 		userID,
 		w.AccountID.String(),

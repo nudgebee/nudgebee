@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -686,7 +687,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	}
 	// Used up here; it must not travel with anything built from this request.
 	request.TopLevelResume = false
-	turnRequest.RecentHistory = recentHistoryTail(historyStr, memoryPrestepMaxHistory)
+	turnRequest.RecentHistory = RecentHistoryTail(historyStr, MemoryPrestepMaxHistory)
 
 	kbChan := make(chan kbAssemblyResult, 1)
 	go func(prompt NBAgentPrompt) {
@@ -714,11 +715,11 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// entirely — no concatenation, no double-injection. When the module is off
 	// (or the tenant is not allowlisted) the legacy notebook remains primary.
 	tenantID := ctx.GetSecurityContext().GetTenantId()
-	memoryModuleActive := isMemoryV2ActiveFn(tenantID)
+	memoryModuleActive := IsMemoryV2ActiveFn(tenantID)
 	memoryEnabled := ResolveAgentMemoryEnabled(agent)
 
 	memChan := make(chan string, 1)
-	memV2Chan := make(chan memoryPromptParts, 1)
+	memV2Chan := make(chan MemoryPromptParts, 1)
 	// Memory is composed once, at the top-level invocation; sub-agents skip the
 	// per-agent recompose (mirrors the eager KB retrieval above, which is already
 	// top-level-only) — each recompose re-ran the 3-layer memory Compose (~3-5s).
@@ -730,17 +731,13 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	if isSubAgentInvocation || !memoryEnabled {
 		// Empty sends keep the collectors below unblocked.
 		memChan <- ""
-		memV2Chan <- memoryPromptParts{}
+		memV2Chan <- MemoryPromptParts{}
 	} else if memoryModuleActive {
 		memChan <- ""
-		go func() {
-			memV2Chan <- composeMemoryV2BlockFn(ctx, turnRequest, agent)
-		}()
+		go composeMemoryV2Into(ctx, memV2Chan, turnRequest, agent)
 	} else {
-		go func(cf []string) {
-			memChan <- retrieveAndBuildMemoryNotebook(ctx, turnRequest, agent, cf)
-		}(convFacts)
-		memV2Chan <- memoryPromptParts{}
+		go buildMemoryNotebookInto(ctx, memChan, turnRequest, agent, convFacts)
+		memV2Chan <- MemoryPromptParts{}
 	}
 
 	// Collect results
@@ -1720,4 +1717,30 @@ func limitStringLength(s string, maxLength int) string {
 	const ellipsis = "..."
 	// Leave space for the ellipsis
 	return s[:maxLength-len(ellipsis)] + ellipsis
+}
+
+// composeMemoryV2Into sends the memory-v2 prompt block on ch. It runs on its own
+// goroutine, where a panic would take down the process (no caller can recover
+// it), so a panic is logged and an empty block is sent instead: the collector in
+// executeAgent waits on ch, and the turn carries on without memory.
+func composeMemoryV2Into(ctx *security.RequestContext, ch chan<- MemoryPromptParts, request NBAgentRequest, agent NBAgent) {
+	defer func() {
+		if r := recover(); r != nil {
+			ctx.GetLogger().Error("executor: memory-v2 compose panicked", "panic", r, "stack", string(debug.Stack()))
+			ch <- MemoryPromptParts{}
+		}
+	}()
+	ch <- ComposeMemoryV2BlockFn(ctx, request, agent)
+}
+
+// buildMemoryNotebookInto sends the legacy memory notebook on ch, with the same
+// panic handling as composeMemoryV2Into.
+func buildMemoryNotebookInto(ctx *security.RequestContext, ch chan<- string, request NBAgentRequest, agent NBAgent, conversationFacts []string) {
+	defer func() {
+		if r := recover(); r != nil {
+			ctx.GetLogger().Error("executor: memory notebook panicked", "panic", r, "stack", string(debug.Stack()))
+			ch <- ""
+		}
+	}()
+	ch <- retrieveAndBuildMemoryNotebook(ctx, request, agent, conversationFacts)
 }

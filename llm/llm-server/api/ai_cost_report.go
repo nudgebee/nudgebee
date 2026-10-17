@@ -20,11 +20,11 @@ func handleAiCostDailyReportApi(r *gin.Engine) {
 		common.MetricsApiRequestsTotal("ai_cost_daily_report_cron")
 		if err := analytics.RunAiCostReportDispatch(time.Now().UTC()); err != nil {
 			slog.Error("ai_cost_daily_report: dispatch run failed", "error", err)
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(map[string]any{"status": "ok"}, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(map[string]any{"status": "ok"}, nil))
 	})
 }

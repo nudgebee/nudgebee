@@ -16,9 +16,10 @@ import (
 // call reads or writes. A governed run's policy may refuse them
 // (AgentRunPolicy.CheckTool); every other run treats them as reads. A new leaf tool
 // should declare its request type (embed toolcore.ReadOnlyTool when no input
-// can make it change anything) rather than join this list.
+// can make it change anything) rather than join this list. EE-only tools are
+// checked in their own package (ee/memory: TestMemoryToolsRequestType).
 var unclassifiedLeafTools = []string{
-	"ask_clarification", "crawl_execute", "evidenceinsightstool", "memory_write", "mermaid_validation",
+	"ask_clarification", "crawl_execute", "evidenceinsightstool", "mermaid_validation",
 	"mongodb_current_op_get", "mongodb_replset_status_get", "mongodb_server_status_get",
 	"remediation_generate", "search_execute", "service_dependency_graph_execute",
 	"standard_diagnostic_grep", "think", "vm_list_execute",

@@ -202,10 +202,10 @@ func handleRequestExecution(
 		})
 		if err != nil {
 			common.MetricsApiRequestsFailedTotal(metricsKey, "timedout")
-			c.JSON(http.StatusServiceUnavailable, buildApiResponse(nil, []error{common.Error{Message: "api: unable to queue request, please try again later"}}))
+			c.JSON(http.StatusServiceUnavailable, BuildApiResponse(nil, []error{common.Error{Message: "api: unable to queue request, please try again later"}}))
 			return
 		}
-		c.JSON(http.StatusAccepted, buildApiResponse(asyncResponse, nil))
+		c.JSON(http.StatusAccepted, BuildApiResponse(asyncResponse, nil))
 	} else {
 		resp, err := executeFn(agentContext)
 		if err != nil {
@@ -215,7 +215,7 @@ func handleRequestExecution(
 			// would be a no-op on it but we skip it for clarity.
 			if scrubErr, ok := egressfilter.AsError(err); ok {
 				logger.Warn("api: outbound LLM call blocked by egressfilter", "metrics_key", metricsKey, "latency", time.Since(startTime).String(), "audit_id", scrubErr.AuditID, "rule_ids", scrubErr.RuleIDs)
-				c.JSON(http.StatusBadRequest, buildApiResponse(resp, []error{
+				c.JSON(http.StatusBadRequest, BuildApiResponse(resp, []error{
 					common.Error{Message: scrubErr.Error()},
 				}))
 				return
@@ -225,7 +225,7 @@ func handleRequestExecution(
 			if !ok {
 				message = common.SanitizeErrorMessage(err.Error())
 			}
-			c.JSON(http.StatusInternalServerError, buildApiResponse(resp, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(resp, []error{
 				common.Error{
 					Message: message,
 				},
@@ -233,7 +233,7 @@ func handleRequestExecution(
 			return
 		}
 		logger.Info("api: request completed", "metrics_key", metricsKey, "latency", time.Since(startTime).String())
-		c.JSON(http.StatusOK, buildApiResponse(resp, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(resp, nil))
 	}
 }
 
@@ -257,7 +257,7 @@ func rejectIfConversationLocked(c *gin.Context, endpoint string, conversation co
 	slog.Warn("chains: rejecting request for locked conversation",
 		"endpoint", endpoint, "conversation_id", conversation.ID.String(),
 		"account_id", conversation.AccountID.String(), "status", conversation.Status)
-	c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+	c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 		common.Error{Message: message},
 	}))
 	return true
@@ -355,7 +355,7 @@ func rejectUnfulfilledQueueRequest(c *gin.Context, request *ConversationApiReque
 	if !request.QueueOnly {
 		return false
 	}
-	c.JSON(http.StatusConflict, buildApiResponse(nil, []error{common.Error{Message: "Conversation is not ready to queue a message. Please retry your message."}}))
+	c.JSON(http.StatusConflict, BuildApiResponse(nil, []error{common.Error{Message: "Conversation is not ready to queue a message. Please retry your message."}}))
 	return true
 }
 
@@ -374,7 +374,7 @@ func tryQueueConversationMessage(
 		}
 		existingQueued, err := core.GetConversationDao().GetQueuedConversationMessages(conversation.ID.String())
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{common.Error{Message: "unable to read queued messages"}}))
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{common.Error{Message: "unable to read queued messages"}}))
 			return true
 		}
 		if len(existingQueued) >= maxQueued {
@@ -383,7 +383,7 @@ func tryQueueConversationMessage(
 				"queued_count", len(existingQueued),
 				"max_limit", maxQueued,
 			)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: fmt.Sprintf("Maximum queued messages limit reached (max: %d). Please wait for queued messages to process or cancel an existing queued message.", maxQueued),
 				},
@@ -396,17 +396,17 @@ func tryQueueConversationMessage(
 	queuedMessageId, err := queueConversationMessage(conversation, request, agentName)
 	if err != nil {
 		if errors.Is(err, core.ErrQueueFull) || errors.Is(err, core.ErrQueueInactive) {
-			c.JSON(http.StatusConflict, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(http.StatusConflict, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return true
 		}
 		slog.Error("chains: failed to queue message", "error", err, "conversation_id", conversation.ID.String())
-		c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+		c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 			common.Error{Message: "failed to queue message: " + err.Error()},
 		}))
 		return true
 	}
 	slog.Info("chains: message queued for in-progress conversation", "conversation_id", conversation.ID.String(), "message_id", queuedMessageId.String())
-	c.JSON(http.StatusAccepted, buildApiResponse(core.NBAgentResponse{
+	c.JSON(http.StatusAccepted, BuildApiResponse(core.NBAgentResponse{
 		Response:       []string{"Your request has been queued and will be processed after the current task finishes."},
 		Query:          request.Query,
 		ConversationId: conversation.ID.String(),
@@ -563,7 +563,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -575,7 +575,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -591,7 +591,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -600,7 +600,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		if request.Query == "" && request.Resolution == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: query is required",
 				},
@@ -609,7 +609,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		if len(request.Query) > 500000 {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: max query size can be 500000 characters",
 				},
@@ -619,7 +619,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		if len(request.Images) > 0 {
 			if err := core.ValidateImages(c.Request.Context(), request.Images); err != nil {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: " + err.Error(),
 					},
@@ -632,7 +632,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.ConversationId != "" {
 			parsedUuid, err := uuid.Parse(request.ConversationId)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: invalid conversation_id",
 					},
@@ -651,7 +651,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if conversationId.Valid {
 			conversation, err := core.GetConversationDao().GetConversation(request.ConversationId)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: conversation_id not found",
 					},
@@ -661,7 +661,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			existingConversation = &conversation
 
 			if conversation.AccountID.String() != request.AccountId {
-				c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{
+				c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: errorUserAccessMessage,
 					},
@@ -674,7 +674,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}
 
 			if request.SessionId != conversation.SessionID {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: invalid sessionId",
 					},
@@ -713,10 +713,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// Optimization: Add a thread-safe resolution cache to the context to prevent redundant DB calls for LLM config
 		ctx = context.WithValue(ctx, core.ContextKeyLLMResolution, core.NewLLMResolutionCache())
 
-		agentContext, err := buildContextFromPayload(ctx, c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(ctx, c, &actionRequest, tracer, meter, logger)
 		timer.mark("security_context")
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -784,7 +784,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.UserId == "" {
 			request.UserId = agentContext.GetSecurityContext().GetUserId()
 		} else if request.UserId != "" && request.UserId != agentContext.GetSecurityContext().GetUserId() && !agentContext.GetSecurityContext().IsSuperAdmin() {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 		// Resolved before the queue branch so a queued message and an immediately
@@ -794,7 +794,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// Check if user has access to account
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 			!granted(agentContext.GetSecurityContext(), request.AccountId, moduleAiMisc, "Read", "Write", "Execute") {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
@@ -803,10 +803,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.Resolution != "" {
 			body, status, err := handleFollowupCancel(agentContext, request)
 			if err != nil {
-				c.JSON(status, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+				c.JSON(status, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 				return
 			}
-			c.JSON(status, buildApiResponse(body, nil))
+			c.JSON(status, BuildApiResponse(body, nil))
 			return
 		}
 
@@ -828,13 +828,13 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.ConversationId != "" && request.AgentId == "" && request.Resolution == "" {
 			if conversation, err := core.GetConversationDao().GetConversation(request.ConversationId); err == nil {
 				if conversation.AccountID.String() != request.AccountId {
-					c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+					c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 					return
 				}
 				// A governed run takes turns only from whom its owner allows,
 				// refused here before a queued row is written.
 				if conversation.RunProfile != nil && !core.MayActOnConversation(conversation, core.ActingUser(agentContext, request.UserId)) {
-					c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+					c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 					return
 				}
 				if config.Config.QueuedMessagesEnabled && queueAdmits(conversation, &request) {
@@ -858,14 +858,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		runProfile, newRunProfile, claimErr := chatRunProfile(c, agentContext, existingConversation, request.AccountId)
 		if claimErr != nil {
 			logger.Warn("api: run claim refused", "error", claimErr)
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{claimErr}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{claimErr}))
 			return
 		}
 		if runProfile != nil && request.AgentId == "" {
 			pinned, err := pinRunAgent(agentContext, runProfile, request.AccountId, agent)
 			if err != nil {
 				logger.Warn("api: governed run's agent not found", "agent_name", runProfile.Agent, "extension", runProfile.Extension)
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{errors.New("api: agent not found")}))
+				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{errors.New("api: agent not found")}))
 				return
 			}
 			agent = pinned
@@ -876,7 +876,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.MessageId != "" {
 			parsedUuid, err := uuid.Parse(request.MessageId)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: invalid message_id",
 					},
@@ -892,7 +892,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.AgentId != "" {
 			parsedUuid, err := uuid.Parse(request.AgentId)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: invalid agent_id",
 					},
@@ -909,7 +909,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			resolvedAgent, dto, walked, err := core.ResolveAgentByConversationAgentId(agentContext, agentId.UUID, request.AccountId)
 			if err != nil {
 				logger.Error("api: error resolving agent for followup resume", "error", err, "agent_id", request.AgentId)
-				c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: unable to complete request, Please try again later",
 					},
@@ -918,7 +918,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}
 			if dto == nil {
 				logger.Error("api: agent not found", "agent_id", request.AgentId)
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: agent not found",
 					},
@@ -927,7 +927,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}
 			if resolvedAgent == nil {
 				logger.Error("api: agent not found", "agent_name", dto.AgentName, "agent_id", dto.ID.String())
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: agent not found",
 					},
@@ -958,7 +958,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithIsNewConversation(isNewConversation), core.ConversationSessionRequestWithConfig(request.Config))
 			if err != nil {
 				logger.Error("api: error getting router chain", "error", err)
-				c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: unable to complete request, Please try again later",
 					},
@@ -969,7 +969,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		if agent == nil {
 			logger.Info("api: unable to identify intent", "error", err)
-			c.JSON(http.StatusOK, buildApiResponse(core.NBAgentResponse{
+			c.JSON(http.StatusOK, BuildApiResponse(core.NBAgentResponse{
 				Response: []string{"Unable to identify intent. My expertise is focused on Kubernetes, Helm, Events, Logs, Metrics, Recommendations, Software Development. Could you please provide more details or rephrase your question so I can better assist you?"},
 				Status:   core.ConversationStatusFailed,
 			}, nil))
@@ -987,7 +987,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				if errors.As(err, &missing) {
 					logger.Info("api: agent missing required integration",
 						"agent", missing.AgentName, "tools", missing.MissingTools)
-					c.JSON(http.StatusOK, buildApiResponse(core.NBAgentResponse{
+					c.JSON(http.StatusOK, BuildApiResponse(core.NBAgentResponse{
 						Response: []string{fmt.Sprintf(
 							"@%s needs an integration to run. Configure one of: %s. Open Settings → Integrations to connect it.",
 							missing.AgentName, strings.Join(missing.MissingTools, ", "))},
@@ -1006,7 +1006,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// Refused here, before any conversation or message row is written.
 		if err := core.CheckAgentInRun(agent, runProfile); err != nil {
 			logger.Warn("api: agent refused outside its run", "agent", agent.GetName(), "error", err)
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
@@ -1073,7 +1073,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1085,7 +1085,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1101,7 +1101,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1110,7 +1110,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		if request.Query == "" {
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: query is required",
 				},
@@ -1119,7 +1119,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		if len(request.Query) > 500000 {
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: max query size can be 500000 characters",
 				},
@@ -1131,7 +1131,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.ConversationId != "" {
 			parsedUuid, err := uuid.Parse(request.ConversationId)
 			if err != nil {
-				c.JSON(400, buildApiResponse(nil, []error{
+				c.JSON(400, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: invalid conversation_id",
 					},
@@ -1147,10 +1147,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// Auto-resolve account_id when not provided
 		if request.AccountId == "" {
 			earlyCtx := context.WithoutCancel(c.Request.Context())
-			earlyAgentContext, earlyErr := buildContextFromPayload(earlyCtx, c, &actionRequest, tracer, meter, slog.Default())
+			earlyAgentContext, earlyErr := BuildContextFromPayload(earlyCtx, c, &actionRequest, tracer, meter, slog.Default())
 			if earlyErr != nil {
 				slog.Error("chat_auto: failed to build security context", "error", earlyErr)
-				c.JSON(401, buildApiResponse(nil, []error{
+				c.JSON(401, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: earlyErr.Error(),
 					},
@@ -1171,7 +1171,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			if request.AccountId == "" {
 				result, resolveErr := resolveAccountForRequest(earlyAgentContext, request.Query)
 				if resolveErr != nil {
-					c.JSON(resolveErr.StatusCode, buildApiResponse(nil, []error{
+					c.JSON(resolveErr.StatusCode, BuildApiResponse(nil, []error{
 						common.Error{
 							Message: resolveErr.Message,
 						},
@@ -1179,14 +1179,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 					return
 				}
 				if result.Followup != nil {
-					c.JSON(200, buildApiResponse(*result.Followup, nil))
+					c.JSON(200, BuildApiResponse(*result.Followup, nil))
 					return
 				}
 				request.AccountId = result.AccountId
 			}
 
 			if request.AccountId == "" {
-				c.JSON(400, buildApiResponse(nil, []error{
+				c.JSON(400, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: unable to resolve account from query",
 					},
@@ -1199,7 +1199,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if conversationId.Valid {
 			conversation, err := core.GetConversationDao().GetConversation(request.ConversationId)
 			if err != nil {
-				c.JSON(400, buildApiResponse(nil, []error{
+				c.JSON(400, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: conversation_id not found",
 					},
@@ -1208,7 +1208,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}
 
 			if conversation.AccountID.String() != request.AccountId {
-				c.JSON(403, buildApiResponse(nil, []error{
+				c.JSON(403, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: errorUserAccessMessage,
 					},
@@ -1221,7 +1221,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}
 
 			if request.SessionId != conversation.SessionID {
-				c.JSON(400, buildApiResponse(nil, []error{
+				c.JSON(400, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: invalid sessionId",
 					},
@@ -1265,9 +1265,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		ctx := context.WithoutCancel(c.Request.Context())
 		c.Request = c.Request.WithContext(ctx)
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{
+			c.JSON(401, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -1286,13 +1286,13 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.UserId == "" {
 			request.UserId = agentContext.GetSecurityContext().GetUserId()
 		} else if request.UserId != "" && request.UserId != agentContext.GetSecurityContext().GetUserId() {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
 		// Check if user has access to account
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
@@ -1311,7 +1311,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.ConversationId != "" && request.AgentId == "" && request.Resolution == "" {
 			if conversation, err := core.GetConversationDao().GetConversation(request.ConversationId); err == nil {
 				if conversation.AccountID.String() != request.AccountId {
-					c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+					c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 					return
 				}
 				if config.Config.QueuedMessagesEnabled && queueAdmits(conversation, &request) {
@@ -1334,7 +1334,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.MessageId != "" {
 			parsedUuid, err := uuid.Parse(request.MessageId)
 			if err != nil {
-				c.JSON(400, buildApiResponse(nil, []error{
+				c.JSON(400, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: invalid message_id",
 					},
@@ -1350,7 +1350,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.AgentId != "" {
 			parsedUuid, err := uuid.Parse(request.AgentId)
 			if err != nil {
-				c.JSON(400, buildApiResponse(nil, []error{
+				c.JSON(400, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: invalid agent_id",
 					},
@@ -1368,7 +1368,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			agents, err := core.GetConversationDao().ListConversationAgents("", agentId.UUID.String())
 			if err != nil {
 				logger.Error("api: error getting router chain", "error", err)
-				c.JSON(500, buildApiResponse(nil, []error{
+				c.JSON(500, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: unable to complete request, Please try again later",
 					},
@@ -1377,7 +1377,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}
 			if len(agents) == 0 {
 				logger.Error("api: agent not found", "agent_id", request.AgentId)
-				c.JSON(400, buildApiResponse(nil, []error{
+				c.JSON(400, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: agent not found",
 					},
@@ -1388,7 +1388,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			agent1, found := core.GetNBAgent(agentContext, agentDto.AgentName, request.AccountId, core.AgentStatusEnabled)
 			if !found {
 				logger.Error("api: agent not found", "agent_name", agentDto.AgentName)
-				c.JSON(400, buildApiResponse(nil, []error{
+				c.JSON(400, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: agent not found",
 					},
@@ -1407,7 +1407,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			agent, err = agents.InferAgentOrHelp(agentContext, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConfig(request.Config))
 			if err != nil {
 				logger.Error("api: error getting router chain", "error", err)
-				c.JSON(500, buildApiResponse(nil, []error{
+				c.JSON(500, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: unable to complete request, Please try again later",
 					},
@@ -1418,7 +1418,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		if agent == nil {
 			logger.Info("api: unable to identify intent", "error", err)
-			c.JSON(200, buildApiResponse(core.NBAgentResponse{
+			c.JSON(200, BuildApiResponse(core.NBAgentResponse{
 				Response: []string{"Unable to identify intent. My expertise is focused on Kubernetes, Helm, Events, Logs, Metrics, Recommendations, Software Development. Could you please provide more details or rephrase your question so I can better assist you?"},
 				Status:   core.ConversationStatusFailed,
 			}, nil))
@@ -1445,10 +1445,10 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			})
 			if err != nil {
 				common.MetricsApiRequestsFailedTotal("chains_chat_auto", "timedout")
-				c.JSON(503, buildApiResponse(nil, []error{common.Error{Message: "api: unable to queue request, please try again later"}}))
+				c.JSON(503, BuildApiResponse(nil, []error{common.Error{Message: "api: unable to queue request, please try again later"}}))
 				return
 			}
-			c.JSON(202, buildApiResponse(core.NBAgentResponse{
+			c.JSON(202, BuildApiResponse(core.NBAgentResponse{
 				Response:       []string{"Your request has been received and will be processed asynchronously."},
 				Query:          request.Query,
 				AgentName:      agent.GetName(),
@@ -1460,14 +1460,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			chainResponse, executeErr := core.HandleConversationSessionRequest(agentContext, agent, request.UserId, request.AccountId, request.SessionId, request.Query, core.ConversationSessionRequestWithSource(source), core.ConversationSessionRequestWithConversationId(conversationId), core.ConversationSessionRequestWithMessageId(messageId), core.ConversationSessionRequestWithAgentId(agentId), core.ConversationSessionRequestWithConfig(request.Config), core.ConversationSessionRequestWithClientTools(request.ClientTools), core.ConversationSessionRequestWithCapabilities(request.Capabilities))
 			if executeErr != nil {
 				logger.Error("api: error executing chain", "error", executeErr)
-				c.JSON(500, buildApiResponse(nil, []error{
+				c.JSON(500, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: unable to complete request, please try again later",
 					},
 				}))
 				return
 			}
-			c.JSON(200, buildApiResponse(chainResponse, nil))
+			c.JSON(200, BuildApiResponse(chainResponse, nil))
 		}
 	})
 
@@ -1477,7 +1477,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1489,7 +1489,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1505,7 +1505,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1515,7 +1515,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		err = common.ValidateStruct(request)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1525,7 +1525,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		_, err = uuid.Parse(request.ConversationId)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: invalid conversation_id",
 				},
@@ -1535,7 +1535,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		_, err = uuid.Parse(request.MessageId)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: invalid message_id",
 				},
@@ -1545,7 +1545,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		_, err = uuid.Parse(request.AccountId)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: invalid account_id",
 				},
@@ -1555,7 +1555,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		message, err := core.GetConversationDao().GetConversationMessage(request.MessageId, request.AccountId, request.ConversationId)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: message_id not found",
 				},
@@ -1564,7 +1564,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		if message.Status == core.ConversationStatusInProgress {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: message is in progress",
 				},
@@ -1574,9 +1574,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		logger := slog.With("account_id", request.AccountId, "conversation_id", request.ConversationId, "user_id", request.UserId)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -1592,14 +1592,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// ai_conversations:Read grant in addition to built-in account roles
 		// (ai_list_conversation_suggestions classifies to ai_conversations).
 		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
 		//TODO validate message_id and agent_id and if they are applicable && correct
 		_, err = uuid.Parse(request.MessageId)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: invalid message_id",
 				},
@@ -1611,7 +1611,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// before the budget check — a tenant-month spend aggregate (~0.8 s) that
 		// every repeat request used to pay for nothing.
 		if stored, ok := core.StoredConversationSuggestions(agentContext, request, message); ok {
-			c.JSON(http.StatusOK, buildApiResponse(stored, nil))
+			c.JSON(http.StatusOK, BuildApiResponse(stored, nil))
 			return
 		}
 
@@ -1623,14 +1623,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		suggestionResponse, executeErr := core.HandleConversationSuggestionRequest(agentContext, request)
 		if executeErr != nil {
 			logger.Error("api: error executing chain", "error", executeErr)
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: unable to complete request, please try again later",
 				},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(suggestionResponse, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(suggestionResponse, nil))
 	})
 
 	groupV2.POST("/chat_stop", func(c *gin.Context) {
@@ -1639,7 +1639,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1651,7 +1651,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1667,7 +1667,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1677,20 +1677,20 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		logger := slog.With("account_id", request.AccountId, "conversation_id", request.ConversationId, "user_id", request.UserId)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiMisc) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
 		if request.ConversationId == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: conversation_id is required to stop the investigation",
 				},
@@ -1704,7 +1704,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// boundary so the caller gets a 400 with a clean reason, matching the
 		// pattern used elsewhere in this file (e.g. /chat, /chat_suggestions).
 		if _, err := uuid.Parse(request.ConversationId); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: invalid conversation_id",
 				},
@@ -1715,7 +1715,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err = core.GetConversationDao().TerminateConversation(agentContext, request.AccountId, request.ConversationId)
 		if err != nil {
 			logger.Error("api: error terminating conversation message", "error", err)
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -1723,7 +1723,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		c.JSON(http.StatusOK, buildApiResponse(map[string]string{"status": "terminated"}, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(map[string]string{"status": "terminated"}, nil))
 	})
 
 	// metricsQueryHandler generates ONE provider-native metrics query from a natural
@@ -1735,7 +1735,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1747,7 +1747,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1763,7 +1763,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1772,7 +1772,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		if request.Query == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: query is required",
 				},
@@ -1785,9 +1785,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		logger := slog.With("account_id", request.AccountId, "conversation_id", request.ConversationId, "user_id", request.UserId)
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -1802,7 +1802,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// Check if user has access to account
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiGeneration) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
@@ -1820,7 +1820,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		metricsQueryChain, err := agents.NewMetricsQueryAgent(agentContext, request.AccountId, request.Index)
 		if err != nil {
 			logger.Error("api: unable to build metrics query agent", "error", err.Error())
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -1865,7 +1865,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -1878,7 +1878,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -1890,9 +1890,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			request.ConversationId = uuid.New().String()
 		}
 		logger := slog.With("account_id", request.AccountId, "conversation_id", request.ConversationId, "user_id", request.UserId)
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -1907,7 +1907,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// Call the HasAccess method
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiGeneration) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
@@ -1950,7 +1950,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1962,7 +1962,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1978,7 +1978,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -1987,7 +1987,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		if request.Query == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: query is required",
 				},
@@ -1999,7 +1999,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.ConversationId != "" {
 			parsedUuid, err := uuid.Parse(request.ConversationId)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: invalid conversation_id",
 					},
@@ -2015,7 +2015,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if conversationId.Valid {
 			conversation, err := core.GetConversationDao().GetConversation(request.ConversationId)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: conversation_id not found",
 					},
@@ -2024,7 +2024,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}
 
 			if conversation.AccountID.String() != request.AccountId {
-				c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{
+				c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: errorUserAccessMessage,
 					},
@@ -2037,7 +2037,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			}
 
 			if request.SessionId != conversation.SessionID {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: invalid sessionId",
 					},
@@ -2061,7 +2061,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.MessageId != "" {
 			parsedUuid, err := uuid.Parse(request.MessageId)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: invalid message_id",
 					},
@@ -2077,7 +2077,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		if request.AgentId != "" {
 			parsedUuid, err := uuid.Parse(request.AgentId)
 			if err != nil {
-				c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: invalid agent_id",
 					},
@@ -2099,9 +2099,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			logger = logger.With("conversation_id", request.ConversationId)
 		}
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -2116,7 +2116,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// Check if user has access to account
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiGeneration) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
@@ -2130,7 +2130,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		chain, found := core.GetNBAgent(agentContext, agents.WorkflowBuilderAgentName, request.AccountId, core.AgentStatusEnabled)
 		if !found {
 			logger.Error("api: agent not found", "agent_name", agents.WorkflowBuilderAgentName)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: agent not found",
 				},
@@ -2161,7 +2161,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&request)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -2172,13 +2172,13 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		logger := slog.With("account_id", request.AccountId, "conversation_id", request.ConversationId, "user_id", request.UserId)
 		agentContext, err := buildContextFromRequestPayload(c.Request.Context(), c, map[string]string{"account_id": request.AccountId, "user_id": request.UserId}, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		// Check if user has access to account
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
@@ -2191,7 +2191,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		chain, found := core.GetNBAgent(agentContext, agents.PromptRefinementAgentName, request.AccountId, core.AgentStatusEnabled)
 		if !found {
 			logger.Error("api: agent not found", "agent_name", agents.PromptRefinementAgentName)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: agent not found",
 				},
@@ -2206,7 +2206,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		resp, err := core.HandleConversationSessionRequest(agentContext, chain, request.UserId, request.AccountId, request.ConversationId, request.Query, core.ConversationSessionRequestWithSource(source))
 		if err != nil {
 			logger.Error(errorAuditMessage, "error", err)
-			c.JSON(http.StatusInternalServerError, buildApiResponse(resp, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(resp, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -2214,7 +2214,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		c.JSON(http.StatusOK, buildApiResponse(resp, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(resp, nil))
 	})
 
 	groupV2.POST("/conversation-usage-metrics", func(c *gin.Context) {
@@ -2223,7 +2223,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -2235,7 +2235,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -2251,7 +2251,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -2261,14 +2261,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		logger := slog.With("account_id", request.AccountId, "conversation_id", request.ConversationId, "user_id", request.UserId)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if request.ConversationId == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: conversationId is required",
 				},
@@ -2279,13 +2279,13 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		data, err := analytics.HandleConversationUsageMetricsApi(agentContext, request)
 
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
 			}))
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	groupV2.POST("/conversation-time-aggregates", func(c *gin.Context) {
@@ -2294,7 +2294,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -2306,7 +2306,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -2322,7 +2322,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionRequestPayload = requestMap
 		}
 		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -2332,9 +2332,9 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		logger := slog.With("account_ids", request.AccountIds, "user_id", request.UserId)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
@@ -2343,7 +2343,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// multi-account roll-up the troubleshoot widget needs. Authorization
 		// of any explicit account_ids happens inside the handler.
 		if request.StartDate == "" || request.EndDate == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: start_date and end_date are required"},
 			}))
 			return
@@ -2351,12 +2351,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		data, err := analytics.HandleConversationTimeAggregatesApi(agentContext, request)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	// usage-metrics backs the AI Cost Analyser Overview + Models screens: KPI
@@ -2370,7 +2370,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2380,7 +2380,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2394,7 +2394,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionRequestPayload = requestMap
 		}
 		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2402,14 +2402,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		logger := slog.With("user_id", request.UserId, "group_by", request.GroupBy)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if request.StartDate == "" || request.EndDate == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: start_date and end_date are required"},
 			}))
 			return
@@ -2417,12 +2417,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		data, err := analytics.HandleUsageMetricsApi(agentContext, request)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	// ai-account-report backs the Cost Analyser dashboard's Accounts tab: the
@@ -2435,7 +2435,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2445,7 +2445,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2459,7 +2459,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionRequestPayload = requestMap
 		}
 		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2467,14 +2467,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		logger := slog.With("account_ids", request.AccountIds, "reference_date", request.ReferenceDate)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if request.ReferenceDate == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: reference_date is required"},
 			}))
 			return
@@ -2482,12 +2482,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		data, err := analytics.HandleAiCostAccountReportApi(agentContext, request)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	// usage-filters returns the option-sets that populate the Cost Analyser
@@ -2499,7 +2499,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2509,7 +2509,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2523,20 +2523,20 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionRequestPayload = requestMap
 		}
 		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
 		}
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if request.StartDate == "" || request.EndDate == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: start_date and end_date are required"},
 			}))
 			return
@@ -2544,12 +2544,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		data, err := analytics.HandleUsageFiltersApi(agentContext, request)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	// usage-conversations is the Cost Analyser explorer: a filtered, sorted,
@@ -2561,7 +2561,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2571,7 +2571,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2585,7 +2585,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionRequestPayload = requestMap
 		}
 		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2593,14 +2593,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		logger := slog.With("user_id", request.UserId, "sort_by", request.SortBy)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if request.StartDate == "" || request.EndDate == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: start_date and end_date are required"},
 			}))
 			return
@@ -2608,12 +2608,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		data, err := analytics.HandleListConversationCostsApi(agentContext, request)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	// conversation-tree is the Cost Analyser detailed drill-down: the full
@@ -2625,7 +2625,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2635,7 +2635,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2649,7 +2649,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionRequestPayload = requestMap
 		}
 		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2657,14 +2657,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		logger := slog.With("account_id", request.AccountId, "user_id", request.UserId)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if request.ConversationId == "" || request.AccountId == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: conversation_id and account_id are required"},
 			}))
 			return
@@ -2672,12 +2672,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		data, err := analytics.HandleConversationTreeApi(agentContext, request)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	// conversation-agent is the on-click drill-down for ONE agent in the Cost
@@ -2690,7 +2690,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2700,7 +2700,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2714,7 +2714,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionRequestPayload = requestMap
 		}
 		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2722,14 +2722,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		logger := slog.With("account_id", request.AccountId, "user_id", request.UserId)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if request.ConversationId == "" || request.AccountId == "" || request.AgentId == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: conversation_id, account_id and agent_id are required"},
 			}))
 			return
@@ -2737,12 +2737,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		data, err := analytics.HandleConversationAgentDetailApi(agentContext, request)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	// event-analysis-digests backs the weekly digest tab: the account's digest
@@ -2756,12 +2756,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		data, err := HandleListEventAnalysisDigestsApi(reqCtx, request)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	groupV2.POST("/event-analysis-digest", func(c *gin.Context) {
@@ -2773,12 +2773,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		data, err := HandleGetEventAnalysisDigestApi(reqCtx, request)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	groupV2.POST("/event-analysis-digest-generate", func(c *gin.Context) {
@@ -2790,12 +2790,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		data, err := HandleGenerateEventAnalysisDigestApi(reqCtx, request)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	// usage-agents is the Cost Analyser "Agents" leaderboard: top agent invocations
@@ -2807,7 +2807,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2817,7 +2817,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2831,7 +2831,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionRequestPayload = requestMap
 		}
 		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2840,7 +2840,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// Reject empty dates with a clean 400 (parity with the sibling handlers);
 		// otherwise time.Parse("") inside the handler surfaces as a 500.
 		if request.StartDate == "" || request.EndDate == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: start_date and end_date are required"},
 			}))
 			return
@@ -2848,20 +2848,20 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		logger := slog.With("account_id", request.AccountIds, "user_id", request.UserId)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		data, err := analytics.HandleListAgentCostsApi(agentContext, request)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	// usage-tools is the Cost Analyser "Tools" leaderboard: a per-tool rollup
@@ -2874,7 +2874,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2884,7 +2884,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2898,7 +2898,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionRequestPayload = requestMap
 		}
 		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2906,7 +2906,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		// Reject empty dates with a clean 400 (parity with the sibling handlers).
 		if request.StartDate == "" || request.EndDate == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: start_date and end_date are required"},
 			}))
 			return
@@ -2914,20 +2914,20 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		logger := slog.With("account_id", request.AccountIds, "user_id", request.UserId)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		data, err := analytics.HandleListToolUsageApi(agentContext, request)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	// tool-calls is the Tools-tab drill-in: the recent invocations of one tool
@@ -2939,7 +2939,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2949,7 +2949,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		var actionRequest ActionRequest
 		if err = common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -2963,20 +2963,20 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionRequestPayload = requestMap
 		}
 		if err = common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
 		}
 
 		if request.StartDate == "" || request.EndDate == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: start_date and end_date are required"},
 			}))
 			return
 		}
 		if request.ToolName == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: tool_name is required"},
 			}))
 			return
@@ -2984,20 +2984,20 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		logger := slog.With("account_id", request.AccountIds, "user_id", request.UserId)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		data, err := analytics.HandleListToolCallsApi(agentContext, request)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	// Critique Analytics routes, gated by requireTenantReadAdmin. A platform
@@ -3009,13 +3009,13 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 	requireTenantReadAdmin := func(c *gin.Context, ctx *security.RequestContext) bool {
 		sc := ctx.GetSecurityContext()
 		if sc == nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{errors.New("critiques: missing security context")}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{errors.New("critiques: missing security context")}))
 			return false
 		}
 		if sc.IsSuperAdmin() || sc.IsSuperAdminReadonly() || sc.IsTenantAdmin() || sc.IsTenantReadAdmin() {
 			return true
 		}
-		c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New("critiques: tenant admin role required")}))
+		c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New("critiques: tenant admin role required")}))
 		return false
 	}
 	groupV2.POST("/critiques-summary", func(c *gin.Context) {
@@ -3023,7 +3023,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		requestMap := make(map[string]any)
 		if err := c.ShouldBindJSON(&requestMap); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -3033,7 +3033,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		var actionRequest ActionRequest
 		if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -3047,21 +3047,21 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionRequestPayload = requestMap
 		}
 		if err := common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
 		}
 		if request.StartDate == "" || request.EndDate == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: start_date and end_date are required"},
 			}))
 			return
 		}
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		if !requireTenantReadAdmin(c, agentContext) {
@@ -3070,12 +3070,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		data, err := analytics.HandleCritiqueSummaryApi(request, analytics.CritiqueScopeFor(agentContext.GetSecurityContext()))
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	groupV2.POST("/critiques-trend", func(c *gin.Context) {
@@ -3083,7 +3083,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		requestMap := make(map[string]any)
 		if err := c.ShouldBindJSON(&requestMap); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -3093,7 +3093,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		var actionRequest ActionRequest
 		if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -3107,21 +3107,21 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionRequestPayload = requestMap
 		}
 		if err := common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
 		}
 		if request.StartDate == "" || request.EndDate == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: start_date and end_date are required"},
 			}))
 			return
 		}
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		if !requireTenantReadAdmin(c, agentContext) {
@@ -3130,12 +3130,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		data, err := analytics.HandleCritiqueTrendApi(request, analytics.CritiqueScopeFor(agentContext.GetSecurityContext()))
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	groupV2.POST("/critiques-list", func(c *gin.Context) {
@@ -3143,7 +3143,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		requestMap := make(map[string]any)
 		if err := c.ShouldBindJSON(&requestMap); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -3153,7 +3153,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		var actionRequest ActionRequest
 		if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -3167,21 +3167,21 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionRequestPayload = requestMap
 		}
 		if err := common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
 		}
 		if request.StartDate == "" || request.EndDate == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: start_date and end_date are required"},
 			}))
 			return
 		}
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		if !requireTenantReadAdmin(c, agentContext) {
@@ -3190,12 +3190,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		data, err := analytics.HandleCritiqueListApi(request, analytics.CritiqueScopeFor(agentContext.GetSecurityContext()))
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(data, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(data, nil))
 	})
 
 	groupV2.POST("/chat_get", func(c *gin.Context) {
@@ -3204,7 +3204,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -3216,7 +3216,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -3234,7 +3234,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -3242,20 +3242,20 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 			!granted(agentContext.GetSecurityContext(), request.AccountId, moduleAiConversations, "Read", "Write") {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
 		if request.ConversationId == "" && request.SessionId == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: conversationId or sessionId is required",
 				},
@@ -3280,7 +3280,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			if errors.Is(err, core.ErrConversationNotFound) {
 				statusCode = http.StatusNotFound
 			}
-			c.JSON(statusCode, buildApiResponse(nil, []error{
+			c.JSON(statusCode, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -3288,7 +3288,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		c.JSON(http.StatusOK, buildApiResponse(conversation, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(conversation, nil))
 	})
 
 	groupV2.POST("/chat_list", func(c *gin.Context) {
@@ -3297,7 +3297,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -3309,7 +3309,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -3325,7 +3325,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -3335,15 +3335,15 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		logger := slog.Default()
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 			!granted(agentContext.GetSecurityContext(), request.AccountId, moduleAiConversations, "Read", "Write") {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
@@ -3356,7 +3356,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		conversations, err := core.GetConversationDao().ListConversations(request.AccountId, request.UserId, request.Title, string(request.Source), request.Limit, request.Offset)
 		if err != nil {
 			logger.Error("api: error listing conversations", "error", err)
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -3364,7 +3364,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
-		c.JSON(http.StatusOK, buildApiResponse(conversations, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(conversations, nil))
 	})
 
 	groupV2.POST("/client-tool-result", func(c *gin.Context) {
@@ -3373,7 +3373,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -3386,7 +3386,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -3403,7 +3403,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -3413,7 +3413,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 
 		err = common.ValidateStruct(request)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -3422,15 +3422,15 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		logger := slog.With("account_id", request.AccountId, "conversation_id", request.ConversationId, "agent_id", request.AgentId)
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		// Check if user has access to account
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
@@ -3439,12 +3439,12 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		// A governed run takes results only from whom its owner allows,
 		// refused before any result is written.
 		if err == nil && !core.MayActOnConversation(conv, core.ActingUser(agentContext, "")) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 		if err == nil && conv.Status == core.ConversationStatusInProgress {
 			logger.Warn("api: conversation already in progress, rejecting tool result submission")
-			c.JSON(http.StatusConflict, buildApiResponse(nil, []error{
+			c.JSON(http.StatusConflict, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: conversation is currently in progress, please wait",
 				},
@@ -3459,7 +3459,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 				// If status is success or error, it means we already have a final result
 				if strings.EqualFold(string(status), string(toolcore.NBToolResponseStatusSuccess)) || strings.EqualFold(string(status), string(toolcore.NBToolResponseStatusError)) {
 					logger.Warn("api: tool response already submitted", "tool_id", r.ToolId, "status", status)
-					c.JSON(http.StatusConflict, buildApiResponse(nil, []error{
+					c.JSON(http.StatusConflict, BuildApiResponse(nil, []error{
 						common.Error{
 							Message: fmt.Sprintf("api: tool response for %s already submitted", r.ToolId),
 						},
@@ -3474,7 +3474,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			err = core.GetConversationDao().UpdateConversationToolResponse(r.ToolId, request.MessageId, request.ConversationId, request.AccountId, r.Result, toolcore.NBToolResponseStatus(r.Status))
 			if err != nil {
 				logger.Error("api: error updating tool response", "tool_id", r.ToolId, "error", err)
-				c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{
+				c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: unable to update tool response for " + r.ToolId,
 					},
@@ -3493,7 +3493,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 	groupV2.POST("/queued_message_delete", func(c *gin.Context) {
 		requestMap := make(map[string]any)
 		if err := c.ShouldBindJSON(&requestMap); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return
 		}
 		var req QueuedMessageDeleteRequest
@@ -3507,34 +3507,34 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionPayload = requestMap
 		}
 		if err := common.DecodeMapToStruct(actionPayload, &req); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return
 		}
 		if req.MessageId == "" || req.AccountId == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: account_id and message_id are required"}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: account_id and message_id are required"}}))
 			return
 		}
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		if !agentContext.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeRead) &&
 			!grantedWrite(agentContext.GetSecurityContext(), req.AccountId, moduleAiConversations) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 		isAdmin := isSecurityContextAdmin(agentContext.GetSecurityContext(), req.AccountId)
 		userId := agentContext.GetSecurityContext().GetUserId()
 		if err := core.GetConversationDao().DeleteQueuedMessage(req.MessageId, req.AccountId, userId, isAdmin); err != nil {
 			if errors.Is(err, core.ErrQueuedMessageNotFoundOrLocked) {
-				c.JSON(http.StatusConflict, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+				c.JSON(http.StatusConflict, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 				return
 			}
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(map[string]any{"status": "deleted", "id": req.MessageId}, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(map[string]any{"status": "deleted", "id": req.MessageId}, nil))
 	})
 
 	groupV2.DELETE("/queued_message/:id", func(c *gin.Context) {
@@ -3542,37 +3542,37 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		accountId := c.Query("account_id")
 
 		if messageId == "" || accountId == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: account_id and id are required"}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: account_id and id are required"}}))
 			return
 		}
 		var actionRequest ActionRequest
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		if !agentContext.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) &&
 			!grantedWrite(agentContext.GetSecurityContext(), accountId, moduleAiConversations) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 		isAdmin := isSecurityContextAdmin(agentContext.GetSecurityContext(), accountId)
 		userId := agentContext.GetSecurityContext().GetUserId()
 		if err := core.GetConversationDao().DeleteQueuedMessage(messageId, accountId, userId, isAdmin); err != nil {
 			if errors.Is(err, core.ErrQueuedMessageNotFoundOrLocked) {
-				c.JSON(http.StatusConflict, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+				c.JSON(http.StatusConflict, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 				return
 			}
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(map[string]any{"status": "deleted", "id": messageId}, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(map[string]any{"status": "deleted", "id": messageId}, nil))
 	})
 
 	groupV2.POST("/queued_message_update", func(c *gin.Context) {
 		requestMap := make(map[string]any)
 		if err := c.ShouldBindJSON(&requestMap); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return
 		}
 		var req QueuedMessageUpdateRequest
@@ -3586,41 +3586,41 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionPayload = requestMap
 		}
 		if err := common.DecodeMapToStruct(actionPayload, &req); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return
 		}
 		if req.MessageId == "" || req.AccountId == "" || strings.TrimSpace(req.Message) == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: account_id, message_id, and non-empty message are required"}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: account_id, message_id, and non-empty message are required"}}))
 			return
 		}
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		if !agentContext.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeRead) &&
 			!grantedWrite(agentContext.GetSecurityContext(), req.AccountId, moduleAiConversations) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 		isAdmin := isSecurityContextAdmin(agentContext.GetSecurityContext(), req.AccountId)
 		userId := agentContext.GetSecurityContext().GetUserId()
 		if err := core.GetConversationDao().UpdateQueuedMessage(req.MessageId, req.AccountId, userId, strings.TrimSpace(req.Message), isAdmin); err != nil {
 			if errors.Is(err, core.ErrQueuedMessageNotFoundOrLocked) {
-				c.JSON(http.StatusConflict, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+				c.JSON(http.StatusConflict, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 				return
 			}
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(map[string]any{"status": "updated", "id": req.MessageId, "message": strings.TrimSpace(req.Message)}, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(map[string]any{"status": "updated", "id": req.MessageId, "message": strings.TrimSpace(req.Message)}, nil))
 	})
 
 	groupV2.PATCH("/queued_message/:id", func(c *gin.Context) {
 		messageId := c.Param("id")
 		requestMap := make(map[string]any)
 		if err := c.ShouldBindJSON(&requestMap); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return
 		}
 		var req QueuedMessageUpdateRequest
@@ -3641,36 +3641,36 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			req.AccountId = c.Query("account_id")
 		}
 		if req.MessageId == "" || req.AccountId == "" || strings.TrimSpace(req.Message) == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: account_id, message_id, and non-empty message are required"}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: account_id, message_id, and non-empty message are required"}}))
 			return
 		}
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		if !agentContext.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeRead) &&
 			!grantedWrite(agentContext.GetSecurityContext(), req.AccountId, moduleAiConversations) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 		isAdmin := isSecurityContextAdmin(agentContext.GetSecurityContext(), req.AccountId)
 		userId := agentContext.GetSecurityContext().GetUserId()
 		if err := core.GetConversationDao().UpdateQueuedMessage(req.MessageId, req.AccountId, userId, strings.TrimSpace(req.Message), isAdmin); err != nil {
 			if errors.Is(err, core.ErrQueuedMessageNotFoundOrLocked) {
-				c.JSON(http.StatusConflict, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+				c.JSON(http.StatusConflict, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 				return
 			}
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		c.JSON(http.StatusOK, buildApiResponse(map[string]any{"status": "updated", "id": req.MessageId, "message": strings.TrimSpace(req.Message)}, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(map[string]any{"status": "updated", "id": req.MessageId, "message": strings.TrimSpace(req.Message)}, nil))
 	})
 
 	groupV2.POST("/queued_message_force", func(c *gin.Context) {
 		requestMap := make(map[string]any)
 		if err := c.ShouldBindJSON(&requestMap); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return
 		}
 		var req QueuedMessageForceRequest
@@ -3684,32 +3684,32 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			actionPayload = requestMap
 		}
 		if err := common.DecodeMapToStruct(actionPayload, &req); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return
 		}
 		if req.MessageId == "" || req.AccountId == "" || req.ConversationId == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: account_id, conversation_id, and message_id are required"}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: account_id, conversation_id, and message_id are required"}}))
 			return
 		}
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		if !agentContext.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeRead) &&
 			!grantedRun(agentContext.GetSecurityContext(), req.AccountId, moduleAiMisc) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
 		conversation, err := core.GetConversationDao().GetConversation(req.ConversationId)
 		if err != nil {
-			c.JSON(http.StatusNotFound, buildApiResponse(nil, []error{common.Error{Message: "api: conversation not found"}}))
+			c.JSON(http.StatusNotFound, BuildApiResponse(nil, []error{common.Error{Message: "api: conversation not found"}}))
 			return
 		}
 
 		if conversation.AccountID.String() != req.AccountId {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 		if budget.CheckBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), req.AccountId, budget.ModuleUserInvestigation, slog.Default()) {
@@ -3720,14 +3720,14 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		claimedMsg, err := core.GetConversationDao().ClaimQueuedMessageById(agentContext, req.AccountId, req.ConversationId, req.MessageId,
 			agentContext.GetSecurityContext().GetUserId(), isSecurityContextAdmin(agentContext.GetSecurityContext(), req.AccountId))
 		if err != nil || claimedMsg == nil {
-			c.JSON(http.StatusConflict, buildApiResponse(nil, []error{common.Error{Message: "api: queued message unavailable or permission denied"}}))
+			c.JSON(http.StatusConflict, BuildApiResponse(nil, []error{common.Error{Message: "api: queued message unavailable or permission denied"}}))
 			return
 		}
 		if err := dispatchQueuedMessage(agentContext, conversation, *claimedMsg); err != nil {
-			c.JSON(http.StatusServiceUnavailable, buildApiResponse(nil, []error{common.Error{Message: "api: unable to dispatch queued message"}}))
+			c.JSON(http.StatusServiceUnavailable, BuildApiResponse(nil, []error{common.Error{Message: "api: unable to dispatch queued message"}}))
 			return
 		}
 
-		c.JSON(http.StatusOK, buildApiResponse(map[string]any{"status": "executing", "message_id": req.MessageId}, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(map[string]any{"status": "executing", "message_id": req.MessageId}, nil))
 	})
 }

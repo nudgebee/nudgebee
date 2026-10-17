@@ -49,19 +49,19 @@ func toolListTool(c *gin.Context, context *security.RequestContext, payload map[
 	// Agents tab and duplicating them here would be confusing.
 	if payload["account_id"] == nil || payload["account_id"] == "" {
 		resp := append(core.ListToolsForTenant(context), tenantMCPWriteToolDtos(context)...)
-		c.JSON(200, buildApiResponse(filterToolsByType(resp, payload), nil))
+		c.JSON(200, BuildApiResponse(filterToolsByType(resp, payload), nil))
 		return
 	}
 	accountIdPayload, ok := payload["account_id"].(string)
 	if !ok || accountIdPayload == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("tools: invalid payload, account_id must be a non-empty string")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, account_id must be a non-empty string")}))
 		return
 	}
 
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(accountIdPayload, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), accountIdPayload, moduleAiTools, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
 			},
@@ -87,7 +87,7 @@ func toolListTool(c *gin.Context, context *security.RequestContext, payload map[
 			},
 		})
 	}
-	c.JSON(200, buildApiResponse(filterToolsByType(resp, payload), nil))
+	c.JSON(200, BuildApiResponse(filterToolsByType(resp, payload), nil))
 }
 
 // tenantMCPWriteToolDtos lists, for the tenant-wide view, the MCP tools their
@@ -149,7 +149,7 @@ func toolCreateTool(c *gin.Context, context *security.RequestContext, payload ma
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -159,7 +159,7 @@ func toolCreateTool(c *gin.Context, context *security.RequestContext, payload ma
 
 	err = common.ValidateStruct(request)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -170,7 +170,7 @@ func toolCreateTool(c *gin.Context, context *security.RequestContext, payload ma
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiTools) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
 			},
@@ -181,12 +181,12 @@ func toolCreateTool(c *gin.Context, context *security.RequestContext, payload ma
 	var config map[string]any
 	switch request.Tool.ExecutorType {
 	case core.ToolExecutorTypeMCP:
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("MCP tools are now managed via integrations, create an MCP integration instead of an MCP tool")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("MCP tools are now managed via integrations, create an MCP integration instead of an MCP tool")}))
 		return
 	case core.ToolExecutorTypeContainer:
 		config = request.Tool.Config
 	default:
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("tools: invalid executor_type, must be 'container'")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid executor_type, must be 'container'")}))
 		return
 	}
 
@@ -202,7 +202,7 @@ func toolCreateTool(c *gin.Context, context *security.RequestContext, payload ma
 		CreatedBy:    context.GetSecurityContext().GetUserId(),
 	})
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -210,34 +210,34 @@ func toolCreateTool(c *gin.Context, context *security.RequestContext, payload ma
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func toolDeleteTool(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	if payload["account_id"] == nil || payload["account_id"] == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
 		return
 	}
 
 	if payload["name"] == nil || payload["name"] == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, name is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, name is required")}))
 		return
 	}
 	accountIdPayload, okAccount := payload["account_id"].(string)
 	if !okAccount || accountIdPayload == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("tools: invalid payload, account_id must be a non-empty string")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, account_id must be a non-empty string")}))
 		return
 	}
 	namePayload, okName := payload["name"].(string)
 	if !okName || namePayload == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("tools: invalid payload, name must be a non-empty string")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, name must be a non-empty string")}))
 		return
 	}
 
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(accountIdPayload, security.SecurityAccessTypeDelete) &&
 		!grantedWrite(context.GetSecurityContext(), accountIdPayload, moduleAiTools) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
 			},
@@ -251,13 +251,13 @@ func toolDeleteTool(c *gin.Context, context *security.RequestContext, payload ma
 		// might warrant different HTTP status codes (e.g., 404 if not found vs 500 for other errors)
 		// For now, a generic 500 is better than 200 on error.
 		slog.Error("tools: failed to delete custom tool", "error", err, "account_id", accountIdPayload, "name", namePayload)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: "tools: failed to delete tool: " + err.Error(),
 			},
 		}))
 	} else {
-		c.JSON(200, buildApiResponse(map[string]any{
+		c.JSON(200, BuildApiResponse(map[string]any{
 			"status": "ok",
 		}, nil)) // Pass nil for errors on success
 	}
@@ -269,7 +269,7 @@ func toolUpdateTool(c *gin.Context, context *security.RequestContext, payload ma
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -279,7 +279,7 @@ func toolUpdateTool(c *gin.Context, context *security.RequestContext, payload ma
 
 	err = common.ValidateStruct(request)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -288,13 +288,13 @@ func toolUpdateTool(c *gin.Context, context *security.RequestContext, payload ma
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("tools: invalid payload, account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, account_id is required")}))
 		return
 	}
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiTools) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
 			},
@@ -316,7 +316,7 @@ func toolUpdateTool(c *gin.Context, context *security.RequestContext, payload ma
 
 	err = core.UpdateCustomTool(context, request.AccountId, request.Tool.Name, tool)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -324,7 +324,7 @@ func toolUpdateTool(c *gin.Context, context *security.RequestContext, payload ma
 		return
 	}
 
-	c.JSON(200, buildApiResponse(tool, nil))
+	c.JSON(200, BuildApiResponse(tool, nil))
 }
 
 func handleToolsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
@@ -335,7 +335,7 @@ func handleToolsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		err := c.ShouldBindJSON(&actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -344,13 +344,13 @@ func handleToolsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		}
 
 		if actionRequest.Action.Name == "" {
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("tools: invalid payload, action.name is required")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, action.name is required")}))
 			return
 		}
 
-		context, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
+		context, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
@@ -359,7 +359,7 @@ func handleToolsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 			if castedRequest, castOk := rawRequest.(map[string]any); castOk {
 				payload = castedRequest
 			} else {
-				c.JSON(400, buildApiResponse(nil, []error{errors.New("tools: invalid payload, request field is not a valid object")}))
+				c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, request field is not a valid object")}))
 				return
 			}
 		}
@@ -382,7 +382,7 @@ func handleToolsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 			toolDeleteTool(c, context, payload)
 			return
 		default:
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("tools: invalid payload, unsupported action")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, unsupported action")}))
 			return
 		}
 	})
@@ -395,7 +395,7 @@ func handleToolsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error("tools: failed to bind request", "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "tools: " + err.Error(),
 				},
@@ -407,7 +407,7 @@ func handleToolsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error("tools: failed to decode rpc request", "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "tools: " + err.Error(),
 				},
@@ -420,22 +420,22 @@ func handleToolsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 			actionRequestPayload = requestMap
 		}
 
-		context, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
+		context, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		accountId, ok := actionRequestPayload["account_id"].(string)
 		if !ok || accountId == "" {
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("tools: account_id is required in request body")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: account_id is required in request body")}))
 			return
 		}
 
 		// Check if user has access to account
 		if !context.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) &&
 			!granted(context.GetSecurityContext(), accountId, moduleAiTools, "Read", "Write") {
-			c.JSON(403, buildApiResponse(nil, []error{
+			c.JSON(403, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: errorUserAccessMessage,
 				},
@@ -447,7 +447,7 @@ func handleToolsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		configs, err := core.ListAllToolConfigs(context, accountId)
 		if err != nil {
 			slog.Error("tools: failed to list all configs", "error", err, "account_id", accountId)
-			c.JSON(500, buildApiResponse(nil, []error{
+			c.JSON(500, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "tools: failed to list configs",
 				},
@@ -492,7 +492,7 @@ func handleToolsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 			"configs": simplifiedConfigs,
 		}
 
-		c.JSON(200, buildApiResponse(response, nil))
+		c.JSON(200, BuildApiResponse(response, nil))
 	})
 
 }

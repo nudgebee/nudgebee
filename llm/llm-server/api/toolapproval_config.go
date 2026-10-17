@@ -154,7 +154,7 @@ type toolApprovalAccountOptions struct {
 
 func requireToolApprovalTenantAdmin(c *gin.Context, ctx *security.RequestContext) bool {
 	if ctx == nil || ctx.GetSecurityContext() == nil || (!ctx.GetSecurityContext().IsTenantAdmin() && !ctx.GetSecurityContext().IsSuperAdmin()) {
-		c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New("tool approval: tenant administrator access is required")}))
+		c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New("tool approval: tenant administrator access is required")}))
 		return false
 	}
 	return true
@@ -162,12 +162,12 @@ func requireToolApprovalTenantAdmin(c *gin.Context, ctx *security.RequestContext
 
 func requireToolApprovalTenantReader(c *gin.Context, ctx *security.RequestContext) bool {
 	if ctx == nil || ctx.GetSecurityContext() == nil {
-		c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New("tool approval: tenant administrator access is required")}))
+		c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New("tool approval: tenant administrator access is required")}))
 		return false
 	}
 	securityContext := ctx.GetSecurityContext()
 	if !securityContext.IsTenantAdmin() && !securityContext.IsTenantReadAdmin() && !securityContext.IsSuperAdmin() && !securityContext.IsSuperAdminReadonly() {
-		c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New("tool approval: tenant administrator access is required")}))
+		c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New("tool approval: tenant administrator access is required")}))
 		return false
 	}
 	return true
@@ -580,17 +580,17 @@ func toolApprovalListTools(c *gin.Context, ctx *security.RequestContext) {
 	}
 	tenantID, err := toolApprovalTenantID(ctx)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{err}))
+		c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	mcpTools, unmarked, err := toolApprovalMCPWriteTools(ctx, tenantID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	options := append(toolApprovalTenantTools(ctx), toolApprovalMCPToolOptions(mcpTools)...)
 	sort.Slice(options, func(i, j int) bool { return options[i].Name < options[j].Name })
-	c.JSON(http.StatusOK, buildApiResponse(gin.H{"tools": options, "unmarked_mcp_integrations": unmarked}, nil))
+	c.JSON(http.StatusOK, BuildApiResponse(gin.H{"tools": options, "unmarked_mcp_integrations": unmarked}, nil))
 }
 
 func toolApprovalOptions(c *gin.Context, ctx *security.RequestContext, payload map[string]any) {
@@ -599,16 +599,16 @@ func toolApprovalOptions(c *gin.Context, ctx *security.RequestContext, payload m
 	}
 	tenantID, err := toolApprovalTenantID(ctx)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{err}))
+		c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	var request toolApprovalOptionsRequest
 	if err := decodeToolApprovalPayload(payload, &request); err != nil {
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{err}))
+		c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	if strings.TrimSpace(request.ToolName) == "" {
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{errors.New("tool approval: tool_name is required")}))
+		c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{errors.New("tool approval: tool_name is required")}))
 		return
 	}
 	if request.Organisation {
@@ -617,11 +617,11 @@ func toolApprovalOptions(c *gin.Context, ctx *security.RequestContext, payload m
 		if _, builtIn := toolcore.GetNBTool("", strings.TrimSpace(request.ToolName)); !builtIn {
 			mcpTool, found, err := findMCPWriteTool(ctx, tenantID, request.ToolName)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+				c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 				return
 			}
 			if found {
-				c.JSON(http.StatusOK, buildApiResponse(gin.H{"target_kind": toolApprovalTargetIntegration, "integrations": []toolapproval.Integration{mcpTool.Integration}}, nil))
+				c.JSON(http.StatusOK, BuildApiResponse(gin.H{"target_kind": toolApprovalTargetIntegration, "integrations": []toolapproval.Integration{mcpTool.Integration}}, nil))
 				return
 			}
 		}
@@ -629,7 +629,7 @@ func toolApprovalOptions(c *gin.Context, ctx *security.RequestContext, payload m
 		probe := &toolapproval.Rule{TenantID: tenantID}
 		tool, err := resolveToolApprovalTool(probe, strings.TrimSpace(request.ToolName))
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		kind, types := toolApprovalTargetKind(ctx, tool)
@@ -637,11 +637,11 @@ func toolApprovalOptions(c *gin.Context, ctx *security.RequestContext, payload m
 		if kind == toolApprovalTargetIntegration {
 			integrations, err = toolapproval.ListTenantIntegrations(ctx.GetContext(), tenantID, types)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+				c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 				return
 			}
 		}
-		c.JSON(http.StatusOK, buildApiResponse(gin.H{"target_kind": kind, "integrations": integrations}, nil))
+		c.JSON(http.StatusOK, BuildApiResponse(gin.H{"target_kind": kind, "integrations": integrations}, nil))
 		return
 	}
 	rows := make([]toolApprovalAccountOptions, 0, len(request.AccountIDs))
@@ -667,7 +667,7 @@ func toolApprovalOptions(c *gin.Context, ctx *security.RequestContext, payload m
 		}
 		rows = append(rows, row)
 	}
-	c.JSON(http.StatusOK, buildApiResponse(gin.H{"accounts": rows}, nil))
+	c.JSON(http.StatusOK, BuildApiResponse(gin.H{"accounts": rows}, nil))
 }
 
 func toolApprovalList(c *gin.Context, ctx *security.RequestContext) {
@@ -676,12 +676,12 @@ func toolApprovalList(c *gin.Context, ctx *security.RequestContext) {
 	}
 	tenantID, err := toolApprovalTenantID(ctx)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	rules, err := toolapproval.List(c.Request.Context(), tenantID)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	// Integration names let a rule pinned to an integration show its name.
@@ -690,7 +690,7 @@ func toolApprovalList(c *gin.Context, ctx *security.RequestContext) {
 		ctx.GetLogger().Warn("tool approval: failed to load integration names", "error", err)
 		integrationNames = map[string]string{}
 	}
-	c.JSON(200, buildApiResponse(gin.H{"enabled": config.Config.LlmServerToolApprovalPolicyEnabled, "rules": rules, "integration_names": integrationNames}, nil))
+	c.JSON(200, BuildApiResponse(gin.H{"enabled": config.Config.LlmServerToolApprovalPolicyEnabled, "rules": rules, "integration_names": integrationNames}, nil))
 }
 
 func toolApprovalUpsert(c *gin.Context, ctx *security.RequestContext, payload map[string]any) {
@@ -699,17 +699,17 @@ func toolApprovalUpsert(c *gin.Context, ctx *security.RequestContext, payload ma
 	}
 	tenantID, err := toolApprovalTenantID(ctx)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	var request toolApprovalUpsertRequest
 	if err := decodeToolApprovalPayload(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	rule, err := buildToolApprovalRule(ctx, request, tenantID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{err}))
+		c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	actor, _ := uuid.Parse(ctx.GetSecurityContext().GetUserId())
@@ -722,7 +722,7 @@ func toolApprovalUpsert(c *gin.Context, ctx *security.RequestContext, payload ma
 		} else if strings.HasPrefix(err.Error(), "tool approval:") {
 			status = http.StatusBadRequest
 		}
-		c.JSON(status, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(status, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	eventType := audit.EventTypeToolApprovalRuleUpdate
@@ -732,7 +732,7 @@ func toolApprovalUpsert(c *gin.Context, ctx *security.RequestContext, payload ma
 		eventAction = audit.EventActionCreate
 	}
 	emitToolApprovalRuleAudit(ctx, eventType, eventAction, saved)
-	c.JSON(200, buildApiResponse(saved, nil))
+	c.JSON(200, BuildApiResponse(saved, nil))
 }
 
 // toolApprovalCreate adds the same rule to several accounts in one transaction.
@@ -742,23 +742,23 @@ func toolApprovalCreate(c *gin.Context, ctx *security.RequestContext, payload ma
 	}
 	tenantID, err := toolApprovalTenantID(ctx)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	var request toolApprovalCreateRequest
 	if err := decodeToolApprovalPayload(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	if strings.TrimSpace(request.Rule.ID) != "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("tool approval: create requires a new rule")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("tool approval: create requires a new rule")}))
 		return
 	}
 	// One all-accounts rule, or one rule per selected account; never both.
 	ruleRequests := make([]toolApprovalUpsertRequest, 0, len(request.Accounts)+1)
 	if request.Rule.AllAccounts {
 		if len(request.Accounts) > 0 {
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("tool approval: choose either all accounts or specific accounts")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("tool approval: choose either all accounts or specific accounts")}))
 			return
 		}
 		if len(request.Integrations) == 0 {
@@ -770,7 +770,7 @@ func toolApprovalCreate(c *gin.Context, ctx *security.RequestContext, payload ma
 		for _, raw := range request.Integrations {
 			integrationID := strings.TrimSpace(raw)
 			if _, dup := seenIntegrations[integrationID]; dup || integrationID == "" {
-				c.JSON(400, buildApiResponse(nil, []error{errors.New("tool approval: invalid or duplicate integration")}))
+				c.JSON(400, BuildApiResponse(nil, []error{errors.New("tool approval: invalid or duplicate integration")}))
 				return
 			}
 			seenIntegrations[integrationID] = struct{}{}
@@ -780,18 +780,18 @@ func toolApprovalCreate(c *gin.Context, ctx *security.RequestContext, payload ma
 		}
 	} else {
 		if len(request.Integrations) > 0 {
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("tool approval: integrations are chosen for organisation rules only")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("tool approval: integrations are chosen for organisation rules only")}))
 			return
 		}
 		if len(request.Accounts) == 0 {
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("tool approval: choose all accounts or at least one account")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("tool approval: choose all accounts or at least one account")}))
 			return
 		}
 		seen := make(map[string]struct{}, len(request.Accounts))
 		for _, account := range request.Accounts {
 			key := strings.TrimSpace(account.AccountID)
 			if _, dup := seen[key]; dup {
-				c.JSON(400, buildApiResponse(nil, []error{errors.New("tool approval: duplicate account")}))
+				c.JSON(400, BuildApiResponse(nil, []error{errors.New("tool approval: duplicate account")}))
 				return
 			}
 			seen[key] = struct{}{}
@@ -804,7 +804,7 @@ func toolApprovalCreate(c *gin.Context, ctx *security.RequestContext, payload ma
 	for _, ruleRequest := range ruleRequests {
 		rule, err := buildToolApprovalRule(ctx, ruleRequest, tenantID)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		rules = append(rules, rule)
@@ -816,13 +816,13 @@ func toolApprovalCreate(c *gin.Context, ctx *security.RequestContext, payload ma
 		if strings.HasPrefix(err.Error(), "tool approval:") {
 			status = http.StatusBadRequest
 		}
-		c.JSON(status, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(status, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	for _, rule := range saved {
 		emitToolApprovalRuleAudit(ctx, audit.EventTypeToolApprovalRuleCreate, audit.EventActionCreate, rule)
 	}
-	c.JSON(200, buildApiResponse(gin.H{"rules": saved}, nil))
+	c.JSON(200, BuildApiResponse(gin.H{"rules": saved}, nil))
 }
 
 func toolApprovalDelete(c *gin.Context, ctx *security.RequestContext, payload map[string]any) {
@@ -831,17 +831,17 @@ func toolApprovalDelete(c *gin.Context, ctx *security.RequestContext, payload ma
 	}
 	tenantID, err := toolApprovalTenantID(ctx)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	var request toolApprovalDeleteRequest
 	if err := decodeToolApprovalPayload(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	id, err := uuid.Parse(request.ID)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("tool approval: invalid rule id")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("tool approval: invalid rule id")}))
 		return
 	}
 	actor, _ := uuid.Parse(ctx.GetSecurityContext().GetUserId())
@@ -851,13 +851,13 @@ func toolApprovalDelete(c *gin.Context, ctx *security.RequestContext, payload ma
 		if errors.Is(err, toolapproval.ErrRevisionConflict) {
 			status = http.StatusConflict
 		}
-		c.JSON(status, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(status, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	if deleted != nil {
 		emitToolApprovalRuleAudit(ctx, audit.EventTypeToolApprovalRuleDelete, audit.EventActionDelete, deleted)
 	}
-	c.JSON(200, buildApiResponse(gin.H{"deleted": deleted != nil}, nil))
+	c.JSON(200, BuildApiResponse(gin.H{"deleted": deleted != nil}, nil))
 }
 
 // toolApprovalRuleAccount is the audit account for a rule: empty for an
@@ -891,17 +891,17 @@ func toolApprovalCheck(c *gin.Context, ctx *security.RequestContext, payload map
 	}
 	tenantID, err := toolApprovalTenantID(ctx)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	var request toolApprovalCheckRequest
 	if err := decodeToolApprovalPayload(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	rule, err := buildToolApprovalRule(ctx, request.Rule, tenantID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{err}))
+		c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	targetID := ""
@@ -909,7 +909,7 @@ func toolApprovalCheck(c *gin.Context, ctx *security.RequestContext, payload map
 		targetID = *rule.ToolConfigID
 	}
 	matched, reason := toolapproval.MatchRule(*rule, rule.ToolName, request.Input, targetID)
-	c.JSON(200, buildApiResponse(gin.H{"matched": matched, "reason": reason}, nil))
+	c.JSON(200, BuildApiResponse(gin.H{"matched": matched, "reason": reason}, nil))
 }
 
 func handleToolApprovalConfigApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
@@ -917,12 +917,12 @@ func handleToolApprovalConfigApis(r *gin.Engine, tracer trace.Tracer, meter metr
 	group.POST("", func(c *gin.Context) {
 		var actionRequest ActionRequest
 		if err := c.ShouldBindJSON(&actionRequest); err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "tool approval: " + err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "tool approval: " + err.Error()}}))
 			return
 		}
-		ctx, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
+		ctx, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		payload := actionRequest.Input
@@ -945,7 +945,7 @@ func handleToolApprovalConfigApis(r *gin.Engine, tracer trace.Tracer, meter metr
 		case "toolapproval_list_tools":
 			toolApprovalListTools(c, ctx)
 		default:
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("tool approval: unsupported action")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("tool approval: unsupported action")}))
 		}
 	})
 }

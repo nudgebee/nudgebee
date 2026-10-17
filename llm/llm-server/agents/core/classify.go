@@ -58,7 +58,7 @@ type ClassificationCall struct {
 	AgentId        string
 	// Tier overrides the model tier for the LLM backend. Empty uses the
 	// classification tier, or the summary tier when no classification model is
-	// configured for the call's account (see classificationTier).
+	// configured for the call's account (see ClassificationTier).
 	Tier ModelTier
 	// KeepCallerTier runs the call on whatever tier the caller's context has,
 	// including none (the account's global model), and ignores Tier. For callers
@@ -215,7 +215,7 @@ func classifyWithLLM(ctx *security.RequestContext, call ClassificationCall, task
 		}
 		if attempt < classificationLLMAttempts {
 			ctx.GetLogger().Warn("classify: llm returned an invalid option, retrying",
-				"task", task.Name, "answer", truncateForLog(d.Raw), "attempt", attempt)
+				"task", task.Name, "answer", TruncateForLog(d.Raw), "attempt", attempt)
 			messages = append(messages,
 				llms.TextParts(llms.ChatMessageTypeAI, d.Raw),
 				llms.TextParts(llms.ChatMessageTypeHuman, classificationRetryPrompt(task, d.Raw)))
@@ -234,7 +234,7 @@ func classificationCallTier(ctx *security.RequestContext, call ClassificationCal
 	if call.Tier != "" {
 		return call.Tier
 	}
-	return classificationTier(ctx, call)
+	return ClassificationTier(ctx, call)
 }
 
 // classificationTierResolve resolves the LLM config for a call; a variable so
@@ -248,13 +248,13 @@ var classificationTierSources = map[string]bool{
 	llmConfigSourceContextOverrideTier: true, llmConfigSourceConversationTier: true,
 }
 
-// classificationTier returns ModelTierClassification when the classification tier
+// ClassificationTier returns ModelTierClassification when the classification tier
 // resolves through a layer that defines it, and ModelTierSummary otherwise, so an
 // unconfigured classification tier is the summary tier. Asking the resolver
 // (rather than reading config keys) keeps layer precedence intact: a model set
 // only in server config does not win over an account's own DB config, which
 // would otherwise route classification to the account's global model.
-func classificationTier(ctx *security.RequestContext, call ClassificationCall) ModelTier {
+func ClassificationTier(ctx *security.RequestContext, call ClassificationCall) ModelTier {
 	tierCtx := security.NewRequestContext(
 		context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierClassification),
 		ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter(),
@@ -296,10 +296,10 @@ func classificationRetryPrompt(task ClassificationTask, answer string) string {
 		instruction = "Respond with ONLY one or more of these, separated by a comma and a space"
 	}
 	return fmt.Sprintf("Your response %q is not a valid answer. %s: %s.",
-		truncateForLog(answer), instruction, strings.Join(classificationLabels(task), ", "))
+		TruncateForLog(answer), instruction, strings.Join(classificationLabels(task), ", "))
 }
 
-func truncateForLog(s string) string {
+func TruncateForLog(s string) string {
 	return TruncateHead(strings.TrimSpace(s), 200) // UTF-8 safe
 }
 
@@ -315,7 +315,7 @@ func recordClassificationDecision(ctx *security.RequestContext, task Classificat
 		attrs = append(attrs, "confidence", *d.Confidence, "decision_model", d.Model)
 	}
 	if d.FellBack {
-		attrs = append(attrs, "fell_back", true, "decision_answer", truncateForLog(d.DecisionAnswer),
+		attrs = append(attrs, "fell_back", true, "decision_answer", TruncateForLog(d.DecisionAnswer),
 			"decision_latency_ms", d.DecisionLatency.Milliseconds())
 	}
 	if err != nil {

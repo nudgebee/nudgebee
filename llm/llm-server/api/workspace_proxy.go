@@ -169,7 +169,7 @@ func extractWorkspacePayloadAndContext(c *gin.Context, tracer trace.Tracer, mete
 			}
 			return nil, nil, "", errors.New("missing " + config.Config.LlmServerTokenHeader)
 		}
-		ctx, err = buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		ctx, err = BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		payload = actionRequest.Input
 		if rawRequest, ok := payload["request"]; ok {
 			if castedRequest, castOk := rawRequest.(map[string]any); castOk {

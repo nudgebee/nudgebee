@@ -1,4 +1,4 @@
-package core
+package bootstrap
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/require"
+
 	"nudgebee/llm/security"
 	"nudgebee/llm/watch"
 )

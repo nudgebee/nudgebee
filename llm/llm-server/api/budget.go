@@ -163,7 +163,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 
 		logger := slog.With("account_id", request.AccountID)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
 			actionError(c, 401, err.Error())
 			return
@@ -188,7 +188,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 			return
 		}
 
-		c.JSON(200, buildApiResponse(budgetStatus, nil))
+		c.JSON(200, BuildApiResponse(budgetStatus, nil))
 	})
 
 	// POST /v1/budget/config/list — list budget configs with optional filters
@@ -212,7 +212,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 		}
 
 		logger := slog.Default()
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
 			actionError(c, 401, err.Error())
 			return
@@ -323,7 +323,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 
 		logger := slog.With("entity_type", request.EntityType, "entity_id", request.EntityID, "module", request.Module)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
 			actionError(c, 401, err.Error())
 			return
@@ -427,7 +427,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 		}
 
 		logger := slog.Default()
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
 			actionError(c, 401, err.Error())
 			return
@@ -500,7 +500,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 		var actionRequest ActionRequest
 		_ = common.DecodeMapToStruct(requestMap, &actionRequest)
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
 			actionError(c, 401, err.Error())
 			return
@@ -567,6 +567,6 @@ func checkChatBudgetAndRespond(c *gin.Context, tenantId, accountId, sessionId, a
 	if !exceeded {
 		return false
 	}
-	c.JSON(429, buildApiResponse(nil, []error{common.Error{Message: message}}))
+	c.JSON(429, BuildApiResponse(nil, []error{common.Error{Message: message}}))
 	return true
 }

@@ -39,7 +39,7 @@ func TestClassifyE2E(t *testing.T) {
 			if tier != "default" {
 				call.Tier = ModelTier(tier)
 			} else {
-				t.Logf("default tier resolves as %s", classificationTier(ctx, call))
+				t.Logf("default tier resolves as %s", ClassificationTier(ctx, call))
 			}
 			for _, suite := range []struct {
 				task  ClassificationTask

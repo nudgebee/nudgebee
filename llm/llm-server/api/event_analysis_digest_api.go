@@ -231,7 +231,7 @@ func bindDigestRequest(
 	requestMap := make(map[string]any)
 	if err := c.ShouldBindJSON(&requestMap); err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+		c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 			common.Error{Message: "api: " + err.Error()},
 		}))
 		return nil, false
@@ -240,7 +240,7 @@ func bindDigestRequest(
 	var actionRequest ActionRequest
 	if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+		c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 			common.Error{Message: "api: " + err.Error()},
 		}))
 		return nil, false
@@ -254,15 +254,15 @@ func bindDigestRequest(
 		payload = requestMap
 	}
 	if err := common.DecodeMapToStruct(payload, target); err != nil {
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+		c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 			common.Error{Message: "api: " + err.Error()},
 		}))
 		return nil, false
 	}
 
-	reqCtx, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+	reqCtx, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+		c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 		return nil, false
 	}
 	return reqCtx, true

@@ -27,6 +27,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
 	toolscore "nudgebee/llm/tools/core"
+	"nudgebee/llm/watch/bootstrap"
 	"nudgebee/llm/workspace"
 
 	"github.com/Cyprinus12138/otelgin"
@@ -368,7 +369,7 @@ func main() {
 
 	// Wire the watch package against the LLM + security stack and register
 	// the leader-elected dispatcher. No-op when LLM_SERVER_WATCH_ENABLED=false.
-	if err := core.BootstrapWatch(); err != nil {
+	if err := bootstrap.BootstrapWatch(); err != nil {
 		slog.Error("main: failed to bootstrap watch", "error", err)
 	}
 

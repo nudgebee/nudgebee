@@ -52,19 +52,19 @@ func memoryCreate(c *gin.Context, context *security.RequestContext, payload map[
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("memory: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("memory: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("memory: account_id is required")}))
 		return
 	}
 
 	if request.Memory.Content == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("memory: content is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("memory: content is required")}))
 		return
 	}
 
@@ -76,7 +76,7 @@ func memoryCreate(c *gin.Context, context *security.RequestContext, payload map[
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiMemory) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorMemoryUserAccessMessage},
 		}))
 		return
@@ -85,13 +85,13 @@ func memoryCreate(c *gin.Context, context *security.RequestContext, payload map[
 	id, err := core.GetConversationDao().SaveLongTermMemory(request.AccountId, request.Memory.ConversationId, request.Memory.MessageId, request.Memory.Content, mType)
 	if err != nil {
 		slog.Error("memory: failed to create", "error", err, "account_id", request.AccountId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(map[string]string{"id": id, "status": "ok"}, nil))
+	c.JSON(200, BuildApiResponse(map[string]string{"id": id, "status": "ok"}, nil))
 }
 
 func memoryList(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -99,14 +99,14 @@ func memoryList(c *gin.Context, context *security.RequestContext, payload map[st
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("memory: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("memory: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("memory: account_id is required")}))
 		return
 	}
 
@@ -115,7 +115,7 @@ func memoryList(c *gin.Context, context *security.RequestContext, payload map[st
 	}
 
 	if !context.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_memory") {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorMemoryUserAccessMessage},
 		}))
 		return
@@ -129,13 +129,13 @@ func memoryList(c *gin.Context, context *security.RequestContext, payload map[st
 	memories, err := core.GetConversationDao().ListLongTermMemories(request.AccountId, request.ConversationId, messageIds, request.MemoryType, request.Query, request.Limit, request.Offset)
 	if err != nil {
 		slog.Error("memory: failed to list", "error", err, "account_id", request.AccountId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(memories, nil))
+	c.JSON(200, BuildApiResponse(memories, nil))
 }
 
 func memoryDelete(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -143,25 +143,25 @@ func memoryDelete(c *gin.Context, context *security.RequestContext, payload map[
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("memory: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("memory: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("memory: account_id is required")}))
 		return
 	}
 
 	if request.Id == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("memory: id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("memory: id is required")}))
 		return
 	}
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiMemory) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorMemoryUserAccessMessage},
 		}))
 		return
@@ -170,19 +170,19 @@ func memoryDelete(c *gin.Context, context *security.RequestContext, payload map[
 	err = core.GetConversationDao().DeleteLongTermMemory(request.Id, request.AccountId)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			c.JSON(404, buildApiResponse(nil, []error{
+			c.JSON(404, BuildApiResponse(nil, []error{
 				common.Error{Message: "memory: memory not found"},
 			}))
 			return
 		}
 		slog.Error("memory: failed to delete", "error", err, "id", request.Id)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(map[string]string{"status": "ok"}, nil))
+	c.JSON(200, BuildApiResponse(map[string]string{"status": "ok"}, nil))
 }
 
 func handleMemoryApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
@@ -193,20 +193,20 @@ func handleMemoryApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		err := c.ShouldBindJSON(&actionRequest)
 		if err != nil {
 			slog.Error("memory: error binding rpc request", "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{Message: "memory: " + err.Error()},
 			}))
 			return
 		}
 
 		if actionRequest.Action.Name == "" {
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("memory: invalid payload, action.name is required")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("memory: invalid payload, action.name is required")}))
 			return
 		}
 
-		context, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
+		context, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
@@ -228,7 +228,7 @@ func handleMemoryApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 			common.MetricsApiRequestsTotal("memory_delete")
 			memoryDelete(c, context, payload)
 		default:
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("memory: invalid payload, unsupported action")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("memory: invalid payload, unsupported action")}))
 		}
 	})
 }

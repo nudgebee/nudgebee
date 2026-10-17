@@ -537,7 +537,7 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 	var actionRequest ActionRequest
 	if err := c.ShouldBindJSON(&actionRequest); err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
@@ -546,21 +546,21 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 		payload = v
 	}
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
 	logger := slog.With("account_id", request.AccountId, "event_id", request.EventId)
-	ctx, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+	ctx, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
 	sc := ctx.GetSecurityContext()
 	if sc == nil || (!sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!grantedRun(sc, request.AccountId, moduleAiMisc)) {
-		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+		c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 		return
 	}
 
@@ -569,11 +569,11 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 	if err != nil {
 		var input errRemediationInput
 		if errors.As(err, &input) {
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 		ctx.GetLogger().Error("remediation_generate: failed", "error", err)
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "failed to generate remediation plan"}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: "failed to generate remediation plan"}}))
 		return
 	}
 
@@ -654,10 +654,10 @@ func planMarkdown(plan RemediationPlan) string {
 func respondWithStoredPlan(c *gin.Context, logger *slog.Logger, plan RemediationPlan, save func() error) {
 	if err := save(); err != nil {
 		logger.Error("remediation_generate: failed to persist plan", "error", err)
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "failed to save remediation plan"}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: "failed to save remediation plan"}}))
 		return
 	}
-	c.JSON(200, buildApiResponse(plan, nil))
+	c.JSON(200, BuildApiResponse(plan, nil))
 }
 
 // remediationPlannerAgent names the plan-generation call in token usage, which
@@ -842,7 +842,7 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 	var actionRequest ActionRequest
 	if err := c.ShouldBindJSON(&actionRequest); err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
@@ -851,20 +851,20 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 		payload = v
 	}
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
 	logger := slog.With("account_id", request.AccountId, "event_id", request.EventId)
-	ctx, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+	ctx, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	sc := ctx.GetSecurityContext()
 	if sc == nil || (!sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(sc, request.AccountId, moduleAiMisc, "Read", "Write")) {
-		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+		c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 		return
 	}
 
@@ -872,18 +872,18 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
 		ctx.GetLogger().Warn("remediation_get: database unavailable", "error", err)
-		c.JSON(200, buildApiResponse(plan, nil))
+		c.JSON(200, BuildApiResponse(plan, nil))
 		return
 	}
 	repo := events.NewEventAnalysisRepository(dbManager)
 	info, err := repo.GetEventInfo(ctx, request.EventId, request.AccountId)
 	if err != nil || info == nil {
-		c.JSON(200, buildApiResponse(plan, nil))
+		c.JSON(200, BuildApiResponse(plan, nil))
 		return
 	}
 	saved, err := repo.GetEventAnalysis(ctx, request.EventId, info.Fingerprint, info.AggregationKey, request.AccountId, events.AnalysisTypeRemediation)
 	if err != nil || saved == nil || strings.TrimSpace(saved.Analysis) == "" {
-		c.JSON(200, buildApiResponse(plan, nil))
+		c.JSON(200, BuildApiResponse(plan, nil))
 		return
 	}
 	// When this event has no plan of its own, the lookup falls back to the newest plan saved for the
@@ -892,7 +892,7 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 	// cause, confidence and commands, and never builds a plan for this incident. Returning no plan here
 	// makes the panel generate one from this event's own investigation.
 	if !planSavedForEvent(saved, request.EventId) {
-		c.JSON(200, buildApiResponse(plan, nil))
+		c.JSON(200, BuildApiResponse(plan, nil))
 		return
 	}
 	// A plan is built from the investigation and its report. When either was re-run after the
@@ -912,7 +912,7 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 	}
 	if planOlderThanAnalysis(saved, inputs...) {
 		ctx.GetLogger().Info("remediation_get: saved plan predates the current analysis, regenerating")
-		c.JSON(200, buildApiResponse(plan, nil))
+		c.JSON(200, BuildApiResponse(plan, nil))
 		return
 	}
 	if err := json.Unmarshal([]byte(saved.Analysis), &plan); err != nil {
@@ -921,7 +921,7 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 	}
 	// Delivery describes the executor now, not when the plan was saved.
 	assignDelivery(ctx, request.AccountId, &plan)
-	c.JSON(200, buildApiResponse(plan, nil))
+	c.JSON(200, BuildApiResponse(plan, nil))
 }
 
 // planCommandRejection returns why a command may not run, or "" when it is the stored plan's command for
@@ -1065,7 +1065,7 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	var actionRequest ActionRequest
 	if err := c.ShouldBindJSON(&actionRequest); err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
@@ -1074,25 +1074,25 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 		payload = v
 	}
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
 	command := strings.TrimSpace(request.Command)
 	manual := strings.EqualFold(strings.TrimSpace(request.Slot), RemediationSlotManual)
 	if command == "" && !manual {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "command is required"}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "command is required"}}))
 		return
 	}
 	if reason := remediationCommandRejection(command); reason != "" && !manual {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: reason}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: reason}}))
 		return
 	}
 
 	logger := slog.With("account_id", request.AccountId)
-	ctx, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+	ctx, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
@@ -1102,7 +1102,7 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	sc := ctx.GetSecurityContext()
 	if sc == nil || (!sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
 		!grantedRun(sc, request.AccountId, moduleAiMisc)) {
-		c.JSON(403, buildApiResponse(nil, []error{errors.New("remediation: write access is required to run remediation commands")}))
+		c.JSON(403, BuildApiResponse(nil, []error{errors.New("remediation: write access is required to run remediation commands")}))
 		return
 	}
 
@@ -1111,12 +1111,12 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	plan, reason := planCommandRejection(ctx, request)
 	if reason != "" {
 		ctx.GetLogger().Warn("remediation_execute: command is not in the event's plan", "command", command, "reason", reason)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: " + reason}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "remediation: " + reason}}))
 		return
 	}
 	if manual {
 		recordOperatorStep(ctx, request, sc.GetUserId())
-		c.JSON(200, buildApiResponse(tools.RemediationExecutionResult{Command: command, ExecutedAt: time.Now().UTC().Format(time.RFC3339), Success: true}, nil))
+		c.JSON(200, BuildApiResponse(tools.RemediationExecutionResult{Command: command, ExecutedAt: time.Now().UTC().Format(time.RFC3339), Success: true}, nil))
 		return
 	}
 
@@ -1128,13 +1128,13 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	// already demotes such an action off the fix ranking; this is the block that makes it safe.
 	if commandHasPlaceholder(command) {
 		ctx.GetLogger().Warn("remediation_execute: command carries a placeholder value", "command", command)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: this command contains a placeholder value and was not run. Substitute the real value and run it yourself — applying it as written would overwrite the setting with the placeholder text."}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "remediation: this command contains a placeholder value and was not run. Substitute the real value and run it yourself — applying it as written would overwrite the setting with the placeholder text."}}))
 		return
 	}
 
 	if err := tools.ValidateCommandSafety(command); err != nil {
 		ctx.GetLogger().Warn("remediation_execute: unsafe command rejected", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
@@ -1149,7 +1149,7 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	if substrate.Reject != "" {
 		ctx.GetLogger().Warn("remediation_execute: command does not match the account's provider",
 			"command", command, "reason", substrate.Reject)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: " + substrate.Reject}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "remediation: " + substrate.Reject}}))
 		return
 	}
 
@@ -1168,7 +1168,7 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 		relayJob := substrate.RelayJob
 		nbTool, found := toolcore.GetNBTool(request.AccountId, registeredToolName)
 		if !found {
-			c.JSON(404, buildApiResponse(nil, []error{common.Error{Message: "execution tool is not configured for this account"}}))
+			c.JSON(404, BuildApiResponse(nil, []error{common.Error{Message: "execution tool is not configured for this account"}}))
 			return
 		}
 
@@ -1258,7 +1258,7 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	if isOutcomeSlot(request.Slot) {
 		outcome := newOutcomeResult(plan.OutcomeCheck, response, exitCodeReported)
 		recordOutcome(ctx, request.EventId, outcome)
-		c.JSON(200, buildApiResponse(outcome, nil))
+		c.JSON(200, BuildApiResponse(outcome, nil))
 		return
 	}
 	// A resolution says how the event was acted on, so only the state-changing execute command earns
@@ -1276,7 +1276,7 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 		// the attempt it checked, so "it ran" and "the check confirmed it" are one record.
 		persistRemediationVerification(ctx, request.EventId, request.ExecuteCommand, command, response, exitCodeReported)
 	}
-	c.JSON(200, buildApiResponse(response, nil))
+	c.JSON(200, BuildApiResponse(response, nil))
 }
 
 // remediationCommandRejection returns why the Run button refuses this command before it runs, or ""

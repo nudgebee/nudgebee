@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel"
 
 	"nudgebee/llm/security"
+	"nudgebee/llm/watch"
 )
 
 // ErrRecoveryAccessDenied means the person who sent a message may no longer run
@@ -69,4 +70,23 @@ func RecoveryContext(message ConversationMessage, conversation Conversation) (*s
 		return nil, ErrRecoveryAccessDenied
 	}
 	return security.NewRequestContext(context.Background(), sc, logger, tracer, nil), nil
+}
+
+// CheckWatchOwnerAccess is the watch package's per-poll owner check. A watch
+// with no user (set up by a system run) has no owner to re-check.
+func CheckWatchOwnerAccess(w watch.Watch) error {
+	if w.UserID == nil || *w.UserID == uuid.Nil {
+		return nil
+	}
+	sc, err := newSecurityContext(w.TenantID.String(), w.UserID.String())
+	if errors.Is(err, security.ErrSecurityContextRejected) {
+		return fmt.Errorf("%w: %w", watch.ErrOwnerAccessRevoked, err)
+	}
+	if err != nil {
+		return fmt.Errorf("watch owner access: %w", err)
+	}
+	if sc == nil || !sc.CanRunAI(w.AccountID.String()) {
+		return watch.ErrOwnerAccessRevoked
+	}
+	return nil
 }

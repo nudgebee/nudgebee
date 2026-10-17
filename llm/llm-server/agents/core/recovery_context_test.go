@@ -119,21 +119,21 @@ func TestCheckWatchOwnerAccess(t *testing.T) {
 	stranger := wireSecurityContext(t, fmt.Sprintf(`{"TenantId":%q,"UserId":%q,"Roles":[],"AccountIds":[]}`, tenant, owner))
 
 	stubNewSecurityContext(t, func(string, string) (*security.SecurityContext, error) { return reader, nil })
-	assert.NoError(t, checkWatchOwnerAccess(w))
+	assert.NoError(t, CheckWatchOwnerAccess(w))
 
 	stubNewSecurityContext(t, func(string, string) (*security.SecurityContext, error) { return stranger, nil })
-	assert.ErrorIs(t, checkWatchOwnerAccess(w), watch.ErrOwnerAccessRevoked)
+	assert.ErrorIs(t, CheckWatchOwnerAccess(w), watch.ErrOwnerAccessRevoked)
 
 	stubNewSecurityContext(t, func(string, string) (*security.SecurityContext, error) {
 		return nil, fmt.Errorf("%w: client error 400", security.ErrSecurityContextRejected)
 	})
-	assert.ErrorIs(t, checkWatchOwnerAccess(w), watch.ErrOwnerAccessRevoked)
+	assert.ErrorIs(t, CheckWatchOwnerAccess(w), watch.ErrOwnerAccessRevoked)
 
 	stubNewSecurityContext(t, func(string, string) (*security.SecurityContext, error) { return nil, errors.New("server error 503") })
-	err := checkWatchOwnerAccess(w)
+	err := CheckWatchOwnerAccess(w)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, watch.ErrOwnerAccessRevoked)
 
 	system := watch.Watch{TenantID: tenant, AccountID: account}
-	assert.NoError(t, checkWatchOwnerAccess(system), "a watch with no owner has no one to re-check")
+	assert.NoError(t, CheckWatchOwnerAccess(system), "a watch with no owner has no one to re-check")
 }

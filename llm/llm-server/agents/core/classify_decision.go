@@ -365,7 +365,7 @@ func shadowDecision(ctx *security.RequestContext, call ClassificationCall, task 
 		labels, valid := matchClassificationLabels(task, dd.Raw)
 		attrs := []any{
 			"task", task.Name, "llm_labels", strings.Join(llm.Labels, ","),
-			"decision_answer", truncateForLog(dd.Raw), "decision_model", dd.Model,
+			"decision_answer", TruncateForLog(dd.Raw), "decision_model", dd.Model,
 			// would_use: confident enough that mode "on" would have used it.
 			"would_use", accepted, "agree", valid && labels[0] == llm.Label(),
 			"latency_ms", time.Since(start).Milliseconds(),

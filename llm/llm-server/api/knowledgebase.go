@@ -190,7 +190,7 @@ func kbCreate(c *gin.Context, context *security.RequestContext, payload map[stri
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("kb: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
@@ -199,19 +199,19 @@ func kbCreate(c *gin.Context, context *security.RequestContext, payload map[stri
 	visibility := request.Knowledgebase.Visibility
 	orgKB := visibility == knowledge.KBVisibilityOrganisation || visibility == knowledge.KBVisibilitySelectedAccounts
 	if visibility != "" && !knowledge.ValidKBVisibility(visibility) {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: invalid visibility")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: invalid visibility")}))
 		return
 	}
 
 	if request.AccountId == "" && !orgKB {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
 		return
 	}
 
 	// Check if user has access to account (organisation KBs are checked by the service)
 	if !orgKB && !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
 		return
@@ -235,13 +235,13 @@ func kbCreate(c *gin.Context, context *security.RequestContext, payload map[stri
 	}
 	if err != nil {
 		slog.Error("kb: failed to create", "error", err, "account_id", request.AccountId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func kbGet(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -249,14 +249,14 @@ func kbGet(c *gin.Context, context *security.RequestContext, payload map[string]
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("kb: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.Id == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: id is required")}))
 		return
 	}
 
@@ -265,22 +265,22 @@ func kbGet(c *gin.Context, context *security.RequestContext, payload map[string]
 		resp, err := knowledge.GetOrganisationKnowledgebase(context, request.Id)
 		if err != nil {
 			slog.Error("kb: failed to get organisation knowledge base", "error", err, "kb_id", request.Id)
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		c.JSON(200, buildApiResponse(resp, nil))
+		c.JSON(200, BuildApiResponse(resp, nil))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
 		return
 	}
 
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
 		return
@@ -289,13 +289,13 @@ func kbGet(c *gin.Context, context *security.RequestContext, payload map[string]
 	resp, err := knowledge.GetKnowledgebase(context, request.AccountId, request.Id)
 	if err != nil {
 		slog.Error("kb: failed to get", "error", err, "kb_id", request.Id)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func kbList(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -303,7 +303,7 @@ func kbList(c *gin.Context, context *security.RequestContext, payload map[string
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("kb: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
@@ -318,19 +318,19 @@ func kbList(c *gin.Context, context *security.RequestContext, payload map[string
 		if err != nil {
 			slog.Error("kb: failed to list tenant-wide", "error", err,
 				"tenant_id", context.GetSecurityContext().GetTenantId())
-			c.JSON(500, buildApiResponse(nil, []error{
+			c.JSON(500, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(200, buildApiResponse(resp, nil))
+		c.JSON(200, BuildApiResponse(resp, nil))
 		return
 	}
 
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
 		return
@@ -339,13 +339,13 @@ func kbList(c *gin.Context, context *security.RequestContext, payload map[string
 	resp, err := knowledge.ListKnowledgebases(context, request.AccountId)
 	if err != nil {
 		slog.Error("kb: failed to list", "error", err, "account_id", request.AccountId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func kbUpdate(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -353,26 +353,26 @@ func kbUpdate(c *gin.Context, context *security.RequestContext, payload map[stri
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("kb: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" && !orgKBWriter(context) {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
 		return
 	}
 
 	if request.Knowledgebase.Id == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: id is required")}))
 		return
 	}
 
 	// Check if user has access to account
 	if request.AccountId != "" && !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
 		return
@@ -391,13 +391,13 @@ func kbUpdate(c *gin.Context, context *security.RequestContext, payload map[stri
 	err = knowledge.UpdateKnowledgebase(context, request.AccountId, request.Knowledgebase.Id, updates)
 	if err != nil {
 		slog.Error("kb: failed to update", "error", err, "kb_id", request.Knowledgebase.Id)
-		c.JSON(kbAlwaysLoadStatus(err), buildApiResponse(nil, []error{
+		c.JSON(kbAlwaysLoadStatus(err), BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(map[string]string{"status": "ok", "id": request.Knowledgebase.Id}, nil))
+	c.JSON(200, BuildApiResponse(map[string]string{"status": "ok", "id": request.Knowledgebase.Id}, nil))
 }
 
 // kbUpdateEnabled flips a knowledge base's on/off switch. Separate from
@@ -408,31 +408,31 @@ func kbUpdateEnabled(c *gin.Context, context *security.RequestContext, payload m
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("kb: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" && !orgKBWriter(context) {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
 		return
 	}
 
 	if request.KbId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: kb_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: kb_id is required")}))
 		return
 	}
 
 	if request.Enabled == nil {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: enabled is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: enabled is required")}))
 		return
 	}
 
 	// Check if user has access to account
 	if request.AccountId != "" && !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
 		return
@@ -441,13 +441,13 @@ func kbUpdateEnabled(c *gin.Context, context *security.RequestContext, payload m
 	err = knowledge.SetKnowledgebaseEnabled(context, request.AccountId, request.KbId, *request.Enabled)
 	if err != nil {
 		slog.Error("kb: failed to set enabled", "error", err, "kb_id", request.KbId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(map[string]any{"status": "ok", "id": request.KbId, "enabled": *request.Enabled}, nil))
+	c.JSON(200, BuildApiResponse(map[string]any{"status": "ok", "id": request.KbId, "enabled": *request.Enabled}, nil))
 }
 
 func kbDelete(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -455,26 +455,26 @@ func kbDelete(c *gin.Context, context *security.RequestContext, payload map[stri
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("kb: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" && !orgKBWriter(context) {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
 		return
 	}
 
 	if request.Id == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: id is required")}))
 		return
 	}
 
 	// Check if user has access to account
 	if request.AccountId != "" && !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
 		return
@@ -483,13 +483,13 @@ func kbDelete(c *gin.Context, context *security.RequestContext, payload map[stri
 	err = knowledge.DeleteKnowledgebase(context, request.AccountId, request.Id)
 	if err != nil {
 		slog.Error("kb: failed to delete", "error", err, "kb_id", request.Id)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(map[string]string{"status": "ok"}, nil))
+	c.JSON(200, BuildApiResponse(map[string]string{"status": "ok"}, nil))
 }
 
 func kbListAgentKBs(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -497,26 +497,26 @@ func kbListAgentKBs(c *gin.Context, context *security.RequestContext, payload ma
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("kb: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
 		return
 	}
 
 	if request.AgentId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: agent_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: agent_id is required")}))
 		return
 	}
 
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiAgents, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
 		return
@@ -525,13 +525,13 @@ func kbListAgentKBs(c *gin.Context, context *security.RequestContext, payload ma
 	resp, err := knowledge.ListAgentKBs(context, request.AccountId, request.AgentId)
 	if err != nil {
 		slog.Error("kb: failed to list agent KBs", "error", err, "agent_id", request.AgentId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func kbMapToAgent(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -539,31 +539,31 @@ func kbMapToAgent(c *gin.Context, context *security.RequestContext, payload map[
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("kb: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
 		return
 	}
 
 	if request.KbId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: kb_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: kb_id is required")}))
 		return
 	}
 
 	if request.AgentId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: agent_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: agent_id is required")}))
 		return
 	}
 
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
 		return
@@ -572,13 +572,13 @@ func kbMapToAgent(c *gin.Context, context *security.RequestContext, payload map[
 	resp, err := knowledge.MapKBToAgent(context, request.AccountId, request.KbId, request.AgentId, request.AlwaysLoad)
 	if err != nil {
 		slog.Error("kb: failed to map KB to agent", "error", err, "kb_id", request.KbId, "agent_id", request.AgentId)
-		c.JSON(kbAlwaysLoadStatus(err), buildApiResponse(nil, []error{
+		c.JSON(kbAlwaysLoadStatus(err), BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func kbUnmapFromAgent(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -586,31 +586,31 @@ func kbUnmapFromAgent(c *gin.Context, context *security.RequestContext, payload 
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("kb: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
 		return
 	}
 
 	if request.KbId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: kb_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: kb_id is required")}))
 		return
 	}
 
 	if request.AgentId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: agent_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: agent_id is required")}))
 		return
 	}
 
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
 		return
@@ -619,13 +619,13 @@ func kbUnmapFromAgent(c *gin.Context, context *security.RequestContext, payload 
 	err = knowledge.UnmapKBFromAgent(context, request.AccountId, request.KbId, request.AgentId)
 	if err != nil {
 		slog.Error("kb: failed to unmap KB from agent", "error", err, "kb_id", request.KbId, "agent_id", request.AgentId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(map[string]string{"status": "ok"}, nil))
+	c.JSON(200, BuildApiResponse(map[string]string{"status": "ok"}, nil))
 }
 
 func kbListAgentsWithCounts(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -633,21 +633,21 @@ func kbListAgentsWithCounts(c *gin.Context, context *security.RequestContext, pa
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("kb: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
 		return
 	}
 
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiAgents, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
 		return
@@ -656,13 +656,13 @@ func kbListAgentsWithCounts(c *gin.Context, context *security.RequestContext, pa
 	resp, err := knowledge.ListAgentsWithKBCounts(context, request.AccountId)
 	if err != nil {
 		slog.Error("kb: failed to list agents with KB counts", "error", err)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func kbListMappings(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -670,21 +670,21 @@ func kbListMappings(c *gin.Context, context *security.RequestContext, payload ma
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("kb: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
 		return
 	}
 
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
 		return
@@ -693,13 +693,13 @@ func kbListMappings(c *gin.Context, context *security.RequestContext, payload ma
 	resp, err := knowledge.ListKBAgentMappings(context, request.AccountId)
 	if err != nil {
 		slog.Error("kb: failed to list KB-agent mappings", "error", err)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func kbListKBAgents(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -707,26 +707,26 @@ func kbListKBAgents(c *gin.Context, context *security.RequestContext, payload ma
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("kb: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
 		return
 	}
 
 	if request.KbId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: kb_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: kb_id is required")}))
 		return
 	}
 
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
 		return
@@ -735,37 +735,37 @@ func kbListKBAgents(c *gin.Context, context *security.RequestContext, payload ma
 	resp, err := knowledge.ListKBAgents(context, request.AccountId, request.KbId)
 	if err != nil {
 		slog.Error("kb: failed to list KB agents", "error", err, "kb_id", request.KbId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 // Route handler registration
 func kbGetLoadHistory(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	var request kbLoadHistoryRequest
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	if request.AccountId == "" || request.KbId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id and kb_id are required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id and kb_id are required")}))
 		return
 	}
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
+		c.JSON(403, BuildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
 	resp, err := knowledge.GetKBLoadHistory(context, request.AccountId, request.KbId)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func kbDocumentsStatus(err error) int {
@@ -784,98 +784,98 @@ func kbDocumentsStatus(err error) int {
 func kbListDocuments(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	var request kbDocumentsRequest
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	if request.AccountId == "" || request.KbId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id and kb_id are required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id and kb_id are required")}))
 		return
 	}
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
+		c.JSON(403, BuildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
 	resp, err := knowledge.ListKBDocuments(context, request.AccountId, request.KbId, request.Limit, request.Offset)
 	if err != nil {
 		slog.Error("kb: failed to list documents", "error", err, "kb_id", request.KbId)
-		c.JSON(kbDocumentsStatus(err), buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(kbDocumentsStatus(err), BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func kbGetDocument(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	var request kbDocumentsRequest
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	if request.AccountId == "" || request.KbId == "" || request.DocumentId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id, kb_id and document_id are required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id, kb_id and document_id are required")}))
 		return
 	}
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
+		c.JSON(403, BuildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
 	resp, err := knowledge.GetKBDocument(context, request.AccountId, request.KbId, request.DocumentId)
 	if err != nil {
 		slog.Error("kb: failed to get document", "error", err, "kb_id", request.KbId)
-		c.JSON(kbDocumentsStatus(err), buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(kbDocumentsStatus(err), BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func kbGetDocumentSource(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	var request kbDocumentsRequest
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	if request.AccountId == "" || request.KbId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id and kb_id are required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id and kb_id are required")}))
 		return
 	}
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
+		c.JSON(403, BuildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
 	resp, err := knowledge.GetKBDocumentSource(context, request.AccountId, request.KbId, request.ContentHash)
 	if err != nil {
 		slog.Error("kb: failed to get document source", "error", err, "kb_id", request.KbId)
-		c.JSON(kbDocumentsStatus(err), buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(kbDocumentsStatus(err), BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func kbListRunDocuments(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	var request kbDocumentsRequest
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	if request.AccountId == "" || request.KbId == "" || request.RunId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id, kb_id and run_id are required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id, kb_id and run_id are required")}))
 		return
 	}
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiKbs, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
+		c.JSON(403, BuildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
 	resp, err := knowledge.ListKBRunDocuments(
 		context, request.AccountId, request.KbId, request.RunId, request.Limit, request.Offset)
 	if err != nil {
 		slog.Error("kb: failed to list run documents", "error", err, "kb_id", request.KbId)
-		c.JSON(kbDocumentsStatus(err), buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(kbDocumentsStatus(err), BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 // kbUpsertDocumentCategory marks a single document Fact or SOP, or clears the
@@ -884,29 +884,29 @@ func kbListRunDocuments(c *gin.Context, context *security.RequestContext, payloa
 func kbUpsertDocumentCategory(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	var request kbSetDocumentCategoryRequest
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	if request.AccountId == "" || request.KbId == "" || request.DocumentKey == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id, kb_id and document_key are required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id, kb_id and document_key are required")}))
 		return
 	}
 	if !core.ValidKBNoteCategory(request.NoteCategory) {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: note_category must be 'sop', 'fact', or empty to clear")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: note_category must be 'sop', 'fact', or empty to clear")}))
 		return
 	}
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
-		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
+		c.JSON(403, BuildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
 	err := core.SetKBDocumentCategory(context, request.AccountId, request.KbId, request.DocumentKey, request.NoteCategory)
 	if err != nil {
 		slog.Error("kb: failed to set document category", "error", err, "kb_id", request.KbId)
-		c.JSON(kbDocumentsStatus(err), buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(kbDocumentsStatus(err), BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
-	c.JSON(200, buildApiResponse(map[string]any{
+	c.JSON(200, BuildApiResponse(map[string]any{
 		"status":        "ok",
 		"kb_id":         request.KbId,
 		"document_key":  request.DocumentKey,
@@ -920,24 +920,24 @@ func kbUpsertDocumentCategory(c *gin.Context, context *security.RequestContext, 
 func kbUpdateVisibility(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	var request kbUpdateVisibilityRequest
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	if request.KbId == "" || !knowledge.ValidKBVisibility(request.Visibility) {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: kb_id and a valid visibility are required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: kb_id and a valid visibility are required")}))
 		return
 	}
 	if !orgKBWriter(context) {
-		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
+		c.JSON(403, BuildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
 	resp, err := knowledge.SetKnowledgebaseVisibility(context, request.KbId, request.Visibility, request.AccountIds, request.TargetAccountId)
 	if err != nil {
 		slog.Error("kb: failed to change visibility", "error", err, "kb_id", request.KbId)
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 // kbUpdateAccountOverride switches an organisation knowledge base on or off
@@ -945,66 +945,66 @@ func kbUpdateVisibility(c *gin.Context, context *security.RequestContext, payloa
 func kbUpdateAccountOverride(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	var request kbAccountOverrideRequest
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	if request.AccountId == "" || request.KbId == "" || request.Enabled == nil {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id, kb_id and enabled are required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id, kb_id and enabled are required")}))
 		return
 	}
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
-		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
+		c.JSON(403, BuildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
 	if err := knowledge.SetKBAccountOverride(context, request.AccountId, request.KbId, *request.Enabled); err != nil {
 		slog.Error("kb: failed to set account override", "error", err, "kb_id", request.KbId)
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
-	c.JSON(200, buildApiResponse(map[string]any{"status": "ok", "id": request.KbId, "enabled": *request.Enabled}, nil))
+	c.JSON(200, BuildApiResponse(map[string]any{"status": "ok", "id": request.KbId, "enabled": *request.Enabled}, nil))
 }
 
 // kbListAccountOverrides lists the per-account switches of an organisation KB.
 func kbListAccountOverrides(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	var request kbListAccountOverridesRequest
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	if request.KbId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: kb_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: kb_id is required")}))
 		return
 	}
 	resp, err := knowledge.ListKBAccountOverrides(context, request.KbId)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func kbRetrigger(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	var request kbRetriggerRequest
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	if (request.AccountId == "" && !orgKBWriter(context)) || request.KbId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id and kb_id are required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id and kb_id are required")}))
 		return
 	}
 	if request.AccountId != "" && !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
 		!grantedRun(context.GetSecurityContext(), request.AccountId, moduleAiKbs) {
-		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
+		c.JSON(403, BuildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
 	err := knowledge.RetriggerKnowledgebase(context, request.AccountId, request.KbId)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
-	c.JSON(200, buildApiResponse(map[string]string{"status": "ok", "id": request.KbId}, nil))
+	c.JSON(200, BuildApiResponse(map[string]string{"status": "ok", "id": request.KbId}, nil))
 }
 
 // kbTestRetrieval answers "what would an agent actually retrieve for this
@@ -1017,24 +1017,24 @@ func kbTestRetrieval(c *gin.Context, context *security.RequestContext, payload m
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("kb: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: account_id is required")}))
 		return
 	}
 	if strings.TrimSpace(request.Query) == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: query is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: query is required")}))
 		return
 	}
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiAgents, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{Message: errorKBUserAccessMessage},
 		}))
 		return
@@ -1043,13 +1043,13 @@ func kbTestRetrieval(c *gin.Context, context *security.RequestContext, payload m
 	result, err := agentcore.ProbeKBRetrieval(context, request.AccountId, request.AgentId, request.KbId, request.Query)
 	if err != nil {
 		slog.Error("kb: test retrieval failed", "error", err, "agent_id", request.AgentId, "kb_id", request.KbId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(result, nil))
+	c.JSON(200, BuildApiResponse(result, nil))
 }
 
 func handleKnowledgebaseApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
@@ -1060,20 +1060,20 @@ func handleKnowledgebaseApis(r *gin.Engine, tracer trace.Tracer, meter metric.Me
 		err := c.ShouldBindJSON(&actionRequest)
 		if err != nil {
 			slog.Error("kb: error binding rpc request", "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{Message: "kb: " + err.Error()},
 			}))
 			return
 		}
 
 		if actionRequest.Action.Name == "" {
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: invalid payload, action.name is required")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: invalid payload, action.name is required")}))
 			return
 		}
 
-		context, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
+		context, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
@@ -1155,7 +1155,7 @@ func handleKnowledgebaseApis(r *gin.Engine, tracer trace.Tracer, meter metric.Me
 			common.MetricsApiRequestsTotal("kb_list_account_overrides")
 			kbListAccountOverrides(c, context, payload)
 		default:
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: invalid payload, unsupported action")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: invalid payload, unsupported action")}))
 		}
 	})
 }

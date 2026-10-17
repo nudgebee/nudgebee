@@ -329,7 +329,7 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		err := c.ShouldBindJSON(&actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -342,7 +342,7 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -351,9 +351,9 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		}
 
 		logger := slog.With("account_id", request.AccountId, "event_id", request.EventId, "user_id", request.UserId)
-		context, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		context, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(500, buildApiResponse(nil, []error{
+			c.JSON(500, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -369,7 +369,7 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		// Check if user has access to account
 		if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 			!granted(context.GetSecurityContext(), request.AccountId, moduleAiRca, "Read", "Write") {
-			c.JSON(403, buildApiResponse(nil, []error{
+			c.JSON(403, BuildApiResponse(nil, []error{
 				errors.New(errorUserAccessMessage),
 			}))
 			return
@@ -388,7 +388,7 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		var request GetRCAFormatRequest
 		var actionRequest ActionRequest
 		if err := c.ShouldBindJSON(&actionRequest); err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 
@@ -397,33 +397,33 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 			actionRequestPayload = v
 		}
 		if err := common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 
 		logger := slog.With("account_id", request.AccountId)
-		context, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		context, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 
 		if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 			!granted(context.GetSecurityContext(), request.AccountId, moduleAiRca, "Read", "Write") {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
 		dbManager, err := common.GetDatabaseManager(common.Metastore)
 		if err != nil {
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 
 		eventAnalysisRepo := events.NewEventAnalysisRepository(dbManager)
 		format, err := eventAnalysisRepo.GetAccountRCAFormat(context, request.AccountId)
 		if err != nil {
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 
@@ -433,7 +433,7 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 			isDefault = true
 		}
 
-		c.JSON(200, buildApiResponse(RCAFormatResponse{
+		c.JSON(200, BuildApiResponse(RCAFormatResponse{
 			Format:        format,
 			IsDefault:     isDefault,
 			DefaultFormat: agents.DefaultRCAFormat,
@@ -445,7 +445,7 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		var request SetRCAFormatRequest
 		var actionRequest ActionRequest
 		if err := c.ShouldBindJSON(&actionRequest); err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 
@@ -454,34 +454,34 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 			actionRequestPayload = v
 		}
 		if err := common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 
 		logger := slog.With("account_id", request.AccountId)
-		context, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		context, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 
 		// Require write access to update format
 		if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
 			!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiRca) {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
 		dbManager, err := common.GetDatabaseManager(common.Metastore)
 		if err != nil {
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 
 		eventAnalysisRepo := events.NewEventAnalysisRepository(dbManager)
 		err = eventAnalysisRepo.SetAccountRCAFormat(context, request.AccountId, request.Format)
 		if err != nil {
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 
@@ -492,7 +492,7 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 			isDefault = true
 		}
 
-		c.JSON(200, buildApiResponse(RCAFormatResponse{
+		c.JSON(200, BuildApiResponse(RCAFormatResponse{
 			Format:        responseFormat,
 			IsDefault:     isDefault,
 			DefaultFormat: agents.DefaultRCAFormat,
@@ -507,7 +507,7 @@ func processEventAnalysis(c *gin.Context, tracer trace.Tracer, meter metric.Mete
 	err := c.ShouldBindJSON(&actionRequest)
 	if err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -521,7 +521,7 @@ func processEventAnalysis(c *gin.Context, tracer trace.Tracer, meter metric.Mete
 	}
 	err = common.DecodeMapToStruct(actionRequestPayload, &request)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -530,9 +530,9 @@ func processEventAnalysis(c *gin.Context, tracer trace.Tracer, meter metric.Mete
 	}
 
 	logger := slog.With("account_id", request.AccountId, "event_id", request.EventId, "user_id", request.UserId)
-	context, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+	context, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -547,7 +547,7 @@ func processEventAnalysis(c *gin.Context, tracer trace.Tracer, meter metric.Mete
 
 	if request.UserId == "" || request.AccountId == "" || request.EventId == "" {
 		slog.Error("analyzer: userId, accountId and eventId are required", "user_id", request.UserId, "account_id", request.AccountId, "event_id", request.EventId)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: "userId, accountId and eventId are required",
 			},
@@ -558,7 +558,7 @@ func processEventAnalysis(c *gin.Context, tracer trace.Tracer, meter metric.Mete
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiGeneration, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			errors.New(errorUserAccessMessage),
 		}))
 		return
@@ -686,11 +686,11 @@ func bindStagesToEvent(ctx *security.RequestContext, repo *events.EventAnalysisR
 func executeEventInvestigation(ctx *security.RequestContext, request EventAnalysisRequest, c *gin.Context) {
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	if request.UserId == "" || request.AccountId == "" || request.EventId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "userId, accountId and eventId are required"}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "userId, accountId and eventId are required"}}))
 		return
 	}
 	eventAnalysisRepo := events.NewEventAnalysisRepositoryForAccount(ctx, dbManager, request.AccountId)
@@ -699,9 +699,9 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 	eventInfo, err := eventAnalysisRepo.GetEventInfo(ctx, request.EventId, request.AccountId)
 	if err != nil {
 		if strings.Contains(err.Error(), "event not found") {
-			c.JSON(404, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(404, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		} else {
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		}
 		return
 	}
@@ -867,17 +867,17 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 		if allCompleted {
 			finalResponse.Status = string(events.AnalysisStatusCompleted)
 			attachEventAnalysisVersions(ctx, eventAnalysisRepo, request.AccountId, &finalResponse)
-			c.JSON(200, buildApiResponse(finalResponse, nil))
+			c.JSON(200, BuildApiResponse(finalResponse, nil))
 			return
 		} else if anyInProgress {
 			finalResponse.Status = string(events.AnalysisStatusInProgress)
 			attachEventAnalysisVersions(ctx, eventAnalysisRepo, request.AccountId, &finalResponse)
-			c.JSON(200, buildApiResponse(finalResponse, nil))
+			c.JSON(200, BuildApiResponse(finalResponse, nil))
 			return
 		} else if anyFailed {
 			finalResponse.Status = string(events.AnalysisStatusFailed)
 			attachEventAnalysisVersions(ctx, eventAnalysisRepo, request.AccountId, &finalResponse)
-			c.JSON(200, buildApiResponse(finalResponse, nil))
+			c.JSON(200, BuildApiResponse(finalResponse, nil))
 			return
 		}
 	}
@@ -910,7 +910,7 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 			// the other DB-error paths in this handler rather than reporting a
 			// misleading IN_PROGRESS.
 			ctx.GetLogger().Error("analyzer: failed to claim analysis", "error", claimErr, "event_id", request.EventId)
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "analyzer: failed to claim analysis: " + claimErr.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: "analyzer: failed to claim analysis: " + claimErr.Error()}}))
 			return
 		}
 		if !claimed {
@@ -920,7 +920,7 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 				finalResponse.TaskStatuses[string(aType)] = string(events.AnalysisStatusInProgress)
 			}
 			attachEventAnalysisVersions(ctx, eventAnalysisRepo, request.AccountId, &finalResponse)
-			c.JSON(200, buildApiResponse(finalResponse, nil))
+			c.JSON(200, BuildApiResponse(finalResponse, nil))
 			return
 		}
 		claimedLog = true
@@ -935,13 +935,13 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 		claimed, claimErr := eventAnalysisRepo.ClaimEventAnalysis(ctx, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey, events.AnalysisTypeDetailedResponse, true)
 		if claimErr != nil {
 			ctx.GetLogger().Error("analyzer: failed to claim final report", "error", claimErr, "event_id", request.EventId)
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "analyzer: failed to claim final report: " + claimErr.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: "analyzer: failed to claim final report: " + claimErr.Error()}}))
 			return
 		}
 		if !claimed {
 			finalResponse.Status = string(events.AnalysisStatusInProgress)
 			attachEventAnalysisVersions(ctx, eventAnalysisRepo, request.AccountId, &finalResponse)
-			c.JSON(200, buildApiResponse(finalResponse, nil))
+			c.JSON(200, BuildApiResponse(finalResponse, nil))
 			return
 		}
 		finalResponse.TaskStatuses[string(events.AnalysisTypeDetailedResponse)] = string(events.AnalysisStatusInProgress)
@@ -1000,11 +1000,11 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 		common.MetricsEventAnalysisOperationsTotal("investigation", "queue_full", request.AccountId)
 		// Keep the claimed row IN_PROGRESS. Recovery can dispatch it when the
 		// worker pool is available; failing every stage would erase that marker.
-		c.JSON(503, buildApiResponse(finalResponse, []error{common.Error{Message: "analyzer: unable to queue analysis request, please try again later"}}))
+		c.JSON(503, BuildApiResponse(finalResponse, []error{common.Error{Message: "analyzer: unable to queue analysis request, please try again later"}}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(finalResponse, nil))
+	c.JSON(200, BuildApiResponse(finalResponse, nil))
 }
 
 func getOrCreateEventAnalysisStatus(ctx *security.RequestContext, request EventAnalysisRequest, dbManager *common.DatabaseManager, createAnalysis bool) (EventAnalysisResponse, error) {

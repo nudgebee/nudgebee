@@ -35,18 +35,18 @@ func applyRCAHistory(response *EventAnalysisResponse, reports []events.RCAReport
 
 func executeEventRCAAnalysis(ctx *security.RequestContext, request EventRCAAnalysisRequest, c *gin.Context) {
 	if request.UserId == "" || request.AccountId == "" || request.EventId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("userId, accountId and eventId are required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("userId, accountId and eventId are required")}))
 		return
 	}
 	db, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{err}))
+		c.JSON(500, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	repo := events.NewEventAnalysisRepositoryForAccount(ctx, db, request.AccountId)
 	info, err := repo.GetEventInfo(ctx, request.EventId, request.AccountId)
 	if err != nil {
-		c.JSON(404, buildApiResponse(nil, []error{errors.New("event not found")}))
+		c.JSON(404, BuildApiResponse(nil, []error{errors.New("event not found")}))
 		return
 	}
 	if info.Fingerprint == "" {
@@ -55,7 +55,7 @@ func executeEventRCAAnalysis(ctx *security.RequestContext, request EventRCAAnaly
 	response := EventAnalysisResponse{EventId: request.EventId, RelatedEventId: request.EventId, EventFingerprint: info.Fingerprint, EventAggregationKey: info.AggregationKey}
 	reports, attempt, err := repo.GetRCAHistory(ctx, request.EventId, info.Fingerprint, request.AccountId, info.AggregationKey)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{err}))
+		c.JSON(500, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	applyRCAHistory(&response, reports, attempt)
@@ -63,14 +63,14 @@ func executeEventRCAAnalysis(ctx *security.RequestContext, request EventRCAAnaly
 		enrichRCAResponseMetadata(ctx, repo, info.Fingerprint, info.AggregationKey, request.AccountId, *response.GeneratedAt, &response)
 	}
 	if !request.Generate || response.Status == string(events.AnalysisStatusInProgress) || (!request.Regenerate && len(reports) > 0 && (response.GeneratedAt == nil || !repo.IsAnalysisStale(*response.GeneratedAt))) {
-		c.JSON(200, buildApiResponse(response, nil))
+		c.JSON(200, BuildApiResponse(response, nil))
 		return
 	}
 	// Rollout kill switch only blocks new generation. Reads and recovery remain
 	// version-aware so disabling generation cannot revert to overwriting reports.
 	disabled, flagErr := common.IsFeatureEnabledForAccount("RCA_REGENERATION_DISABLED", ctx.GetSecurityContext().GetTenantId(), request.AccountId)
 	if flagErr != nil || disabled {
-		c.JSON(503, buildApiResponse(response, []error{errors.New("RCA generation is temporarily unavailable")}))
+		c.JSON(503, BuildApiResponse(response, []error{errors.New("RCA generation is temporarily unavailable")}))
 		return
 	}
 	if budget.CheckBudgetAndRespond(c, ctx.GetSecurityContext().GetTenantId(), request.AccountId, budget.ModuleInvestigation, ctx.GetLogger()) {
@@ -81,19 +81,19 @@ func executeEventRCAAnalysis(ctx *security.RequestContext, request EventRCAAnaly
 	}
 	id, claimed, err := repo.ClaimRCAAttempt(ctx, request.EventId, info.Fingerprint, request.AccountId, info.AggregationKey, response.RCAReportID)
 	if err != nil {
-		c.JSON(500, buildApiResponse(response, []error{err}))
+		c.JSON(500, BuildApiResponse(response, []error{err}))
 		return
 	}
 	if !claimed {
 		reports, attempt, err = repo.GetRCAHistory(ctx, request.EventId, info.Fingerprint, request.AccountId, info.AggregationKey)
 		if err != nil {
-			c.JSON(500, buildApiResponse(nil, []error{err}))
+			c.JSON(500, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		response.StatusReason = ""
 		response.AttemptedAt = nil
 		applyRCAHistory(&response, reports, attempt)
-		c.JSON(200, buildApiResponse(response, nil))
+		c.JSON(200, BuildApiResponse(response, nil))
 		return
 	}
 	request.AttemptID = id
@@ -113,12 +113,12 @@ func executeEventRCAAnalysis(ctx *security.RequestContext, request EventRCAAnaly
 	})
 	if err != nil {
 		_ = repo.UpdateRCAAttemptStatus(ctx, id, request.EventId, request.AccountId, string(events.AnalysisStatusFailed), "queue full, please retry")
-		c.JSON(503, buildApiResponse(response, []error{errors.New("unable to queue RCA; please retry")}))
+		c.JSON(503, BuildApiResponse(response, []error{errors.New("unable to queue RCA; please retry")}))
 		return
 	}
 	response.Status = string(events.AnalysisStatusInProgress)
 	response.StatusReason = ""
-	c.JSON(200, buildApiResponse(response, nil))
+	c.JSON(200, BuildApiResponse(response, nil))
 }
 
 func isRCAAnalysisType(t events.EventAnalysisType) bool {

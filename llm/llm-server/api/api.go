@@ -17,6 +17,13 @@ var (
 	metricsWorkerPool            *common.WorkerPool
 )
 
+// HandleMemoryV2ApisFn registers the memory-v2 HTTP routes. Defaults to a
+// no-op so OSS builds (which strip ee/, including ee/memory/httpapi)
+// compile without a reference to handleMemoryV2Apis. Prod / EE builds
+// override this via ee/memory/httpapi's init() and register the real
+// routes.
+var HandleMemoryV2ApisFn = func(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {}
+
 func init() {
 	asyncOperationWorkerPool = common.NewWorkerPool("async_api_operations", config.Config.AsyncApiWorkerCount, config.Config.AsyncApiQueueSize)
 	asyncUserOperationWorkerPool = common.NewWorkerPool("async_api_user_operations", config.Config.AsyncApiWorkerCount, config.Config.AsyncApiQueueSize)
@@ -46,6 +53,7 @@ func ConfigureRoutes(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 	handleConversationApis(r, tracer, meter)
 	handleKnowledgebaseApis(r, tracer, meter)
 	handleMemoryApis(r, tracer, meter)
+	HandleMemoryV2ApisFn(r, tracer, meter)
 	handleGlobalContextApis(r, tracer, meter)
 	handleWorkspaceApis(r, tracer, meter)
 	handleWorkspaceLLM(r, tracer, meter)

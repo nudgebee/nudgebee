@@ -88,13 +88,13 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		requestMap := make(map[string]any)
 		if err := c.ShouldBindJSON(&requestMap); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return
 		}
 		var actionRequest ActionRequest
 		if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return
 		}
 
@@ -112,19 +112,19 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		}
 		var request knowledgeActivityRequest
 		if err := common.DecodeMapToStruct(payload, &request); err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return
 		}
 		// Authenticate before validating the payload, as every sibling action
 		// does: reporting "these fields are required" to a caller we have not
 		// authenticated tells them which payloads are well-formed.
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		if request.AccountId == "" || request.ConversationId == "" || len(request.MessageIds) == 0 {
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				errors.New("api: account_id, conversation_id and message_ids are required"),
 			}))
 			return
@@ -133,17 +133,17 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		// input syntax for type uuid" there, which surfaces as a 500 and a noisy
 		// error log for what is a caller mistake.
 		if _, err := uuid.Parse(request.ConversationId); err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("api: conversation_id is not a valid id")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("api: conversation_id is not a valid id")}))
 			return
 		}
 		for _, id := range request.MessageIds {
 			if _, err := uuid.Parse(id); err != nil {
-				c.JSON(400, buildApiResponse(nil, []error{errors.New("api: message_ids contains an invalid id")}))
+				c.JSON(400, BuildApiResponse(nil, []error{errors.New("api: message_ids contains an invalid id")}))
 				return
 			}
 		}
 		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
@@ -151,10 +151,10 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		if err != nil {
 			agentContext.GetLogger().Error("knowledge activity: lookup failed", "error", err,
 				"conversation_id", request.ConversationId)
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		c.JSON(200, buildApiResponse(activity, nil))
+		c.JSON(200, BuildApiResponse(activity, nil))
 	})
 
 	// Get model configuration for a conversation
@@ -165,7 +165,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -175,7 +175,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -197,20 +197,20 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
 		}
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_models") {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
@@ -268,7 +268,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			"is_custom", response["is_custom"],
 			"config_source", response["config_source"])
 
-		c.JSON(200, buildApiResponse(response, nil))
+		c.JSON(200, BuildApiResponse(response, nil))
 	})
 
 	// bindPricingRequest folds the action-envelope decoding the RPC handlers all
@@ -282,13 +282,13 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		requestMap := make(map[string]any)
 		if err := c.ShouldBindJSON(&requestMap); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return nil, false
 		}
 		var actionRequest ActionRequest
 		if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return nil, false
 		}
 		payload := actionRequest.Input
@@ -299,12 +299,12 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			payload = requestMap
 		}
 		if err := common.DecodeMapToStruct(payload, request); err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return nil, false
 		}
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return nil, false
 		}
 		return agentContext, true
@@ -329,22 +329,22 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		// on a tab they can see. Writing rates stays tenant_admin only.
 		if !sc.IsTenantAdmin() && !sc.IsTenantReadAdmin() && !sc.IsAccountAdmin() && !sc.IsAccountReadAdmin() &&
 			!sc.IsSuperAdmin() && !sc.IsSuperAdminReadonly() {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
 		dbManager, err := common.GetDatabaseManager(common.Metastore)
 		if err != nil {
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 		prices, err := core.ListModelPricing(dbManager, sc.GetTenantId())
 		if err != nil {
 			agentContext.GetLogger().Error("api: error listing model pricing", "error", err)
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		c.JSON(200, buildApiResponse(map[string]any{"prices": prices}, nil))
+		c.JSON(200, BuildApiResponse(map[string]any{"prices": prices}, nil))
 	})
 
 	groupV2.POST("/ai_upsert_model_pricing", func(c *gin.Context) {
@@ -358,13 +358,13 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		// what all of them are billed at, so it is a tenant-admin action —
 		// account-level write access is not enough.
 		if !agentContext.GetSecurityContext().IsTenantAdmin() {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New("model pricing can only be changed by a tenant admin")}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New("model pricing can only be changed by a tenant admin")}))
 			return
 		}
 
 		dbManager, err := common.GetDatabaseManager(common.Metastore)
 		if err != nil {
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 		sc := agentContext.GetSecurityContext()
@@ -372,10 +372,10 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			agentContext.GetLogger().Error("api: error saving model pricing", "error", err)
 			// Validation failures are the caller's fault, so report them as 400
 			// with the message intact rather than a blanket 500.
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		c.JSON(200, buildApiResponse(map[string]any{"saved": len(request.Prices)}, nil))
+		c.JSON(200, BuildApiResponse(map[string]any{"saved": len(request.Prices)}, nil))
 	})
 
 	groupV2.POST("/ai_delete_model_pricing", func(c *gin.Context) {
@@ -388,23 +388,23 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		// Removing an override changes what every account in the tenant is
 		// billed at, exactly as setting one does, so it carries the same gate.
 		if !agentContext.GetSecurityContext().IsTenantAdmin() {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New("model pricing can only be changed by a tenant admin")}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New("model pricing can only be changed by a tenant admin")}))
 			return
 		}
 
 		dbManager, err := common.GetDatabaseManager(common.Metastore)
 		if err != nil {
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 		sc := agentContext.GetSecurityContext()
 		removed, err := core.DeleteModelPricing(dbManager, sc.GetTenantId(), request.ProviderName, request.ModelName)
 		if err != nil {
 			agentContext.GetLogger().Error("api: error deleting model pricing", "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		c.JSON(200, buildApiResponse(map[string]any{"removed": removed}, nil))
+		c.JSON(200, BuildApiResponse(map[string]any{"removed": removed}, nil))
 	})
 
 	// AI Cost Daily Report per-tenant send hour (UTC-only).
@@ -419,22 +419,22 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		// Read-only — seeing the configured hour is not privileged within a
 		// tenant, matching the read gate on ai_list_model_pricing.
 		if !sc.IsTenantAdmin() && !sc.IsTenantReadAdmin() && !sc.IsSuperAdmin() && !sc.IsSuperAdminReadonly() {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
 		dbManager, err := common.GetDatabaseManager(common.Metastore)
 		if err != nil {
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 		sendHourUTC, err := analytics.GetAiCostReportSchedule(dbManager, sc.GetTenantId())
 		if err != nil {
 			agentContext.GetLogger().Error("api: error reading cost report schedule", "error", err)
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		c.JSON(200, buildApiResponse(map[string]any{"send_hour_utc": sendHourUTC}, nil))
+		c.JSON(200, BuildApiResponse(map[string]any{"send_hour_utc": sendHourUTC}, nil))
 	})
 
 	groupV2.POST("/ai_upsert_cost_report_schedule", func(c *gin.Context) {
@@ -451,23 +451,23 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		// both roles.
 		sc := agentContext.GetSecurityContext()
 		if !sc.IsTenantAdmin() && !sc.IsSuperAdmin() {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New("cost report schedule can only be changed by a tenant admin")}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New("cost report schedule can only be changed by a tenant admin")}))
 			return
 		}
 
 		dbManager, err := common.GetDatabaseManager(common.Metastore)
 		if err != nil {
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 		if err := analytics.UpsertAiCostReportSchedule(dbManager, sc.GetTenantId(), sc.GetUserId(), request.SendHourUTC); err != nil {
 			agentContext.GetLogger().Error("api: error saving cost report schedule", "error", err)
 			// Validation failures (out-of-range hour) are the caller's fault —
 			// 400 with the message intact, not a blanket 500.
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		c.JSON(200, buildApiResponse(map[string]any{"send_hour_utc": request.SendHourUTC}, nil))
+		c.JSON(200, BuildApiResponse(map[string]any{"send_hour_utc": request.SendHourUTC}, nil))
 	})
 
 	// ai_list_tenant_models lists the models a config saved with no accounts may
@@ -478,26 +478,26 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		common.MetricsApiRequestsTotal("ai_list_tenant_models")
 		var actionRequest ActionRequest
 		if err := c.ShouldBindJSON(&actionRequest); err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return
 		}
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		sc := agentContext.GetSecurityContext()
 		if !sc.IsTenantAdmin() && !sc.IsSuperAdmin() {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 		models, err := core.GetTenantWideConfiguredModels(sc.GetTenantId())
 		if err != nil {
 			agentContext.GetLogger().Error("api: error listing tenant models", "error", err)
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		c.JSON(200, buildApiResponse(map[string]any{"models": models}, nil))
+		c.JSON(200, BuildApiResponse(map[string]any{"models": models}, nil))
 	})
 
 	groupV2.POST("/ai_list_models", func(c *gin.Context) {
@@ -506,7 +506,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -518,7 +518,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -534,7 +534,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -542,14 +542,14 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_models") {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
@@ -559,7 +559,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		models, err := core.GetAllConfiguredModels(request.AccountId)
 		if err != nil {
 			logger.Error("api: error listing models", "error", err)
-			c.JSON(500, buildApiResponse(nil, []error{
+			c.JSON(500, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -600,7 +600,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			},
 		}
 
-		c.JSON(200, buildApiResponse(response, nil))
+		c.JSON(200, BuildApiResponse(response, nil))
 	})
 
 	groupV2.POST("/ai_get_conversations", func(c *gin.Context) {
@@ -609,7 +609,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -621,7 +621,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -639,7 +639,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -647,19 +647,19 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
 		if request.ConversationId == "" && request.SessionId == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: conversationId or sessionId is required",
 				},
@@ -678,9 +678,9 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 
 		// Re-initialize context with resolution cache and rebuild agentContext
 		ctx := context.WithValue(c.Request.Context(), core.ContextKeyLLMResolution, core.NewLLMResolutionCache())
-		agentContext, err = buildContextFromPayload(ctx, c, &actionRequest, tracer, meter, logger)
+		agentContext, err = BuildContextFromPayload(ctx, c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 			return
 		}
 		c.Request = c.Request.WithContext(agentContext.GetContext())
@@ -698,7 +698,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			if errors.Is(err, core.ErrConversationNotFound) {
 				statusCode = 404
 			}
-			c.JSON(statusCode, buildApiResponse(nil, []error{
+			c.JSON(statusCode, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -734,7 +734,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			response["model_config"] = modelConfig
 		}
 
-		c.JSON(200, buildApiResponse(response, nil))
+		c.JSON(200, BuildApiResponse(response, nil))
 	})
 
 	groupV2.POST("/ai_list_conversations", func(c *gin.Context) {
@@ -743,7 +743,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -755,7 +755,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -771,7 +771,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		}
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -781,14 +781,14 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 
 		logger := slog.Default()
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
@@ -801,7 +801,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		conversations, err := core.GetConversationDao().ListConversations(request.AccountId, request.UserId, request.Title, string(request.Source), request.Limit, request.Offset)
 		if err != nil {
 			logger.Error("api: error listing conversations", "error", err)
-			c.JSON(500, buildApiResponse(nil, []error{
+			c.JSON(500, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -809,7 +809,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 
-		c.JSON(200, buildApiResponse(conversations, nil))
+		c.JSON(200, BuildApiResponse(conversations, nil))
 	})
 
 	groupV2.POST("/ai_list_references", func(c *gin.Context) {
@@ -818,7 +818,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		err := c.ShouldBindJSON(&requestMap)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -828,7 +828,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		err = common.DecodeMapToStruct(requestMap, &actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
@@ -845,20 +845,20 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 
 		err = common.DecodeMapToStruct(actionRequestPayload, &request)
 		if err != nil {
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{Message: "api: " + err.Error()},
 			}))
 			return
 		}
 
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
 		if !agentContext.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
-			c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
@@ -876,12 +876,12 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		references, err := core.GetConversationDao().ListAgentReferences(request.AccountId, request.ConversationId, messageIds, request.AgentId, request.Limit)
 		if err != nil {
 			logger.Error("api: error listing references", "error", err)
-			c.JSON(500, buildApiResponse(nil, []error{
+			c.JSON(500, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
 
-		c.JSON(200, buildApiResponse(references, nil))
+		c.JSON(200, BuildApiResponse(references, nil))
 	})
 }

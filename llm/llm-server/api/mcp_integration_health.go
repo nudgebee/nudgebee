@@ -60,7 +60,7 @@ func handleMCPIntegrationApis(r *gin.Engine, tracer trace.Tracer, meter metric.M
 		}
 
 		logger := slog.With("integration_id", request.IntegrationID)
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
 			actionError(c, 401, err.Error())
 			return

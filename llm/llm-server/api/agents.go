@@ -51,18 +51,18 @@ func agentListAgent(c *gin.Context, context *security.RequestContext, payload ma
 	// agents (compiled-in catalog) are returned for everyone.
 	if payload["account_id"] == nil || payload["account_id"] == "" {
 		resp := core.ListAgentsForTenant(context, allowOnlyEnabled)
-		c.JSON(200, buildApiResponse(resp, nil))
+		c.JSON(200, BuildApiResponse(resp, nil))
 		return
 	}
 	accountIdPayload, ok := payload["account_id"].(string)
 	if !ok || accountIdPayload == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id must be a non-empty string")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id must be a non-empty string")}))
 		return
 	}
 
 	// Check if user has access to account (built-in role or an ai_agents custom grant)
 	if !context.GetSecurityContext().CanReadAccountData(accountIdPayload, "ai_agents") {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
 			},
@@ -70,7 +70,7 @@ func agentListAgent(c *gin.Context, context *security.RequestContext, payload ma
 		return
 	}
 	resp := core.ListAgents(context, accountIdPayload, allowOnlyEnabled)
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func agentCreateAgent(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -78,7 +78,7 @@ func agentCreateAgent(c *gin.Context, context *security.RequestContext, payload 
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -94,7 +94,7 @@ func agentCreateAgent(c *gin.Context, context *security.RequestContext, payload 
 
 	err = common.ValidateStruct(request)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -105,7 +105,7 @@ func agentCreateAgent(c *gin.Context, context *security.RequestContext, payload 
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiAgents) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
 			},
@@ -117,7 +117,7 @@ func agentCreateAgent(c *gin.Context, context *security.RequestContext, payload 
 
 	resp, err := core.CreateCustomAgent(context, request.AccountId, request.Agent, request.Rags, overrideAgent)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -125,34 +125,34 @@ func agentCreateAgent(c *gin.Context, context *security.RequestContext, payload 
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func agentDeleteAgent(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	if payload["account_id"] == nil || payload["account_id"] == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
 		return
 	}
 
 	if payload["name"] == nil || payload["name"] == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, name is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, name is required")}))
 		return
 	}
 	accountIdPayload, okAccount := payload["account_id"].(string)
 	if !okAccount || accountIdPayload == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id must be a non-empty string")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id must be a non-empty string")}))
 		return
 	}
 	namePayload, okName := payload["name"].(string)
 	if !okName || namePayload == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, name must be a non-empty string")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, name must be a non-empty string")}))
 		return
 	}
 
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(accountIdPayload, security.SecurityAccessTypeDelete) &&
 		!grantedWrite(context.GetSecurityContext(), accountIdPayload, moduleAiAgents) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
 			},
@@ -166,13 +166,13 @@ func agentDeleteAgent(c *gin.Context, context *security.RequestContext, payload 
 		// might warrant different HTTP status codes (e.g., 404 if not found vs 500 for other errors)
 		// For now, a generic 500 is better than 200 on error.
 		slog.Error("agentDeleteAgent: failed to delete custom agent", "error", err, "account_id", accountIdPayload, "name", namePayload)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: "agents: failed to delete agent: " + err.Error(),
 			},
 		}))
 	} else {
-		c.JSON(200, buildApiResponse(map[string]any{
+		c.JSON(200, BuildApiResponse(map[string]any{
 			"status": "ok",
 		}, nil)) // Pass nil for errors on success
 	}
@@ -184,7 +184,7 @@ func agentUpdateAgent(c *gin.Context, context *security.RequestContext, payload 
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -194,7 +194,7 @@ func agentUpdateAgent(c *gin.Context, context *security.RequestContext, payload 
 
 	err = common.ValidateStruct(request)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -203,13 +203,13 @@ func agentUpdateAgent(c *gin.Context, context *security.RequestContext, payload 
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
 		return
 	}
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiAgents) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
 			},
@@ -221,7 +221,7 @@ func agentUpdateAgent(c *gin.Context, context *security.RequestContext, payload 
 
 	resp, err := core.UpdateCustomAgent(context, request.AccountId, request.Agent)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -229,7 +229,7 @@ func agentUpdateAgent(c *gin.Context, context *security.RequestContext, payload 
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func createAgentExtension(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -238,7 +238,7 @@ func createAgentExtension(c *gin.Context, context *security.RequestContext, payl
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -248,7 +248,7 @@ func createAgentExtension(c *gin.Context, context *security.RequestContext, payl
 
 	err = common.ValidateStruct(request)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -257,18 +257,18 @@ func createAgentExtension(c *gin.Context, context *security.RequestContext, payl
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
 		return
 	}
 
 	if request.Agent.AgentName == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, agent name is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, agent name is required")}))
 		return
 	}
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiAgents) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
 			},
@@ -280,11 +280,11 @@ func createAgentExtension(c *gin.Context, context *security.RequestContext, payl
 
 	resp, err := core.CreateAgentExtension(context, request.AccountId, request.Agent, createdBy)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func updateAgentExtension(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -292,7 +292,7 @@ func updateAgentExtension(c *gin.Context, context *security.RequestContext, payl
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -302,7 +302,7 @@ func updateAgentExtension(c *gin.Context, context *security.RequestContext, payl
 
 	err = common.ValidateStruct(request)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -311,18 +311,18 @@ func updateAgentExtension(c *gin.Context, context *security.RequestContext, payl
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
 		return
 	}
 
 	if request.Agent.AgentName == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, agent name is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, agent name is required")}))
 		return
 	}
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiAgents) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
 			},
@@ -334,11 +334,11 @@ func updateAgentExtension(c *gin.Context, context *security.RequestContext, payl
 
 	resp, err := core.UpdateAgentExtension(context, request.AccountId, request.Agent, updatedBy)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func deleteAgentExtension(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -346,7 +346,7 @@ func deleteAgentExtension(c *gin.Context, context *security.RequestContext, payl
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -356,7 +356,7 @@ func deleteAgentExtension(c *gin.Context, context *security.RequestContext, payl
 
 	err = common.ValidateStruct(request)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: err.Error(),
 			},
@@ -365,18 +365,18 @@ func deleteAgentExtension(c *gin.Context, context *security.RequestContext, payl
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
 		return
 	}
 
 	if request.AgentName == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, agent_name is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, agent_name is required")}))
 		return
 	}
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiAgents) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
 			},
@@ -386,11 +386,11 @@ func deleteAgentExtension(c *gin.Context, context *security.RequestContext, payl
 
 	err = core.DeleteAgentExtension(context, request.AccountId, request.AgentName)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(map[string]any{
+	c.JSON(200, BuildApiResponse(map[string]any{
 		"status": "ok",
 	}, nil))
 }
@@ -403,7 +403,7 @@ func handleAgentsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		err := c.ShouldBindJSON(&actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -412,13 +412,13 @@ func handleAgentsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		}
 
 		if actionRequest.Action.Name == "" {
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, action.name is required")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, action.name is required")}))
 			return
 		}
 
-		context, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
+		context, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
@@ -427,7 +427,7 @@ func handleAgentsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 			if castedRequest, castOk := rawRequest.(map[string]any); castOk {
 				payload = castedRequest
 			} else {
-				c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, request field is not a valid object")}))
+				c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, request field is not a valid object")}))
 				return
 			}
 		}
@@ -462,7 +462,7 @@ func handleAgentsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 			deleteAgentExtension(c, context, payload)
 			return
 		default:
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, unsupported action")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, unsupported action")}))
 			return
 		}
 	})

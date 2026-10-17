@@ -1,15 +1,15 @@
-package core
+package bootstrap
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
+
+	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/watch"
 
-	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -19,9 +19,9 @@ import (
 // (after config is loaded). When LLM_SERVER_WATCH_ENABLED is false the
 // dispatcher registration is a no-op so the bridge is also harmless.
 //
-// Lives in agents/core (not in cmd/main) because:
+// Lives in its own package (not in watch, not in cmd/main) because:
 //   - the watch package must NOT import agents/core (LLM provider stack
-//     is huge and would invert the dependency arrow)
+//     is huge and agents/core already imports watch)
 //   - someone has to give watch its LLM judge client and a way to
 //     construct a security context, and agents/core owns both
 func BootstrapWatch() error {
@@ -36,7 +36,7 @@ func BootstrapWatch() error {
 	}
 	watch.SetLLMJudgeClientFactory(buildWatchJudgeClient)
 	watch.SetSecurityContextBuilder(buildWatchSecurityContext)
-	watch.SetOwnerAccessChecker(checkWatchOwnerAccess)
+	watch.SetOwnerAccessChecker(core.CheckWatchOwnerAccess)
 	watch.SetSummarizerFactory(newLlmSummarizer)
 	if err := watch.RegisterDispatcher(); err != nil {
 		return fmt.Errorf("BootstrapWatch: register dispatcher: %w", err)
@@ -68,9 +68,9 @@ func (c *trackedJudgeClient) GenerateContent(callCtx context.Context, messages [
 	// at factory time; use the caller's deadline-bounded context. Hint
 	// the resolver to pick the summary-tier model (matches the short
 	// JSON yes/no shape of the judge prompt).
-	callCtx = context.WithValue(callCtx, ContextKeyModelTier, ModelTierSummary)
+	callCtx = context.WithValue(callCtx, core.ContextKeyModelTier, core.ModelTierSummary)
 	rctx := security.NewRequestContext(callCtx, c.rctx.GetSecurityContext(), c.rctx.GetLogger(), c.rctx.GetTracer(), c.rctx.GetMeter())
-	return GenerateAndTrackLLMContent(
+	return core.GenerateAndTrackLLMContent(
 		rctx,
 		c.userID,
 		c.accountID,
@@ -111,7 +111,7 @@ func buildWatchJudgeClient(ctx *security.RequestContext, w watch.Watch) (watch.L
 // registered the watch.
 //
 // Sources are read-only (mutating verbs and SQL writes are refused at
-// create time), and checkWatchOwnerAccess re-checks the originating user
+// create time), and core.CheckWatchOwnerAccess re-checks the originating user
 // on every poll, ending the watch as FAILED once they may no longer run
 // Nubi on the account.
 func buildWatchSecurityContext(w watch.Watch) (*security.SecurityContext, error) {
@@ -130,23 +130,4 @@ func buildWatchSecurityContext(w watch.Watch) (*security.SecurityContext, error)
 		return nil, fmt.Errorf("watch.bootstrap: failed to build security context for tenant %s", w.TenantID.String())
 	}
 	return sc, nil
-}
-
-// checkWatchOwnerAccess is the watch package's per-poll owner check. A watch
-// with no user (set up by a system run) has no owner to re-check.
-func checkWatchOwnerAccess(w watch.Watch) error {
-	if w.UserID == nil || *w.UserID == uuid.Nil {
-		return nil
-	}
-	sc, err := newSecurityContext(w.TenantID.String(), w.UserID.String())
-	if errors.Is(err, security.ErrSecurityContextRejected) {
-		return fmt.Errorf("%w: %w", watch.ErrOwnerAccessRevoked, err)
-	}
-	if err != nil {
-		return fmt.Errorf("watch owner access: %w", err)
-	}
-	if sc == nil || !sc.CanRunAI(w.AccountID.String()) {
-		return watch.ErrOwnerAccessRevoked
-	}
-	return nil
 }

@@ -145,6 +145,7 @@ Not strictly enforced (no `.golangci.yml` config). Follow stdlib → external �
 - **`security/`** — authentication, authorization, RequestContext. Outbound LLM payload inspection (credential gate, future redact / tokenize) is the egressfilter package — see [docs/llm-egress-filter.md](docs/llm-egress-filter.md).
 - **`workflows/`** — workflow/automation service integration
 - **`relay/`** — relay server communication for Kubernetes operations
+- **`ee/`** — enterprise-only extensions, stripped from the OSS build. Each fills an exported hook in `agents/core` from `init()` and is blank-imported from `cmd/imports_enterprise.go` (e.g. `ee/memory/corebridge` installs memory-v2 into `agents/core/memory.go`'s hooks, and `ee/memory/httpapi` registers the memory-v2 routes through `api.HandleMemoryV2ApisFn`)
 
 Import graph is clean: `agents/core/` → `tools/core/` (one-way). No circular dependencies.
 

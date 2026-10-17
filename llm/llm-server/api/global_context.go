@@ -74,20 +74,20 @@ func gcCreate(c *gin.Context, context *security.RequestContext, payload map[stri
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("gc: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New(errorGCAccountIDRequired)}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New(errorGCAccountIDRequired)}))
 		return
 	}
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiGuardrails) {
-		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
+		c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
 		return
 	}
 
@@ -103,13 +103,13 @@ func gcCreate(c *gin.Context, context *security.RequestContext, payload map[stri
 	resp, err := knowledge.CreateGlobalContext(context, gc)
 	if err != nil {
 		slog.Error("gc: failed to create", "error", err, "account_id", request.AccountId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func gcGet(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -117,37 +117,37 @@ func gcGet(c *gin.Context, context *security.RequestContext, payload map[string]
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("gc: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New(errorGCAccountIDRequired)}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New(errorGCAccountIDRequired)}))
 		return
 	}
 	if request.Id == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New(errorGCIDRequired)}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New(errorGCIDRequired)}))
 		return
 	}
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiGuardrails, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
+		c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
 		return
 	}
 
 	resp, err := knowledge.GetGlobalContext(context, request.AccountId, request.Id)
 	if err != nil {
 		slog.Error("gc: failed to get", "error", err, "gc_id", request.Id, "account_id", request.AccountId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func gcList(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -155,7 +155,7 @@ func gcList(c *gin.Context, context *security.RequestContext, payload map[string
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("gc: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
@@ -169,31 +169,31 @@ func gcList(c *gin.Context, context *security.RequestContext, payload map[string
 		resp, err := knowledge.ListGlobalContextsForTenant(context)
 		if err != nil {
 			slog.Error("gc: failed to list (tenant-wide)", "error", err)
-			c.JSON(500, buildApiResponse(nil, []error{
+			c.JSON(500, BuildApiResponse(nil, []error{
 				common.Error{Message: err.Error()},
 			}))
 			return
 		}
-		c.JSON(200, buildApiResponse(resp, nil))
+		c.JSON(200, BuildApiResponse(resp, nil))
 		return
 	}
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), request.AccountId, moduleAiGuardrails, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
+		c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
 		return
 	}
 
 	resp, err := knowledge.ListGlobalContexts(context, request.AccountId)
 	if err != nil {
 		slog.Error("gc: failed to list", "error", err, "account_id", request.AccountId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(resp, nil))
+	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
 func gcUpdate(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -201,24 +201,24 @@ func gcUpdate(c *gin.Context, context *security.RequestContext, payload map[stri
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("gc: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New(errorGCAccountIDRequired)}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New(errorGCAccountIDRequired)}))
 		return
 	}
 	if request.GlobalContext.Id == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New(errorGCIDRequired)}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New(errorGCIDRequired)}))
 		return
 	}
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiGuardrails) {
-		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
+		c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
 		return
 	}
 
@@ -233,13 +233,13 @@ func gcUpdate(c *gin.Context, context *security.RequestContext, payload map[stri
 	err = knowledge.UpdateGlobalContext(context, request.AccountId, request.GlobalContext.Id, updates)
 	if err != nil {
 		slog.Error("gc: failed to update", "error", err, "gc_id", request.GlobalContext.Id, "account_id", request.AccountId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(map[string]string{"status": "ok", "id": request.GlobalContext.Id}, nil))
+	c.JSON(200, BuildApiResponse(map[string]string{"status": "ok", "id": request.GlobalContext.Id}, nil))
 }
 
 func gcDelete(c *gin.Context, context *security.RequestContext, payload map[string]any) {
@@ -247,37 +247,37 @@ func gcDelete(c *gin.Context, context *security.RequestContext, payload map[stri
 	err := common.DecodeMapToStruct(payload, &request)
 	if err != nil {
 		slog.Error("gc: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{
+		c.JSON(400, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New(errorGCAccountIDRequired)}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New(errorGCAccountIDRequired)}))
 		return
 	}
 	if request.Id == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New(errorGCIDRequired)}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New(errorGCIDRequired)}))
 		return
 	}
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiGuardrails) {
-		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
+		c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorGCUserAccessMessage)}))
 		return
 	}
 
 	err = knowledge.DeleteGlobalContext(context, request.AccountId, request.Id)
 	if err != nil {
 		slog.Error("gc: failed to delete", "error", err, "gc_id", request.Id, "account_id", request.AccountId)
-		c.JSON(500, buildApiResponse(nil, []error{
+		c.JSON(500, BuildApiResponse(nil, []error{
 			common.Error{Message: err.Error()},
 		}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(map[string]string{"status": "ok"}, nil))
+	c.JSON(200, BuildApiResponse(map[string]string{"status": "ok"}, nil))
 }
 
 // Route handler registration
@@ -289,20 +289,20 @@ func handleGlobalContextApis(r *gin.Engine, tracer trace.Tracer, meter metric.Me
 		err := c.ShouldBindJSON(&actionRequest)
 		if err != nil {
 			slog.Error("gc: error binding rpc request", "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{Message: "gc: " + err.Error()},
 			}))
 			return
 		}
 
 		if actionRequest.Action.Name == "" {
-			c.JSON(400, buildApiResponse(nil, []error{errors.New(errorGCInvalidPayload)}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New(errorGCInvalidPayload)}))
 			return
 		}
 
-		context, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
+		context, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
@@ -330,7 +330,7 @@ func handleGlobalContextApis(r *gin.Engine, tracer trace.Tracer, meter metric.Me
 			common.MetricsApiRequestsTotal("gc_delete")
 			gcDelete(c, context, payload)
 		default:
-			c.JSON(400, buildApiResponse(nil, []error{errors.New(errorGCUnsupportedAction)}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New(errorGCUnsupportedAction)}))
 		}
 	})
 }

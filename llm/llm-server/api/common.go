@@ -25,7 +25,7 @@ type ApiResponseError struct {
 	Message string `json:"message"`
 }
 
-func buildApiResponse(data any, errors []error) ApiResponse {
+func BuildApiResponse(data any, errors []error) ApiResponse {
 	apiErrors := make([]ApiResponseError, 0)
 	for _, err := range errors {
 		apiErrors = append(apiErrors, ApiResponseError{
@@ -111,7 +111,7 @@ func sessionAllowedRoles(sv map[string]any) []string {
 	return out
 }
 
-func buildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionRequest, tracer trace.Tracer, meter metric.Meter, logger *slog.Logger) (*security.RequestContext, error) {
+func BuildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionRequest, tracer trace.Tracer, meter metric.Meter, logger *slog.Logger) (*security.RequestContext, error) {
 	// no need to handle role as its calculated by security context
 	tenantId := ""
 	userId := ""

@@ -792,7 +792,7 @@ func withOriginalQuestion(ctx *security.RequestContext, req NBAgentRequest) NBAg
 	// The stored message keeps the routed @agent mention; the first run's
 	// OriginalQuery was seeded after executeAgent stripped it.
 	req.OriginalQuery = stripRoutedAgentMention(question)
-	req.OriginalQueryFromUser = isUserConversationSource(req.ConversationSource)
+	req.OriginalQueryFromUser = IsUserConversationSource(req.ConversationSource)
 	return req
 }
 

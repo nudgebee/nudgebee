@@ -199,11 +199,11 @@ var commonAcks = []string{
 	"I'll help you with that. Just a moment while I gather the data.",
 }
 
-// isUserConversationSource reports whether a conversation source is a live user
+// IsUserConversationSource reports whether a conversation source is a live user
 // chat — i.e. someone is watching for the acknowledgment. System/automated
 // sources (event RCA, automation, workflows, notifications, optimize, single
 // query endpoints) are not, so a tailored LLM acknowledgment is wasted on them.
-func isUserConversationSource(source ConversationSource) bool {
+func IsUserConversationSource(source ConversationSource) bool {
 	switch source {
 	case ConversationSourceUserInvestigation, ConversationSourceUserInvestigationCLI:
 		return true
@@ -225,7 +225,7 @@ func seedOriginalQuery(request *NBAgentRequest) bool {
 		return false
 	}
 	request.OriginalQuery = request.Query
-	request.OriginalQueryFromUser = isUserConversationSource(request.ConversationSource)
+	request.OriginalQueryFromUser = IsUserConversationSource(request.ConversationSource)
 	return true
 }
 
@@ -240,7 +240,7 @@ func seedOriginalQuery(request *NBAgentRequest) bool {
 // The tailored LLM acknowledgment is reserved for substantial user questions,
 // where the latency/cost is worth it.
 func useStaticAcknowledgment(query string, source ConversationSource) bool {
-	if !isUserConversationSource(source) {
+	if !IsUserConversationSource(source) {
 		return true
 	}
 	// wordCount == 0 (empty / whitespace / punctuation- or emoji-only) also → static:

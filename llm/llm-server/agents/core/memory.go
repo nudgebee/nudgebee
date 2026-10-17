@@ -22,35 +22,35 @@ import (
 // Memory-v2 seam. These package-level function pointers default to no-op /
 // disabled implementations so this file compiles clean without importing
 // nudgebee/llm/ee/memory. In prod (which ships the full source tree)
-// agents/core/memory_v2.go's init() reassigns each pointer to a real impl
+// ee/memory/corebridge/memory_v2.go's init() reassigns each pointer to a real impl
 // that reaches into memory.Default(), memory.ComposeEnabledFor, and the
-// typed stores. In OSS builds memory_v2.go is stripped by .oss-exclude and
+// typed stores. In OSS builds ee/ (and so ee/memory/corebridge) is stripped by .oss-exclude and
 // these no-op defaults stay in force — every memory-v2 code path becomes
 // a legacy fall-through.
 //
-// Per-tenant gating is preserved: isMemoryV2ActiveFn calls through to
+// Per-tenant gating is preserved: IsMemoryV2ActiveFn calls through to
 // memory.ComposeEnabledFor(tenantID) in EE, which reads the MEMORY_MODULE
 // feature-flag row for the tenant. Tenants not enrolled in MEMORY_MODULE
 // still take the legacy path even on EE binaries — unchanged from before
 // the seam was introduced.
-// memoryPromptParts is what composeMemoryV2BlockFn hands the executor. The
+// MemoryPromptParts is what ComposeMemoryV2BlockFn hands the executor. The
 // two halves land in different places in the human message: Memory becomes
 // the <user_memory> reference block; Style is the user's <user_style> answer
 // instruction, rendered on its own right before <question>.
-type memoryPromptParts struct {
+type MemoryPromptParts struct {
 	Memory string
 	Style  string
 }
 
 var (
-	// isMemoryV2ActiveFn reports whether memory-v2 is enabled for this
+	// IsMemoryV2ActiveFn reports whether memory-v2 is enabled for this
 	// tenant. OSS default: always false.
-	isMemoryV2ActiveFn = func(tenantID string) bool { return false }
+	IsMemoryV2ActiveFn = func(tenantID string) bool { return false }
 
-	// recordExtractedFactViaMemoryV2Fn writes a single extracted fact to
+	// RecordExtractedFactViaMemoryV2Fn writes a single extracted fact to
 	// the memory-v2 typed stores. OSS default: returns an error so the
 	// caller records stats.Errors and moves on.
-	recordExtractedFactViaMemoryV2Fn = func(
+	RecordExtractedFactViaMemoryV2Fn = func(
 		ctx *security.RequestContext,
 		agent NBAgent,
 		request NBAgentRequest,
@@ -62,10 +62,10 @@ var (
 		return errors.New("memory-v2 unavailable in this build")
 	}
 
-	// extractSessionWorkingMemoryFn runs the v2 session extractor after
+	// ExtractSessionWorkingMemoryFn runs the v2 session extractor after
 	// each turn (writes a fresh per-session working-memory blob). OSS
 	// default: no-op — session-working-memory feature simply doesn't run.
-	extractSessionWorkingMemoryFn = func(
+	ExtractSessionWorkingMemoryFn = func(
 		ctx *security.RequestContext,
 		request NBAgentRequest,
 		response string,
@@ -73,42 +73,42 @@ var (
 	) {
 	}
 
-	// composeMemoryV2BlockFn returns the memory block and the user-style
+	// ComposeMemoryV2BlockFn returns the memory block and the user-style
 	// block the executor injects into the human message, when
 	// memoryModuleActive is true. OSS default: empty —
 	// the executor's !memoryModuleActive branch (legacy
 	// retrieveAndBuildMemoryNotebook path) is exclusively taken in OSS, so
 	// this hook is never actually reached in an OSS binary; the no-op is
 	// just what makes the file compile.
-	composeMemoryV2BlockFn = func(
+	ComposeMemoryV2BlockFn = func(
 		ctx *security.RequestContext,
 		request NBAgentRequest,
 		agent NBAgent,
-	) memoryPromptParts {
-		return memoryPromptParts{}
+	) MemoryPromptParts {
+		return MemoryPromptParts{}
 	}
 
-	// loadTypedStoreDedupContextFn returns existing collective facts matching
+	// LoadTypedStoreDedupContextFn returns existing collective facts matching
 	// this turn's query, as a bullet list, for the extractor's write-time dedup
 	// hint (Layer 1). EE override (memory_v2.go) reads the collective store via
 	// Postgres full-text search — current + authoritative, NOT the async RAG
 	// index — because in module-active mode the legacy llm_conversation_memory
 	// table is empty, which left the extractor blind and re-emitting known facts.
 	// OSS default: empty (no memory module).
-	loadTypedStoreDedupContextFn = func(
+	LoadTypedStoreDedupContextFn = func(
 		ctx *security.RequestContext,
 		request NBAgentRequest,
 	) string {
 		return ""
 	}
 
-	// dedupCanonicalSubjectFn is the Layer-2 pre-write dedup check: given a
+	// DedupCanonicalSubjectFn is the Layer-2 pre-write dedup check: given a
 	// freshly extracted fact, it returns the subject of an existing collective
 	// fact that duplicates it under a DIFFERENT subject (Postgres FTS candidate +
 	// body token-overlap over threshold), so the caller rewrites this fact's
 	// subject to collide on the Upsert key instead of inserting a duplicate row.
 	// Empty = no cross-subject duplicate. OSS default: no-op.
-	dedupCanonicalSubjectFn = func(
+	DedupCanonicalSubjectFn = func(
 		ctx *security.RequestContext,
 		request NBAgentRequest,
 		fact MemoryFact,
@@ -314,12 +314,12 @@ func filterAcceptableMemories(memories []LongTermMemory) []LongTermMemory {
 	return out
 }
 
-// errMemoryRecordSkipped marks a memory-v2 Record outcome that the typed-store
+// ErrMemoryRecordSkipped marks a memory-v2 Record outcome that the typed-store
 // grounding gate intentionally refused (e.g. a Decisions fact with no
 // user-agreement quote, or an empty subject). The EE bridge maps the store's
 // sentinels onto this so the caller counts a benign skip as Skipped, not Errors,
 // without this OSS-kept file importing ee/memory.
-var errMemoryRecordSkipped = errors.New("memory-v2: record skipped by grounding gate")
+var ErrMemoryRecordSkipped = errors.New("memory-v2: record skipped by grounding gate")
 
 // MemoryExtractionStats tracks outcomes of a single extraction run for
 // observability and test verification.
@@ -358,18 +358,18 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 	// entirely. Extracted facts go to the new typed stores via the bridge; the
 	// legacy llm_conversation_memory table and its RAG index are not written.
 	tenantID := ctx.GetSecurityContext().GetTenantId()
-	memoryModuleActive := isMemoryV2ActiveFn(tenantID)
+	memoryModuleActive := IsMemoryV2ActiveFn(tenantID)
 
 	// Layer-1 dedup: show the extractor the existing knowledge so it does not
 	// re-emit facts already stored. This MUST read from where facts actually
 	// live. In module-active mode facts are in the typed stores (collective) and
 	// the legacy llm_conversation_memory table stays empty — reading it left the
 	// extractor blind (the Q15 accumulation), so module-active reads the typed
-	// store via Postgres full-text search (loadTypedStoreDedupContextFn), while
+	// store via Postgres full-text search (LoadTypedStoreDedupContextFn), while
 	// legacy mode keeps the llm_conversation_memory similarity read.
 	existingMemoriesStr := "None"
 	if memoryModuleActive {
-		if dedup := strings.TrimSpace(loadTypedStoreDedupContextFn(ctx, request)); dedup != "" {
+		if dedup := strings.TrimSpace(LoadTypedStoreDedupContextFn(ctx, request)); dedup != "" {
 			existingMemoriesStr = dedup
 		}
 	} else {
@@ -481,7 +481,7 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 					// the canonical one so the Upsert refreshes that row instead of
 					// inserting a duplicate (the Q15 case: same metric, 3 subjects).
 					// Same-subject re-assertions already collide on the Upsert key.
-					if canon := dedupCanonicalSubjectFn(ctx, request, fact); canon != "" && !strings.EqualFold(canon, fact.Subject) {
+					if canon := DedupCanonicalSubjectFn(ctx, request, fact); canon != "" && !strings.EqualFold(canon, fact.Subject) {
 						ctx.GetLogger().Info("agentexecutor: dedup merged fact onto existing subject",
 							"extracted_subject", fact.Subject, "canonical_subject", canon)
 						fact.Subject = canon
@@ -497,8 +497,8 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 					// shape-conversion, super-admin user-id rescue, and agent-module
 					// resolution live in memory_v2.go so this OSS-kept file never
 					// references memory.ExtractedFact.
-					if berr := recordExtractedFactViaMemoryV2Fn(ctx, agent, request, fact, memType, groundedConfidence(memType, toolCallCount), memoryWriteSucceeded); berr != nil {
-						if errors.Is(berr, errMemoryRecordSkipped) {
+					if berr := RecordExtractedFactViaMemoryV2Fn(ctx, agent, request, fact, memType, groundedConfidence(memType, toolCallCount), memoryWriteSucceeded); berr != nil {
+						if errors.Is(berr, ErrMemoryRecordSkipped) {
 							// Intended grounding-gate skip (e.g. a Decisions fact
 							// without a user-agreement quote), not a save failure.
 							ctx.GetLogger().Debug("agentexecutor: memory-v2 record skipped", "reason", berr, "subject", fact.Subject, "type", memType)
@@ -570,13 +570,13 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 // extractSessionWorkingMemory runs after each turn to refresh the typed
 // per-session working-memory blob the next turn's Compose will inject
 // under <session_working_memory>. The real body lives in
-// agents/core/memory_v2.go (EE-only) and is wired in via
-// extractSessionWorkingMemoryFn's init override. In OSS builds the hook
+// ee/memory/corebridge/memory_v2.go (EE-only) and is wired in via
+// ExtractSessionWorkingMemoryFn's init override. In OSS builds the hook
 // stays at the no-op default and this function returns without doing
 // anything — the legacy path does not have an equivalent session-scoped
 // working-memory feature, so there is nothing to fall back to.
 func extractSessionWorkingMemory(ctx *security.RequestContext, request NBAgentRequest, response string, notebook string) {
-	extractSessionWorkingMemoryFn(ctx, request, response, notebook)
+	ExtractSessionWorkingMemoryFn(ctx, request, response, notebook)
 }
 
 func parseMemoryFacts(ctx *security.RequestContext, content string) []MemoryFact {
