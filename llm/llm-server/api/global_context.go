@@ -3,9 +3,10 @@ package api
 import (
 	"errors"
 	"log/slog"
+
 	"nudgebee/llm/common"
+	"nudgebee/llm/knowledge"
 	"nudgebee/llm/security"
-	"nudgebee/llm/tools/core"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -90,7 +91,7 @@ func gcCreate(c *gin.Context, context *security.RequestContext, payload map[stri
 		return
 	}
 
-	gc := core.GlobalContext{
+	gc := knowledge.GlobalContext{
 		AccountId:    request.AccountId,
 		Name:         request.GlobalContext.Name,
 		Description:  request.GlobalContext.Description,
@@ -99,7 +100,7 @@ func gcCreate(c *gin.Context, context *security.RequestContext, payload map[stri
 		DataFilename: request.GlobalContext.FileName,
 	}
 
-	resp, err := core.CreateGlobalContext(context, gc)
+	resp, err := knowledge.CreateGlobalContext(context, gc)
 	if err != nil {
 		slog.Error("gc: failed to create", "error", err, "account_id", request.AccountId)
 		c.JSON(500, buildApiResponse(nil, []error{
@@ -137,7 +138,7 @@ func gcGet(c *gin.Context, context *security.RequestContext, payload map[string]
 		return
 	}
 
-	resp, err := core.GetGlobalContext(context, request.AccountId, request.Id)
+	resp, err := knowledge.GetGlobalContext(context, request.AccountId, request.Id)
 	if err != nil {
 		slog.Error("gc: failed to get", "error", err, "gc_id", request.Id, "account_id", request.AccountId)
 		c.JSON(500, buildApiResponse(nil, []error{
@@ -165,7 +166,7 @@ func gcList(c *gin.Context, context *security.RequestContext, payload map[string
 	// ladder used elsewhere, so super/tenant admins see all rows and scoped
 	// account-admins see only their assigned accounts.
 	if request.AccountId == "" {
-		resp, err := core.ListGlobalContextsForTenant(context)
+		resp, err := knowledge.ListGlobalContextsForTenant(context)
 		if err != nil {
 			slog.Error("gc: failed to list (tenant-wide)", "error", err)
 			c.JSON(500, buildApiResponse(nil, []error{
@@ -183,7 +184,7 @@ func gcList(c *gin.Context, context *security.RequestContext, payload map[string
 		return
 	}
 
-	resp, err := core.ListGlobalContexts(context, request.AccountId)
+	resp, err := knowledge.ListGlobalContexts(context, request.AccountId)
 	if err != nil {
 		slog.Error("gc: failed to list", "error", err, "account_id", request.AccountId)
 		c.JSON(500, buildApiResponse(nil, []error{
@@ -221,7 +222,7 @@ func gcUpdate(c *gin.Context, context *security.RequestContext, payload map[stri
 		return
 	}
 
-	updates := core.GlobalContext{
+	updates := knowledge.GlobalContext{
 		Name:         request.GlobalContext.Name,
 		Description:  request.GlobalContext.Description,
 		Data:         request.GlobalContext.Data,
@@ -229,7 +230,7 @@ func gcUpdate(c *gin.Context, context *security.RequestContext, payload map[stri
 		DataFilename: request.GlobalContext.FileName,
 	}
 
-	err = core.UpdateGlobalContext(context, request.AccountId, request.GlobalContext.Id, updates)
+	err = knowledge.UpdateGlobalContext(context, request.AccountId, request.GlobalContext.Id, updates)
 	if err != nil {
 		slog.Error("gc: failed to update", "error", err, "gc_id", request.GlobalContext.Id, "account_id", request.AccountId)
 		c.JSON(500, buildApiResponse(nil, []error{
@@ -267,7 +268,7 @@ func gcDelete(c *gin.Context, context *security.RequestContext, payload map[stri
 		return
 	}
 
-	err = core.DeleteGlobalContext(context, request.AccountId, request.Id)
+	err = knowledge.DeleteGlobalContext(context, request.AccountId, request.Id)
 	if err != nil {
 		slog.Error("gc: failed to delete", "error", err, "gc_id", request.Id, "account_id", request.AccountId)
 		c.JSON(500, buildApiResponse(nil, []error{

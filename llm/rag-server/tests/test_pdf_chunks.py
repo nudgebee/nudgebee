@@ -1,7 +1,7 @@
 """Chunk assembly for PDF documents.
 
 Counterparts to the Go tests these were ported from
-(llm-server ``tools/core/knowledgebase_pdf_test.go``), so a behaviour change on
+(llm-server ``knowledge/knowledgebase_pdf_test.go``), so a behaviour change on
 either side shows up as a failing test rather than as two indexes that disagree.
 """
 

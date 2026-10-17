@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"nudgebee/llm/knowledge"
 	"strings"
 	"testing"
 
@@ -384,8 +385,8 @@ func TestSkillReferenceMetadata_DocumentKeepsPage(t *testing.T) {
 		toolcore.NBToolResponseReference{Text: "runbook", Url: "https://kb/1", Snippet: page})
 	assert.Equal(t, page, got["content"])
 
-	huge := strings.Repeat("x", toolcore.MaxKnowledgeReferenceBytes+500)
+	huge := strings.Repeat("x", knowledge.MaxKnowledgeReferenceBytes+500)
 	got = skillReferenceMetadata(AgentReferenceKindKBDocument, "load_skills",
 		toolcore.NBToolResponseReference{Text: "runbook", Url: "https://kb/1", Snippet: huge})
-	assert.LessOrEqual(t, len(got["content"].(string)), toolcore.MaxKnowledgeReferenceBytes)
+	assert.LessOrEqual(t, len(got["content"].(string)), knowledge.MaxKnowledgeReferenceBytes)
 }

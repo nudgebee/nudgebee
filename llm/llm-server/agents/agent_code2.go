@@ -8,21 +8,23 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"nudgebee/llm/agents/core"
-	"nudgebee/llm/common"
-	"nudgebee/llm/config"
-	"nudgebee/llm/security"
-	"nudgebee/llm/services_server"
-	"nudgebee/llm/tools"
-	toolcore "nudgebee/llm/tools/core"
-	"nudgebee/llm/utils"
-	"nudgebee/llm/workspace"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
+
+	"nudgebee/llm/agents/core"
+	"nudgebee/llm/common"
+	"nudgebee/llm/config"
+	"nudgebee/llm/knowledge"
+	"nudgebee/llm/security"
+	"nudgebee/llm/services_server"
+	"nudgebee/llm/tools"
+	toolcore "nudgebee/llm/tools/core"
+	"nudgebee/llm/utils"
+	"nudgebee/llm/workspace"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -416,9 +418,9 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		// llm_kb_agent_mappings before the rename are still inherited (the lookup
 		// UNIONs both names and dedupes by kb id).
 		// The wildcard sentinel carries KBs mapped to "All agents" (see
-		// toolcore.KBAgentWildcard); without it, code-analysis would be the one
+		// knowledge.KBAgentWildcard); without it, code-analysis would be the one
 		// agent an all-agents skill never reached.
-		skillAgentNames := toolcore.WithKBAgentWildcard(append([]string{AgentCodeAnalyzer, agentCodeAnalyzerLegacyName}, agentRequest.InheritSkillsFromAgents...))
+		skillAgentNames := knowledge.WithKBAgentWildcard(append([]string{AgentCodeAnalyzer, agentCodeAnalyzerLegacyName}, agentRequest.InheritSkillsFromAgents...))
 		skillQuery := agentRequest.OriginalQuery
 		if skillQuery == "" {
 			skillQuery = request.Query
@@ -427,15 +429,15 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		if topK <= 0 {
 			topK = defaultForwardedSkillTopK
 		}
-		candidates, cErr := toolcore.ListActiveAgentSkillCandidates(ctx, request.AccountId, skillAgentNames)
+		candidates, cErr := knowledge.ListActiveAgentSkillCandidates(ctx, request.AccountId, skillAgentNames)
 		if cErr != nil {
 			logger.Warn("code: skill candidate fetch failed; skipping operator skills", "error", cErr)
 		} else if len(candidates) > 0 {
 			// SelectRelevantSkills returns all candidate ids when the query is empty
 			// or candidates <= topK, the top-K ids when it can rank, and an empty
 			// (non-nil) slice when nothing matched — in which case we forward nothing.
-			selectedIds := toolcore.SelectRelevantSkills(skillQuery, candidates, topK)
-			block, _, sErr := toolcore.LoadAgentSkillContentsByIDs(ctx, request.AccountId, selectedIds)
+			selectedIds := knowledge.SelectRelevantSkills(skillQuery, candidates, topK)
+			block, _, sErr := knowledge.LoadAgentSkillContentsByIDs(ctx, request.AccountId, selectedIds)
 			if sErr != nil {
 				logger.Warn("code: failed to load selected skill contents", "error", sErr)
 			} else if block != "" {

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
@@ -791,7 +793,7 @@ func (chat *ConversationDao) RetrieveRelevantMemories(accountId string, queryStr
 	if queryStr == "" {
 		return nil, nil
 	}
-	results := toolcore.QueryRAG("", accountId, queryStr, "long_term_memory", limit, "", "", "", false)
+	results := knowledge.QueryRAG("", accountId, queryStr, "long_term_memory", limit, "", "", "", false)
 	memories := parseRAGMemoryResults(results)
 	slog.Info("LTM fetched memories", "count", len(memories))
 
@@ -811,7 +813,7 @@ func (chat *ConversationDao) FindSimilarMemories(accountId string, content strin
 	if content == "" {
 		return nil, nil
 	}
-	results := toolcore.QueryRAG("", accountId, content, "long_term_memory", limit, "", "", "", false)
+	results := knowledge.QueryRAG("", accountId, content, "long_term_memory", limit, "", "", "", false)
 	memories := parseRAGMemoryResults(results)
 	return memories, nil
 }
@@ -819,7 +821,7 @@ func (chat *ConversationDao) FindSimilarMemories(accountId string, content strin
 // parseRAGMemoryResults converts raw RAG query results into LongTermMemory structs.
 // It is the single place that maps RAG metadata (_id, memory_type, similarity_score)
 // onto the Go struct, shared by RetrieveRelevantMemories and FindSimilarMemories.
-func parseRAGMemoryResults(results toolcore.RAGSearchResults) []LongTermMemory {
+func parseRAGMemoryResults(results knowledge.RAGSearchResults) []LongTermMemory {
 	var memories []LongTermMemory
 	for _, res := range results {
 		if res.Document == "" {
@@ -2999,7 +3001,7 @@ func (chat *ConversationDao) DeleteConversationMemories(conversationId string) e
 
 	// 2. Delete from RAG
 	for _, m := range mems {
-		if err := toolcore.DeleteMemoryFromRAG(m.AccountID, m.ID); err != nil {
+		if err := knowledge.DeleteMemoryFromRAG(m.AccountID, m.ID); err != nil {
 			slog.Warn("history: failed to delete memory from RAG during conversation cleanup", "error", err, "id", m.ID)
 		}
 	}
@@ -4635,7 +4637,7 @@ func (chat *ConversationDao) SaveLongTermMemory(accountId, conversationId, messa
 	}
 
 	// Also save to RAG for semantic search with memory type for better retrieval
-	err = toolcore.AddMemoryToRAG(accountId, content, id, string(memoryType))
+	err = knowledge.AddMemoryToRAG(accountId, content, id, string(memoryType))
 	if err != nil {
 		// Log error but don't fail the operation as DB save was successful
 		slog.Error("history: failed to save memory to RAG", "error", err, "memoryType", memoryType)
@@ -4723,7 +4725,7 @@ func (chat *ConversationDao) ListLongTermMemories(accountId string, conversation
 
 func (chat *ConversationDao) DeleteLongTermMemory(id, accountId string) error {
 	// 1. Delete from RAG using ID
-	err := toolcore.DeleteMemoryFromRAG(accountId, id)
+	err := knowledge.DeleteMemoryFromRAG(accountId, id)
 	if err != nil {
 		// Log error but proceed to delete from DB to maintain consistency (or user choice)
 		// Usually better to ensure it's gone from at least one place, or retry.
@@ -4797,7 +4799,7 @@ func (chat *ConversationDao) purgeStaleMemories() {
 	// DB remains authoritative and the orphaned RAG entry won't be retrieved.
 	idsToDelete := make([]string, 0, len(candidates))
 	for _, c := range candidates {
-		if ragErr := toolcore.DeleteMemoryFromRAG(c.accountId, c.id); ragErr != nil {
+		if ragErr := knowledge.DeleteMemoryFromRAG(c.accountId, c.id); ragErr != nil {
 			slog.Warn("memory-ttl: failed to delete from RAG, proceeding with DB delete", "id", c.id, "error", ragErr)
 		}
 		idsToDelete = append(idsToDelete, c.id)
@@ -4851,7 +4853,7 @@ func (chat *ConversationDao) LoadLongTermMemories(accountId string, queryStr str
 	}
 
 	// Use RAG for semantic search
-	results := toolcore.QueryRAG("", accountId, queryStr, "long_term_memory", limit, "", "", "", false)
+	results := knowledge.QueryRAG("", accountId, queryStr, "long_term_memory", limit, "", "", "", false)
 	var memories []string
 	for _, res := range results {
 		if res.Document != "" {

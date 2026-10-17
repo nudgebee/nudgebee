@@ -3,11 +3,14 @@ package api
 import (
 	"context"
 	"log/slog"
+	"runtime/debug"
+	"testing"
+
 	"nudgebee/llm/agents"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/knowledge"
 	"nudgebee/llm/tools/core"
-	"testing"
 )
 
 // cacheInvalidationMessage is the wire format for messages published on
@@ -56,7 +59,7 @@ func init() {
 		return
 	}
 
-	core.OrgKnowledgeCacheInvalidator = publishOrgKnowledgeInvalidation
+	knowledge.OrgKnowledgeCacheInvalidator = publishOrgKnowledgeInvalidation
 	core.MCPIntegrationHealthChanged = publishMCPIntegrationHealthChange
 
 	// Refuse to start the consumer if ServerName is unset. The fanout
@@ -109,7 +112,7 @@ func processCacheInvalidationMessage(_ context.Context, data []byte) error {
 	if msg.KnowledgeBases {
 		// Not an integration change: do not run the per-account integration
 		// refresh and KB sync below.
-		core.ClearKnowledgeBaseCaches()
+		knowledge.ClearKnowledgeBaseCaches()
 		slog.Info("cache-invalidation: knowledge base caches cleared", "tenant_id", msg.TenantId)
 		return nil
 	}
@@ -150,9 +153,21 @@ func processCacheInvalidationMessage(_ context.Context, data []byte) error {
 		// rag-server (triggerIntegrationKBSync); blocking the MQ consumer on
 		// rag-server health would back up the fanout queue. The callee owns
 		// its own context timeout.
-		go core.EnsureIntegrationKBsForAccount(id)
+		go ensureIntegrationKBsInBackground(id, knowledge.EnsureIntegrationKBsForAccount)
 		invalidated++
 	}
 	slog.Info("cache-invalidation: account integration cache invalidated", "count", invalidated)
 	return nil
+}
+
+// ensureIntegrationKBsInBackground runs the KB-sync fast path (ensure) on its
+// own goroutine. A panic there would take down the process, so it is logged
+// instead; the periodic sync tick remains the safety net.
+func ensureIntegrationKBsInBackground(accountID string, ensure func(accountID string)) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("cache-invalidation: integration KB sync panicked", "account_id", accountID, "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+	ensure(accountID)
 }

@@ -297,7 +297,7 @@ successful canary run as proof of operational correctness.
 - `agents/core/executor.go` — selects the planner-aware knowledge mode and runs discovery.
 - `agents/core/kb_prestep.go` — builds the combined query, searches/reranks, and creates candidate menus.
 - `agents/core/interface.go` — knowledge modes and request fields.
-- `tools/core/knowledge_candidates.go` — turn-scoped candidate cache.
+- `knowledge/knowledge_candidates.go` — turn-scoped candidate cache.
 - `tools/skills.go` — exact candidate/name loading, search candidate creation, and known integration-KB retrieval.
 - `agents/core/planner_callback_handler.go` — reference persistence for loaded knowledge.
 

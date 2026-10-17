@@ -35,7 +35,7 @@ on:
       # The account delete plan is checked against the migrated schema below.
       - "api-server/services/account/**"
       # Knowledge-base queries are checked against the migrated schema below.
-      - "llm/llm-server/tools/core/knowledge*.go"
+      - "llm/llm-server/knowledge/**"
       - "llm/rag-server/tests/fixtures/kb_visibility_cases.json"
       - "llm/rag-server/rag/core/utils/db_query.py"
       - "llm/rag-server/tests/test_kb_visibility_db.py"
@@ -191,7 +191,7 @@ jobs:
         env:
           KB_TEST_DATABASE_URL: postgres://nudgebee:postgres@localhost:5432/appdb?sslmode=disable
           REQUIRE_DB_TESTS: "true"
-        run: go test ./tools/core/ -run '_DB$' -count=1 -v
+        run: go test ./knowledge/ -run '_DB$' -count=1 -v
 
       # rag-server applies the same visibility rule in its own query before any
       # search. Only the packages that query needs are installed (versions as in

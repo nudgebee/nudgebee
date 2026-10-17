@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
-	toolcore "nudgebee/llm/tools/core"
 )
 
 const (
@@ -40,25 +43,25 @@ const (
 	kbPrestepMinBaseLen = 100
 )
 
-var resolveManualKnowledgeFn = toolcore.ResolveManualKnowledge
-var resolveDocumentCategoriesFn = toolcore.ResolveDocumentCategories
+var resolveManualKnowledgeFn = knowledge.ResolveManualKnowledge
+var resolveDocumentCategoriesFn = knowledge.ResolveDocumentCategories
 
-var queryAccountKnowledgeFn = toolcore.QueryRAGRerankedContext
+var queryAccountKnowledgeFn = knowledge.QueryRAGRerankedContext
 
 // queryEventKindKnowledgeFn runs the event-kind search. It leaves out the
 // product documentation: those pages match short event labels generically and
 // crowd out the account's own procedures, while the question-based search
 // still offers them.
-var queryEventKindKnowledgeFn = func(ctx context.Context, userId, accountId, query, module string, numberOfResults int, conversationID, messageId, agentId string, trackTokenUsage bool) toolcore.RAGSearchResults {
-	return toolcore.QueryRAGRerankedFilteredContext(ctx, userId, accountId, query, module, numberOfResults, conversationID, messageId, agentId, trackTokenUsage,
+var queryEventKindKnowledgeFn = func(ctx context.Context, userId, accountId, query, module string, numberOfResults int, conversationID, messageId, agentId string, trackTokenUsage bool) knowledge.RAGSearchResults {
+	return knowledge.QueryRAGRerankedFilteredContext(ctx, userId, accountId, query, module, numberOfResults, conversationID, messageId, agentId, trackTokenUsage,
 		map[string]any{"must_not": []any{map[string]any{"field": "source", "value": productDocsSource}}})
 }
 
 // productDocsSource is the metadata source of NudgeBee's own product documentation.
 const productDocsSource = "nudgebee_docs"
 
-var queryCollectionKnowledgeFn = toolcore.QueryRAGCollectionReranked
-var judgeKBResultsFn = toolcore.JudgeKBResults
+var queryCollectionKnowledgeFn = knowledge.QueryRAGCollectionReranked
+var judgeKBResultsFn = knowledge.JudgeKBResults
 
 // kbPrestepHintKeys are the QueryConfig.Labels keys, in priority order, used to
 // enrich the KB search query with the focused resource / event context.
@@ -81,7 +84,7 @@ type kbAssemblyResult struct {
 }
 
 type kbDiscoveryResult struct {
-	candidates []toolcore.KnowledgeCandidate
+	candidates []knowledge.KnowledgeCandidate
 	content    string
 	menu       string
 	references []AgentReference
@@ -96,7 +99,7 @@ type kbDiscoveryResult struct {
 // mappings are keyed by the name in effect when the mapping was created, so an agent
 // renamed after the fact (e.g. k8s_debug → k8s_orchestrator) would otherwise never
 // see runbooks users mapped under its old name.
-func fetchAgentKBs(ctx *security.RequestContext, accountId string, ownNames []string, inheritedNames []string, selectedIds []string) []toolcore.Knowledgebase {
+func fetchAgentKBs(ctx *security.RequestContext, accountId string, ownNames []string, inheritedNames []string, selectedIds []string) []knowledge.Knowledgebase {
 	if accountId == "" || len(ownNames) == 0 {
 		return nil
 	}
@@ -111,13 +114,13 @@ func fetchAgentKBs(ctx *security.RequestContext, accountId string, ownNames []st
 
 	seen := make(map[string]bool)
 	fetchedAgents := make(map[string]bool)
-	var kbs []toolcore.Knowledgebase
+	var kbs []knowledge.Knowledgebase
 	fetch := func(name string, isOwnName bool) {
 		if name == "" || fetchedAgents[name] {
 			return
 		}
 		fetchedAgents[name] = true
-		fetched, err := toolcore.ListAgentKBs(ctx, accountId, name)
+		fetched, err := knowledge.ListAgentKBs(ctx, accountId, name)
 		if err != nil {
 			ctx.GetLogger().Warn("agentexecutor: unable to fetch agent KBs", "error", err, "agent", name)
 			return
@@ -222,7 +225,7 @@ func buildKBSearchQuery(request NBAgentRequest) string {
 // <retrieved_knowledge> block and one reference per attributed KB. FAILS OPEN:
 // empty query or no completed hits returns an empty result; timeout preserves
 // completed hits so planning can use them without waiting for slower searches.
-func retrieveRelevantKB(ctx *security.RequestContext, request NBAgentRequest, kbs []toolcore.Knowledgebase) kbDiscoveryResult {
+func retrieveRelevantKB(ctx *security.RequestContext, request NBAgentRequest, kbs []knowledge.Knowledgebase) kbDiscoveryResult {
 	started := time.Now()
 	defer func() {
 		ctx.GetLogger().Info("knowledge: discovery preparation complete", "duration", time.Since(started).String())
@@ -344,7 +347,7 @@ func retrieveRelevantKB(ctx *security.RequestContext, request NBAgentRequest, kb
 		"result_count", len(docs), "kept", len(kept),
 		"kbs_matched", len(refs), "injected", len(attributed), "query_chars", len(query))
 
-	var exactCandidates []toolcore.KnowledgeCandidate
+	var exactCandidates []knowledge.KnowledgeCandidate
 	menu := buildKnowledgeCandidateMenuCollect(ctx, request, attributed, refs, &exactCandidates)
 	return kbDiscoveryResult{
 		candidates: exactCandidates,
@@ -357,21 +360,21 @@ func retrieveRelevantKB(ctx *security.RequestContext, request NBAgentRequest, kb
 // retrieveKnowledgeDocs collects each search independently so one slow request
 // cannot discard completed results. Mapped results retain selection order and
 // precede account-wide results, regardless of completion order.
-func retrieveKnowledgeDocs(ctx context.Context, request NBAgentRequest, query string, kbs []toolcore.Knowledgebase) (toolcore.RAGSearchResults, []string) {
-	candidates := make([]toolcore.SkillCandidate, 0, len(kbs))
-	byID := make(map[string]toolcore.Knowledgebase, len(kbs))
+func retrieveKnowledgeDocs(ctx context.Context, request NBAgentRequest, query string, kbs []knowledge.Knowledgebase) (knowledge.RAGSearchResults, []string) {
+	candidates := make([]knowledge.SkillCandidate, 0, len(kbs))
+	byID := make(map[string]knowledge.Knowledgebase, len(kbs))
 	for _, kb := range kbs {
 		if !kb.UsableForAgents() || kb.Id == "" {
 			continue
 		}
 		byID[kb.Id] = kb
-		candidates = append(candidates, toolcore.SkillCandidate{ID: kb.Id, Name: kb.Name, Description: kb.Description + " " + strings.Join(kb.ContextTags, " ")})
+		candidates = append(candidates, knowledge.SkillCandidate{ID: kb.Id, Name: kb.Name, Description: kb.Description + " " + strings.Join(kb.ContextTags, " ")})
 	}
-	selectedIDs := toolcore.SelectRelevantSkills(query, candidates, kbMappedCollectionsTopK)
+	selectedIDs := knowledge.SelectRelevantSkills(query, candidates, kbMappedCollectionsTopK)
 
 	type result struct {
 		index   int
-		docs    toolcore.RAGSearchResults
+		docs    knowledge.RAGSearchResults
 		traceID string
 	}
 	// An event investigation also searches by what kind of event it is. Its
@@ -386,10 +389,20 @@ func retrieveKnowledgeDocs(ctx context.Context, request NBAgentRequest, query st
 	// One slot per producer allows late completions to exit after timeout.
 	results := make(chan result, slots)
 	accountQuery, eventKindQuery, collectionQuery := queryAccountKnowledgeFn, queryEventKindKnowledgeFn, queryCollectionKnowledgeFn
-	searchAccount := func(search func(context.Context, string, string, string, string, int, string, string, string, bool) toolcore.RAGSearchResults, index int, q string) {
+	// Each search runs on its own goroutine, where a panic would take down the
+	// process: log it and send an empty result so the collector below does not
+	// wait for it until the deadline.
+	recoverSearch := func(index int) {
+		if r := recover(); r != nil {
+			slog.ErrorContext(ctx, "kb prestep: knowledge search panicked", "panic", r, "stack", string(debug.Stack()))
+			results <- result{index: index}
+		}
+	}
+	searchAccount := func(search func(context.Context, string, string, string, string, int, string, string, string, bool) knowledge.RAGSearchResults, index int, q string) {
+		defer recoverSearch(index)
 		// One trace id per search, derived inside the goroutine: these run
 		// concurrently, and a shared id would collapse four rows into one.
-		searchCtx, traceID := toolcore.WithRetrievalTraceID(ctx)
+		searchCtx, traceID := knowledge.WithRetrievalTraceID(ctx)
 		docs := search(searchCtx, request.UserId, request.AccountId, q, "knowledge_base",
 			kbPrestepTopK, request.ConversationId, request.MessageId, request.AgentId, true)
 		results <- result{index: index, docs: docs, traceID: traceID}
@@ -407,14 +420,15 @@ func retrieveKnowledgeDocs(ctx context.Context, request NBAgentRequest, query st
 		}
 		launched++
 		go func(index int, collection string) {
-			searchCtx, traceID := toolcore.WithRetrievalTraceID(ctx)
+			defer recoverSearch(index)
+			searchCtx, traceID := knowledge.WithRetrievalTraceID(ctx)
 			docs := collectionQuery(searchCtx, request.UserId, request.AccountId, query, "knowledge_base", collection,
 				kbMappedDocsPerCollection, request.ConversationId, request.MessageId, request.AgentId, true)
 			results <- result{index: index, docs: docs, traceID: traceID}
-		}(i, toolcore.KnowledgebaseCollectionName(kb))
+		}(i, knowledge.KnowledgebaseCollectionName(kb))
 	}
 
-	ordered := make([]toolcore.RAGSearchResults, slots)
+	ordered := make([]knowledge.RAGSearchResults, slots)
 	var traceIDs []string
 collect:
 	for range launched {
@@ -435,7 +449,7 @@ collect:
 			}
 		}
 	}
-	var out toolcore.RAGSearchResults
+	var out knowledge.RAGSearchResults
 	for _, docs := range ordered {
 		out = append(out, docs...)
 	}
@@ -445,11 +459,11 @@ collect:
 // buildKnowledgeCandidateMenu stores bounded excerpts and handles for on-demand
 // loading and renders only a compact index into ReAct prompts. Discovery is
 // account-wide; agent mappings are not required for a candidate to appear.
-func buildKnowledgeCandidateMenu(ctx *security.RequestContext, request NBAgentRequest, docs toolcore.RAGSearchResults, refs []AgentReference) string {
+func buildKnowledgeCandidateMenu(ctx *security.RequestContext, request NBAgentRequest, docs knowledge.RAGSearchResults, refs []AgentReference) string {
 	return buildKnowledgeCandidateMenuCollect(ctx, request, docs, refs, nil)
 }
 
-func buildKnowledgeCandidateMenuCollect(ctx *security.RequestContext, request NBAgentRequest, docs toolcore.RAGSearchResults, refs []AgentReference, candidates *[]toolcore.KnowledgeCandidate) string {
+func buildKnowledgeCandidateMenuCollect(ctx *security.RequestContext, request NBAgentRequest, docs knowledge.RAGSearchResults, refs []AgentReference, candidates *[]knowledge.KnowledgeCandidate) string {
 	if len(docs) == 0 {
 		return ""
 	}
@@ -457,8 +471,8 @@ func buildKnowledgeCandidateMenuCollect(ctx *security.RequestContext, request NB
 	sb.WriteString("<skill-lists>\n")
 	sb.WriteString("Question-relevant account knowledge is available below. Load only the entries needed for this task using load_skills with the candidate id.\n")
 	for _, doc := range docs {
-		if toolcore.KnowledgeDocumentPurpose(doc) == toolcore.KnowledgePurposeProcedure {
-			sb.WriteString(toolcore.KnowledgePurposeGuidance(toolcore.KnowledgePurposeProcedure) + "\n")
+		if knowledge.KnowledgeDocumentPurpose(doc) == knowledge.KnowledgePurposeProcedure {
+			sb.WriteString(knowledge.KnowledgePurposeGuidance(knowledge.KnowledgePurposeProcedure) + "\n")
 			break
 		}
 	}
@@ -484,11 +498,11 @@ func buildKnowledgeCandidateMenuCollect(ctx *security.RequestContext, request NB
 			// Keep distinct sections from the same article independently loadable.
 			identity += "\x00" + content
 		}
-		if exact := toolcore.KnowledgeDocumentIdentity(doc); exact != "" {
+		if exact := knowledge.KnowledgeDocumentIdentity(doc); exact != "" {
 			identity = exact
 		}
-		id := toolcore.NewKnowledgeCandidateID(request.AccountId, request.ConversationId, request.MessageId, identity)
-		candidate := toolcore.KnowledgeCandidate{
+		id := knowledge.NewKnowledgeCandidateID(request.AccountId, request.ConversationId, request.MessageId, identity)
+		candidate := knowledge.KnowledgeCandidate{
 			ID:      id,
 			Title:   strings.TrimSpace(title),
 			Source:  strings.TrimSpace(source),
@@ -499,13 +513,13 @@ func buildKnowledgeCandidateMenuCollect(ctx *security.RequestContext, request NB
 		if i < len(refs) {
 			candidate.ReferenceID = refs[i].ReferenceID
 		}
-		toolcore.SetKnowledgeDocumentHandle(&candidate, doc)
-		candidate.KBID = toolcore.ManualKnowledgeID(doc)
+		knowledge.SetKnowledgeDocumentHandle(&candidate, doc)
+		candidate.KBID = knowledge.ManualKnowledgeID(doc)
 		if candidate.KBID != "" {
 			candidate.Content = ""
 			candidate.ReferenceID = candidate.KBID
 		}
-		if err := toolcore.StoreKnowledgeCandidate(request.AccountId, request.ConversationId, request.MessageId, candidate); err != nil {
+		if err := knowledge.StoreKnowledgeCandidate(request.AccountId, request.ConversationId, request.MessageId, candidate); err != nil {
 			ctx.GetLogger().Warn("kb_prestep: unable to cache knowledge candidate", "candidate_id", id, "error", err)
 			continue
 		}
@@ -540,8 +554,8 @@ func kbPrestepTimeout() time.Duration {
 // attributeKBReferences re-checks this key defensively, and that check is only
 // dead code for as long as it derives the key the same way dedupRAGDocs does —
 // so both call this rather than each spelling it out.
-func ragDocDedupKey(doc toolcore.RAGSearchResult) string {
-	if exact := toolcore.KnowledgeDocumentIdentity(doc); exact != "" {
+func ragDocDedupKey(doc knowledge.RAGSearchResult) string {
+	if exact := knowledge.KnowledgeDocumentIdentity(doc); exact != "" {
 		return exact
 	}
 	if url, _ := doc.Metadata["url"].(string); strings.TrimSpace(url) != "" {
@@ -550,9 +564,9 @@ func ragDocDedupKey(doc toolcore.RAGSearchResult) string {
 	return strings.TrimSpace(doc.Document)
 }
 
-func dedupRAGDocs(docs toolcore.RAGSearchResults) toolcore.RAGSearchResults {
+func dedupRAGDocs(docs knowledge.RAGSearchResults) knowledge.RAGSearchResults {
 	seen := make(map[string]struct{}, len(docs))
-	out := make(toolcore.RAGSearchResults, 0, len(docs))
+	out := make(knowledge.RAGSearchResults, 0, len(docs))
 	for _, doc := range docs {
 		key := ragDocDedupKey(doc)
 		if _, dup := seen[key]; dup {
@@ -566,14 +580,14 @@ func dedupRAGDocs(docs toolcore.RAGSearchResults) toolcore.RAGSearchResults {
 
 // listAccountKBsFn is swappable in tests; production uses the real account-wide
 // KB listing.
-var listAccountKBsFn = toolcore.ListKnowledgebases
+var listAccountKBsFn = knowledge.ListKnowledgebases
 
 // mergeAccountIntegrationKBs widens attribution candidates to every active KB
 // in the account. Discovery is account-wide, so agent mapping is retained only
 // as a curation and legacy-attribution hint, not a visibility boundary. Modern RAG hits carry
 // their owning collection id, allowing exact attribution without loading KB
 // bodies; legacy unstamped hits retain the content/source fallback below.
-func mergeAccountIntegrationKBs(ctx *security.RequestContext, accountId string, kbs []toolcore.Knowledgebase) []toolcore.Knowledgebase {
+func mergeAccountIntegrationKBs(ctx *security.RequestContext, accountId string, kbs []knowledge.Knowledgebase) []knowledge.Knowledgebase {
 	acctKBs, err := listAccountKBsFn(ctx, accountId)
 	if err != nil {
 		ctx.GetLogger().Debug("kb_prestep: unable to list account KBs for attribution", "error", err)
@@ -583,7 +597,7 @@ func mergeAccountIntegrationKBs(ctx *security.RequestContext, accountId string, 
 	for _, kb := range kbs {
 		seen[kb.Id] = struct{}{}
 	}
-	merged := make([]toolcore.Knowledgebase, len(kbs), len(kbs)+len(acctKBs))
+	merged := make([]knowledge.Knowledgebase, len(kbs), len(kbs)+len(acctKBs))
 	copy(merged, kbs)
 	for _, kb := range acctKBs {
 		if !kb.UsableForAgents() || kb.Id == "" {
@@ -630,14 +644,14 @@ func metadataKeys(md map[string]any) []string {
 // Nothing in the point payload carries a kb id, so this is the only identity
 // available. Absent on hits from a rag-server predating the stamp; callers then
 // fall back to the text/source rules in matchKB.
-func docCollection(doc toolcore.RAGSearchResult) (string, bool) {
+func docCollection(doc knowledge.RAGSearchResult) (string, bool) {
 	name, _ := doc.Metadata["collection"].(string)
 	name = strings.TrimSpace(name)
 	return name, name != ""
 }
 
 // withoutKBs drops the knowledge bases whose ids are in exclude.
-func withoutKBs(kbs []toolcore.Knowledgebase, exclude []string) []toolcore.Knowledgebase {
+func withoutKBs(kbs []knowledge.Knowledgebase, exclude []string) []knowledge.Knowledgebase {
 	if len(exclude) == 0 || len(kbs) == 0 {
 		return kbs
 	}
@@ -645,7 +659,7 @@ func withoutKBs(kbs []toolcore.Knowledgebase, exclude []string) []toolcore.Knowl
 	for _, id := range exclude {
 		drop[id] = true
 	}
-	out := make([]toolcore.Knowledgebase, 0, len(kbs))
+	out := make([]knowledge.Knowledgebase, 0, len(kbs))
 	for _, kb := range kbs {
 		if !drop[kb.Id] {
 			out = append(out, kb)
@@ -656,7 +670,7 @@ func withoutKBs(kbs []toolcore.Knowledgebase, exclude []string) []toolcore.Knowl
 
 // withoutDocsFromKBs drops search hits from the knowledge bases whose ids are
 // in exclude. A hit's knowledge base is known only from its collection name.
-func withoutDocsFromKBs(docs toolcore.RAGSearchResults, exclude []string) toolcore.RAGSearchResults {
+func withoutDocsFromKBs(docs knowledge.RAGSearchResults, exclude []string) knowledge.RAGSearchResults {
 	if len(exclude) == 0 || len(docs) == 0 {
 		return docs
 	}
@@ -664,7 +678,7 @@ func withoutDocsFromKBs(docs toolcore.RAGSearchResults, exclude []string) toolco
 	for _, id := range exclude {
 		drop[id] = true
 	}
-	out := make(toolcore.RAGSearchResults, 0, len(docs))
+	out := make(knowledge.RAGSearchResults, 0, len(docs))
 	for _, d := range docs {
 		if name, ok := docCollection(d); ok {
 			if kbID, _ := classifyCollection(name); kbID != "" && drop[kbID] {
@@ -739,7 +753,7 @@ func scopeOrDefault(scope string) string {
 // The third return is the number of documents dropped as unattributable. It is
 // counted at the drop site rather than inferred from len(docs)-len(attributed),
 // so the caller's warning stays exact even if this is ever handed duplicates.
-func attributeKBReferences(ctx *security.RequestContext, accountId string, docs toolcore.RAGSearchResults, kbs []toolcore.Knowledgebase) ([]AgentReference, toolcore.RAGSearchResults, int) {
+func attributeKBReferences(ctx *security.RequestContext, accountId string, docs knowledge.RAGSearchResults, kbs []knowledge.Knowledgebase) ([]AgentReference, knowledge.RAGSearchResults, int) {
 	if len(docs) == 0 {
 		return nil, nil, 0
 	}
@@ -751,10 +765,10 @@ func attributeKBReferences(ctx *security.RequestContext, accountId string, docs 
 	// when a lower-ranked page drove the conclusion). Docs arrive in descending
 	// score order; duplicates of the same page (same url, or identical text
 	// from another collection) collapse to their best-scored instance.
-	matchKB := func(doc toolcore.RAGSearchResult) (toolcore.Knowledgebase, bool) {
+	matchKB := func(doc knowledge.RAGSearchResult) (knowledge.Knowledgebase, bool) {
 		content := strings.TrimSpace(doc.Document)
 		if content == "" {
-			return toolcore.Knowledgebase{}, false
+			return knowledge.Knowledgebase{}, false
 		}
 		docSource, _ := doc.Metadata["source"].(string)
 		// Identity first: when rag-server reports the collection, the owning KB
@@ -774,7 +788,7 @@ func attributeKBReferences(ctx *security.RequestContext, accountId string, docs 
 				}
 			}
 		}
-		owns := func(kb toolcore.Knowledgebase) bool {
+		owns := func(kb knowledge.Knowledgebase) bool {
 			if data := dataByKB[kb.Id]; data != "" && strings.Contains(data, content) {
 				return true
 			}
@@ -790,12 +804,12 @@ func attributeKBReferences(ctx *security.RequestContext, accountId string, docs 
 				return kb, true
 			}
 		}
-		return toolcore.Knowledgebase{}, false
+		return knowledge.Knowledgebase{}, false
 	}
 
 	seenDocs := make(map[string]struct{})
 	var refs []AgentReference
-	var attributed toolcore.RAGSearchResults
+	var attributed knowledge.RAGSearchResults
 	dropped := 0
 	for _, doc := range docs {
 		kb, ok := matchKB(doc)
@@ -957,7 +971,7 @@ func firstLine(s string, maxChars int) string {
 // by id, for content-based attribution. Integration KBs are skipped: their
 // content lives only in the vector store and they attribute via kb_source, so
 // fetching them would only return empty data.
-func fetchKBData(ctx *security.RequestContext, accountId string, docs toolcore.RAGSearchResults, kbs []toolcore.Knowledgebase) map[string]string {
+func fetchKBData(ctx *security.RequestContext, accountId string, docs knowledge.RAGSearchResults, kbs []knowledge.Knowledgebase) map[string]string {
 	out := make(map[string]string, len(kbs))
 	// Collection-stamped documents attribute by id and need no body reads. Only
 	// retain the expensive substring fallback when at least one legacy hit lacks
@@ -973,12 +987,12 @@ func fetchKBData(ctx *security.RequestContext, accountId string, docs toolcore.R
 		return out
 	}
 	// Resolved once: the KBs come from one list, so one visibility lookup covers them.
-	orgIDs := toolcore.VisibleOrgKnowledgebaseIDs(ctx.GetContext(), accountId)
+	orgIDs := knowledge.VisibleOrgKnowledgebaseIDs(ctx.GetContext(), accountId)
 	for _, kb := range kbs {
 		if kb.Id == "" || !kb.UsableForAgents() || kb.KBType == "integration" {
 			continue
 		}
-		full, err := toolcore.GetKnowledgebaseScoped(ctx, accountId, kb.Id, orgIDs)
+		full, err := knowledge.GetKnowledgebaseScoped(ctx, accountId, kb.Id, orgIDs)
 		if err != nil {
 			ctx.GetLogger().Debug("kb_prestep: could not load KB data for attribution", "error", err, "kb_id", kb.Id)
 			continue
@@ -995,7 +1009,7 @@ func fetchKBData(ctx *security.RequestContext, accountId string, docs toolcore.R
 // instead of being thrown away (with the old fixed split, a runbook competing
 // with short duplicates was cut to its intro and its steps never reached the
 // model). Returns "" when there are no documents.
-func formatRetrievedKBBlock(docs toolcore.RAGSearchResults) string {
+func formatRetrievedKBBlock(docs knowledge.RAGSearchResults) string {
 	if len(docs) == 0 {
 		return ""
 	}
@@ -1037,7 +1051,7 @@ func formatRetrievedKBBlock(docs toolcore.RAGSearchResults) string {
 		if written > 0 {
 			sb.WriteString("---\n")
 		}
-		sb.WriteString(toolcore.KnowledgePurposeGuidance(toolcore.KnowledgeDocumentPurpose(doc)) + "\n")
+		sb.WriteString(knowledge.KnowledgePurposeGuidance(knowledge.KnowledgeDocumentPurpose(doc)) + "\n")
 		sb.WriteString(content)
 		if url, ok := doc.Metadata["url"].(string); ok && url != "" {
 			sb.WriteString("\nSource: ")
@@ -1053,7 +1067,7 @@ func formatRetrievedKBBlock(docs toolcore.RAGSearchResults) string {
 
 // DiscoverKnowledgeCandidates shares the executor's account-wide discovery and
 // eligibility rules with custom consumers that materialize selected documents.
-func DiscoverKnowledgeCandidates(ctx *security.RequestContext, request NBAgentRequest, agent NBAgent) []toolcore.KnowledgeCandidate {
+func DiscoverKnowledgeCandidates(ctx *security.RequestContext, request NBAgentRequest, agent NBAgent) []knowledge.KnowledgeCandidate {
 	if !AutomaticKnowledgeAllowed(request) || agent == nil {
 		return nil
 	}
@@ -1065,5 +1079,5 @@ func DiscoverKnowledgeCandidates(ctx *security.RequestContext, request NBAgentRe
 // all-agents wildcard, which carries KBs mapped to "All agents" and every
 // organisation KB the account can see (the executor's own lookup adds it too).
 func discoveryAgentNames(agent NBAgent) []string {
-	return toolcore.WithKBAgentWildcard(append([]string{agent.GetName()}, agent.GetNameAliases()...))
+	return knowledge.WithKBAgentWildcard(append([]string{agent.GetName()}, agent.GetNameAliases()...))
 }

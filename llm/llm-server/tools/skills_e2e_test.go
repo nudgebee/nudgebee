@@ -4,11 +4,13 @@ package tools
 
 import (
 	"html"
-	"nudgebee/llm/security"
-	"nudgebee/llm/tools/core"
 	"os"
 	"regexp"
 	"testing"
+
+	"nudgebee/llm/knowledge"
+	"nudgebee/llm/security"
+	"nudgebee/llm/tools/core"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -139,7 +141,7 @@ func TestSearchSkillsTool_Integration_SearchThenLoad(t *testing.T) {
 	if len(ids) < 2 {
 		t.Skip("no RAG candidates returned; configure indexed knowledge for this account")
 	}
-	candidate, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, ids[1])
+	candidate, ok := knowledge.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, ids[1])
 	require.True(t, ok)
 	loaded, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{
 		Arguments: map[string]any{"skill_name": ids[1]},
@@ -156,7 +158,7 @@ func TestLoadSkillsTool_Integration_CandidateAndMissingName(t *testing.T) {
 	const id = "knowledge:0123456789abcdef"
 	const missing = "nonexistent_skill_"
 	missingName := missing + uuid.NewString()
-	require.NoError(t, core.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, core.KnowledgeCandidate{
+	require.NoError(t, knowledge.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, knowledge.KnowledgeCandidate{
 		ID: id, Title: "Test candidate", Source: "test", Content: "CANARY-7392",
 	}))
 	resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{

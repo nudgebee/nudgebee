@@ -6,16 +6,18 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"nudgebee/llm/common"
-	"nudgebee/llm/config"
-	"nudgebee/llm/services_server"
-	"nudgebee/llm/tools/core"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"nudgebee/llm/common"
+	"nudgebee/llm/config"
+	"nudgebee/llm/knowledge"
+	"nudgebee/llm/services_server"
+	"nudgebee/llm/tools/core"
 
 	"github.com/google/uuid"
 	"github.com/prometheus/prometheus/promql/parser"
@@ -1897,7 +1899,7 @@ func (s SearchMetricsTool) Call(nbRequestContext core.NbToolContext, input core.
 		}, nil
 	}
 
-	results := core.QueryRAG(
+	results := knowledge.QueryRAG(
 		nbRequestContext.UserId, nbRequestContext.AccountId, query,
 		"prometheus", 5,
 		nbRequestContext.ConversationId, nbRequestContext.MessageId, nbRequestContext.ParentAgentId, true,

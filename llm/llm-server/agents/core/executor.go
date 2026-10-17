@@ -5,19 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"nudgebee/llm/common"
-	"nudgebee/llm/config"
-	"nudgebee/llm/llms/googleai"
-	nbprompts "nudgebee/llm/prompts"
-	"nudgebee/llm/security"
-	"nudgebee/llm/security/egressfilter"
-	toolcore "nudgebee/llm/tools/core"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"nudgebee/llm/common"
+	"nudgebee/llm/config"
+	"nudgebee/llm/knowledge"
+	"nudgebee/llm/llms/googleai"
+	nbprompts "nudgebee/llm/prompts"
+	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
+	toolcore "nudgebee/llm/tools/core"
 
 	"log/slog"
 
@@ -650,7 +652,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// KBs the user mapped to "All agents" are carried by a wildcard mapping row, so
 	// every agent resolves them by looking the sentinel up alongside its own names.
 	// Appended last so ownSkillNames[0] stays the canonical name for logging.
-	ownSkillNames = toolcore.WithKBAgentWildcard(ownSkillNames)
+	ownSkillNames = knowledge.WithKBAgentWildcard(ownSkillNames)
 
 	// Text this agent always gets (skills linked with "always load"),
 	// resolved here for every planner type and for this request's account. Not

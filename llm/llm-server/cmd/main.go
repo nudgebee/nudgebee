@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"nudgebee/llm/knowledge"
+
 	"github.com/gin-gonic/gin"
 
 	"nudgebee/llm/agents"
@@ -282,7 +284,7 @@ func main() {
 	// and never shrinks. The cleanup walks the map once a minute and
 	// drops expired entries.
 	egressfilter.StartTenantConfigCacheCleanup(syncCtx)
-	go toolscore.StartIntegrationKBSync(syncCtx)
+	go knowledge.StartIntegrationKBSync(syncCtx)
 	slog.Info("main: started integration KB sync background thread")
 
 	// One-time sync of the capability catalog (agent tools + runbook-server

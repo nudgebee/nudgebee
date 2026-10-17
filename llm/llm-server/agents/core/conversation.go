@@ -6,16 +6,18 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
-	"nudgebee/llm/common"
-	"nudgebee/llm/config"
-	"nudgebee/llm/prompts"
-	"nudgebee/llm/security"
-	"nudgebee/llm/security/egressfilter"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"nudgebee/llm/common"
+	"nudgebee/llm/config"
+	"nudgebee/llm/knowledge"
+	"nudgebee/llm/prompts"
+	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 
 	toolcore "nudgebee/llm/tools/core"
 
@@ -780,7 +782,7 @@ func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgen
 	// additional guidance. ReAct planners cache AccountContext in their system
 	// prefix while AccountPrompt stays in the dynamic human turn. The GC loader
 	// is soft-failing — DB issues never block a chat turn.
-	gcPrompt := toolcore.LoadActiveGlobalContext(ctx, accountId)
+	gcPrompt := knowledge.LoadActiveGlobalContext(ctx, accountId)
 
 	agentRequest := NBAgentRequest{
 		Query:                 query,
@@ -1644,7 +1646,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	}
 
 	// "/skill-name question" puts that skill in front of the question.
-	var commandSkills []toolcore.SkillCommand
+	var commandSkills []knowledge.SkillCommand
 	request, commandSkills = evalSkillCommand(ctx, request)
 	saveSkillCommandReferences(ctx, request, conversation.ID.String(), commandSkills)
 
@@ -1892,7 +1894,7 @@ func resolveAnswerCharts(conversationID string, response []string) {
 	})
 }
 
-var getSkillsForCommandFn = toolcore.GetSkillsForCommand
+var getSkillsForCommandFn = knowledge.GetSkillsForCommand
 
 // maxSkillMentions caps how many "/name" words in one message are looked up.
 const maxSkillMentions = 3
@@ -1975,7 +1977,7 @@ func findSkillMentions(text string) []skillMention {
 // further in is replaced by the skill's name so the sentence still reads.
 // Words that name no skill (a path, say) are left as typed. A leading
 // "@agent" mention is kept in front. Returns the skills it loaded.
-func evalSkillCommand(ctx *security.RequestContext, request NBAgentRequest) (NBAgentRequest, []toolcore.SkillCommand) {
+func evalSkillCommand(ctx *security.RequestContext, request NBAgentRequest) (NBAgentRequest, []knowledge.SkillCommand) {
 	query := strings.TrimSpace(request.Query)
 	_, rest := common.ParseAgentMention(query)
 	prefix := query[:len(query)-len(rest)]
@@ -2007,7 +2009,7 @@ func evalSkillCommand(ctx *security.RequestContext, request NBAgentRequest) (NBA
 
 	// One block per skill, in the order the message first names them.
 	var blocks []string
-	var used []toolcore.SkillCommand
+	var used []knowledge.SkillCommand
 	loaded := map[string]bool{}
 	for _, m := range mentions {
 		skill, ok := skills[strings.ToLower(m.name)]
@@ -2017,9 +2019,9 @@ func evalSkillCommand(ctx *security.RequestContext, request NBAgentRequest) (NBA
 		loaded[skill.ID] = true
 		used = append(used, skill)
 		body := strings.TrimSpace(skill.Data)
-		if utf8.RuneCountInString(body) > toolcore.SkillCommandMaxChars {
-			body = body[:runeByteOffset(body, toolcore.SkillCommandMaxChars)] +
-				fmt.Sprintf("\n[Cut at %d characters. Load the skill %q to read the rest.]", toolcore.SkillCommandMaxChars, skill.Name)
+		if utf8.RuneCountInString(body) > knowledge.SkillCommandMaxChars {
+			body = body[:runeByteOffset(body, knowledge.SkillCommandMaxChars)] +
+				fmt.Sprintf("\n[Cut at %d characters. Load the skill %q to read the rest.]", knowledge.SkillCommandMaxChars, skill.Name)
 		}
 		blocks = append(blocks, fmt.Sprintf("<skill name=%q>\n%s\n</skill>", skill.Name, body))
 		ctx.GetLogger().Info("conversation: skill command", "skill", skill.Name, "kb_id", skill.ID)
@@ -2054,7 +2056,7 @@ func evalSkillCommand(ctx *security.RequestContext, request NBAgentRequest) (NBA
 // saveSkillCommandReferences records the skills a "/skill-name" message loaded
 // on that message, like a load_skills call does, so they are listed with the
 // answer's contexts. Best-effort: a failed save never fails the turn.
-func saveSkillCommandReferences(ctx *security.RequestContext, request NBAgentRequest, conversationId string, skills []toolcore.SkillCommand) {
+func saveSkillCommandReferences(ctx *security.RequestContext, request NBAgentRequest, conversationId string, skills []knowledge.SkillCommand) {
 	if len(skills) == 0 || request.MessageId == "" || conversationId == "" {
 		return
 	}

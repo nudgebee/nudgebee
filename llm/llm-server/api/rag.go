@@ -3,9 +3,10 @@ package api
 import (
 	"errors"
 	"log/slog"
+
 	"nudgebee/llm/common"
+	"nudgebee/llm/knowledge"
 	"nudgebee/llm/security"
-	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -62,7 +63,7 @@ func ragQuery(c *gin.Context, context *security.RequestContext, payload map[stri
 		queryRequest.Limit = 3
 	}
 
-	resp := toolcore.QueryRAG(context.GetSecurityContext().GetUserId(), queryRequest.AccountId, queryRequest.Query, queryRequest.Module, queryRequest.Limit, uuid.NewString(), uuid.NewString(), uuid.NewString(), false)
+	resp := knowledge.QueryRAG(context.GetSecurityContext().GetUserId(), queryRequest.AccountId, queryRequest.Query, queryRequest.Module, queryRequest.Limit, uuid.NewString(), uuid.NewString(), uuid.NewString(), false)
 
 	// Check if response is empty
 	if len(resp) == 0 {
@@ -117,7 +118,7 @@ func createAgentRagData(c *gin.Context, context *security.RequestContext, payloa
 	}
 
 	// Call the core function
-	agentRag, err := toolcore.CreateAgentRag(context, createRequest.AccountId, createRequest.Agent,
+	agentRag, err := knowledge.CreateAgentRag(context, createRequest.AccountId, createRequest.Agent,
 		createRequest.Data, createRequest.Format, createRequest.FileName)
 
 	if err != nil {

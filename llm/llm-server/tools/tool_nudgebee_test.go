@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -778,7 +780,7 @@ func TestNudgebeeIntegrationDiagnoseToolRequiresID(t *testing.T) {
 func TestNudgebeeDocsSearchFiltersAndFormatsProductDocs(t *testing.T) {
 	previous := queryNudgebeeDocs
 	t.Cleanup(func() { queryNudgebeeDocs = previous })
-	queryNudgebeeDocs = func(_ context.Context, userID, accountID, _, query, module, _ string, count int, conversationID, messageID, agentID string, track bool, filters ...map[string]any) core.RAGSearchResults {
+	queryNudgebeeDocs = func(_ context.Context, userID, accountID, _, query, module, _ string, count int, conversationID, messageID, agentID string, track bool, filters ...map[string]any) knowledge.RAGSearchResults {
 		assert.Equal(t, "user-1", userID)
 		assert.Equal(t, "acc-1", accountID)
 		assert.Equal(t, "what is an account?", query)
@@ -786,7 +788,7 @@ func TestNudgebeeDocsSearchFiltersAndFormatsProductDocs(t *testing.T) {
 		assert.Equal(t, nudgebeeDocsResultLimit, count)
 		assert.True(t, track)
 		require.Equal(t, []map[string]any{{"source": nudgebeeDocsSource}}, filters)
-		return core.RAGSearchResults{
+		return knowledge.RAGSearchResults{
 			{Document: "<p>An account&nbsp;groups   resources.</p>", Metadata: map[string]any{
 				"title": "Accounts &amp; access", "section": " Concepts ", "url": "https://docs.nudgebee.com/accounts",
 			}},
@@ -821,7 +823,7 @@ func TestNudgebeeDocsSearchNoResultDoesNotFallback(t *testing.T) {
 	previous := queryNudgebeeDocs
 	t.Cleanup(func() { queryNudgebeeDocs = previous })
 	calls := 0
-	queryNudgebeeDocs = func(_ context.Context, _, _, _, _, _, _ string, _ int, _, _, _ string, _ bool, _ ...map[string]any) core.RAGSearchResults {
+	queryNudgebeeDocs = func(_ context.Context, _, _, _, _, _, _ string, _ int, _, _, _ string, _ bool, _ ...map[string]any) knowledge.RAGSearchResults {
 		calls++
 		return nil
 	}
@@ -835,7 +837,7 @@ func TestNudgebeeDocsSearchNoResultDoesNotFallback(t *testing.T) {
 
 func TestFormatNudgebeeDocsResultsBoundsAndDeduplicates(t *testing.T) {
 	longDocument := strings.Repeat("évidence ", nudgebeeDocsExcerptMaxRunes)
-	data, references, selected, truncated := formatNudgebeeDocsResults(core.RAGSearchResults{
+	data, references, selected, truncated := formatNudgebeeDocsResults(knowledge.RAGSearchResults{
 		{Document: longDocument, Metadata: map[string]any{"title": "Long", "url": "https://docs.nudgebee.com/long"}},
 		{Document: longDocument, Metadata: map[string]any{"title": "Long", "url": "https://docs.nudgebee.com/long"}},
 		{Document: "unsafe URL remains evidence-only", Metadata: map[string]any{"url": "javascript:alert(1)"}},
@@ -852,7 +854,7 @@ func TestFormatNudgebeeDocsResultsBoundsAndDeduplicates(t *testing.T) {
 
 func TestFormatNudgebeeDocsResultsDeduplicatesTruncatedEvidence(t *testing.T) {
 	sharedPrefix := strings.Repeat("same ", nudgebeeDocsExcerptMaxRunes)
-	_, _, selected, truncated := formatNudgebeeDocsResults(core.RAGSearchResults{
+	_, _, selected, truncated := formatNudgebeeDocsResults(knowledge.RAGSearchResults{
 		{Document: sharedPrefix + "first suffix"},
 		{Document: sharedPrefix + "second suffix"},
 	})

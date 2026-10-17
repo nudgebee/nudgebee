@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"nudgebee/llm/common"
-	"nudgebee/llm/config"
-	"nudgebee/llm/tools/core"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"nudgebee/llm/common"
+	"nudgebee/llm/config"
+	"nudgebee/llm/knowledge"
+	"nudgebee/llm/tools/core"
 
 	"github.com/lib/pq"
 )
@@ -20,15 +22,15 @@ const SearchSkillsToolName = "search_skills"
 
 // skillData holds bounded content for one resolved skill.
 type skillData struct {
-	Purpose       core.KnowledgeContentPurpose `json:"purpose,omitempty"`
-	ExcerptOnly   bool                         `json:"excerpt_only,omitempty"`
-	ID            string                       `json:"id"`
-	Data          string                       `json:"data"`
-	Description   string                       `json:"description"`
-	KBType        string                       `json:"kb_type"`
-	KBSource      *string                      `json:"kb_source"`
-	IntegrationID *string                      `json:"integration_id,omitempty"`
-	ReferenceType string                       `json:"reference_type,omitempty"`
+	Purpose       knowledge.KnowledgeContentPurpose `json:"purpose,omitempty"`
+	ExcerptOnly   bool                              `json:"excerpt_only,omitempty"`
+	ID            string                            `json:"id"`
+	Data          string                            `json:"data"`
+	Description   string                            `json:"description"`
+	KBType        string                            `json:"kb_type"`
+	KBSource      *string                           `json:"kb_source"`
+	IntegrationID *string                           `json:"integration_id,omitempty"`
+	ReferenceType string                            `json:"reference_type,omitempty"`
 }
 
 const ragSkillTopK = 5
@@ -196,7 +198,7 @@ func (m LoadSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallReques
 	var dbNames []string
 	for _, name := range requestedNames {
 		if strings.HasPrefix(strings.ToLower(name), "knowledge:") {
-			if candidate, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, name); ok {
+			if candidate, ok := knowledge.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, name); ok {
 				if candidate.KBID != "" {
 					manualCandidates[strings.ToLower(name)] = candidate.KBID
 					continue
@@ -227,17 +229,17 @@ func (m LoadSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallReques
 	}
 
 	if len(manualCandidates) > 0 {
-		docs := make(core.RAGSearchResults, 0, len(manualCandidates))
+		docs := make(knowledge.RAGSearchResults, 0, len(manualCandidates))
 		for _, id := range manualCandidates {
-			docs = append(docs, core.RAGSearchResult{Metadata: map[string]any{"collection": "kb_" + id}})
+			docs = append(docs, knowledge.RAGSearchResult{Metadata: map[string]any{"collection": "kb_" + id}})
 		}
-		resolved := core.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, docs)
+		resolved := knowledge.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, docs)
 		for _, doc := range resolved {
 			id, _ := doc.Metadata["kb_id"].(string)
 			title, _ := doc.Metadata["kb_name"].(string)
 			for alias, kbID := range manualCandidates {
 				if kbID == id {
-					results[alias] = skillData{Purpose: core.KnowledgeDocumentPurpose(doc), ID: id, ExcerptOnly: len(doc.Document) > core.KnowledgeExcerptBytes, Data: common.TruncateHead(doc.Document, core.KnowledgeExcerptBytes), Description: title, KBType: "manual", ReferenceType: "skill"}
+					results[alias] = skillData{Purpose: knowledge.KnowledgeDocumentPurpose(doc), ID: id, ExcerptOnly: len(doc.Document) > knowledge.KnowledgeExcerptBytes, Data: common.TruncateHead(doc.Document, knowledge.KnowledgeExcerptBytes), Description: title, KBType: "manual", ReferenceType: "skill"}
 				}
 			}
 		}
@@ -300,7 +302,7 @@ func (m LoadSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallReques
 			"<skill>\n<name>%s</name>\n<description>%s</description>\n<guidance>%s</guidance>\n<content>\n%s\n</content>",
 			html.EscapeString(name),
 			html.EscapeString(skill.Description),
-			html.EscapeString(core.KnowledgePurposeGuidance(skill.Purpose)),
+			html.EscapeString(knowledge.KnowledgePurposeGuidance(skill.Purpose)),
 			html.EscapeString(data))
 		if skill.ExcerptOnly {
 			aggregatedOutput.WriteString("\n<note>Only a bounded excerpt is loaded. The full document is not available through this legacy read path; refine search_skills or enable workspace knowledge reads.</note>")
@@ -384,7 +386,7 @@ func (m LoadSkillsTool) fetchSkillsBatch(ctx core.NbToolContext, dbms *common.Da
 
 	// Resolve the requested names in one batch query over the KBs this account
 	// may read (its own and the visible organisation ones).
-	scope, scopeArgs := core.KBAccountScope("kb", 1, 3, core.VisibleOrgKnowledgebaseIDs(ctx.Ctx.GetContext(), ctx.AccountId))
+	scope, scopeArgs := knowledge.KBAccountScope("kb", 1, 3, knowledge.VisibleOrgKnowledgebaseIDs(ctx.Ctx.GetContext(), ctx.AccountId))
 	query := `
 		SELECT kb.id, kb.name, CASE WHEN kb.data_format = 'pdf' THEN '' ELSE LEFT(kb.data, 4097) END, COALESCE(kb.description, ''),
 		       COALESCE(kb.kb_type, 'manual'), kb.kb_source, kb.integration_id, COALESCE(kb.note_category, ''),
@@ -413,13 +415,13 @@ func (m LoadSkillsTool) fetchSkillsBatch(ctx core.NbToolContext, dbms *common.Da
 		if err := rows.Scan(&id, &name, &data, &description, &kbType, &kbSource, &integrationID, &category, &format); err != nil {
 			continue
 		}
-		if format == string(core.KBFormatPDF) {
+		if format == string(knowledge.KBFormatPDF) {
 			// A PDF's data column is base64 of the document; its content is only
 			// reachable through the indexed page and figure chunks.
-			data = core.PDFKnowledgePointer
+			data = knowledge.PDFKnowledgePointer
 		}
 		lower := strings.ToLower(strings.TrimSpace(name))
-		sd := skillData{Purpose: core.KnowledgePurpose(kbType, category), ID: id, ExcerptOnly: len(data) > core.KnowledgeExcerptBytes, Data: common.TruncateHead(data, core.KnowledgeExcerptBytes), Description: description, KBType: kbType, KBSource: kbSource, IntegrationID: integrationID}
+		sd := skillData{Purpose: knowledge.KnowledgePurpose(kbType, category), ID: id, ExcerptOnly: len(data) > knowledge.KnowledgeExcerptBytes, Data: common.TruncateHead(data, knowledge.KnowledgeExcerptBytes), Description: description, KBType: kbType, KBSource: kbSource, IntegrationID: integrationID}
 		results[lower] = sd
 		foundInDB[lower] = true
 
@@ -444,7 +446,7 @@ func (m LoadSkillsTool) fetchSkillsBatch(ctx core.NbToolContext, dbms *common.Da
 // ---------------------------------------------------------------------------
 
 // resolveDocumentCategoriesFn is swapped out in tests.
-var resolveDocumentCategoriesFn = core.ResolveDocumentCategories
+var resolveDocumentCategoriesFn = knowledge.ResolveDocumentCategories
 
 // cacheSearchKnowledgeCandidates exposes exact, turn-scoped identities instead
 // of asking the loader to search again using a guessed article title.
@@ -453,7 +455,7 @@ var resolveDocumentCategoriesFn = core.ResolveDocumentCategories
 // (search_skills, and load_skills naming an integration knowledge base), so
 // the per-document Fact/SOP marks are applied here rather than by each caller:
 // a candidate's purpose is fixed when it is cached.
-func cacheSearchKnowledgeCandidates(ctx core.NbToolContext, docs core.RAGSearchResults) []string {
+func cacheSearchKnowledgeCandidates(ctx core.NbToolContext, docs knowledge.RAGSearchResults) []string {
 	docs = resolveDocumentCategoriesFn(ctx.Ctx, ctx.AccountId, docs)
 	var results []string
 	for _, doc := range docs {
@@ -472,24 +474,24 @@ func cacheSearchKnowledgeCandidates(ctx core.NbToolContext, docs core.RAGSearchR
 		}
 		// Include content so separate chunks from one article cannot overwrite
 		// each other or a candidate created by automatic discovery.
-		identity := core.KnowledgeDocumentIdentity(doc)
+		identity := knowledge.KnowledgeDocumentIdentity(doc)
 		if identity == "" {
 			identity = url + "\x00" + content
 		}
-		id := core.NewKnowledgeCandidateID(ctx.AccountId, ctx.ConversationId, ctx.MessageId, "search:"+identity)
-		candidate := core.KnowledgeCandidate{
+		id := knowledge.NewKnowledgeCandidateID(ctx.AccountId, ctx.ConversationId, ctx.MessageId, "search:"+identity)
+		candidate := knowledge.KnowledgeCandidate{
 			ID: id, ReferenceID: url, Title: truncateRunesExact(title, 240),
 			Source: source, URL: url,
 			Content: content,
 			Snippet: truncateRunesExact(content, 240),
 		}
-		core.SetKnowledgeDocumentHandle(&candidate, doc)
-		candidate.KBID = core.ManualKnowledgeID(doc)
+		knowledge.SetKnowledgeDocumentHandle(&candidate, doc)
+		candidate.KBID = knowledge.ManualKnowledgeID(doc)
 		if candidate.KBID != "" {
 			candidate.Content = ""
 			candidate.ReferenceID = candidate.KBID
 		}
-		if err := core.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, candidate); err != nil {
+		if err := knowledge.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, candidate); err != nil {
 			ctx.Ctx.GetLogger().Warn("search_skills: unable to cache candidate", "error", err)
 			continue
 		}
@@ -531,7 +533,7 @@ func enrichIntegrationSkillsFromRAG(ctx core.NbToolContext, input core.NBToolCal
 	keyword, _ := input.Arguments["keyword"].(string)
 	// Loop-invariant: the query depends on the turn, not on which skill is
 	// being enriched. Only the per-skill fallback below varies.
-	baseQuery := core.BuildRetrievalQuery(keyword, ctx.QueryConfig, ctx.Query)
+	baseQuery := knowledge.BuildRetrievalQuery(keyword, ctx.QueryConfig, ctx.Query)
 	if baseQuery == "" {
 		baseQuery = strings.TrimSpace(ctx.Query)
 	}
@@ -539,14 +541,14 @@ func enrichIntegrationSkillsFromRAG(ctx core.NbToolContext, input core.NBToolCal
 		if skill.KBType != "integration" || strings.TrimSpace(skill.Data) != "" {
 			continue
 		}
-		collection := core.KnowledgebaseCollectionName(core.Knowledgebase{Id: skill.ID, KBType: skill.KBType, IntegrationId: skill.IntegrationID})
+		collection := knowledge.KnowledgebaseCollectionName(knowledge.Knowledgebase{Id: skill.ID, KBType: skill.KBType, IntegrationId: skill.IntegrationID})
 		query := baseQuery
 		if query == "" {
 			query = key
 		}
-		searchCtx, traceID := core.WithRetrievalTraceID(retrievalCtx)
-		docs := core.QueryRAGCollectionReranked(searchCtx, ctx.UserId, ctx.AccountId, query, ragKBModule, collection, ragSkillTopK, ctx.ConversationId, ctx.MessageId, "", false)
-		docs = core.JudgeKBResults(ctx.Ctx, ctx.AccountId, ctx.UserId, ctx.ConversationId, ctx.MessageId, query, docs, traceID)
+		searchCtx, traceID := knowledge.WithRetrievalTraceID(retrievalCtx)
+		docs := knowledge.QueryRAGCollectionReranked(searchCtx, ctx.UserId, ctx.AccountId, query, ragKBModule, collection, ragSkillTopK, ctx.ConversationId, ctx.MessageId, "", false)
+		docs = knowledge.JudgeKBResults(ctx.Ctx, ctx.AccountId, ctx.UserId, ctx.ConversationId, ctx.MessageId, query, docs, traceID)
 		var content strings.Builder
 		for _, doc := range docs {
 			// Defend against a mis-scoped response from an incompatible server.
@@ -568,8 +570,8 @@ func enrichIntegrationSkillsFromRAG(ctx core.NbToolContext, input core.NBToolCal
 			delete(results, key)
 			continue
 		}
-		skill.ExcerptOnly = content.Len() > core.KnowledgeExcerptBytes
-		skill.Data = common.TruncateHead(content.String(), core.KnowledgeExcerptBytes)
+		skill.ExcerptOnly = content.Len() > knowledge.KnowledgeExcerptBytes
+		skill.Data = common.TruncateHead(content.String(), knowledge.KnowledgeExcerptBytes)
 		results[key] = skill
 	}
 }
@@ -635,12 +637,12 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 	var idNotFound string
 	if id != "" {
 		lookupCtx, cancel := context.WithTimeout(ctx.Ctx.GetContext(), ragSkillTimeout)
-		docs, err := core.QueryRAGByDocumentID(lookupCtx, ctx.UserId, ctx.AccountId, id, query, ragKBModule, ragSkillTopK, ctx.ConversationId, ctx.MessageId)
+		docs, err := knowledge.QueryRAGByDocumentID(lookupCtx, ctx.UserId, ctx.AccountId, id, query, ragKBModule, ragSkillTopK, ctx.ConversationId, ctx.MessageId)
 		cancel()
 		if err != nil {
 			ctx.Ctx.GetLogger().Warn("tool: search_skills id lookup failed", "id", id, "error", err)
 		}
-		docs = core.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, docs)
+		docs = knowledge.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, docs)
 		if results := cacheSearchKnowledgeCandidates(ctx, docs); len(results) > 0 {
 			common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "success", ctx.AccountId)
 			return core.NBToolResponse{
@@ -663,7 +665,7 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 	type searchOutput struct {
 		results []string
 		refs    []core.NBToolResponseReference
-		docs    core.RAGSearchResults
+		docs    knowledge.RAGSearchResults
 	}
 	manualCh := make(chan searchOutput, 1)
 	ragCh := make(chan searchOutput, 1)
@@ -673,7 +675,7 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 		var out searchOutput
 		for _, mr := range s.searchManualKBs(ctx, dbms, query) {
 			out.results = append(out.results, fmt.Sprintf("<result system=\"internal\" source=\"manual\" name=\"%s\" purpose=\"%s\">\n%s\n</result>",
-				html.EscapeString(mr.name), resultPurpose(core.KnowledgePurpose("manual", mr.category)), html.EscapeString(mr.snippet)))
+				html.EscapeString(mr.name), resultPurpose(knowledge.KnowledgePurpose("manual", mr.category)), html.EscapeString(mr.snippet)))
 			out.refs = append(out.refs, core.NBToolResponseReference{
 				Text: mr.name, Type: "skill", Url: mr.id, Description: mr.description,
 			})
@@ -684,10 +686,10 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 	// 2. Integration KBs — single RAG search with module "knowledge_base".
 	go func() {
 		var out searchOutput
-		searchCtx, traceID := core.WithRetrievalTraceID(ctx.Ctx.GetContext())
-		docs := core.QueryRAGCollection(searchCtx, ctx.UserId, ctx.AccountId, "", query, ragKBModule, "",
+		searchCtx, traceID := knowledge.WithRetrievalTraceID(ctx.Ctx.GetContext())
+		docs := knowledge.QueryRAGCollection(searchCtx, ctx.UserId, ctx.AccountId, "", query, ragKBModule, "",
 			ragSkillFetchSize(), ctx.ConversationId, ctx.MessageId, "", false)
-		out.docs = core.JudgeKBResults(ctx.Ctx, ctx.AccountId, ctx.UserId, ctx.ConversationId, ctx.MessageId, query, docs, traceID)
+		out.docs = knowledge.JudgeKBResults(ctx.Ctx, ctx.AccountId, ctx.UserId, ctx.ConversationId, ctx.MessageId, query, docs, traceID)
 		ragCh <- out
 	}()
 
@@ -712,12 +714,12 @@ collect:
 
 	// Resolve manual vector hits by ID before formatting, so lexical and vector
 	// search cannot offer the same KB twice under unrelated identities.
-	docs := core.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, ragOut.docs)
+	docs := knowledge.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, ragOut.docs)
 	seenManual := make(map[string]bool)
 	for _, ref := range manualOut.refs {
 		seenManual[ref.Url] = true
 	}
-	filtered := make(core.RAGSearchResults, 0, len(docs))
+	filtered := make(knowledge.RAGSearchResults, 0, len(docs))
 	for _, doc := range docs {
 		id, _ := doc.Metadata["kb_id"].(string)
 		if id != "" && seenManual[id] {
@@ -753,11 +755,11 @@ collect:
 
 // resultPurpose is the purpose a search hit declares: a procedure only when the
 // knowledge was marked as one, otherwise reference.
-func resultPurpose(purpose core.KnowledgeContentPurpose) core.KnowledgeContentPurpose {
-	if purpose == core.KnowledgePurposeProcedure {
+func resultPurpose(purpose knowledge.KnowledgeContentPurpose) knowledge.KnowledgeContentPurpose {
+	if purpose == knowledge.KnowledgePurposeProcedure {
 		return purpose
 	}
-	return core.KnowledgePurposeReference
+	return knowledge.KnowledgePurposeReference
 }
 
 // withSearchGuidance joins search hits behind the guidance for each purpose they
@@ -765,11 +767,11 @@ func resultPurpose(purpose core.KnowledgeContentPurpose) core.KnowledgeContentPu
 // hits was mostly one paragraph repeated.
 func withSearchGuidance(results []string, separator string) string {
 	var blocks []string
-	for _, purpose := range []core.KnowledgeContentPurpose{core.KnowledgePurposeProcedure, core.KnowledgePurposeReference} {
+	for _, purpose := range []knowledge.KnowledgeContentPurpose{knowledge.KnowledgePurposeProcedure, knowledge.KnowledgePurposeReference} {
 		marker := fmt.Sprintf("purpose=\"%s\"", purpose)
 		for _, result := range results {
 			if strings.Contains(result, marker) {
-				blocks = append(blocks, fmt.Sprintf("<guidance purpose=\"%s\">%s</guidance>", purpose, html.EscapeString(core.KnowledgePurposeGuidance(purpose))))
+				blocks = append(blocks, fmt.Sprintf("<guidance purpose=\"%s\">%s</guidance>", purpose, html.EscapeString(knowledge.KnowledgePurposeGuidance(purpose))))
 				break
 			}
 		}
@@ -789,7 +791,7 @@ type manualSearchResult struct {
 // The query is tokenized (lowercased, stop words removed) and each token must
 // appear in the name, description or tags.
 func (s SearchSkillsTool) searchManualKBs(ctx core.NbToolContext, dbms *common.DatabaseManager, query string) []manualSearchResult {
-	words := core.TokenizeForSkillSelection(query)
+	words := knowledge.TokenizeForSkillSelection(query)
 	if len(words) == 0 {
 		return nil
 	}
@@ -806,7 +808,7 @@ func (s SearchSkillsTool) searchManualKBs(ctx core.NbToolContext, dbms *common.D
 		args = append(args, "%"+word+"%")
 	}
 
-	scope, scopeArgs := core.KBAccountScope("kb", 1, len(args)+1, core.VisibleOrgKnowledgebaseIDs(ctx.Ctx.GetContext(), ctx.AccountId))
+	scope, scopeArgs := knowledge.KBAccountScope("kb", 1, len(args)+1, knowledge.VisibleOrgKnowledgebaseIDs(ctx.Ctx.GetContext(), ctx.AccountId))
 	args = append(args, scopeArgs...)
 	sqlQuery := fmt.Sprintf(`
 		SELECT kb.id, kb.name, COALESCE(kb.description, ''),

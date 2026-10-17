@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
@@ -280,7 +282,7 @@ func parseSearchToolsQuery(input toolcore.NBToolCallRequest) string {
 // exact-match weakness fixed in workflow_search's own ranking, one layer up, and
 // it takes the same fix.
 func scoreAndRankSearchTools(query string, candidates []searchToolCandidate, limit int) []searchToolCandidate {
-	tokens := toolcore.TokenizeForSkillSelection(query)
+	tokens := knowledge.TokenizeForSkillSelection(query)
 	if len(tokens) == 0 {
 		return nil
 	}
@@ -293,8 +295,8 @@ func scoreAndRankSearchTools(query string, candidates []searchToolCandidate, lim
 	for _, c := range candidates {
 		nameHay := strings.ToLower(c.name + " " + strings.Join(c.aliases, " "))
 		descHay := strings.ToLower(c.description)
-		nameTokens := toolcore.TokenizeForSkillSelection(nameHay)
-		descTokens := toolcore.TokenizeForSkillSelection(descHay)
+		nameTokens := knowledge.TokenizeForSkillSelection(nameHay)
+		descTokens := knowledge.TokenizeForSkillSelection(descHay)
 		score := 0
 		for _, tok := range tokens {
 			score += searchToolsFieldScore(nameHay, nameTokens, tok, searchToolsWeightName)

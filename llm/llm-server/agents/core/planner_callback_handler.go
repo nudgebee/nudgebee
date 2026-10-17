@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"nudgebee/llm/common"
+	"nudgebee/llm/knowledge"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -296,7 +297,7 @@ func skillReferenceMetadata(kind, tool string, ref toolcore.NBToolResponseRefere
 		limit := kbRefSnippetMaxChars
 		if kind == AgentReferenceKindKBDocument {
 			// Synced pages have no stored KB body, so this is all the panel can show.
-			limit = toolcore.MaxKnowledgeReferenceBytes
+			limit = knowledge.MaxKnowledgeReferenceBytes
 		}
 		metadata["content"] = TruncateHead(snippet, limit)
 	}

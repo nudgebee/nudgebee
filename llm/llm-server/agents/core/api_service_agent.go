@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"nudgebee/llm/knowledge"
+
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
@@ -321,7 +323,7 @@ func CreateCustomAgent(context *security.RequestContext, accountId string, agent
 
 	if len(rags) > 0 {
 		for _, rag := range rags {
-			_, ragErr := toolcore.CreateAgentRag(context, accountId, agent.Name, rag.Data, rag.Format, rag.Filename)
+			_, ragErr := knowledge.CreateAgentRag(context, accountId, agent.Name, rag.Data, rag.Format, rag.Filename)
 			if ragErr != nil {
 				getLogger(context).Error("agent: failed to create agent rag", "error", ragErr)
 			}

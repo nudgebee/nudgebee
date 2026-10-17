@@ -8,9 +8,10 @@ import (
 	"regexp"
 	"strings"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
-	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -19,7 +20,7 @@ import (
 // in tools/core because the LLM call needs this package's tiered, cache-scoped
 // invocation and token tracking, and tools/core cannot import this package.
 func init() {
-	toolcore.KBRerankFn = llmJudgeKBChunks
+	knowledge.KBRerankFn = llmJudgeKBChunks
 }
 
 // kbJudgeSystemPrompt is the STATIC (cacheable) instruction prefix, so it must
@@ -68,8 +69,8 @@ func llmJudgeKBChunks(
 	rc *security.RequestContext,
 	accountID, userID, conversationID, messageID, query string,
 	chunks []string,
-) (toolcore.KBRerankVerdict, bool) {
-	none := toolcore.KBRerankVerdict{Keep: toolcore.KBRerankNone}
+) (knowledge.KBRerankVerdict, bool) {
+	none := knowledge.KBRerankVerdict{Keep: knowledge.KBRerankNone}
 	if !config.Config.KBRerankEnabled || rc == nil || len(chunks) == 0 {
 		return none, false
 	}
@@ -126,8 +127,8 @@ func llmJudgeKBChunks(
 // here is relevant", the other is "I have no verdict, keep what you had". The
 // last usable object wins, so a model that reasons in JSON before concluding is
 // read by its conclusion.
-func parseKBJudgeVerdict(content string, n int) (toolcore.KBRerankVerdict, bool) {
-	none := toolcore.KBRerankVerdict{Keep: toolcore.KBRerankNone}
+func parseKBJudgeVerdict(content string, n int) (knowledge.KBRerankVerdict, bool) {
+	none := knowledge.KBRerankVerdict{Keep: knowledge.KBRerankNone}
 	matches := kbJudgeObjectRe.FindAllString(content, -1)
 	for i := len(matches) - 1; i >= 0; i-- {
 		var raw struct {
@@ -158,7 +159,7 @@ func parseKBJudgeVerdict(content string, n int) (toolcore.KBRerankVerdict, bool)
 				score = math.Max(0, math.Min(1, f))
 			}
 		}
-		return toolcore.KBRerankVerdict{Keep: best - 1, Score: score}, true
+		return knowledge.KBRerankVerdict{Keep: best - 1, Score: score}, true
 	}
 	return none, false
 }

@@ -12,6 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 )
@@ -36,7 +38,7 @@ type nudgebeeProviderErrorClassification struct {
 }
 
 var (
-	queryNudgebeeDocs                    = core.QueryRAGCollection
+	queryNudgebeeDocs                    = knowledge.QueryRAGCollection
 	nudgebeeNow                          = time.Now
 	nudgebeeHTMLTags                     = regexp.MustCompile(`(?i)</?[a-z](?:[^'">]|"[^"]*"|'[^']*')*?>`)
 	nudgebeeHTTPStatusCode               = regexp.MustCompile(`(?i)\b(?:http(?: status)?|status(?: code)?|response|returned|googleapi: error)\s*[:=]?\s*(401|403|502|503)\b`)
@@ -1054,13 +1056,13 @@ func (NudgebeeDocsSearchTool) Call(nbCtx core.NbToolContext, input core.NBToolCa
 
 	started := time.Now()
 	userID := nbCtx.Ctx.GetSecurityContext().EffectiveUserIdForRPC()
-	searchCtx, traceID := core.WithRetrievalTraceID(nbCtx.Ctx.GetContext())
+	searchCtx, traceID := knowledge.WithRetrievalTraceID(nbCtx.Ctx.GetContext())
 	results := queryNudgebeeDocs(
 		searchCtx, userID, nbCtx.AccountId, "", input.Command, nudgebeeDocsModule, "",
 		nudgebeeDocsResultLimit, nbCtx.ConversationId, nbCtx.MessageId,
 		nbCtx.ParentAgentId, true, map[string]any{"source": nudgebeeDocsSource},
 	)
-	results = core.JudgeKBResults(nbCtx.Ctx, nbCtx.AccountId, userID, nbCtx.ConversationId, nbCtx.MessageId, input.Command, results, traceID)
+	results = knowledge.JudgeKBResults(nbCtx.Ctx, nbCtx.AccountId, userID, nbCtx.ConversationId, nbCtx.MessageId, input.Command, results, traceID)
 	data, references, selected, truncated := formatNudgebeeDocsResults(results)
 	if nbCtx.Ctx != nil {
 		nbCtx.Ctx.GetLogger().Info("nudgebee: product docs search completed",
@@ -1078,7 +1080,7 @@ func (NudgebeeDocsSearchTool) Call(nbCtx core.NbToolContext, input core.NBToolCa
 	}, nil
 }
 
-func formatNudgebeeDocsResults(results core.RAGSearchResults) (string, []core.NBToolResponseReference, int, bool) {
+func formatNudgebeeDocsResults(results knowledge.RAGSearchResults) (string, []core.NBToolResponseReference, int, bool) {
 	var blocks []string
 	var references []core.NBToolResponseReference
 	seenDocuments := make(map[string]bool)

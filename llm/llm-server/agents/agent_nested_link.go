@@ -2,11 +2,12 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/knowledge"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
 
-var loadActiveGlobalContextFn = toolcore.LoadActiveGlobalContext
+var loadActiveGlobalContextFn = knowledge.LoadActiveGlobalContext
 
 // delegatedAccountContext is the Account Context a delegator (metrics, traces,
 // metrics_query) hands the provider agent it runs for accountId. A call that

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
@@ -801,7 +803,7 @@ func TestBuildResumeAgentRequestKeepsAccountContextFromDB(t *testing.T) {
 	}
 
 	ctx := security.NewRequestContextForTenantAdmin(tenant)
-	firstTurn := toolcore.LoadActiveGlobalContext(ctx, account)
+	firstTurn := knowledge.LoadActiveGlobalContext(ctx, account)
 	require.NotEmpty(t, firstTurn, "account has no active global context — pick one that does")
 
 	resumed := buildResumeAgentRequest(

@@ -5,10 +5,11 @@ import (
 	"log/slog"
 	"strings"
 
+	"nudgebee/llm/knowledge"
+
 	agentcore "nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
-	"nudgebee/llm/tools/core"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lib/pq"
@@ -105,14 +106,14 @@ type kbMapToAgentRequest struct {
 	AccountId string `json:"account_id"`
 	KbId      string `json:"kb_id"`
 	AgentId   string `json:"agent_id"`
-	// AlwaysLoad nil keeps the link's current flag; see core.MapKBToAgent.
+	// AlwaysLoad nil keeps the link's current flag; see knowledge.MapKBToAgent.
 	AlwaysLoad *bool `json:"always_load,omitempty"`
 }
 
 // kbAlwaysLoadStatus is 400 for a refused always-load request (#40899) and
 // 500 for anything else.
 func kbAlwaysLoadStatus(err error) int {
-	if core.IsAlwaysLoadRuleError(err) {
+	if knowledge.IsAlwaysLoadRuleError(err) {
 		return 400
 	}
 	return 500
@@ -196,8 +197,8 @@ func kbCreate(c *gin.Context, context *security.RequestContext, payload map[stri
 	}
 
 	visibility := request.Knowledgebase.Visibility
-	orgKB := visibility == core.KBVisibilityOrganisation || visibility == core.KBVisibilitySelectedAccounts
-	if visibility != "" && !core.ValidKBVisibility(visibility) {
+	orgKB := visibility == knowledge.KBVisibilityOrganisation || visibility == knowledge.KBVisibilitySelectedAccounts
+	if visibility != "" && !knowledge.ValidKBVisibility(visibility) {
 		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: invalid visibility")}))
 		return
 	}
@@ -216,7 +217,7 @@ func kbCreate(c *gin.Context, context *security.RequestContext, payload map[stri
 		return
 	}
 
-	kb := core.Knowledgebase{
+	kb := knowledge.Knowledgebase{
 		NoteCategory: request.Knowledgebase.NoteCategory,
 		ContextTags:  pq.StringArray(request.Knowledgebase.ContextTags),
 		Name:         request.Knowledgebase.Name,
@@ -226,11 +227,11 @@ func kbCreate(c *gin.Context, context *security.RequestContext, payload map[stri
 		DataFilename: request.Knowledgebase.FileName,
 	}
 
-	var resp core.Knowledgebase
+	var resp knowledge.Knowledgebase
 	if orgKB {
-		resp, err = core.CreateOrganisationKnowledgebase(context, kb, visibility, request.Knowledgebase.AccountIds)
+		resp, err = knowledge.CreateOrganisationKnowledgebase(context, kb, visibility, request.Knowledgebase.AccountIds)
 	} else {
-		resp, err = core.CreateKnowledgebase(context, request.AccountId, kb)
+		resp, err = knowledge.CreateKnowledgebase(context, request.AccountId, kb)
 	}
 	if err != nil {
 		slog.Error("kb: failed to create", "error", err, "account_id", request.AccountId)
@@ -261,7 +262,7 @@ func kbGet(c *gin.Context, context *security.RequestContext, payload map[string]
 
 	// A tenant admin reads an organisation KB without an account.
 	if request.AccountId == "" && context.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead) {
-		resp, err := core.GetOrganisationKnowledgebase(context, request.Id)
+		resp, err := knowledge.GetOrganisationKnowledgebase(context, request.Id)
 		if err != nil {
 			slog.Error("kb: failed to get organisation knowledge base", "error", err, "kb_id", request.Id)
 			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
@@ -285,7 +286,7 @@ func kbGet(c *gin.Context, context *security.RequestContext, payload map[string]
 		return
 	}
 
-	resp, err := core.GetKnowledgebase(context, request.AccountId, request.Id)
+	resp, err := knowledge.GetKnowledgebase(context, request.AccountId, request.Id)
 	if err != nil {
 		slog.Error("kb: failed to get", "error", err, "kb_id", request.Id)
 		c.JSON(500, buildApiResponse(nil, []error{
@@ -313,7 +314,7 @@ func kbList(c *gin.Context, context *security.RequestContext, payload map[string
 	// read; the service layer row-filters by HasAccountAccess so each
 	// caller only sees KBs they're allowed to read.
 	if request.AccountId == "" {
-		resp, err := core.ListKnowledgebasesForTenant(context)
+		resp, err := knowledge.ListKnowledgebasesForTenant(context)
 		if err != nil {
 			slog.Error("kb: failed to list tenant-wide", "error", err,
 				"tenant_id", context.GetSecurityContext().GetTenantId())
@@ -335,7 +336,7 @@ func kbList(c *gin.Context, context *security.RequestContext, payload map[string
 		return
 	}
 
-	resp, err := core.ListKnowledgebases(context, request.AccountId)
+	resp, err := knowledge.ListKnowledgebases(context, request.AccountId)
 	if err != nil {
 		slog.Error("kb: failed to list", "error", err, "account_id", request.AccountId)
 		c.JSON(500, buildApiResponse(nil, []error{
@@ -377,7 +378,7 @@ func kbUpdate(c *gin.Context, context *security.RequestContext, payload map[stri
 		return
 	}
 
-	updates := core.Knowledgebase{
+	updates := knowledge.Knowledgebase{
 		NoteCategory: request.Knowledgebase.NoteCategory,
 		ContextTags:  pq.StringArray(request.Knowledgebase.ContextTags),
 		Name:         request.Knowledgebase.Name,
@@ -387,7 +388,7 @@ func kbUpdate(c *gin.Context, context *security.RequestContext, payload map[stri
 		DataFilename: request.Knowledgebase.FileName,
 	}
 
-	err = core.UpdateKnowledgebase(context, request.AccountId, request.Knowledgebase.Id, updates)
+	err = knowledge.UpdateKnowledgebase(context, request.AccountId, request.Knowledgebase.Id, updates)
 	if err != nil {
 		slog.Error("kb: failed to update", "error", err, "kb_id", request.Knowledgebase.Id)
 		c.JSON(kbAlwaysLoadStatus(err), buildApiResponse(nil, []error{
@@ -437,7 +438,7 @@ func kbUpdateEnabled(c *gin.Context, context *security.RequestContext, payload m
 		return
 	}
 
-	err = core.SetKnowledgebaseEnabled(context, request.AccountId, request.KbId, *request.Enabled)
+	err = knowledge.SetKnowledgebaseEnabled(context, request.AccountId, request.KbId, *request.Enabled)
 	if err != nil {
 		slog.Error("kb: failed to set enabled", "error", err, "kb_id", request.KbId)
 		c.JSON(500, buildApiResponse(nil, []error{
@@ -479,7 +480,7 @@ func kbDelete(c *gin.Context, context *security.RequestContext, payload map[stri
 		return
 	}
 
-	err = core.DeleteKnowledgebase(context, request.AccountId, request.Id)
+	err = knowledge.DeleteKnowledgebase(context, request.AccountId, request.Id)
 	if err != nil {
 		slog.Error("kb: failed to delete", "error", err, "kb_id", request.Id)
 		c.JSON(500, buildApiResponse(nil, []error{
@@ -521,7 +522,7 @@ func kbListAgentKBs(c *gin.Context, context *security.RequestContext, payload ma
 		return
 	}
 
-	resp, err := core.ListAgentKBs(context, request.AccountId, request.AgentId)
+	resp, err := knowledge.ListAgentKBs(context, request.AccountId, request.AgentId)
 	if err != nil {
 		slog.Error("kb: failed to list agent KBs", "error", err, "agent_id", request.AgentId)
 		c.JSON(500, buildApiResponse(nil, []error{
@@ -568,7 +569,7 @@ func kbMapToAgent(c *gin.Context, context *security.RequestContext, payload map[
 		return
 	}
 
-	resp, err := core.MapKBToAgent(context, request.AccountId, request.KbId, request.AgentId, request.AlwaysLoad)
+	resp, err := knowledge.MapKBToAgent(context, request.AccountId, request.KbId, request.AgentId, request.AlwaysLoad)
 	if err != nil {
 		slog.Error("kb: failed to map KB to agent", "error", err, "kb_id", request.KbId, "agent_id", request.AgentId)
 		c.JSON(kbAlwaysLoadStatus(err), buildApiResponse(nil, []error{
@@ -615,7 +616,7 @@ func kbUnmapFromAgent(c *gin.Context, context *security.RequestContext, payload 
 		return
 	}
 
-	err = core.UnmapKBFromAgent(context, request.AccountId, request.KbId, request.AgentId)
+	err = knowledge.UnmapKBFromAgent(context, request.AccountId, request.KbId, request.AgentId)
 	if err != nil {
 		slog.Error("kb: failed to unmap KB from agent", "error", err, "kb_id", request.KbId, "agent_id", request.AgentId)
 		c.JSON(500, buildApiResponse(nil, []error{
@@ -652,7 +653,7 @@ func kbListAgentsWithCounts(c *gin.Context, context *security.RequestContext, pa
 		return
 	}
 
-	resp, err := core.ListAgentsWithKBCounts(context, request.AccountId)
+	resp, err := knowledge.ListAgentsWithKBCounts(context, request.AccountId)
 	if err != nil {
 		slog.Error("kb: failed to list agents with KB counts", "error", err)
 		c.JSON(500, buildApiResponse(nil, []error{
@@ -689,7 +690,7 @@ func kbListMappings(c *gin.Context, context *security.RequestContext, payload ma
 		return
 	}
 
-	resp, err := core.ListKBAgentMappings(context, request.AccountId)
+	resp, err := knowledge.ListKBAgentMappings(context, request.AccountId)
 	if err != nil {
 		slog.Error("kb: failed to list KB-agent mappings", "error", err)
 		c.JSON(500, buildApiResponse(nil, []error{
@@ -731,7 +732,7 @@ func kbListKBAgents(c *gin.Context, context *security.RequestContext, payload ma
 		return
 	}
 
-	resp, err := core.ListKBAgents(context, request.AccountId, request.KbId)
+	resp, err := knowledge.ListKBAgents(context, request.AccountId, request.KbId)
 	if err != nil {
 		slog.Error("kb: failed to list KB agents", "error", err, "kb_id", request.KbId)
 		c.JSON(500, buildApiResponse(nil, []error{
@@ -759,7 +760,7 @@ func kbGetLoadHistory(c *gin.Context, context *security.RequestContext, payload 
 		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
-	resp, err := core.GetKBLoadHistory(context, request.AccountId, request.KbId)
+	resp, err := knowledge.GetKBLoadHistory(context, request.AccountId, request.KbId)
 	if err != nil {
 		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
@@ -795,7 +796,7 @@ func kbListDocuments(c *gin.Context, context *security.RequestContext, payload m
 		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
-	resp, err := core.ListKBDocuments(context, request.AccountId, request.KbId, request.Limit, request.Offset)
+	resp, err := knowledge.ListKBDocuments(context, request.AccountId, request.KbId, request.Limit, request.Offset)
 	if err != nil {
 		slog.Error("kb: failed to list documents", "error", err, "kb_id", request.KbId)
 		c.JSON(kbDocumentsStatus(err), buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
@@ -819,7 +820,7 @@ func kbGetDocument(c *gin.Context, context *security.RequestContext, payload map
 		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
-	resp, err := core.GetKBDocument(context, request.AccountId, request.KbId, request.DocumentId)
+	resp, err := knowledge.GetKBDocument(context, request.AccountId, request.KbId, request.DocumentId)
 	if err != nil {
 		slog.Error("kb: failed to get document", "error", err, "kb_id", request.KbId)
 		c.JSON(kbDocumentsStatus(err), buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
@@ -843,7 +844,7 @@ func kbGetDocumentSource(c *gin.Context, context *security.RequestContext, paylo
 		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
-	resp, err := core.GetKBDocumentSource(context, request.AccountId, request.KbId, request.ContentHash)
+	resp, err := knowledge.GetKBDocumentSource(context, request.AccountId, request.KbId, request.ContentHash)
 	if err != nil {
 		slog.Error("kb: failed to get document source", "error", err, "kb_id", request.KbId)
 		c.JSON(kbDocumentsStatus(err), buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
@@ -867,7 +868,7 @@ func kbListRunDocuments(c *gin.Context, context *security.RequestContext, payloa
 		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
-	resp, err := core.ListKBRunDocuments(
+	resp, err := knowledge.ListKBRunDocuments(
 		context, request.AccountId, request.KbId, request.RunId, request.Limit, request.Offset)
 	if err != nil {
 		slog.Error("kb: failed to list run documents", "error", err, "kb_id", request.KbId)
@@ -922,7 +923,7 @@ func kbUpdateVisibility(c *gin.Context, context *security.RequestContext, payloa
 		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
-	if request.KbId == "" || !core.ValidKBVisibility(request.Visibility) {
+	if request.KbId == "" || !knowledge.ValidKBVisibility(request.Visibility) {
 		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: kb_id and a valid visibility are required")}))
 		return
 	}
@@ -930,7 +931,7 @@ func kbUpdateVisibility(c *gin.Context, context *security.RequestContext, payloa
 		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
-	resp, err := core.SetKnowledgebaseVisibility(context, request.KbId, request.Visibility, request.AccountIds, request.TargetAccountId)
+	resp, err := knowledge.SetKnowledgebaseVisibility(context, request.KbId, request.Visibility, request.AccountIds, request.TargetAccountId)
 	if err != nil {
 		slog.Error("kb: failed to change visibility", "error", err, "kb_id", request.KbId)
 		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
@@ -956,7 +957,7 @@ func kbUpdateAccountOverride(c *gin.Context, context *security.RequestContext, p
 		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
-	if err := core.SetKBAccountOverride(context, request.AccountId, request.KbId, *request.Enabled); err != nil {
+	if err := knowledge.SetKBAccountOverride(context, request.AccountId, request.KbId, *request.Enabled); err != nil {
 		slog.Error("kb: failed to set account override", "error", err, "kb_id", request.KbId)
 		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
@@ -975,7 +976,7 @@ func kbListAccountOverrides(c *gin.Context, context *security.RequestContext, pa
 		c.JSON(400, buildApiResponse(nil, []error{errors.New("kb: kb_id is required")}))
 		return
 	}
-	resp, err := core.ListKBAccountOverrides(context, request.KbId)
+	resp, err := knowledge.ListKBAccountOverrides(context, request.KbId)
 	if err != nil {
 		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
@@ -998,7 +999,7 @@ func kbRetrigger(c *gin.Context, context *security.RequestContext, payload map[s
 		c.JSON(403, buildApiResponse(nil, []error{common.Error{Message: errorKBUserAccessMessage}}))
 		return
 	}
-	err := core.RetriggerKnowledgebase(context, request.AccountId, request.KbId)
+	err := knowledge.RetriggerKnowledgebase(context, request.AccountId, request.KbId)
 	if err != nil {
 		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return

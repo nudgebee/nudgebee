@@ -6,12 +6,13 @@ import (
 	"log/slog"
 	"net/http"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/analytics"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
-	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -146,7 +147,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 
-		activity, err := toolcore.GetKnowledgeActivity(agentContext, request.AccountId, request.ConversationId, request.MessageIds)
+		activity, err := knowledge.GetKnowledgeActivity(agentContext, request.AccountId, request.ConversationId, request.MessageIds)
 		if err != nil {
 			agentContext.GetLogger().Error("knowledge activity: lookup failed", "error", err,
 				"conversation_id", request.ConversationId)

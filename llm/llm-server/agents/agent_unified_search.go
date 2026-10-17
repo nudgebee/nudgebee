@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
@@ -520,7 +522,7 @@ func (a UnifiedSearchAgent) searchSkills(ctx *security.RequestContext, request c
 	// We use QueryRAGCollection to target specific module/collection if needed.
 	// Here we use QueryRAG which takes module.
 
-	results := toolcore.QueryRAG(request.UserId, request.AccountId, query, "skills", 3, request.ConversationId, request.MessageId, request.AgentId, true)
+	results := knowledge.QueryRAG(request.UserId, request.AccountId, query, "skills", 3, request.ConversationId, request.MessageId, request.AgentId, true)
 
 	if len(results) == 0 {
 		return "", nil

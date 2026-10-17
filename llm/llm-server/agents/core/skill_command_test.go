@@ -5,20 +5,21 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/llm/knowledge"
+
 	"github.com/stretchr/testify/assert"
 
 	"nudgebee/llm/security"
-	toolcore "nudgebee/llm/tools/core"
 )
 
-func stubSkillsForCommand(t *testing.T, skills map[string]toolcore.SkillCommand, err error) *[]string {
+func stubSkillsForCommand(t *testing.T, skills map[string]knowledge.SkillCommand, err error) *[]string {
 	t.Helper()
 	orig := getSkillsForCommandFn
 	t.Cleanup(func() { getSkillsForCommandFn = orig })
 	var looked []string
-	getSkillsForCommandFn = func(_ *security.RequestContext, _ string, names []string) (map[string]toolcore.SkillCommand, error) {
+	getSkillsForCommandFn = func(_ *security.RequestContext, _ string, names []string) (map[string]knowledge.SkillCommand, error) {
 		looked = append(looked, names...)
-		out := map[string]toolcore.SkillCommand{}
+		out := map[string]knowledge.SkillCommand{}
 		for _, n := range names {
 			if s, ok := skills[strings.ToLower(n)]; ok {
 				out[strings.ToLower(n)] = s
@@ -30,7 +31,7 @@ func stubSkillsForCommand(t *testing.T, skills map[string]toolcore.SkillCommand,
 }
 
 func TestEvalSkillCommand(t *testing.T) {
-	skills := map[string]toolcore.SkillCommand{
+	skills := map[string]knowledge.SkillCommand{
 		"pod-triage":  {ID: "kb-1", Name: "Pod triage", Data: "Check restarts, then events."},
 		"db-failover": {ID: "kb-2", Name: "DB failover", Data: "Promote the replica."},
 	}
@@ -80,8 +81,8 @@ func TestEvalSkillCommand_LookupErrorKeepsMessage(t *testing.T) {
 }
 
 func TestEvalSkillCommand_CutsLongSkill(t *testing.T) {
-	stubSkillsForCommand(t, map[string]toolcore.SkillCommand{
-		"big": {ID: "kb-2", Name: "Big", Data: strings.Repeat("é", toolcore.SkillCommandMaxChars+5)},
+	stubSkillsForCommand(t, map[string]knowledge.SkillCommand{
+		"big": {ID: "kb-2", Name: "Big", Data: strings.Repeat("é", knowledge.SkillCommandMaxChars+5)},
 	}, nil)
 	got, _ := evalSkillCommand(security.NewRequestContextForSuperAdmin(), NBAgentRequest{AccountId: "acc-1", Query: "/big go"})
 	assert.Contains(t, got.Query, `[Cut at 16000 characters. Load the skill "Big" to read the rest.]`)
@@ -89,11 +90,11 @@ func TestEvalSkillCommand_CutsLongSkill(t *testing.T) {
 }
 
 func TestEvalSkillCommand_ReturnsLoadedSkillsOnce(t *testing.T) {
-	stubSkillsForCommand(t, map[string]toolcore.SkillCommand{
+	stubSkillsForCommand(t, map[string]knowledge.SkillCommand{
 		"pod-triage": {ID: "kb-1", Name: "Pod triage", Data: "x"},
 	}, nil)
 	_, used := evalSkillCommand(security.NewRequestContextForSuperAdmin(), NBAgentRequest{AccountId: "acc-1", Query: "/pod-triage api, then /pod-triage web /nope"})
-	assert.Equal(t, []toolcore.SkillCommand{{ID: "kb-1", Name: "Pod triage", Data: "x"}}, used)
+	assert.Equal(t, []knowledge.SkillCommand{{ID: "kb-1", Name: "Pod triage", Data: "x"}}, used)
 }
 
 func TestSaveSkillCommandReferences(t *testing.T) {
@@ -108,7 +109,7 @@ func TestSaveSkillCommandReferences(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
 
 	saveSkillCommandReferences(ctx, NBAgentRequest{AccountId: "acc-1", MessageId: "msg-1"}, "conv-1",
-		[]toolcore.SkillCommand{{ID: "kb-1", Name: "Pod triage"}})
+		[]knowledge.SkillCommand{{ID: "kb-1", Name: "Pod triage"}})
 	assert.Equal(t, "msg-1", savedMessage)
 	assert.Equal(t, []AgentReference{{
 		Type:        AgentReferenceTypeKB,
@@ -117,6 +118,6 @@ func TestSaveSkillCommandReferences(t *testing.T) {
 	}}, saved)
 
 	saved = nil
-	saveSkillCommandReferences(ctx, NBAgentRequest{AccountId: "acc-1"}, "conv-1", []toolcore.SkillCommand{{ID: "kb-1"}})
+	saveSkillCommandReferences(ctx, NBAgentRequest{AccountId: "acc-1"}, "conv-1", []knowledge.SkillCommand{{ID: "kb-1"}})
 	assert.Nil(t, saved, "no message id, nothing to attach to")
 }

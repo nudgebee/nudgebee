@@ -6,11 +6,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"nudgebee/llm/common"
-	_ "nudgebee/llm/security"
-	"nudgebee/llm/tools/core"
 	"strings"
 	"time"
+
+	"nudgebee/llm/common"
+	"nudgebee/llm/knowledge"
+	_ "nudgebee/llm/security"
+	"nudgebee/llm/tools/core"
 
 	"github.com/samber/lo"
 	"github.com/tmc/langchaingo/schema"
@@ -93,9 +95,9 @@ func searchDocumentation(nbRequestContext core.NbToolContext, query string) (str
 	// in rag-server, so this one call covers every searchable source. Falls
 	// back to live Confluence below when the index has zero hits.
 	var refs []string
-	searchCtx, traceID := core.WithRetrievalTraceID(nbRequestContext.Ctx.GetContext())
-	document := core.QueryRAGCollection(searchCtx, nbRequestContext.UserId, nbRequestContext.AccountId, "", query, "knowledge_base", "", 3, nbRequestContext.ConversationId, nbRequestContext.MessageId, nbRequestContext.ParentAgentId, true)
-	document = core.JudgeKBResults(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.UserId,
+	searchCtx, traceID := knowledge.WithRetrievalTraceID(nbRequestContext.Ctx.GetContext())
+	document := knowledge.QueryRAGCollection(searchCtx, nbRequestContext.UserId, nbRequestContext.AccountId, "", query, "knowledge_base", "", 3, nbRequestContext.ConversationId, nbRequestContext.MessageId, nbRequestContext.ParentAgentId, true)
+	document = knowledge.JudgeKBResults(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.UserId,
 		nbRequestContext.ConversationId, nbRequestContext.MessageId, query, document, traceID)
 	if len(document) > 0 {
 		for _, doc := range document {

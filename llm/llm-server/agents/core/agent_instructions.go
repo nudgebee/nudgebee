@@ -5,8 +5,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/security"
-	toolcore "nudgebee/llm/tools/core"
 )
 
 // Text an agent always gets (#40899) is the skills linked to it with "always
@@ -22,7 +23,7 @@ import (
 // InheritSkillsFromAgents and run the provider agent for the queried account,
 // so the provider gets the parent's skills and its own, once each.
 
-var listAlwaysLoadSkillsFn = toolcore.ListAlwaysLoadSkills
+var listAlwaysLoadSkillsFn = knowledge.ListAlwaysLoadSkills
 
 // resolveAgentInstructions returns the always-on text for an agent and the ids
 // of the skills in it in full (a cut skill stays searchable). Inherited (parent) names come first, then the agent's
@@ -35,7 +36,7 @@ func resolveAgentInstructions(ctx *security.RequestContext, accountId string, ow
 	seenName := make(map[string]bool, cap(names))
 	for _, list := range [][]string{inheritedNames, ownNames} {
 		for _, n := range list {
-			if n == "" || n == toolcore.KBAgentWildcard || seenName[n] {
+			if n == "" || n == knowledge.KBAgentWildcard || seenName[n] {
 				continue
 			}
 			seenName[n] = true
@@ -59,14 +60,14 @@ func resolveAgentInstructions(ctx *security.RequestContext, accountId string, ow
 		if body == "" {
 			continue
 		}
-		if utf8.RuneCountInString(body) > toolcore.AlwaysLoadMaxChars {
+		if utf8.RuneCountInString(body) > knowledge.AlwaysLoadMaxChars {
 			// Saves refuse marking a skill over the cap, so this only happens when
 			// the row was changed some other way. Say the text is cut and leave the
 			// skill searchable, so the model can still read the rest.
 			ctx.GetLogger().Warn("agent_instructions: always-load skill over the size cap, truncating",
-				"kb_id", s.ID, "chars", utf8.RuneCountInString(body), "cap", toolcore.AlwaysLoadMaxChars)
-			body = body[:runeByteOffset(body, toolcore.AlwaysLoadMaxChars)] +
-				fmt.Sprintf("\n[Cut at %d characters. Search the knowledge base for %q to read the rest.]", toolcore.AlwaysLoadMaxChars, s.Name)
+				"kb_id", s.ID, "chars", utf8.RuneCountInString(body), "cap", knowledge.AlwaysLoadMaxChars)
+			body = body[:runeByteOffset(body, knowledge.AlwaysLoadMaxChars)] +
+				fmt.Sprintf("\n[Cut at %d characters. Search the knowledge base for %q to read the rest.]", knowledge.AlwaysLoadMaxChars, s.Name)
 		} else {
 			ids = append(ids, s.ID)
 		}

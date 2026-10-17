@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"strings"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/security"
-	toolcore "nudgebee/llm/tools/core"
 )
 
 // KBRetrievalProbeDoc is one retrieved document as the probe reports it.
@@ -116,7 +117,7 @@ func ProbeKBRetrieval(ctx *security.RequestContext, accountId, agentId, kbId, qu
 	}
 
 	// Scope: one knowledge base, an agent's mapped KBs, else the whole account.
-	var kbs []toolcore.Knowledgebase
+	var kbs []knowledge.Knowledgebase
 	var scopedCollection string
 	var err error
 	switch {
@@ -128,7 +129,7 @@ func ProbeKBRetrieval(ctx *security.RequestContext, accountId, agentId, kbId, qu
 		// Resolving through the account's OWN list is what stops this being a
 		// read primitive for someone else's knowledge base: an id the account
 		// does not own simply is not found.
-		var scoped *toolcore.Knowledgebase
+		var scoped *knowledge.Knowledgebase
 		for i := range acctKBs {
 			if acctKBs[i].Id == kbId {
 				scoped = &acctKBs[i]
@@ -143,9 +144,9 @@ func ProbeKBRetrieval(ctx *security.RequestContext, accountId, agentId, kbId, qu
 			return result, fmt.Errorf("kb_probe: knowledge base %q has no searchable collection", scoped.Name)
 		}
 		scopedCollection = collection
-		kbs = []toolcore.Knowledgebase{*scoped}
+		kbs = []knowledge.Knowledgebase{*scoped}
 	case agentId != "":
-		kbs, err = toolcore.ListAgentKBs(ctx, accountId, agentId)
+		kbs, err = knowledge.ListAgentKBs(ctx, accountId, agentId)
 	default:
 		kbs, err = listAccountKBsFn(ctx, accountId)
 	}
@@ -159,17 +160,17 @@ func ProbeKBRetrieval(ctx *security.RequestContext, accountId, agentId, kbId, qu
 	userId := ctx.GetSecurityContext().GetUserId()
 	queryCtx, cancel := context.WithTimeout(ctx.GetContext(), kbPrestepTimeout())
 	defer cancel()
-	ch := make(chan toolcore.RAGSearchResults, 1)
+	ch := make(chan knowledge.RAGSearchResults, 1)
 	go func() {
 		if scopedCollection != "" {
-			ch <- toolcore.QueryRAGCollectionReranked(queryCtx, userId, accountId, query,
+			ch <- knowledge.QueryRAGCollectionReranked(queryCtx, userId, accountId, query,
 				"knowledge_base", scopedCollection, kbPrestepTopK, "", "", agentId, false)
 			return
 		}
-		ch <- toolcore.QueryRAGRerankedContext(queryCtx, userId, accountId, query,
+		ch <- knowledge.QueryRAGRerankedContext(queryCtx, userId, accountId, query,
 			"knowledge_base", kbPrestepTopK, "", "", agentId, false)
 	}()
-	var docs toolcore.RAGSearchResults
+	var docs knowledge.RAGSearchResults
 	select {
 	case docs = <-ch:
 	case <-queryCtx.Done():
@@ -241,7 +242,7 @@ func ProbeKBRetrieval(ctx *security.RequestContext, accountId, agentId, kbId, qu
 //
 // The second return is the set of KB ids that actually contributed a document,
 // used to mark the in-scope knowledge bases that matched nothing.
-func buildProbeDocuments(kept toolcore.RAGSearchResults, refs []AgentReference, attributed toolcore.RAGSearchResults, judgedKeys map[string]struct{}) ([]KBRetrievalProbeDoc, map[string]struct{}) {
+func buildProbeDocuments(kept knowledge.RAGSearchResults, refs []AgentReference, attributed knowledge.RAGSearchResults, judgedKeys map[string]struct{}) ([]KBRetrievalProbeDoc, map[string]struct{}) {
 	injectedKeys := make(map[string]int, len(attributed))
 	for i, doc := range attributed {
 		injectedKeys[ragDocDedupKey(doc)] = i
@@ -300,7 +301,7 @@ func buildProbeDocuments(kept toolcore.RAGSearchResults, refs []AgentReference, 
 // mirrors matchKB's own guard (UsableForAgents: active AND not switched off)
 // so the panel cannot claim a KB "contributed nothing" when attribution would
 // have skipped it regardless of the question.
-func summarizeCandidates(candidates []toolcore.Knowledgebase, matchedKBIds map[string]struct{}) []KBRetrievalProbeKB {
+func summarizeCandidates(candidates []knowledge.Knowledgebase, matchedKBIds map[string]struct{}) []KBRetrievalProbeKB {
 	out := make([]KBRetrievalProbeKB, 0, len(candidates))
 	for _, kb := range candidates {
 		_, matched := matchedKBIds[kb.Id]
@@ -326,7 +327,7 @@ func summarizeCandidates(candidates []toolcore.Knowledgebase, matchedKBIds map[s
 //
 // Returns false when the knowledge base has no collection of its own — an
 // integration KB with no integration id is reachable only via attribution.
-func kbCollectionName(kb toolcore.Knowledgebase) (string, bool) {
+func kbCollectionName(kb knowledge.Knowledgebase) (string, bool) {
 	if kb.KBType == "integration" {
 		if kb.IntegrationId == nil || strings.TrimSpace(*kb.IntegrationId) == "" {
 			return "", false
@@ -343,8 +344,8 @@ func kbCollectionName(kb toolcore.Knowledgebase) (string, bool) {
 // collection. Documents carrying NO collection tag are kept: the tag comes from
 // rag-server's search layer, and dropping untagged documents would silently
 // discard content on any deployment that stops stamping it.
-func filterDocsToCollection(docs toolcore.RAGSearchResults, collection string) toolcore.RAGSearchResults {
-	out := make(toolcore.RAGSearchResults, 0, len(docs))
+func filterDocsToCollection(docs knowledge.RAGSearchResults, collection string) knowledge.RAGSearchResults {
+	out := make(knowledge.RAGSearchResults, 0, len(docs))
 	for _, doc := range docs {
 		name, stamped := docCollection(doc)
 		if stamped && !strings.EqualFold(name, collection) {

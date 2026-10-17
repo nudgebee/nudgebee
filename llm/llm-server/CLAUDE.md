@@ -134,6 +134,7 @@ Not strictly enforced (no `.golangci.yml` config). Follow stdlib → external �
 - **`cmd/`** — application entry point, server initialization
 - **`api/`** — HTTP API handlers (conversations, agents, tools, RAG, events)
 - **`analytics/`** — AI Cost Analyser and cost-report reads plus their HTTP handlers (imports `agents/core`, never the reverse)
+- **`knowledge/`** — knowledge bases and skills: CRUD, integration sync, documents, RAG client, global context, skill selection (imports `tools/core`; `tools/core` never imports it)
 - **`agents/`** — autonomous agent implementations (190+ agent files)
 - **`agents/core/`** — agent framework: planner, executor, critiquer logic
 - **`prompts/`** — all system prompts as YAML under `prompts/default/v1/` (Go-embedded via `prompts/loader.go`)

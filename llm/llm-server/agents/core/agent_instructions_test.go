@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/llm/knowledge"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/prompts"
@@ -12,12 +14,12 @@ import (
 	toolcore "nudgebee/llm/tools/core"
 )
 
-func stubAlwaysLoadSkills(t *testing.T, skills []toolcore.AlwaysLoadSkill) *[]string {
+func stubAlwaysLoadSkills(t *testing.T, skills []knowledge.AlwaysLoadSkill) *[]string {
 	t.Helper()
 	orig := listAlwaysLoadSkillsFn
 	t.Cleanup(func() { listAlwaysLoadSkillsFn = orig })
 	var queried []string
-	listAlwaysLoadSkillsFn = func(_ *security.RequestContext, _ string, names []string) ([]toolcore.AlwaysLoadSkill, error) {
+	listAlwaysLoadSkillsFn = func(_ *security.RequestContext, _ string, names []string) ([]knowledge.AlwaysLoadSkill, error) {
 		queried = append(queried, names...)
 		return skills, nil
 	}
@@ -25,14 +27,14 @@ func stubAlwaysLoadSkills(t *testing.T, skills []toolcore.AlwaysLoadSkill) *[]st
 }
 
 func TestResolveAgentInstructions_ParentNamesFirst(t *testing.T) {
-	queried := stubAlwaysLoadSkills(t, []toolcore.AlwaysLoadSkill{
+	queried := stubAlwaysLoadSkills(t, []knowledge.AlwaysLoadSkill{
 		{ID: "kb-parent", Name: "ES setup", AgentId: "metrics", Data: "metrics live in ccs-self:metrics-*"},
 		{ID: "kb-own", Name: "Units", AgentId: "elastic_search_metrics", Data: "report latency in ms"},
 	})
 	ctx := security.NewRequestContextForSuperAdmin()
 
 	text, ids := resolveAgentInstructions(ctx, "acc-1",
-		[]string{"elastic_search_metrics", toolcore.KBAgentWildcard, "metrics"}, []string{"metrics"})
+		[]string{"elastic_search_metrics", knowledge.KBAgentWildcard, "metrics"}, []string{"metrics"})
 
 	assert.Equal(t, []string{"kb-parent", "kb-own"}, ids)
 	assert.Equal(t, []string{"metrics", "elastic_search_metrics"}, *queried, "parent first, deduped, wildcard never looked up")
@@ -41,20 +43,20 @@ func TestResolveAgentInstructions_ParentNamesFirst(t *testing.T) {
 }
 
 func TestResolveAgentInstructions_SkipsEmptyAndCaps(t *testing.T) {
-	long := strings.Repeat("é", toolcore.AlwaysLoadMaxChars+10)
-	stubAlwaysLoadSkills(t, []toolcore.AlwaysLoadSkill{
+	long := strings.Repeat("é", knowledge.AlwaysLoadMaxChars+10)
+	stubAlwaysLoadSkills(t, []knowledge.AlwaysLoadSkill{
 		{ID: "kb-long", Name: "Long", AgentId: "metrics", Data: long},
 		{ID: "kb-empty", Name: "Empty", AgentId: "metrics", Data: "   "},
 	})
 	text, ids := resolveAgentInstructions(security.NewRequestContextForSuperAdmin(), "acc-1", []string{"metrics"}, nil)
 
 	assert.Empty(t, ids, "an empty skill adds nothing; a cut skill stays searchable")
-	assert.Equal(t, toolcore.AlwaysLoadMaxChars, strings.Count(text, "é"))
+	assert.Equal(t, knowledge.AlwaysLoadMaxChars, strings.Count(text, "é"))
 	assert.Contains(t, text, `[Cut at 4000 characters. Search the knowledge base for "Long" to read the rest.]`)
 }
 
 func TestResolveAgentInstructions_NoAccount(t *testing.T) {
-	queried := stubAlwaysLoadSkills(t, []toolcore.AlwaysLoadSkill{{ID: "x", AgentId: "metrics", Data: "x"}})
+	queried := stubAlwaysLoadSkills(t, []knowledge.AlwaysLoadSkill{{ID: "x", AgentId: "metrics", Data: "x"}})
 	text, ids := resolveAgentInstructions(security.NewRequestContextForSuperAdmin(), "", []string{"metrics"}, nil)
 	assert.Empty(t, text)
 	assert.Empty(t, ids)
@@ -100,11 +102,11 @@ func TestReAct3_AgentInstructionsInSystemExactlyOnce(t *testing.T) {
 }
 
 func TestKnowledgeDiscovery_SkipsAlwaysLoadedKBs(t *testing.T) {
-	kbs := []toolcore.Knowledgebase{{Id: "a"}, {Id: "b"}}
-	assert.Equal(t, []toolcore.Knowledgebase{{Id: "b"}}, withoutKBs(kbs, []string{"a"}))
+	kbs := []knowledge.Knowledgebase{{Id: "a"}, {Id: "b"}}
+	assert.Equal(t, []knowledge.Knowledgebase{{Id: "b"}}, withoutKBs(kbs, []string{"a"}))
 	assert.Equal(t, kbs, withoutKBs(kbs, nil))
 
-	docs := toolcore.RAGSearchResults{
+	docs := knowledge.RAGSearchResults{
 		{Document: "pinned", Metadata: map[string]any{"collection": "kb_a"}},
 		{Document: "other", Metadata: map[string]any{"collection": "kb_b"}},
 		{Document: "global", Metadata: map[string]any{}},

@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
-	"nudgebee/llm/common"
-	"nudgebee/llm/tools/core"
 	"testing"
+
+	"nudgebee/llm/common"
+	"nudgebee/llm/knowledge"
+	"nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -70,7 +72,7 @@ func TestProcessCacheInvalidationMessage_DedupsAccountIds(t *testing.T) {
 
 func TestProcessCacheInvalidationMessage_KnowledgeBaseChangeClearsSkillCaches(t *testing.T) {
 	const key = "skill:acct-org-kb-test:db failover"
-	assert.NoError(t, common.CacheSet(core.CacheNamespaceLlmSkillContent, key, []byte(`{"id":"org-kb"}`)))
+	assert.NoError(t, common.CacheSet(knowledge.CacheNamespaceLlmSkillContent, key, []byte(`{"id":"org-kb"}`)))
 	const accountId = "acct-org-kb-mcp"
 	core.SetMCPIntegrationToolCache(accountId, []core.NBTool{})
 	defer core.ClearMCPIntegrationToolCache(accountId)
@@ -78,7 +80,7 @@ func TestProcessCacheInvalidationMessage_KnowledgeBaseChangeClearsSkillCaches(t 
 	err := processCacheInvalidationMessage(context.Background(), []byte(`{"knowledge_bases":true,"tenant_id":"tenant-1","account_ids":["`+accountId+`"]}`))
 	assert.NoError(t, err)
 
-	_, found := common.CacheGet(core.CacheNamespaceLlmSkillContent, key)
+	_, found := common.CacheGet(knowledge.CacheNamespaceLlmSkillContent, key)
 	assert.False(t, found, "skill body cache should be cleared for every account")
 	_, present := core.GetMCPIntegrationToolCache(accountId)
 	assert.True(t, present, "a knowledge base change must not run the integration refresh")
