@@ -63,3 +63,23 @@ func TestPromChartNotes_UnconvertedValues(t *testing.T) {
 		assert.Contains(t, string(c), `"data":[1.5,2.5]`)
 	}
 }
+
+// Units come from the metric name only when nothing in the query changes them.
+func TestPromChartFormat(t *testing.T) {
+	for query, want := range map[string]string{
+		`container_memory_working_set_bytes{namespace="x"}`:                                     "bytes",
+		`sum by (pod) (container_memory_working_set_bytes{namespace="x"})`:                      "bytes",
+		`rate(container_network_receive_bytes_total[5m])`:                                       "bytes_per_second",
+		`sum(rate(container_cpu_usage_seconds_total{pod="p"}[5m])) by (pod)`:                    "number", // cores
+		`histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))`: "seconds",
+		`process_cpu_seconds_total`:                                                             "seconds",
+		`100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`:      "number",
+		`rate(a_bytes_total[5m]) / rate(b_bytes_total[5m])`:                                     "number",
+		`count(container_memory_working_set_bytes)`:                                             "number",
+		`count_over_time(container_memory_working_set_bytes[1h])`:                               "number",
+		`kube_pod_container_status_restarts_total`:                                              "number",
+		`not promql at all`: "number",
+	} {
+		assert.Equal(t, want, promChartFormat(query), query)
+	}
+}

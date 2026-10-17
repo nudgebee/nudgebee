@@ -224,6 +224,24 @@ class TestRenderNbChart:
         note = next(b for b in blocks if isinstance(b, ContextBlock))
         assert "20 evenly spaced of 120 data points" in note.text
 
+    def test_byte_chart_is_scaled_and_labelled(self):
+        # #40909: a memory chart in bytes reads as MiB on the axis, not 152,043,520.
+        series = '[{"key":"p","data":[152043520,104857600]}]'
+        code = '{"type":"line","title":"T","labels":["a","b"],"format":"bytes","series":' + series + "}"
+        chart = render_nb_chart(code)[0].chart
+
+        assert chart["axis_config"]["y_label"] == "MiB"
+        assert [p["value"] for p in chart["series"][0]["data"]] == [145.0, 100.0]
+
+    def test_duration_chart_keeps_small_values_readable(self):
+        code = (
+            '{"type":"line","title":"T","labels":["a","b"],"format":"seconds","series":[{"key":"p","data":[0.25,0.5]}]}'
+        )
+        chart = render_nb_chart(code)[0].chart
+
+        assert chart["axis_config"]["y_label"] == "ms"
+        assert [p["value"] for p in chart["series"][0]["data"]] == [250.0, 500.0]
+
     def test_truncation_note_includes_link_when_view_url_given(self):
         labels = [f'"c{i}"' for i in range(25)]
         code = (

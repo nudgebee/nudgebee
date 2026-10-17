@@ -62,3 +62,37 @@ func TestPrometheusPlannerViewKeepsChartNote(t *testing.T) {
 	assert.True(t, strings.HasSuffix(got, note), got)
 	assert.NotContains(t, got, "**Query** - __chart_note")
 }
+
+// The planner view keeps what an oversized result says instead of reporting no data:
+// the saved-file note verbatim, and a per-query "not shown inline" note as that
+// query's response.
+func TestPrometheusPlannerViewKeepsDataNotes(t *testing.T) {
+	dataNote := `Inline results carry only stats (min/max/avg/p99) for the 1 of 40 matched series with the largest |max|. The complete results are saved to file_ref "metrics_prometheus_1.json".`
+	raw, err := json.Marshal(map[string]string{
+		"node_cpu":    `[{"metric":{"node":"a"},"stats":{"max":0.2}}]`,
+		"pod_cpu":     "39 series, not shown inline (inline limit reached); see the saved file",
+		"__data_note": dataNote,
+	})
+	require.NoError(t, err)
+
+	got := PrometheusAgent{accountId: "test"}.UpdateToolResponseForPlanner(core.NBAgentPlannerToolAction{Tool: tools.ToolQueryPrometheus}, string(raw))
+
+	assert.True(t, strings.HasSuffix(got, dataNote), got)
+	assert.NotContains(t, got, "**Query** - __data_note")
+	assert.Contains(t, got, "**Query** - pod_cpu \n **Response** - 39 series, not shown inline")
+	assert.NotContains(t, got, "No data found")
+}
+
+// Each query's response lists only its own series, not every earlier query's too.
+func TestPrometheusPlannerViewSeparatesQueries(t *testing.T) {
+	raw, err := json.Marshal(map[string]string{
+		"q_a": `[{"metric":{"node":"only-a"},"timestamps":[1],"values":[1],"stats":{"max":1}}]`,
+		"q_b": `[{"metric":{"node":"only-b"},"timestamps":[1],"values":[2],"stats":{"max":2}}]`,
+	})
+	require.NoError(t, err)
+
+	got := PrometheusAgent{accountId: "test"}.UpdateToolResponseForPlanner(core.NBAgentPlannerToolAction{Tool: tools.ToolQueryPrometheus}, string(raw))
+
+	assert.Equal(t, 1, strings.Count(got, "only-a"), got)
+	assert.Equal(t, 1, strings.Count(got, "only-b"), got)
+}

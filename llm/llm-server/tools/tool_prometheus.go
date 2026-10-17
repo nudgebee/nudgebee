@@ -745,6 +745,73 @@ func saveSeriesToWorkspace(nbRequestContext core.NbToolContext, seriesByQuery ma
 	}}, nil
 }
 
+// promUnitBySuffix maps a metric name suffix to the unit of its raw values, and
+// of their per-second rate. Order matters: the first matching suffix wins.
+var promUnitBySuffix = []struct{ suffix, raw, perSecond string }{
+	{"_bytes_total", "bytes", "bytes_per_second"},
+	{"_bytes", "bytes", "bytes_per_second"},
+	{"_seconds_total", "seconds", "number"}, // rate of CPU seconds is cores
+	{"_seconds_bucket", "seconds", "number"},
+	{"_seconds", "seconds", "number"},
+}
+
+// promUnitLosingFuncs return a count or a time, not the metric's unit.
+var promUnitLosingFuncs = map[string]bool{
+	"count_over_time": true, "changes": true, "resets": true, "absent": true,
+	"absent_over_time": true, "timestamp": true, "time": true, "scalar": true,
+}
+
+// promChartFormat is the unit of a query's values, read from its metric name when the
+// query is one metric under functions and aggregations only. Arithmetic, counts or
+// several metrics change the unit, so those stay "number": no label beats a wrong one.
+func promChartFormat(query string) string {
+	expr, err := promQLParser.ParseExpr(query)
+	if err != nil {
+		return "number"
+	}
+	name, perSecond, quantile, known := "", false, false, true
+	parser.Inspect(expr, func(node parser.Node, _ []parser.Node) error {
+		switch n := node.(type) {
+		case *parser.BinaryExpr:
+			known = false
+		case *parser.AggregateExpr:
+			if n.Op == parser.COUNT || n.Op == parser.COUNT_VALUES || n.Op == parser.GROUP {
+				known = false
+			}
+		case *parser.Call:
+			switch {
+			case n.Func.Name == "rate" || n.Func.Name == "irate" || n.Func.Name == "deriv":
+				perSecond = true
+			case n.Func.Name == "histogram_quantile":
+				quantile = true // of rate(..._bucket): the bucket bound's unit, not per second
+			case promUnitLosingFuncs[n.Func.Name]:
+				known = false
+			}
+		case *parser.VectorSelector:
+			if name != "" && n.Name != name {
+				known = false
+			}
+			name = n.Name
+		}
+		return nil
+	})
+	if !known || name == "" {
+		return "number"
+	}
+	if quantile {
+		perSecond = false
+	}
+	for _, u := range promUnitBySuffix {
+		if strings.HasSuffix(name, u.suffix) {
+			if perSecond {
+				return u.perSecond
+			}
+			return u.raw
+		}
+	}
+	return "number"
+}
+
 // promChartNotes builds a chart of each query's full series (#40909) and returns the
 // notes that tell the model its chart_ref, with the charts for the response metadata.
 // A chart that cannot be built is skipped: the data is still inline or in the saved file.
@@ -789,6 +856,7 @@ func promChartNotes(nbRequestContext core.NbToolContext, queries []string, serie
 		if !ok {
 			continue
 		}
+		chart.Format = promChartFormat(q)
 		ref, err := core.AddMetricChart(charts, chart)
 		if err != nil {
 			nbRequestContext.Ctx.GetLogger().Warn("prometheus: unable to build chart", "error", err.Error())

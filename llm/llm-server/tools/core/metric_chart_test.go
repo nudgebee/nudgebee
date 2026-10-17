@@ -237,3 +237,14 @@ func TestMetricChartRefs(t *testing.T) {
 	assert.Equal(t, []string{"chart_ab12"}, MetricChartRefs(note))
 	assert.Contains(t, note, "```nb-chart\n{\"chart_ref\":\"chart_ab12\"}\n```")
 }
+
+// The answer can name the unit; an unknown one is ignored rather than passed to renderers.
+func TestResolveMetricCharts_FormatOverride(t *testing.T) {
+	ref, _ := savedChart(t, "conv-fmt")
+	block := func(format string) string {
+		return "```nb-chart\n{\"chart_ref\":\"" + ref + "\",\"format\":\"" + format + "\"}\n```"
+	}
+
+	assert.Equal(t, "bytes", resolvedSpec(t, resolve("conv-fmt", block("bytes")))["format"])
+	assert.Equal(t, "number", resolvedSpec(t, resolve("conv-fmt", block("furlongs")))["format"])
+}

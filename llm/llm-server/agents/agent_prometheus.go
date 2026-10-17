@@ -390,13 +390,22 @@ func (l PrometheusAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPl
 		var allStats []seriesStat
 
 		data := ""
-		dataResponse := ""
-		// The chart note is guidance, not a query result: keep it verbatim, after any truncation.
+		// The data and chart notes are guidance, not query results: keep them verbatim,
+		// after any truncation. Formatted as queries they read as "No data found".
+		dataNote, _ := resultsMap["__data_note"].(string)
 		chartNote, _ := resultsMap["__chart_note"].(string)
+		delete(resultsMap, "__data_note")
 		delete(resultsMap, "__chart_note")
 		for k, v := range resultsMap {
+			// Per query: shared across queries, each Response repeated every earlier query's series.
+			dataResponse := ""
+			raw, _ := v.(string)
 			dataArray := []any{}
-			err := common.UnmarshalJson([]byte(v.(string)), &dataArray)
+			err := common.UnmarshalJson([]byte(raw), &dataArray)
+			if err != nil && strings.TrimSpace(raw) != "" {
+				// A note in place of series, e.g. "12 series, not shown inline …; see the saved file".
+				dataResponse = raw
+			}
 			if err == nil && len(dataArray) > 0 {
 				for _, dataMapAny := range dataArray {
 					if dataMap, ok := dataMapAny.(map[string]any); ok {
@@ -505,8 +514,10 @@ func (l PrometheusAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPl
 				maxToolResponseChars, len(data), statsSummary,
 			)
 		}
-		if chartNote != "" {
-			data += "\n\n" + chartNote
+		for _, note := range []string{dataNote, chartNote} {
+			if note != "" {
+				data += "\n\n" + note
+			}
 		}
 
 		return data

@@ -43,6 +43,32 @@ _CHART_TYPE_MAP = {"bar": "bar", "line": "line", "area": "area", "pie": "pie", "
 # y-axis label as a unit hint rather than dropping it silently.
 _FORMAT_UNIT_LABELS = {"usd": "USD ($)", "percent": "%", "gi": "GiB"}
 
+# Units of metric charts built from query results (#40909). Slack cannot format
+# each point, so the whole chart is scaled to the largest unit its biggest value
+# reaches and the axis names it: (divisor, axis label), largest first.
+_BYTE_STEPS = [(1024**4, "TiB"), (1024**3, "GiB"), (1024**2, "MiB"), (1024, "KiB"), (1, "B")]
+_SCALED_UNITS = {
+    "bytes": _BYTE_STEPS,
+    "bytes_per_second": [(d, f"{u}/s") for d, u in _BYTE_STEPS],
+    "seconds": [(3600, "hours"), (60, "minutes"), (1, "seconds"), (0.001, "ms")],
+}
+# A larger unit is used only once the biggest value reaches this many of it
+# (2 hours, not 1.1), so axes do not read 0.9 / 1.1.
+_SCALE_MIN_MULTIPLE = {"seconds": 2}
+
+
+def _unit_scale(fmt: str, values: List[float]) -> Optional[tuple]:
+    """(divisor, axis label) for a scaled unit format, or None for other formats."""
+    steps = _SCALED_UNITS.get(fmt)
+    if not steps:
+        return None
+    biggest = max((abs(v) for v in values), default=0.0)
+    multiple = _SCALE_MIN_MULTIPLE.get(fmt, 1)
+    for divisor, label in steps:
+        if biggest >= divisor * multiple:
+            return divisor, label
+    return steps[-1]
+
 
 @dataclass
 class NbChartSegment:
@@ -198,7 +224,14 @@ def _render_nb_series_chart(
 
     axis_config: Dict[str, Any] = {"categories": labels}
     fmt = str(data.get("format") or "").lower()
-    if fmt and fmt != "number":
+    scale = _unit_scale(fmt, [p["value"] for s in chart_series for p in s["data"]])
+    if scale:
+        divisor, unit_label = scale
+        for s in chart_series:
+            for p in s["data"]:
+                p["value"] = round(p["value"] / divisor, 2)
+        axis_config["y_label"] = unit_label
+    elif fmt and fmt != "number":
         axis_config["y_label"] = _FORMAT_UNIT_LABELS.get(fmt, fmt)
 
     chart = {"type": slack_type, "series": chart_series, "axis_config": axis_config}

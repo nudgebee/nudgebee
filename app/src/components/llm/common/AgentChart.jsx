@@ -23,7 +23,7 @@ import { SERIES_PALETTE } from '@shared/charts/chartPlugins';
  *     "labels": ["storage-loki-0", ...],
  *     "series": [{ "key": "Provisioned", "data": [100, ...] }, ...],  // bar/line/area
  *     "values": [3.4, 23.2, ...],                                     // doughnut (alt to series)
- *     "format": "gi" | "usd" | "percent" | "number"
+ *     "format": "gi" | "usd" | "percent" | "number" | "bytes" | "bytes_per_second" | "seconds"
  *   }
  */
 
@@ -41,11 +41,43 @@ const CIRCULAR_TYPES = ['doughnut', 'pie'];
 
 const numberFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 });
 
-const FORMATTERS = {
+const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+
+// formatBytes scales each value to its own binary unit: 152043520 -> "145 MiB".
+const formatBytes = (v) => {
+  let unit = 0;
+  let scaled = v;
+  while (Math.abs(scaled) >= 1024 && unit < BYTE_UNITS.length - 1) {
+    scaled /= 1024;
+    unit += 1;
+  }
+  return `${numberFmt.format(scaled)} ${BYTE_UNITS[unit]}`;
+};
+
+// formatSeconds picks ms / s / min / h by size: 0.25 -> "250 ms", 9000 -> "2.5 h".
+const formatSeconds = (v) => {
+  const abs = Math.abs(v);
+  if (abs > 0 && abs < 1) {
+    return `${numberFmt.format(v * 1000)} ms`;
+  }
+  if (abs < 120) {
+    return `${numberFmt.format(v)} s`;
+  }
+  if (abs < 7200) {
+    return `${numberFmt.format(v / 60)} min`;
+  }
+  return `${numberFmt.format(v / 3600)} h`;
+};
+
+export const FORMATTERS = {
   usd: (v) => `$${numberFmt.format(v)}`,
   gi: (v) => `${numberFmt.format(v)} Gi`,
   percent: (v) => `${numberFmt.format(v)}%`,
   number: (v) => numberFmt.format(v),
+  // Units of metric charts built from query results (#40909).
+  bytes: formatBytes,
+  bytes_per_second: (v) => `${formatBytes(v)}/s`,
+  seconds: formatSeconds,
 };
 
 const isFiniteNumber = (v) => typeof v === 'number' && Number.isFinite(v);

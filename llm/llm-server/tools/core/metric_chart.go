@@ -55,6 +55,12 @@ type MetricChart struct {
 
 const metricChartSource = "metrics"
 
+// MetricChartFormats are the value units a metric chart can carry; AgentChart.jsx
+// FORMATTERS and nb_chart.py render each one.
+var MetricChartFormats = map[string]bool{
+	"number": true, "percent": true, "bytes": true, "bytes_per_second": true, "seconds": true,
+}
+
 type metricChartData struct {
 	Key  string    `json:"key"`
 	Data []float64 `json:"data"`
@@ -146,7 +152,7 @@ func MetricChartNote(ref, title string) string {
 		title = " (" + title + ")"
 	}
 	return fmt.Sprintf("Chart%s: chart_ref %q. Only if the user asked for a chart or graph, put "+
-		"```nb-chart\n{\"chart_ref\":%q}\n``` in your answer (optional: \"top\" N series; \"type\" area, or bar/pie of latest values; \"title\"); never type chart numbers.",
+		"```nb-chart\n{\"chart_ref\":%q}\n``` in your answer (optional: \"top\" N series; \"type\" area, or bar/pie of latest values; \"title\"; \"format\" bytes/bytes_per_second/seconds/percent/number when the unit is not shown); never type chart numbers.",
 		title, ref, ref)
 }
 
@@ -182,6 +188,7 @@ func ResolveMetricCharts(text string, lookup func(ref string) ([]byte, bool)) st
 			Top      int    `json:"top"`
 			Type     string `json:"type"`
 			Title    string `json:"title"`
+			Format   string `json:"format"`
 		}
 		if json.Unmarshal([]byte(strings.TrimSpace(m[1])), &ref) != nil || ref.ChartRef == "" {
 			return block
@@ -193,6 +200,9 @@ func ResolveMetricCharts(text string, lookup func(ref string) ([]byte, bool)) st
 		}
 		if ref.Top > 0 && ref.Top < len(chart.Data) {
 			chart.Data = chart.Data[:ref.Top]
+		}
+		if MetricChartFormats[ref.Format] {
+			chart.Format = ref.Format
 		}
 		if ref.Title = strings.TrimSpace(ref.Title); ref.Title != "" {
 			chart.Title = ref.Title
