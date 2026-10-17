@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -649,7 +650,14 @@ func validateGithubConfigurationAndReturnMetadata(ctx context.Context, configura
 			for {
 				collabs, resp, err := client.Repositories.ListCollaborators(ctx, *repo.Owner.Login, *repo.Name, collabOpts)
 				if err != nil {
-					slog.Warn("Failed to fetch GitHub collaborators (may lack permission)", "repo", *repo.Name, "error", err)
+					if ctx.Err() != nil {
+						return nil, ctx.Err()
+					}
+					if isGithubForbidden(err) {
+						slog.Debug("Skipping GitHub collaborators, token lacks permission", "repo", *repo.Name, "error", err)
+					} else {
+						slog.Warn("Failed to fetch GitHub collaborators", "repo", *repo.Name, "error", err)
+					}
 					break
 				}
 				for _, u := range collabs {
@@ -676,6 +684,13 @@ func validateGithubConfigurationAndReturnMetadata(ctx context.Context, configura
 		{"projects": projects},
 		{"users": users},
 	}, nil
+}
+
+// isGithubForbidden reports a plain 403 from the GitHub API. Rate-limit 403s are
+// returned as their own error types by go-github and are not matched.
+func isGithubForbidden(err error) bool {
+	var errResp *github.ErrorResponse
+	return errors.As(err, &errResp) && errResp.Response != nil && errResp.Response.StatusCode == http.StatusForbidden
 }
 
 func validateServiceNowConfigurationAndReturnMetadata(ctx context.Context, configuration models.TicketConfigurations) ([]map[string]interface{}, error) {
