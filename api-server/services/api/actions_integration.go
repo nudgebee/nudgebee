@@ -111,8 +111,9 @@ func notifyGoogleChatBinding(tenantId, spaceId, event string) {
 }
 
 // notifyMessagingCacheInvalidate drops notifications-server's cached per-tenant
-// messaging installs so a new/deleted webhook target is routable without waiting
-// out the 60-minute cache TTL. Best-effort; a miss only delays visibility.
+// messaging installs so a new/deleted webhook target, or a Slack/Discord setting
+// change, applies without waiting out the 60-minute cache TTL. Best-effort; a
+// miss only delays visibility.
 func notifyMessagingCacheInvalidate(tenantId string) {
 	if tenantId == "" || config.Config.NotificationServiceUrl == "" {
 		return
@@ -241,7 +242,9 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		if request.IntegrationName == integrations.IntegrationGoogleChatSpace && request.IntegrationId == "" {
 			notifyGoogleChatBinding(ctx.GetSecurityContext().GetTenantId(), request.IntegrationConfigName, "bound")
 		}
-		if integrations.IsWebhookMessagingIntegration(request.IntegrationName) {
+		if integrations.IsWebhookMessagingIntegration(request.IntegrationName) ||
+			request.IntegrationName == integrations.IntegrationSlack ||
+			request.IntegrationName == integrations.IntegrationDiscord {
 			notifyMessagingCacheInvalidate(ctx.GetSecurityContext().GetTenantId())
 		}
 		return

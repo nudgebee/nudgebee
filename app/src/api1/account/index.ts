@@ -363,7 +363,9 @@ const apiAccount = {
         return { ...base, channels };
       }
       const channels = cfg.default_channel_id ? JSON.stringify({ id: cfg.default_channel_id, name: cfg.default_channel_name || '' }) : null;
-      return { ...base, channels };
+      // Unset means repeats thread, matching notifications-server.
+      const thread_repeats = String(cfg.thread_repeats ?? '').toLowerCase() !== 'false';
+      return { ...base, channels, thread_repeats };
     });
     return { data: normalized };
   },

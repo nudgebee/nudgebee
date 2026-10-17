@@ -8,6 +8,7 @@ import { Button as DsButton } from '@ui/Button';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { Select } from '@ui/Select';
 import { Input } from '@ui/Input';
+import { Checkbox } from '@ui/Checkbox';
 import Datetime from '@shared/format/Datetime';
 import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
@@ -50,6 +51,7 @@ const MessagingIntegrationTile = ({
   const [channelVal, setChannelVal] = useState('');
   const [channelOptions, setChannelOptions] = useState([]);
   const [channelsValues, setChannelsValues] = useState({});
+  const [threadRepeats, setThreadRepeats] = useState(true);
   const [deleteConfig, setDeleteConfig] = useState(false);
   const [mode, setMode] = useState('map'); // map | update
   const [isLoading, setIsLoading] = useState(false);
@@ -77,6 +79,9 @@ const MessagingIntegrationTile = ({
   const [sectionTab, setSectionTab] = useState('mappings');
   // Same flag WatchedChannels gates itself on; still resolving (null) counts as off.
   const channelAwarenessEnabled = useFeatureAccess('CHANNEL_AWARENESS') === true;
+  // Only Slack and Discord thread repeat findings, and only integration installs
+  // store the setting.
+  const showThreadRepeats = ['slack', 'discord'].includes(provider) && installationData?.[0]?._origin === 'integration';
 
   // Fetch installations
   const listMessagingPlatform = () => {
@@ -235,6 +240,7 @@ const MessagingIntegrationTile = ({
       const parsed = safeJSONParse(channel?.channels);
       setChannelVal(parsed?.name || '');
       setChannelsValues(parsed || {});
+      setThreadRepeats(installationData?.[0]?.thread_repeats !== false);
     }
     setInstallationId(acc?.id);
     setMode('update');
@@ -368,6 +374,10 @@ const MessagingIntegrationTile = ({
               { name: 'default_channel_id', value: channelsValues?.id || '' },
               { name: 'default_channel_name', value: channelsValues?.name || '' },
             ];
+      // Sent only when changed, so a plain channel edit never writes the setting.
+      if (showThreadRepeats && threadRepeats !== (inst.thread_repeats !== false)) {
+        values.push({ name: 'thread_repeats', value: String(threadRepeats) });
+      }
       apiIntegrations
         .addIntegrations({
           integration_name: provider,
@@ -661,6 +671,15 @@ const MessagingIntegrationTile = ({
                 disabled={isLoadingChannels}
                 placeholder={isLoadingChannels ? 'Loading…' : 'Select channel'}
               />
+              {showThreadRepeats && (
+                <Checkbox
+                  id='thread-repeats-checkbox'
+                  checked={threadRepeats}
+                  onChange={setThreadRepeats}
+                  label='Reply to repeat alerts in the original thread'
+                  description='Turn off to post every repeat as a new message.'
+                />
+              )}
               {provider === 'discord' && !isLoadingChannels && channelOptions.length === 0 && channelListHint && (
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[3] }}>
                   <Typography sx={{ fontSize: ds.text.body, color: ds.brand[500], lineHeight: 1.5 }}>

@@ -550,7 +550,8 @@ async def send_test_notification(request: Request, body: Dict[Any, Any]):
 async def invalidate_messaging_cache(body: Dict[Any, Any]):
     """Drop a tenant's cached messaging installs. Called by api-server on
     webhook messaging integration (ms_teams_webhook, slack_webhook)
-    create/update/delete so the change is routable without the cache TTL."""
+    create/update/delete, and on Slack/Discord config saves, so the change
+    applies without the cache TTL."""
     tenant = body.get("tenant_id")
     if not tenant:
         raise HTTPException(status_code=400, detail="tenant_id is required")

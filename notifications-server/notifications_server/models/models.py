@@ -65,6 +65,9 @@ class MessagingPlatform(Base):
     bot_id = Column(String, nullable=True)
     channels = Column(JSON, nullable=True)
     _to_channels = None
+    # Integration config `thread_repeats`: False posts repeat findings as new
+    # messages instead of replying in the original thread. Legacy rows thread.
+    thread_repeats = True
 
     @property
     def to_channel(self):
@@ -107,6 +110,7 @@ class MessagingPlatform(Base):
             # ms_teams_webhook: the decrypted URL is the whole destination; must
             # survive the installations cache round-trip.
             "webhook_url": getattr(self, "webhook_url", None),
+            "thread_repeats": self.thread_repeats,
         }
         return {**standard_values}
 
@@ -142,6 +146,7 @@ class MessagingPlatform(Base):
         instance.token_expires_at = parse_datetime(data.get("token_expires_at"))
         instance.refresh_token_expires_at = parse_datetime(data.get("refresh_token_expires_at"))
         instance.webhook_url = data.get("webhook_url")
+        instance.thread_repeats = data.get("thread_repeats", True)
         instance._origin = data.get("_origin")
         # Re-hydrate the integration id as a UUID so the encrypted-token write path
         # filters on the correct type regardless of strict DB-driver coercion.

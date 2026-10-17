@@ -1410,7 +1410,9 @@ class MessageService:
 
         # Look up the thread at the channel the message is actually posted to
         # (rule-routed channel or default), not the installation default.
-        thread_id = await self.slack_sender.check_if_sent_already(session, fingerprint, ip.team_id, ip.to_channel)
+        thread_id = None
+        if getattr(ip, "thread_repeats", True):
+            thread_id = await self.slack_sender.check_if_sent_already(session, fingerprint, ip.team_id, ip.to_channel)
         message, output_blocks, attachments = get_slack_finding_message(self.slack_app, ip, finding)
 
         # Empty text/blocks must be OMITTED: with no blocks Slack renders a
@@ -1466,6 +1468,7 @@ class MessageService:
             query = query.filter(SentNotifications.slack_thread_id.isnot(None))
             if account_id:
                 query = query.filter_by(account_id=account_id)
+            query = query.order_by(SentNotifications.created_at.desc())
             rows = (await session.execute(query)).scalars().all()
             rows = [row for row in rows if row.slack_thread_id and row.slack_team_id and row.slack_metadata]
             if not rows:
@@ -1478,6 +1481,7 @@ class MessageService:
 
             responses = []
             stamped = False
+            replied_channels = set()
             for row in rows:
                 try:
                     slack_metadata = json.loads(row.slack_metadata)
@@ -1487,6 +1491,12 @@ class MessageService:
                     continue
                 channel_id = slack_metadata.get("channel")
                 ip = installs_by_team.get(row.slack_team_id)
+                # With thread_repeats off a channel holds one top-level message per
+                # repeat; only the newest (rows are newest first) gets the reply.
+                channel_key = (row.slack_team_id, channel_id)
+                if channel_key in replied_channels:
+                    continue
+                replied_channels.add(channel_key)
                 if slack_metadata.get("resolved_notified") or not (channel_id and ip):
                     continue
 
@@ -1727,7 +1737,9 @@ class MessageService:
 
         # Repeat findings reply to the original message (Slack-thread parity)
         # instead of posting a fresh top-level message each time.
-        thread_id = await self.discord_sender.check_if_sent_already(session, fingerprint, tenant_id, channel_id)
+        thread_id = None
+        if getattr(ip, "thread_repeats", True):
+            thread_id = await self.discord_sender.check_if_sent_already(session, fingerprint, tenant_id, channel_id)
         if thread_id:
             result = await asyncio.to_thread(
                 DiscordClient.reply_in_thread,

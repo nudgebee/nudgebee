@@ -130,6 +130,7 @@ def build_installation(platform: str, integration: Integration, cfg: Dict[str, s
     inst.token_expires_at = _parse_dt(cfg.get("token_expires_at"))
     inst.refresh_token_expires_at = _parse_dt(cfg.get("refresh_token_expires_at"))
     inst.channels = _default_channel_shape(platform, cfg)
+    inst.thread_repeats = str(cfg.get("thread_repeats", "")).lower() != "false"
     inst._origin = ORIGIN_INTEGRATION
     inst._integration_id = integration.id
     return inst
