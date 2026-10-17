@@ -181,6 +181,7 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 		}
 	}
 
+	resp.Usage.SplitThinking()
 	genInfo := map[string]any{
 		"input_tokens":  resp.Usage.InputTokens,
 		"output_tokens": resp.Usage.OutputTokens,
