@@ -294,19 +294,6 @@ actions:
     permissions:
       - role: account_admin
       - role: tenant_admin
-  - name: ai_create_function
-    comment: Create a reusable prompt function with variables and defaults
-    definition:
-      kind: synchronous
-      handler: '{{LLM_SERVER_URL}}/v1/functions'
-      forward_client_headers: true
-      headers:
-        - name: X-ACTION-TOKEN
-          value_from_env: LLM_SERVER_TOKEN
-    permissions:
-      - role: account_admin
-      - role: k8s_namespace_admin
-      - role: tenant_admin
   - name: ai_create_gc
     definition:
       kind: synchronous
@@ -380,18 +367,6 @@ actions:
     permissions:
       - role: tenant_admin
       - role: account_admin
-  - name: ai_delete_function
-    comment: Delete a prompt function
-    definition:
-      kind: synchronous
-      handler: '{{LLM_SERVER_URL}}/v1/functions'
-      forward_client_headers: true
-      headers:
-        - name: X-ACTION-TOKEN
-          value_from_env: LLM_SERVER_TOKEN
-    permissions:
-      - role: account_admin
-      - role: tenant_admin
   - name: ai_delete_gc
     definition:
       kind: synchronous
@@ -2058,19 +2033,6 @@ actions:
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: LLM_SERVER_TOKEN
-    permissions:
-      - role: tenant_admin
-      - role: account_admin
-  - name: ai_update_function
-    comment: Update a prompt function
-    definition:
-      kind: synchronous
-      handler: '{{LLM_SERVER_URL}}/v1/functions'
-      forward_client_headers: true
-      headers:
-        - name: X-ACTION-TOKEN
-          value_from_env: LLM_SERVER_TOKEN
-      timeout: 120
     permissions:
       - role: tenant_admin
       - role: account_admin
@@ -7533,20 +7495,6 @@ actions:
       - role: tenant_admin
       - role: account_admin_readonly
       - role: account_admin
-  - name: ai_list_functions
-    comment: List AI functions available to agents
-    definition:
-      kind: "synchronous"
-      handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
-      forward_client_headers: true
-      headers:
-        - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_admin_readonly
-      - role: tenant_admin
-      - role: account_admin_readonly
-      - role: account_admin
   - name: ai_list_agent_installations
     comment: List AI agent installations per account
     definition:
@@ -8009,7 +7957,6 @@ custom_types:
     - name: TicketAddCommentObjectInput
     - name: CreateAgentRagInput
     - name: TenantAttributeRequest
-    - name: CreateFunctionInput
     - name: AIStopInvestigationRequest
     - name: auto_runbook_custom_action_update_input
     - name: SortField
@@ -8037,10 +7984,8 @@ custom_types:
     - name: TracesV3LabelValuesRequest
     - name: CreateExtensionAgentDetails
     - name: CreateExtensionAgentRequest
-    - name: AiDeleteFunctionRequest
     - name: FetchMetricLabelsRequest
     - name: FetchMetricsLabelValueRequest
-    - name: UpdateFunctionInput
     - name: FetchMetricsRequest
     - name: UpdateAgentExtensionRequest
     - name: UpdateAgentExtensionDetails
@@ -8178,7 +8123,6 @@ custom_types:
     - name: RecommendationResolutionGroupingsWhereRequest
     - name: EventResolutionWhereRequest
     - name: EventResolutionGroupingsWhereRequest
-    - name: LlmFunctionsWhereRequest
     - name: LlmAgentsInstallationWhereRequest
     - name: KnowledgeBaseWhereRequest
     - name: FeatureFlagWhereRequest
@@ -8506,9 +8450,6 @@ custom_types:
     - name: LLMRagGroupingResponse
     - name: LLMRagGroupingRowResponse
     - name: TenantAttributeResponse
-    - name: CreateFunctionResponse
-    - name: LLMFunctionCreateResponse
-    - name: FunctionResponse
     - name: AIStopInvestigationResponse
     - name: auto_runbook_custom_action_update_output
     - name: FetchLogResponse
@@ -8544,11 +8485,9 @@ custom_types:
     - name: TracesV3LabelValuesResponse
     - name: TraceGroupingValues
     - name: CreateAgentExtensionResponse
-    - name: AiDeleteFunctionResponse
     - name: OutputMetricLabels
     - name: OutputMetricsLabelValues
     - name: UpgradeExecuteCommandResponse
-    - name: FunctionUpdateResponse
     - name: TracesGroupV3CountResponse
     - name: OutputMetricQuery
     - name: UpdateAgentExtensionResponse
@@ -8807,8 +8746,6 @@ custom_types:
     - name: EventResolutionRowResponse
     - name: EventResolutionGroupingsResponse
     - name: EventResolutionGroupingsRowResponse
-    - name: LlmFunctionsResponse
-    - name: LlmFunctionsRowResponse
     - name: LlmAgentsInstallationResponse
     - name: LlmAgentsInstallationRowResponse
     - name: CloudResourcesListResponse

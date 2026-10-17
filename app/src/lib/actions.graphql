@@ -172,13 +172,6 @@ type Mutation {
 }
 
 type Mutation {
-  ai_create_function(
-    account_id: String!
-    function: CreateFunctionInput!
-  ): FunctionResponse
-}
-
-type Mutation {
   ai_create_gc(
     request: CreateGCRequest!
   ): CreateGCResponse
@@ -212,12 +205,6 @@ type Mutation {
   ai_delete_tool(
     request: DeleteToolRequest!
   ): DeleteToolResponse
-}
-
-type Mutation {
-  ai_delete_function(
-    request: AiDeleteFunctionRequest!
-  ): AiDeleteFunctionResponse
 }
 
 type Mutation {
@@ -538,14 +525,6 @@ type Mutation {
   ai_execute_queued_message(
     request: AiForceExecuteQueuedMessageRequest!
   ): AiQueuedMessageResponse
-}
-
-type Mutation {
-  ai_update_function(
-    account_id: String!
-    function_id: String!
-    function: UpdateFunctionInput!
-  ): FunctionUpdateResponse
 }
 
 type Mutation {
@@ -4961,16 +4940,6 @@ input TenantAttributeRequest {
   value: String!
 }
 
-input CreateFunctionInput {
-  name: String!
-  description: String!
-  prompt: String!
-  variables: [String]
-  variable_defaults: jsonb
-  status: String
-  version: Int
-}
-
 input AIStopInvestigationRequest {
   account_id: String!
   conversation_id: String!
@@ -5212,11 +5181,6 @@ input CreateExtensionAgentRequest {
   agent: CreateExtensionAgentDetails
 }
 
-input AiDeleteFunctionRequest {
-  account_id: String!
-  function_id: String!
-}
-
 input FetchMetricLabelsRequest {
   account_id: String!
   metric_provider: String
@@ -5233,16 +5197,6 @@ input FetchMetricsLabelValueRequest {
   end_time: Float
   request: jsonb
   label: String!
-}
-
-input UpdateFunctionInput {
-  name: String!
-  description: String!
-  prompt: String!
-  variables: [String]
-  variable_defaults: jsonb
-  status: String
-  version: Int
 }
 
 input FetchMetricsRequest {
@@ -8757,33 +8711,6 @@ type TenantAttributeResponse {
   tenant_id: String!
 }
 
-type CreateFunctionResponse {
-  success: Boolean!
-  message: String!
-  function: LLMFunctionCreateResponse
-}
-
-type LLMFunctionCreateResponse {
-  id: String!
-  name: String!
-  description: String!
-  prompt: String!
-  variables: [String!]
-  variable_defaults: jsonb
-  status: String!
-  version: Int
-  account_id: String!
-  tenant_id: String!
-  created_by: String
-  updated_by: String
-  created_at: Datetime
-  updated_at: Datetime
-}
-
-type FunctionResponse {
-  data: CreateFunctionResponse!
-}
-
 type AIStopInvestigationResponse {
   data: jsonb!
 }
@@ -9160,10 +9087,6 @@ type CreateAgentExtensionResponse {
   err: jsonb
 }
 
-type AiDeleteFunctionResponse {
-  data: jsonb
-}
-
 input MetricsCheckVmStatusRequest {
   account_id: String!
 }
@@ -9211,10 +9134,6 @@ type UpgradeExecuteCommandResponse {
   success: Boolean
   output: String
   error: String
-}
-
-type FunctionUpdateResponse {
-  data: jsonb!
 }
 
 type TracesGroupV3CountResponse {
@@ -12023,15 +11942,6 @@ type Query {
 }
 
 type Query {
-  ai_list_functions(
-    where: LlmFunctionsWhereRequest
-    limit: Int
-    offset: Int
-    order_by: [QuerySortByRequest!]
-  ): LlmFunctionsResponse
-}
-
-type Query {
   ai_list_agent_installations(
     where: LlmAgentsInstallationWhereRequest
     limit: Int
@@ -12176,17 +12086,6 @@ input EventResolutionGroupingsWhereRequest {
   tenant_id: QueryWhereStringRequest
   account_id: QueryWhereStringRequest
   event_cloud_account_id: QueryWhereStringRequest
-}
-
-input LlmFunctionsWhereRequest {
-  _and: [LlmFunctionsWhereRequest]
-  _or: [LlmFunctionsWhereRequest]
-  _not: LlmFunctionsWhereRequest
-  id: QueryWhereStringRequest
-  tenant_id: QueryWhereStringRequest
-  account_id: QueryWhereStringRequest
-  name: QueryWhereStringRequest
-  status: QueryWhereStringRequest
 }
 
 type AutoPilotTaskResponse {
@@ -12344,27 +12243,6 @@ type EventResolutionGroupingsResponse {
 
 type EventResolutionGroupingsRowResponse {
   count: Int
-}
-
-type LlmFunctionsResponse {
-  rows: [LlmFunctionsRowResponse]
-}
-
-type LlmFunctionsRowResponse {
-  id: String
-  tenant_id: String
-  account_id: String
-  name: String
-  description: String
-  prompt: String
-  variables: Json
-  variable_defaults: Json
-  status: String
-  version: Int
-  created_by: String
-  updated_by: String
-  created_at: Datetime
-  updated_at: Datetime
 }
 
 type Query {

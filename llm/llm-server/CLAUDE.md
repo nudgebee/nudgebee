@@ -212,7 +212,7 @@ llm_conversations (id PK)
   └── llm_conversation_token_usage (conversation_id FK, message_id FK, agent_id FK)
 ```
 
-Supporting tables: `llm_functions`, `llm_knowledgebases`, `llm_budget_config`, `llm_model_pricing`.
+Supporting tables: `llm_knowledgebases`, `llm_budget_config`, `llm_model_pricing`.
 
 ### Migrations
 

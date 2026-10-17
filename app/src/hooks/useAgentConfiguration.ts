@@ -1,5 +1,6 @@
-import { useEffect, useCallback, useReducer } from 'react';
+import { useEffect, useCallback, useReducer, useRef } from 'react';
 import apiAskNudgebee from '@api1/ask-nudgebee';
+import apiKnowledgeBase from '@api1/knowledge-base';
 
 export interface RawAgent {
   name: string;
@@ -13,28 +14,16 @@ export interface FormattedAgent {
   display_name: string;
 }
 
-export interface LLMFunction {
-  id: string;
+export interface SkillCommand {
   name: string;
   description: string;
-  prompt: string;
-  variables: any;
-  variable_defaults: any;
-  status: string;
-  version: string;
-  account_id: string;
-  tenant_id: string;
-  created_by: string;
-  updated_by: string;
-  created_at: string;
-  updated_at: string;
 }
 
 interface AgentState {
   allAgents: RawAgent[];
   enabledAgents: FormattedAgent[];
   loadingAgents: boolean;
-  allFunctions: LLMFunction[];
+  allSkills: SkillCommand[];
 }
 
 type AgentAction =
@@ -42,13 +31,13 @@ type AgentAction =
   | { type: 'FETCH_AGENTS_SUCCESS'; allAgents: RawAgent[]; enabledAgents: FormattedAgent[] }
   | { type: 'FETCH_AGENTS_EMPTY' }
   | { type: 'FETCH_AGENTS_END' }
-  | { type: 'SET_FUNCTIONS'; functions: LLMFunction[] };
+  | { type: 'SET_SKILLS'; skills: SkillCommand[] };
 
 interface UseAgentConfigurationReturn {
   allAgents: RawAgent[];
   enabledAgents: FormattedAgent[];
   loadingAgents: boolean;
-  allFunctions: LLMFunction[];
+  allSkills: SkillCommand[];
   refreshAgents: () => Promise<void>;
 }
 
@@ -56,7 +45,7 @@ const initialState: AgentState = {
   allAgents: [],
   enabledAgents: [],
   loadingAgents: false,
-  allFunctions: [],
+  allSkills: [],
 };
 
 function agentReducer(state: AgentState, action: AgentAction): AgentState {
@@ -69,8 +58,8 @@ function agentReducer(state: AgentState, action: AgentAction): AgentState {
       return { ...state, loadingAgents: false, allAgents: [], enabledAgents: [] };
     case 'FETCH_AGENTS_END':
       return { ...state, loadingAgents: false };
-    case 'SET_FUNCTIONS':
-      return { ...state, allFunctions: action.functions };
+    case 'SET_SKILLS':
+      return { ...state, allSkills: action.skills };
     default:
       return state;
   }
@@ -113,24 +102,31 @@ export const useAgentConfiguration = (accountId: string | number): UseAgentConfi
     }
   }, [accountId]);
 
-  // --- Logic: List Functions ---
-  const listFunctions = useCallback(async () => {
+  // --- Logic: List Skills (offered as /skill-name commands) ---
+  // The account the skill list was last requested for: a reply for an account the user
+  // has since switched away from is dropped, so the list never shows another account's skills.
+  const skillsAccountRef = useRef<string | number>(accountId);
+  const listSkills = useCallback(async () => {
+    skillsAccountRef.current = accountId;
+    dispatch({ type: 'SET_SKILLS', skills: [] });
     if (!accountId) {
       return;
     }
     try {
-      const res: any = await apiAskNudgebee.listFunctions({ accountId });
-      dispatch({ type: 'SET_FUNCTIONS', functions: res?.res?.llm_functions || [] });
+      const skills = await apiKnowledgeBase.listSkillCommands(String(accountId));
+      if (skillsAccountRef.current === accountId) {
+        dispatch({ type: 'SET_SKILLS', skills });
+      }
     } catch (error) {
-      console.error('Failed to list functions', error);
+      console.error('Failed to list skills', error);
     }
   }, [accountId]);
 
   // --- Effects ---
 
-  // 1. Fetch Functions on mount/account change
+  // 1. Fetch Skills on mount/account change
   useEffect(() => {
-    listFunctions();
+    listSkills();
   }, [accountId]);
 
   // 2. Fetch Agents on account change
@@ -142,7 +138,7 @@ export const useAgentConfiguration = (accountId: string | number): UseAgentConfi
     allAgents: state.allAgents,
     enabledAgents: state.enabledAgents,
     loadingAgents: state.loadingAgents,
-    allFunctions: state.allFunctions,
+    allSkills: state.allSkills,
     refreshAgents: listAgents,
   };
 };

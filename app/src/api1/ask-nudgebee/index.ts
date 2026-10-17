@@ -3,7 +3,6 @@ import { getUserSession } from '@lib/auth';
 import type {
   AgentDefinition,
   AiFeedbackCreateRequest,
-  AiFunctionData,
   ConversationComparisonRequest,
   ConversationHistoryForInvestigationRequest,
   ConversationHistoryRequest,
@@ -24,14 +23,12 @@ import type {
   InvestigateRequest,
   ListAiFeedbackRequest,
   ListAgentsRequest,
-  ListFunctionsRequest,
   ListToolsRequest,
   OwnFeedbackForSessionRequest,
   SaveConversationRequest,
   StopInvestigateRequest,
   ToolDefinition,
   UpdateAgentExtensionRequest,
-  UpdateFunctionData,
   UpdateQueuedMessageRequest,
 } from '../../types/ask-nudgebee';
 
@@ -1034,100 +1031,6 @@ const api = {
       return null;
     }
   },
-  async listFunctions(data: ListFunctionsRequest) {
-    if (data.accountId === 'demo') return { res: { llm_functions: [] }, errors: [] };
-    const GET_FUNCTIONS = `
-      query GetFunctions($where: LlmFunctionsWhereRequest) {
-        llm_functions: ai_list_functions(where: $where) {
-          rows {
-            id
-            name
-            description
-            prompt
-            variables
-            variable_defaults
-            status
-            version
-            account_id
-            created_by
-            updated_by
-            created_at
-            updated_at
-          }
-        }
-      }
-    `;
-
-    try {
-      // Empty accountId == tenant-wide read (b-Cortex sidebar surface).
-      // Omit the account_id filter and let api-server's query service apply
-      // its standard row-level account ACL automatically (tenant/super
-      // admins see all in tenant; account-admins see only their assigned
-      // accounts; everyone else 403s).
-      const where: any = data.accountId ? { account_id: { _eq: data.accountId } } : {};
-      const response = await queryGraphQL(GET_FUNCTIONS, 'GetFunctions', { where });
-      const rows = response?.data?.data?.llm_functions?.rows || [];
-
-      return {
-        res: { llm_functions: rows },
-        errors: response?.data?.errors,
-      };
-    } catch (error) {
-      console.error('failed to get functions-', error);
-      return null;
-    }
-  },
-  async createAiFunction(data: AiFunctionData, accountId: string) {
-    if (accountId === 'demo') {
-      return {
-        success: false,
-        error: 'Demo account does not have access.',
-      };
-    }
-    const CREATE_AI_FUNCTION = `
-      mutation CreateAiFunction($account_id: String!) {
-        ai_create_function(
-          account_id: $account_id,
-          function: __WHERE__
-        ) {
-          data{
-            success
-            message
-            function {
-              id
-              name
-              description
-            }
-          }
-        }
-      }
-    `;
-    try {
-      const response = await queryGraphQL(CREATE_AI_FUNCTION.replaceAll('__WHERE__', gqlStringify(data)), 'CreateAiFunction', {
-        account_id: accountId,
-      });
-
-      // Check for GraphQL errors first
-      if (response.data?.errors && response.data.errors.length > 0) {
-        const error = response.data.errors[0];
-
-        return { success: false, error: error.message };
-      }
-
-      // Check for successful response
-      if (response.data?.data?.ai_create_function?.data?.success) {
-        return {
-          success: true,
-        };
-      } else if (response.data?.data?.ai_create_function?.data?.message) {
-        return { success: false, error: response.data.data.ai_create_function.data.message };
-      }
-      return { success: false, error: 'Unknown error occurred' };
-    } catch (error) {
-      console.error('failed to create ai function-', error);
-      return { success: false, error: 'Network error occurred' };
-    }
-  },
   async aiStopInvestigate(data: StopInvestigateRequest) {
     if (data.accountId === 'demo') return null;
     const AI_STOP_INVESTIGATE = `
@@ -1315,77 +1218,6 @@ const api = {
     } catch (error) {
       console.error('failed to list agent extensions-', error);
       return { data: [], errors: [error] };
-    }
-  },
-  async deleteLLMFunction({ id, accountId }: { id: string; accountId: string }) {
-    if (accountId === 'demo') {
-      return {
-        data: null,
-        errors: [{ message: 'Demo account does not have access.' }],
-      };
-    }
-    const DELETE_LLM_FUNCTION = `mutation AiDeleteFunction($accountId: String!, $functionId:String!){
-      ai_delete_function(request:{account_id:$accountId, function_id:$functionId}){
-    data
-      }
-    }`;
-
-    try {
-      const response = await queryGraphQL(DELETE_LLM_FUNCTION, 'AiDeleteFunction', {
-        accountId: accountId,
-        functionId: id,
-      });
-      return {
-        data: response.data?.data?.ai_delete_function.data || [],
-        errors: response.data?.errors || [],
-      };
-    } catch (error) {
-      console.error('failed to delete llm function-', error);
-      return { data: [], errors: [error] };
-    }
-  },
-  async updateFunction({ accountId, functionId, data }: { accountId?: string; functionId: string; data: UpdateFunctionData }) {
-    if (accountId === 'demo') {
-      return {
-        success: false,
-        error: 'Demo account does not have access.',
-      };
-    }
-    const UPDATE_AI_FUNCTION = `
-      mutation AiEditFunction($account_id: String!, $function_id: String!) {
-        ai_update_function(
-          account_id: $account_id,
-          function_id: $function_id,
-          function: __WHERE__
-        ) {
-          data
-        }
-      }
-    `;
-    try {
-      const response = await queryGraphQL(UPDATE_AI_FUNCTION.replaceAll('__WHERE__', gqlStringify(data)), 'AiEditFunction', {
-        account_id: accountId,
-        function_id: functionId,
-      });
-
-      // Check for GraphQL errors first
-      if (response.data?.errors && response.data.errors.length > 0) {
-        const error = response.data.errors[0];
-        return { success: false, error: error.message };
-      }
-
-      // Check for successful response
-      if (response.data?.data?.ai_update_function?.data?.success) {
-        return {
-          success: true,
-        };
-      } else if (response.data?.data?.ai_update_function?.data?.message) {
-        return { success: false, error: response.data.data.ai_update_function.data.message };
-      }
-      return { success: false, error: 'Unknown error occurred' };
-    } catch (error) {
-      console.error('failed to update ai function-', error);
-      return { success: false, error: 'Network error occurred' };
     }
   },
   async llmConversationHistoryForInvestigation(data: ConversationHistoryForInvestigationRequest) {

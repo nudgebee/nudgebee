@@ -180,11 +180,6 @@ const featureRecommendedContent = (baseTitle, assistantName) => ({
     whenToTurnOn: 'You have automations you trust and want them reachable from a conversation.',
     why: "Moves the assistant from advising to acting, so it carries three guardrails: per-workflow opt-in, confirmation, and the caller's permissions. This flag is the outermost.",
   },
-  LLM_FUNCTION: {
-    description: 'Lets your team author and edit custom AI functions and attach them to alerts.',
-    whenToTurnOn: 'You have repeatable per-alert investigation steps worth encoding.',
-    why: 'Built-in analysis is general. A function encodes the check a team always runs for a particular alert and makes it automatic.',
-  },
   CHANNEL_AWARENESS: {
     description: `${toAssistantLabel(
       assistantName
@@ -258,10 +253,6 @@ const FEATURE_NAVIGATION = {
   AI_WORKFLOW_TOOLS: {
     path: 'Automation › a workflow’s settings',
     reason: 'Needs a specific workflow selected first, so it has no standalone link.',
-  },
-  LLM_FUNCTION: {
-    path: 'Ask {Assistant} Settings, or Kubernetes › Create Alert',
-    reason: 'Lives inside existing modals — there is no dedicated screen to link to.',
   },
   MEMORY_MODULE: {
     path: 'Ask {Assistant} › Memory',

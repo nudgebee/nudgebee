@@ -577,18 +577,6 @@ export const isEmailValid = (value: string) => {
   return nameRegex.test(value);
 };
 
-export const isLLMFunctionNameValid = (value: string) => {
-  const functionNameRegex = /^[a-z][a-z0-9_-]*[a-z0-9]$/;
-  return functionNameRegex.test(value) && value.length >= 2 && value.length <= 30;
-};
-
-export const isVariableNameValid = (value: string) => {
-  // Variable names can only contain letters, numbers, and underscores
-  // No hyphens or spaces allowed
-  const variableNameRegex = /^[a-zA-Z]\w*$/;
-  return variableNameRegex.test(value) && value.length >= 1 && value.length <= 50;
-};
-
 export const isK8sAccountNameValid = (value: string) => {
   const regex = /^(?!.*(?:--|__|\s\s))[a-zA-Z0-9](?:[a-zA-Z0-9\s_-]{2,47}[a-zA-Z0-9])?$/;
   return regex.test(value);

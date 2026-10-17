@@ -15,10 +15,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	toolcore "nudgebee/llm/tools/core"
 
-	"github.com/google/shlex"
 	"github.com/google/uuid"
 	"github.com/samber/lo"
 	"github.com/tmc/langchaingo/llms"
@@ -1643,12 +1643,10 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		}
 	}
 
-	// before passing the request to agent eval functions
-	request, err = evalLLMFunction(ctx, request)
-	if err != nil {
-		ctx.GetLogger().Error("conversation: unable to evaluate functions", "error", err)
-		return NBAgentResponse{}, err
-	}
+	// "/skill-name question" puts that skill in front of the question.
+	var commandSkills []toolcore.SkillCommand
+	request, commandSkills = evalSkillCommand(ctx, request)
+	saveSkillCommandReferences(ctx, request, conversation.ID.String(), commandSkills)
 
 	convSetupDur := time.Since(t0)
 	ctx.GetLogger().Info("conversation: executing agent", "agent", agent.GetName(), "setup_duration", convSetupDur.String())
@@ -1871,62 +1869,189 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	return agentResponse, executeErr
 }
 
-func evalLLMFunction(ctx *security.RequestContext, request NBAgentRequest) (NBAgentRequest, error) {
-	message := strings.TrimSpace(request.Query)
+var getSkillsForCommandFn = toolcore.GetSkillsForCommand
 
-	if !strings.HasPrefix(strings.ToLower(message), "/") {
-		request.Query = message
-		return request, nil
-	}
+// maxSkillMentions caps how many "/name" words in one message are looked up.
+const maxSkillMentions = 3
 
-	parts, err := shlex.Split(message)
-	// extract function name and arguments /call functionName arg1 arg2 ...
-	if err != nil {
-		ctx.GetLogger().Warn("conversation: invalid function call syntax", "message", message, "error", err)
-		request.Query = message
-		return request, nil
-	}
-
-	functionName := ""
-	functionArgs := []string{}
-
-	if parts[0] == "/call" {
-		if len(parts) < 2 {
-			ctx.GetLogger().Info("conversation: invalid function call syntax, missing function name", "message", message)
-			request.Query = message
-			return request, errors.New("invalid function call syntax, missing function name")
-		}
-
-		functionName = parts[1]
-		if len(parts) > 2 {
-			functionArgs = parts[2:]
-		}
-	} else {
-		functionName = strings.TrimPrefix(parts[0], "/")
-		if len(parts) > 1 {
-			functionArgs = parts[1:]
-		}
-	}
-
-	function, err := GetLLMFunctionByName(ctx, request.AccountId, functionName)
-	if err != nil {
-		ctx.GetLogger().Info("conversation: function not found", "function_name", functionName, "error", err)
-		return request, fmt.Errorf("function '%s' not found", functionName)
-	}
-
-	// requires some more work to validate arguments against function variables and types
-	request.Query = function.Prompt
-	if len(functionArgs) > 0 && len(function.Variables) == 0 {
-		request.Query = function.Prompt + "\n\n Question:" + strings.Join(functionArgs, " ")
-	} else if len(functionArgs) > 0 && len(function.Variables) > 0 {
-		request.Query = function.Prompt + "\n\n Inputs:" + strings.Join(functionArgs, " ")
-	}
-	return request, nil
+// skillMention is one "/name" or "/call name" in a message: text[start:end].
+type skillMention struct {
+	start, end int
+	name       string
 }
 
-// HandleConversationMessageRequest resumes or restarts a stored message. ctx is
-// who the run acts as: the signed-in caller for a client-tool result, or
-// RecoveryContext for a restarted message.
+func isMentionSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+
+// readSkillWord reads a skill-name word at text[i:] (a letter, then letters,
+// digits, "_", "-" or ":"), dropping a trailing ":". Returns "" when none.
+func readSkillWord(text string, i int) (string, int) {
+	j := i
+	for j < len(text) {
+		c := text[j]
+		isLetter := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		if isLetter || (j > i && ((c >= '0' && c <= '9') || c == '_' || c == '-' || c == ':')) {
+			j++
+			continue
+		}
+		break
+	}
+	for j > i && text[j-1] == ':' {
+		j--
+	}
+	return text[i:j], j
+}
+
+// endsMention reports whether a mention may end at text[end]: the end of the
+// text, a space, or punctuation that is itself followed by a space or the end
+// (so "/pod-triage." counts but "/pod-triage.md" does not).
+func endsMention(text string, end int) bool {
+	if end >= len(text) || isMentionSpace(text[end]) {
+		return true
+	}
+	if !strings.ContainsRune(",;:.!?)", rune(text[end])) {
+		return false
+	}
+	return end+1 >= len(text) || isMentionSpace(text[end+1]) || strings.ContainsRune(",;:.!?)", rune(text[end+1]))
+}
+
+// findSkillMentions returns the first maxSkillMentions "/name" words of text
+// that start a word and end at a space, punctuation or the end of the text,
+// so a path such as /var/log never counts. "/call name" counts as "name".
+func findSkillMentions(text string) []skillMention {
+	var out []skillMention
+	for i := 0; i < len(text) && len(out) < maxSkillMentions; i++ {
+		if text[i] != '/' || (i > 0 && !isMentionSpace(text[i-1])) {
+			continue
+		}
+		name, end := readSkillWord(text, i+1)
+		if name == "" {
+			continue
+		}
+		if strings.EqualFold(name, "call") {
+			j := end
+			for j < len(text) && isMentionSpace(text[j]) {
+				j++
+			}
+			if next, nextEnd := readSkillWord(text, j); next != "" && j > end {
+				name, end = next, nextEnd
+			}
+		}
+		if !endsMention(text, end) {
+			i = end
+			continue
+		}
+		out = append(out, skillMention{start: i, end: end, name: name})
+		i = end - 1
+	}
+	return out
+}
+
+// evalSkillCommand handles "/skill-name" (or "/call skill-name") words in a
+// message: each one that names a skill the account can see puts that skill's
+// text ahead of the message. A mention that opens the message is dropped; one
+// further in is replaced by the skill's name so the sentence still reads.
+// Words that name no skill (a path, say) are left as typed. A leading
+// "@agent" mention is kept in front. Returns the skills it loaded.
+func evalSkillCommand(ctx *security.RequestContext, request NBAgentRequest) (NBAgentRequest, []toolcore.SkillCommand) {
+	query := strings.TrimSpace(request.Query)
+	_, rest := common.ParseAgentMention(query)
+	prefix := query[:len(query)-len(rest)]
+
+	mentions := findSkillMentions(rest)
+	if len(mentions) == 0 {
+		return request, nil
+	}
+	names := make([]string, len(mentions))
+	for i, m := range mentions {
+		names[i] = m.name
+	}
+	skills, err := getSkillsForCommandFn(ctx, request.AccountId, names)
+	if err != nil {
+		ctx.GetLogger().Warn("conversation: unable to look up skill commands", "skills", names, "error", err)
+		return request, nil
+	}
+
+	// Skills named back to back at the very start are dropped, not replaced.
+	leading := make([]bool, len(mentions))
+	from := 0
+	for i, m := range mentions {
+		_, ok := skills[strings.ToLower(m.name)]
+		if !ok || strings.TrimSpace(rest[from:m.start]) != "" {
+			break
+		}
+		leading[i], from = true, m.end
+	}
+
+	// One block per skill, in the order the message first names them.
+	var blocks []string
+	var used []toolcore.SkillCommand
+	loaded := map[string]bool{}
+	for _, m := range mentions {
+		skill, ok := skills[strings.ToLower(m.name)]
+		if !ok || loaded[skill.ID] {
+			continue
+		}
+		loaded[skill.ID] = true
+		used = append(used, skill)
+		body := strings.TrimSpace(skill.Data)
+		if utf8.RuneCountInString(body) > toolcore.SkillCommandMaxChars {
+			body = body[:runeByteOffset(body, toolcore.SkillCommandMaxChars)] +
+				fmt.Sprintf("\n[Cut at %d characters. Load the skill %q to read the rest.]", toolcore.SkillCommandMaxChars, skill.Name)
+		}
+		blocks = append(blocks, fmt.Sprintf("<skill name=%q>\n%s\n</skill>", skill.Name, body))
+		ctx.GetLogger().Info("conversation: skill command", "skill", skill.Name, "kb_id", skill.ID)
+	}
+
+	// Edit the message from the end, so earlier offsets stay valid.
+	question := rest
+	for i := len(mentions) - 1; i >= 0; i-- {
+		m := mentions[i]
+		skill, ok := skills[strings.ToLower(m.name)]
+		if !ok {
+			continue
+		}
+		replacement := ""
+		if !leading[i] {
+			replacement = fmt.Sprintf("%q", skill.Name)
+		}
+		question = question[:m.start] + replacement + question[m.end:]
+	}
+	if len(blocks) == 0 {
+		return request, nil
+	}
+	text := strings.Join(blocks, "\n\n")
+	// A skill dropped from the start can leave its punctuation behind ("/x, then ...").
+	if question = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(question), ",;:")); question != "" {
+		text += "\n\n" + question
+	}
+	request.Query = prefix + text
+	return request, used
+}
+
+// saveSkillCommandReferences records the skills a "/skill-name" message loaded
+// on that message, like a load_skills call does, so they are listed with the
+// answer's contexts. Best-effort: a failed save never fails the turn.
+func saveSkillCommandReferences(ctx *security.RequestContext, request NBAgentRequest, conversationId string, skills []toolcore.SkillCommand) {
+	if len(skills) == 0 || request.MessageId == "" || conversationId == "" {
+		return
+	}
+	refs := make([]AgentReference, 0, len(skills))
+	for _, skill := range skills {
+		refs = append(refs, AgentReference{
+			Type:        AgentReferenceTypeKB,
+			ReferenceID: skill.ID,
+			Metadata:    map[string]any{"kind": AgentReferenceKindSkill, "via": "skill_command", "name": skill.Name},
+		})
+	}
+	if err := saveSkillCommandReferencesFn(request.AccountId, conversationId, request.MessageId, uuid.Nil.String(), refs); err != nil {
+		ctx.GetLogger().Error("conversation: failed to save skill command references", "error", err, "message_id", request.MessageId)
+	}
+}
+
+var saveSkillCommandReferencesFn = func(accountId, conversationId, messageId, agentId string, refs []AgentReference) error {
+	return GetConversationDao().SaveAgentReferences(accountId, conversationId, messageId, agentId, refs)
+}
+
 func HandleConversationMessageRequest(ctx *security.RequestContext, accountId, conversationId, messageId string, resumeAgentId ...string) (NBAgentResponse, error) {
 	history := GetConversationDao()
 	conversationMessage, err := history.GetConversationMessage(messageId, accountId, conversationId)

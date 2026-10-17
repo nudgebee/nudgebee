@@ -91,7 +91,7 @@ func TestGrantHelpers(t *testing.T) {
 	// built-in HasAccountAccess check it always had.
 	plain := authzContext(t, `{"TenantId":"t1","UserId":"u5","Roles":["account_admin"],
 		"AccountIds":["`+authzAcctA+`"]}`)
-	for _, module := range []string{moduleAiKbs, moduleAiAgents, moduleAiTools, moduleAiFunctions,
+	for _, module := range []string{moduleAiKbs, moduleAiAgents, moduleAiTools,
 		moduleAiGuardrails, moduleAiMemory, moduleAiMisc, moduleAiRca, moduleAiGeneration, moduleAiConversations} {
 		if granted(plain, authzAcctA, module, "Read", "Write", "Execute") {
 			t.Errorf("a user with no custom grants must get nothing from %s", module)

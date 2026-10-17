@@ -235,10 +235,6 @@ export interface ListToolsRequest {
   nbToolType?: 'tool' | 'agent';
 }
 
-export interface ListFunctionsRequest {
-  accountId: string | number;
-}
-
 // Agent/tool definitions are open-ended objects; only account_id is required.
 // Remaining fields are passed through to the backend verbatim via gqlStringify.
 
@@ -285,26 +281,6 @@ export interface GetWorkspaceFileRequest {
   conversation_id?: string;
   path?: string;
   download?: boolean;
-}
-
-export interface AiFunctionData {
-  name: string;
-  description?: string;
-  prompt?: string;
-  variables?: string[];
-  variable_defaults?: Record<string, string>;
-  status?: string;
-  version?: string;
-}
-
-export interface UpdateFunctionData {
-  name?: string;
-  description?: string;
-  prompt?: string;
-  variables?: string[];
-  variable_defaults?: Record<string, string>;
-  status?: string;
-  version?: string;
 }
 
 export interface StopInvestigateRequest {

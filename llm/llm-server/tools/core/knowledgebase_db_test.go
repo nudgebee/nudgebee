@@ -505,3 +505,88 @@ func TestKBMigrationV1014DeletesLeftoverRows_DB(t *testing.T) {
 		"{"+strings.Join([]string{org, leftover, manual}, ",")+"}"))
 	assert.ElementsMatch(t, []string{org, manual}, remaining)
 }
+
+// "/skill-name" resolves a user-defined text skill the account can see, by its
+// name or with spaces typed as hyphens; the account's own skill wins over an
+// organisation one, and switched-off, disabled, PDF, integration and other
+// tenants' skills are never found.
+func TestGetSkillsForCommand_DB(t *testing.T) {
+	db := kbTestDB(t)
+	s := seedKBTenantCommitted(t, db)
+	integration := seedIntegration(t, db, s.tenant, "enabled", s.a)
+	setData := func(id, data, format string) {
+		mustExec(t, db, `UPDATE llm_knowledgebases SET data = $2, data_format = $3 WHERE id = $1`, id, data, format)
+	}
+
+	org := seedKB(t, db, s.tenant, kbSeedRow{name: "DB failover", enabled: true, visibility: "organisation"})
+	setData(org, "org steps", "text")
+	ownA := seedKB(t, db, s.tenant, kbSeedRow{account: s.a, name: "db failover", enabled: true, visibility: "account"})
+	setData(ownA, "A's steps", "text")
+	off := seedKB(t, db, s.tenant, kbSeedRow{account: s.a, name: "Old runbook", enabled: false, visibility: "account"})
+	setData(off, "old", "text")
+	pdf := seedKB(t, db, s.tenant, kbSeedRow{account: s.a, name: "Manual", enabled: true, visibility: "account"})
+	setData(pdf, "JVBERi0=", "pdf")
+	seedKB(t, db, s.tenant, kbSeedRow{integration: integration, name: "Confluence", enabled: true, visibility: "organisation"})
+	seedOverride(t, db, s.tenant, org, s.b, false)
+
+	sc := security.NewRequestContextForSuperAdmin()
+	find := func(account, name string) string {
+		skills, err := GetSkillsForCommand(sc, account, []string{name})
+		require.NoError(t, err)
+		return skills[strings.ToLower(name)].Data
+	}
+
+	assert.Equal(t, "A's steps", find(s.a, "db-failover"), "the account's own skill wins")
+	assert.Equal(t, "A's steps", find(s.a, "DB FAILOVER"))
+	assert.Empty(t, find(s.b, "db-failover"), "B switched the organisation skill off")
+	assert.Empty(t, find(s.c, "db-failover"), "another tenant sees nothing")
+	assert.Empty(t, find(s.a, "old-runbook"), "disabled")
+	assert.Empty(t, find(s.a, "manual"), "PDF")
+	assert.Empty(t, find(s.a, "confluence"), "integration knowledge base")
+	assert.Empty(t, find(s.a, "var/log/syslog"))
+
+	both, err := GetSkillsForCommand(sc, s.a, []string{"DB-Failover", "nope", "db failover"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"db-failover": "A's steps", "db failover": "A's steps"},
+		map[string]string{"db-failover": both["db-failover"].Data, "db failover": both["db failover"].Data})
+	assert.Len(t, both, 2, "one entry per matching name, keyed lower-case")
+}
+
+// V1037 copies each saved function into its account as a text skill, skipping
+// names the account already uses and functions with no account.
+func TestKBMigrationV1037FunctionsToSkills_DB(t *testing.T) {
+	db := kbTestDB(t)
+	tx, err := db.Beginx()
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+
+	s := seedKBTenant(t, tx)
+	seedKB(t, tx, s.tenant, kbSeedRow{account: s.a, name: "Pod triage", enabled: true, visibility: "account"})
+	fn := func(account any, name, prompt, variables string) {
+		mustExec(t, tx, `INSERT INTO llm_functions (tenant_id, account_id, name, description, prompt, variables)
+			VALUES ($1, $2, $3, 'desc', $4, NULLIF($5, '')::jsonb)`, s.tenant, account, name, prompt, variables)
+	}
+	fn(s.a, "pod_triage", "check pods", "")
+	fn(s.a, "deploy_check", "check deploys", `["ns"]`)
+	fn(s.a, "POD TRIAGE", "clashes with the skill", "")
+	fn(nil, "tenant_wide", "no account", "")
+
+	runMigrationFile(t, tx, "V1037")
+
+	var got []string
+	require.NoError(t, tx.Select(&got, `SELECT name || '=' || data || ':' || kb_type || ':' || status || ':' || enabled::text
+		FROM llm_knowledgebases WHERE tenant_id = $1 AND account_id = $2 AND name <> 'Pod triage' ORDER BY name`, s.tenant, s.a))
+	assert.Equal(t, []string{
+		"deploy_check=check deploys\n\nInputs: [\"ns\"]:manual:active:true",
+		"pod_triage=check pods:manual:active:true",
+	}, got)
+
+	var orgRows int
+	require.NoError(t, tx.Get(&orgRows, `SELECT count(*) FROM llm_knowledgebases WHERE tenant_id = $1 AND account_id IS NULL`, s.tenant))
+	assert.Zero(t, orgRows, "a function with no account is not widened to the organisation")
+
+	runMigrationFile(t, tx, "V1037")
+	var again int
+	require.NoError(t, tx.Get(&again, `SELECT count(*) FROM llm_knowledgebases WHERE tenant_id = $1`, s.tenant))
+	assert.Equal(t, 3, again, "re-running adds nothing")
+}

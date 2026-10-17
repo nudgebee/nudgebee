@@ -590,7 +590,6 @@ type appConfig struct {
 	LlmToolCrawlDevtoolWebsocketUrl string `mapstructure:"llm_server_tool_crawl_devtool_websocket_url"`
 
 	ConversationTaskWorkerCount    int `mapstructure:"llm_server_conversation_task_worker_count"`
-	AuditApiWorkerCount            int `mapstructure:"llm_server_audit_api_worker_count"`
 	AsyncApiWorkerCount            int `mapstructure:"llm_server_async_api_worker_count"`
 	AsyncApiQueueSize              int `mapstructure:"llm_server_async_api_queue_size"`
 	EventAnalysisWorkerCount       int `mapstructure:"llm_server_event_analysis_worker_count"`
@@ -1491,7 +1490,6 @@ func init() {
 	viper.SetDefault("llm_server_async_ref_worker_count", 10)
 	viper.SetDefault("llm_server_async_api_worker_count", 100)
 	viper.SetDefault("llm_server_async_api_queue_size", 1000)
-	viper.SetDefault("llm_server_audit_api_worker_count", 5)
 	viper.SetDefault("llm_server_conversation_task_worker_count", 20)
 	viper.SetDefault("llm_server_event_analysis_worker_count", 5)
 	viper.SetDefault("llm_server_event_analysis_queue_size", 100)

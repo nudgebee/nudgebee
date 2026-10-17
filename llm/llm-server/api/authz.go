@@ -20,7 +20,6 @@ import "nudgebee/llm/security"
 const (
 	moduleAiAgents        = "ai_agents"
 	moduleAiConversations = "ai_conversations"
-	moduleAiFunctions     = "ai_functions"
 	moduleAiGeneration    = "ai_generation"
 	moduleAiGuardrails    = "ai_guardrails"
 	moduleAiKbs           = "ai_kbs"

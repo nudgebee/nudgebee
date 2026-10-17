@@ -248,7 +248,7 @@ interface AttachedImage extends OutgoingImage {
 interface AutoSuggestTextareaProps {
   value: string;
   suggestionsAt: { name: string; display_name: string }[];
-  functionSuggestions?: { name: string; description: string; variables?: any; variable_defaults?: any }[];
+  skillSuggestions?: { name: string; description: string }[];
   placeholder: string;
   maxRows: number;
   maxLength: number;
@@ -950,20 +950,14 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   );
 };
 
-// `variables` arrives as a name list, a {name}-object list, or a name-keyed object
-// depending on the function — normalise before any .map/.length assumes an array.
-const variableNamesOf = (fn?: { variables?: any }): string[] => {
-  const raw = fn?.variables;
-  if (Array.isArray(raw)) return raw.map((v) => (typeof v === 'string' ? v : v?.name)).filter(Boolean);
-  if (raw && typeof raw === 'object') return Object.keys(raw);
-  return [];
-};
+// The slash-command name the backend resolves a skill by: lowercase, spaces typed as hyphens.
+const skillCommandName = (name: string) => name.trim().toLowerCase().replace(/ /g, '-');
 
 const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTextareaProps>(function AutoSuggestTextarea(
   {
     value,
     suggestionsAt,
-    functionSuggestions = [],
+    skillSuggestions = [],
     placeholder,
     maxLength,
     maxRows,
@@ -1001,13 +995,15 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [filteredSuggestions, setFilteredSuggestions] = useState<{ name: string; display_name: string }[]>([]);
-  const [filteredFunctions, setFilteredFunctions] = useState<{ name: string; description: string; variables?: any; variable_defaults?: any }[]>([]);
+  const [filteredSkills, setFilteredSkills] = useState<{ name: string; description: string }[]>([]);
+  // Where the "/..." word being typed sits in the text, so picking a skill replaces just that word.
+  const slashWordRef = useRef<{ start: number; end: number } | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // Point both the internal ref (used for focus/anchor positioning below) and any
   // ref forwarded by the parent (which calls `.focus()`) at the same DOM textarea.
   const mergedTextareaRef = useForkRef(textareaRef, forwardedRef);
-  const [suggestionsTrigger, setSuggestionsTrigger] = useState<'at' | 'button' | 'call'>('at');
+  const [suggestionsTrigger, setSuggestionsTrigger] = useState<'at' | 'button' | 'skill'>('at');
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const agentButtonRef = useRef<HTMLDivElement | null>(null);
   // Opened by a footer button (placed above it) rather than by typing (placed under the text).
@@ -1118,19 +1114,6 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
     }
   };
 
-  const buildFunctionCall = (selectedFunction: { name: string; variables?: any; variable_defaults?: any }) => {
-    let functionCall = `/call ${selectedFunction.name}`;
-    const varNames = variableNamesOf(selectedFunction);
-    if (varNames.length > 0) {
-      const paramPairs = varNames.map((variable) => {
-        const defaultValue = selectedFunction.variable_defaults?.[variable] || '';
-        return `${variable}="${defaultValue}"`;
-      });
-      functionCall += ` ${paramPairs.join(' ')}`;
-    }
-    return functionCall;
-  };
-
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     setText(value);
@@ -1143,15 +1126,31 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
       (suggest) => suggest.name.toLowerCase().startsWith(typedAgent) || suggest.display_name.toLowerCase().startsWith(typedAgent)
     );
 
-    // Handle /call function suggestions
-    const callMatch = /^\/call(?:\s+(\w*))?/.exec(value);
-    const typedFunction = callMatch && callMatch[1] ? callMatch[1].trim().toLowerCase() : '';
-    const matchedFunctions = functionSuggestions.filter((func) => func.name.toLowerCase().startsWith(typedFunction));
+    // Handle /skill-name suggestions for the word at the cursor, anywhere in the message:
+    // a word that starts with "/" and holds no other "/" (so a path like /var/log pops nothing).
+    const caret = e.target.selectionStart ?? value.length;
+    const wordStart = value.slice(0, caret).search(/\S*$/);
+    const wordEnd = caret + (/^\S*/.exec(value.slice(caret))?.[0].length ?? 0);
+    const word = value.slice(wordStart, wordEnd);
+    const isSkillWord = /^\/[^\s/]*$/.test(word);
+    const typedSkill = isSkillWord ? value.slice(wordStart + 1, caret).toLowerCase() : '';
+    const matchedSkills = isSkillWord
+      ? skillSuggestions.filter((skill) => skillCommandName(skill.name).startsWith(typedSkill) || skill.name.toLowerCase().startsWith(typedSkill))
+      : [];
+    slashWordRef.current = isSkillWord ? { start: wordStart, end: wordEnd } : null;
 
-    if (value.startsWith('@') && suggestionsAt.length > 0 && matchedAgents.length > 0) {
+    // The skill word at the cursor wins, so "@agent /dis" still suggests skills.
+    if (matchedSkills.length > 0) {
+      setSuggestionsTrigger('skill');
+      setFilteredSuggestions([]);
+      setFilteredSkills(matchedSkills);
+      setShowSuggestions(true);
+      setSelectedIndex(-1);
+      setAnchorEl(textareaRef.current);
+    } else if (value.startsWith('@') && suggestionsAt.length > 0 && matchedAgents.length > 0) {
       setSuggestionsTrigger('at');
       setFilteredSuggestions(matchedAgents);
-      setFilteredFunctions([]);
+      setFilteredSkills([]);
       setShowSuggestions(true);
       setSelectedIndex(-1);
       const isSuggestionPresent = matchedAgents.some(
@@ -1161,23 +1160,6 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
         setShowSuggestions(false);
       }
       setAnchorEl(textareaRef.current);
-    } else if (value.startsWith('/call') && functionSuggestions.length > 0) {
-      setSuggestionsTrigger('call');
-      setFilteredSuggestions([]);
-
-      // Hide once the name is fully typed AND followed by a space (params/free-text
-      // follow); until then keep offering matches so a prefix like "get" still shows "get_user".
-      const isFunctionFullyTyped = /^\/call\s+\w+\s+/.test(value);
-      const functionsToShow = typedFunction === '' ? functionSuggestions : matchedFunctions;
-
-      if (!isFunctionFullyTyped && functionsToShow.length > 0) {
-        setFilteredFunctions(functionsToShow);
-        setShowSuggestions(true);
-        setSelectedIndex(-1);
-        setAnchorEl(textareaRef.current);
-      } else {
-        setShowSuggestions(false);
-      }
     } else {
       setShowSuggestions(false);
     }
@@ -1207,22 +1189,18 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
     }, 0);
   };
 
-  const handleSelectFunction = (selectedFunc: { name: string; variables?: any; variable_defaults?: any }) => {
-    if (!selectedFunc) return;
-    const callIndex = text.indexOf('/call');
-    if (callIndex !== -1) {
-      const beforeCall = text.substring(0, callIndex);
-      const afterCallPattern = text.substring(callIndex).match(/^\/call\s*\w*/);
-      const afterCallEnd = afterCallPattern ? callIndex + afterCallPattern[0].length : callIndex + 5;
-      setText(beforeCall + buildFunctionCall(selectedFunc) + text.substring(afterCallEnd));
-    } else {
-      // Reached from the footer button; the call has to lead the message, so keep any draft after it.
-      setText(`${buildFunctionCall(selectedFunc)} ${text}`);
-    }
+  const handleSelectSkill = (selectedSkill: { name: string }) => {
+    if (!selectedSkill) return;
+    const command = `/${skillCommandName(selectedSkill.name)} `;
+    // Replace the "/..." word being typed; without one, put the command first.
+    const { start, end } = slashWordRef.current ?? { start: 0, end: 0 };
+    setText(text.slice(0, start) + command + text.slice(end).replace(/^[ \t]+/, ''));
+    slashWordRef.current = null;
     setShowSuggestions(false);
     setSelectedIndex(-1);
     setTimeout(() => {
       textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(start + command.length, start + command.length);
     }, 0);
   };
 
@@ -1240,7 +1218,7 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
       return;
     }
     if (showSuggestions) {
-      const currentList = suggestionsTrigger === 'call' ? filteredFunctions : filteredSuggestions;
+      const currentList = suggestionsTrigger === 'skill' ? filteredSkills : filteredSuggestions;
       switch (e.key) {
         case 'ArrowDown':
           e.preventDefault();
@@ -1253,8 +1231,8 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
         case 'Enter':
           e.preventDefault();
           if (selectedIndex >= 0) {
-            if (suggestionsTrigger === 'call') {
-              handleSelectFunction(filteredFunctions[selectedIndex]);
+            if (suggestionsTrigger === 'skill') {
+              handleSelectSkill(filteredSkills[selectedIndex]);
             } else {
               handleSelectSuggestion(filteredSuggestions[selectedIndex].name);
             }
@@ -1281,7 +1259,7 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
     setSuggestionsTrigger('button');
     setFilteredSuggestions(suggestionsAt);
     setOpenedFromButton(true);
-    // Toggle only this list: a click while the functions list is open switches to agents.
+    // Toggle only this list: a click while the skills list is open switches to agents.
     setShowSuggestions(!(showSuggestions && suggestionsTrigger === 'button'));
     setAnchorEl(agentButtonRef.current || textareaRef.current);
     setSelectedIndex(-1);
@@ -1369,17 +1347,14 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
               <Box
                 sx={{
                   display: 'grid',
-                  gridTemplateColumns:
-                    (suggestionsTrigger === 'call' ? filteredFunctions.length : filteredSuggestions.length) <= 3 ? '1fr' : 'repeat(3, 1fr)',
+                  // Skills are one per row: their names and descriptions are too long for the agent grid.
+                  gridTemplateColumns: suggestionsTrigger === 'skill' || filteredSuggestions.length <= 3 ? '1fr' : 'repeat(3, 1fr)',
                   gap: 'var(--ds-space-1)',
                   padding: 'var(--ds-space-2)',
                   border: '1px solid var(--ds-blue-300)',
                   borderRadius: 'var(--ds-radius-sm)',
                   backgroundColor: 'var(--ds-background-100)',
-                  width:
-                    (suggestionsTrigger === 'call' ? filteredFunctions.length : filteredSuggestions.length) <= 3
-                      ? ds.space.mul(0, 100)
-                      : ds.space.mul(0, 280),
+                  width: suggestionsTrigger === 'skill' || filteredSuggestions.length > 3 ? ds.space.mul(0, 280) : ds.space.mul(0, 100),
                   maxHeight: ds.space.mul(0, 119),
                   overflowY: 'auto',
                   '&::-webkit-scrollbar': {
@@ -1387,17 +1362,14 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
                     borderRadius: 'var(--ds-radius-lg)',
                   },
                   '@media (max-width: 1100px)': {
-                    width:
-                      (suggestionsTrigger === 'call' ? filteredFunctions.length : filteredSuggestions.length) <= 3
-                        ? ds.space.mul(0, 90)
-                        : ds.space.mul(0, 245),
+                    width: suggestionsTrigger === 'skill' || filteredSuggestions.length > 3 ? ds.space.mul(0, 245) : ds.space.mul(0, 90),
                   },
                 }}
               >
-                {suggestionsTrigger === 'call'
-                  ? filteredFunctions.map((func, index) => (
+                {suggestionsTrigger === 'skill'
+                  ? filteredSkills.map((skill, index) => (
                       <Box
-                        key={func.name}
+                        key={skill.name}
                         sx={{
                           display: 'flex',
                           flexDirection: 'column',
@@ -1415,17 +1387,24 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
                             fontSize: 'var(--ds-text-caption)',
                           },
                         }}
-                        onClick={() => handleSelectFunction(func)}
+                        onClick={() => handleSelectSkill(skill)}
                       >
                         <Typography sx={{ fontWeight: 'var(--ds-font-weight-semibold)', color: ds.blue[500], fontSize: 'var(--ds-text-small)' }}>
-                          {func.name}
+                          {skill.name}
                         </Typography>
-                        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[600], lineHeight: 1.2 }}>{func.description}</Typography>
-                        {variableNamesOf(func).length > 0 && (
-                          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[700], fontStyle: 'italic' }}>
-                            {variableNamesOf(func).length} parameter{variableNamesOf(func).length !== 1 ? 's' : ''}
-                          </Typography>
-                        )}
+                        <Typography
+                          sx={{
+                            fontSize: 'var(--ds-text-caption)',
+                            color: ds.gray[600],
+                            lineHeight: 1.2,
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          {skill.description}
+                        </Typography>
                       </Box>
                     ))
                   : filteredSuggestions.map((suggest, index) => (

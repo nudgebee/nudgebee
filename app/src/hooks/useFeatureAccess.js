@@ -3,13 +3,11 @@ import { hasFeatureAccess } from '@lib/auth';
 
 /**
  * Tri-state tenant feature-flag check (null = still resolving, then the
- * real boolean) — same async hasFeatureAccess() SettingsModal.jsx's own
- * initializeTabs used to gate its Functions tab on 'LLM_FUNCTION', pulled
- * out into a hook since Admin's AI & Tools page, its Nubi-rail modal, and
- * b-Cortex all now need the same check. Unlike useBCortexEnabled's
+ * real boolean) — the async hasFeatureAccess() wrapped in a hook for
+ * components that gate UI on a tenant flag. Unlike useBCortexEnabled's
  * "treat null as enabled" default, a still-resolving flag here is treated
- * as false by callers (fail-closed) — matches Settings' own behaviour,
- * which never showed the tab at all until the check resolved true.
+ * as false by callers (fail-closed), so gated UI never shows until the
+ * check resolves true.
  */
 export function useFeatureAccess(featureName) {
   const [enabled, setEnabled] = useState(null);

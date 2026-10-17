@@ -627,7 +627,7 @@ export const cloudFoundryDetailsSearchFragments: CloudFoundryDetailsSearchFragme
 // sub-tab). b-Cortex is a modal, not a route, so there's no page of its own
 // to index — GlobalPageSearch.jsx opens these directly via the bCortexOpener
 // seam (NubiBrainNav.jsx subscribes to it) rather than navigating anywhere.
-// `memoryOnly`/`requiresFeature`/`requiresFeedbackScope` mirror the matching
+// `memoryOnly`/`requiresFeedbackScope` mirror the matching
 // field on that tab's own config in BCortexModal.jsx exactly, so
 // GlobalPageSearch.jsx can gate a row the same way the modal gates the tab
 // itself. Kept here rather than exported from the modal so this stays a
@@ -638,7 +638,6 @@ export interface BCortexSearchFragment {
   slug: string;
   tab: string;
   memoryOnly?: boolean;
-  requiresFeature?: string;
   requiresFeedbackScope?: boolean;
 }
 
@@ -659,12 +658,6 @@ export const bCortexSearchFragments: BCortexSearchFragment[] = [
     slug: 'bcortex/knowledge/account-context',
     tab: 'account-context',
     memoryOnly: true,
-  },
-  {
-    label: 'My Functions',
-    slug: 'bcortex/knowledge/my-functions',
-    tab: 'my-functions',
-    requiresFeature: 'LLM_FUNCTION',
   },
 
   { label: 'Knowledge Graph', slug: 'bcortex/knowledge-graph', tab: 'knowledge-graph' },

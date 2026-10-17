@@ -298,7 +298,7 @@ const KubernetesLLMResponseGenerator = ({
     setRawConversations,
     setSelectedConversation,
   } = useConversationManager();
-  const { enabledAgents, loadingAgents, allFunctions } = useAgentConfiguration(accountId);
+  const { enabledAgents, loadingAgents, allSkills } = useAgentConfiguration(accountId);
   const { tokenUsageData, messageTokenData, fetchTokenUsage, resetTokenMetrics, getAgentTokenDataForMessage, getReasoningForTool } =
     useTokenUsage(accountId);
   const { suggestions: conversationSuggestions, fetchSuggestions, clearSuggestions } = useConversationSuggestions(accountId);
@@ -2112,7 +2112,7 @@ const KubernetesLLMResponseGenerator = ({
                         }}
                       >
                         <AutoSuggestTextarea
-                          functionSuggestions={allFunctions}
+                          skillSuggestions={allSkills}
                           ref={textareaRef}
                           onDraftChange={trackComposerDraft}
                           value={generateQuestionText}
@@ -2536,7 +2536,7 @@ const KubernetesLLMResponseGenerator = ({
                   }}
                 >
                   <AutoSuggestTextarea
-                    functionSuggestions={allFunctions}
+                    skillSuggestions={allSkills}
                     ref={textareaRef}
                     onDraftChange={trackComposerDraft}
                     fontSize='var(--ds-text-body)'

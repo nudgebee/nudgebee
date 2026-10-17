@@ -203,6 +203,42 @@ const apiKnowledgeBase = {
   },
 
   /**
+   * Skills a user can load from chat with `/skill-name`: active, enabled,
+   * user-defined (manual) text KBs. Selects only the fields needed for the
+   * slash-command suggestion list.
+   */
+  listSkillCommands: async (accountId: string): Promise<{ name: string; description: string }[]> => {
+    if (accountId === 'demo') {
+      return [];
+    }
+    const LIST_SKILL_COMMANDS = `
+      query ListSkillCommands($request: ListKBRequest!) {
+        ai_list_kb(request: $request) {
+          data {
+            id
+            name
+            description
+            kb_type
+            enabled
+            status
+            switched_off
+            data_format
+          }
+        }
+      }
+    `;
+    const response = await queryGraphQL(LIST_SKILL_COMMANDS, 'ListSkillCommands', {
+      request: {
+        account_id: accountId,
+      },
+    });
+    const rows: KnowledgeBaseOutput[] = response?.data?.data?.ai_list_kb?.data || [];
+    return rows
+      .filter((kb) => kb.kb_type === 'manual' && kb.enabled && kb.status === 'active' && !kb.switched_off && kb.data_format !== 'pdf')
+      .map((kb) => ({ name: kb.name, description: kb.description || '' }));
+  },
+
+  /**
    * Get a single knowledge base by ID
    */
   getKnowledgeBase: async (accountId: string, kbId: string) => {

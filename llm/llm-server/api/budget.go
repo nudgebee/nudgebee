@@ -357,7 +357,7 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 		// The caller's own tenant is the only valid target for a tenant-scoped
 		// upsert, whatever entity_id the form posted (the Add-Budget form posts
 		// the tenant NAME, not its id). Matches /config/list behaviour and the
-		// rest of the llm-server API surface, e.g. functions.go:161,182.
+		// rest of the llm-server API surface.
 		if request.EntityType == budget.EntityTypeTenant {
 			request.EntityID = tenantId
 			logger = logger.With("entity_id", request.EntityID)

@@ -483,7 +483,7 @@ const navSearchIntegrationItems = integrationProviders.map((provider) => {
 // anywhere. `value`/`path` are still opaque, stable strings (not real URLs)
 // since they're only used as the Recents dedupe key, same role every other
 // row's `value` plays there. Visibility (OSS mode, plus each tab's own
-// memoryOnly/requiresFeature/requiresFeedbackScope gate) is handled in
+// memoryOnly/requiresFeedbackScope gate) is handled in
 // isNavSearchItemVisible below, not here.
 const navSearchBCortexItems = bCortexSearchFragments.map((entry) => {
   const path = `bcortex:${entry.tab}`;
@@ -496,7 +496,6 @@ const navSearchBCortexItems = bCortexSearchFragments.map((entry) => {
     group: 'b-Cortex',
     bcortexTab: entry.tab,
     bcortexMemoryOnly: entry.memoryOnly,
-    bcortexRequiresFeature: entry.requiresFeature,
     bcortexRequiresFeedbackScope: entry.requiresFeedbackScope,
     acronym: pathAcronym(entry.slug),
     searchText: `b-Cortex ${entry.slug} ${pathAcronym(entry.slug)}`,
@@ -1196,15 +1195,6 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
       .then((v) => setMemoryModuleEnabled(Boolean(v)))
       .catch(() => {});
   }, []);
-  // LLM_FUNCTION — gates b-Cortex's My Functions tab, same
-  // hasFeatureAccess('LLM_FUNCTION') check the modal's own llmFunctionEnabled
-  // uses. Fails closed until it resolves, same as llmAnalyserEnabled above.
-  const [llmFunctionEnabled, setLlmFunctionEnabled] = useState(false);
-  useEffect(() => {
-    hasFeatureAccess('LLM_FUNCTION')
-      .then(setLlmFunctionEnabled)
-      .catch(() => setLlmFunctionEnabled(false));
-  }, []);
 
   // Same gate the sidebar's own "Admin" nav item uses (layout/index.jsx) — a
   // user who can't see that nav entry shouldn't find its pages (Users,
@@ -1216,8 +1206,6 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
   const canAccessBCortex = !isOSSDeploymentMode();
   // Account Context sub-tab gate — mirrors BCortexModal.jsx's own knowledgeSubTabs filter.
   const canAccessBCortexAccountContext = memoryModuleEnabled !== false;
-  // My Functions sub-tab gate — mirrors BCortexModal.jsx's own knowledgeSubTabs filter.
-  const canAccessBCortexMyFunctions = llmFunctionEnabled === true;
   // Feedback sub-tab gate — same isTenantWideRole() || getSessionAccountIds().length > 0
   // check BCortexModal.jsx's own hasFeedbackScope uses; session-derived, not async.
   const canAccessBCortexFeedback = isTenantWideRole() || getSessionAccountIds().length > 0;
@@ -1287,9 +1275,6 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
         if (opt.bcortexMemoryOnly && !canAccessBCortexAccountContext) {
           return false;
         }
-        if (opt.bcortexRequiresFeature && !canAccessBCortexMyFunctions) {
-          return false;
-        }
         if (opt.bcortexRequiresFeedbackScope && !canAccessBCortexFeedback) {
           return false;
         }
@@ -1315,7 +1300,6 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
       canAccessAdmin,
       canAccessBCortex,
       canAccessBCortexAccountContext,
-      canAccessBCortexMyFunctions,
       canAccessBCortexFeedback,
       canAccessTaskRunner,
       canAccessBilling,
