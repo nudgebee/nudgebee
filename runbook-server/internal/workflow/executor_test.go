@@ -12,8 +12,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"nudgebee/runbook/internal/model"
-	// "nudgebee/runbook/internal/tasks/core" // Not directly imported here, but types used.
-	// "nudgebee/runbook/internal/tasks/types" // Not directly imported here, but types used.
+	"nudgebee/runbook/internal/tasks"
 )
 
 type ExecutorTestSuite struct {
@@ -523,4 +522,313 @@ func (s *ExecutorTestSuite) TestCalleeWorkflowIDSurvivesSystemUpsert() {
 		val, ok := attrs.GetKeyword(temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowID))
 		s.False(ok && val == inlineChildSnapshot.ID, "must not overwrite the callee id with the synthetic snapshot id")
 	}
+}
+
+func (s *ExecutorTestSuite) TestTaskExpectedOutput_ValidationFailure_FailsWorkflow() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+
+	f := false
+	wf := &model.Workflow{
+		ID:        "test-output-val-fail",
+		TenantID:  "test-tenant",
+		AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{
+					ID:   "task_empty",
+					Type: "core.print",
+					Params: map[string]any{
+						"message": "",
+					},
+					ExpectedOutput: &model.TaskExpectedOutput{
+						Type:       "string",
+						AllowEmpty: &f,
+					},
+				},
+			},
+		},
+	}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.Error(s.env.GetWorkflowError())
+	s.Contains(s.env.GetWorkflowError().Error(), "ERR_EMPTY_OUTPUT")
+}
+
+func (s *ExecutorTestSuite) TestTaskExpectedOutput_ValidationFailure_ContinueOnError() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+
+	f := false
+	wf := &model.Workflow{
+		ID:        "test-output-val-continue",
+		TenantID:  "test-tenant",
+		AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{
+					ID:   "task_empty",
+					Type: "core.print",
+					Params: map[string]any{
+						"message": "",
+					},
+					ExpectedOutput: &model.TaskExpectedOutput{
+						Type:       "string",
+						AllowEmpty: &f,
+					},
+					FailurePolicy: &model.FailurePolicy{
+						Action: "continue",
+					},
+				},
+				{
+					ID:        "task_next",
+					Type:      "core.print",
+					DependsOn: []string{"task_empty"},
+					Params: map[string]any{
+						"message": "continued_successfully",
+					},
+				},
+			},
+			Output: map[string]any{
+				"task_empty_status": "{{ Tasks['task_empty'].status }}",
+				"next_output":       "{{ Tasks['task_next'].output.data }}",
+			},
+		},
+	}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+
+	var resultStr string
+	s.NoError(s.env.GetWorkflowResult(&resultStr))
+	s.JSONEq(`{"task_empty_status":"FAILED","next_output":"continued_successfully"}`, resultStr)
+}
+
+func (s *ExecutorTestSuite) TestTaskExpectedOutput_SuccessAndJSONNormalization() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+
+	wf := &model.Workflow{
+		ID:        "test-output-val-success",
+		TenantID:  "test-tenant",
+		AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{
+					ID:   "task_json",
+					Type: "core.print",
+					Params: map[string]any{
+						"message": `{"cluster_id":"c-123","status":"healthy"}`,
+					},
+					ExpectedOutput: &model.TaskExpectedOutput{
+						Type:     "json",
+						Required: []string{"cluster_id"},
+					},
+				},
+				{
+					ID:        "task_consumer",
+					Type:      "data.transform",
+					DependsOn: []string{"task_json"},
+					Params: map[string]any{
+						"expression": "cluster={{ Tasks['task_json'].output.data.cluster_id }}",
+					},
+				},
+			},
+			Output: map[string]any{
+				"result": "{{ Tasks['task_consumer'].output.data }}",
+			},
+		},
+	}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+
+	var resultStr string
+	s.NoError(s.env.GetWorkflowResult(&resultStr))
+	s.JSONEq(`{"result":"cluster=c-123"}`, resultStr)
+}
+
+func extractTestExpectedOutput(params map[string]any) *model.TaskExpectedOutput {
+	if eoVal, ok := params[tasks.ParamExpectedOutput]; ok && eoVal != nil {
+		switch eo := eoVal.(type) {
+		case *model.TaskExpectedOutput:
+			return eo
+		case model.TaskExpectedOutput:
+			return &eo
+		case map[string]any:
+			return model.ParseTaskExpectedOutput(eo)
+		}
+	}
+	return nil
+}
+
+func (s *ExecutorTestSuite) TestTaskExpectedOutput_RetrySemantics_TransientEventuallySucceeds() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+
+	attempts := 0
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]any) (any, error) {
+		attempts++
+		raw := ""
+		if attempts >= 2 {
+			raw = "recovered-on-attempt-2"
+		}
+		res := map[string]any{"data": raw}
+		if eo := extractTestExpectedOutput(params); eo != nil {
+			norm, valErr := tasks.ValidateTaskOutput(res, eo, "test.transient_task")
+			if valErr != nil {
+				return nil, valErr.ToTemporalError()
+			}
+			return norm, nil
+		}
+		return res, nil
+	}, activity.RegisterOptions{Name: "test.transient_task"})
+
+	f := false
+	wf := &model.Workflow{
+		ID:        "test-transient-retry-success",
+		TenantID:  "test-tenant",
+		AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{
+					ID:   "task_retry",
+					Type: "test.transient_task",
+					ExpectedOutput: &model.TaskExpectedOutput{
+						Type:       "string",
+						AllowEmpty: &f,
+					},
+					FailurePolicy: &model.FailurePolicy{
+						Retry: &model.WorkflowRetryPolicy{
+							MaximumAttempts: 3,
+							InitialInterval: "10ms",
+						},
+					},
+				},
+			},
+			Output: map[string]any{
+				"output": "{{ Tasks['task_retry'].output.data }}",
+			},
+		},
+	}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+	s.Equal(2, attempts, "transient validation failure must trigger retry and succeed on attempt 2")
+
+	var resultStr string
+	s.NoError(s.env.GetWorkflowResult(&resultStr))
+	s.JSONEq(`{"output":"recovered-on-attempt-2"}`, resultStr)
+}
+
+func (s *ExecutorTestSuite) TestTaskExpectedOutput_RetrySemantics_DeterministicDoesNotRetry() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+
+	attempts := 0
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]any) (any, error) {
+		attempts++
+		res := map[string]any{"data": `{"broken": json...`}
+		if eo := extractTestExpectedOutput(params); eo != nil {
+			norm, valErr := tasks.ValidateTaskOutput(res, eo, "test.malformed_task")
+			if valErr != nil {
+				return nil, valErr.ToTemporalError()
+			}
+			return norm, nil
+		}
+		return res, nil
+	}, activity.RegisterOptions{Name: "test.malformed_task"})
+
+	wf := &model.Workflow{
+		ID:        "test-deterministic-no-retry",
+		TenantID:  "test-tenant",
+		AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{
+					ID:   "task_malformed",
+					Type: "test.malformed_task",
+					ExpectedOutput: &model.TaskExpectedOutput{
+						Type: "json",
+					},
+					FailurePolicy: &model.FailurePolicy{
+						Retry: &model.WorkflowRetryPolicy{
+							MaximumAttempts: 5,
+							InitialInterval: "10ms",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.Error(s.env.GetWorkflowError())
+	s.Equal(1, attempts, "deterministic validation failure (ERR_MALFORMED_OUTPUT) must NOT retry despite MaximumAttempts: 5")
+}
+
+func (s *ExecutorTestSuite) TestTaskExpectedOutput_RetrySemantics_ExhaustedRetries() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+
+	attempts := 0
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]any) (any, error) {
+		attempts++
+		res := map[string]any{"data": ""}
+		if eo := extractTestExpectedOutput(params); eo != nil {
+			norm, valErr := tasks.ValidateTaskOutput(res, eo, "test.exhausted_task")
+			if valErr != nil {
+				return nil, valErr.ToTemporalError()
+			}
+			return norm, nil
+		}
+		return res, nil
+	}, activity.RegisterOptions{Name: "test.exhausted_task"})
+
+	f := false
+	wf := &model.Workflow{
+		ID:        "test-exhausted-retries",
+		TenantID:  "test-tenant",
+		AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{
+					ID:   "task_exhaust",
+					Type: "test.exhausted_task",
+					ExpectedOutput: &model.TaskExpectedOutput{
+						Type:       "string",
+						AllowEmpty: &f,
+					},
+					FailurePolicy: &model.FailurePolicy{
+						Retry: &model.WorkflowRetryPolicy{
+							MaximumAttempts: 3,
+							InitialInterval: "10ms",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.Error(s.env.GetWorkflowError())
+	s.Equal(3, attempts, "transient error must retry until MaximumAttempts is exhausted")
 }
