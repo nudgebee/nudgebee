@@ -248,5 +248,134 @@ class TestProviderNoLongerNamed(unittest.TestCase):
         self.assertEqual(released, [])
 
 
+def holder(source="agent", status="enabled", is_self=False, marked=False):
+    """One link of the account that holds the default column, as the claim reads it."""
+    return (source, status, is_self, marked)
+
+
+class TestDefaultClaimDecision(unittest.TestCase):
+    """Who keeps an account's default when the agent's connected provider heartbeats.
+
+    A default the user set in the UI carries a mark on its link; the agent never takes a
+    marked or user-sourced default, but still takes one only an agent claim put there.
+    """
+
+    def test_nothing_holds_the_default_so_the_agent_claims_it(self):
+        self.assertEqual(th._default_claim_decision([]), "claim")
+
+    def test_the_agent_already_holds_it(self):
+        self.assertEqual(th._default_claim_decision([holder(is_self=True)]), "keep")
+
+    def test_a_user_sourced_default_is_left_alone(self):
+        self.assertEqual(th._default_claim_decision([holder(source="user")]), "keep")
+
+    def test_an_agent_row_the_user_picked_is_left_alone(self):
+        """The bug: a user picks the agent's ClickHouse row for logs, and Loki's next
+        heartbeat took it back because the row's source is 'agent'."""
+        self.assertEqual(th._default_claim_decision([holder(marked=True)]), "keep")
+
+    def test_an_agent_row_only_an_agent_claim_put_there_is_taken_over(self):
+        """Unmarked agent-held defaults heal as before, e.g. one left on a provider the
+        cluster switched away from."""
+        self.assertEqual(th._default_claim_decision([holder()]), "claim")
+
+    def test_a_disabled_pick_does_not_block_the_agent(self):
+        self.assertEqual(th._default_claim_decision([holder(marked=True, status="disabled")]), "claim")
+        self.assertEqual(th._default_claim_decision([holder(source="user", status="disabled")]), "claim")
+
+    def test_the_agent_gives_way_when_an_enabled_pick_also_holds_it(self):
+        """Two rows hold the default: a pick re-enabled after a Disable, or a heartbeat
+        that raced a UI save. The agent clears its own claim."""
+        self.assertEqual(th._default_claim_decision([holder(is_self=True), holder(marked=True)]), "release")
+        self.assertEqual(th._default_claim_decision([holder(is_self=True), holder(source="user")]), "release")
+
+    def test_the_agent_never_clears_a_pick_of_its_own_row(self):
+        self.assertEqual(
+            th._default_claim_decision([holder(is_self=True, marked=True), holder(source="user")]),
+            "keep",
+        )
+
+    def test_a_default_the_user_turned_off_is_claimed_back(self):
+        """Decided with the k8s-agent#660 maintainer: turning off an agent-held default
+        without picking another leaves nothing holding it, so the next heartbeat claims it
+        again. With no default the resolver routes to the agent's own provider anyway, so
+        "off" could not change what serves the signal; the toggle shows what does."""
+        self.assertEqual(th._default_claim_decision([]), "claim")
+
+
+class _FakeSQL(str):
+    """psycopg2.sql stand-in: identifiers render as their names, so statements are text."""
+
+    def format(self, *args, **kwargs):
+        return _FakeSQL(str.format(self, *args, **{k: str(v) for k, v in kwargs.items()}))
+
+
+class TestDefaultClaimStatements(unittest.TestCase):
+    def _claim(self, holders):
+        statements = []
+
+        def run_query(statement, params=None):
+            statements.append((" ".join(str(statement).split()), params))
+            return list(holders) if str(statement).lstrip().startswith("SELECT") else []
+
+        fake_sql = mock.Mock(SQL=_FakeSQL, Identifier=lambda name: name)
+        with mock.patch.object(th, "sql", fake_sql), mock.patch.object(th.database, "run_query", side_effect=run_query):
+            th._maybe_set_default_provider(INTEGRATION, ACCOUNT, TENANT, "default_log_provider")
+        return [s for s, _ in statements[1:]], statements
+
+    def test_keep_writes_nothing(self):
+        writes, _ = self._claim([holder(marked=True)])
+        self.assertEqual(writes, [])
+
+    def test_claim_resets_only_unmarked_agent_rows_and_guards_against_any_enabled_pick(self):
+        writes, statements = self._claim([holder()])
+
+        self.assertEqual(len(writes), 2)
+        reset, set_self = writes
+        self.assertIn("SET default_log_provider = false", reset)
+        self.assertIn("i.source = 'agent'", reset)
+        self.assertIn("NOT (%s = ANY(ica.user_set_defaults))", reset)
+        self.assertIn("SET default_log_provider = true", set_self)
+        self.assertIn("ui.status != 'disabled'", set_self)
+        self.assertIn("ui.source = 'user' OR %s = ANY(u.user_set_defaults)", set_self)
+        self.assertIn("default_log_provider", statements[1][1])
+
+    def test_release_clears_only_the_agents_own_unmarked_link(self):
+        writes, statements = self._claim([holder(is_self=True), holder(marked=True)])
+
+        self.assertEqual(len(writes), 1)
+        self.assertIn("SET default_log_provider = false", writes[0])
+        self.assertIn("ica.integration_id = %s", writes[0])
+        self.assertIn("NOT (%s = ANY(ica.user_set_defaults))", writes[0])
+        self.assertEqual(statements[1][1][0], INTEGRATION)
+
+
+class _PGError(Exception):
+    def __init__(self, pgcode):
+        super().__init__(pgcode)
+        self.pgcode = pgcode
+
+
+class TestDefaultClaimBeforeMigration(unittest.TestCase):
+    """The collector can roll out before the migration adding user_set_defaults applies,
+    wherever it deploys independently of the migrations Job. Until then it leaves the
+    default alone instead of failing the rest of the heartbeat."""
+
+    def _claim_with(self, error):
+        run_query = mock.Mock(side_effect=error)
+        fake_sql = mock.Mock(SQL=_FakeSQL, Identifier=lambda name: name)
+        with mock.patch.object(th, "sql", fake_sql), mock.patch.object(th.database, "run_query", run_query):
+            th._maybe_set_default_provider(INTEGRATION, ACCOUNT, TENANT, "default_log_provider")
+        return run_query
+
+    def test_a_missing_column_skips_the_default_and_writes_nothing(self):
+        run_query = self._claim_with(_PGError("42703"))
+        self.assertEqual(run_query.call_count, 1)
+
+    def test_any_other_database_error_still_raises(self):
+        with self.assertRaises(_PGError):
+            self._claim_with(_PGError("40P01"))
+
+
 if __name__ == "__main__":
     unittest.main()

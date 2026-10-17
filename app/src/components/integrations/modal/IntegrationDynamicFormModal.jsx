@@ -46,6 +46,7 @@ import WebhookLabelHelpTooltip from './WebhookLabelHelpTooltip';
 import useLogFieldOptions, { fieldOptionsKey, indexForAccount } from './useLogFieldOptions';
 import DefaultFiltersCard, { emptyFilterCard, hasCardMissingAccount, parseDefaultFilters, serializeDefaultFilters } from './DefaultFiltersCard';
 import { TRACE_LABEL_ADVANCED_FIELDS, TRACE_LABEL_FIELDS } from '@components/common/settings/labelMapperFields';
+import { buildAgentProviderTogglePayload } from './agentProviderToggle';
 
 // Array-typed config fields travel as one comma-joined string in
 // integration_config_values; chips may be plain values or {label, value}.
@@ -1018,21 +1019,14 @@ const IntegrationDynamicFormModal = ({
 
   const handleAgentProviderToggle = async (cloudAccountId, providerKey, newValue) => {
     setIsSubmitting(true);
-    const allAccountIds = agentAccountProviders.map((acc) => acc.cloud_account_id);
-    const providerMap = {};
-    agentAccountProviders.forEach((acc) => {
-      providerMap[acc.cloud_account_id] = acc.cloud_account_id === cloudAccountId ? String(newValue) : String(acc[providerKey]);
+    const payload = buildAgentProviderTogglePayload({
+      editData,
+      integrationName,
+      accountIds: agentAccountProviders.map((acc) => acc.cloud_account_id),
+      cloudAccountId,
+      providerKey,
+      newValue,
     });
-
-    const payload = {
-      ...(editData?.id && { integration_id: editData.id }),
-      integration_name: integrationName,
-      account_ids: allAccountIds,
-      integration_config_name: editData?.name,
-      skip_validation: true,
-      source: editData?.source || 'user',
-      integration_config_values: [{ name: providerKey, value: JSON.stringify(providerMap), is_encrypted: false }],
-    };
 
     try {
       const res = await apiIntegrations.addIntegrations(payload);

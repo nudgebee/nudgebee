@@ -874,50 +874,8 @@ func CreateIntegrationConfig(
 			// concurrent saves over overlapping accounts must take them in the
 			// same order or Postgres deadlocks one of them.
 			for _, accId := range slices.Sorted(maps.Keys(perAccountValues)) {
-				accValue := perAccountValues[accId]
-				if accValue == "true" {
-					// upsert true
-					_, err = tx.Exec(fmt.Sprintf(`
-						INSERT INTO integrations_cloud_accounts (
-							integration_id, cloud_account_id, tenant_id, link_role, %s
-						)
-						VALUES ($1,$2,$3,'own',true)
-						ON CONFLICT (integration_id, cloud_account_id, tenant_id, link_role)
-						DO UPDATE SET %s=EXCLUDED.%s`,
-						column, column, column),
-						configId,
-						accId,
-						ctx.GetSecurityContext().GetTenantId(),
-					)
-					if err != nil {
-						return IntegrationDto{}, fmt.Errorf("failed to upsert %s=true: %w", column, err)
-					}
-
-					// reset others
-					_, err = tx.Exec(fmt.Sprintf(`
-						UPDATE integrations_cloud_accounts
-						SET %s=false
-						WHERE cloud_account_id=$1 AND integration_id != $2`,
-						column),
-						accId,
-						configId,
-					)
-					if err != nil {
-						return IntegrationDto{}, fmt.Errorf("failed to reset others for %s: %w", column, err)
-					}
-				} else {
-					// explicitly set to false
-					_, err = tx.Exec(fmt.Sprintf(`
-						UPDATE integrations_cloud_accounts
-						SET %s=false
-						WHERE integration_id=$1 AND cloud_account_id=$2`,
-						column),
-						configId,
-						accId,
-					)
-					if err != nil {
-						return IntegrationDto{}, fmt.Errorf("failed to update %s=false: %w", column, err)
-					}
+				if err = writeAccountDefault(tx, ctx.GetSecurityContext().GetTenantId(), configId, accId, column, perAccountValues[accId] == "true"); err != nil {
+					return IntegrationDto{}, err
 				}
 			}
 		}
@@ -2564,6 +2522,11 @@ func GetIntegrationByConfigNameValues(
 		// Use BuildInClause to safely interpolate values into the query string
 		// instead of using parameterized queries ($1, $2, $3) which trigger
 		// lib/pq unnamed prepared statements that collide under concurrent goroutines.
+		//
+		// Ordered so that, when two links hold the default (a UI save racing a
+		// k8s collector heartbeat, which the next heartbeat undoes), the answer is
+		// the user's choice every time: one set from the UI (user_set_defaults),
+		// then a user-sourced integration, then a fixed tie-break.
 		rows, err = dbms.Db.Queryx(fmt.Sprintf(`
 			SELECT i.id, i.name, i.source, i.type
 			FROM integrations i
@@ -2573,8 +2536,9 @@ func GetIntegrationByConfigNameValues(
 			AND ica.%s = %s
 			AND i.tenant_id = %s
 			AND i.status != 'disabled'
+			ORDER BY ('%s' = ANY(ica.user_set_defaults)) DESC, (i.source = 'user') DESC, i.id
 			LIMIT 1
-		`, dbms.BuildInClause(accountId), column, dbms.BuildInClause(configValue), dbms.BuildInClause(context.GetSecurityContext().GetTenantId())))
+		`, dbms.BuildInClause(accountId), column, dbms.BuildInClause(configValue), dbms.BuildInClause(context.GetSecurityContext().GetTenantId()), column))
 	} else {
 		rows, err = dbms.Db.Queryx(fmt.Sprintf(`
 			SELECT i.id, i.name, i.source, i.type

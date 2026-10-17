@@ -27,6 +27,31 @@ def _upsert_cloud_account_attrs(cloud_account_id: str, attrs: Dict[str, str]):
         database.run_query(upsert_attr, [str(uuid.uuid4()), cloud_account_id, name, value])
 
 
+# Postgres SQLSTATE undefined_column (psycopg2.errorcodes.UNDEFINED_COLUMN).
+_PG_UNDEFINED_COLUMN = "42703"
+
+
+def _default_claim_decision(holders) -> str:
+    """What the agent's connected provider does about the account's default.
+
+    `holders` are the account's links that hold the default column, each
+    (source, status, is_self, marked): the integration's source and status,
+    whether the link is this provider's, and whether the user set the default on
+    it from the Integrations UI (`user_set_defaults`).
+
+    A default is the user's when its integration is user-sourced or its link is
+    marked. The agent never takes one of those while it is enabled, but still
+    takes a default only an agent claim put there, so stale ones heal. Returns
+    "claim", "keep", or "release" (clear this provider's own unmarked claim,
+    because an enabled user default also holds the column).
+    """
+    picked = [h for h in holders if not h[2] and h[1] != "disabled" and (h[0] == "user" or h[3])]
+    own = next((h for h in holders if h[2]), None)
+    if own is not None:
+        return "release" if picked and not own[3] else "keep"
+    return "keep" if picked else "claim"
+
+
 def _maybe_set_default_provider(
     integration_id: str,
     cloud_account_id: str,
@@ -39,11 +64,16 @@ def _maybe_set_default_provider(
 
     Issue #25714: when a log provider like Loki is wired up via the agent file,
     the "Default Log Provider" toggle should turn on by itself. But a user can
-    later pick a different provider as default from the Integrations UI
-    (integration source='user'); a subsequent heartbeat must not flip that back
-    to the agent's provider. So we only claim the default when no user-sourced
-    default exists for this account+category, and we no-op once this integration
-    already holds it (keeps heartbeats from rewriting the table every cycle).
+    later pick a different default from the Integrations UI, including another
+    agent-created integration (the ClickHouse row traces created, picked for
+    logs); a subsequent heartbeat must not flip that back to the agent's
+    provider. api-server marks the link when the user turns its default on
+    (`user_set_defaults`), and _default_claim_decision decides from that.
+
+    Turning off an agent-held default without picking another leaves nothing
+    holding it, so the next heartbeat claims it again. That is deliberate: with
+    no default the resolver routes to the agent's own provider anyway, so "off"
+    could not change what serves the signal, and the toggle shows what does.
 
     `default_column` is one of the fixed `integrations_cloud_accounts` flag
     columns; it is code-controlled, never user input, so interpolating it as an
@@ -58,35 +88,63 @@ def _maybe_set_default_provider(
     col = sql.Identifier(default_column)
 
     # Who, if anyone, currently holds the default for this category?
-    current_defaults = database.run_query(
-        sql.SQL("""
-            SELECT i.source, ica.integration_id = %s AS is_self
-            FROM integrations_cloud_accounts ica
-            JOIN integrations i ON i.id = ica.integration_id
-            WHERE ica.cloud_account_id = %s
-              AND ica.tenant_id = %s
-              AND ica.{col} = true
-            """).format(col=col),
-        [integration_id, cloud_account_id, tenant_id],
-    )
-
-    # User has explicitly chosen a default -> respect it, leave everything alone.
-    if any(row[0] == "user" for row in current_defaults):
+    try:
+        holders = database.run_query(
+            sql.SQL("""
+                SELECT i.source, i.status, ica.integration_id = %s AS is_self,
+                       %s = ANY(ica.user_set_defaults) AS marked
+                FROM integrations_cloud_accounts ica
+                JOIN integrations i ON i.id = ica.integration_id
+                WHERE ica.cloud_account_id = %s
+                  AND ica.tenant_id = %s
+                  AND ica.{col} = true
+                """).format(col=col),
+            [integration_id, default_column, cloud_account_id, tenant_id],
+        )
+    except Exception as e:
+        if getattr(e, "pgcode", None) != _PG_UNDEFINED_COLUMN:
+            raise
+        # This collector can run before the migration adding user_set_defaults has
+        # applied, wherever it deploys independently of the migrations Job. Leave the
+        # default alone until the column exists, rather than failing the rest of the
+        # heartbeat's link/unlink for the remaining signals.
+        logging.warning(
+            f"Skipped {default_column} for agent integration {integration_id}: "
+            "integrations_cloud_accounts.user_set_defaults does not exist yet"
+        )
         return
-    # This agent integration is already the default -> nothing to do (no write).
-    if any(row[1] for row in current_defaults):
+    decision = _default_claim_decision(holders)
+
+    if decision == "release":
+        # Never clears a marked column, even its own: only the save path does.
+        database.run_query(
+            sql.SQL("""
+                UPDATE integrations_cloud_accounts ica
+                SET {col} = false
+                WHERE ica.integration_id = %s
+                  AND ica.cloud_account_id = %s
+                  AND ica.tenant_id = %s
+                  AND NOT (%s = ANY(ica.user_set_defaults))
+                """).format(col=col),
+            [integration_id, cloud_account_id, tenant_id, default_column],
+        )
+        logging.info(
+            f"Cleared {default_column} for agent integration {integration_id} on "
+            f"cloud_account {cloud_account_id}: a user-chosen default also holds it"
+        )
+        return
+    if decision != "claim":
         return
 
-    # No user-chosen default and we don't already hold it: claim it. Clear any
-    # stale agent-sourced default first so exactly one row wins, then flag self.
+    # Claim it. Clear any stale agent claim first so exactly one row wins, then
+    # flag self.
     #
-    # Both statements re-assert the source/no-user-default condition so a user
-    # default set concurrently (between the SELECT above and these writes) is
-    # never clobbered and we never leave two rows defaulted:
-    #   - the reset only clears OTHER agent-sourced rows (a user row set in the
-    #     race is left untouched);
-    #   - the set-self is guarded by NOT EXISTS(user default), so if a user
-    #     default appeared mid-flight we simply no-op instead of duplicating it.
+    # Both statements re-assert the condition so a user default set concurrently
+    # (between the SELECT above and these writes) is never clobbered:
+    #   - the reset only clears OTHER agent-sourced rows the user did not mark;
+    #   - the set-self is guarded by NOT EXISTS(enabled user default). A save
+    #     that commits after this guard ran still leaves two rows holding the
+    #     column; the next heartbeat sees it and releases ("release" above).
     database.run_query(
         sql.SQL("""
             UPDATE integrations_cloud_accounts ica
@@ -98,8 +156,9 @@ def _maybe_set_default_provider(
               AND ica.integration_id != %s
               AND ica.{col} = true
               AND i.source = 'agent'
+              AND NOT (%s = ANY(ica.user_set_defaults))
             """).format(col=col),
-        [cloud_account_id, tenant_id, integration_id],
+        [cloud_account_id, tenant_id, integration_id, default_column],
     )
     database.run_query(
         sql.SQL("""
@@ -116,10 +175,11 @@ def _maybe_set_default_provider(
                   WHERE u.cloud_account_id = %s
                     AND u.tenant_id = %s
                     AND u.{col} = true
-                    AND ui.source = 'user'
+                    AND ui.status != 'disabled'
+                    AND (ui.source = 'user' OR %s = ANY(u.user_set_defaults))
               )
             """).format(col=col),
-        [integration_id, cloud_account_id, tenant_id, cloud_account_id, tenant_id],
+        [integration_id, cloud_account_id, tenant_id, cloud_account_id, tenant_id, default_column],
     )
     logging.info(
         f"Set {default_column}=true for agent integration {integration_id} on "
