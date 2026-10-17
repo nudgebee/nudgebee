@@ -209,7 +209,7 @@ func (m SplunkMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input 
 		}, nil
 	}
 
-	summarized, refs := inlineESResponse(nbRequestContext, response, "splunk_metrics_query", "Splunk")
+	summarized, refs, metadata := inlineESResponse(nbRequestContext, response, "splunk_metrics_query", "Splunk")
 	data, err := common.MarshalJson(summarized)
 	if err != nil {
 		return core.NBToolResponse{Status: core.NBToolResponseStatusError}, fmt.Errorf("splunk_metrics_query: marshal response: %w", err)
@@ -219,5 +219,6 @@ func (m SplunkMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input 
 		Type:       core.NBToolResponseTypeJson,
 		Status:     core.NBToolResponseStatusSuccess,
 		References: refs,
+		Metadata:   metadata,
 	}, nil
 }

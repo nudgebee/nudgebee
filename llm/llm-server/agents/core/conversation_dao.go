@@ -258,6 +258,9 @@ type IConversationDao interface {
 	ListConversationMessages(status ConversationStatus, workerName string, conversationId string, deadWorker bool) ([]ConversationMessage, error)
 	SaveConversationMessage(id, conversationId, accountID, userId string, role MessageRole, messageType MessageType, message, response, agentName string, parentAgentId uuid.UUID, messageConfig any, messageContext string, llmProvider, llmModel string, status ConversationStatus) (uuid.UUID, error)
 	GetConversationMessage(id, accountId, conversationId string) (ConversationMessage, error)
+	// GetToolCallChart returns the chart a tool call of this conversation saved
+	// under ref in its metadata (#40909); nil when there is none.
+	GetToolCallChart(conversationID, ref string) ([]byte, error)
 	// GetConversationMessageStatus reads only a message's status. A sub-agent
 	// that queries a delegated target runs under that target's account, which
 	// is not the message's account (see CheckMessageTerminationStatus).
@@ -2490,6 +2493,20 @@ func (chat *ConversationDao) GetConversationMessageStatus(id, conversationId str
 	return status, nil
 }
 
+func (chat *ConversationDao) GetToolCallChart(conversationID, ref string) ([]byte, error) {
+	// conversation_id leads idx_llm_conv_tool_calls_conv_id_tool_type.
+	query := `SELECT metadata->'charts'->$2::text FROM llm_conversation_tool_calls WHERE conversation_id = $1 AND metadata->'charts'->$2::text IS NOT NULL LIMIT 1`
+	var chart []byte
+	err := chat.dbManager.Db.QueryRow(query, conversationID, ref).Scan(&chart)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("history: failed to get tool call chart: %w", err)
+	}
+	return chart, nil
+}
+
 func (chat *ConversationDao) GetConversationMessage(id, accountId, conversationId string) (ConversationMessage, error) {
 	query := `select id, conversation_id, message, created_at, response, role, account_id, user_id, message_type, updated_at, responded_at, status, worker_name, agent_name, message_config, message_context, suggestions, llm_provider, llm_model from llm_conversation_messages WHERE id = $1 and conversation_id = $2 and account_id = $3`
 	row := chat.dbManager.Db.QueryRowx(query, id, conversationId, accountId)
@@ -2858,7 +2875,8 @@ func (chat *ConversationDao) LoadConversationMessages(accountID, conversationID,
 		msg := make(map[string]string)
 		msg["role"] = role
 		msg["content"] = message
-		msg["response"] = response
+		// Every caller feeds history to a model: a chart's points are for the reader.
+		msg["response"] = toolcore.StripChartData(response)
 		msg["id"] = id
 		msg["message_type"] = mType
 		msg["message_config"] = mConfig

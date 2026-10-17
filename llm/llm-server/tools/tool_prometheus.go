@@ -443,6 +443,8 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 		totalSeries += len(apiData)
 		totalPoints += countSeriesPoints(apiData)
 	}
+	// Before the stats-only pass below strips the points they are built from.
+	chartNotes, charts := promChartNotes(nbRequestContext, queries, seriesByQuery)
 
 	// Every series already has stats (min/max/avg/p99). When the raw
 	// timestamps/values are too large to hand the planner inline, they are
@@ -520,6 +522,9 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 	if oversized {
 		finalData["__data_note"] = seriesFileNote(fileRef, saveFailed, totalSeries, totalPoints, shown)
 	}
+	if len(chartNotes) > 0 {
+		finalData["__chart_note"] = strings.Join(chartNotes, "\n")
+	}
 
 	dataResponse, err := common.MarshalJson(finalData)
 	if err != nil {
@@ -534,6 +539,7 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 		Type:       core.NBToolResponseTypeJson,
 		Status:     core.NBToolResponseStatusSuccess,
 		References: append(refs, core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"monitoring", "query"}, "Query Prometheus", map[string]string{"tab": "4", "subtab": "2"}, input.Command)),
+		Metadata:   core.MetricChartMetadata(charts),
 	}, nil
 }
 
@@ -735,6 +741,60 @@ func saveSeriesToWorkspace(nbRequestContext core.NbToolContext, seriesByQuery ma
 		Type:        "file",
 		Description: "Full Prometheus query results",
 	}}, nil
+}
+
+// promChartNotes builds a chart of each query's full series (#40909) and returns the
+// notes that tell the model its chart_ref, with the charts for the response metadata.
+// A chart that cannot be built is skipped: the data is still inline or in the saved file.
+func promChartNotes(nbRequestContext core.NbToolContext, queries []string, seriesByQuery map[string][]any) ([]string, map[string]json.RawMessage) {
+	var notes []string
+	charts := map[string]json.RawMessage{}
+	for _, q := range queries {
+		var series []core.MetricChartSeries
+		for _, s := range seriesByQuery[q] {
+			ss, ok := s.(map[string]any)
+			if !ok {
+				continue
+			}
+			cs := core.MetricChartSeries{Labels: map[string]string{}}
+			if metric, ok := ss["metric"].(map[string]any); ok {
+				for k, v := range metric {
+					cs.Labels[k] = fmt.Sprint(v)
+				}
+			}
+			if ts, ok := ss["timestamps"].([]any); ok {
+				for _, t := range ts {
+					f, _ := t.(float64)
+					cs.Timestamps = append(cs.Timestamps, int64(f))
+				}
+			}
+			switch vals := ss["values"].(type) {
+			case []float64:
+				cs.Values = vals
+			case []any: // a series the stats pass above left unconverted
+				for _, v := range vals {
+					f, _ := v.(float64)
+					cs.Values = append(cs.Values, f)
+				}
+			}
+			series = append(series, cs)
+		}
+		title := q
+		if r := []rune(title); len(r) > 80 {
+			title = string(r[:79]) + "…"
+		}
+		chart, ok := core.BuildMetricChart(title, series)
+		if !ok {
+			continue
+		}
+		ref, err := core.AddMetricChart(charts, chart)
+		if err != nil {
+			nbRequestContext.Ctx.GetLogger().Warn("prometheus: unable to build chart", "error", err.Error())
+			continue
+		}
+		notes = append(notes, core.MetricChartNote(ref, chart.Title))
+	}
+	return notes, charts
 }
 
 // seriesFileNote tells the planner where the complete data went and what is

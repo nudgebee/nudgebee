@@ -28,7 +28,10 @@ import { SERIES_PALETTE } from '@shared/charts/chartPlugins';
  */
 
 // Bounds keep an LLM from emitting a runaway spec that would clutter or stall the UI.
+// Trends get more points: metric charts are built from the queried data (#40909).
 const MAX_LABELS = 16;
+const MAX_TREND_LABELS = 120;
+const TREND_TYPES = ['line', 'area'];
 const MAX_SERIES = 6;
 const ALLOWED_TYPES = ['bar', 'line', 'area', 'doughnut', 'pie'];
 
@@ -60,7 +63,8 @@ export const parseChartSpec = (raw) => {
     return null;
   }
   const labels = Array.isArray(raw.labels) ? raw.labels.map((l) => String(l)) : [];
-  if (labels.length === 0 || labels.length > MAX_LABELS) {
+  const maxLabels = TREND_TYPES.includes(type) ? MAX_TREND_LABELS : MAX_LABELS;
+  if (labels.length === 0 || labels.length > maxLabels) {
     return null;
   }
   const format = FORMATTERS[raw.format] ? raw.format : 'number';

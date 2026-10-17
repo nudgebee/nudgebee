@@ -207,6 +207,23 @@ class TestRenderNbChart:
         assert "20 of 25 data points" in note.text
         assert not any(isinstance(b, LinksBlock) for b in blocks)
 
+    def test_line_chart_keeps_whole_time_range(self):
+        # #40909: a 120-point trend spreads Slack's 20 points over the whole range
+        # instead of keeping only its earliest 20.
+        labels = [f'"t{i}"' for i in range(120)]
+        series = '[{"key":"a","data":' + str(list(range(120))) + "}]"
+        code = '{"type":"line","title":"T","labels":[' + ",".join(labels) + '],"series":' + series + "}"
+        blocks = render_nb_chart(code)
+
+        categories = blocks[0].chart["axis_config"]["categories"]
+        points = blocks[0].chart["series"][0]["data"]
+        assert len(categories) == 20
+        assert categories[0] == "t0" and categories[-1] == "t119"
+        assert [p["value"] for p in points][:3] == [0.0, 6.0, 13.0]
+        assert all(p["label"] == f"t{int(p['value'])}" for p in points), "each value stays on its own label"
+        note = next(b for b in blocks if isinstance(b, ContextBlock))
+        assert "20 evenly spaced of 120 data points" in note.text
+
     def test_truncation_note_includes_link_when_view_url_given(self):
         labels = [f'"c{i}"' for i in range(25)]
         code = (

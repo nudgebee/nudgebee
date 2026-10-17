@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"reflect"
@@ -889,4 +890,40 @@ func TestIsResumedTopLevelInvocation(t *testing.T) {
 	// The resume marks only the agent that is its own parent.
 	assert.True(t, buildResumeAgentRequest(NBAgentRequest{AgentId: "a"}, "a", "", toolcore.NBQueryConfig{}).TopLevelResume)
 	assert.False(t, buildResumeAgentRequest(NBAgentRequest{AgentId: "c"}, "a", "s", toolcore.NBQueryConfig{}).TopLevelResume)
+}
+
+// #40909: an answer finalized on resume is saved, and returned, with its chart_refs
+// swapped for the stored charts, like one finalized on the normal path.
+func TestPersistFinalMessage_ResolvesChartRefs(t *testing.T) {
+	origDao := GetConversationDao()
+	defer SetConversationDao(origDao)
+	fake := &bubbleFakeDao{}
+	conversationID := uuid.New().String()
+	chart, ok := toolcore.BuildMetricChart("cpu", []toolcore.MetricChartSeries{{Timestamps: []int64{1792231200, 1792231500}, Values: []float64{1, 2}}})
+	require.True(t, ok)
+	charts := map[string]json.RawMessage{}
+	ref, err := toolcore.AddMetricChart(charts, chart)
+	require.NoError(t, err)
+	SetConversationDao(chartFakeDao{bubbleFakeDao: fake, conversationID: conversationID, charts: charts})
+	resp := NBAgentResponse{Response: []string{"CPU rose.\n```nb-chart\n{\"chart_ref\":\"" + ref + "\"}\n```"}}
+
+	persistFinalMessage(security.NewRequestContextForTenantAccountAdmin("44444444-4444-4444-4444-444444444444", "u", nil), conversationID, uuid.New().String(), resp)
+
+	assert.NotContains(t, fake.persistedContent, "chart_ref")
+	assert.Contains(t, fake.persistedContent, `"data":[1,2]`)
+	assert.Equal(t, fake.persistedContent, resp.Response[0], "the caller's response carries the chart too")
+}
+
+// chartFakeDao serves the charts saved with this conversation's tool calls.
+type chartFakeDao struct {
+	*bubbleFakeDao
+	conversationID string
+	charts         map[string]json.RawMessage
+}
+
+func (f chartFakeDao) GetToolCallChart(conversationID, ref string) ([]byte, error) {
+	if conversationID != f.conversationID {
+		return nil, nil
+	}
+	return f.charts[ref], nil
 }

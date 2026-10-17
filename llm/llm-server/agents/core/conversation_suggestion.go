@@ -7,6 +7,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
+	toolcore "nudgebee/llm/tools/core"
 	"sort"
 	"strings"
 	"time"
@@ -101,7 +102,7 @@ func HandleConversationSuggestionRequest(ctx *security.RequestContext, request C
 			fmt.Sprintf(
 				"question: %s\nanswer: %s",
 				mesasge.Message,
-				mesasge.Response,
+				toolcore.StripChartData(mesasge.Response),
 			),
 		),
 	}

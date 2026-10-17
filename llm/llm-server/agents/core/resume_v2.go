@@ -685,7 +685,7 @@ func bubbleUpIfSiblingsDone(ctx *security.RequestContext, req NBAgentRequest, ch
 	// For terminal non-complete states (FAILED), also persist message content.
 	// WAITING states leave the message alone — another resume will finalize it.
 	if finalStatus == ConversationStatusFailed {
-		persistFinalMessage(ctx, req.MessageId, parentResp)
+		persistFinalMessage(ctx, req.ConversationId, req.MessageId, parentResp)
 	}
 	if err := dao.UpdateConversationStatus(req.ConversationId, finalStatus); err != nil {
 		logger.Warn("resume_v2: failed to persist post-parent status", "error", err)
@@ -732,7 +732,7 @@ func resolveBubbleUpParent(
 // that needed a followup (any confirm-to-proceed, pick-one, or extra-input
 // exchange) — #37534.
 func finalizeCompletedConversation(ctx *security.RequestContext, req NBAgentRequest, resp NBAgentResponse) {
-	persistFinalMessage(ctx, req.MessageId, resp)
+	persistFinalMessage(ctx, req.ConversationId, req.MessageId, resp)
 	if err := GetConversationDao().UpdateConversationStatus(req.ConversationId, ConversationStatusCompleted); err != nil {
 		ctx.GetLogger().Warn("resume_v2: failed to mark conversation complete", "error", err)
 	}
@@ -767,7 +767,7 @@ func finalizeCompletedConversation(ctx *security.RequestContext, req NBAgentRequ
 		return
 	}
 
-	ScoreAnswerConfidenceAsync(ctx, req, answer)
+	ScoreAnswerConfidenceAsync(ctx, req, toolcore.StripChartData(answer))
 }
 
 // withOriginalQuestion restores the turn's original question on a followup
@@ -827,7 +827,7 @@ func loadOriginalQuestion(req NBAgentRequest) (string, error) {
 // but resume_v2 bubbles up through executeAgent directly and must persist
 // the message itself — otherwise the UI sees conversation=COMPLETED but
 // message.status=IN_PROGRESS with empty response (bug surfaced in #28141).
-func persistFinalMessage(ctx *security.RequestContext, messageID string, resp NBAgentResponse) {
+func persistFinalMessage(ctx *security.RequestContext, conversationID, messageID string, resp NBAgentResponse) {
 	if messageID == "" {
 		return
 	}
@@ -835,6 +835,9 @@ func persistFinalMessage(ctx *security.RequestContext, messageID string, resp NB
 	if status == "" {
 		status = ConversationStatusCompleted
 	}
+	// In place: resp.Response shares its array with the caller, so the response
+	// it returns carries the charts too.
+	resolveAnswerCharts(conversationID, resp.Response)
 	content := ""
 	if len(resp.Response) > 0 {
 		content = resp.Response[0]

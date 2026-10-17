@@ -1669,6 +1669,9 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	}
 	agentResponseContent := ""
 	if len(agentResponse.Response) > 0 {
+		// Before anything reads or saves the answer, so the saved, returned and
+		// notified copies all carry the charts.
+		resolveAnswerCharts(request.ConversationId, agentResponse.Response)
 		agentResponseContent = agentResponse.Response[0]
 		switch agentResponse.Status {
 		case ConversationStatusWaiting, ConversationStatusWaitingForClientTool:
@@ -1710,7 +1713,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		agentResponse.AgentName != ToolLlm &&
 		!isSingleShotClassifier(agent) &&
 		isContextExtractionApplicable(effectiveSource) {
-		updateConversationContextAsync(ctx, request, agentResponseContent, conversation.ID.String(), conversation.Context, agentResponse.AgentName)
+		updateConversationContextAsync(ctx, request, toolcore.StripChartData(agentResponseContent), conversation.ID.String(), conversation.Context, agentResponse.AgentName)
 	}
 	conversation, err = GetConversationDao().GetConversation(conversation.ID.String())
 	if err != nil {
@@ -1811,7 +1814,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			// and is fire-and-forget — the turn is already complete and its
 			// status does not depend on the outcome. Self-gates on the feature
 			// flag and on the turn being an investigation.
-			ScoreAnswerConfidenceAsync(ctx, request, agentResponseContent)
+			ScoreAnswerConfidenceAsync(ctx, request, toolcore.StripChartData(agentResponseContent))
 		}
 
 		if status == ConversationStatusCompleted || status == ConversationStatusFailed {
@@ -1844,7 +1847,12 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 
 	// Generate compact response for InstantNotification source (Slack) and Investigation
 	if config.Config.SlackCompactResponse && (effectiveSource == ConversationSourceInstantNotification || effectiveSource == ConversationSourceInvestigation) && status == ConversationStatusCompleted && len(agentResponse.Response) > 0 && agentResponse.Response[0] != "" && agentResponse.AgentName != ToolLlm {
-		compactResponse, compactErr := generateCompactResponse(ctx, request.AccountId, request.ConversationId, request.MessageId, request.UserId, request.Query, agentResponse.Response[0])
+		// The rewrite model sees chart placeholders, not chart data, and the charts
+		// are put back after: a model must never retype chart numbers.
+		compactResponse, compactErr := generateCompactResponse(ctx, request.AccountId, request.ConversationId, request.MessageId, request.UserId, request.Query, toolcore.StripChartData(agentResponse.Response[0]))
+		if compactErr == nil {
+			compactResponse = toolcore.RestoreCharts(compactResponse, agentResponse.Response[0])
+		}
 
 		if compactErr != nil {
 			ctx.GetLogger().Warn("conversation: failed to generate compact response, using original", "error", compactErr)
@@ -1867,6 +1875,21 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		agentResponse.Response = []string{agentResponseContent}
 	}
 	return agentResponse, executeErr
+}
+
+// resolveAnswerCharts swaps the chart_refs in an answer for the charts the metrics
+// tools saved with their tool calls in this conversation (#40909), in place.
+func resolveAnswerCharts(conversationID string, response []string) {
+	if len(response) == 0 {
+		return
+	}
+	response[0] = toolcore.ResolveMetricCharts(response[0], func(ref string) ([]byte, bool) {
+		chart, err := GetConversationDao().GetToolCallChart(conversationID, ref)
+		if err != nil {
+			slog.Warn("conversation: unable to load chart", "error", err, "conversation_id", conversationID, "chart_ref", ref)
+		}
+		return chart, len(chart) > 0
+	})
 }
 
 var getSkillsForCommandFn = toolcore.GetSkillsForCommand

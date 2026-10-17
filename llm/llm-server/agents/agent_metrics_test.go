@@ -231,16 +231,15 @@ func TestMetricsAnswerReturnsAnswerAndQueriesUsed(t *testing.T) {
 		AgentStepResponse: []core.ToolInvocation{
 			call("metrics_labels_list", `{"metric":"cpu"}`, `["node"]`, false),
 			call("prometheus_execute", `{"command":"old"}`, `{"old":"[]"}`, false),
-			call("prometheus_execute", `{"command":"wide"}`, `{"__data_note":"saved to file_ref \"metrics_prometheus_1.json\""}`, false),
+			call("prometheus_execute", `{"command":"wide"}`, `{"__data_note":"saved to file_ref \"metrics_prometheus_1.json\"","__chart_note":"ready as chart_ref \"chart_ab12\""}`, false),
 			call("prometheus_execute", `{"command":"narrow"}`, `{"narrow":"[1]"}`, false),
-			call("visualizer", `{}`, "```chart\n{}\n```", false),
 		},
 	}
 
 	data, status, lastRaw := metricsAnswer(resp, resp.Response[0])
 	assert.Equal(t, toolcore.NBToolResponseStatusSuccess, status)
 	assert.True(t, strings.HasPrefix(data, "CPU peaked at 82% on node-a."))
-	assert.Contains(t, data, "```chart", "a chart missing from the answer is appended")
+	assert.Contains(t, data, `{"chart_ref":"chart_ab12"}`, "a chart missing from the answer is listed")
 	assert.Contains(t, data, `prometheus_execute (ok) {"command":"narrow"}`)
 	assert.Contains(t, data, `prometheus_execute (ok) {"command":"wide"} — file_ref`)
 	assert.NotContains(t, data, `"old"`, "only the two newest data queries are listed")
@@ -259,9 +258,9 @@ func TestMetricsAnswerReturnsAnswerAndQueriesUsed(t *testing.T) {
 	assert.Equal(t, toolcore.NBToolResponseStatusSuccess, status)
 
 	// The chart is not repeated when the answer already carries it.
-	resp.Response = []string{"CPU peaked at 82% on node-a.\n```chart\n{}\n```"}
+	resp.Response = []string{"CPU peaked at 82% on node-a.\n```nb-chart\n{\"chart_ref\":\"chart_ab12\"}\n```"}
 	data, _, _ = metricsAnswer(resp, resp.Response[0])
-	assert.Equal(t, 1, strings.Count(data, "```chart"))
+	assert.Equal(t, 1, strings.Count(data, "```nb-chart"))
 }
 
 func TestMetricsAnswerStatus(t *testing.T) {

@@ -149,6 +149,20 @@ def _render_nb_pie(
     return blocks
 
 
+# A trend keeps its whole time range: points are picked evenly, first and last
+# included, instead of keeping only the earliest ones.
+_TREND_TYPES = ("line", "area")
+
+
+def _point_indices(n: int, slack_type: str) -> List[int]:
+    limit = _SLACK_MAX_DATA_POINTS
+    if n <= limit:
+        return list(range(n))
+    if slack_type not in _TREND_TYPES:
+        return list(range(limit))
+    return [round(k * (n - 1) / (limit - 1)) for k in range(limit)]
+
+
 def _render_nb_series_chart(
     title: str, slack_type: str, raw_labels: List[Any], data: Dict[str, Any], view_url: Optional[str] = None
 ) -> List[BaseBlock]:
@@ -156,7 +170,8 @@ def _render_nb_series_chart(
     if not isinstance(series, list) or not series:
         return []
 
-    labels = [_truncate_label(str(v)) for v in raw_labels[:_SLACK_MAX_DATA_POINTS]]
+    indices = _point_indices(len(raw_labels), slack_type)
+    labels = [_truncate_label(str(raw_labels[i])) for i in indices]
 
     chart_series = []
     for entry in series[:_SLACK_MAX_SERIES]:
@@ -169,7 +184,11 @@ def _render_nb_series_chart(
             chart_series.append(
                 {
                     "name": str(entry.get("key", "")),
-                    "data": [{"label": labels[i], "value": float(v)} for i, v in enumerate(values[: len(labels)])],
+                    "data": [
+                        {"label": labels[k], "value": float(values[i])}
+                        for k, i in enumerate(indices)
+                        if i < len(values)
+                    ],
                 }
             )
         except (TypeError, ValueError):
@@ -189,7 +208,8 @@ def _render_nb_series_chart(
     if len(series) > _SLACK_MAX_SERIES:
         notes.append(f"{len(chart_series)} of {len(series)} series")
     if len(labels) < len(raw_labels):
-        notes.append(f"{len(labels)} of {len(raw_labels)} data points")
+        spread = " evenly spaced" if slack_type in _TREND_TYPES else ""
+        notes.append(f"{len(labels)}{spread} of {len(raw_labels)} data points")
     blocks.extend(_truncation_note(view_url, *notes))
     return blocks
 

@@ -1,12 +1,16 @@
 package agents
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/tools"
+	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestPrometheusDiscoveryWiring asserts the metrics_series_match tool is registered and
@@ -41,4 +45,20 @@ func TestPrometheusDiscoveryWiring(t *testing.T) {
 	// Discovery must not hardcode this environment's metric families.
 	assert.NotContains(t, joined, "rpc_server", "must not hardcode a specific metric family")
 	assert.NotContains(t, joined, "http_server_", "must not hardcode a specific metric family")
+}
+
+// #40909: the planner view of a prometheus_execute result keeps the chart note verbatim
+// instead of formatting it as a query.
+func TestPrometheusPlannerViewKeepsChartNote(t *testing.T) {
+	note := toolcore.MetricChartNote("chart_ab12", "node_cpu (UTC)")
+	raw, err := json.Marshal(map[string]string{
+		"node_cpu":     `[{"metric":{"node":"a"},"timestamps":[1,2],"values":[0.1,0.2],"stats":{"max":0.2}}]`,
+		"__chart_note": note,
+	})
+	require.NoError(t, err)
+
+	got := PrometheusAgent{accountId: "test"}.UpdateToolResponseForPlanner(core.NBAgentPlannerToolAction{Tool: tools.ToolQueryPrometheus}, string(raw))
+
+	assert.True(t, strings.HasSuffix(got, note), got)
+	assert.NotContains(t, got, "**Query** - __chart_note")
 }

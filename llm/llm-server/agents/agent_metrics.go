@@ -426,6 +426,7 @@ func (m MetricsAgentTool) Description() string {
 
 	* Input: Provide a question in natural language to search, filter, troubleshoot, or visualize metrics.
 	* Output: Returns metrics data, summaries, and visualizations based on your query.
+	* Charts: when the user asks for a chart or graph, the result carries a ` + "```nb-chart" + ` block or chart_ref per query. Copy that block into your final answer as-is (you may set "top", "type" or "title" in it); never type chart numbers or draw a chart yourself.
 	`
 }
 
@@ -637,8 +638,8 @@ var metricsDataTools = map[string]bool{
 }
 
 // metricsAnswer builds the metrics tool's result from the backend agent's answer: the
-// answer, any chart the agent drew that the answer does not carry, and the last two
-// data queries it ran (tool, status, arguments, saved-data note). It also returns the
+// answer, the chart_refs of charts its queries saved that the answer does not carry,
+// and the last two data queries it ran (tool, status, arguments, saved-data note). It also returns the
 // newest successful query's raw output when that output was not already saved to a
 // file, so the caller can keep it for follow-up work. The status is Error when the
 // agent failed, or when it ran data queries and none of them succeeded (#36633).
@@ -648,10 +649,8 @@ func metricsAnswer(resp core.NBAgentResponse, answer string) (string, toolcore.N
 	if len(resp.Response) > 0 {
 		agentAnswer = resp.Response[0]
 	}
-	if chart := metricsChart(resp.AgentStepResponse, agentAnswer); chart != "" {
-		data += "\n\n" + chart
-	}
 	var used []string
+	var charts []string
 	lastRaw := ""
 	ran, succeeded, sawOK := false, false, false
 	for i := len(resp.AgentStepResponse) - 1; i >= 0; i-- {
@@ -661,6 +660,12 @@ func metricsAnswer(resp core.NBAgentResponse, answer string) (string, toolcore.N
 		}
 		ran = true
 		succeeded = succeeded || !st.Failed
+		for _, ref := range toolcore.MetricChartRefs(st.Response.Content) {
+			// Newest first; the answer may already carry the block.
+			if len(charts) < 3 && !strings.Contains(agentAnswer, ref) {
+				charts = append(charts, toolcore.MetricChartNote(ref, ""))
+			}
+		}
 		j := strings.Index(st.Response.Content, "file_ref")
 		// Only the newest successful query's output, even when it is older than the
 		// listed queries: a later success's output would be mislabelled.
@@ -683,6 +688,9 @@ func metricsAnswer(resp core.NBAgentResponse, answer string) (string, toolcore.N
 		}
 		used = append(used, line)
 	}
+	if len(charts) > 0 {
+		data += "\n\nCharts of the queries below (newest first):\n- " + strings.Join(charts, "\n- ")
+	}
 	if len(used) > 0 {
 		data += "\n\nQueries used (newest first):\n- " + strings.Join(used, "\n- ")
 	}
@@ -691,23 +699,6 @@ func metricsAnswer(resp core.NBAgentResponse, answer string) (string, toolcore.N
 		status = toolcore.NBToolResponseStatusError
 	}
 	return data, status, lastRaw
-}
-
-// metricsChart returns the newest visualizer output when the answer does not already
-// carry it, so a chart the agent drew still reaches the user.
-func metricsChart(steps []core.ToolInvocation, answer string) string {
-	for i := len(steps) - 1; i >= 0; i-- {
-		st := steps[i]
-		if st.Call.FunctionCall == nil || st.Call.FunctionCall.Name != "visualizer" || st.Failed {
-			continue
-		}
-		c := strings.TrimSpace(st.Response.Content)
-		if c == "" || strings.Contains(answer, c) {
-			return ""
-		}
-		return c
-	}
-	return ""
 }
 
 func truncateRunes(s string, n int) string {

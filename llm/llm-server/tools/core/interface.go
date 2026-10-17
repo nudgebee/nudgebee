@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"errors"
 
 	"nudgebee/llm/security"
@@ -282,6 +283,10 @@ type NBToolResponseMetadata struct {
 	// callers can tell the planner how much was dropped.
 	Truncated   bool `json:"truncated,omitempty"`
 	OriginalLen int  `json:"original_len,omitempty"`
+	// Charts are the nb-chart specs a metrics tool built from its exact results,
+	// keyed by chart_ref (#40909). Saved with the tool call; never rendered to
+	// the planner, which only sees the ref.
+	Charts map[string]json.RawMessage `json:"charts,omitempty"`
 	// SavedOutputNote names the workspace file that holds a cut output in full
 	// (or says why none was saved). It is added to the observation only when
 	// the prompt is built, so Data, the stored response and the UI keep the

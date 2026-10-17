@@ -388,6 +388,15 @@ def test_an_answer_renders_tables_code_and_headings():
     assert card["version"] == "1.5"
 
 
+def test_an_answer_names_a_chart_instead_of_showing_its_json():
+    # #40909: Adaptive Cards cannot draw an nb-chart, so the card names it.
+    markdown = 'CPU rose.\n\n```nb-chart\n{"type":"line","title":"node_cpu (UTC)","labels":["10:00"],"series":[]}\n```'
+    card = ac.answer_card(markdown, [])
+    assert [b["type"] for b in card["body"]] == ["TextBlock", "TextBlock"]
+    assert "Chart: node_cpu (UTC)" in card["body"][1]["text"]
+    assert "labels" not in str(card)
+
+
 def test_an_answer_too_big_for_a_card_falls_back_to_text():
     assert Events._teams_answer_card(_entry(), "x" * 30_000) == (None, None)
 
