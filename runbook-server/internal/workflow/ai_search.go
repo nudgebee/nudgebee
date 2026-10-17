@@ -85,7 +85,8 @@ func (s *Service) SearchAIInvocableWorkflows(ctx *security.RequestContext, accou
 	// automation that cannot actually be run.
 	eligible := make([]model.AIInvocableWorkflow, 0, len(candidates))
 	for _, c := range candidates {
-		if c.Definition.HasManualTrigger() && strings.TrimSpace(c.Definition.LLMDescription) != "" {
+		// The query already required opted in, ACTIVE and published.
+		if aiOfferReason(true, true, model.WorkflowStatusActive, &c.Definition) == "" {
 			eligible = append(eligible, c)
 		}
 	}

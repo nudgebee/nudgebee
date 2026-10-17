@@ -839,6 +839,41 @@ type AIInvocableWorkflow struct {
 	Definition WorkflowDefinition
 }
 
+// AIToolCandidate is an automation that is, or could be, offered to the AI
+// assistant as a tool: not an agent's, and either opted in or carrying an AI
+// description in its draft. Live is the published version's definition, nil
+// when nothing is published.
+type AIToolCandidate struct {
+	ID            string
+	Name          string
+	AccountID     string
+	Status        WorkflowStatus
+	AIInvocable   bool
+	AIAutoApprove bool
+	CreatedBy     *WorkflowUser
+	Live          *WorkflowDefinition
+}
+
+// AIToolSetting is one row of the AI settings list: an automation's two AI
+// flags and whether the assistant is offered it right now, with the reason
+// when it is not (see workflow.aiOfferReason for the codes).
+type AIToolSetting struct {
+	ID               string         `json:"id"`
+	Name             string         `json:"name"`
+	AccountID        string         `json:"account_id"`
+	Status           WorkflowStatus `json:"status"`
+	AIInvocable      bool           `json:"ai_invocable"`
+	AIAutoApprove    bool           `json:"ai_auto_approve"`
+	Offered          bool           `json:"offered"`
+	NotOfferedReason string         `json:"not_offered_reason,omitempty"`
+	CreatedByUser    *WorkflowUser  `json:"created_by_user,omitempty"`
+}
+
+// ListAIToolSettingsResponse is the AI settings list.
+type ListAIToolSettingsResponse struct {
+	Workflows []AIToolSetting `json:"workflows"`
+}
+
 // AIWorkflowSearchResponse is the AI search result set.
 type AIWorkflowSearchResponse struct {
 	Workflows []AIWorkflowCandidate `json:"workflows"`

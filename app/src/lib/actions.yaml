@@ -6916,6 +6916,32 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin_readonly
       - role: account_admin
+  - name: workflows_list_ai_settings
+    comment: List automations offered, or that could be offered, to Nubi as tools, with their AI settings
+    definition:
+      kind: "synchronous"
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+  - name: workflows_update_ai_settings
+    comment: Set whether Nubi may run an automation, and whether it runs without asking
+    definition:
+      kind: synchronous
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: tenant_admin
   - name: workflow_update
     comment: Update a workflow definition
     definition:
@@ -8021,6 +8047,8 @@ custom_types:
     - name: AIBudgetStatusRequest
     - name: WorkflowTaskDefinitionListRequest
     - name: WorkflowListRequest
+    - name: WorkflowListAISettingsRequest
+    - name: WorkflowUpdateAISettingsRequest
     - name: WorkflowGetRequest
     - name: WorkflowCountRequest
     - name: WorkflowExecutionCountRequest
@@ -8537,6 +8565,8 @@ custom_types:
     - name: WorkflowTaskDefinitionResponse
     - name: WorkflowTaskDefinitionListResponse
     - name: WorkflowListResponse
+    - name: WorkflowAISetting
+    - name: WorkflowListAISettingsResponse
     - name: WorkflowCountResponse
     - name: WorkflowExecutionCountResponse
     - name: WorkflowUser

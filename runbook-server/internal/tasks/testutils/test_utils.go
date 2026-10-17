@@ -173,6 +173,12 @@ func (m *MockWorkflowStore) ListCallers(ctx context.Context, tenantID, accountID
 func (m *MockWorkflowStore) ListAIInvocableWorkflows(ctx context.Context, tenantID, accountID string) ([]model.AIInvocableWorkflow, error) {
 	return nil, nil
 }
+func (m *MockWorkflowStore) ListAIToolCandidates(ctx context.Context, tenantID string, accountIDs []string) ([]model.AIToolCandidate, error) {
+	return nil, nil
+}
+func (m *MockWorkflowStore) UpdateAISettings(ctx context.Context, tenantID, accountID, id, updatedBy string, aiInvocable, aiAutoApprove bool) error {
+	return nil
+}
 func (m *MockWorkflowStore) Update(ctx context.Context, tenantID, accountID, id string, wf model.Workflow) error {
 	return nil
 }

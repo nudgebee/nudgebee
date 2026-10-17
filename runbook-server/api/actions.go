@@ -129,6 +129,10 @@ func (s *Server) handleAction(c *gin.Context) {
 		s.handleUpdateWorkflowVersionMetadata(c, sc, args)
 	case "workflows_update_version_status":
 		s.handleUpdateWorkflowVersionStatus(c, sc, args)
+	case "workflows_list_ai_settings":
+		s.handleListAIToolSettings(c, sc, args)
+	case "workflows_update_ai_settings":
+		s.handleUpdateAISettings(c, sc, args)
 	case "workflows_delete_version":
 		s.handleDeleteWorkflowVersion(c, sc, args)
 	default:
@@ -280,6 +284,43 @@ func (s *Server) handleListWorkflows(c *gin.Context, sc *security.RequestContext
 	}
 
 	c.JSON(http.StatusOK, workflows)
+}
+
+// handleListAIToolSettings lists the automations that are or could be offered
+// to the AI assistant, across the caller's readable accounts, with whether each
+// is offered right now.
+func (s *Server) handleListAIToolSettings(c *gin.Context, sc *security.RequestContext, args map[string]any) {
+	resp, err := s.workflowService.ListAIToolSettings(sc, parseAccountFilter(args))
+	if err != nil {
+		s.logger.Error("failed to list automation AI settings via RPC", "error", err)
+		handleServiceError(c, err, "failed to list automation AI settings")
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleUpdateAISettings sets an automation's two AI flags. Both are required,
+// so an omitted flag is never read as "off".
+func (s *Server) handleUpdateAISettings(c *gin.Context, sc *security.RequestContext, args map[string]any) {
+	accountID, _ := args["account_id"].(string)
+	workflowID, _ := args["id"].(string)
+	aiInvocable, invocableSet := args["ai_invocable"].(bool)
+	aiAutoApprove, autoSet := args["ai_auto_approve"].(bool)
+	if accountID == "" || workflowID == "" || !invocableSet || !autoSet {
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{errors.New("account_id, id, ai_invocable and ai_auto_approve are required")}))
+		return
+	}
+	updated, err := s.workflowService.UpdateAISettings(sc, accountID, workflowID, aiInvocable, aiAutoApprove)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, buildApiResponse(nil, []error{errors.New("workflow not found")}))
+			return
+		}
+		s.logger.Error("failed to update automation AI settings via RPC", "workflowID", workflowID, "error", err)
+		handleServiceError(c, err, "failed to update automation AI settings")
+		return
+	}
+	c.JSON(http.StatusOK, updated)
 }
 
 // parseAccountFilter reads the optional account scope shared by the tenant-level

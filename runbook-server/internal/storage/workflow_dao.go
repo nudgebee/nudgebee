@@ -697,7 +697,7 @@ func (s *WorkflowDao) ListAIInvocableWorkflows(ctx context.Context, tenantID, ac
 		WHERE w.tenant_id = $1 AND w.account_id = $2
 		  AND w.ai_invocable
 		  AND w.status = $3
-		  AND w.bee IS NULL
+		  AND ` + aiToolNotBound + `
 		ORDER BY w.name
 	`
 
@@ -741,6 +741,93 @@ func (s *WorkflowDao) ListAIInvocableWorkflows(ctx context.Context, tenantID, ac
 		return nil, fmt.Errorf("failed to iterate AI-invocable workflows: %w", err)
 	}
 	return out, nil
+}
+
+// aiToolNotBound keeps an agent's automations out of everything offered to the
+// AI assistant as a tool, and out of the list of what could be.
+const aiToolNotBound = "w.bee IS NULL"
+
+// ListAIToolCandidates returns the automations across accountIDs that are or
+// could be offered to the AI assistant: not an agent's, and either opted in or
+// with an AI description in the draft (the one precondition only an author can
+// meet). LEFT JOIN on the live version so an unpublished one is listed too,
+// with a nil Live, and the caller can say why it is not offered.
+func (s *WorkflowDao) ListAIToolCandidates(ctx context.Context, tenantID string, accountIDs []string) ([]model.AIToolCandidate, error) {
+	if tenantID == "" || len(accountIDs) == 0 {
+		return nil, fmt.Errorf("tenantID and at least one accountID must not be empty")
+	}
+
+	query := `
+		SELECT w.id::text, w.name, w.account_id::text, w.status, w.ai_invocable, w.ai_auto_approve,
+			cu.id::text, cu.display_name, cu.username, lv.definition
+		FROM workflows w
+		LEFT JOIN users cu ON w.created_by = cu.id
+		LEFT JOIN workflow_versions lv ON lv.id = w.live_version_id
+		WHERE w.tenant_id = $1 AND w.account_id = ANY($2)
+		  AND ` + aiToolNotBound + `
+		  AND (w.ai_invocable OR btrim(COALESCE(w.definition->>'llm_description', '')) <> '')
+		ORDER BY w.name
+	`
+	rows, err := s.db.QueryContext(ctx, query, tenantID, pq.Array(accountIDs))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list AI tool candidates: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("failed to close rows: %v", err)
+		}
+	}()
+
+	var out []model.AIToolCandidate
+	for rows.Next() {
+		var (
+			c                             model.AIToolCandidate
+			userID, displayName, username sql.NullString
+			liveBytes                     []byte
+		)
+		if err := rows.Scan(&c.ID, &c.Name, &c.AccountID, &c.Status, &c.AIInvocable, &c.AIAutoApprove,
+			&userID, &displayName, &username, &liveBytes); err != nil {
+			return nil, fmt.Errorf("failed to scan AI tool candidate: %w", err)
+		}
+		if userID.Valid {
+			c.CreatedBy = &model.WorkflowUser{ID: userID.String, DisplayName: displayName.String, Username: username.String}
+		}
+		if len(liveBytes) > 0 {
+			var live model.WorkflowDefinition
+			if err := json.Unmarshal(liveBytes, &live); err != nil {
+				// Listed as unpublished rather than dropped: the row still needs
+				// to be visible to the admin looking for it.
+				log.Printf("AI tool candidate %s: failed to unmarshal live definition: %v", c.ID, err)
+			} else {
+				c.Live = &live
+			}
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate AI tool candidates: %w", err)
+	}
+	return out, nil
+}
+
+// UpdateAISettings sets only the two AI flags, bumping updated_at/updated_by as
+// any user edit does. It returns sql.ErrNoRows when no such workflow exists.
+func (s *WorkflowDao) UpdateAISettings(ctx context.Context, tenantID, accountID, id, updatedBy string, aiInvocable, aiAutoApprove bool) error {
+	if tenantID == "" || accountID == "" {
+		return fmt.Errorf("tenantID and accountID must not be empty")
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE workflows
+		SET ai_invocable = $1, ai_auto_approve = $2, updated_at = now(), updated_by = $3
+		WHERE id = $4 AND tenant_id = $5 AND account_id = $6
+	`, aiInvocable, aiAutoApprove, updatedBy, id, tenantID, accountID)
+	if err != nil {
+		return fmt.Errorf("failed to update workflow AI settings: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // nullableString maps an optional string field to a NULL-able column value, so

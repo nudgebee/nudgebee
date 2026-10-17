@@ -1,9 +1,19 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AutomationToolsList from '@components/llm/AutomationToolsList';
 import { queryGraphQL } from '@lib/HttpService';
+import { hasWriteAccess } from '@lib/auth';
 
 jest.mock('@lib/HttpService', () => ({ queryGraphQL: jest.fn() }));
+jest.mock('@lib/auth', () => ({ hasWriteAccess: jest.fn() }));
 jest.mock('@api1/tool-approval', () => ({ listToolApprovalAccounts: jest.fn(() => Promise.resolve([{ id: 'acct-1', account_name: 'Prod' }])) }));
+jest.mock('@ui/Switch', () => ({
+  Switch: ({ label, checked, onChange, disabled }) => (
+    <label>
+      {label}
+      <input type='checkbox' aria-label={label} checked={checked} disabled={disabled} onChange={(e) => onChange(e, e.target.checked)} />
+    </label>
+  ),
+}));
 jest.mock('@shared/tables/CustomTable', () => ({
   __esModule: true,
   default: ({ tableData }) => (
@@ -19,77 +29,70 @@ jest.mock('@shared/tables/CustomTable', () => ({
   ),
 }));
 
-const page = (workflows, next) => ({ data: { data: { workflow_list: { workflows, next_page_token: next } } } });
+const listed = (workflows) => ({ data: { data: { workflows_list_ai_settings: { workflows } } } });
 
-// The Automations sub-tab lists automations Nubi can run and whether they ask (#40399).
+const offered = { id: 'w1', name: 'Restart api', account_id: 'acct-1', ai_invocable: true, ai_auto_approve: false, offered: true };
+const staleLive = {
+  id: 'w2',
+  name: 'Collect logs',
+  account_id: 'acct-1',
+  ai_invocable: true,
+  ai_auto_approve: true,
+  offered: false,
+  not_offered_reason: 'no_llm_description',
+};
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  hasWriteAccess.mockReturnValue(true);
+});
+
+// The Automations sub-tab shows what Nubi is offered and lets editors change it (#40399).
 describe('AutomationToolsList', () => {
-  it('lists only active, published automations Nubi can run, across pages, with whether each asks', async () => {
-    queryGraphQL
-      .mockResolvedValueOnce(
-        page(
-          [
-            {
-              id: 'w1',
-              name: 'Restart api',
-              account_id: 'acct-1',
-              status: 'ACTIVE',
-              live_version_id: 'v1',
-              ai_invocable: true,
-              ai_auto_approve: false,
-              definition: { llm_description: 'Restarts the api deployment' },
-            },
-          ],
-          'next'
-        )
-      )
-      .mockResolvedValueOnce(
-        page([
-          {
-            id: 'w2',
-            name: 'Collect logs',
-            account_id: 'acct-1',
-            status: 'ACTIVE',
-            live_version_id: 'v2',
-            ai_invocable: true,
-            ai_auto_approve: true,
-            definition: { llm_description: 'Collects pod logs' },
-          },
-          { id: 'w3', name: 'Not for Nubi', account_id: 'acct-1', status: 'ACTIVE', live_version_id: 'v3', ai_invocable: false },
-          { id: 'w4', name: 'Paused one', account_id: 'acct-1', status: 'PAUSED', live_version_id: 'v4', ai_invocable: true },
-          { id: 'w5', name: 'Never published', account_id: 'acct-1', status: 'ACTIVE', ai_invocable: true },
-          {
-            id: 'w6',
-            name: 'Undescribed',
-            account_id: 'acct-1',
-            status: 'ACTIVE',
-            live_version_id: 'v6',
-            ai_invocable: true,
-            definition: { llm_description: ' ' },
-          },
-          {
-            id: 'w7',
-            name: 'Agent trigger',
-            account_id: 'acct-1',
-            status: 'ACTIVE',
-            live_version_id: 'v7',
-            ai_invocable: true,
-            bee: { bee: 'b1', role: 'trigger' },
-            definition: { llm_description: 'Runs for an agent' },
-          },
-        ])
-      );
+  it('shows the server verdict on each automation and whether it asks', async () => {
+    queryGraphQL.mockResolvedValueOnce(listed([offered, staleLive]));
     render(<AutomationToolsList />);
 
     expect(await screen.findByText('Restart api')).toBeInTheDocument();
-    expect(screen.getByText('Collect logs')).toBeInTheDocument();
-    expect(screen.queryByText('Not for Nubi')).not.toBeInTheDocument();
-    expect(screen.queryByText('Paused one')).not.toBeInTheDocument();
-    expect(screen.queryByText('Never published')).not.toBeInTheDocument();
-    expect(screen.queryByText('Undescribed')).not.toBeInTheDocument();
-    expect(screen.queryByText('Agent trigger')).not.toBeInTheDocument();
+    expect(screen.getByText('Offered')).toBeInTheDocument();
+    expect(screen.getByText('Not offered')).toBeInTheDocument();
     expect(screen.getByText('Always asks')).toBeInTheDocument();
     expect(screen.getByText('Never asks')).toBeInTheDocument();
     expect(screen.getAllByText('Prod')).toHaveLength(2);
-    expect(queryGraphQL).toHaveBeenCalledTimes(2);
+  });
+
+  it('saves both settings, and turning Nubi off turns off running without asking', async () => {
+    queryGraphQL.mockResolvedValueOnce(listed([staleLive])).mockResolvedValueOnce({
+      data: {
+        data: {
+          workflows_update_ai_settings: { id: 'w2', ai_invocable: false, ai_auto_approve: false, offered: false, not_offered_reason: 'not_opted_in' },
+        },
+      },
+    });
+    render(<AutomationToolsList />);
+
+    fireEvent.click(await screen.findByTestId('automation-ai-manage-w2'));
+    fireEvent.click(screen.getByLabelText('Nubi can run it'));
+    expect(screen.getByLabelText('Runs without asking')).not.toBeChecked();
+    expect(screen.getByLabelText('Runs without asking')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('automation-ai-save'));
+
+    await waitFor(() =>
+      expect(queryGraphQL).toHaveBeenLastCalledWith(expect.stringContaining('workflows_update_ai_settings'), 'UpdateAutomationAISettings', {
+        request: { account_id: 'acct-1', id: 'w2', ai_invocable: false, ai_auto_approve: false },
+      })
+    );
+    // Nubi may no longer run it, so whether it asks is shown as not applying.
+    expect(await screen.findByText('—')).toBeInTheDocument();
+    expect(screen.queryByText('Never asks')).not.toBeInTheDocument();
+  });
+
+  it('offers Manage only on automations the viewer can edit', async () => {
+    hasWriteAccess.mockReturnValue(false);
+    queryGraphQL.mockResolvedValueOnce(listed([offered]));
+    render(<AutomationToolsList />);
+
+    expect(await screen.findByText('Restart api')).toBeInTheDocument();
+    expect(screen.queryByText('Manage')).not.toBeInTheDocument();
   });
 });

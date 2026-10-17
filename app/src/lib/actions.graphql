@@ -2735,6 +2735,18 @@ type Query {
   ): WorkflowTemplateListResponse
 }
 
+type Query {
+  workflows_list_ai_settings(
+    request: WorkflowListAISettingsRequest!
+  ): WorkflowListAISettingsResponse
+}
+
+type Mutation {
+  workflows_update_ai_settings(
+    request: WorkflowUpdateAISettingsRequest!
+  ): WorkflowAISetting
+}
+
 type Mutation {
   workflow_pause(
     request: WorkflowGetRequest!
@@ -5309,8 +5321,6 @@ input WorkflowListRequest {
   type: String
   created_by: String
   next_page_token: String
-  "Only automations Nubi can (true) or cannot (false) run as tools."
-  ai_invocable: Boolean
 }
 
 input WorkflowGetRequest {
@@ -9337,6 +9347,36 @@ type WorkflowExecutionCountResponse {
   count: Int!
 }
 
+input WorkflowListAISettingsRequest {
+  account_ids: [String]
+}
+
+input WorkflowUpdateAISettingsRequest {
+  account_id: String!
+  id: String!
+  ai_invocable: Boolean!
+  ai_auto_approve: Boolean!
+}
+
+"An automation offered, or that could be offered, to Nubi as a tool."
+type WorkflowAISetting {
+  id: String!
+  name: String!
+  account_id: String!
+  status: String
+  ai_invocable: Boolean
+  ai_auto_approve: Boolean
+  "Nubi is offered it right now, judged on the published version."
+  offered: Boolean
+  "Why it is not offered: not_enabled, not_opted_in, not_active, not_published, no_manual_trigger or no_llm_description."
+  not_offered_reason: String
+  created_by_user: WorkflowUser
+}
+
+type WorkflowListAISettingsResponse {
+  workflows: [WorkflowAISetting]
+}
+
 type WorkflowUser {
   id: String
   display_name: String
@@ -9366,8 +9406,6 @@ type Workflow {
   ai_invocable: Boolean
   "The author allowed Nubi to run it without asking."
   ai_auto_approve: Boolean
-  "Set when the automation belongs to an agent; Nubi never runs those as tools."
-  bee: jsonb
 }
 
 type WorkflowDefinition {

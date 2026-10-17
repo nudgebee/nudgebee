@@ -52,6 +52,8 @@ type WorkflowService interface {
 	RetriggerWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string, inputs map[string]any) (string, error)
 	ListWorkflows(ctx *security.RequestContext, accountIds []string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error)
 	SearchAIInvocableWorkflows(ctx *security.RequestContext, accountId, query string, limit int) (model.AIWorkflowSearchResponse, error)
+	ListAIToolSettings(ctx *security.RequestContext, accountIds []string) (model.ListAIToolSettingsResponse, error)
+	UpdateAISettings(ctx *security.RequestContext, accountId, id string, aiInvocable, aiAutoApprove bool) (model.AIToolSetting, error)
 	GetWorkflow(ctx *security.RequestContext, accountId, id string) (*model.Workflow, error)
 	GetWorkflowAccount(ctx *security.RequestContext, id string) (string, error)
 	UpdateWorkflow(ctx *security.RequestContext, accountId, id string, workflow model.Workflow) (model.Workflow, error)

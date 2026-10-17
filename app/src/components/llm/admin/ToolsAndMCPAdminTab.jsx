@@ -67,8 +67,8 @@ const ToolsAndMCPAdminTab = ({ stickyTable = false }) => {
               actionsPlacement='inline'
               message={
                 <>
-                  Automations Nubi can run as tools. Whether one is offered to Nubi, and whether it asks first, is set in the{' '}
-                  <strong>automation</strong> itself.
+                  Automations Nubi can run as tools, and whether each asks first. <strong>Manage</strong> changes both; the AI description and trigger
+                  are edited in the <strong>automation</strong> itself.
                 </>
               }
               actions={[{ label: 'Open Automations', onClick: () => window.open('/automation', '_blank') }]}

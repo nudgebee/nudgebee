@@ -725,6 +725,18 @@ func (m *MockWorkflowStore) ListAIInvocableWorkflows(ctx context.Context, tenant
 	return args.Get(0).([]model.AIInvocableWorkflow), args.Error(1)
 }
 
+func (m *MockWorkflowStore) ListAIToolCandidates(ctx context.Context, tenantID string, accountIDs []string) ([]model.AIToolCandidate, error) {
+	args := m.Called(ctx, tenantID, accountIDs)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.AIToolCandidate), args.Error(1)
+}
+
+func (m *MockWorkflowStore) UpdateAISettings(ctx context.Context, tenantID, accountID, id, updatedBy string, aiInvocable, aiAutoApprove bool) error {
+	return m.Called(ctx, tenantID, accountID, id, updatedBy, aiInvocable, aiAutoApprove).Error(0)
+}
+
 func (m *MockWorkflowStore) ListCallers(ctx context.Context, tenantID, accountID, calleeName string) ([]model.WorkflowCaller, error) {
 	args := m.Called(ctx, tenantID, accountID, calleeName)
 	if args.Get(0) == nil {

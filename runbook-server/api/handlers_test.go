@@ -47,6 +47,16 @@ func (m *MockWorkflowService) SearchAIInvocableWorkflows(ctx *security.RequestCo
 	return args.Get(0).(model.AIWorkflowSearchResponse), args.Error(1)
 }
 
+func (m *MockWorkflowService) ListAIToolSettings(ctx *security.RequestContext, accountIds []string) (model.ListAIToolSettingsResponse, error) {
+	args := m.Called(ctx, accountIds)
+	return args.Get(0).(model.ListAIToolSettingsResponse), args.Error(1)
+}
+
+func (m *MockWorkflowService) UpdateAISettings(ctx *security.RequestContext, accountId, id string, aiInvocable, aiAutoApprove bool) (model.AIToolSetting, error) {
+	args := m.Called(ctx, accountId, id, aiInvocable, aiAutoApprove)
+	return args.Get(0).(model.AIToolSetting), args.Error(1)
+}
+
 func (m *MockWorkflowService) ListWorkflows(ctx *security.RequestContext, accountIds []string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error) {
 	args := m.Called(ctx, accountIds, request)
 	return args.Get(0).(model.ListWorkflowResponse), args.Error(1)
