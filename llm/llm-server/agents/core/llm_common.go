@@ -851,7 +851,7 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 			"nonCachedTokens", totalTokenInfo.InputTokens-totalTokenInfo.CacheReadTokens,
 			"outputTokens", totalTokenInfo.OutputTokens,
 			"totalInputTokens", totalTokenInfo.InputTokens,
-			"cacheHitRate", fmt.Sprintf("%.1f%%", float64(totalTokenInfo.CacheReadTokens)/float64(totalTokenInfo.InputTokens)*100))
+			"cacheHitRate", fmt.Sprintf("%.1f%%", float64(totalTokenInfo.CacheReadTokens)/float64(promptTokens(provider, totalTokenInfo.InputTokens, totalTokenInfo.CacheCreationTokens))*100))
 	}
 
 	// Extract content from completion
@@ -3809,7 +3809,7 @@ func trackTokenUsage(
 			"cacheCreationTokens", tokenInfo.CacheCreationTokens,
 			"nonCachedTokens", tokenInfo.InputTokens-tokenInfo.CacheReadTokens,
 			"outputTokens", tokenInfo.OutputTokens,
-			"cacheSavings", fmt.Sprintf("%.1f%%", float64(tokenInfo.CacheReadTokens)/float64(tokenInfo.InputTokens)*100))
+			"cacheSavings", fmt.Sprintf("%.1f%%", float64(tokenInfo.CacheReadTokens)/float64(promptTokens(provider, tokenInfo.InputTokens, tokenInfo.CacheCreationTokens))*100))
 	}
 
 	// Parse agentId to check if it's a valid UUID (skip nil UUID which indicates a failed agent record creation)
@@ -3820,8 +3820,8 @@ func trackTokenUsage(
 
 	// Calculate cache hit rate
 	var cacheHitRate *float64
-	if tokenInfo.InputTokens > 0 && tokenInfo.CacheReadTokens > 0 {
-		rate := (float64(tokenInfo.CacheReadTokens) / float64(tokenInfo.InputTokens)) * 100
+	if prompt := promptTokens(provider, tokenInfo.InputTokens, tokenInfo.CacheCreationTokens); prompt > 0 && tokenInfo.CacheReadTokens > 0 {
+		rate := (float64(tokenInfo.CacheReadTokens) / float64(prompt)) * 100
 		cacheHitRate = &rate
 	}
 

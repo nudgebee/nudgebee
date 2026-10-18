@@ -131,6 +131,9 @@ type AgentMetrics struct {
 	Requests         int  `json:"requests"`
 	FailedRequests   int  `json:"failed_requests"`
 	UnpricedRequests int  `json:"unpriced_requests"`
+
+	// promptTokens is the hit-rate denominator for the message total; not sent.
+	promptTokens int
 }
 
 func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request ConversationUsageMetricsRequest) (ConversationUsageMetricsResponse, error) {
@@ -180,6 +183,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	totalInputTokens := 0
 	totalOutputTokens := 0
 	totalCachedInputTokens := 0
+	totalPromptTokens := 0
 	totalThinkingTokens := 0
 
 	for _, agent := range agents {
@@ -195,6 +199,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 			ThinkingTokens:         agent.ThinkingTokens,
 			CacheHitRatePercentage: agent.CacheHitRate,
 			CostUsd:                agent.Cost,
+			promptTokens:           agent.PromptTokens,
 			ModelProviderName:      agent.ModelProviderName,
 			ModelName:              agent.ModelName,
 			ModelTier:              agent.ModelTier,
@@ -210,13 +215,14 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		totalInputTokens += agent.InputTokens
 		totalOutputTokens += agent.OutputTokens
 		totalCachedInputTokens += agent.CachedInputTokens
+		totalPromptTokens += agent.PromptTokens
 		totalThinkingTokens += agent.ThinkingTokens
 	}
 
 	// Calculate conversation-level cache hit rate
 	var totalCacheHitRate *float64
-	if totalInputTokens > 0 {
-		rate := (float64(totalCachedInputTokens) / float64(totalInputTokens)) * 100
+	if totalPromptTokens > 0 {
+		rate := (float64(totalCachedInputTokens) / float64(totalPromptTokens)) * 100
 		totalCacheHitRate = &rate
 	}
 
@@ -300,6 +306,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		messageInputTokens := 0
 		messageOutputTokens := 0
 		messageCachedInputTokens := 0
+		messagePromptTokens := 0
 		messageThinkingTokens := 0
 
 		for _, agent := range agentsList {
@@ -307,13 +314,14 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 			messageInputTokens += agent.InputTokens
 			messageOutputTokens += agent.OutputTokens
 			messageCachedInputTokens += agent.CachedInputTokens
+			messagePromptTokens += agent.promptTokens
 			messageThinkingTokens += agent.ThinkingTokens
 		}
 
 		// Calculate message-level cache hit rate
 		var messageCacheHitRate *float64
-		if messageInputTokens > 0 {
-			rate := (float64(messageCachedInputTokens) / float64(messageInputTokens)) * 100
+		if messagePromptTokens > 0 {
+			rate := (float64(messageCachedInputTokens) / float64(messagePromptTokens)) * 100
 			messageCacheHitRate = &rate
 		}
 
@@ -517,8 +525,8 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId strin
 	result := []ModelUsageStat{}
 	for _, stat := range modelMap {
 		// Calculate cache hit rate
-		if stat.InputTokens > 0 {
-			rate := (float64(stat.CachedInputTokens) / float64(stat.InputTokens)) * 100
+		if prompt := promptTokens(stat.ModelProvider, stat.InputTokens, stat.CacheCreationTokens); prompt > 0 {
+			rate := (float64(stat.CachedInputTokens) / float64(prompt)) * 100
 			stat.CacheHitRatePercentage = &rate
 		}
 
@@ -545,12 +553,12 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId strin
 // cached-read discount and any cache-write premium (e.g. Anthropic 1.25x).
 func calculateCacheSavings(records []TokenUsageDetailedRecord, actualCost float64, costs map[string]modelPricing) CacheSavingsInfo {
 	totalCachedTokens := 0
-	totalInputTokens := 0
+	totalPromptTokens := 0
 	estimatedCostWithoutCache := 0.0
 
 	for _, record := range records {
 		totalCachedTokens += record.CachedInputTokens
-		totalInputTokens += record.InputTokens
+		totalPromptTokens += promptTokens(record.LLMProvider, record.InputTokens, record.CacheCreationTokens)
 
 		if pricing, ok := costs[record.LLMProvider+":"+record.LLMModel]; ok {
 			// "Without cache" hypothetical: all input tokens billed at the
@@ -567,8 +575,8 @@ func calculateCacheSavings(records []TokenUsageDetailedRecord, actualCost float6
 	}
 
 	var cacheHitRate *float64
-	if totalInputTokens > 0 {
-		rate := (float64(totalCachedTokens) / float64(totalInputTokens)) * 100
+	if totalPromptTokens > 0 {
+		rate := (float64(totalCachedTokens) / float64(totalPromptTokens)) * 100
 		cacheHitRate = &rate
 	}
 

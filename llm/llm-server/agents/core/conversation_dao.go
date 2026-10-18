@@ -3152,13 +3152,14 @@ func (chat *ConversationDao) UpdateConversationMessageMetrics(id string, metrics
 type TokenMetrics struct {
 	AgentId              string          `json:"id"`
 	AgentName            string          `json:"agent_name"`              // Human-readable agent name
-	InputTokens          int             `json:"input_tokens"`            // Total input (cached + non-cached, includes cache_creation)
+	InputTokens          int             `json:"input_tokens"`            // Fresh input + cache reads. Cache writes are NOT included for Anthropic/Bedrock (see promptTokens)
 	OutputTokens         int             `json:"output_tokens"`           // Total output
 	CachedInputTokens    int             `json:"cached_input_tokens"`     // Tokens served from cache
 	NonCachedInputTokens int             `json:"non_cached_input_tokens"` // New input tokens (full input rate)
 	CacheCreationTokens  int             `json:"cache_creation_tokens"`   // Tokens written to cache (Anthropic/Vertex)
 	ThinkingTokens       int             `json:"thinking_tokens"`         // Hidden chain-of-thought (Gemini 2.5+)
 	CacheHitRate         sql.NullFloat64 `json:"cache_hit_rate"`          // Cache hit rate percentage (0-100)
+	PromptTokens         int             `json:"-"`                       // Whole prompt sent (input + cache writes for providers that keep writes outside input); hit-rate denominator
 	Cost                 float64         `json:"cost"`
 	ModelProviderName    sql.NullString  `json:"model_provider_name"`
 	ModelName            sql.NullString  `json:"model_name"`
@@ -3632,6 +3633,7 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 		stat.CachedInputTokens += call.CachedInputTokens
 		stat.NonCachedInputTokens += nonCached
 		stat.CacheCreationTokens += call.CacheCreationTokens
+		stat.PromptTokens += promptTokens(call.ModelProviderName.String, call.InputTokens, call.CacheCreationTokens)
 		stat.ThinkingTokens += call.ThinkingTokens
 		stat.Cost += cost
 		if pricingLoaded && !priced && call.InputTokens+call.OutputTokens > 0 {
@@ -3646,8 +3648,8 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 	agents := make([]TokenMetrics, len(order))
 	for i, key := range order {
 		stat := groups[key]
-		if stat.InputTokens > 0 {
-			rate := (float64(stat.CachedInputTokens) / float64(stat.InputTokens)) * 100
+		if stat.PromptTokens > 0 {
+			rate := (float64(stat.CachedInputTokens) / float64(stat.PromptTokens)) * 100
 			stat.CacheHitRate = sql.NullFloat64{Float64: rate, Valid: true}
 		}
 		agents[i] = *stat

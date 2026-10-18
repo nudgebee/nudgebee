@@ -227,7 +227,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 	msgAgg := map[string]*agg{}
 	toolCountByAgent := map[string]int{}
 	var totalCost, totalLatency float64
-	var totalIn, totalOut, totalCached int64
+	var totalIn, totalOut, totalCached, totalPrompt int64
 
 	for _, m := range mcScans {
 		// Prefer the cost persisted at insert time (see cost_usd column
@@ -273,6 +273,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 		totalIn += int64(m.InputTokens)
 		totalOut += int64(m.OutputTokens)
 		totalCached += int64(m.CachedInputTokens)
+		totalPrompt += int64(promptTokens(m.Provider, m.InputTokens, m.CacheCreationTokens))
 	}
 
 	// --- Messages ---
@@ -473,7 +474,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 		TotalInputTokens:       totalIn,
 		TotalOutputTokens:      totalOut,
 		TotalCachedInputTokens: totalCached,
-		CacheHitRatePct:        cacheHitPct(totalCached, totalIn),
+		CacheHitRatePct:        cacheHitPct(totalCached, totalPrompt),
 		MessageCount:           len(tree.Messages),
 		AgentCount:             len(tree.Agents),
 		ToolCallCount:          len(tree.ToolCalls),

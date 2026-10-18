@@ -314,7 +314,9 @@ type totalsScan struct {
 	InputTokens       int64   `db:"input_tokens"`
 	OutputTokens      int64   `db:"output_tokens"`
 	CachedInputTokens int64   `db:"cached_input_tokens"`
-	Requests          int64   `db:"requests"`
+	// Cache writes for providers that keep them outside input (see promptTokens); hit-rate denominator only.
+	CacheWritesOutsideInput int64 `db:"cache_writes_outside_input"`
+	Requests                int64 `db:"requests"`
 }
 
 type groupScan struct {
@@ -323,9 +325,11 @@ type groupScan struct {
 	InputTokens       int64   `db:"input_tokens"`
 	OutputTokens      int64   `db:"output_tokens"`
 	CachedInputTokens int64   `db:"cached_input_tokens"`
-	Requests          int64   `db:"requests"`
-	Conversations     int     `db:"conversations"`
-	AvgLatencySeconds float64 `db:"avg_latency_seconds"`
+	// Cache writes for providers that keep them outside input (see promptTokens); hit-rate denominator only.
+	CacheWritesOutsideInput int64   `db:"cache_writes_outside_input"`
+	Requests                int64   `db:"requests"`
+	Conversations           int     `db:"conversations"`
+	AvgLatencySeconds       float64 `db:"avg_latency_seconds"`
 }
 
 func cacheHitPct(cached, input int64) float64 {
@@ -516,9 +520,11 @@ type gsScan struct {
 	InputTokens       int64   `db:"input_tokens"`
 	OutputTokens      int64   `db:"output_tokens"`
 	CachedInputTokens int64   `db:"cached_input_tokens"`
-	Requests          int64   `db:"requests"`
-	Conversations     int     `db:"conversations"`
-	AvgLatencySeconds float64 `db:"avg_latency_seconds"`
+	// Cache writes for providers that keep them outside input (see promptTokens); hit-rate denominator only.
+	CacheWritesOutsideInput int64   `db:"cache_writes_outside_input"`
+	Requests                int64   `db:"requests"`
+	Conversations           int     `db:"conversations"`
+	AvgLatencySeconds       float64 `db:"avg_latency_seconds"`
 }
 
 // runGroupedUsageSets computes the KPI totals AND the five join-free breakdowns
@@ -543,13 +549,14 @@ func (chat *ConversationDao) runGroupedUsageSets(where string, args []any) (Usag
 			COALESCE(SUM(t.input_tokens), 0)                 AS input_tokens,
 			COALESCE(SUM(t.output_tokens), 0)                AS output_tokens,
 			COALESCE(SUM(COALESCE(t.cached_input_tokens, 0)), 0) AS cached_input_tokens,
+			%s AS cache_writes_outside_input,
 			COUNT(*)                                         AS requests,
 			COUNT(DISTINCT c.id)                             AS conversations,
 			COALESCE(AVG(t.latency_seconds), 0)              AS avg_latency_seconds
 		%s
 		WHERE %s
 		GROUP BY GROUPING SETS ( (), (t.llm_model), (t.llm_provider), (c.source), (t.agent_name), (t.request_status) )`,
-		perCallCostExpr, cacheSavingsExpr, usageBaseFrom, where)
+		perCallCostExpr, cacheSavingsExpr, cacheWritesOutsideInputSQL, usageBaseFrom, where)
 
 	var scans []gsScan
 	if err := chat.dbManager.Db.Select(&scans, query, args...); err != nil {
@@ -571,7 +578,7 @@ func (chat *ConversationDao) runGroupedUsageSets(where string, args []any) (Usag
 				TotalInputTokens:       s.InputTokens,
 				TotalOutputTokens:      s.OutputTokens,
 				TotalCachedInputTokens: s.CachedInputTokens,
-				CacheHitRatePct:        cacheHitPct(s.CachedInputTokens, s.InputTokens),
+				CacheHitRatePct:        cacheHitPct(s.CachedInputTokens, s.InputTokens+s.CacheWritesOutsideInput),
 				TotalRequests:          s.Requests,
 			}
 			continue
@@ -597,7 +604,7 @@ func (chat *ConversationDao) runGroupedUsageSets(where string, args []any) (Usag
 			InputTokens:       s.InputTokens,
 			OutputTokens:      s.OutputTokens,
 			CachedInputTokens: s.CachedInputTokens,
-			CacheHitRatePct:   cacheHitPct(s.CachedInputTokens, s.InputTokens),
+			CacheHitRatePct:   cacheHitPct(s.CachedInputTokens, s.InputTokens+s.CacheWritesOutsideInput),
 			Requests:          s.Requests,
 			Conversations:     s.Conversations,
 			AvgLatencySeconds: s.AvgLatencySeconds,
@@ -652,9 +659,10 @@ func (chat *ConversationDao) runUsageTotals(where string, args []any) (UsageTota
 			COALESCE(SUM(t.input_tokens), 0)                 AS input_tokens,
 			COALESCE(SUM(t.output_tokens), 0)                AS output_tokens,
 			COALESCE(SUM(COALESCE(t.cached_input_tokens, 0)), 0) AS cached_input_tokens,
+			%s AS cache_writes_outside_input,
 			COUNT(*)                                         AS requests
 		%s
-		WHERE %s`, perCallCostExpr, cacheSavingsExpr, usageBaseFrom, where)
+		WHERE %s`, perCallCostExpr, cacheSavingsExpr, cacheWritesOutsideInputSQL, usageBaseFrom, where)
 
 	var ts totalsScan
 	if err := chat.dbManager.Db.Get(&ts, query, args...); err != nil {
@@ -668,7 +676,7 @@ func (chat *ConversationDao) runUsageTotals(where string, args []any) (UsageTota
 		TotalInputTokens:       ts.InputTokens,
 		TotalOutputTokens:      ts.OutputTokens,
 		TotalCachedInputTokens: ts.CachedInputTokens,
-		CacheHitRatePct:        cacheHitPct(ts.CachedInputTokens, ts.InputTokens),
+		CacheHitRatePct:        cacheHitPct(ts.CachedInputTokens, ts.InputTokens+ts.CacheWritesOutsideInput),
 		TotalRequests:          ts.Requests,
 	}, nil
 }
@@ -729,6 +737,7 @@ func (chat *ConversationDao) runUsageBreakdown(keyExpr, extraJoins, extraWhere, 
 			COALESCE(SUM(t.input_tokens), 0)                 AS input_tokens,
 			COALESCE(SUM(t.output_tokens), 0)                AS output_tokens,
 			COALESCE(SUM(COALESCE(t.cached_input_tokens, 0)), 0) AS cached_input_tokens,
+			%s AS cache_writes_outside_input,
 			COUNT(*)                                         AS requests,
 			COUNT(DISTINCT c.id)                             AS conversations,
 			COALESCE(AVG(t.latency_seconds), 0)              AS avg_latency_seconds
@@ -737,7 +746,7 @@ func (chat *ConversationDao) runUsageBreakdown(keyExpr, extraJoins, extraWhere, 
 		WHERE %s%s
 		GROUP BY 1
 		ORDER BY cost_usd DESC%s`,
-		keyExpr, perCallCostExpr, usageBaseFrom, extraJoins, where, extraWhere, limitClause)
+		keyExpr, perCallCostExpr, cacheWritesOutsideInputSQL, usageBaseFrom, extraJoins, where, extraWhere, limitClause)
 
 	var scans []groupScan
 	if err := chat.dbManager.Db.Select(&scans, query, args...); err != nil {
@@ -753,7 +762,7 @@ func (chat *ConversationDao) runUsageBreakdown(keyExpr, extraJoins, extraWhere, 
 			InputTokens:       s.InputTokens,
 			OutputTokens:      s.OutputTokens,
 			CachedInputTokens: s.CachedInputTokens,
-			CacheHitRatePct:   cacheHitPct(s.CachedInputTokens, s.InputTokens),
+			CacheHitRatePct:   cacheHitPct(s.CachedInputTokens, s.InputTokens+s.CacheWritesOutsideInput),
 			Requests:          s.Requests,
 			Conversations:     s.Conversations,
 			AvgLatencySeconds: s.AvgLatencySeconds,
