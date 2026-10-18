@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 
 	"github.com/stretchr/testify/require"
@@ -21,7 +22,6 @@ func (cardDao) GetConversation(string) (Conversation, error) {
 // in the conversation, as ReAct3 always did (#41546); an accepted answer
 // leaves none.
 func TestReAct4RefineWritesCritiqueCard(t *testing.T) {
-	pinClaimAuditOnly(t) // standalone critique path, as the sibling critique tests use
 	previous := config.Config.ClaimCritiqueFeedbackEnabled
 	config.Config.ClaimCritiqueFeedbackEnabled = false // legacy decision only, no claim audit call
 	t.Cleanup(func() { config.Config.ClaimCritiqueFeedbackEnabled = previous })
@@ -47,6 +47,12 @@ func TestReAct4RefineWritesCritiqueCard(t *testing.T) {
 			dao := &trackingFakeDao{IConversationDao: prev}
 			SetConversationDao(cardDao{dao})
 			t.Cleanup(func() { SetConversationDao(prev) })
+			// Route background token-usage writes through a pool that cleanup
+			// drains before the DAO above is restored (cleanups run LIFO).
+			prevPool := GetMetricsWorkerPool()
+			pool := common.NewWorkerPool("critique-card-test-metrics", 1, 16)
+			SetMetricsWorkerPool(pool)
+			t.Cleanup(func() { pool.Stop(); SetMetricsWorkerPool(prevPool) })
 			withFakeLLMModel(t, &fakeLLMModel{turns: tc.turns})
 
 			ctx := llmOverrideContext()
