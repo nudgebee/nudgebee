@@ -1222,3 +1222,12 @@ func TestReAct4_RenderSteps_InvalidArgumentsReplayAsEmptyObject(t *testing.T) {
 		})
 	}
 }
+
+// The user never sees a rejected answer, so the send-back must ask for a
+// self-contained answer that does not narrate the correction (#39803).
+func TestReact4RefinementMessageAsksForSelfContainedAnswer(t *testing.T) {
+	msg := react4RefinementMessage("E2 contradicts the OOM claim")
+	assert.Contains(t, msg, "E2 contradicts the OOM claim")
+	assert.Contains(t, msg, "The user never saw the previous answer")
+	assert.Contains(t, msg, "do not mention a previous answer")
+}

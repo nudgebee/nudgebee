@@ -1200,8 +1200,14 @@ func react4RefinementMessage(feedback string) string {
 	return "Your previous answer was reviewed and needs improvement before it can be returned to the user. " +
 		"Feedback:\n" + feedback + "\n\n" +
 		"Revise your answer to address this feedback. If you need more evidence, call the appropriate tool(s); " +
-		"otherwise reply with the improved final answer as plain text."
+		"otherwise reply with the improved final answer as plain text. " + refinedAnswerStandsAlone
 }
+
+// refinedAnswerStandsAlone keeps the review out of the revised answer: the user
+// never saw the rejected answer, so "my prior answer said X, corrected to Y"
+// reads as a contradiction of something they were never shown (#39803).
+const refinedAnswerStandsAlone = "The user never saw the previous answer or this review: write the revised answer as a fresh, " +
+	"self-contained final answer, and do not mention a previous answer, the review, or that anything was corrected."
 
 // parseCompletion translates a single provider choice into actions or a finish.
 // Zero tool calls with non-empty text is the terminal (final answer); zero tool

@@ -1801,7 +1801,7 @@ func (o *NBReActPlanner3) Plan(
 					// follow it. When no tool action is appropriate (format /
 					// hallucination / no-execution-path), the critique feedback
 					// itself will guide a rewrite.
-					feedbackMsg := fmt.Sprintf("The previous final answer was: %s\nThe critique feedback was: %s\nFollow the critique feedback exactly. If it names a specific tool to call, you MUST issue that tool action now via <thought_action> and produce no <final_answer> this turn. Otherwise, refine the answer to address the feedback. Refer to previous conversation/messages for better context.", rd.Answer, rd.Feedback)
+					feedbackMsg := fmt.Sprintf("The previous final answer was: %s\nThe critique feedback was: %s\nFollow the critique feedback exactly. If it names a specific tool to call, you MUST issue that tool action now via <thought_action> and produce no <final_answer> this turn. Otherwise, refine the answer to address the feedback. Refer to previous conversation/messages for better context. "+refinedAnswerStandsAlone, rd.Answer, rd.Feedback)
 					mcList = append(mcList, llms.MessageContent{
 						Role:  llms.ChatMessageTypeHuman,
 						Parts: []llms.ContentPart{llms.TextContent{Text: feedbackMsg}},
