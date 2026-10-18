@@ -430,7 +430,7 @@ class NotificationRuleMatcher:
                 params.get("workload"),
                 None,
             )
-        if source == "cloud":
+        if source == "cloud" or type_ == "integration_health":
             return (
                 source,
                 params.get("account_id"),

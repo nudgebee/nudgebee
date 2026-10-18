@@ -123,6 +123,30 @@ def test_cloud_template_account_only():
     assert workload is None
 
 
+def test_integration_health_is_account_scoped_troubleshoot():
+    # api-server's provider status check publishes these under troubleshoot; an
+    # account-scoped rule has to see the cluster to route or silence them.
+    source, account_id, namespace, workload, _ = _filters(
+        "integration_health",
+        source="troubleshoot",
+        parameters={"message": "Integration failing", "account_id": "acc-6"},
+    )
+    assert source == "troubleshoot"
+    assert account_id == "acc-6"
+    assert namespace is None
+    assert workload is None
+
+
+def test_integration_health_renders_like_generic_on_every_platform():
+    from notifications_server.message_templates import template_mapping
+
+    mapping = template_mapping["integration_health"]
+    params = mapping["common_params"](message="**Integration failing: prod-es**", account_id="acc-6", state="failing")
+    for platform in ("slack", "ms_teams", "google_chat", "discord"):
+        assert mapping[platform] is not None, platform
+        assert mapping[platform](params), platform
+
+
 # ----------------------------- rule severity parsing -----------------------------
 
 

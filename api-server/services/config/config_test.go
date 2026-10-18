@@ -115,6 +115,21 @@ func TestSLOResolvedDigestDisabledByDefault(t *testing.T) {
 	}
 }
 
+// Provider health alerts are opt-in, and the switch has to be reachable from
+// the environment: an environment turns them on once its notifications-server
+// knows the integration_health message type.
+func TestProviderHealthAlertsAreOffByDefaultAndReadFromTheEnvironment(t *testing.T) {
+	if !slices.Contains(viper.AllKeys(), "feature_provider_health_alerts_enabled") {
+		t.Error("feature_provider_health_alerts_enabled has no viper default, so FEATURE_PROVIDER_HEALTH_ALERTS_ENABLED is ignored")
+	}
+	if v, ok := os.LookupEnv("FEATURE_PROVIDER_HEALTH_ALERTS_ENABLED"); ok {
+		t.Skipf("FEATURE_PROVIDER_HEALTH_ALERTS_ENABLED=%q is set in the environment; the compiled-in default is not observable here", v)
+	}
+	if Config.FeatureProviderHealthAlertsEnabled {
+		t.Error("default feature_provider_health_alerts_enabled = true, want false")
+	}
+}
+
 // Re-running workflows on a scheduled job's re-detection is opt-in, and the
 // switch has to be reachable from the environment.
 func TestScheduledAlertWorkflowRefireIsOffByDefaultAndReadFromTheEnvironment(t *testing.T) {

@@ -32,6 +32,12 @@ type ProviderConnectionStatus struct {
 	// credential. It must never affect Connected, or one integration's missing
 	// capability would mark all three signals it serves as broken.
 	Note string `json:"note,omitempty"`
+	// FailingSince is when the probe of this integration first failed in the
+	// current run of failures (RFC 3339), carried over from the previous stamp.
+	// Alerted says a failure notification went out for that run, so a recovery
+	// is announced and the failure is not announced twice. See applyAlertState.
+	FailingSince string `json:"failing_since,omitempty"`
+	Alerted      bool   `json:"alerted,omitempty"`
 }
 
 // ProviderStatusKey is the server-managed key on agent.connection_status that
@@ -182,8 +188,9 @@ var refreshInFlight sync.Map // key: account id string, value: struct{}
 
 // providerStatusAccount is one candidate cluster and the tenant that owns it.
 type providerStatusAccount struct {
-	AccountId string `db:"cloud_account_id"`
-	TenantId  string `db:"tenant"`
+	AccountId   string `db:"cloud_account_id"`
+	TenantId    string `db:"tenant"`
+	AccountName string `db:"account_name"`
 }
 
 // providerStatusAccountsQuery selects the K8s clusters this check exists for: those with a
@@ -203,7 +210,7 @@ type providerStatusAccount struct {
 // The `a.type != 'proxy'` guard picks the row the agent's own telemetry writes, which is
 // the row the UI reads and the row stampProviderStatus updates.
 const providerStatusAccountsQuery = `
-	SELECT ca.id::varchar AS cloud_account_id, ca.tenant::varchar AS tenant
+	SELECT ca.id::varchar AS cloud_account_id, ca.tenant::varchar AS tenant, COALESCE(ca.account_name, '') AS account_name
 	FROM cloud_accounts ca
 	INNER JOIN agent a ON ca.id = a.cloud_account_id AND a.type != 'proxy'
 	WHERE ca.cloud_provider = 'K8s'
@@ -220,20 +227,20 @@ const providerStatusAccountsQuery = `
 	    )
 	    OR COALESCE(a.connection_status, '{}'::jsonb) ? '` + ProviderStatusKey + `'
 	  )
-	GROUP BY ca.id, ca.tenant`
+	GROUP BY ca.id, ca.tenant, ca.account_name`
 
 // providerStatusAccountsByIdQuery is the explicit-account variant (manual cron
 // payload, and the post-save trigger). It deliberately drops the eligibility arms:
 // an account named explicitly has just had its integrations changed, so it must be
 // re-checked even when that change was the removal of the last one.
 const providerStatusAccountsByIdQuery = `
-	SELECT ca.id::varchar AS cloud_account_id, ca.tenant::varchar AS tenant
+	SELECT ca.id::varchar AS cloud_account_id, ca.tenant::varchar AS tenant, COALESCE(ca.account_name, '') AS account_name
 	FROM cloud_accounts ca
 	INNER JOIN agent a ON ca.id = a.cloud_account_id AND a.type != 'proxy'
 	WHERE ca.id = ANY($1::uuid[])
 	  AND ca.cloud_provider = 'K8s'
 	  AND ca.status = 'active'
-	GROUP BY ca.id, ca.tenant`
+	GROUP BY ca.id, ca.tenant, ca.account_name`
 
 func listProviderStatusAccounts(ctx context.Context, accountIds []string) ([]providerStatusAccount, error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
@@ -386,6 +393,7 @@ func RefreshProviderStatus(ctx *security.RequestContext, accountIds []string) er
 				accLogger.Error("provider status refresh: check failed", "error", err)
 				return
 			}
+			notifyProviderTransitions(accCtx, acc, statuses)
 			if err := stampProviderStatus(accCtx, acc.AccountId, statuses); err != nil {
 				failed++
 				accLogger.Error("provider status refresh: failed to stamp status", "error", err)

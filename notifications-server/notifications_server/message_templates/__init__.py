@@ -178,6 +178,16 @@ template_mapping = {
         "google_chat": get_google_chat_generic_message_template,
         "discord": get_discord_generic_message_template,
     },
+    # Integration health alerts from api-server's provider status check: a
+    # generic markdown message, under its own type so rule matching can read
+    # its account_id (see NotificationRuleMatcher.get_filters_from_notification_payload).
+    "integration_health": {
+        "common_params": get_generic_message_params,
+        "slack": get_slack_generic_message_template,
+        "ms_teams": get_ms_teams_generic_message_template,
+        "google_chat": get_google_chat_generic_message_template,
+        "discord": get_discord_generic_message_template,
+    },
     "batched_findings": {
         "common_params": get_batched_findings_message_params,
         "slack": get_batched_findings_message_template,

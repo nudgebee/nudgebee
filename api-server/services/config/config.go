@@ -364,6 +364,14 @@ type appConfig struct {
 	// DIGEST_RESOLVED_ENABLED is on, and drops it when off.
 	FeatureSLOResolvedDigestEnabled bool `mapstructure:"feature_slo_resolved_digest_enabled"`
 
+	// When true, the provider status check (observability.RefreshProviderStatus)
+	// notifies the tenant's channels when a default logs / metrics / traces
+	// integration stays unreachable across two checks, and again when it
+	// recovers. Default off: turn it on only once notifications-server runs a
+	// build that knows the integration_health message type — an older one logs
+	// it as an unknown type and delivers nothing.
+	FeatureProviderHealthAlertsEnabled bool `mapstructure:"feature_provider_health_alerts_enabled"`
+
 	// Triage scoring: when true, ComputeScore uses the LLM-verdict-per-class + deterministic
 	// policy path instead of the legacy severity*env formula. Default off (legacy formula).
 	FeatureLLMTriageScoringEnabled bool `mapstructure:"feature_llm_triage_scoring_enabled"`
@@ -673,6 +681,7 @@ func init() {
 	// without this line the environment variable could never turn it on.
 	viper.SetDefault("feature_anomaly_returned_digest_enabled", false)
 	viper.SetDefault("feature_slo_resolved_digest_enabled", false)
+	viper.SetDefault("feature_provider_health_alerts_enabled", false)
 	viper.SetDefault("feature_kg_cloud_topology_from_db", true)
 	viper.SetDefault("feature_kg_cfn_stack_resources_from_db", true)
 	viper.SetDefault("webhook_async_execution", true)
