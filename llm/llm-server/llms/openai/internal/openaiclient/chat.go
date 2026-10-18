@@ -406,6 +406,19 @@ type ChatUsage struct {
 	} `json:"completion_tokens_details"`
 }
 
+// OutputTokens is CompletionTokens without the reasoning share. OpenAI's
+// completion_tokens INCLUDES completion_tokens_details.reasoning_tokens, but
+// callers price output and thinking separately and add them (the Gemini
+// convention), so passing the raw count bills reasoning twice. A reasoning
+// count outside (0, completion] is not trusted and leaves the count as is.
+func (u ChatUsage) OutputTokens() int {
+	reasoning := u.CompletionTokensDetails.ReasoningTokens
+	if reasoning <= 0 || reasoning > u.CompletionTokens {
+		return u.CompletionTokens
+	}
+	return u.CompletionTokens - reasoning
+}
+
 // ChatCompletionResponse is a response to a chat request.
 type ChatCompletionResponse struct {
 	ID                string                  `json:"id,omitempty"`

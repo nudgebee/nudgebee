@@ -378,7 +378,8 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 			ReasoningContent: c.Message.ReasoningContent,
 			StopReason:       fmt.Sprint(c.FinishReason),
 			GenerationInfo: map[string]any{
-				"CompletionTokens":  result.Usage.CompletionTokens,
+				// Visible output only; reasoning is reported as ThinkingTokens.
+				"CompletionTokens":  result.Usage.OutputTokens(),
 				"PromptTokens":      result.Usage.PromptTokens,
 				"TotalTokens":       result.Usage.TotalTokens,
 				"ReasoningTokens":   result.Usage.CompletionTokensDetails.ReasoningTokens,
