@@ -29,9 +29,3 @@ func PromptTokens(provider string, inputTokens, cacheCreationTokens int) int {
 // the cache writes that PromptTokens adds for the same providers. Kept next to
 // the map so the two lists stay one.
 const CacheWritesOutsideInputSQL = `COALESCE(SUM(CASE WHEN lower(t.llm_provider) IN ('anthropic', 'bedrock') THEN COALESCE(t.cache_creation_tokens, 0) ELSE 0 END), 0)`
-
-func promptTokens(provider string, inputTokens, cacheCreationTokens int) int {
-	return PromptTokens(provider, inputTokens, cacheCreationTokens)
-}
-
-const cacheWritesOutsideInputSQL = CacheWritesOutsideInputSQL

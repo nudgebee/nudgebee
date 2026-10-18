@@ -556,7 +556,7 @@ func (chat *ConversationDao) runGroupedUsageSets(where string, args []any) (Usag
 		%s
 		WHERE %s
 		GROUP BY GROUPING SETS ( (), (t.llm_model), (t.llm_provider), (c.source), (t.agent_name), (t.request_status) )`,
-		perCallCostExpr, cacheSavingsExpr, cacheWritesOutsideInputSQL, usageBaseFrom, where)
+		perCallCostExpr, cacheSavingsExpr, CacheWritesOutsideInputSQL, usageBaseFrom, where)
 
 	var scans []gsScan
 	if err := chat.dbManager.Db.Select(&scans, query, args...); err != nil {
@@ -662,7 +662,7 @@ func (chat *ConversationDao) runUsageTotals(where string, args []any) (UsageTota
 			%s AS cache_writes_outside_input,
 			COUNT(*)                                         AS requests
 		%s
-		WHERE %s`, perCallCostExpr, cacheSavingsExpr, cacheWritesOutsideInputSQL, usageBaseFrom, where)
+		WHERE %s`, perCallCostExpr, cacheSavingsExpr, CacheWritesOutsideInputSQL, usageBaseFrom, where)
 
 	var ts totalsScan
 	if err := chat.dbManager.Db.Get(&ts, query, args...); err != nil {
@@ -746,7 +746,7 @@ func (chat *ConversationDao) runUsageBreakdown(keyExpr, extraJoins, extraWhere, 
 		WHERE %s%s
 		GROUP BY 1
 		ORDER BY cost_usd DESC%s`,
-		keyExpr, perCallCostExpr, cacheWritesOutsideInputSQL, usageBaseFrom, extraJoins, where, extraWhere, limitClause)
+		keyExpr, perCallCostExpr, CacheWritesOutsideInputSQL, usageBaseFrom, extraJoins, where, extraWhere, limitClause)
 
 	var scans []groupScan
 	if err := chat.dbManager.Db.Select(&scans, query, args...); err != nil {

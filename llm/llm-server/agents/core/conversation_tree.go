@@ -273,7 +273,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 		totalIn += int64(m.InputTokens)
 		totalOut += int64(m.OutputTokens)
 		totalCached += int64(m.CachedInputTokens)
-		totalPrompt += int64(promptTokens(m.Provider, m.InputTokens, m.CacheCreationTokens))
+		totalPrompt += int64(PromptTokens(m.Provider, m.InputTokens, m.CacheCreationTokens))
 	}
 
 	// --- Messages ---

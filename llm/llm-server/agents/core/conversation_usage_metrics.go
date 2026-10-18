@@ -525,7 +525,7 @@ func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId strin
 	result := []ModelUsageStat{}
 	for _, stat := range modelMap {
 		// Calculate cache hit rate
-		if prompt := promptTokens(stat.ModelProvider, stat.InputTokens, stat.CacheCreationTokens); prompt > 0 {
+		if prompt := PromptTokens(stat.ModelProvider, stat.InputTokens, stat.CacheCreationTokens); prompt > 0 {
 			rate := (float64(stat.CachedInputTokens) / float64(prompt)) * 100
 			stat.CacheHitRatePercentage = &rate
 		}
@@ -558,7 +558,7 @@ func calculateCacheSavings(records []TokenUsageDetailedRecord, actualCost float6
 
 	for _, record := range records {
 		totalCachedTokens += record.CachedInputTokens
-		totalPromptTokens += promptTokens(record.LLMProvider, record.InputTokens, record.CacheCreationTokens)
+		totalPromptTokens += PromptTokens(record.LLMProvider, record.InputTokens, record.CacheCreationTokens)
 
 		if pricing, ok := costs[record.LLMProvider+":"+record.LLMModel]; ok {
 			// "Without cache" hypothetical: all input tokens billed at the

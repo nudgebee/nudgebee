@@ -3152,7 +3152,7 @@ func (chat *ConversationDao) UpdateConversationMessageMetrics(id string, metrics
 type TokenMetrics struct {
 	AgentId              string          `json:"id"`
 	AgentName            string          `json:"agent_name"`              // Human-readable agent name
-	InputTokens          int             `json:"input_tokens"`            // Fresh input + cache reads. Cache writes are NOT included for Anthropic/Bedrock (see promptTokens)
+	InputTokens          int             `json:"input_tokens"`            // Fresh input + cache reads. Cache writes are NOT included for Anthropic/Bedrock (see PromptTokens)
 	OutputTokens         int             `json:"output_tokens"`           // Total output
 	CachedInputTokens    int             `json:"cached_input_tokens"`     // Tokens served from cache
 	NonCachedInputTokens int             `json:"non_cached_input_tokens"` // New input tokens (full input rate)
@@ -3633,7 +3633,7 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 		stat.CachedInputTokens += call.CachedInputTokens
 		stat.NonCachedInputTokens += nonCached
 		stat.CacheCreationTokens += call.CacheCreationTokens
-		stat.PromptTokens += promptTokens(call.ModelProviderName.String, call.InputTokens, call.CacheCreationTokens)
+		stat.PromptTokens += PromptTokens(call.ModelProviderName.String, call.InputTokens, call.CacheCreationTokens)
 		stat.ThinkingTokens += call.ThinkingTokens
 		stat.Cost += cost
 		if pricingLoaded && !priced && call.InputTokens+call.OutputTokens > 0 {
