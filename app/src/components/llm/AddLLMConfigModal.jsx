@@ -59,34 +59,34 @@ const TIER_HINTS = {
 // summarisation, memory, acknowledgments).
 const PROVIDER_EXAMPLES = {
   anthropic: {
-    reasoning: 'claude-opus-4-7',
-    retrieval: 'claude-sonnet-4-6',
-    summary: 'claude-haiku-4-5',
+    reasoning: 'claude-opus-5-5',
+    retrieval: 'claude-sonnet-5-5',
+    summary: 'claude-haiku-5-5',
   },
   azure: {
-    reasoning: 'gpt-5-pro',
-    retrieval: 'gpt-5',
-    summary: 'gpt-5-mini',
+    reasoning: 'gpt-5.5-pro',
+    retrieval: 'gpt-5.5',
+    summary: 'gpt-5.4-mini',
   },
   bedrock: {
-    reasoning: 'anthropic.claude-opus-4-7',
-    retrieval: 'anthropic.claude-sonnet-4-6',
-    summary: 'anthropic.claude-haiku-4-5',
+    reasoning: 'us.anthropic.claude-opus-5-5',
+    retrieval: 'us.anthropic.claude-sonnet-5-5',
+    summary: 'us.anthropic.claude-haiku-5-5',
   },
   googleai: {
-    reasoning: 'gemini-3-pro-preview',
+    reasoning: 'gemini-3.1-pro-preview',
     retrieval: 'gemini-3-flash-preview',
-    summary: 'gemini-2.5-flash',
+    summary: 'gemini-3.1-flash-lite',
   },
   huggingface: {
-    reasoning: 'meta-llama/Llama-3-70b-instruct',
-    retrieval: 'meta-llama/Llama-3-13b-instruct',
-    summary: 'meta-llama/Llama-3-8b-instruct',
+    reasoning: 'meta-llama/Llama-3.3-70B-Instruct',
+    retrieval: 'meta-llama/Llama-3.1-8B-Instruct',
+    summary: 'meta-llama/Llama-3.1-8B-Instruct',
   },
   openai: {
-    reasoning: 'gpt-5-pro',
-    retrieval: 'gpt-5',
-    summary: 'gpt-5-mini',
+    reasoning: 'gpt-5.5-pro',
+    retrieval: 'gpt-5.5',
+    summary: 'gpt-5.4-mini',
   },
   sagemaker: {
     reasoning: 'endpoint-name-reasoning',
@@ -94,11 +94,18 @@ const PROVIDER_EXAMPLES = {
     summary: 'endpoint-name-summary',
   },
   vertexai: {
-    reasoning: 'gemini-3-pro-preview',
+    reasoning: 'gemini-3.1-pro-preview',
     retrieval: 'gemini-3-flash-preview',
-    summary: 'gemini-2.5-flash',
+    summary: 'gemini-3.1-flash-lite',
   },
 };
+
+// Models pre-filled into the primary + tier fields on provider change
+// (#41118). Every entry must be a current chat model the provider's API
+// accepts, because Test Connection probes each tier and Save waits on it.
+// Hugging Face and SageMaker are left out: their model names are the
+// tenant's own repo / endpoint names, so they stay placeholder-only.
+const PROVIDER_DEFAULT_MODELS = Object.fromEntries(Object.entries(PROVIDER_EXAMPLES).filter(([p]) => !['huggingface', 'sagemaker'].includes(p)));
 
 // Per-tier and per-agent override shape. provider === '' means "inherit from
 // global"; any other value triggers conditional credential fields for that
@@ -1056,9 +1063,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const [testStatus, setTestStatus] = useState('idle');
   const [testMessage, setTestMessage] = useState('');
 
-  // Pricing rows for computing tier auto-fills on provider change (#35174).
-  // Loaded once when the modal opens; empty array is a safe fallback (the
-  // computeTierDefaults helper falls back to PROVIDER_EXAMPLES per provider).
+  // Pricing rows, loaded once when the modal opens; used to read the recorded
+  // image-input support for the chosen model. Empty array is a safe fallback.
   const [pricingRows, setPricingRows] = useState([]);
 
   // Collapse for the "Advanced options" section (per-tenant pricing overrides
@@ -1106,10 +1112,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     };
   }, [open]);
 
-  // Load pricing rows once on modal open. Used by the tier auto-fill on
-  // provider change (#35174) — the sort determines which model becomes each
-  // tier's default. A failed fetch is non-fatal: computeTierDefaults falls
-  // back to the curated PROVIDER_EXAMPLES map for the selected provider.
+  // Load pricing rows once on modal open. A failed fetch is non-fatal.
   useEffect(() => {
     if (!open) {
       return;
@@ -1123,7 +1126,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         }
         // Same resolve-with-errors contract as elsewhere in this file
         // (see the tier/cache carry-forward at handleSave). Missing pricing
-        // is not fatal — the fallback map still populates sensible tiers.
+        // is not fatal.
         if (res?.errors && res.errors.length > 0) {
           setPricingRows([]);
           return;
@@ -1595,15 +1598,15 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   // provider is virtually never valid for another.
   const handleProviderChange = (value) => {
     setProvider(value);
-    // Primary + tier auto-fill (#35174): compute per-family defaults from
-    // llm_model_pricing (fallback: curated PROVIDER_EXAMPLES). Primary is
+    // Primary + tier auto-fill (#35174): curated per-provider defaults from
+    // PROVIDER_DEFAULT_MODELS (#41118). Primary is
     // the mid-cost retrieval-tier model — most call sites are untagged
     // and running the flagship on every one of them was the cost-inflation
     // pattern this ticket is fixing. Reasoning tier is set explicitly to
     // the flagship (opt-in for heavy investigation), summary to the
     // cheapest (opt-in for cheap tasks). Retrieval tier is left blank so
     // it inherits from primary — no need to name the same model twice.
-    const tierDefaults = computeTierDefaults(value, pricingRows, PROVIDER_EXAMPLES);
+    const tierDefaults = computeTierDefaults(value, PROVIDER_DEFAULT_MODELS);
     setModel(tierDefaults.retrieval);
     setFallbacks('');
     setApiKey('');
@@ -2642,7 +2645,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
             onChange={setConnField(setModel)}
             onBlur={trimOnBlur(model, setModel)}
             error={errors.model}
-            help={provider === 'azure' ? AZURE_MODEL_HELP : 'Name of the primary model (e.g., gpt-4, claude-opus-4-7, gemini-3.1-pro-preview).'}
+            help={provider === 'azure' ? AZURE_MODEL_HELP : 'Name of the primary model (e.g., gpt-5.5, claude-sonnet-5-5, gemini-3-flash-preview).'}
             required
           />
 
