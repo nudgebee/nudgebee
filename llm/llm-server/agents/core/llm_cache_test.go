@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -378,4 +379,37 @@ func TestAnthropicCacheProvider_SystemTTLByScope(t *testing.T) {
 
 	config.Config.LlmServerAnthropicSystemCacheTTL = "5m"
 	assert.Equal(t, map[int]time.Duration{0: 0, 1: 0, 3: 0}, durations(CacheScopeAccount))
+}
+
+// Bedrock (Claude via the Anthropic body) is routed to the Anthropic breakpoints.
+func TestCacheManager_BedrockUsesAnthropicBreakpoints(t *testing.T) {
+	msgs := []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: "system + tools"}}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "question"}}},
+		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{
+			llms.ToolCall{ID: "t1", Type: "function", FunctionCall: &llms.FunctionCall{Name: "kubectl", Arguments: `{}`}},
+		}},
+		{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{llms.ToolCallResponse{ToolCallID: "t1", Content: "pods"}}},
+	}
+	req := func(provider string) *CacheRequest {
+		return &CacheRequest{Provider: provider, Messages: msgs, Scope: CacheScopeConversation}
+	}
+
+	bedrock := GetCacheManager().ApplyCache(context.Background(), req("bedrock"))
+	anthropic := GetCacheManager().ApplyCache(context.Background(), req("anthropic"))
+	require.NoError(t, bedrock.Error)
+	assert.Equal(t, anthropic.Messages, bedrock.Messages)
+	for _, i := range []int{0, 1, 3} {
+		_, ok := bedrock.Messages[i].Parts[0].(llms.CachedContent)
+		assert.True(t, ok, "message %d marked", i)
+	}
+}
+
+// A Bedrock rejection of a cache marker routes to the retry-without-cache path;
+// other Bedrock validation errors don't.
+func TestIsCacheError_BedrockValidation(t *testing.T) {
+	assert.True(t, isCacheError(errors.New(`operation error Bedrock Runtime: InvokeModel, https response error StatusCode: 400, RequestID: x, ValidationException: messages.1.content.0.text.cache_control: Extra inputs are not permitted`)))
+	assert.True(t, isCacheError(errors.New(`ValidationException: cache_control.ttl: 1h is not supported for this model`)))
+	assert.False(t, isCacheError(errors.New(`ValidationException: messages: roles must alternate between "user" and "assistant"`)))
+	assert.False(t, isCacheError(errors.New(`ThrottlingException: Too many requests, please wait before trying again.`)))
 }

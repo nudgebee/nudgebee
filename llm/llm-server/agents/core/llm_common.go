@@ -3483,7 +3483,10 @@ func isCacheError(err error) bool {
 		(strings.Contains(errMsg, "403") && strings.Contains(errMsg, "cachedcontent")) ||
 		(strings.Contains(errMsg, "404") && strings.Contains(errMsg, "cachedcontent")) ||
 		// Model mismatch between cached content and inference request (Google AI 400)
-		(strings.Contains(errMsg, "cachedcontent") && strings.Contains(errMsg, "has to be the same"))
+		(strings.Contains(errMsg, "cachedcontent") && strings.Contains(errMsg, "has to be the same")) ||
+		// Bedrock rejecting a cache marker or its TTL on a model without them
+		(strings.Contains(errMsg, "validationexception") &&
+			(strings.Contains(errMsg, "cache") || strings.Contains(errMsg, "ttl")))
 }
 
 // isProgramError checks if the error is a programming bug (nil pointer, panic recovery)

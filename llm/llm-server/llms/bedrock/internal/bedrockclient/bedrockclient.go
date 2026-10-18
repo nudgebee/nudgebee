@@ -26,6 +26,9 @@ type Message struct {
 	Type string
 	// MimeType is the MIME type
 	MimeType string
+	// CacheControl is the prompt-cache marker on this message, if any.
+	// Providers without prompt caching ignore it.
+	CacheControl *llms.CacheControl
 }
 
 func getProvider(modelID string) string {

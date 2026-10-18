@@ -114,8 +114,11 @@ func GetCacheManager() *CacheManager {
 		anthropicProvider := NewAnthropicCacheProvider()
 		globalCacheManager.RegisterProvider(anthropicProvider)
 
+		bedrockProvider := NewBedrockCacheProvider()
+		globalCacheManager.RegisterProvider(bedrockProvider)
+
 		slog.Info("Cache manager initialized",
-			"providers", []string{googleAIProvider.GetProviderName(), anthropicProvider.GetProviderName()})
+			"providers", []string{googleAIProvider.GetProviderName(), anthropicProvider.GetProviderName(), bedrockProvider.GetProviderName()})
 	})
 	return globalCacheManager
 }
@@ -1101,6 +1104,24 @@ func isAnthropicCacheablePart(part llms.ContentPart) bool {
 func (p *AnthropicCacheProvider) InvalidateCache(ctx context.Context, req *CacheRequest) error {
 	// Anthropic caching is ephemeral and managed by Anthropic, nothing to invalidate
 	return nil
+}
+
+// ========== Bedrock Cache Provider ==========
+
+// BedrockCacheProvider places the same breakpoints as AnthropicCacheProvider:
+// Claude on Bedrock takes the Anthropic Messages body, cache_control included.
+// The Bedrock client drops markers on models without prompt caching (non-Claude
+// models, Claude before 3.7) and the 1h TTL on models without it.
+type BedrockCacheProvider struct {
+	AnthropicCacheProvider
+}
+
+func NewBedrockCacheProvider() *BedrockCacheProvider {
+	return &BedrockCacheProvider{}
+}
+
+func (p *BedrockCacheProvider) GetProviderName() string {
+	return "bedrock"
 }
 
 // ========== Helper Functions ==========
