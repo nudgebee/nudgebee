@@ -13,6 +13,7 @@ import (
 	"nudgebee/llm/common"
 	toolcore "nudgebee/llm/tools/core"
 
+	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -237,4 +238,36 @@ func appendNoteToLastMessage(messages []llms.MessageContent, note string) []llms
 		}
 	}
 	return append(out, llms.MessageContent{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: note}}})
+}
+
+// saveCritiqueCard writes a synthetic tool-call record so that the critique
+// feedback that sent an answer back surfaces in the conversation as a
+// "Critique Feedback" step. Shared by ReAct3 and ReAct4 (#41546). Callers
+// swallow its error — this is a visibility feature and must never fail the
+// planner.
+func saveCritiqueCard(request NBAgentRequest, feedback string) error {
+	if request.AgentId == "" || request.ConversationId == "" || strings.TrimSpace(feedback) == "" {
+		return nil
+	}
+	conversationDAO := GetConversationDao()
+	toolId := uuid.New().String()
+	return conversationDAO.SaveConversationToolCall(
+		request.ConversationId,
+		request.AccountId,
+		request.UserId,
+		request.MessageId,
+		request.AgentId,
+		toolId,
+		"react_critique",
+		"Answer rejected by critique — refining for better quality",   // title shown on the UI card
+		"Critiquing the final answer to ensure quality and accuracy.", // thought shown in Tool Details drawer
+		"", // no SQL
+		feedback,
+		toolcore.NBToolResponseStatusSuccess,
+		toolcore.NBToolTypeTool,
+		nil,
+		nil,
+		nil,
+		nil, // memoryRefs — synthetic critique-feedback tool call
+	)
 }

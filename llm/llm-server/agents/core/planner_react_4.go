@@ -634,6 +634,9 @@ func (o *NBReActPlanner4) Plan(
 			StepIndex: len(intermediateSteps),
 		})
 		o.ctx.GetLogger().Info("react4: critique requested refinement", "attempt", len(o.refinementData))
+		if err := saveCritiqueCard(o.request, feedback); err != nil {
+			o.ctx.GetLogger().Error("react4: failed to save critique card", "error", err)
+		}
 		messages = append(messages, o.refinementMessages(finish.Data, feedback)...)
 	}
 }
@@ -1999,10 +2002,10 @@ func (o *NBReActPlanner4) flattenTranscript(steps []NBAgentPlannerToolActionStep
 
 // runCritique asks the critiquer whether the final answer is acceptable,
 // returning (decision, feedback); an empty decision means accept. It mirrors
-// NBReActPlanner3.runCritique but omits the react_3-specific DB persistence
-// (saveCritique / saveCritiqueAsToolCall), which the seam map flagged as
-// optional (errors there are swallowed and never affect the decision). Wiring
-// analytics persistence for react_4 is a follow-up.
+// NBReActPlanner3.runCritique but omits ReAct3's react_answer analytics row
+// (saveCritique); the claim_shadow row written by runClaimCritiqueShadow is the
+// record. The "Critique Feedback" card is written by Plan when it acts on a
+// refine.
 func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, intermediateSteps []NBAgentPlannerToolActionStep, conv *critiqueConversation) (resultDecision, resultFeedback string) {
 	defer func() {
 		resultDecision, resultFeedback = runClaimCritiqueShadow(o.ctx, o.request, "react4", o.nbAgent.GetName(), resultDecision, resultFeedback, input, finalAnswer, o.Notebook, intermediateSteps,

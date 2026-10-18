@@ -2265,7 +2265,7 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 			o.refinementAttempts+1 >= o.maxRefinementAttempts, nil)
 		// Surface the feedback actually returned to the planner, including claim gaps.
 		if !strings.EqualFold(resultDecision, "accept") && resultFeedback != "" {
-			if err := o.saveCritiqueAsToolCall(resultFeedback); err != nil {
+			if err := saveCritiqueCard(o.request, resultFeedback); err != nil {
 				logger.Error("reactagent3: failed to save critique as tool call", "error", err)
 			}
 		}
@@ -2373,36 +2373,6 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 	}
 
 	return decision, feedback
-}
-
-// saveCritiqueAsToolCall writes a synthetic tool-call record so that the
-// critique feedback surfaces in the UI's Tool Details drawer. Errors are
-// swallowed — this is a visibility feature and must never fail the planner.
-func (o *NBReActPlanner3) saveCritiqueAsToolCall(feedback string) error {
-	if o.request.AgentId == "" || o.request.ConversationId == "" {
-		return nil
-	}
-	conversationDAO := GetConversationDao()
-	toolId := uuid.New().String()
-	return conversationDAO.SaveConversationToolCall(
-		o.request.ConversationId,
-		o.request.AccountId,
-		o.request.UserId,
-		o.request.MessageId,
-		o.request.AgentId,
-		toolId,
-		"react_critique",
-		"Answer rejected by critique — refining for better quality",   // title shown on the UI card
-		"Critiquing the final answer to ensure quality and accuracy.", // thought shown in Tool Details drawer
-		"", // no SQL
-		feedback,
-		toolcore.NBToolResponseStatusSuccess,
-		toolcore.NBToolTypeTool,
-		nil,
-		nil,
-		nil,
-		nil, // memoryRefs — synthetic critique-feedback tool call
-	)
 }
 
 // resolveHypothesisModeEnabled mirrors the gating used when building the
