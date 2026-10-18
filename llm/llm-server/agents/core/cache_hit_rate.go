@@ -14,16 +14,24 @@ var providersWithCacheWritesOutsideInput = map[string]bool{
 	"bedrock":   true,
 }
 
-// promptTokens is the whole prompt a call (or a sum of calls from one provider)
-// sent: the denominator of a cache hit rate. Stored input_tokens is left as it
-// is because cost formulas price input − cache reads and cache writes apart.
-func promptTokens(provider string, inputTokens, cacheCreationTokens int) int {
+// PromptTokens is the whole prompt a call (or a sum of calls from one provider)
+// sent: the denominator of a cache hit rate, and the input a "without cache"
+// cost estimate prices at the full rate. Stored input_tokens is left as it is
+// because cost formulas price input − cache reads and cache writes apart.
+func PromptTokens(provider string, inputTokens, cacheCreationTokens int) int {
 	if providersWithCacheWritesOutsideInput[strings.ToLower(strings.TrimSpace(provider))] {
 		return inputTokens + cacheCreationTokens
 	}
 	return inputTokens
 }
 
-// cacheWritesOutsideInputSQL sums, in SQL, the cache writes that promptTokens
-// adds for the same providers. Kept next to the map so the two lists stay one.
-const cacheWritesOutsideInputSQL = `COALESCE(SUM(CASE WHEN lower(t.llm_provider) IN ('anthropic', 'bedrock') THEN COALESCE(t.cache_creation_tokens, 0) ELSE 0 END), 0)`
+// CacheWritesOutsideInputSQL sums, in SQL over llm_conversation_token_usage t,
+// the cache writes that PromptTokens adds for the same providers. Kept next to
+// the map so the two lists stay one.
+const CacheWritesOutsideInputSQL = `COALESCE(SUM(CASE WHEN lower(t.llm_provider) IN ('anthropic', 'bedrock') THEN COALESCE(t.cache_creation_tokens, 0) ELSE 0 END), 0)`
+
+func promptTokens(provider string, inputTokens, cacheCreationTokens int) int {
+	return PromptTokens(provider, inputTokens, cacheCreationTokens)
+}
+
+const cacheWritesOutsideInputSQL = CacheWritesOutsideInputSQL
