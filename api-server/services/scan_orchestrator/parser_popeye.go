@@ -2,6 +2,7 @@ package scan_orchestrator
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -36,6 +37,10 @@ import (
 // Each `issues` map key is `namespace/name` for namespaced resources and just
 // `name` for cluster-scoped ones (clusterroles, clusterrolebindings, nodes, …).
 //
+// Releases before v0.20, including the v0.11 fork the scanner image is built
+// from, write the same list under "sanitizers" with a "sanitizer" name per
+// section and no "report_time". The issues map is identical in both.
+//
 // The collector's handle_popeye_report joined service_keys against
 // k8s_pods/k8s_workloads to map each row to a resource_id. PR-C-1 ships the
 // structural parser without that DB enrichment — every row becomes a
@@ -44,16 +49,18 @@ import (
 
 type popeyeReport struct {
 	Popeye struct {
-		Score    float64         `json:"score"`
-		Grade    string          `json:"grade"`
-		Sections []popeyeSection `json:"sections"`
+		Score      float64         `json:"score"`
+		Grade      string          `json:"grade"`
+		Sections   []popeyeSection `json:"sections"`
+		Sanitizers []popeyeSection `json:"sanitizers"`
 	} `json:"popeye"`
 }
 
 type popeyeSection struct {
-	Linter string                   `json:"linter"`
-	GVR    string                   `json:"gvr"`
-	Issues map[string][]popeyeIssue `json:"issues"`
+	Linter    string                   `json:"linter"`
+	Sanitizer string                   `json:"sanitizer"`
+	GVR       string                   `json:"gvr"`
+	Issues    map[string][]popeyeIssue `json:"issues"`
 }
 
 type popeyeIssue struct {
@@ -91,14 +98,29 @@ func popeyeRuleNameForLinter(linter string) string {
 // (Ok) are dropped. Severity follows the collector's mapping (priority
 // 1=Info, 2=Medium, 3=Critical) using the maximum level across the row's
 // issues.
+//
+// A report with neither "sections" nor "sanitizers" is an error, not an
+// empty result: Persist archives every open finding when a scan returns no
+// rows, so an unrecognised schema must fail the scan instead.
 func ParsePopeye(stdout string, account ScanAccount) ([]Recommendation, error) {
 	var report popeyeReport
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		return nil, fmt.Errorf("popeye: parse json: %w", err)
 	}
+	sections := report.Popeye.Sections
+	if sections == nil {
+		sections = report.Popeye.Sanitizers
+	}
+	if sections == nil {
+		return nil, errors.New("popeye: report has neither sections nor sanitizers")
+	}
 	out := make([]Recommendation, 0)
-	for _, section := range report.Popeye.Sections {
-		kind := normalizePopeyeKind(section.Linter)
+	for _, section := range sections {
+		linter := section.Linter
+		if linter == "" {
+			linter = section.Sanitizer
+		}
+		kind := normalizePopeyeKind(linter)
 		for resourceKey, issues := range section.Issues {
 			namespace, name := splitResourceKey(resourceKey)
 			insights := make([]map[string]any, 0, len(issues))
@@ -132,7 +154,7 @@ func ParsePopeye(stdout string, account ScanAccount) ([]Recommendation, error) {
 				CloudAccountID:       account.AccountID,
 				TenantID:             account.TenantID,
 				Category:             "Configuration",
-				RuleName:             popeyeRuleNameForLinter(section.Linter),
+				RuleName:             popeyeRuleNameForLinter(linter),
 				RecommendationAction: "Modify",
 				Recommendation:       string(recommendationJSON),
 				Severity:             popeyeSeverity(maxLevel),
