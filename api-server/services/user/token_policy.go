@@ -32,6 +32,8 @@ type TokenLimit struct {
 	Period string  `json:"period" mapstructure:"period"` // minute | hour | day | month; "" for concurrent
 	Value  float64 `json:"value" mapstructure:"value"`
 	Model  string  `json:"model" mapstructure:"model"` // "" = any model
+	// SoftPct is the warn level, a percent of Value (1-99); it never blocks. nil = none.
+	SoftPct *int `json:"soft_pct,omitempty" mapstructure:"soft_pct"`
 }
 
 var validMetrics = map[string]bool{"requests": true, "tokens": true, "cost": true, metricConcurrent: true}
@@ -82,6 +84,9 @@ func validateLimitsForKind(kind string, limits []TokenLimit) error {
 			if l.Value < 1 || l.Value != math.Trunc(l.Value) {
 				return common.ErrorBadRequest("a concurrent limit must be a whole number of at least 1")
 			}
+			if l.SoftPct != nil {
+				return common.ErrorBadRequest("a concurrent limit has no warn level")
+			}
 			continue
 		}
 		if !validPeriods[l.Period] {
@@ -89,6 +94,9 @@ func validateLimitsForKind(kind string, limits []TokenLimit) error {
 		}
 		if l.Value <= 0 {
 			return common.ErrorBadRequest("limit value must be greater than zero")
+		}
+		if l.SoftPct != nil && (*l.SoftPct < 1 || *l.SoftPct > 99) {
+			return common.ErrorBadRequest("a warn level (soft_pct) must be between 1 and 99")
 		}
 	}
 	return nil

@@ -667,10 +667,10 @@ func CreateUserAuthToken(context *security.RequestContext, tokenCreateRequest Us
 
 	for _, l := range tokenCreateRequest.Limits {
 		if _, err := tx.Exec(
-			`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, true)`,
+			`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled, soft_pct)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8)`,
 			context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId(),
-			key.KeyID, l.Model, l.Metric, l.Period, l.Value); err != nil {
+			key.KeyID, l.Model, l.Metric, l.Period, l.Value, l.SoftPct); err != nil {
 			return UserTokenCreateResponse{}, err
 		}
 	}
@@ -873,10 +873,10 @@ func UpdateUserAuthToken(context *security.RequestContext, request UserTokenUpda
 		}
 		for _, l := range request.Limits {
 			if _, err := tx.Exec(
-				`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, true)`,
+				`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled, soft_pct)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8)`,
 				context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId(),
-				key.KeyID, l.Model, l.Metric, l.Period, l.Value); err != nil {
+				key.KeyID, l.Model, l.Metric, l.Period, l.Value, l.SoftPct); err != nil {
 				return UserTokenUpdateResponse{}, err
 			}
 		}

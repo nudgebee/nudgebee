@@ -34,7 +34,10 @@ const isValidCustomDuration = (value) => {
 
 const METRICS = ['requests', 'tokens', 'cost', 'concurrent'];
 const PERIODS = ['minute', 'hour', 'day', 'month'];
-const EMPTY_LIMIT = { metric: 'cost', period: 'month', value: '', model: '' };
+const EMPTY_LIMIT = { metric: 'cost', period: 'month', value: '', model: '', soft_pct: '' };
+
+// A blank warn level is none; otherwise a whole 1-99.
+export const softPctInvalid = (v) => v !== '' && v != null && !(Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 99);
 
 // `model` is free text for now: which catalog supplies the names is an open question in
 // the spec, so no dropdown is wired up here.
@@ -48,7 +51,9 @@ const LimitEditor = ({ limits, onChange }) => {
             label='Metric'
             value={l.metric}
             // concurrent caps requests in flight and has no window.
-            onChange={(v) => update(i, { metric: v, period: v === 'concurrent' ? '' : l.period || 'month' })}
+            onChange={(v) =>
+              update(i, { metric: v, period: v === 'concurrent' ? '' : l.period || 'month', ...(v === 'concurrent' && { soft_pct: '' }) })
+            }
             options={METRICS}
           />
           {l.metric !== 'concurrent' && <Select label='Per' value={l.period} onChange={(v) => update(i, { period: v })} options={PERIODS} />}
@@ -59,6 +64,17 @@ const LimitEditor = ({ limits, onChange }) => {
             value={l.value}
             onChange={(v) => update(i, { value: v })}
           />
+          {l.metric !== 'concurrent' && (
+            <Input
+              size='sm'
+              label='Warn at (%)'
+              type='number'
+              placeholder='optional'
+              value={l.soft_pct ?? ''}
+              onChange={(v) => update(i, { soft_pct: v })}
+              error={softPctInvalid(l.soft_pct) ? '1 to 99' : undefined}
+            />
+          )}
           <Input size='sm' label='Model (blank = any)' value={l.model} onChange={(v) => update(i, { model: v })} />
           <Button tone='secondary' size='sm' onClick={() => onChange(limits.filter((_, n) => n !== i))}>
             Remove
@@ -201,7 +217,9 @@ const CreateTokenDialog = ({ open, defaultKind = 'platform', onClose, onCreate }
   const submit = async () => {
     // Held as a string while editing so the field can be cleared; coerced here because
     // the API takes a number.
-    const usable = limits.filter((l) => Number(l.value) > 0).map((l) => ({ ...l, value: Number(l.value) }));
+    const usable = limits
+      .filter((l) => Number(l.value) > 0)
+      .map(({ soft_pct, ...l }) => ({ ...l, value: Number(l.value), ...(soft_pct !== '' && soft_pct != null && { soft_pct: Number(soft_pct) }) }));
     // Omitted, not empty, for full access: the server stores no scopes as NULL.
     const restricted = carriesPlatformTraffic(kind) && access === 'restricted';
     setSubmitting(true);
@@ -223,7 +241,12 @@ const CreateTokenDialog = ({ open, defaultKind = 'platform', onClose, onCreate }
   // An unscoped all key could mint an unrestricted key and step around its gateway policy;
   // the server 400s on it (normalizeGatewayPolicy).
   const gatewayNeedsScopes = kind === 'all' && gatewayAccess === 'restricted' && access !== 'restricted';
-  const createDisabled = !name.trim() || (expiryDays === 'custom' && !customValid) || restrictedEmpty || gatewayNeedsScopes;
+  const createDisabled =
+    !name.trim() ||
+    (expiryDays === 'custom' && !customValid) ||
+    restrictedEmpty ||
+    gatewayNeedsScopes ||
+    (carriesGatewayTraffic(kind) && limits.some((l) => softPctInvalid(l.soft_pct)));
   const both = kind === 'all';
 
   return (

@@ -242,7 +242,7 @@ query ListUserTokens {
       last_provider
       last_model
       gateway_policy { providers models endpoints }
-      limits { metric period value model }
+      limits { metric period value model soft_pct }
       usage { requests tokens cost_usd }
     }
   }
@@ -289,7 +289,7 @@ query ListTenantTokens($user_id: String, $kind: String, $limit: Int, $offset: In
       last_provider
       last_model
       gateway_policy { providers models endpoints }
-      limits { metric period value model }
+      limits { metric period value model soft_pct }
       usage { requests tokens cost_usd }
     }
   }

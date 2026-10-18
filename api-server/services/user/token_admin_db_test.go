@@ -55,16 +55,17 @@ func TestTenantTokens_DB(t *testing.T) {
 		CREATE TABLE user_auths (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), credential text NOT NULL DEFAULT '',
 			provider_type text NOT NULL, "user" uuid NOT NULL, created_at timestamp NOT NULL DEFAULT now(),
 			updated_at timestamp NOT NULL DEFAULT now(), name varchar(255), expires_at timestamptz,
-			status text, provider text NOT NULL, accessed_at timestamp, tenant_id uuid)`)
+			status text, provider text NOT NULL, accessed_at timestamp, tenant_id uuid);
+		CREATE TABLE notification_source_type (value text PRIMARY KEY)`) // V1038 seeds a rule source
 	require.NoError(t, err)
 	for _, m := range []string{"V803_llm_gateway_tables", "V964_api_key_policy", "V967_add_user_auths_scopes",
-		"V985_create_llm_gateway_access_policies", "V1012_user_auths_token_suffix"} {
+		"V985_create_llm_gateway_access_policies", "V1012_user_auths_token_suffix", "V1039_add_llm_gateway_rate_limit_soft_pct"} {
 		files, err := filepath.Glob("../../migrations/migrations/app/*_" + m + ".up.sql")
 		require.NoError(t, err)
 		require.Len(t, files, 1, m)
 		ddl, err := os.ReadFile(files[0])
 		require.NoError(t, err)
-		_, err = db.Exec(strings.ReplaceAll(string(ddl), "public.", ""))
+		_, err = db.Exec(strings.NewReplacer(`"public".`, "", "public.", "").Replace(string(ddl)))
 		require.NoError(t, err, m)
 	}
 	// V793's backfill reads the pricing catalog, so only its column is added here.

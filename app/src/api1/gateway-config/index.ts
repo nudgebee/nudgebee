@@ -89,6 +89,12 @@ export interface GatewayRateLimit {
   period: GatewayPeriod;
   limit_value: number;
   enabled: boolean;
+  /** Warn level, a percent (1–99) of limit_value. Never blocks. Not on concurrent. */
+  soft_pct?: number | null;
+  /** Settled use in the current window (count, tokens or USD) and when the window resets.
+   * Read-only, from the list call; absent for concurrent limits. */
+  used?: number;
+  resets_at?: string;
   /** A concurrent limit each gateway pod enforces on its own (no Redis): the real cap is
    * the limit times the number of pods. Read-only, from the list call. */
   per_pod?: boolean;

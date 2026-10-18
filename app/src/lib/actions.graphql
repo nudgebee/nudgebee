@@ -5046,6 +5046,7 @@ input TokenLimitInput {
   period: String!
   value: Float!
   model: String
+  soft_pct: Int
 }
 
 input TraceServiceMapRequest {
@@ -8806,6 +8807,7 @@ type TokenLimit {
   period: String
   value: Float
   model: String
+  soft_pct: Int
 }
 
 type TokenUsage {

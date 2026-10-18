@@ -13,3 +13,7 @@ it('shows a cost limit in dollars and keeps the unit word for counts', () => {
 it('shows a concurrent limit without a window', () => {
   expect(limitsText([{ metric: 'concurrent', period: '', value: 5 }])).toBe('5 requests at once');
 });
+
+it('adds the warn level to a limit that has one', () => {
+  expect(limitsText([{ metric: 'cost', period: 'day', value: 50, soft_pct: 80 }])).toBe('$50 / day · warn 80%');
+});

@@ -339,3 +339,14 @@ func TestReplaceKeyGatewayPolicy_RefusesABlankScope(t *testing.T) {
 	}
 	assert.Zero(t, exec.statements, "no statement may run without a full scope")
 }
+
+func TestValidateLimitsForKind_SoftPct(t *testing.T) {
+	pct := func(v int) *int { return &v }
+	for _, ok := range []*int{nil, pct(1), pct(80), pct(99)} {
+		assert.Nil(t, validateLimitsForKind("gateway", []TokenLimit{{Metric: "cost", Period: "day", Value: 50, SoftPct: ok}}))
+	}
+	for _, bad := range []*int{pct(0), pct(100)} {
+		assert.NotNil(t, validateLimitsForKind("gateway", []TokenLimit{{Metric: "cost", Period: "day", Value: 50, SoftPct: bad}}))
+	}
+	assert.NotNil(t, validateLimitsForKind("gateway", []TokenLimit{{Metric: "concurrent", Value: 5, SoftPct: pct(80)}}))
+}

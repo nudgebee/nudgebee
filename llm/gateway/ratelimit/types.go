@@ -75,6 +75,12 @@ func (l Limit) appliesTo(s Scope) bool {
 		modelMatches(l.Model, s.RequestedProvider, s.RequestedModel)
 }
 
+// ModelMatches reports whether a quota naming limitModel covers a call served (or asked
+// for) as provider/model. Exported for the admin usage query's test, which mirrors it in SQL.
+func ModelMatches(limitModel, provider, model string) bool {
+	return modelMatches(limitModel, provider, model)
+}
+
 // modelMatches compares a limit's model with (provider, model). A literal match wins (ids like
 // "Qwen/…" contain "/"); otherwise a "provider/" prefix must name the serving provider.
 func modelMatches(limitModel, provider, model string) bool {

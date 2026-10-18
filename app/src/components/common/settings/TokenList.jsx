@@ -22,7 +22,9 @@ const limitAmount = (l) => (l.metric === 'cost' ? `$${l.value}` : `${l.value} ${
 const limitWindow = (l) => (l.metric === 'concurrent' ? '' : ` / ${l.period}`);
 
 export const limitsText = (limits) =>
-  (limits || []).map((l) => `${limitAmount(l)}${limitWindow(l)}${l.model ? ` (${l.model})` : ''}`).join(', ') || '—';
+  (limits || [])
+    .map((l) => `${limitAmount(l)}${limitWindow(l)}${l.model ? ` (${l.model})` : ''}${l.soft_pct ? ` · warn ${l.soft_pct}%` : ''}`)
+    .join(', ') || '—';
 
 export const usageText = (usage) => (usage ? `$${(usage.cost_usd ?? 0).toFixed(2)} · ${usage.requests ?? 0} reqs` : '—');
 
