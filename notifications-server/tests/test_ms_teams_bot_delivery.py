@@ -377,6 +377,49 @@ def test_connect_stores_no_graph_token():
     assert upsert.call_args.kwargs["name"] == "tenant-a"
 
 
+def test_saving_a_messaging_connection_clears_the_cached_installs_after_commit():
+    import uuid
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from notifications_server.models.models import Base, Integration, IntegrationConfigValue
+    from notifications_server.services import messaging_installations as mi
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[Integration.__table__, IntegrationConfigValue.__table__])
+    tenant = uuid.UUID("aaaaaaaa-1111-4111-8111-111111111111")
+    seen_in_db = []
+
+    def cleared(tenant_id):
+        # Another session must already see the row, or a reader could re-cache the old list.
+        with Session(engine) as other:
+            seen_in_db.append(other.query(Integration).filter(Integration.tenant_id == tenant).count())
+
+    with Session(engine) as session, mock.patch.object(mi, "Cache") as cache:
+        cache.return_value.delete_cached_installations.side_effect = cleared
+        mi.upsert_messaging_integration(session, tenant, "ms_teams", "tenant-a", {"client_id": "object-1"})
+    cache.return_value.delete_cached_installations.assert_called_once_with(tenant)
+    assert seen_in_db == [1]
+
+
+def test_a_cache_failure_doesnt_fail_saving_the_connection():
+    import uuid
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from notifications_server.models.models import Base, Integration, IntegrationConfigValue
+    from notifications_server.services import messaging_installations as mi
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[Integration.__table__, IntegrationConfigValue.__table__])
+    tenant = uuid.UUID("aaaaaaaa-1111-4111-8111-111111111111")
+    with Session(engine) as session, mock.patch.object(mi, "Cache", side_effect=RuntimeError("redis down")):
+        integ = mi.upsert_messaging_integration(session, tenant, "ms_teams", "tenant-a", {"client_id": "object-1"})
+        assert integ.name == "tenant-a"
+
+
 def test_load_teams_returns_only_enabled_teams_of_the_tenant():
     import uuid
 
