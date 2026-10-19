@@ -1,5 +1,12 @@
 import type { VmFleetMetric, VmMetricResult, VmMetricSeries, VmResource } from '@api1/vm';
 
+/**
+ * The VM's private IP from its cloud_resourses meta. ListVms returns the AWS-style
+ * `PrivateIpAddress` the agent reports; `private_ip` is the snake_case form
+ * vm_subject.go also matches, kept as a fallback.
+ */
+export const vmPrivateIp = (meta?: Record<string, any>): string | undefined => meta?.PrivateIpAddress || meta?.private_ip || undefined;
+
 const GIB = 1024 ** 3;
 const MIB = 1024 ** 2;
 
@@ -178,7 +185,7 @@ export function joinFleetMetrics(
 
   const out: Record<string, VmFleetMetric> = {};
   for (const vm of vms) {
-    const instance = only(byInstanceId, vm.resourse_id) || only(byIp, vm.meta?.private_ip) || only(byHostname, vm.name);
+    const instance = only(byInstanceId, vm.resourse_id) || only(byIp, vmPrivateIp(vm.meta)) || only(byHostname, vm.name);
     if (!instance) continue;
     const metric: VmFleetMetric = {
       cpuPct: pct(cpuUsed.get(instance), cpuCores.get(instance)),

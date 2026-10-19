@@ -2,6 +2,7 @@ import React from 'react';
 import { Modal } from '@ui/Modal';
 import type { VmResource } from '@api1/vm';
 import VmMetrics from './VmMetrics';
+import { vmPrivateIp } from './vmMetricsData';
 
 interface VmMetricsDialogProps {
   accountId: string;
@@ -17,7 +18,7 @@ const VmMetricsDialog = ({ accountId, vm, onClose }: VmMetricsDialogProps) => (
     open={Boolean(vm)}
     handleClose={onClose}
     title={vm ? `${vm.name} metrics` : 'Metrics'}
-    subtitle={vm?.meta?.private_ip || vm?.resourse_id}
+    subtitle={vmPrivateIp(vm?.meta) || vm?.resourse_id}
   >
     {vm ? <VmMetrics accountId={accountId} vm={vm} /> : null}
   </Modal>

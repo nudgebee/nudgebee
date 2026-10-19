@@ -1,5 +1,16 @@
 import { parseVmMetricResults, VmMetricResult } from '@api1/vm';
-import { cpuChart, diskIoChart, emptyReasons, formatBytes, hasAnyData, joinFleetMetrics, latest, serviceName, serviceRows } from '../vmMetricsData';
+import {
+  cpuChart,
+  diskIoChart,
+  emptyReasons,
+  formatBytes,
+  hasAnyData,
+  joinFleetMetrics,
+  latest,
+  serviceName,
+  serviceRows,
+  vmPrivateIp,
+} from '../vmMetricsData';
 
 const GIB = 1024 ** 3;
 
@@ -170,6 +181,12 @@ describe('joinFleetMetrics', () => {
     expect(out.byHost?.cpuPct).toBe(100);
   });
 
+  it('matches on the PascalCase PrivateIpAddress that ListVms returns', () => {
+    const results = fleet([{ instance: 'B', instance_id: 'i-2', local_ipv4: '172.31.0.12' }]);
+    const out = joinFleetMetrics(results, [vm('v', { meta: { PrivateIpAddress: '172.31.0.12', PublicIpAddress: '18.213.115.253' } })]);
+    expect(out.v?.cpuPct).toBe(100);
+  });
+
   it('clamps a busy VM to 100%', () => {
     const out = joinFleetMetrics(fleet([{ instance: 'B', instance_id: 'i-2' }]), [vm('v', { resourse_id: 'i-2' })]);
     expect(out.v.cpuPct).toBe(100);
@@ -206,5 +223,21 @@ describe('joinFleetMetrics', () => {
   it('tolerates empty results', () => {
     expect(joinFleetMetrics([], [vm('v')])).toEqual({});
     expect(joinFleetMetrics(fleet([]), [])).toEqual({});
+  });
+});
+
+describe('vmPrivateIp', () => {
+  it('reads the PascalCase PrivateIpAddress that ListVms returns', () => {
+    expect(vmPrivateIp({ PublicIpAddress: '18.213.115.253', PrivateIpAddress: '172.31.0.12' })).toBe('172.31.0.12');
+  });
+
+  it('falls back to snake_case private_ip', () => {
+    expect(vmPrivateIp({ private_ip: '10.0.0.5' })).toBe('10.0.0.5');
+  });
+
+  it('returns undefined when no IP is reported', () => {
+    expect(vmPrivateIp({})).toBeUndefined();
+    expect(vmPrivateIp(undefined)).toBeUndefined();
+    expect(vmPrivateIp({ PrivateIpAddress: '' })).toBeUndefined();
   });
 });

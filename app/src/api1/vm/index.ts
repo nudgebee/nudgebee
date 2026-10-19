@@ -16,7 +16,7 @@
  * queries here are inert until that lands.
  */
 import { gqlStringify, queryGraphQL } from '@lib/HttpService';
-import { joinFleetMetrics } from '@components/vm/vmMetricsData';
+import { joinFleetMetrics, vmPrivateIp } from '@components/vm/vmMetricsData';
 import apiHome from '@api1/home';
 import k8sApi from '@api1/kubernetes';
 import ticketsApi from '@api1/tickets';
@@ -602,7 +602,7 @@ const apiVm = {
       jsonFilter: {
         kind: 'vm',
         vm_instance_id: vm.resourse_id && !vm.resourse_id.startsWith('vm-') ? vm.resourse_id : undefined,
-        vm_ip: vm.meta?.private_ip || vm.meta?.PrivateIpAddress,
+        vm_ip: vmPrivateIp(vm.meta),
         vm_hostname: vm.name,
         metrics,
         instant: false,

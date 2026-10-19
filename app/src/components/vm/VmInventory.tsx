@@ -16,6 +16,7 @@ import ScanVmDialog from './ScanVmDialog';
 import ScanAccountDialog from './ScanAccountDialog';
 import VmMetricsDialog from './VmMetricsDialog';
 import { VmMetricsCell } from './VmMetricsGauges';
+import { vmPrivateIp } from './vmMetricsData';
 import VmPackages from './VmPackages';
 import VmAlerts from './VmAlerts';
 import VmVulnerabilities from './VmVulnerabilities';
@@ -235,11 +236,16 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
   const tableData = vms.map((vm) => {
     const packages = packageCounts[vm.id];
     const severities = vulnCounts[vm.id];
+    const privateIp = vmPrivateIp(vm.meta);
     return [
       { component: <CellText text={vm.name} subtext={vm.type} />, drilldownQuery: vm },
       {
         component: (
-          <CellText text={vm.meta?.private_ip || vm.meta?.host || vm.resourse_id} subtext={vm.meta?.private_ip ? vm.resourse_id : undefined} mono />
+          <CellText
+            text={privateIp || vm.meta?.host || vm.resourse_id}
+            subtext={privateIp && privateIp !== vm.resourse_id ? vm.resourse_id : undefined}
+            mono
+          />
         ),
       },
       { component: <CellText text={osByVm[vm.id]} /> },
