@@ -71,7 +71,7 @@ import ExecutionStatusBar, { type PendingApproval } from './components/Execution
 import { findExecutionTaskForNode, getSwitchAncestorChain, getSwitchChildNodeIds } from './utils/templateUtils';
 import { getDuration, getStatusColor, getStatusTone, isExecutionCompleted } from './utils/executionStatus';
 import { getLlmSessionId, getLlmAccountId, buildAskNudgebeeHref } from './utils/llmChat';
-import { resolveApprovalOptions } from './utils/approvalOptions';
+import { resolveApprovalOptions, describePendingApproval } from './utils/approvalOptions';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 
 // Function to get appropriate icon based on task type (matches ActionNode.tsx exactly)
@@ -1693,6 +1693,7 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                     .map<PendingApproval>((t) => ({
                       taskId: t.id as string,
                       options: resolveApprovalOptions((t as any).input, undefined),
+                      ...describePendingApproval((t as any).input, undefined),
                     }))
                 : []
             }

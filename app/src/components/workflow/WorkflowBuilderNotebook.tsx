@@ -76,7 +76,14 @@ import {
   getPreviousTasksForNode,
   getSwitchDryRunEligibility,
 } from './utils/templateUtils';
-import { buildWorkflowFromAIResponse, type AIGenerateWorkflowResponse, sanitizeTaskId, buildFilterExpression, resolveApprovalOptions } from './utils';
+import {
+  buildWorkflowFromAIResponse,
+  type AIGenerateWorkflowResponse,
+  sanitizeTaskId,
+  buildFilterExpression,
+  resolveApprovalOptions,
+  describePendingApproval,
+} from './utils';
 import { parseConditionLabel, hasConditionalStyling } from './utils/conditionParser';
 
 // Custom imports
@@ -2716,7 +2723,11 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             const taskConfig = nodesRef.current.find((n) => (n.data?.taskConfig?.id || n.id) === t.id)?.data?.taskConfig;
             const isApproval = t.type === 'core.approval' || taskConfig?.type === 'core.approval';
             if (isApproval && String(t.status ?? '').toUpperCase() === 'SCHEDULED') {
-              pending.push({ taskId: t.id, options: resolveApprovalOptions(t.input, taskConfig?.config) });
+              pending.push({
+                taskId: t.id,
+                options: resolveApprovalOptions(t.input, taskConfig?.config),
+                ...describePendingApproval(t.input, taskConfig?.config),
+              });
             }
           });
           setDryRunPendingApprovals(pending);
@@ -4314,6 +4325,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                                 .map((n) => ({
                                   taskId: n.data.taskConfig.id || n.id,
                                   options: resolveApprovalOptions(n.data.executionInput, n.data.taskConfig?.config),
+                                  ...describePendingApproval(n.data.executionInput, n.data.taskConfig?.config),
                                 }))
                         }
                         onApprove={handleCompleteApproval}
