@@ -56,6 +56,7 @@ jest.mock('@components/integrations/modal/IntegrationDynamicFormModal', () => ({
       data-testid='integration-modal'
       data-edit-name={editData?.name || ''}
       data-edit-config={editData ? JSON.stringify(editData.integration_config_values) : ''}
+      data-edit-null={String(editData === null)}
     >
       {integrationName}:{title}
     </div>
@@ -1374,6 +1375,33 @@ describe('mixed-state note — known issue #34', () => {
   });
 });
 
+describe('alert provider Add matches the Integrations page', () => {
+  // Same title and same "new record" shape as ListIntegrations' own Add, so
+  // the popup doesn't read as a different form — "Add Datadog" alone also
+  // reads the same as the Telemetry panel's Datadog source.
+  it('opens a webhook form titled and shaped like the Integrations page', async () => {
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    render(<SetupCenter />);
+
+    fireEvent.click(await screen.findByText('Alerts and deployments'));
+    fireEvent.click(await screen.findByTestId('setup-provider-datadog_webhook'));
+
+    const modal = await screen.findByTestId('integration-modal');
+    expect(modal).toHaveTextContent('datadog_webhook:Add Datadog Webhook Account');
+    expect(modal).toHaveAttribute('data-edit-null', 'false');
+  });
+
+  it('keeps the registry label for non-webhook types', async () => {
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    render(<SetupCenter />);
+
+    fireEvent.click(await screen.findByText('Telemetry'));
+    fireEvent.click(await screen.findByTestId('setup-provider-prometheus'));
+
+    expect(await screen.findByTestId('integration-modal')).toHaveTextContent(/^prometheus:Add Prometheus$/);
+  });
+});
+
 describe('alert provider chip reopens its own integration', () => {
   // A locked first-time user can only ever be on /setup — unlike the
   // Integrations page, which they can't navigate to — so this has to reopen
@@ -1395,7 +1423,7 @@ describe('alert provider chip reopens its own integration', () => {
     fireEvent.click(chipFor(alertsItem, 'PagerDuty'));
 
     const modal = await screen.findByTestId('integration-modal');
-    expect(modal).toHaveTextContent('pagerduty_webhook:Edit PagerDuty');
+    expect(modal).toHaveTextContent('pagerduty_webhook:Edit Pagerduty Webhook Account');
     expect(modal).toHaveAttribute('data-edit-config', expect.stringContaining('secret-token'));
   });
 

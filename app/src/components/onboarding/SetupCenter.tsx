@@ -57,6 +57,7 @@ import AddSelfHostedAccountModal from '@pages/accounts/AddSelfHostedAccountModal
 import KnowledgeBaseFormModal from '@components/llm/KnowledgeBaseFormModal';
 import useKnowledgeBaseForm from '@components/llm/useKnowledgeBaseForm';
 import { getIntegrationDescription } from '@lib/integrationDescriptions';
+import { snakeToTitleCase } from '@utils/common';
 import { Card } from '@ui/Card';
 import { Button } from '@ui/Button';
 import { Chip } from '@ui/Chip';
@@ -194,6 +195,18 @@ const toDynamicFormEditData = (row: ConnectedAiIntegration): Record<string, unkn
     integration_config_name: row.name,
   },
 });
+
+/**
+ * Webhook types take the Integrations page's own title ("Add Datadog Webhook
+ * Account", from `ListIntegrations.jsx`'s `getDisplayName`) — the registry
+ * label alone ("Datadog") reads the same as the Telemetry panel's Datadog
+ * source. Every other type keeps its registry label.
+ */
+const integrationModalTitle = ({ type, label, editData }: { type: string; label: string; editData: Record<string, unknown> | null }): string => {
+  // Same test as the modal's own `hasEditData` — `{}` is Add, not Edit.
+  const verb = editData && Object.keys(editData).length > 0 ? 'Edit' : 'Add';
+  return type.endsWith('_webhook') ? `${verb} ${snakeToTitleCase(type)} Account` : `${verb} ${label}`;
+};
 
 /**
  * Types that need a real, dedicated "Add" modal instead of the generic
@@ -2139,10 +2152,13 @@ const SetupCenter = () => {
             openModal
             handleClose={(saved?: boolean) => closeIntegrationModal(saved)}
             integrationName={integrationModal.type}
-            title={`${integrationModal.editData ? 'Edit' : 'Add'} ${integrationModal.label}`}
+            title={integrationModalTitle(integrationModal)}
             subtitle={getIntegrationDescription(integrationModal.type)}
             integrationData={[]}
-            editData={integrationModal.editData}
+            // `{}` for Add, as ListIntegrations passes it: the modal reads a
+            // bare `null` differently on save (it adds an empty webhook
+            // `token` value the Integrations page never sends).
+            editData={integrationModal.editData ?? {}}
           />
         ))}
 
