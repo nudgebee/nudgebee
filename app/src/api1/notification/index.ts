@@ -144,6 +144,7 @@ query ListNotificationChannelAccountMappings($where: NotificationChannelAccountM
       account_name
       cloud_provider
       created_by_display_name
+      is_system_managed
     }
   }
 }`;
@@ -453,11 +454,14 @@ const apiNotifications = {
     const response = await queryGraphQL(INSERT_NOTIFICATION_CHANNEL_ACCOUNT_MAPPING, 'InsertNotificationChannelAccountMapping', data);
     return { data: unwrapGraphQL(response, 'Failed to create channel mapping') };
   },
-  async listChannelAccountMappings(platform: string) {
+  async listChannelAccountMappings(platform: string, systemManaged?: boolean) {
     try {
-      const where: { platform?: { _eq: string } } = {};
+      const where: { platform?: { _eq: string }; is_system_managed?: { _eq: boolean } } = {};
       if (platform) {
         where.platform = { _eq: platform };
+      }
+      if (systemManaged !== undefined) {
+        where.is_system_managed = { _eq: systemManaged };
       }
       const response = await queryGraphQL(LIST_NOTIFICATION_CHANNEL_ACCOUNT_MAPPINGS, 'ListNotificationChannelAccountMappings', { where });
       const rows = (response?.data?.data?.notification_channel_account_mappings?.rows || []).map((row: any) => ({

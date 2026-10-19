@@ -11705,6 +11705,7 @@ input NotificationChannelAccountMappingWhereRequest {
   channel_id: QueryWhereStringRequest
   tenant_id: QueryWhereStringRequest
   created_at: QueryWhereDatetimeRequest
+  is_system_managed: QueryWhereBooleanRequest
 }
 
 type NotificationChannelAccountMappingResponse {
@@ -11724,6 +11725,7 @@ type NotificationChannelAccountMappingRowResponse {
   account_name: String
   cloud_provider: String
   created_by_display_name: String
+  is_system_managed: Boolean
 }
 
 type Query {

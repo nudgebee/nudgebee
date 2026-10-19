@@ -9540,7 +9540,8 @@ var table_metadata = map[string]TableDefinition{
 		Def: `(SELECT ncam.*,
 			ca.account_name as account_name,
 			ca.cloud_provider as cloud_provider,
-			u.display_name as created_by_display_name
+			u.display_name as created_by_display_name,
+			COALESCE((ncam.channel_metadata::jsonb ->> 'system_managed')::boolean, false) as is_system_managed
 			FROM notification_channel_account_mappings ncam
 			LEFT JOIN cloud_accounts ca ON ca.id = ncam.account_id
 			LEFT JOIN users u ON u.id = ncam.created_by
@@ -9562,6 +9563,10 @@ var table_metadata = map[string]TableDefinition{
 			"account_name":            {Type: ColumnDefinitionTypeString},
 			"cloud_provider":          {Type: ColumnDefinitionTypeString},
 			"created_by_display_name": {Type: ColumnDefinitionTypeString},
+			// system_managed flag from channel_metadata (see CommonService._persist_channel_account_mapping
+			// in notifications-server): true for channels an automation (e.g. event-investigation)
+			// created/bound, false for channels an admin configured by hand.
+			"is_system_managed": {Type: ColumnDefinitionTypeBoolean},
 		},
 	},
 	"application_group_v2": {

@@ -1,7 +1,8 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Box, Typography } from '@mui/material';
 import { Modal } from '@ui/Modal';
 import { Select } from '@ui/Select';
+import { Switch } from '@ui/Switch';
 import { Button as DsButton } from '@ui/Button';
 import Text from '@shared/format/Text';
 import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
@@ -44,6 +45,7 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
   const [selectedChannel, setSelectedChannel] = useState('');
   const [selectedTeam, setSelectedTeam] = useState('');
   const [selectedMappingId, setSelectedMappingId] = useState('');
+  const [showSystemManaged, setShowSystemManaged] = useState(false);
 
   const headers = useMemo(
     () =>
@@ -149,18 +151,32 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
     }
   }, [isConfigured, loadMessagingPlatform]);
 
-  const loadMappings = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const response = await apiNotifications.listChannelAccountMappings(provider);
-      setMappings(response?.data || []);
-    } catch (error) {
-      snackbar.error('Failed to load mappings');
-      console.error(error);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [provider]);
+  // One toggle state = one full (non-paginated) dataset, so switching back and forth
+  // between normal/system-managed shouldn't re-fetch what we already have.
+  const mappingsCacheRef = useRef<Record<string, any[]>>({});
+
+  const loadMappings = useCallback(
+    async (force = false) => {
+      const cacheKey = `${provider}:${showSystemManaged}`;
+      if (!force && mappingsCacheRef.current[cacheKey]) {
+        setMappings(mappingsCacheRef.current[cacheKey]);
+        return;
+      }
+      setIsLoading(true);
+      try {
+        const response = await apiNotifications.listChannelAccountMappings(provider, provider === 'slack' ? showSystemManaged : undefined);
+        const rows = response?.data || [];
+        mappingsCacheRef.current[cacheKey] = rows;
+        setMappings(rows);
+      } catch (error) {
+        snackbar.error('Failed to load mappings');
+        console.error(error);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [provider, showSystemManaged]
+  );
 
   useEffect(() => {
     if (isConfigured) {
@@ -231,7 +247,8 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
     try {
       await apiNotifications.deleteChannelAccountMapping(selectedMappingId);
       snackbar.success('Mapping deleted');
-      await loadMappings();
+      mappingsCacheRef.current = {};
+      await loadMappings(true);
     } catch {
       snackbar.error('Failed to delete');
     } finally {
@@ -289,7 +306,8 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
         snackbar.success('Mapping saved');
       }
 
-      await loadMappings();
+      mappingsCacheRef.current = {};
+      await loadMappings(true);
       setOpenModal(false);
       resetForm();
     } catch (error) {
@@ -432,11 +450,22 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
       <ListingLayout id={`${provider}-channel-account-mappings`}>
         <ListingLayout.Toolbar
           actions={
-            canManage('messagingplatforms', 'Write') ? (
-              <DsButton id='add-mapping-btn' tone='primary' size='md' onClick={() => setOpenModal(true)}>
-                Add Mapping
-              </DsButton>
-            ) : undefined
+            <Box display='flex' alignItems='center' gap='var(--ds-space-4)'>
+              {provider === 'slack' ? (
+                <Switch
+                  id={`${provider}-show-system-managed`}
+                  checked={showSystemManaged}
+                  onChange={(_, checked) => setShowSystemManaged(checked)}
+                  label='Show system-managed channels'
+                  size='sm'
+                />
+              ) : null}
+              {canManage('messagingplatforms', 'Write') ? (
+                <DsButton id='add-mapping-btn' tone='primary' size='md' onClick={() => setOpenModal(true)}>
+                  Add Mapping
+                </DsButton>
+              ) : null}
+            </Box>
           }
         >
           <Box display='flex' flexDirection='column'>
