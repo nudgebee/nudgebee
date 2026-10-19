@@ -1176,15 +1176,15 @@ const styles = {
   // Same type treatment as the ds menus' section header (OverlaySection), dimmed
   // for the dark panel, and inset to line up with the row icons below it.
   flyoutGroupLabel: {
-    mx: 'var(--ds-space-2)',
-    padding: 'var(--ds-space-2) var(--ds-space-3) var(--ds-space-1)',
-    fontSize: 'var(--ds-text-caption)',
-    fontWeight: 'var(--ds-font-weight-semibold)',
+    mx: ds.space[2],
+    padding: `${ds.space[2]} ${ds.space[3]} ${ds.space[1]}`,
+    fontSize: ds.text.caption,
+    fontWeight: ds.weight.semibold,
     color: FLYOUT_GROUP_TEXT,
     textTransform: 'uppercase',
     letterSpacing: '0.02em',
   },
-  flyoutDivider: { mx: 'var(--ds-space-4)', my: 'var(--ds-space-2)' },
+  flyoutDivider: { mx: ds.space[4], my: ds.space[2] },
   body: {
     transition: 'ease 0.2s',
     flexGrow: 1,
