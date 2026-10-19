@@ -387,24 +387,6 @@ func TestPrometheus_ValidateConfig_UnreachableEndpoint(t *testing.T) {
 
 // ----- config resolution ----------------------------------------------------
 
-// An account can hold both an agent-created row (no URL, no credentials) and a
-// user-configured one. Picking the wrong one produces an empty-URL failure that
-// looks like a missing integration.
-func TestPickPrometheusUserIntegration_SkipsAgentRow(t *testing.T) {
-	agentRow := core.IntegrationDto{Id: "agent-row", Source: "agent"}
-	userRow := core.IntegrationDto{Id: "user-row", Source: "user"}
-
-	got, found := pickPrometheusUserIntegration([]core.IntegrationDto{agentRow, userRow})
-	require.True(t, found)
-	assert.Equal(t, "user-row", got.Id)
-
-	_, found = pickPrometheusUserIntegration([]core.IntegrationDto{agentRow})
-	assert.False(t, found, "an agent-only account has no direct connection to use")
-
-	_, found = pickPrometheusUserIntegration(nil)
-	assert.False(t, found)
-}
-
 // ----- helpers --------------------------------------------------------------
 
 func errorsToString(errs []error) string {

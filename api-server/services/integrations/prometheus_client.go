@@ -3,7 +3,6 @@ package integrations
 import (
 	"fmt"
 	"net/http"
-	"strings"
 
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
@@ -89,8 +88,9 @@ func ExpandClusterPlaceholder(query, additionalLabels string) string {
 	return promclient.ExpandClusterPlaceholder(query, additionalLabels)
 }
 
-// GetPrometheusUserConfigs resolves the user-source Prometheus integration for an
-// account and decrypts its secrets.
+// GetPrometheusUserConfigs resolves the Prometheus integration a server-side client
+// connects to for an account (user-source, or a datasource its forager registered) and
+// decrypts its secrets.
 func GetPrometheusUserConfigs(sc *security.RequestContext, accountId string) (PrometheusUserConfig, error) {
 	integrationDtos, err := core.ListIntegrationConfigs(sc, accountId, IntegrationPrometheus)
 	if err != nil {
@@ -100,8 +100,13 @@ func GetPrometheusUserConfigs(sc *security.RequestContext, accountId string) (Pr
 	// An account can carry BOTH an agent-source prometheus row (created by the
 	// k8s agent, which holds no URL or credentials) and this user-source one,
 	// because they share the integration type name. Taking configs[0] would
-	// intermittently pick the agent row and fail with an empty URL.
-	dto, found := pickPrometheusUserIntegration(integrationDtos)
+	// intermittently pick the agent row and fail with an empty URL. A datasource
+	// the account's forager registered is also usable: it is reached through the
+	// forager, which holds its URL.
+	dto, found, err := core.PickServerReachableIntegration(sc, accountId, core.DefaultMetricsProvider, integrationDtos)
+	if err != nil {
+		return PrometheusUserConfig{}, fmt.Errorf("failed to pick Prometheus integration: %w", err)
+	}
 	if !found {
 		return PrometheusUserConfig{}, fmt.Errorf("no user-configured prometheus integration found for account: %s", accountId)
 	}
@@ -123,7 +128,9 @@ func GetPrometheusUserConfigs(sc *security.RequestContext, accountId string) (Pr
 	if err != nil {
 		return cfg, err
 	}
-	if cfg.URL == "" {
+	// Through a forager the URL is the forager's own: a datasource it registered
+	// from its config has none on the server side, and the transport never dials it.
+	if cfg.URL == "" && !cfg.ViaForager {
 		return cfg, fmt.Errorf("prometheus integration for account %s has no %s configured", accountId, PrometheusURLKey)
 	}
 	if values[PrometheusConnectionModeKey] == PrometheusConnectionModeVMAgent {
@@ -136,15 +143,4 @@ func GetPrometheusUserConfigs(sc *security.RequestContext, accountId string) (Pr
 		cfg.ProxyTransport = promforager.NewTransport(accountId, datasourceKey, values["agent_type"])
 	}
 	return cfg, nil
-}
-
-// pickPrometheusUserIntegration returns the first user-source row, ignoring
-// agent-source rows for the same integration type.
-func pickPrometheusUserIntegration(dtos []core.IntegrationDto) (core.IntegrationDto, bool) {
-	for _, dto := range dtos {
-		if strings.EqualFold(dto.Source, "user") {
-			return dto, true
-		}
-	}
-	return core.IntegrationDto{}, false
 }

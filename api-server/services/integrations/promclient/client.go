@@ -468,7 +468,9 @@ func (c PrometheusUserConfig) DoGet(ctx context.Context, apiPath string, params 
 // body-less special case every metric query uses. The body is hashed for SigV4
 // because the empty-payload hash only verifies for a body-less request.
 func (c PrometheusUserConfig) Do(ctx context.Context, method, apiPath string, params neturl.Values, contentType string, body []byte) (*http.Response, error) {
-	if c.URL == "" {
+	// A forager transport addresses the datasource the forager holds, so a row with
+	// no URL of its own (one the forager registered from its config) is usable.
+	if c.URL == "" && c.ProxyTransport == nil {
 		return nil, fmt.Errorf("prometheus: base URL not configured")
 	}
 	target := c.URL + apiPath

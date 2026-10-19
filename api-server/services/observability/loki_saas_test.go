@@ -36,6 +36,24 @@ func patchLokiIntegration(t *testing.T, dtos []core.IntegrationDto) {
 		func(_ *security.RequestContext, _ string, _ string) ([]core.IntegrationDto, error) {
 			return dtos, nil
 		})
+	patches.ApplyFunc(core.ListActiveIntegrationsForAccount,
+		func(_ *security.RequestContext, _ string) ([]core.IntegrationDto, error) {
+			return dtos, nil
+		})
+	// The registration check reads the database; answer it from the row's own config, which
+	// is what the real check looks at.
+	patches.ApplyFunc(core.IsForagerRegisteredDatasource, func(dto core.IntegrationDto) (bool, error) {
+		var mode, key string
+		for _, c := range dto.Configs {
+			switch c.Name {
+			case "connection_mode":
+				mode = c.Value
+			case "datasource_key":
+				key = c.Value
+			}
+		}
+		return dto.Source == "agent" && dto.Name != dto.Type && mode == "vm_agent" && key != "", nil
+	})
 	patches.ApplyFunc(relay.Execute, func(_ relay.RelayExecuteRequest) (map[string]any, error) {
 		t.Fatal("LokiSaasSource must not use the agent relay")
 		return nil, nil
@@ -408,6 +426,44 @@ func TestGetLokiConfig(t *testing.T) {
 			{Id: "int-agent", Type: "loki", Source: "agent", Configs: []core.IntegrationConfigValue{
 				{Name: "default_log_provider", Value: "true"},
 			}},
+		})
+		_, err := GetLokiConfig(newLokiSaasCtx(), "acc-1")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no loki integration configured")
+	})
+
+	// A VM account's forager registers its own Loki from its config; the row has no URL on
+	// the server side and is reached by key through the forager.
+	t.Run("uses a forager-registered row that has no url", func(t *testing.T) {
+		patchLokiIntegration(t, []core.IntegrationDto{
+			{Id: "int-agent", Name: "vm-loki", Type: "loki", Source: "agent", Configs: []core.IntegrationConfigValue{
+				{Name: "connection_mode", Value: "vm_agent"},
+				{Name: "datasource_key", Value: "local:vm-loki"},
+				{Name: "agent_type", Value: "proxy"},
+			}},
+		})
+		cfg, err := GetLokiConfig(newLokiSaasCtx(), "acc-1")
+		require.NoError(t, err)
+		assert.Empty(t, cfg.Url)
+		assert.NotNil(t, cfg.Transport, "requests must go through the forager")
+	})
+
+	// The integration form lists Loki labels before the user saves: the record is built from
+	// the form's values, has no id, and is not among the account's stored rows.
+	t.Run("uses a config-override row that has no id", func(t *testing.T) {
+		patchLokiIntegration(t, []core.IntegrationDto{
+			{Name: "loki", Type: "loki", Source: "user", Configs: []core.IntegrationConfigValue{
+				{Name: "loki_url", Value: "http://loki.example.com:3100"},
+			}},
+		})
+		cfg, err := GetLokiConfig(newLokiSaasCtx(), "acc-1")
+		require.NoError(t, err)
+		assert.Equal(t, "http://loki.example.com:3100", cfg.Url)
+	})
+
+	t.Run("a Kubernetes agent's differently named loki row is still ignored", func(t *testing.T) {
+		patchLokiIntegration(t, []core.IntegrationDto{
+			{Id: "int-agent", Name: "loki-k8s", Type: "loki", Source: "agent"},
 		})
 		_, err := GetLokiConfig(newLokiSaasCtx(), "acc-1")
 		require.Error(t, err)

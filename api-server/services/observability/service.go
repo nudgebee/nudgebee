@@ -696,6 +696,30 @@ func isAgentOwnProvider(dto *core.IntegrationDto) bool {
 	return dto.Source == "agent" && dto.Name == dto.Type
 }
 
+// foragerRegisteredDatasource is core.IsForagerRegisteredDatasource, indirected so a
+// test needs no database behind it.
+var foragerRegisteredDatasource = core.IsForagerRegisteredDatasource
+
+// servingSource is the source a provider row is served from. The relay files a datasource
+// the account's forager registered under source=agent, but it is not the Kubernetes agent's
+// provider: it is reached through the forager like a hand-added connection, so the same
+// source that serves a user row serves it. Only Prometheus and Loki have a source that can
+// connect that way, so no other provider type is retargeted. Every other row keeps its
+// stored source.
+func servingSource(dto *core.IntegrationDto) (string, error) {
+	if dto.Source != "agent" || (dto.Type != "prometheus" && dto.Type != "loki") {
+		return dto.Source, nil
+	}
+	registered, err := foragerRegisteredDatasource(*dto)
+	if err != nil {
+		return "", err
+	}
+	if registered {
+		return "user", nil
+	}
+	return dto.Source, nil
+}
+
 // builtInHealthFlags lists the flags in an agent's connection_status that say its
 // own provider for a signal is up. Chronosphere serves traces from the metrics
 // backend and older agents report its traces as off, so either flag counts there.
@@ -790,8 +814,12 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 		}
 
 		if integrationDto != nil {
+			source, sErr := servingSource(integrationDto)
+			if sErr != nil {
+				return "", "", nil, sErr
+			}
 			defaultProvider = integrationDto.Type
-			defaultSource = integrationDto.Source
+			defaultSource = source
 			matchedIntegration = integrationDto
 		} else {
 			// 1. Try resolving to the agent's own provider.
@@ -846,8 +874,12 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 
 				switch len(candidates) {
 				case 1:
+					source, sErr := servingSource(candidates[0])
+					if sErr != nil {
+						return "", "", nil, sErr
+					}
 					defaultProvider = candidates[0].Type
-					defaultSource = candidates[0].Source
+					defaultSource = source
 					matchedIntegration = candidates[0]
 				case 0:
 					// GCP cloud accounts have no agent; their traces come from Cloud Trace.
@@ -911,7 +943,11 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 		}
 
 		if integrationDto != nil {
-			defaultSource = integrationDto.Source
+			source, sErr := servingSource(integrationDto)
+			if sErr != nil {
+				return "", "", nil, sErr
+			}
+			defaultSource = source
 			matchedIntegration = integrationDto
 		} else {
 			defaultSource = "agent"

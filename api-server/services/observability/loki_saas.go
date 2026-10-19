@@ -69,28 +69,27 @@ func (c *LokiConfig) RulerBaseURL() string {
 	return c.Url
 }
 
-// GetLokiConfig reads and decrypts the user-sourced Loki integration configuration.
-// Agent-sourced rows are filtered out: they carry no URL, and LokiSource (relay) is the
-// source that serves them.
+// GetLokiConfig reads and decrypts the Loki integration configuration a server-side
+// client connects to: a user-sourced row, or a datasource the account's forager
+// registered. The Kubernetes agent's own rows are filtered out: they carry no URL, and
+// LokiSource (relay) is the source that serves them.
 func GetLokiConfig(ctx *security.RequestContext, accountId string) (*LokiConfig, error) {
 	dtos, err := core.ListIntegrationConfigs(ctx, accountId, "loki")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get loki integration: %w", err)
 	}
 
-	var userDtos []core.IntegrationDto
-	for _, dto := range dtos {
-		if dto.Source == "user" {
-			userDtos = append(userDtos, dto)
-		}
+	picked, found, err := core.PickServerReachableIntegration(ctx, accountId, core.DefaultLogProvider, dtos)
+	if err != nil {
+		return nil, fmt.Errorf("failed to pick loki integration: %w", err)
 	}
-	if len(userDtos) == 0 {
+	if !found {
 		return nil, fmt.Errorf("no loki integration configured for account %s", accountId)
 	}
 
 	cfg := &LokiConfig{Headers: map[string]string{}}
 	var connectionMode, datasourceKey, agentType string
-	for _, c := range userDtos[0].Configs {
+	for _, c := range picked.Configs {
 		value := c.Value
 		if c.IsEncrypted && value != "" {
 			decrypted, decErr := common.Decrypt(value)
@@ -142,12 +141,14 @@ func GetLokiConfig(ctx *security.RequestContext, accountId string) (*LokiConfig,
 		}
 	}
 
-	if cfg.Url == "" {
+	// Through a forager the URL is the forager's own: a datasource it registered from
+	// its config has none on the server side, and requests are sent relative to it.
+	if cfg.Url == "" && connectionMode != integrations.LokiConnectionModeVMAgent {
 		return nil, fmt.Errorf("loki integration is missing %s", LokiUrl)
 	}
 	if connectionMode == integrations.LokiConnectionModeVMAgent {
 		if datasourceKey == "" {
-			datasourceKey = userDtos[0].Id
+			datasourceKey = picked.Id
 		}
 		cfg.Transport = promforager.NewTransport(accountId, datasourceKey, agentType)
 	}

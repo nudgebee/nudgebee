@@ -52,6 +52,7 @@ func TestGetLogsMetricsTracesProvider_SingleActiveProviderDefault(t *testing.T) 
 		agentErr           error
 		builtIn            builtInState
 		noBuiltInCheck     bool
+		foragerRegistered  bool // the relay-registered row is reached through the forager (vm_agent + datasource_key)
 		cloudProvider      string
 		expectErr          bool
 		expectedErrSubstr  string
@@ -213,6 +214,26 @@ func TestGetLogsMetricsTracesProvider_SingleActiveProviderDefault(t *testing.T) 
 			expectedSource:     "agent",
 		},
 		{
+			// A VM account has no agent; its forager registers the datasource, and that
+			// row is served like a hand-added connection.
+			name:               "forager-registered datasource is the account default -> served as a user source",
+			defaultIntegration: &relayProm,
+			activeIntegrations: []core.IntegrationDto{relayProm},
+			agentErr:           errors.New("no agent connected"),
+			foragerRegistered:  true,
+			noBuiltInCheck:     true,
+			expectedProvider:   "prometheus",
+			expectedSource:     "user",
+		},
+		{
+			name:               "forager-registered datasource is the only provider -> served as a user source",
+			activeIntegrations: []core.IntegrationDto{relayProm},
+			agentErr:           errors.New("no agent connected"),
+			foragerRegistered:  true,
+			expectedProvider:   "prometheus",
+			expectedSource:     "user",
+		},
+		{
 			name:               "no integrations and no agent -> returns lookup error",
 			activeIntegrations: []core.IntegrationDto{},
 			agentErr:           errors.New("no agent connected"),
@@ -267,6 +288,9 @@ func TestGetLogsMetricsTracesProvider_SingleActiveProviderDefault(t *testing.T) 
 					builtInChecks++
 					return tt.builtIn.configured, tt.builtIn.usable, nil
 				})
+
+			// 4b. Whether an agent-source row under its own name is a datasource the forager registered
+			stubForagerRegistered(t, func(core.IntegrationDto) (bool, error) { return tt.foragerRegistered, nil })
 
 			// 5. Fallback source lookup
 			patches.ApplyFunc(core.GetIntegrationByTypePreferringDefault,
