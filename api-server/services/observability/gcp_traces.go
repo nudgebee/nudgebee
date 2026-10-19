@@ -2,7 +2,6 @@ package observability
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
 
@@ -16,8 +15,9 @@ import (
 // Cloud Trace client (cloud.QueryTracesList), and adapts them to the unified TraceSource
 // interface so GCP traces flow through the same actions (traces_list / traces_counts /
 // traces_get_heatmap / traces_label_values) as every other provider — including the LLM
-// traces agent. Cloud Trace has no rich query language, so filtering is limited to a time
-// window and an optional Cloud Run service; grouping is not supported yet.
+// traces agent. Cloud Trace has no rich query language, so filtering is a time window plus
+// span/HTTP/resource terms pushed to the source and an in-memory service scope (Cloud Trace
+// cannot filter by service — see buildCloudTracesRequest); grouping is not supported yet.
 type GcpTraceSource struct{}
 
 // buildCloudTracesRequest maps a unified TracesV3Request onto the cloud package's request:
@@ -25,16 +25,15 @@ type GcpTraceSource struct{}
 // filter string, a trace-id (routed to GetTrace), the sort, and a limit.
 func (s *GcpTraceSource) buildCloudTracesRequest(req TracesV3Request) cloud.QueryTracesRequest {
 	where := req.QueryRequest.Where
-	// Only a pushable workload becomes ServiceName; QueryTracesList turns a non-empty
-	// ServiceName into a `service.name:<v>` filter, which for a Cloud SQL instance id
-	// matches nothing. Those are scoped in memory by QueryTraces instead.
-	serviceName := ""
-	if w := requestedWorkload(where); pushableAsServiceName(w) {
-		serviceName = w
-	}
+	// Service is NOT pushed to Cloud Trace. Cloud Trace v1's ListTraces filter does not
+	// match the OTel service.name label on these spans — pushing `service.name:<v>` returns
+	// zero traces (verified live: a window holding 26 traces returned 0 under
+	// service.name:<svc>, #41419). Service is scoped in memory by scopeToWorkload instead.
+	// Leaving ServiceName empty also disables MapCloudTraceSpans's serviceName fallback, so
+	// a trace's unlabeled spans are not relabeled with the requested service (which would
+	// make them match the in-memory scope by mistake).
 	q := cloud.TracesQuery{
-		ServiceName: serviceName,
-		OrderBy:     gcpTraceOrderBy(req.QueryRequest.OrderBy),
+		OrderBy: gcpTraceOrderBy(req.QueryRequest.OrderBy),
 		// "Search By Trace Id" — route to Cloud Trace GetTrace (single trace) instead of
 		// a window scan; the collector honors Query.TraceId directly.
 		TraceId: extractTraceStringFilter(where, "trace_id"),
@@ -62,7 +61,7 @@ func (s *GcpTraceSource) QueryTraces(ctx *security.RequestContext, req TracesV3R
 	if err != nil {
 		return nil, err
 	}
-	return mapCloudSpansToOTelTraces(scopeUnpushedWorkload(spans, req.QueryRequest.Where)), nil
+	return mapCloudSpansToOTelTraces(scopeToWorkload(spans, req.QueryRequest.Where)), nil
 }
 
 // gcpTraceOrderBy maps the unified sort request to a Cloud Trace ListTraces
@@ -87,14 +86,12 @@ func gcpTraceOrderBy(orderBy []query.QueryOrderBy) string {
 	return col + " " + dir
 }
 
-// GetQuery returns the provider-native Cloud Trace filter that would be applied (empty when
-// no service is selected). Surfaced by the traces_get_query action for transparency.
+// GetQuery returns the provider-native Cloud Trace filter actually pushed to the source
+// (span / HTTP status / resource terms). Service is deliberately absent — it is scoped in
+// memory, not by Cloud Trace (see buildCloudTracesRequest). Surfaced by the traces_get_query
+// action for transparency.
 func (s *GcpTraceSource) GetQuery(_ *security.RequestContext, req TracesV3Request) (string, error) {
-	svc := extractTraceStringFilter(req.QueryRequest.Where, "workload_name", "service_name")
-	if svc == "" {
-		return "", nil
-	}
-	return fmt.Sprintf(`service.name:%s`, svc), nil
+	return gcpCloudTraceFilter(req.QueryRequest.Where), nil
 }
 
 func (s *GcpTraceSource) CountTraces(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
@@ -162,7 +159,7 @@ func (s *GcpTraceSource) QueryRootSpansByTrace(ctx *security.RequestContext, req
 	if err != nil {
 		return nil, err
 	}
-	return mapCloudSpansToOTelTraces(scopeUnpushedWorkload(spans, req.QueryRequest.Where)), nil
+	return mapCloudSpansToOTelTraces(scopeToWorkload(spans, req.QueryRequest.Where)), nil
 }
 
 // CountTracesByTrace returns the distinct-trace count for the "By Traces" view. Cloud Trace
@@ -198,16 +195,13 @@ func (s *GcpTraceSource) GetSupportedOperators() []string { return []string{"_eq
 
 // gcpCloudTraceFilter translates the UI filter predicates into a Cloud Trace v1
 // filter string (space-separated terms are AND-ed at the source). Uses OTel
-// semantic-convention labels (service.name / http.response.status_code / url.path),
-// which are what GCP OTel-instrumented services emit and which we verified narrow
-// correctly; Cloud Trace's filter grammar has no OR, so agent-only "/http/*" spans
-// aren't dual-matched. Trace-id and Ok/Error are handled elsewhere (GetTrace and
-// not expressible, respectively).
+// semantic-convention labels (http.response.status_code / url.path), which GCP
+// OTel-instrumented services emit. Service is intentionally excluded: Cloud Trace v1's
+// filter does not match service.name on these spans and returns zero (#41419), so service
+// is scoped in memory (scopeToWorkload). Trace-id and Ok/Error are handled elsewhere
+// (GetTrace and not expressible, respectively).
 func gcpCloudTraceFilter(where query.QueryWhereClause) string {
 	var terms []string
-	if v := extractTraceStringFilter(where, "service_name", "workload_name", "workload_name_1"); pushableAsServiceName(v) {
-		terms = append(terms, "service.name:"+v)
-	}
 	if v := extractTraceStringFilter(where, "span_name"); v != "" {
 		terms = append(terms, "span:"+v)
 	}
@@ -285,6 +279,13 @@ func traceFilterScalar(ops map[query.BinaryWhereClauseType]any) string {
 			if len(arr) > 0 {
 				return arr[0]
 			}
+		case string:
+			// The trace UI sends the Service filter as workload_name:{_in:"nudgebee"} —
+			// a scalar, not a list (#41419). Without this case the strict list-only switch
+			// read it as "no filter", so GCP traces came back unscoped to the whole project.
+			if arr != "" {
+				return arr
+			}
 		}
 	}
 	return ""
@@ -295,25 +296,28 @@ func requestedWorkload(where query.QueryWhereClause) string {
 	return extractTraceStringFilter(where, "workload_name", "service_name", "workload_name_1")
 }
 
-// pushableAsServiceName reports whether a workload can be expressed as a Cloud Trace
-// `service.name:<v>` filter term. A Cloud SQL workload is the instance id `project:instance`,
-// whose colon breaks the LABEL:VALUE grammar — and it would never match anyway, because
-// Cloud SQL Query Insights spans carry the *database* as service.name and the instance only
-// in their `instance` label. Those are scoped in memory instead of pushed down.
-func pushableAsServiceName(workload string) bool {
-	return workload != "" && !strings.Contains(workload, ":")
-}
-
-// scopeUnpushedWorkload narrows project-wide Cloud Trace spans to the requested workload in
-// the one case the filter could not be pushed to Cloud Trace. Paths that do push down are
-// left untouched — the source already scoped those, so their results are unchanged.
+// scopeToWorkload narrows project-wide Cloud Trace spans to the requested workload. Service
+// cannot be pushed to Cloud Trace (its filter matches nothing — see buildCloudTracesRequest),
+// so EVERY service/workload filter is applied here in memory, not just the Cloud SQL instance
+// ids whose colon broke the old push-down grammar.
+//
+// Whole-trace keep: a trace is kept whole if ANY of its spans match the workload. A Cloud SQL
+// query's plan-node children carry no identity of their own, so matching span-by-span would
+// strip them off their root. For multi-service (Cloud Run/GAE) traces this means Service=X
+// also returns the sibling-service spans of any trace that touches X — intended, and
+// consistent with the AC's "or a child span of the trace". Every GCP trace seen on the
+// affected accounts is single-service, so in practice this returns only the selected service.
+//
+// Narrowing happens AFTER the source-side page limit, so for a rare service on a small page
+// some matching traces beyond the fetched page can be missed (lossy pagination) — inherent to
+// Cloud Trace having no real service filter or count API; matches the prior Cloud SQL path.
 //
 // Strict by design: an unmatched workload yields no spans rather than the whole project
 // window. Returning everything is what attached one Cloud SQL instance's slow queries to
 // another instance's incident, while the evidence still reported itself as scoped.
-func scopeUnpushedWorkload(spans []map[string]any, where query.QueryWhereClause) []map[string]any {
+func scopeToWorkload(spans []map[string]any, where query.QueryWhereClause) []map[string]any {
 	workload := requestedWorkload(where)
-	if workload == "" || pushableAsServiceName(workload) {
+	if workload == "" {
 		return spans
 	}
 	// Keep matched traces whole: a Cloud SQL query's plan-node children (Seq Scan,
