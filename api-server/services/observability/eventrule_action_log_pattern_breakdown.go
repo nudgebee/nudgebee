@@ -26,10 +26,15 @@ import (
 const (
 	logSpikeBucket   = 5 * time.Minute
 	logSpikeBaseline = 6 * time.Hour
-	// The rule holds for 10 minutes on a 5-minute window before it fires, and
-	// delivery adds more, so the rise starts well before the alert does.
-	logSpikeLead = 30 * time.Minute
-	logSpikeTail = time.Hour
+	// The rule holds for 10 minutes before it fires, and the alert's start is
+	// the moment it fired. Its condition began to hold that long before, give
+	// or take one evaluation interval (logSpikeEvalSlack). Before that it did
+	// not hold, so nothing earlier belongs to this firing: on an alert that
+	// re-fires soon after its last firing, an earlier start takes the
+	// previous burst's peak as this one's.
+	logSpikeHold      = 10 * time.Minute
+	logSpikeEvalSlack = time.Minute
+	logSpikeTail      = time.Hour
 
 	logSpikeMaxPatterns  = 10
 	logSpikeExampleRunes = 300
@@ -44,6 +49,11 @@ var logSpikeLevels = []string{"error", "critical"}
 // which is why an access-log line with "error" in a URL is not counted and a
 // line that opens with a word like "Critical..." is.
 const logSpikeCountingNote = `Counts only log lines the log agent tagged error or critical. The tag comes from the line's own level field, or from a level word at the start of the line. A warning, or a line that only mentions "error" further in, is not counted.`
+
+// logSpikeRatioNote says which ratio is which. The alert's description carries
+// the alert's value when it fired, also a "times the average" figure; read
+// next to the peak it passes for the peak's ratio, which it is not.
+const logSpikeRatioNote = `total.peak_ratio is total.peak divided by total.normal. The ratio in the alert's description is a different figure: the alert's value when it fired, the count in the 5 min before it fired against the 6 h average up to then.`
 
 // LogPatternBreakdown is the card data under "pattern_breakdown". llm-server
 // decodes it into its own mirror of this struct (events.LogPatternBreakdown)
@@ -67,6 +77,8 @@ type LogPatternBreakdown struct {
 	CountedLevels []string        `json:"counted_levels"`
 	CountingNote  string          `json:"counting_note"`
 	Total         LogPatternTotal `json:"total"`
+	// RatioNote explains Total.PeakRatio; set only with it.
+	RatioNote string `json:"ratio_note,omitempty"`
 	// PatternsSeen is how many patterns logged in the window; Patterns holds
 	// the logSpikeMaxPatterns that rose most.
 	PatternsSeen int              `json:"patterns_seen"`
@@ -80,6 +92,8 @@ type LogPatternTotal struct {
 	Peak   float64 `json:"peak"`
 	PeakAt string  `json:"peak_at"`
 	Normal float64 `json:"normal"`
+	// PeakRatio is Peak / Normal, 0 when Normal is 0 or not known.
+	PeakRatio float64 `json:"peak_ratio,omitempty"`
 }
 
 // LogPatternRise is one log pattern: its busiest bucket-long stretch in the
@@ -116,14 +130,15 @@ func logSpikeQueries(appID string) (current string, normal string, measured stri
 	return current, normal, measured
 }
 
-// logSpikeWindow is the span the breakdown looks at: from before the rise
-// began to an hour after the alert, never past now or the alert's end.
+// logSpikeWindow is the span the breakdown looks at: from when the alert's
+// condition began to hold to an hour after the alert, never past now or the
+// alert's end.
 func logSpikeWindow(event playbooks.PlaybookEvent, now time.Time) (time.Time, time.Time) {
 	alertStart := now
 	if t := event.AlertStart(); t != nil && !t.IsZero() {
 		alertStart = *t
 	}
-	start := alertStart.Add(-logSpikeLead)
+	start := alertStart.Add(-logSpikeHold - logSpikeEvalSlack)
 	end := alertStart.Add(logSpikeTail)
 	if event.EndedAt != nil && !event.EndedAt.IsZero() && event.EndedAt.Before(end) {
 		end = *event.EndedAt
@@ -162,7 +177,9 @@ type logPatternSeries struct {
 //
 // current may be on any time grid. Each point is the count over the bucket
 // ending at that point, so on a grid finer than the bucket the points overlap
-// and the peak is the busiest bucket-long stretch, wherever it falls.
+// and the peak is the busiest bucket-long stretch, wherever it falls. A point
+// before start is dropped: a backend that aligns the range to its step can
+// return one, and it belongs to the time before this firing.
 func buildLogPatternBreakdown(current []Result, normal []Result, measured []Result, start time.Time, end time.Time) *LogPatternBreakdown {
 	normals, baselineAt, ok := logPatternNormals(normal, start)
 	if !ok {
@@ -182,7 +199,7 @@ func buildLogPatternBreakdown(current []Result, normal []Result, measured []Resu
 				break
 			}
 			value := series.Values[i]
-			if math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 {
+			if ts < start.Unix() || math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 {
 				continue
 			}
 			p := patterns[key]
@@ -240,6 +257,14 @@ func buildLogPatternBreakdown(current []Result, normal []Result, measured []Resu
 		totalNormal += value
 	}
 	totalPeak, totalPeakAt := logPatternPeak(total)
+	totals := LogPatternTotal{Peak: roundCount(totalPeak), PeakAt: formatLogSpikeTime(totalPeakAt), Normal: roundCount(totalNormal)}
+	ratioNote := ""
+	if baselineKnown && totals.Normal > 0 {
+		totals.PeakRatio = math.Round(totals.Peak/totals.Normal*10) / 10
+	}
+	if totals.PeakRatio > 0 {
+		ratioNote = logSpikeRatioNote
+	}
 
 	return &LogPatternBreakdown{
 		WindowStart:         start.UTC().Format(time.RFC3339),
@@ -250,7 +275,8 @@ func buildLogPatternBreakdown(current []Result, normal []Result, measured []Resu
 		BaselineKnown:       baselineKnown,
 		CountedLevels:       logSpikeLevels,
 		CountingNote:        logSpikeCountingNote,
-		Total:               LogPatternTotal{Peak: roundCount(totalPeak), PeakAt: formatLogSpikeTime(totalPeakAt), Normal: roundCount(totalNormal)},
+		Total:               totals,
+		RatioNote:           ratioNote,
 		PatternsSeen:        seen,
 		Patterns:            rises,
 	}

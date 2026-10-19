@@ -25,7 +25,8 @@ const logPatternBreakdownCardJSON = `{
   "baseline_known": true,
   "counted_levels": ["error", "critical"],
   "counting_note": "Counts only log lines the log agent tagged error or critical. The tag comes from the line's own level field, or from a level word at the start of the line. A warning, or a line that only mentions \"error\" further in, is not counted.",
-  "total": {"peak": 705, "peak_at": "2026-01-15T10:10:00Z", "normal": 9},
+  "total": {"peak": 705, "peak_at": "2026-01-15T10:10:00Z", "normal": 9, "peak_ratio": 78.3},
+  "ratio_note": "total.peak_ratio is total.peak divided by total.normal. The ratio in the alert's description is a different figure: the alert's value when it fired, the count in the 5 min before it fired against the 6 h average up to then.",
   "patterns_seen": 3,
   "patterns": [
     {"pattern_hash": "aaa", "level": "error", "peak": 700, "peak_at": "2026-01-15T10:10:00Z", "normal": 2.8, "example": "ERROR relay query failed", "container_id": "/k8s/shop/api-1/api"},
@@ -49,7 +50,7 @@ func TestRenderLogPatternBreakdown(t *testing.T) {
 	got := renderLogPatternBreakdown(breakdownEvidence(t, logPatternBreakdownCardJSON))
 	want := `Counts only log lines the log agent tagged error or critical. The tag comes from the line's own level field, or from a level word at the start of the line. A warning, or a line that only mentions "error" further in, is not counted.
 Window 2026-01-15 10:00 → 10:20 UTC. Counts are per 5 minutes; a time below is the end of those 5 minutes.
-Normal is the average per 5 min over the 6 h before 09:59. It was measured before the alert fired, so a ratio here can be higher than the one in the alert's description, whose 6 h already held the start of the spike.
+Normal is the average per 5 min over the 6 h before 09:59. The ratio in the alert's description is a different figure: the count in the 5 min before the alert fired against the 6 h average up to then. It is not the peak's ratio; that is the × figure below.
 Total: peak 705 per 5 min at 10:10 vs 9 normal (78×).
 Patterns that rose most (2 shown, 3 seen in the window):
 - error: peak 700 at 10:10 vs 2.8 normal (250×) — e.g. ` + "`ERROR relay query failed`" + `
