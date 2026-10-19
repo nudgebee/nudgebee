@@ -23,6 +23,7 @@ import (
 	"nudgebee/llm/workspace"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -2489,23 +2490,15 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 			core.TruncateHead(evidenceContext, maxInvestigationEvidenceBytes)
 	}
 
-	// Explain how to interpret related-alert candidates. The preliminary summary
-	// and collected evidence may already contain the assembly, so fetching it
-	// again is a gap-filling fallback rather than mandatory first-turn work.
-	eventAnalsysisPrompt = eventAnalsysisPrompt +
-		"\n\n## Related-Alert Candidates\nReuse related-alert candidates already present in the preliminary summary or collected evidence. " +
-		"Only when that information is absent or incomplete, call get_event_incident_assembly with event_id=" + request.EventId +
-		". It returns the alerts around this event grouped by timing and topology: " +
-		"same_incident (this alert's other firings and cross-source copies), cause (config changes and " +
-		"upstream-dependency alerts shortly before it), impact (dependent services alerting after it) and " +
-		"chronic (background noise for that subject). These are candidates only — they may or may not be " +
-		"related. Verify each against evidence before using it in your root-cause reasoning, and distinguish " +
-		"active causes from chronic background noise.\n" +
-		"Do not reacquire event details or triage explanation while filling this gap. REQUIRED: end your analysis with a '### Related Alerts Check' section — one line per cause/impact " +
-		"candidate the tool returned, each marked confirmed (with the evidence), ruled out (with the reason), " +
-		"or not assessed. Render each candidate's alert name as a markdown link to its event page using that " +
-		"candidate's event_id from the tool output: [<alert title>](/investigate?id=<event_id>&accountId=" +
-		request.AccountId + "). If the tool returned no candidates, say so in one line."
+	// #41579: the assembly is fetched here and put in the prompt. The
+	// orchestrator does not declare get_event_incident_assembly, so the
+	// gap-filling wording below sent it to the events sub-agent for the same
+	// data in ~65% of runs; that wording is now only the fetch-failed fallback.
+	if assembly, ok := incidentAssemblyForPrompt(ctx, request, parsedLabels); ok {
+		eventAnalsysisPrompt = eventAnalsysisPrompt + buildInlinedRelatedAlertsBlock(assembly, request.AccountId)
+	} else {
+		eventAnalsysisPrompt = eventAnalsysisPrompt + buildRelatedAlertsUnavailableBlock()
+	}
 
 	eventAnalsysisPrompt = eventAnalsysisPrompt + buildConfirmingCheckBlock(capNamespace, capWorkload)
 
@@ -2653,7 +2646,33 @@ func appendRunbookReference(detailed string, ref *tools.RunbookRef) string {
 // paid for it too. The tools are still called; only their output framing is
 // constrained. Degrades to a plain summary when no triage data is recorded yet.
 func buildEventSummaryQuery(eventId string) string {
-	return "Get the details of Event with id - " + eventId + ". " +
+	return buildEventBriefQuery(eventId, false)
+}
+
+// buildEventBriefQuery is the step-1 instruction. With prefetched=false it asks
+// the events agent to call the tools; with prefetched=true (#41579) the reads
+// have already run (buildDirectEventBriefQuery appends their outputs), so the
+// same five sections are asked "from" each output instead. Only those source
+// phrases differ; the format is one text so the two paths cannot drift.
+func buildEventBriefQuery(eventId string, prefetched bool) string {
+	opening := "Get the details of Event with id - " + eventId + ". "
+	triageSource := "Call get_event_triage_explanation and state"
+	assemblySource := "Call get_event_incident_assembly and report"
+	if prefetched {
+		opening = "The details of Event with id - " + eventId + " (get_event_by_id), its get_event_triage_explanation, its " +
+			"get_event_incident_assembly and a summary of its metric evidence (get_event_evidence) are provided below; " +
+			"look for the measured value anywhere in the event details first (alert data, log and kernel lines, pod status), " +
+			"then in the metric summary. These outputs are a subset of the event's evidence: when a value is not in them, " +
+			"leave it out — never write that it is unavailable, missing or unknown, because the later investigation reads " +
+			"this brief and would take that as proof the data does not exist. " +
+			"An output that reads NOT LOADED was not fetched: for every section drawn from it (get_event_by_id for What is " +
+			"broken and Priority, get_event_triage_explanation for Since when, get_event_incident_assembly for What changed " +
+			"just before and What else is firing), write the single bullet \"- Not checked in this brief.\" instead of " +
+			"saying that nothing qualifies. "
+		triageSource = "From the get_event_triage_explanation output, state"
+		assemblySource = "From the get_event_incident_assembly output, report"
+	}
+	return opening +
 		"Write it up as an on-call brief for an engineer who was just paged and has never seen this alert before.\n\n" +
 		"Reply with EXACTLY these five sections, in this order, using these headings verbatim as markdown H3 headings " +
 		"(`### What is broken`) and `- ` bullets under each. Do not number the sections, do not bold the headings, " +
@@ -2663,10 +2682,10 @@ func buildEventSummaryQuery(eventId string) string {
 		"specific failing identifier the alert carries when there is one — endpoint/path and status code, container " +
 		"name, volume, query, error message — and the actual measured value, not just the threshold.\n" +
 		"### Since when\n" +
-		"Call get_event_triage_explanation and state the firing history in ONE bullet: first seen, occurrence number in " +
+		triageSource + " the firing history in ONE bullet: first seen, occurrence number in " +
 		"the current chain, how often it has fired recently.\n" +
 		"### What changed just before\n" +
-		"Call get_event_incident_assembly and report its cause tiers (cause.config_changes and cause.upstream): changes " +
+		assemblySource + " its cause tiers (cause.config_changes and cause.upstream): changes " +
 		"and deploys on the affected resource itself or on something it depends on, each with how long before the alert " +
 		"it happened. If nothing qualifies, say so in one bullet.\n" +
 		"### What else is firing\n" +
@@ -2682,6 +2701,140 @@ func buildEventSummaryQuery(eventId string) string {
 		"Do NOT include a section on how Nudgebee triaged the event. Do NOT reproduce the score-factor arithmetic, " +
 		"triage rule ids, nb_status internals or deduplication-chain mechanics — they are internal bookkeeping, not " +
 		"incident content. Keep the whole brief under 300 words, in short bullets."
+}
+
+// maxInlinedAssemblyBytes caps the incident assembly put in the investigation
+// prompt. Dev 10-17..19: assembly output p50 4.8 KB, p99 10.3 KB (chronic items
+// included, which are folded to a count here); investigation prompts peak at
+// 43 KB, so this keeps them under maxInvestigationPromptBytes and out of its
+// middle cut.
+const maxInlinedAssemblyBytes = 8000
+
+// incidentAssemblyForPrompt fetches the event's incident assembly for the
+// investigation prompt. ok=false (the fetch failed) keeps the
+// fetch-it-yourself wording.
+func incidentAssemblyForPrompt(ctx *security.RequestContext, request EventAnalysisRequest, parsedLabels map[string]any) (string, bool) {
+	data, err := callEventReadTool(ctx, request, parsedLabels, tools.IncidentAssemblyTool{}, map[string]any{"event_id": request.EventId})
+	if err != nil {
+		ctx.GetLogger().Warn("analyzer: incident assembly unavailable for the investigation prompt, leaving it to the agent", "error", err, "event_id", request.EventId)
+		return "", false
+	}
+	return data, true
+}
+
+// buildRelatedAlertsUnavailableBlock replaces the Related-Alert Candidates
+// section when the assembly fetch failed. It names no tool: the orchestrator
+// does not declare get_event_incident_assembly, and the old "call it if
+// missing" wording sent it to the events sub-agent instead (#41579).
+func buildRelatedAlertsUnavailableBlock() string {
+	return "\n\n## Related-Alert Candidates\nThe related-alert data for this event could not be loaded for this run. Do not " +
+		"try to fetch it, and do not ask the events tool for this event's related alerts, details or triage explanation. " +
+		"REQUIRED: end your analysis with a '### Related Alerts Check' section that says in one line that related alerts " +
+		"could not be checked for this run."
+}
+
+// inlinedAssemblyKeyOrder writes the strongest candidates first, so the
+// maxInlinedAssemblyBytes cut drops the weakest (co_firing, then bookkeeping).
+// json.Marshal of a map would sort the keys and cut same_incident first.
+var inlinedAssemblyKeyOrder = []string{"event_id", "root_identity", "topology_coverage", "same_incident", "cause", "impact", "same_node", "chronic_count", "co_firing"}
+
+func marshalAssemblyFields(fields map[string]json.RawMessage) string {
+	keys := append([]string(nil), inlinedAssemblyKeyOrder...)
+	rest := make([]string, 0, len(fields))
+	for k := range fields {
+		if !slices.Contains(inlinedAssemblyKeyOrder, k) {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	keys = append(keys, rest...)
+
+	var b strings.Builder
+	b.WriteString("{")
+	first := true
+	for _, k := range keys {
+		raw, ok := fields[k]
+		if !ok {
+			continue
+		}
+		if !first {
+			b.WriteString(",")
+		}
+		first = false
+		name, _ := json.Marshal(k)
+		b.Write(name)
+		b.WriteString(":")
+		b.Write(raw)
+	}
+	b.WriteString("}")
+	return b.String()
+}
+
+// buildInlinedRelatedAlertsBlock is the Related-Alert Candidates section when
+// the assembly is already in hand. The chronic tier becomes a count: it is
+// background noise the investigation must not cite as a cause, and it is the
+// largest tier.
+func buildInlinedRelatedAlertsBlock(assembly, accountId string) string {
+	note := ""
+	body := assembly
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(assembly), &fields); err == nil && fields != nil {
+		if raw, ok := fields["note"]; ok {
+			_ = json.Unmarshal(raw, &note)
+			delete(fields, "note")
+		}
+		if raw, ok := fields["chronic"]; ok {
+			var chronic []json.RawMessage
+			if json.Unmarshal(raw, &chronic) == nil {
+				fields["chronic_count"], _ = json.Marshal(len(chronic))
+				delete(fields, "chronic")
+			}
+		}
+		body = marshalAssemblyFields(fields)
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## Related-Alert Candidates\n")
+	b.WriteString("This event's incident assembly (get_event_incident_assembly) is already included below. Do not call " +
+		"get_event_incident_assembly, and do not ask the events tool for this event's related alerts, details or triage " +
+		"explanation — that data is already here. It lists the alerts around this event grouped by timing and topology: " +
+		"same_incident (this alert's other firings and cross-source copies), cause (config changes and upstream-dependency " +
+		"alerts shortly before it), impact (dependent services alerting after it), co_firing (other alerts in the account " +
+		"close in time with no known topology link) and chronic_count (how many background-noise alerts fire for that " +
+		"subject at their normal rate — never a cause). These are candidates only — they may or may not be related. Verify " +
+		"each against evidence before using it in your root-cause reasoning, and distinguish active causes from chronic " +
+		"background noise.\n")
+	b.WriteString("REQUIRED: end your analysis with a '### Related Alerts Check' section — one line per cause/impact candidate " +
+		"listed below, each marked confirmed (with the evidence), ruled out (with the reason), or not assessed. Render each " +
+		"candidate's alert name as a markdown link to its event page using that candidate's event_id from the data below: " +
+		"[<alert title>](/investigate?id=<event_id>&accountId=" + accountId + "). If there are no cause or impact candidates, " +
+		"say so in one line.\n")
+	if note != "" {
+		b.WriteString("\n" + note + "\n")
+	}
+	b.WriteString("\n```json\n" + core.TruncateHead(body, maxInlinedAssemblyBytes) + "\n```")
+	return b.String()
+}
+
+// eventDirectBriefFlag switches step 1 from the events ReAct agent to a
+// direct brief: the reads run in code and the LLM agent writes the brief in one
+// call (#41579). On by default; a feature_flag row with status 'disabled' turns
+// it off for that account or tenant.
+const eventDirectBriefFlag = "EVENT_INVESTIGATION_DIRECT_BRIEF"
+
+// eventDirectBriefEnabled is a variable so the e2e tests can pick either path
+// without writing a feature_flag row.
+var eventDirectBriefEnabled = readEventDirectBriefFlag
+
+func readEventDirectBriefFlag(ctx *security.RequestContext, accountId string) bool {
+	if ctx == nil || ctx.GetSecurityContext() == nil {
+		return false
+	}
+	// Fails open: a DB error reads as enabled, the default.
+	enabled, err := common.IsFeatureEnabledByDefaultForAccount(eventDirectBriefFlag, ctx.GetSecurityContext().GetTenantId(), accountId)
+	if err != nil {
+		ctx.GetLogger().Warn("analyzer: unable to read direct brief flag, using the default", "error", err, "account_id", accountId, "enabled", enabled)
+	}
+	return enabled
 }
 
 // A report persistence error leaves the claimed report IN_PROGRESS for the
@@ -2834,18 +2987,31 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		ctx.GetLogger().Info("analyzer: using existing summary", "event_id", request.EventId)
 	} else {
 		//generate initial summary if not present
-		eventSummaryAgent, ok := core.GetNBAgent(ctx, agents.EventsAgentName, request.AccountId, core.AgentStatusEnabled)
+		// The direct brief runs through the plain LLM agent, as the RCA report
+		// does: the reads happen in code, so there is nothing for a ReAct loop
+		// to decide.
+		directBrief := eventDirectBriefEnabled(ctx, request.AccountId)
+		summaryAgentName := agents.EventsAgentName
+		if directBrief {
+			summaryAgentName = core.ToolLlm
+		}
+		eventSummaryAgent, ok := core.GetNBAgent(ctx, summaryAgentName, request.AccountId, core.AgentStatusEnabled)
 		if !ok || eventSummaryAgent == nil {
 			updateAllFailed(ctx, eventAnalysisRepo, eventData, request.AccountId, "summary agent not found")
 			return EventAnalysisResponse{}, errors.New("summary agent not found")
 		}
-		summaryAgentName := eventSummaryAgent.GetName()
 
 		var summaryResponseStr string
 		var hasSummary bool
 
 		if shouldRecoverStageFromConversation(eventAnalysisRepo, existingSummary, request.Regenerate) {
-			summaryResponseStr, hasSummary = getAgentResponseFromConversation(ctx, parentConversationId, request.AccountId, summaryAgentName, request.EventId)
+			// Either agent may have written this run's summary: the flag can
+			// change between the run that started and the one recovering it.
+			for _, name := range []string{eventSummaryAgent.GetName(), agents.EventsAgentName, core.ToolLlm} {
+				if summaryResponseStr, hasSummary = getAgentResponseFromConversation(ctx, parentConversationId, request.AccountId, name, request.EventId); hasSummary {
+					break
+				}
+			}
 		}
 
 		if hasSummary {
@@ -2856,6 +3022,9 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			// firing's row.
 			bindStagesToEvent(ctx, eventAnalysisRepo, request.EventId, eventFingerprint, request.AccountId, eventAggregationKey, events.AnalysisTypeSummary)
 			summaryQuery := buildEventSummaryQuery(eventData.Id)
+			if directBrief {
+				summaryQuery = buildDirectEventBriefQuery(ctx, request, eventData.Id, parsedLabels)
+			}
 			summaryResp, err := core.HandleConversationSessionRequest(ctx, eventSummaryAgent, request.UserId, request.AccountId, parentConversationId, summaryQuery, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithEnableCritique(false), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels}), core.ConversationSessionRequestWithoutConversationHistory())
 			if err != nil {
 				if errors.Is(err, core.ErrConversationInProgress) {

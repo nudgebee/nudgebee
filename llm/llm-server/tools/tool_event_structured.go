@@ -359,6 +359,13 @@ func offloadEventEvidence(ctx *security.RequestContext, wm workspace.WorkspaceMa
 	preview := buildEventEvidencePreview(investigateData)
 	capInvestigateDataEvidence(&investigateData)
 
+	// No conversation (the event pipeline reading an event before its
+	// conversation exists): no workspace a later call could read the file
+	// from, so return the key facts without saving.
+	if conversationId == "" {
+		return fmt.Sprintf("Output large (%d bytes); key facts below.\n%s", len(fullBytes), preview), nil
+	}
+
 	outputFile := EventEvidenceFileName(eventID)
 	if err := wm.SaveFile(ctx, accountId, conversationId, outputFile, string(fullBytes)); err != nil {
 		ctx.GetLogger().Error("get_event_by_id: failed to save evidence to workspace", "error", err, "path", outputFile)

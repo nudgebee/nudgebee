@@ -438,6 +438,33 @@ func TestOffloadEventEvidence_WorkspaceFileHoldsUncappedValidJSON(t *testing.T) 
 	assert.Equal(t, "event_evt-1_evidence.json", refs[0].Url)
 }
 
+// The event pipeline reads an event before its conversation exists (#41579).
+// With no conversation there is no workspace a later call could read, so the
+// key facts come back inline and nothing is saved.
+func TestOffloadEventEvidence_NoConversationSkipsSave(t *testing.T) {
+	sc := security.NewRequestContextForSuperAdmin()
+	evidence := events.InvestigateData{
+		PodMetrics: []events.InvestigateDataInsight{{Data: metricSeriesJSON(t, 400), Title: "json"}},
+	}
+	saved := false
+	wm := &mockWorkspaceManager{
+		saveFileFunc: func(ctx *security.RequestContext, accountId, conversationId, path, content string) error {
+			saved = true
+			return nil
+		},
+	}
+
+	inline, refs := offloadEventEvidence(sc, wm, "acct-1", "", "evt-1", evidence)
+
+	assert.False(t, saved, "no file without a conversation")
+	assert.Nil(t, refs)
+	inlineStr, ok := inline.(string)
+	require.True(t, ok)
+	assert.Contains(t, inlineStr, "key facts below")
+	assert.Contains(t, inlineStr, "pod_metrics=")
+	assert.NotContains(t, inlineStr, "saved to", "must not point at a file that was not written")
+}
+
 func TestOffloadEventEvidence_SaveFailureFallsBackToCappedInline(t *testing.T) {
 	sc := security.NewRequestContextForSuperAdmin()
 	evidence := events.InvestigateData{
