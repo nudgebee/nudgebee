@@ -48,14 +48,23 @@ func lintTasks(tasks []model.Task, warnings *[]LintWarning) {
 				})
 			}
 		}
-		if sw, ok := branchOf[task.ID]; ok && len(task.DependsOn) > 0 {
-			*warnings = append(*warnings, LintWarning{
-				Code:   LintSwitchTargetDependsOn,
-				TaskID: task.ID,
-				Message: fmt.Sprintf("task '%s' is a branch of switch '%s' but depends on %s. A branch runs inside the switch once it has chosen, "+
-					"so a dependency outside the branch fails with \"missing dependencies\" at run time — remove depends_on from the branch task.",
-					task.ID, sw, strings.Join(task.DependsOn, ", ")),
-			})
+		if sw, ok := branchOf[task.ID]; ok {
+			past := switchPast(sw, tasks)
+			var outside []string
+			for _, dep := range task.DependsOn {
+				if !past[dep] {
+					outside = append(outside, dep)
+				}
+			}
+			if len(outside) > 0 {
+				*warnings = append(*warnings, LintWarning{
+					Code:   LintSwitchTargetDependsOn,
+					TaskID: task.ID,
+					Message: fmt.Sprintf("task '%s' is a branch of switch '%s' but depends on %s, which may not have run when the branch starts. "+
+						"A branch runs inside the switch once it has chosen — depend only on the switch or on steps before it.",
+						task.ID, sw, strings.Join(outside, ", ")),
+				})
+			}
 		}
 		if len(task.Tasks) > 0 {
 			lintTasks(task.Tasks, warnings)
@@ -86,6 +95,27 @@ func switchBranches(tasks []model.Task) map[string]string {
 		}
 	}
 	return branchOf
+}
+
+// switchPast returns the switch and every task it transitively depends on; all
+// of them have finished before a branch of that switch runs.
+func switchPast(switchID string, tasks []model.Task) map[string]bool {
+	deps := map[string][]string{}
+	for _, t := range tasks {
+		deps[t.ID] = t.DependsOn
+	}
+	seen := map[string]bool{}
+	stack := []string{switchID}
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		stack = append(stack, deps[id]...)
+	}
+	return seen
 }
 
 func stringEnv(raw any) map[string]string {

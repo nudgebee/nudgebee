@@ -1548,6 +1548,7 @@ func processTaskLoop(
 										taskCopy := fullTask
 										// Uniquify ID to avoid duplicate activity scheduling if the task is also in the main loop
 										taskCopy.ID = fmt.Sprintf("%s-%s", task.ID, fullTask.ID)
+										taskCopy.OriginalID = fullTask.ID
 										// The step running this body already waited on the run's approval gate.
 										taskCopy.DependsOn = withoutApprovalGate(taskCopy.DependsOn)
 										hydratedTasks = append(hydratedTasks, taskCopy)
@@ -1562,24 +1563,16 @@ func processTaskLoop(
 									// Also uniquify IDs for explicitly defined inline tasks to ensure uniqueness in this execution scope
 									tCopy := t
 									tCopy.ID = fmt.Sprintf("%s-%s", task.ID, t.ID)
+									tCopy.OriginalID = t.ID
 									hydratedTasks = append(hydratedTasks, tCopy)
 									originalToRenamedID[t.ID] = tCopy.ID
 								}
 							}
 
-							// Update dependencies to point to new unique IDs
+							// Point dependencies at the renamed IDs and drop the ones the child
+							// scope cannot see but are already satisfied (#41250).
 							for i := range hydratedTasks {
-								if len(hydratedTasks[i].DependsOn) > 0 {
-									var newDependsOn []string
-									for _, dep := range hydratedTasks[i].DependsOn {
-										if newID, ok := originalToRenamedID[dep]; ok {
-											newDependsOn = append(newDependsOn, newID)
-										} else {
-											newDependsOn = append(newDependsOn, dep)
-										}
-									}
-									hydratedTasks[i].DependsOn = newDependsOn
-								}
+								hydratedTasks[i].DependsOn = scopeInlineDeps(hydratedTasks[i].DependsOn, originalToRenamedID, task.ID, task.OriginalID, completedTasks, switchBranchDone)
 							}
 
 							// Start sub-routine

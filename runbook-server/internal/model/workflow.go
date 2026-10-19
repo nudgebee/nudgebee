@@ -739,6 +739,9 @@ type Task struct {
 	// the frontend on a single canonical shape and migrating saved workflows.
 	PrevEdges any                 `yaml:"_prev_edges,omitempty" json:"_prev_edges,omitempty"`
 	Layout    *WorkflowTaskLayout `yaml:"layout,omitempty" json:"layout,omitempty"`
+	// OriginalID is the pre-rename ID of a task hydrated into an inline child
+	// scope as "<parent>-<id>". Runtime only, never serialized.
+	OriginalID string `yaml:"-" json:"-"`
 }
 
 // SetVarConfig is a helper struct for validating the polymorphic set_vars field.
