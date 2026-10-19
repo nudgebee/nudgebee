@@ -295,6 +295,8 @@ func buildPrometheusVMQueries(meta RequestMetadata, metrics []string) map[string
 			queries[metricKey] = fmt.Sprintf(`sum by (container_id) (container_resources_memory_rss_bytes{%s})`, inst)
 		case KeyVMServiceDiskUsed:
 			queries[metricKey] = fmt.Sprintf(`sum by (container_id) (container_resources_disk_used_bytes{%s})`, inst)
+		case KeyVMServiceGit:
+			queries[metricKey] = fmt.Sprintf(`max by (container_id, git_repo, git_branch) (container_info{%s, git_repo!=""})`, inst)
 		}
 	}
 	return queries
@@ -306,7 +308,7 @@ func vmKeyList() []string {
 		string(KeyCPUUsage), string(KeyCPUUsageLine), string(KeyCPUTotal),
 		string(KeyMemoryUsage), string(KeyMemoryUsageLine), string(KeyMemTotal),
 		string(KeyDiskReadBytes), string(KeyDiskWriteBytes), string(KeyDiskTotal), string(KeyDiskUsed),
-		string(KeyVMServiceCPUUsage), string(KeyVMServiceMemoryUsage), string(KeyVMServiceDiskUsed),
+		string(KeyVMServiceCPUUsage), string(KeyVMServiceMemoryUsage), string(KeyVMServiceDiskUsed), string(KeyVMServiceGit),
 	}
 }
 

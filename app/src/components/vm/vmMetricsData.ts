@@ -66,6 +66,9 @@ export interface ServiceRow {
   cpuCores?: number;
   memoryBytes?: number;
   diskBytes?: number;
+  /** Repository and branch the service declares itself (container label or systemd Environment=). */
+  agentRepo?: string;
+  agentBranch?: string;
 }
 
 /**
@@ -93,6 +96,13 @@ export function serviceRows(results: VmMetricResult[]): ServiceRow[] {
   fill('vm_service_cpu_usage', 'cpuCores');
   fill('vm_service_memory_usage', 'memoryBytes');
   fill('vm_service_disk_used', 'diskBytes');
+  for (const s of find(results, 'vm_service_git')?.series || []) {
+    const row = rows.get(s.metric?.container_id);
+    if (row && s.metric?.git_repo) {
+      row.agentRepo = s.metric.git_repo;
+      row.agentBranch = s.metric.git_branch || '';
+    }
+  }
   return [...rows.values()].sort((a, b) => (b.cpuCores ?? 0) - (a.cpuCores ?? 0) || a.containerId.localeCompare(b.containerId));
 }
 

@@ -510,6 +510,7 @@ export const VM_METRIC_KEYS = [
   'vm_service_cpu_usage',
   'vm_service_memory_usage',
   'vm_service_disk_used',
+  'vm_service_git',
 ] as const;
 
 /** Fleet-wide keys behind the VM list's CPU and memory gauges (see prometheus_vm_queries.go). */

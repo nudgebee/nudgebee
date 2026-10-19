@@ -23,6 +23,7 @@ import (
 const (
 	AnnotationGitRepo       = "workloads.nudgebee.com/git.repo"
 	AnnotationGitHash       = "workloads.nudgebee.com/git.hash"
+	AnnotationGitBranch     = "workloads.nudgebee.com/git.branch"
 	AnnotationCIGitRepo     = "ci.nudgebee.com/git.repo"
 	AnnotationCIGitHash     = "ci.nudgebee.com/git.hash"
 	AnnotationArgoCDTracker = "argocd.argoproj.io/tracking-id"

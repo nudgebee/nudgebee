@@ -58,11 +58,11 @@ func TestBuildCodeCapabilityBlock(t *testing.T) {
 
 func TestBuildNamedRepoBlock(t *testing.T) {
 	t.Run("no repository named adds nothing", func(t *testing.T) {
-		assert.Empty(t, buildNamedRepoBlock(""))
+		assert.Empty(t, buildNamedRepoBlock("", ""))
 	})
 
 	t.Run("offers code analysis without the change-plan contract", func(t *testing.T) {
-		b := buildNamedRepoBlock("https://github.com/example-org/payments")
+		b := buildNamedRepoBlock("https://github.com/example-org/payments", "")
 		assert.Contains(t, b, "This event names the repository `https://github.com/example-org/payments`")
 		// The dispatch log keys on this sentence to record that the offer was made.
 		assert.Contains(t, b, "`code_analyzer` is available")
@@ -72,6 +72,12 @@ func TestBuildNamedRepoBlock(t *testing.T) {
 		assert.NotContains(t, b, "<change_plan>")
 		assert.NotContains(t, b, "deployed revision")
 	})
+}
+
+func TestBuildNamedRepoBlockBranch(t *testing.T) {
+	b := buildNamedRepoBlock("https://github.com/example-org/payments", "release")
+	assert.Contains(t, b, "runs the `release` branch")
+	assert.NotContains(t, buildNamedRepoBlock("https://github.com/example-org/payments", ""), "branch: pass it")
 }
 
 func TestEventLabelValues(t *testing.T) {

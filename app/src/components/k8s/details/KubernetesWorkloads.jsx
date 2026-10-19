@@ -361,37 +361,9 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
     setSelectedCiGitIntegration('');
     setCiReposFromIntegration([]);
 
-    // listTicketConfigsForCreate is read-level (unlike listTicketConfigurationsByTool)
-    // and returns both GitHub and GitLab integrations in one call.
     apiTickets
-      .listTicketConfigsForCreate({ status: 'enabled' })
-      .then((res) => {
-        const configs = res?.data || [];
-        const githubData = configs
-          .filter((g) => g.tool === 'github')
-          .map((g) => ({
-            name: g.name,
-            type: 'github',
-            url: 'https://github.com',
-            projects: Array.isArray(g.projects) ? g.projects : [],
-          }));
-
-        const gitlabData = configs
-          .filter((g) => g.tool === 'gitlab')
-          .map((g) => ({
-            name: g.name,
-            type: 'gitlab',
-            url: g.url || 'https://gitlab.com',
-            projects: Array.isArray(g.projects) ? g.projects : [],
-          }));
-
-        // Combine for dropdown with type prefix for unique identification
-        const combined = [
-          ...githubData.map((g) => ({ ...g, key: `github:${g.name}`, label: `GitHub: ${g.name}` })),
-          ...gitlabData.map((g) => ({ ...g, key: `gitlab:${g.name}`, label: `GitLab: ${g.name}` })),
-        ];
-        setAllGitIntegrations(combined);
-      })
+      .listGitIntegrations()
+      .then(setAllGitIntegrations)
       .catch((error) => {
         console.error('Error fetching Git configurations:', error);
         setAllGitIntegrations([]);

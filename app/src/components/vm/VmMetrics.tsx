@@ -6,7 +6,19 @@ import { ProgressLinear } from '@ui/ProgressLinear';
 import { Skeleton } from '@ui/Skeleton';
 import apiVm, { VmMetricResult, VmResource } from '@api1/vm';
 import { CellText, useLatestRequest } from './common';
-import { cpuChart, diskIoChart, emptyReasons, formatBytes, formatCores, hasAnyData, latest, memoryChart, serviceRows } from './vmMetricsData';
+import { useVmServiceRepos, VmServiceGitModal } from './VmServiceGit';
+import {
+  cpuChart,
+  diskIoChart,
+  emptyReasons,
+  formatBytes,
+  formatCores,
+  hasAnyData,
+  latest,
+  memoryChart,
+  ServiceRow,
+  serviceRows,
+} from './vmMetricsData';
 import { ds } from '@utils/colors';
 
 const RANGES = [
@@ -95,6 +107,11 @@ const VmMetrics = ({ accountId, vm }: VmMetricsProps) => {
   const memory = useMemo(() => memoryChart(results), [results]);
   const diskIo = useMemo(() => diskIoChart(results), [results]);
   const services = useMemo(() => serviceRows(results), [results]);
+  const { links, reload: reloadLinks } = useVmServiceRepos(vm.id);
+  const [repoService, setRepoService] = useState<ServiceRow | null>(null);
+  // A repository set here wins over the one the service declares itself.
+  const repoFor = (row: ServiceRow) =>
+    links[row.containerId]?.repo ? links[row.containerId] : row.agentRepo ? { repo: row.agentRepo, branch: row.agentBranch || '' } : undefined;
   const reasons = useMemo(() => emptyReasons(results), [results]);
 
   const cores = latest(results, 'cpu_total');
@@ -173,7 +190,7 @@ const VmMetrics = ({ accountId, vm }: VmMetricsProps) => {
               <Box component='table' sx={{ width: '100%', borderCollapse: 'collapse', fontSize: ds.text.small }}>
                 <thead>
                   <tr>
-                    {['Service', 'CPU (cores)', 'Memory', 'Disk used'].map((h) => (
+                    {['Service', 'CPU (cores)', 'Memory', 'Disk used', 'Repository'].map((h) => (
                       <Box component='th' key={h} sx={{ textAlign: 'left', color: ds.gray[500], fontWeight: ds.weight.medium, padding: ds.space[1] }}>
                         {h}
                       </Box>
@@ -195,6 +212,11 @@ const VmMetrics = ({ accountId, vm }: VmMetricsProps) => {
                       <Box component='td' sx={{ padding: ds.space[1] }}>
                         {formatBytes(row.diskBytes)}
                       </Box>
+                      <Box component='td' sx={{ padding: ds.space[1] }}>
+                        <Button id={`vm-service-repo-btn-${row.service}`} tone='secondary' size='sm' onClick={() => setRepoService(row)}>
+                          {repoFor(row)?.repo.replace(/^https?:\/\//, '') || 'Link repository'}
+                        </Button>
+                      </Box>
                     </tr>
                   ))}
                 </tbody>
@@ -204,6 +226,17 @@ const VmMetrics = ({ accountId, vm }: VmMetricsProps) => {
             )}
           </Panel>
         </Box>
+      ) : null}
+      {repoService ? (
+        <VmServiceGitModal
+          accountId={accountId}
+          vmId={vm.id}
+          containerId={repoService.containerId}
+          serviceName={repoService.service}
+          current={repoFor(repoService)}
+          onClose={() => setRepoService(null)}
+          onSaved={reloadLinks}
+        />
       ) : null}
     </Box>
   );

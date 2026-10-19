@@ -281,6 +281,18 @@ const transformIntegrationToLegacyFormat = (integration: any) => {
   };
 };
 
+export interface GitIntegration {
+  name: string;
+  type: 'github' | 'gitlab';
+  /** Base URL repo keys are appended to, e.g. https://github.com */
+  url: string;
+  /** Repos the integration can read: `key` is "owner/repo", `name` the display name. */
+  projects: { key: string; name: string }[];
+  /** "type:name", unique across integrations */
+  key: string;
+  label: string;
+}
+
 const apiIntegrations = {
   listTicketConfigurations: async function (query?: any, refresh = false) {
     try {
@@ -349,6 +361,26 @@ const apiIntegrations = {
       // and crash later configList.find(...) calls in TicketFormSection.
       return { data: [] };
     }
+  },
+
+  // Enabled GitHub and GitLab integrations with their repos, shaped for a
+  // "pick an integration, then a repo" dropdown. `key` is "type:name".
+  listGitIntegrations: async function (): Promise<GitIntegration[]> {
+    const res = await apiIntegrations.listTicketConfigsForCreate({ status: 'enabled' });
+    const configs: any[] = res?.data || [];
+    return configs
+      .filter((c) => c.tool === 'github' || c.tool === 'gitlab')
+      .map((c) => {
+        const isGithub = c.tool === 'github';
+        return {
+          name: c.name,
+          type: c.tool,
+          url: isGithub ? 'https://github.com' : c.url || 'https://gitlab.com',
+          projects: Array.isArray(c.projects) ? c.projects : [],
+          key: `${c.tool}:${c.name}`,
+          label: `${isGithub ? 'GitHub' : 'GitLab'}: ${c.name}`,
+        };
+      });
   },
 
   listTool: async function () {

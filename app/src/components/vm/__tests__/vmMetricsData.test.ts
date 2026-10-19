@@ -87,6 +87,20 @@ describe('summary helpers', () => {
     expect(rows[0].memoryBytes).toBeUndefined();
   });
 
+  it('serviceRows carries the repository a service declares itself, only for services that have one', () => {
+    const rows = serviceRows([
+      result('vm_service_cpu_usage', [
+        { metric: { container_id: '/docker/api' }, t: [1], v: [0.9] },
+        { metric: { container_id: '/docker/web' }, t: [1], v: [0.1] },
+      ]),
+      result('vm_service_git', [
+        { metric: { container_id: '/docker/api', git_repo: 'https://github.com/org/api', git_branch: 'main' }, t: [1], v: [1] },
+      ]),
+    ]);
+    expect(rows[0]).toMatchObject({ containerId: '/docker/api', agentRepo: 'https://github.com/org/api', agentBranch: 'main' });
+    expect(rows[1].agentRepo).toBeUndefined();
+  });
+
   it('ignores series with no container_id, including ones that only carry the empty app_id', () => {
     expect(serviceRows([result('vm_service_cpu_usage', [{ t: [1], v: [1] }])])).toEqual([]);
     expect(serviceRows([result('vm_service_cpu_usage', [{ metric: { app_id: '' }, t: [1], v: [1] }])])).toEqual([]);

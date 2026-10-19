@@ -2337,16 +2337,40 @@ func buildCodeCapabilityBlock(caps *services_server.EventCodeCapabilities, names
 // it concerns, not a mapping to what is deployed, so the code-fix stage stays
 // behind the annotation-resolved capabilities. It makes no claim about a
 // deployed revision for the same reason.
-func buildNamedRepoBlock(repo string) string {
+func buildNamedRepoBlock(repo, branch string) string {
 	if repo == "" {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("\n\n## Code Analysis\n")
 	fmt.Fprintf(&b, "This event names the repository `%s`. `code_analyzer` is available.\n", repo)
+	if branch != "" {
+		fmt.Fprintf(&b, "- The service runs the `%s` branch: pass it as the branch to `code_analyzer`.\n", branch)
+	}
 	b.WriteString("- When the evidence supports a code defect, call `code_analyzer` in **explore mode** with the observed failure, the causal mechanism, and distinctive log strings (including any filename:lineno). If the event names a branch or commit, pass it, so the code read is the code that failed. Ask it to verify the mechanism and identify the exact repo-relative file(s). A log-string match alone does not establish a defect.\n")
 	b.WriteString(codeAlreadyThereRule)
 	return b.String()
+}
+
+// vmServiceCodeLink returns the repository and branch a user linked to the VM
+// service an alert is about. Only an alert that kept the series' container_id
+// label names its service; a host-level alert has no link to look up.
+func vmServiceCodeLink(ctx *security.RequestContext, eventId string, parsedLabels map[string]any) services_server.VMServiceCodeLink {
+	labels, _ := parsedLabels["labels"].(map[string]any)
+	containerID, _ := labels["container_id"].(string)
+	if containerID == "" {
+		return services_server.VMServiceCodeLink{}
+	}
+	dbm, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		ctx.GetLogger().Warn("analyzer: unable to look up the VM service's linked repository", "error", err, "event_id", eventId)
+		return services_server.VMServiceCodeLink{}
+	}
+	link, err := services_server.GetVMServiceCodeLink(dbm, eventId, containerID)
+	if err != nil {
+		ctx.GetLogger().Warn("analyzer: unable to look up the VM service's linked repository", "error", err, "event_id", eventId, "container_id", containerID)
+	}
+	return link
 }
 
 // eventLabelValues returns the string values among an event's labels, one level
@@ -2440,8 +2464,13 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 		// deliberately kept out of codeCapabilities, which is what the code-fix
 		// stage gates on.
 		if !codeCapabilities.HasAny() {
-			namedRepo = agents.IntegrationRepoNamedBy(ctx, request.AccountId, eventLabelValues(parsedLabels))
-			eventAnalsysisPrompt = eventAnalsysisPrompt + buildNamedRepoBlock(namedRepo)
+			var namedBranch string
+			if link := vmServiceCodeLink(ctx, request.EventId, parsedLabels); link.Repo != "" {
+				namedRepo, namedBranch = link.Repo, link.Branch
+			} else {
+				namedRepo = agents.IntegrationRepoNamedBy(ctx, request.AccountId, eventLabelValues(parsedLabels))
+			}
+			eventAnalsysisPrompt = eventAnalsysisPrompt + buildNamedRepoBlock(namedRepo, namedBranch)
 		}
 	}
 

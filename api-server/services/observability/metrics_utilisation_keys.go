@@ -77,6 +77,8 @@ const (
 	KeyVMServiceCPUUsage    UtilisationKey = "vm_service_cpu_usage"
 	KeyVMServiceMemoryUsage UtilisationKey = "vm_service_memory_usage"
 	KeyVMServiceDiskUsed    UtilisationKey = "vm_service_disk_used"
+	// The repository and branch a service declares through a container label or systemd Environment=.
+	KeyVMServiceGit UtilisationKey = "vm_service_git"
 
 	// Self-hosted VM fleet: one series per node-agent `instance` across the whole store, so
 	// a list of VMs gets its CPU and memory gauges from a handful of queries, not one set
@@ -202,6 +204,7 @@ var utilisationKeys = func() map[UtilisationKey]bool {
 		KeyVMServiceCPUUsage,
 		KeyVMServiceMemoryUsage,
 		KeyVMServiceDiskUsed,
+		KeyVMServiceGit,
 		KeyVMFleetCPUUsed,
 		KeyVMFleetCPUCores,
 		KeyVMFleetMemUsed,
