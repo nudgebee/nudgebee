@@ -209,3 +209,134 @@ it('edits map and list properties in the shape the collector stores them', async
     })
   );
 });
+
+// Kinds of the tenant's own, outside any account: a NetworkSwitch under the
+// CloudResource category, with free key/value properties.
+const outsideKeyFields = [nameField, { name: 'namespace', label: 'Namespace' }];
+const CUSTOM_KIND = {
+  specific_type: 'NetworkSwitch',
+  node_type: 'CloudResource',
+  key_fields: outsideKeyFields,
+  properties: [],
+  free_properties: true,
+};
+const withOutside = (extra) => [SCHEMA[0], { ...SCHEMA[2], kinds: [...SCHEMA[2].kinds, CUSTOM_KIND], ...extra }];
+
+// The dialog renders in a portal, so the picker is looked up on the document.
+const openTypePicker = () => fireEvent.click(document.querySelector('#manual-node-type'));
+
+const addProperty = (key, value) => {
+  fireEvent.click(screen.getByRole('button', { name: 'Add property' }));
+  const keys = screen.getAllByPlaceholderText('key');
+  const values = screen.getAllByPlaceholderText('value');
+  fireEvent.change(keys[keys.length - 1], { target: { value: key } });
+  fireEvent.change(values[values.length - 1], { target: { value } });
+};
+
+it('declares a node of a custom kind with its category, its kind and free properties', async () => {
+  apiKnowledgeGraph.createManualNode.mockResolvedValue({ data: { data: { kg_create_manual_node: { data: { id: 2 } } } } });
+  renderDialog({ schema: withOutside(), initial: { node_type: 'NetworkSwitch', name: 'sw-core-02' } });
+
+  addProperty('site', 'blr-1');
+  addProperty('vlans', '["10", "20"]');
+  fireEvent.click(screen.getByRole('button', { name: 'Declare' }));
+
+  await waitFor(() =>
+    expect(apiKnowledgeGraph.createManualNode).toHaveBeenCalledWith({
+      name: 'sw-core-02',
+      node_type: 'CloudResource',
+      specific_type: 'NetworkSwitch',
+      description: '',
+      properties: { site: 'blr-1', vlans: ['10', '20'] },
+      labels: {},
+    })
+  );
+});
+
+it('keeps a built-in kind outside any account on the request it always had', async () => {
+  apiKnowledgeGraph.createManualNode.mockResolvedValue({ data: { data: { kg_create_manual_node: { data: { id: 3 } } } } });
+  renderDialog({ schema: withOutside({ can_define_kinds: true }), initial: { node_type: 'Database', name: 'billing-db' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Declare' }));
+  await waitFor(() => expect(apiKnowledgeGraph.createManualNode).toHaveBeenCalled());
+  expect(apiKnowledgeGraph.createManualNode.mock.calls[0][0]).not.toHaveProperty('specific_type');
+});
+
+it('refuses a property the server reserves for a custom kind', () => {
+  renderDialog({ schema: withOutside(), initial: { node_type: 'NetworkSwitch', name: 'sw-core-02' } });
+  addProperty('region', 'us-east-1');
+  expect(screen.getByText(/“region” cannot be a property/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Declare' })).toBeDisabled();
+});
+
+it('offers a new kind only to a caller who may define one', () => {
+  const { unmount } = renderDialog({ schema: withOutside() });
+  openTypePicker();
+  expect(screen.getByText('Network Switch')).toBeInTheDocument();
+  expect(screen.queryByText('New kind…')).not.toBeInTheDocument();
+  unmount();
+
+  renderDialog({ schema: withOutside({ can_define_kinds: true }) });
+  openTypePicker();
+  expect(screen.getByText('New kind…')).toBeInTheDocument();
+});
+
+it('introduces a new kind under the chosen category, checking its name first', async () => {
+  apiKnowledgeGraph.createManualNode.mockResolvedValue({ data: { data: { kg_create_manual_node: { data: { id: 4 } } } } });
+  renderDialog({ schema: withOutside({ can_define_kinds: true }) });
+  openTypePicker();
+  fireEvent.click(screen.getByText('New kind…'));
+
+  const kindName = screen.getByTestId('manual-node-kind-name');
+  const declare = screen.getByRole('button', { name: 'Declare' });
+  fireEvent.change(kindName, { target: { value: 'networkRouter' } });
+  expect(screen.getByText(/Start with a capital letter/)).toBeInTheDocument();
+  fireEvent.change(kindName, { target: { value: 'Database' } });
+  expect(screen.getByText(/Database is a built-in type/)).toBeInTheDocument();
+  fireEvent.change(kindName, { target: { value: 'NetworkSwitch' } });
+  expect(screen.getByText(/already in the type list/)).toBeInTheDocument();
+  fireEvent.change(kindName, { target: { value: 'NetworkRouter' } });
+  fireEvent.change(screen.getByTestId('manual-node-name'), { target: { value: 'rt-edge-01' } });
+  expect(declare).toBeEnabled();
+
+  addProperty('model', 'ASR1001');
+  fireEvent.click(declare);
+  await waitFor(() =>
+    expect(apiKnowledgeGraph.createManualNode).toHaveBeenCalledWith({
+      name: 'rt-edge-01',
+      node_type: 'CloudResource',
+      specific_type: 'NetworkRouter',
+      description: '',
+      properties: { model: 'ASR1001' },
+      labels: {},
+    })
+  );
+});
+
+it('edits a custom-kind declaration in the key/value editor, keeping values it did not touch', async () => {
+  apiKnowledgeGraph.updateManualNode.mockResolvedValue({ data: { data: { kg_update_manual_node: { data: { id: 11 } } } } });
+  renderDialog({
+    schema: withOutside(),
+    row: {
+      id: 11,
+      cloud_provider: 'external',
+      node_type: 'CloudResource',
+      specific_type: 'NetworkSwitch',
+      name: 'sw-core-01',
+      description: '',
+      properties: { site: 'blr-1', ports: 48, vlans: ['10', '20'] },
+      labels: {},
+      status: 'active',
+    },
+  });
+
+  expect(screen.getByDisplayValue('site')).toBeInTheDocument();
+  expect(screen.getByDisplayValue('48')).toBeInTheDocument();
+  fireEvent.change(screen.getByDisplayValue('blr-1'), { target: { value: 'blr-2' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() =>
+    expect(apiKnowledgeGraph.updateManualNode).toHaveBeenCalledWith({
+      id: 11,
+      node: { description: '', properties: { site: 'blr-2', ports: 48, vlans: ['10', '20'] }, labels: {} },
+    })
+  );
+});

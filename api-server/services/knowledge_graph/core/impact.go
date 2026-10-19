@@ -174,7 +174,11 @@ var impactRelationshipDefaults = map[NodeType][]RelationshipType{
 	// as dependents; instance-typed callers (sibling VMs, k8s node ENI noise)
 	// are not app types and therefore surface in InfrastructureDependents
 	// with hop distance, never in the band.
-	NodeTypeComputeInstance: {RelationshipRunsOn, RelationshipManages, RelationshipOwns, RelationshipCalls},
+	//
+	// CONNECTED_TO / DEPENDS_ON are user-declared links to nodes declared outside
+	// any account (a switch cabled to the instance, a job that depends on it).
+	// CONNECTED_TO is undirected, so the walk follows it from either end.
+	NodeTypeComputeInstance: {RelationshipRunsOn, RelationshipManages, RelationshipOwns, RelationshipCalls, RelationshipConnectedTo, RelationshipDependsOn},
 	NodeTypeNode:            {RelationshipRunsOn, RelationshipManages, RelationshipOwns},
 	NodeTypePV:              {RelationshipProvidesStorage, RelationshipIsBoundTo, RelationshipMounts},
 	NodeTypePVC:             {RelationshipMounts, RelationshipIsBoundTo},
@@ -245,7 +249,7 @@ func ImpactSeedNodeTypes() []NodeType {
 // fallbackImpactRelationships is used when the seed's node type has no specific
 // mapping — the common dependency edges without traversing noise.
 var fallbackImpactRelationships = []RelationshipType{
-	RelationshipCalls, RelationshipRunsOn, RelationshipMounts,
+	RelationshipCalls, RelationshipRunsOn, RelationshipMounts, RelationshipConnectedTo, RelationshipDependsOn,
 }
 
 // downstreamRelationshipDefaults maps seed node types to the edge types whose
@@ -1119,6 +1123,32 @@ type connectingEdgeAttribution struct {
 // ignored. When several edges connect the same node, the best-corroborated one
 // names the relationship (ties broken lexically so attribution is
 // deterministic) and sources are unioned across all of them.
+// orientTowardSeed returns the edge's endpoint farther from the seed and the
+// one a BFS layer closer to it, for an edge that connects consecutive layers
+// in the walk's direction. An undirected edge (CONNECTED_TO) may connect them
+// either way round.
+func orientTowardSeed(e *DbEdge, direction TraverseDirection, nodeMinDepth map[string]int) (nodeID, towardSeedID string, ok bool) {
+	nodeID, towardSeedID = e.SourceNodeID, e.DestinationNodeID
+	if direction == TraverseDirectionDownstream {
+		nodeID, towardSeedID = e.DestinationNodeID, e.SourceNodeID
+	}
+	layered := func(far, near string) bool {
+		farDepth, ok := nodeMinDepth[far]
+		if !ok {
+			return false
+		}
+		nearDepth, ok := nodeMinDepth[near]
+		return ok && nearDepth == farDepth-1
+	}
+	if layered(nodeID, towardSeedID) {
+		return nodeID, towardSeedID, true
+	}
+	if IsUndirectedRelationship(e.RelationshipType) && layered(towardSeedID, nodeID) {
+		return towardSeedID, nodeID, true
+	}
+	return "", "", false
+}
+
 func attributeConnectingEdges(edges []*DbEdge, nodeMinDepth map[string]int, direction TraverseDirection) map[string]connectingEdgeAttribution {
 	best := map[string]*DbEdge{}
 	sourceSets := map[string]map[string]struct{}{}
@@ -1127,15 +1157,8 @@ func attributeConnectingEdges(edges []*DbEdge, nodeMinDepth map[string]int, dire
 		if e == nil {
 			continue
 		}
-		nodeID, towardSeedID := e.SourceNodeID, e.DestinationNodeID
-		if direction == TraverseDirectionDownstream {
-			nodeID, towardSeedID = e.DestinationNodeID, e.SourceNodeID
-		}
-		nodeDepth, ok := nodeMinDepth[nodeID]
+		nodeID, _, ok := orientTowardSeed(e, direction, nodeMinDepth)
 		if !ok {
-			continue
-		}
-		if towardDepth, ok := nodeMinDepth[towardSeedID]; !ok || towardDepth != nodeDepth-1 {
 			continue
 		}
 		set := sourceSets[nodeID]
@@ -1198,15 +1221,8 @@ func appHopDistances(seedID string, nodes []*DbNode, edges []*DbEdge, nodeMinDep
 		if e == nil {
 			continue
 		}
-		nodeID, towardSeedID := e.SourceNodeID, e.DestinationNodeID
-		if direction == TraverseDirectionDownstream {
-			nodeID, towardSeedID = e.DestinationNodeID, e.SourceNodeID
-		}
-		nodeDepth, ok := nodeMinDepth[nodeID]
+		nodeID, towardSeedID, ok := orientTowardSeed(e, direction, nodeMinDepth)
 		if !ok {
-			continue
-		}
-		if towardDepth, ok := nodeMinDepth[towardSeedID]; !ok || towardDepth != nodeDepth-1 {
 			continue
 		}
 		toward[nodeID] = append(toward[nodeID], towardSeedID)

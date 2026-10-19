@@ -61,6 +61,8 @@ func manualDepWriteStatus(err error, fallback int) int {
 		return 404
 	case errors.Is(err, flow_sources.ErrManualDependencyNodeNotFound):
 		return 400
+	case errors.Is(err, flow_sources.ErrManualDependencyPairLinked):
+		return 409
 	}
 	return fallback
 }

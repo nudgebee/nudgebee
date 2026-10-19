@@ -22,6 +22,8 @@ const (
 	EdgePriority8  EdgeSourcePriority = 8  // elastic-apm
 	EdgePriority9  EdgeSourcePriority = 9  // aws-vpc-flow (VPC Flow Logs — coarsest network observation: no L7, no latency, IP-derived)
 	EdgePriority10 EdgeSourcePriority = 10 // Lowest priority (unknown sources)
+	// EdgePriorityManualDeclared: see core.EdgePriorityManualDeclared.
+	EdgePriorityManualDeclared EdgeSourcePriority = 11
 )
 
 // Aliases for readability
@@ -43,9 +45,11 @@ const (
 // APM) come last — they capture observed behaviour, which manual overrides
 // only when the operator explicitly declares it.
 //
-// Edges from the manual flow source apply only to CALLS, PUBLISHES_TO, and
-// SUBSCRIBES_TO. ResolvesTo / RoutesTo / RoutesThrough are structural and not
-// user-declarable in Phase 1.
+// The manual flow source may emit CALLS, PUBLISHES_TO and SUBSCRIBES_TO
+// anywhere, at priority 2. CONNECTED_TO, DEPENDS_ON, RUNS_ON, HOSTED_ON,
+// ROUTES_TO and BELONGS_TO only on links touching a node declared outside any
+// account, at EdgePriorityManualDeclared: below every other source, so such an
+// edge never displaces another source's edge on the same node pair.
 var EdgeTypePriorities = map[core.RelationshipType]map[string]EdgeSourcePriority{
 	core.RelationshipCalls: {
 		"k8s":              EdgePriority1, // K8s has authoritative service-to-service data
@@ -71,7 +75,13 @@ var EdgeTypePriorities = map[core.RelationshipType]map[string]EdgeSourcePriority
 		"aws":              EdgePriority2, // AWS ALB/NLB routing
 		"cloud_enrichment": EdgePriority3, // Cloud API routing data
 		"dns_resolver":     EdgePriority4, // DNS-based discovery
+		"manual":           EdgePriorityManualDeclared,
 	},
+	core.RelationshipConnectedTo: {"manual": EdgePriorityManualDeclared},
+	core.RelationshipDependsOn:   {"manual": EdgePriorityManualDeclared},
+	core.RelationshipRunsOn:      {"manual": EdgePriorityManualDeclared},
+	core.RelationshipHostedOn:    {"manual": EdgePriorityManualDeclared},
+	core.RelationshipBelongsTo:   {"manual": EdgePriorityManualDeclared},
 	core.RelationshipRoutesToBackend: {
 		"k8s":              EdgePriority1,
 		"aws":              EdgePriority2,

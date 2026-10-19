@@ -99,6 +99,9 @@ export interface ManualNodeKind {
   node_type: string;
   key_fields: ManualNodeKeyField[];
   properties: ManualNodeProperty[];
+  // A tenant's own kind outside any account (specific_type is its name,
+  // node_type its category): any keys, no schema.
+  free_properties?: boolean;
 }
 
 export type ManualNodePropertyValue = string | number | boolean | string[] | Record<string, string>;
@@ -110,6 +113,8 @@ export interface ManualNodeSchemaAccount {
   account_number?: string;
   cloud_provider: string;
   kinds: ManualNodeKind[];
+  // Outside any account: the caller may introduce a kind the tenant does not use yet.
+  can_define_kinds?: boolean;
 }
 
 export interface ManualNode {

@@ -2240,7 +2240,10 @@ func behavioralEdgeTypesSlice() []string {
 // type NOT in the behavioural allowlist) that weren't re-stamped with the current
 // sync version. Mirrors markInactiveNodes — runs after each successful sync that
 // incremented sync_version. Behavioural edges are excluded; they go through the
-// time-based MarkStaleEdgesInactive sweep instead.
+// time-based MarkStaleEdgesInactive sweep instead. Manual edges are excluded
+// too, like manual nodes in markInactiveNodes: the manual flow source retires
+// its own edges from the declarations' state, and a build in which it failed
+// must not retire every declared RUNS_ON / CONNECTED_TO link.
 func (s *Service) markInactiveInfraEdges(tenantID string, syncVersion int64) (int64, error) {
 	query := `
 		UPDATE knowledge_graph_edge
@@ -2250,10 +2253,11 @@ func (s *Service) markInactiveInfraEdges(tenantID string, syncVersion int64) (in
 		  AND level = 'Tenant'
 		  AND is_active = true
 		  AND relationship_type != ALL($3::text[])
+		  AND COALESCE(source, '') <> $4
 	`
 	behavioralTypes := behavioralEdgeTypesSlice()
 
-	result, err := s.dbManager.Exec(query, tenantID, syncVersion, pq.Array(behavioralTypes))
+	result, err := s.dbManager.Exec(query, tenantID, syncVersion, pq.Array(behavioralTypes), ManualNodeSource)
 	if err != nil {
 		return 0, fmt.Errorf("failed to mark inactive infra edges: %w", err)
 	}
@@ -3785,8 +3789,12 @@ func (s *Service) discoverBFS(seeds []string, opts traverseOptions) (discoveredI
 	// Expand one level at a time (levels <= 3), each a single indexed edge query
 	// over the whole current frontier. A node already in nodeMinDepth is never
 	// re-expanded — that is what removes the recursive CTE's path explosion.
+	// viaUndirected holds the nodes first reached over an undirected edge
+	// (CONNECTED_TO): their own undirected edges are not followed, so two
+	// servers on one switch do not reach each other through it.
+	viaUndirected := map[string]bool{}
 	for depth := 0; depth < opts.Levels && len(frontier) > 0; depth++ {
-		frontier, err = s.expandFrontier(frontier, depth, opts, nodeMinDepth, edgeIDSet)
+		frontier, err = s.expandFrontier(frontier, depth, opts, nodeMinDepth, edgeIDSet, viaUndirected)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -3854,19 +3862,26 @@ func (s *Service) fetchTraversalSeeds(ids []string, tenantID string) ([]string, 
 // seeds are not. The walked edge is recorded even when the far endpoint was already
 // visited (cross/back edges), matching the previous CTE's walked-edge set;
 // filterLayeredEdges prunes it to consecutive layers downstream.
-func (s *Service) expandFrontier(frontier []string, depth int, opts traverseOptions, nodeMinDepth map[string]int, edgeIDSet map[string]struct{}) ([]string, error) {
+func (s *Service) expandFrontier(frontier []string, depth int, opts traverseOptions, nodeMinDepth map[string]int, edgeIDSet map[string]struct{}, viaUndirected map[string]bool) ([]string, error) {
 	// Direction-specific incidence predicate + projection of the far endpoint.
-	// $1 is always the frontier array.
+	// $1 is always the frontier array. A directional walk also follows an
+	// undirected edge (CONNECTED_TO) from its other end; $2 lists those types.
 	var incidence, otherEnd, nearEnd string
+	args := []interface{}{pq.Array(frontier)}
+	argIdx := 2
 	switch opts.Direction {
 	case TraverseDirectionDownstream:
-		incidence = "e.source_node_id = ANY($1::uuid[])"
-		otherEnd = "e.destination_node_id"
-		nearEnd = "e.source_node_id"
+		incidence = "(e.source_node_id = ANY($1::uuid[]) OR (e.relationship_type = ANY($2::text[]) AND e.destination_node_id = ANY($1::uuid[])))"
+		otherEnd = "CASE WHEN e.source_node_id = ANY($1::uuid[]) THEN e.destination_node_id ELSE e.source_node_id END"
+		nearEnd = "CASE WHEN e.source_node_id = ANY($1::uuid[]) THEN e.source_node_id ELSE e.destination_node_id END"
+		args = append(args, pq.Array(undirectedRelationshipTypes))
+		argIdx++
 	case TraverseDirectionUpstream:
-		incidence = "e.destination_node_id = ANY($1::uuid[])"
-		otherEnd = "e.source_node_id"
-		nearEnd = "e.destination_node_id"
+		incidence = "(e.destination_node_id = ANY($1::uuid[]) OR (e.relationship_type = ANY($2::text[]) AND e.source_node_id = ANY($1::uuid[])))"
+		otherEnd = "CASE WHEN e.destination_node_id = ANY($1::uuid[]) THEN e.source_node_id ELSE e.destination_node_id END"
+		nearEnd = "CASE WHEN e.destination_node_id = ANY($1::uuid[]) THEN e.destination_node_id ELSE e.source_node_id END"
+		args = append(args, pq.Array(undirectedRelationshipTypes))
+		argIdx++
 	default: // TraverseDirectionBoth
 		incidence = "(e.source_node_id = ANY($1::uuid[]) OR e.destination_node_id = ANY($1::uuid[]))"
 		otherEnd = "CASE WHEN e.source_node_id = ANY($1::uuid[]) THEN e.destination_node_id ELSE e.source_node_id END"
@@ -3883,9 +3898,20 @@ func (s *Service) expandFrontier(frontier []string, depth int, opts traverseOpti
 			RelationshipSameAs, NodeTypeComputeInstance, nearEnd, NodeTypeComputeInstance)
 	}
 
-	args := []interface{}{pq.Array(frontier)}
-	argIdx := 2
 	var clauses []string
+	// One hop of an undirected link: a frontier node reached over one does not
+	// follow another, in either stored direction.
+	var blocked []string
+	for _, id := range frontier {
+		if viaUndirected[id] {
+			blocked = append(blocked, id)
+		}
+	}
+	if len(blocked) > 0 {
+		clauses = append(clauses, fmt.Sprintf("NOT (e.relationship_type = ANY($%d::text[]) AND (%s) = ANY($%d::uuid[]))", argIdx, nearEnd, argIdx+1))
+		args = append(args, pq.Array(undirectedRelationshipTypes), pq.Array(blocked))
+		argIdx += 2
+	}
 	if opts.TenantID != "" {
 		clauses = append(clauses, fmt.Sprintf("e.tenant_id = $%d AND n.tenant_id = $%d", argIdx, argIdx))
 		args = append(args, opts.TenantID)
@@ -3913,7 +3939,7 @@ func (s *Service) expandFrontier(frontier []string, depth int, opts traverseOpti
 	}
 
 	query := fmt.Sprintf(`
-		SELECT e.id::text, (%s)::text AS other_id, %s AS twin_leaf
+		SELECT e.id::text, (%s)::text AS other_id, %s AS twin_leaf, e.relationship_type
 		FROM knowledge_graph_edge e
 		JOIN knowledge_graph_node n ON n.id = %s
 		WHERE %s
@@ -3933,33 +3959,41 @@ func (s *Service) expandFrontier(frontier []string, depth int, opts traverseOpti
 	type frontierRow struct {
 		edgeID, otherID string
 		twinLeaf        bool
+		undirected      bool
 	}
 	var buffered []frontierRow
 	for rows.Next() {
 		var r frontierRow
-		if scanErr := rows.Scan(&r.edgeID, &r.otherID, &r.twinLeaf); scanErr != nil {
+		var relationship string
+		if scanErr := rows.Scan(&r.edgeID, &r.otherID, &r.twinLeaf, &relationship); scanErr != nil {
 			return nil, fmt.Errorf("failed to scan frontier row at depth %d: %w", depth, scanErr)
 		}
+		r.undirected = IsUndirectedRelationship(RelationshipType(relationship))
 		buffered = append(buffered, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating frontier rows at depth %d: %w", depth, err)
 	}
 
-	// Two passes so row order cannot decide whether a node is expanded: a node
-	// reachable at this level both over a real edge and over a twin SAME_AS is
-	// registered by the real edge first and expanded. Twins are registered (and
-	// their edge recorded) but never queued for the next level.
+	// Passes so row order cannot decide how a node is expanded: a node
+	// reachable at this level over a real edge is registered by it first —
+	// before an undirected edge (which would stop it following undirected
+	// edges) and before a twin SAME_AS (which would stop it expanding at all).
+	// Twins are registered (and their edge recorded) but never queued.
 	var next []string
-	for _, leafPass := range []bool{false, true} {
+	passes := []struct{ twinLeaf, undirected bool }{{false, false}, {false, true}, {true, false}, {true, true}}
+	for _, pass := range passes {
 		for _, r := range buffered {
-			if r.twinLeaf != leafPass {
+			if r.twinLeaf != pass.twinLeaf || r.undirected != pass.undirected {
 				continue
 			}
 			edgeIDSet[r.edgeID] = struct{}{}
 			if _, seen := nodeMinDepth[r.otherID]; !seen {
 				nodeMinDepth[r.otherID] = depth + 1
-				if !leafPass {
+				if r.undirected {
+					viaUndirected[r.otherID] = true
+				}
+				if !pass.twinLeaf {
 					next = append(next, r.otherID)
 				}
 			}
@@ -5608,8 +5642,10 @@ func filterLayeredEdges(edges []*DbEdge, nodeMinDepth map[string]int, direction 
 			continue
 		}
 		// Twins seeded together sit at depth 0; the SAME_AS link between them is
-		// the one same-layer edge worth drawing.
-		if keep(sd, dd) || (sd == 0 && dd == 0 && e.RelationshipType == RelationshipSameAs) {
+		// the one same-layer edge worth drawing. An undirected edge was walked
+		// from whichever end the BFS reached first.
+		if keep(sd, dd) || (sd == 0 && dd == 0 && e.RelationshipType == RelationshipSameAs) ||
+			(IsUndirectedRelationship(e.RelationshipType) && keep(dd, sd)) {
 			filtered = append(filtered, e)
 		}
 	}

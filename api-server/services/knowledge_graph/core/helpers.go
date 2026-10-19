@@ -287,6 +287,11 @@ const (
 	EdgePriority8  EdgeSourcePriority = 8  // elastic-apm
 	EdgePriority9  EdgeSourcePriority = 9  // aws-vpc-flow (VPC Flow Logs — coarsest network observation: no L7, no latency, IP-derived)
 	EdgePriority10 EdgeSourcePriority = 10 // Lowest priority (unknown sources)
+	// EdgePriorityManualDeclared is below every other source, unknown ones
+	// included: a manual edge of a type only users declare (CONNECTED_TO,
+	// RUNS_ON, …) never displaces another source's edge on the same node pair
+	// (the dedup keys on the pair, not the relationship).
+	EdgePriorityManualDeclared EdgeSourcePriority = 11
 )
 
 // Aliases for readability
@@ -331,6 +336,7 @@ var edgeTypePriorities = map[RelationshipType]map[string]EdgeSourcePriority{
 		"aws":              EdgePriority2, // AWS ALB/NLB routing
 		"cloud_enrichment": EdgePriority3, // Cloud API routing data
 		"dns_resolver":     EdgePriority4, // DNS-based discovery
+		"manual":           EdgePriorityManualDeclared,
 	},
 	RelationshipRoutesToBackend: {
 		"k8s":              EdgePriority1,
@@ -372,6 +378,14 @@ var edgeTypePriorities = map[RelationshipType]map[string]EdgeSourcePriority{
 	RelationshipConnectionRejected: {
 		"aws-vpc-flow": EdgePriority1,
 	},
+	// Types users may declare only on links touching a node declared outside
+	// any account. Keep in step with flow_sources.EdgeTypePriorities.
+	// (ROUTES_TO carries its manual entry above.)
+	RelationshipConnectedTo: {"manual": EdgePriorityManualDeclared},
+	RelationshipDependsOn:   {"manual": EdgePriorityManualDeclared},
+	RelationshipRunsOn:      {"manual": EdgePriorityManualDeclared},
+	RelationshipHostedOn:    {"manual": EdgePriorityManualDeclared},
+	RelationshipBelongsTo:   {"manual": EdgePriorityManualDeclared},
 }
 
 // metricsToMerge defines which edge properties should be merged with source prefix

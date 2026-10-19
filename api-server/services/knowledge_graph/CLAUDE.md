@@ -208,7 +208,7 @@ A VM account (`cloud_provider='SelfHosted'`, `account_type='vm'`) has no cloud A
 
 Users declare what the collectors cannot see. Both halves are run by the always-on `manual` flow source ([flow_sources/manual_flow_source.go](flow_sources/manual_flow_source.go)) every build.
 
-- **Dependencies** (`kg_manual_dependencies`, V743) — `A CALLS B` between nodes, resolved by type + name (+ namespace/cluster/arn) against `knowledge_graph_node` and emitted as `source='manual'` edges.
+- **Dependencies** (`kg_manual_dependencies`, V743) — `A CALLS B` (or another type, see below) between nodes, resolved by type + name (+ namespace/cluster/arn) against `knowledge_graph_node` and emitted as `source='manual'` edges.
 - **Nodes** (`kg_manual_nodes`, V989) — resources no collector discovered, so a dependency has something to resolve to. RPCs: `kg_*_manual_node*` in [api/actions_kg_manual_nodes.go](../api/actions_kg_manual_nodes.go).
 
 **A declared node must get the id the collector will write for the same resource**, or the collector later adds a second node. So nothing hand-builds a cloud key: each cloud registers a `core.ManualNodeBuilder` ([sources/manual_node.go](sources/manual_node.go), `sources/<cloud>/manual_node.go`) that feeds a synthetic inventory row through its own `createNodeFromResource`, and AWS re-keys by the picked VPC node's name the way `propagateVPCNamesToResources` does. The compulsory form fields are exactly what that cloud's `GenerateUniqueKey` reads (name, region, plus the VPC for EC2 / load balancers / RDS / Redshift). Kubernetes clusters do the same through `createNodeFromWorkload` (`sources/k8s/manual_node.go`: Deployment, StatefulSet, DaemonSet, CronJob, Service; key fields name + namespace; the cluster name is the account name, as the k8s source stamps it). `TestManualNode_<Cloud>KeyMatchesCollector` runs every declarable type through both paths (for K8s Services, the relay path too) and fails on any drift — if you change a `GenerateUniqueKey` or a VPC/naming pass, that test tells you whether declared nodes still merge.
@@ -229,6 +229,25 @@ Users declare what the collectors cannot see. Both halves are run by the always-
 4. **Flag possible duplicates** — a collected node with the same type + name (same account, or any account for a tenant-scoped declaration) under a different key. The UI offers **Merge**: pinned dependencies move to it, the declaration goes.
 
 Declared `ExternalService` nodes are skipped by the ExternalService enricher and both collapse passes (`CollapseEnrichedExternalServices`, `ResolveGCPManagedServiceCalls`): they are what the user said they are, not observed stubs to fold into a cloud resource.
+
+### Custom kinds
+
+A declaration outside any account may carry a kind of the tenant's own (`NetworkSwitch`) as its `specific_type`, under a built-in category from `core.ManualNodeTypes` as its `node_type` (`ManualNode.IsCustomKind`). There is no kind table: the kinds are the `specific_type` values in use. Decision record: [docs/architecture-decisions.md](../../../docs/architecture-decisions.md) ("KG custom node kinds").
+
+- **Key unchanged**: `external:<tenant>::<category>:<namespace>:<name>`. Two kinds under one category with the same name and namespace collide; the second is refused and told to set a namespace.
+- **Introducing a kind is a tenant admin's call**: `ManualNodeCreate.AuthorizeNewKind` is asked when the tenant has no live declaration of the kind. A kind keeps one category. Its name must match `^[A-Z][A-Za-z0-9]{1,63}$` and must not be a `NodeType` (`core.IsKnownNodeType`), a registered specific type, or a `specific_type` a collector writes in the tenant (`ValidateCustomKindName`, `checkCustomKind`).
+- **Properties are free** (`validateCustomKindProperties`): any key that is not `IsManualReservedProperty` or an endpoint key the ExternalService enricher indexes (`customKindEndpointKeys`; keep in step with `buildCloudEndpointIndex`, or observed traffic lands on the custom node). They are not in `query_attributes` / `ontology_attributes`.
+- **Links** store the category, never the kind: an endpoint named by kind is translated at write time and qualified by the tenant as its account (`translateCustomKinds`, `boundNodeFor`), so a same-named collected node never matches.
+
+**Relationship types.** `CALLS`, `PUBLISHES_TO`, `SUBSCRIBES_TO` link any two nodes. `CONNECTED_TO`, `DEPENDS_ON`, `RUNS_ON`, `HOSTED_ON`, `ROUTES_TO`, `BELONGS_TO` (`ManualRelationshipsDeclaredOnly`) need a node declared outside any account at one end. Three guards exist because the in-build dedup keeps **one edge per node pair whatever its relationship** (`buildEdgeCompositeKey`); a type-aware dedup would let them go:
+
+1. the declared-node rule, checked at write time (`checkLinkRules`) and every build (`processRow`, row → `invalid_payload`);
+2. `EdgePriorityManualDeclared` (11) — below every source, unknown ones included — in both priority tables, so such an edge never displaces another source's edge on the pair;
+3. one declaration per pair when either uses a declared-only type (`checkLinkRules`, `claimPair`; the lower row id wins).
+
+`CONNECTED_TO` is undirected (`core.IsUndirectedRelationship`): directional BFS (`expandFrontier`, `filterLayeredEdges`) and impact (`orientTowardSeed`) follow it from either end, **for one hop**: a node first reached over a `CONNECTED_TO` edge does not follow another (`viaUndirected` in `discoverBFS`), so two servers on one switch are not in each other's blast radius while the switch's lists both (`TestCustomKind_ConnectedToBlastRadius`).
+
+**Manual edges own their lifecycle.** `markInactiveInfraEdges` skips `source='manual'`; after a successful cycle the manual source retires every manual edge that no `resolved` declaration with the same type and endpoints backs (`retireOrphanedEdges`). It reads row state, so a resolved link whose endpoint is missing from one build keeps its edge.
 
 ---
 

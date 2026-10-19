@@ -56,9 +56,11 @@ const refsResolve = (doc) => {
 
 it('declares a node per kind of place the tenant has, linked by refs', () => {
   const doc = buildSampleDeclarations(SCHEMA);
-  expect(doc.nodes).toHaveLength(3);
-  const [outside, cloud, cluster] = doc.nodes;
+  expect(doc.nodes).toHaveLength(4);
+  const [outside, custom, cloud, cluster] = doc.nodes;
   expect(outside).toMatchObject({ node_type: 'Database', name: 'billing-db' });
+  // A kind of the tenant's own: its category as node_type, its name as specific_type, free properties.
+  expect(custom).toMatchObject({ node_type: 'CloudResource', specific_type: 'NetworkSwitch', properties: { site: 'blr-1', model: 'C9300' } });
   // The account is named by its number, and the kind needs nothing but name and region.
   expect(cloud).toMatchObject({ cloud_account: '123456789012', specific_type: 'SQSQueue', region: 'us-east-1' });
   expect(cloud.network).toBeUndefined();
@@ -66,22 +68,24 @@ it('declares a node per kind of place the tenant has, linked by refs', () => {
   // A Kubernetes account has no number, so its id; a key/value property is an object.
   expect(cluster).toMatchObject({ cloud_account: 'k8s-1', specific_type: 'KubernetesDeployment', namespace: 'payments' });
   expect(cluster.properties.annotations).toEqual({ owner: 'ledger-team' });
-  expect(doc.dependencies).toHaveLength(2);
-  expect(doc.dependencies[1]).toMatchObject({ source: cluster.ref, dest: cloud.ref, relationship_type: 'PUBLISHES_TO' });
+  expect(doc.dependencies).toHaveLength(3);
+  // CONNECTED_TO needs a node declared outside any account at one end — here both are.
+  expect(doc.dependencies[1]).toMatchObject({ source: outside.ref, dest: custom.ref, relationship_type: 'CONNECTED_TO' });
+  expect(doc.dependencies[2]).toMatchObject({ source: cluster.ref, dest: cloud.ref, relationship_type: 'PUBLISHES_TO' });
   refsResolve(doc);
   expect(() => JSON.parse(JSON.stringify(doc))).not.toThrow();
 });
 
-it('falls back to a node outside any account when nothing is connected', () => {
+it('falls back to nodes outside any account when nothing is connected', () => {
   for (const schema of [[], undefined, null]) {
     const doc = buildSampleDeclarations(schema);
-    expect(doc.nodes).toHaveLength(1);
-    expect(doc.dependencies).toHaveLength(1);
+    expect(doc.nodes).toHaveLength(2);
+    expect(doc.dependencies).toHaveLength(2);
     refsResolve(doc);
   }
 });
 
 it('adds a network placeholder only when every kind needs one', () => {
   const doc = buildSampleDeclarations([{ ...SCHEMA[0], kinds: [SCHEMA[0].kinds[0]] }]);
-  expect(doc.nodes[1]).toMatchObject({ specific_type: 'RDSInstance', network: '<vpc id or name>' });
+  expect(doc.nodes[2]).toMatchObject({ specific_type: 'RDSInstance', network: '<vpc id or name>' });
 });

@@ -3,9 +3,11 @@
 // Phase 2 (NB-30989): tabbed shell mirroring `@components/llm/SettingsModal`.
 // - Tab 1 ("Coverage"): cloud account / flow source filter — the legacy
 //   single-section UI, extracted into KGCoverageTab.
-// - Tab 2 ("Manual Declarations"): operator-declared CALLS / PUBLISHES_TO /
-//   SUBSCRIBES_TO dependencies and the nodes they point at when no collector
-//   has discovered them, with one JSON import for both + ambiguity resolve.
+// - Tab 2 ("Manual Declarations"): operator-declared dependencies (CALLS /
+//   PUBLISHES_TO / SUBSCRIBES_TO, plus CONNECTED_TO / DEPENDS_ON / RUNS_ON /
+//   HOSTED_ON / ROUTES_TO / BELONGS_TO when one end is declared outside any
+//   account) and the nodes they point at when no collector has discovered
+//   them, with one JSON import for both + ambiguity resolve.
 // - TODO Phase 2.5: 'Diff View' (declared vs auto-detected) and 'Activity'
 //   tabs slot in alongside.
 

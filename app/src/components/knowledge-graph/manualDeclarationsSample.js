@@ -36,6 +36,18 @@ export const buildSampleDeclarations = (schema) => {
     properties: { engine: 'postgres' },
   });
 
+  // A kind of the tenant's own, under a built-in category, with free properties.
+  const switchRef = uniqueRef(refs, 'sw-core-01');
+  nodes.push({
+    ref: switchRef,
+    node_type: 'CloudResource',
+    specific_type: 'NetworkSwitch',
+    name: 'sw-core-01',
+    namespace: 'datacenter',
+    description: 'Outside any connected account: a kind of your own',
+    properties: { site: 'blr-1', model: 'C9300' },
+  });
+
   const cloud = places.find((p) => p.cloud_account_id && p.cloud_provider !== 'K8s' && p.kinds?.length);
   let cloudRef = null;
   if (cloud) {
@@ -80,6 +92,12 @@ export const buildSampleDeclarations = (schema) => {
     dest: outsideRef,
     relationship_type: 'CALLS',
     notes: 'A node already in the graph calls a node of this document',
+  });
+  dependencies.push({
+    source: outsideRef,
+    dest: switchRef,
+    relationship_type: 'CONNECTED_TO',
+    notes: 'Needs a node declared outside any account at one end',
   });
   if (clusterRef && cloudRef) {
     dependencies.push({ source: clusterRef, dest: cloudRef, relationship_type: 'PUBLISHES_TO', notes: 'Both sides are nodes of this document' });

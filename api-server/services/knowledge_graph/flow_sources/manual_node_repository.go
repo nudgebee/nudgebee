@@ -64,6 +64,9 @@ type ManualNodeCreate struct {
 	// Authorize, when set, is asked about the resolved account before
 	// anything is read or written for it.
 	Authorize ManualAccountAuthorizer `json:"-"`
+	// AuthorizeNewKind, when set, is asked before the tenant's first node of
+	// a custom kind is declared: introducing a kind is a tenant admin's call.
+	AuthorizeNewKind func() bool `json:"-"`
 }
 
 // ManualNodeSchemaAccount is one place a node can be declared, with the types
@@ -74,6 +77,9 @@ type ManualNodeSchemaAccount struct {
 	AccountNumber  string                `json:"account_number,omitempty"`
 	CloudProvider  string                `json:"cloud_provider"`
 	Kinds          []core.ManualNodeKind `json:"kinds"`
+	// CanDefineKinds, on the place outside any account, says whether the
+	// caller may introduce a custom kind (set by the handler).
+	CanDefineKinds bool `json:"can_define_kinds,omitempty"`
 }
 
 // Schema lists the tenant's connected accounts that accept declarations,
@@ -106,8 +112,75 @@ func (r *ManualNodeRepository) Schema(ctx context.Context, tenantID string) ([]M
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate cloud accounts: %w", err)
 	}
-	out = append(out, ManualNodeSchemaAccount{CloudProvider: TenantScopedProvider, Kinds: TenantScopedManualNodeKinds()})
+	kinds := TenantScopedManualNodeKinds()
+	custom, err := r.customKinds(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, ManualNodeSchemaAccount{CloudProvider: TenantScopedProvider, Kinds: append(kinds, custom...)})
 	return out, nil
+}
+
+// customKinds are the tenant's own kinds in use, each with its category.
+func (r *ManualNodeRepository) customKinds(tenantID string) ([]core.ManualNodeKind, error) {
+	var rows []struct {
+		NodeType     string `db:"node_type"`
+		SpecificType string `db:"specific_type"`
+	}
+	if err := r.dbManager.Db.Select(&rows, `SELECT DISTINCT node_type, specific_type FROM kg_manual_nodes
+		WHERE tenant_id = $1 AND cloud_account_id IS NULL AND specific_type <> node_type AND is_active = true
+		ORDER BY specific_type, node_type`, tenantID); err != nil {
+		return nil, fmt.Errorf("list custom kinds: %w", err)
+	}
+	out := make([]core.ManualNodeKind, 0, len(rows))
+	for _, k := range rows {
+		out = append(out, CustomManualNodeKind(core.NodeType(k.NodeType), k.SpecificType))
+	}
+	return out, nil
+}
+
+func (r *ManualNodeRepository) customKindCategories(tenantID, kind string) ([]string, error) {
+	return customKindCategories(r.dbManager, tenantID, kind)
+}
+
+// customKindCategories are the categories the tenant's live declarations of
+// a kind use. One kind has one category; older rows may disagree.
+func customKindCategories(dbManager *database.DatabaseManager, tenantID, kind string) ([]string, error) {
+	var out []string
+	if err := dbManager.Db.Select(&out, `SELECT DISTINCT node_type FROM kg_manual_nodes
+		WHERE tenant_id = $1 AND cloud_account_id IS NULL AND specific_type = $2 AND specific_type <> node_type AND is_active = true
+		ORDER BY node_type`, tenantID, kind); err != nil {
+		return nil, fmt.Errorf("look up kind %s: %w", kind, err)
+	}
+	return out, nil
+}
+
+// checkCustomKind runs the checks a custom-kind declaration needs the
+// database for: the kind keeps one category, it is not a specific type the
+// tenant's collectors write, and only a tenant admin introduces it.
+func (r *ManualNodeRepository) checkCustomKind(n *ManualNode, authorizeNewKind func() bool) error {
+	categories, err := r.customKindCategories(n.TenantID, n.SpecificType)
+	if err != nil {
+		return err
+	}
+	for _, c := range categories {
+		if c != n.NodeType {
+			return fmt.Errorf("%s is already declared under %s; a kind keeps one category", n.SpecificType, c)
+		}
+	}
+	var collected bool
+	if err := r.dbManager.Db.Get(&collected, `SELECT EXISTS (SELECT 1 FROM knowledge_graph_node
+		WHERE tenant_id = $1 AND specific_type = $2 AND is_active = true AND COALESCE(source, '') <> $3)`,
+		n.TenantID, n.SpecificType, core.ManualNodeSource); err != nil {
+		return fmt.Errorf("check kind %s: %w", n.SpecificType, err)
+	}
+	if collected {
+		return fmt.Errorf("%s is a type the collectors already use; give the kind another name", n.SpecificType)
+	}
+	if len(categories) == 0 && authorizeNewKind != nil && !authorizeNewKind() {
+		return ErrManualNodeKindForbidden
+	}
+	return nil
 }
 
 // List returns the tenant's live declarations.
@@ -145,18 +218,39 @@ func (r *ManualNodeRepository) Create(ctx context.Context, graph ManualNodeGraph
 	if err != nil {
 		return nil, err
 	}
-	return r.createPrepared(ctx, graph, n, req.Authorize)
+	created, err := r.createPrepared(ctx, graph, n, req.Authorize, req.AuthorizeNewKind)
+	if errors.Is(err, ErrManualNodeDuplicate) && n.IsCustomKind() {
+		return nil, r.explainKindCollision(n, err)
+	}
+	return created, err
+}
+
+// explainKindCollision says why a custom-kind node collides with an existing
+// declaration of another kind: the key carries the category, not the kind, so
+// two kinds under one category need different names or namespaces.
+func (r *ManualNodeRepository) explainKindCollision(n *ManualNode, err error) error {
+	existing, lookupErr := r.activeDeclaration(n.TenantID, n.KGNodeID)
+	if lookupErr != nil || existing.SpecificType == n.SpecificType {
+		return err
+	}
+	return fmt.Errorf("%w: a %s named %q is already declared under %s; set a namespace to tell them apart",
+		ErrManualNodeDuplicate, existing.SpecificType, n.Name, n.NodeType)
 }
 
 // createPrepared declares a prepared node: the second half of Create, kept
 // apart so an import still knows the node's identity when the declaration is
 // refused because the node is already in the graph.
-func (r *ManualNodeRepository) createPrepared(ctx context.Context, graph ManualNodeGraphWriter, n *ManualNode, authorize ManualAccountAuthorizer) (*ManualNode, error) {
+func (r *ManualNodeRepository) createPrepared(ctx context.Context, graph ManualNodeGraphWriter, n *ManualNode, authorize ManualAccountAuthorizer, authorizeNewKind func() bool) (*ManualNode, error) {
 	// cloudInput already checked an account declaration before its lookups;
 	// this covers one outside any account, and must precede the graph lookup
 	// below so a refused caller cannot learn whether the resource is collected.
 	if authorize != nil && !authorize(n.CloudAccountID) {
 		return nil, ErrManualNodeForbidden
+	}
+	if n.IsCustomKind() {
+		if err := r.checkCustomKind(n, authorizeNewKind); err != nil {
+			return nil, err
+		}
 	}
 
 	var source string
@@ -227,13 +321,7 @@ func (r *ManualNodeRepository) prepare(req ManualNodeCreate) (*ManualNode, error
 
 	var built *core.DbNode
 	if account == "" {
-		if n.SpecificType == "" {
-			n.SpecificType = n.NodeType
-		}
-		if n.NodeType == "" {
-			n.NodeType = n.SpecificType
-		}
-		node, err := buildTenantScopedNode(n)
+		node, err := r.prepareTenantScoped(n)
 		if err != nil {
 			return nil, err
 		}
@@ -268,6 +356,34 @@ func (r *ManualNodeRepository) prepare(req ManualNodeCreate) (*ManualNode, error
 		return nil, fmt.Errorf("node type %q cannot be declared", n.NodeType)
 	}
 	return n, nil
+}
+
+// prepareTenantScoped fills in the type of a declaration outside any account
+// and builds its node. A custom kind named without its category takes the one
+// the tenant already declares it under.
+func (r *ManualNodeRepository) prepareTenantScoped(n *ManualNode) (*core.DbNode, error) {
+	if n.NodeType == "" && n.SpecificType != "" && !core.IsKnownNodeType(n.SpecificType) {
+		categories, err := r.customKindCategories(n.TenantID, n.SpecificType)
+		if err != nil {
+			return nil, err
+		}
+		if len(categories) != 1 {
+			return nil, fmt.Errorf("%s is a new kind: choose its category (node_type)", n.SpecificType)
+		}
+		n.NodeType = categories[0]
+	}
+	if n.SpecificType == "" {
+		n.SpecificType = n.NodeType
+	}
+	if n.NodeType == "" {
+		n.NodeType = n.SpecificType
+	}
+	if n.IsCustomKind() {
+		if err := ValidateCustomKindName(n.SpecificType); err != nil {
+			return nil, err
+		}
+	}
+	return buildTenantScopedNode(n)
 }
 
 // cloudInput resolves the account and network a cloud declaration names.
@@ -722,6 +838,10 @@ func (r *ManualNodeRepository) flagDuplicates(tenantID string) (int, error) {
 				 WHERE n.tenant_id = m.tenant_id AND n.is_active = true AND n.level = 'Tenant'
 				   AND COALESCE(n.source, '') <> $2
 				   AND n.node_type = m.node_type
+				   -- A custom kind (NetworkSwitch under CloudResource) only
+				   -- duplicates a node of the same kind, not any unclassified
+				   -- cloud row that happens to share its name.
+				   AND (m.cloud_account_id IS NOT NULL OR m.specific_type = m.node_type OR n.specific_type = m.specific_type)
 				   AND n.id <> m.kg_node_id
 				   AND (m.cloud_account_id IS NULL OR n.cloud_account_id = m.cloud_account_id)
 				   -- query_attributes, not properties: every declarable type hoists

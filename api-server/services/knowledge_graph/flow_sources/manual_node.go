@@ -3,6 +3,7 @@ package flow_sources
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -45,9 +46,30 @@ var tenantScopedProperties = []core.ManualNodeProperty{{Name: "endpoint"}, {Name
 // maxManualNodeLabels caps labels per node; a declaration is not a tag store.
 const maxManualNodeLabels = 50
 
+// maxCustomKindProperties caps the free properties of a custom-kind node.
+const maxCustomKindProperties = 50
+
+// customKindPattern is a custom kind's name: PascalCase, like the built-in
+// specific types it sits beside.
+var customKindPattern = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{1,63}$`)
+
+// customKindEndpointKeys are the properties the ExternalService enricher
+// indexes to point observed traffic at a node (buildCloudEndpointIndex in
+// cloud_enrichment.go). A custom-kind node may not carry them: observed CALLS
+// edges would then land on it and meet the declared links on the same pair.
+// Keep in step with buildCloudEndpointIndex.
+var customKindEndpointKeys = map[string]struct{}{
+	"dns_name": {}, "dns_aliases": {}, "endpoint_address": {},
+	"configuration_endpoint": {}, "primary_endpoint": {}, "reader_endpoint": {},
+	"node_group_endpoints": {}, "cache_node_endpoints": {},
+}
+
 var (
 	// ErrManualNodeDuplicate: the resource already has an active declaration.
 	ErrManualNodeDuplicate = errors.New("this resource is already declared")
+	// ErrManualNodeKindForbidden: only a tenant admin may declare the first
+	// node of a kind the tenant does not use yet.
+	ErrManualNodeKindForbidden = errors.New("only a tenant admin can introduce a new node kind")
 	// ErrManualNodeAdopted: a collector now writes this node, so it is no
 	// longer the declaration's to edit or merge.
 	ErrManualNodeAdopted = errors.New("a collector now provides this node")
@@ -102,6 +124,13 @@ type ManualNode struct {
 // cloud account.
 func (n *ManualNode) IsTenantScoped() bool { return n.CloudAccountID == "" }
 
+// IsCustomKind reports whether the declaration carries a kind of the tenant's
+// own (e.g. NetworkSwitch) under its built-in category, rather than the
+// category itself.
+func (n *ManualNode) IsCustomKind() bool {
+	return n.IsTenantScoped() && n.SpecificType != "" && n.SpecificType != n.NodeType
+}
+
 // accountSlot is the node's cloud_account_id: the account, or the tenant for
 // a tenant-scoped node (a partition key only; it has no FK).
 func (n *ManualNode) accountSlot() string {
@@ -143,14 +172,50 @@ func TenantScopedManualNodeKinds() []core.ManualNodeKind {
 		out = append(out, core.ManualNodeKind{
 			SpecificType: string(nt),
 			NodeType:     nt,
-			KeyFields: []core.ManualNodeField{
-				{Name: core.ManualNodeFieldName, Label: "Name", Hint: "How the resource is known, e.g. billing-db or api.stripe.com", Required: true},
-				{Name: core.ManualNodeFieldNamespace, Label: "Namespace", Hint: "Optional grouping, e.g. the team or environment"},
-			},
-			Properties: append([]core.ManualNodeProperty(nil), tenantScopedProperties...),
+			KeyFields:    tenantScopedKeyFields(),
+			Properties:   append([]core.ManualNodeProperty(nil), tenantScopedProperties...),
 		})
 	}
 	return out
+}
+
+// CustomManualNodeKind is the schema entry for a tenant's own kind: the same
+// key fields as any declaration outside an account, and free properties.
+func CustomManualNodeKind(category core.NodeType, kind string) core.ManualNodeKind {
+	return core.ManualNodeKind{
+		SpecificType:   kind,
+		NodeType:       category,
+		KeyFields:      tenantScopedKeyFields(),
+		Properties:     []core.ManualNodeProperty{},
+		FreeProperties: true,
+	}
+}
+
+func tenantScopedKeyFields() []core.ManualNodeField {
+	return []core.ManualNodeField{
+		{Name: core.ManualNodeFieldName, Label: "Name", Hint: "How the resource is known, e.g. billing-db or api.stripe.com", Required: true},
+		{Name: core.ManualNodeFieldNamespace, Label: "Namespace", Hint: "Optional grouping, e.g. the team or environment"},
+	}
+}
+
+// ValidateCustomKindName checks a custom kind's name against what the code
+// already uses: a NodeType, or a specific type a source declares. The
+// repository also checks the tenant's graph for specific types set outside
+// the registries.
+func ValidateCustomKindName(kind string) error {
+	if !customKindPattern.MatchString(kind) {
+		return fmt.Errorf("kind %q must start with a capital letter and use only letters and digits, e.g. NetworkSwitch", kind)
+	}
+	if core.IsKnownNodeType(kind) {
+		return fmt.Errorf("%s is a built-in node type; choose it as the category, or give the kind another name", kind)
+	}
+	if _, ok := core.LookupSpecificTypeSchema(kind); ok {
+		return fmt.Errorf("%s is a type the collectors already use; give the kind another name", kind)
+	}
+	if _, ok := core.LookupOntologySpec(kind); ok {
+		return fmt.Errorf("%s is a type the collectors already use; give the kind another name", kind)
+	}
+	return nil
 }
 
 // buildTenantScopedNode makes the base node for a declaration outside any
@@ -181,6 +246,12 @@ func buildTenantScopedNode(n *ManualNode) (*core.DbNode, error) {
 // validateManualNodeDetails checks the descriptive data against what the type
 // allows: its concrete schema in a cloud account, a fixed few fields outside.
 func validateManualNodeDetails(n *ManualNode) error {
+	if n.IsCustomKind() {
+		if err := validateCustomKindProperties(n.Properties); err != nil {
+			return err
+		}
+		return validateManualNodeLabels(n.Labels)
+	}
 	shapes := manualPropertyShapes(n)
 	var unknown []string
 	for k, v := range n.Properties {
@@ -200,12 +271,54 @@ func validateManualNodeDetails(n *ManualNode) error {
 		sort.Strings(unknown)
 		return fmt.Errorf("%s does not have the properties %s", n.SpecificType, strings.Join(unknown, ", "))
 	}
-	if len(n.Labels) > maxManualNodeLabels {
+	return validateManualNodeLabels(n.Labels)
+}
+
+func validateManualNodeLabels(labels map[string]string) error {
+	if len(labels) > maxManualNodeLabels {
 		return fmt.Errorf("at most %d labels", maxManualNodeLabels)
 	}
-	for k := range n.Labels {
+	for k := range labels {
 		if strings.TrimSpace(k) == "" {
 			return errors.New("label keys may not be empty")
+		}
+	}
+	return nil
+}
+
+// validateCustomKindProperties checks a custom-kind node's free properties:
+// no key a node's identity or the builder owns, no key that would make the
+// node a target of observed traffic, and each value in a shape the graph
+// stores (text/number/boolean, a list of text, or text key/values).
+func validateCustomKindProperties(props map[string]interface{}) error {
+	if len(props) > maxCustomKindProperties {
+		return fmt.Errorf("at most %d properties", maxCustomKindProperties)
+	}
+	keys := make([]string, 0, len(props))
+	for k := range props {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if strings.TrimSpace(k) == "" {
+			return errors.New("property names may not be empty")
+		}
+		if core.IsManualReservedProperty(k) {
+			return fmt.Errorf("property %q cannot be set: it is part of the node's identity", k)
+		}
+		if _, ok := customKindEndpointKeys[k]; ok {
+			return fmt.Errorf("property %q cannot be set on a custom kind: Nudgebee matches observed traffic on it", k)
+		}
+		v := props[k]
+		shape := core.PropertyShapeScalar
+		switch v.(type) {
+		case map[string]interface{}:
+			shape = core.PropertyShapeMap
+		case []interface{}:
+			shape = core.PropertyShapeList
+		}
+		if err := checkPropertyShape(k, v, shape); err != nil {
+			return err
 		}
 	}
 	return nil

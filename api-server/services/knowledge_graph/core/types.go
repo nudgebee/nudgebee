@@ -94,6 +94,35 @@ const (
 	NodeTypeOnCallService NodeType = "OnCallService" // A pageable service/unit of on-call responsibility (e.g. PagerDuty service)
 )
 
+// knownNodeTypes is every NodeType constant above. TestKnownNodeTypesIsComplete
+// reads this file and fails when a constant is missing here.
+var knownNodeTypes = map[NodeType]bool{
+	NodeTypeService: true, NodeTypeWorkload: true, NodeTypeDatabase: true, NodeTypeMessageQueue: true,
+	NodeTypeQueue: true, NodeTypeTopic: true, NodeTypeCache: true, NodeTypeExternalService: true,
+	NodeTypeComputeInstance: true, NodeTypeComputeInstancePool: true,
+	NodeTypeCluster: true, NodeTypeNamespace: true, NodeTypePod: true, NodeTypeNode: true,
+	NodeTypeJob: true, NodeTypeCronJob: true, NodeTypeCRD: true,
+	NodeTypeLoadBalancer: true, NodeTypeBackendPool: true, NodeTypeStorage: true, NodeTypeVPC: true,
+	NodeTypeSecurityGroup: true, NodeTypeSubnet: true, NodeTypeNetworkInterface: true, NodeTypeRouteTable: true,
+	NodeTypeCloudResource: true, NodeTypeInfraStack: true,
+	NodeTypeContainerRegistry: true, NodeTypeContainerImage: true, NodeTypeArtifact: true, NodeTypeDNSZone: true,
+	NodeTypeDNSRecord: true, NodeTypeCDN: true, NodeTypeNetworkGateway: true, NodeTypePrivateEndpoint: true,
+	NodeTypeAPIGateway: true, NodeTypeSecretVault: true, NodeTypeEncryptionKey: true, NodeTypeMonitoringService: true,
+	NodeTypeLogAggregator: true, NodeTypeServerlessFunction: true, NodeTypeManagedCluster: true,
+	NodeTypeBackupVault: true, NodeTypeBackupPolicy: true, NodeTypePublicIP: true, NodeTypeSecurityService: true,
+	NodeTypeEmailService: true, NodeTypeAIService: true, NodeTypeServiceIdentity: true,
+	NodeTypeK8sService: true, NodeTypeIngress: true, NodeTypeNetworkPolicy: true, NodeTypeConfigMap: true,
+	NodeTypeK8sSecret: true, NodeTypeK8sServiceAccount: true, NodeTypePVC: true, NodeTypePV: true,
+	NodeTypeHelmChart: true, NodeTypeHelmRelease: true, NodeTypeConfiguration: true, NodeTypeRepository: true,
+	NodeTypeSourceControlOrg: true, NodeTypeUserAccount: true, NodeTypeUserGroup: true,
+	NodeTypeOnCallService: true,
+}
+
+// IsKnownNodeType reports whether name is one of the NodeType constants.
+func IsKnownNodeType(name string) bool {
+	return knownNodeTypes[NodeType(name)]
+}
+
 // NodeCategory represents the category of a node (infrastructure vs non-infrastructure)
 type NodeCategory string
 
@@ -255,6 +284,11 @@ const (
 	RelationshipPublishesTo  RelationshipType = "PUBLISHES_TO"
 	RelationshipSubscribesTo RelationshipType = "SUBSCRIBES_TO"
 	RelationshipRunsOn       RelationshipType = "RUNS_ON"
+
+	// User-declared only (manual dependencies touching a node declared outside
+	// any account): a physical/network link, and a generic dependency.
+	RelationshipConnectedTo RelationshipType = "CONNECTED_TO" // undirected: traversals follow it both ways
+	RelationshipDependsOn   RelationshipType = "DEPENDS_ON"   // A depends on B
 
 	// Network-flow relationships (VPC Flow Logs). ACCEPT traffic is modeled as
 	// CALLS (a live dependency); REJECT traffic gets its own edge type so a
@@ -431,6 +465,21 @@ var DefaultBehavioralEdgeTypes = map[RelationshipType]bool{
 	RelationshipPublishesTo:        true,
 	RelationshipSubscribesTo:       true,
 	RelationshipConnectionRejected: true, // VPC-flow REJECT edges are observed & intermittent — grace period, not immediate tombstone
+}
+
+// undirectedRelationshipTypes are links with no direction (a cable between a
+// switch and a server): directional traversals (upstream, downstream, impact)
+// follow them from either end.
+var undirectedRelationshipTypes = []string{string(RelationshipConnectedTo)}
+
+// IsUndirectedRelationship reports whether traversals follow rt both ways.
+func IsUndirectedRelationship(rt RelationshipType) bool {
+	for _, t := range undirectedRelationshipTypes {
+		if t == string(rt) {
+			return true
+		}
+	}
+	return false
 }
 
 // KgNodeSlim is a lightweight node for graph traversal API responses

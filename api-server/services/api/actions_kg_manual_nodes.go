@@ -117,7 +117,7 @@ func manualNodeWriteStatus(err error) int {
 	switch {
 	case errors.As(err, &exists), errors.Is(err, flow_sources.ErrManualNodeDuplicate):
 		return 409
-	case errors.Is(err, flow_sources.ErrManualNodeForbidden):
+	case errors.Is(err, flow_sources.ErrManualNodeForbidden), errors.Is(err, flow_sources.ErrManualNodeKindForbidden):
 		return 403
 	case errors.Is(err, sql.ErrNoRows):
 		return 404
@@ -151,7 +151,19 @@ func handleKgGetManualNodeSchema(actionPayload *ActionRequest, c *gin.Context, t
 		c.JSON(500, common.ErrorActionInternal("Failed to load the node schema: "+err.Error()))
 		return
 	}
+	canDefineKinds := manualNewKindAuthorizer(ctx.GetSecurityContext())()
+	for i := range schema {
+		if schema[i].CloudProvider == flow_sources.TenantScopedProvider {
+			schema[i].CanDefineKinds = canDefineKinds
+		}
+	}
 	c.JSON(200, map[string]any{"data": schema})
+}
+
+// manualNewKindAuthorizer answers whether the caller may introduce a custom
+// node kind the tenant does not use yet: a tenant admin's call.
+func manualNewKindAuthorizer(sc *security.SecurityContext) func() bool {
+	return func() bool { return sc.IsTenantAdmin() || sc.IsSuperAdmin() }
 }
 
 // handleKgListManualNodes returns the tenant's live declarations.
@@ -191,6 +203,7 @@ func handleKgCreateManualNode(actionPayload *ActionRequest, c *gin.Context, trac
 	req.TenantID = tenantID
 	req.DeclaredByUserID = ctx.GetSecurityContext().GetUserId()
 	req.Authorize = manualAccountAuthorizer(ctx.GetSecurityContext(), security.SecurityAccessTypeCreate)
+	req.AuthorizeNewKind = manualNewKindAuthorizer(ctx.GetSecurityContext())
 
 	created, err := repo.Create(ctx.GetContext(), kg, req)
 	if err != nil {

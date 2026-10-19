@@ -51,6 +51,9 @@ type ManualNodeKind struct {
 	// Properties are the optional, descriptive fields: the type's concrete
 	// schema (SpecificTypeSchema), never part of the key.
 	Properties []ManualNodeProperty `json:"properties"`
+	// FreeProperties marks a tenant's own kind: any key/value may be set,
+	// Properties is empty.
+	FreeProperties bool `json:"free_properties,omitempty"`
 }
 
 // ManualNodeProperty is one optional field a declaration may set, with the

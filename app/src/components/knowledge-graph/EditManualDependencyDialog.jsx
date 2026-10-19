@@ -5,7 +5,9 @@
 //   - source_node_type, source_name, dest_node_type, dest_name required;
 //   - the other six per-side fields (namespace, cluster, arn, account_id,
 //     region) are optional qualifiers that narrow ambiguous matches;
-//   - relationship_type defaults to CALLS.
+//   - relationship_type defaults to CALLS. CALLS / PUBLISHES_TO /
+//     SUBSCRIBES_TO link any two nodes; the other six need a node declared
+//     outside any account at one end (the server refuses them otherwise).
 //
 // The form is a two-column layout (Source | Destination) so the operator
 // can visually parallel the two endpoints. Sits inside the parent DS Modal
@@ -67,7 +69,17 @@ const CLOUD_NODE_TYPE_OPTIONS = [
   { value: 'LoadBalancer', label: 'LoadBalancer' },
   { value: 'APIGateway', label: 'APIGateway' },
   { value: 'ExternalService', label: 'ExternalService' },
+  { value: 'CloudResource', label: 'CloudResource (other)' },
 ];
+
+// The tenant's own kinds (NetworkSwitch, …) declared outside any account, from
+// kg_get_manual_node_schema. An endpoint names one as its node type.
+const customKindOptions = (schema) =>
+  (schema ?? [])
+    .filter((p) => !p.cloud_account_id)
+    .flatMap((p) => p.kinds ?? [])
+    .filter((k) => k.free_properties)
+    .map((k) => ({ value: k.specific_type, label: `${k.specific_type} (your kind)` }));
 
 const K8S_NODE_TYPE_SET = new Set(K8S_NODE_TYPE_OPTIONS.map((o) => o.value));
 
@@ -83,11 +95,20 @@ const defaultNodeTypeForKind = (kind) => (kind === KIND_K8S ? K8S_NODE_TYPE_OPTI
 // letting the backend resolver re-run and clobber it.
 const PIN_COMPARE_FIELDS = ['node_type', 'name', 'namespace', 'cluster', 'arn', 'account_id', 'region'];
 
+// The first three link any two nodes; the rest need a node declared outside
+// any account at one end. Which end that is the form cannot tell (a typed
+// Database may be either), so all are offered and the server decides.
 const RELATIONSHIP_OPTIONS = [
-  { value: 'CALLS', label: 'CALLS' },
-  { value: 'PUBLISHES_TO', label: 'PUBLISHES_TO' },
-  { value: 'SUBSCRIBES_TO', label: 'SUBSCRIBES_TO' },
-];
+  'CALLS',
+  'PUBLISHES_TO',
+  'SUBSCRIBES_TO',
+  'CONNECTED_TO',
+  'DEPENDS_ON',
+  'RUNS_ON',
+  'HOSTED_ON',
+  'ROUTES_TO',
+  'BELONGS_TO',
+].map((value) => ({ value, label: value }));
 
 // Per-field tooltip copy. Keeping the wording in one place so we can edit
 // without hunting through JSX. Mirrors the resolver semantics in
@@ -106,7 +127,7 @@ const TOOLTIPS = {
   cloudAccount: 'Optional. Strict qualifier — only nodes in this connected account match (AWS, GCP and Azure).',
   region: 'Optional. Cloud region (us-east-1, eastus, us-central1, …). Useful when the same logical resource exists in multiple regions.',
   relationship:
-    'Edge type. CALLS for synchronous request/response. PUBLISHES_TO / SUBSCRIBES_TO for pub-sub (you must declare both directions; no automatic inverse).',
+    'Edge type. CALLS for synchronous request/response. PUBLISHES_TO / SUBSCRIBES_TO for pub-sub (you must declare both directions; no automatic inverse). These three link any two nodes. The rest need a node declared outside any account at one end: Source RUNS_ON / HOSTED_ON / DEPENDS_ON / ROUTES_TO Destination means the source depends on the destination; CONNECTED_TO has no direction (a cable between two things); BELONGS_TO groups the source under the destination.',
   notes: 'Free-text context for future readers. Surfaces in the manual dependencies table so reviewers can see why a row was declared.',
   kgPickAccount: 'Pick the cloud account whose KG nodes you want to browse. Required to populate the node-type and node dropdowns.',
   kgPickNodeType: 'Pick the KG NodeType. Only types with at least one node in the selected account are shown.',
@@ -176,8 +197,9 @@ const formatAccountOption = (acc) => {
 const accountToSelectValue = (stored) => (stored ? stored : ACCOUNT_ANY_VALUE);
 const selectValueToAccount = (next) => (next === ACCOUNT_ANY_VALUE ? '' : next);
 
-const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
+const EditManualDependencyDialog = ({ open, row, schema, onClose, onSaved }) => {
   const isEdit = Boolean(row?.id);
+  const customKinds = useMemo(() => customKindOptions(schema), [schema]);
   const [form, setForm] = useState(BLANK);
   const [submitting, setSubmitting] = useState(false);
   const [cloudAccounts, setCloudAccounts] = useState([]);
@@ -521,6 +543,7 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
             prefix='source'
             accountOptions={accountOptions}
             cloudAccounts={cloudAccounts}
+            customKinds={customKinds}
           />
           <Divider orientation='vertical' sx={{ mx: 0 }} />
           <EndpointColumn
@@ -533,6 +556,7 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
             prefix='dest'
             accountOptions={accountOptions}
             cloudAccounts={cloudAccounts}
+            customKinds={customKinds}
           />
         </Box>
 
@@ -568,6 +592,8 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
 EditManualDependencyDialog.propTypes = {
   open: PropTypes.bool.isRequired,
   row: PropTypes.object,
+  // kg_get_manual_node_schema: the tenant's own kinds become node-type options.
+  schema: PropTypes.array,
   onClose: PropTypes.func.isRequired,
   onSaved: PropTypes.func.isRequired,
 };
@@ -580,11 +606,25 @@ EditManualDependencyDialog.propTypes = {
 //   - Pick from KG — cascading dropdowns (account → type → node) for direct picking.
 //     Available in create and edit. On submit the picked UUID is pinned via
 //     kg_resolve_manual_dependency so the row resolves first try.
-const EndpointColumn = ({ label, fields, updateField, updateKind, updatePickerField, onPickNode, prefix, accountOptions, cloudAccounts }) => {
+const EndpointColumn = ({
+  label,
+  fields,
+  updateField,
+  updateKind,
+  updatePickerField,
+  onPickNode,
+  prefix,
+  accountOptions,
+  cloudAccounts,
+  customKinds,
+}) => {
   const get = (suffix) => fields[`${prefix}_${suffix}`] ?? '';
   const set = (suffix) => updateField(`${prefix}_${suffix}`);
   const kind = fields[`${prefix}_kind`] ?? KIND_K8S;
-  const nodeTypeOptions = kind === KIND_K8S ? K8S_NODE_TYPE_OPTIONS : CLOUD_NODE_TYPE_OPTIONS;
+  const listed = kind === KIND_K8S ? K8S_NODE_TYPE_OPTIONS : [...CLOUD_NODE_TYPE_OPTIONS, ...customKinds];
+  // A stored type the lists lack (a kind no longer in use) still shows.
+  const nodeType = get('node_type');
+  const nodeTypeOptions = nodeType && !listed.some((o) => o.value === nodeType) ? [...listed, { value: nodeType, label: nodeType }] : listed;
   // Display label for a pinned node (picked_node_id set) — seeds the Node
   // dropdown and the brief "loading" banner so the picker reflects the pin
   // instead of looking empty before its option lists are opened.
@@ -692,6 +732,7 @@ EndpointColumn.propTypes = {
   prefix: PropTypes.oneOf(['source', 'dest']).isRequired,
   accountOptions: PropTypes.array.isRequired,
   cloudAccounts: PropTypes.array.isRequired,
+  customKinds: PropTypes.array.isRequired,
 };
 
 // Tiny helper for consistent field-label styling across the form. When

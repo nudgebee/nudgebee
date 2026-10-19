@@ -377,6 +377,17 @@ func accountDisplay(accountId string, nameMap map[string]string) string {
 	return accountId
 }
 
+// kgNodeTypeDisplay renders a node's type column: the ontology type, plus a
+// user-declared node's own kind, e.g. "CloudResource (NetworkSwitch)" for a
+// switch declared as a custom kind. Collected nodes keep the bare type, the
+// value node_types filters take.
+func kgNodeTypeDisplay(nodeType, specificType, source string) string {
+	if source != "manual" || specificType == "" || specificType == nodeType {
+		return nodeType
+	}
+	return nodeType + " (" + specificType + ")"
+}
+
 // formatKGSearchResponse formats kg_search_nodes results as a concise markdown
 // table. Node IDs are preserved so the LLM can chain into kg_traverse.
 //
@@ -415,7 +426,7 @@ func formatKGSearchResponse(data map[string]any, accountNames map[string]string)
 		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n",
 			stringFromAny(node["id"]),
 			stringFromAny(node["name"]),
-			stringFromAny(node["node_type"]),
+			kgNodeTypeDisplay(stringFromAny(node["node_type"]), stringFromAny(node["specific_type"]), stringFromAny(node["source"])),
 			stringFromAny(node["namespace"]),
 			stringFromAny(node["source"]),
 			accountDisplay(stringFromAny(node["cloud_account_id"]), accountNames),

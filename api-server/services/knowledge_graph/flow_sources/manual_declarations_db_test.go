@@ -16,7 +16,7 @@ func importDeclarations(t *testing.T, f *depAuthzFixture, deps *flow_sources.Man
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	res, err := flow_sources.NewManualDeclarationsImporter(f.repo, deps, f.kg).Import(context.Background(), f.tenantID, "", authorize, parsed)
+	res, err := flow_sources.NewManualDeclarationsImporter(f.repo, deps, f.kg).Import(context.Background(), f.tenantID, "", authorize, nil, parsed)
 	if err != nil {
 		t.Fatalf("import: %v", err)
 	}
@@ -62,8 +62,10 @@ func TestManualDeclarations_NodesThenDependenciesByRef(t *testing.T) {
 		both.ResolvedSourceNodeID != cache.NodeID || both.ResolvedDestNodeID != refunds.NodeID {
 		t.Errorf("ref -> ref: %s, %s -> %s", both.ResolutionStatus, both.ResolvedSourceNodeID, both.ResolvedDestNodeID)
 	}
-	// The stored text names the node the way the resolver would find it.
-	if both.DestNodeType != "MessageQueue" || both.DestName != "refunds" || both.DestAccountID != f.account || both.SourceAccountID != "" {
+	// The stored text names the node the way the resolver would find it. A
+	// node outside any account is qualified by the tenant (its
+	// cloud_account_id), so it never re-resolves to a same-named collected node.
+	if both.DestNodeType != "MessageQueue" || both.DestName != "refunds" || both.DestAccountID != f.account || both.SourceAccountID != f.tenantID {
 		t.Errorf("stored endpoints: %+v", both)
 	}
 	orders := f.collect(t, "SQSQueue", "orders")

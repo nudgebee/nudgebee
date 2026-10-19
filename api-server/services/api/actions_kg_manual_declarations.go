@@ -68,7 +68,7 @@ func handleKgCreateManualDeclarations(actionPayload *ActionRequest, c *gin.Conte
 	authorize := manualAccountAuthorizer(sc, security.SecurityAccessTypeCreate)
 	deps := manualDepWriter(ctx, flow_sources.NewManualDependencyRepository(dbManager, ctx.GetLogger()), security.SecurityAccessTypeCreate)
 
-	result, err := flow_sources.NewManualDeclarationsImporter(nodes, deps, kg).Import(ctx.GetContext(), tenantID, sc.GetUserId(), authorize, doc)
+	result, err := flow_sources.NewManualDeclarationsImporter(nodes, deps, kg).Import(ctx.GetContext(), tenantID, sc.GetUserId(), authorize, manualNewKindAuthorizer(sc), doc)
 	if err != nil {
 		ctx.GetLogger().Error("manual declarations import failed", "error", err)
 		c.JSON(500, common.ErrorActionInternal("import failed: "+err.Error()))

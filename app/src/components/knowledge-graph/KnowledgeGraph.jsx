@@ -674,7 +674,9 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
       const isIdentityNode = n.kind === 'UserAccount' || n.kind === 'UserGroup';
       const tenantScopedName = tenantId && n.account_id === tenantId ? 'Not in a connected account' : n.account_id;
       const accName = isIdentityNode ? '' : accMap.get(n.account_id) || tenantScopedName;
-      const subtitle = isIdentityNode && n.specific_type ? humanizeNodeType(n.specific_type) : n.kind;
+      // A kind of the tenant's own (NetworkSwitch, declared outside any account) shows by its name, not its category.
+      const isCustomKind = tenantId && n.account_id === tenantId && n.specific_type && n.specific_type !== n.kind;
+      const subtitle = (isIdentityNode || isCustomKind) && n.specific_type ? humanizeNodeType(n.specific_type) : n.kind;
       return {
         id: n.id,
         type: 'serviceNode',
