@@ -454,8 +454,10 @@ const VmVulnerabilities = ({
   // An empty result reads as "no open vulnerabilities" (good news) only when
   // nothing narrowed the query — otherwise it just means the filter (severity,
   // status, VM, package, or a deep-link scope) matched nothing, which
-  // CustomTable's showUpdatedEmptyData path can't tell apart on its own.
-  const isFiltered = Boolean(severity || vmFilter || packageFilter || scopeLabel || statusFilter === 'Dismissed');
+  // CustomTable's showUpdatedEmptyData path can't tell apart on its own. An
+  // embedded table has no toolbar: its scope is the row it opened from, and an
+  // empty VM row means that VM has no findings yet — not a filter to clear.
+  const isFiltered = !embedded && Boolean(severity || vmFilter || packageFilter || scopeLabel || statusFilter === 'Dismissed');
 
   const groupData = groups.map((group) => {
     const groupSeverity = severityFromWeight(group.max_severity_weight);
