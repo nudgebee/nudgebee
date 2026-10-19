@@ -274,7 +274,13 @@ const CloudOptimizeRecommendationsTable = (props: {
     setPage(0);
   };
 
-  const getMenuItems = (item: any) => {
+  const getMenuItems = (item: any, ticketId?: string) => {
+    const ticketMenuItem = {
+      icon: TicketsIcon,
+      disabled: !!ticketId,
+      label: ticketId ? `Ticket: ${ticketId}` : 'Create Ticket',
+      id: 1,
+    };
     if (config.showAlarmModal) {
       const items: any[] = [];
       // Only show "Create Alarm" for recommendations that have alarm_config and account is not read-only.
@@ -284,13 +290,10 @@ const CloudOptimizeRecommendationsTable = (props: {
       if (item?.recommendation?.alarm_config && props.accountAccess !== 'readonly' && hasWriteAccess(item?.account_id ?? selectedAccountId)) {
         items.push({ icon: AutoPilotGreyIcon, disabled: false, label: 'Create Alarm', id: 0 });
       }
-      items.push({ icon: TicketsIcon, disabled: false, label: 'Create Ticket', id: 1 });
+      items.push(ticketMenuItem);
       return items;
     }
-    return [
-      { icon: AutoPilotGreyIcon, disabled: true, label: 'Resolve', id: 0 },
-      { icon: TicketsIcon, disabled: false, label: 'Create Ticket', id: 1 },
-    ];
+    return [{ icon: AutoPilotGreyIcon, disabled: true, label: 'Resolve', id: 0 }, ticketMenuItem];
   };
 
   const onMenuClick = (menuItem: { id: number }, data: any) => {
@@ -447,9 +450,11 @@ const CloudOptimizeRecommendationsTable = (props: {
       };
     }
 
-    const ticketLink = ticketReferenceMap.has(item.id) ? (
-      <CustomTicketLink ticketURL={ticketReferenceMap.get(item.id)?.url} ticketID={ticketReferenceMap.get(item.id)?.ticket_id} />
-    ) : null;
+    const ticketId = ticketReferenceMap.get(item.id)?.ticket_id;
+    // Gate on ticketId (not map membership) so the link and the menu's disabled state key off the
+    // same condition — a map entry without a ticket_id then renders neither a broken link nor a
+    // wrongly-disabled action.
+    const ticketLink = ticketId ? <CustomTicketLink ticketURL={ticketReferenceMap.get(item.id)?.url} ticketID={ticketId} /> : null;
 
     const recommendationValue = config.getRecommendationText(recommenedationDetails, item);
 
@@ -513,10 +518,10 @@ const CloudOptimizeRecommendationsTable = (props: {
     }
 
     // Actions menu (Ask NuBi + per-row dropdown)
-    const menuItemsConfig = getMenuItems(item);
+    const menuItemsConfig = getMenuItems(item, ticketId);
     data.push({
       component: (
-        <Box display='flex' justifyContent='flex-end' flexDirection='row' alignItems='center' gap={ds.space[1]}>
+        <Box display='flex' justifyContent='flex-end' flexDirection='row' alignItems='center' gap={ds.space[1]} onClick={(e) => e.stopPropagation()}>
           <DsTooltip title={`Ask ${assistantName}`} placement='top'>
             <span>
               <DsButton
