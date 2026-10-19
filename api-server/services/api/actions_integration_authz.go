@@ -1,6 +1,7 @@
 package api
 
 import (
+	"nudgebee/services/integrations"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
 	"slices"
@@ -53,6 +54,52 @@ var integrationActionsAuthorizedInHandler = map[string]bool{
 	"integrations_diagnose_connection": true,
 	"webhook_subject_mappings_sync":    true,
 }
+
+// observabilityIntegrationTypes are the integration types (stored
+// integrations.type, lowercased) a per-provider grant can cover: the providers
+// on the Integrations → Observability tab. The grant is the module
+// providerGrantModulePrefix+type at class Write. The app's copy is
+// OBSERVABILITY_INTEGRATION_PROVIDERS in app/src/lib/integrationProviderGrants.ts;
+// TestObservabilityIntegrationTypesMatchApp keeps the two equal.
+var observabilityIntegrationTypes = map[string]bool{
+	integrations.IntegrationDatadog:          true,
+	integrations.IntegrationDynatrace:        true,
+	integrations.IntegrationLast9:            true,
+	integrations.IntegrationLoggly:           true,
+	integrations.IntegrationLoki:             true,
+	integrations.IntegrationSignoz:           true,
+	integrations.IntegrationOpenObserve:      true,
+	integrations.IntegrationCubeAPM:          true,
+	integrations.IntegrationObserve:          true,
+	integrations.IntegrationAzureAppInsights: true,
+	integrations.IntegrationPrometheus:       true,
+	integrations.IntegrationChronosphere:     true,
+	"otel_clickhouse":                        true,
+	integrations.IntegrationJaeger:           true,
+	integrations.IntegrationNewRelic:         true,
+	integrations.IntegrationSplunkO11y:       true,
+	integrations.IntegrationSplunkEnterprise: true,
+	integrations.IntegrationSolarWinds:       true,
+	integrations.IntegrationGrafanaTempo:     true,
+	"es":                                     true, // stored as "ES"
+	integrations.IntegrationPinot:            true,
+	integrations.IntegrationHive:             true,
+}
+
+const providerGrantModulePrefix = "integrations."
+
+// providerGrantActions are the writes a per-provider grant covers. Everything
+// else keeps the tenant-wide integrations rule: reads need integrations:Read,
+// and discovery targets and config pushes are not per-provider.
+var providerGrantActions = map[string]bool{
+	"integrations_create_config": true,
+	"integrations_delete_config": true,
+	"integrations_update_status": true,
+}
+
+// getStoredIntegrationType returns the stored type of the tenant's integration
+// with that id ("" when there is none). Swapped in tests.
+var getStoredIntegrationType = core.GetIntegrationTypeByID
 
 // workflowWebhookIntegration is the integration type runbook-server creates and
 // deletes on the user's behalf when a workflow with a webhook trigger is saved
@@ -154,10 +201,43 @@ func canRunIntegrationAction(ctx *security.RequestContext, actionName string, ta
 	if target.Ambiguous {
 		return false
 	}
+	if providerGrantActions[actionName] && canManageIntegrationProvider(ctx, actionName, target) {
+		return true
+	}
 	if target.IntegrationName == workflowWebhookIntegration {
 		return canManageWorkflowWebhook(ctx, actionName, target)
 	}
 	return false
+}
+
+// canManageIntegrationProvider reports whether a per-provider grant covers the
+// write. The grant is tenant-wide only (HasPermission): integrations are not
+// per-account data, so an account-bound assignment of the role stays inert here,
+// as it does for the integrations module itself.
+//   - delete and update_status find the row by type, name and source, so the
+//     type in the request is the type of the row they change.
+//   - create with an integration_id updates that row without comparing its
+//     stored type to the request's, so the stored type must match. A create
+//     without an id inserts the request's type (or, for a name that already
+//     exists, updates the row of that same type).
+func canManageIntegrationProvider(ctx *security.RequestContext, actionName string, target integrationActionTarget) bool {
+	integrationType := strings.ToLower(target.IntegrationName)
+	if !observabilityIntegrationTypes[integrationType] {
+		return false
+	}
+	if !ctx.GetSecurityContext().HasPermission(providerGrantModulePrefix+integrationType, "Write") {
+		return false
+	}
+	if actionName != "integrations_create_config" || target.IntegrationId == "" {
+		return true
+	}
+	stored, err := getStoredIntegrationType(ctx, target.IntegrationId)
+	if err != nil {
+		ctx.GetLogger().Error("integrations: failed to look up integration type for authorization",
+			"error", err, "integration_id", target.IntegrationId)
+		return false
+	}
+	return strings.EqualFold(stored, integrationType)
 }
 
 // canManageWorkflowWebhook applies runbook-server's workflow-write rule to every

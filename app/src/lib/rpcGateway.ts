@@ -18,6 +18,7 @@ import { elevateRoles } from '@lib/authHooks';
 import { pickDefaultRole } from '@lib/rolePriority';
 import { stripSuperAdminRoles } from '@lib/superAdminRoles';
 import { isTokenScopeBlockedAction } from '@lib/permissionCatalog';
+import { actionHasProviderGrant } from '@lib/integrationProviderGrants';
 import { TAB_TENANT_HEADER } from '@lib/tabTenant';
 
 // Shared primitives for the RPC-bypass path. Used by both /api/rpc
@@ -388,7 +389,9 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
   // we couldn't classify (route.permission undefined) is never grantable this
   // way, only via a built-in role in allowedRoles.
   const permissions = opts.sessionVariables.permissions || [];
-  const hasPermission = actionHasCustomGrant(opts.method, route, permissions);
+  // A per-provider integration grant admits its write actions here; which
+  // provider it covers is decided by the API server against the stored type.
+  const hasPermission = actionHasCustomGrant(opts.method, route, permissions) || actionHasProviderGrant(opts.method, permissions);
   // Tenant-agnostic actions (actions.yaml `tenant_agnostic: true`) authorize on
   // the authenticated user's identity alone, not on a role within the active
   // tenant, so both gates below are skipped for them. This is what keeps

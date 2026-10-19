@@ -17,7 +17,7 @@ jest.mock('next-auth/jwt', () => ({ getToken: jest.fn() }));
 jest.mock('@lib/internal', () => ({ decodeSessionJWT: jest.fn(), decrypt: jest.fn() }));
 jest.mock('@lib/sessionRevocation', () => ({ isSessionRevoked: jest.fn() }));
 
-import { actionHasCustomGrant, forwardAction, ACCOUNT_ENFORCED_ACTIONS } from '@lib/rpcGateway';
+import { actionAllowedByTokenScopes, actionHasCustomGrant, forwardAction, ACCOUNT_ENFORCED_ACTIONS } from '@lib/rpcGateway';
 import { loadRpcRoutes, type RpcRoute } from '@lib/rpcRoutes';
 import { buildCatalog, classifyAction, type PermissionClass } from '@lib/permissionCatalog';
 import { deriveSystemRoleGrants, DERIVED_SYSTEM_ROLE_KEYS } from '@lib/systemRoleGrants';
@@ -377,5 +377,47 @@ describe('RBAC enforcement matrix — denial kind', () => {
   it('still names the real role when the caller holds a built-in one', async () => {
     const r = await forward('userroles_upsert_group', ['account_admin'], []);
     expect(!r.ok && r.error.kind === 'forbidden' && r.error.role).toBe('account_admin');
+  });
+});
+
+// Per-provider integration grants (integrations.<type>:Write). The gateway only
+// asks "does the caller hold any provider grant"; the API server decides which
+// provider (actions_integration_authz.go canManageIntegrationProvider).
+describe('RBAC enforcement matrix — per-provider integration grants', () => {
+  const forward = (method: string, permissions: string[]) =>
+    forwardAction({
+      method,
+      params: {},
+      sessionVariables: { role: 'tenant_admin_readonly', allowed_roles: [], permissions, user_id: 'u1', tenant_id: 't1' },
+      tenantId: 't1',
+      userId: 'u1',
+      traceparent: '',
+      requestId: 'r1',
+    });
+  const denied = (r: Awaited<ReturnType<typeof forward>>) => !r.ok && r.error.kind === 'forbidden';
+  const datadogOnly = ['integrations:Read', 'integrations.datadog:Write'];
+
+  it.each(['integrations_create_config', 'integrations_delete_config', 'integrations_update_status'])(
+    'admits %s for a provider grant',
+    async (method) => {
+      expect(denied(await forward(method, datadogOnly))).toBe(false);
+    }
+  );
+
+  it('refuses the integration writes a provider grant does not cover', async () => {
+    expect(denied(await forward('integrations_upsert_discovery_target', datadogOnly))).toBe(true);
+  });
+
+  it('leaves reads to integrations:Read', async () => {
+    expect(denied(await forward('integrations_get_schema', ['integrations.datadog:Write']))).toBe(true);
+    expect(denied(await forward('integrations_get_schema', datadogOnly))).toBe(false);
+  });
+
+  it('does not admit an account-bound provider grant', async () => {
+    expect(denied(await forward('integrations_create_config', ['integrations:Read', 'scoped:integrations.datadog:Write']))).toBe(true);
+  });
+
+  it('is not an API-key scope', () => {
+    expect(actionAllowedByTokenScopes('integrations_create_config', routes.integrations_create_config, ['integrations.datadog:Write'])).toBe(false);
   });
 });

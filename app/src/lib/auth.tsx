@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { queryGraphQL } from '@lib/HttpService';
 import { pinTabTenant, reportSessionTenant, type TenantRef } from '@lib/tabTenant';
 import Loader from '@shared/Loader';
+import { providerGrantModule } from '@lib/integrationProviderGrants';
 
 // AUTHORIZATION MODEL — front-end vs back-end
 //
@@ -436,6 +437,16 @@ export function isSuperAdmin(): boolean {
 // actions that would 403.
 export function canManage(module: string, permissionClass: 'Read' | 'Write' | 'Execute'): boolean {
   return isTenantAdmin() || isSuperAdmin() || hasPermission(module, permissionClass);
+}
+
+// Write gate for one integration type: canManage('integrations','Write'), or a
+// per-provider grant (`integrations.<type>:Write`) for an observability
+// provider. Mirrors canRunIntegrationAction in
+// api-server/services/api/actions_integration_authz.go.
+export function canManageIntegration(integrationType: string | null | undefined): boolean {
+  if (canManage('integrations', 'Write')) return true;
+  const module = providerGrantModule(integrationType);
+  return module !== null && hasPermission(module, 'Write');
 }
 
 // EDIT gate for the Tenant Settings Admin tab — mirrors CanManage("tenants","Write") in

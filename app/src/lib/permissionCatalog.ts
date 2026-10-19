@@ -359,7 +359,9 @@ function refineAiModule(name: string): string {
 // admins understand what each grant does. Classification is grounded in each
 // module's backend handler authz (IsTenantAdmin/CanManage → tenant;
 // HasAccountAccess/ListAccountIds → account).
-export type ModuleScope = 'tenant' | 'account';
+//   - 'provider' → per-provider integration grants (`integrations.<type>`), which
+//                 are not derived from action names — see integrationProviderGrants.ts.
+export type ModuleScope = 'tenant' | 'account' | 'provider';
 
 const MODULE_SCOPE: Record<string, ModuleScope> = {
   // Tenant-wide configuration & identity.
@@ -537,6 +539,10 @@ export type CatalogEntry = {
   // ticking Read/Write/Execute actually allows. Keyed by class; only classes
   // present in `classes` appear.
   actions: Partial<Record<PermissionClass, CatalogAction[]>>;
+  // A `<module>:<Class>` key the role editor ticks alongside any grant on this
+  // module, for modules that are useless on their own (provider grants need the
+  // integration list).
+  requires?: string;
 };
 
 // An action as buildCatalog consumes it. A bare string is accepted for callers

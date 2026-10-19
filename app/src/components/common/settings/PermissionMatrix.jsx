@@ -6,6 +6,7 @@ import { Checkbox } from '@ui/Checkbox';
 import Tabs from '@shared/navigation/Tabs';
 import Text from '@shared/format/Text';
 import { ds } from 'src/utils/colors';
+import { providerGrantLabel } from '@lib/integrationProviderGrants';
 
 // Module × {Read,Write,Execute} permission grid, shared by the custom-role editor
 // (ee RolePermissions) and the API-key scope picker (CreateTokenDialog). Both
@@ -47,6 +48,8 @@ ScopeTabs.propTypes = {
 
 // Reusable module × {Read,Write,Execute} checkbox grid for one scope group.
 export function formatModuleName(name) {
+  const providerLabel = providerGrantLabel(name);
+  if (providerLabel) return providerLabel;
   if (name.startsWith('ai_')) {
     const suffix = name.slice(3);
     const overrides = {
@@ -175,8 +178,10 @@ export function PermissionMatrix({ entries, selected, toggle, emptyMessage = 'No
           <Text value={formatModuleName(entry.module)} />
           {CLASSES.map((c) => {
             const grantActions = entry.actions?.[c] ?? [];
-            // Write requires Read — disable Write until Read is granted for this module.
-            const disabled = c === 'Write' && !selected.has(permKey(entry.module, 'Read'));
+            // Write requires Read — disable Write until Read is granted for this
+            // module. A module with no Read class (provider grants) has nothing
+            // to wait for; its prerequisite is ticked by the editor instead.
+            const disabled = c === 'Write' && entry.classes.includes('Read') && !selected.has(permKey(entry.module, 'Read'));
             const checkbox = (
               <Checkbox
                 checked={selected.has(permKey(entry.module, c))}
