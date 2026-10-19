@@ -3,6 +3,7 @@ package triage
 import (
 	"encoding/json"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/internal/database/models"
 	"nudgebee/services/internal/testenv"
 	"nudgebee/services/security"
 	"testing"
@@ -240,6 +241,25 @@ func TestDedupeTimelineEntries(t *testing.T) {
 		}, actions, "every event_history row must survive dedup even though they share RefID with the main 'fired' row")
 	})
 
+	// The main event's 'resolved' entry shares its RefID with 'fired', which
+	// outranks it; it must survive dedup or a closed alert shows no close.
+	t.Run("resolved entry preserved alongside fired entry", func(t *testing.T) {
+		fired := time.Date(2026, 10, 18, 11, 39, 36, 0, time.UTC)
+		in := []TimelineEntry{
+			{Timestamp: fired, RefType: "event", RefID: "evt-1", Action: "fired", Summary: "K8s node NotReady"},
+			{Timestamp: fired.Add(2 * time.Minute), RefType: "event", RefID: "evt-1", Action: "resolved", Summary: "Alert resolved"},
+			{Timestamp: fired, RefType: "event", RefID: "evt-1", Action: "related_resource_event", Summary: "K8s node NotReady"},
+		}
+
+		got := dedupeTimelineEntries(in)
+
+		actions := make([]string, 0, len(got))
+		for _, e := range got {
+			actions = append(actions, e.Action)
+		}
+		assert.Equal(t, []string{"fired", "resolved"}, actions)
+	})
+
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := dedupeTimelineEntries(tc.in)
@@ -302,6 +322,45 @@ func TestExtractImageTag(t *testing.T) {
 			result := extractImageTag(tt.input)
 			if result != tt.expected {
 				t.Errorf("extractImageTag() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestResolvedEntry pins the main event's close on the timeline. A close by the
+// alert's own source writes no event_history row, so without this entry a CLOSED
+// event's timeline ends at 'fired'.
+func TestResolvedEntry(t *testing.T) {
+	sp := func(s string) *string { return &s }
+	tp := func(t time.Time) *time.Time { return &t }
+	starts := time.Date(2026, 10, 18, 11, 39, 36, 0, time.UTC)
+	ends := starts.Add(2 * time.Minute)
+
+	cases := []struct {
+		name         string
+		status       *string
+		endsAt       *time.Time
+		closesAt     []time.Time
+		findingType  *string
+		wantResolved bool
+	}{
+		{"point-in-time: ended as it started", sp("CLOSED"), tp(starts), nil, nil, false},
+		{"point-in-time: configuration change", sp("CLOSED"), tp(ends), nil, sp("configuration_change"), false},
+		{"closed by its source, no history row", sp("CLOSED"), tp(ends), nil, nil, true},
+		{"resolved status counts as closed", sp("RESOLVED"), tp(ends), nil, nil, true},
+		{"still firing", sp("FIRING"), tp(ends), nil, nil, false},
+		{"closed without an end time", sp("CLOSED"), nil, nil, nil, false},
+		{"no status", nil, tp(ends), nil, nil, false},
+		{"manual close already on the timeline", sp("CLOSED"), tp(ends), []time.Time{ends.Add(2 * time.Second)}, nil, false},
+		{"earlier manual close, later closed by its source", sp("CLOSED"), tp(ends), []time.Time{ends.Add(-2 * time.Hour)}, nil, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			event := &models.Event{Id: "evt-1", Status: c.status, StartsAt: tp(starts), EndsAt: c.endsAt, FindingType: c.findingType}
+			got, ok := resolvedEntry(event, c.closesAt)
+			assert.Equal(t, c.wantResolved, ok)
+			if c.wantResolved {
+				assert.Equal(t, TimelineEntry{Timestamp: ends, RefType: "event", RefID: "evt-1", Action: "resolved", Summary: "Alert resolved"}, got)
 			}
 		})
 	}

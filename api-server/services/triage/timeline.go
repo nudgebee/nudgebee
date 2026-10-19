@@ -152,9 +152,11 @@ const timelineActionDefault = 100
 //   - empty RefID: annotation-style rows with no first-class record to collapse
 //     against
 //   - RefType=="event_history": lifecycle entries (status_changed, commented,
-//     priority_changed, assigned, resolved, …) all share the main event's ID as
+//     priority_changed, assigned, …) all share the main event's ID as
 //     RefID but represent distinct sequential occurrences. Collapsing them would
 //     erase the history of how the event was handled.
+//   - Action=="resolved": the main event's close, a lifecycle entry with the same
+//     RefID as its 'fired' entry, which outranks it and would otherwise drop it.
 func dedupeTimelineEntries(entries []TimelineEntry) []TimelineEntry {
 	if len(entries) <= 1 {
 		return entries
@@ -169,7 +171,7 @@ func dedupeTimelineEntries(entries []TimelineEntry) []TimelineEntry {
 	out := make([]TimelineEntry, 0, len(entries))
 	for _, e := range entries {
 		// Pass through entries that shouldn't be collapsed against a RefID bucket.
-		if e.RefID == "" || e.RefType == "event_history" {
+		if e.RefID == "" || e.RefType == "event_history" || e.Action == "resolved" {
 			out = append(out, e)
 			continue
 		}
@@ -287,24 +289,80 @@ func getMainEventEntries(ctx context.Context, db *sqlx.DB, event *models.Event, 
 	}
 
 	// Add event history entries (status changes, urgency, priority, assignments, etc.)
-	historyEntries := getEventHistoryEntries(ctx, db, event, tenantID)
+	historyEntries, closesRecordedAt := getEventHistoryEntries(ctx, db, event, tenantID)
 	entries = append(entries, historyEntries...)
+
+	if resolved, ok := resolvedEntry(event, closesRecordedAt); ok {
+		entries = append(entries, resolved)
+	}
 
 	return entries
 }
 
-// getEventHistoryEntries returns entries from event_history table with tenant isolation
-func getEventHistoryEntries(ctx context.Context, db *sqlx.DB, event *models.Event, tenantID string) []TimelineEntry {
+// closeCoveredWindow is how near ends_at a visible status row must be to count
+// as the record of the same close.
+const closeCoveredWindow = 5 * time.Minute
+
+// resolvedEntry returns the main event's "resolved" entry. A close by the alert's
+// own source (webhook resolve, automation, agent) leaves no event_history row —
+// fn_event_history_trigger skips plain transitions to CLOSED — so the event's
+// ends_at is the only record of it. A close that already has a visible status
+// row (a manual close, a deleted resource) is shown by that row instead.
+func resolvedEntry(event *models.Event, closesRecordedAt []time.Time) (TimelineEntry, bool) {
+	if event.EndsAt == nil || event.EndsAt.IsZero() || event.Status == nil || !isCloseStatusValue(*event.Status) {
+		return TimelineEntry{}, false
+	}
+	// A point-in-time event (a configuration change, or one that ended as it
+	// started) is stored already closed: nothing fired and then resolved. Same
+	// rule as event.isPointInTime.
+	if (event.FindingType != nil && *event.FindingType == "configuration_change") ||
+		(event.StartsAt != nil && !event.EndsAt.After(*event.StartsAt)) {
+		return TimelineEntry{}, false
+	}
+	for _, at := range closesRecordedAt {
+		if d := at.Sub(*event.EndsAt); d >= -closeCoveredWindow && d <= closeCoveredWindow {
+			return TimelineEntry{}, false
+		}
+	}
+	return TimelineEntry{
+		Timestamp: *event.EndsAt,
+		RefType:   "event",
+		RefID:     event.Id,
+		Action:    "resolved",
+		Summary:   "Alert resolved",
+	}, true
+}
+
+func isCloseStatusValue(status string) bool {
+	return strings.EqualFold(status, "CLOSED") || strings.EqualFold(status, "RESOLVED")
+}
+
+// getEventHistoryEntries returns entries from event_history table with tenant isolation,
+// and the times of the visible rows that moved the event's status to CLOSED or RESOLVED.
+func getEventHistoryEntries(ctx context.Context, db *sqlx.DB, event *models.Event, tenantID string) ([]TimelineEntry, []time.Time) {
+	// COALESCE the nullable jsonb columns: a NULL old_value/new_value/metadata (status changes never
+	// set metadata) cannot be scanned into json.RawMessage and would error the whole query, silently
+	// dropping ALL history rows for the event. Default them to the JSON literal null instead.
+	//
+	// Filter out internal bookkeeping so the timeline shows lifecycle + human actions, not plumbing:
+	//   - change_type='labels': the auto-dedup classifier writes a row on EVERY duplicate occurrence
+	//     (hundreds per recurring event) — pure noise, not a user-facing timeline event.
+	//   - automatic status flips (resource_inactive / alert_firing / alert_resolved): the alert
+	//     auto-resolving and re-firing, redundant with the main fired/resolved entries. A real
+	//     human status change keeps its own change_reason (the user's note, or 'manual_status_update').
 	query := `
 		SELECT
 			changed_at,
 			change_type,
 			change_reason,
-			old_value,
-			new_value,
-			metadata
+			COALESCE(old_value, 'null'::jsonb) AS old_value,
+			COALESCE(new_value, 'null'::jsonb) AS new_value,
+			COALESCE(metadata, 'null'::jsonb)  AS metadata
 		FROM event_history
 		WHERE event_id = $1 AND tenant_id = $2
+		  AND change_type <> 'labels'
+		  AND NOT (change_type = 'status'
+		           AND COALESCE(change_reason, '') IN ('resource_inactive', 'alert_firing', 'alert_resolved'))
 		ORDER BY changed_at ASC
 	`
 
@@ -320,10 +378,11 @@ func getEventHistoryEntries(ctx context.Context, db *sqlx.DB, event *models.Even
 	err := db.SelectContext(ctx, &historyEntries, query, event.Id, tenantID)
 	if err != nil {
 		slog.WarnContext(ctx, "Failed to get event history", "error", err, "event_id", event.Id)
-		return nil
+		return nil, nil
 	}
 
 	var entries []TimelineEntry
+	var closesRecordedAt []time.Time
 	for _, entry := range historyEntries {
 		summary := formatHistoryEntrySummary(entry.ChangeType, entry.ChangeReason, entry.OldValue, entry.NewValue, entry.Metadata)
 		action := formatHistoryAction(entry.ChangeType)
@@ -335,8 +394,13 @@ func getEventHistoryEntries(ctx context.Context, db *sqlx.DB, event *models.Even
 			Action:    action,
 			Summary:   summary,
 		})
+		// nb_status rows wrap their value under "nb_status", so they decode to "" here: a
+		// triage resolve is not the alert closing.
+		if entry.ChangeType == "status" && isCloseStatusValue(decodeHistoryValue(entry.NewValue, "status")) {
+			closesRecordedAt = append(closesRecordedAt, entry.ChangedAt)
+		}
 	}
-	return entries
+	return entries, closesRecordedAt
 }
 
 // formatHistoryAction converts change_type to timeline action
@@ -357,6 +421,36 @@ func formatHistoryAction(changeType string) string {
 	}
 }
 
+// systemReasonCodes are the machine-generated change_reason markers written by automated status
+// transitions (not user prose). They are suppressed from the timeline summary so only a genuine
+// user-written note is surfaced.
+var systemReasonCodes = map[string]bool{
+	"manual_status_update":    true,
+	"alert_resolved":          true,
+	"alert_firing":            true,
+	"resource_inactive":       true,
+	"classified_as_duplicate": true,
+}
+
+func isSystemReasonCode(reason string) bool {
+	return systemReasonCodes[strings.ToLower(reason)]
+}
+
+// decodeHistoryValue renders an old_value/new_value cell to a display string. The cell may be a bare
+// JSON string ("OPEN") or an object that wraps the value under a known key ({"nb_status":"OPEN"}),
+// depending on which writer produced the row; try the string form first, then the object key.
+func decodeHistoryValue(raw json.RawMessage, objKey string) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var m map[string]string
+	if err := json.Unmarshal(raw, &m); err == nil {
+		return m[objKey]
+	}
+	return ""
+}
+
 // formatHistoryEntrySummary creates a human-readable summary from event history entry
 func formatHistoryEntrySummary(changeType string, changeReason *string, oldValue, newValue, metadata json.RawMessage) string {
 	var oldStr, newStr string
@@ -365,16 +459,28 @@ func formatHistoryEntrySummary(changeType string, changeReason *string, oldValue
 
 	switch changeType {
 	case "status":
+		// Status rows store old/new as {"nb_status":"X"}; decode that shape (falls back to a bare
+		// string for other writers) so the transition isn't rendered blank.
+		oldStatus := decodeHistoryValue(oldValue, "nb_status")
+		newStatus := decodeHistoryValue(newValue, "nb_status")
 		if changeReason != nil && *changeReason == "alert_resolved" {
 			// Check metadata for resolution method
 			var meta map[string]interface{}
 			if err := json.Unmarshal(metadata, &meta); err == nil {
 				if method, ok := meta["resolution_method"].(string); ok {
-					return fmt.Sprintf("Status: %s → %s (%s)", oldStr, newStr, method)
+					return fmt.Sprintf("Status: %s → %s (%s)", oldStatus, newStatus, method)
 				}
 			}
 		}
-		return fmt.Sprintf("Status: %s → %s", oldStr, newStr)
+		base := fmt.Sprintf("Status: %s → %s", oldStatus, newStatus)
+		// A user-provided note is stored as the change_reason on a manual status change; surface it.
+		// System markers (e.g. manual_status_update, alert_resolved, resource_inactive) are suppressed.
+		if changeReason != nil {
+			if note := strings.TrimSpace(*changeReason); note != "" && !isSystemReasonCode(note) {
+				return base + " — " + note
+			}
+		}
+		return base
 	case "urgency":
 		return fmt.Sprintf("Urgency: %s → %s", oldStr, newStr)
 	case "priority":
