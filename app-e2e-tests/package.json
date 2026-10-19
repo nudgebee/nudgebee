@@ -34,10 +34,10 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
-    "@types/node": "^26.6.3",
+    "@playwright/test": "^1.64.0",
+    "@types/node": "^26.6.5",
     "cross-env": "^10.1.0",
-    "dotenv": "^18.0.4",
+    "dotenv": "^18.0.7",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.3"
   },
