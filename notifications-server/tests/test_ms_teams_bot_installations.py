@@ -348,6 +348,42 @@ def test_tenant_owner_counts_legacy_rows():
     assert mi.ms_teams_aad_tenant_owner(session, "tenant-b") == nb_tenant
 
 
+def test_tenant_owner_is_the_oldest_claim_however_rows_come_back():
+    import datetime
+    import uuid
+
+    from notifications_server.models.models import MessagingPlatform
+    from notifications_server.services import messaging_installations as mi
+
+    older, newer = "aaaaaaaa-1111-4111-8111-111111111111", "bbbbbbbb-2222-4222-8222-222222222222"
+    day = datetime.datetime(2026, 1, 1)
+
+    def legacy(tenant, created_at):
+        return MessagingPlatform(
+            id=uuid.uuid4(),
+            tenant_id=uuid.UUID(tenant),
+            platform="ms_teams",
+            team_id="object-1.tenant-b",
+            client_id="c",
+            token="t",
+            created_at=created_at,
+        )
+
+    # Inserted newest first, so insertion order can't be what picks the owner.
+    session = _session_with(legacy(newer, day + datetime.timedelta(days=30)), legacy(older, day))
+    assert mi.ms_teams_aad_tenant_owner(session, "tenant-b") == older
+
+    integrations = [_teams_integration("tenant-c", t) for t in (newer, older)]
+    integrations[0].created_at, integrations[0].updated_at = day + datetime.timedelta(
+        days=30
+    ), day + datetime.timedelta(days=60)
+    integrations[1].created_at, integrations[1].updated_at = day, day
+    session = _session_with(*integrations)
+    # The older claim wins even though the newer one was updated more recently.
+    assert mi.ms_teams_aad_tenant_owner(session, "tenant-c") == older
+    assert mi.ms_teams_aad_tenant_owner(session, "tenant-c", enabled_only=True) == older
+
+
 def _run_connect(owner, tenant_id="aaaaaaaa-1111-4111-8111-111111111111"):
     from notifications_server.routers import tools
 
