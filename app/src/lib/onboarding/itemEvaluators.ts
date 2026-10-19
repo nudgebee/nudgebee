@@ -48,6 +48,10 @@ export interface EvaluatorContext {
    * connection status alone, the same anti-flakiness fallback
    * `accountRowState` uses for `k8sAgentConnected`. */
   hasReceivedAlert: boolean | null;
+  /** Per chat integration type (normalized), whether the tenant has a default
+   *  channel for it — see `chatDefaultChannelByType`. `null` until the lookup
+   *  resolves; a type missing from the map is unknown, never "no channel". */
+  chatDefaultChannel: Record<string, boolean> | null;
   /** Worst-wins comparison, so one failure is never hidden by a healthy sibling. */
   worst: (a: OnboardingState, b: OnboardingState) => OnboardingState;
   /** Maps a raw status string to a state; shared so the rules stay in one place. */
@@ -70,6 +74,9 @@ export interface ItemVerdict {
    *  `accountEvaluator`. A provider-label chip can't tell two AWS accounts
    *  apart, or say which one is still waiting on its agent; this can. */
   accounts?: ItemAccountRow[];
+  /** Chat `connectedBy` labels installed with no default channel — populated
+   *  only by `chatEvaluator`. */
+  missingDefaultChannel?: string[];
 }
 
 /** One connected account, named and stated for a per-account chip. */
@@ -132,6 +139,100 @@ export const alertsEvaluator: ItemEvaluator = (ctx, item) => {
   const base = providerMatchEvaluator(ctx, item);
   if (base.state !== 'done' || ctx.hasReceivedAlert !== false) return base;
   return { ...base, state: 'partial' };
+};
+
+/**
+ * Chat is `providerMatchEvaluator` plus the step an install alone leaves
+ * open: picking a default channel. A notification no rule routes goes to each
+ * app's default channel, so an app without one has nowhere to post it — yet
+ * the install alone used to check the whole item off, and nothing on Setup
+ * said a step was left. Each such app's chip moves `done` → `partial`, and
+ * worst-wins carries that to the item. Unknown (`null`, or a type missing
+ * from the map) never downgrades anything.
+ */
+export const chatEvaluator: ItemEvaluator = (ctx, item) => {
+  const base = providerMatchEvaluator(ctx, item);
+  const defaults = ctx.chatDefaultChannel;
+  if (!defaults || !base.connectedByState) return base;
+  const missing = item.providers
+    .filter((p) => base.connectedByState?.[p.label] === 'done' && (p.types || []).every((t) => defaults[ctx.normalize(t)] === false))
+    .map((p) => p.label);
+  if (missing.length === 0) return base;
+  const connectedByState = { ...base.connectedByState };
+  missing.forEach((label) => {
+    connectedByState[label] = 'partial';
+  });
+  const state = Object.values(connectedByState).reduce<OnboardingState>((acc, s) => ctx.worst(acc, s), 'blank');
+  return { ...base, state, connectedByState, missingDefaultChannel: missing };
+};
+
+/** A chat integration row as `listIntegrations` returns it — only the fields read here. */
+export interface ChatIntegrationRow {
+  type?: string;
+  status?: string;
+  integration_config_values?: unknown;
+}
+
+const configOf = (raw: unknown): Record<string, unknown> => {
+  try {
+    const arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(arr) ? Object.fromEntries(arr.map((c: { name?: string; value?: unknown }) => [c?.name, c?.value])) : {};
+  } catch {
+    return {};
+  }
+};
+
+// A legacy `messaging_platforms.channels` value: a JSON string or object —
+// `{id, name}` for Slack/Discord, `{team_id, channels: [...]}` for Teams.
+const legacyHasChannel = (raw: unknown): boolean => {
+  let v = raw;
+  if (typeof v === 'string') {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      return false;
+    }
+  }
+  if (Array.isArray(v)) return v.some(legacyHasChannel);
+  if (!v || typeof v !== 'object') return false;
+  const obj = v as { id?: unknown; name?: unknown; channels?: unknown };
+  if ('channels' in obj) return legacyHasChannel(obj.channels);
+  return Boolean(obj.id || obj.name);
+};
+
+/**
+ * Whether each chat platform has a default channel, by integration type.
+ * Mirrors how notifications-server resolves one, so this can't call a
+ * platform ready that the sender would skip: `_default_channel_shape`
+ * (Slack/Discord need `default_channel_id`; Teams needs `default_team_id`
+ * and `default_channel_id`) and `_resolve_default_gchat_space` (a single
+ * bound space is the implicit default, otherwise the one flagged
+ * `is_default`). Integration rows win over legacy `messaging_platforms` rows
+ * for the same platform, the same precedence `getMessagingInstallations` uses.
+ */
+export const chatDefaultChannelByType = (
+  integrationRows: ChatIntegrationRow[],
+  legacyPlatforms: Array<{ platform?: string; channels?: unknown }>
+): Record<string, boolean> => {
+  const result: Record<string, boolean> = {};
+  const live = integrationRows.filter((r) => r && typeof r.type === 'string' && r.status !== 'disabled');
+  const byType: Record<string, Record<string, unknown>[]> = {};
+  live.forEach((r) => {
+    (byType[r.type!.toLowerCase()] ||= []).push(configOf(r.integration_config_values));
+  });
+  Object.entries(byType).forEach(([type, cfgs]) => {
+    if (type === 'google_chat_space') result[type] = cfgs.length === 1 || cfgs.some((c) => c.is_default === 'true');
+    // Per installation, as the sender resolves it: a second workspace with no
+    // default must not hide behind the first one's.
+    else if (type === 'ms_teams') result[type] = cfgs.every((c) => Boolean(c.default_team_id && c.default_channel_id));
+    else result[type] = cfgs.every((c) => Boolean(c.default_channel_id));
+  });
+  legacyPlatforms.forEach((m) => {
+    const type = typeof m?.platform === 'string' ? m.platform.toLowerCase() : '';
+    if (!type || byType[type]) return;
+    result[type] = (result[type] ?? false) || legacyHasChannel(m.channels);
+  });
+  return result;
 };
 
 /**
@@ -219,6 +320,7 @@ export const ITEM_EVALUATORS: Record<string, ItemEvaluator> = {
   account: accountEvaluator,
   skills: skillsEvaluator,
   alerts: alertsEvaluator,
+  chat: chatEvaluator,
 };
 
 export const evaluatorFor = (itemId: string): ItemEvaluator => ITEM_EVALUATORS[itemId] ?? providerMatchEvaluator;

@@ -366,6 +366,13 @@ const isWaitingForFirstAlert = (item: OnboardingItemStatus): boolean => {
  * color, which specific connection is which.
  */
 const mixedStateNote = (item: OnboardingItemStatus): string | undefined => {
+  // `chatEvaluator`'s own downgrade: installed, but no default channel to post to.
+  if (item.missingDefaultChannel?.length) {
+    const names = item.missingDefaultChannel.join(' and ');
+    return `${names} ${
+      item.missingDefaultChannel.length > 1 ? 'have' : 'has'
+    } no default channel yet, so notifications that don't match a rule have nowhere to go.`;
+  }
   // `alertsEvaluator`'s own downgrade: every matched provider is itself
   // `done`, yet the item reads `partial` — that combination only happens
   // when a webhook URL exists but nothing has posted to it yet.
@@ -612,6 +619,7 @@ const ItemRow = ({
   pendingKnowledgeBaseId,
   selectedModules,
   onReopenAgentInstall,
+  onSetDefaultChannel,
 }: {
   item: OnboardingItemStatus;
   first: boolean;
@@ -654,6 +662,9 @@ const ItemRow = ({
   /** Reopens the install command for a K8s/self-hosted account row stuck
    *  `partial` on its agent — see the account-chip `onClick` below for why. */
   onReopenAgentInstall?: (account: ItemAccountRow) => void;
+  /** Opens where a chat app's default channel is picked — see
+   *  `openDefaultChannelSetup`. Takes the provider's registry `route`. */
+  onSetDefaultChannel?: (route: string) => void;
 }) => {
   const connected = item.connectedBy.length > 0;
   // A row with no alternatives to choose between opens its form directly — the
@@ -862,7 +873,11 @@ const ItemRow = ({
                       trailingIcon={<ChipStatusGlyph tone={tone} />}
                       onClick={alertRow ? () => onOpenConnectedIntegration?.(alertRow) : undefined}
                     >
-                      {item.defaultBy?.includes(label) ? `${label} · Default` : label}
+                      {item.missingDefaultChannel?.includes(label)
+                        ? `${label} · No default channel`
+                        : item.defaultBy?.includes(label)
+                        ? `${label} · Default`
+                        : label}
                     </Chip>
                   );
                 })}
@@ -882,6 +897,26 @@ const ItemRow = ({
             {note}
           </Typography>
         )}
+
+        {canWrite && onSetDefaultChannel && item.missingDefaultChannel?.length ? (
+          <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', flexWrap: 'wrap', mt: 'var(--ds-space-2)' }}>
+            {item.missingDefaultChannel.map((label) => {
+              const provider = providerByLabel.get(label);
+              if (!provider) return null;
+              return (
+                <Button
+                  key={`${item.id}-default-channel-${provider.route}`}
+                  tone='secondary'
+                  size='xs'
+                  data-testid={`setup-default-channel-${provider.route.toLowerCase()}`}
+                  onClick={() => onSetDefaultChannel(provider.route)}
+                >
+                  Set {label} default channel
+                </Button>
+              );
+            })}
+          </Box>
+        ) : null}
 
         {/* Compact (accounts) has no name row to carry the Add action, so it
             keeps its own inline button here instead. */}
@@ -1092,6 +1127,7 @@ const PanelBody = ({
   pendingKnowledgeBaseId,
   selectedModules,
   onReopenAgentInstall,
+  onSetDefaultChannel,
 }: {
   panel: OnboardingPanelStatus;
   /** Single-open accordion: only the expanded panel renders its items. */
@@ -1119,6 +1155,8 @@ const PanelBody = ({
   selectedModules: string[];
   /** Passed straight through to `ItemRow` — see its own doc comment. */
   onReopenAgentInstall?: (account: ItemAccountRow) => void;
+  /** Passed straight through to `ItemRow` — see its own doc comment. */
+  onSetDefaultChannel?: (route: string) => void;
 }) => {
   // Accounts is the one panel where the item *is* the panel — its own name
   // would just repeat "Accounts and clusters" a second time. An explicit
@@ -1258,6 +1296,7 @@ const PanelBody = ({
                 pendingKnowledgeBaseId={item.id === 'skills' ? pendingKnowledgeBaseId : undefined}
                 selectedModules={selectedModules}
                 onReopenAgentInstall={onReopenAgentInstall}
+                onSetDefaultChannel={item.id === 'chat' ? onSetDefaultChannel : undefined}
               />
             ))}
           </Box>
@@ -1623,6 +1662,35 @@ const SetupCenter = () => {
     [providerIndex, handleAddKnowledgeBase, closeIntegrationModal]
   );
 
+  // A chat app's default channel is picked on its own Integrations page
+  // ("Map Channel", or Google Chat's "Set default") — the channel lists and
+  // team pickers live there, not in a form Setup can open. New tab for the
+  // same reason as the Google Chat hand-off below; readiness refreshes when
+  // this tab regains focus, so the step clears without a reload. Each
+  // registry route is already that page's `?cloudProvider=` value.
+  // One pending listener at most, and none left behind after unmount — a
+  // second click before refocusing must not queue a second refetch.
+  const refocusRefreshRef = React.useRef<(() => void) | null>(null);
+  React.useEffect(
+    () => () => {
+      if (refocusRefreshRef.current) window.removeEventListener('focus', refocusRefreshRef.current);
+    },
+    []
+  );
+  const openDefaultChannelSetup = React.useCallback(
+    (route: string) => {
+      window.open(`/accounts/account-form?cloudProvider=${route.toLowerCase()}`, '_blank', 'noopener');
+      if (refocusRefreshRef.current) return;
+      const onFocus = () => {
+        refocusRefreshRef.current = null;
+        refreshReadinessInputs();
+      };
+      refocusRefreshRef.current = onFocus;
+      window.addEventListener('focus', onFocus, { once: true });
+    },
+    [refreshReadinessInputs]
+  );
+
   const togglePanel = React.useCallback((id: string) => setExpandedPanel((prev) => (prev === id ? '' : id)), []);
   const toggleWhy = React.useCallback((id: string) => setOpenWhy((prev) => ({ ...prev, [id]: !prev[id] })), []);
   const togglePicker = React.useCallback((id: string) => setOpenPicker((prev) => ({ ...prev, [id]: !prev[id] })), []);
@@ -1934,6 +2002,7 @@ const SetupCenter = () => {
                 onOpenKnowledgeBase={handleOpenKnowledgeBase}
                 pendingKnowledgeBaseId={pendingKnowledgeBaseId}
                 selectedModules={selectedModules}
+                onSetDefaultChannel={openDefaultChannelSetup}
               />
             </Card>
           ))}

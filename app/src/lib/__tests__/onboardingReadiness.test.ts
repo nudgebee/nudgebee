@@ -181,6 +181,42 @@ describe('panel state resolution', () => {
     });
   });
 
+  // An installed chat app with no default channel has nowhere to post a
+  // finding no rule routes — Setup must not check it off as done.
+  describe('chat waits on a default channel, not just the install', () => {
+    it('reads done while the default-channel lookup has not resolved', () => {
+      const r = evaluateOnboarding({ integrations: [integration('slack')] });
+      expect(itemOf(r, 'delivery', 'chat')?.state).toBe('done');
+      expect(itemOf(r, 'delivery', 'chat')?.missingDefaultChannel).toBeUndefined();
+    });
+
+    it('downgrades to partial and names the app when no default channel is set', () => {
+      const r = evaluateOnboarding({
+        integrations: [integration('slack'), integration('discord')],
+        chatDefaultChannel: { slack: true, discord: false },
+      });
+      const chat = itemOf(r, 'delivery', 'chat');
+      expect(chat?.state).toBe('partial');
+      expect(chat?.connectedBy).toEqual(['Slack', 'Discord']);
+      expect(chat?.connectedByState).toEqual({ Slack: 'done', Discord: 'partial' });
+      expect(chat?.missingDefaultChannel).toEqual(['Discord']);
+      expect(panelOf(r, 'delivery')?.state).toBe('partial');
+    });
+
+    it('reads done once every connected app has a default channel', () => {
+      const r = evaluateOnboarding({ integrations: [integration('slack')], chatDefaultChannel: { slack: true } });
+      expect(itemOf(r, 'delivery', 'chat')?.state).toBe('done');
+    });
+
+    it('never touches a broken install, or an app the lookup said nothing about', () => {
+      const broken = evaluateOnboarding({ integrations: [integration('slack', 'error')], chatDefaultChannel: { slack: false } });
+      expect(itemOf(broken, 'delivery', 'chat')?.state).toBe('error');
+      expect(itemOf(broken, 'delivery', 'chat')?.missingDefaultChannel).toBeUndefined();
+      const unknown = evaluateOnboarding({ integrations: [integration('ms_teams')], chatDefaultChannel: {} });
+      expect(itemOf(unknown, 'delivery', 'chat')?.state).toBe('done');
+    });
+  });
+
   it('lets a gateway satisfy model access on its own', () => {
     const r = evaluateOnboarding({ integrations: [integration('llm_gateway')] });
     expect(panelOf(r, 'ai')?.state).toBe('done');

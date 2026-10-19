@@ -26,7 +26,8 @@ import apiKnowledgeBase from '@api1/knowledge-base';
 import apiIntegrations from '@api1/integrations';
 import { AGENT_CONNECTED } from '@components/integrations/pendingAgentInstall';
 import { evaluateCloudFirstSync } from '@components/integrations/CloudFirstSync';
-import { ALERT_PROVIDERS, ONBOARDING_CLOUD_PROVIDERS } from '@lib/onboarding/setupRegistry';
+import { ALERT_PROVIDERS, CHAT_PROVIDERS, ONBOARDING_CLOUD_PROVIDERS } from '@lib/onboarding/setupRegistry';
+import { chatDefaultChannelByType, type ChatIntegrationRow } from '@lib/onboarding/itemEvaluators';
 import {
   evaluateOnboarding,
   type EvaluateOnboardingInput,
@@ -40,6 +41,8 @@ import {
 // `alerts`'s own registry providers declare, flattened once rather than per
 // fetch.
 const ALERT_TYPES = new Set(ALERT_PROVIDERS.flatMap((p) => p.types || []).map((t) => t.toLowerCase()));
+// Same idea for the `chat` item's providers.
+const CHAT_TYPES = CHAT_PROVIDERS.flatMap((p) => p.types || []).map((t) => t.toLowerCase());
 
 // Shape `apiAccount.getAllAccount()` resolves with. It is a plain JS module, so
 // this is declared here rather than imported; the fields are exactly the three
@@ -150,7 +153,12 @@ export function useOnboardingReadiness(selectedModules: string[] = [], { enabled
       })
     );
 
-    const [[agentHealthResult, kbResult, hasReceivedAlert], cloudSyncRowsByProvider] = await Promise.all([
+    // A chat app's default channel lives in its integration config values,
+    // which `getAllAccount`'s integration rows don't carry — so one more
+    // read, only when a chat integration row exists to ask about.
+    const hasChatIntegration = (data.integrations || []).some((i) => CHAT_TYPES.includes(String(i?.type || '').toLowerCase()));
+
+    const [[agentHealthResult, kbResult, hasReceivedAlert, chatRowsResult], cloudSyncRowsByProvider] = await Promise.all([
       Promise.all([
         agentCheckedAccountIds.length > 0
           ? apiKubernetes1.listK8sAccAgentHealth(agentCheckedAccountIds, null).catch(() => undefined)
@@ -175,6 +183,7 @@ export function useOnboardingReadiness(selectedModules: string[] = [], { enabled
         alertIntegrationIds.length > 0
           ? apiIntegrations.hasReceivedWebhookEvents(alertIntegrationIds).catch(() => undefined)
           : Promise.resolve(undefined),
+        hasChatIntegration ? apiIntegrations.listIntegrations({ type: CHAT_TYPES, limit: 200 }).catch(() => undefined) : Promise.resolve(undefined),
       ]),
       // `listCloudAccountFirstSync` never rejects (an internal try/catch
       // resolves `[]` on any failure), so no `.catch` needed here — only the
@@ -229,6 +238,14 @@ export function useOnboardingReadiness(selectedModules: string[] = [], { enabled
       });
     });
 
+    // A failed chat lookup is unknown, not "no channel anywhere" — `null`
+    // leaves the item on its connection status rather than flagging every
+    // installed app on a request that blipped.
+    const chatRows = (chatRowsResult as { data?: { data?: { integrations_list?: { rows?: ChatIntegrationRow[] } } } } | undefined)?.data?.data
+      ?.integrations_list?.rows;
+    const chatDefaultChannel =
+      hasChatIntegration && !Array.isArray(chatRows) ? null : chatDefaultChannelByType(chatRows || [], data.messaging_platforms || []);
+
     return {
       accounts: data.all_accounts,
       integrations: data.integrations,
@@ -237,6 +254,7 @@ export function useOnboardingReadiness(selectedModules: string[] = [], { enabled
       cloudSyncState,
       hasKnowledgeBase,
       hasReceivedAlert: hasReceivedAlert ?? null,
+      chatDefaultChannel,
     };
   }, []);
 

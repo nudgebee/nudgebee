@@ -105,6 +105,13 @@ export interface EvaluateOnboardingInput {
    */
   hasReceivedAlert?: boolean | null;
   /**
+   * Per chat integration type, whether a default channel is set — built by
+   * `chatDefaultChannelByType` in `useOnboardingReadiness`. Omit when the
+   * lookup has not resolved; the `chat` item then reads its connection
+   * status alone, same as `hasReceivedAlert` for `alerts`.
+   */
+  chatDefaultChannel?: Record<string, boolean> | null;
+  /**
    * First-cost-sync phase for AWS/GCP/Azure accounts, keyed by account id —
    * see `useOnboardingReadiness`'s own fetch, which reduces
    * `listCloudAccountFirstSync` with `evaluateCloudFirstSync` (the same
@@ -249,6 +256,9 @@ export interface OnboardingItemStatus extends Omit<OnboardingItemDef, 'need'> {
   /** The real account rows behind `connectedBy` — populated only on the
    *  `account` item. See `ItemAccountRow`. */
   accounts?: ItemAccountRow[];
+  /** Chat apps installed with no default channel yet — populated only on the
+   *  `chat` item. */
+  missingDefaultChannel?: string[];
   /**
    * How much the **selected** modules need this item — the strongest level
    * across them, so `na` for one module never hides what another requires.
@@ -505,6 +515,7 @@ export function evaluateOnboarding(input: EvaluateOnboardingInput = {}): Onboard
   const cloudSyncState = input.cloudSyncState && typeof input.cloudSyncState === 'object' ? input.cloudSyncState : null;
   const hasKnowledgeBase = typeof input.hasKnowledgeBase === 'boolean' ? input.hasKnowledgeBase : null;
   const hasReceivedAlert = typeof input.hasReceivedAlert === 'boolean' ? input.hasReceivedAlert : null;
+  const chatDefaultChannel = input.chatDefaultChannel && typeof input.chatDefaultChannel === 'object' ? input.chatDefaultChannel : null;
   const selectedModules = Array.isArray(input.selectedModules) ? input.selectedModules.filter((m) => typeof m === 'string') : [];
 
   // The demo account is injected client-side by `apiHome.getCloudAccounts` and
@@ -572,6 +583,7 @@ export function evaluateOnboarding(input: EvaluateOnboardingInput = {}): Onboard
     cloudSyncState,
     hasKnowledgeBase,
     hasReceivedAlert,
+    chatDefaultChannel,
     worst,
     stateOfStatus,
     normalize,
