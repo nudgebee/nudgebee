@@ -186,11 +186,23 @@ describe('PanelEditorModal — thresholds', () => {
     expect(screen.getByTestId('threshold-sentence-0')).toHaveTextContent('as soon as any k8s-prod line is at or above 80');
   });
 
+  // Visible, not merely present: the closed picker hides the name, and that rule must not reach the list.
   it('names each colour in the open list, not only its swatch', async () => {
     renderEditor(panel('stat', [{ value: 80, color: 'red' }]));
-    fireEvent.click(document.getElementById('threshold-color-0') as HTMLElement);
+    const trigger = document.getElementById('threshold-color-0') as HTMLElement;
+    expect(within(trigger).getByText('Red')).not.toBeVisible();
+    fireEvent.click(trigger);
     const list = await screen.findByRole('listbox', { hidden: true });
-    for (const name of ['Red', 'Amber', 'Green', 'Blue']) expect(within(list).getByText(name)).toBeInTheDocument();
+    for (const name of ['Red', 'Amber', 'Green', 'Blue']) expect(within(list).getByText(name)).toBeVisible();
+  });
+
+  it('spells out each comparison in the open list, and shows only the symbol when closed', async () => {
+    renderEditor(panel('stat', [{ value: 80, color: 'red' }]));
+    const trigger = document.getElementById('threshold-op-0') as HTMLElement;
+    expect(within(trigger).getByText('at or above')).not.toBeVisible();
+    fireEvent.click(trigger);
+    const list = await screen.findByRole('listbox', { hidden: true });
+    for (const phrase of ['at or above', 'above', 'at or below', 'below']) expect(within(list).getByText(phrase)).toBeVisible();
   });
 
   it('says nothing about a step that has no number yet', () => {

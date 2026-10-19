@@ -162,6 +162,12 @@ const THRESHOLD_COLOR_OPTIONS = THRESHOLD_COLORS.map((color) => {
 /** Spelled-out half of a comparison's label; the closed picker hides it so the column stays narrow. */
 const OP_PHRASE_CLASS = 'threshold-op-phrase';
 
+/**
+ * Selects the closed picker — Select's trigger button — and not its option list,
+ * which renders inline in the same wrapper (Select does not portal by default).
+ */
+const CLOSED_PICKER = '& [aria-haspopup="listbox"]';
+
 /** How a threshold step compares — the symbol the badge shows, spelled out in the open list. */
 const THRESHOLD_OP_OPTIONS = THRESHOLD_OPS.map((op) => ({
   label: (
@@ -1313,8 +1319,8 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                                         id={`threshold-applies-${i}`}
                                       />
                                     )}
-                                    {/* The closed picker shows only the symbol; the open list spells it out. The list is portalled, so this rule misses it. */}
-                                    <Box sx={{ [`& .${OP_PHRASE_CLASS}`]: { display: 'none' } }}>
+                                    {/* The closed picker shows only the symbol; the open list spells it out. */}
+                                    <Box sx={{ [`${CLOSED_PICKER} .${OP_PHRASE_CLASS}`]: { display: 'none' } }}>
                                       <Select
                                         value={opOf(step)}
                                         options={THRESHOLD_OP_OPTIONS}
@@ -1333,7 +1339,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                                     />
                                     {lineThresholds && <ThresholdHold seconds={step.for} index={i} onChange={(next) => patchStep({ for: next })} />}
                                     {/* Same trick as the comparison: the closed picker is the swatch alone, the open list names it. */}
-                                    <Box sx={{ [`& .${COLOR_NAME_CLASS}`]: { display: 'none' } }}>
+                                    <Box sx={{ [`${CLOSED_PICKER} .${COLOR_NAME_CLASS}`]: { display: 'none' } }}>
                                       <Select
                                         value={step.color}
                                         options={THRESHOLD_COLOR_OPTIONS}
