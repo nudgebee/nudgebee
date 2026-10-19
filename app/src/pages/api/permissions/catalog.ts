@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { authenticateRequest } from '@lib/rpcGateway';
 import { loadRpcRoutes } from '@lib/rpcRoutes';
-import { buildCatalog, type CatalogEntry, type PermissionClass } from '@lib/permissionCatalog';
+import { buildCatalog, withRunTimeGrants, type CatalogEntry, type PermissionClass } from '@lib/permissionCatalog';
 import { deriveSystemRoleGrants, DERIVED_SYSTEM_ROLE_KEYS, SYSTEM_ROLE_LABELS } from '@lib/systemRoleGrants';
 import { providerGrantCatalogEntries } from '@lib/integrationProviderGrants';
 
@@ -48,11 +48,15 @@ function getCatalog(): CatalogResponse {
   }));
   // Feed the yaml `comment:` through so each grant can be explained in the
   // editor; buildCatalog falls back to the action name where none exists.
-  // Provider grants are not derived from action names, so they are appended
-  // here — and only here: the token catalog must not offer them.
+  // Integration grants and run-time classes are not derived from action names,
+  // so they are added here — and only here: the token catalog must not offer
+  // them.
   const comments = Object.fromEntries(actionNames.map((name) => [name, routes[name].comment]));
   cache = {
-    catalog: [...buildCatalog(actionNames.map((name) => ({ name, comment: comments[name] }))), ...providerGrantCatalogEntries(comments)],
+    catalog: [
+      ...withRunTimeGrants(buildCatalog(actionNames.map((name) => ({ name, comment: comments[name] })))),
+      ...providerGrantCatalogEntries(comments),
+    ],
     systemRoles,
   };
   return cache;

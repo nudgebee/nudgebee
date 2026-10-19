@@ -57,6 +57,23 @@ describe('/api/permissions/catalog', () => {
     expect(res.body.systemRoles.length).toBeGreaterThan(0);
   });
 
+  it('offers Execute on k8s, and use grants per integration type', async () => {
+    asTenantAdmin();
+    const catalog: Array<{ module: string; scope: string; classes: string[]; requires?: Record<string, string> }> = (await call()).body.catalog;
+    const byModule = new Map(catalog.map((e) => [e.module, e]));
+    expect(byModule.get('k8s')?.classes).toContain('Execute');
+    expect(byModule.get('integrations.ssh')).toMatchObject({ scope: 'provider', classes: ['Read', 'Execute'] });
+    // Use only (read-only / with changes) for a type with no manage grant; all
+    // three for an observability provider, whose Write still needs integrations:Read.
+    expect(byModule.get('integrations.github')).toMatchObject({ scope: 'provider', classes: ['Read', 'Execute'] });
+    expect(byModule.get('integrations.mcp')).toMatchObject({ scope: 'provider', classes: ['Read', 'Execute'] });
+    expect(byModule.get('integrations.datadog')).toMatchObject({
+      scope: 'provider',
+      classes: ['Read', 'Write', 'Execute'],
+      requires: { Write: 'integrations:Read' },
+    });
+  });
+
   it('hides the K8s Namespace built-in roles from the view', async () => {
     asTenantAdmin();
     const keys = (await call()).body.systemRoles.map((r: { systemKey: string }) => r.systemKey);

@@ -539,10 +539,17 @@ export type CatalogEntry = {
   // ticking Read/Write/Execute actually allows. Keyed by class; only classes
   // present in `classes` appear.
   actions: Partial<Record<PermissionClass, CatalogAction[]>>;
-  // A `<module>:<Class>` key the role editor ticks alongside any grant on this
-  // module, for modules that are useless on their own (provider grants need the
-  // integration list).
-  requires?: string;
+  // What a class allows when no RPC action is classified to it — a grant only a
+  // run checks (RUN_TIME_GRANTS, integration use grants). The editor shows it in
+  // the box's tooltip.
+  notes?: Partial<Record<PermissionClass, string>>;
+  // Per class, a `<module>:<Class>` key the role editor ticks alongside that
+  // class, for grants that are useless on their own (a provider's Write needs
+  // the integration list).
+  requires?: Partial<Record<PermissionClass, string>>;
+  // The classes are separate rights, so the editor does not couple Write to
+  // Read (integration grants: managing an integration is not using it).
+  independentClasses?: boolean;
 };
 
 // An action as buildCatalog consumes it. A bare string is accepted for callers
@@ -584,4 +591,36 @@ export function buildCatalog(actions: CatalogInput[]): CatalogEntry[] {
       return { module, scope: moduleScope(module), classes, actions: entryActions };
     })
     .sort((a, b) => a.module.localeCompare(b.module));
+}
+
+// Classes a custom role can hold on a module although no RPC action is
+// classified to them: the run checks them, not the gateway. A domain step or
+// an AI agent's tool call that changes something needs Execute on its module
+// (runbook-server internal/tasks/authz.go stepRequirements, llm-server
+// security.ToolPathAccountAccess), and k8s has no Execute action in
+// actions.yaml, so without this the editor could only grant those changes
+// through Write. Steps that act through an integration (databases, tickets,
+// source control) need only that integration type's use grant, so their
+// modules need no entry here. Role editor only — an API key never runs steps,
+// so the token catalog does not offer them.
+export const RUN_TIME_GRANTS: ReadonlyArray<{ module: string; class: PermissionClass; note: string }> = [
+  {
+    module: 'k8s',
+    class: 'Execute',
+    note: 'Make changes to Kubernetes resources from automation steps and AI agent runs (restart, rightsize, kubectl), without Write. Checked when the step runs.',
+  },
+];
+
+// The catalog with RUN_TIME_GRANTS added to their modules. A class the module
+// already has from an action is left as it is.
+export function withRunTimeGrants(entries: CatalogEntry[]): CatalogEntry[] {
+  return entries.map((entry) => {
+    const extra = RUN_TIME_GRANTS.filter((g) => g.module === entry.module && !entry.classes.includes(g.class));
+    if (!extra.length) return entry;
+    return {
+      ...entry,
+      classes: CLASS_ORDER.filter((cls) => entry.classes.includes(cls) || extra.some((g) => g.class === cls)),
+      notes: { ...entry.notes, ...Object.fromEntries(extra.map((g) => [g.class, g.note])) },
+    };
+  });
 }

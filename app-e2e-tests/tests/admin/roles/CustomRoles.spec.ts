@@ -71,11 +71,13 @@ test.describe("Admin → Roles: custom role editor", () => {
     expect(catalog.filter((e) => e.scope === "tenant").length).toBeGreaterThan(0);
     expect(catalog.filter((e) => e.scope === "account").length).toBeGreaterThan(0);
 
-    // Every advertised class must be backed by at least one action, otherwise
-    // the tooltip renders an empty explanation and the grant explains nothing.
+    // Every advertised class must be explained — by the actions it covers, or by
+    // a note for a grant only a run checks (k8s:Execute, integration use) —
+    // otherwise the tooltip renders an empty explanation and the grant explains nothing.
     for (const entry of catalog) {
       for (const cls of entry.classes) {
-        expect(entry.actions?.[cls]?.length ?? 0, `${entry.module}:${cls} must list its actions`).toBeGreaterThan(0);
+        const explained = (entry.actions?.[cls]?.length ?? 0) > 0 || !!entry.notes?.[cls];
+        expect(explained, `${entry.module}:${cls} must list its actions or carry a note`).toBe(true);
       }
       expect(entry.classes.every((c) => CLASSES.includes(c))).toBe(true);
     }

@@ -1,7 +1,15 @@
 import fs from 'fs';
 import path from 'path';
-import yaml from 'js-yaml';
-import { classifyAction, buildCatalog, normalizeModule, isTokenScopeBlockedAction, type PermissionClass } from '@lib/permissionCatalog';
+import * as yaml from 'js-yaml';
+import {
+  classifyAction,
+  buildCatalog,
+  normalizeModule,
+  isTokenScopeBlockedAction,
+  withRunTimeGrants,
+  RUN_TIME_GRANTS,
+  type PermissionClass,
+} from '@lib/permissionCatalog';
 
 // Pull every action name from actions.yaml (+ the EE overlay) directly, so this
 // test stays decoupled from rpcRoutes internals and exercises the real action
@@ -289,5 +297,40 @@ describe('permissionCatalog', () => {
     // Both scope groups must be populated so the editor renders both sections.
     expect(catalog.some((e) => e.scope === 'tenant')).toBe(true);
     expect(catalog.some((e) => e.scope === 'account')).toBe(true);
+  });
+
+  describe('run-time grants', () => {
+    const catalog = buildCatalog(ACTION_NAMES);
+    const withRun = withRunTimeGrants(catalog);
+    const byModule = new Map(withRun.map((e) => [e.module, e]));
+
+    it('adds Execute to k8s, explained, so a change step needs no Write', () => {
+      const before = catalog.find((e) => e.module === 'k8s')!;
+      const after = byModule.get('k8s')!;
+      // Guard: the class is added only because no action supplies it.
+      expect(before.classes).not.toContain('Execute');
+      expect(after.classes).toEqual([...before.classes, 'Execute']);
+      expect(after.notes?.Execute).toMatch(/without Write/);
+      expect(after.actions).toEqual(before.actions);
+      expect(after.scope).toBe('account');
+      expect(RUN_TIME_GRANTS.map((g) => g.module)).toEqual(['k8s']);
+    });
+
+    it('offers no run-time Execute on modules whose steps act through an integration', () => {
+      // Database and ticket steps need the integration type's use grant only.
+      for (const module of ['database', 'tickets']) expect(byModule.get(module)?.classes).not.toContain('Execute');
+    });
+
+    it('leaves every other module as built', () => {
+      for (const e of catalog) {
+        if (RUN_TIME_GRANTS.some((g) => g.module === e.module)) continue;
+        expect(byModule.get(e.module)).toBe(e);
+      }
+    });
+
+    it('does not override a class an action already supplies', () => {
+      const entry = { module: 'k8s', scope: 'account' as const, classes: ['Read', 'Execute'] as PermissionClass[], actions: {} };
+      expect(withRunTimeGrants([entry])[0]).toBe(entry);
+    });
   });
 });
