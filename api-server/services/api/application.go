@@ -100,6 +100,12 @@ func handleApplicationEvent(actionPayload *ActionRequest, c *gin.Context, tracer
 		if handleError(c, err, 500) {
 			return
 		}
+		// Profile tasks are keyed by the caller's account id alone; refuse an
+		// account outside the caller's tenant.
+		if !ctx.GetSecurityContext().IsTenantAccount(applicationprofileRequest.AccountId) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+applicationprofileRequest.AccountId))
+			return
+		}
 
 		resp, err := application.AppplicationProfile(ctx, applicationprofileRequest)
 		if handleError(c, err, 500) {
@@ -118,6 +124,12 @@ func handleApplicationEvent(actionPayload *ActionRequest, c *gin.Context, tracer
 
 		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
 		if handleError(c, err, 500) {
+			return
+		}
+		// Profile tasks are keyed by the caller's account id alone; refuse an
+		// account outside the caller's tenant.
+		if !ctx.GetSecurityContext().IsTenantAccount(applicationprofileRequest.AccountId) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+applicationprofileRequest.AccountId))
 			return
 		}
 

@@ -73,6 +73,12 @@ func handleAnomaly(actionPayload *ActionRequest, c *gin.Context, tracer *trace.T
 			})
 			return
 		}
+		// The account id comes from the caller, and ExecuteForAccount resolves the
+		// tenant from the account itself, so check access before anything is queued.
+		if !ctx.CanAccessAccount(request.AccountId, security.SecurityAccessTypeUpdate) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
+			return
+		}
 
 		// Create detached context for background execution
 		// (gin reuses request contexts, so we must not use ctx inside goroutines)
