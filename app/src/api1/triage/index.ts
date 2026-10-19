@@ -331,6 +331,25 @@ mutation EventGetTriageRules(
 }
 `;
 
+export const EVENT_LIST_TRIAGE_SOURCES = `
+mutation EventListTriageSources($provider: String, $cloud_account_id: String) {
+  event_list_triage_sources(provider: $provider, cloud_account_id: $cloud_account_id) {
+    sources {
+      label
+      value
+      provider
+    }
+  }
+}
+`;
+
+// One Source option for the Create/Edit Triage Rule form (from event_list_triage_sources).
+export interface TriageSource {
+  label: string;
+  value: string;
+  provider?: string;
+}
+
 export const EVENT_DELETE_TRIAGE_RULE = `
 mutation EventDeleteTriageRule(
   $cloud_account_id: String!
@@ -1027,6 +1046,20 @@ const apiTriage = {
     } catch (error) {
       console.error('Failed to get triage rules:', error);
       throw error;
+    }
+  },
+
+  // List the Source options for the Create/Edit Triage Rule form, from the account's own sources.
+  async listTriageSources(provider?: string, cloudAccountId?: string): Promise<TriageSource[]> {
+    try {
+      const response = await queryGraphQL(EVENT_LIST_TRIAGE_SOURCES, 'EventListTriageSources', {
+        provider: provider || undefined,
+        cloud_account_id: cloudAccountId || undefined,
+      });
+      return response?.data?.data?.event_list_triage_sources?.sources ?? [];
+    } catch (error) {
+      console.error('Failed to list triage sources:', error);
+      return [];
     }
   },
 

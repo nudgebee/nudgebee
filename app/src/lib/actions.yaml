@@ -3309,6 +3309,20 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: Get triage rules for an account
+  - name: event_list_triage_sources
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/triage'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: List the Source options for the Create Triage Rule form
   - name: workload_list_criticality
     definition:
       kind: synchronous

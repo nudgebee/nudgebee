@@ -29,6 +29,7 @@ import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
 
 interface TriageRulesManagerProps {
   accountId?: string;
+  provider?: string;
 }
 
 interface AccountOption {
@@ -80,7 +81,7 @@ const parseScoreAdjustment = (actionValue: string | undefined, isSystemRule?: bo
   }
 };
 
-const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) => {
+const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId, provider }) => {
   const router = useRouter();
   const tableId = 'triageRulesManager';
   const isMultiAccountView = !accountId;
@@ -651,6 +652,8 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
         open={isRuleModalOpen}
         handleClose={handleCloseRuleModal}
         accountId={selectedRule?.account_id || accountId}
+        // Multi-account view derives the provider from the rule's own account.
+        provider={provider ?? accounts.find((acc) => (acc.id || acc.value) === (selectedRule?.account_id || accountId))?.cloud_provider}
         rule={selectedRule}
         isCreate={isCreateMode}
         onSuccess={handleRuleSuccess}

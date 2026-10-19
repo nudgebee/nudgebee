@@ -1298,7 +1298,7 @@ const KubernetesDetails = () => {
                 <FeatureDisabledEmptyState id='anomaly-flag-disabled' title={ANOMALY_FLAG_DISABLED_MESSAGE} />
               )}
               {selectedSubTab == 7 && <KubernetesGroupedEventsTable accountId={kubeId} groupEventType={'fingerprint'} isTroubleshootPage={false} />}
-              {selectedSubTab == 8 && <TriageRulesManager accountId={kubeId} />}
+              {selectedSubTab == 8 && <TriageRulesManager accountId={kubeId} provider='K8s' />}
               {selectedSubTab === 10 && <WorkloadCriticalityManager accountId={kubeId} />}
             </>
           )}

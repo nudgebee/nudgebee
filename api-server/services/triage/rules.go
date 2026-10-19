@@ -35,6 +35,8 @@ var triageSourceGroups = map[string][]string{
 	// Pushed CloudWatch alarms were stored as AWS_EventBridge before they were
 	// stored as AWS_CloudWatch_Alarm; a rule or mute written then still covers them.
 	"AWS_EventBridge": {"AWS_EventBridge", "AWS_CloudWatch_Alarm"},
+	// Azure alerts arrive as Azure_Monitor_Alert (collector) or azure_monitor_webhook (integration).
+	"azure_monitor_webhook": {"azure_monitor_webhook", "Azure_Monitor_Alert"},
 }
 
 // triageMatchSources expands a rule's Source filter value into the raw event
@@ -46,6 +48,86 @@ func triageMatchSources(matchSource string) []string {
 		return sources
 	}
 	return []string{matchSource}
+}
+
+// TriageSource is one selectable Source option for the Create/Edit Triage Rule form. Value is
+// saved to a rule's match_source; Provider scopes it to one platform (empty = cross-platform).
+type TriageSource struct {
+	Label    string `json:"label"`
+	Value    string `json:"value"`
+	Provider string `json:"provider"`
+}
+
+// triageSourceCatalog maps known raw event sources to their friendly, grouped dropdown option. It is
+// the label/grouping overlay for ListTriageSources, and the fallback when there is no account. Values
+// line up with triageMatchSources.
+var triageSourceCatalog = []TriageSource{
+	{Label: "Kubernetes", Value: "kubernetes", Provider: "K8s"},
+	{Label: "Prometheus", Value: "prometheus", Provider: "K8s"},
+	{Label: "AWS CloudWatch & EventBridge", Value: "AWS_EventBridge", Provider: "AWS"},
+	{Label: "GCP Metric Alert", Value: "GCP_Metric_Alert", Provider: "GCP"},
+	{Label: "Azure Monitor", Value: "azure_monitor_webhook", Provider: "Azure"},
+	{Label: "PagerDuty", Value: "pagerduty"},
+	{Label: "Datadog", Value: "datadog"},
+}
+
+func catalogForProvider(provider string) []TriageSource {
+	if provider == "" {
+		return triageSourceCatalog
+	}
+	out := make([]TriageSource, 0, len(triageSourceCatalog))
+	for _, s := range triageSourceCatalog {
+		if s.Provider == "" || strings.EqualFold(s.Provider, provider) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// ListTriageSources builds the Source options from the account's own event sources: each raw source
+// collapses into its curated grouped option, or shows title-cased if uncurated. No accountSources
+// (multi-account / unknown) falls back to the curated catalog for the provider.
+func ListTriageSources(provider string, accountSources []string) []TriageSource {
+	if len(accountSources) == 0 {
+		return catalogForProvider(provider)
+	}
+
+	// Reverse index: each raw events.source -> the curated option that groups/labels it.
+	byRaw := map[string]TriageSource{}
+	for _, s := range triageSourceCatalog {
+		for _, raw := range triageMatchSources(s.Value) {
+			byRaw[raw] = s
+		}
+	}
+
+	out := []TriageSource{}
+	added := map[string]bool{}
+	for _, raw := range accountSources {
+		if raw == "" {
+			continue
+		}
+		opt, known := byRaw[raw]
+		if !known {
+			opt = TriageSource{Label: titleCaseSource(raw), Value: raw}
+		}
+		if added[opt.Value] {
+			continue
+		}
+		added[opt.Value] = true
+		out = append(out, opt)
+	}
+	return out
+}
+
+// titleCaseSource: "Azure_Monitor_Alert" -> "Azure Monitor Alert".
+func titleCaseSource(s string) string {
+	parts := strings.Split(s, "_")
+	for i, p := range parts {
+		if p != "" {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // CheckTriageRules evaluates all matching rules for an event and returns the result

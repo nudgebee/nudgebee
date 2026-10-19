@@ -97,6 +97,8 @@ func handleTriageAction(h *ActionRequest, c *gin.Context, tracer *trace.Tracer, 
 		handleEventCreateTriageRule(h, c, ctx)
 	case "event_get_triage_rules":
 		handleEventGetTriageRules(h, c, ctx)
+	case "event_list_triage_sources":
+		handleEventListTriageSources(h, c, ctx)
 	case "event_preview_triage_rule", "events_dryrun_triage_rule":
 		handleEventPreviewTriageRule(h, c, ctx)
 	case "event_delete_triage_rule":
@@ -1063,6 +1065,34 @@ func handleEventGetTriageRules(h *ActionRequest, c *gin.Context, ctx *security.R
 	c.JSON(http.StatusOK, triage.GetTriageRulesResponse{
 		Rules: rules,
 	})
+}
+
+// handleEventListTriageSources returns the Source dropdown options, built from the account's own
+// distinct events.source values (grouped/labelled by the triage catalog) with the curated catalog
+// as the fallback when they can't be read.
+func handleEventListTriageSources(h *ActionRequest, c *gin.Context, ctx *security.RequestContext) {
+	provider, _ := h.Input["provider"].(string)
+	accountID, _ := h.Input["cloud_account_id"].(string)
+
+	var accountSources []string
+	if accountID != "" {
+		resp, err := event.GetEventFilterValues(ctx, event.GetEventFilterValuesRequest{
+			AccountID:   &accountID,
+			FilterTypes: []event.EventFilterType{event.EventFilterTypeSource},
+		})
+		if err != nil {
+			ctx.GetLogger().Warn("triage sources: could not load account event sources; using curated base", "error", err, "account", accountID)
+		} else {
+			for _, f := range resp.Filters {
+				if f.FilterType == event.EventFilterTypeSource {
+					for _, v := range f.Values {
+						accountSources = append(accountSources, v.Value)
+					}
+				}
+			}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"sources": triage.ListTriageSources(provider, accountSources)})
 }
 
 // handleEventPreviewTriageRule previews how many existing events would match a rule's criteria
