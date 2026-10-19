@@ -131,6 +131,27 @@ func TestResolveStore_SingleIntegrationResolves(t *testing.T) {
 	}
 }
 
+// A user-created integration has no datasource_key config row (the relay only
+// writes one on its own mirror row), so the store falls back to the integration
+// id, as the metric-query loader does. Regression: this used to be ErrNoStore.
+func TestResolveStore_NoDatasourceKeyFallsBackToIntegrationID(t *testing.T) {
+	dbm := testenv.RequireMetastore(t)
+	ids := []string{"6e2f0000-0000-4000-8000-000000001008"}
+	cleanupStoreFixture(dbm, ids)
+	t.Cleanup(func() { cleanupStoreFixture(dbm, ids) })
+	seedStoreFixture(t, dbm, []storeFixtureIntegration{
+		{id: ids[0], accountID: rsVMAccount, tenantID: rsTenant, connectionMode: "vm_agent", status: "enabled"},
+	})
+
+	store, err := ResolveStore(rsVMAccount, rsTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.DatasourceKey != ids[0] {
+		t.Errorf("DatasourceKey = %q, want the integration id %q", store.DatasourceKey, ids[0])
+	}
+}
+
 // TestResolveStore_TwoIntegrationsDefaultWins is the regression test for the
 // bug Codex review found: the default-metrics-provider flag lives on
 // integrations_cloud_accounts (the account-link row), set by the integration

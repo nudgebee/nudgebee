@@ -21,9 +21,11 @@ var ErrNoStore = errors.New("vmservicemap: no Prometheus integration reached thr
 
 // ResolveStore finds the account's metrics store held by a forager: an enabled
 // Prometheus integration linked to the account as its own, in
-// connection_mode=vm_agent, that carries a datasource key. With several, the one
-// marked as the default metrics provider wins; if that does not settle it, the
-// map is not built from a guess.
+// connection_mode=vm_agent. Its datasource key is the row's own datasource_key,
+// else the integration id: the same rule the metric-query loader and alert-rule
+// listing use, since a user-created row only has the key when the relay wrote it.
+// With several, the one marked as the default metrics provider wins; if that does
+// not settle it, the map is not built from a guess.
 func ResolveStore(accountID, tenantID string) (Store, error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -35,7 +37,7 @@ func ResolveStore(accountID, tenantID string) (Store, error) {
 		IsDefault     bool   `db:"is_default"`
 	}
 	err = dbms.Db.Select(&rows,
-		`SELECT ck.value AS datasource_key,
+		`SELECT COALESCE(NULLIF(ck.value, ''), i.id::text) AS datasource_key,
 		        COALESCE(at.value, '') AS agent_type,
 		        COALESCE(l.default_metrics_provider, false) AS is_default
 		 FROM integrations i
@@ -43,8 +45,8 @@ func ResolveStore(accountID, tenantID string) (Store, error) {
 		   ON l.integration_id = i.id AND l.cloud_account_id = $1 AND l.link_role = 'own'
 		 JOIN integration_config_values mode
 		   ON mode.integration_id = i.id AND mode.name = 'connection_mode' AND mode.value = 'vm_agent'
-		 JOIN integration_config_values ck
-		   ON ck.integration_id = i.id AND ck.name = 'datasource_key' AND ck.value <> ''
+		 LEFT JOIN integration_config_values ck
+		   ON ck.integration_id = i.id AND ck.name = 'datasource_key'
 		 LEFT JOIN integration_config_values at
 		   ON at.integration_id = i.id AND at.name = 'agent_type'
 		 WHERE i.type = 'prometheus' AND i.status = 'enabled' AND i.tenant_id = $2
