@@ -639,6 +639,24 @@ func TargetModule(toolName string) string {
 	return ""
 }
 
+// WriteGrantModule is the custom-role module a write through tool needs
+// Execute on: k8s for kubectl and helm, cloud for the cloud CLIs, and for a
+// tool that uses an integration integrations.<type> of the integration the
+// call resolved (boundType; "" when it is not known yet). "" means no grant
+// covers the tool's writes. It is the one map from a write to its grant.
+func WriteGrantModule(ctx *security.RequestContext, tool core.NBTool, boundType string) string {
+	if tool == nil {
+		return ""
+	}
+	if core.UsesIntegration(ctx, tool) {
+		if strings.TrimSpace(boundType) == "" {
+			return ""
+		}
+		return security.IntegrationModule(boundType)
+	}
+	return TargetModule(tool.Name())
+}
+
 // targetConfigModule is TargetModule for a selected target, from the kind of
 // account its tool lists.
 func targetConfigModule(selected core.ToolConfig) string {

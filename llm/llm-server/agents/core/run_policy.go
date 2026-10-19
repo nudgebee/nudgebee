@@ -104,8 +104,14 @@ type AgentRunPolicy interface {
 	// tools: no client tool from the request, no registry or custom-agent
 	// fallback for other names.
 	OwnToolsOnly(ctx *security.RequestContext) bool
-	// CheckTool decides a tool call (see ToolVerdict).
+	// CheckTool decides a tool call (see ToolVerdict). It may be called more
+	// than once for one call, so it must change nothing.
 	CheckTool(ctx *security.RequestContext, call ToolCall) ToolVerdict
+	// StartToolCall decides, once, a call CheckTool answered
+	// ToolCallDecideAtCall: called right before the tool runs, after every
+	// access check, with the account the call lands on. It is where the
+	// policy may observe the call (record it), so it runs exactly once.
+	StartToolCall(ctx *security.RequestContext, call ToolCall, account string) ToolStart
 	// AgentTools is a custom agent's tool set in the run, given the tools on
 	// its list.
 	AgentTools(ctx *security.RequestContext, agent NBAgent, configured []toolcore.NBTool) []toolcore.NBTool
@@ -135,6 +141,9 @@ type ToolCall struct {
 	AccountId      string
 	SessionId      string
 	ConversationId string
+	// BoundIntegrationType is the stored type of the integration the call
+	// resolved (toolcore.BoundIntegrationType); set for StartToolCall only.
+	BoundIntegrationType string
 }
 
 // ToolVerdictKind is how a tool call goes ahead.
@@ -152,11 +161,22 @@ const (
 	ToolCallRefuseReadOnly
 	// ToolCallRefuse: the call is refused, and Observation tells the agent why.
 	ToolCallRefuse
+	// ToolCallDecideAtCall: the policy decides whether the call runs once it
+	// is about to run (StartToolCall), on the account it lands on and after
+	// every access check: no approval prompt and no read-only refusal here.
+	ToolCallDecideAtCall
 )
 
 // ToolVerdict is AgentRunPolicy.CheckTool's answer.
 type ToolVerdict struct {
 	Kind        ToolVerdictKind
+	Observation string
+}
+
+// ToolStart is AgentRunPolicy.StartToolCall's answer: run the call, or not,
+// with Observation telling the agent why.
+type ToolStart struct {
+	Run         bool
 	Observation string
 }
 
@@ -174,9 +194,12 @@ func (NoRunPolicy) StartAgent(ctx *security.RequestContext, _ NBAgent, request N
 func (NoRunPolicy) ConversationTurn(ctx *security.RequestContext, _ NBAgent, _ Conversation, _ string) (*security.RequestContext, error) {
 	return ctx, nil
 }
-func (NoRunPolicy) MayActOnConversation(Conversation, string) bool              { return true }
-func (NoRunPolicy) OwnToolsOnly(*security.RequestContext) bool                  { return false }
-func (NoRunPolicy) CheckTool(*security.RequestContext, ToolCall) ToolVerdict    { return ToolVerdict{} }
+func (NoRunPolicy) MayActOnConversation(Conversation, string) bool           { return true }
+func (NoRunPolicy) OwnToolsOnly(*security.RequestContext) bool               { return false }
+func (NoRunPolicy) CheckTool(*security.RequestContext, ToolCall) ToolVerdict { return ToolVerdict{} }
+func (NoRunPolicy) StartToolCall(*security.RequestContext, ToolCall, string) ToolStart {
+	return ToolStart{Run: true}
+}
 func (NoRunPolicy) AnswerInstructions(*security.RequestContext, NBAgent) string { return "" }
 func (NoRunPolicy) MaxTurns(*security.RequestContext, NBAgent) int              { return 0 }
 func (NoRunPolicy) AddTokens(*security.RequestContext, int)                     {}
@@ -206,6 +229,41 @@ func (p unregisteredRunPolicy) ConversationTurn(ctx *security.RequestContext, _ 
 	return ctx, p.refusal()
 }
 func (p unregisteredRunPolicy) MayActOnConversation(Conversation, string) bool { return false }
+func (p unregisteredRunPolicy) StartToolCall(*security.RequestContext, ToolCall, string) ToolStart {
+	return ToolStart{Observation: p.refusal().Error()}
+}
+
+// decidedAtCallKey carries, from the planner to the tool call, a call the run
+// policy decides when it is about to run (ToolCallDecideAtCall).
+type decidedAtCallKey struct{}
+
+// decidedAtCall is a call waiting for StartToolCall, and the account the
+// planner resolved it lands on.
+type decidedAtCall struct {
+	call    ToolCall
+	account string
+}
+
+// withDecidedAtCall marks ctx for the one tool call the policy decides at the
+// call; nil clears the mark, so nothing the tool calls inherits it.
+func withDecidedAtCall(ctx *security.RequestContext, pending *decidedAtCall) *security.RequestContext {
+	if ctx == nil || ctx.GetContext() == nil {
+		return ctx
+	}
+	return ctx.WithContext(context.WithValue(ctx.GetContext(), decidedAtCallKey{}, pending))
+}
+
+// decidedAtCallOf is the call ctx was marked for, if it is tool's.
+func decidedAtCallOf(ctx *security.RequestContext, tool toolcore.NBTool) *decidedAtCall {
+	if ctx == nil || ctx.GetContext() == nil || tool == nil {
+		return nil
+	}
+	pending, _ := ctx.GetContext().Value(decidedAtCallKey{}).(*decidedAtCall)
+	if pending == nil || pending.call.Tool == nil || !strings.EqualFold(pending.call.Tool.Name(), tool.Name()) {
+		return nil
+	}
+	return pending
+}
 
 // runPolicies are the registered policies by extension name. Written only
 // from extensions' init (RegisterAgentRunPolicy), read without a lock.

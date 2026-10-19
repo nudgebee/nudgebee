@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 
 	"nudgebee/llm/tools/core"
@@ -76,4 +77,10 @@ func RunbookErrorStatus(err error) (status int, body string, ok bool) {
 func IsAIInvocableAutomationTool(t core.NBTool) bool {
 	_, ok := t.(*automationTool)
 	return ok
+}
+
+// DoRunbookRequestWithHeaders is DoRunbookRequestWithContext with extra
+// request headers, set after the standard ones.
+func DoRunbookRequestWithHeaders(reqCtx context.Context, method, path string, body any, accountId, tenantId, userId string, headers map[string]string) ([]byte, error) {
+	return doRunbookRequestWithHeaders(reqCtx, method, path, body, accountId, tenantId, userId, headers)
 }

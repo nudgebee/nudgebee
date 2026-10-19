@@ -595,3 +595,19 @@ func TestActingUser(t *testing.T) {
 	assert.Equal(t, named, ActingUser(system, named), "nor does the system user")
 	assert.Equal(t, named, ActingUser(nil, named))
 }
+
+// A governed run resolves its agent's tool list fresh: it neither reads nor
+// fills the cross-request cache, which an ordinary run keeps using.
+func TestGovernedRunSkipsTheAgentToolCache(t *testing.T) {
+	agent := &nbCustomAgent{agent: AgentDto{Name: "cache_probe", Tools: []string{registeredOnlyTool}}, accountId: policyTestAccount}
+	customAgentToolsCacheInst.delete(policyTestAccount, agent.agent.Name)
+	t.Cleanup(func() { customAgentToolsCacheInst.delete(policyTestAccount, agent.agent.Name) })
+
+	require.Len(t, agent.configuredTools(governedRun(security.NewRequestContextForSuperAdmin())), 1)
+	_, cached := customAgentToolsCacheInst.get(policyTestAccount, agent.agent.Name)
+	assert.False(t, cached, "a governed run does not fill the cache")
+
+	customAgentToolsCacheInst.set(policyTestAccount, agent.agent.Name, nil)
+	assert.Len(t, agent.configuredTools(governedRun(security.NewRequestContextForSuperAdmin())), 1, "nor read it")
+	assert.Empty(t, agent.configuredTools(security.NewRequestContextForSuperAdmin()), "an ordinary run uses the cache as before")
+}

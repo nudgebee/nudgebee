@@ -98,6 +98,12 @@ func FollowupRequestForToolOperationConfirmation(ctx *security.RequestContext, q
 	return followUpRequest, nil
 }
 
+// ConfirmationDisplayInput is the command text an approval card shows for a
+// tool input.
+func ConfirmationDisplayInput(input string) string {
+	return confirmationDisplayInput(input)
+}
+
 // confirmationDisplayInput is the part of a tool input an approver reads: the
 // SQL of a query tool, else the raw input.
 func confirmationDisplayInput(input string) string {

@@ -339,6 +339,28 @@ func rejectWrongProvider(binary, label string) string {
 	return fmt.Sprintf("this is a %s account, so the %q CLI has no credentials here. Regenerate the plan to get a command for %s.", label, binary, label)
 }
 
+// GetAccountEnvironment returns the account's environment (cloud_accounts.
+// account_env: "prod" or "non_prod"), or "" when it cannot be read.
+func GetAccountEnvironment(accountId string) string {
+	if strings.TrimSpace(accountId) == "" {
+		return ""
+	}
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return ""
+	}
+	return AccountEnvironmentFrom(dbms, accountId)
+}
+
+// AccountEnvironmentFrom is GetAccountEnvironment on a given database.
+func AccountEnvironmentFrom(dbms *common.DatabaseManager, accountId string) string {
+	var env string
+	if err := dbms.Db.QueryRowx(`SELECT COALESCE(account_env,'') FROM cloud_accounts WHERE id = $1`, accountId).Scan(&env); err != nil {
+		return ""
+	}
+	return env
+}
+
 // GetCloudProviderForAccount returns the account's cloud_provider ("AWS", "Azure", "GCP", "K8s",
 // "CloudFoundry"), or "" when it cannot be read. It lives here rather than in agents because both
 // remediation callers dispatch on it and tools cannot import agents.

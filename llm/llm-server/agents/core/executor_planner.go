@@ -2716,7 +2716,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		}, nil, nil
 	}
 	// confirmation if tehre is write operation
-	if tool.GetType() == toolcore.NBToolTypeTool && verdict.Kind != ToolCallRun {
+	if tool.GetType() == toolcore.NBToolTypeTool && verdict.Kind != ToolCallRun && verdict.Kind != ToolCallDecideAtCall {
 		if writeConfirmationRequired(tool, requestType, action) {
 			// A write on another account is approved for that account; every
 			// write's card says where it lands.
@@ -2914,6 +2914,14 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			err = summaryErr
 		}
 	} else {
+		if verdict.Kind == ToolCallDecideAtCall {
+			// The policy decides at the call, on where the call lands.
+			account := e.agentRequest.AccountId
+			if target := e.writeTargetOf(tool, action); target != nil && target.Target.AccountID != "" {
+				account = target.Target.AccountID
+			}
+			actionCtx = withDecidedAtCall(actionCtx, &decidedAtCall{call: toolCallOf(e.agent, e.agentRequest, tool, action, lo.FromPtr(requestType)), account: account})
+		}
 		observation, err = callNbTool(actionCtx, e.agentRequest, e.agent.GetName(), tool, action.ToolInput, nil, queryContext, action.ToolID, action.FollowupAnswer, lo.FromPtr(requestType))
 	}
 	var dt []string
@@ -4911,6 +4919,23 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 		if breakerActive && !toolcore.ToolCircuitBreaker().IsHealthy(implType, breakerKey) {
 			nbRequestContext.GetLogger().Warn("plannerexecutor: skipping call — circuit open", "tool", tool.Name(), "account_id", breakerKey.AccountId, "instance_id", breakerKey.InstanceId, "impl_type", implType)
 			return toolcore.NewCircuitOpenResponse(tool.Name(), toolcore.ToolCircuitBreaker().Threshold()), nil
+		}
+	}
+
+	// A call the run policy decides at the call (ToolCallDecideAtCall) is
+	// decided here, once, after every access check above and right before the tool runs, on the account the
+	// call lands on. The mark is cleared so nothing the tool calls inherits it.
+	if pending := decidedAtCallOf(nbRequestContext, tool); pending != nil {
+		nbRequestContext = withDecidedAtCall(nbRequestContext, nil)
+		toolContext.Ctx = withDecidedAtCall(toolContext.Ctx, nil)
+		account := pending.account
+		if toolContext.TargetAccountId != "" && toolContext.TargetAccountId != toolContext.AccountId {
+			account = toolContext.TargetAccountId
+		}
+		pending.call.BoundIntegrationType = toolcore.BoundIntegrationType(tool, toolContext.ToolConfig)
+		if start := policyFor(nbRequestContext).StartToolCall(nbRequestContext, pending.call, account); !start.Run {
+			nbRequestContext.GetLogger().Info("plannerexecutor: run policy did not run the call", "tool", tool.Name(), "account_id", account)
+			return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: start.Observation}, nil
 		}
 	}
 

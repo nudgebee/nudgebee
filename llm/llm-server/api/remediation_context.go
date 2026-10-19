@@ -303,11 +303,7 @@ func targetSection(ctx *security.RequestContext, dbms *common.DatabaseManager, a
 }
 
 func accountEnvironment(dbms *common.DatabaseManager, accountId string) string {
-	var env string
-	if err := dbms.Db.QueryRowx(`SELECT COALESCE(account_env,'') FROM cloud_accounts WHERE id = $1`, accountId).Scan(&env); err != nil {
-		return ""
-	}
-	return env
+	return tools.AccountEnvironmentFrom(dbms, accountId)
 }
 
 type inventoryResource struct {

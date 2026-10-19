@@ -189,14 +189,22 @@ func (a *nbCustomAgent) GetSupportedTools(ctx *security.RequestContext) []toolco
 
 // configuredTools resolves the tools on the agent's stored list.
 func (a *nbCustomAgent) configuredTools(ctx *security.RequestContext) []toolcore.NBTool {
+	// A governed run resolves its agent's list fresh, never from or into the
+	// cross-request cache, so a change to the agent's record reaches its next
+	// run.
+	governed := RunProfileOf(ctx) != nil
 	// Module-level TTL cache shared across requests for this account+agent.
-	if cached, ok := customAgentToolsCacheInst.get(a.accountId, a.agent.Name); ok {
-		return cached
+	if !governed {
+		if cached, ok := customAgentToolsCacheInst.get(a.accountId, a.agent.Name); ok {
+			return cached
+		}
 	}
 
 	nbTools := make([]toolcore.NBTool, 0, len(a.agent.Tools))
 	if len(a.agent.Tools) == 0 {
-		customAgentToolsCacheInst.set(a.accountId, a.agent.Name, nbTools)
+		if !governed {
+			customAgentToolsCacheInst.set(a.accountId, a.agent.Name, nbTools)
+		}
 		return nbTools
 	}
 	allResolved := true
@@ -225,7 +233,7 @@ func (a *nbCustomAgent) configuredTools(ctx *security.RequestContext) []toolcore
 	}
 	// Only cache across requests if all configured tools were successfully resolved.
 	// If any tool failed to resolve, avoid poisoning the 30-minute cache with an incomplete list.
-	if allResolved {
+	if allResolved && !governed {
 		customAgentToolsCacheInst.set(a.accountId, a.agent.Name, nbTools)
 	}
 	return nbTools

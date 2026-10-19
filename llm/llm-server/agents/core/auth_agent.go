@@ -236,7 +236,7 @@ func mayWrite(ctx *security.RequestContext, tool toolcore.NBTool, account string
 	if toolcore.UsesIntegration(ctx, tool) {
 		return true
 	}
-	module := tools.TargetModule(tool.Name())
+	module := tools.WriteGrantModule(ctx, tool, "")
 	return module != "" && ctx.GetSecurityContext().Can(account, module, "Execute")
 }
 

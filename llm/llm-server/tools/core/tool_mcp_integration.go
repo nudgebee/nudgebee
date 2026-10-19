@@ -688,6 +688,21 @@ func ListMCPIntegrationTools(accountId string) []NBTool {
 	return tools
 }
 
+// ListMCPIntegrationToolsFresh is ListMCPIntegrationTools discovered now,
+// not from the cache: for a caller that must see a server's current tools
+// and annotations (a governed run's tool set). The fresh list also refreshes
+// the cache.
+func ListMCPIntegrationToolsFresh(accountId string) []NBTool {
+	if accountId == "" {
+		return nil
+	}
+	tools := loadMCPIntegrationToolsFromDB(accountId)
+	if tools != nil {
+		mcpIntegrationToolCacheInstance.set(accountId, tools)
+	}
+	return tools
+}
+
 // ListMCPIntegrationToolDtos returns ToolDto representations for the MCP integration tools.
 func ListMCPIntegrationToolDtos(accountId string) []ToolDto {
 	tools := ListMCPIntegrationTools(accountId)
