@@ -51,6 +51,9 @@ const (
 	// ParamMaxTier is the run's tier ceiling (the definition's max_tier): a
 	// step with a higher tier is refused. Absent or 0 means no ceiling.
 	ParamMaxTier = "_max_tier"
+	// ParamApprovalGate marks the run's own approval gate (the engine-added
+	// model.ApprovalGateTaskID step); set only by the executor.
+	ParamApprovalGate = "_approval_gate"
 )
 
 // Execute is the method registered with Temporal. It extracts workflow metadata from params,
@@ -76,6 +79,7 @@ func (tw *TaskWrapper) Execute(ctx context.Context, params map[string]any) (any,
 		principal = userID
 	}
 	maxTier, readable := tierParam(params[ParamMaxTier])
+	approvalGate, _ := params[ParamApprovalGate].(string)
 
 	// Build TaskContext (includes logger, metadata, etc.). Its user is the
 	// principal, so outbound calls carry the identity the step was checked as.
@@ -96,6 +100,7 @@ func (tw *TaskWrapper) Execute(ctx context.Context, params map[string]any) (any,
 	delete(params, ParamWorkflowName)
 	delete(params, ParamUserDisplayName)
 	delete(params, ParamMaxTier)
+	delete(params, ParamApprovalGate)
 
 	// Checked before anything else about the step: it needs no lookups, and a
 	// step built at run time is exactly what the static check could not see.
@@ -118,6 +123,13 @@ func (tw *TaskWrapper) Execute(ctx context.Context, params map[string]any) (any,
 		if err := schema.Process(params); err != nil {
 			return nil, scrubError(err, secrets)
 		}
+	}
+
+	// The run's own approval gate only waits for an answer: it needs no right
+	// of the principal's, and who may answer is checked when they answer.
+	if approvalGate != "" && tw.Task.GetName() == "core.approval" && activity.GetInfo(ctx).ActivityID == model.ApprovalGateTaskID {
+		activity.GetLogger(ctx).Info("step authorization skipped for the run's approval gate", "workflow_id", workflowID)
+		return tw.Task.Execute(taskCtx, params)
 	}
 
 	stepAccount := StepAccount(params, accountID)

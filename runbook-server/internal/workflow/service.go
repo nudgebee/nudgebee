@@ -1171,15 +1171,27 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	// A bound automation runs only when the run gate allows it. Checked on
 	// this shared tail so no execution path skips it.
 	var boundRunStarted func(executionID string)
+	var approval *RunApproval
 	if wf.Binding.IsAutomation() {
 		if s.runGate == nil {
 			return "", errBoundAutomationUnavailable()
 		}
-		started, err := s.runGate.CheckRun(ctx, accountId, wf, memo, triggerType, inputs)
+		decision, err := s.runGate.CheckRun(ctx, accountId, wf, memo, triggerType, inputs)
 		if err != nil {
 			return "", err
 		}
-		boundRunStarted = started
+		boundRunStarted = decision.Started
+		approval = decision.Approval
+	}
+	// Only the run tail decides whether a run waits on an approval gate.
+	wf.ApprovalGate = ""
+	if approval != nil {
+		gated, err := withApprovalGate(wf.Definition, approval)
+		if err != nil {
+			return "", err
+		}
+		wf.Definition = gated
+		wf.ApprovalGate = approval.Ref
 	}
 
 	var runWorkflowID string
@@ -1223,6 +1235,11 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	if ctx.IsAITriggered() {
 		memo[model.MemoWorkflowAITriggered] = true
 	}
+	if wf.ApprovalGate != "" {
+		memo[model.MemoApprovalGate] = wf.ApprovalGate
+	} else {
+		delete(memo, model.MemoApprovalGate)
+	}
 
 	// Determine workflow timeout
 	workflowTimeout := 1 * time.Hour // Default
@@ -1232,6 +1249,10 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 		} else {
 			slog.Warn("Invalid workflow timeout duration, using default", "timeout", wf.Definition.Timeout, "error", err)
 		}
+	}
+	// A gated run first waits for its approval, then gets its own time.
+	if approval != nil {
+		workflowTimeout += approval.Timeout
 	}
 
 	options := client.StartWorkflowOptions{
@@ -3687,7 +3708,28 @@ func (s *Service) CompleteApprovalTaskFromUI(ctx *security.RequestContext, accou
 	if comments != "" {
 		result["comments"] = comments
 	}
+	// A run's approval gate is answered through its run gate, which checks the
+	// decider; the answer then carries the gate's reference, without which the
+	// run does not go on (checkApprovalGateAnswer).
+	gateRef := ""
+	if taskID == model.ApprovalGateTaskID {
+		if field := describeResp.GetWorkflowExecutionInfo().GetMemo().GetFields()[model.MemoApprovalGate]; field != nil {
+			if err := s.dataConverter.FromPayload(field, &gateRef); err != nil {
+				return fmt.Errorf("decode approval gate: %w", err)
+			}
+		}
+		if gateRef == "" || s.runGate == nil {
+			return common.Error{Code: 409, Message: "this run has no approval gate to answer"}
+		}
+		if err := s.runGate.DecideApproval(ctx, accountID, workflowID, gateRef, status); err != nil {
+			return err
+		}
+		result[approvalGateOutputRef] = gateRef
+	}
 	if err := s.CompleteApprovalTask(ctx, token, status, result); err != nil {
+		if gateRef != "" {
+			s.runGate.ApprovalNotDelivered(ctx, gateRef, err)
+		}
 		return err
 	}
 	emitWorkflowAudit(

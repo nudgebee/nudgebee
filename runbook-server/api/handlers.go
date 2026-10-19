@@ -807,6 +807,13 @@ func (s *Server) handleApproval(c *gin.Context) {
 		return
 	}
 
+	// A run's approval gate needs to know who answers, which a link cannot
+	// tell; the run would refuse the answer anyway (it carries no person).
+	if parts := strings.Split(token, ":"); len(parts) == 5 && parts[4] == model.ApprovalGateTaskID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "this approval can only be answered in the app, by a person allowed to make its changes"})
+		return
+	}
+
 	sc := security.NewRequestContextForSuperAdmin()
 	err := s.workflowService.CompleteApprovalTask(sc, token, req.Status, req.Result)
 	if err != nil {

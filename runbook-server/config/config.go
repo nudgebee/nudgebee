@@ -157,6 +157,9 @@ type appConfig struct {
 	OptimizationEnabled                           bool `mapstructure:"runbook_server_optimization_enabled"`
 	OptimizationRecommendationPollIntervalSeconds int  `mapstructure:"runbook_server_optimization_poll_interval_seconds"`
 	WebhookMaxBodySizeMB                          int  `mapstructure:"webhook_max_body_size_mb"`
+	// BeeApprovalTimeoutMinutes is how long a Worker Bee's automation in ask
+	// mode waits for a person to approve it; no answer by then stops the run.
+	BeeApprovalTimeoutMinutes int `mapstructure:"runbook_server_bee_approval_timeout_minutes"`
 
 	// Multi-source system template loading (see internal/templatesource).
 	RunbookServerTemplateSyncEnabled           bool   `mapstructure:"runbook_server_template_sync_enabled"`
@@ -181,6 +184,7 @@ func init() {
 	viper.SetDefault("runbook_server_optimization_enabled", true)
 	viper.SetDefault("runbook_server_optimization_poll_interval_seconds", 180)
 	viper.SetDefault("webhook_max_body_size_mb", 5)
+	viper.SetDefault("runbook_server_bee_approval_timeout_minutes", 240)
 
 	viper.SetDefault("nudgebee_encryption_key", "")
 

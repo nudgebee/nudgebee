@@ -159,6 +159,15 @@ type Workflow struct {
 	// AI runs, RunAsUserID otherwise. Carried in the Temporal input, so it must
 	// serialize.
 	PrincipalUserID string `json:"principal_user_id,omitempty" yaml:"-"`
+	// ApprovalGate is a transient field set when a run starts with an approval
+	// in front of its own steps (ApprovalGateTaskID): the gate's reference,
+	// which only an approval made through the run gate's own decision carries.
+	// Set only by the run tail, never trusted from a stored row or a request.
+	ApprovalGate string `json:"approval_gate,omitempty" yaml:"-"`
+	// ApprovalGatePassed is set during a gated run, in the run's own memory,
+	// once its approval gate accepted an approval. Never serialized, so no
+	// input can set it.
+	ApprovalGatePassed bool `json:"-" yaml:"-"`
 	// RestrictToAccountConfigs is set when the triggering user lacks tenant read
 	// access. When true, FetchWorkflowConfigsActivity drops tenant-scoped configs
 	// from the run so a `{{ Configs.<tenant_key> }}` reference cannot resolve.

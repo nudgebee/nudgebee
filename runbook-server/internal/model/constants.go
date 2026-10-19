@@ -41,4 +41,15 @@ const (
 	MemoFailedStepCount      = "failed_step_count"       // int
 	MemoFirstFailedStep      = "first_failed_step"       // string; task id
 	MemoFirstFailedStepError = "first_failed_step_error" // string; secret-scrubbed, truncated
+	// MemoApprovalGate names the approval a run waits on before its own steps
+	// (Workflow.ApprovalGate), set only when the run starts.
+	MemoApprovalGate = "nb_approval_gate" // string; the gate's reference
 )
+
+// ApprovalGateTaskID is the id of the approval step the engine puts in front of
+// a run's own steps when its run gate asks for one (Workflow.ApprovalGate). It
+// is never stored: a definition may not use the ReservedTaskIDPrefix.
+const ApprovalGateTaskID = "__bee_approval"
+
+// ReservedTaskIDPrefix starts the ids of steps only the engine adds.
+const ReservedTaskIDPrefix = "__bee_"

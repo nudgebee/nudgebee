@@ -339,6 +339,15 @@ func handleTaskCompletion(ctx workflow.Context, wf *model.Workflow, workflowID s
 		}
 	}
 
+	// A run's approval gate lets it go on only on an approval made in the app.
+	if gateErr := checkApprovalGateAnswer(wf, taskID, result, err); gateErr != nil {
+		logger.Warn("Run stopped at its approval gate", "taskID", taskID, "error", gateErr)
+		return gateErr
+	}
+	if wf != nil && wf.ApprovalGate != "" && taskID == model.ApprovalGateTaskID {
+		wf.ApprovalGatePassed = true
+	}
+
 	currentTask, ok := taskMap[taskID]
 	if !ok {
 		logger.Error("Could not find task definition for completed task", "taskID", taskID)
@@ -1305,6 +1314,14 @@ func processTaskLoop(
 				// that depend on loop variables not yet available in the current context.
 				paramsToProcess := task.Params
 				preservedParams := make(map[string]any)
+				// The run's approval gate is built by the engine and quotes what
+				// the run was asked to do; its text is shown, never rendered.
+				if task.ID == model.ApprovalGateTaskID && wf.ApprovalGate != "" {
+					for k, v := range task.Params {
+						preservedParams[k] = v
+					}
+					paramsToProcess = nil
+				}
 
 				if impl, err := taskRegistry.GetTask(task.Type); err == nil {
 					if _, isLoop := impl.(types.TaskLoop); isLoop {
@@ -1344,6 +1361,10 @@ func processTaskLoop(
 
 				eventID := extractEventIDFromInputs(tplCtx.Inputs)
 				setInternalTaskParams(paramMap, wf, eventID)
+				// And only the run's own approval gate is marked as one.
+				if task.ID == model.ApprovalGateTaskID && wf.ApprovalGate != "" {
+					paramMap[tasks.ParamApprovalGate] = wf.ApprovalGate
+				}
 				// Intentionally do NOT attach the full template Vars (tplCtx.Vars) to the
 				// activity input. Params are already rendered above via ProcessValue, and
 				// TaskWrapper strips ParamVars before Execute, so no task ever reads it.
@@ -1527,6 +1548,8 @@ func processTaskLoop(
 										taskCopy := fullTask
 										// Uniquify ID to avoid duplicate activity scheduling if the task is also in the main loop
 										taskCopy.ID = fmt.Sprintf("%s-%s", task.ID, fullTask.ID)
+										// The step running this body already waited on the run's approval gate.
+										taskCopy.DependsOn = withoutApprovalGate(taskCopy.DependsOn)
 										hydratedTasks = append(hydratedTasks, taskCopy)
 										originalToRenamedID[t.ID] = taskCopy.ID
 									} else {
@@ -1961,10 +1984,16 @@ func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Wo
 		}
 	}
 
+	// A gated run that ended before its approval gate passed (rejected,
+	// expired, canceled, or broken before the gate answered) was not approved
+	// to run any step, and hooks are steps.
+	gateStopped := stoppedAtApprovalGate(workflowError) || (wf != nil && wf.ApprovalGate != "" && !wf.ApprovalGatePassed)
 	if canceled {
 		// On.Failure is for a run that broke, not for one the user stopped; only
 		// On.Always (below) is owed to a cancel.
 		logger.Info("Workflow canceled")
+	} else if gateStopped {
+		logger.Info("Workflow stopped at its approval gate; hooks skipped", "error", fmt.Sprint(workflowError))
 	} else if workflowError != nil {
 		logger.Error("Workflow failed", "error", logsafe.ScrubSecretValues(workflowError.Error(), secretValues))
 		if wf != nil && wf.Definition.Hooks != nil && len(wf.Definition.Hooks.Failure) > 0 {
@@ -1982,7 +2011,7 @@ func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Wo
 			}
 		}
 	}
-	if wf != nil && wf.Definition.Hooks != nil && len(wf.Definition.Hooks.Always) > 0 {
+	if !gateStopped && wf != nil && wf.Definition.Hooks != nil && len(wf.Definition.Hooks.Always) > 0 {
 		onFinalCtx := createActivityCtxForAction(ctx)
 		if err := executeSimpleActions(onFinalCtx, wf.Definition.Hooks.Always, newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs), wf); err != nil {
 			logger.Error("On.Always hook failed", "error", err)
@@ -2003,6 +2032,8 @@ func setInternalTaskParams(params map[string]any, wf *model.Workflow, eventID st
 	} else {
 		delete(params, tasks.ParamRunAsUserID)
 	}
+	// Only the run's own approval gate is marked as one; a step sets it after this.
+	delete(params, tasks.ParamApprovalGate)
 	// Likewise the tier ceiling comes from the definition only.
 	delete(params, tasks.ParamMaxTier)
 	if wf.Definition.MaxTier > 0 {

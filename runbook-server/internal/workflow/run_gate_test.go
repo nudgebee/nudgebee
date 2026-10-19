@@ -15,13 +15,28 @@ import (
 )
 
 type fakeRunGate struct {
-	calls int
-	err   error
+	calls    int
+	err      error
+	decision RunDecision
+	// decideErr is DecideApproval's answer; decided and undelivered record
+	// the calls.
+	decideErr   error
+	decided     []string
+	undelivered []string
 }
 
-func (g *fakeRunGate) CheckRun(*security.RequestContext, string, *model.Workflow, map[string]any, model.WorkflowTrigger, map[string]any) (func(string), error) {
+func (g *fakeRunGate) CheckRun(*security.RequestContext, string, *model.Workflow, map[string]any, model.WorkflowTrigger, map[string]any) (RunDecision, error) {
 	g.calls++
-	return nil, g.err
+	return g.decision, g.err
+}
+
+func (g *fakeRunGate) DecideApproval(_ *security.RequestContext, _, _, ref, status string) error {
+	g.decided = append(g.decided, ref+":"+status)
+	return g.decideErr
+}
+
+func (g *fakeRunGate) ApprovalNotDelivered(_ *security.RequestContext, ref string, _ error) {
+	g.undelivered = append(g.undelivered, ref)
 }
 
 func (g *fakeRunGate) Binding(context.Context, string, string) (*model.WorkflowBinding, error) {
