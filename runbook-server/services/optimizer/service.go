@@ -3,6 +3,7 @@ package optimizer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/robfig/cron"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/temporal"
 )
 
 type Service interface {
@@ -75,7 +77,7 @@ func (s *optimizerService) SyncSchedules(ctx context.Context) error {
 
 		err := s.createSchedule(ctx, ao)
 		if err != nil {
-			if strings.Contains(err.Error(), "Schedule already exists") {
+			if errors.Is(err, temporal.ErrScheduleAlreadyRunning) {
 				skipped++
 			} else {
 				failed++
