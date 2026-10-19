@@ -447,7 +447,13 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
   const coercedInput = coerceActionInput(opts.method, opts.params);
 
   const upstreamBody = {
-    action: { name: opts.method },
+    // `permission` is the action's classified "<module>:<Class>" key (empty when
+    // unclassified / non-grantable). It names the grant that covers the action,
+    // so a handler checks the caller's custom grants against the account it
+    // operates on without hardcoding a module — see Go RequestContext.CanAccessAccount.
+    // It is a classification, not a claim: the handler still looks the grant up
+    // in the caller's own security context.
+    action: { name: opts.method, permission: route.permission || '' },
     input: coercedInput,
     request_query: opts.requestQuery || '',
     session_variables: opts.sessionVariables,

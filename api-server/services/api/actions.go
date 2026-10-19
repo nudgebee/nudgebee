@@ -17,6 +17,10 @@ import (
 
 type ActionRequestAction struct {
 	Name string `json:"name"`
+	// Permission is the action's classified "<module>:<Class>" grant key, set by
+	// the app gateway (rpcGateway forwardAction). Empty for unclassified actions
+	// and for callers other than the gateway.
+	Permission string `json:"permission"`
 }
 
 type ActionRequestQuery struct {
@@ -108,7 +112,9 @@ func buildContextFromPayload(c *gin.Context, h *ActionRequest, tracer *trace.Tra
 
 	// trace_id/span_id are stamped by NewRequestContext from ctx.
 	childLogger := logger.With("tenant_id", tenantId, "user_id", userId)
-	return security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter), nil
+	rc := security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter)
+	rc.SetActionPermission(h.Action.Permission)
+	return rc, nil
 }
 
 func handleApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
