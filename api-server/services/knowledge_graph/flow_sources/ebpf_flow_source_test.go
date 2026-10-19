@@ -503,3 +503,125 @@ func TestEbpfFlowSource_EdgeLatencyIsMilliseconds(t *testing.T) {
 		t.Errorf("ebpf_latency_ms = %v, want 250", got)
 	}
 }
+
+// TestEbpfKindMapExistencePolicy locks the contract documented on ebpfKindMap:
+// membership grants an agent-reported kind permission to exist in the graph as
+// a stand-alone node, indefinitely. Adding a high-cardinality kind here
+// reintroduces #41003, where 10,063 finished CI runner pods each became a
+// permanent Service node. This test is the gate on that.
+func TestEbpfKindMapExistencePolicy(t *testing.T) {
+	// One object per event. These must never be materialisable.
+	ephemeral := []string{
+		"EphemeralRunner", // GitHub ARC — one per CI job
+		"Challenge",       // cert-manager ACME — one per certificate renewal
+		"Unknown",         // the agent's own placeholder
+	}
+	for _, kind := range ephemeral {
+		t.Run("ephemeral/"+kind, func(t *testing.T) {
+			if isMaterialisableKind(kind) {
+				t.Errorf("kind %q is materialisable; it creates one object per event "+
+					"and will accumulate unbounded nodes that no sweep retires (#41003)", kind)
+			}
+		})
+	}
+
+	// One object per installation. These are expected to appear in the graph.
+	longLived := []string{
+		"Service", "Deployment", "StatefulSet", "DaemonSet",
+		"Elasticsearch", "Kibana", "ApmServer", "Alertmanager",
+		"ClickHouseInstallation", "VMSingle", "DatadogAgentInternal",
+		"AutoscalingRunnerSet", "AutoscalingListener",
+	}
+	for _, kind := range longLived {
+		t.Run("longlived/"+kind, func(t *testing.T) {
+			if !isMaterialisableKind(kind) {
+				t.Errorf("kind %q is not materialisable; its topology will be silently dropped", kind)
+			}
+		})
+	}
+
+	// An observation carrying no kind at all is not identifiable, so it is
+	// refused for the same reason. This is a guard on intent rather than a live
+	// path: no stored eBPF row has an empty or missing kind (0 of 11,979 on dev).
+	if isMaterialisableKind("") {
+		t.Error("empty kind is materialisable; an unidentifiable observation must not become a node")
+	}
+
+	// The policy is exactly map membership, case-insensitively.
+	for kind := range ebpfKindMap {
+		if !isMaterialisableKind(strings.ToUpper(kind)) {
+			t.Errorf("isMaterialisableKind(%q) disagrees with ebpfKindMap membership", kind)
+		}
+	}
+}
+
+// TestCreateNodeForApplication_UnknownKindNotMaterialised proves the two halves
+// of the #41003 fix at the only place that matters: an ephemeral kind produces
+// no node (and is counted for the summary log), while a long-lived operator CRD
+// still produces one, correctly typed.
+func TestCreateNodeForApplication_UnknownKindNotMaterialised(t *testing.T) {
+	source := NewEbpfFlowSource(slog.Default())
+	account := core.K8sAccount{CloudAccountID: "a2a30b02-0f67-42e5-a2ab-c658230fd798"}
+	tenantID := "890cad87-c452-4aa7-b84a-742cee0454a1"
+
+	// A finished CI runner pod: the exact shape that filled the graph.
+	runner := &core.ServiceApplication{
+		Id: core.ServiceApplicationId{
+			Name:      "arc-nudgebee-vrdf7-runner-tkrk6",
+			Kind:      "EphemeralRunner",
+			Namespace: "arc-systems",
+		},
+	}
+	skipped := make(map[string]int)
+	if node := source.createNodeForApplication(runner, tenantID, account, skipped); node != nil {
+		t.Errorf("materialised a node for an EphemeralRunner: %s", node.UniqueKey)
+	}
+	if skipped["EphemeralRunner"] != 1 {
+		t.Errorf("skipped count = %d, want 1 — the summary log is the only signal this happened", skipped["EphemeralRunner"])
+	}
+
+	// Same via the ID-only path, which the downstream/upstream branches use.
+	skippedByID := make(map[string]int)
+	id := core.ServiceApplicationId{
+		Name:      "arc-nudgebee-vx286-runner-64mwj",
+		Kind:      "EphemeralRunner",
+		Namespace: "arc-systems",
+	}
+	if node := source.createNodeForApplicationID(id, tenantID, account, skippedByID); node != nil {
+		t.Errorf("materialised a node for an EphemeralRunner by ID: %s", node.UniqueKey)
+	}
+	if skippedByID["EphemeralRunner"] != 1 {
+		t.Errorf("skipped-by-id count = %d, want 1", skippedByID["EphemeralRunner"])
+	}
+
+	// A long-lived operator CRD must still land, as a CRD rather than a Service.
+	es := &core.ServiceApplication{
+		Id: core.ServiceApplicationId{Name: "logging-es", Kind: "Elasticsearch", Namespace: "elastic-system"},
+	}
+	skippedES := make(map[string]int)
+	node := source.createNodeForApplication(es, tenantID, account, skippedES)
+	if node == nil {
+		t.Fatal("Elasticsearch was not materialised; a long-lived operator CRD must stay in the graph")
+	}
+	if node.NodeType != core.NodeTypeCRD {
+		t.Errorf("Elasticsearch node type = %s, want %s", node.NodeType, core.NodeTypeCRD)
+	}
+	if len(skippedES) != 0 {
+		t.Errorf("unexpected skips recorded: %v", skippedES)
+	}
+}
+
+// TestInferNodeTypeUnchangedForUnknownKinds guards the deliberate asymmetry:
+// the #41003 fix withholds node *creation* for an unknown kind but leaves
+// *matching* alone, so traffic to a real Workload or Kubernetes Service keeps
+// its edges. matchApplicationToNode probes the type inferNodeType returns, so
+// this must keep defaulting to Service.
+func TestInferNodeTypeUnchangedForUnknownKinds(t *testing.T) {
+	source := NewEbpfFlowSource(slog.Default())
+	for _, kind := range []string{"EphemeralRunner", "Challenge", "SomethingNobodyHasShippedYet"} {
+		if got := source.inferNodeType(kind); got != core.NodeTypeService {
+			t.Errorf("inferNodeType(%q) = %s, want %s — matching must be unaffected by the creation policy",
+				kind, got, core.NodeTypeService)
+		}
+	}
+}
