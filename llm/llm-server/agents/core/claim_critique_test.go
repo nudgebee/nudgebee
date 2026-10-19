@@ -207,6 +207,7 @@ func (d *claimTestDAO) SaveClaimCritiqueAudit(_ context.Context, _ *ClaimCritiqu
 func (d *claimTestDAO) SaveCritique(_ *ConversationCritique) error { return nil }
 
 func TestClaimFeedbackBothPlannersValidateAudit(t *testing.T) {
+	critiqueCallsInOrder(t)
 	pinClaimAuditOnly(t)
 	previous := config.Config.ClaimCritiqueFeedbackEnabled
 	t.Cleanup(func() { config.Config.ClaimCritiqueFeedbackEnabled = previous })

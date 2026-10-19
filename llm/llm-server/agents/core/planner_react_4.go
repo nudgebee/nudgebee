@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
@@ -2027,17 +2028,43 @@ func (o *NBReActPlanner4) flattenTranscript(steps []NBAgentPlannerToolActionStep
 	return b.String()
 }
 
+// startAnswerCritique starts the answer critiquer so it runs alongside the claim
+// audit. Tests that script model replies in call order swap in a synchronous call.
+var startAnswerCritique = func(critique func()) { go critique() }
+
 // runCritique asks the critiquer whether the final answer is acceptable,
 // returning (decision, feedback); an empty decision means accept. It mirrors
 // NBReActPlanner3.runCritique but omits ReAct3's react_answer analytics row
-// (saveCritique); the claim_shadow row written by runClaimCritiqueShadow is the
+// (saveCritique); the claim_shadow row written by runClaimCritique is the
 // record. The "Critique Feedback" card is written by Plan when it acts on a
 // refine.
 func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, intermediateSteps []NBAgentPlannerToolActionStep, conv *critiqueConversation) (resultDecision, resultFeedback string) {
-	defer func() {
-		resultDecision, resultFeedback = runClaimCritiqueShadow(o.ctx, o.request, "react4", o.nbAgent.GetName(), resultDecision, resultFeedback, input, finalAnswer, o.Notebook, intermediateSteps,
-			len(o.refinementData)+1 >= o.maxRefinementAttempts, conv)
-	}()
+	// The claim audit never reads the critiquer's verdict, only combines with it,
+	// so the critiquer runs while the audit does instead of before it.
+	var decision, feedback string
+	done := make(chan struct{})
+	// Never return while the critiquer still runs, even if the audit panics.
+	defer func() { <-done }()
+	startAnswerCritique(func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				// Same fail-safe as a failed critique call: accept the answer.
+				o.ctx.GetLogger().Error("react4: critique panicked, accepting answer", "panic", r, "stack", string(debug.Stack()))
+				decision, feedback = "", ""
+			}
+		}()
+		decision, feedback = o.answerCritique(input, scratchpad, finalAnswer, intermediateSteps, conv)
+	})
+	return runClaimCritique(o.ctx, o.request, "react4", o.nbAgent.GetName(), func() (string, string) {
+		<-done
+		return decision, feedback
+	}, input, finalAnswer, o.Notebook, intermediateSteps, len(o.refinementData)+1 >= o.maxRefinementAttempts, conv)
+}
+
+// answerCritique runs the answer critiquer. Empty decision means the critique
+// failed and the answer is accepted.
+func (o *NBReActPlanner4) answerCritique(input, scratchpad, finalAnswer string, intermediateSteps []NBAgentPlannerToolActionStep, conv *critiqueConversation) (resultDecision, resultFeedback string) {
 	logger := o.ctx.GetLogger()
 
 	questionType := "query"
