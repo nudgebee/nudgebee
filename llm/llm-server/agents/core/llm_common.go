@@ -799,6 +799,7 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 			totalTokenInfo.CacheCreationTokens += continuationTokenInfo.CacheCreationTokens
 			totalTokenInfo.CacheCreation1hTokens += continuationTokenInfo.CacheCreation1hTokens
 			totalTokenInfo.TotalTokens += continuationTokenInfo.TotalTokens
+			totalTokenInfo.ThinkingTokens += continuationTokenInfo.ThinkingTokens
 
 			// Accumulate latency from this continuation chunk so the row's
 			// itl_ms_avg / tokens_per_second reflect the FULL call duration,
@@ -829,7 +830,13 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 	ctx.GetLogger().Info("Successfully generated complete content", "model", model, "provider", provider, "agent", agentName, "agentId", agentId, "totalTokens", totalTokenInfo.TotalTokens)
 	// Counted here, in the call's own goroutine: the usage row below is
 	// written later by a background task, too late for a budget check.
-	policyFor(ctx).AddTokens(ctx, totalTokenInfo.InputTokens+totalTokenInfo.OutputTokens)
+	// Charged by the provider that served the call: it decides whether cache
+	// writes are inside input, and a fallback can change it.
+	budgetProvider := provider
+	if callMetadata.ServedProvider != "" {
+		budgetProvider = callMetadata.ServedProvider
+	}
+	policyFor(ctx).AddTokens(ctx, RunBudgetTokens(budgetProvider, *totalTokenInfo))
 
 	// Token metrics
 	if totalTokenInfo.InputTokens > 0 {

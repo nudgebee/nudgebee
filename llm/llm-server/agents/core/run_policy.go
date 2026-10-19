@@ -124,9 +124,11 @@ type AgentRunPolicy interface {
 	AddTokens(ctx *security.RequestContext, tokens int)
 	// BudgetSpent reports whether the run has spent its token budget.
 	BudgetSpent(ctx *security.RequestContext) (used, limit int64, spent bool)
-	// FinishCutShort rewrites the answer of agent's run that stopped on a cap
-	// (budgetStopped: the token budget, else its turns).
-	FinishCutShort(ctx *security.RequestContext, agent NBAgent, answer string, used, limit int64, budgetStopped bool) string
+	// FinishAnswer may rewrite agent's final answer in the run: every answer
+	// passes through it, a cut-short one (cutShort, budgetStopped: by the
+	// token budget, else by its turns) and a normal one alike. used and limit
+	// are the run's budget at that point.
+	FinishAnswer(ctx *security.RequestContext, agent NBAgent, answer string, used, limit int64, cutShort, budgetStopped bool) string
 }
 
 // ToolCall is a tool call put to AgentRunPolicy.CheckTool.
@@ -207,7 +209,7 @@ func (NoRunPolicy) BudgetSpent(*security.RequestContext) (int64, int64, bool)   
 func (NoRunPolicy) AgentTools(_ *security.RequestContext, _ NBAgent, configured []toolcore.NBTool) []toolcore.NBTool {
 	return configured
 }
-func (NoRunPolicy) FinishCutShort(_ *security.RequestContext, _ NBAgent, answer string, _, _ int64, _ bool) string {
+func (NoRunPolicy) FinishAnswer(_ *security.RequestContext, _ NBAgent, answer string, _, _ int64, _, _ bool) string {
 	return answer
 }
 

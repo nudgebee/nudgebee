@@ -29,3 +29,19 @@ func PromptTokens(provider string, inputTokens, cacheCreationTokens int) int {
 // the cache writes that PromptTokens adds for the same providers. Kept next to
 // the map so the two lists stay one.
 const CacheWritesOutsideInputSQL = `COALESCE(SUM(CASE WHEN lower(t.llm_provider) IN ('anthropic', 'bedrock') THEN COALESCE(t.cache_creation_tokens, 0) ELSE 0 END), 0)`
+
+// RunBudgetTokens is what a call costs a governed run's token budget: the
+// tokens the provider processed afresh. Input served from the prompt cache
+// does not count; input written to the cache does (inside input for most
+// providers, outside it for those in providersWithCacheWritesOutsideInput),
+// and so do output and thinking.
+func RunBudgetTokens(provider string, info TokenInfo) int {
+	fresh := info.InputTokens - info.CacheReadTokens
+	if fresh < 0 {
+		fresh = 0
+	}
+	if providersWithCacheWritesOutsideInput[strings.ToLower(strings.TrimSpace(provider))] {
+		fresh += info.CacheCreationTokens
+	}
+	return fresh + info.OutputTokens + info.ThinkingTokens
+}

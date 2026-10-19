@@ -93,7 +93,10 @@ func (f *fakeRunPolicy) AnswerInstructions(_ *security.RequestContext, agent NBA
 	}
 	return ""
 }
-func (f *fakeRunPolicy) FinishCutShort(_ *security.RequestContext, _ NBAgent, answer string, used, limit int64, budgetStopped bool) string {
+func (f *fakeRunPolicy) FinishAnswer(_ *security.RequestContext, _ NBAgent, answer string, used, limit int64, cutShort, budgetStopped bool) string {
+	if !cutShort {
+		return fmt.Sprintf("%s [final %d/%d]", answer, used, limit)
+	}
 	return fmt.Sprintf("%s [cut budget=%v %d/%d]", answer, budgetStopped, used, limit)
 }
 
@@ -166,7 +169,8 @@ func TestOrdinaryRunIsNeverGoverned(t *testing.T) {
 	custom := customAgentWith(map[string]any{"max_turns": 3})
 	configured := []toolcore.NBTool{&MockContextCapturingTool{NameVal: "t"}}
 	assert.Equal(t, configured, policy.AgentTools(ctx, custom, configured))
-	assert.Equal(t, "answer", policy.FinishCutShort(ctx, custom, "answer", 1, 1, true))
+	assert.Equal(t, "answer", policy.FinishAnswer(ctx, custom, "answer", 1, 1, true, true))
+	assert.Equal(t, "answer", policy.FinishAnswer(ctx, custom, "answer", 1, 1, false, false))
 	assert.Empty(t, policy.AnswerInstructions(ctx, custom))
 	assert.Zero(t, policy.MaxTurns(ctx, custom))
 	_, _, spent := policy.BudgetSpent(ctx)
@@ -436,6 +440,43 @@ func TestRunPolicyCountsTokensFromEachLLMResponse(t *testing.T) {
 	assert.Equal(t, 2, fake.tokens, "1 input + 1 output token")
 }
 
+// usageScriptedModel answers each call with the next scripted response.
+type usageScriptedModel struct {
+	fakeLLMModel
+	responses []*llms.ContentResponse
+}
+
+func (m *usageScriptedModel) GenerateContent(context.Context, []llms.MessageContent, ...llms.CallOption) (*llms.ContentResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r := m.responses[min(m.calls, len(m.responses)-1)]
+	m.calls++
+	return r, nil
+}
+
+// The budget counts what each call processed afresh, continuation chunks
+// included: cache reads do not count; output and thinking (summed across
+// chunks) do.
+func TestRunPolicyBudgetCountsUncachedTokensAcrossContinuations(t *testing.T) {
+	fake := &fakeRunPolicy{}
+	withFakeRunPolicy(t, fake)
+	drainTokenUsageWrites(t)
+	chunk := func(content, stop string, prompt, cached, completion, thinking int) *llms.ContentResponse {
+		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: content, StopReason: stop, GenerationInfo: map[string]any{
+			"PromptTokens": prompt, "PromptCachedTokens": cached, "CompletionTokens": completion, "ThinkingTokens": thinking,
+		}}}}
+	}
+	model := &usageScriptedModel{responses: []*llms.ContentResponse{
+		chunk("first half", "length", 20000, 15000, 400, 100),
+		chunk(" second half", "stop", 21000, 16000, 300, 50),
+	}}
+	withFakeLLMModel(t, model)
+	_, err := GenerateAndTrackLLMContent(governedRun(llmOverrideContext()), "user-1", "acct-1", "conv-1", "msg-1", "", false, nil, false)
+	require.NoError(t, err)
+	require.Equal(t, 2, model.calls, "the cut-off response was continued")
+	assert.Equal(t, (5000+400+100)+(5000+300+50), fake.tokens)
+}
+
 // drainTokenUsageWrites sends the test's background usage writes through a
 // pool that cleanup waits for, so none reads the conversation store after an
 // earlier cleanup has put the real one back. The returned func waits for them
@@ -459,16 +500,21 @@ func drainTokenUsageWrites(t *testing.T) func() {
 // loopPlanner proposes a read on every turn, or finishes on its first.
 type loopPlanner struct {
 	mockNBAgentPlanner
-	tools       []toolcore.NBTool
-	finishFirst bool
-	calls       int
+	tools        []toolcore.NBTool
+	finishFirst  bool
+	finishStatus ConversationStatus // of the first-turn finish; completed when empty
+	calls        int
 }
 
 func (p *loopPlanner) GetTools() []toolcore.NBTool { return p.tools }
 func (p *loopPlanner) Plan(_ context.Context, _ []NBAgentPlannerToolActionStep, _ string) ([]NBAgentPlannerToolAction, *NBAgentPlannerFinishAction, error) {
 	p.calls++
 	if p.finishFirst {
-		return nil, &NBAgentPlannerFinishAction{Data: "done", Status: ConversationStatusCompleted}, nil
+		status := p.finishStatus
+		if status == "" {
+			status = ConversationStatusCompleted
+		}
+		return nil, &NBAgentPlannerFinishAction{Data: "done", Status: status}, nil
 	}
 	return []NBAgentPlannerToolAction{{ToolID: fmt.Sprintf("t%d", p.calls), Tool: "own_tool", ToolInput: "{}"}}, nil, nil
 }
@@ -504,7 +550,7 @@ func loopFixture(finishFirst bool) (*MockAgent, *loopPlanner) {
 }
 
 // A spent budget stops the loop before the next turn; the answer goes
-// through FinishCutShort, and the summary carries the runtime's answer
+// through FinishAnswer as cut short, and the summary carries the runtime's answer
 // format for the agent.
 func TestPolicyRunBudgetStopsTheLoop(t *testing.T) {
 	fake := &fakeRunPolicy{spent: true}
@@ -519,22 +565,50 @@ func TestPolicyRunBudgetStopsTheLoop(t *testing.T) {
 }
 
 // Running out of turns — or resuming already past the cap — goes through
-// FinishCutShort too; a normal finish does not.
+// FinishAnswer as cut short too; a normal finish goes through it as final,
+// with the run's budget at that point.
 func TestPolicyRunTurnCapAndNormalFinish(t *testing.T) {
 	withFakeRunPolicy(t, &fakeRunPolicy{})
 	agent, planner := loopFixture(false)
 	answer, _ := runLoop(t, true, agent, planner, 2, 0)
 	assert.Equal(t, 2, planner.calls)
-	assert.Equal(t, "Partial findings. [cut budget=false 0/0]", answer)
+	assert.Equal(t, "Partial findings. [cut budget=false 12/10]", answer)
 
 	agent, planner = loopFixture(false)
 	answer, _ = runLoop(t, true, agent, planner, 3, 3)
 	assert.Equal(t, 0, planner.calls)
-	assert.True(t, strings.HasSuffix(answer, "[cut budget=false 0/0]"), "resumed past the cap")
+	assert.True(t, strings.HasSuffix(answer, "[cut budget=false 12/10]"), "resumed past the cap")
 
 	agent, planner = loopFixture(true)
 	answer, _ = runLoop(t, true, agent, planner, 10, 0)
+	assert.Equal(t, "done [final 12/10]", answer)
+
+	// A run paused on a question has not answered: the question is left as it is.
+	for _, waiting := range []ConversationStatus{ConversationStatusWaiting, ConversationStatusWaitingForClientTool} {
+		agent, planner = loopFixture(true)
+		planner.finishStatus = waiting
+		answer, _ = runLoop(t, true, agent, planner, 10, 0)
+		assert.Equal(t, "done", answer, waiting)
+	}
+}
+
+// An ordinary run's answer is byte for byte what the agent wrote, on a
+// normal finish and on one its turns cut short, even with a policy
+// registered: every final answer passes through NoRunPolicy.FinishAnswer.
+func TestNoRunPolicyAnswerUnchanged(t *testing.T) {
+	withFakeRunPolicy(t, &fakeRunPolicy{})
+	agent, planner := loopFixture(true)
+	answer, _ := runLoop(t, false, agent, planner, 10, 0)
 	assert.Equal(t, "done", answer)
+
+	agent, planner = loopFixture(false)
+	answer, _ = runLoop(t, false, agent, planner, 2, 0)
+	assert.Equal(t, "Partial findings.", answer)
+
+	for _, a := range []string{"", "plain", "x\n```json\n{\"verdict\":\"leak\"}\n```\n", "  spaced\r\n"} {
+		assert.Equal(t, a, NoRunPolicy{}.FinishAnswer(nil, nil, a, 5, 10, false, false))
+		assert.Equal(t, a, NoRunPolicy{}.FinishAnswer(nil, nil, a, 15, 10, true, true))
+	}
 }
 
 // An ordinary run that ends on its turn cap answers as before.

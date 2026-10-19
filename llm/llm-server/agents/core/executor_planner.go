@@ -586,8 +586,14 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 		e.finish = finish
 		if finish != nil {
 			e.ctx.GetLogger().Debug("plannerexecutor: finishing execution", "status", finish.Status, "data", finish.Data)
+			output := common.XmlExtractCDATA(finish.Data)
+			// A run paused on a question has not answered yet.
+			if finish.Status != ConversationStatusWaiting && finish.Status != ConversationStatusWaitingForClientTool {
+				used, limit, _ := policyFor(e.ctx).BudgetSpent(e.ctx)
+				output = policyFor(e.ctx).FinishAnswer(e.ctx, e.agent, output, used, limit, false, false)
+			}
 			return map[string]any{
-				"output": common.XmlExtractCDATA(finish.Data),
+				"output": output,
 			}, err
 		}
 
@@ -650,9 +656,13 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 	result, err := e.summarizeConversation()
 	if err == nil && result != nil && len(result) > 0 {
 		e.recordUncritiquedSummary(inputs["input"], result)
-		// The run policy may mark an answer a cap cut short.
-		if output, ok := result["output"].(string); ok && (budgetStopped || ranOutOfTurns) {
-			result["output"] = policyFor(e.ctx).FinishCutShort(e.ctx, e.agent, output, budgetUsed, budgetLimit, budgetStopped)
+		// The run policy sees every final answer, and may mark one a cap cut short.
+		if output, ok := result["output"].(string); ok {
+			cutShort := budgetStopped || ranOutOfTurns
+			if !budgetStopped {
+				budgetUsed, budgetLimit, _ = policyFor(e.ctx).BudgetSpent(e.ctx)
+			}
+			result["output"] = policyFor(e.ctx).FinishAnswer(e.ctx, e.agent, output, budgetUsed, budgetLimit, cutShort, budgetStopped)
 		}
 		return result, err
 	} else if err != nil {
