@@ -15,7 +15,7 @@
  * The last two arrive with the services-server VM-scan pipeline (#35405); the
  * queries here are inert until that lands.
  */
-import { gqlStringify, queryGraphQL } from '@lib/HttpService';
+import { escapeLikePattern, gqlStringify, queryGraphQL } from '@lib/HttpService';
 import { joinFleetMetrics, vmPrivateIp } from '@components/vm/vmMetricsData';
 import apiHome from '@api1/home';
 import k8sApi from '@api1/kubernetes';
@@ -662,7 +662,10 @@ const apiVm = {
     const where: any = { account: { _eq: accountId } };
     if (resourceIds?.length) where.id = { _in: resourceIds };
     if (search) {
-      where._and = [{ _or: [{ name: { _ilike: `%${search}%` } }, { resourse_id: { _ilike: `%${search}%` } }] }];
+      // Match the typed text literally — escape %, _ and \ so a search like "%" does
+      // not become the ILIKE wildcard that matches every VM (#41436).
+      const pattern = `%${escapeLikePattern(search)}%`;
+      where._and = [{ _or: [{ name: { _ilike: pattern } }, { resourse_id: { _ilike: pattern } }] }];
     }
     const response = await queryGraphQLCached(LIST_VMS.replaceAll('__WHERE__', gqlStringify(where)), 'ListVms', { limit, offset });
     const rows = response?.data?.data?.vms?.rows || [];
@@ -691,7 +694,9 @@ const apiVm = {
     if (cloudResourceId) where.cloud_resource_id = { _eq: cloudResourceId };
     if (pkgType) where.pkg_type = { _eq: pkgType };
     if (search) {
-      where._and = [{ _or: [{ name: { _ilike: `%${search}%` } }, { source_name: { _ilike: `%${search}%` } }] }];
+      // Same literal match as listVms: a typed % or _ must not list every package (#41436).
+      const pattern = `%${escapeLikePattern(search)}%`;
+      where._and = [{ _or: [{ name: { _ilike: pattern } }, { source_name: { _ilike: pattern } }] }];
     }
     const query = LIST_VM_PACKAGES.replaceAll('__WHERE__', gqlStringify(where))
       .replaceAll('__GROUP_BY__', JSON.stringify(PACKAGE_GROUP_KEY))
