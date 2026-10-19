@@ -81,6 +81,15 @@ func TestValidateConfiguredFallback(t *testing.T) {
 		{"category: not to its own category slot", map[string]string{"llm_fallback_ref_source_reasoning": "db:22222222-2222-2222-2222-222222222222:tier:reasoning", "llm_fallback_ref_model_reasoning": "m",
 			core.IntegrationID: "22222222-2222-2222-2222-222222222222"}, "acct-1", "reasoning fallback cannot be the model it falls back from"},
 		{"category: reference the account cannot see", map[string]string{"llm_fallback_ref_source_summary": "db:11111111-1111-1111-1111-111111111111", "llm_fallback_ref_model_summary": "gpt-5.6-terra"}, "acct-2", "not an enabled LLM integration available to account acct-2"},
+		// OAuth and extra headers on a new fallback follow the main model's rules.
+		{"new: custom on OAuth needs no api key", map[string]string{"llm_fallback_provider": "custom", "llm_fallback_model": "m", "llm_fallback_api_endpoint": "https://gw.example/v1",
+			"llm_fallback_auth_type": "oauth_client_credentials", "llm_fallback_oauth_token_url": "https://idp.example/token", "llm_fallback_oauth_client_id": "c", "llm_fallback_oauth_client_secret": "s",
+			"llm_fallback_extra_headers": `{"X-Project":"p"}`}, "acct-1", ""},
+		{"new: OAuth missing its client secret", map[string]string{"llm_fallback_provider": "custom", "llm_fallback_model": "m", "llm_fallback_api_endpoint": "https://gw.example/v1",
+			"llm_fallback_auth_type": "oauth_client_credentials", "llm_fallback_oauth_token_url": "https://idp.example/token", "llm_fallback_oauth_client_id": "c"}, "acct-1", "llm_fallback_oauth_client_secret is required"},
+		{"new: OAuth only on custom or azure", map[string]string{"llm_fallback_provider": "openai", "llm_fallback_model": "m", "llm_fallback_api_key": "fk", "llm_fallback_auth_type": "oauth_client_credentials"}, "acct-1", "llm_fallback_auth_type oauth_client_credentials is only supported for the custom and azure providers"},
+		{"category: header may not carry auth", map[string]string{"llm_fallback_provider_reasoning": "custom", "llm_fallback_model_reasoning": "m", "llm_fallback_api_key_reasoning": "fk",
+			"llm_fallback_api_endpoint_reasoning": "https://gw.example/v1", "llm_fallback_extra_headers_reasoning": `{"Authorization":"x"}`}, "acct-1", `llm_fallback_extra_headers_reasoning must not set "Authorization"`},
 		{"existing: whole config", map[string]string{"llm_fallback_ref_source": "db:11111111-1111-1111-1111-111111111111:all", "llm_fallback_ref_model": "gpt-5.6-terra"}, "acct-1", "not a single configured slot"},
 		{"existing: env slot is checked by llm-server", map[string]string{"llm_fallback_ref_source": "env:tier:reasoning", "llm_fallback_ref_model": "m"}, "acct-1", ""},
 		{"existing: missing model", map[string]string{"llm_fallback_ref_source": "env:global"}, "acct-1", "llm_fallback_ref_model is required"},
@@ -117,11 +126,12 @@ func TestReferencedIntegrationEditLeavesDependentStaleUntilResaved(t *testing.T)
 
 func TestFallbackKeysAreSecretAwareAndDeletable(t *testing.T) {
 	for _, k := range []string{"llm_fallback_api_key", "llm_fallback_access_key", "llm_fallback_secret_key",
-		"llm_fallback_api_key_reasoning", "llm_fallback_secret_key_summary"} {
+		"llm_fallback_api_key_reasoning", "llm_fallback_secret_key_summary", "llm_fallback_oauth_client_secret", "llm_fallback_oauth_client_secret_retrieval"} {
 		assert.True(t, core.IsLLMSecretFieldName(k), "%s must be encrypted, redacted and omit-to-keep", k)
 	}
 	for _, k := range []string{"llm_fallback_ref_source", "llm_fallback_ref_model", "llm_fallback_provider", "llm_fallback_model", "llm_fallback_api_endpoint", "llm_fallback_context_size",
-		"llm_fallback_ref_source_reasoning", "llm_fallback_provider_summary", "llm_fallback_api_endpoint_retrieval"} {
+		"llm_fallback_ref_source_reasoning", "llm_fallback_provider_summary", "llm_fallback_api_endpoint_retrieval",
+		"llm_fallback_auth_type", "llm_fallback_oauth_client_id_summary", "llm_fallback_extra_headers", "llm_fallback_deployment_name", "llm_fallback_disable_thinking_reasoning"} {
 		assert.False(t, core.IsLLMSecretFieldName(k), k)
 		assert.True(t, LLM{}.AllowsDynamicKey(k), "%s must be accepted at save", k)
 	}

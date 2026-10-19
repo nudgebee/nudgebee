@@ -458,45 +458,8 @@ func (m LLM) ValidateConfig(securityContext *security.SecurityContext, integrati
 	// credentials. OAuth replaces the static API key, so the key requirement
 	// is skipped in that mode; llm-server's llmAuthTransport presents the
 	// bearer token instead.
-	authType := cfg["llm_auth_type"]
-	oauthMode := authType == "oauth_client_credentials"
-	if authType != "" && authType != "api_key" && !oauthMode {
-		errs = append(errs, fmt.Errorf("llm_auth_type %q is invalid; must be api_key or oauth_client_credentials", authType))
-	}
-	if oauthMode {
-		if provider != "" && provider != "custom" && provider != "azure" {
-			errs = append(errs, fmt.Errorf("llm_auth_type oauth_client_credentials is only supported for the custom and azure providers"))
-		}
-		for _, f := range []string{"llm_oauth_token_url", "llm_oauth_client_id", "llm_oauth_client_secret"} {
-			if cfg[f] == "" {
-				errs = append(errs, fmt.Errorf("%s is required when llm_auth_type is oauth_client_credentials", f))
-			}
-		}
-		if tu := cfg["llm_oauth_token_url"]; tu != "" && !isValidHTTPURL(tu) {
-			errs = append(errs, fmt.Errorf("llm_oauth_token_url %q must be a valid http(s) URL", tu))
-		}
-	}
-
-	// Extra headers: a JSON object of string values. Auth-bearing headers are
-	// rejected here (not just silently dropped by llm-server) so the user
-	// learns at save time instead of debugging a header that never arrives.
-	if eh := cfg["llm_extra_headers"]; eh != "" {
-		// llm-server only attaches the header transport on the custom and
-		// azure providers, so reject rather than silently ignore elsewhere.
-		if provider != "" && provider != "custom" && provider != "azure" {
-			errs = append(errs, fmt.Errorf("llm_extra_headers is only supported for the custom and azure providers"))
-		}
-		headers := map[string]string{}
-		if err := json.Unmarshal([]byte(eh), &headers); err != nil {
-			errs = append(errs, fmt.Errorf("llm_extra_headers must be a JSON object of string values"))
-		} else {
-			for k := range headers {
-				if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "api-key") {
-					errs = append(errs, fmt.Errorf("llm_extra_headers must not set %q; authentication headers are managed by the auth settings", k))
-				}
-			}
-		}
-	}
+	authErrs, oauthMode := validateAuthAndHeaders(cfg, provider, func(base string) string { return base })
+	errs = append(errs, authErrs...)
 
 	errs = append(errs, validateAzureAPIStyles(cfg)...)
 
@@ -572,6 +535,45 @@ func (m LLM) ValidateConfig(securityContext *security.SecurityContext, integrati
 	}
 
 	return errs
+}
+
+// validateAuthAndHeaders checks a slot's OAuth and extra-header keys, named by key; oauthMode means OAuth replaces the API key.
+func validateAuthAndHeaders(cfg map[string]string, provider string, key func(base string) string) (errs []error, oauthMode bool) {
+	authType := cfg[key("llm_auth_type")]
+	oauthMode = authType == "oauth_client_credentials"
+	if authType != "" && authType != "api_key" && !oauthMode {
+		errs = append(errs, fmt.Errorf("%s %q is invalid; must be api_key or oauth_client_credentials", key("llm_auth_type"), authType))
+	}
+	if oauthMode {
+		if provider != "" && provider != "custom" && provider != "azure" {
+			errs = append(errs, fmt.Errorf("%s oauth_client_credentials is only supported for the custom and azure providers", key("llm_auth_type")))
+		}
+		for _, f := range []string{"llm_oauth_token_url", "llm_oauth_client_id", "llm_oauth_client_secret"} {
+			if cfg[key(f)] == "" {
+				errs = append(errs, fmt.Errorf("%s is required when %s is oauth_client_credentials", key(f), key("llm_auth_type")))
+			}
+		}
+		if tu := cfg[key("llm_oauth_token_url")]; tu != "" && !isValidHTTPURL(tu) {
+			errs = append(errs, fmt.Errorf("%s %q must be a valid http(s) URL", key("llm_oauth_token_url"), tu))
+		}
+	}
+	// Auth-bearing headers are rejected at save rather than silently dropped by llm-server.
+	if eh := cfg[key("llm_extra_headers")]; eh != "" {
+		if provider != "" && provider != "custom" && provider != "azure" {
+			errs = append(errs, fmt.Errorf("%s is only supported for the custom and azure providers", key("llm_extra_headers")))
+		}
+		headers := map[string]string{}
+		if err := json.Unmarshal([]byte(eh), &headers); err != nil {
+			errs = append(errs, fmt.Errorf("%s must be a JSON object of string values", key("llm_extra_headers")))
+		} else {
+			for k := range headers {
+				if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "api-key") {
+					errs = append(errs, fmt.Errorf("%s must not set %q; authentication headers are managed by the auth settings", key("llm_extra_headers"), k))
+				}
+			}
+		}
+	}
+	return errs, oauthMode
 }
 
 // validateAWSRegion checks the AWS region shape for AWS-backed providers
@@ -1152,7 +1154,14 @@ func validateConfiguredFallback(sc *security.SecurityContext, cfg map[string]str
 			if cfg[k("llm_fallback_model")] == "" {
 				errs = append(errs, fmt.Errorf("%s is required when %s is set", k("llm_fallback_model"), k("llm_fallback_provider")))
 			}
+			authErrs, oauthMode := validateAuthAndHeaders(cfg, provider, func(base string) string {
+				return k("llm_fallback_" + strings.TrimPrefix(base, "llm_"))
+			})
+			errs = append(errs, authErrs...)
 			for _, f := range providerRequiredFields(provider) {
+				if f == "llm_provider_api_key" && oauthMode {
+					continue
+				}
 				if key := k(strings.Replace(f, "llm_provider_", "llm_fallback_", 1)); cfg[key] == "" {
 					errs = append(errs, fmt.Errorf("%s is required when %s is %q", key, k("llm_fallback_provider"), provider))
 				}

@@ -3512,8 +3512,7 @@ func readDbSlotInto(res *LLMConfigResolution, cfg map[string]string, p *parsedCo
 	var fallbackStr string
 	switch p.Scope {
 	case "fallback":
-		// Returns before the integration-wide thinking/OAuth/headers/deployment reads and
-		// inheritSlotDefaults below: those are the primary's and must not reach this endpoint.
+		// Returns before the integration-wide reads and inheritSlotDefaults below: the fallback has its own.
 		k := func(base string) string { return cfg[fallbackKey(base, ModelTier(p.Name))] }
 		res.Provider = k(llmFallbackProviderKey)
 		res.Model = k(llmFallbackModelKey)
@@ -3525,6 +3524,14 @@ func readDbSlotInto(res *LLMConfigResolution, cfg map[string]string, p *parsedCo
 		res.PinnedRegion = k("llm_fallback_region")
 		res.PinnedAccessKey = k("llm_fallback_access_key")
 		res.PinnedSecretKey = k("llm_fallback_secret_key")
+		res.PinnedAuthType = k("llm_fallback_auth_type")
+		res.PinnedOAuthTokenURL = k("llm_fallback_oauth_token_url")
+		res.PinnedOAuthClientID = k("llm_fallback_oauth_client_id")
+		res.PinnedOAuthClientSecret = k("llm_fallback_oauth_client_secret")
+		res.PinnedOAuthScope = k("llm_fallback_oauth_scope")
+		res.PinnedExtraHeaders = k("llm_fallback_extra_headers")
+		res.PinnedDeploymentName = k("llm_fallback_deployment_name")
+		res.PinnedDisableThinking = strings.EqualFold(strings.TrimSpace(k("llm_fallback_disable_thinking")), "true")
 		if n, err := strconv.Atoi(strings.TrimSpace(k(llmFallbackContextSizeKey))); err == nil && n > 0 {
 			res.MaxContext = n
 		}

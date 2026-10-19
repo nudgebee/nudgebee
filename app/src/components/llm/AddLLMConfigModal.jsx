@@ -154,6 +154,74 @@ const AZURE_API_STYLE_OPTIONS = [
 ];
 const AZURE_MODEL_HELP =
   'Azure: enter the deployment name. Name the deployment after its model (e.g. gpt-5-mini); with a custom name, temperature, pricing and token limits are not detected for that model.';
+// Field notes shared by the main model and a new fallback, so the two forms read the same.
+const NOTES = {
+  authType: (p) =>
+    p === 'azure'
+      ? 'API key sends the resource key. OAuth2 client credentials signs in as a Microsoft Entra ID service principal (needs the Cognitive Services OpenAI User role) and refreshes the token automatically.'
+      : "API key sends a static key with each request. OAuth2 client credentials fetches a bearer token from your gateway's token endpoint and refreshes it automatically — for corporate AI gateways that reject static keys.",
+  apiKey: 'API key for authenticating with the LLM provider. Surrounding whitespace is trimmed when you tab out of the field.',
+  oauthTokenUrl: (p) =>
+    p === 'azure'
+      ? 'Microsoft Entra ID token endpoint for your tenant: https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token.'
+      : 'Token endpoint the client-credentials grant is POSTed to (e.g. https://api.example.com/oauth2/token).',
+  oauthTokenUrlPlaceholder: (p) => (p === 'azure' ? 'https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token' : undefined),
+  oauthClientId: 'Client ID for the client-credentials grant.',
+  oauthClientSecret: 'Client secret for the client-credentials grant. Stored encrypted; never shown again.',
+  oauthScope: (p) =>
+    p === 'azure'
+      ? 'Use https://cognitiveservices.azure.com/.default for Azure OpenAI.'
+      : 'Scope(s) requested with the token, space-separated (e.g. https://api.example.com/.default). Optional.',
+  oauthScopePlaceholder: (p) => (p === 'azure' ? 'https://cognitiveservices.azure.com/.default' : undefined),
+  apiEndpoint: (p) =>
+    p === 'custom'
+      ? 'Base URL including the version segment — e.g. https://openrouter.ai/api/v1. "/chat/completions" is appended to it, so omitting /v1 will 404.'
+      : p === 'azure'
+      ? 'Your Azure OpenAI resource endpoint, e.g. https://<resource>.openai.azure.com.'
+      : 'Custom API endpoint for the LLM provider.',
+  region: 'Geographic region (e.g., us-east-1).',
+  accessKey: 'AWS Access Key ID for Bedrock. Surrounding whitespace is trimmed when you tab out of the field.',
+  secretKey: 'AWS Secret Access Key for Bedrock. Surrounding whitespace is trimmed when you tab out of the field.',
+  apiTypeCustom:
+    'URL shape of the gateway. Leave unset for plain /chat/completions; pick azure or azure_ad for gateways that use /openai/deployments/{deployment}/chat/completions.',
+  apiType: 'Type of the API. Optional. Use "azure" or "azure_ad" for Azure-shaped gateways.',
+  apiStyle: 'v1 calls {endpoint}/openai/v1 and needs no API version. Classic calls {endpoint}/openai/deployments/{model} with an api-version.',
+  apiVersion: (p) =>
+    p === 'azure'
+      ? 'api-version sent with every classic request (e.g. 2024-10-21).'
+      : 'api-version query parameter sent with every request (e.g. 2025-01-01-preview). Most Azure-shaped gateways require it.',
+  deploymentName:
+    'URL deployment segment when it differs from the model name (e.g. gpt-5.6-terra_2026-07-09). The request body still carries the model name. Optional.',
+  extraHeaders:
+    'Sent with every LLM request — some gateways require identification headers alongside auth. Authorization and api-key cannot be set here. Optional.',
+  disableThinking:
+    'For self-hosted reasoning models. Some models spend their whole response budget thinking and never answer, which shows up as a very slow or failed reply. Turning reasoning off makes responses faster and more predictable; it can reduce answer quality on complex questions. Ignored by servers that do not support the setting.',
+  contextSize:
+    'Total input + output window. Optional — defaults to the model’s built-in window if blank. For self-hosted deployments, set this to your deployment’s max-model-len.',
+  advanced: (canPrice, p) =>
+    canPrice && showsContextSize(p)
+      ? 'Override the built-in pricing and set a custom model context window for this tenant.'
+      : canPrice
+      ? 'Override the built-in pricing rates for this tenant.'
+      : showsContextSize(p)
+      ? "Set a custom context window for your self-hosted deployment (defaults to the model's built-in window if blank)."
+      : 'Other optional settings.',
+};
+
+const CustomProviderBanner = () => (
+  <Banner
+    tone='info'
+    title='Custom uses the OpenAI Chat Completions API'
+    message={
+      <>
+        Point this at any service that exposes OpenAI&apos;s <code>/chat/completions</code> — OpenRouter, vLLM, Ollama, Groq, Together, DeepSeek,
+        LiteLLM and most gateways do. Give the base URL <strong>including the version segment</strong> (e.g. <code>https://openrouter.ai/api/v1</code>
+        ); <code>/chat/completions</code> is appended to it.
+      </>
+    }
+  />
+);
+
 const AUTH_TYPE_OPTIONS = [
   { value: 'api_key', label: 'API key' },
   { value: 'oauth_client_credentials', label: 'OAuth2 client credentials' },
@@ -180,7 +248,20 @@ const fallbackOptionValue = (source, model) => `${source}|${model}`;
 const FALLBACK_SCOPES = ['', 'reasoning', 'retrieval', 'summary'];
 // Config key of a fallback field for a scope: llm_fallback_model / llm_fallback_model_reasoning.
 const fallbackKeyFor = (base, scope) => (scope ? `${base}_${scope}` : base);
-const emptyFallback = () => ({ mode: 'none', ref: { source: '', model: '' }, new: emptyConfig() });
+// A new fallback offers every option the main model does.
+const emptyFallbackNew = () => ({
+  ...emptyConfig(),
+  authType: 'api_key',
+  oauthTokenUrl: '',
+  oauthClientId: '',
+  oauthClientSecret: '',
+  oauthScope: '',
+  extraHeaders: '',
+  deploymentName: '',
+  disableThinking: false,
+  price: emptyPrice(),
+});
+const emptyFallback = () => ({ mode: 'none', ref: { source: '', model: '' }, new: emptyFallbackNew() });
 const emptyFallbacks = () => Object.fromEntries(FALLBACK_SCOPES.map((scope) => [scope, emptyFallback()]));
 const loadFallback = (cfg, scope) => {
   const k = (base) => cfg[fallbackKeyFor(base, scope)] || '';
@@ -192,7 +273,7 @@ const loadFallback = (cfg, scope) => {
       ...emptyFallback(),
       mode: 'new',
       new: {
-        ...emptyConfig(),
+        ...emptyFallbackNew(),
         provider: k('llm_fallback_provider'),
         model: k('llm_fallback_model'),
         apiEndpoint: k('llm_fallback_api_endpoint'),
@@ -201,6 +282,13 @@ const loadFallback = (cfg, scope) => {
         apiType: k('llm_fallback_api_type'),
         region: k('llm_fallback_region'),
         contextSize: k('llm_fallback_context_size'),
+        authType: k('llm_fallback_auth_type') || 'api_key',
+        oauthTokenUrl: k('llm_fallback_oauth_token_url'),
+        oauthClientId: k('llm_fallback_oauth_client_id'),
+        oauthScope: k('llm_fallback_oauth_scope'),
+        extraHeaders: k('llm_fallback_extra_headers'),
+        deploymentName: k('llm_fallback_deployment_name'),
+        disableThinking: k('llm_fallback_disable_thinking') === 'true',
       },
     };
   }
@@ -253,6 +341,20 @@ const providerFieldShape = (p) => ({
   showsBedrockKeys: p === 'bedrock',
   showsApiType: ['openai', 'custom', 'huggingface'].includes(p),
 });
+
+// providerFieldShape plus the main model's auth, deployment and Azure-gateway inputs.
+const fallbackFieldShape = (n) => {
+  const shape = providerFieldShape(n.provider);
+  const azureShapedCustom = n.provider === 'custom' && ['azure', 'azure_ad'].includes((n.apiType || '').toLowerCase());
+  const showsOAuthOption = OAUTH_PROVIDERS.includes(n.provider);
+  return {
+    ...shape,
+    showsApiVersion: rowNeedsApiVersion(n) || azureShapedCustom,
+    showsDeploymentName: azureShapedCustom,
+    showsOAuthOption,
+    oauthSelected: showsOAuthOption && n.authType === 'oauth_client_credentials',
+  };
+};
 
 /**
  * Custom Add/Edit modal for the LLM Configuration. Writes flat config keys
@@ -323,6 +425,60 @@ SecretInput.propTypes = {
   required: PropTypes.bool,
 };
 
+// Collapsed "Advanced options" header: the main model's and a new fallback's.
+const AdvancedOptionsToggle = ({ open, onToggle, controls, summary }) => (
+  <Box
+    onClick={onToggle}
+    onKeyDown={(e) => {
+      if (e.key === ' ' || e.key === 'Enter') {
+        e.preventDefault();
+        onToggle();
+      }
+    }}
+    tabIndex={0}
+    role='button'
+    aria-expanded={open}
+    aria-controls={controls}
+    sx={{
+      display: 'flex',
+      alignItems: 'center',
+      cursor: 'pointer',
+      py: 'var(--ds-space-2)',
+      color: 'var(--ds-text-secondary)',
+      fontWeight: 'var(--ds-font-weight-semibold)',
+      fontSize: 'var(--ds-text-small)',
+      userSelect: 'none',
+      '&:focus-visible': {
+        outline: '2px solid var(--ds-text-secondary)',
+        outlineOffset: '2px',
+      },
+    }}
+  >
+    {open ? <ExpandLessIcon fontSize='small' /> : <ExpandMoreIcon fontSize='small' />}
+    <Box component='span' sx={{ ml: 'var(--ds-space-1)' }}>
+      Advanced options
+    </Box>
+    <Box
+      component='span'
+      sx={{
+        ml: 'var(--ds-space-2)',
+        color: 'var(--ds-text-tertiary)',
+        fontWeight: 'var(--ds-font-weight-regular)',
+        fontSize: 'var(--ds-text-caption)',
+      }}
+    >
+      {summary}
+    </Box>
+  </Box>
+);
+
+AdvancedOptionsToggle.propTypes = {
+  open: PropTypes.bool.isRequired,
+  onToggle: PropTypes.func.isRequired,
+  controls: PropTypes.string.isRequired,
+  summary: PropTypes.string.isRequired,
+};
+
 // FallbackModelEditor edits one configured fallback (#36339): the integration's
 // (scope '') or a category's. 'existing' references a configured slot; 'new' owns its fields.
 const FallbackModelEditor = ({
@@ -333,6 +489,7 @@ const FallbackModelEditor = ({
   errors,
   secretsConfigured,
   noAccounts,
+  pricingRows,
   onModeChange,
   onPickRef,
   onUpdateNew,
@@ -340,7 +497,14 @@ const FallbackModelEditor = ({
   const idFor = (base) => (scope ? `${base}-${scope}` : base);
   const refValue = state.ref.source ? fallbackOptionValue(state.ref.source, state.ref.model) : '';
   const refAvailable = fallbackRefIsAvailable(state, options);
-  const shape = providerFieldShape(state.new.provider);
+  const shape = fallbackFieldShape(state.new);
+  const canPrice = Boolean(state.new.provider && state.new.model.trim());
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const p = state.new.provider;
+  const trimOnBlur = (field) => () => {
+    const v = state.new[field] || '';
+    if (v.trim() !== v) onUpdateNew(field, v.trim());
+  };
   return (
     <Stack spacing='var(--ds-space-2)'>
       <ToggleGroup
@@ -406,15 +570,71 @@ const FallbackModelEditor = ({
             error={state.new.provider ? errors.model || undefined : undefined}
           />
           {state.new.provider && errors.creds && <Box sx={{ color: 'var(--ds-red-600)', fontSize: 'var(--ds-text-caption)' }}>✗ {errors.creds}</Box>}
-          {shape.showsApiKey && (
+          {p === 'custom' && <CustomProviderBanner />}
+          {shape.showsOAuthOption && (
+            <Select
+              id={idFor('llm-fallback-new-auth-type')}
+              label='Authentication'
+              size='sm'
+              value={state.new.authType}
+              onChange={(value) => onUpdateNew('authType', value)}
+              options={AUTH_TYPE_OPTIONS}
+              help={NOTES.authType(p)}
+            />
+          )}
+          {shape.showsApiKey && !shape.oauthSelected && (
             <SecretInput
               label='API Key'
               value={state.new.apiKey}
               onChange={(value) => onUpdateNew('apiKey', value)}
+              onBlur={trimOnBlur('apiKey')}
               isConfigured={secretsConfigured[fallbackKeyFor('llm_fallback_api_key', scope)]}
-              helperText='API key for the fallback provider (for a gateway, the gateway key).'
+              helperText={NOTES.apiKey}
               required
             />
+          )}
+          {shape.oauthSelected && (
+            <>
+              <Input
+                label='OAuth2 Token URL'
+                size='sm'
+                required
+                value={state.new.oauthTokenUrl}
+                data-testid={idFor('llm-fallback-new-oauth-token-url')}
+                onChange={(value) => onUpdateNew('oauthTokenUrl', value)}
+                onBlur={trimOnBlur('oauthTokenUrl')}
+                error={errors.oauthTokenUrl || undefined}
+                placeholder={NOTES.oauthTokenUrlPlaceholder(p)}
+                help={NOTES.oauthTokenUrl(p)}
+              />
+              <Input
+                label='OAuth2 Client ID'
+                size='sm'
+                required
+                value={state.new.oauthClientId}
+                onChange={(value) => onUpdateNew('oauthClientId', value)}
+                onBlur={trimOnBlur('oauthClientId')}
+                help={NOTES.oauthClientId}
+              />
+              <SecretInput
+                label='OAuth2 Client Secret'
+                value={state.new.oauthClientSecret}
+                onChange={(value) => onUpdateNew('oauthClientSecret', value)}
+                onBlur={trimOnBlur('oauthClientSecret')}
+                isConfigured={secretsConfigured[fallbackKeyFor('llm_fallback_oauth_client_secret', scope)]}
+                helperText={NOTES.oauthClientSecret}
+                required
+              />
+              <Input
+                label='OAuth2 Scope'
+                size='sm'
+                value={state.new.oauthScope}
+                onChange={(value) => onUpdateNew('oauthScope', value)}
+                onBlur={trimOnBlur('oauthScope')}
+                placeholder={NOTES.oauthScopePlaceholder(p)}
+                help={NOTES.oauthScope(p)}
+              />
+            </>
           )}
           {shape.showsApiEndpoint && (
             <Input
@@ -423,28 +643,21 @@ const FallbackModelEditor = ({
               value={state.new.apiEndpoint}
               data-testid={idFor('llm-fallback-new-endpoint')}
               onChange={(value) => onUpdateNew('apiEndpoint', value)}
-              required={['azure', 'custom', 'sagemaker'].includes(state.new.provider)}
-              help={
-                state.new.provider === 'custom'
-                  ? 'Base URL including the version segment — e.g. https://openrouter.ai/api/v1.'
-                  : 'Custom API endpoint — e.g. your LLM gateway. Optional.'
-              }
+              onBlur={trimOnBlur('apiEndpoint')}
+              required={['azure', 'custom', 'sagemaker'].includes(p)}
+              help={NOTES.apiEndpoint(p)}
             />
-          )}
-          {shape.showsApiStyle && (
-            <Select
-              label='API Style'
-              size='sm'
-              value={state.new.apiStyle}
-              onChange={(value) => onUpdateNew('apiStyle', value)}
-              options={AZURE_API_STYLE_OPTIONS}
-            />
-          )}
-          {rowNeedsApiVersion(state.new) && (
-            <Input label='API Version' size='sm' required value={state.new.apiVersion} onChange={(value) => onUpdateNew('apiVersion', value)} />
           )}
           {shape.showsRegion && (
-            <Input label='Region' size='sm' required value={state.new.region} onChange={(value) => onUpdateNew('region', value)} />
+            <Input
+              label='Region'
+              size='sm'
+              required
+              value={state.new.region}
+              onChange={(value) => onUpdateNew('region', value)}
+              onBlur={trimOnBlur('region')}
+              help={NOTES.region}
+            />
           )}
           {shape.showsBedrockKeys && (
             <>
@@ -452,14 +665,18 @@ const FallbackModelEditor = ({
                 label='AWS Access Key'
                 value={state.new.accessKey}
                 onChange={(value) => onUpdateNew('accessKey', value)}
+                onBlur={trimOnBlur('accessKey')}
                 isConfigured={secretsConfigured[fallbackKeyFor('llm_fallback_access_key', scope)]}
+                helperText={NOTES.accessKey}
                 required
               />
               <SecretInput
                 label='AWS Secret Key'
                 value={state.new.secretKey}
                 onChange={(value) => onUpdateNew('secretKey', value)}
+                onBlur={trimOnBlur('secretKey')}
                 isConfigured={secretsConfigured[fallbackKeyFor('llm_fallback_secret_key', scope)]}
+                helperText={NOTES.secretKey}
                 required
               />
             </>
@@ -472,21 +689,99 @@ const FallbackModelEditor = ({
               onChange={(value) => onUpdateNew('apiType', value)}
               options={API_TYPE_OPTIONS}
               placeholder='Default (OpenAI-style)'
+              help={NOTES.apiTypeCustom}
             />
           )}
           {shape.showsApiType && state.new.provider !== 'custom' && (
-            <Input label='API Type' size='sm' value={state.new.apiType} onChange={(value) => onUpdateNew('apiType', value)} />
+            <Input label='API Type' size='sm' value={state.new.apiType} onChange={(value) => onUpdateNew('apiType', value)} help={NOTES.apiType} />
           )}
-          {showsContextSize(state.new.provider) && (
-            <Input
-              label='Context window (tokens)'
+          {shape.showsApiStyle && (
+            <Select
+              label='API Style'
               size='sm'
-              type='number'
-              inputMode='numeric'
-              value={state.new.contextSize}
-              onChange={(value) => onUpdateNew('contextSize', value)}
-              help="This model's total input+output window. Optional — blank uses the model's built-in default."
+              value={state.new.apiStyle}
+              onChange={(value) => onUpdateNew('apiStyle', value)}
+              options={AZURE_API_STYLE_OPTIONS}
+              help={NOTES.apiStyle}
             />
+          )}
+          {shape.showsApiVersion && (
+            <Input
+              label='API Version'
+              size='sm'
+              required={rowNeedsApiVersion(state.new)}
+              value={state.new.apiVersion}
+              onChange={(value) => onUpdateNew('apiVersion', value)}
+              help={NOTES.apiVersion(p)}
+            />
+          )}
+          {shape.showsDeploymentName && (
+            <Input
+              label='Deployment Name'
+              size='sm'
+              value={state.new.deploymentName}
+              onChange={(value) => onUpdateNew('deploymentName', value)}
+              help={NOTES.deploymentName}
+            />
+          )}
+          {shape.showsOAuthOption && (
+            <Input
+              label='Extra request headers (JSON)'
+              size='sm'
+              type='textarea'
+              rows={3}
+              value={state.new.extraHeaders}
+              onChange={(value) => onUpdateNew('extraHeaders', value)}
+              onBlur={trimOnBlur('extraHeaders')}
+              error={errors.extraHeaders || undefined}
+              placeholder='{"projectId": "abc-123"}'
+              help={NOTES.extraHeaders}
+            />
+          )}
+          {(canPrice || showsContextSize(state.new.provider) || showsDisableThinking(state.new.provider)) && (
+            <Box>
+              <AdvancedOptionsToggle
+                open={showAdvanced}
+                onToggle={() => setShowAdvanced((v) => !v)}
+                controls={idFor('llm-fallback-advanced-options')}
+                summary={NOTES.advanced(canPrice, p)}
+              />
+              {showAdvanced && (
+                <Stack id={idFor('llm-fallback-advanced-options')} spacing='var(--ds-space-2)' sx={{ mt: 'var(--ds-space-2)' }}>
+                  {showsDisableThinking(state.new.provider) && (
+                    <Checkbox
+                      id={idFor('llm-fallback-new-disable-thinking')}
+                      size='sm'
+                      checked={state.new.disableThinking}
+                      onChange={(value) => onUpdateNew('disableThinking', value)}
+                      label='Turn off model reasoning'
+                      description={NOTES.disableThinking}
+                    />
+                  )}
+                  {canPrice && (
+                    <PricingFields
+                      idPrefix={idFor('llm-fallback-new')}
+                      provider={state.new.provider}
+                      price={state.new.price}
+                      recordedImageSupport={recordedImageSupportFor(pricingRows, state.new.provider, state.new.model)}
+                      onChange={(field, value) => onUpdateNew('price', { ...state.new.price, [field]: value })}
+                    />
+                  )}
+                  {showsContextSize(state.new.provider) && (
+                    <Input
+                      label='Model context window (tokens)'
+                      size='sm'
+                      type='number'
+                      inputMode='numeric'
+                      value={state.new.contextSize}
+                      onChange={(value) => onUpdateNew('contextSize', value)}
+                      onBlur={trimOnBlur('contextSize')}
+                      help={NOTES.contextSize}
+                    />
+                  )}
+                </Stack>
+              )}
+            </Box>
           )}
         </>
       )}
@@ -502,9 +797,116 @@ FallbackModelEditor.propTypes = {
   errors: PropTypes.object.isRequired,
   secretsConfigured: PropTypes.object.isRequired,
   noAccounts: PropTypes.bool,
+  pricingRows: PropTypes.array.isRequired,
   onModeChange: PropTypes.func.isRequired,
   onPickRef: PropTypes.func.isRequired,
   onUpdateNew: PropTypes.func.isRequired,
+};
+
+const emptyPrice = () => ({
+  input: '',
+  output: '',
+  cachedInput: '',
+  cacheCreation: '',
+  threshold: '',
+  inputLong: '',
+  outputLong: '',
+  supportsImage: false, // unticked keeps the recorded verdict; it does not mean "text only"
+});
+
+// Image support already on file for this model (built-in or the tenant's own).
+const recordedImageSupportFor = (pricingRows, provider, model) =>
+  pricingRows.find((p) => p.provider_name === provider && p.model_name === (model || '').trim())?.supports_image_input;
+
+// Image support + optional rates for one (provider, model): the main model's, or a new fallback's.
+const PricingFields = ({ idPrefix, provider, price, recordedImageSupport, onChange }) => (
+  <>
+    <Checkbox
+      id={`${idPrefix}-supports-image`}
+      size='sm'
+      checked={price.supportsImage || recordedImageSupport === true}
+      disabled={recordedImageSupport === true}
+      onChange={(v) => onChange('supportsImage', v)}
+      label='Supports image input'
+      description={
+        recordedImageSupport === true
+          ? 'Already recorded as supported for this model.'
+          : 'Tick if this model accepts images such as screenshots and graphs. Without it, attached images are dropped before the model sees them. Leave unticked to keep the current setting.'
+      }
+    />
+    <Input
+      label='Input rate (USD per 1M tokens)'
+      size='sm'
+      type='number'
+      value={price.input}
+      onChange={(v) => onChange('input', v)}
+      placeholder='e.g. 0.40'
+      help={
+        provider === 'custom'
+          ? 'Optional. We ship no rate for custom endpoints, so without this the model reports $0 spend.'
+          : 'Optional. Overrides the built-in rate for this tenant. Any long-context tier or cache rate you leave blank is preserved — edit it from Settings → Model Pricing.'
+      }
+    />
+    <Input
+      label='Output rate (USD per 1M tokens)'
+      size='sm'
+      type='number'
+      value={price.output}
+      onChange={(v) => onChange('output', v)}
+      placeholder='e.g. 0.60'
+    />
+    <Input
+      label='Cached input rate (USD per 1M tokens)'
+      size='sm'
+      type='number'
+      value={price.cachedInput}
+      onChange={(v) => onChange('cachedInput', v)}
+      placeholder='e.g. 0.10'
+      help='Optional. Most providers discount prompt tokens served from cache. Leave blank to bill them at the input rate.'
+    />
+    <Input
+      label='Cache creation rate (USD per 1M tokens)'
+      size='sm'
+      type='number'
+      value={price.cacheCreation}
+      onChange={(v) => onChange('cacheCreation', v)}
+      placeholder='e.g. 0.50'
+      help='Optional. Charged when tokens are first written to cache — Anthropic bills 1.25x input; OpenAI-compatible providers do not charge it.'
+    />
+    <Input
+      label='Input rate above threshold (USD per 1M)'
+      size='sm'
+      type='number'
+      value={price.inputLong}
+      onChange={(v) => onChange('inputLong', v)}
+      placeholder='e.g. 0.80'
+    />
+    <Input
+      label='Output rate above threshold (USD per 1M)'
+      size='sm'
+      type='number'
+      value={price.outputLong}
+      onChange={(v) => onChange('outputLong', v)}
+      placeholder='e.g. 1.20'
+    />
+    <Input
+      label='Long-context threshold (prompt tokens)'
+      size='sm'
+      type='number'
+      value={price.threshold}
+      onChange={(v) => onChange('threshold', v)}
+      placeholder='e.g. 200000'
+      help='Optional. Some providers charge more above a prompt size — Gemini Pro doubles above 200k. Leave blank for flat pricing; fill all three to set a tier.'
+    />
+  </>
+);
+
+PricingFields.propTypes = {
+  idPrefix: PropTypes.string.isRequired,
+  provider: PropTypes.string.isRequired,
+  price: PropTypes.object.isRequired,
+  recordedImageSupport: PropTypes.bool,
+  onChange: PropTypes.func.isRequired,
 };
 
 const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
@@ -937,7 +1339,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         llm_oauth_client_secret: !!hasValueByName.llm_oauth_client_secret,
       };
       FALLBACK_SCOPES.forEach((scope) => {
-        ['llm_fallback_api_key', 'llm_fallback_access_key', 'llm_fallback_secret_key'].forEach((base) => {
+        ['llm_fallback_api_key', 'llm_fallback_access_key', 'llm_fallback_secret_key', 'llm_fallback_oauth_client_secret'].forEach((base) => {
           const key = fallbackKeyFor(base, scope);
           secretsCfg[key] = !!hasValueByName[key];
         });
@@ -1046,7 +1448,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         key.startsWith('llm_oauth_client_secret') ||
         key.startsWith('llm_fallback_api_key') ||
         key.startsWith('llm_fallback_access_key') ||
-        key.startsWith('llm_fallback_secret_key');
+        key.startsWith('llm_fallback_secret_key') ||
+        key.startsWith('llm_fallback_oauth_client_secret');
       const seedKeys = new Set();
       Object.keys(cfg).forEach((key) => {
         if (isLLMSecretKey(key)) {
@@ -1334,7 +1737,11 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const updateFallbackNew = (scope, field, value) => {
     setFallbackCfg((prev) => ({
       ...prev,
-      [scope]: { ...prev[scope], new: { ...prev[scope].new, [field]: value, ...(field === 'provider' ? credResetForProvider : {}) } },
+      [scope]: {
+        ...prev[scope],
+        // A provider change keeps only the model.
+        new: field === 'provider' ? { ...emptyFallbackNew(), model: prev[scope].new.model, provider: value } : { ...prev[scope].new, [field]: value },
+      },
     }));
     if (field === 'provider') {
       // A stored key belongs to the previous provider; never let it ride along.
@@ -1343,6 +1750,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         [fallbackKeyFor('llm_fallback_api_key', scope)]: false,
         [fallbackKeyFor('llm_fallback_access_key', scope)]: false,
         [fallbackKeyFor('llm_fallback_secret_key', scope)]: false,
+        [fallbackKeyFor('llm_fallback_oauth_client_secret', scope)]: false,
       }));
     }
     setTestStatus('idle');
@@ -1559,10 +1967,19 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       };
     }
     if (f.mode === 'new') {
+      const n = f.new;
+      const credKey = (c) => fallbackKeyFor(`llm_fallback_${c}`, scope);
+      const { oauthSelected, showsOAuthOption } = fallbackFieldShape(n);
+      const oauthCreds =
+        !n.oauthTokenUrl.trim() || !n.oauthClientId.trim() || !hasSecret(n.oauthClientSecret, credKey('oauth_client_secret'))
+          ? 'OAuth2 Token URL, Client ID and Client Secret are required'
+          : null;
       return {
-        provider: f.new.provider ? null : 'Provider is required',
-        model: !f.new.model.trim() ? 'Model is required' : validateModelName(f.new.model),
-        creds: validateOverrideCreds(f.new, (c) => fallbackKeyFor(`llm_fallback_${c}`, scope)) || requiredConnFieldError(f.new),
+        provider: n.provider ? null : 'Provider is required',
+        model: !n.model.trim() ? 'Model is required' : validateModelName(n.model),
+        creds: (oauthSelected ? oauthCreds : validateOverrideCreds(n, credKey)) || requiredConnFieldError(n),
+        oauthTokenUrl: oauthSelected ? validateOAuthTokenUrl(n.oauthTokenUrl) : null,
+        extraHeaders: showsOAuthOption ? validateExtraHeaders(n.extraHeaders) : null,
       };
     }
     return {};
@@ -1712,13 +2129,23 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       }
       if (f.mode === 'new' && f.new.provider) {
         const n = f.new;
-        const shape = providerFieldShape(n.provider);
+        const shape = fallbackFieldShape(n);
         out.push({ name: k('llm_fallback_provider'), value: n.provider });
         out.push({ name: k('llm_fallback_model'), value: n.model.trim() });
-        pushSecret(shape.showsApiKey, k('llm_fallback_api_key'), n.apiKey);
+        pushSecret(shape.showsApiKey && !shape.oauthSelected, k('llm_fallback_api_key'), n.apiKey);
+        if (shape.showsOAuthOption) {
+          out.push({ name: k('llm_fallback_auth_type'), value: n.authType, is_encrypted: false });
+        }
+        pushPlain(shape.oauthSelected, k('llm_fallback_oauth_token_url'), n.oauthTokenUrl);
+        pushPlain(shape.oauthSelected, k('llm_fallback_oauth_client_id'), n.oauthClientId);
+        pushSecret(shape.oauthSelected, k('llm_fallback_oauth_client_secret'), n.oauthClientSecret);
+        pushPlain(shape.oauthSelected, k('llm_fallback_oauth_scope'), n.oauthScope);
+        pushPlain(shape.showsOAuthOption, k('llm_fallback_extra_headers'), n.extraHeaders);
+        pushPlain(shape.showsDeploymentName, k('llm_fallback_deployment_name'), n.deploymentName);
+        pushPlain(showsDisableThinking(n.provider), k('llm_fallback_disable_thinking'), n.disableThinking ? 'true' : '');
         pushPlain(shape.showsApiEndpoint, k('llm_fallback_api_endpoint'), n.apiEndpoint);
         pushPlain(shape.showsApiStyle, k('llm_fallback_api_style'), n.apiStyle);
-        pushPlain(rowNeedsApiVersion(n), k('llm_fallback_api_version'), n.apiVersion);
+        pushPlain(shape.showsApiVersion, k('llm_fallback_api_version'), n.apiVersion);
         pushPlain(shape.showsRegion, k('llm_fallback_region'), n.region);
         pushSecret(shape.showsBedrockKeys, k('llm_fallback_access_key'), n.accessKey);
         pushSecret(shape.showsBedrockKeys, k('llm_fallback_secret_key'), n.secretKey);
@@ -1805,6 +2232,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       errors={fallbackErrors[scope]}
       secretsConfigured={secretsConfigured}
       noAccounts={selectedAccountIds.length === 0}
+      pricingRows={pricingRows}
       onModeChange={(mode) => updateFallback(scope, { mode })}
       onPickRef={(value) => pickFallbackRef(scope, value)}
       onUpdateNew={(field, value) => updateFallbackNew(scope, field, value)}
@@ -1861,32 +2289,14 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   // the config does is report $0 spend. Written through the same RPC the
   // Model Pricing tab uses — two entry points, one write path, so they cannot
   // drift.
-  const [priceInput, setPriceInput] = useState('');
-  const [priceOutput, setPriceOutput] = useState('');
-  // Long-context tier. Providers like Gemini charge more once a prompt crosses
-  // a threshold; leaving these blank means flat pricing.
-  const [priceCachedInput, setPriceCachedInput] = useState('');
-  const [priceCacheCreation, setPriceCacheCreation] = useState('');
-  const [priceThreshold, setPriceThreshold] = useState('');
-  const [priceInputLong, setPriceInputLong] = useState('');
-  const [priceOutputLong, setPriceOutputLong] = useState('');
-  // Declares that this model accepts image input (llm_model_pricing.supports_image_input).
-  // Unticked means "leave the recorded verdict alone", not "text only".
-  const [supportsImage, setSupportsImage] = useState(false);
+  const [price, setPrice] = useState(emptyPrice());
   // The modal is mounted permanently and only toggled via `open`, so pricing
   // state survives a dismiss. Without this reset, a rate typed for one model is
   // still populated when the modal is reopened for a different one — and would
   // be saved against it.
   useEffect(() => {
     if (open) return;
-    setPriceInput('');
-    setPriceOutput('');
-    setPriceCachedInput('');
-    setPriceCacheCreation('');
-    setPriceThreshold('');
-    setPriceInputLong('');
-    setPriceOutputLong('');
-    setSupportsImage(false);
+    setPrice(emptyPrice());
   }, [open]);
 
   // Only meaningful once there is a (provider, model) to attach a rate to.
@@ -1894,59 +2304,59 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   // A verdict already on file for this model (built-in or this tenant's own).
   // When it is true there is nothing to declare, and writing it would only
   // copy the built-in rates into a tenant row for no gain.
-  const recordedImageSupport = pricingRows.find((p) => p.provider_name === provider && p.model_name === model.trim())?.supports_image_input;
-  const declareImageSupport = supportsImage && recordedImageSupport !== true;
+  const recordedImageSupport = recordedImageSupportFor(pricingRows, provider, model);
 
   // Saved after the config, and never allowed to fail the config save: the
   // credentials are the point of this modal, and a rejected price should not
   // roll back a provider the user just set up correctly.
-  const savePriceIfProvided = async () => {
-    if (!canPrice) return;
-    const input = Number(priceInput);
-    const output = Number(priceOutput);
+  const savePrice = async ({ provider, model, price: pr, what }) => {
+    if (!provider || !model.trim()) return;
+    const declareImageSupport = pr.supportsImage && recordedImageSupportFor(pricingRows, provider, model) !== true;
+    const input = Number(pr.input);
+    const output = Number(pr.output);
     // Declaring image support with no rates still needs a row; it reuses the model's existing rates below.
-    const flagOnly = declareImageSupport && priceInput === '' && priceOutput === '';
+    const flagOnly = declareImageSupport && pr.input === '' && pr.output === '';
     // Pricing is optional, so both blank means "not pricing this model". One
     // blank is a half-filled form: returning silently would discard what the
     // user did type with no feedback.
-    if (priceInput === '' && priceOutput === '') {
+    if (pr.input === '' && pr.output === '') {
       // Every other rate hangs off input/output, so filling only a cache or
       // tier field and leaving these blank would discard that input silently.
-      if ([priceCachedInput, priceCacheCreation, priceThreshold, priceInputLong, priceOutputLong].some((v) => v !== '')) {
-        snackbar.error('Pricing not saved — an input and an output rate are required before the other pricing fields apply.');
+      if ([pr.cachedInput, pr.cacheCreation, pr.threshold, pr.inputLong, pr.outputLong].some((v) => v !== '')) {
+        snackbar.error(`${what} not saved — an input and an output rate are required before the other pricing fields apply.`);
         return;
       }
       if (!flagOnly) {
         return;
       }
     }
-    if (!flagOnly && (priceInput === '' || priceOutput === '')) {
-      snackbar.error('Pricing not saved — enter both an input and an output rate. Set it from Settings → Model Pricing.');
+    if (!flagOnly && (pr.input === '' || pr.output === '')) {
+      snackbar.error(`${what} not saved — enter both an input and an output rate. Set it from Settings → Model Pricing.`);
       return;
     }
     if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) {
-      snackbar.error('Pricing not saved — rates must be zero or a positive number. Set it from Settings → Model Pricing.');
+      snackbar.error(`${what} not saved — rates must be zero or a positive number. Set it from Settings → Model Pricing.`);
       return;
     }
     // Cache rates are independently optional; an omitted one falls back to the input rate.
-    if ([priceCachedInput, priceCacheCreation].some((v) => v !== '' && !(Number(v) >= 0))) {
-      snackbar.error('Pricing not saved — cache rates must be zero or a positive number. Set it from Settings → Model Pricing.');
+    if ([pr.cachedInput, pr.cacheCreation].some((v) => v !== '' && !(Number(v) >= 0))) {
+      snackbar.error(`${what} not saved — cache rates must be zero or a positive number. Set it from Settings → Model Pricing.`);
       return;
     }
 
     // All three tier fields or none. A threshold without rates (or rates
     // without a threshold) stores a tier that never fires — it reads as
     // configured but bills every long prompt at the short rate.
-    const tierFilled = [priceThreshold, priceInputLong, priceOutputLong].filter((v) => v !== '').length;
+    const tierFilled = [pr.threshold, pr.inputLong, pr.outputLong].filter((v) => v !== '').length;
     if (tierFilled !== 0 && tierFilled !== 3) {
-      snackbar.error('Pricing not saved — long-context pricing needs a threshold and both long-context rates, or leave all three blank.');
+      snackbar.error(`${what} not saved — long-context pricing needs a threshold and both long-context rates, or leave all three blank.`);
       return;
     }
-    const threshold = Number(priceThreshold);
-    const inputLong = Number(priceInputLong);
-    const outputLong = Number(priceOutputLong);
+    const threshold = Number(pr.threshold);
+    const inputLong = Number(pr.inputLong);
+    const outputLong = Number(pr.outputLong);
     if (tierFilled === 3 && (!Number.isFinite(threshold) || threshold <= 0 || !(inputLong >= 0) || !(outputLong >= 0))) {
-      snackbar.error('Pricing not saved — the threshold must be a positive token count and long-context rates zero or above.');
+      snackbar.error(`${what} not saved — the threshold must be a positive token count and long-context rates zero or above.`);
       return;
     }
     const price = {
@@ -1964,8 +2374,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       price.cost_per_million_input_tokens_long_ctx = inputLong;
       price.cost_per_million_output_tokens_long_ctx = outputLong;
     }
-    if (priceCachedInput !== '') price.cost_per_million_cached_input_tokens = Number(priceCachedInput);
-    if (priceCacheCreation !== '') price.cost_per_million_cache_creation_tokens = Number(priceCacheCreation);
+    if (pr.cachedInput !== '') price.cost_per_million_cached_input_tokens = Number(pr.cachedInput);
+    if (pr.cacheCreation !== '') price.cost_per_million_cache_creation_tokens = Number(pr.cacheCreation);
 
     // Anything left blank is carried over from the model's existing price. The
     // upsert replaces the whole row, so a flat price over a tiered model (every
@@ -1973,7 +2383,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     // rate — and the same replacement would drop a cache discount, billing every
     // cached token at full input rate.
     const carryTier = tierFilled !== 3;
-    const carryCache = priceCachedInput === '' || priceCacheCreation === '';
+    const carryCache = pr.cachedInput === '' || pr.cacheCreation === '';
     if (carryTier || carryCache) {
       try {
         const existing = await apiAskNudgebee.listModelPricing();
@@ -2009,24 +2419,34 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
             price.cost_per_million_input_tokens_long_ctx = match.cost_per_million_input_tokens_long_ctx;
             price.cost_per_million_output_tokens_long_ctx = match.cost_per_million_output_tokens_long_ctx;
           }
-          if (priceCachedInput === '' && match.cost_per_million_cached_input_tokens != null) {
+          if (pr.cachedInput === '' && match.cost_per_million_cached_input_tokens != null) {
             price.cost_per_million_cached_input_tokens = match.cost_per_million_cached_input_tokens;
           }
-          if (priceCacheCreation === '' && match.cost_per_million_cache_creation_tokens != null) {
+          if (pr.cacheCreation === '' && match.cost_per_million_cache_creation_tokens != null) {
             price.cost_per_million_cache_creation_tokens = match.cost_per_million_cache_creation_tokens;
           }
         }
       } catch (err) {
         // Losing an existing tier or cache rate silently is worse than not pricing at all.
         console.error('could not read existing pricing', err);
-        snackbar.error('Provider saved, but pricing was skipped — set it from Settings → Model Pricing.');
+        snackbar.error(`Provider saved, but ${what.toLowerCase()} was skipped — set it from Settings → Model Pricing.`);
         return;
       }
     }
 
     const res = await apiAskNudgebee.upsertModelPricing([price]);
     if (res?.errors?.length) {
-      snackbar.error(`Provider saved, but pricing was not: ${res.errors[0]?.message || 'unknown error'}`);
+      snackbar.error(`Provider saved, but ${what.toLowerCase()} was not: ${res.errors[0]?.message || 'unknown error'}`);
+    }
+  };
+
+  const savePriceIfProvided = async () => {
+    await savePrice({ provider, model, price, what: 'Pricing' });
+    for (const scope of FALLBACK_SCOPES) {
+      const f = fallbackCfg[scope];
+      if (f.mode === 'new' && f.new.provider) {
+        await savePrice({ ...f.new, what: scope ? `${TIER_LABELS[scope]} fallback pricing` : 'Fallback pricing' });
+      }
     }
   };
 
@@ -2221,19 +2641,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           )}
 
           {/* Provider-specific credentials — visibility driven by selected provider */}
-          {provider === 'custom' && (
-            <Banner
-              tone='info'
-              title='Custom uses the OpenAI Chat Completions API'
-              message={
-                <>
-                  Point this at any service that exposes OpenAI&apos;s <code>/chat/completions</code> — OpenRouter, vLLM, Ollama, Groq, Together,
-                  DeepSeek, LiteLLM and most gateways do. Give the base URL <strong>including the version segment</strong> (e.g.{' '}
-                  <code>https://openrouter.ai/api/v1</code>); <code>/chat/completions</code> is appended to it.
-                </>
-              }
-            />
-          )}
+          {provider === 'custom' && <CustomProviderBanner />}
           {showsOAuthOption && (
             <Select
               label='Authentication'
@@ -2241,11 +2649,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               value={authType}
               onChange={setConnField(setAuthType)}
               options={AUTH_TYPE_OPTIONS}
-              help={
-                provider === 'azure'
-                  ? 'API key sends the resource key. OAuth2 client credentials signs in as a Microsoft Entra ID service principal (needs the Cognitive Services OpenAI User role) and refreshes the token automatically.'
-                  : "API key sends a static key with each request. OAuth2 client credentials fetches a bearer token from your gateway's token endpoint and refreshes it automatically — for corporate AI gateways that reject static keys."
-              }
+              help={NOTES.authType(provider)}
             />
           )}
           {showsApiKey && !oauthSelected && (
@@ -2255,7 +2659,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               onChange={setConnField(setApiKey)}
               onBlur={trimOnBlur(apiKey, setApiKey)}
               isConfigured={secretsConfigured.llm_provider_api_key}
-              helperText='API key for authenticating with the LLM provider. Surrounding whitespace is trimmed when you tab out of the field.'
+              helperText={NOTES.apiKey}
               required
             />
           )}
@@ -2268,12 +2672,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                 onChange={setConnField(setOauthTokenUrl)}
                 onBlur={trimOnBlur(oauthTokenUrl, setOauthTokenUrl)}
                 error={errors.oauthTokenUrl}
-                placeholder={provider === 'azure' ? 'https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token' : undefined}
-                help={
-                  provider === 'azure'
-                    ? 'Microsoft Entra ID token endpoint for your tenant: https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token.'
-                    : 'Token endpoint the client-credentials grant is POSTed to (e.g. https://api.example.com/oauth2/token).'
-                }
+                placeholder={NOTES.oauthTokenUrlPlaceholder(provider)}
+                help={NOTES.oauthTokenUrl(provider)}
                 required
               />
               <Input
@@ -2282,7 +2682,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                 value={oauthClientId}
                 onChange={setConnField(setOauthClientId)}
                 onBlur={trimOnBlur(oauthClientId, setOauthClientId)}
-                help='Client ID for the client-credentials grant.'
+                help={NOTES.oauthClientId}
                 required
               />
               <SecretInput
@@ -2291,7 +2691,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                 onChange={setConnField(setOauthClientSecret)}
                 onBlur={trimOnBlur(oauthClientSecret, setOauthClientSecret)}
                 isConfigured={secretsConfigured.llm_oauth_client_secret}
-                helperText='Client secret for the client-credentials grant. Stored encrypted; never shown again.'
+                helperText={NOTES.oauthClientSecret}
                 required
               />
               <Input
@@ -2300,12 +2700,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                 value={oauthScope}
                 onChange={setConnField(setOauthScope)}
                 onBlur={trimOnBlur(oauthScope, setOauthScope)}
-                placeholder={provider === 'azure' ? 'https://cognitiveservices.azure.com/.default' : undefined}
-                help={
-                  provider === 'azure'
-                    ? 'Use https://cognitiveservices.azure.com/.default for Azure OpenAI.'
-                    : 'Scope(s) requested with the token, space-separated (e.g. https://api.example.com/.default). Optional.'
-                }
+                placeholder={NOTES.oauthScopePlaceholder(provider)}
+                help={NOTES.oauthScope(provider)}
               />
             </>
           )}
@@ -2316,13 +2712,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               value={apiEndpoint}
               onChange={setConnField(setApiEndpoint)}
               onBlur={trimOnBlur(apiEndpoint, setApiEndpoint)}
-              help={
-                provider === 'custom'
-                  ? 'Base URL including the version segment — e.g. https://openrouter.ai/api/v1. "/chat/completions" is appended to it, so omitting /v1 will 404.'
-                  : provider === 'azure'
-                  ? 'Your Azure OpenAI resource endpoint, e.g. https://<resource>.openai.azure.com.'
-                  : 'Custom API endpoint for the LLM provider.'
-              }
+              help={NOTES.apiEndpoint(provider)}
               required={['azure', 'sagemaker', 'huggingface', 'anthropic', 'custom'].includes(provider)}
             />
           )}
@@ -2333,7 +2723,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               value={region}
               onChange={setConnField(setRegion)}
               onBlur={trimOnBlur(region, setRegion)}
-              help='Geographic region (e.g., us-east-1).'
+              help={NOTES.region}
               required
             />
           )}
@@ -2345,7 +2735,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                 onChange={setConnField(setAccessKey)}
                 onBlur={trimOnBlur(accessKey, setAccessKey)}
                 isConfigured={secretsConfigured.llm_provider_access_key}
-                helperText='AWS Access Key ID for Bedrock. Surrounding whitespace is trimmed when you tab out of the field.'
+                helperText={NOTES.accessKey}
                 required
               />
               <SecretInput
@@ -2354,7 +2744,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                 onChange={setConnField(setSecretKey)}
                 onBlur={trimOnBlur(secretKey, setSecretKey)}
                 isConfigured={secretsConfigured.llm_provider_secret_key}
-                helperText='AWS Secret Access Key for Bedrock. Surrounding whitespace is trimmed when you tab out of the field.'
+                helperText={NOTES.secretKey}
                 required
               />
             </>
@@ -2367,17 +2757,11 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               onChange={setConnField(setApiType)}
               options={API_TYPE_OPTIONS}
               placeholder='Default (OpenAI-style)'
-              help='URL shape of the gateway. Leave unset for plain /chat/completions; pick azure or azure_ad for gateways that use /openai/deployments/{deployment}/chat/completions.'
+              help={NOTES.apiTypeCustom}
             />
           )}
           {showsApiType && provider !== 'custom' && (
-            <Input
-              label='API Type'
-              size='sm'
-              value={apiType}
-              onChange={setConnField(setApiType)}
-              help='Type of the API. Optional. Use "azure" or "azure_ad" for Azure-shaped gateways.'
-            />
+            <Input label='API Type' size='sm' value={apiType} onChange={setConnField(setApiType)} help={NOTES.apiType} />
           )}
           {provider === 'azure' && (
             <Select
@@ -2386,7 +2770,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               value={apiStyle}
               onChange={setConnField(setApiStyle)}
               options={AZURE_API_STYLE_OPTIONS}
-              help='v1 calls {endpoint}/openai/v1 and needs no API version. Classic calls {endpoint}/openai/deployments/{model} with an api-version.'
+              help={NOTES.apiStyle}
             />
           )}
           {showsApiVersion && (
@@ -2395,22 +2779,12 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               size='sm'
               value={apiVersion}
               onChange={setConnField(setApiVersion)}
-              help={
-                provider === 'azure'
-                  ? 'api-version sent with every classic request (e.g. 2024-10-21).'
-                  : 'api-version query parameter sent with every request (e.g. 2025-01-01-preview). Most Azure-shaped gateways require it.'
-              }
+              help={NOTES.apiVersion(provider)}
               required={provider === 'azure'}
             />
           )}
           {azureShapedCustom && (
-            <Input
-              label='Deployment Name'
-              size='sm'
-              value={deploymentName}
-              onChange={setConnField(setDeploymentName)}
-              help='URL deployment segment when it differs from the model name (e.g. gpt-5.6-terra_2026-07-09). The request body still carries the model name. Optional.'
-            />
+            <Input label='Deployment Name' size='sm' value={deploymentName} onChange={setConnField(setDeploymentName)} help={NOTES.deploymentName} />
           )}
           {showsOAuthOption && (
             <Input
@@ -2423,7 +2797,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               onBlur={trimOnBlur(extraHeaders, setExtraHeaders)}
               error={errors.extraHeaders}
               placeholder='{"projectId": "abc-123"}'
-              help='Sent with every LLM request — some gateways require identification headers alongside auth. Authorization and api-key cannot be set here. Optional.'
+              help={NOTES.extraHeaders}
             />
           )}
           {showsAdapter && (
@@ -2440,55 +2814,12 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           )}
           {(canPrice || showsContextSize(provider)) && (
             <Box>
-              <Box
-                onClick={() => setShowAdvanced((v) => !v)}
-                onKeyDown={(e) => {
-                  if (e.key === ' ' || e.key === 'Enter') {
-                    e.preventDefault();
-                    setShowAdvanced((v) => !v);
-                  }
-                }}
-                tabIndex={0}
-                role='button'
-                aria-expanded={showAdvanced}
-                aria-controls='llm-advanced-options'
-                sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  cursor: 'pointer',
-                  py: 'var(--ds-space-2)',
-                  color: 'var(--ds-text-secondary)',
-                  fontWeight: 'var(--ds-font-weight-semibold)',
-                  fontSize: 'var(--ds-text-small)',
-                  userSelect: 'none',
-                  '&:focus-visible': {
-                    outline: '2px solid var(--ds-text-secondary)',
-                    outlineOffset: '2px',
-                  },
-                }}
-              >
-                {showAdvanced ? <ExpandLessIcon fontSize='small' /> : <ExpandMoreIcon fontSize='small' />}
-                <Box component='span' sx={{ ml: 'var(--ds-space-1)' }}>
-                  Advanced options
-                </Box>
-                <Box
-                  component='span'
-                  sx={{
-                    ml: 'var(--ds-space-2)',
-                    color: 'var(--ds-text-tertiary)',
-                    fontWeight: 'var(--ds-font-weight-regular)',
-                    fontSize: 'var(--ds-text-caption)',
-                  }}
-                >
-                  {canPrice && showsContextSize(provider)
-                    ? 'Override the built-in pricing and set a custom model context window for this tenant.'
-                    : canPrice
-                    ? 'Override the built-in pricing rates for this tenant.'
-                    : showsContextSize(provider)
-                    ? "Set a custom context window for your self-hosted deployment (defaults to the model's built-in window if blank)."
-                    : 'Other optional settings.'}
-                </Box>
-              </Box>
+              <AdvancedOptionsToggle
+                open={showAdvanced}
+                onToggle={() => setShowAdvanced((v) => !v)}
+                controls='llm-advanced-options'
+                summary={NOTES.advanced(canPrice, provider)}
+              />
               {showAdvanced && (
                 <Stack id='llm-advanced-options' spacing='var(--ds-space-2)' sx={{ mt: 'var(--ds-space-2)' }}>
                   {showsDisableThinking(provider) && (
@@ -2498,89 +2829,17 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                       checked={disableThinking}
                       onChange={setDisableThinking}
                       label='Turn off model reasoning'
-                      description='For self-hosted reasoning models. Some models spend their whole response budget thinking and never answer, which shows up as a very slow or failed reply. Turning reasoning off makes responses faster and more predictable; it can reduce answer quality on complex questions. Ignored by servers that do not support the setting.'
+                      description={NOTES.disableThinking}
                     />
                   )}
                   {canPrice && (
-                    <>
-                      <Checkbox
-                        id='llm-config-supports-image'
-                        size='sm'
-                        checked={supportsImage || recordedImageSupport === true}
-                        disabled={recordedImageSupport === true}
-                        onChange={setSupportsImage}
-                        label='Supports image input'
-                        description={
-                          recordedImageSupport === true
-                            ? 'Already recorded as supported for this model.'
-                            : 'Tick if this model accepts images such as screenshots and graphs. Without it, attached images are dropped before the model sees them. Leave unticked to keep the current setting.'
-                        }
-                      />
-                      <Input
-                        label='Input rate (USD per 1M tokens)'
-                        size='sm'
-                        type='number'
-                        value={priceInput}
-                        onChange={setPriceInput}
-                        placeholder='e.g. 0.40'
-                        help={
-                          provider === 'custom'
-                            ? 'Optional. We ship no rate for custom endpoints, so without this the model reports $0 spend.'
-                            : 'Optional. Overrides the built-in rate for this tenant. Any long-context tier or cache rate you leave blank is preserved — edit it from Settings → Model Pricing.'
-                        }
-                      />
-                      <Input
-                        label='Output rate (USD per 1M tokens)'
-                        size='sm'
-                        type='number'
-                        value={priceOutput}
-                        onChange={setPriceOutput}
-                        placeholder='e.g. 0.60'
-                      />
-                      <Input
-                        label='Cached input rate (USD per 1M tokens)'
-                        size='sm'
-                        type='number'
-                        value={priceCachedInput}
-                        onChange={setPriceCachedInput}
-                        placeholder='e.g. 0.10'
-                        help='Optional. Most providers discount prompt tokens served from cache. Leave blank to bill them at the input rate.'
-                      />
-                      <Input
-                        label='Cache creation rate (USD per 1M tokens)'
-                        size='sm'
-                        type='number'
-                        value={priceCacheCreation}
-                        onChange={setPriceCacheCreation}
-                        placeholder='e.g. 0.50'
-                        help='Optional. Charged when tokens are first written to cache — Anthropic bills 1.25x input; OpenAI-compatible providers do not charge it.'
-                      />
-                      <Input
-                        label='Input rate above threshold (USD per 1M)'
-                        size='sm'
-                        type='number'
-                        value={priceInputLong}
-                        onChange={setPriceInputLong}
-                        placeholder='e.g. 0.80'
-                      />
-                      <Input
-                        label='Output rate above threshold (USD per 1M)'
-                        size='sm'
-                        type='number'
-                        value={priceOutputLong}
-                        onChange={setPriceOutputLong}
-                        placeholder='e.g. 1.20'
-                      />
-                      <Input
-                        label='Long-context threshold (prompt tokens)'
-                        size='sm'
-                        type='number'
-                        value={priceThreshold}
-                        onChange={setPriceThreshold}
-                        placeholder='e.g. 200000'
-                        help='Optional. Some providers charge more above a prompt size — Gemini Pro doubles above 200k. Leave blank for flat pricing; fill all three to set a tier.'
-                      />
-                    </>
+                    <PricingFields
+                      idPrefix='llm-config'
+                      provider={provider}
+                      price={price}
+                      recordedImageSupport={recordedImageSupport}
+                      onChange={(field, value) => setPrice((prev) => ({ ...prev, [field]: value }))}
+                    />
                   )}
                   {showsContextSize(provider) && (
                     <Input
@@ -2591,7 +2850,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                       value={contextSize}
                       onChange={setContextSize}
                       onBlur={trimOnBlur(contextSize, setContextSize)}
-                      help='Total input + output window. Optional — defaults to the model’s built-in window if blank. For self-hosted deployments, set this to your deployment’s max-model-len.'
+                      help={NOTES.contextSize}
                     />
                   )}
                 </Stack>
