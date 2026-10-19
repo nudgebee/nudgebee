@@ -1237,6 +1237,10 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
   // isUiFeatureEnabled. Both are then narrowed by
   // hasReadAccess(selectedCluster?.value), mirroring the page's per-account check.
   const canAccessLlmAnalyser = llmAnalyserEnabled && hasReadAccess(selectedCluster?.value);
+  // Cost Report is the one LLM Analyser sub-tab CostAnalyser.tsx itself only puts in
+  // its tabOptions for a tenant-wide role (showCostReportTab) — every other sub-tab
+  // is reachable by anyone who clears canAccessLlmAnalyser.
+  const canAccessLlmAnalyserCostReport = canAccessLlmAnalyser && isTenantWideRole();
   // The `llm:Read` disjunct mirrors the page too: the gateway usage API is
   // tenant-scoped, so hasReadAccess (per-account) never sees that grant and the
   // row went missing for grant holders. Keep in lockstep with optimise/index.jsx.
@@ -1288,7 +1292,10 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
       if (opt.label === 'Roles' && !canAccessRoles) {
         return false;
       }
-      if (opt.label === 'LLM Analyser' && !canAccessLlmAnalyser) {
+      if (opt.label?.startsWith('LLM Analyser') && !canAccessLlmAnalyser) {
+        return false;
+      }
+      if (opt.label === 'LLM Analyser - Cost Report' && !canAccessLlmAnalyserCostReport) {
         return false;
       }
       if (opt.label === 'AI Gateway' && !canAccessAiGateway) {
@@ -1305,6 +1312,7 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
       canAccessBilling,
       canAccessRoles,
       canAccessLlmAnalyser,
+      canAccessLlmAnalyserCostReport,
       canAccessAiGateway,
     ]
   );

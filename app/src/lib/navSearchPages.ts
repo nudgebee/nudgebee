@@ -135,6 +135,14 @@ export const navSearchPages: NavSearchPage[] = [
   // the deployment's UI_ENABLE_LLM_GATEWAY env var (read off the session — see
   // optimise/index.jsx), each narrowed by hasReadAccess(selectedCluster?.value).
   { group: 'Optimize', label: 'LLM Analyser', path: '/optimise#llm-analyser' },
+  { group: 'Optimize', label: 'LLM Analyser - Overview', path: '/optimise#llm-analyser/overview' },
+  { group: 'Optimize', label: 'LLM Analyser - Conversations', path: '/optimise#llm-analyser/conversations' },
+  { group: 'Optimize', label: 'LLM Analyser - Models', path: '/optimise#llm-analyser/models' },
+  { group: 'Optimize', label: 'LLM Analyser - Agents', path: '/optimise#llm-analyser/agents' },
+  { group: 'Optimize', label: 'LLM Analyser - Tools', path: '/optimise#llm-analyser/tools' },
+  { group: 'Optimize', label: 'LLM Analyser - Users', path: '/optimise#llm-analyser/users' },
+  { group: 'Optimize', label: 'LLM Analyser - Cost Report', path: '/optimise#llm-analyser/cost-report' },
+  { group: 'Optimize', label: 'LLM Analyser - Critiques', path: '/optimise#llm-analyser/critiques' },
   { group: 'Optimize', label: 'AI Gateway', path: '/optimise#ai-gateway' },
 
   // Infra → VM. The account in scope comes from the header cluster dropdown, and
