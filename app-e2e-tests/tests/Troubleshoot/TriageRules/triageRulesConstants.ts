@@ -148,9 +148,7 @@ export const ENABLE_MENU_ITEM = "Enable";
 // The delete confirmation is a ds/Modal with confirmText='Delete' (TriageRulesManager.tsx:515).
 export const DELETE_MENU_ITEM = "Delete";
 export const DELETE_CONFIRM_LABEL = "Delete";
-// handleToggleRule refuses to flip a disabled rule back on — re-enabling has no endpoint, so it
-// info-toasts this instead of mutating anything (TriageRulesManager.tsx:423).
-export const REENABLE_BLOCKED_MESSAGE = "To re-enable a rule, please create a new one";
+export const DISABLE_CONFIRM_LABEL = "Disable";
 // A system rule's row menu has exactly one item, whose own label flips on `is_overridden`
 // (TriageRulesManager.tsx:152) — a different pair of strings from the regular Disable/Enable
 // above, since toggling a system rule writes an account-level override row, not the rule itself.

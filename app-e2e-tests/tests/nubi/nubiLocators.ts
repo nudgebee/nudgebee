@@ -115,9 +115,11 @@ export class NubiLocators {
     this.agenRole = page.getByRole('textbox', { name: 'You are a [role], responsible' })
     this.agentInstructionsInput = page.getByRole('textbox', { name: 'Key responsibilities: 1. [' })
     this.selectAgentOrTool = page.getByRole("button", { name: "Select Tool/Agent" });
-    this.listOfAgentsOrTools = page.getByText('anomaly_execute - system')
-    
-    this.agentToolUsage = page.getByRole('textbox', { name: 'Tool: [Tool Name] Purpose: [' })
+    // First tool the picker offers on this env, not a named one that may not exist everywhere.
+    this.listOfAgentsOrTools = page.locator('.MuiPopover-root [role="option"]:visible').first()
+
+    // By placeholder: the role/name lookup misses it while the picker popover leaves the dialog aria-hidden.
+    this.agentToolUsage = page.getByPlaceholder(/^Tool: \[Tool Name\]/)
     this.submitCreateAgentBtn = page.getByRole("button", { name: "Create Agent" });
 
     // create custom tool locators

@@ -266,6 +266,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     const id = await createRole(page, name, []);
 
     await roles.open();
+    await roles.revealRole(id);
     await roles.editRoleBtn(id).click();
     await expect(roles.roleNameInput).toBeVisible();
 
@@ -285,6 +286,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     const id = await createRole(page, name, []);
 
     await roles.open();
+    await roles.revealRole(id);
     await roles.deleteRoleBtn(id).click();
     await expect(page.getByText(new RegExp(`Delete role "${name}"`))).toBeVisible();
 
@@ -402,7 +404,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     expect((saved!.permissions ?? []).map((p) => `${p.module}:${p.class}`).sort()).toEqual(
       [`${accountMod}:Read`, `${tenantMod}:Read`].sort()
     );
-    await expect(roles.editRoleBtn(saved!.id)).toBeVisible();
+    await roles.revealRole(saved!.id);
 
     await deleteRole(page, saved!.id);
   });

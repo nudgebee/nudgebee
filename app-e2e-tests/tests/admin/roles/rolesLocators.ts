@@ -1,4 +1,4 @@
-import { Page, Locator } from "@playwright/test";
+import { Page, Locator, expect } from "@playwright/test";
 import { registerWelcomeTourAutoDismiss } from "../../utils/helpers";
 
 /**
@@ -109,6 +109,21 @@ export class RolesLocators {
 
   editRoleBtn(roleId: string): Locator {
     return this.page.locator(`[data-testid="edit-role-${roleId}"]`);
+  }
+
+  // The roles table client-paginates past 10 rows, so a role created mid-suite can sit on a later page.
+  async revealRole(roleId: string): Promise<void> {
+    const editBtn = this.editRoleBtn(roleId);
+    const nextPage = this.page.getByRole("button", { name: "Go to next page" }).first();
+    await this.page.locator('[data-testid^="edit-role-"]').first().waitFor({ state: "visible", timeout: 30000 });
+    for (let pageIndex = 0; pageIndex < 20; pageIndex++) {
+      // The row being on another page is the case this loop handles, so absence here is a branch.
+      if (await editBtn.isVisible().catch(() => false)) return;
+      // No pagination bar (10 or fewer roles) means there is no further page to try.
+      if (!(await nextPage.isEnabled().catch(() => false))) break;
+      await nextPage.click();
+    }
+    await expect(editBtn).toBeVisible();
   }
 
   deleteRoleBtn(roleId: string): Locator {

@@ -1,3 +1,4 @@
+import { clickSidenavRail } from "../../utils/helpers";
 import { Page, Locator, expect } from "@playwright/test";
 import { CommonLocators } from "../../GlobalLocators";
 import { LoginPage } from "../../../pages/LoginPage";
@@ -764,9 +765,9 @@ export class GroupLocators extends CommonLocators {
 export async function setup(page: Page): Promise<GroupLocators> {
   const locators = new GroupLocators(page);
   await new LoginPage(page).doFullLogin();
-  await locators.homeBtn.click();
+  await clickSidenavRail(locators.homeBtn);
   await locators.adminBtn.waitFor({ state: "visible", timeout: 15000 });
-  await locators.adminBtn.click();
+  await clickSidenavRail(locators.adminBtn);
   // The sidenav click can land before React attaches its handler, so navigate directly rather than fail on nav flake.
   await page.waitForURL("**/user-management**", { timeout: 20000 }).catch(async () => {
     await page.goto("/user-management");
@@ -780,7 +781,7 @@ export async function setup(page: Page): Promise<GroupLocators> {
 // navigation is the fallback rather than a failed test.
 export async function openUsersPage(page: Page): Promise<UserLocators> {
   const users = new UserLocators(page);
-  await users.adminBtn.click();
+  await clickSidenavRail(users.adminBtn);
   await page.waitForURL("**/user-management**", { timeout: 20000 }).catch(async () => {
     await page.goto("/user-management");
     await page.waitForURL("**/user-management**", { timeout: 20000 });

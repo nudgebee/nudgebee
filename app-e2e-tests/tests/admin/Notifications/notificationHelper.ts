@@ -1,3 +1,4 @@
+import { clickSidenavRail } from "../../utils/helpers";
 import { Page, expect, TestInfo } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
@@ -70,7 +71,7 @@ export async function navigateToNewNotificationRule(
 
   await loginPage.doFullLogin();
   await locators.adminBtn.waitFor({ state: "visible" });
-  await locators.adminBtn.click();
+  await clickSidenavRail(locators.adminBtn);
 
   await locators.notificationsTab.waitFor({ state: "visible" });
   await locators.notificationsTab.click();

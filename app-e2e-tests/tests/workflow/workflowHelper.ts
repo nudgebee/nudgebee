@@ -1,11 +1,62 @@
+import { clickSidenavRail } from "../utils/helpers";
 import { Locator, Page, expect, test } from "@playwright/test";
 import { LoginPage } from "../../pages/LoginPage";
 import { WorkflowLocators } from "./workflowlocators";
 import { waitForGraphQLAndValidate } from "../utils/GraphQLNetworkWatcher";
 
-export function generateWorkflowName(baseName: string): string {
-  const suffix = String(Math.floor(Math.random() * 99) + 1).padStart(2, "0");
-  return `${baseName} ${suffix}`;
+// Only automations created by the e2e login user are cleaned up, never another person's with the same name.
+const AUTOMATION_OWNER = "PW Automation";
+
+// Fixed names stop reruns piling up automations; loginAndNavigateToNewWorkflow deletes earlier copies first.
+let pendingWorkflowName: { name: string; legacyPrefix: string } | undefined;
+
+export function generateWorkflowName(baseName: string, legacyPrefix: string = baseName): string {
+  pendingWorkflowName = { name: baseName, legacyPrefix };
+  return baseName;
+}
+
+// Deletes copies left by failed runs, by exact name or the old "<legacyPrefix> NN" random-suffix form.
+export async function deleteExistingWorkflowsByName(
+  page: Page,
+  locators: WorkflowLocators,
+  workflowName: string,
+  legacyPrefix: string = workflowName
+): Promise<void> {
+  await locators.autoPilotSidenavBtn.waitFor({ state: "visible", timeout: 30000 });
+  await clickSidenavRail(locators.autoPilotSidenavBtn);
+  await locators.nameSearchInput.waitFor({ state: "visible", timeout: 30000 });
+
+  await locators.createdByFilter.click({ timeout: 30000 });
+  await locators.filterSearchInput.fill(AUTOMATION_OWNER);
+  await locators.filterOption(AUTOMATION_OWNER).click();
+  await expect(locators.createdByFilter).toContainText(AUTOMATION_OWNER);
+
+  const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const matcher = new RegExp(`^(${escape(workflowName)}|${escape(legacyPrefix)} \\d{1,2})$`);
+  const matches = page.locator(`a[href^="/automation/"]`).filter({ hasText: matcher });
+
+  for (let removed = 0; removed < 60; removed++) {
+    await locators.nameSearchInput.fill(legacyPrefix.length < workflowName.length ? legacyPrefix : workflowName);
+    await locators.nameSearchInput.press("Enter");
+    // No match left is the normal end of the cleanup, so absence returns false instead of throwing.
+    const present = await matches
+      .first()
+      .waitFor({ state: "visible", timeout: removed === 0 ? 5000 : 3000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!present) break;
+
+    const linkName = ((await matches.first().innerText()) ?? "").trim();
+    const href = (await matches.first().getAttribute("href")) ?? "";
+    const id = href.match(/\/automation\/([0-9a-fA-F-]{36})/)?.[1];
+    await locators.rowMenuBtn(id).click();
+    await locators.rowDeleteMenuItem.dispatchEvent("click");
+    await locators.deleteConfirmBtn.click();
+    await expect(page.getByText(`Automation "${linkName}" deleted successfully`).first()).toBeVisible({ timeout: 15000 });
+    // The confirm dialog fades out after the toast; the next row menu click would land on it.
+    await expect(locators.deleteConfirmBtn).toBeHidden({ timeout: 15000 });
+    console.log(`Removed leftover automation "${linkName}"`);
+  }
 }
 
 export async function leaveWorkflowEditor(page: Page, locators: WorkflowLocators): Promise<void> {
@@ -137,8 +188,14 @@ export async function loginAndNavigateToNewWorkflow(
   await loginPage.doFullLogin();
   console.log("Login complete");
 
+  if (pendingWorkflowName) {
+    const { name, legacyPrefix } = pendingWorkflowName;
+    pendingWorkflowName = undefined;
+    await deleteExistingWorkflowsByName(page, locators, name, legacyPrefix);
+  }
+
   await locators.autoPilotSidenavBtn.waitFor({ state: "visible", timeout: 30000 });
-  await locators.autoPilotSidenavBtn.click();
+  await clickSidenavRail(locators.autoPilotSidenavBtn);
 
   await locators.createAutomationBtn
     .waitFor({ state: "visible", timeout: 30000 })
@@ -188,40 +245,14 @@ export async function pasteAndApplyWorkflowJson(
   await locators.codeMirrorEditor.waitFor({ state: "visible", timeout: 15000 });
 
   const jsonContent = JSON.stringify(workflowJson, null, 2);
-  // insertText instead of a clipboard paste: the clipboard is one OS-wide resource, so parallel workers overwrite each other.
-  await locators.codeMirrorEditor.click();
-  await page.keyboard.press("ControlOrMeta+A");
-  await page.keyboard.insertText(jsonContent);
-
-  // CodeMirror virtualizes long documents, so assert on the name only — it sits on the first line of the JSON.
-  const pastedName = (workflowJson as { name?: string }).name;
-  const contentLanded = async () =>
-    !pastedName || (await locators.codeMirrorEditor.textContent().catch(() => ""))?.includes(pastedName) === true;
-
-  // Fall back to retyping, since Apply on a stale editor closes the panel and leaves the canvas empty.
-  if (!(await contentLanded())) {
+  // insertText (not clipboard, shared across workers), retried because the builder can re-sync and wipe the editor after a paste.
+  await expect(async () => {
     await locators.codeMirrorEditor.click();
     await page.keyboard.press("ControlOrMeta+A");
     await page.keyboard.insertText(jsonContent);
-  }
-  if (pastedName) {
-    await expect(locators.codeMirrorEditor).toContainText(pastedName, { timeout: 15000 });
-  }
+    await locators.applyJsonBtn.waitFor({ state: "visible", timeout: 5000 });
+  }).toPass({ timeout: 60000, intervals: [1000, 2000, 3000] });
 
-  // Fall back to reopening the panel if Apply never appears, which happens when the editor renders only partially.
-  const applyVisible = await locators.applyJsonBtn
-    .waitFor({ state: "visible", timeout: 15000 })
-    .then(() => true)
-    .catch(() => false);
-  if (!applyVisible) {
-    await locators.jsonPanelToggleBtn.click();
-    await locators.codeMirrorEditor.waitFor({ state: "visible", timeout: 15000 });
-    await locators.codeMirrorEditor.click();
-    await page.keyboard.press("ControlOrMeta+A");
-    await page.keyboard.insertText(jsonContent);
-    await locators.applyJsonBtn.waitFor({ state: "visible", timeout: 15000 });
-    console.log("Reopened JSON panel after Apply failed to render");
-  }
   await locators.applyJsonBtn.click();
   console.log("Applied workflow JSON");
 
@@ -579,8 +610,7 @@ export async function configureMcpIntegrationAction(
   await dialog.getByText(/Select an MCP integration/i).first().click();
   await page.waitForTimeout(500);
 
-  const escapedIntegration = integrationName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  await page.locator('[role="option"]').filter({ hasText: new RegExp(escapedIntegration, "i") }).first().click();
+  await page.locator('[role="option"]').filter({ has: page.getByText(integrationName, { exact: true }) }).first().click();
   await page.waitForTimeout(500);
 
   const toolNameInput = dialog.getByPlaceholder(/Select or type tool name/i);

@@ -1,3 +1,4 @@
+import { clickSidenavRail } from "../../utils/helpers";
 import { expect, Page, Locator } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { IntegrationLocators } from "./IntegrationLocators";
@@ -31,7 +32,7 @@ export function getGcpServiceAccountKey(): string {
 
 async function navigateToAdminIntegrationsPage(page: Page, locators: IntegrationLocators): Promise<void> {
   await locators.adminBtn.waitFor({ state: "visible" });
-  await locators.adminBtn.click();
+  await clickSidenavRail(locators.adminBtn);
 
   const tabVisible = await locators.integrationsTab
     .waitFor({ state: "visible", timeout: 15000 })

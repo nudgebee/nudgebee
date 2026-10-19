@@ -1,4 +1,4 @@
-import { Page, expect } from "@playwright/test";
+import { Page, TestInfo, expect } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { MonitoringTabLocator } from "./MonitoringTabLocator";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
@@ -112,27 +112,54 @@ export async function clickDialogSubmit(page: Page): Promise<void> {
   }
 }
 
+// Puts the alert in the wanted state from whatever an earlier test or run left, so no test depends on another one passing.
+export async function ensureAlertState(
+  page: Page,
+  state: "enabled" | "disabled",
+  alertName: string,
+  testInfo: TestInfo
+): Promise<void> {
+  await searchAlert(page, alertName);
+  const alertRow = page.locator("tr", { hasText: alertName });
+  await expect(alertRow).toBeVisible({ timeout: 30000 });
+  const isDisabled = await alertRow.locator("td").filter({ hasText: /disabled/i })
+    .count().then(n => n > 0).catch(() => false);
+  if (state === "disabled" && !isDisabled) await toggleAlert(page, "disable", alertName, testInfo);
+  if (state === "enabled" && isDisabled) await toggleAlert(page, "enable", alertName, testInfo);
+}
+
+// Enable/disable changes the PrometheusRule on the cluster through the relay (create_or_replace_alert_rule), whose default timeout is 180s (relay.Execute).
+const RULE_CHANGE_TIMEOUT_MS = 190000;
+
 export async function toggleAlert(
   page: Page,
   action: "disable" | "enable",
   alertName: string,
-  testInfo: { title: string }
+  testInfo: TestInfo
 ): Promise<void> {
+  // Each toggle may take as long as the relay allows, so the test budget grows by that much per toggle.
+  testInfo.setTimeout(testInfo.timeout + RULE_CHANGE_TIMEOUT_MS);
   await clickAlertRowMenu(page, alertName);
   const toggleItem = page
     .locator("#toggle-enabled:visible")
     .or(page.locator('[role="menuitem"]:visible', { hasText: new RegExp(action, "i") }))
     .first();
   await expect(toggleItem).toBeVisible();
+  // The row menu labels the toggle by the alert's real state, so a stale status cell fails here instead of toggling the wrong way.
+  await expect(toggleItem).toHaveText(new RegExp(`^\\s*${action}\\s*$`, "i"));
   await waitForGraphQLAndValidate(
     page,
     async () => {
       await toggleItem.click();
       await clickDialogSubmit(page);
     },
-    { testName: testInfo.title, operationNames: [] }
+    // Enable and disable share this mutation.
+    { testName: testInfo.title, operationNames: ["DisableAlertManagerRule"], timeoutMs: RULE_CHANGE_TIMEOUT_MS }
   );
-  const toastText    = action === "disable" ? /disabled successful/i : /enabled successful/i;
-  const toastVisible = await page.getByText(toastText).waitFor({ state: "visible", timeout: 5000 }).then(() => true).catch(() => false);
-  if (!toastVisible) await expect(page.getByText(alertName)).toBeVisible({ timeout: 10000 });
+  // KubernetesAlertManager.handleSubmit toasts "Rule <name> disabled|enabled", or "Failed to disable|enable <name>" and reverts the row.
+  const escaped = alertName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const success = page.getByText(new RegExp(`Rule ${escaped} ${action}d`, "i"));
+  const failure = page.getByText(new RegExp(`Failed to ${action} ${escaped}`, "i"));
+  await expect(success.or(failure).first()).toBeVisible({ timeout: 15000 });
+  expect(await failure.count(), `the app reported: ${await failure.first().innerText().catch(() => "")}`).toBe(0);
 }

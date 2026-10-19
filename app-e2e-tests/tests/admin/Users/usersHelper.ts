@@ -1,3 +1,4 @@
+import { clickSidenavRail } from "../../utils/helpers";
 import { Page } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { UserLocators } from "./usersLocators";
@@ -6,8 +7,8 @@ import { UserLocators } from "./usersLocators";
 export async function setup(page: Page): Promise<UserLocators> {
   const locators = new UserLocators(page);
   await new LoginPage(page).doFullLogin();
-  await locators.homeBtn.click();
-  await locators.adminBtn.click();
+  await clickSidenavRail(locators.homeBtn);
+  await clickSidenavRail(locators.adminBtn);
   await page.waitForURL("**/user-management**", { timeout: 15000 });
   // Admin defaults to Overview; the Access & Users tab opens on its default Users sub-tab.
   await locators.accessUsersTab.click();

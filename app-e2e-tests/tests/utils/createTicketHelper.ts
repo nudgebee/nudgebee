@@ -1,3 +1,4 @@
+import { clickSidenavRail } from "./helpers";
 import { test, Page, Locator, expect } from "@playwright/test";
 import { waitForGraphQLAndValidate } from "./GraphQLNetworkWatcher";
 
@@ -151,7 +152,7 @@ async function verifyTicketInSidebar(
   }
 
   const ticketsBtn = page.locator("#tickets-sidenavbutton");
-  await ticketsBtn.click();
+  await clickSidenavRail(ticketsBtn);
 
   const listTicket = page.locator("#list-ticket");
   await listTicket.waitFor({ state: "visible", timeout: 20000 });
