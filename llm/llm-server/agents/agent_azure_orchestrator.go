@@ -104,5 +104,8 @@ func (a *AzureOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, q
 	if n := workspaceNbctlNudgeIfEnabled(query.AccountId); n != "" {
 		promptText += "\n\n" + n
 	}
+	if n := mcpIntegrationsNudge(query.AccountId); n != "" {
+		promptText += "\n\n" + n
+	}
 	return core.ParsePromptToNBAgentPrompt(promptText)
 }

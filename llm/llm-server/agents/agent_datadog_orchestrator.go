@@ -117,7 +117,7 @@ func (a *DatadogOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext,
 		},
 	}
 
-	return core.NBAgentPrompt{
+	prompt := core.NBAgentPrompt{
 		Role: "You are a super-intelligent AI that helps engineers troubleshoot and debug issues in Datadog environments. Your role is to act as a seasoned Datadog expert, guiding users to create XML-based execution plans.",
 		Instructions: []string{
 			"When a user asks a question, your goal is to create a plan as an XML document to help them solve the problem.",
@@ -196,6 +196,10 @@ Example: ...found in [Resource Search - E1](#task-E1) and [Logs - E3](#task-E3).
 Exception: when citing an external resource that has its own real URL (e.g. a GitHub PR/issue link), use [Label](actual-url) with that real URL instead — never substitute a #task-ID anchor for it.
 `,
 	}
+	if n := mcpIntegrationsNudge(query.AccountId); n != "" {
+		prompt.Instructions = append(prompt.Instructions, n)
+	}
+	return prompt
 }
 
 func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId string) []toolcore.NBTool {
@@ -231,6 +235,7 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 		// reached on-demand via search_tools + delegate_agent, which surfaces
 		// redis_command_executer / rabbit_execute (both carry their own ToolPrompt()).
 		DelegateAgentToolName,      // For dynamic specialist sub-agents
+		SearchToolsToolName,        // MCP tools and automations when they are not declared
 		tools.SearchSkillsToolName, // Search knowledge bases by query (#34819)
 	}
 
@@ -259,7 +264,11 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 	// sub-agent, one is reachable only after the orchestrator decides to delegate —
 	// the hop that registering automations as tools exists to remove. Free on
 	// accounts without the feature flag: the source returns nothing at all.
-	tools = append(tools, toolcore.ListAccountSourcedTools(accountId)...)
+	// With MCP tools on demand neither is declared: both are found with
+	// search_tools, as on the other orchestrators.
+	if !config.Config.LlmServerMCPToolsOnDemandEnabled {
+		tools = append(tools, toolcore.ListAccountSourcedTools(accountId)...)
+	}
 
 	// Conditionally add think tool for complex investigations
 	if config.Config.LlmServerThinkToolEnabled {

@@ -114,7 +114,12 @@ func getTrimmedK8sSupportedTools(ctx *security.RequestContext, accountId, agentN
 		agentSupportedToolsCacheInstance.set(accountId, agentName, staticTools)
 	}
 
-	mcpTools := toolcore.ListMCPIntegrationTools(accountId)
+	// With MCP tools on demand the prompt names the integrations and
+	// search_tools finds their tools, so none are declared here.
+	var mcpTools []toolcore.NBTool
+	if !config.Config.LlmServerMCPToolsOnDemandEnabled {
+		mcpTools = toolcore.ListMCPIntegrationTools(accountId)
+	}
 	if len(mcpTools) == 0 {
 		// Defensive copy: downstream may append; never hand out the cached slice.
 		out := make([]toolcore.NBTool, len(staticTools))

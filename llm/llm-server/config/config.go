@@ -884,6 +884,11 @@ type appConfig struct {
 	// PR deletes the tool + all injection sites entirely.
 	// Rollback: set LLM_SERVER_THINK_TOOL_ENABLED=true in the env.
 	LlmServerThinkToolEnabled bool `mapstructure:"llm_server_think_tool_enabled"`
+	// LlmServerMCPToolsOnDemandEnabled stops the k8s/aws/gcp/azure and datadog
+	// orchestrators declaring every MCP tool on every round (#41585): their
+	// prompt names the integrations and the model finds tools with search_tools.
+	// On in dev, off elsewhere. Rollback: LLM_SERVER_MCP_TOOLS_ON_DEMAND_ENABLED=false.
+	LlmServerMCPToolsOnDemandEnabled bool `mapstructure:"llm_server_mcp_tools_on_demand_enabled"`
 	// LlmServerOrchestratorQueryModelDownshiftEnabled applies in the shared executor before
 	// ReAct3/ReAct4 engine selection. It downshifts the MODEL TIER for a TOP-LEVEL
 	// plain-retrieval turn ("list pods") on a Reasoning-tier orchestrator from
@@ -1659,6 +1664,7 @@ func init() {
 	// Any env that wants the tool back sets LLM_SERVER_THINK_TOOL_ENABLED=true
 	// (env override still wins over SetDefault).
 	viper.SetDefault("llm_server_think_tool_enabled", false)
+	viper.SetDefault("llm_server_mcp_tools_on_demand_enabled", false)
 	viper.SetDefault("llm_server_kg_get_node_enabled", false)
 	viper.SetDefault("llm_server_evaluation_enabled", false)
 

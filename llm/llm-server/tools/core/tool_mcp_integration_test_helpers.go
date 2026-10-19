@@ -24,3 +24,19 @@ func GetMCPIntegrationToolCache(accountId string) ([]NBTool, bool) {
 func NewMCPIntegrationToolForTest(integrationID, toolName string) NBTool {
 	return mcpIntegrationTool{config: mcpIntegrationConfig{IntegrationID: integrationID}, toolName: toolName}
 }
+
+// NewMCPToolForTest returns an MCP integration tool of the named integration,
+// with its instructions and description.
+func NewMCPToolForTest(integrationName, instructions, serverTool, description string) NBTool {
+	return mcpIntegrationTool{
+		config:      mcpIntegrationConfig{IntegrationID: "id-" + integrationName, IntegrationName: integrationName, LLMInstructions: instructions},
+		toolName:    MCPToolName(integrationName, serverTool),
+		mcpToolName: serverTool,
+		toolDesc:    description,
+	}
+}
+
+// NewMCPUnavailableToolForTest returns the placeholder of an unreachable integration.
+func NewMCPUnavailableToolForTest(integrationName string) NBTool {
+	return mcpUnavailableTool{integrationID: "id-" + integrationName, integrationName: integrationName, reason: "test", retryAfter: defaultCacheTTL}
+}
