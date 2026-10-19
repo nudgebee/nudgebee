@@ -664,7 +664,8 @@ export const ScriptEditor: React.FC<ScriptEditorProps> = ({ value, onChange, err
       <CodeMirror
         value={value || ''}
         height={height}
-        extensions={[StreamLanguage.define(shell)]}
+        // Nominal StreamParser mismatch between @codemirror/legacy-modes and @codemirror/language; cast is intentional.
+        extensions={[StreamLanguage.define(shell as unknown as Parameters<typeof StreamLanguage.define>[0])]}
         onChange={onChange}
         editable={!disabled}
         placeholder={placeholder}
@@ -1133,7 +1134,7 @@ export const CodeEditorWithLanguage: React.FC<CodeEditorWithLanguageProps> = ({
         return [json()];
       case 'bash':
       default:
-        return [StreamLanguage.define(shell)];
+        return [StreamLanguage.define(shell as unknown as Parameters<typeof StreamLanguage.define>[0])];
     }
   };
 
