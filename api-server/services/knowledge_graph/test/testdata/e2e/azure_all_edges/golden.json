@@ -70,6 +70,7 @@
       "query_attributes": {
         "name": "vm1",
         "nsg_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/networkSecurityGroups/nsg1",
+        "region": "eastus",
         "subnet_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet1/subnets/subnet1",
         "subtype": "virtualmachine",
         "vnet_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet1"
@@ -108,6 +109,7 @@
       "labels": {},
       "query_attributes": {
         "name": "aks-vmss",
+        "region": "eastus",
         "subtype": "virtualmachinescalesets"
       },
       "ontology_attributes": {
@@ -144,6 +146,7 @@
       "labels": {},
       "query_attributes": {
         "name": "vmss1",
+        "region": "eastus",
         "subtype": "virtualmachinescalesets"
       },
       "ontology_attributes": {
@@ -184,6 +187,7 @@
       "labels": {},
       "query_attributes": {
         "name": "lb1",
+        "region": "eastus",
         "type": "loadbalancer"
       },
       "ontology_attributes": {
@@ -260,6 +264,7 @@
       "labels": {},
       "query_attributes": {
         "name": "nic1",
+        "region": "eastus",
         "status": "",
         "subnet_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet1/subnets/subnet1"
       },
@@ -297,7 +302,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "pip1"
+        "name": "pip1",
+        "region": "eastus"
       },
       "ontology_attributes": {
         "location": "eastus",
@@ -332,7 +338,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "nsg1"
+        "name": "nsg1",
+        "region": "eastus"
       },
       "ontology_attributes": {
         "location": "eastus",
@@ -367,7 +374,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "func1"
+        "name": "func1",
+        "region": "eastus"
       },
       "ontology_attributes": {
         "location": "eastus",
@@ -402,7 +410,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "plan1"
+        "name": "plan1",
+        "region": "eastus"
       },
       "ontology_attributes": {
         "location": "eastus",
@@ -439,6 +448,7 @@
       "query_attributes": {
         "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id1",
         "name": "id1",
+        "region": "eastus",
         "service_name": "microsoft.managedidentity/userassignedidentities",
         "subtype": "userassignedidentities"
       },
@@ -478,6 +488,7 @@
       "labels": {},
       "query_attributes": {
         "name": "storage1",
+        "region": "eastus",
         "subtype": "storageaccount"
       },
       "ontology_attributes": {
@@ -519,6 +530,7 @@
       "labels": {},
       "query_attributes": {
         "name": "subnet1",
+        "region": "eastus",
         "subnet_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet1/subnets/subnet1",
         "vnet_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet1"
       },
@@ -556,7 +568,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "vnet1"
+        "name": "vnet1",
+        "region": "eastus"
       },
       "ontology_attributes": {
         "location": "eastus",

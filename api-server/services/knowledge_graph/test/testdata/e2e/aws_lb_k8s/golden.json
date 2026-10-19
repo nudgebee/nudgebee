@@ -67,6 +67,7 @@
       "query_attributes": {
         "load_balancer_type": "application",
         "name": "app-alb",
+        "region": "us-east-1",
         "scheme": "internet-facing",
         "type": "application_loadbalancer",
         "vpc_id": "vpc-1"

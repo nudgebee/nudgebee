@@ -34,6 +34,7 @@
         "instance_state": "running",
         "name": "api-vm",
         "private_ip": "10.0.1.5",
+        "region": "us-east-1",
         "subtype": "compute-instance"
       },
       "ontology_attributes": {
@@ -76,6 +77,7 @@
       "labels": {},
       "query_attributes": {
         "name": "batch-vm",
+        "region": "us-central1",
         "subtype": "ComputeEngine"
       },
       "ontology_attributes": {
@@ -138,6 +140,7 @@
         "os_version": "22.04",
         "package_count": 495,
         "private_ip": "192.168.10.5",
+        "region": "global",
         "scan_status": "completed",
         "scanned_at": "2026-10-13T10:00:00Z"
       },
@@ -183,6 +186,7 @@
         "os_version": "22.04",
         "package_count": 495,
         "private_ip": "10.128.0.7",
+        "region": "us-central1",
         "scan_status": "completed",
         "scanned_at": "2026-10-13T10:00:00Z"
       },
@@ -228,6 +232,7 @@
         "os_version": "22.04",
         "package_count": 495,
         "private_ip": "10.0.1.5",
+        "region": "us-east-1",
         "scan_status": "completed",
         "scanned_at": "2026-10-13T10:00:00Z"
       },

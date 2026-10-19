@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -1170,20 +1171,42 @@ var QueryablePropertiesMap = map[NodeType][]string{
 	},
 }
 
-// GetQueryableProperties returns the list of queryable properties for a given node type
+// CommonQueryableProperties are hoisted into query_attributes for EVERY node
+// type, on top of that type's own entry in QueryablePropertiesMap.
+//
+// "region" belongs here rather than in each map entry: it was listed on only 8
+// of the node types, so an Attribute filter on region matched those 8 and
+// silently dropped EC2, RDS, S3, Lambda, EBS, load balancers, VPCs and the
+// rest — nodes whose Node Details pane showed the very region being filtered
+// on, because that pane reads properties while the filter reads
+// query_attributes (#41137).
+var CommonQueryableProperties = []string{"name", "environment", "region"}
+
+// GetQueryableProperties returns every queryable property for a node type:
+// CommonQueryableProperties plus the type's own entry in QueryablePropertiesMap,
+// deduplicated. It is the single source of truth for "can this be filtered on",
+// so a caller cannot see a type-specific list that silently omits the common keys.
 func GetQueryableProperties(nodeType NodeType) []string {
-	if props, ok := QueryablePropertiesMap[nodeType]; ok {
-		return props
+	props, ok := QueryablePropertiesMap[nodeType]
+	if !ok {
+		return CommonQueryableProperties
 	}
-	// Return common queryable properties if node type not found
-	return []string{"name", "environment"}
+	out := make([]string, 0, len(CommonQueryableProperties)+len(props))
+	out = append(out, CommonQueryableProperties...)
+	for _, p := range props {
+		if !slices.Contains(CommonQueryableProperties, p) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // ExtractQueryAttributes extracts queryable properties from a properties map.
 //
-// The per-NodeType QueryablePropertiesMap is the safety-net; the per-specific_type
+// GetQueryableProperties supplies CommonQueryableProperties (every node type)
+// plus the per-NodeType QueryablePropertiesMap safety-net; the per-specific_type
 // concrete schema (schema_registry.go) drives additional Indexed fields
-// when one is registered for specificType. The two are UNIONed so no existing
+// when one is registered for specificType. The three are UNIONed so no existing
 // filter can regress and un-schema'd / synthesized / defaulted nodes (which have
 // no registered schema — e.g. in core-only tests that don't import the source
 // packages) still get their query_attributes from the map.
