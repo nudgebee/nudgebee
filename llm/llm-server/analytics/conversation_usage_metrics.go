@@ -110,6 +110,9 @@ type MessageMetrics struct {
 	MessageCachedInputTokens      int            `json:"message_cached_input_tokens"`
 	MessageThinkingTokens         int            `json:"message_thinking_tokens"`
 	MessageCacheHitRatePercentage *float64       `json:"message_cache_hit_rate_percentage,omitempty"`
+	// MessageCacheSavings is the same calculation as the conversation's
+	// cache_savings, over this message's calls. Nil when nothing was cached.
+	MessageCacheSavings *CacheSavingsInfo `json:"message_cache_savings,omitempty"`
 }
 
 type AgentMetrics struct {
@@ -360,6 +363,25 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	// Calculate cache savings
 	cacheSavings := calculateCacheSavings(detailedRecords, totalCost, costs)
 
+	// Per message, from the same per-call records and prices, so the message
+	// popover no longer has to estimate savings on its own.
+	recordsByMessage := make(map[string][]core.TokenUsageDetailedRecord)
+	for _, record := range detailedRecords {
+		recordsByMessage[record.MessageID] = append(recordsByMessage[record.MessageID], record)
+	}
+	for i := range messages {
+		records := recordsByMessage[messages[i].MessageId]
+		cachedOrWritten := 0
+		for _, record := range records {
+			cachedOrWritten += record.CachedInputTokens + record.CacheCreationTokens
+		}
+		if cachedOrWritten == 0 {
+			continue
+		}
+		savings := calculateCacheSavings(records, messages[i].MessageCostUsd, costs)
+		messages[i].MessageCacheSavings = &savings
+	}
+
 	// Calculate success rate and request stats
 	successRate, totalRequests, successfulRequests, failedRequests := calculateSuccessRate(detailedRecords)
 
@@ -562,13 +584,16 @@ func calculateCacheSavings(records []core.TokenUsageDetailedRecord, actualCost f
 		totalPromptTokens += PromptTokens(record.LLMProvider, record.InputTokens, record.CacheCreationTokens)
 
 		if pricing, ok := costs[record.LLMProvider+":"+record.LLMModel]; ok {
-			// "Without cache" hypothetical: all input tokens billed at the
+			// "Without cache" hypothetical: the whole prompt billed at the
 			// non-cached rate, no cache creation, same output and thinking.
+			// For Anthropic and Bedrock the prompt includes the cache-write
+			// tokens, which are stored outside input_tokens; leaving them out
+			// made caching look cheaper than it was.
 			estimatedCostWithoutCache += core.CalculateTotalCost(
 				&pricing,
-				record.InputTokens, // all input as non-cached
-				0,                  // no cached read
-				0,                  // no cache creation
+				PromptTokens(record.LLMProvider, record.InputTokens, record.CacheCreationTokens), // whole prompt as non-cached
+				0, // no cached read
+				0, // no cache creation
 				record.OutputTokens,
 				record.ThinkingTokens,
 			)

@@ -980,6 +980,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
     message_thinking_tokens = 0,
     message_cache_hit_rate_percentage = null,
     message_cost_usd = 0,
+    message_cache_savings = null,
     agents = [],
   } = messageData;
 
@@ -1022,30 +1023,9 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
   // From all agents, so a call with no model name still matches the conversation total.
   const messageUnpricedRequests = agents.reduce((sum, agent) => sum + (agent.unpriced_requests || 0), 0);
 
-  // Calculate cache savings with cost details
-  let cacheSavings = null;
-  if (hasCacheData) {
-    // Estimate cost savings
-    // Cached tokens typically cost 10% of regular tokens, so we save ~90%
-    // Estimate the average cost per input token and calculate savings
-    const totalInputTokens = message_input_tokens;
-
-    // If we have cost data, estimate what cached tokens would have cost at full price
-    // Rough estimation: cached tokens save ~90% of their cost
-    // Average input token cost = total_cost / (input_tokens + output_tokens * output_multiplier)
-    // Using a rough 3:1 ratio for output:input cost
-    const estimatedCostPerInputToken = message_cost_usd / (totalInputTokens + message_output_tokens * 3);
-    const estimatedSavings = message_cached_input_tokens * estimatedCostPerInputToken * 0.9;
-    const estimatedCostWithoutCache = message_cost_usd + estimatedSavings;
-
-    cacheSavings = {
-      tokens_saved: message_cached_input_tokens,
-      cache_hit_rate_percentage: message_cache_hit_rate_percentage,
-      actual_cost_usd: message_cost_usd,
-      estimated_cost_without_cache_usd: estimatedCostWithoutCache,
-      cost_savings_usd: estimatedSavings,
-    };
-  }
+  // Savings come from the backend, priced per call from the same records as the
+  // conversation total; it counts cache writes, which an estimate here could not.
+  const cacheSavings = hasCacheData ? message_cache_savings : null;
 
   const tooltipContent = (
     <Box sx={{ padding: ds.space.mul(0, 5), width: ds.space.mul(1, 145) }}>
@@ -1450,7 +1430,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
               <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>Tokens Cached:</Typography>
               <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-semibold)' }}>
                 {formatTokens(cacheSavings.tokens_saved)} (
-                {cacheSavings.cache_hit_rate_percentage !== null ? cacheSavings.cache_hit_rate_percentage.toFixed(1) : '0'}%)
+                {cacheSavings.cache_hit_rate_percentage != null ? cacheSavings.cache_hit_rate_percentage.toFixed(1) : '0'}%)
               </Typography>
             </Box>
             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr auto', columnGap: ds.space[4] }}>
@@ -1519,7 +1499,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
       {cacheSavings && cacheSavings.cost_savings_usd > 0 && (
         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-green-600)', fontStyle: 'italic', marginTop: ds.space[1] }}>
           💰 Savings Highlight: {formatTokens(cacheSavings.tokens_saved)} (
-          {cacheSavings.cache_hit_rate_percentage !== null ? cacheSavings.cache_hit_rate_percentage.toFixed(1) : '0'}%) of input tokens were served
+          {cacheSavings.cache_hit_rate_percentage != null ? cacheSavings.cache_hit_rate_percentage.toFixed(1) : '0'}%) of input tokens were served
           from the cache, reducing costs.
         </Typography>
       )}
@@ -1650,6 +1630,13 @@ MessageTokenUsage.propTypes = {
     message_cached_input_tokens: PropTypes.number,
     message_thinking_tokens: PropTypes.number,
     message_cache_hit_rate_percentage: PropTypes.number,
+    message_cache_savings: PropTypes.shape({
+      tokens_saved: PropTypes.number,
+      cache_hit_rate_percentage: PropTypes.number,
+      actual_cost_usd: PropTypes.number,
+      estimated_cost_without_cache_usd: PropTypes.number,
+      cost_savings_usd: PropTypes.number,
+    }),
     message_cost_usd: PropTypes.number.isRequired,
     agents: PropTypes.arrayOf(
       PropTypes.shape({
