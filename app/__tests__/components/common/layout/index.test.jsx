@@ -972,6 +972,27 @@ describe('sub-section hover flyout', () => {
     expect(document.getElementById('sidenav-dashboards-groups')).toBeInTheDocument();
   });
 
+  it('groups the Home flyout rows under Overview and Dashboards headings', async () => {
+    await renderAndHover('home-sidenavbutton');
+    const paper = document.querySelector('#sidenav-flyout .MuiPaper-root');
+    const sequence = Array.from(paper.children).map((el) => (el.getAttribute('role') === 'separator' ? '---' : el.id || el.textContent));
+    expect(sequence).toEqual([
+      'Overview',
+      'sidenav-home-home',
+      'sidenav-home-account-overview',
+      '---',
+      'Dashboards',
+      'sidenav-dashboards-list',
+      'sidenav-dashboards-groups',
+    ]);
+  });
+
+  it('renders no group headings on a flyout whose rows carry no group', async () => {
+    await renderAndHover('troubleshoot-sidenavbutton');
+    expect(document.querySelector('#sidenav-flyout [role="separator"]')).not.toBeInTheDocument();
+    expect(screen.queryByText('Overview')).not.toBeInTheDocument();
+  });
+
   it('navigates to the Account Overview page from the Home flyout', async () => {
     await renderAndHover('home-sidenavbutton');
     fireEvent.click(document.getElementById('sidenav-home-account-overview'));

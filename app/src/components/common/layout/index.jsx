@@ -65,6 +65,7 @@ import FirstLoginTour from '@components/onboarding/FirstLoginTour';
 import PendingAgentInstallBanner, { PendingAgentInstallBannerHostContext } from '@components/integrations/PendingAgentInstallBanner';
 import SectionFirstVisitTour from '@components/onboarding/SectionFirstVisitTour';
 import Tooltip from '@ui/Tooltip';
+import { Divider } from '@ui/Divider';
 import ApiTokens from '@shared/settings/ApiTokens';
 import { tenantSwitcher } from '@lib/tenantSwitcherService';
 import { useData } from '@context/DataContext';
@@ -83,6 +84,8 @@ const SIDEBAR_FLYOUT_BG = `color-mix(in srgb, var(--ds-sidebar-bg, var(--ds-bran
 const SIDEBAR_FLYOUT_TEXT = `color-mix(in srgb, ${ds.background[100]} 72%, transparent)`;
 const NAV_ITEM_HOVER_BG = SIDEBAR_FLYOUT_BG;
 const FLYOUT_ITEM_HOVER_BG = `color-mix(in srgb, ${ds.background[100]} 14%, transparent)`;
+const FLYOUT_GROUP_TEXT = `color-mix(in srgb, ${ds.background[100]} 50%, transparent)`;
+const FLYOUT_DIVIDER = `color-mix(in srgb, ${ds.background[100]} 12%, transparent)`;
 const FLYOUT_ICON_PX = 20;
 
 /**
@@ -219,7 +222,7 @@ const SubNavFlyout = ({ item, anchorEl, onMouseEnter, onMouseLeave, onNavigate }
       disableScrollLock
       slotProps={{ paper: { onMouseEnter, onMouseLeave, sx: styles.flyoutPaper } }}
     >
-      {item.subItems.map((sub) => {
+      {item.subItems.map((sub, i) => {
         const row = (
           <MenuItem
             id={sub.id}
@@ -243,12 +246,25 @@ const SubNavFlyout = ({ item, anchorEl, onMouseEnter, onMouseLeave, onNavigate }
             {sub.text}
           </MenuItem>
         );
-        return sub.disabled && sub.disabledTooltip ? (
-          <Tooltip key={sub.text} title={sub.disabledTooltip} placement='right'>
-            <span style={{ display: 'block' }}>{row}</span>
-          </Tooltip>
-        ) : (
-          row
+        const entry =
+          sub.disabled && sub.disabledTooltip ? (
+            <Tooltip key={sub.text} title={sub.disabledTooltip} placement='right'>
+              <span style={{ display: 'block' }}>{row}</span>
+            </Tooltip>
+          ) : (
+            row
+          );
+        // A row whose `group` differs from the row above opens a new section:
+        // a divider (except at the top) and the group's heading.
+        if (!sub.group || sub.group === item.subItems[i - 1]?.group) {
+          return entry;
+        }
+        return (
+          <React.Fragment key={sub.text}>
+            {i > 0 && <Divider color={FLYOUT_DIVIDER} sx={styles.flyoutDivider} />}
+            <Typography sx={styles.flyoutGroupLabel}>{sub.group}</Typography>
+            {entry}
+          </React.Fragment>
         );
       })}
     </Popover>
@@ -498,21 +514,30 @@ const PageLayout = ({ children }) => {
         // because the page draws on both the k8s and cloud modules — either
         // grant entitles something on it, and each section only renders the
         // accounts the backend actually returns.
+        // Unlike the other flyouts, these rows span three pages, so `group` splits
+        // them under the same Overview / Dashboards headings global search uses.
         subItems: [
-          { text: 'Home', path: '/home', id: 'sidenav-home-home', module: 'insights', icon: homeIcon1 },
+          { text: 'Home', path: '/home', id: 'sidenav-home-home', module: 'insights', icon: homeIcon1, group: 'Overview' },
           {
             text: 'Account Overview',
             path: '/overview#overview',
             id: 'sidenav-home-account-overview',
             modules: ['k8s', 'cloud'],
             icon: KubernetesClusterIcon,
+            group: 'Overview',
           },
           // Dashboards used to be its own rail item; folded in here to cut down
           // the number of top-level icons. No `module`: a dashboard panel may
           // query any connected account, so the page itself gates on nothing —
           // each panel's query is authorised per account by the backend it reads.
-          { text: 'Dashboard List', path: '/dashboards#list', id: 'sidenav-dashboards-list', icon: dashboardIcon1 },
-          { text: 'Application Grouping', path: '/dashboards#groups', id: 'sidenav-dashboards-groups', icon: ApplicationsIcon },
+          { text: 'Dashboard List', path: '/dashboards#list', id: 'sidenav-dashboards-list', icon: dashboardIcon1, group: 'Dashboards' },
+          {
+            text: 'Application Grouping',
+            path: '/dashboards#groups',
+            id: 'sidenav-dashboards-groups',
+            icon: ApplicationsIcon,
+            group: 'Dashboards',
+          },
         ],
       },
       {
@@ -1148,6 +1173,18 @@ const styles = {
     transition: `opacity ${ds.motion.micro} ${ds.motion.ease}`,
     '& img, & svg': { filter: 'brightness(0) invert(1)' },
   },
+  // Same type treatment as the ds menus' section header (OverlaySection), dimmed
+  // for the dark panel, and inset to line up with the row icons below it.
+  flyoutGroupLabel: {
+    mx: 'var(--ds-space-2)',
+    padding: 'var(--ds-space-2) var(--ds-space-3) var(--ds-space-1)',
+    fontSize: 'var(--ds-text-caption)',
+    fontWeight: 'var(--ds-font-weight-semibold)',
+    color: FLYOUT_GROUP_TEXT,
+    textTransform: 'uppercase',
+    letterSpacing: '0.02em',
+  },
+  flyoutDivider: { mx: 'var(--ds-space-4)', my: 'var(--ds-space-2)' },
   body: {
     transition: 'ease 0.2s',
     flexGrow: 1,
