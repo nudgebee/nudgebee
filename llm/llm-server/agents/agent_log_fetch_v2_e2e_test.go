@@ -3,14 +3,20 @@
 package agents
 
 import (
+	"encoding/json"
+	"fmt"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
+	toolcore "nudgebee/llm/tools/core"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestGenerateCanonicalLogQuery_Live exercises ONLY the canonical query
@@ -148,4 +154,70 @@ func compact(v map[string]any) string {
 		return ""
 	}
 	return string(b)
+}
+
+// TestKubectlFallbackDisclosure_E2E runs the command the log agent's kubectl
+// fallback builds against the live cluster, then assembles the response the
+// way the fallback does, to confirm the cap and the missing time bound reach
+// the model and not just a field beside it (issue #40196).
+//
+// The LLM intent-extraction step is skipped — the intent is given directly —
+// because the command it produces is what this fix is about, not how it is
+// chosen.
+func TestKubectlFallbackDisclosure_E2E(t *testing.T) {
+	tenant := os.Getenv("TEST_TENANT")
+	account := os.Getenv("TEST_ACCOUNT")
+	user := os.Getenv("TEST_USER")
+	if tenant == "" || account == "" || user == "" {
+		t.Skip("TEST_TENANT / TEST_ACCOUNT / TEST_USER not set; kubectl fallback e2e skipped")
+	}
+
+	tool := tools.KubectlExecuteTool{}
+	ctx := security.NewRequestContextForTenantAccountAdmin(tenant, user, []string{account})
+	configs, err := toolcore.ListToolConfigs(ctx, account, tool)
+	require.NoError(t, err)
+	require.NotEmpty(t, configs, "account has no cluster configured")
+
+	intent := kubectlLogQuery{
+		ResourceName: fmt.Sprintf("workspace-%s", strings.ToLower(account)),
+		ResourceType: "pod",
+		Namespace:    "nudgebee",
+	}
+	command := buildKubectlLogCommand(intent)
+	t.Logf("fallback command: %s", command)
+
+	resp, err := tool.Call(toolcore.NbToolContext{
+		Ctx:            ctx,
+		AccountId:      account,
+		UserId:         user,
+		ConversationId: fmt.Sprintf("e2e-kubectl-fallback-%d", time.Now().UnixNano()),
+		ToolConfig:     configs[0],
+	}, toolcore.NBToolCallRequest{Command: command})
+	require.NoError(t, err)
+	require.NotEqual(t, toolcore.NBToolResponseStatusError, resp.Status, "Data=%s", resp.Data)
+
+	fetch := makeFetchResponse("fetch_logs", command, resp.Data, flattenLogsToTabSeparated(resp.Data), "", "", nil)
+	disclosed := withKubectlDisclosure(fetch, kubectlDisclosureNote(intent, 0, ""))
+	require.NotEmpty(t, disclosed.Response)
+
+	var envelope map[string]any
+	require.NoError(t, json.Unmarshal([]byte(disclosed.Response[0]), &envelope))
+	note, _ := envelope["kubectl_disclosure"].(string)
+	logs, _ := envelope["logs"].(string)
+	t.Logf("kubectl_disclosure: %s", note)
+	t.Logf("logs tail:\n%s", lastLines(logs, 3))
+
+	assert.Contains(t, note, "last 100 lines", "the fallback's own cap must be named")
+	assert.Contains(t, note, "no time bound")
+	assert.Contains(t, logs, note, "the note must also sit where the model reads")
+	assert.NotContains(t, logs, "complete — all fetched lines are shown above",
+		"a capped read must not also be called complete")
+}
+
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }

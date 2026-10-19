@@ -151,3 +151,26 @@ func TestK8sNativeAgent_GetSystemPrompt_NoDroppedSubAgentRefs(t *testing.T) {
 			"native prompt must retain surface-completeness language: %q", r)
 	}
 }
+
+// TestK8sOrchestratorsDoNotCondenseLogs pins the removal of the error-line
+// condenser (#40196). It cut a `kubectl logs` observation down to error lines
+// and replaced the JSON envelope with bare text, so the tool's own coverage
+// note was discarded with the envelope and the planner saw a slice of one
+// pod's log with no sign anything else had been read. Passing the envelope
+// through untouched is what carries that note; a response handler on either
+// orchestrator would start cutting again.
+func TestK8sOrchestratorsDoNotCondenseLogs(t *testing.T) {
+	const accountId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	for _, tc := range []struct {
+		name  string
+		agent any
+	}{
+		{"lean", newK8sLeanAgentNamed(accountId, AgentK8sOrchestratorName)},
+		{"native", newK8sNativeAgentNamed(accountId, AgentK8sOrchestratorNativeName)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, condenses := tc.agent.(core.NBAgentExecutorToolResponseHandler)
+			assert.False(t, condenses, "kubectl output must reach the planner whole, envelope included")
+		})
+	}
+}

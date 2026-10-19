@@ -1146,19 +1146,64 @@ func TestBuildKubectlLogCommandHonorsRequestedWindow(t *testing.T) {
 	assert.Contains(t, relative, "--since=168h0m0s")
 }
 
-func TestStripKubectlPodBannerAndDisclosure(t *testing.T) {
-	raw := `{"stdout":"Found 4 pods, using pod/checkout-74fb7f54d5-kpl75\nreal log line\n","stderr":"warn"}`
-	cleaned, podCount, usedPod := stripKubectlPodBanner(raw)
-	assert.Equal(t, 4, podCount)
-	assert.Equal(t, "checkout-74fb7f54d5-kpl75", usedPod)
-	assert.NotContains(t, cleaned, "Found 4 pods")
-	assert.Contains(t, cleaned, "real log line")
+// TestKubectlDisclosureNote covers issue #36237's disclosure requirement: the
+// response must say when it narrowed coverage (fewer pods than the workload
+// has, a filter, a line cap) instead of leaving it silently implicit.
+func TestKubectlDisclosureNote(t *testing.T) {
+	// Was "discloses nothing" until #40196: a single-pod, unfiltered read is
+	// still capped by line and still unbounded in time, which is precisely
+	// what the agent was treating as the pod's whole log.
+	t.Run("no pod banner and no filter still discloses the line cap", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{}, 0, "")
+		assert.Contains(t, got, "last 100 lines")
+	})
 
-	note := kubectlDisclosureNote(kubectlLogQuery{FilterPattern: "error"}, podCount, usedPod)
-	assert.Contains(t, note, "3 other pod(s)")
-	assert.Contains(t, note, "error")
-	resp := withKubectlDisclosure(core.NBAgentResponse{Response: []string{`{"logs":"x"}`}}, note)
-	assert.Contains(t, resp.Response[0], "kubectl_disclosure")
+	t.Run("multi-pod target discloses which pod was read and how many were skipped", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{}, 4, "ehq-api-preprod-74fb7f54d5-kpl75")
+		assert.Contains(t, got, "ehq-api-preprod-74fb7f54d5-kpl75")
+		assert.Contains(t, got, "3 other pod(s)")
+	})
+
+	t.Run("filter_pattern discloses the pattern and the cap", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{FilterPattern: "(error|fatal)"}, 0, "")
+		assert.Contains(t, got, "(error|fatal)")
+		assert.Contains(t, got, "200")
+	})
+
+	t.Run("both conditions disclose both facts", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{FilterPattern: "error"}, 2, "pod-a")
+		assert.Contains(t, got, "pod-a")
+		assert.Contains(t, got, "error")
+	})
+}
+
+// TestWithKubectlDisclosure covers the envelope-injection mechanics: it must
+// be a no-op when there's nothing to disclose or the response isn't the
+// expected JSON shape, and otherwise add the field without disturbing the
+// rest of the envelope.
+func TestWithKubectlDisclosure(t *testing.T) {
+	t.Run("empty note is a no-op", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{`{"logs":"x"}`}}
+		got := withKubectlDisclosure(resp, "")
+		assert.Equal(t, resp, got)
+	})
+
+	t.Run("non-JSON response body is left unchanged", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{"not json"}}
+		got := withKubectlDisclosure(resp, "some note")
+		assert.Equal(t, resp, got)
+	})
+
+	t.Run("injects kubectl_disclosure alongside existing fields", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{`{"logs":"x","query":"kubectl logs pod/y"}`}}
+		got := withKubectlDisclosure(resp, "read pod y only")
+
+		var env map[string]any
+		require.NoError(t, json.Unmarshal([]byte(got.Response[0]), &env))
+		assert.Equal(t, "read pod y only", env["kubectl_disclosure"])
+		assert.Equal(t, "x\n\n[... read pod y only ...]", env["logs"], "the note also goes where the model reads")
+		assert.Equal(t, "kubectl logs pod/y", env["query"])
+	})
 }
 
 func TestParseKubectlDiscoveryCandidates(t *testing.T) {
@@ -1575,4 +1620,159 @@ func TestDescribeLogLines_MixedFractionalSeconds(t *testing.T) {
 func TestDescribeLogLines_NumericLevels(t *testing.T) {
 	body := "2026-10-10T05:00:00Z\t{\"level\":30,\"msg\":\"ok\"}\n2026-10-10T04:59:00Z\t{\"level\":50,\"msg\":\"boom\"}\n"
 	assert.Equal(t, map[string]int{"30": 1, "50": 1}, DescribeLogLines(body).Levels)
+}
+
+// TestKubectlDisclosureNoteCoversTheCap covers issue #40196. Before this, a
+// kubectl read disclosed only unread pods and a filter: the line cap and the
+// absent time bound — the two things that decide whether the lines relate to
+// the window asked about at all — were silent, so a read of the newest 100
+// lines of one pod read as "the pod's logs".
+func TestKubectlDisclosureNoteCoversTheCap(t *testing.T) {
+	t.Run("a plain read still discloses its cap and its missing time bound", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{}, 0, "")
+
+		require.NotEmpty(t, got, "a kubectl read is never unnarrowed — it always caps by line")
+		assert.Contains(t, got, "last 100 lines")
+		assert.Contains(t, got, "no time bound")
+	})
+
+	t.Run("an explicit tail is disclosed as the cap that ran", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{Tail: 2000}, 0, "")
+		assert.Contains(t, got, "last 2000 lines")
+	})
+
+	t.Run("a relative window is named, and the cap still applies within it", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{TimeRange: "6h"}, 0, "")
+
+		assert.Contains(t, got, "6h0m0s ago")
+		assert.NotContains(t, got, "no time bound")
+		assert.Contains(t, got, "the earlier ones were not read")
+	})
+
+	t.Run("an absolute window wins over a relative one, matching the command", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{StartTime: "2026-10-19T04:00:00Z", TimeRange: "6h"}, 0, "")
+		assert.Contains(t, got, "2026-10-19T04:00:00Z")
+	})
+
+	t.Run("an unparseable window is not claimed, because the command would not set it", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{StartTime: "last tuesday"}, 0, "")
+		assert.Contains(t, got, "no time bound")
+	})
+
+	// An absolute anchor the command cannot parse stops it applying any
+	// window, including the relative one beside it. Two copies of that rule
+	// disagreed: the note promised "since 6h0m0s ago" over a command with no
+	// --since at all.
+	t.Run("an unparseable absolute window does not fall through to the relative one", func(t *testing.T) {
+		intent := kubectlLogQuery{StartTime: "yesterday", TimeRange: "6h"}
+		assert.NotContains(t, buildKubectlLogCommand(intent), "--since")
+		assert.Contains(t, kubectlDisclosureNote(intent, 0, ""), "no time bound")
+	})
+
+	t.Run("pods and filter are still disclosed alongside the cap", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{FilterPattern: "(error|fatal)"}, 4, "api-74fb7f54d5-kpl75")
+
+		assert.Contains(t, got, "api-74fb7f54d5-kpl75")
+		assert.Contains(t, got, "3 other pod(s)")
+		assert.Contains(t, got, "(error|fatal)")
+		assert.Contains(t, got, "last 100 lines")
+	})
+}
+
+// TestKubectlDisclosureNoteMatchesCommand pins the note to the command that
+// actually ran. A note naming a window the command never set is worse than
+// no note at all.
+
+// TestKubectlDisclosureNoteMatchesCommand pins the note to the command that
+// actually ran. A note naming a window the command never set is worse than
+// no note at all.
+func TestKubectlDisclosureNoteMatchesCommand(t *testing.T) {
+	cases := []kubectlLogQuery{
+		{ResourceName: "api", Namespace: "shop"},
+		{ResourceName: "api", Namespace: "shop", Tail: 2000},
+		{ResourceName: "api", Namespace: "shop", TimeRange: "6h"},
+		{ResourceName: "api", Namespace: "shop", StartTime: "2026-10-19T04:00:00Z"},
+		{ResourceName: "api", Namespace: "shop", StartTime: "not a time"},
+		{ResourceName: "api", Namespace: "shop", StartTime: "not a time", TimeRange: "6h"},
+		{ResourceName: "api", Namespace: "shop", StartTime: "2026-10-19T04:00:00Z", TimeRange: "6h"},
+		{ResourceName: "api", Namespace: "shop", TimeRange: "not a window"},
+	}
+	for _, intent := range cases {
+		cmd := buildKubectlLogCommand(intent)
+		note := kubectlDisclosureNote(intent, 0, "")
+
+		assert.Contains(t, cmd, "--tail=", "every kubectl read is capped")
+		assert.Contains(t, note, strings.TrimPrefix(cmdTail(cmd), "--tail="), "the note states the cap the command ran with")
+		assert.Equal(t, strings.Contains(cmd, "--since"), !strings.Contains(note, "no time bound"),
+			"the note claims a window exactly when the command sets one: %s", cmd)
+	}
+}
+
+func cmdTail(cmd string) string {
+	for _, field := range strings.Fields(cmd) {
+		if strings.HasPrefix(field, "--tail=") {
+			return field
+		}
+	}
+	return ""
+}
+
+// TestWithKubectlDisclosureReachesTheLogs covers the delivery half: the note
+// must land where the model reads, not only in a field beside it, and must
+// not sit next to a marker calling the same logs complete.
+
+// TestWithKubectlDisclosureReachesTheLogs covers the delivery half: the note
+// must land where the model reads, not only in a field beside it, and must
+// not sit next to a marker calling the same logs complete.
+func TestWithKubectlDisclosureReachesTheLogs(t *testing.T) {
+	t.Run("the note is appended to logs as a bracketed marker", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{`{"logs":"line one\nline two","logs_complete":true}`}}
+		env := decodeEnvelope(t, withKubectlDisclosure(resp, "read the last 100 lines only"))
+
+		assert.Equal(t, "read the last 100 lines only", env["kubectl_disclosure"])
+		assert.Equal(t, "line one\nline two\n\n[... read the last 100 lines only ...]", env["logs"])
+	})
+
+	t.Run("the complete marker comes off, so nothing calls a capped read whole", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{`{"logs":` + mustJSON(t, "line one"+logsCompleteMarker) + `}`}}
+		env := decodeEnvelope(t, withKubectlDisclosure(resp, "read the last 100 lines only"))
+
+		logs, _ := env["logs"].(string)
+		assert.NotContains(t, logs, "complete — all fetched lines are shown above")
+		assert.Contains(t, logs, "[... read the last 100 lines only ...]")
+	})
+
+	t.Run("logs_complete is left alone: it is about file_ref, not the window", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{`{"logs":"x","logs_complete":true}`}}
+		env := decodeEnvelope(t, withKubectlDisclosure(resp, "note"))
+		assert.Equal(t, true, env["logs_complete"], "flipping it would buy a pointless shell_execute")
+	})
+
+	t.Run("an empty note and a non-JSON body are both no-ops", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{`{"logs":"x"}`}}
+		assert.Equal(t, resp, withKubectlDisclosure(resp, ""))
+
+		raw := core.NBAgentResponse{Response: []string{"not json"}}
+		assert.Equal(t, raw, withKubectlDisclosure(raw, "note"))
+	})
+}
+
+// TestFilterKubectlLogResponseDisclosesWhatItDropped covers the k8s
+// orchestrator path, where the condenser replaces the whole observation with
+// joined text — taking the tool's own coverage field with it — and the
+// planner saw error lines with no sign that anything else had been read.
+
+func decodeEnvelope(t *testing.T, resp core.NBAgentResponse) map[string]any {
+	t.Helper()
+	require.NotEmpty(t, resp.Response)
+	var env map[string]any
+	require.NoError(t, json.Unmarshal([]byte(resp.Response[0]), &env))
+	return env
+}
+
+func mustJSON(t *testing.T, v string) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return string(b)
 }

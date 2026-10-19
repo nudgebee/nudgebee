@@ -178,15 +178,84 @@ func stripKubectlPodBanner(raw string) (cleaned string, podCount int, usedPod st
 	return string(body), n, usedPod
 }
 
+// kubectlDefaultTailLines is the --tail a kubectl fallback read applies when
+// the extracted intent names none.
+const kubectlDefaultTailLines = 100
+
+// effectiveKubectlTail is the line cap the read will actually run with.
+func effectiveKubectlTail(intent kubectlLogQuery) int {
+	if intent.Tail <= 0 {
+		return kubectlDefaultTailLines
+	}
+	return intent.Tail
+}
+
+// kubectlDisclosureNote summarizes what a kubectl read did NOT cover — the
+// line cap, the absence of a time bound, unread pods, an applied filter — so
+// the caller never has to infer coverage from silence.
+//
+// Unlike the backend log read, this is never empty: kubectl always caps by
+// line, and a cap the caller cannot see is the whole of issue #40196. A read
+// of "the pod's logs" that returns the last 100 lines of one pod, whenever
+// they were written, reads as the pod's logs unless it says otherwise.
 func kubectlDisclosureNote(intent kubectlLogQuery, podCount int, usedPod string) string {
 	var parts []string
 	if podCount > 1 {
 		parts = append(parts, fmt.Sprintf("read pod %s only — %d other pod(s) of this workload were not read", usedPod, podCount-1))
 	}
-	if pat := strings.TrimSpace(intent.FilterPattern); pat != "" {
-		parts = append(parts, fmt.Sprintf("filtered to lines matching /%s/ and capped at 200 matching lines", pat))
+
+	tail := effectiveKubectlTail(intent)
+	// --since/--since-time is the only bound kubectl honours on the past;
+	// buildKubectlLogCommand adds one only when the intent carried a window.
+	if _, windowed := kubectlReadWindow(intent); windowed != "" {
+		parts = append(parts, fmt.Sprintf(
+			"read the last %d lines written since %s — if the pod logged more than %d lines in that window, the earlier ones were not read",
+			tail, windowed, tail,
+		))
+	} else {
+		parts = append(parts, fmt.Sprintf(
+			"read the last %d lines only, with no time bound — these are the newest %d lines whenever they were written, so they may all sit outside the window you are asking about, and anything older was not read",
+			tail, tail,
+		))
 	}
+
+	if pat := strings.TrimSpace(intent.FilterPattern); pat != "" {
+		parts = append(parts, fmt.Sprintf(
+			"then filtered to lines matching /%s/ and capped at 200 matching lines — non-matching lines are gone, so this says nothing about what else the pod logged",
+			pat,
+		))
+	}
+
+	parts = append(parts, "state this narrowing in your answer rather than describing the lines as the pod's logs")
 	return strings.Join(parts, "; ")
+}
+
+// kubectlReadWindow resolves the start bound of a kubectl log read once, for
+// both the command that runs and the note that describes it: flag is what
+// buildKubectlLogCommand appends, phrase is the same bound in words. Both
+// empty when the read gets no time bound at all.
+//
+// One function because they must agree. Two copies of this logic disagreed on
+// an intent carrying an unparseable StartTime next to a usable TimeRange: the
+// command applied no window and the note claimed one.
+//
+// An absolute anchor wins over a relative one, and keeps winning when it does
+// not parse — an intent that named a precise instant we cannot read is not
+// silently downgraded to a vaguer window. Mirrored here rather than corrected,
+// because changing it changes which lines get fetched.
+func kubectlReadWindow(intent kubectlLogQuery) (flag, phrase string) {
+	if st := strings.TrimSpace(intent.StartTime); st != "" {
+		if _, err := time.Parse(time.RFC3339, st); err != nil {
+			return "", ""
+		}
+		return "--since-time=" + st, st
+	}
+	if tr := strings.TrimSpace(intent.TimeRange); tr != "" {
+		if d, ok := parseRelativeWindow(tr); ok {
+			return "--since=" + d.String(), d.String() + " ago"
+		}
+	}
+	return "", ""
 }
 
 // logReadCoverageNote says that a backend log read stopped at its line limit
@@ -246,6 +315,24 @@ func logReadCoverageNote(logs string) string {
 	return b.String()
 }
 
+// logsCompleteMarker closes the inline logs when every fetched line is shown
+// and file_ref holds nothing more. Shared with withKubectlDisclosure, which
+// must take it back off: a kubectl read is capped at the source, so "complete"
+// would contradict the disclosure appended in its place.
+const logsCompleteMarker = "\n\n[... complete — all fetched lines are shown above; file_ref holds nothing further, so no shell_execute is needed ...]"
+
+// withKubectlDisclosure records what a kubectl fallback read did not cover —
+// fewer pods than the workload has, a grep filter, the line cap, the absent
+// time bound — on a makeFetchResponse envelope, best-effort (issues #36237,
+// #40196). No-op when note is empty or the body isn't the expected envelope.
+//
+// The note goes on two channels, as a backend read's coverage does: the
+// kubectl_disclosure field for anything parsing the envelope, and a bracketed
+// marker at the end of `logs`, which is what the model demonstrably reads.
+// The "complete" marker comes off in exchange — it is about inline text
+// versus file_ref, but next to a capped read it reads as "this is the whole
+// log". logs_complete itself is left alone: file_ref really does hold
+// nothing more, and flipping it would buy a pointless shell_execute.
 func withKubectlDisclosure(resp core.NBAgentResponse, note string) core.NBAgentResponse {
 	if note == "" || len(resp.Response) == 0 {
 		return resp
@@ -255,6 +342,9 @@ func withKubectlDisclosure(resp core.NBAgentResponse, note string) core.NBAgentR
 		return resp
 	}
 	envelope["kubectl_disclosure"] = note
+	if logs, ok := envelope["logs"].(string); ok {
+		envelope["logs"] = strings.TrimSuffix(logs, logsCompleteMarker) + "\n\n[... " + note + " ...]"
+	}
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		return resp
@@ -940,7 +1030,7 @@ func makeFetchResponse(agentName, query, logs, flattened, fileRef, bundleSignal 
 		// leaving it to be inferred from a flag.
 		// "Fetched", not "matching": this knows the inline text is the whole
 		// saved file, not that the backend returned every line that matched.
-		inlineLogs += "\n\n[... complete — all fetched lines are shown above; file_ref holds nothing further, so no shell_execute is needed ...]"
+		inlineLogs += logsCompleteMarker
 	}
 	if coverageNote != "" {
 		// A read that stopped at its limit is never marked complete, however
@@ -1498,19 +1588,14 @@ func buildKubectlLogCommand(intent kubectlLogQuery) string {
 	if intent.IsPrevious {
 		args = append(args, "--previous")
 	}
-	tail := intent.Tail
-	if tail <= 0 {
-		tail = 100
-	}
-	args = append(args, fmt.Sprintf("--tail=%d", tail))
-	if st := strings.TrimSpace(intent.StartTime); st != "" {
-		if _, err := time.Parse(time.RFC3339, st); err == nil {
-			args = append(args, fmt.Sprintf("--since-time=%s", st))
-		}
-	} else if tr := strings.TrimSpace(intent.TimeRange); tr != "" {
-		if d, ok := parseRelativeWindow(tr); ok {
-			args = append(args, fmt.Sprintf("--since=%s", d))
-		}
+	args = append(args, fmt.Sprintf("--tail=%d", effectiveKubectlTail(intent)))
+
+	// A requested window must bound the read, not just --tail (which returns
+	// the last N lines wherever they land in time — a bounded past incident
+	// that stopped logging becomes invisible under --tail alone; see
+	// tool_kubectl.go's own --tail-vs---since guidance).
+	if flag, _ := kubectlReadWindow(intent); flag != "" {
+		args = append(args, flag)
 	}
 
 	cmd := strings.Join(args, " ")

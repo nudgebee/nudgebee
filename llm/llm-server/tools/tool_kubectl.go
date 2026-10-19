@@ -18,6 +18,109 @@ import (
 
 const ToolExecuteKubectlCommand = "kubectl_execute"
 
+// kubectlAutoTailLines is the --tail the tool adds to a `kubectl logs` call
+// that set no bound of its own, and kubectlAutoTailNote is that cap in words
+// the caller can repeat. Without the note the capped read is indistinguishable
+// from a whole one (issue #40196).
+const kubectlAutoTailLines = 500
+
+const kubectlAutoTailNote = "partial read: the command bounded the log neither by lines nor by time, so --tail 500 was added — only the last 500 lines per container were read. Older lines were not read and nothing can be concluded about them; report counts and \"first seen\" times as holding for the read lines only. Reading further back takes --since=<duration> (the right flag for any question about a time window) or a larger --tail."
+
+// kubectlVerbAndArgs finds the subcommand in a kubectl argv (already split and
+// with "kubectl" removed) and returns it lowercased with the arguments that
+// follow. ok is false when no verb can be identified without guessing.
+//
+// Global flags can precede the verb. Only forms whose boundary is unambiguous
+// are skipped; an unfamiliar flag yields ok=false so callers stay fail-closed
+// rather than mistaking a flag value for the verb.
+func kubectlVerbAndArgs(parts []string) (verb string, rest []string, ok bool) {
+	for len(parts) > 0 && strings.HasPrefix(parts[0], "-") {
+		flag := parts[0]
+		parts = parts[1:]
+		if strings.Contains(flag, "=") {
+			continue
+		}
+		if !kubectlGlobalFlagsWithValue[flag] || len(parts) == 0 {
+			return "", nil, false
+		}
+		parts = parts[1:]
+	}
+	if len(parts) == 0 {
+		return "", nil, false
+	}
+	return strings.ToLower(parts[0]), parts, true
+}
+
+// kubectlLogsArgs returns the arguments of a `kubectl logs` call in a single
+// pipeline stage, and whether the stage is one at all.
+//
+// Substring-matching " logs " instead matched any command with a bare "logs"
+// token — a namespace named logs turned `kubectl get pods -n logs` into
+// `kubectl get pods -n logs --tail 500`, which kubectl rejects as an unknown
+// flag. The verb has to be the subcommand, not a word in the line.
+func kubectlLogsArgs(stage string) ([]string, bool) {
+	parts, err := shlex.Split(strings.TrimSpace(stage))
+	if err != nil || len(parts) == 0 || !strings.EqualFold(parts[0], "kubectl") {
+		return nil, false
+	}
+	verb, rest, ok := kubectlVerbAndArgs(parts[1:])
+	if !ok || verb != "logs" {
+		return nil, false
+	}
+	return rest[1:], true
+}
+
+// kubectlLogsIsBounded reports whether the caller limited the read itself, by
+// lines (--tail), by time (--since / --since-time) or by following the stream
+// (-f / --follow). The safety net leaves those alone.
+//
+// Matched per argument rather than as substrings of the command, which was
+// wrong both ways: `--follow` was not seen because the test was for " -f",
+// and a pod named `my--tail-pod` read as a caller-set limit and suppressed
+// the cap.
+func kubectlLogsIsBounded(args []string) bool {
+	for _, arg := range args {
+		name, _, _ := strings.Cut(arg, "=")
+		switch name {
+		case "--tail", "--since", "--since-time", "-f", "--follow":
+			return true
+		}
+	}
+	return false
+}
+
+// injectKubectlAutoTail is the safety net for a `kubectl logs` call that
+// bounded its output by neither lines nor time: without one, an unfiltered
+// read can return hundreds of thousands of lines. Reports whether it fired,
+// so the response can say the log was cut (issue #40196).
+//
+// Only for a single command whose kubectl call (before any pipe) is the logs
+// call: in a chain or loop the first pipe need not belong to it.
+func injectKubectlAutoTail(command string) (string, bool) {
+	// splitShellPipeline always yields at least one stage, so stages[0] is safe.
+	stages := splitShellPipeline(command)
+	// Only the kubectl stage counts: a bound read from the whole command let a
+	// later stage suppress the cap — `| grep -f patterns` read as --follow,
+	// and the kubectl read then ran unbounded and unsaid.
+	logsArgs, isLogs := kubectlLogsArgs(stages[0])
+	if !isLogs || len(splitShellCommandSegments(command)) != 1 {
+		return command, false
+	}
+	if kubectlLogsIsBounded(logsArgs) {
+		return command, false
+	}
+	tailFlag := fmt.Sprintf(" --tail %d", kubectlAutoTailLines)
+	// The flag belongs on the kubectl stage, so a piped command keeps working.
+	// Found by splitting the pipeline rather than seeking the first "|" byte:
+	// a pipe inside a quoted argument is not a separator, and cutting there
+	// put the flag inside the quotes (`-c 'a|b'` became `-c 'a --tail 500 | b'`).
+	if len(stages) > 1 {
+		stages[0] = strings.TrimRight(stages[0], " ") + tailFlag
+		return strings.Join(stages, " | "), true
+	}
+	return command + tailFlag, true
+}
+
 var kubectlGlobalFlagsWithValue = map[string]bool{
 	"--as": true, "--as-group": true, "--as-uid": true,
 	"--cache-dir": true, "--certificate-authority": true,
@@ -1079,20 +1182,7 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 		return core.NBToolResponse{}, err
 	}
 
-	// Safety net: auto-inject --tail for kubectl logs if not already limited.
-	// Only for a single command whose kubectl call (before any pipe) is the
-	// logs call: in a chain or loop the first pipe need not belong to it.
-	kubectlStage := strings.ToLower(splitShellPipeline(command)[0]) + " "
-	if strings.Contains(kubectlStage, " logs ") && len(splitShellCommandSegments(command)) == 1 {
-		if !strings.Contains(command, "--tail") && !strings.Contains(command, "--since") && !strings.Contains(command, " -f") {
-			// Insert --tail before any pipe to avoid breaking piped commands
-			if pipeIdx := strings.Index(command, "|"); pipeIdx > 0 {
-				command = strings.TrimRight(command[:pipeIdx], " ") + " --tail 500 | " + strings.TrimLeft(command[pipeIdx+1:], " ")
-			} else {
-				command += " --tail 500"
-			}
-		}
-	}
+	command, autoTailed := injectKubectlAutoTail(command)
 
 	// --context selected the target above; the workspace has no kubeconfig
 	// contexts, so the flag itself must not reach kubectl.
@@ -1165,6 +1255,11 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 	}
 	if crossCluster {
 		outputformat["cluster"] = target.Name
+	}
+	// The command asked for no bound, so the read is the tail of the log, not
+	// the log. Nothing else in the response shows it: the lines look whole.
+	if autoTailed {
+		outputformat["read_coverage"] = kubectlAutoTailNote
 	}
 	outputformatBytes, err := common.MarshalJson(outputformat)
 	if err != nil {
@@ -1401,24 +1496,10 @@ func InferKubectlVerbType(command string) core.ToolRequestType {
 		return core.ToolRequestTypeRead
 	}
 
-	// Global flags can precede the verb. Only skip forms whose boundary is
-	// unambiguous; an unfamiliar flag falls back to the LLM classifier.
-	for len(parts) > 0 && strings.HasPrefix(parts[0], "-") {
-		flag := parts[0]
-		parts = parts[1:]
-		if strings.Contains(flag, "=") {
-			continue
-		}
-		if !kubectlGlobalFlagsWithValue[flag] || len(parts) == 0 {
-			return ""
-		}
-		parts = parts[1:]
-	}
-	if len(parts) == 0 {
+	verb, parts, ok := kubectlVerbAndArgs(parts)
+	if !ok {
 		return ""
 	}
-
-	verb := strings.ToLower(parts[0])
 	if kubectlReadVerbs[verb] {
 		return core.ToolRequestTypeRead
 	}

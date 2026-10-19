@@ -800,3 +800,104 @@ func TestIsNoMatchExitIgnoresChains(t *testing.T) {
 	require.False(t, isNoMatchExit(exit1, `kubectl get ns nosuch 2>/dev/null && kubectl get pods | grep foo`))
 	require.False(t, isNoMatchExit(exit1, `kubectl get pods | grep foo; kubectl delete pod x 2>/dev/null`))
 }
+
+// TestInjectKubectlAutoTail covers issue #40196: the tool caps an unbounded
+// `kubectl logs` read, and the caller is entitled to know it happened.
+func TestInjectKubectlAutoTail(t *testing.T) {
+	t.Run("unbounded logs read is capped and reports it", func(t *testing.T) {
+		got, tailed := injectKubectlAutoTail("kubectl logs pod/api -n shop")
+		assert.True(t, tailed)
+		assert.Equal(t, "kubectl logs pod/api -n shop --tail 500", got)
+	})
+
+	t.Run("cap lands before a pipe so the pipeline still parses", func(t *testing.T) {
+		got, tailed := injectKubectlAutoTail("kubectl logs pod/api -n shop | grep -i error")
+		assert.True(t, tailed)
+		assert.Equal(t, "kubectl logs pod/api -n shop --tail 500 | grep -i error", got)
+	})
+
+	// A pipe inside a quoted argument is not a pipeline separator. Seeking the
+	// first "|" byte cut there and put the flag inside the quotes.
+	t.Run("a quoted pipe is not mistaken for a pipeline separator", func(t *testing.T) {
+		got, tailed := injectKubectlAutoTail(`kubectl logs pod/api -n shop -c 'a|b'`)
+		assert.True(t, tailed)
+		assert.Equal(t, `kubectl logs pod/api -n shop -c 'a|b' --tail 500`, got)
+	})
+
+	t.Run("a quoted pipe before a real one does not move the split", func(t *testing.T) {
+		got, tailed := injectKubectlAutoTail(`kubectl logs pod/api -n 'a|b' | grep -E "error|fatal"`)
+		assert.True(t, tailed)
+		assert.Equal(t, `kubectl logs pod/api -n 'a|b' --tail 500 | grep -E "error|fatal"`, got)
+	})
+
+	for _, bounded := range []string{
+		"kubectl logs pod/api -n shop --tail 20",
+		"kubectl logs pod/api -n shop --tail=20",
+		"kubectl logs pod/api -n shop --since=1h",
+		"kubectl logs pod/api -n shop --since-time=2026-10-19T04:00:00Z",
+		"kubectl logs pod/api -n shop -f",
+		"kubectl logs pod/api -n shop --follow",
+	} {
+		t.Run("already bounded is left alone: "+bounded, func(t *testing.T) {
+			got, tailed := injectKubectlAutoTail(bounded)
+			assert.False(t, tailed, "the caller set its own bound, so nothing was hidden")
+			assert.Equal(t, bounded, got)
+		})
+	}
+
+	// Only the kubectl stage can bound the read; `grep -f FILE` is a real
+	// shape, and matching " -f" across the whole command read it as --follow
+	// and let an unbounded read through uncapped.
+	t.Run("a later pipeline stage cannot suppress the cap", func(t *testing.T) {
+		got, tailed := injectKubectlAutoTail("kubectl logs pod/api -n shop | grep -f patterns.txt")
+		assert.True(t, tailed)
+		assert.Equal(t, "kubectl logs pod/api -n shop --tail 500 | grep -f patterns.txt", got)
+	})
+
+	t.Run("a bound on the kubectl stage still suppresses it", func(t *testing.T) {
+		_, tailed := injectKubectlAutoTail("kubectl logs pod/api -n shop -f | grep x")
+		assert.False(t, tailed, "--follow on the kubectl stage is the caller's own bound")
+	})
+
+	t.Run("a non-logs command is untouched", func(t *testing.T) {
+		got, tailed := injectKubectlAutoTail("kubectl get pods -n shop")
+		assert.False(t, tailed)
+		assert.Equal(t, "kubectl get pods -n shop", got)
+	})
+
+	// "logs" has to be the subcommand. Substring-matching it broke any command
+	// with a bare logs token: --tail on a `get` is an unknown flag, so a
+	// working command came back as an error.
+	for _, notLogs := range []string{
+		"kubectl get pods -n logs",
+		"kubectl describe pod api -n logs",
+		"kubectl get deployment logs -n shop",
+	} {
+		t.Run("a bare logs token is not the verb: "+notLogs, func(t *testing.T) {
+			got, tailed := injectKubectlAutoTail(notLogs)
+			assert.False(t, tailed)
+			assert.Equal(t, notLogs, got)
+		})
+	}
+
+	// The bound is a flag, not a substring: a pod whose name happens to contain
+	// one read as a caller-set limit and suppressed the cap entirely.
+	t.Run("a pod name containing a flag spelling does not suppress the cap", func(t *testing.T) {
+		got, tailed := injectKubectlAutoTail("kubectl logs my--tail-pod -n shop")
+		assert.True(t, tailed)
+		assert.Equal(t, "kubectl logs my--tail-pod -n shop --tail 500", got)
+	})
+
+	t.Run("a global flag before the verb still resolves it", func(t *testing.T) {
+		_, tailed := injectKubectlAutoTail("kubectl -n shop logs pod/api")
+		assert.True(t, tailed)
+	})
+
+	t.Run("the note names the cap it describes", func(t *testing.T) {
+		assert.Contains(t, kubectlAutoTailNote, "--tail 500")
+		assert.Contains(t, kubectlAutoTailNote, "partial read")
+	})
+}
+
+// TestGetErrorLinesFromLogStringWithCoverage covers the other half of #40196:
+// the condenser drops most of what it reads, and said so nowhere.

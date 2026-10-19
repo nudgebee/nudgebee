@@ -148,11 +148,3 @@ func (a *K8sNativeAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 	}
 	return core.ParsePromptToNBAgentPrompt(promptText)
 }
-
-// UpdateToolResponseForPlanner reuses the shared kubectl log condenser
-// (the native agent runs kubectl directly, so raw log output lands in its
-// own scratchpad and benefits from the same size-cap the direct
-// orchestrator uses).
-func (a *K8sNativeAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlannerToolAction, toolResponse string) string {
-	return filterKubectlLogResponse(toolRequest, toolResponse)
-}
