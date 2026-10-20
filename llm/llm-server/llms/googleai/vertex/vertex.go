@@ -364,9 +364,13 @@ DoStream:
 		}
 
 		if len(resp.Candidates) == 0 {
-			// No candidates - likely blocked by safety filter, break gracefully
-			stoppedEarly = true
-			break DoStream
+			// Only a block reason makes this a stop; otherwise the finish-reason
+			// check below decides (see googleai.accumulateStream).
+			if resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != genai.BlockedReasonUnspecified {
+				stoppedEarly = true
+				break DoStream
+			}
+			continue
 		}
 		if len(resp.Candidates) != 1 {
 			return nil, fmt.Errorf("expect single candidate in stream mode; got %v", len(resp.Candidates))
