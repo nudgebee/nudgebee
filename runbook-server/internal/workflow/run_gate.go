@@ -55,6 +55,16 @@ type RunApproval struct {
 type RunGateDeps struct {
 	Store        model.WorkflowStore
 	TaskRegistry *tasks.TaskRegistry
+	// Workflows is the service's own writer, for an extension that creates
+	// and deletes workflows (a bee install) through the same checks,
+	// schedules and audit as every other caller.
+	Workflows WorkflowWriter
+}
+
+// WorkflowWriter creates and deletes workflows as the request's user.
+type WorkflowWriter interface {
+	CreateWorkflow(ctx *security.RequestContext, accountId string, wf model.Workflow) (string, string, error)
+	DeleteWorkflow(ctx *security.RequestContext, accountId, id string) error
 }
 
 var runGateFactory func(RunGateDeps) RunGate

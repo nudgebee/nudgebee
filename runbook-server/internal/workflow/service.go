@@ -151,7 +151,7 @@ func NewService(temporalClient client.Client, store model.WorkflowStore, dataCon
 		s.templateStore = templateStore[0]
 	}
 	if runGateFactory != nil {
-		s.runGate = runGateFactory(RunGateDeps{Store: store, TaskRegistry: taskRegistry})
+		s.runGate = runGateFactory(RunGateDeps{Store: store, TaskRegistry: taskRegistry, Workflows: s})
 	}
 	return s
 }

@@ -817,6 +817,12 @@ const api = {
     query.account_id = data.accountId;
     try {
       const response = await queryGraphQL(LIST_AGENTS.replaceAll('__WHERE__', gqlStringify(query)), 'ListAgents', {});
+      // An agent that belongs to an extension (a Worker Bee's) runs only inside
+      // that extension's runs, so no agent list or picker offers it.
+      const agents = response?.data?.data?.ai_list_agents?.data;
+      if (Array.isArray(agents)) {
+        response.data.data.ai_list_agents.data = agents.filter((agent: any) => !agent?.config?.requires_extension);
+      }
       return response;
     } catch (error) {
       console.error('failed to fetch agent list-', error);
