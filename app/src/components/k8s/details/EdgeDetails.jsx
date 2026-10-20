@@ -18,11 +18,20 @@ const EdgeDetails = ({ edge }) => {
     'properties',
   ];
   const safeEdge = edge || {};
-  const { properties = {}, ...rest } = safeEdge;
+  const { properties, source_name, destination_name, ...rest } = safeEdge;
+  // Where the edge came from: every collector that asserted it (`contributing_sources`,
+  // e.g. ["aws"] or ["manual"]), else the winning top-level `source`. Shown as one
+  // "Detected By" row so it isn't confused with the From node or `properties.source`.
+  const { contributing_sources: contributingSources, source: derivedFrom, ...otherProperties } = properties || {};
+  const origins = Array.isArray(contributingSources) && contributingSources.length ? contributingSources : [safeEdge.source];
   const filtered = Object.fromEntries(Object.entries(rest).filter(([key]) => !keysToFilter.includes(key)));
-  const flatProperties = flattenObject(properties);
+  const flatProperties = flattenObject(otherProperties);
   const cleanEdges = {
     ...filtered,
+    from: source_name,
+    to: destination_name,
+    detected_by: origins.filter(Boolean).join(', ') || '-',
+    ...(derivedFrom !== undefined && { derived_from: derivedFrom }),
     ...flatProperties,
   };
   const { headers = [], convertedJson2 = [] } = getTableData4([cleanEdges]);

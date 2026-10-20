@@ -4161,7 +4161,8 @@ func (s *Service) fetchEdgeByID(tenantID, edgeID string) (*DbEdge, error) {
 	}
 	query := `
 		SELECT id, created_at, updated_at, relationship_type, properties,
-			   cloud_account_id, tenant_id, source_node_id, destination_node_id, level
+			   cloud_account_id, tenant_id, source_node_id, destination_node_id, level,
+			   COALESCE(source, '')
 		FROM knowledge_graph_edge
 		WHERE id = $1 AND tenant_id = $2::uuid AND level = 'Tenant' AND is_active = true
 	`
@@ -4184,6 +4185,7 @@ func (s *Service) fetchEdgeByID(tenantID, edgeID string) (*DbEdge, error) {
 			&relationshipType, &propertiesJSON,
 			&edge.CloudAccountID, &edge.TenantID,
 			&edge.SourceNodeID, &edge.DestinationNodeID, &edge.Level,
+			&edge.Source,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan edge: %w", err)
@@ -4256,6 +4258,9 @@ func (s *Service) GetEdgeByID(edgeID string) (*KgEdge, error) {
 		return nil, nil
 	}
 	kgEdge := ConvertDbEdgeToKgEdge(dbEdge)
+	// Edge Details shows this as the edge's origin; an edge rewritten by a resource
+	// patch carries it only here, not in properties.contributing_sources (#40706).
+	kgEdge.Source = dbEdge.Source
 	return &kgEdge, nil
 }
 
