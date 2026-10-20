@@ -37,6 +37,32 @@ MISSING_SCHEMA_SQLSTATES = {"42703", "42P01"}
 
 _warned_missing_schema = False
 
+# The rule columns a save may set from its input. The rest (id, tenant_id,
+# created_*, updated_*) are server-owned and never read from the request.
+CLIENT_RULE_FIELDS = frozenset(
+    {
+        "name",
+        "description",
+        "source",
+        "source_mode",
+        "sources",
+        "account_id",
+        "cluster",
+        "scope_mode",
+        "exceptions",
+        "namespace",
+        "workload",
+        "aggregation_key",
+        "expires_at",
+        "is_suppressed",
+        "is_active",
+        "delivery_mode",
+        "frequency",
+        "severity",
+        "event_types",
+    }
+)
+
 
 def _is_missing_schema(exc):
     orig = getattr(exc, "orig", None)
@@ -421,7 +447,7 @@ class NotificationRulesService:
                 if rule_data.get("source_mode") == SOURCE_MODE_ALL:
                     source = ALL_TYPES_MIRROR_SOURCE
 
-                fields = {k: v for k, v in rule_data.items() if hasattr(NotificationRules, k)}
+                fields = {k: v for k, v in rule_data.items() if k in CLIENT_RULE_FIELDS}
                 if "exceptions" in rule_data:
                     fields["exceptions"] = normalize_exceptions(rule_data["exceptions"])
                 if "expires_at" in fields and isinstance(fields["expires_at"], str):
@@ -455,7 +481,7 @@ class NotificationRulesService:
                     self._update_existing_rule(existing_rule, fields, user_id)
                     rule_id = existing_rule.id
                 else:
-                    rule_id = self._create_new_rule(session, fields, tenant_id, user_id, rule_data)
+                    rule_id = self._create_new_rule(session, fields, tenant_id, user_id)
                 await session.flush()
                 await self._replace_rule_accounts(session, rule_id, tenant_id, account_ids)
 
@@ -543,8 +569,7 @@ class NotificationRulesService:
         }
 
         for key, value in fields.items():
-            if key != "id":
-                setattr(existing_rule, key, value)
+            setattr(existing_rule, key, value)
 
         for f in nullable_fields - fields.keys():
             if hasattr(existing_rule, f):
@@ -554,17 +579,16 @@ class NotificationRulesService:
         existing_rule.updated_at = utc_now()
 
     @staticmethod
-    def _create_new_rule(session, fields, tenant_id, user_id, rule_data):
+    def _create_new_rule(session, fields, tenant_id, user_id):
         rule_id = uuid.uuid4()
         rule = NotificationRules(
+            **{"is_active": True, **fields},
             id=rule_id,
             tenant_id=tenant_id,
             created_by=user_id,
             updated_by=user_id,
             created_at=utc_now(),
             updated_at=utc_now(),
-            is_active=rule_data.get("is_active", True),
-            **{k: v for k, v in fields.items() if k != "id"},
         )
         session.add(rule)
         return rule_id
