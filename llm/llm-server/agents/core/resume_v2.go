@@ -260,6 +260,15 @@ func resumeFollowupLocked(ctx *security.RequestContext, req NBAgentRequest) (NBA
 	// sub-agent's refine already wrote its config, we must surface it here or
 	// refine will overwrite message_config losing the sibling's choice (#28141).
 	req.QueryConfig = mergeLatestMessageConfig(dao, req.MessageId, req.AccountId, req.ConversationId, req.QueryConfig, logger, "resume_v2: merged existing message_config into request QueryConfig")
+	// Messages saved before the write-off existed lack it in message_config; sibling and parent resumes merge onto this.
+	// The run's stored source, not the request's: an approval answered from the UI arrives as a chat.
+	runSource := req.ConversationSource
+	if conversation, cErr := dao.GetConversation(req.ConversationId); cErr == nil && conversation.Source != nil && *conversation.Source != "" {
+		runSource = *conversation.Source
+	}
+	if !isChatOrAlertSource(runSource) {
+		req.QueryConfig.Memory = withMemoryWriteOff(req.QueryConfig.Memory)
+	}
 	req = withOriginalQuestion(ctx, req)
 
 	// A resumed turn ends here rather than in the save-back that drains the

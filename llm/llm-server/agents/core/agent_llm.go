@@ -124,7 +124,12 @@ func (l LLMAgent) Execute(ctx *security.RequestContext, request NBAgentRequest) 
 		llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf(`<context>%s</context>`, queryContext)),
 		llms.TextParts(llms.ChatMessageTypeHuman, command),
 	}
-	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, true)
+	var opts []llms.CallOption
+	// Alert triage fills fixed fields; replayed on stored calls, low thinking agreed as well as the default at half the cost.
+	if request.ConversationSource == ConversationSourceTriageClassification {
+		opts = append(opts, llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
+	}
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, true, opts...)
 	if err != nil {
 		ctx.GetLogger().Error("llm: unable to generate content", "error", err)
 		return NBAgentResponse{Response: nil}, err

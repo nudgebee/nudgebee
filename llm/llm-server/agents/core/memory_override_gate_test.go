@@ -29,6 +29,34 @@ func TestGate_ExtractLongTermMemorySkipsWhenWriteDisabled(t *testing.T) {
 	assert.Zero(t, stats, "no extraction may run, so no stats")
 }
 
+// Only person chats and alert investigations save memory; anything else,
+// including a source added later, does not.
+func TestGate_IsChatOrAlertSource(t *testing.T) {
+	for _, s := range []ConversationSource{"", ConversationSourceUserInvestigation, ConversationSourceUserInvestigationCLI,
+		ConversationSourceInvestigation, ConversationSourceInstantNotification} {
+		assert.True(t, isChatOrAlertSource(s), "%q", s)
+	}
+	for _, s := range []ConversationSource{ConversationSourceAutomation, ConversationSourcePRLifecycle,
+		ConversationSourceTriageClassification, ConversationSourceWorkflowBuilder, "SomeFutureSource"} {
+		assert.False(t, isChatOrAlertSource(s), "%q", s)
+	}
+}
+
+// Switching writing off for an unattended run keeps its reading and reranking,
+// and never mutates the caller's overrides.
+func TestGate_WithMemoryWriteOff(t *testing.T) {
+	q := toolcore.NBQueryConfig{Memory: withMemoryWriteOff(nil)}
+	assert.True(t, q.MemoryReadAllowed())
+	assert.True(t, q.MemoryRerankAllowed())
+	assert.False(t, q.MemoryWriteAllowed())
+
+	in := &toolcore.MemoryOverrides{Rerank: offPtr()}
+	out := withMemoryWriteOff(in)
+	assert.Nil(t, in.Write)
+	assert.False(t, *out.Write)
+	assert.False(t, *out.Rerank)
+}
+
 // Write off must leave reading alone — that is the combination the grouped
 // shape exists to express.
 func TestGate_WriteOffLeavesReadingEnabled(t *testing.T) {

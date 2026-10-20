@@ -755,6 +755,29 @@ func resolveSessionRequestConfigs(configs ...ConversationSessionRequestConfig) a
 	return defaultConfig
 }
 
+// isChatOrAlertSource reports whether a turn is a person's chat (app, CLI, or a
+// Slack/Teams thread) or an alert investigation. Only these save memory and
+// session notes and get an answer-confidence score; automations, PR jobs,
+// builders and any source added later skip that background work.
+func isChatOrAlertSource(source ConversationSource) bool {
+	switch source {
+	case "", ConversationSourceUserInvestigation, ConversationSourceUserInvestigationCLI,
+		ConversationSourceInvestigation, ConversationSourceInstantNotification:
+		return true
+	}
+	return false
+}
+
+// withMemoryWriteOff returns a copy of m with writing switched off, leaving reading and reranking as they were.
+func withMemoryWriteOff(m *toolcore.MemoryOverrides) *toolcore.MemoryOverrides {
+	out := m.Clone()
+	if out == nil {
+		out = &toolcore.MemoryOverrides{}
+	}
+	out.Write = lo.ToPtr(false)
+	return out
+}
+
 func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgent, userId string, accountId string, sessionId string, query string, configs ...ConversationSessionRequestConfig) (NBAgentResponse, error) {
 
 	defaultConfig := resolveSessionRequestConfigs(configs...)
@@ -1475,6 +1498,10 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			}
 		}
 
+		// Saved with the message so an approval resume, which rebuilds the request from it, saves nothing either.
+		if !isChatOrAlertSource(request.ConversationSource) {
+			request.QueryConfig.Memory = withMemoryWriteOff(request.QueryConfig.Memory)
+		}
 		messageId, err := GetConversationDao().SaveConversationMessage("", conversation.ID.String(), request.AccountId, request.UserId, MessageRoleHuman, historyType, request.Query, "", agent.GetName(), parentAgentId, request.QueryConfig, request.ConversationContext, effectiveProvider, effectiveModel, ConversationStatusInProgress)
 		if err != nil {
 			ctx.GetLogger().Error("conversation: unable to save user query to DB", "error", err)
@@ -1603,6 +1630,10 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	if len(request.ClientTools) == 0 && len(request.QueryConfig.ClientTools) > 0 {
 		request.ClientTools = request.QueryConfig.ClientTools
 		ctx.GetLogger().Debug("conversation: restored client tools from query config", "count", len(request.ClientTools))
+	}
+	// Carried in the config so delegated sub-agents, which do not inherit the source, save nothing either.
+	if !isChatOrAlertSource(request.ConversationSource) {
+		request.QueryConfig.Memory = withMemoryWriteOff(request.QueryConfig.Memory)
 	}
 
 	// Generate acknowledgment for new messages (not for retries or existing messages)

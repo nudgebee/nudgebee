@@ -462,5 +462,8 @@ func shouldScoreAnswerConfidence(request NBAgentRequest, answer string) bool {
 	if strings.TrimSpace(question) == "" {
 		return false
 	}
+	if !isChatOrAlertSource(request.ConversationSource) {
+		return false
+	}
 	return IsInvestigationRequestTask(question) || request.ConversationSource == ConversationSourceInvestigation
 }

@@ -60,6 +60,7 @@ const (
 	ConversationSourceAutomation           ConversationSource = "Automation"
 	ConversationSourcePRLifecycle          ConversationSource = "pr_lifecycle"
 	ConversationSourceRecommendation       ConversationSource = "recommendation"
+	ConversationSourceTriageClassification ConversationSource = "triage_classification"
 )
 
 // ImageAttachment represents an image attached to an agent request.
