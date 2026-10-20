@@ -375,6 +375,26 @@ var serviceMapNeighbourTypes = []NodeType{
 	// its instances only via LoadBalancer -> BackendPool -> ComputeInstance,
 	// and its alarms were getting a service map containing the balancer alone.
 	NodeTypeBackendPool,
+	// CloudResource carries the network devices a user declares by hand —
+	// switches, routers — for kit no collector discovers. On a VM or on-prem
+	// estate the switch is the shared cause an operator looks for: a host's
+	// evidence should name the switch it hangs off, and the switch's own alert
+	// should list the hosts it takes down with it. Left out, the device was
+	// invisible on both sides. Verified on a declared NetworkSwitch
+	// CONNECTED_TO two hosts: both edges active in the graph, and the host's
+	// evidence card still held the two hosts alone.
+	//
+	// This does not fan a host's map out across its rack. Those edges are
+	// CONNECTED_TO, which is undirected and followed for exactly one hop
+	// (viaUndirected in discoverBFS): a walk that reaches the switch does not
+	// leave it over another CONNECTED_TO, so two hosts sharing a switch stay
+	// out of each other's neighbourhood while the switch's lists both. That is
+	// the behaviour TestCustomKind_ConnectedToBlastRadius already pins.
+	//
+	// The plumbing the comment above warns about is unaffected: VPC, Subnet,
+	// SecurityGroup, RouteTable and NetworkInterface are each their own node
+	// type and stay out, as TestNeighbourTypesExcludePlumbing asserts.
+	NodeTypeCloudResource,
 }
 
 // serviceMapLevels is how far the evidence neighbourhood walks, and
