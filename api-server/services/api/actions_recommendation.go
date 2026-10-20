@@ -533,6 +533,11 @@ func handleRecommendationAction(actionPayload *ActionRequest, c *gin.Context, tr
 			})
 			return
 		}
+		// A retry re-applies the resolution against request.AccountId.
+		if !ctx.CanAccessAccount(request.AccountId, security.SecurityAccessTypeUpdate) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
+			return
+		}
 
 		auditEvent := audit.Audit{
 			UserId:         ctx.GetSecurityContext().GetUserId(),

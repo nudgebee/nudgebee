@@ -562,10 +562,6 @@ func withSettledStatus(resolution models.RecommendationResolution, outcome adapt
 
 // RetryRecommendationResolution retries a failed recommendation resolution
 func RetryRecommendationResolution(ctx *security.RequestContext, query RetryRecommendationResolutionRequest) (RetryRecommendationResolutionResponse, error) {
-	// if !ctx.GetSecurityContext().HasAccountAccess(query.AccountId, security.SecurityAccessTypeCreate) {
-	// 	return RetryRecommendationResolutionResponse{}, common.ErrorUnauthorized("error: account access not found")
-	// }
-
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return RetryRecommendationResolutionResponse{}, err
@@ -596,6 +592,12 @@ func RetryRecommendationResolution(ctx *security.RequestContext, query RetryReco
 	if err != nil {
 		ctx.GetLogger().Error("error getting recommendation", "error", err)
 		return RetryRecommendationResolutionResponse{}, err
+	}
+	// The resolution is looked up by id alone; refuse one whose recommendation is
+	// not on the account the caller was authorized for (the handler checked
+	// that account belongs to the caller).
+	if r.CloudAccountId != query.AccountId {
+		return RetryRecommendationResolutionResponse{}, fmt.Errorf("resolution not found: %s", query.ResolutionId)
 	}
 
 	// Get the account

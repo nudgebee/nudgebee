@@ -162,6 +162,12 @@ func handleEventRuleAction(actionPayload *ActionRequest, c *gin.Context, tracer 
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
+		// The PromQL probe runs against this account's Prometheus. The action is
+		// open to read-only and tenant_usage roles, so check only the tenant.
+		if relayAPIRequest.CloudAccountId != "" && !ctx.GetSecurityContext().IsTenantAccount(relayAPIRequest.CloudAccountId) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+relayAPIRequest.CloudAccountId))
+			return
+		}
 		actions, err := eventrule.ListAction(ctx, relayAPIRequest, promQLLabelNames)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -205,6 +211,11 @@ func handleEventRuleAction(actionPayload *ActionRequest, c *gin.Context, tracer 
 		}
 		if err := common.UnmarshalMapToStruct(relayRequest, &syncRequest); err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		// Provider credentials are resolved from the account id alone.
+		if syncRequest.AccountId != "" && !ctx.CanAccessAccount(syncRequest.AccountId, security.SecurityAccessTypeUpdate) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+syncRequest.AccountId))
 			return
 		}
 		results, err := eventrule.SyncProviderRulesForAccount(ctx, syncRequest)
