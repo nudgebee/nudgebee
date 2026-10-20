@@ -774,6 +774,15 @@ func init() {
 	viper.SetDefault("rabbit_mq_event_investigate_completed_queue", "services_event_investigate_completed")
 	viper.SetDefault("rabbit_mq_event_investigate_completed_concurrency", 5)
 
+	// Before Unmarshal: a default set later never reaches Config, so ServerName
+	// stayed empty and SERVICES_SERVER_NAME was ignored.
+	hostName, hostErr := os.Hostname()
+	if hostErr != nil {
+		slog.Error("Unable to get hostname", "error", hostErr)
+		hostName = "localhost"
+	}
+	viper.SetDefault("services_server_name", hostName)
+
 	err := viper.ReadInConfig()
 	if err != nil {
 		slog.Warn("reading config file failed, using .env file")
@@ -848,13 +857,5 @@ func init() {
 	if Config.OtelMetricesExporter == "" {
 		Config.OtelMetricesExporter = Config.OtelExporter
 	}
-
-	hostName, err := os.Hostname()
-	if err != nil {
-		slog.Error("Unable to get hostname", "error", err)
-		hostName = "localhost"
-	}
-
-	viper.SetDefault("services_server_name", hostName)
 
 }

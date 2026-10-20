@@ -58,6 +58,22 @@ func TestServerRoleDefaultsToAll(t *testing.T) {
 	}
 }
 
+// ServerName names this pod in RabbitMQ consumer tags and replica broadcast
+// senders. Its hostname default was once set after Unmarshal, so it never
+// applied and every pod reported an empty name (#40807).
+func TestServerNameDefaultsToHostname(t *testing.T) {
+	if v, ok := os.LookupEnv("SERVICES_SERVER_NAME"); ok {
+		t.Skipf("SERVICES_SERVER_NAME=%q is set in the environment; the compiled-in default is not observable here", v)
+	}
+	hostName, err := os.Hostname()
+	if err != nil {
+		t.Skipf("hostname unavailable: %v", err)
+	}
+	if Config.ServerName != hostName {
+		t.Errorf("default ServerName = %q, want hostname %q", Config.ServerName, hostName)
+	}
+}
+
 // Per-resource knowledge-graph updates are on unless an environment explicitly
 // turns them off. They shipped off, and two days on dev showed the detector
 // publishing refs that never reached the patch path — so the comparison the
