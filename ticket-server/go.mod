@@ -16,7 +16,7 @@ require (
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.12.3
 	github.com/michaeldcanady/servicenow-sdk-go v1.12.1
-	github.com/microsoft/kiota-http-go v1.5.7
+	github.com/microsoft/kiota-http-go v1.5.8
 	github.com/redis/go-redis/v9 v9.23.0
 	gitlab.com/gitlab-org/api/client-go v1.46.0
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.72.0
