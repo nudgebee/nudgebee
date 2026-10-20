@@ -1514,6 +1514,8 @@ const Investigate = () => {
   }, [isRenderInvestigationCard, row?.id]);
 
   useEffect(() => {
+    let abortController = null;
+
     async function loadInsightsData() {
       try {
         let aggregation_key = queryParam.aggregationKey;
@@ -1524,8 +1526,13 @@ const Investigate = () => {
           service_key,
           id,
           end_date,
-          row?.cloud_account_id || router.query.accountId
+          row?.cloud_account_id || router.query.accountId,
+          abortController?.signal
         );
+        // Fast navigation between events re-fires this effect before the previous
+        // request resolves; a superseded response must not overwrite state for
+        // the event the reader has since moved to.
+        if (abortController?.signal?.aborted) return;
         let last7Days = response?.data?.similar_issue_on_same_service_in_7days?.aggregate?.count;
         let last1Days = response?.data?.similar_issue_on_same_service_in_1days?.aggregate?.count;
         const othersData = [];
@@ -1549,18 +1556,25 @@ const Investigate = () => {
         }, []);
         setInsightData(uniqueInsightLines(insights.flat()));
       } catch (error) {
-        console.error(error);
+        if (!abortController?.signal?.aborted) console.error(error);
       }
-      if (isMountedRef.current) setCurrentInvestigation(null);
+      if (!abortController?.signal?.aborted && isMountedRef.current) setCurrentInvestigation(null);
     }
 
     const shouldLoad = Object.keys(queryParam).length > 0 && queryParam.aggregationKey?.trim() != '';
     // Cloud: additional guard - don't load if investigation cards are rendering
     if (shouldLoad && (isK8s || !isRenderInvestigationCard)) {
+      abortController = new AbortController();
       setCurrentInvestigation(null);
       setMatchedOptions([]);
       loadInsightsData();
     }
+    // Cleanup runs before the effect re-fires on the next dep change (e.g. fast
+    // event navigation), so the previous event's in-flight request is aborted
+    // before this one starts.
+    return () => {
+      if (abortController) abortController.abort();
+    };
   }, [queryParam?.id, queryParam?.aggregationKey, queryParam?.serviceKey, queryParam?.start_at, source]);
 
   const handleCardClick = useCallback((cardKey) => {

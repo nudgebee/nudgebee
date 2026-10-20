@@ -1276,7 +1276,14 @@ const apiKubernetes = {
       return error;
     }
   },
-  async getEventsSimilarDataAndInsights(aggregation_key: string, service_key: string, id: string, end_date: string | null = null, account_id = '') {
+  async getEventsSimilarDataAndInsights(
+    aggregation_key: string,
+    service_key: string,
+    id: string,
+    end_date: string | null = null,
+    account_id = '',
+    signal?: AbortSignal
+  ) {
     try {
       // The event's start is UTC and may be written without a zone, so it is read as UTC here.
       const end = end_date ? new Date(/([Zz]|[+-]\d{2}:?\d{2})$/.test(end_date) ? end_date : `${end_date}Z`) : new Date();
@@ -1285,22 +1292,28 @@ const apiKubernetes = {
       }
       const DAY_MS = 24 * 60 * 60 * 1000;
 
-      const response = await queryGraphQL(EVENT_SIMILAR_AND_INSIGHTS, 'eventsSimilarAndInsightData', {
-        id: id,
-        // Without the account, the counts covered every account in the tenant: two accounts
-        // watching one cluster have the same service key, and their alerts were added together.
-        account_id,
-        aggregation_key: aggregation_key,
-        service_key: service_key,
-        // Anchored on the event, not on now: with `endDate` set to the event's
-        // start and these set from today, the range inverted on any event older
-        // than the window and the count silently came back 0.
-        // Sent as ISO strings: queryGraphQL shifts a Date object by the browser's UTC offset, which
-        // moved both windows by that offset (a day's count of 67 read 53 for a viewer at UTC+5:30).
-        sdate_1_days: new Date(end.getTime() - DAY_MS).toISOString(),
-        sdate_7_days: new Date(end.getTime() - 7 * DAY_MS).toISOString(),
-        endDate: end.toISOString(),
-      });
+      const response = await queryGraphQL(
+        EVENT_SIMILAR_AND_INSIGHTS,
+        'eventsSimilarAndInsightData',
+        {
+          id: id,
+          // Without the account, the counts covered every account in the tenant: two accounts
+          // watching one cluster have the same service key, and their alerts were added together.
+          account_id,
+          aggregation_key: aggregation_key,
+          service_key: service_key,
+          // Anchored on the event, not on now: with `endDate` set to the event's
+          // start and these set from today, the range inverted on any event older
+          // than the window and the count silently came back 0.
+          // Sent as ISO strings: queryGraphQL shifts a Date object by the browser's UTC offset, which
+          // moved both windows by that offset (a day's count of 67 read 53 for a viewer at UTC+5:30).
+          sdate_1_days: new Date(end.getTime() - DAY_MS).toISOString(),
+          sdate_7_days: new Date(end.getTime() - 7 * DAY_MS).toISOString(),
+          endDate: end.toISOString(),
+        },
+        undefined,
+        signal
+      );
       const d = response?.data?.data;
       return {
         data: {
