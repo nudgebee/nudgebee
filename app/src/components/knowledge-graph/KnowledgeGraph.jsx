@@ -944,6 +944,11 @@ const ServiceMapContent = ({ cardElevation, height }) => {
   const [isExportingImage, setIsExportingImage] = useState(false);
   // Collapse the left filter sidebar to give the graph canvas more room.
   const [isFilterCollapsed, setIsFilterCollapsed] = useState(false);
+  // Width of the absolutely-positioned top-right toolbar (search, Relationships,
+  // Download, Settings). The Back / Forward / path row reserves this much room
+  // on its right so the path wraps instead of sliding under the toolbar.
+  const toolbarRef = useRef(null);
+  const [toolbarWidth, setToolbarWidth] = useState(0);
 
   const graphWrapperRef = useRef(null);
   const edgesByNodeRef = useRef(new Map());
@@ -967,6 +972,17 @@ const ServiceMapContent = ({ cardElevation, height }) => {
       isMountedRef.current = false;
       clearTimeout(nodeSearchDebounceRef.current);
     };
+  }, []);
+
+  // The toolbar's width changes with the Settings button (admins only) and the
+  // Download button's loading state, so track it rather than hardcoding it.
+  useEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return undefined;
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => setToolbarWidth(toolbar.offsetWidth));
+    observer.observe(toolbar);
+    return () => observer.disconnect();
   }, []);
 
   // Refs for path computation in handleInfoClick (these get updated after useMemos are computed)
@@ -2677,7 +2693,18 @@ const ServiceMapContent = ({ cardElevation, height }) => {
           }}
         >
           {(filterHistory.length > 0 || filterFuture.length > 0 || selectedNodes.length > 0) && (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
+            <Box
+              data-testid='kg-path-row'
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: ds.space[2],
+                mb: ds.space[2],
+                // The toolbar sits ds.space[3] in from the card edge; the card's own
+                // ds.space[2] padding already covers the rest, so this leaves a ds.space[2] gap.
+                pr: toolbarWidth ? `calc(${toolbarWidth}px + ${ds.space[3]})` : undefined,
+              }}
+            >
               {filterHistory.length > 0 && (
                 <Button data-testid='kg-back-btn' tone='secondary' size='sm' icon={<ArrowBackIcon sx={{ width: '14px' }} />} onClick={handleBack}>
                   Back
@@ -2703,6 +2730,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
 
           {/* Top-right toolbar: search + relationships */}
           <Box
+            ref={toolbarRef}
             sx={{ position: 'absolute', top: ds.space[3], right: ds.space[3], zIndex: 200, display: 'flex', alignItems: 'center', gap: ds.space[2] }}
           >
             {/* Node search spotlight */}
