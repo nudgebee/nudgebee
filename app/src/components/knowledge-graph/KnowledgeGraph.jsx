@@ -904,6 +904,10 @@ const ServiceMapContent = ({ cardElevation, height }) => {
   const [selectedLevel, setSelectedLevel] = useState(1);
   const [queryItems, setQueryItems] = useState([]);
   const [queryItemsLabel, setQueryItemsLabel] = useState([]);
+  // queryItems/queryItemsLabel are the live (draft) chips; these hold the chips of the
+  // applied filters, so Back/Forward snapshots restore the chips that produced each graph.
+  const [appliedQueryItems, setAppliedQueryItems] = useState([]);
+  const [appliedQueryItemsLabel, setAppliedQueryItemsLabel] = useState([]);
   const [labelFilters, setLabelFilters] = useState('');
   const [attributeFilters, setAttributeFilters] = useState('');
   const [kgFilterOptions, setKgFilterOptions] = useState({});
@@ -1332,12 +1336,21 @@ const ServiceMapContent = ({ cardElevation, height }) => {
       selectedLevel,
       labelFilters,
       attributeFilters,
-      queryItems,
-      queryItemsLabel,
+      queryItems: appliedQueryItems,
+      queryItemsLabel: appliedQueryItemsLabel,
     };
     setFilterHistory((prev) => [...prev.slice(-19), snapshot]);
     setFilterFuture([]); // new action invalidates forward history
-  }, [selectedAccountIds, selectedNodes, selectedNodeTypes, selectedLevel, labelFilters, attributeFilters, queryItems, queryItemsLabel]);
+  }, [
+    selectedAccountIds,
+    selectedNodes,
+    selectedNodeTypes,
+    selectedLevel,
+    labelFilters,
+    attributeFilters,
+    appliedQueryItems,
+    appliedQueryItemsLabel,
+  ]);
 
   // Pop last snapshot and restore all state + re-fetch the graph
   const handleBack = useCallback(() => {
@@ -1348,7 +1361,16 @@ const ServiceMapContent = ({ cardElevation, height }) => {
     // Save current state to future stack so Forward can return here
     setFilterFuture((prev) => [
       ...prev,
-      { selectedAccountIds, selectedNodes, selectedNodeTypes, selectedLevel, labelFilters, attributeFilters, queryItems, queryItemsLabel },
+      {
+        selectedAccountIds,
+        selectedNodes,
+        selectedNodeTypes,
+        selectedLevel,
+        labelFilters,
+        attributeFilters,
+        queryItems: appliedQueryItems,
+        queryItemsLabel: appliedQueryItemsLabel,
+      },
     ]);
 
     // Restore applied state
@@ -1370,6 +1392,8 @@ const ServiceMapContent = ({ cardElevation, height }) => {
     // Restore filter builder chip UI state
     setQueryItems(snapshot.queryItems);
     setQueryItemsLabel(snapshot.queryItemsLabel);
+    setAppliedQueryItems(snapshot.queryItems);
+    setAppliedQueryItemsLabel(snapshot.queryItemsLabel);
 
     // Fire fetch immediately; skip the useEffect duplicate trigger
     skipNextGraphEffectRef.current = true;
@@ -1389,8 +1413,8 @@ const ServiceMapContent = ({ cardElevation, height }) => {
     selectedLevel,
     labelFilters,
     attributeFilters,
-    queryItems,
-    queryItemsLabel,
+    appliedQueryItems,
+    appliedQueryItemsLabel,
     fetchGraph,
     setSelectedAccountIds,
     setSelectedNodes,
@@ -1417,7 +1441,16 @@ const ServiceMapContent = ({ cardElevation, height }) => {
     // Save current state to history stack so Back can return here
     setFilterHistory((prev) => [
       ...prev.slice(-19),
-      { selectedAccountIds, selectedNodes, selectedNodeTypes, selectedLevel, labelFilters, attributeFilters, queryItems, queryItemsLabel },
+      {
+        selectedAccountIds,
+        selectedNodes,
+        selectedNodeTypes,
+        selectedLevel,
+        labelFilters,
+        attributeFilters,
+        queryItems: appliedQueryItems,
+        queryItemsLabel: appliedQueryItemsLabel,
+      },
     ]);
 
     // Restore applied state
@@ -1439,6 +1472,8 @@ const ServiceMapContent = ({ cardElevation, height }) => {
     // Restore filter builder chip UI state
     setQueryItems(snapshot.queryItems);
     setQueryItemsLabel(snapshot.queryItemsLabel);
+    setAppliedQueryItems(snapshot.queryItems);
+    setAppliedQueryItemsLabel(snapshot.queryItemsLabel);
 
     // Fire fetch immediately; skip the useEffect duplicate trigger
     skipNextGraphEffectRef.current = true;
@@ -1458,8 +1493,8 @@ const ServiceMapContent = ({ cardElevation, height }) => {
     selectedLevel,
     labelFilters,
     attributeFilters,
-    queryItems,
-    queryItemsLabel,
+    appliedQueryItems,
+    appliedQueryItemsLabel,
     fetchGraph,
     setSelectedAccountIds,
     setSelectedNodes,
@@ -2070,7 +2105,20 @@ const ServiceMapContent = ({ cardElevation, height }) => {
     setSelectedLevel(draftLevel);
     setLabelFilters(draftLabelFilters);
     setAttributeFilters(draftAttributeFilters);
-  }, [draftAccountIds, draftNodes, draftNodeTypes, draftLevel, draftLabelFilters, draftAttributeFilters, fetchGraph, pushToHistory]);
+    setAppliedQueryItems(queryItems);
+    setAppliedQueryItemsLabel(queryItemsLabel);
+  }, [
+    draftAccountIds,
+    draftNodes,
+    draftNodeTypes,
+    draftLevel,
+    draftLabelFilters,
+    draftAttributeFilters,
+    queryItems,
+    queryItemsLabel,
+    fetchGraph,
+    pushToHistory,
+  ]);
 
   const handleClear = useCallback(() => {
     pushToHistory();
@@ -2090,6 +2138,8 @@ const ServiceMapContent = ({ cardElevation, height }) => {
     setDraftAttributeFilters('');
     setQueryItems([]);
     setQueryItemsLabel([]);
+    setAppliedQueryItems([]);
+    setAppliedQueryItemsLabel([]);
     setSelectedAccountIds([]);
     setSelectedNodes([]);
     setSelectedNodeTypes([]);
@@ -2200,6 +2250,8 @@ const ServiceMapContent = ({ cardElevation, height }) => {
       setDraftAttributeFilters('');
       setQueryItems([]);
       setQueryItemsLabel([]);
+      setAppliedQueryItems([]);
+      setAppliedQueryItemsLabel([]);
 
       const existingIndex = fullBreadcrumbPath.findIndex((n) => n.value === nodeId);
 
