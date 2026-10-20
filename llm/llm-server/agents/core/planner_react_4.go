@@ -1868,7 +1868,8 @@ func isStepRecent(stepIndex, totalSteps int, compressionActive bool) bool {
 // hard-capped (UTF-8-safe) to the per-observation ceiling; older steps (only
 // when compression is active) are summarized/truncated via SummarizeObservation,
 // which caches the result on the step. SubAgentEvidence is appended uncompressed
-// so the distilled manifest always survives, mirroring react_3.
+// so the distilled manifest always survives, mirroring react_3. The names of the
+// workspace files the step saved are appended last (savedFilesNote).
 func (o *NBReActPlanner4) renderObservation(step *NBAgentPlannerToolActionStep, stepIndex, totalSteps int, compressionActive bool, maxObs int) string {
 	// A successful notebook update's content is already in the replayed call's
 	// arguments; echoing it again would double its cost in context.
@@ -1896,7 +1897,8 @@ func (o *NBReActPlanner4) renderObservation(step *NBAgentPlannerToolActionStep, 
 	if ev := strings.TrimSpace(step.SubAgentEvidence); ev != "" {
 		obs = obs + "\n\n" + ev
 	}
-	return withSavedOutputNote(obs, step.Metadata)
+	obs = withSavedOutputNote(obs, step.Metadata)
+	return obs + savedFilesNote(step, obs, o.tools)
 }
 
 // Replayed results for successful update_notebook calls (see renderObservation).

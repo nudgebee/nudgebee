@@ -77,6 +77,10 @@ func trimmedK8sCoreToolNames() []string {
 		names = append(names, RemediationAgentName)
 	}
 	names = append(names, toolcore.ToolExecuteShellCommand)
+	// analyze_metric_series computes trend, baseline and time-to-threshold over a
+	// metric file a metrics or CLI step saved, so an investigation quotes computed
+	// numbers instead of extrapolating them (#41760).
+	names = append(names, tools.ToolAnalyzeMetricSeries)
 	names = appendMemoryToolName(names)
 	if llmruntime.IsAgentsFollowupEnabled() {
 		names = append(names, FollowupAgentName)

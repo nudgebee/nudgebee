@@ -1,12 +1,17 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 	"regexp"
+	"slices"
 	"strings"
+	"time"
+
+	"github.com/google/shlex"
 )
 
 const ToolExecuteAwsCliCommand = "aws_execute"
@@ -186,13 +191,92 @@ func (t AwsCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
-	response = provenance + response
+	note, refs := saveCloudMetricRead(nbRequestContext, t.workspace(), awsMetricRead, command, response)
+	response = provenance + response + note
 
 	return core.NBToolResponse{
-		Data:   response,
-		Type:   core.NBToolResponseTypeText,
-		Status: core.NBToolResponseStatusSuccess,
+		Data:       response,
+		Type:       core.NBToolResponseTypeText,
+		Status:     core.NBToolResponseStatusSuccess,
+		References: refs,
 	}, nil
+}
+
+// cloudMetricReadSpec says which commands of one cloud CLI read metric time series,
+// and how their output is saved.
+type cloudMetricReadSpec struct {
+	binary string
+	// valueFlags are global flags that take a separate value ("--profile prod"), so
+	// the value is not mistaken for the service or verb.
+	valueFlags map[string]bool
+	// paths are the leading positional tokens of a metric read, e.g. cloudwatch get-metric-data.
+	paths       [][]string
+	filePrefix  string
+	description string
+}
+
+var awsMetricRead = cloudMetricReadSpec{
+	binary: "aws",
+	valueFlags: map[string]bool{
+		"--profile": true, "--region": true, "--output": true, "--endpoint-url": true,
+		"--query": true, "--color": true, "--ca-bundle": true, "--cli-read-timeout": true,
+		"--cli-connect-timeout": true, "--cli-binary-format": true,
+	},
+	paths: [][]string{
+		{"cloudwatch", "get-metric-data"},
+		{"cloudwatch", "get-metric-statistics"},
+	},
+	filePrefix:  "metrics_aws_cloudwatch",
+	description: "CloudWatch metric data (raw CLI JSON output)",
+}
+
+// isCloudMetricRead reports whether command is exactly one metric read for spec's
+// CLI: the binary, then (skipping global flags and their values) the path's tokens.
+// Any unquoted shell syntax -- a pipe, chain, redirect, substitution or comment --
+// disqualifies it, because stdout is then no longer the CLI's own JSON.
+func isCloudMetricRead(spec cloudMetricReadSpec, command string) bool {
+	if hasUnquotedShellSyntax(command) {
+		return false
+	}
+	args, err := shlex.Split(command)
+	if err != nil || len(args) == 0 || !strings.EqualFold(args[0], spec.binary) {
+		return false
+	}
+	var positional []string
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			if !strings.Contains(a, "=") && spec.valueFlags[strings.ToLower(a)] {
+				i++
+			}
+			continue
+		}
+		positional = append(positional, strings.ToLower(a))
+	}
+	for _, path := range spec.paths {
+		if len(positional) >= len(path) && slices.Equal(positional[:len(path)], path) {
+			return true
+		}
+	}
+	return false
+}
+
+// saveCloudMetricRead saves the raw JSON stdout of a successful metric read to the
+// conversation workspace, so a trend can be computed over it later, and returns a
+// one-line note naming the file plus its reference. Anything else, and any save
+// failure, returns nothing: the command's own output is never affected.
+func saveCloudMetricRead(nbRequestContext core.NbToolContext, wsm workspace.WorkspaceManager, spec cloudMetricReadSpec, command, stdout string) (string, []core.NBToolResponseReference) {
+	body := strings.TrimSpace(stdout)
+	if body == "" || !isCloudMetricRead(spec, command) || !json.Valid([]byte(body)) {
+		return "", nil
+	}
+	name := fmt.Sprintf("%s_%d.json", spec.filePrefix, time.Now().UnixNano())
+	if err := wsm.SaveFile(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, name, body); err != nil {
+		nbRequestContext.Ctx.GetLogger().Warn(spec.binary+": failed to save metric data to workspace", "error", err.Error(), "file", name)
+		return "", nil
+	}
+	note := fmt.Sprintf("\n[metric data saved to file_ref %q; pass it to analyze_metric_series as file_ref, or read it with shell_execute]", name)
+	return note, []core.NBToolResponseReference{{Type: "file", Url: name, Text: name, Description: spec.description}}
 }
 
 func isPermanentAwsCredentialFailure(message string) bool {

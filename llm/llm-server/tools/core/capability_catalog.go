@@ -224,6 +224,7 @@ var capabilityScopeTable = map[string]CapabilityScope{
 
 	// Typed agent tools: ids, enums and filters only, fixed actions or fixed read queries.
 	"aggregate_events":                        CapabilityScopeNarrow,
+	"analyze_metric_series":                   CapabilityScopeNarrow,
 	"cloud_resource_search_execute":           CapabilityScopeNarrow,
 	"metric_forecast":                         CapabilityScopeNarrow,
 	"dryrun_triage_rule":                      CapabilityScopeNarrow,

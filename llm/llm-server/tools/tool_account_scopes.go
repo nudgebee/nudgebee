@@ -25,7 +25,7 @@ func init() {
 		"resource_search_execute", "shell_execute",
 	)
 	toolcore.DeclareAccountScope(toolcore.AccountScopeIndependent,
-		"crawl_execute", "github_execute", "gitlab_execute",
+		"analyze_metric_series", "crawl_execute", "github_execute", "gitlab_execute",
 		"kg_get_node", "kg_traverse", "load_skills", "mermaid_validation",
 		"nudgebee_account_get", "nudgebee_accounts_count", "nudgebee_accounts_list",
 		"nudgebee_docs_search", "nudgebee_integration_diagnose", "nudgebee_integration_get_status",
