@@ -63,6 +63,7 @@ import {
 } from './kgFilterCascade';
 import { getAutoFitCenter } from './kgViewport';
 import { getFocusCenter } from './kgFocusView';
+import { humanizeType } from './ManualNodesTable';
 import { getCurrentTenant, isTenantAdmin } from '@lib/auth';
 import PropTypes from 'prop-types';
 
@@ -583,9 +584,7 @@ const BreadcrumbTooltipContent = memo(({ node }) => {
       </Box>
       <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)' }}>
         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)', minWidth: ds.space.mul(0, 35) }}>Type:</Typography>
-        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-background-100)' }}>
-          {snakeToTitleCase(node.nodeType || '')}
-        </Typography>
+        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-background-100)' }}>{humanizeType(node.nodeType)}</Typography>
       </Box>
       <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', alignItems: 'flex-start' }}>
         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)', minWidth: ds.space.mul(0, 35) }}>Unique Key:</Typography>
@@ -686,7 +685,7 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
       const accName = isIdentityNode ? '' : accMap.get(n.account_id) || tenantScopedName;
       // A kind of the tenant's own (NetworkSwitch, declared outside any account) shows by its name, not its category.
       const isCustomKind = tenantId && n.account_id === tenantId && n.specific_type && n.specific_type !== n.kind;
-      const subtitle = (isIdentityNode || isCustomKind) && n.specific_type ? humanizeNodeType(n.specific_type) : n.kind;
+      const subtitle = humanizeType((isIdentityNode || isCustomKind) && n.specific_type ? n.specific_type : n.kind);
       return {
         id: n.id,
         type: 'serviceNode',
@@ -751,17 +750,19 @@ function getNodeTypeLeaves(nodeType, specificTypesByNodeType) {
 // or the AWS/GCP/Azure specific_type extractors' own fallback-to-node_type default) has
 // nothing to drill into, so it's left ungrouped rather than rendered as a group header with
 // one child of the same name — FilterDropdown buckets ungrouped options under "Other".
-// Real leaves also carry `searchText: nodeType` so the dropdown's search matches on the broad
+// Labels and group headers are spaced ("RDS Instance", "Compute Instance"); `searchText` keeps
+// the raw PascalCase leaf so typing "RDSInstance" still finds it, and real leaves add their broad
 // (ontological) type too — e.g. searching "compute" surfaces EC2Instance/GCEInstance/etc. even
 // though none of those specific-type labels themselves contain "compute".
-function buildNodeTypeOptions(nodeTypes, specificTypesByNodeType) {
+export function buildNodeTypeOptions(nodeTypes, specificTypesByNodeType) {
   return (nodeTypes || []).flatMap((nodeType) => {
     const leaves = getNodeTypeLeaves(nodeType, specificTypesByNodeType);
     const hasRealBreakdown = !(leaves.length === 1 && leaves[0] === nodeType);
+    const group = humanizeType(nodeType);
     return leaves.map((leaf) => ({
-      label: snakeToTitleCase(leaf),
+      label: humanizeType(leaf),
       value: leaf,
-      ...(hasRealBreakdown ? { group: nodeType, searchText: nodeType } : {}),
+      ...(hasRealBreakdown ? { group, searchText: `${leaf} ${nodeType} ${group}` } : { searchText: leaf }),
     }));
   });
 }
@@ -801,10 +802,6 @@ const KNOWN_CLOUD_PROVIDERS = new Set(['aws', 'k8s', 'gcp', 'azure', 'github', '
 
 // parseUniqueKey and formatTypeBadge are imported from ./kgFilterCascade (shared with the
 // client-side cascade).
-
-// PascalCase NodeType → spaced label ("ServiceIdentity" → "Service Identity").
-// snakeToTitleCase only splits on '_', so it would leave these un-spaced.
-const humanizeNodeType = (nodeType) => (nodeType || '').replace(/([a-z])([A-Z])/g, '$1 $2');
 
 // Build a Node-dropdown option from a unique key + node id. Shapes the row as
 // [provider icon] [NodeType badge] <name>  <cluster · location · hierarchy chip>
@@ -2002,7 +1999,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
         // slim response: f.kind, f.name, f.account_id, f.unique_key
         const accountName = accountLookup.get(f.account_id) || f.account_id || '';
         const displayName = f.name || f.unique_key;
-        const simplifiedLabel = f.name ? `${f.name} (${snakeToTitleCase(f.kind)})` : f.unique_key;
+        const simplifiedLabel = f.name ? `${f.name} (${humanizeType(f.kind)})` : f.unique_key;
 
         return {
           label: f.unique_key,

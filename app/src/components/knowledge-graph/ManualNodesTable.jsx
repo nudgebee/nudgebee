@@ -46,13 +46,35 @@ const buildMenuItems = (row) => {
   return items;
 };
 
-// PascalCase specific type → spaced label ("SQSQueue" → "SQS Queue",
-// "EC2Instance" → "EC2 Instance"). The type picker searches these labels.
-export const humanizeType = (type) =>
+const splitPascalCase = (type) =>
   (type || '')
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/([0-9])([A-Z][a-z])/g, '$1 $2')
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+
+// Product names that are PascalCase themselves stay whole after the split
+// ("DynamoDBTable" → "DynamoDB Table", not "Dynamo DB Table").
+const PRODUCT_NAMES = [
+  'BigQuery',
+  'CloudFormation',
+  'CloudFront',
+  'CloudTrail',
+  'CloudWatch',
+  'DynamoDB',
+  'ElastiCache',
+  'GitHub',
+  'GitLab',
+  'GuardDuty',
+  'OpenSearch',
+  'PagerDuty',
+  'SageMaker',
+];
+const PRODUCT_NAME_REJOINS = PRODUCT_NAMES.map((name) => [new RegExp(`\\b${splitPascalCase(name)}\\b`, 'g'), name]);
+
+// PascalCase specific type → spaced label ("SQSQueue" → "SQS Queue",
+// "EC2Instance" → "EC2 Instance"). The type picker and the Knowledge Graph's
+// Node Type filter and node cards all show these labels.
+export const humanizeType = (type) => PRODUCT_NAME_REJOINS.reduce((label, [re, name]) => label.replace(re, name), splitPascalCase(type));
 
 // "Where" cell: the account (or "Outside connected accounts") plus the
 // identity qualifiers that place the node.

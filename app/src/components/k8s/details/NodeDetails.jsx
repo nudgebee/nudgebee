@@ -9,7 +9,7 @@ import Tooltip from '@ui/Tooltip';
 import Tabs from '@shared/navigation/Tabs';
 import CopyButton from '@shared/buttons/CopyButton';
 import Datetime from '@shared/format/Datetime';
-import { snakeToTitleCase } from 'src/utils/common';
+import { humanizeType } from '@components/knowledge-graph/ManualNodesTable';
 import { getSpecificTime, getYesterday } from '@lib/datetime';
 
 // Lazy-load the heavy tab bodies so opening a node popup doesn't pull the events /
@@ -122,9 +122,7 @@ const PathNodeTooltipContent = memo(({ pathNode }) => {
       </Box>
       <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)' }}>
         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)', minWidth: '70px' }}>Type:</Typography>
-        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-background-100)' }}>
-          {snakeToTitleCase(pathNode.nodeType || '')}
-        </Typography>
+        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-background-100)' }}>{humanizeType(pathNode.nodeType)}</Typography>
       </Box>
       <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', alignItems: 'flex-start' }}>
         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)', minWidth: '70px' }}>Unique Key:</Typography>
@@ -233,7 +231,7 @@ const DetailsBody = ({ node }) => {
                   }}
                 >
                   <Chip
-                    label={pathNode.name ? `${pathNode.name} (${snakeToTitleCase(pathNode.nodeType || '')})` : pathNode.label}
+                    label={pathNode.name ? `${pathNode.name} (${humanizeType(pathNode.nodeType)})` : pathNode.label}
                     size='small'
                     variant={index === pathToNode.length - 1 ? 'filled' : 'outlined'}
                     color={index === pathToNode.length - 1 ? 'primary' : 'default'}

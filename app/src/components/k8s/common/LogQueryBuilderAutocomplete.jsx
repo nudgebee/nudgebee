@@ -315,9 +315,9 @@ const KgSegmentedChip = ({ chipKey, operator, value, onDismiss }) => {
 };
 
 // Rich "Filter by <heading>" help popover — guided flow + quick input + keyboard
-// shortcuts + tips. Exported so the KG section-header ⓘ renders the same content
-// the in-field ⓘ shows for logs / service-map (kept in sync with the inline copy
-// in the render below).
+// shortcuts + tips. Rendered only by the KG section-header ⓘ, so its copy names the
+// Knowledge Graph's operators (KNOWLEDGE_GRAPH_OPERATORS) and keys; the in-field ⓘ
+// for logs / service-map keeps its own inline copy in the render below.
 export const PropertyFilterHelp = ({ heading }) => (
   <Box>
     <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)', mb: 0 }}>
@@ -326,7 +326,7 @@ export const PropertyFilterHelp = ({ heading }) => (
     <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', mb: ds.space[3] }}>
       {heading === 'Attribute'
         ? 'Attributes are resource-level metadata (e.g. cluster, namespace, pod).'
-        : 'Labels classify nodes by type (e.g. service, host, pod).'}
+        : 'Labels are the key/value tags on a node (e.g. app, environment, team).'}
     </Typography>
 
     <Typography
@@ -343,8 +343,8 @@ export const PropertyFilterHelp = ({ heading }) => (
     </Typography>
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
       {[
-        `Click the selector and pick a ${heading.toLowerCase()} from the dropdown`,
-        'Choose an operator (=, !=, LIKE, etc.)',
+        `Click the selector and pick ${heading === 'Attribute' ? 'an' : 'a'} ${heading.toLowerCase()} from the dropdown`,
+        'Choose the = operator (the only one the Knowledge Graph supports)',
         `Select a value for that ${heading.toLowerCase()}`,
         'Filter is applied automatically as a chip',
       ].map((text, i) => (
@@ -396,7 +396,7 @@ export const PropertyFilterHelp = ({ heading }) => (
           color: 'var(--ds-gray-700)',
         }}
       >
-        service.name = my-api
+        {heading === 'Attribute' ? 'namespace = default' : 'environment = production'}
       </Box>
     </Box>
 
