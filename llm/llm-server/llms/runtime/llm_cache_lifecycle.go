@@ -47,7 +47,7 @@ func recordCacheLifecycle(record *CacheLifecycleRecord) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), cacheLifecycleWriteTimeout)
 	defer cancel()
-	if err := getStore().InsertCacheLifecycle(ctx, record); err != nil {
+	if err := GetUsageStore().InsertCacheLifecycle(ctx, record); err != nil {
 		slog.Error("cache lifecycle insert failed (cost will undercount this cache)",
 			"error", err,
 			"cache_name", record.CacheName,
@@ -65,7 +65,7 @@ func recordCacheLifecycleInvalidation(cacheName string) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), cacheLifecycleWriteTimeout)
 	defer cancel()
-	if err := getStore().SetCacheLifecycleInvalidated(ctx, cacheName); err != nil {
+	if err := GetUsageStore().SetCacheLifecycleInvalidated(ctx, cacheName); err != nil {
 		slog.Error("cache lifecycle invalidation update failed",
 			"error", err,
 			"cache_name", cacheName)

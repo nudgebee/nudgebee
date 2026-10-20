@@ -1,19 +1,17 @@
-package core
+package runtime
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 	"strings"
-
-	llmruntime "nudgebee/llm/llms/runtime"
 )
 
 // InsertCacheLifecycle records a new cache resource. Idempotent — duplicate
 // inserts (same cache_name) are silently ignored to handle the rare race
 // where two requests trigger createCache concurrently and the provider
 // deduplicates by content hash.
-func (chat *ConversationDao) InsertCacheLifecycle(ctx context.Context, record *llmruntime.CacheLifecycleRecord) error {
+func (chat *usageDAO) InsertCacheLifecycle(ctx context.Context, record *CacheLifecycleRecord) error {
 	if record == nil {
 		return fmt.Errorf("cache lifecycle record is nil")
 	}
@@ -60,7 +58,7 @@ const setCacheLifecycleInvalidatedSQL = `
 // SetCacheLifecycleInvalidated marks a cache as invalidated at now(). No-op if
 // the row is already invalidated (LEAST + COALESCE pattern preserves the
 // earliest end time, which matches reality — once a cache is gone, it's gone).
-func (chat *ConversationDao) SetCacheLifecycleInvalidated(ctx context.Context, cacheName string) error {
+func (chat *usageDAO) SetCacheLifecycleInvalidated(ctx context.Context, cacheName string) error {
 	if strings.TrimSpace(cacheName) == "" {
 		return fmt.Errorf("cache_name is required")
 	}

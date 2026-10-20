@@ -5,10 +5,34 @@ import (
 	"nudgebee/llm/security"
 )
 
-// Installs the conversation-side hooks the LLM runtime calls (see llm_store.go).
+// runtimeConversation is the conversation side of the LLM runtime (see
+// llmruntime.ConversationPort).
+type runtimeConversation struct{}
+
+func (runtimeConversation) GetAgentNameFromAgentId(agentId string) (string, error) {
+	return GetConversationDao().GetAgentNameFromAgentId(agentId)
+}
+
+func (runtimeConversation) UpdateConversationAgentThought(agentId, thought string) error {
+	dao := GetConversationDao()
+	if dao == nil {
+		return nil
+	}
+	return dao.UpdateConversationAgentThought(agentId, thought)
+}
+
+func (runtimeConversation) SetMessageLiveStatus(messageId, key string, status *llmruntime.LiveStatus) error {
+	return GetConversationDao().SetMessageLiveStatus(messageId, key, status)
+}
+
+func (runtimeConversation) GetConversationOverride(conversationId string) (string, string, llmruntime.ConversationTierOverrides, string, error) {
+	return GetConversationOverride(conversationId)
+}
+
+func (runtimeConversation) AddRunTokens(ctx *security.RequestContext, tokens int) {
+	policyFor(ctx).AddTokens(ctx, tokens)
+}
+
 func init() {
-	llmruntime.GetStoreFn = func() llmruntime.Store { return GetConversationDao() }
-	llmruntime.PeekStoreFn = func() llmruntime.Store { return PeekConversationDao() }
-	llmruntime.ConversationOverrideFn = GetConversationOverride
-	llmruntime.AddRunTokensFn = func(ctx *security.RequestContext, tokens int) { policyFor(ctx).AddTokens(ctx, tokens) }
+	llmruntime.SetConversationPort(runtimeConversation{})
 }

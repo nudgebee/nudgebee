@@ -1,4 +1,4 @@
-package core
+package runtime
 
 import (
 	"context"
@@ -24,7 +24,7 @@ func TestSetCacheLifecycleInvalidated_StopsTtlBilling(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &usageDAO{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	// The UPDATE must target the row by cache_name AND only touch live rows.
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE llm_cache_lifecycle")).
@@ -48,7 +48,7 @@ func TestSetCacheLifecycleInvalidated_StopsTtlBilling(t *testing.T) {
 // touching the DB — a blank name would otherwise match the WHERE on nothing but
 // still issue a pointless statement.
 func TestSetCacheLifecycleInvalidated_EmptyName(t *testing.T) {
-	dao := &ConversationDao{}
+	dao := &usageDAO{}
 	err := dao.SetCacheLifecycleInvalidated(context.Background(), "   ")
 	require.Error(t, err)
 }
@@ -61,7 +61,7 @@ func TestSetCacheLifecycleInvalidated_DBErrorWrapped(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &usageDAO{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE llm_cache_lifecycle")).
 		WithArgs("cachedContents/xyz").

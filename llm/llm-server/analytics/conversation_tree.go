@@ -208,7 +208,7 @@ func (chat *Store) GetConversationTree(sessionID, accountID string) (Conversatio
 		return ConversationTree{}, fmt.Errorf("GetConversationTree model_calls: %w", err)
 	}
 
-	pricing, err := core.NewConversationDao(chat.dbManager).GetConversationCosts(nil, llmruntime.TenantForPricing(accountID))
+	pricing, err := llmruntime.NewUsageStore(chat.dbManager).GetConversationCosts(nil, llmruntime.TenantForPricing(accountID))
 	if err != nil {
 		return ConversationTree{}, fmt.Errorf("GetConversationTree pricing: %w", err)
 	}
@@ -240,7 +240,7 @@ func (chat *Store) GetConversationTree(sessionID, accountID string) (Conversatio
 			if nonCached < 0 {
 				nonCached = 0
 			}
-			cost = core.CalculateTotalCost(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
+			cost = llmruntime.CalculateTotalCost(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
 		}
 
 		if m.AgentID != "" {

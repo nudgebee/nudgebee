@@ -110,7 +110,7 @@ func (rc *retryContext) setLiveStatus(status LiveStatus) {
 	}
 	status.Text = strings.TrimSpace(status.Text)
 	status.UpdatedAt = time.Now().UTC()
-	if err := getStore().SetMessageLiveStatus(rc.messageId, rc.liveStatusKey(), &status); err != nil {
+	if err := conversationPort.SetMessageLiveStatus(rc.messageId, rc.liveStatusKey(), &status); err != nil {
 		rc.ctx.GetLogger().Debug("live status: unable to save", "error", err, "message_id", rc.messageId)
 		return
 	}
@@ -123,7 +123,7 @@ func (rc *retryContext) clearLiveStatus() {
 	if rc == nil || !rc.liveStatusSet {
 		return
 	}
-	if err := getStore().SetMessageLiveStatus(rc.messageId, rc.liveStatusKey(), nil); err != nil {
+	if err := conversationPort.SetMessageLiveStatus(rc.messageId, rc.liveStatusKey(), nil); err != nil {
 		rc.ctx.GetLogger().Debug("live status: unable to clear", "error", err, "message_id", rc.messageId)
 		return
 	}

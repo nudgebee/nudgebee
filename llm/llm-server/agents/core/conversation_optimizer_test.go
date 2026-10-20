@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/jmoiron/sqlx"
@@ -24,7 +25,7 @@ func TestAssembleFindings_DeterministicAndDeconflicted(t *testing.T) {
 		byTypeModel: map[string]optTok{
 			tmKey("a", "pro"): {nonCached: 1_000_000, output: 0, calls: 10, cost: 50},
 		},
-		byModelName: map[string]ModelPricing{
+		byModelName: map[string]llmruntime.ModelPricing{
 			"flash": {CostPerMillionInput: 1.0, CostPerMillionOutput: 1.0},
 		},
 	}

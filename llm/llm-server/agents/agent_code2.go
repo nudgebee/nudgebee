@@ -1167,7 +1167,7 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 			"completion_tokens", tu.CompletionTokens,
 			"conversation_id", query.ConversationId)
 	}
-	dao := core.GetConversationDao()
+	dao := llmruntime.GetUsageStore()
 
 	if dao == nil {
 		slog.Debug("code: skipping token usage tracking — conversation DAO unavailable")
@@ -1276,7 +1276,7 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 // long-context tier switch inside GetConversationCost then applies per call,
 // as billed by the provider. cache_ttl_minutes is no longer written — see
 // trackTokenUsage rationale; storage cost lives in llm_cache_lifecycle.
-func buildCodeAnalysisUsageRecord(query core.NBAgentRequest, agentUUID *string, dao core.IConversationDao,
+func buildCodeAnalysisUsageRecord(query core.NBAgentRequest, agentUUID *string, dao llmruntime.UsageStore,
 	provider, model string, promptTokens, cachedTokens, creationTokens, completionTokens, thinkingTokens int,
 	latencySeconds *float64, modelTier, taskType *string) *llmruntime.TokenUsageRecord {
 	nonCachedPromptTokens := promptTokens - cachedTokens

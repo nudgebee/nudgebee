@@ -233,11 +233,11 @@ func TestImageSupportForTenant_DropsIdleTenantsOnNewEntry(t *testing.T) {
 	assert.Contains(t, tenantImageSupport, "new")
 }
 
-// catalogStore stands in for the conversation DAO: each GetImageSupportCatalog
+// catalogStore stands in for the usage store: each GetImageSupportCatalog
 // call returns the next queued result, the catalog keyed "provider:model" as
 // the DAO builds it.
 type catalogStore struct {
-	Store
+	UsageStore
 	results []catalogResult
 }
 
@@ -266,11 +266,10 @@ func installCatalogStore(t *testing.T) *catalogStore {
 	return s
 }
 
-// installStore makes store what the image-support cache sees as the
-// already-connected store, restoring the previous one after the test.
-func installStore(t *testing.T, store Store) {
+// installStore makes store the shared usage store the image-support cache
+// sees, restoring the previous one after the test.
+func installStore(t *testing.T, store UsageStore) {
 	t.Helper()
-	prev := PeekStoreFn
-	PeekStoreFn = func() Store { return store }
-	t.Cleanup(func() { PeekStoreFn = prev })
+	prev := SetUsageStore(store)
+	t.Cleanup(func() { SetUsageStore(prev) })
 }

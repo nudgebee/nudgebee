@@ -10,17 +10,19 @@ import (
 	"testing"
 	"time"
 
+	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
+	"nudgebee/llm/security"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
-	"nudgebee/llm/config"
-	llmruntime "nudgebee/llm/llms/runtime"
-	"nudgebee/llm/security"
 )
 
 type claimCaptureDAO struct {
 	IConversationDao
+	llmruntime.UsageStore
 	mu        sync.Mutex
 	rows      []ClaimCritiqueAuditRecord
 	writes    int
@@ -72,7 +74,11 @@ func installClaimCaptureDAO(t *testing.T, d *claimCaptureDAO) {
 	previous := GetConversationDao()
 	d.IConversationDao = previous
 	SetConversationDao(d)
-	t.Cleanup(func() { SetConversationDao(previous) })
+	d.UsageStore = llmruntime.SetUsageStore(d)
+	t.Cleanup(func() {
+		SetConversationDao(previous)
+		llmruntime.SetUsageStore(d.UsageStore)
+	})
 }
 
 func TestClaimCapturePersistsWithTracingDisabled(t *testing.T) {
@@ -174,7 +180,7 @@ func TestClaimCaptureDAOAndUsageID(t *testing.T) {
 	mock.ExpectExec("INSERT INTO llm_conversation_token_usage").WithArgs(
 		nil, nil, nil, "", nil, nil, "", "", 0, 0, 0, 0, false, nil, 0, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, record.TokenUsageID,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
-	require.NoError(t, dao.InsertTokenUsage(&llmruntime.TokenUsageRecord{ID: record.TokenUsageID}))
+	require.NoError(t, llmruntime.NewUsageStore(dao.dbManager).InsertTokenUsage(&llmruntime.TokenUsageRecord{ID: record.TokenUsageID}))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

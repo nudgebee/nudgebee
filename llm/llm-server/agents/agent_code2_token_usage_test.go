@@ -15,7 +15,7 @@ import (
 // methods recordCodeAnalysisTokenUsage touches. Pricing mirrors the real
 // per-record long-context tier switch: totalPrompt > 200K → 2× rates.
 type fakeUsageDao struct {
-	core.IConversationDao
+	llmruntime.UsageStore
 	mu           sync.Mutex
 	inserted     []llmruntime.TokenUsageRecord
 	nilAgentOnce bool // simulate the FK retry nulling record.AgentID on first insert
@@ -45,9 +45,8 @@ func (f *fakeUsageDao) InsertTokenUsage(record *llmruntime.TokenUsageRecord) err
 func withFakeUsageDao(t *testing.T) *fakeUsageDao {
 	t.Helper()
 	fake := &fakeUsageDao{}
-	prev := core.GetConversationDao()
-	core.SetConversationDao(fake)
-	t.Cleanup(func() { core.SetConversationDao(prev) })
+	prev := llmruntime.SetUsageStore(fake)
+	t.Cleanup(func() { llmruntime.SetUsageStore(prev) })
 	return fake
 }
 

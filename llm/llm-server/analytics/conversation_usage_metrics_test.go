@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -101,16 +102,16 @@ func TestModelUsageStatsCalculation(t *testing.T) {
 	assert.Equal(t, 0.0, *googleStat.SuccessRatePercentage)
 }
 
-// fixedPricingDao is a fake IConversationDao that returns a canned pricing
+// fixedPricingDao is a fake UsageStore that returns a canned pricing
 // map, letting tests exercise CalculateTotalCost's long-ctx tiering without a
-// database. Embedding the interface panics loudly on any other DAO call.
+// database. Embedding the interface panics loudly on any other store call.
 type fixedPricingDao struct {
-	core.IConversationDao
-	pricing map[string]core.ModelPricing
+	llmruntime.UsageStore
+	pricing map[string]llmruntime.ModelPricing
 	err     error
 }
 
-func (d *fixedPricingDao) GetConversationCosts(models []string, tenantId string) (map[string]core.ModelPricing, error) {
+func (d *fixedPricingDao) GetConversationCosts(models []string, tenantId string) (map[string]llmruntime.ModelPricing, error) {
 	return d.pricing, d.err
 }
 
@@ -122,10 +123,10 @@ func (d *fixedPricingDao) GetConversationCosts(models []string, tenantId string)
 // size, so calculateModelUsageStats must price each record independently and
 // sum the resulting dollars, not sum tokens first and price the aggregate.
 func TestModelUsageStatsCalculation_PerCallTiering(t *testing.T) {
-	original := core.GetConversationDao()
-	defer core.SetConversationDao(original)
-	core.SetConversationDao(&fixedPricingDao{
-		pricing: map[string]core.ModelPricing{
+	original := llmruntime.SetUsageStore(nil)
+	defer llmruntime.SetUsageStore(original)
+	llmruntime.SetUsageStore(&fixedPricingDao{
+		pricing: map[string]llmruntime.ModelPricing{
 			"googleai:gemini-3.1-pro-preview": {
 				CostPerMillionInput:         2,
 				CostPerMillionOutput:        12,
@@ -163,13 +164,13 @@ func TestModelUsageStatsCalculation_PerCallTiering(t *testing.T) {
 // made the analytics panel's per-model rows disagree with its own total — and
 // with Optimize → LLM Analyser — for any call billed before a pricing change.
 func TestModelUsageStatsCalculation_PrefersStoredCost(t *testing.T) {
-	original := core.GetConversationDao()
-	// Cleanup, not defer: the global DAO is restored even if this test panics or
+	original := llmruntime.SetUsageStore(nil)
+	// Cleanup, not defer: the global store is restored even if this test panics or
 	// exits early, so a failure here can't leak the fake into the next test.
-	t.Cleanup(func() { core.SetConversationDao(original) })
+	t.Cleanup(func() { llmruntime.SetUsageStore(original) })
 	// Live pricing is 10x what these calls were actually billed at.
-	core.SetConversationDao(&fixedPricingDao{
-		pricing: map[string]core.ModelPricing{
+	llmruntime.SetUsageStore(&fixedPricingDao{
+		pricing: map[string]llmruntime.ModelPricing{
 			"googleai:gemini-3-flash-preview": {CostPerMillionInput: 5, CostPerMillionOutput: 30},
 		},
 	})
@@ -198,10 +199,10 @@ func TestModelUsageStatsCalculation_PrefersStoredCost(t *testing.T) {
 // A model with no pricing row must be told apart from one priced at zero: both
 // cost $0, but only the first needs a Model Pricing entry.
 func TestModelUsageStatsCalculation_CountsUnpricedCalls(t *testing.T) {
-	original := core.GetConversationDao()
-	t.Cleanup(func() { core.SetConversationDao(original) })
-	core.SetConversationDao(&fixedPricingDao{
-		pricing: map[string]core.ModelPricing{
+	original := llmruntime.SetUsageStore(nil)
+	t.Cleanup(func() { llmruntime.SetUsageStore(original) })
+	llmruntime.SetUsageStore(&fixedPricingDao{
+		pricing: map[string]llmruntime.ModelPricing{
 			"custom:free-model": {CostPerMillionInput: 0, CostPerMillionOutput: 0},
 		},
 	})
@@ -230,9 +231,9 @@ func TestModelUsageStatsCalculation_CountsUnpricedCalls(t *testing.T) {
 
 // A failed pricing lookup must not send users to Model Pricing for a price that may exist.
 func TestModelUsageStatsCalculation_PricingLookupFailedFlagsNothing(t *testing.T) {
-	original := core.GetConversationDao()
-	t.Cleanup(func() { core.SetConversationDao(original) })
-	core.SetConversationDao(&fixedPricingDao{err: errors.New("db unavailable")})
+	original := llmruntime.SetUsageStore(nil)
+	t.Cleanup(func() { llmruntime.SetUsageStore(original) })
+	llmruntime.SetUsageStore(&fixedPricingDao{err: errors.New("db unavailable")})
 
 	records := []core.TokenUsageDetailedRecord{
 		{LLMProvider: "custom", LLMModel: "new-model", InputTokens: 1_000, RequestStatus: "success"},
@@ -264,7 +265,7 @@ func TestCacheSavingsCalculation(t *testing.T) {
 	}
 
 	// Mock costs for calculation
-	costs := map[string]core.ModelPricing{
+	costs := map[string]llmruntime.ModelPricing{
 		"anthropic:claude-3-5-sonnet": {
 			CostPerMillionInput:  3.0,
 			CostPerMillionOutput: 15.0,

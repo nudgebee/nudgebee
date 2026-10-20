@@ -219,8 +219,8 @@ type optSavingsIndex struct {
 	callsByType   map[string]int
 	// per (agentName \x00 model): token sums + current cost (model_downgrade basis)
 	byTypeModel map[string]optTok
-	pricing     map[string]ModelPricing // key provider:model
-	byModelName map[string]ModelPricing // key model name (for suggested_model lookup)
+	pricing     map[string]llmruntime.ModelPricing // key provider:model
+	byModelName map[string]llmruntime.ModelPricing // key model name (for suggested_model lookup)
 
 	// granular per-group data for verifiable evidence (token distribution, backing
 	// instance ids, exemplar calls). Keyed the same way findings are grouped.
@@ -268,7 +268,7 @@ func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accou
 	}
 	args := []any{sessionID, accountID}
 
-	pricing, err := chat.GetConversationCosts(nil, llmruntime.TenantForPricing(accountID))
+	pricing, err := llmruntime.NewUsageStore(chat.dbManager).GetConversationCosts(nil, llmruntime.TenantForPricing(accountID))
 	if err != nil {
 		return OptimizationProfile{}, nil, fmt.Errorf("GetConversationOptimizationProfile pricing: %w", err)
 	}
@@ -365,7 +365,7 @@ func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accou
 		callsByType:      map[string]int{},
 		byTypeModel:      map[string]optTok{},
 		pricing:          pricing,
-		byModelName:      map[string]ModelPricing{},
+		byModelName:      map[string]llmruntime.ModelPricing{},
 		granByType:       map[string]*optGroupGran{},
 		granByTypeModel:  map[string]*optGroupGran{},
 		taskByAgentID:    map[string]string{},
@@ -435,7 +435,7 @@ func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accou
 		if nonCached < 0 {
 			nonCached = 0
 		}
-		cost := CalculateTotalCost(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
+		cost := llmruntime.CalculateTotalCost(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
 		idx.totalCost += cost
 		costByAgentID[m.AgentID] += cost
 		latencyByAgentID[m.AgentID] += m.LatencySeconds
@@ -928,7 +928,7 @@ func assembleFindings(profile OptimizationProfile, idx *optSavingsIndex, llmResp
 			if !ok { // suggested model must be priced
 				continue
 			}
-			newCost := CalculateTotalCost(&target, tk.nonCached, tk.cached, tk.creation, tk.output, tk.thinking)
+			newCost := llmruntime.CalculateTotalCost(&target, tk.nonCached, tk.cached, tk.creation, tk.output, tk.thinking)
 			saving := tk.cost - newCost
 			if saving <= 0 {
 				continue
@@ -1213,7 +1213,7 @@ func parseToolFlags(tools []string) (ok, noData, errc int) {
 }
 
 // fmtRate renders a model's price as "in / out per Mtok".
-func fmtRate(p ModelPricing) string {
+func fmtRate(p llmruntime.ModelPricing) string {
 	return fmt.Sprintf("$%.2f in / $%.2f out per Mtok", p.CostPerMillionInput, p.CostPerMillionOutput)
 }
 

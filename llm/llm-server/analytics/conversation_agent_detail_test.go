@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func sumComponents(b core.CostBreakdown) float64 {
+func sumComponents(b llmruntime.CostBreakdown) float64 {
 	var s float64
 	for _, c := range b.Components {
 		s += c.CostUsd

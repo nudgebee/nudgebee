@@ -1452,7 +1452,7 @@ func hasThinkingLevelOption(options []llms.CallOption) bool {
 }
 
 func getAgentNameFromAgentId(agentId string) string {
-	agentName, err := getStore().GetAgentNameFromAgentId(agentId)
+	agentName, err := conversationPort.GetAgentNameFromAgentId(agentId)
 	if err != nil {
 		return ""
 	}
@@ -3761,7 +3761,7 @@ func RecordTokenUsageFailure(
 				logger.Error("recordTokenUsageFailure: recovered from panic in background token-usage write", "panic", r)
 			}
 		}()
-		dao := getStore()
+		dao := GetUsageStore()
 		if dao == nil {
 			bgCtx.GetLogger().Debug("recordTokenUsageFailure: skipping — conversation DAO unavailable")
 			return
@@ -3869,11 +3869,11 @@ func TrackTokenUsage(
 		}
 	}
 
-	// Best-effort tracking: if the conversation DAO is unavailable (e.g. the
+	// Best-effort tracking: if the usage store is unavailable (e.g. the
 	// metastore DB is down, or in hermetic tests), skip silently rather than
 	// dereferencing a nil interface and panicking this background goroutine —
 	// which would otherwise crash the process.
-	dao := getStore()
+	dao := GetUsageStore()
 	if dao == nil {
 		ctx.GetLogger().Debug("llm: skipping token usage tracking — conversation DAO unavailable")
 		return
@@ -3975,8 +3975,8 @@ func TrackTokenUsage(
 	}
 
 	// Update thought content on the agent record (if applicable)
-	if agentUUID != nil && trackContent && content != "" {
-		if err := dao.UpdateConversationAgentThought(*agentUUID, content); err != nil {
+	if agentUUID != nil && trackContent && content != "" && conversationPort != nil {
+		if err := conversationPort.UpdateConversationAgentThought(*agentUUID, content); err != nil {
 			ctx.GetLogger().Error("llm: unable to update agent thought", "error", err)
 		}
 	}

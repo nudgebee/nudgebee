@@ -5,9 +5,11 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	llmruntime "nudgebee/llm/llms/runtime"
 )
 
-func sumComponents(b CostBreakdown) float64 {
+func sumComponents(b llmruntime.CostBreakdown) float64 {
 	var s float64
 	for _, c := range b.Components {
 		s += c.CostUsd
@@ -18,15 +20,15 @@ func sumComponents(b CostBreakdown) float64 {
 // TestCalculateCostBreakdown_ReconcilesStandard verifies the per-component split
 // sums exactly to CalculateTotalCost on the standard tier, and labels it.
 func TestCalculateCostBreakdown_ReconcilesStandard(t *testing.T) {
-	p := ModelPricing{
+	p := llmruntime.ModelPricing{
 		CostPerMillionInput:       3.0,
 		CostPerMillionOutput:      15.0,
 		CostPerMillionCachedInput: sql.NullFloat64{Float64: 0.3, Valid: true},
 	}
 	nonCached, cached, creation, output, thinking := 90000, 10000, 0, 5000, 1000
 
-	total := CalculateTotalCost(&p, nonCached, cached, creation, output, thinking)
-	bd := CalculateCostBreakdown(&p, nonCached, cached, creation, output, thinking)
+	total := llmruntime.CalculateTotalCost(&p, nonCached, cached, creation, output, thinking)
+	bd := llmruntime.CalculateCostBreakdown(&p, nonCached, cached, creation, output, thinking)
 
 	assert.Equal(t, "standard", bd.Tier)
 	assert.Len(t, bd.Components, 4)
@@ -44,7 +46,7 @@ func TestCalculateCostBreakdown_ReconcilesStandard(t *testing.T) {
 // long-ctx rates are applied (and still reconcile) once the prompt crosses the
 // threshold.
 func TestCalculateCostBreakdown_LongContextTier(t *testing.T) {
-	p := ModelPricing{
+	p := llmruntime.ModelPricing{
 		CostPerMillionInput:         3.0,
 		CostPerMillionOutput:        15.0,
 		ContextThresholdTokens:      sql.NullInt64{Int64: 200000, Valid: true},
@@ -54,8 +56,8 @@ func TestCalculateCostBreakdown_LongContextTier(t *testing.T) {
 	// totalPrompt = 250k > 200k threshold → long-ctx.
 	nonCached, cached, creation, output, thinking := 250000, 0, 0, 1000, 0
 
-	total := CalculateTotalCost(&p, nonCached, cached, creation, output, thinking)
-	bd := CalculateCostBreakdown(&p, nonCached, cached, creation, output, thinking)
+	total := llmruntime.CalculateTotalCost(&p, nonCached, cached, creation, output, thinking)
+	bd := llmruntime.CalculateCostBreakdown(&p, nonCached, cached, creation, output, thinking)
 
 	assert.Equal(t, "long_context", bd.Tier)
 	assert.InDelta(t, total, sumComponents(bd), 1e-12)
@@ -69,7 +71,7 @@ func TestCalculateCostBreakdown_LongContextTier(t *testing.T) {
 
 // TestCalculateCostBreakdown_NilPricing returns an empty, standard breakdown.
 func TestCalculateCostBreakdown_NilPricing(t *testing.T) {
-	bd := CalculateCostBreakdown(nil, 10, 0, 0, 5, 0)
+	bd := llmruntime.CalculateCostBreakdown(nil, 10, 0, 0, 5, 0)
 	assert.Equal(t, "standard", bd.Tier)
 	assert.Empty(t, bd.Components)
 }

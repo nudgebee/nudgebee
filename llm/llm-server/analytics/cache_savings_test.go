@@ -4,12 +4,13 @@ import (
 	"testing"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/stretchr/testify/assert"
 )
 
 // Claude Sonnet 5 rates: $2 input, $10 output per million tokens.
-var sonnet5Pricing = map[string]core.ModelPricing{
+var sonnet5Pricing = map[string]llmruntime.ModelPricing{
 	"anthropic:claude-sonnet-5": {CostPerMillionInput: 2, CostPerMillionOutput: 10},
 	"googleai:gemini-3.8-flash": {CostPerMillionInput: 0.75, CostPerMillionOutput: 3.75},
 }

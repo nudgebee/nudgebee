@@ -83,24 +83,24 @@ func (c *imageSupportCache) lookup(provider, model string) (supported bool, know
 	return supported, known
 }
 
-// refresh reloads the catalog via the conversation DAO. Serialized by
+// refresh reloads the catalog via the usage store. Serialized by
 // refreshMu: double-checked locking means a goroutine that waited on the
 // lock re-checks staleness before querying, so only one goroutine per
 // TTL window actually hits the DB — the rest reuse whatever it loaded.
 //
-// Best-effort and does NOT cache failure: if the DAO/DB is unavailable, the
+// Best-effort and does NOT cache failure: if the store/DB is unavailable, the
 // previous snapshot (if any) is returned as-is and loadedAt is left
 // untouched, so the very next lookup retries immediately rather than
-// treating an outage (or a DAO that simply hasn't been established yet at
+// treating an outage (or a store that simply hasn't been established yet at
 // startup) as a 5-minute-long "known empty" catalog — which, combined with
 // IsVisionCapableModel's default-deny fallback, would otherwise disable
 // image support for every model during that window.
 //
-// Uses PeekConversationDao (not GetConversationDao) deliberately — this is a
+// Uses PeekUsageStore (not GetUsageStore) deliberately — this is a
 // nice-to-have lookup and must never pay the cost of establishing a fresh DB
 // connection itself. By the time a real request reaches an image check, the
-// conversation DAO singleton is already warm from earlier, mandatory use in
-// the same request's conversation lifecycle.
+// metastore connection is already open from earlier, mandatory use in the
+// same request's conversation lifecycle.
 func (c *imageSupportCache) refresh() map[string]bool {
 	c.refreshMu.Lock()
 	defer c.refreshMu.Unlock()
@@ -113,7 +113,7 @@ func (c *imageSupportCache) refresh() map[string]bool {
 		return values
 	}
 
-	dao := peekStore()
+	dao := PeekUsageStore()
 	if dao == nil {
 		return values
 	}

@@ -1,4 +1,4 @@
-package core
+package runtime
 
 import (
 	"nudgebee/llm/common"
@@ -14,7 +14,7 @@ func TestGetImageSupportCatalog_OmitsNullRows(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &usageDAO{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	mock.ExpectQuery("supports_image_input").WillReturnRows(
 		sqlmock.NewRows([]string{"provider_name", "model_name", "supports_image_input"}).
@@ -34,7 +34,7 @@ func TestGetImageSupportCatalog_TenantReadsOnlyThatTenantsRows(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &usageDAO{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	mock.ExpectQuery(`tenant_id = \$1`).
 		WithArgs("tenant-1").

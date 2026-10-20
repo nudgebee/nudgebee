@@ -350,7 +350,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	for _, record := range detailedRecords {
 		modelNames = append(modelNames, record.LLMModel)
 	}
-	costs, _ := core.GetConversationDao().GetConversationCosts(modelNames, llmruntime.PricingTenantFromContext(ctx))
+	costs, _ := llmruntime.GetUsageStore().GetConversationCosts(modelNames, llmruntime.PricingTenantFromContext(ctx))
 
 	// Add per-hour storage cost for conversation-scoped caches owned by this
 	// conversation. Account/tenant/global-scoped caches are excluded — their
@@ -479,9 +479,9 @@ func calculateModelUsageStats(records []core.TokenUsageDetailedRecord, tenantId 
 
 	// Fetch costs in batch. Tolerate a nil DAO (unit tests) — without pricing,
 	// CostUsd stays zero and only the per-model token aggregates are populated.
-	var costs map[string]core.ModelPricing
+	var costs map[string]llmruntime.ModelPricing
 	pricingLoaded := false
-	if dao := core.GetConversationDao(); dao != nil {
+	if dao := llmruntime.GetUsageStore(); dao != nil {
 		var err error
 		costs, err = dao.GetConversationCosts(modelNames, tenantId)
 		// A failed lookup says nothing about whether a price exists, so no call is flagged unpriced.
@@ -532,7 +532,7 @@ func calculateModelUsageStats(records []core.TokenUsageDetailedRecord, tenantId 
 			if nonCachedTokens < 0 {
 				nonCachedTokens = 0
 			}
-			stat.CostUsd += core.CalculateTotalCost(
+			stat.CostUsd += llmruntime.CalculateTotalCost(
 				&pricing,
 				nonCachedTokens,
 				record.CachedInputTokens,
@@ -575,7 +575,7 @@ func calculateModelUsageStats(records []core.TokenUsageDetailedRecord, tenantId 
 // Then sum and subtract the actual cost. The difference is what caching
 // saved (or, if negative, cost) for the period — accounting for both the
 // cached-read discount and any cache-write premium (e.g. Anthropic 1.25x).
-func calculateCacheSavings(records []core.TokenUsageDetailedRecord, actualCost float64, costs map[string]core.ModelPricing) CacheSavingsInfo {
+func calculateCacheSavings(records []core.TokenUsageDetailedRecord, actualCost float64, costs map[string]llmruntime.ModelPricing) CacheSavingsInfo {
 	totalCachedTokens := 0
 	totalPromptTokens := 0
 	estimatedCostWithoutCache := 0.0
@@ -590,7 +590,7 @@ func calculateCacheSavings(records []core.TokenUsageDetailedRecord, actualCost f
 			// For Anthropic and Bedrock the prompt includes the cache-write
 			// tokens, which are stored outside input_tokens; leaving them out
 			// made caching look cheaper than it was.
-			estimatedCostWithoutCache += core.CalculateTotalCost(
+			estimatedCostWithoutCache += llmruntime.CalculateTotalCost(
 				&pricing,
 				PromptTokens(record.LLMProvider, record.InputTokens, record.CacheCreationTokens), // whole prompt as non-cached
 				0, // no cached read

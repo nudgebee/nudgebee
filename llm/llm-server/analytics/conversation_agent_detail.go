@@ -72,25 +72,25 @@ type DetailToolCall struct {
 // DetailModelCall is one billable LLM API call under the agent, with its cost
 // justification and error/success detail.
 type DetailModelCall struct {
-	ID                  string             `json:"id"`
-	Model               string             `json:"model"`
-	Provider            string             `json:"provider"`
-	Status              string             `json:"status"`
-	IsError             bool               `json:"is_error"`
-	ErrorMessage        string             `json:"error_message"`
-	StopReason          string             `json:"stop_reason"`
-	IsCacheHit          bool               `json:"is_cache_hit"`
-	RetryAttempt        int                `json:"retry_attempt"`
-	InputTokens         int64              `json:"input_tokens"`
-	OutputTokens        int64              `json:"output_tokens"`
-	CachedInputTokens   int64              `json:"cached_input_tokens"`
-	CacheCreationTokens int64              `json:"cache_creation_tokens"`
-	ThinkingTokens      int64              `json:"thinking_tokens"`
-	CostUsd             float64            `json:"cost_usd"`
-	CostBreakdown       core.CostBreakdown `json:"cost_breakdown"`
-	LatencySeconds      float64            `json:"latency_seconds"`
-	TtftMs              int                `json:"ttft_ms"`
-	CreatedAt           time.Time          `json:"created_at"`
+	ID                  string                   `json:"id"`
+	Model               string                   `json:"model"`
+	Provider            string                   `json:"provider"`
+	Status              string                   `json:"status"`
+	IsError             bool                     `json:"is_error"`
+	ErrorMessage        string                   `json:"error_message"`
+	StopReason          string                   `json:"stop_reason"`
+	IsCacheHit          bool                     `json:"is_cache_hit"`
+	RetryAttempt        int                      `json:"retry_attempt"`
+	InputTokens         int64                    `json:"input_tokens"`
+	OutputTokens        int64                    `json:"output_tokens"`
+	CachedInputTokens   int64                    `json:"cached_input_tokens"`
+	CacheCreationTokens int64                    `json:"cache_creation_tokens"`
+	ThinkingTokens      int64                    `json:"thinking_tokens"`
+	CostUsd             float64                  `json:"cost_usd"`
+	CostBreakdown       llmruntime.CostBreakdown `json:"cost_breakdown"`
+	LatencySeconds      float64                  `json:"latency_seconds"`
+	TtftMs              int                      `json:"ttft_ms"`
+	CreatedAt           time.Time                `json:"created_at"`
 	// HasTrace is true when the stored prompt/response trace exists for this call
 	// (LLM_TRACE_ENABLED was on). Always returned (cheap) so the UI can show a
 	// "view prompt" action without transferring the (large) trace text.
@@ -283,7 +283,7 @@ func (chat *Store) GetConversationAgentDetail(sessionID, accountID, agentID, mod
 		return AgentDetail{}, fmt.Errorf("GetConversationAgentDetail model_calls: %w", err)
 	}
 
-	pricing, err := core.NewConversationDao(chat.dbManager).GetConversationCosts(nil, llmruntime.TenantForPricing(accountID))
+	pricing, err := llmruntime.NewUsageStore(chat.dbManager).GetConversationCosts(nil, llmruntime.TenantForPricing(accountID))
 	if err != nil {
 		return AgentDetail{}, fmt.Errorf("GetConversationAgentDetail pricing: %w", err)
 	}
@@ -296,8 +296,8 @@ func (chat *Store) GetConversationAgentDetail(sessionID, accountID, agentID, mod
 		if nonCached < 0 {
 			nonCached = 0
 		}
-		cost := core.CalculateTotalCost(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
-		breakdown := core.CalculateCostBreakdown(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
+		cost := llmruntime.CalculateTotalCost(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
+		breakdown := llmruntime.CalculateCostBreakdown(&p, nonCached, m.CachedInputTokens, m.CacheCreationTokens, m.OutputTokens, m.ThinkingTokens)
 
 		detail.ModelCalls = append(detail.ModelCalls, DetailModelCall{
 			ID:                  m.ID,
