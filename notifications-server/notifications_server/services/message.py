@@ -1110,7 +1110,7 @@ class MessageService:
     # ----------------------------- Installation loading -----------------------------
     async def get_installed_platforms_from_cache_or_db(self, session, tenant_id):
         if self.cache and self.cache.redis_client:
-            installed_platforms = self.cache.get_installations(tenant_id)
+            installed_platforms = await asyncio.to_thread(self.cache.get_installations, tenant_id)
             if installed_platforms is not None:
                 return installed_platforms
 
@@ -1122,7 +1122,7 @@ class MessageService:
                 session.expunge(ip)
 
         if installed_platforms and self.cache and self.cache.redis_client:
-            self.cache.cache_installations(tenant_id, installed_platforms)
+            await asyncio.to_thread(self.cache.cache_installations, tenant_id, installed_platforms)
 
         if installed_platforms:
             return installed_platforms

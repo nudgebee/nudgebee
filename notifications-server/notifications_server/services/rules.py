@@ -597,7 +597,7 @@ class NotificationRulesService:
         migration) cannot abort the caller's transaction; that case reads as no
         saved defaults and is not cached."""
         if self.cache and self.cache.redis_client:
-            cached = self.cache.get_default_policies(tenant_id)
+            cached = await asyncio.to_thread(self.cache.get_default_policies, tenant_id)
             if cached is not None:
                 return cached
         async with BaseDB.async_session(self.engine)() as session:
@@ -614,7 +614,7 @@ class NotificationRulesService:
                 LOG.exception("Error loading notification default policies for tenant %s: %s", tenant_id, e)
                 return {}
         if self.cache and self.cache.redis_client:
-            self.cache.cache_default_policies(tenant_id, policies)
+            await asyncio.to_thread(self.cache.cache_default_policies, tenant_id, policies)
         return policies
 
     async def get_default_policy(self, tenant_id, source):
@@ -816,7 +816,7 @@ class NotificationRulesService:
 
     async def get_notification_rules(self, tenant_id):
         if self.cache and self.cache.redis_client:
-            cached = self.cache.get_notification_rules(tenant_id)
+            cached = await asyncio.to_thread(self.cache.get_notification_rules, tenant_id)
             if cached:
                 return cached
 
@@ -838,7 +838,7 @@ class NotificationRulesService:
                 rule.missing_columns = frozenset()
             scope_loaded = await self._attach_account_ids(session, tenant_id, rules)
             if rules and scope_loaded and self.cache and self.cache.redis_client:
-                self.cache.cache_notification_rules(tenant_id, rules)
+                await asyncio.to_thread(self.cache.cache_notification_rules, tenant_id, rules)
             return rules
 
     @staticmethod

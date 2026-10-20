@@ -32,7 +32,9 @@ class Cache:
 
     @staticmethod
     def _create_redis_client():
-        """Create a new Redis client with connection pooling and retry logic"""
+        """Create a new Redis client with connection pooling and retry logic. The
+        client is kept even when the first ping fails: it connects per command, so
+        it starts working once Redis is reachable."""
         try:
             client = redis.Redis(
                 host=settings.redis.host,
@@ -49,12 +51,15 @@ class Cache:
                 socket_timeout=5,
                 retry=redis.retry.Retry(redis.backoff.ExponentialBackoff(), 3),
             )
+        except Exception as e:
+            LOG.exception(f"Unable to create Redis client. {e}")
+            return None
+        try:
             client.ping()
             LOG.info("Connected to Redis!")
-            return client
         except Exception as e:
-            LOG.exception(f"Unable to connect to Redis. {e}")
-            return None
+            LOG.warning(f"Redis is not reachable yet; reads fall back to the database until it is. {e}")
+        return client
 
     def _ensure_connection(self):
         """Ensure Redis connection is alive, reconnect if needed"""
@@ -87,7 +92,11 @@ class Cache:
         if not self.redis_client:
             return None
         key = f"notification_installations:{tenant_id}"
-        installations_json = self.redis_client.get(key)
+        try:
+            installations_json = self.redis_client.get(key)
+        except redis.RedisError as e:
+            LOG.warning(f"Error reading cached installations for tenant {tenant_id}: {e}")
+            return None
         if installations_json:
             installations_data = json.loads(installations_json)
             return [MessagingPlatform.from_dict(data) for data in installations_data]
@@ -127,7 +136,11 @@ class Cache:
         if not self.redis_client:
             return None
         key = f"notification_rules:v5:{tenant_id}"
-        rules_json = self.redis_client.get(key)
+        try:
+            rules_json = self.redis_client.get(key)
+        except redis.RedisError as e:
+            LOG.warning(f"Error reading cached notification rules for tenant {tenant_id}: {e}")
+            return None
         if rules_json:
             rules_data = json.loads(rules_json)
             from notifications_server.models.models import NotificationRules
@@ -168,7 +181,11 @@ class Cache:
         self._ensure_connection()
         if not self.redis_client:
             return None
-        cached = self.redis_client.get(f"notification_defaults:v1:{tenant_id}")
+        try:
+            cached = self.redis_client.get(f"notification_defaults:v1:{tenant_id}")
+        except redis.RedisError as e:
+            LOG.warning(f"Error reading cached notification default policies for tenant {tenant_id}: {e}")
+            return None
         return json.loads(cached) if cached else None
 
     def cache_event_entry(self, thread_ts, event_entry):
@@ -192,14 +209,17 @@ class Cache:
         if not self.redis_client:
             return None
         key = f"chat_event:{thread_ts}"
-        event_json = self.redis_client.get(key)
-        if event_json:
-            event_entry = json.loads(event_json)
-            timestamp = event_entry.get("timestamp")
-            if timestamp and time.time() - timestamp <= settings.redis.conversation_cache_expiration_minutes * 60:
-                return event_entry
-            else:
-                self.redis_client.delete(key)
+        try:
+            event_json = self.redis_client.get(key)
+            if event_json:
+                event_entry = json.loads(event_json)
+                timestamp = event_entry.get("timestamp")
+                if timestamp and time.time() - timestamp <= settings.redis.conversation_cache_expiration_minutes * 60:
+                    return event_entry
+                else:
+                    self.redis_client.delete(key)
+        except redis.RedisError as e:
+            LOG.warning(f"Error reading cached event entry {thread_ts}: {e}")
         return None
 
     def _json_serializable(self, obj):
