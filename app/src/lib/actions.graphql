@@ -9362,6 +9362,7 @@ type WorkflowDefinitionInput {
   description: String
   type: String
   default: String
+  required: Boolean
 }
 
 type WorkflowDefinitionTrigger {

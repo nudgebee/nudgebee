@@ -716,6 +716,7 @@ query ListWorkflowTemplates($request: WorkflowListTemplateRequest!) {
           description
           type
           default
+          required
         }
         triggers {
           type
