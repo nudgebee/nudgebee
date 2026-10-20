@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
@@ -70,8 +71,12 @@ func (a *AzureOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
-func (a *AzureOrchestratorAgent) GetModelCategory() core.ModelTier { return core.ModelTierReasoning }
-func (a *AzureOrchestratorAgent) GetCacheScope() core.CacheScope   { return core.CacheScopeAccount }
+func (a *AzureOrchestratorAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
+}
+func (a *AzureOrchestratorAgent) GetCacheScope() llmruntime.CacheScope {
+	return llmruntime.CacheScopeAccount
+}
 
 // IsWatchCapable: drives action sub-agents whose async outcome completes later,
 // so it may register a background watch.

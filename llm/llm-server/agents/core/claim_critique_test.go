@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	nbprompts "nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
@@ -22,7 +23,7 @@ func TestClaimShadowNeverAuditsTruncatedEvidence(t *testing.T) {
 	fake := &fakeLLMModel{response: validClaimAudit}
 	withFakeLLMModel(t, fake)
 	base := llmOverrideContext()
-	ctx := security.NewRequestContext(context.WithValue(base.GetContext(), contextKeyPreserveInput, true),
+	ctx := security.NewRequestContext(context.WithValue(base.GetContext(), llmruntime.ContextKeyPreserveInput, true),
 		base.GetSecurityContext(), base.GetLogger(), base.GetTracer(), base.GetMeter())
 	result := evaluateClaimShadow(ctx, NBAgentRequest{}, "why", "answer", "",
 		[]NBAgentPlannerToolActionStep{{Action: NBAgentPlannerToolAction{Tool: "metrics"}, Observation: strings.Repeat("CPU high ", 100)}})
@@ -35,7 +36,7 @@ func TestClaimShadowDoesNotContinueTruncatedOutput(t *testing.T) {
 	fake := &fakeLLMModel{turns: []fakeTurn{{content: validClaimAudit, stopReason: "length"}}}
 	withFakeLLMModel(t, fake)
 	base := llmOverrideContext()
-	ctx := security.NewRequestContext(context.WithValue(base.GetContext(), contextKeyPreserveInput, true),
+	ctx := security.NewRequestContext(context.WithValue(base.GetContext(), llmruntime.ContextKeyPreserveInput, true),
 		base.GetSecurityContext(), base.GetLogger(), base.GetTracer(), base.GetMeter())
 	result := evaluateClaimShadow(ctx, NBAgentRequest{}, "why", "answer", "",
 		[]NBAgentPlannerToolActionStep{{Action: NBAgentPlannerToolAction{Tool: "metrics"}, Observation: "CPU high"}})

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"time"
@@ -29,7 +30,7 @@ func (o *PromptPlanner) Plan(
 	fullInputs := map[string]any{}
 	fullInputs["input"] = input
 	fullInputs["query_context"] = o.request.ConversationContext
-	fullInputs[agentScratchpad] = o.constructScratchPad(intermediateSteps)
+	fullInputs[llmruntime.AgentScratchpad] = o.constructScratchPad(intermediateSteps)
 	fullInputs["today"] = time.Now().Format("January 02, 2006")
 
 	prompt, err := o.prompt.FormatPrompt(fullInputs)
@@ -69,7 +70,7 @@ func (o *PromptPlanner) Plan(
 	// Attach images from the current request to the last human message
 	mcList = AppendImagesToLastHumanMessage(mcList, o.request.Images)
 
-	result, err := GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, true, mcList, true, llms.WithTools(nbToolsToLlmTools(o.tools)), llms.WithTemperature(0.1))
+	result, err := llmruntime.GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, true, mcList, true, llms.WithTools(nbToolsToLlmTools(o.tools)), llms.WithTemperature(0.1))
 	if err != nil {
 		o.ctx.GetLogger().Error("toolagent: unable to save agent thought", "error", err)
 		return nil, nil, err
@@ -160,7 +161,7 @@ func (o *PromptPlanner) parseOutputInternal(contentResp *llms.ContentResponse) (
 
 func createPrompt(systemMessage string, tools []toolcore.NBTool, accountId string, agentName string, agentInstructions string, conversationContext string, extraMessages []prompts.MessageFormatter) prompts.ChatPromptTemplate {
 	messageFormatters := []prompts.MessageFormatter{prompts.NewSystemMessagePromptTemplate(systemMessage, nil)}
-	if IsSLMEnabled(accountId, agentName) {
+	if llmruntime.IsSLMEnabled(accountId, agentName) {
 		messageFormatters = append(messageFormatters, prompts.NewHumanMessagePromptTemplate(`Question: {{.input}}`, []string{"input"}))
 	} else {
 		messageFormatters = append(messageFormatters, prompts.NewHumanMessagePromptTemplate(`
@@ -194,7 +195,7 @@ func createPrompt(systemMessage string, tools []toolcore.NBTool, accountId strin
 	}
 
 	messageFormatters = append(messageFormatters, prompts.MessagesPlaceholder{
-		VariableName: agentScratchpad,
+		VariableName: llmruntime.AgentScratchpad,
 	})
 
 	previousMessageStr := messageFormatterToString(extraMessages)

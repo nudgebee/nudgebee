@@ -3,6 +3,7 @@ package agents
 import (
 	"fmt"
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -178,7 +179,7 @@ func (l *VisualizationAgent) Execute(ctx *security.RequestContext, request core.
 		// diagram), persisted as the agent's `response` by the executor. Passing
 		// true additionally writes it to the agent's `thought` column, which made
 		// the UI render the same chart twice (THOUGHT + RESPONSE) in Tool Details.
-		completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messageContent, false)
+		completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messageContent, false)
 		if err != nil {
 			ctx.GetLogger().Error("visualizer: unable to generate content", "error", err)
 			return core.NBAgentResponse{Response: nil}, err
@@ -237,6 +238,6 @@ func (l *VisualizationAgent) Execute(ctx *security.RequestContext, request core.
 	return core.NBAgentResponse{Response: []string{lastContent}, Status: core.ConversationStatusCompleted}, nil
 }
 
-func (l *VisualizationAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierSummary
+func (l *VisualizationAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierSummary
 }

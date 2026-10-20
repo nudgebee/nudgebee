@@ -12,6 +12,7 @@ import (
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
@@ -406,14 +407,14 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 	}
 
 	memoryCtx := security.NewRequestContext(
-		context.WithValue(context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierSummary), ContextKeyCacheScope, CacheScopeGlobal),
+		context.WithValue(context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary), llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	result, err := GenerateAndTrackLLMContent(memoryCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, "memory_extractor", false, messages, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
+	result, err := llmruntime.GenerateAndTrackLLMContent(memoryCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, "memory_extractor", false, messages, true, llms.WithTemperature(0.0), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil {
 		ctx.GetLogger().Error("agentexecutor: failed to extract long-term memory", "error", err)
 		return stats
@@ -774,7 +775,7 @@ func saveMemoryReferences(ctx *security.RequestContext, request NBAgentRequest, 
 			ctx.GetLogger().Warn("agentexecutor: failed to save memory references", "error", err)
 		}
 	}
-	if metricsPool := GetMetricsWorkerPool(); metricsPool != nil {
+	if metricsPool := llmruntime.GetMetricsWorkerPool(); metricsPool != nil {
 		if err := metricsPool.Submit(context.Background(), trackFn); err != nil {
 			ctx.GetLogger().Error("agentexecutor: failed to submit memory reference task to pool, falling back to goroutine", "error", err)
 			go trackFn()

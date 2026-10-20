@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -442,6 +443,6 @@ func (r RemediationAgent) GetSummaryToolName() string {
 	return ""
 }
 
-func (r RemediationAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierReasoning
+func (r RemediationAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
 }

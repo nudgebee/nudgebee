@@ -6,6 +6,7 @@ import (
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/stretchr/testify/require"
 )
@@ -49,10 +50,10 @@ func TestReAct4RefineWritesCritiqueCard(t *testing.T) {
 			t.Cleanup(func() { SetConversationDao(prev) })
 			// Route background token-usage writes through a pool that cleanup
 			// drains before the DAO above is restored (cleanups run LIFO).
-			prevPool := GetMetricsWorkerPool()
+			prevPool := llmruntime.GetMetricsWorkerPool()
 			pool := common.NewWorkerPool("critique-card-test-metrics", 1, 16)
-			SetMetricsWorkerPool(pool)
-			t.Cleanup(func() { pool.Stop(); SetMetricsWorkerPool(prevPool) })
+			llmruntime.SetMetricsWorkerPool(pool)
+			t.Cleanup(func() { pool.Stop(); llmruntime.SetMetricsWorkerPool(prevPool) })
 			withFakeLLMModel(t, &fakeLLMModel{turns: tc.turns})
 
 			ctx := llmOverrideContext()

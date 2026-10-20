@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"nudgebee/llm/knowledge"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/gin-gonic/gin"
 
@@ -229,7 +230,7 @@ func main() {
 		slog.Error("main: prompt catalog is incomplete", "error", err)
 		os.Exit(1)
 	}
-	if err := core.InitTokenizers(); err != nil {
+	if err := llmruntime.InitTokenizers(); err != nil {
 		slog.Error("main: failed to init tokenizers", "error", err)
 		return
 	}
@@ -350,7 +351,7 @@ func main() {
 		slog.Warn("main: failed to register waiting conversation expiry job", "error", err)
 	}
 
-	if err := core.RegisterLLMHookLinkCleanup(); err != nil {
+	if err := llmruntime.RegisterLLMHookLinkCleanup(); err != nil {
 		slog.Warn("main: failed to register LLM hook link cleanup job", "error", err)
 	}
 

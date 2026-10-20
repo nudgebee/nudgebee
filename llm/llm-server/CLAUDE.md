@@ -97,7 +97,7 @@ return "", fmt.Errorf("GetTenantIdFromAccountId: failed to get database manager:
 return "", err
 ```
 
-Sentinel errors live in `agents/core/errors.go`. Combine via `errors.Join()` or `fmt.Errorf("%w: %s", sentinel, detail)`. Custom HTTP error types in `common/errors.go`.
+Sentinel errors live in `agents/core/errors.go`; the LLM-call ones (`ErrLLMRateLimited`, `ErrLlmUnableToGenerate`, …) in `llms/runtime/llm_errors.go`. Combine via `errors.Join()` or `fmt.Errorf("%w: %s", sentinel, detail)`. Custom HTTP error types in `common/errors.go`.
 
 ### Logging
 
@@ -137,6 +137,7 @@ Not strictly enforced (no `.golangci.yml` config). Follow stdlib → external �
 - **`knowledge/`** — knowledge bases and skills: CRUD, integration sync, documents, RAG client, global context, skill selection (imports `tools/core`; `tools/core` never imports it)
 - **`agents/`** — autonomous agent implementations (190+ agent files)
 - **`agents/core/`** — agent framework: planner, executor, critiquer logic
+- **`llms/runtime/`** — the LLM runtime every agent calls through: model config and tier resolution, model construction, the generate/track call path, prompt caching, circuit breaker, token counting and usage recording. Imported as `llmruntime`. It never imports `agents/core`: the conversation state it needs (token-usage rows, live status, conversation model overrides, the run budget) comes through the `Store` interface and hooks in `llm_store.go`, which `agents/core` installs from `init()`
 - **`prompts/`** — all system prompts as YAML under `prompts/default/v1/` (Go-embedded via `prompts/loader.go`)
 - **`tools/`** — tool implementations for external system integrations
 - **`llms/`** — LLM provider clients (Bedrock, Azure, OpenAI, Vertex AI, etc.)
@@ -147,7 +148,7 @@ Not strictly enforced (no `.golangci.yml` config). Follow stdlib → external �
 - **`relay/`** — relay server communication for Kubernetes operations
 - **`ee/`** — enterprise-only extensions, stripped from the OSS build. Each fills an exported hook in `agents/core` from `init()` and is blank-imported from `cmd/imports_enterprise.go` (e.g. `ee/memory/corebridge` installs memory-v2 into `agents/core/memory.go`'s hooks, and `ee/memory/httpapi` registers the memory-v2 routes through `api.HandleMemoryV2ApisFn`)
 
-Import graph is clean: `agents/core/` → `tools/core/` (one-way). No circular dependencies.
+Import graph is clean: `agents/core/` → `llms/runtime/` → `tools/core/` (one-way). No circular dependencies.
 
 ### Agent Architecture
 

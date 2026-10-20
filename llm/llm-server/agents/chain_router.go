@@ -7,6 +7,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
@@ -472,7 +473,7 @@ func (l HelpAgent) Execute(ctx *security.RequestContext, request core.NBAgentReq
 		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, systemtMessages)),
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
-	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, routerPromptMessage, true)
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, routerPromptMessage, true)
 	if err != nil {
 		ctx.GetLogger().Error("helper: unable to generate content", "error", err)
 		return core.NBAgentResponse{}, err

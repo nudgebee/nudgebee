@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 )
 
@@ -207,7 +208,7 @@ func (chat *Store) GetConversationTree(sessionID, accountID string) (Conversatio
 		return ConversationTree{}, fmt.Errorf("GetConversationTree model_calls: %w", err)
 	}
 
-	pricing, err := core.NewConversationDao(chat.dbManager).GetConversationCosts(nil, core.TenantForPricing(accountID))
+	pricing, err := core.NewConversationDao(chat.dbManager).GetConversationCosts(nil, llmruntime.TenantForPricing(accountID))
 	if err != nil {
 		return ConversationTree{}, fmt.Errorf("GetConversationTree pricing: %w", err)
 	}
@@ -269,7 +270,7 @@ func (chat *Store) GetConversationTree(sessionID, accountID string) (Conversatio
 		totalIn += int64(m.InputTokens)
 		totalOut += int64(m.OutputTokens)
 		totalCached += int64(m.CachedInputTokens)
-		totalPrompt += int64(PromptTokens(m.Provider, m.InputTokens, m.CacheCreationTokens))
+		totalPrompt += int64(llmruntime.PromptTokens(m.Provider, m.InputTokens, m.CacheCreationTokens))
 	}
 
 	// --- Messages ---

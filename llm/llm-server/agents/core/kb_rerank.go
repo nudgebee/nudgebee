@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"nudgebee/llm/knowledge"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
@@ -97,8 +98,8 @@ func llmJudgeKBChunks(
 	// and the static system prompt above is what the global scope caches.
 	judgeCtx := security.NewRequestContext(
 		context.WithValue(
-			context.WithValue(rc.GetContext(), ContextKeyModelTier, ModelTierRetrieval),
-			ContextKeyCacheScope, CacheScopeGlobal,
+			context.WithValue(rc.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierRetrieval),
+			llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal,
 		),
 		rc.GetSecurityContext(),
 		rc.GetLogger(),
@@ -106,10 +107,10 @@ func llmJudgeKBChunks(
 		rc.GetMeter(),
 	)
 
-	result, err := GenerateAndTrackLLMContent(
+	result, err := llmruntime.GenerateAndTrackLLMContent(
 		judgeCtx, userID, accountID, conversationID, messageID,
 		"kb_rerank", false, messages, true,
-		llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask),
+		llms.WithTemperature(0.0), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask),
 	)
 	if err != nil || result == nil || len(result.Choices) == 0 {
 		// Fail open: the caller keeps the order rag-server gave it. A judge

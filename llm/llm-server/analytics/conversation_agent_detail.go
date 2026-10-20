@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 )
 
@@ -282,7 +283,7 @@ func (chat *Store) GetConversationAgentDetail(sessionID, accountID, agentID, mod
 		return AgentDetail{}, fmt.Errorf("GetConversationAgentDetail model_calls: %w", err)
 	}
 
-	pricing, err := core.NewConversationDao(chat.dbManager).GetConversationCosts(nil, core.TenantForPricing(accountID))
+	pricing, err := core.NewConversationDao(chat.dbManager).GetConversationCosts(nil, llmruntime.TenantForPricing(accountID))
 	if err != nil {
 		return AgentDetail{}, fmt.Errorf("GetConversationAgentDetail pricing: %w", err)
 	}

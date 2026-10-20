@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/google/uuid"
@@ -83,7 +84,7 @@ func TestModelConfigRoundTrip(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
 
 	// --- Round 1: dispatch blanket. Row should hold provider+model; tier NULL.
-	applyConversationModelConfig(ctx, dao, conversationID, "openai", "gpt-4o-mini", ConversationTierOverrides{}, "", false)
+	applyConversationModelConfig(ctx, dao, conversationID, "openai", "gpt-4o-mini", llmruntime.ConversationTierOverrides{}, "", false)
 
 	conv, err := dao.GetConversation(conversationID)
 	require.NoError(t, err)
@@ -91,16 +92,16 @@ func TestModelConfigRoundTrip(t *testing.T) {
 	assertNoTierOverrides(t, conv)
 
 	// Resolver should pick the blanket from this conversation (untagged call).
-	res, err := ResolveLLMConfig(ctx, accountID, "k8s_debug", conversationID)
+	res, err := llmruntime.ResolveLLMConfig(ctx, accountID, "k8s_debug", conversationID)
 	require.NoError(t, err)
 	assert.Equal(t, "openai", res.Provider)
 	assert.Equal(t, "gpt-4o-mini", res.Model)
 	assert.True(t, res.IsOverridden, "blanket conversation pick must be flagged as override")
 
 	// --- Round 2: dispatch tier picks. Blanket must clear; tier_overrides must persist.
-	tierPicks := ConversationTierOverrides{Picks: map[string]TierModelPick{
-		string(ModelTierReasoning): {Provider: "googleai", Model: "gemini-2.5-pro"},
-		string(ModelTierRetrieval): {Provider: "openai", Model: "gpt-4o-mini"},
+	tierPicks := llmruntime.ConversationTierOverrides{Picks: map[string]llmruntime.TierModelPick{
+		string(llmruntime.ModelTierReasoning): {Provider: "googleai", Model: "gemini-2.5-pro"},
+		string(llmruntime.ModelTierRetrieval): {Provider: "openai", Model: "gpt-4o-mini"},
 	}}
 	applyConversationModelConfig(ctx, dao, conversationID, "", "", tierPicks, "", false)
 
@@ -110,27 +111,27 @@ func TestModelConfigRoundTrip(t *testing.T) {
 	assertTierOverrides(t, conv, tierPicks)
 
 	// Resolver, scoped to the reasoning tier, should pick the per-tier model.
-	ctxReason := withTier(ctx, ModelTierReasoning)
-	res, err = ResolveLLMConfig(ctxReason, accountID, "k8s_debug", conversationID)
+	ctxReason := withTier(ctx, llmruntime.ModelTierReasoning)
+	res, err = llmruntime.ResolveLLMConfig(ctxReason, accountID, "k8s_debug", conversationID)
 	require.NoError(t, err)
 	assert.Equal(t, "googleai", res.Provider)
 	assert.Equal(t, "gemini-2.5-pro", res.Model)
 
-	ctxRetrieve := withTier(ctx, ModelTierRetrieval)
-	res, err = ResolveLLMConfig(ctxRetrieve, accountID, "k8s_debug", conversationID)
+	ctxRetrieve := withTier(ctx, llmruntime.ModelTierRetrieval)
+	res, err = llmruntime.ResolveLLMConfig(ctxRetrieve, accountID, "k8s_debug", conversationID)
 	require.NoError(t, err)
 	assert.Equal(t, "openai", res.Provider)
 	assert.Equal(t, "gpt-4o-mini", res.Model)
 
 	// --- Round 3: dispatch blanket again. Tier must clear; blanket replaces.
-	applyConversationModelConfig(ctx, dao, conversationID, "anthropic", "claude-opus-4-7", ConversationTierOverrides{}, "", false)
+	applyConversationModelConfig(ctx, dao, conversationID, "anthropic", "claude-opus-4-7", llmruntime.ConversationTierOverrides{}, "", false)
 
 	conv, err = dao.GetConversation(conversationID)
 	require.NoError(t, err)
 	assertBlanket(t, conv, "anthropic", "claude-opus-4-7")
 	assertNoTierOverrides(t, conv)
 
-	res, err = ResolveLLMConfig(ctx, accountID, "k8s_debug", conversationID)
+	res, err = llmruntime.ResolveLLMConfig(ctx, accountID, "k8s_debug", conversationID)
 	require.NoError(t, err)
 	assert.Equal(t, "anthropic", res.Provider)
 	assert.Equal(t, "claude-opus-4-7", res.Model)
@@ -156,7 +157,7 @@ func assertNoBlanket(t *testing.T, conv Conversation) {
 	}
 }
 
-func assertTierOverrides(t *testing.T, conv Conversation, want ConversationTierOverrides) {
+func assertTierOverrides(t *testing.T, conv Conversation, want llmruntime.ConversationTierOverrides) {
 	t.Helper()
 	require.NotNil(t, conv.LlmTierOverrides, "llm_tier_overrides must be loaded")
 	assert.Equal(t, want.Picks, conv.LlmTierOverrides.Picks)
@@ -170,13 +171,13 @@ func assertNoTierOverrides(t *testing.T, conv Conversation) {
 	assert.False(t, conv.LlmTierOverrides.HasAny(), "llm_tier_overrides must be NULL or empty")
 }
 
-func withTier(ctx *security.RequestContext, tier ModelTier) *security.RequestContext {
+func withTier(ctx *security.RequestContext, tier llmruntime.ModelTier) *security.RequestContext {
 	goCtx := ctx.GetContext()
 	if goCtx == nil {
 		goCtx = context.Background()
 	}
 	return security.NewRequestContext(
-		context.WithValue(goCtx, ContextKeyModelTier, tier),
+		context.WithValue(goCtx, llmruntime.ContextKeyModelTier, tier),
 		ctx.GetSecurityContext(), ctx.GetLogger(), nil, nil,
 	)
 }

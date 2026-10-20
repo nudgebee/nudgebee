@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -107,8 +108,8 @@ func (l *LogAgent) GetPlannerType() core.AgentPlannerType {
 }
 
 // GetModelCategory explicitly opts into Retrieval, matching agentModelCategory's default for untagged agents.
-func (l *LogAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierRetrieval
+func (l *LogAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierRetrieval
 }
 
 func (l *LogAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {

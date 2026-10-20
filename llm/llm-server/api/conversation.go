@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"nudgebee/llm/knowledge"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/analytics"
@@ -49,7 +50,7 @@ type ModelPricingListApiRequest struct{}
 // deliberately no tenant_id field: taking it from the request body would let a
 // caller write another tenant's prices.
 type ModelPricingUpsertApiRequest struct {
-	Prices []core.ModelPriceInput `json:"prices"`
+	Prices []llmruntime.ModelPriceInput `json:"prices"`
 }
 
 // The tenant is never taken from the request — it comes from the security
@@ -217,8 +218,8 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		logger := agentContext.GetLogger()
 
 		// Get default model (from existing hierarchy)
-		defaultProvider := core.GetLLMProvider(agentContext, request.AccountId, "", false, "")
-		defaultModel := core.GetLLMModelName(agentContext, request.AccountId, defaultProvider, "", false, "")
+		defaultProvider := llmruntime.GetLLMProvider(agentContext, request.AccountId, "", false, "")
+		defaultModel := llmruntime.GetLLMModelName(agentContext, request.AccountId, defaultProvider, "", false, "")
 
 		response := map[string]any{
 			"default": map[string]string{
@@ -338,7 +339,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
-		prices, err := core.ListModelPricing(dbManager, sc.GetTenantId())
+		prices, err := llmruntime.ListModelPricing(dbManager, sc.GetTenantId())
 		if err != nil {
 			agentContext.GetLogger().Error("api: error listing model pricing", "error", err)
 			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
@@ -368,7 +369,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 		sc := agentContext.GetSecurityContext()
-		if err := core.UpsertModelPricing(dbManager, sc.GetTenantId(), sc.GetUserId(), request.Prices); err != nil {
+		if err := llmruntime.UpsertModelPricing(dbManager, sc.GetTenantId(), sc.GetUserId(), request.Prices); err != nil {
 			agentContext.GetLogger().Error("api: error saving model pricing", "error", err)
 			// Validation failures are the caller's fault, so report them as 400
 			// with the message intact rather than a blanket 500.
@@ -398,7 +399,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 		sc := agentContext.GetSecurityContext()
-		removed, err := core.DeleteModelPricing(dbManager, sc.GetTenantId(), request.ProviderName, request.ModelName)
+		removed, err := llmruntime.DeleteModelPricing(dbManager, sc.GetTenantId(), request.ProviderName, request.ModelName)
 		if err != nil {
 			agentContext.GetLogger().Error("api: error deleting model pricing", "error", err)
 			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
@@ -491,7 +492,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
-		models, err := core.GetTenantWideConfiguredModels(sc.GetTenantId())
+		models, err := llmruntime.GetTenantWideConfiguredModels(sc.GetTenantId())
 		if err != nil {
 			agentContext.GetLogger().Error("api: error listing tenant models", "error", err)
 			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
@@ -556,7 +557,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		logger := agentContext.GetLogger()
 
 		// Get all configured models (ENV + DB, global + agent-specific)
-		models, err := core.GetAllConfiguredModels(request.AccountId)
+		models, err := llmruntime.GetAllConfiguredModels(request.AccountId)
 		if err != nil {
 			logger.Error("api: error listing models", "error", err)
 			c.JSON(500, BuildApiResponse(nil, []error{
@@ -568,8 +569,8 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		}
 
 		// Get the default model (first in resolution order)
-		defaultProvider := core.GetLLMProvider(agentContext, request.AccountId, "", false, "")
-		defaultModel := core.GetLLMModelName(agentContext, request.AccountId, defaultProvider, "", false, "")
+		defaultProvider := llmruntime.GetLLMProvider(agentContext, request.AccountId, "", false, "")
+		defaultModel := llmruntime.GetLLMModelName(agentContext, request.AccountId, defaultProvider, "", false, "")
 
 		// Build response. image_support advertises the server's image limits
 		// so the UI can enforce them client-side instead of guessing. Image
@@ -583,7 +584,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			// destinations, each with the models reachable through it. Only the
 			// server can compute this — endpoints and api keys are never
 			// serialized — so clients must not attempt their own grouping.
-			"credentials": core.BuildCredentialsFrom(request.AccountId, models),
+			"credentials": llmruntime.BuildCredentialsFrom(request.AccountId, models),
 			"default": map[string]string{
 				"provider": defaultProvider,
 				"model":    defaultModel,
@@ -677,7 +678,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		}
 
 		// Re-initialize context with resolution cache and rebuild agentContext
-		ctx := context.WithValue(c.Request.Context(), core.ContextKeyLLMResolution, core.NewLLMResolutionCache())
+		ctx := context.WithValue(c.Request.Context(), llmruntime.ContextKeyLLMResolution, llmruntime.NewLLMResolutionCache())
 		agentContext, err = BuildContextFromPayload(ctx, c, &actionRequest, tracer, meter, logger)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
@@ -707,7 +708,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 		}
 
 		// Optionally include model configuration info
-		var modelConfig *core.LLMConfigResolution
+		var modelConfig *llmruntime.LLMConfigResolution
 		if len(conversation.Messages) > 0 {
 			// Get agent name from first message, or use default
 			agentName := "llm"
@@ -716,7 +717,7 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			}
 
 			// Resolve model config for this conversation
-			modelConfig, err = core.ResolveLLMConfig(agentContext, request.AccountId, agentName, conversation.ID.String())
+			modelConfig, err = llmruntime.ResolveLLMConfig(agentContext, request.AccountId, agentName, conversation.ID.String())
 			if err != nil {
 				logger.Warn("api: failed to resolve model config for conversation",
 					"conversation_id", conversation.ID.String(),

@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -109,6 +110,6 @@ func (d DatadogContainersQueryAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeTool
 }
 
-func (d DatadogContainersQueryAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierRetrieval
+func (d DatadogContainersQueryAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierRetrieval
 }

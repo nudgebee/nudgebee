@@ -7,8 +7,8 @@ import (
 	"text/template"
 	"time"
 
-	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/watch"
@@ -82,7 +82,7 @@ func (s *llmSummarizer) Summarize(ctx *security.RequestContext, w watch.Watch, s
 	if w.UserID != nil {
 		userID = w.UserID.String()
 	}
-	resp, err := core.GenerateAndTrackLLMContent(
+	resp, err := llmruntime.GenerateAndTrackLLMContent(
 		ctx,
 		userID,
 		w.AccountID.String(),

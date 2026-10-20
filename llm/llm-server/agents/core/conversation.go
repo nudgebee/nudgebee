@@ -15,6 +15,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/knowledge"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
@@ -106,14 +107,14 @@ func generateConversationTitle(ctx *security.RequestContext, accountId string, c
 
 	// Use Lite model for title generation
 	titleCtx := security.NewRequestContext(
-		context.WithValue(context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierSummary), ContextKeyCacheScope, CacheScopeGlobal),
+		context.WithValue(context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary), llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	completion, err := GenerateAndTrackLLMContent(titleCtx, userId, accountId, conversationId, messageId, "summary_agent", false, messageContent, true, WithThinkingLevel(ThinkingLevelFastTask))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(titleCtx, userId, accountId, conversationId, messageId, "summary_agent", false, messageContent, true, llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil {
 		return "", fmt.Errorf("llm call for title generation failed: %w", err)
 	}
@@ -150,7 +151,7 @@ func generateConversationTitleAsync(ctx *security.RequestContext, conversationId
 		}
 	}
 
-	if agentName != "" && agentName == ToolLlm {
+	if agentName != "" && agentName == llmruntime.ToolLlm {
 		title = "Processing LLM Request"
 	}
 
@@ -325,14 +326,14 @@ func generateCompactResponse(ctx *security.RequestContext, accountId, conversati
 	// Reformatting a finished answer for Slack — no tools, no reasoning — so it
 	// resolves on the summary tier instead of the conversation's main model.
 	compactCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierSummary),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	completion, err := GenerateAndTrackLLMContent(compactCtx, userId, accountId, conversationId, messageId, "compact_response_agent", true, messageContent, false)
+	completion, err := llmruntime.GenerateAndTrackLLMContent(compactCtx, userId, accountId, conversationId, messageId, "compact_response_agent", true, messageContent, false)
 	if err != nil {
 		return "", fmt.Errorf("llm call for compact response generation failed: %w", err)
 	}
@@ -909,7 +910,7 @@ func markConversationActive(ctx *security.RequestContext, conversationId string,
 // llmConfigSource is handled outside the switch: pinning a config slot is
 // independent of picking a model, so it persists whichever of the two branches
 // below applies — or neither.
-func applyConversationModelConfig(ctx *security.RequestContext, dao IConversationDao, conversationId, llmProvider, llmModel string, llmTierOverrides ConversationTierOverrides, llmConfigSource string, llmConfigReset bool) {
+func applyConversationModelConfig(ctx *security.RequestContext, dao IConversationDao, conversationId, llmProvider, llmModel string, llmTierOverrides llmruntime.ConversationTierOverrides, llmConfigSource string, llmConfigReset bool) {
 	// A reset drops everything and takes no other write: the picker sends it
 	// only when nothing is selected, so there is nothing to persist after it.
 	if llmConfigReset {
@@ -967,8 +968,8 @@ type droppedTierPick struct {
 // provider AND model discarded it, so those tiers silently fell back to account
 // defaults. Guessing a provider from the config's first model is not a fix: on a
 // mixed config that row can belong to a different provider than the base slot.
-func tierOverridesFromPicks(picks map[string]toolcore.TierModelPick) (ConversationTierOverrides, []droppedTierPick) {
-	var overrides ConversationTierOverrides
+func tierOverridesFromPicks(picks map[string]toolcore.TierModelPick) (llmruntime.ConversationTierOverrides, []droppedTierPick) {
+	var overrides llmruntime.ConversationTierOverrides
 	var dropped []droppedTierPick
 	for tier, p := range picks {
 		if p.ConfigSource == "" && (p.Provider == "" || p.Model == "") {
@@ -976,9 +977,9 @@ func tierOverridesFromPicks(picks map[string]toolcore.TierModelPick) (Conversati
 			continue
 		}
 		if overrides.Picks == nil {
-			overrides.Picks = make(map[string]TierModelPick)
+			overrides.Picks = make(map[string]llmruntime.TierModelPick)
 		}
-		overrides.Picks[tier] = TierModelPick{Provider: p.Provider, Model: p.Model, ConfigSource: p.ConfigSource}
+		overrides.Picks[tier] = llmruntime.TierModelPick{Provider: p.Provider, Model: p.Model, ConfigSource: p.ConfigSource}
 	}
 	return overrides, dropped
 }
@@ -1268,7 +1269,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			} else {
 				title = DefaultConversationTitle
 			}
-			var saveTierOverrides *ConversationTierOverrides
+			var saveTierOverrides *llmruntime.ConversationTierOverrides
 			if llmTierOverrides.HasAny() {
 				to := llmTierOverrides
 				saveTierOverrides = &to
@@ -1342,13 +1343,13 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	// them up on every downstream LLM call.
 	parentContext := ctx.GetContext()
 	if request.QueryConfig.LlmProvider != "" {
-		parentContext = context.WithValue(parentContext, ContextKeyLlmProviderOverride, request.QueryConfig.LlmProvider)
+		parentContext = context.WithValue(parentContext, llmruntime.ContextKeyLlmProviderOverride, request.QueryConfig.LlmProvider)
 	}
 	if request.QueryConfig.LlmModelName != "" {
-		parentContext = context.WithValue(parentContext, ContextKeyLlmModelOverride, request.QueryConfig.LlmModelName)
+		parentContext = context.WithValue(parentContext, llmruntime.ContextKeyLlmModelOverride, request.QueryConfig.LlmModelName)
 	}
 	if llmTierOverrides.HasAny() {
-		parentContext = context.WithValue(parentContext, ContextKeyLlmTierModelOverrides, llmTierOverrides)
+		parentContext = context.WithValue(parentContext, llmruntime.ContextKeyLlmTierModelOverrides, llmTierOverrides)
 	}
 	// The pin falls back to the conversation row when the request didn't carry
 	// one. MergeFrom normally inherits it from the previous message, but that
@@ -1361,7 +1362,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		effectiveConfigSource = *conversation.LlmConfigSource
 	}
 	if effectiveConfigSource != "" {
-		parentContext = context.WithValue(parentContext, ContextKeyLlmConfigSourceOverride, effectiveConfigSource)
+		parentContext = context.WithValue(parentContext, llmruntime.ContextKeyLlmConfigSourceOverride, effectiveConfigSource)
 	}
 
 	ctx = security.NewRequestContext(
@@ -1462,7 +1463,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 
 		// Fallback to resolved config if still empty
 		if effectiveProvider == "" || effectiveModel == "" {
-			if res, err := ResolveLLMConfig(ctx, request.AccountId, agent.GetName(), request.ConversationId); err == nil {
+			if res, err := llmruntime.ResolveLLMConfig(ctx, request.AccountId, agent.GetName(), request.ConversationId); err == nil {
 				if effectiveProvider == "" {
 					effectiveProvider = res.Provider
 				}
@@ -1608,7 +1609,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	// TO Do move this to async task
 	// Single-shot internal classifiers have no user watching for an acknowledgment,
 	// so skip the acknowledgment_agent call for them.
-	if messageStatus != ConversationStatusWaiting && messageType != MessageTypeFollowup && agent.GetName() != RouterAgentName && agent.GetName() != ToolLlm && request.Query != "" && !isSingleShotClassifier(agent) {
+	if messageStatus != ConversationStatusWaiting && messageType != MessageTypeFollowup && agent.GetName() != RouterAgentName && agent.GetName() != llmruntime.ToolLlm && request.Query != "" && !isSingleShotClassifier(agent) {
 		processAcknowledgmentAsync(ctx, request.AccountId, request.Query, agent.GetName(), conversation.ID.String(), request.MessageId, request.UserId, request.ConversationSource)
 	}
 
@@ -1712,7 +1713,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	}
 	if len(agentResponse.Response) > 0 &&
 		agentResponse.AgentName != RouterAgentName &&
-		agentResponse.AgentName != ToolLlm &&
+		agentResponse.AgentName != llmruntime.ToolLlm &&
 		!isSingleShotClassifier(agent) &&
 		isContextExtractionApplicable(effectiveSource) {
 		updateConversationContextAsync(ctx, request, toolcore.StripChartData(agentResponseContent), conversation.ID.String(), conversation.Context, agentResponse.AgentName)
@@ -1809,7 +1810,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			}
 		}
 
-		if status == ConversationStatusCompleted && agentResponse.AgentName != ToolLlm {
+		if status == ConversationStatusCompleted && agentResponse.AgentName != llmruntime.ToolLlm {
 			computeProductivityMetricsAsync(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId)
 			// Post-hoc answer grading. Runs only after the answer row is
 			// committed above, so the grader reads the same text the user sees,
@@ -1837,7 +1838,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	if agentResponse.MessageId == "" {
 		agentResponse.MessageId = request.MessageId
 	}
-	if agentResponse.FollowupRequest.Question == "" && agentResponse.Status != ConversationStatusWaiting && agentResponse.Status != ConversationStatusWaitingForClientTool && agent.GetName() != RouterAgentName && agentResponse.AgentName != ToolLlm && !isSingleShotClassifier(agent) {
+	if agentResponse.FollowupRequest.Question == "" && agentResponse.Status != ConversationStatusWaiting && agentResponse.Status != ConversationStatusWaitingForClientTool && agent.GetName() != RouterAgentName && agentResponse.AgentName != llmruntime.ToolLlm && !isSingleShotClassifier(agent) {
 		tools := agent.GetSupportedTools(ctx)
 		evaluateAgentResponseAsync(ctx, agentResponse, request.AccountId, tools, request.UserId)
 	}
@@ -1848,7 +1849,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	}
 
 	// Generate compact response for InstantNotification source (Slack) and Investigation
-	if config.Config.SlackCompactResponse && (effectiveSource == ConversationSourceInstantNotification || effectiveSource == ConversationSourceInvestigation) && status == ConversationStatusCompleted && len(agentResponse.Response) > 0 && agentResponse.Response[0] != "" && agentResponse.AgentName != ToolLlm {
+	if config.Config.SlackCompactResponse && (effectiveSource == ConversationSourceInstantNotification || effectiveSource == ConversationSourceInvestigation) && status == ConversationStatusCompleted && len(agentResponse.Response) > 0 && agentResponse.Response[0] != "" && agentResponse.AgentName != llmruntime.ToolLlm {
 		// The rewrite model sees chart placeholders, not chart data, and the charts
 		// are put back after: a model must never retype chart numbers.
 		compactResponse, compactErr := generateCompactResponse(ctx, request.AccountId, request.ConversationId, request.MessageId, request.UserId, request.Query, toolcore.StripChartData(agentResponse.Response[0]))

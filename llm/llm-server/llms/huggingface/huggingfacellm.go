@@ -138,7 +138,7 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 		Content: parseMessageResponse(result.Text),
 	}
 	if result.PromptTokens > 0 || result.CompletionTokens > 0 {
-		// Key names match the extractor in agents/core/llm_common.go:653-663
+		// Key names match the extractor in llms/runtime/llm_common.go:653-663
 		// (uses Anthropic-style InputTokens/OutputTokens, not OpenAI naming).
 		choice.GenerationInfo = map[string]any{
 			"InputTokens":  result.PromptTokens,

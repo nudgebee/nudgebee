@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"nudgebee/llm/llms/googleai"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
@@ -141,11 +142,11 @@ func withModelThinking(model string, opts []llms.CallOption) []llms.CallOption {
 	if !ok {
 		return opts
 	}
-	clamped := clampThinkingLevel(model, level)
+	clamped := llmruntime.ClampThinkingLevel(model, level)
 	if clamped == "" {
 		clamped = "none"
 	}
-	return append(opts, WithThinkingLevel(clamped))
+	return append(opts, llmruntime.WithThinkingLevel(clamped))
 }
 
 func maxDuration(ds []time.Duration) time.Duration {

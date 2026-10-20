@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -331,7 +332,7 @@ func TestInferToolRequestTypeFromPrompt_Answers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := stubGenerate(t, tc.answers, nil)
 			ctx := security.NewRequestContext(
-				context.WithValue(context.Background(), ContextKeyModelTier, ModelTierReasoning),
+				context.WithValue(context.Background(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning),
 				security.NewRequestContextForSuperAdmin().GetSecurityContext(), slog.Default(), nil, nil)
 			got, err := inferToolRequestTypeFromPrompt(ctx, NBAgentRequest{AccountId: "test-account"}, agent, "mock_cli",
 				NBAgentPlannerToolAction{Tool: "mock_cli", ToolInput: "mock list"}, tool)
@@ -345,10 +346,10 @@ func TestInferToolRequestTypeFromPrompt_Answers(t *testing.T) {
 // The check runs on the calling agent's tier. A caller with no tier gets the
 // classification tier, which is the summary tier until one is configured.
 func TestInferToolRequestTypeFromPrompt_Tier(t *testing.T) {
-	var tier ModelTier
+	var tier llmruntime.ModelTier
 	old := classificationGenerate
 	classificationGenerate = func(ctx *security.RequestContext, _, _, _, _, _ string, _ bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
-		tier = modelTierFromContext(ctx)
+		tier = llmruntime.ModelTierFromContext(ctx)
 		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "read"}}}, nil
 	}
 	t.Cleanup(func() { classificationGenerate = old })
@@ -357,20 +358,20 @@ func TestInferToolRequestTypeFromPrompt_Tier(t *testing.T) {
 	agent := mockAgentWithTools{mockPlainAgent: mockPlainAgent{name: "test_agent"}, tools: []toolcore.NBTool{tool}}
 	cases := []struct {
 		name       string
-		callerTier ModelTier
+		callerTier llmruntime.ModelTier
 		source     string // where the classification tier would resolve from
-		want       ModelTier
+		want       llmruntime.ModelTier
 	}{
-		{"caller tier is kept", ModelTierRetrieval, "db-tier", ModelTierRetrieval},
-		{"no caller tier, classification not configured", "", "db-global", ModelTierSummary},
-		{"no caller tier, classification configured", "", "db-tier", ModelTierClassification},
+		{"caller tier is kept", llmruntime.ModelTierRetrieval, "db-tier", llmruntime.ModelTierRetrieval},
+		{"no caller tier, classification not configured", "", "db-global", llmruntime.ModelTierSummary},
+		{"no caller tier, classification configured", "", "db-tier", llmruntime.ModelTierClassification},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			stubClassificationTier(t, tc.source)
 			goCtx := context.Background()
 			if tc.callerTier != "" {
-				goCtx = context.WithValue(goCtx, ContextKeyModelTier, tc.callerTier)
+				goCtx = context.WithValue(goCtx, llmruntime.ContextKeyModelTier, tc.callerTier)
 			}
 			ctx := security.NewRequestContext(goCtx, security.NewRequestContextForSuperAdmin().GetSecurityContext(), slog.Default(), nil, nil)
 			_, err := inferToolRequestTypeFromPrompt(ctx, NBAgentRequest{AccountId: "test-account"}, agent, "mock_cli",

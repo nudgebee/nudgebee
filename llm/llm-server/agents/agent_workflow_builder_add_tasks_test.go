@@ -8,6 +8,7 @@ import (
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -459,7 +460,7 @@ func TestGetTaskSchema_SingleTypeIsUnchanged(t *testing.T) {
 // A build asks for less reasoning only from a model whose default is higher. Asking a model that
 // does not reason by default for "low" would switch reasoning on.
 func TestLowReasoningLevel_OnlyLowersADefault(t *testing.T) {
-	assert.Equal(t, core.ThinkingLevelLow, lowReasoningLevel("gemini-3-flash-preview"))
+	assert.Equal(t, llmruntime.ThinkingLevelLow, lowReasoningLevel("gemini-3-flash-preview"))
 	// Already at low by default, or not reasoning by default: nothing is asked for.
 	for _, model := range []string{"gemini-3-pro-preview", "gemini-2.5-flash", "claude-sonnet-4-6", "us.anthropic.claude-sonnet-4-5-20250929-v1:0", "gpt-5", ""} {
 		assert.Empty(t, lowReasoningLevel(model), model)
@@ -470,6 +471,6 @@ func TestLowReasoningLevel_OnlyLowersADefault(t *testing.T) {
 	config.Config.LlmProviderThinkingLevel = "minimal"
 	assert.Empty(t, lowReasoningLevel("gemini-3-flash-preview"))
 	config.Config.LlmProviderThinkingLevel = "HIGH"
-	assert.Equal(t, core.ThinkingLevelLow, lowReasoningLevel("gemini-3-flash-preview"))
+	assert.Equal(t, llmruntime.ThinkingLevelLow, lowReasoningLevel("gemini-3-flash-preview"))
 	assert.Empty(t, lowReasoningLevel("claude-sonnet-4-6"))
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/google/uuid"
@@ -326,12 +327,12 @@ func TestValidateImages_MIMEMismatch(t *testing.T) {
 
 func TestIsVisionCapableModel_DefaultDenyList(t *testing.T) {
 	// Regex-denied models are never vision-capable, regardless of DB state.
-	assert.False(t, IsVisionCapableModel("", "openai", "gpt-3.5-turbo"))
-	assert.False(t, IsVisionCapableModel("", "bedrock", "claude-2.1"))
-	assert.False(t, IsVisionCapableModel("", "bedrock", "claude-instant-v1"))
-	assert.False(t, IsVisionCapableModel("", "bedrock", "amazon.titan-text-express-v1"))
-	assert.False(t, IsVisionCapableModel("", "bedrock", "cohere.command-text-v14"))
-	assert.False(t, IsVisionCapableModel("", "bedrock", "cohere.command-light-text-v14"))
+	assert.False(t, llmruntime.IsVisionCapableModel("", "openai", "gpt-3.5-turbo"))
+	assert.False(t, llmruntime.IsVisionCapableModel("", "bedrock", "claude-2.1"))
+	assert.False(t, llmruntime.IsVisionCapableModel("", "bedrock", "claude-instant-v1"))
+	assert.False(t, llmruntime.IsVisionCapableModel("", "bedrock", "amazon.titan-text-express-v1"))
+	assert.False(t, llmruntime.IsVisionCapableModel("", "bedrock", "cohere.command-text-v14"))
+	assert.False(t, llmruntime.IsVisionCapableModel("", "bedrock", "cohere.command-light-text-v14"))
 }
 
 // TestIsVisionCapableModel_UnconfirmedModelsDefaultDeny documents the
@@ -339,88 +340,14 @@ func TestIsVisionCapableModel_DefaultDenyList(t *testing.T) {
 // vision-capable absent an explicit llm_model_pricing.supports_image_input
 // row. Absence from the deny-list is not evidence of vision support.
 func TestIsVisionCapableModel_UnconfirmedModelsDefaultDeny(t *testing.T) {
-	assert.False(t, IsVisionCapableModel("", "bedrock", "anthropic.claude-sonnet-4-20250514-v1:0"))
-	assert.False(t, IsVisionCapableModel("", "openai", "gpt-4o"))
-	assert.False(t, IsVisionCapableModel("", "googleai", "gemini-2.0-flash"))
+	assert.False(t, llmruntime.IsVisionCapableModel("", "bedrock", "anthropic.claude-sonnet-4-20250514-v1:0"))
+	assert.False(t, llmruntime.IsVisionCapableModel("", "openai", "gpt-4o"))
+	assert.False(t, llmruntime.IsVisionCapableModel("", "googleai", "gemini-2.0-flash"))
 }
 
 func TestIsVisionCapableModel_CaseInsensitive(t *testing.T) {
-	assert.False(t, IsVisionCapableModel("", "openai", "GPT-3.5-turbo"))
-	assert.False(t, IsVisionCapableModel("", "bedrock", "Claude-2"))
-}
-
-// TestIsVisionCapableModel_AnchoredPatterns ensures the deny-list regexes do
-// not accidentally match a model whose name shares a substring with an old
-// non-vision model. The biggest historical footgun was the bare "cohere"
-// prefix that blanket-rejected every Cohere model. Checked directly against
-// the compiled patterns (not IsVisionCapableModel) since overall vision
-// capability now also depends on DB state — this test isolates regex
-// correctness from that (see TestIsVisionCapableModel_UnconfirmedModelsDefaultDeny).
-func TestIsVisionCapableModel_AnchoredPatterns(t *testing.T) {
-	regexes := compileVisionDenyPatterns(defaultNonVisionPatterns)
-	deniedByRegex := func(model string) bool {
-		for _, re := range regexes {
-			if re.MatchString(model) {
-				return true
-			}
-		}
-		return false
-	}
-	// New Cohere models like command-r/r-plus must not be blanket-rejected
-	assert.False(t, deniedByRegex("cohere.command-r-plus-v1"), "cohere command-r should not match the deny-list")
-	assert.False(t, deniedByRegex("cohere.embed-english-v3"), "cohere embed should not match the deny-list")
-	// gpt-4 (with vision) and gpt-4-turbo must not be caught by gpt-4-base pattern
-	assert.False(t, deniedByRegex("gpt-4"), "gpt-4 should not match the deny-list")
-	assert.False(t, deniedByRegex("gpt-4-turbo-2024-04-09"), "gpt-4-turbo should not match the deny-list")
-	// claude-3 / claude-4 must not be caught by claude-2 pattern
-	assert.False(t, deniedByRegex("anthropic.claude-3-opus-20240229-v1:0"), "claude-3 should not match the deny-list")
-	assert.False(t, deniedByRegex("anthropic.claude-sonnet-4-5"), "claude-4 should not match the deny-list")
-}
-
-func TestHasImageParts_NoImages(t *testing.T) {
-	msgs := []llms.MessageContent{
-		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: "hello"}}},
-	}
-	assert.False(t, hasImageParts(msgs))
-}
-
-func TestHasImageParts_WithBinaryContent(t *testing.T) {
-	msgs := []llms.MessageContent{
-		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{
-			llms.TextContent{Text: "describe this"},
-			llms.BinaryContent{MIMEType: "image/png", Data: pngHeader},
-		}},
-	}
-	assert.True(t, hasImageParts(msgs))
-}
-
-func TestHasImageParts_WithImageURL(t *testing.T) {
-	msgs := []llms.MessageContent{
-		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{
-			llms.ImageURLContent{URL: "https://example.com/img.png"},
-		}},
-	}
-	assert.True(t, hasImageParts(msgs))
-}
-
-func TestStripImagePartsWithFallback(t *testing.T) {
-	msgs := []llms.MessageContent{
-		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: "system prompt"}}},
-		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{
-			llms.TextContent{Text: "describe this"},
-			llms.BinaryContent{MIMEType: "image/png", Data: pngHeader},
-			llms.ImageURLContent{URL: "https://example.com/img.png"},
-		}},
-	}
-	result := stripImagePartsWithFallback(msgs)
-
-	assert.Len(t, result, 2)
-	// System message unchanged
-	assert.Len(t, result[0].Parts, 1)
-	// Human message: text + fallback note, images removed
-	assert.Len(t, result[1].Parts, 2)
-	assert.Equal(t, "describe this", result[1].Parts[0].(llms.TextContent).Text)
-	assert.Contains(t, result[1].Parts[1].(llms.TextContent).Text, "2 image(s) were attached but cannot be processed")
+	assert.False(t, llmruntime.IsVisionCapableModel("", "openai", "GPT-3.5-turbo"))
+	assert.False(t, llmruntime.IsVisionCapableModel("", "bedrock", "Claude-2"))
 }
 
 // --- Phase 4: Content Part Conversion Tests ---

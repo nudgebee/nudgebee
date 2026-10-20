@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -332,6 +333,6 @@ func (a WorkflowAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
 
-func (a WorkflowAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierReasoning
+func (a WorkflowAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
 }

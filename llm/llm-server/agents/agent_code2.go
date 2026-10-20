@@ -19,6 +19,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/knowledge"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -224,7 +225,7 @@ Each call runs a full (expensive) analysis — decide the intended outcome first
 	core.RegisterNBAgentFactoryAndToolWithAliases(AgentCodeAnalyzer, codeAnalyzerFactory, toolDescription, toolInput, toolOutput, agentCodeAnalyzerLegacyName)
 }
 
-func forwardedLLMConfigToMap(c *core.ForwardedLLMConfig) map[string]any {
+func forwardedLLMConfigToMap(c *llmruntime.ForwardedLLMConfig) map[string]any {
 	m := map[string]any{"provider": c.Provider}
 	if c.Model != "" {
 		m["model"] = c.Model
@@ -279,8 +280,8 @@ func forwardedLLMConfigToMap(c *core.ForwardedLLMConfig) map[string]any {
 // block dispatch instead of silently proceeding — the pod would otherwise run
 // with no usable credentials at all. logPrefix matches each call site's
 // existing "code"/"code followup" log prefix convention.
-func resolveLLMConfigForDispatch(ctx *security.RequestContext, accountId, agentName, conversationId, logPrefix string) (*core.ForwardedLLMConfig, error) {
-	llmCfg, err := core.ResolveLLMConfigForForwarding(ctx, accountId, agentName, conversationId)
+func resolveLLMConfigForDispatch(ctx *security.RequestContext, accountId, agentName, conversationId, logPrefix string) (*llmruntime.ForwardedLLMConfig, error) {
+	llmCfg, err := llmruntime.ResolveLLMConfigForForwarding(ctx, accountId, agentName, conversationId)
 	if err != nil {
 		return nil, fmt.Errorf("%s: failed to resolve LLM config for forwarding: %w", logPrefix, err)
 	}
@@ -1130,7 +1131,7 @@ func asJSONString(v any) string {
 // records (older pod image), the previous single-aggregate-row behavior is
 // kept unchanged.
 // modelTier and taskType are the tier attribution for this turn, resolved by the
-// CALLER via core.TierAttributionForRecord while the request context is still
+// CALLER via llmruntime.TierAttributionForRecord while the request context is still
 // live — this function runs in a goroutine that outlives the request, so it must
 // not read the context itself. Both nil on uninstrumented paths, which writes
 // NULL and keeps "legacy row" distinguishable from a real tier.
@@ -1277,13 +1278,13 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 // trackTokenUsage rationale; storage cost lives in llm_cache_lifecycle.
 func buildCodeAnalysisUsageRecord(query core.NBAgentRequest, agentUUID *string, dao core.IConversationDao,
 	provider, model string, promptTokens, cachedTokens, creationTokens, completionTokens, thinkingTokens int,
-	latencySeconds *float64, modelTier, taskType *string) *core.TokenUsageRecord {
+	latencySeconds *float64, modelTier, taskType *string) *llmruntime.TokenUsageRecord {
 	nonCachedPromptTokens := promptTokens - cachedTokens
 	if nonCachedPromptTokens < 0 {
 		nonCachedPromptTokens = 0
 	}
 	var costUsd *float64
-	if cost, err := dao.GetConversationCost(provider, model, nonCachedPromptTokens, cachedTokens, creationTokens, completionTokens, thinkingTokens, core.TenantForPricing(query.AccountId)); err == nil {
+	if cost, err := dao.GetConversationCost(provider, model, nonCachedPromptTokens, cachedTokens, creationTokens, completionTokens, thinkingTokens, llmruntime.TenantForPricing(query.AccountId)); err == nil {
 		costUsd = &cost
 	} else {
 		slog.Debug("code: no pricing data for cost calc", "provider", provider, "model", model, "error", err)
@@ -1296,7 +1297,7 @@ func buildCodeAnalysisUsageRecord(query core.NBAgentRequest, agentUUID *string, 
 		cacheHitRate = &rate
 	}
 
-	record := &core.TokenUsageRecord{
+	record := &llmruntime.TokenUsageRecord{
 		ConversationID:      query.ConversationId,
 		MessageID:           query.MessageId,
 		AgentID:             agentUUID,
@@ -1922,7 +1923,7 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 	// Record token usage from code-analysis service (fire-and-forget). Tier
 	// attribution is resolved here, on the request goroutine, because the
 	// recorder outlives the request context.
-	modelTier, taskType := core.TierAttributionForRecord(ctx)
+	modelTier, taskType := llmruntime.TierAttributionForRecord(ctx)
 	go recordCodeAnalysisTokenUsage(query, wsResult.TokenUsage, latency, modelTier, taskType)
 
 	// workspace path returns agent_response directly — parse and enrich
@@ -2858,7 +2859,7 @@ Log data: %v`
 	}
 
 	// Generate completion with temperature 0 for more deterministic results
-	completion, err := core.GenerateAndTrackLLMContent(ctx, userId, accountId, conversationId, messageId, agentId, false, messageHistory, true, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, userId, accountId, conversationId, messageId, agentId, false, messageHistory, true, llms.WithTemperature(0.0))
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract k8s info from log data: %w", err)
 	}
@@ -3174,7 +3175,7 @@ Reply with ONLY the chosen URL (exactly as listed above) or the single word UNCE
 		llms.TextParts(llms.ChatMessageTypeHuman, prompt),
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(
+	completion, err := llmruntime.GenerateAndTrackLLMContent(
 		ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId,
 		query.AgentId, false, messages, true, llms.WithTemperature(0.0),
 	)
@@ -3227,7 +3228,7 @@ Text: %v`
 	}
 
 	// Generate completion with temperature 0 for more deterministic results
-	completion, err := core.GenerateAndTrackLLMContent(ctx, userId, accountId, conversationId, messageId, agentId, false, messageHistory, true, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, userId, accountId, conversationId, messageId, agentId, false, messageHistory, true, llms.WithTemperature(0.0))
 	if err != nil {
 		return "", "", fmt.Errorf("failed to extract git repo from query: %w", err)
 	}
@@ -3463,7 +3464,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	var asyncResp map[string]any
 	if err := json.Unmarshal(respBytes, &asyncResp); err != nil {
 		result := extractAgentResponseWithTokenUsage(respBytes)
-		modelTier, taskType := core.TierAttributionForRecord(ctx)
+		modelTier, taskType := llmruntime.TierAttributionForRecord(ctx)
 		go recordCodeAnalysisTokenUsage(query, result.TokenUsage, time.Since(followupStart).Seconds(), modelTier, taskType)
 		return core.NBAgentResponse{Response: []string{result.AgentResponse}}, nil
 	}
@@ -3471,7 +3472,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	// Sync response (backward compat)
 	if _, hasResult := asyncResp["agent_response"]; hasResult {
 		result := extractAgentResponseWithTokenUsage(respBytes)
-		modelTier, taskType := core.TierAttributionForRecord(ctx)
+		modelTier, taskType := llmruntime.TierAttributionForRecord(ctx)
 		go recordCodeAnalysisTokenUsage(query, result.TokenUsage, time.Since(followupStart).Seconds(), modelTier, taskType)
 		return core.NBAgentResponse{Response: []string{result.AgentResponse}}, nil
 	}
@@ -3564,7 +3565,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 			}
 			logger.Info("code followup: analysis completed", "analysis_id", analysisID)
 			caResult := extractAgentResponseWithTokenUsage(resultBytes)
-			modelTier, taskType := core.TierAttributionForRecord(ctx)
+			modelTier, taskType := llmruntime.TierAttributionForRecord(ctx)
 			go recordCodeAnalysisTokenUsage(query, caResult.TokenUsage, time.Since(followupStart).Seconds(), modelTier, taskType)
 			return core.NBAgentResponse{Response: []string{caResult.AgentResponse}}, nil
 		case "failed":
@@ -3575,6 +3576,6 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	}
 }
 
-func (l CodeAgent2) GetModelCategory() core.ModelTier {
-	return core.ModelTierReasoning
+func (l CodeAgent2) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
 }

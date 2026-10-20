@@ -2,6 +2,7 @@ package core
 
 import (
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -113,14 +114,14 @@ func linkStepCitations(ctx *security.RequestContext, finder toolCallRowFinder, c
 		if inv.DisplayID == "" || toolID == "" {
 			continue
 		}
-		if !containsString(stepToolIDs[inv.DisplayID], toolID) {
+		if !slices.Contains(stepToolIDs[inv.DisplayID], toolID) {
 			stepToolIDs[inv.DisplayID] = append(stepToolIDs[inv.DisplayID], toolID)
 		}
 	}
 
 	var wanted []string
 	for _, m := range stepCitationLink.FindAllStringSubmatch(text, -1) {
-		if ids := stepToolIDs[strings.ToUpper(m[2])]; len(ids) == 1 && !containsString(wanted, ids[0]) {
+		if ids := stepToolIDs[strings.ToUpper(m[2])]; len(ids) == 1 && !slices.Contains(wanted, ids[0]) {
 			wanted = append(wanted, ids[0])
 		}
 	}

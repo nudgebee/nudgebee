@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -667,8 +668,8 @@ func ExecuteAgentToolCall(nbRequestContext toolcore.NbToolContext, agent NBAgent
 // created a cache.
 func subAgentCacheContext(ctx *security.RequestContext) *security.RequestContext {
 	goCtx := ctx.GetContext()
-	if disabled, _ := goCtx.Value(ContextKeyDisableCaching).(bool); !disabled {
+	if disabled, _ := goCtx.Value(llmruntime.ContextKeyDisableCaching).(bool); !disabled {
 		return ctx
 	}
-	return ctx.WithContext(context.WithValue(goCtx, ContextKeyDisableCaching, false))
+	return ctx.WithContext(context.WithValue(goCtx, llmruntime.ContextKeyDisableCaching, false))
 }

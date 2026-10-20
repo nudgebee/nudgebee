@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"nudgebee/llm/llms/decision"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/spf13/viper"
@@ -37,7 +38,7 @@ func decisionSlot(minConfidence string) map[string]string {
 func stubDecisionConfig(t *testing.T, cfg map[string]string) {
 	t.Helper()
 	old := decisionConfigSource
-	decisionConfigSource = func(*security.RequestContext, string, string, ModelTier) (map[string]string, string) {
+	decisionConfigSource = func(*security.RequestContext, string, string, llmruntime.ModelTier) (map[string]string, string) {
 		return cfg, "db"
 	}
 	t.Cleanup(func() { decisionConfigSource = old })
@@ -169,9 +170,9 @@ func TestClassify_NoDecisionConfigured(t *testing.T) {
 // The decision call goes through the same outbound decorators as an LLM call,
 // so the scrub/egress layers see and can rewrite its text.
 func TestClassify_DecisionInputIsDecorated(t *testing.T) {
-	old := LLMModelDecorator
-	LLMModelDecorator = func(m llms.Model) llms.Model { return scrubbingModel{inner: m} }
-	t.Cleanup(func() { LLMModelDecorator = old })
+	old := llmruntime.LLMModelDecorator
+	llmruntime.LLMModelDecorator = func(m llms.Model) llms.Model { return scrubbingModel{inner: m} }
+	t.Cleanup(func() { llmruntime.LLMModelDecorator = old })
 	stubDecisionConfig(t, decisionSlot("0.8"))
 	states := stubDecisionChooser(t, decision.Choice{Choice: "EDIT", Confidence: conf(0.9)}, nil)
 
@@ -204,10 +205,10 @@ func (s scrubbingModel) Call(context.Context, string, ...llms.CallOption) (strin
 
 func TestParseConfigSourceId_RejectsDecisionSlot(t *testing.T) {
 	for _, id := range []string{"env:tier:decision", "db:11111111-1111-1111-1111-111111111111:tier:decision"} {
-		_, err := ParseConfigSourceId(id)
+		_, err := llmruntime.ParseConfigSourceId(id)
 		assert.ErrorContains(t, err, "cannot be pinned", id)
 	}
-	_, err := ParseConfigSourceId("env:tier:classification")
+	_, err := llmruntime.ParseConfigSourceId("env:tier:classification")
 	assert.NoError(t, err)
 }
 
@@ -231,20 +232,20 @@ func TestDecisionConfigSource_FollowsPins(t *testing.T) {
 		}
 		return security.NewRequestContext(goCtx, security.NewRequestContextForSuperAdmin().GetSecurityContext(), slog.Default(), nil, nil)
 	}
-	byTask := ConversationTierOverrides{Picks: map[string]TierModelPick{
-		string(ModelTierRetrieval): {Model: "m", ConfigSource: "db:" + pinned + ":tier:retrieval"},
+	byTask := llmruntime.ConversationTierOverrides{Picks: map[string]llmruntime.TierModelPick{
+		string(llmruntime.ModelTierRetrieval): {Model: "m", ConfigSource: "db:" + pinned + ":tier:retrieval"},
 	}}
 
 	cases := []struct {
 		name string
 		ctx  *security.RequestContext
-		tier ModelTier
+		tier llmruntime.ModelTier
 		want string
 	}{
-		{"per-task pick for the fallback's tier", ctxWith(ContextKeyLlmTierModelOverrides, byTask), ModelTierRetrieval, "pin:" + pinned},
-		{"a pick for another tier does not apply", ctxWith(ContextKeyLlmTierModelOverrides, byTask), ModelTierSummary, "account"},
-		{"request pin", ctxWith(ContextKeyLlmConfigSourceOverride, "db:"+pinned), ModelTierRetrieval, "pin:" + pinned},
-		{"no pin uses the account integration", ctxWith(nil, nil), ModelTierRetrieval, "account"},
+		{"per-task pick for the fallback's tier", ctxWith(llmruntime.ContextKeyLlmTierModelOverrides, byTask), llmruntime.ModelTierRetrieval, "pin:" + pinned},
+		{"a pick for another tier does not apply", ctxWith(llmruntime.ContextKeyLlmTierModelOverrides, byTask), llmruntime.ModelTierSummary, "account"},
+		{"request pin", ctxWith(llmruntime.ContextKeyLlmConfigSourceOverride, "db:"+pinned), llmruntime.ModelTierRetrieval, "pin:" + pinned},
+		{"no pin uses the account integration", ctxWith(nil, nil), llmruntime.ModelTierRetrieval, "account"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -253,14 +254,14 @@ func TestDecisionConfigSource_FollowsPins(t *testing.T) {
 		})
 	}
 
-	cfg, source := decisionConfigSource(ctxWith(ContextKeyLlmConfigSourceOverride, "db:"+pinned+":tier:decision"), "acct", "", ModelTierRetrieval)
+	cfg, source := decisionConfigSource(ctxWith(llmruntime.ContextKeyLlmConfigSourceOverride, "db:"+pinned+":tier:decision"), "acct", "", llmruntime.ModelTierRetrieval)
 	assert.Nil(t, cfg, "an invalid pin turns decisions off rather than falling back to the account")
 	assert.Equal(t, "pin-invalid", source)
 
 	decisionPinConfig = func(*security.RequestContext, string, string, string) (map[string]string, error) {
 		return nil, errors.New("not linked")
 	}
-	cfg, source = decisionConfigSource(ctxWith(ContextKeyLlmConfigSourceOverride, "db:"+pinned), "acct", "", ModelTierRetrieval)
+	cfg, source = decisionConfigSource(ctxWith(llmruntime.ContextKeyLlmConfigSourceOverride, "db:"+pinned), "acct", "", llmruntime.ModelTierRetrieval)
 	assert.Nil(t, cfg, "an unavailable pinned integration turns decisions off")
 	assert.Equal(t, "pin-unavailable", source)
 }
@@ -271,7 +272,7 @@ func TestGetLLMModel_RefusesDecisionProvider(t *testing.T) {
 		{decision.ProviderCloudflare, "clef"},
 		{decision.ProviderTypeSafe, "jev-latest"},
 	} {
-		_, err := GetLLMModel(pm[0], pm[1], "", false, "")
+		_, err := llmruntime.GetLLMModel(pm[0], pm[1], "", false, "")
 		assert.ErrorContains(t, err, "decision model and cannot serve LLM calls", pm[0])
 	}
 }
@@ -356,10 +357,10 @@ func (d *agentNameDAO) GetAgentNameFromAgentId(agentId string) (string, error) {
 // another one, so the decision call is not counted as that tier's usage.
 func TestDecisionUsageContext_UsesDecisionTier(t *testing.T) {
 	base := testRequestContext()
-	caller := base.WithContext(context.WithValue(base.GetContext(), ContextKeyModelTier, ModelTierReasoning))
-	tier, _ := tierAttributionForRecord(decisionUsageContext(caller))
+	caller := base.WithContext(context.WithValue(base.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning))
+	tier, _ := llmruntime.TierAttributionForRecord(decisionUsageContext(caller))
 	require.NotNil(t, tier)
-	assert.Equal(t, string(ModelTierDecision), *tier)
+	assert.Equal(t, string(llmruntime.ModelTierDecision), *tier)
 }
 
 func TestDecisionAgentName(t *testing.T) {

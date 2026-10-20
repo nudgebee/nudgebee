@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"fmt"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"regexp"
@@ -179,7 +180,7 @@ func FormatAgentResponse(ctx *security.RequestContext, request NBAgentRequest, r
 	messageContent = append(messageContent,
 		llms.TextParts(llms.ChatMessageTypeHuman, userPrompt),
 	)
-	completion, err := GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.ParentAgentId, true, messageContent, false, WithThinkingLevel(ThinkingLevelFastTask))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.ParentAgentId, true, messageContent, false, llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil {
 		ctx.GetLogger().Error("request: unable to generate content", "error", err)
 		return response

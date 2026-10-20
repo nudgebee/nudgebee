@@ -1,9 +1,9 @@
 package api
 
 import (
-	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/gin-gonic/gin"
 
@@ -28,7 +28,7 @@ func init() {
 	asyncOperationWorkerPool = common.NewWorkerPool("async_api_operations", config.Config.AsyncApiWorkerCount, config.Config.AsyncApiQueueSize)
 	asyncUserOperationWorkerPool = common.NewWorkerPool("async_api_user_operations", config.Config.AsyncApiWorkerCount, config.Config.AsyncApiQueueSize)
 	metricsWorkerPool = common.NewWorkerPool("metrics_tracking", 10, 5000)
-	core.SetMetricsWorkerPool(metricsWorkerPool)
+	llmruntime.SetMetricsWorkerPool(metricsWorkerPool)
 }
 
 func GetMetricsWorkerPool() *common.WorkerPool {

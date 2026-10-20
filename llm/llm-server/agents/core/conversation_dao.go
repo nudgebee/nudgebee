@@ -3,8 +3,6 @@ package core
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +11,7 @@ import (
 	"time"
 
 	"nudgebee/llm/knowledge"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
@@ -50,18 +49,18 @@ var ErrQueueInactive = errors.New("history: conversation is no longer running; r
 var ErrQueuedMessageNotFoundOrLocked = errors.New("history: queued message not found, already started, or permission denied")
 
 type Conversation struct {
-	TenantID         uuid.UUID                  `json:"tenant_id,omitempty" db:"tenant_id"`
-	AccountID        uuid.UUID                  `json:"account_id" db:"account_id"`
-	UserID           uuid.UUID                  `json:"user_id" db:"user_id"`
-	SessionID        string                     `json:"session_id" db:"session_id"`
-	ID               uuid.UUID                  `json:"id" db:"id"`
-	Context          map[string]any             `json:"context,omitempty" db:"context"`
-	Status           ConversationStatus         `json:"status,omitempty" db:"status"`
-	Title            *string                    `json:"title,omitempty" db:"title"`
-	Source           *ConversationSource        `json:"source,omitempty" db:"source"`
-	LlmProvider      *string                    `json:"llm_provider,omitempty" db:"llm_provider"`
-	LlmModel         *string                    `json:"llm_model,omitempty" db:"llm_model"`
-	LlmTierOverrides *ConversationTierOverrides `json:"llm_tier_overrides,omitempty" db:"llm_tier_overrides"`
+	TenantID         uuid.UUID                             `json:"tenant_id,omitempty" db:"tenant_id"`
+	AccountID        uuid.UUID                             `json:"account_id" db:"account_id"`
+	UserID           uuid.UUID                             `json:"user_id" db:"user_id"`
+	SessionID        string                                `json:"session_id" db:"session_id"`
+	ID               uuid.UUID                             `json:"id" db:"id"`
+	Context          map[string]any                        `json:"context,omitempty" db:"context"`
+	Status           ConversationStatus                    `json:"status,omitempty" db:"status"`
+	Title            *string                               `json:"title,omitempty" db:"title"`
+	Source           *ConversationSource                   `json:"source,omitempty" db:"source"`
+	LlmProvider      *string                               `json:"llm_provider,omitempty" db:"llm_provider"`
+	LlmModel         *string                               `json:"llm_model,omitempty" db:"llm_model"`
+	LlmTierOverrides *llmruntime.ConversationTierOverrides `json:"llm_tier_overrides,omitempty" db:"llm_tier_overrides"`
 	// Pinned config slot ({layer}:{scope}[:{name}]). Orthogonal to the three
 	// above: a conversation can pin a slot with or without also pinning a
 	// provider/model, so the blanket/tier mutual exclusivity doesn't apply.
@@ -69,84 +68,6 @@ type Conversation struct {
 	// RunProfile is the identity of a governed run (see RunProfile), set once
 	// when the conversation is created; nil for an ordinary conversation.
 	RunProfile *RunProfile `json:"run_profile,omitempty" db:"run_profile"`
-}
-
-type TierModelPick struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	// ConfigSource is the credential this task resolves through. Empty for
-	// picks made before per-tier credentials existed; those fall back to the
-	// conversation-wide pin.
-	ConfigSource string `json:"llm_config_source,omitempty"`
-}
-
-// Typed view of the llm_conversations.llm_tier_overrides jsonb column.
-// Map keys are ModelTier names; empty Picks → SQL NULL via Value below.
-type ConversationTierOverrides struct {
-	Picks map[string]TierModelPick `json:"picks,omitempty"`
-}
-
-// usableTierPick reports whether a pick carries an instruction the resolver can
-// act on: a config source (the slot supplies provider and model), or a complete
-// provider+model pair. Requiring provider AND model made source-only picks —
-// "use this config's own model" — invisible here, so they were neither persisted
-// nor returned, and the tier silently fell back to a lower-precedence layer.
-func usableTierPick(p TierModelPick) bool {
-	return p.ConfigSource != "" || (p.Provider != "" && p.Model != "")
-}
-
-func (c *ConversationTierOverrides) HasAny() bool {
-	if c == nil {
-		return false
-	}
-	for _, p := range c.Picks {
-		if usableTierPick(p) {
-			return true
-		}
-	}
-	return false
-}
-
-// Half-set picks (a provider or model alone, with no config source) carry no
-// usable instruction and fall through to lower precedence layers — never
-// returned as present.
-func (c *ConversationTierOverrides) Get(tier string) (TierModelPick, bool) {
-	if c == nil {
-		return TierModelPick{}, false
-	}
-	p, ok := c.Picks[tier]
-	if !ok || !usableTierPick(p) {
-		return TierModelPick{}, false
-	}
-	return p, true
-}
-
-func (c ConversationTierOverrides) Value() (driver.Value, error) {
-	if len(c.Picks) == 0 {
-		return nil, nil
-	}
-	return json.Marshal(c)
-}
-
-func (c *ConversationTierOverrides) Scan(src any) error {
-	if src == nil {
-		c.Picks = nil
-		return nil
-	}
-	var raw []byte
-	switch v := src.(type) {
-	case []byte:
-		raw = v
-	case string:
-		raw = []byte(v)
-	default:
-		return fmt.Errorf("ConversationTierOverrides.Scan: unsupported source type %T", src)
-	}
-	if len(raw) == 0 {
-		c.Picks = nil
-		return nil
-	}
-	return json.Unmarshal(raw, c)
 }
 
 type ConversationMessage struct {
@@ -249,13 +170,13 @@ type IConversationDao interface {
 	UpdateConversationTitle(conversationId, title string) error
 	UpdateConversationModel(conversationId, provider, model string) error
 	UpdateConversationModelBlanket(conversationId, provider, model string) error
-	UpdateConversationTierOverrides(conversationId string, overrides ConversationTierOverrides) error
+	UpdateConversationTierOverrides(conversationId string, overrides llmruntime.ConversationTierOverrides) error
 	UpdateConversationConfigSource(conversationId, configSource string) error
 	ClearConversationModelConfig(conversationId string) error
 	UpdateMessageAcknowledgement(messageId, accountId, ackMessage string) error
 	UpdateConversationContext(conversationId string, context map[string]any) error
 	GetConversation(conversationId string) (Conversation, error)
-	SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *ConversationTierOverrides, llmConfigSource string, runProfile *RunProfile) (uuid.UUID, error)
+	SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *llmruntime.ConversationTierOverrides, llmConfigSource string, runProfile *RunProfile) (uuid.UUID, error)
 	UpdateConversationStatus(conversationId string, status ConversationStatus) error
 	ListConversationMessages(status ConversationStatus, workerName string, conversationId string, deadWorker bool) ([]ConversationMessage, error)
 	SaveConversationMessage(id, conversationId, accountID, userId string, role MessageRole, messageType MessageType, message, response, agentName string, parentAgentId uuid.UUID, messageConfig any, messageContext string, llmProvider, llmModel string, status ConversationStatus) (uuid.UUID, error)
@@ -271,7 +192,7 @@ type IConversationDao interface {
 	UpdateConversationMessageContext(messageId string, context map[string]any) error
 	UpdateConversationMessage(id, response string, status ConversationStatus) error
 	UpdateConversationMessageMetadata(id string, metadata map[string]any) error
-	SetMessageLiveStatus(messageId, key string, status *LiveStatus) error
+	SetMessageLiveStatus(messageId, key string, status *llmruntime.LiveStatus) error
 	UpdateConversationMessageAsync(id, response string, status ConversationStatus)
 	UpdateMessageCompactResponse(context *security.RequestContext, messageId, compactResponse string) error
 	UpdateConversationMessageMetrics(id string, metrics string) error
@@ -337,9 +258,9 @@ type IConversationDao interface {
 	GetConversationTimeBreakdown(conversationId, accountId string) (TimeBreakdown, error)
 	GetConversationTimeAggregates(filter ConversationTimeAggregatesFilter) (ConversationTimeAggregates, error)
 	GetConversationOptimizationProfile(sessionID, accountID string) (OptimizationProfile, *optSavingsIndex, error)
-	InsertTokenUsage(record *TokenUsageRecord) error
+	InsertTokenUsage(record *llmruntime.TokenUsageRecord) error
 	SaveClaimCritiqueAudit(ctx context.Context, record *ClaimCritiqueAuditRecord) error
-	InsertCacheLifecycle(ctx context.Context, record *CacheLifecycleRecord) error
+	InsertCacheLifecycle(ctx context.Context, record *llmruntime.CacheLifecycleRecord) error
 	SetCacheLifecycleInvalidated(ctx context.Context, cacheName string) error
 	GetConversationWithMessages(conversationId string, accountId string) (*ConversationWithMessages, error)
 	GetLatestConversationBySessionIDWithMessages(sessionID string, accountId string) (*ConversationWithMessages, error)
@@ -468,53 +389,6 @@ type ConversationReference struct {
 
 type ConversationDao struct {
 	dbManager *common.DatabaseManager
-}
-
-// TokenUsageRecord represents a single LLM API call token usage
-type TokenUsageRecord struct {
-	ID                  string // Optional explicit ID for a single-call audit; other callers use the DB default.
-	ConversationID      string
-	MessageID           string
-	AgentID             *string // Nullable
-	AgentName           string
-	AccountID           string
-	UserID              string // Nullable
-	LLMProvider         string
-	LLMModel            string
-	InputTokens         int
-	OutputTokens        int
-	CachedInputTokens   int
-	CacheCreationTokens int
-	// CostUsd is the USD cost of this call, computed via GetConversationCost at
-	// insert time. Nil when the (provider, model) has no llm_model_pricing entry —
-	// distinguishes "not priced" from "$0" for readers, which fall back to a live pricing JOIN when nil.
-	CostUsd           *float64
-	IsCacheHit        bool
-	CacheHitRate      *float64 // Nullable
-	RetryAttempt      int
-	FallbackFromModel *string  // Nullable - immediate previous model
-	FallbackChain     *string  // Nullable - JSON array of all fallback models
-	LatencySeconds    *float64 // Nullable
-	RequestStatus     string   // 'success' or 'failure'
-	ErrorMessage      *string  // Nullable
-	ContentLength     *int     // Nullable
-	StopReason        *string  // Nullable
-	CacheTTLMinutes   *int     // Nullable - cache TTL in minutes at time of request
-	PromptMessages    *string  // Nullable - serialized prompt messages JSON (when LLM trace is enabled)
-	ResponseContent   *string  // Nullable - full LLM response text (when LLM trace is enabled)
-	ThinkingTokens    *int     // Nullable - Gemini 2.5+ hidden chain-of-thought tokens (usage.ThoughtsTokenCount). NULL when 0/unavailable.
-	// Streaming-latency breakdown. ttft_ms / itl_ms_avg / tokens_per_second
-	// are NULL on non-streaming or legacy rows. was_streaming is FALSE on new
-	// non-streaming rows and NULL only on legacy rows pre-V722.
-	TTFTMs          *int64   // Time-to-first-token in ms.
-	ITLMsAvg        *float64 // Average inter-token latency in ms ((latency_ms - ttft_ms) / output_tokens). float to preserve sub-ms precision on fast models.
-	TokensPerSecond *float64 // Steady-state output throughput.
-	WasStreaming    *bool    // Whether the call streamed (≥1 chunk observed).
-	// Configured LLM slot this call resolved through (V887). NULL on legacy rows.
-	LLMConfigSource *string
-	// Tier-experiment attribution (V836). Both NULL on legacy rows.
-	ModelTier *string // Resolved ModelTier this call ran on (reasoning/retrieval/summary). NULL when unstamped.
-	TaskType  *string // Top-level turn classification (query/investigation). NULL for sub-agent calls.
 }
 
 func (chat *ConversationDao) ListAgentReferences(accountId, conversationId string, messageIds []string, agentId string, limit int) ([]ConversationReference, error) {
@@ -1133,7 +1007,7 @@ func (chat *ConversationDao) ClearConversationModelConfig(conversationId string)
 
 // Clears llm_provider and llm_model in the same UPDATE — see
 // UpdateConversationModelBlanket for the mutual-exclusivity rule.
-func (chat *ConversationDao) UpdateConversationTierOverrides(conversationId string, overrides ConversationTierOverrides) error {
+func (chat *ConversationDao) UpdateConversationTierOverrides(conversationId string, overrides llmruntime.ConversationTierOverrides) error {
 	if conversationId == "" {
 		return errors.New("history: conversationId is required")
 	}
@@ -1173,7 +1047,7 @@ const saveConversationQueryNullUser = `
     ON CONFLICT (session_id, account_id) WHERE user_id IS NULL
     DO UPDATE SET context = EXCLUDED.context, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at, llm_provider = EXCLUDED.llm_provider, llm_model = EXCLUDED.llm_model, llm_tier_overrides = EXCLUDED.llm_tier_overrides, llm_config_source = EXCLUDED.llm_config_source RETURNING llm_conversations.id;`
 
-func (chat *ConversationDao) SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *ConversationTierOverrides, llmConfigSource string, runProfile *RunProfile) (uuid.UUID, error) {
+func (chat *ConversationDao) SaveConversation(id, sessionID, tenantId, accountID, userId, context, title string, status ConversationStatus, source ConversationSource, llmProvider, llmModel string, llmTierOverrides *llmruntime.ConversationTierOverrides, llmConfigSource string, runProfile *RunProfile) (uuid.UUID, error) {
 	if accountID == "" || tenantId == "" {
 		return uuid.Nil, errors.New("history: accountID and tenantId are required")
 	}
@@ -1660,7 +1534,7 @@ func (chat *ConversationDao) GetConversationBySession(accountID, sessionID strin
 	var source *ConversationSource
 	var cntxt sql.NullString
 	var llmProvider, llmModel, llmConfigSource *string
-	var tierOverrides ConversationTierOverrides
+	var tierOverrides llmruntime.ConversationTierOverrides
 	var runProfile nullRunProfile
 	for rows.Next() {
 		if err := rows.Scan(&id, &userId, &sessionId, &accoundId, &cntxt, &status, &tenantId, &title, &source, &llmProvider, &llmModel, &tierOverrides, &llmConfigSource, &runProfile); err != nil {
@@ -1722,7 +1596,7 @@ func (chat *ConversationDao) GetConversation(conversationId string) (Conversatio
 	var source *ConversationSource
 	var cntxt sql.NullString
 	var llmProvider, llmModel, llmConfigSource *string
-	var tierOverrides ConversationTierOverrides
+	var tierOverrides llmruntime.ConversationTierOverrides
 	var runProfile nullRunProfile
 	for rows.Next() {
 		if err := rows.Scan(&id, &userId, &sessionId, &accoundId, &cntxt, &status, &tenantId, &title, &source, &llmProvider, &llmModel, &tierOverrides, &llmConfigSource, &runProfile); err != nil {
@@ -1986,7 +1860,7 @@ func (chat *ConversationDao) UpdateConversationMessage(id, response string, stat
 // SetMessageLiveStatus sets one entry under metadata.live_status, or removes it
 // when status is nil. Entries are keyed per agent so parallel sub-agents writing
 // to the same message never overwrite each other.
-func (chat *ConversationDao) SetMessageLiveStatus(messageId, key string, status *LiveStatus) error {
+func (chat *ConversationDao) SetMessageLiveStatus(messageId, key string, status *llmruntime.LiveStatus) error {
 	if messageId == "" || key == "" {
 		return nil
 	}
@@ -3389,35 +3263,6 @@ func CalculateCostBreakdown(p *ModelPricing, nonCachedInputTokens, cachedInputTo
 	}
 }
 
-// tenantForPricing resolves the tenant whose price overrides apply to an
-// account's usage. Pricing is tenant-scoped (V843): a tenant's own row for a
-// (model, provider) beats the built-in one.
-//
-// A failure degrades to "" — built-in pricing only — rather than failing the
-// read: a cost display that falls back to list prices is far better than a
-// conversation view that will not load.
-// PricingTenantFromContext is the request-context form of tenantForPricing:
-// the tenant is already on the security context, so no lookup is needed.
-func PricingTenantFromContext(ctx *security.RequestContext) string {
-	if ctx == nil || ctx.GetSecurityContext() == nil {
-		return ""
-	}
-	return ctx.GetSecurityContext().GetTenantId()
-}
-
-func TenantForPricing(accountId string) string {
-	if accountId == "" {
-		return ""
-	}
-	tenantId, err := security.GetTenantIdFromAccountId(accountId)
-	if err != nil {
-		slog.Warn("pricing: could not resolve tenant for account, using built-in pricing",
-			"error", err, "account_id", accountId)
-		return ""
-	}
-	return tenantId
-}
-
 func (chat *ConversationDao) fetchModelPricing(tenantId string) (map[string]ModelPricing, error) {
 	return chat.GetConversationCosts(nil, tenantId)
 }
@@ -3591,7 +3436,7 @@ func (chat *ConversationDao) GetImageSupportCatalog(tenantId string) (map[string
 func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId string) ([]TokenMetrics, error) {
 
 	// Fetch Pricing Map upfront to avoid N+1 queries
-	pricingMap, err := chat.fetchModelPricing(TenantForPricing(accountId))
+	pricingMap, err := chat.fetchModelPricing(llmruntime.TenantForPricing(accountId))
 	// A failed lookup says nothing about whether a price exists, so no call is flagged unpriced.
 	pricingLoaded := err == nil
 	if err != nil {
@@ -3734,7 +3579,7 @@ func (chat *ConversationDao) GetConversationTokenUsage(conversationId, accountId
 		stat.CachedInputTokens += call.CachedInputTokens
 		stat.NonCachedInputTokens += nonCached
 		stat.CacheCreationTokens += call.CacheCreationTokens
-		stat.PromptTokens += PromptTokens(call.ModelProviderName.String, call.InputTokens, call.CacheCreationTokens)
+		stat.PromptTokens += llmruntime.PromptTokens(call.ModelProviderName.String, call.InputTokens, call.CacheCreationTokens)
 		stat.ThinkingTokens += call.ThinkingTokens
 		stat.Cost += cost
 		if pricingLoaded && !priced && call.InputTokens+call.OutputTokens > 0 {
@@ -4313,7 +4158,7 @@ func (chat *ConversationDao) GetConversationTimeAggregates(filter ConversationTi
 	}, nil
 }
 
-func (chat *ConversationDao) InsertTokenUsage(record *TokenUsageRecord) error {
+func (chat *ConversationDao) InsertTokenUsage(record *llmruntime.TokenUsageRecord) error {
 	if record == nil {
 		return fmt.Errorf("token usage record is nil")
 	}

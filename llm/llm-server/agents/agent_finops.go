@@ -12,6 +12,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
@@ -110,12 +111,12 @@ func (a *FinOpsAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
 
-func (a *FinOpsAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierReasoning
+func (a *FinOpsAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
 }
 
-func (a *FinOpsAgent) GetCacheScope() core.CacheScope {
-	return core.CacheScopeAccount
+func (a *FinOpsAgent) GetCacheScope() llmruntime.CacheScope {
+	return llmruntime.CacheScopeAccount
 }
 
 func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {

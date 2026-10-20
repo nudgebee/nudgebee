@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -717,7 +718,7 @@ func TestDelegateToolFiltering_AppliesCapabilities(t *testing.T) {
 // on the cheap Retrieval tier (scoped grunt work), not the orchestrator's Reasoning tier.
 func TestDynamicReActAgent_RunsOnCheapTier(t *testing.T) {
 	a := &dynamicReActAgent{name: DelegateAgentToolName}
-	assert.Equal(t, core.ModelTierRetrieval, a.GetModelCategory(),
+	assert.Equal(t, llmruntime.ModelTierRetrieval, a.GetModelCategory(),
 		"delegated sub-agents must run on the cheap Retrieval tier, not Reasoning")
 }
 

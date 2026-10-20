@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
@@ -267,7 +268,7 @@ func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accou
 	}
 	args := []any{sessionID, accountID}
 
-	pricing, err := chat.GetConversationCosts(nil, TenantForPricing(accountID))
+	pricing, err := chat.GetConversationCosts(nil, llmruntime.TenantForPricing(accountID))
 	if err != nil {
 		return OptimizationProfile{}, nil, fmt.Errorf("GetConversationOptimizationProfile pricing: %w", err)
 	}
@@ -789,7 +790,7 @@ func GenerateConversationOptimization(ctx *security.RequestContext, sessionID, a
 	// so 16k is ample. Without a cap the agent inherits the model's 64k default and
 	// can spend minutes generating (a sync caller then times out). 16k keeps the
 	// call to tens of seconds while leaving room for every finding + its evidence.
-	completion, err := GenerateAndTrackLLMContent(ctx, userID, accountID, trackConversationID, trackMessageID, "cost_optimizer", false, messages, false,
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, userID, accountID, trackConversationID, trackMessageID, "cost_optimizer", false, messages, false,
 		llms.WithTemperature(0.0), llms.WithJSONMode(), llms.WithMaxTokens(16384))
 	var llmResp llmOptResponse
 	if err != nil {

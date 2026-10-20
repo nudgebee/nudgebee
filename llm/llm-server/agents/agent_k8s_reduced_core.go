@@ -3,8 +3,8 @@ package agents
 import (
 	"strings"
 
-	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -78,7 +78,7 @@ func trimmedK8sCoreToolNames() []string {
 	}
 	names = append(names, toolcore.ToolExecuteShellCommand)
 	names = appendMemoryToolName(names)
-	if core.IsAgentsFollowupEnabled() {
+	if llmruntime.IsAgentsFollowupEnabled() {
 		names = append(names, FollowupAgentName)
 	}
 	return names

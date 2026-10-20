@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	toolcore "nudgebee/llm/tools/core"
@@ -100,13 +101,13 @@ func (e *ESMetricsQueryAgent) Execute(ctx *security.RequestContext, request core
 	messages := buildLogIntentMessages(prompt, request)
 
 	summaryCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), core.ContextKeyModelTier, core.ModelTierSummary),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
-	res, err := core.GenerateAndTrackLLMContent(summaryCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
+	res, err := llmruntime.GenerateAndTrackLLMContent(summaryCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
 	if err != nil {
 		return errorResponse(e.GetName(), fmt.Errorf("es metrics query generation: %w", err)), nil
 	}

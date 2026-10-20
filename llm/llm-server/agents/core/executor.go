@@ -17,6 +17,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/knowledge"
 	"nudgebee/llm/llms/googleai"
+	llmruntime "nudgebee/llm/llms/runtime"
 	nbprompts "nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
@@ -70,7 +71,7 @@ func guessAgentStatusFromResponse(plannerResponse NBAgentPlannerExecutorResponse
 		return AgentExecutionStatusFail
 	}
 
-	if strings.Contains(response, toolcore.ErrUnableToFetchData.Error()) || strings.Contains(response, errLlmUnableToGenerate.Error()) {
+	if strings.Contains(response, toolcore.ErrUnableToFetchData.Error()) || strings.Contains(response, llmruntime.ErrLlmUnableToGenerateSentinel.Error()) {
 		return AgentExecutionStatusFail
 	}
 
@@ -106,7 +107,7 @@ func sanitizeErrorForUser(err error) string {
 	if err == nil {
 		return ""
 	}
-	if msg, ok := LLMFailureMessage(err); ok {
+	if msg, ok := llmruntime.LLMFailureMessage(err); ok {
 		return msg
 	}
 	errStr := err.Error()
@@ -139,9 +140,9 @@ func sanitizeErrorForUser(err error) string {
 	switch {
 	case errors.Is(err, ErrParseFailure) || errors.Is(err, errSummaryTextToolCall):
 		return runStoppedEarlyMessage
-	case errors.Is(err, errLlmUnableToGenerate) || errors.Is(err, ErrLLMRateLimited) ||
-		errors.Is(err, ErrLLMRequestTooLarge) || errors.Is(err, ErrLLMServiceUnavailable):
-		if safe := classifyUserFacingLLMError(err); safe != nil {
+	case errors.Is(err, llmruntime.ErrLlmUnableToGenerateSentinel) || errors.Is(err, llmruntime.ErrLLMRateLimited) ||
+		errors.Is(err, llmruntime.ErrLLMRequestTooLarge) || errors.Is(err, llmruntime.ErrLLMServiceUnavailable):
+		if safe := llmruntime.ClassifyUserFacingLLMError(err); safe != nil {
 			return safe.Error()
 		}
 		return providerErrorMessage
@@ -180,7 +181,7 @@ func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent, request NB
 		goCtx = context.Background()
 	}
 	return security.NewRequestContext(
-		context.WithValue(goCtx, ContextKeyModelTier, resolveModelTier(ctx, agent, request)),
+		context.WithValue(goCtx, llmruntime.ContextKeyModelTier, resolveModelTier(ctx, agent, request)),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
@@ -203,13 +204,13 @@ func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent, request NB
 // chosen — same principle as tierPinFor (llm_config.go).
 // This shared executor policy runs before engine selection, so ReAct3 and ReAct4
 // resolve their models (and ReAct4 native-tool capability) using the same tier.
-func resolveModelTier(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) ModelTier {
+func resolveModelTier(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) llmruntime.ModelTier {
 	base := agentModelCategory(agent)
 	if config.Config.LlmServerOrchestratorQueryModelDownshiftEnabled &&
-		base == ModelTierReasoning &&
+		base == llmruntime.ModelTierReasoning &&
 		isTopLevelPlainRetrievalTurn(request) &&
 		!hasExplicitModelConfig(ctx) {
-		return ModelTierSummary
+		return llmruntime.ModelTierSummary
 	}
 	return base
 }
@@ -227,16 +228,16 @@ func hasExplicitModelConfig(ctx *security.RequestContext) bool {
 	if goCtx == nil {
 		return false
 	}
-	if p, _ := goCtx.Value(ContextKeyLlmProviderOverride).(string); p != "" {
+	if p, _ := goCtx.Value(llmruntime.ContextKeyLlmProviderOverride).(string); p != "" {
 		return true
 	}
-	if m, _ := goCtx.Value(ContextKeyLlmModelOverride).(string); m != "" {
+	if m, _ := goCtx.Value(llmruntime.ContextKeyLlmModelOverride).(string); m != "" {
 		return true
 	}
-	if v, ok := goCtx.Value(ContextKeyLlmTierModelOverrides).(ConversationTierOverrides); ok && v.HasAny() {
+	if v, ok := goCtx.Value(llmruntime.ContextKeyLlmTierModelOverrides).(llmruntime.ConversationTierOverrides); ok && v.HasAny() {
 		return true
 	}
-	if s, _ := goCtx.Value(ContextKeyLlmConfigSourceOverride).(string); s != "" {
+	if s, _ := goCtx.Value(llmruntime.ContextKeyLlmConfigSourceOverride).(string); s != "" {
 		return true
 	}
 	return false
@@ -253,7 +254,7 @@ func promptVariantForRequest(request NBAgentRequest) string {
 	if !isTopLevelPlainRetrievalTurn(request) {
 		return ""
 	}
-	return promptVariantLean
+	return llmruntime.PromptVariantLean
 }
 
 // isTopLevelPlainRetrievalTurn reports whether this is a TOP-LEVEL, non-investigation
@@ -298,7 +299,7 @@ func applyPromptVariant(ctx *security.RequestContext, request NBAgentRequest) *s
 		goCtx = context.Background()
 	}
 	return security.NewRequestContext(
-		context.WithValue(goCtx, ContextKeyPromptVariant, promptVariantForRequest(request)),
+		context.WithValue(goCtx, llmruntime.ContextKeyPromptVariant, promptVariantForRequest(request)),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
@@ -326,9 +327,9 @@ func classifyTaskType(request NBAgentRequest) string {
 		return ""
 	}
 	if IsInvestigationRequestTask(query) || request.ConversationSource == ConversationSourceInvestigation {
-		return taskTypeInvestigation
+		return llmruntime.TaskTypeInvestigation
 	}
-	return taskTypeQuery
+	return llmruntime.TaskTypeQuery
 }
 
 // applyTaskTypeAttribution stamps ContextKeyTaskType so the token-usage writer can
@@ -344,7 +345,7 @@ func applyTaskTypeAttribution(ctx *security.RequestContext, request NBAgentReque
 		goCtx = context.Background()
 	}
 	return security.NewRequestContext(
-		context.WithValue(goCtx, ContextKeyTaskType, classifyTaskType(request)),
+		context.WithValue(goCtx, llmruntime.ContextKeyTaskType, classifyTaskType(request)),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
@@ -576,7 +577,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// action batch share the caller's RequestContext pointer, so an in-place
 	// mutation would race and leak one agent's model into its siblings.
 	if ctx != nil {
-		if res, err := ResolveLLMConfig(ctx, request.AccountId, agent.GetName(), request.ConversationId); err == nil && res != nil && res.Model != "" {
+		if res, err := llmruntime.ResolveLLMConfig(ctx, request.AccountId, agent.GetName(), request.ConversationId); err == nil && res != nil && res.Model != "" {
 			ctx = security.NewRequestContext(
 				nbprompts.WithRequestModel(ctx.GetContext(), res.Model),
 				ctx.GetSecurityContext(),
@@ -842,7 +843,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		// agents that have a specific LLM call with a stable system prompt can override this
 		// by creating a sub-context with ContextKeyDisableCaching set to false.
 		noCacheCtx := security.NewRequestContext(
-			context.WithValue(ctx.GetContext(), ContextKeyDisableCaching, true),
+			context.WithValue(ctx.GetContext(), llmruntime.ContextKeyDisableCaching, true),
 			ctx.GetSecurityContext(),
 			ctx.GetLogger(),
 			ctx.GetTracer(),
@@ -963,7 +964,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// Phase 2: Async Summary Generation for success responses
 	// Moved here from executeAgentPlanner to avoid race conditions with the main DB update
 	// and to ensure the main response is returned to the user as quickly as possible.
-	isSummaryTask := strings.EqualFold(agent.GetName(), ToolLlm) && request.ParentAgentId != "" && request.ParentAgentId != uuid.Nil.String()
+	isSummaryTask := strings.EqualFold(agent.GetName(), llmruntime.ToolLlm) && request.ParentAgentId != "" && request.ParentAgentId != uuid.Nil.String()
 	if dbErr == nil && finalDbStatus == AgentExecutionStatusSuccess && !isSummaryTask && (agent.GetPlannerType() == AgentPlannerTypeCustom || isReActStylePlanner(agent.GetPlannerType())) && len(response.Response) > 50 && agentId != uuid.Nil {
 		// Generate 1 liner summary asynchronously
 		bgCtx := security.NewRequestContext(
@@ -1446,8 +1447,8 @@ func useReAct4Engine(ctx *security.RequestContext, agent NBAgent, request NBAgen
 	if declared != AgentPlannerTypeReAct && declared != AgentPlannerTypeOrchestrating {
 		return false
 	}
-	provider := GetLLMProvider(ctx, request.AccountId, agent.GetName(), true, request.ConversationId)
-	model := GetLLMModelName(ctx, request.AccountId, provider, agent.GetName(), true, request.ConversationId)
+	provider := llmruntime.GetLLMProvider(ctx, request.AccountId, agent.GetName(), true, request.ConversationId)
+	model := llmruntime.GetLLMModelName(ctx, request.AccountId, provider, agent.GetName(), true, request.ConversationId)
 	return shouldUseReAct4(declared, engine, forced, provider, model)
 }
 
@@ -1496,7 +1497,7 @@ func createAgentPlanner(ctx *security.RequestContext, agent NBAgent, request NBA
 		// dynamic system-message content inside Execute() does not create stale
 		// Google AI / Anthropic cache entries.
 		noCacheCtx := security.NewRequestContext(
-			context.WithValue(ctx.GetContext(), ContextKeyDisableCaching, true),
+			context.WithValue(ctx.GetContext(), llmruntime.ContextKeyDisableCaching, true),
 			ctx.GetSecurityContext(),
 			ctx.GetLogger(),
 			ctx.GetTracer(),

@@ -7,6 +7,7 @@ import (
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/watch"
 
@@ -68,9 +69,9 @@ func (c *trackedJudgeClient) GenerateContent(callCtx context.Context, messages [
 	// at factory time; use the caller's deadline-bounded context. Hint
 	// the resolver to pick the summary-tier model (matches the short
 	// JSON yes/no shape of the judge prompt).
-	callCtx = context.WithValue(callCtx, core.ContextKeyModelTier, core.ModelTierSummary)
+	callCtx = context.WithValue(callCtx, llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary)
 	rctx := security.NewRequestContext(callCtx, c.rctx.GetSecurityContext(), c.rctx.GetLogger(), c.rctx.GetTracer(), c.rctx.GetMeter())
-	return core.GenerateAndTrackLLMContent(
+	return llmruntime.GenerateAndTrackLLMContent(
 		rctx,
 		c.userID,
 		c.accountID,

@@ -9,6 +9,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -1215,7 +1216,7 @@ func logsFormatHint(format string) string {
 
 func errorResponse(agentName string, err error) core.NBAgentResponse {
 	text := err.Error()
-	if msg, ok := core.LLMFailureMessage(err); ok {
+	if msg, ok := llmruntime.LLMFailureMessage(err); ok {
 		text = msg
 	}
 	return core.NBAgentResponse{
@@ -1454,14 +1455,14 @@ a specific symptom is already known — when it is set, tail SHOULD be 10000 so 
 	messages := buildLogIntentMessages(systemPrompt, request)
 
 	liteCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), core.ContextKeyModelTier, core.ModelTierRetrieval),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierRetrieval),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	res, err := core.GenerateAndTrackLLMContent(liteCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
+	res, err := llmruntime.GenerateAndTrackLLMContent(liteCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
 	if err != nil {
 		ctx.GetLogger().Error("fetch_logs: kubectl intent LLM call failed", "error", err, "query", request.Query)
 		return kubectlLogQuery{}, fmt.Errorf("intent LLM: %w", err)
@@ -1521,7 +1522,7 @@ Answer: host:my-web-server "connection refused"
 `
 	messages := buildLogIntentMessages(systemPrompt, request)
 
-	res, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
+	res, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
 	if err != nil {
 		return "", err
 	}

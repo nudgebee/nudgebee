@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
@@ -37,7 +38,7 @@ func TestClassifyE2E(t *testing.T) {
 				AgentId:   "classification_e2e",
 			}
 			if tier != "default" {
-				call.Tier = ModelTier(tier)
+				call.Tier = llmruntime.ModelTier(tier)
 			} else {
 				t.Logf("default tier resolves as %s", ClassificationTier(ctx, call))
 			}

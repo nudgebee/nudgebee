@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
@@ -212,10 +213,10 @@ Context
 		mc = append([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeSystem, block)}, mc...)
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(ctx, ctx.GetSecurityContext().GetUserId(), request.AccountId, request.ConversationId, request.MessageId, AgentEventReportName, false, mc, false, llms.WithTemperature(0.5))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, ctx.GetSecurityContext().GetUserId(), request.AccountId, request.ConversationId, request.MessageId, AgentEventReportName, false, mc, false, llms.WithTemperature(0.5))
 	if err != nil {
 		ctx.GetLogger().Error("llm: unable to generate content", "error", err)
-		return "", core.ErrLlmUnableToGenerate(err)
+		return "", llmruntime.ErrLlmUnableToGenerate(err)
 	}
 	content := ""
 	if len(completion.Choices) > 0 {
@@ -224,6 +225,6 @@ Context
 	return content, err
 }
 
-func (l AgentEventRCAReport) GetModelCategory() core.ModelTier {
-	return core.ModelTierSummary
+func (l AgentEventRCAReport) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierSummary
 }

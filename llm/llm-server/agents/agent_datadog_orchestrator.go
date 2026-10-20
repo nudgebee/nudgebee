@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -56,12 +57,12 @@ func (a *DatadogOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
 // so it may register a background watch.
 func (a *DatadogOrchestratorAgent) IsWatchCapable() bool { return true }
 
-func (a *DatadogOrchestratorAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierReasoning
+func (a *DatadogOrchestratorAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
 }
 
-func (a *DatadogOrchestratorAgent) GetCacheScope() core.CacheScope {
-	return core.CacheScopeAccount
+func (a *DatadogOrchestratorAgent) GetCacheScope() llmruntime.CacheScope {
+	return llmruntime.CacheScopeAccount
 }
 
 func (a *DatadogOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -78,7 +79,7 @@ func (d DatadogIncidentAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 			"Input: A valid Datadog incident query string.",
 			"Output: JSON response from Datadog containing incident data.",
 		},
-		core.ToolLlm: {
+		llmruntime.ToolLlm: {
 			"Use this tool for reasoning, generating the initial Datadog incident query string, or summarizing the results.",
 			"Input: A clear instruction or question.",
 		},
@@ -102,7 +103,7 @@ func (d DatadogIncidentAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 
 // GetSupportedTools returns the tools that this agent can use.
 func (d DatadogIncidentAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	toolsList := []string{tools.ToolDatadogIncidentExecute, core.ToolLlm}
+	toolsList := []string{tools.ToolDatadogIncidentExecute, llmruntime.ToolLlm}
 
 	tools := make([]toolcore.NBTool, 0, len(toolsList))
 	for _, toolName := range toolsList {

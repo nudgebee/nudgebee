@@ -249,7 +249,7 @@ func RenderPrompt(ctx context.Context, module string, accountID string, data map
 
 // requestModelKey carries the LLM model resolved for the current request
 // (conversation override → pinned source → tier config → env, reconciled by
-// agents/core.ResolveLLMConfig). Set via WithRequestModel at the start of an
+// llms/runtime.ResolveLLMConfig). Set via WithRequestModel at the start of an
 // agent execution so prompt resolution matches the model that will actually
 // serve the call, instead of the deployment-wide LLM_MODEL env var.
 type requestModelKey struct{}

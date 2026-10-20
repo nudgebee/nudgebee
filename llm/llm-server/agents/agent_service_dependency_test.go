@@ -3,6 +3,7 @@ package agents
 import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -34,7 +35,7 @@ func TestServiceDependency_GetPlannerType(t *testing.T) {
 
 func TestServiceDependency_GetCacheScope_Account(t *testing.T) {
 	agent := ServiceDependencyGraphAgent{accountId: "test-account"}
-	assert.Equal(t, core.CacheScopeAccount, agent.GetCacheScope(),
+	assert.Equal(t, llmruntime.CacheScopeAccount, agent.GetCacheScope(),
 		"agent must declare CacheScopeAccount so the embedded agent_kg_usage.txt sits in the 12h-cached prefix")
 }
 

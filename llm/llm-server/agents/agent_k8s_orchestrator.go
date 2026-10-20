@@ -5,6 +5,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
@@ -97,8 +98,8 @@ func (l *K8sLeanAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
-func (l *K8sLeanAgent) GetModelCategory() core.ModelTier { return core.ModelTierReasoning }
-func (l *K8sLeanAgent) GetCacheScope() core.CacheScope   { return core.CacheScopeAccount }
+func (l *K8sLeanAgent) GetModelCategory() llmruntime.ModelTier { return llmruntime.ModelTierReasoning }
+func (l *K8sLeanAgent) GetCacheScope() llmruntime.CacheScope   { return llmruntime.CacheScopeAccount }
 
 // IsWatchCapable: drives action sub-agents (restart/scale/rollout) whose outcome
 // completes later, so it may register a background watch.

@@ -239,7 +239,7 @@ def _get_integrations_cached(cache, lock, cloud_account_id, integration_type):
 def choose_account_llm_integration(cloud_account_id, candidates):
     """The integration an account resolves against, or None for the environment defaults.
 
-    Mirrors llm-server's chooseAccountLLMIntegration (agents/core/llm_default_pick.go),
+    Mirrors llm-server's chooseAccountLLMIntegration (llms/runtime/llm_default_pick.go),
     and both run llm/llm-server/agents/core/testdata/llm_default_cases.json. Each
     candidate is (id, linked to the account, marked default on the account's link,
     tenant default). The account's own default wins, otherwise the tenant default.

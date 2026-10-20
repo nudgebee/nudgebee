@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"nudgebee/llm/utils"
@@ -174,7 +175,7 @@ func (l LogGithubAgent) Execute(ctx *security.RequestContext, query core.NBAgent
 		messageHistory = append([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeSystem, block)}, messageHistory...)
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId, query.AgentId, false, messageHistory, true, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId, query.AgentId, false, messageHistory, true, llms.WithTemperature(0.0))
 	if err != nil {
 		ctx.GetLogger().Error("loganalysisgithub: unable to generate content", "error", err)
 		return core.NBAgentResponse{}, err

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"testing"
 
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
@@ -119,33 +120,33 @@ func TestClassificationPlanner_MultiInstruction(t *testing.T) {
 
 type cacheScopedAgent struct{ mockPlainAgent }
 
-func (cacheScopedAgent) GetCacheScope() CacheScope { return CacheScopeAccount }
+func (cacheScopedAgent) GetCacheScope() llmruntime.CacheScope { return llmruntime.CacheScopeAccount }
 
 // The planner keeps the agent's tier (stamped by the executor), its declared
 // cache scope, the parent agent id and content tracking, as before.
 func TestClassificationPlanner_KeepsTierAndCacheScope(t *testing.T) {
-	var tier ModelTier
+	var tier llmruntime.ModelTier
 	var scope any
 	var agentID string
 	var track bool
 	old := classificationGenerate
 	classificationGenerate = func(ctx *security.RequestContext, _, _, _, _, agentId string, trackContent bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
-		tier = modelTierFromContext(ctx)
-		scope = ctx.GetContext().Value(ContextKeyCacheScope)
+		tier = llmruntime.ModelTierFromContext(ctx)
+		scope = ctx.GetContext().Value(llmruntime.ContextKeyCacheScope)
 		agentID, track = agentId, trackContent
 		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "Not Found"}}}, nil
 	}
 	t.Cleanup(func() { classificationGenerate = old })
 
-	goCtx := context.WithValue(context.Background(), ContextKeyModelTier, ModelTierReasoning)
+	goCtx := context.WithValue(context.Background(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning)
 	ctx := security.NewRequestContext(goCtx, security.NewRequestContextForSuperAdmin().GetSecurityContext(), slog.Default(), nil, nil)
 	p, err := NewClassificationPlanner(ctx, NBAgentRequest{AccountId: "test-account", AgentId: "child", ParentAgentId: "parent"}, cacheScopedAgent{mockPlainAgent{name: "subject_test"}}, "system", []string{"Not Found"}, false)
 	require.NoError(t, err)
 	_, finish, err := p.Plan(context.Background(), nil, "alert")
 	require.NoError(t, err)
 	assert.Equal(t, "Not Found", finish.Data)
-	assert.Equal(t, ModelTierReasoning, tier)
-	assert.Equal(t, CacheScopeAccount, scope)
+	assert.Equal(t, llmruntime.ModelTierReasoning, tier)
+	assert.Equal(t, llmruntime.CacheScopeAccount, scope)
 	assert.Equal(t, "parent", agentID, "the parent agent id keys LLM config and cost, as before")
 	assert.True(t, track)
 }

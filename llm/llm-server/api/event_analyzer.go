@@ -14,6 +14,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/events"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
@@ -1648,7 +1649,7 @@ func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request
 		}
 	}
 
-	rcaAgent, ok := core.GetNBAgent(ctx, core.ToolLlm, request.AccountId, core.AgentStatusEnabled)
+	rcaAgent, ok := core.GetNBAgent(ctx, llmruntime.ToolLlm, request.AccountId, core.AgentStatusEnabled)
 	if !ok || rcaAgent == nil {
 		ctx.GetLogger().Error("analyzer: LLM agent not found for RCA")
 		if statusErr := updateStatus(string(events.AnalysisStatusFailed), "LLM agent not found"); statusErr != nil {
@@ -2993,7 +2994,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		directBrief := eventDirectBriefEnabled(ctx, request.AccountId)
 		summaryAgentName := agents.EventsAgentName
 		if directBrief {
-			summaryAgentName = core.ToolLlm
+			summaryAgentName = llmruntime.ToolLlm
 		}
 		eventSummaryAgent, ok := core.GetNBAgent(ctx, summaryAgentName, request.AccountId, core.AgentStatusEnabled)
 		if !ok || eventSummaryAgent == nil {
@@ -3007,7 +3008,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		if shouldRecoverStageFromConversation(eventAnalysisRepo, existingSummary, request.Regenerate) {
 			// Either agent may have written this run's summary: the flag can
 			// change between the run that started and the one recovering it.
-			for _, name := range []string{eventSummaryAgent.GetName(), agents.EventsAgentName, core.ToolLlm} {
+			for _, name := range []string{eventSummaryAgent.GetName(), agents.EventsAgentName, llmruntime.ToolLlm} {
 				if summaryResponseStr, hasSummary = getAgentResponseFromConversation(ctx, parentConversationId, request.AccountId, name, request.EventId); hasSummary {
 					break
 				}

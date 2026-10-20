@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 )
 
@@ -342,14 +343,14 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	}
 
 	// Calculate model usage statistics
-	modelUsage := calculateModelUsageStats(detailedRecords, core.PricingTenantFromContext(ctx))
+	modelUsage := calculateModelUsageStats(detailedRecords, llmruntime.PricingTenantFromContext(ctx))
 
 	// Fetch costs for cache savings calculation
 	modelNames := []string{}
 	for _, record := range detailedRecords {
 		modelNames = append(modelNames, record.LLMModel)
 	}
-	costs, _ := core.GetConversationDao().GetConversationCosts(modelNames, core.PricingTenantFromContext(ctx))
+	costs, _ := core.GetConversationDao().GetConversationCosts(modelNames, llmruntime.PricingTenantFromContext(ctx))
 
 	// Add per-hour storage cost for conversation-scoped caches owned by this
 	// conversation. Account/tenant/global-scoped caches are excluded — their
@@ -548,7 +549,7 @@ func calculateModelUsageStats(records []core.TokenUsageDetailedRecord, tenantId 
 	result := []ModelUsageStat{}
 	for _, stat := range modelMap {
 		// Calculate cache hit rate
-		if prompt := PromptTokens(stat.ModelProvider, stat.InputTokens, stat.CacheCreationTokens); prompt > 0 {
+		if prompt := llmruntime.PromptTokens(stat.ModelProvider, stat.InputTokens, stat.CacheCreationTokens); prompt > 0 {
 			rate := (float64(stat.CachedInputTokens) / float64(prompt)) * 100
 			stat.CacheHitRatePercentage = &rate
 		}
@@ -581,7 +582,7 @@ func calculateCacheSavings(records []core.TokenUsageDetailedRecord, actualCost f
 
 	for _, record := range records {
 		totalCachedTokens += record.CachedInputTokens
-		totalPromptTokens += PromptTokens(record.LLMProvider, record.InputTokens, record.CacheCreationTokens)
+		totalPromptTokens += llmruntime.PromptTokens(record.LLMProvider, record.InputTokens, record.CacheCreationTokens)
 
 		if pricing, ok := costs[record.LLMProvider+":"+record.LLMModel]; ok {
 			// "Without cache" hypothetical: the whole prompt billed at the
@@ -764,7 +765,7 @@ var resolutionLayerLabels = map[string]string{
 // back to showing the raw source rather than an empty cell.
 func configSourceDisplayNames(ctx *security.RequestContext, accountId string, sources map[string]struct{}) map[string]string {
 	names := make(map[string]string, len(sources))
-	var integrations []core.LLMIntegration
+	var integrations []llmruntime.LLMIntegration
 	loaded := false
 
 	for src := range sources {
@@ -778,7 +779,7 @@ func configSourceDisplayNames(ctx *security.RequestContext, accountId string, so
 			names[src] = label
 			continue
 		}
-		parsed, err := core.ParseConfigSourceId(src)
+		parsed, err := llmruntime.ParseConfigSourceId(src)
 		if err != nil {
 			continue
 		}
@@ -792,7 +793,7 @@ func configSourceDisplayNames(ctx *security.RequestContext, accountId string, so
 			var err error
 			// Naming is cosmetic: a lookup failure costs the config label, not the
 			// token and latency figures, so degrade rather than fail the panel.
-			if integrations, err = core.GetLLMIntegrationsForAccount(ctx, accountId); err != nil {
+			if integrations, err = llmruntime.GetLLMIntegrationsForAccount(ctx, accountId); err != nil {
 				ctx.GetLogger().Warn("usage metrics: unable to load LLM integrations, config names will be omitted", "error", err, "account_id", accountId)
 			}
 			loaded = true

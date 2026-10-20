@@ -349,7 +349,7 @@ type appConfig struct {
 	// Global default TTFT (time-to-first-token) timeout in seconds. Applies only
 	// when a provider is explicitly enabled via LLM_PROVIDER_TTFT_TIMEOUT_ENABLED_<PROVIDER>=true
 	// and does NOT have its own LLM_PROVIDER_TTFT_TIMEOUT_SECONDS_<PROVIDER> override.
-	// See getLLMTTFTTimeout in agents/core/llm_config.go. The watchdog cancels and
+	// See getLLMTTFTTimeout in llms/runtime/llm_config.go. The watchdog cancels and
 	// retries the same model if no first streamed token arrives within this deadline.
 	LlmProviderTTFTTimeoutSeconds int `mapstructure:"llm_provider_ttft_timeout_seconds"`
 
@@ -372,7 +372,7 @@ type appConfig struct {
 	// provider is explicitly enabled via
 	// LLM_PROVIDER_SUSTAINED_GEN_TIMEOUT_ENABLED_<PROVIDER>=true and does NOT have
 	// its own LLM_PROVIDER_SUSTAINED_GEN_TIMEOUT_SECONDS_<PROVIDER> override. See
-	// getLLMSustainedGenTimeout in agents/core/llm_config.go. Unlike the TTFT
+	// getLLMSustainedGenTimeout in llms/runtime/llm_config.go. Unlike the TTFT
 	// watchdog above (which only guards the gap before the first streamed token),
 	// this watchdog cancels and retries the same model if TOTAL call duration
 	// exceeds this deadline regardless of whether streaming already started —
@@ -382,13 +382,13 @@ type appConfig struct {
 	// This is a FLOOR, not the literal deadline used at runtime: a thinking-aware
 	// TTFT deadline can exceed this flat value on higher thinking levels, which
 	// would silently make TTFT unreachable for those calls. sustainedGenDeadlineSeconds
-	// (agents/core/llm_common.go) layers the actual deadline on top of both this
+	// (llms/runtime/llm_common.go) layers the actual deadline on top of both this
 	// floor and the TTFT deadline — see LlmProviderSustainedGenHeadroomSeconds below.
 	LlmProviderSustainedGenTimeoutSeconds int `mapstructure:"llm_provider_sustained_gen_timeout_seconds"`
 
 	// Fixed safety margin added on top of max(TTFT deadline, LlmProviderSustainedGenTimeoutSeconds)
 	// when computing the actual sustained-gen deadline for a call (see
-	// sustainedGenDeadlineSeconds in agents/core/llm_common.go). Guarantees the TTFT
+	// sustainedGenDeadlineSeconds in llms/runtime/llm_common.go). Guarantees the TTFT
 	// watchdog always gets its full configured chance to fire before sustained-gen
 	// can, so the two watchdogs are explicitly layered rather than racing on two
 	// independently-configured values (PR #36332 review).
@@ -1275,7 +1275,7 @@ type appConfig struct {
 	// PROMPTS_VERSION_<PROMPT_NAME> (e.g. PROMPTS_VERSION_K8S_LEAN=v1),
 	// read dynamically since prompt names aren't enumerable here -- see
 	// prompts/loader.go's forcedVersionFor. Mirrors the LLM_PROVIDER_<AGENT>
-	// per-agent-then-global env convention (agents/core/llm_config.go).
+	// per-agent-then-global env convention (llms/runtime/llm_config.go).
 	// Never set in a deployed environment; production rollout stays
 	// DB-experiment/DB-config gated.
 	PromptsVersion string `mapstructure:"prompts_version"`

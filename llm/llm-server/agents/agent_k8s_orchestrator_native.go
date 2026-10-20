@@ -3,6 +3,7 @@ package agents
 import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
@@ -89,8 +90,10 @@ func (a *K8sNativeAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
-func (a *K8sNativeAgent) GetModelCategory() core.ModelTier { return core.ModelTierReasoning }
-func (a *K8sNativeAgent) GetCacheScope() core.CacheScope   { return core.CacheScopeAccount }
+func (a *K8sNativeAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
+}
+func (a *K8sNativeAgent) GetCacheScope() llmruntime.CacheScope { return llmruntime.CacheScopeAccount }
 
 // IsWatchCapable returns false — watch_resource is deliberately NOT in the
 // K8s-native allowlist. Write patterns that need to block on completion use

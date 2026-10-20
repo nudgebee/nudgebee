@@ -338,7 +338,7 @@ func (l *PromptLoader) resolveConfig(ctx context.Context, req PromptRequest) (*R
 // prompt name: PROMPTS_VERSION_<PROMPT_NAME> if set, else the global
 // PROMPTS_VERSION, else "". Mirrors the LLM_PROVIDER_<AGENT> /
 // LLM_PROVIDER per-agent-then-global env pattern in
-// agents/core/llm_config.go. The per-prompt key is read dynamically via
+// llms/runtime/llm_config.go. The per-prompt key is read dynamically via
 // viper (AutomaticEnv, set up in config.init()) rather than a static
 // struct field, since prompt names aren't enumerable in config.go.
 // No registered prompt name has a hyphen today, but env vars can't carry
@@ -493,7 +493,7 @@ func (l *PromptLoader) loadPromptFile(name string, category PromptCategory, mode
 // Deliberately coarser than the exact/canonical tiers in modelResolutionBases
 // -- see modelFamily. Mirrors the same "match the whole model line, not one
 // deployment string" pattern already used for token-limit lookup
-// (agents/core/llm_tokencount.go's strings.Contains(n, "qwen") case).
+// (llms/runtime/llm_tokencount.go's strings.Contains(n, "qwen") case).
 var modelFamilyPatterns = []struct {
 	substr string
 	family string

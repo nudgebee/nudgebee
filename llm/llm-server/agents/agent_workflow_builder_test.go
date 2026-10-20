@@ -12,6 +12,7 @@ import (
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
@@ -2375,7 +2376,7 @@ func TestTurnIntentClassification(t *testing.T) {
 		call, task := turnIntentClassification(request, hasWorkflow)
 
 		// Stays on today's model; the classification tier is a separate switch.
-		assert.Equal(t, core.ModelTierRetrieval, call.Tier)
+		assert.Equal(t, llmruntime.ModelTierRetrieval, call.Tier)
 		assert.Equal(t, "agent", call.AgentId, "agent id keys LLM config and cost")
 		assert.True(t, call.TrackContent)
 

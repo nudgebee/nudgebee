@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"strings"
 
@@ -27,14 +28,14 @@ func generateUserAcknowledgment(ctx *security.RequestContext, userId string, acc
 	// Summary tier + global cache scope, used for both the pre-flight model
 	// check and the generation call so they resolve and validate the same model.
 	ackCtx := security.NewRequestContext(
-		context.WithValue(context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierSummary), ContextKeyCacheScope, CacheScopeGlobal),
+		context.WithValue(context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary), llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	_, err := GetLlmModel(ackCtx, "acknowledgment_agent", accountId, conversationId)
+	_, err := llmruntime.GetLlmModel(ackCtx, "acknowledgment_agent", accountId, conversationId)
 	if err != nil {
 		ctx.GetLogger().Warn("acknowledgment: unable to get LLM model, using fallback", "error", err)
 		return generateFallbackAcknowledgment(query, agentName)
@@ -76,7 +77,7 @@ INTENT: Analyze event ID 12345 to identify any associated errors or issues`
 		llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf("User Query: %s", query)),
 	}
 
-	completion, err := GenerateAndTrackLLMContent(ackCtx, userId, accountId, conversationId, messageId, "acknowledgment_agent", false, messageContent, true, WithThinkingLevel(ThinkingLevelFastTask))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ackCtx, userId, accountId, conversationId, messageId, "acknowledgment_agent", false, messageContent, true, llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil {
 		ctx.GetLogger().Warn("acknowledgment: LLM call failed, using fallback", "error", err)
 		return generateFallbackAcknowledgment(query, agentName)

@@ -1,12 +1,14 @@
 package analytics
 
-import "nudgebee/llm/agents/core"
+import (
+	llmruntime "nudgebee/llm/llms/runtime"
+)
 
-// PromptTokens and CacheWritesOutsideInputSQL mirror core's so usage code reads
-// the same in both packages. See core.PromptTokens for why Anthropic and Bedrock
+// PromptTokens and CacheWritesOutsideInputSQL mirror llmruntime's so usage code reads
+// the same in both packages. See llmruntime.PromptTokens for why Anthropic and Bedrock
 // add cache writes to input.
 func PromptTokens(provider string, inputTokens, cacheCreationTokens int) int {
-	return core.PromptTokens(provider, inputTokens, cacheCreationTokens)
+	return llmruntime.PromptTokens(provider, inputTokens, cacheCreationTokens)
 }
 
-const CacheWritesOutsideInputSQL = core.CacheWritesOutsideInputSQL
+const CacheWritesOutsideInputSQL = llmruntime.CacheWritesOutsideInputSQL

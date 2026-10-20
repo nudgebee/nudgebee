@@ -11,6 +11,7 @@ import (
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 )
 
@@ -96,7 +97,7 @@ func TestReAct3VsReAct4Comparison(t *testing.T) {
 
 	// react_4 only engages on a native-tools-capable provider; otherwise both
 	// runs would execute react_3 and the comparison is vacuous.
-	provider := core.GetLLMProvider(sc, accountID, "", false, "")
+	provider := llmruntime.GetLLMProvider(sc, accountID, "", false, "")
 	if !core.SupportsNativeTools(provider, "") {
 		t.Skipf("provider %q is not native-tools capable — react_4 would fall back to react_3; nothing to compare", provider)
 	}

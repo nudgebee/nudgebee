@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/google/uuid"
@@ -256,10 +257,10 @@ func generateClaimShadow(ctx *security.RequestContext, request NBAgentRequest, d
 		llms.TextParts(llms.ChatMessageTypeSystem, detail.Prompt),
 		llms.TextParts(llms.ChatMessageTypeHuman, string(detail.InputPacket)),
 	}
-	response, err := GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId,
+	response, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId,
 		request.MessageId, request.AgentId, false, messages, false, llms.WithTemperature(0), llms.WithJSONMode())
 	if err != nil {
-		if errors.Is(err, errPreservedPromptChanged) {
+		if errors.Is(err, llmruntime.ErrPreservedPromptChanged) {
 			return claimShadowResult{Status: "input_limit", ErrorStage: "preflight", ErrorDetail: TruncateHead(err.Error(), 2048)}
 		}
 		return claimShadowResult{Status: "generation_error", ErrorStage: "generation", ErrorDetail: TruncateHead(err.Error(), 2048)}
@@ -275,9 +276,9 @@ func generateClaimFallback(ctx *security.RequestContext, request NBAgentRequest,
 	bounded, cancel := context.WithTimeout(ctx.GetContext(), claimCritiqueTimeout())
 	defer cancel()
 	record.TokenUsageID = uuid.NewString()
-	bounded = context.WithValue(bounded, ContextKeyModelTier, ModelTierReasoning)
-	bounded = context.WithValue(bounded, contextKeyPreserveInput, true)
-	bounded = context.WithValue(bounded, contextKeyClaimUsageID, record.TokenUsageID)
+	bounded = context.WithValue(bounded, llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning)
+	bounded = context.WithValue(bounded, llmruntime.ContextKeyPreserveInput, true)
+	bounded = context.WithValue(bounded, llmruntime.ContextKeyClaimUsageID, record.TokenUsageID)
 	fallbackCtx := security.NewRequestContext(bounded, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 	return generateClaimShadow(fallbackCtx, request, record.Detail)
 }
@@ -288,13 +289,13 @@ func generateClaimFallback(ctx *security.RequestContext, request NBAgentRequest,
 func generateClaimContinuation(conv *critiqueConversation, usageID string, request NBAgentRequest, detail claimCaptureDetail) claimShadowResult {
 	bounded, cancel := context.WithTimeout(conv.ctx.GetContext(), claimCritiqueTimeout())
 	defer cancel()
-	ctx := conv.derive(context.WithValue(bounded, contextKeyClaimUsageID, usageID))
+	ctx := conv.derive(context.WithValue(bounded, llmruntime.ContextKeyClaimUsageID, usageID))
 	instruction := conv.instruction(detail.Prompt)
 	response, err := conv.generate(ctx, request, llms.TextParts(llms.ChatMessageTypeHuman, instruction))
 	switch {
 	case errors.Is(err, errCritiqueToolCall):
 		return claimShadowResult{Status: "tool_call", ErrorStage: "generation", ErrorDetail: "Continuation audit called a tool"}
-	case errors.Is(err, errPreservedPromptChanged):
+	case errors.Is(err, llmruntime.ErrPreservedPromptChanged):
 		return claimShadowResult{Status: "input_limit", ErrorStage: "preflight", ErrorDetail: TruncateHead(err.Error(), 2048)}
 	case err != nil:
 		return claimShadowResult{Status: "generation_error", ErrorStage: "generation", ErrorDetail: TruncateHead(err.Error(), 2048)}
@@ -355,8 +356,8 @@ func runClaimCritique(ctx *security.RequestContext, request NBAgentRequest, plan
 	started := time.Now()
 	bounded, cancel := context.WithTimeout(ctx.GetContext(), claimCritiqueTimeout())
 	defer cancel()
-	bounded = context.WithValue(bounded, ContextKeyModelTier, ModelTierReasoning)
-	bounded = context.WithValue(bounded, contextKeyPreserveInput, true)
+	bounded = context.WithValue(bounded, llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning)
+	bounded = context.WithValue(bounded, llmruntime.ContextKeyPreserveInput, true)
 	auditCtx := security.NewRequestContext(bounded, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 	record := newClaimCapture(auditCtx, request, planner, agentName, claimBaselinePending, "", input, answer, notebook, steps)
 	record.Detail.FeedbackEnabled = config.Config.ClaimCritiqueFeedbackEnabled
@@ -374,7 +375,7 @@ func runClaimCritique(ctx *security.RequestContext, request NBAgentRequest, plan
 		if oversizedContinuation {
 			record.Detail.ErrorStage, record.Detail.ErrorDetail = "", ""
 		}
-		auditCtx = security.NewRequestContext(context.WithValue(bounded, contextKeyClaimUsageID, record.TokenUsageID),
+		auditCtx = security.NewRequestContext(context.WithValue(bounded, llmruntime.ContextKeyClaimUsageID, record.TokenUsageID),
 			ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 		if conv != nil {
 			result = generateClaimContinuation(conv, record.TokenUsageID, request, record.Detail)

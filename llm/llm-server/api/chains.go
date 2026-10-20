@@ -21,6 +21,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/events"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
 	toolcore "nudgebee/llm/tools/core"
@@ -221,7 +222,7 @@ func handleRequestExecution(
 				return
 			}
 			logger.Error("api: error executing request", "metrics_key", metricsKey, "latency", time.Since(startTime).String(), "error", err)
-			message, ok := core.LLMFailureMessage(err)
+			message, ok := llmruntime.LLMFailureMessage(err)
 			if !ok {
 				message = common.SanitizeErrorMessage(err.Error())
 			}
@@ -711,7 +712,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		defer func() { timer.log(logger, "/v1/completions/chat") }()
 		ctx := context.WithoutCancel(c.Request.Context())
 		// Optimization: Add a thread-safe resolution cache to the context to prevent redundant DB calls for LLM config
-		ctx = context.WithValue(ctx, core.ContextKeyLLMResolution, core.NewLLMResolutionCache())
+		ctx = context.WithValue(ctx, llmruntime.ContextKeyLLMResolution, llmruntime.NewLLMResolutionCache())
 
 		agentContext, err := BuildContextFromPayload(ctx, c, &actionRequest, tracer, meter, logger)
 		timer.mark("security_context")

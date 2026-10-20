@@ -984,7 +984,7 @@ func HasDatadogIntegration(accountId string) bool {
 	}
 
 	// Check if account has Datadog integration configured
-	// Based on pattern from tools/tool_docs.go:204 and agents/core/llm_common.go:1443
+	// Based on pattern from tools/tool_docs.go:204 and llms/runtime/llm_common.go:1443
 	query := `
 		SELECT COUNT(*)
 		FROM integrations i

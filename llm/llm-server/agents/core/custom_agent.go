@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
@@ -145,10 +146,10 @@ func (a *nbCustomAgent) GetThinkingLevel() string {
 	level, _ := a.agent.Config["thinking_level"].(string)
 	level = strings.ToLower(strings.TrimSpace(level))
 	switch level {
-	case ThinkingLevelMinimal, ThinkingLevelLow, ThinkingLevelMedium, ThinkingLevelHigh:
+	case llmruntime.ThinkingLevelMinimal, llmruntime.ThinkingLevelLow, llmruntime.ThinkingLevelMedium, llmruntime.ThinkingLevelHigh:
 		return level
 	}
-	return ThinkingLevelLow
+	return llmruntime.ThinkingLevelLow
 }
 
 func (a *nbCustomAgent) GetName() string {
@@ -171,8 +172,8 @@ func (a *nbCustomAgent) GetPlannerType() AgentPlannerType {
 	return a.agent.ExecutorType
 }
 
-func (a *nbCustomAgent) GetModelCategory() ModelTier {
-	return ModelTierReasoning
+func (a *nbCustomAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
 }
 
 func (a *nbCustomAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {

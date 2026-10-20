@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -160,7 +161,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 
 	// Always include the LLM tool so the sub-agent can reason/summarize. The LLM tool
 	// is essential for the ReAct planner — fail fast if it cannot be resolved.
-	llmTool, llmOk := toolcore.GetNBTool(t.accountId, core.ToolLlm)
+	llmTool, llmOk := toolcore.GetNBTool(t.accountId, llmruntime.ToolLlm)
 	if !llmOk {
 		ctx.Ctx.GetLogger().Error("delegate_agent: LLM tool not found for account", "account_id", t.accountId)
 		return toolcore.NBToolResponse{
@@ -170,7 +171,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 	}
 	hasLlm := false
 	for _, rt := range resolvedTools {
-		if strings.EqualFold(rt.Name(), core.ToolLlm) {
+		if strings.EqualFold(rt.Name(), llmruntime.ToolLlm) {
 			hasLlm = true
 			break
 		}
@@ -599,7 +600,7 @@ func filterOutTool(tools []toolcore.NBTool, name string) []toolcore.NBTool {
 // facing lists (the system-prompt "available tools" line) or metrics (the budget/
 // usage count shown to the parent agent).
 func isLLMReasoningTool(name string) bool {
-	return strings.EqualFold(name, core.ToolLlm)
+	return strings.EqualFold(name, llmruntime.ToolLlm)
 }
 
 // collectToolsUsed builds a histogram of tool names the sub-agent actually invoked,
@@ -723,8 +724,8 @@ func (a *dynamicReActAgent) GetPlannerType() core.AgentPlannerType {
 // orchestrator that owns the cross-cutting diagnosis; paying pro rates for a delegated
 // sub-task was cost with no matching quality need. This also makes delegation (and the
 // trimmed orchestrators' on-demand reach-back) cost-competitive with a direct tool call.
-func (a *dynamicReActAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierRetrieval
+func (a *dynamicReActAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierRetrieval
 }
 
 // GetNotebookEnabled keeps delegated specialists focused on their bounded brief.
@@ -744,7 +745,7 @@ func (a *dynamicReActAgent) GetMaxIterations() int {
 // GetSummaryToolName implements core.NBAgentReActPlannerSummaryToolProvider.
 // Use the standard LLM tool for summarization.
 func (a *dynamicReActAgent) GetSummaryToolName() string {
-	return core.ToolLlm
+	return llmruntime.ToolLlm
 }
 
 // OptOutDefaultTools implements core.DefaultToolsOptOut. The parent agent has already

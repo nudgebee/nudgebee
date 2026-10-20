@@ -14,6 +14,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -435,7 +436,7 @@ func TestRunPolicyCountsTokensFromEachLLMResponse(t *testing.T) {
 	withFakeRunPolicy(t, fake)
 	drainTokenUsageWrites(t)
 	withFakeLLMModel(t, &fakeLLMModel{response: "ok"})
-	_, err := GenerateAndTrackLLMContent(governedRun(llmOverrideContext()), "user-1", "acct-1", "conv-1", "msg-1", "", false, nil, false)
+	_, err := llmruntime.GenerateAndTrackLLMContent(governedRun(llmOverrideContext()), "user-1", "acct-1", "conv-1", "msg-1", "", false, nil, false)
 	require.NoError(t, err)
 	assert.Equal(t, 2, fake.tokens, "1 input + 1 output token")
 }
@@ -471,7 +472,7 @@ func TestRunPolicyBudgetCountsUncachedTokensAcrossContinuations(t *testing.T) {
 		chunk(" second half", "stop", 21000, 16000, 300, 50),
 	}}
 	withFakeLLMModel(t, model)
-	_, err := GenerateAndTrackLLMContent(governedRun(llmOverrideContext()), "user-1", "acct-1", "conv-1", "msg-1", "", false, nil, false)
+	_, err := llmruntime.GenerateAndTrackLLMContent(governedRun(llmOverrideContext()), "user-1", "acct-1", "conv-1", "msg-1", "", false, nil, false)
 	require.NoError(t, err)
 	require.Equal(t, 2, model.calls, "the cut-off response was continued")
 	assert.Equal(t, (5000+400+100)+(5000+300+50), fake.tokens)
@@ -483,14 +484,14 @@ func TestRunPolicyBudgetCountsUncachedTokensAcrossContinuations(t *testing.T) {
 // sooner, for a test that swaps the store again before it ends.
 func drainTokenUsageWrites(t *testing.T) func() {
 	t.Helper()
-	prev := GetMetricsWorkerPool()
+	prev := llmruntime.GetMetricsWorkerPool()
 	pool := common.NewWorkerPool("policy-test-metrics", 1, 16)
-	SetMetricsWorkerPool(pool)
+	llmruntime.SetMetricsWorkerPool(pool)
 	var once sync.Once
 	drain := func() {
 		once.Do(func() {
 			pool.Stop()
-			SetMetricsWorkerPool(prev)
+			llmruntime.SetMetricsWorkerPool(prev)
 		})
 	}
 	t.Cleanup(drain)
@@ -633,7 +634,7 @@ func (d refuseBeforeWriteDao) GetConversationBySession(string, string) (Conversa
 func (d refuseBeforeWriteDao) GetConversation(string) (Conversation, error) {
 	return Conversation{}, ErrConversationNotFound
 }
-func (d refuseBeforeWriteDao) SaveConversation(string, string, string, string, string, string, string, ConversationStatus, ConversationSource, string, string, *ConversationTierOverrides, string, *RunProfile) (uuid.UUID, error) {
+func (d refuseBeforeWriteDao) SaveConversation(string, string, string, string, string, string, string, ConversationStatus, ConversationSource, string, string, *llmruntime.ConversationTierOverrides, string, *RunProfile) (uuid.UUID, error) {
 	*d.saves++
 	return uuid.New(), nil
 }

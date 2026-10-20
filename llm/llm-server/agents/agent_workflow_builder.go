@@ -9,6 +9,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -537,8 +538,8 @@ func (a *WorkflowBuilderAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeCustom
 }
 
-func (a *WorkflowBuilderAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierReasoning
+func (a *WorkflowBuilderAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
 }
 
 // PostProcessResponse is a pass-through. The builder produces its terminal output
@@ -828,7 +829,7 @@ Rules:
 		ConversationId: request.ConversationId,
 		MessageId:      request.MessageId,
 		AgentId:        request.AgentId,
-		Tier:           core.ModelTierRetrieval,
+		Tier:           llmruntime.ModelTierRetrieval,
 		TrackContent:   true,
 	}
 	task := core.ClassificationTask{
@@ -1347,14 +1348,14 @@ func (a *WorkflowBuilderAgent) generateClarifyingQuestions(ctx *security.Request
 
 	// Use lite model for speed
 	clarifyCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), core.ContextKeyModelTier, core.ModelTierRetrieval),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierRetrieval),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	completion, err := core.GenerateAndTrackLLMContent(clarifyCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(clarifyCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		return nil, fmt.Errorf("clarification LLM call failed: %w", err)
 	}
@@ -1391,14 +1392,14 @@ func (a *WorkflowBuilderAgent) generateEditClarifyingQuestions(ctx *security.Req
 
 	// Lite/fast model — this is a yes/ask classification, same as the create-mode clarification.
 	clarifyCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), core.ContextKeyModelTier, core.ModelTierRetrieval),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierRetrieval),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	completion, err := core.GenerateAndTrackLLMContent(clarifyCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(clarifyCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		return nil, fmt.Errorf("edit clarification LLM call failed: %w", err)
 	}
@@ -2730,7 +2731,7 @@ Return ONLY the JSON object.`, taskTypeNames, envContext)
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		return "", err
 	}
@@ -3275,7 +3276,7 @@ NOTE: In all user-facing text, refer to these as "automations" (not "workflows")
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		return "", err
 	}
@@ -3338,7 +3339,7 @@ RULES:
 		llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf("Original request: %s\n\nPlease update the plan based on my feedback: %s", request.Query, feedback)),
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		return "", err
 	}
@@ -5284,10 +5285,10 @@ func (a *WorkflowBuilderAgent) toolLoopTurn(ctx *security.RequestContext, reques
 	}
 	thinkingLevel := ""
 	if lowReasoning {
-		thinkingLevel = lowReasoningLevel(core.GetLLMModelName(ctx, request.AccountId, "", a.GetName(), true, request.ConversationId))
+		thinkingLevel = lowReasoningLevel(llmruntime.GetLLMModelName(ctx, request.AccountId, "", a.GetName(), true, request.ConversationId))
 	}
 	// Cap max tokens at 8192 — a single tool call or final answer never needs more.
-	return core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messages, false, llms.WithTemperature(0.0), llms.WithStopWords(toolLoopStopWords), llms.WithMaxTokens(8192), core.WithThinkingLevel(thinkingLevel))
+	return llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messages, false, llms.WithTemperature(0.0), llms.WithStopWords(toolLoopStopWords), llms.WithMaxTokens(8192), llmruntime.WithThinkingLevel(thinkingLevel))
 }
 
 // lowReasoningLevel is the reasoning level to ask of model for a step that needs little
@@ -5295,14 +5296,14 @@ func (a *WorkflowBuilderAgent) toolLoopTurn(ctx *security.RequestContext, reques
 // model that does not reason by default for "low" would switch reasoning on and make the step
 // slower, not faster.
 func lowReasoningLevel(model string) string {
-	level := core.GetLlmDefaultThinkingLevel(model)
+	level := llmruntime.GetLlmDefaultThinkingLevel(model)
 	// The operator's override replaces the default of a model that has one.
 	if level != "" && config.Config.LlmProviderThinkingLevel != "" {
 		level = config.Config.LlmProviderThinkingLevel
 	}
 	switch strings.ToLower(level) {
-	case core.ThinkingLevelMedium, core.ThinkingLevelHigh:
-		return core.ThinkingLevelLow
+	case llmruntime.ThinkingLevelMedium, llmruntime.ThinkingLevelHigh:
+		return llmruntime.ThinkingLevelLow
 	}
 	return ""
 }

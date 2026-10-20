@@ -16,6 +16,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/llms/googleai"
+	llmruntime "nudgebee/llm/llms/runtime"
 	nbprompts "nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -313,13 +314,13 @@ func renderReact4Base(ctx *security.RequestContext, request NBAgentRequest, agen
 	notebookEnabled := ResolveAgentNotebookEnabled(agent)
 	hypothesisModeEnabled := resolveHypothesisModeEnabled(request, agent)
 	orchestratorMode, executorMode := resolveOrchestratorRoleModes(request)
-	promptVariant := promptVariantFromCtx(ctx)
-	if promptVariant == promptVariantLean {
+	promptVariant := llmruntime.PromptVariantFromCtx(ctx)
+	if promptVariant == llmruntime.PromptVariantLean {
 		notebookEnabled = false
 		hypothesisModeEnabled = false
 		orchestratorMode = false
 	}
-	isInvestigation := promptVariant != promptVariantLean
+	isInvestigation := promptVariant != llmruntime.PromptVariantLean
 
 	// Fragment lookups use an empty account ID (include-only), matching react_3.
 	// Custom agents deliberately skip built-in-only fragments rather than paying
@@ -520,8 +521,8 @@ func (o *NBReActPlanner4) Plan(
 		thinkingLevel := ""
 		if o.orchestratorDeepThinking(firstPlanCallOfTurn) {
 			agentName := o.agentName()
-			provider := GetLLMProvider(o.ctx, o.request.AccountId, agentName, true, o.request.ConversationId)
-			model := GetLLMModelName(o.ctx, o.request.AccountId, provider, agentName, true, o.request.ConversationId)
+			provider := llmruntime.GetLLMProvider(o.ctx, o.request.AccountId, agentName, true, o.request.ConversationId)
+			model := llmruntime.GetLLMModelName(o.ctx, o.request.AccountId, provider, agentName, true, o.request.ConversationId)
 			thinkingLevel = resolveOrchestratorThinkingLevel(model)
 		}
 		// Agent-level policy remains the final authority, matching ReAct3.
@@ -529,7 +530,7 @@ func (o *NBReActPlanner4) Plan(
 			thinkingLevel = level
 		}
 		if thinkingLevel != "" {
-			opts = append(opts, WithThinkingLevel(thinkingLevel))
+			opts = append(opts, llmruntime.WithThinkingLevel(thinkingLevel))
 		}
 		if len(o.llmTools) > 0 {
 			opts = append(opts, llms.WithTools(o.llmTools))
@@ -541,7 +542,7 @@ func (o *NBReActPlanner4) Plan(
 			opts = append(opts, sigOpt)
 		}
 		agentCtx := o.resolveAgentContext()
-		result, err := GenerateAndTrackLLMContent(
+		result, err := llmruntime.GenerateAndTrackLLMContent(
 			agentCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId,
 			o.request.MessageId, o.request.AgentId, false, messages, true,
 			opts...,
@@ -655,16 +656,16 @@ func (o *NBReActPlanner4) Plan(
 // the prompt), the scope is downgraded to Conversation so they cannot share an
 // Account-scope cache across sessions.
 func (o *NBReActPlanner4) resolveAgentContext() *security.RequestContext {
-	cacheScope := CacheScopeConversation
+	cacheScope := llmruntime.CacheScopeConversation
 	if cacheProvider, ok := o.nbAgent.(NBAgentCacheScopeProvider); ok {
 		cacheScope = cacheProvider.GetCacheScope()
 	}
-	if len(o.request.ClientTools) > 0 && cacheScope != CacheScopeConversation {
+	if len(o.request.ClientTools) > 0 && cacheScope != llmruntime.CacheScopeConversation {
 		if o.ctx != nil && o.ctx.GetLogger() != nil {
 			o.ctx.GetLogger().Debug("react4: downgrading cache scope to conversation due to client tools",
 				"agent", o.nbAgent.GetName(), "from", cacheScope)
 		}
-		cacheScope = CacheScopeConversation
+		cacheScope = llmruntime.CacheScopeConversation
 	}
 	baseCtx := context.Background()
 	if o.ctx != nil && o.ctx.GetContext() != nil {
@@ -673,16 +674,16 @@ func (o *NBReActPlanner4) resolveAgentContext() *security.RequestContext {
 	if o.ctx == nil {
 		return security.NewRequestContext(
 			context.WithValue(
-				context.WithValue(baseCtx, ContextKeyCacheScope, cacheScope),
-				ContextKeyCapabilities, o.request.Capabilities,
+				context.WithValue(baseCtx, llmruntime.ContextKeyCacheScope, cacheScope),
+				llmruntime.ContextKeyCapabilities, o.request.Capabilities,
 			),
 			nil, nil, nil, nil,
 		)
 	}
 	return security.NewRequestContext(
 		context.WithValue(
-			context.WithValue(baseCtx, ContextKeyCacheScope, cacheScope),
-			ContextKeyCapabilities, o.request.Capabilities,
+			context.WithValue(baseCtx, llmruntime.ContextKeyCacheScope, cacheScope),
+			llmruntime.ContextKeyCapabilities, o.request.Capabilities,
 		),
 		o.ctx.GetSecurityContext(),
 		o.ctx.GetLogger(),
@@ -2114,12 +2115,12 @@ func (o *NBReActPlanner4) answerCritique(input, scratchpad, finalAnswer string, 
 	// Critique is reasoning-heavy; tag the context so it resolves the
 	// Reasoning-tier model regardless of the host agent's category.
 	critiqueCtx := security.NewRequestContext(
-		context.WithValue(o.ctx.GetContext(), ContextKeyModelTier, ModelTierReasoning),
+		context.WithValue(o.ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning),
 		o.ctx.GetSecurityContext(), o.ctx.GetLogger(), o.ctx.GetTracer(), o.ctx.GetMeter(),
 	)
 
 	critiqueMessages := []llms.MessageContent{{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: critiquePromptStr}}}}
-	critiqueResult, critiqueErr := GenerateAndTrackLLMContent(critiqueCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.AgentId, false, critiqueMessages, true, llms.WithTemperature(0.0))
+	critiqueResult, critiqueErr := llmruntime.GenerateAndTrackLLMContent(critiqueCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.AgentId, false, critiqueMessages, true, llms.WithTemperature(0.0))
 	if critiqueErr != nil {
 		logger.Error("react4: critique llm call failed, accepting answer", "error", critiqueErr)
 		return "", ""
@@ -2137,7 +2138,7 @@ func (o *NBReActPlanner4) answerCritique(input, scratchpad, finalAnswer string, 
 				{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: instruction}}},
 				{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: critiquePromptStr}}},
 			}
-			retryCritique, retryErr := GenerateAndTrackLLMContent(critiqueCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.AgentId, false, retryMessages, true, llms.WithTemperature(0.0))
+			retryCritique, retryErr := llmruntime.GenerateAndTrackLLMContent(critiqueCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.AgentId, false, retryMessages, true, llms.WithTemperature(0.0))
 			if retryErr != nil {
 				continue
 			}

@@ -6,6 +6,7 @@ import (
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -20,8 +21,8 @@ func TestK8sNativeAgent_Identity(t *testing.T) {
 	a := newK8sNativeAgentNamed("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", AgentK8sOrchestratorNativeName)
 	assert.Equal(t, AgentK8sOrchestratorNativeName, a.GetName())
 	assert.Equal(t, core.AgentPlannerTypeOrchestrating, a.GetPlannerType())
-	assert.Equal(t, core.ModelTierReasoning, a.GetModelCategory())
-	assert.Equal(t, core.CacheScopeAccount, a.GetCacheScope())
+	assert.Equal(t, llmruntime.ModelTierReasoning, a.GetModelCategory())
+	assert.Equal(t, llmruntime.CacheScopeAccount, a.GetCacheScope())
 	assert.False(t, a.IsWatchCapable(), "watch tools are not in native allowlist")
 }
 

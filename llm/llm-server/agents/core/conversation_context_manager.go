@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 
 	"nudgebee/llm/security"
@@ -83,14 +84,14 @@ Be brief, accurate, and return only factual information. If nothing is useful or
 	}
 
 	summaryCtx := security.NewRequestContext(
-		context.WithValue(context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierSummary), ContextKeyCacheScope, CacheScopeGlobal),
+		context.WithValue(context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary), llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	llmResponse, err := GenerateAndTrackLLMContent(summaryCtx, userId, accountId, conversationId, messageId, "conversation_context_summary", false, mclist, true, WithThinkingLevel(ThinkingLevelFastTask))
+	llmResponse, err := llmruntime.GenerateAndTrackLLMContent(summaryCtx, userId, accountId, conversationId, messageId, "conversation_context_summary", false, mclist, true, llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil {
 		return "", err
 	}
@@ -117,14 +118,14 @@ func getJsonFromLlm(ctx *security.RequestContext, inputString string, userId str
 	}
 
 	jsonCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), ContextKeyCacheScope, CacheScopeGlobal),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	llmResponse, err := GenerateAndTrackLLMContent(jsonCtx, userId, accountId, conversationId, messageId, "context_extraction_agent", false, mclist, true)
+	llmResponse, err := llmruntime.GenerateAndTrackLLMContent(jsonCtx, userId, accountId, conversationId, messageId, "context_extraction_agent", false, mclist, true)
 	if err != nil {
 		return "{}", err
 	}
@@ -239,8 +240,8 @@ func (m *ConversationContextManager) unifiedExtraction(
 
 	extractCtx := security.NewRequestContext(
 		context.WithValue(
-			context.WithValue(ctx.GetContext(), ContextKeyCacheScope, CacheScopeGlobal),
-			ContextKeyModelTier, ModelTierSummary,
+			context.WithValue(ctx.GetContext(), llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal),
+			llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary,
 		),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
@@ -248,7 +249,7 @@ func (m *ConversationContextManager) unifiedExtraction(
 		ctx.GetMeter(),
 	)
 
-	llmResponse, err := GenerateAndTrackLLMContent(
+	llmResponse, err := llmruntime.GenerateAndTrackLLMContent(
 		extractCtx,
 		query.UserId,
 		query.AccountId,
@@ -321,7 +322,7 @@ func (m *ConversationContextManager) extractContextFromExchangeOld(ctx *security
 	}
 
 	// Use the existing retry mechanism in GenerateAndTrackLLMContent
-	llmResponse, err := GenerateAndTrackLLMContent(ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId, "conversation_context_extraction", false, mclist, true)
+	llmResponse, err := llmruntime.GenerateAndTrackLLMContent(ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId, "conversation_context_extraction", false, mclist, true)
 	if err != nil {
 		ctx.GetLogger().Error("LLM call failed after retries", "error", err)
 		return currentContext, err
@@ -522,7 +523,7 @@ func (m *ConversationContextManager) ContextualizeQuery(ctx *security.RequestCon
 		},
 	}
 
-	llmResponse, err := GenerateAndTrackLLMContent(ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId, "conversation_query_context", false, mclist, true)
+	llmResponse, err := llmruntime.GenerateAndTrackLLMContent(ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId, "conversation_query_context", false, mclist, true)
 	if err != nil {
 		return query.Query, err
 	}
@@ -646,7 +647,7 @@ func (m *ConversationContextManager) queryNeedsContextualization(
 		},
 	}
 
-	llmResponse, err := GenerateAndTrackLLMContent(
+	llmResponse, err := llmruntime.GenerateAndTrackLLMContent(
 		ctx,
 		userId,
 		accountId,

@@ -9,6 +9,7 @@ import (
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
@@ -171,8 +172,8 @@ func generateAnswerConfidence(
 	// Temperature 0 for a stable grade on re-runs.
 	cacheCtx := security.NewRequestContext(
 		context.WithValue(
-			context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierSummary),
-			ContextKeyCacheScope, CacheScopeAccount,
+			context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary),
+			llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeAccount,
 		),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
@@ -180,9 +181,9 @@ func generateAnswerConfidence(
 		ctx.GetMeter(),
 	)
 
-	result, err := GenerateAndTrackLLMContent(
+	result, err := llmruntime.GenerateAndTrackLLMContent(
 		cacheCtx, userId, accountId, conversationId, messageId, PromptAnswerConfidenceAgent, true, mcList, true,
-		llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask),
+		llms.WithTemperature(0.0), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("llm call failed: %w", err)

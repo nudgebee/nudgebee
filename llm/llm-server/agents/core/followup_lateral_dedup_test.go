@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -112,7 +113,7 @@ func newReproductionDao() *reproductionDao {
 // test has this fake installed as the conversation DAO — the promoted nil call
 // then SIGSEGVs and crashes the whole test binary (flaky, timing-dependent).
 // Overriding it keeps the async metrics path harmless in tests.
-func (d *reproductionDao) InsertTokenUsage(record *TokenUsageRecord) error {
+func (d *reproductionDao) InsertTokenUsage(record *llmruntime.TokenUsageRecord) error {
 	return nil
 }
 

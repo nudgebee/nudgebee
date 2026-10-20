@@ -11,6 +11,7 @@ import (
 	"maps"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
@@ -887,13 +888,13 @@ func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
 	// (HTTP request or agent timeout) has expired — this is critical for the
 	// deadline-exceeded partial-result path.
 	summaryCtx := security.NewRequestContext(
-		context.WithValue(context.WithoutCancel(e.ctx.GetContext()), ContextKeyModelTier, ModelTierSummary),
+		context.WithValue(context.WithoutCancel(e.ctx.GetContext()), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary),
 		e.ctx.GetSecurityContext(),
 		e.ctx.GetLogger(),
 		e.ctx.GetTracer(),
 		e.ctx.GetMeter(),
 	)
-	response, err := GenerateAndTrackLLMContent(summaryCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.ParentAgentId, true, mclist, true, WithThinkingLevel(ThinkingLevelFastTask))
+	response, err := llmruntime.GenerateAndTrackLLMContent(summaryCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.ParentAgentId, true, mclist, true, llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil {
 		// Propagate rather than swallow: a caller that sees (nil, nil) here falls
 		// through to the generic agents.ErrNotFinished ("agent not finished before
@@ -1035,7 +1036,7 @@ func (e *plannerExecutor) evaluateConditions(action NBAgentPlannerToolAction, av
 			e.ctx.GetTracer(),
 			e.ctx.GetMeter(),
 		)
-		llmResponse, err := GenerateAndTrackLLMContent(conditionCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.AgentId, true, []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, formattedPrompt)}, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
+		llmResponse, err := llmruntime.GenerateAndTrackLLMContent(conditionCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.AgentId, true, []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, formattedPrompt)}, true, llms.WithTemperature(0.0), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 		if err != nil || len(llmResponse.Choices) == 0 || llmResponse.Choices[0].Content == "" {
 			e.ctx.GetLogger().Error("plannerexecutor: LLM call for condition failed or returned no content", "prompt", egressfilter.RedactForLog(formattedPrompt), "error", err)
 			return false, fmt.Errorf("LLM condition call failed or returned no content: %w", err)
@@ -1103,7 +1104,7 @@ func (e *plannerExecutor) doIteration(
 		planStart := time.Now()
 		planCtx := ctx
 		if e.critiqueApplies() {
-			planCtx = context.WithValue(ctx, contextKeyIterationsLeft, e.maxIterations-e.currentIteration)
+			planCtx = context.WithValue(ctx, llmruntime.ContextKeyIterationsLeft, e.maxIterations-e.currentIteration)
 		}
 		actions, finish, err = e.agentPlanner.Plan(planCtx, previousIterationSteps, input["input"])
 		span.End() // End plan span immediately after planning
@@ -2146,7 +2147,7 @@ func truncateToolResponse(ctx *security.RequestContext, data string, status Tool
 		return data, originalLen
 	}
 
-	truncated := SmartTruncateToolOutput(data, maxLen)
+	truncated := llmruntime.SmartTruncateToolOutput(data, maxLen)
 	if ctx != nil {
 		ctx.GetLogger().Info("plannerexecutor: tool output truncated at source",
 			"tool", toolName,
@@ -2483,7 +2484,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	actionCtx := e.ctx
 	if strings.EqualFold(action.Tool, "LLM") {
 		actionCtx = security.NewRequestContext(
-			context.WithValue(e.ctx.GetContext(), ContextKeyModelTier, ModelTierSummary),
+			context.WithValue(e.ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary),
 			e.ctx.GetSecurityContext(),
 			e.ctx.GetLogger(),
 			e.ctx.GetTracer(),
@@ -3420,7 +3421,7 @@ func (e *plannerExecutor) selectConfigUsingLLM(userQuery string, configs []toolc
 		"configCount", len(configs))
 
 	// Call LLM
-	resp, err := GenerateAndTrackLLMContent(
+	resp, err := llmruntime.GenerateAndTrackLLMContent(
 		e.ctx,
 		e.agentRequest.UserId,
 		e.agentRequest.AccountId,
@@ -5407,7 +5408,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 	// Single-shot internal classifiers (e.g. webhook_subject_name_extractor) run
 	// on a throwaway conversation and produce a bare label, not an investigation
 	// worth remembering — skip the memory_extractor / session-memory LLM calls.
-	if status == AgentExecutionStatusSuccess && len(response) > 0 && agent.GetName() != ToolLlm && !isSingleShotClassifier(agent) {
+	if status == AgentExecutionStatusSuccess && len(response) > 0 && agent.GetName() != llmruntime.ToolLlm && !isSingleShotClassifier(agent) {
 		bgCtx := security.NewRequestContext(
 			context.Background(),
 			ctx.GetSecurityContext(),
@@ -5523,14 +5524,14 @@ func (e *plannerExecutor) rewriteToolInput(action NBAgentPlannerToolAction, quer
 	// Tool-input rewrite is a retrieval-oriented sub-operation; tag the context
 	// so it resolves the Retrieval-tier model regardless of the host agent.
 	rewriteCtx := security.NewRequestContext(
-		context.WithValue(e.ctx.GetContext(), ContextKeyModelTier, ModelTierRetrieval),
+		context.WithValue(e.ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierRetrieval),
 		e.ctx.GetSecurityContext(),
 		e.ctx.GetLogger(),
 		e.ctx.GetTracer(),
 		e.ctx.GetMeter(),
 	)
 
-	llmResponse, err := GenerateAndTrackLLMContent(rewriteCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.AgentId, true, []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, prompt)}, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
+	llmResponse, err := llmruntime.GenerateAndTrackLLMContent(rewriteCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.AgentId, true, []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, prompt)}, true, llms.WithTemperature(0.0), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil || len(llmResponse.Choices) == 0 || llmResponse.Choices[0].Content == "" {
 		e.ctx.GetLogger().Error("plannerexecutor: LLM call for rewriting tool input failed", "prompt", egressfilter.RedactForLog(prompt), "error", err)
 		// Fallback to original input if rewriting fails
@@ -5556,7 +5557,7 @@ func (e *plannerExecutor) fastSummarizeTool(action NBAgentPlannerToolAction, que
 
 	// Use Lite model for summarization
 	summaryCtx := security.NewRequestContext(
-		context.WithValue(context.WithValue(e.ctx.GetContext(), ContextKeyModelTier, ModelTierSummary), ContextKeyCacheScope, CacheScopeGlobal),
+		context.WithValue(context.WithValue(e.ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary), llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal),
 		e.ctx.GetSecurityContext(),
 		e.ctx.GetLogger(),
 		e.ctx.GetTracer(),
@@ -5568,7 +5569,7 @@ func (e *plannerExecutor) fastSummarizeTool(action NBAgentPlannerToolAction, que
 	agentId := uuid.New()
 
 	start := time.Now()
-	completion, err := GenerateAndTrackLLMContent(
+	completion, err := llmruntime.GenerateAndTrackLLMContent(
 		summaryCtx,
 		e.agentRequest.UserId,
 		e.agentRequest.AccountId,
@@ -5648,7 +5649,7 @@ func generateAsyncAgentSummary(ctx *security.RequestContext, request NBAgentRequ
 	// args — passing them dumped the full raw response into the prompt as a
 	// "%!(EXTRA ...)" overflow, inflating summary inputs past 200k tokens. The
 	// response is also capped, since a one-sentence summary needs only the gist.
-	truncatedResponse := SmartTruncateToolOutput(response, maxSummaryInputBytes)
+	truncatedResponse := llmruntime.SmartTruncateToolOutput(response, maxSummaryInputBytes)
 	// Fail safe rather than silently: this function has no error return, and summarizing
 	// under an empty instruction yields a bare "User request: ..." blob that reads like a
 	// real summary. Skipping the async summary is the honest outcome.
@@ -5665,14 +5666,14 @@ func generateAsyncAgentSummary(ctx *security.RequestContext, request NBAgentRequ
 
 	// Use Lite model for summarization
 	summaryCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierSummary),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	summaryCompletion, err := GenerateAndTrackLLMContent(summaryCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, "summary_agent", false, summaryMessages, true, llms.WithTemperature(0.2), WithThinkingLevel(ThinkingLevelFastTask))
+	summaryCompletion, err := llmruntime.GenerateAndTrackLLMContent(summaryCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, "summary_agent", false, summaryMessages, true, llms.WithTemperature(0.2), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil {
 		ctx.GetLogger().Error("agentexecutor: failed to generate summary for agent response", "error", err)
 		return

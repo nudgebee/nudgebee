@@ -24,6 +24,7 @@ import (
 	"sync"
 
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
@@ -737,7 +738,7 @@ func finalizeCompletedConversation(ctx *security.RequestContext, req NBAgentRequ
 		ctx.GetLogger().Warn("resume_v2: failed to mark conversation complete", "error", err)
 	}
 
-	if resp.AgentName == ToolLlm {
+	if resp.AgentName == llmruntime.ToolLlm {
 		return
 	}
 

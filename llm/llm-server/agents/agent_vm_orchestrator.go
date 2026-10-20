@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
@@ -32,8 +33,12 @@ func (a VMOrchestratorAgent) GetDescription() string {
 func (a VMOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
-func (a VMOrchestratorAgent) GetModelCategory() core.ModelTier { return core.ModelTierReasoning }
-func (a VMOrchestratorAgent) GetCacheScope() core.CacheScope   { return core.CacheScopeAccount }
+func (a VMOrchestratorAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
+}
+func (a VMOrchestratorAgent) GetCacheScope() llmruntime.CacheScope {
+	return llmruntime.CacheScopeAccount
+}
 
 func (a VMOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	allowed := map[string]bool{

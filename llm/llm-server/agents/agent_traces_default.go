@@ -3,6 +3,7 @@ package agents
 import (
 	"fmt"
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -142,8 +143,8 @@ func (p TracesDefaultAgent) GetSupportedTools(ctx *security.RequestContext) []to
 // default Conversation scope, whose key includes the conversation id — a cache
 // that can only ever be reused by a later call in the same conversation, and
 // expires 30 minutes later. TracesDefaultAgentV2 embeds this type and inherits it.
-func (l TracesDefaultAgent) GetCacheScope() core.CacheScope {
-	return core.CacheScopeAccount
+func (l TracesDefaultAgent) GetCacheScope() llmruntime.CacheScope {
+	return llmruntime.CacheScopeAccount
 }
 
 func (l TracesDefaultAgent) GetPlannerType() core.AgentPlannerType {

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"strings"
 	"time"
@@ -59,7 +60,7 @@ type ClassificationCall struct {
 	// Tier overrides the model tier for the LLM backend. Empty uses the
 	// classification tier, or the summary tier when no classification model is
 	// configured for the call's account (see ClassificationTier).
-	Tier ModelTier
+	Tier llmruntime.ModelTier
 	// KeepCallerTier runs the call on whatever tier the caller's context has,
 	// including none (the account's global model), and ignores Tier. For callers
 	// whose model must not change when they move onto Classify.
@@ -183,14 +184,14 @@ func matchClassificationLabels(task ClassificationTask, raw string) ([]string, b
 // LLM backend
 
 // classificationGenerate is GenerateAndTrackLLMContent; a variable so tests can stub it.
-var classificationGenerate = GenerateAndTrackLLMContent
+var classificationGenerate = llmruntime.GenerateAndTrackLLMContent
 
 // classifyWithLLM is the LLM backend: strict label matching with corrective retries.
 func classifyWithLLM(ctx *security.RequestContext, call ClassificationCall, task ClassificationTask, input string) (ClassificationDecision, error) {
 	llmCtx := ctx
 	if !call.KeepCallerTier {
 		llmCtx = security.NewRequestContext(
-			context.WithValue(ctx.GetContext(), ContextKeyModelTier, classificationCallTier(ctx, call)),
+			context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, classificationCallTier(ctx, call)),
 			ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter(),
 		)
 	}
@@ -201,7 +202,7 @@ func classifyWithLLM(ctx *security.RequestContext, call ClassificationCall, task
 	d := ClassificationDecision{Backend: classificationBackendLLM}
 	for attempt := 1; attempt <= classificationLLMAttempts; attempt++ {
 		result, err := classificationGenerate(llmCtx, call.UserId, call.AccountId, call.ConversationId, call.MessageId,
-			call.AgentId, call.TrackContent, messages, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
+			call.AgentId, call.TrackContent, messages, true, llms.WithTemperature(0.0), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 		if err != nil {
 			return d, fmt.Errorf("llm backend: %w", err)
 		}
@@ -227,9 +228,9 @@ func classifyWithLLM(ctx *security.RequestContext, call ClassificationCall, task
 // classificationCallTier is the tier the LLM backend runs a call on: the
 // caller's own tier with KeepCallerTier, else call.Tier, else the classification
 // tier (summary until configured).
-func classificationCallTier(ctx *security.RequestContext, call ClassificationCall) ModelTier {
+func classificationCallTier(ctx *security.RequestContext, call ClassificationCall) llmruntime.ModelTier {
 	if call.KeepCallerTier {
-		return modelTierFromContext(ctx)
+		return llmruntime.ModelTierFromContext(ctx)
 	}
 	if call.Tier != "" {
 		return call.Tier
@@ -239,13 +240,13 @@ func classificationCallTier(ctx *security.RequestContext, call ClassificationCal
 
 // classificationTierResolve resolves the LLM config for a call; a variable so
 // tests can stub it.
-var classificationTierResolve = ResolveLLMConfig
+var classificationTierResolve = llmruntime.ResolveLLMConfig
 
 // classificationTierSources are the ResolveLLMConfig sources that mean the
 // resolved model came from a layer defining the tier itself.
 var classificationTierSources = map[string]bool{
-	llmConfigSourceEnvTier: true, llmConfigSourceDBTier: true,
-	llmConfigSourceContextOverrideTier: true, llmConfigSourceConversationTier: true,
+	llmruntime.LlmConfigSourceEnvTier: true, llmruntime.LlmConfigSourceDBTier: true,
+	llmruntime.LlmConfigSourceContextOverrideTier: true, llmruntime.LlmConfigSourceConversationTier: true,
 }
 
 // ClassificationTier returns ModelTierClassification when the classification tier
@@ -254,16 +255,16 @@ var classificationTierSources = map[string]bool{
 // (rather than reading config keys) keeps layer precedence intact: a model set
 // only in server config does not win over an account's own DB config, which
 // would otherwise route classification to the account's global model.
-func ClassificationTier(ctx *security.RequestContext, call ClassificationCall) ModelTier {
+func ClassificationTier(ctx *security.RequestContext, call ClassificationCall) llmruntime.ModelTier {
 	tierCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierClassification),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierClassification),
 		ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter(),
 	)
 	res, err := classificationTierResolve(tierCtx, call.AccountId, call.AgentId, call.ConversationId)
 	if err == nil && res != nil && classificationTierSources[res.Source] {
-		return ModelTierClassification
+		return llmruntime.ModelTierClassification
 	}
-	return ModelTierSummary
+	return llmruntime.ModelTierSummary
 }
 
 func classificationLabels(task ClassificationTask) []string {

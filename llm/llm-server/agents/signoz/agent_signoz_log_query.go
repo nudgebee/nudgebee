@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/relay"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -157,6 +158,6 @@ func (d SignozLogQueryAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeTool
 }
 
-func (d SignozLogQueryAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierRetrieval
+func (d SignozLogQueryAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierRetrieval
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"nudgebee/llm/llms/googleai"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
@@ -1175,10 +1176,10 @@ func TestReAct4_ClarificationContinuationInputRestoresOriginalTask(t *testing.T)
 
 type mockScopedAgent struct {
 	notebookOptOutAgent
-	scope CacheScope
+	scope llmruntime.CacheScope
 }
 
-func (m mockScopedAgent) GetCacheScope() CacheScope {
+func (m mockScopedAgent) GetCacheScope() llmruntime.CacheScope {
 	return m.scope
 }
 
@@ -1187,13 +1188,13 @@ func TestReAct4_ResolveAgentContext_HonorsDeclaredScope(t *testing.T) {
 	caps := toolcore.AgentCapabilities{AllowedTools: []string{"kubectl_execute"}}
 	planner := &NBReActPlanner4{
 		ctx:     ctx,
-		nbAgent: mockScopedAgent{scope: CacheScopeAccount},
+		nbAgent: mockScopedAgent{scope: llmruntime.CacheScopeAccount},
 		request: NBAgentRequest{Capabilities: caps},
 	}
 	agentCtx := planner.resolveAgentContext()
 	assert.NotNil(t, agentCtx)
-	assert.Equal(t, CacheScopeAccount, agentCtx.GetContext().Value(ContextKeyCacheScope))
-	assert.Equal(t, caps, agentCtx.GetContext().Value(ContextKeyCapabilities))
+	assert.Equal(t, llmruntime.CacheScopeAccount, agentCtx.GetContext().Value(llmruntime.ContextKeyCacheScope))
+	assert.Equal(t, caps, agentCtx.GetContext().Value(llmruntime.ContextKeyCapabilities))
 }
 
 func TestReAct4_ResolveAgentContext_DowngradesOnClientTools(t *testing.T) {
@@ -1201,12 +1202,12 @@ func TestReAct4_ResolveAgentContext_DowngradesOnClientTools(t *testing.T) {
 	clientTool := toolcore.NBToolCommand{Name: "custom_client_tool"}
 	planner := &NBReActPlanner4{
 		ctx:     ctx,
-		nbAgent: mockScopedAgent{scope: CacheScopeAccount},
+		nbAgent: mockScopedAgent{scope: llmruntime.CacheScopeAccount},
 		request: NBAgentRequest{ClientTools: []toolcore.NBToolCommand{clientTool}},
 	}
 	agentCtx := planner.resolveAgentContext()
 	assert.NotNil(t, agentCtx)
-	assert.Equal(t, CacheScopeConversation, agentCtx.GetContext().Value(ContextKeyCacheScope))
+	assert.Equal(t, llmruntime.CacheScopeConversation, agentCtx.GetContext().Value(llmruntime.ContextKeyCacheScope))
 }
 
 func TestReAct4_ResolveAgentContext_DefaultsWithoutCacheProvider(t *testing.T) {
@@ -1218,7 +1219,7 @@ func TestReAct4_ResolveAgentContext_DefaultsWithoutCacheProvider(t *testing.T) {
 	}
 	agentCtx := planner.resolveAgentContext()
 	assert.NotNil(t, agentCtx)
-	assert.Equal(t, CacheScopeConversation, agentCtx.GetContext().Value(ContextKeyCacheScope))
+	assert.Equal(t, llmruntime.CacheScopeConversation, agentCtx.GetContext().Value(llmruntime.ContextKeyCacheScope))
 }
 
 // #39704 root cause: non-JSON args replayed as-is -> vLLM 400s every later request.

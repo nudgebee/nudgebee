@@ -131,7 +131,7 @@ func (r RemediationGenerateTool) Call(nbRequestContext core.NbToolContext, input
 	userPrompt := investigationContext
 
 	// Use LLM to generate the remediation plan
-	// Note: "LLM" is the tool name constant defined in agents/core/llm_common.go
+	// Note: "LLM" is the tool name constant defined in llms/runtime/llm_common.go
 	// We use the string directly to avoid circular import dependency
 	llmTool, ok := core.GetNBTool(nbRequestContext.AccountId, "LLM")
 	if !ok {

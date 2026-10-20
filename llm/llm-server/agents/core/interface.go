@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"time"
@@ -616,7 +617,7 @@ type NBAgent interface {
 // model. An agent that does not implement it defaults to the Retrieval tier
 // (see agentModelCategory).
 type NBAgentCategoryProvider interface {
-	GetModelCategory() ModelTier
+	GetModelCategory() llmruntime.ModelTier
 }
 
 // agentModelCategory returns the category an agent opted into, or a sensible
@@ -635,17 +636,17 @@ type NBAgentCategoryProvider interface {
 // or Reasoning (orchestrators). Global is no longer a per-agent routing target; it
 // remains the inherited base/fallback every tier resolves to when its own model is
 // unconfigured.
-func agentModelCategory(agent NBAgent) ModelTier {
+func agentModelCategory(agent NBAgent) llmruntime.ModelTier {
 	if agent == nil {
-		return ModelTierRetrieval
+		return llmruntime.ModelTierRetrieval
 	}
 	if p, ok := agent.(NBAgentCategoryProvider); ok {
 		return p.GetModelCategory()
 	}
 	if agent.GetPlannerType() == AgentPlannerTypeClassification {
-		return ModelTierSummary
+		return llmruntime.ModelTierSummary
 	}
-	return ModelTierRetrieval
+	return llmruntime.ModelTierRetrieval
 }
 
 // isSingleShotClassifier reports whether the agent is a single-shot
@@ -680,7 +681,7 @@ func isContextExtractionApplicable(source ConversationSource) bool {
 // NBAgentCacheScopeProvider is an optional interface that allows agents to define
 // their caching stability scope (e.g. Account or Global level vs Conversation).
 type NBAgentCacheScopeProvider interface {
-	GetCacheScope() CacheScope
+	GetCacheScope() llmruntime.CacheScope
 }
 
 // NBAgentRequestAwareToolProvider is an optional interface for agents whose

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,7 +17,7 @@ import (
 type fakeUsageDao struct {
 	core.IConversationDao
 	mu           sync.Mutex
-	inserted     []core.TokenUsageRecord
+	inserted     []llmruntime.TokenUsageRecord
 	nilAgentOnce bool // simulate the FK retry nulling record.AgentID on first insert
 }
 
@@ -31,7 +32,7 @@ func (f *fakeUsageDao) GetConversationCost(provider, model string, nonCachedInpu
 		float64(outputTokens+thinkingTokens)/m*outRate, nil
 }
 
-func (f *fakeUsageDao) InsertTokenUsage(record *core.TokenUsageRecord) error {
+func (f *fakeUsageDao) InsertTokenUsage(record *llmruntime.TokenUsageRecord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.nilAgentOnce && len(f.inserted) == 0 {

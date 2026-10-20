@@ -1,0 +1,4447 @@
+package runtime
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"math"
+	"math/rand/v2"
+	"net"
+
+	"nudgebee/llm/common"
+	"nudgebee/llm/config"
+	"nudgebee/llm/llms/huggingface/huggingfaceclient"
+	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
+	toolcore "nudgebee/llm/tools/core"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+	"unicode/utf8"
+
+	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
+	"github.com/tmc/langchaingo/llms"
+)
+
+// Wire LLM provider integration config invalidation into the shared tool
+// cache invalidation chain so it runs whenever an integration mutation
+// notifies llm-server. Without this registration the helper below was
+// defined but never called — admins rotating LLM provider keys would see
+// stale credentials for up to llmIntegrationConfigCacheTTL.
+func init() {
+	toolcore.RegisterToolCacheInvalidator(InvalidateLLMIntegrationConfigCache)
+}
+
+const AgentScratchpad = "agent_scratchpad"
+const ToolLlm = "LLM"
+
+// Thinking levels the provider layer accepts, in ascending order of spend.
+// Named so the level set and thinkingLevelBudgets cannot drift apart. Note the
+// same values still appear as raw literals in ClampThinkingLevelForModel and
+// GetLlmDefaultThinkingLevel (llm_tokencount.go) and in the
+// llm_provider_thinking_level config docs — those are left untouched here to
+// keep this change scoped; worth folding onto these constants separately.
+const (
+	// ThinkingLevelNone is what ClampThinkingLevelForModel returns for models
+	// that cannot think at all (flash-lite). It means "attach no thinking
+	// config", NOT "think a little" — see resolveThinkingBudgetForLevel.
+	ThinkingLevelNone    = "none"
+	ThinkingLevelMinimal = "minimal"
+	ThinkingLevelLow     = "low"
+	ThinkingLevelMedium  = "medium"
+	ThinkingLevelHigh    = "high"
+)
+
+// ThinkingLevelFastTask is used for lightweight LLM calls (title generation,
+// summarization, formatting, classification) where deep reasoning is not needed.
+const ThinkingLevelFastTask = ThinkingLevelLow
+
+var codeBlockPrefixRegex = regexp.MustCompile("^```[a-zA-Z]*\n")
+var (
+	llmIntegrationConfigCache = make(map[string]struct {
+		config map[string]string
+		ts     time.Time
+	})
+	llmIntegrationConfigCacheMutex sync.RWMutex
+
+	// Per-integration view of the same rows, keyed by accountId. Shares the TTL
+	// and the invalidation path with the caches above.
+	llmIntegrationsCache = make(map[string]struct {
+		integrations []LLMIntegration
+		ts           time.Time
+	})
+	llmIntegrationsCacheMutex sync.RWMutex
+
+	modelSemaphores sync.Map // map[string]chan struct{}
+)
+
+// llmIntegrationConfigCacheTTL is read per call rather than captured at init:
+// package vars initialise before config is loaded, so capturing it would pin
+// the compiled-in default and ignore the env. 0 disables the caches entirely.
+func llmIntegrationConfigCacheTTL() time.Duration {
+	return time.Duration(config.Config.LlmServerLlmConfigCacheTTLMinutes) * time.Minute
+}
+
+// LLMIntegration is one enabled LLM integration visible to an account, with its
+// config values already decrypted. getLLMIntegrationConfig merges every visible
+// integration into a single map for the layered resolver, which loses the
+// integration id; pinning needs each integration addressable on its own, so
+// this keeps them separate. See NBQueryConfig.LlmConfigSource ("db:<uuid>").
+type LLMIntegration struct {
+	Id     string
+	Name   string
+	Config map[string]string
+}
+
+func getLlmSemaphore(accountId, provider, model string) chan struct{} {
+	// Key pattern: accountId:provider:model.
+	// This ensures accounts with independent API keys have separate concurrency pools.
+	key := fmt.Sprintf("%s:%s:%s", accountId, provider, model)
+	if sem, ok := modelSemaphores.Load(key); ok {
+		return sem.(chan struct{})
+	}
+
+	// Use the hierarchical configuration resolution for concurrency limits, passing the accountId
+	limit := GetLLMModelIntConfig(accountId, provider, model, "llm_server_max_concurrent_llm_calls", 20)
+
+	// Atomic creation to prevent race conditions during initialization
+	sem, _ := modelSemaphores.LoadOrStore(key, make(chan struct{}, limit))
+	return sem.(chan struct{})
+}
+
+type LlmConcurrencyStats struct {
+	MaxConcurrent int `json:"max_concurrent"`
+	CurrentInUse  int `json:"current_in_use"`
+}
+
+func GetLlmConcurrencyStats() map[string]LlmConcurrencyStats {
+	stats := make(map[string]LlmConcurrencyStats)
+	modelSemaphores.Range(func(key, value any) bool {
+		sem := value.(chan struct{})
+		stats[key.(string)] = LlmConcurrencyStats{
+			MaxConcurrent: cap(sem),
+			CurrentInUse:  len(sem),
+		}
+		return true
+	})
+	return stats
+}
+
+// ForgetLLMIntegrationsList drops only accountId's cached integration list — what
+// a referenced fallback resolves against — without the tenant-wide sweep below.
+func ForgetLLMIntegrationsList(accountId string) {
+	llmIntegrationsCacheMutex.Lock()
+	delete(llmIntegrationsCache, accountId)
+	llmIntegrationsCacheMutex.Unlock()
+}
+
+func InvalidateLLMIntegrationConfigCache(accountId string) {
+	slog.Info("Invalidating LLM integration config cache for account", "accountId", accountId)
+	llmIntegrationConfigCacheMutex.Lock()
+	delete(llmIntegrationConfigCache, accountId)
+	llmIntegrationConfigCacheMutex.Unlock()
+
+	llmIntegrationsCacheMutex.Lock()
+	delete(llmIntegrationsCache, accountId)
+	llmIntegrationsCacheMutex.Unlock()
+
+	// Sibling accounts still see this tenant's unmapped integrations in their
+	// pickable list (GetLLMIntegrationsForAccount), so their caches go too.
+	if tenantId, err := security.GetTenantIdFromAccountId(accountId); err == nil && tenantId != "" {
+		// Clear account-level cache entries for all accounts under this tenant
+		// so they re-resolve on next call.
+		if siblingAccounts, err := security.GetAccountIdsForTenant(tenantId); err == nil {
+			// One cache at a time. Holding both would be the only place in the
+			// package that does, so it'd be the lock-ordering rule everything
+			// else has to remember — and it buys nothing: readers take a single
+			// mutex, so they can already see one cache fresh and the other
+			// stale no matter how invalidation locks.
+			llmIntegrationConfigCacheMutex.Lock()
+			for _, siblingId := range siblingAccounts {
+				if siblingId != accountId {
+					delete(llmIntegrationConfigCache, siblingId)
+				}
+			}
+			llmIntegrationConfigCacheMutex.Unlock()
+
+			llmIntegrationsCacheMutex.Lock()
+			for _, siblingId := range siblingAccounts {
+				if siblingId != accountId {
+					delete(llmIntegrationsCache, siblingId)
+				}
+			}
+			llmIntegrationsCacheMutex.Unlock()
+
+			// Invalidate LLM client cache for all sibling accounts
+			for _, siblingId := range siblingAccounts {
+				InvalidateLLMClientCache(siblingId)
+			}
+		}
+	}
+
+	// Also invalidate the client cache for this account
+	InvalidateLLMClientCache(accountId)
+}
+
+type LLMContextKey string
+
+// ContextKeyDisableCaching is defined in tools/core so tools can set it; see
+// toolcore.ContextKeyDisableCaching.
+const ContextKeyDisableCaching = toolcore.ContextKeyDisableCaching
+
+const (
+	ContextKeyLlmProviderOverride LLMContextKey = "llm_provider_override"
+	ContextKeyLlmModelOverride    LLMContextKey = "llm_model_override"
+	// ContextKeyLlmTierModelOverrides carries per-category model picks for a
+	// single request (the "Per category" chat-UI mode). When set, a
+	// tier-tagged call resolves to the matching tier's (provider, model)
+	// instead of the global / db / conversation-blanket layer. Untagged
+	// calls in the same request fall through the rest of the chain as if
+	// no override was set — see the ResolveLLMConfig precedence notes.
+	//
+	// Value type: ConversationTierOverrides (passing the typed struct keeps
+	// callers from having to convert maps at the boundary).
+	ContextKeyLlmTierModelOverrides LLMContextKey = "llm_tier_model_overrides"
+	// ContextKeyLlmConfigSourceOverride pins the entire LLM connection (endpoint,
+	// api-key, api-type, api-version, region) to a specific configured slot for
+	// the request and every sub-agent call it spawns — regardless of the
+	// sub-agent's ContextKeyModelTier. When set, ResolveLLMConfig short-circuits
+	// its normal layered walk and reads all credentials directly from the pinned
+	// slot. Value type: string, format {layer}:{scope}[:{name}] — see
+	// NBQueryConfig.LlmConfigSource for the schema.
+	ContextKeyLlmConfigSourceOverride LLMContextKey = "llm_config_source_override"
+	ContextKeyCacheScope              LLMContextKey = "cache_scope"
+	// ContextKeyCapabilities carries the request's AgentCapabilities into the LLM call
+	// stack so the cache layer can fingerprint capability-constrained requests and give
+	// them distinct Google AI CachedContent slots.
+	ContextKeyCapabilities LLMContextKey = "capabilities"
+	// ContextKeyModelTier carries the category a call opted into (planner /
+	// query_generator / summariser) so ResolveLLMConfig picks a category model.
+	// Absent = no category opted → normal resolution flow.
+	ContextKeyModelTier LLMContextKey = "model_tier"
+	// ContextKeyPromptVariant carries the orchestrator prompt shape for this turn.
+	// promptVariantLean = a top-level plain-retrieval turn that drops the heavy
+	// investigation overlays; "" = the full/default prompt. Stamped once per turn
+	// (applyPromptVariant) and read both when building the prompt (planner) and
+	// when keying the cache slot, so the cached prefix and its key always move
+	// together — a lean prompt and a full prompt land in distinct cache slots
+	// instead of thrashing one.
+	ContextKeyPromptVariant LLMContextKey = "prompt_variant"
+	// ContextKeyTaskType carries the top-level turn classification (taskTypeQuery /
+	// taskTypeInvestigation) that drives prompt-variant and tier selection. Stamped
+	// once per turn in applyAgentModelTier and persisted on the token-usage row so
+	// query-vs-investigation traffic can be segmented — and classifier misses
+	// audited — in post-run review, independent of any tier flag. Absent for
+	// sub-agent calls (not top-level, not classified).
+	ContextKeyTaskType LLMContextKey = "task_type"
+	// ContextKeyPreserveInput forbids evidence truncation, summarization, fallback and continuation for audits.
+	ContextKeyPreserveInput LLMContextKey = "preserve_input"
+	ContextKeyClaimUsageID  LLMContextKey = "claim_usage_id"
+	// ContextKeyIterationsLeft is how many planning iterations a run whose answer
+	// is critiqued has left, counting the current one; set by the executor
+	// before each Plan.
+	ContextKeyIterationsLeft LLMContextKey = "iterations_left"
+)
+
+var ErrPreservedPromptChanged = errors.New("complete evidence does not fit model input budget")
+
+// Top-level turn classifications stamped on ContextKeyTaskType. Kept short since
+// they land verbatim in the llm_conversation_token_usage.task_type column.
+const (
+	TaskTypeQuery         = "query"
+	TaskTypeInvestigation = "investigation"
+)
+
+// TaskTypeFromContext returns the ContextKeyTaskType value on ctx, or "" when
+// unset (a sub-agent call, or a turn stamped before this instrumentation existed).
+func TaskTypeFromContext(ctx *security.RequestContext) string {
+	if ctx == nil {
+		return ""
+	}
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		return ""
+	}
+	v, _ := goCtx.Value(ContextKeyTaskType).(string)
+	return v
+}
+
+// tierAttributionForRecord returns the (model_tier, task_type) pointers for a
+// token-usage row, read from the request context. Each is nil when unstamped —
+// model_tier on legacy/uninstrumented call paths, task_type additionally on every
+// sub-agent call (only top-level turns are classified). nil → NULL, which keeps
+// "legacy row" distinguishable from a real tier.
+// configSourceForRecord returns the slot to stamp on a usage row, nil when the
+// call carried none (background jobs, legacy paths) so the column stays NULL
+// rather than empty-string.
+func configSourceForRecord(md *LLMCallMetadata) *string {
+	if md == nil || md.ConfigSource == "" {
+		return nil
+	}
+	src := md.ConfigSource
+	return &src
+}
+
+func tierAttributionForRecord(ctx *security.RequestContext) (modelTier *string, taskType *string) {
+	if ctx == nil {
+		return nil, nil
+	}
+	if t := string(ModelTierFromContext(ctx)); t != "" {
+		modelTier = &t
+	}
+	if tt := TaskTypeFromContext(ctx); tt != "" {
+		taskType = &tt
+	}
+	return
+}
+
+// DetachedRequestContext returns a copy of ctx whose cancellation is severed from
+// the request but whose VALUES are kept. It is the correct parent for a best-effort
+// background write that must outlive the turn (token-usage tracking) yet still read
+// per-turn attribution — ContextKeyModelTier / ContextKeyTaskType — off the context.
+//
+// context.Background() is the trap this exists to prevent: it detaches cancellation
+// AND drops every value, so a record built from it silently loses its attribution.
+// That is exactly how every successful token-usage row came to be written with
+// model_tier NULL, while the failure path — which reads attribution before
+// detaching — carried a tier.
+func DetachedRequestContext(ctx *security.RequestContext) *security.RequestContext {
+	if ctx == nil {
+		return nil
+	}
+	// A zero-value security.RequestContext has a nil internal context.Context
+	// (e.g., tests that build planner stubs with `&security.RequestContext{}`).
+	// Guard so WithoutCancel never gets a nil parent — it panics on one.
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		goCtx = context.Background()
+	}
+	return security.NewRequestContext(
+		context.WithoutCancel(goCtx),
+		ctx.GetSecurityContext(),
+		ctx.GetLogger(),
+		ctx.GetTracer(),
+		ctx.GetMeter(),
+	)
+}
+
+// TierAttributionForRecord is the exported form of tierAttributionForRecord, for
+// callers outside package core that build TokenUsageRecords themselves — the
+// code-analysis path in package agents inserts its own per-call rows rather than
+// going through trackTokenUsage, and without this its rows are the only ones in
+// llm_conversation_token_usage with model_tier/task_type left NULL.
+func TierAttributionForRecord(ctx *security.RequestContext) (modelTier *string, taskType *string) {
+	return tierAttributionForRecord(ctx)
+}
+
+// PromptVariantLean marks the lean (investigation-overlays-dropped) orchestrator
+// prompt. It is used both as the ContextKeyPromptVariant value and as the cache
+// key suffix. Kept short because it is appended to the Google AI cache key.
+const PromptVariantLean = "lean"
+
+// cacheModeOf reports how a call's cached tokens were obtained: "explicit" when
+// the request referenced a provider cache entry (Gemini CachedContent), otherwise
+// "implicit" (provider-side prefix caching, or Anthropic inline markers). Cached
+// tokens and is_cache_hit look the same for both, so this is the only per-call
+// signal that separates them (#39633).
+func cacheModeOf(metadata *LLMCallMetadata) string {
+	if metadata != nil && metadata.CacheInfo != nil && len(metadata.CacheInfo.Options) > 0 {
+		return "explicit"
+	}
+	return "implicit"
+}
+
+// PromptVariantFromCtx returns the ContextKeyPromptVariant value on ctx, or ""
+// when unset (the full/default prompt).
+func PromptVariantFromCtx(ctx *security.RequestContext) string {
+	if ctx == nil {
+		return ""
+	}
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		return ""
+	}
+	v, _ := goCtx.Value(ContextKeyPromptVariant).(string)
+	return v
+}
+
+// TokenInfo contains detailed token breakdown including cache information
+type TokenInfo struct {
+	InputTokens         int // Total input tokens sent to the model
+	OutputTokens        int // Total output tokens received from the model
+	CacheReadTokens     int // Input tokens that were served from a cache
+	CacheCreationTokens int // Input tokens used to create a new cache entry
+	// CacheCreation1hTokens is the part of CacheCreationTokens written with
+	// Anthropic's 1-hour TTL, billed at 2x input instead of the 1.25x
+	// creation rate.
+	CacheCreation1hTokens int
+	TotalTokens           int // Total tokens used (input + output)
+	ThinkingTokens        int // Hidden chain-of-thought tokens (Gemini 2.5+ usage.ThoughtsTokenCount). 0 for non-thinking models.
+}
+
+// LLMCallMetadata contains metadata about the LLM call for token tracking
+type LLMCallMetadata struct {
+	LatencySeconds    float64
+	RetryAttempt      int
+	FallbackFromModel *string  // Immediate previous model
+	FallbackChain     []string // Full chain of fallback models
+	RequestStatus     string   // 'success' or 'failure'
+	ErrorMessage      *string
+	CacheInfo         *CacheResponse // Cache information from last successful call
+	// Streaming-latency breakdown captured during the actual GenerateContent call
+	// in tryWithModel. TTFTMs is the wall-clock ms from request send → first
+	// streamed chunk; nil when the call was non-streaming or no chunk arrived.
+	// WasStreaming reports whether the underlying call used streaming at all
+	// (false means TTFTMs / ITL are not meaningful).
+	TTFTMs       *int64
+	WasStreaming bool
+	// ConfigSource is the configured LLM slot the call resolved through
+	// ({layer}:{scope}[:{name}]). provider+model cannot identify it: two configs
+	// can share both, so usage views could not say which integration served a call.
+	ConfigSource string
+	// ServedModel/ServedProvider are the model and provider that actually produced
+	// the response, which is NOT the caller's resolved model once a fallback ran.
+	// Without these the usage row records the primary, so a response served by a
+	// fallback is attributed to the model that failed — and FallbackFromModel then
+	// equals LLMModel, which reads as a nonsensical same-model fallback.
+	// Empty when the call never left the primary; callers fall back to their own value.
+	ServedModel    string
+	ServedProvider string
+}
+
+type retryContext struct {
+	ctx                      *security.RequestContext
+	llm                      llms.Model
+	promptMessages           []llms.MessageContent
+	options                  []llms.CallOption
+	agentId                  string
+	agentName                string
+	currentModel             string
+	currentProvider          string
+	triedModels              map[string]bool
+	lastErr                  error
+	errorHistory             []string // Track all errors encountered
+	accountId                string
+	conversationId           string
+	messageId                string   // Track messageId for token tracking
+	lastLatency              float64  // Track latency of last LLM call
+	attemptCount             int      // Track number of attempts made
+	fallbackFromModel        *string  // Track immediate previous model we fell back from
+	fallbackChain            []string // Track full chain of models tried (for multiple fallbacks)
+	userId                   string
+	lastCacheInfo            *CacheResponse // Track cache info from last LLM call
+	cacheScope               CacheScope
+	capabilities             toolcore.AgentCapabilities // Forwarded to CacheRequest for capability fingerprinting
+	promptVariant            string                     // Forwarded to CacheRequest to isolate the lean vs full prompt cache slot
+	totalStart               time.Time                  // Track when the entire retry loop started
+	maxTotalDuration         time.Duration              // Maximum allowed time for the entire retry loop
+	enableCaching            bool                       // Whether provider-level prompt caching is enabled for this call
+	hasMalformedFunctionCall bool                       // Sticky flag: set when Gemini returns MALFORMED_FUNCTION_CALL, never cleared during retries
+	lastTTFTMs               *int64                     // Wall-clock ms from call start → first streamed chunk (last attempt)
+	lastWasStreaming         bool                       // Whether the last attempt actually streamed (≥1 chunk seen)
+	// resolution is the per-request tier-aware LLM config resolution (carries
+	// Tier + dbConfig). Stored so downstream calls — notably the cache-path
+	// getLLMApiKey — resolve the SAME tier-specific key as the client-build
+	// path, instead of dropping the tier and falling back to the global key.
+	resolution *LLMConfigResolution
+	// Live status shown in the chat while this call retries (see llm_live_status.go).
+	liveStatusSet        bool
+	liveConfigName       string
+	liveConfigNameLoaded bool
+}
+
+func GetLLMNumTokensFromStringMessages(context *security.RequestContext, messages []string, provider string, model string) (numTokens int) {
+	var tokensPerMessage int
+	for _, message := range messages {
+		numTokens += tokensPerMessage
+		count, err := CountTokens(provider, model, message)
+		if err != nil {
+			context.GetLogger().Warn("Failed to count tokens for message", "warning", err)
+		}
+		numTokens += count
+	}
+	numTokens += 3
+	return numTokens
+}
+
+func GetLLMNumTokensFromMessages(context *security.RequestContext, messages []llms.MessageContent, provider string, model string) (numTokens int) {
+	var tokensPerMessage int
+	for _, message := range messages {
+		numTokens += tokensPerMessage
+		roleCount, err := CountTokens(provider, model, string(message.Role))
+		if err != nil {
+			context.GetLogger().Warn("Failed to count tokens for message role", "warning", err)
+		}
+		numTokens += roleCount
+		contentCount, err := CountTokens(provider, model, fmt.Sprintf("%v", message.Parts[0]))
+		if err != nil {
+			context.GetLogger().Warn("Failed to count tokens for message content", "warning", err)
+		}
+		numTokens += contentCount
+	}
+	numTokens += 3
+	return numTokens
+}
+
+// NewLLMModel constructs the llms.Model used by GenerateAndTrackLLMContent.
+// It is a package-level seam: production points it at GetLLMModel, while tests
+// override it to inject a fake llms.Model and exercise the generation path
+// (summarization, planners, agents, …) without real provider credentials or
+// network calls. Behaviour is identical to calling GetLLMModel directly.
+var NewLLMModel = GetLLMModel
+
+// GenerateAndTrackLLMContent generates content using an LLM and tracks token usage
+func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, accountId string, conversationId string, messageId string, agentId string, trackContent bool, promptMessages []llms.MessageContent, cleanupMarkdown bool, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	t0 := time.Now()
+	options = append([]llms.CallOption(nil), options...)
+	// Validate userid, if it's empty or nil, set to system user
+	if userId == "" {
+		userId = security.GetSystemUserId()
+	}
+
+	// Streaming is enabled per-attempt inside tryWithModel via a streamingTracker
+	// so each retry captures its own TTFT. (Previously a global no-op streaming
+	// callback was added here.)
+
+	// Get agent name if agentId is valid UUID
+	agentName := ""
+	if agentUID, err := uuid.Parse(agentId); err == nil {
+		agentName = getAgentNameFromAgentId(agentUID.String())
+	} else if agentId != "" {
+		agentName = agentId
+	}
+
+	// Resolve configuration ONCE. ResolveLLMConfig owns the full hierarchy —
+	// category tier (lite path) and explicit per-request overrides included.
+	res, err := ResolveLLMConfig(ctx, accountId, agentName, conversationId)
+	if err != nil {
+		ctx.GetLogger().Error("Failed to resolve LLM config", "error", err, "agentName", agentName)
+		return nil, ErrLlmUnableToGenerate(err)
+	}
+
+	provider := res.Provider
+	model := res.Model
+
+	// Step 2: Initialize LLM using the resolution context (newLLMModel is a test
+	// seam; in production it is GetLLMModel).
+	llm, err := NewLLMModel(provider, model, agentName, agentName != "", accountId, res)
+	if err != nil {
+		ctx.GetLogger().Error("Failed to initialize LLM model", "error", err, "agentName", agentName, "provider", provider, "model", model)
+		return nil, newLLMFailure(ctx, ErrLlmUnableToGenerate(err), accountId, provider, model, res)
+	}
+
+	// Optimize chunk size to reduce continuation attempts.
+	//
+	// The floor below is a last resort for models with no ceiling anywhere, and it
+	// is LOWER than most current models support — a model that lands here truncates
+	// at max_tokens and pays the continuation loop on every long response. That is
+	// silent by nature (the loop succeeds), so log it: a Claude 4.x model sat on
+	// this floor unnoticed until a customer investigation was traced call by call.
+	maxOutputTokens := ResolveMaxOutputTokens(accountId, provider, model)
+	if maxOutputTokens <= 0 {
+		maxOutputTokens = DefaultMaxOutputTokensFloor
+		ctx.GetLogger().Warn("llm: no max-output-token value in config or pricing catalog, applying the conservative floor — "+
+			"long responses will truncate and drive the continuation loop until a catalog row is added",
+			"model", model, "provider", provider, "agentName", agentName, "maxOutputTokens", maxOutputTokens)
+	}
+	options = append(options, llms.WithMaxTokens(maxOutputTokens))
+
+	// nativeLevel reports whether this model's documented thinking control is a LEVEL
+	// rather than a numeric budget. When true we deliberately do NOT attach a
+	// ThinkingBudget: googleai.go suppresses the level whenever a budget is present
+	// (Gemini rejects both on the wire), so attaching one is what has kept every
+	// Gemini 3 call on the legacy parameter Google documents as back-compat only.
+	//
+	// Gated so it can be rolled back by config rather than revert: this changes the
+	// parameter sent on the majority of production calls.
+	// Attach the legacy numeric budget ONLY for models whose native control genuinely IS
+	// a numeric budget (Claude <= 4.5). Everything else — level-native Gemini 3,
+	// effort-native Claude 4.6+/OpenAI, and models we deliberately leave uncontrolled
+	// (gemini < 3) — gets none.
+	//
+	// Gating on "== thinkingGeminiLevel" left gemini-2.5 still receiving a budget,
+	// contradicting this file's own claim to have dropped it, and would have sent
+	// budget_tokens to Claude 4.7+ once that adapter is wired — a 400 there.
+	nativeLevel := config.Config.LlmThinkingLevelNativeEnabled &&
+		thinkingCapabilityFor(model).Format != thinkingAnthropicBudget
+
+	// Auto-apply thinking level for models that support thinking tokens (Gemini 2.5+, Gemini 3),
+	// unless the caller has already set an explicit ThinkingLevel in the options metadata.
+	if !hasThinkingLevelOption(options) {
+		defaultLevel := GetLlmDefaultThinkingLevel(model)
+		if defaultLevel != "" {
+			// Config override takes precedence if set.
+			if config.Config.LlmProviderThinkingLevel != "" {
+				options = append(options, WithThinkingLevel(ClampThinkingLevel(model, config.Config.LlmProviderThinkingLevel)))
+			} else {
+				options = append(options, WithThinkingLevel(ClampThinkingLevel(model, defaultLevel)))
+			}
+		}
+
+		// Cap thinking-token spend (ThinkingLevel alone is a hint the model can exceed).
+		// Only applies here, not to callers with an explicit level — they already made that choice.
+		if budget := resolveThinkingBudget(res.Tier); budget >= 0 && !nativeLevel {
+			options = append(options, WithThinkingBudget(budget))
+		}
+	} else {
+		// Caller explicitly set a thinking level — still clamp it for model compatibility.
+		// e.g. ThinkingLevelFastTask="minimal" fails on gemini-3.1-pro-preview which needs >= "low".
+		combined := llms.CallOptions{}
+		for _, opt := range options {
+			opt(&combined)
+		}
+		effectiveLevel := ""
+		if lvl, ok := combined.Metadata["ThinkingLevel"].(string); ok {
+			effectiveLevel = lvl
+			clamped := ClampThinkingLevel(model, lvl)
+			if clamped != lvl {
+				options = append(options, WithThinkingLevel(clamped))
+				effectiveLevel = clamped
+			}
+		}
+		// A level alone leaves spend unbounded — the provider treats it as a hint
+		// and may think to its own ceiling. Attach a numeric ceiling derived from
+		// the level so the caller's intent is preserved AND bounded. Safe to send
+		// alongside the level: googleai forwards only the budget when both are
+		// present (Gemini rejects both reaching the wire), so exactly one applies.
+		if budget := resolveThinkingBudgetForLevel(effectiveLevel, res.Tier); budget >= 0 && !nativeLevel {
+			options = append(options, WithThinkingBudget(budget))
+		}
+	}
+
+	// Temperature safety net: some reasoning models reject an explicit
+	// temperature (Anthropic claude-sonnet-5 / opus-5, OpenAI o1/o3/gpt-5).
+	if !ModelSupportsTemperature(provider, model) {
+		options = append(options, withoutTemperature())
+	}
+
+	// Vision safety net: strip image parts if the resolved model does not support vision
+	if hasImageParts(promptMessages) && !IsVisionCapableModel(accountId, provider, model) {
+		ctx.GetLogger().Warn("llm: stripping image parts — model does not support vision",
+			"provider", provider, "model", model, "agent", agentName)
+		promptMessages = stripImagePartsWithFallback(promptMessages)
+	}
+
+	ctx.GetLogger().Info("LLM call configuration",
+		"provider", provider,
+		"model", model,
+		"maxOutputTokens", maxOutputTokens,
+		"agent", agentName)
+
+	preserveInput, _ := ctx.GetContext().Value(ContextKeyPreserveInput).(bool)
+	var originalInput []byte
+	if preserveInput {
+		originalInput, err = json.Marshal(promptMessages)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot preserved prompt: %w", err)
+		}
+	}
+
+	// Step 3: Pre-flight per-message size guard.
+	// Truncate any individual message that exceeds the configurable byte cap before the first
+	// LLM call. This prevents token-limit errors caused by upstream agents injecting massive
+	// context (e.g. large event payloads, code files) without going through the scratchpad.
+	// The summarization-loop fallback (Strategy 1) is still the safety net for edge cases.
+	promptMessages = applyPreflightMessageSizeCap(ctx, promptMessages, agentName)
+
+	// Step 3b: bound the TOTAL prompt against the model window (per-message cap above
+	// only bounds individual messages).
+	promptMessages = applyPreflightContextWindowCap(ctx, promptMessages, provider, model, res, agentName)
+	if preserveInput {
+		boundedInput, encodeErr := json.Marshal(promptMessages)
+		if encodeErr != nil {
+			return nil, fmt.Errorf("check preserved prompt: %w", encodeErr)
+		}
+		if string(originalInput) != string(boundedInput) {
+			return nil, ErrPreservedPromptChanged
+		}
+	}
+
+	// Step 3c: guarantee a non-empty user turn (Qwen3/vLLM rejects a prompt with no user query).
+	// If the safety net fires, WARN with agent context — that's always a caller-side bug
+	// (an upstream planner emitted `<tool_input></tool_input>`, or a sub-agent was spawned
+	// with query=""). Silent auto-fix would mask which agent is broken; the warn gives us
+	// the exact caller to hunt down. Expected volume post-deploy: near-zero once callers
+	// are fixed. Grep in prod: `history: ensure_user_message safety net fired`.
+	var rewrite ensureUserMessageRewrite
+	promptMessages, rewrite = ensureUserMessage(promptMessages)
+	if rewrite != ensureUserMessageNoOp {
+		ctx.GetLogger().Warn("ensure_user_message safety net fired — caller emitted an empty/missing user turn",
+			"rewrite", string(rewrite),
+			"agent_name", agentName,
+			"agent_id", agentId,
+			"provider", provider,
+			"model", model,
+			"conversation_id", conversationId,
+			"message_id", messageId,
+		)
+	}
+
+	// Step 4: Generate content with retry logic
+	completion, callMetadata, err := generateLLMContentWithRetry(ctx, llm, promptMessages, options, agentName, agentId, accountId, conversationId, messageId, preserveInput, userId, res)
+
+	if err != nil {
+		ctx.GetLogger().Error("unable to generate content", "error", err, "agentName", agentName, "agentId", agentId)
+		// Persist a failure row to llm_conversation_token_usage so the underlying
+		// provider error and the failing agent run are visible from the DB,
+		// not only debug logs. A TTFT timeout is skipped: tryWithModel already
+		// persisted that attempt when the watchdog fired, and recording it again
+		// here would double-count the same abandoned call.
+		if !alreadyRecordedAtSource(err) {
+			RecordTokenUsageFailure(ctx, conversationId, messageId, agentId, agentName,
+				provider, model, accountId, userId, callMetadata, err)
+		}
+		return nil, newLLMFailure(ctx, err, accountId, provider, model, res)
+	}
+
+	// Add safety check for nil completion (should not happen after retry logic)
+	if completion == nil {
+		ctx.GetLogger().Error("unable to generate content as data is nil", "error", err, "agentName", agentName, "agentId", agentId)
+		return nil, fmt.Errorf("LLM returned nil completion response after all retries exhausted")
+	}
+
+	// Get detailed token info for the initial response. This is now the source of truth.
+	totalTokenInfo := getDetailedTokenInfo(completion, callMetadata.CacheInfo)
+	ctx.GetLogger().Debug("Token Usage Info", "details", fmt.Sprintf("%+v", totalTokenInfo))
+
+	// Track the final prompt messages used for tracing (may be updated by continuation loop)
+	traceMessages := promptMessages
+
+	// Handle response truncation by attempting to continue generation
+	if !preserveInput && len(completion.Choices) > 0 && isMaxTokensStop(completion.Choices[0].StopReason) {
+		ctx.GetLogger().Info("Response truncated (Chunk 1), starting continuation loop", "agentId", agentId, "agentName", agentName)
+
+		var fullContentBuilder strings.Builder
+		fullContentBuilder.WriteString(completion.Choices[0].Content)
+
+		// Create a retry context for continuation calls to ensure model info is tracked
+		disableCachingCont, _ := ctx.GetContext().Value(ContextKeyDisableCaching).(bool)
+		rc := &retryContext{
+			ctx:              ctx,
+			llm:              llm,
+			promptMessages:   nil, // Will be set in loop
+			options:          options,
+			agentId:          agentId,
+			agentName:        agentName,
+			currentModel:     model,
+			currentProvider:  provider,
+			triedModels:      make(map[string]bool),
+			errorHistory:     make([]string, 0),
+			accountId:        accountId,
+			conversationId:   conversationId,
+			userId:           userId,
+			totalStart:       t0, // Budget tracks from initial start
+			maxTotalDuration: time.Duration(config.Config.LlmServerGlobalRetryBudgetMinutes) * time.Minute,
+			enableCaching:    config.Config.LlmEnableCaching && !disableCachingCont,
+			// Carry the tier-aware resolution so the cache-path getLLMApiKey in
+			// tryWithModel resolves the same tier-specific key as the main call.
+			resolution: res,
+		}
+
+		const maxContinuations = 3
+		for i := range maxContinuations {
+			chunkIdx := i + 2
+			ctx.GetLogger().Info("Attempting continuation", "chunk", chunkIdx, "max", maxContinuations+1, "agentId", agentId)
+
+			// Accumulate all content generated so far into a single AI message
+			// to maintain coherence and leverage prefix caching.
+			iterationMessages := make([]llms.MessageContent, len(promptMessages))
+			copy(iterationMessages, promptMessages)
+
+			// Append the accumulated assistant content
+			iterationMessages = append(iterationMessages, llms.TextParts(llms.ChatMessageTypeAI, fullContentBuilder.String()))
+
+			// Add the instruction to continue
+			iterationMessages = append(iterationMessages, llms.TextParts(llms.ChatMessageTypeHuman, "Please continue generating the response from exactly where you left off. Do not repeat anything you've already said or add any introductory phrases. Just continue the text directly."))
+
+			// Re-apply size cap to the accumulated messages (prevents context bleed)
+			rc.promptMessages = applyPreflightMessageSizeCap(ctx, iterationMessages, agentName)
+
+			// Update trace messages to capture the continuation prompt
+			if config.Config.LlmTraceEnabled {
+				traceMessages = rc.promptMessages
+			}
+
+			// Use tryWithModel to ensure model info is properly tracked via defer
+			nextCompletion, continuationErr := tryWithModel(rc)
+
+			if continuationErr != nil {
+				ctx.GetLogger().Warn("Error during continuation attempt, stopping.", "error", continuationErr, "chunk", chunkIdx, "agentId", agentId)
+				fullContentBuilder.WriteString("\n\n**Note**: The response was cut off and could not be fully continued.")
+				break
+			}
+
+			if nextCompletion == nil || len(nextCompletion.Choices) == 0 {
+				ctx.GetLogger().Warn("Empty response during continuation attempt, stopping.", "chunk", chunkIdx, "agentId", agentId)
+				break
+			}
+
+			if nextCompletion.Choices[0].Content == "" {
+				ctx.GetLogger().Warn("Empty content received during continuation attempt despite MaxTokens stop reason, stopping.", "chunk", chunkIdx, "agentId", agentId)
+				break
+			}
+
+			ctx.GetLogger().Info("Successfully received continuation chunk", "chunk", chunkIdx, "agentId", agentId, "stopReason", nextCompletion.Choices[0].StopReason)
+
+			continuationTokenInfo := getDetailedTokenInfo(nextCompletion, rc.lastCacheInfo)
+
+			// Add the tokens from this continuation call to the totals
+			totalTokenInfo.InputTokens += continuationTokenInfo.InputTokens
+			totalTokenInfo.OutputTokens += continuationTokenInfo.OutputTokens
+			totalTokenInfo.CacheReadTokens += continuationTokenInfo.CacheReadTokens
+			totalTokenInfo.CacheCreationTokens += continuationTokenInfo.CacheCreationTokens
+			totalTokenInfo.CacheCreation1hTokens += continuationTokenInfo.CacheCreation1hTokens
+			totalTokenInfo.TotalTokens += continuationTokenInfo.TotalTokens
+			totalTokenInfo.ThinkingTokens += continuationTokenInfo.ThinkingTokens
+
+			// Accumulate latency from this continuation chunk so the row's
+			// itl_ms_avg / tokens_per_second reflect the FULL call duration,
+			// not just the first chunk. Without this, multi-chunk responses
+			// report misleading throughput because tokens are summed but
+			// latency stayed pinned to the initial chunk.
+			callMetadata.LatencySeconds += rc.lastLatency
+
+			chunkContent := nextCompletion.Choices[0].Content
+			fullContentBuilder.WriteString(chunkContent)
+
+			completion = nextCompletion
+
+			if !isMaxTokensStop(completion.Choices[0].StopReason) {
+				ctx.GetLogger().Info("Continuation loop finished naturally", "totalChunks", chunkIdx, "agentId", agentId)
+				break
+			}
+
+			if i == maxContinuations-1 {
+				ctx.GetLogger().Warn("Max continuations reached, response may still be incomplete.", "agentId", agentId)
+				fullContentBuilder.WriteString("\n\n**Note**: The response is very long and may still be incomplete.")
+			}
+		}
+		// Overwrite the content of the original completion object with the full, concatenated content.
+		completion.Choices[0].Content = fullContentBuilder.String()
+	}
+
+	ctx.GetLogger().Info("Successfully generated complete content", "model", model, "provider", provider, "agent", agentName, "agentId", agentId, "totalTokens", totalTokenInfo.TotalTokens)
+	// Counted here, in the call's own goroutine: the usage row below is
+	// written later by a background task, too late for a budget check.
+	// Charged by the provider that served the call: it decides whether cache
+	// writes are inside input, and a fallback can change it.
+	budgetProvider := provider
+	if callMetadata.ServedProvider != "" {
+		budgetProvider = callMetadata.ServedProvider
+	}
+	addRunTokens(ctx, RunBudgetTokens(budgetProvider, *totalTokenInfo))
+
+	// Token metrics
+	if totalTokenInfo.InputTokens > 0 {
+		common.MetricsLLMTokensTotal(provider, model, "input", accountId, int64(totalTokenInfo.InputTokens))
+	}
+	if totalTokenInfo.OutputTokens > 0 {
+		common.MetricsLLMTokensTotal(provider, model, "output", accountId, int64(totalTokenInfo.OutputTokens))
+	}
+
+	// Track cache-specific metrics for cost calculation
+	if totalTokenInfo.CacheReadTokens > 0 {
+		// Track cached tokens separately - these are billed at a different rate
+		common.MetricsLLMCachedTokensTotal(provider, model, accountId, int64(totalTokenInfo.CacheReadTokens))
+		ctx.GetLogger().Info("LLM cache tokens used",
+			"provider", provider,
+			"model", model,
+			"conversationId", conversationId,
+			"agent", agentName,
+			"cacheMode", cacheModeOf(callMetadata),
+			"cacheReadTokens", totalTokenInfo.CacheReadTokens,
+			"cacheCreationTokens", totalTokenInfo.CacheCreationTokens,
+			"nonCachedTokens", totalTokenInfo.InputTokens-totalTokenInfo.CacheReadTokens,
+			"outputTokens", totalTokenInfo.OutputTokens,
+			"totalInputTokens", totalTokenInfo.InputTokens,
+			"cacheHitRate", fmt.Sprintf("%.1f%%", float64(totalTokenInfo.CacheReadTokens)/float64(PromptTokens(provider, totalTokenInfo.InputTokens, totalTokenInfo.CacheCreationTokens))*100))
+	}
+
+	// Extract content from completion
+	content := ""
+	if len(completion.Choices) > 0 {
+		content = completion.Choices[0].Content
+	}
+
+	// Extract stop reason
+	var stopReason *string
+	if len(completion.Choices) > 0 && completion.Choices[0].StopReason != "" {
+		stopReason = &completion.Choices[0].StopReason
+	}
+
+	// Prepare trace data when LLM tracing is enabled
+	// Uses traceMessages which reflects the last prompt sent (including continuations if any)
+	var tracePrompt *string
+	var traceResponse *string
+	if config.Config.LlmTraceEnabled {
+		serialized := serializePromptMessages(traceMessages)
+		tracePrompt = &serialized
+		if content != "" {
+			traceResponse = &content
+		}
+	}
+
+	// Track token usage for the agent including cache breakdown
+	// Use metadata from the LLM call for accurate tracking
+	// RUN ASYNCHRONOUSLY to prevent DB latency from blocking the response.
+	//
+	bgCtx := DetachedRequestContext(ctx)
+	trackFn := func() {
+		// Best-effort background metrics write — never let a panic crash the
+		// process. Guards against a typed-nil DAO (non-nil interface wrapping a
+		// nil concrete, e.g. a test fake embedding a nil IConversationDao swapped
+		// in concurrently) or a partially-initialised DAO during early startup.
+		defer func() {
+			if r := recover(); r != nil {
+				// Fall back to slog.Default() — bgCtx's logger can be nil (some
+				// test contexts pass a nil logger), and logging on it here would
+				// be a second, unrecovered panic.
+				logger := slog.Default()
+				if bgCtx != nil && bgCtx.GetLogger() != nil {
+					logger = bgCtx.GetLogger()
+				}
+				logger.Error("trackTokenUsage: recovered from panic in background token-usage write", "panic", r)
+			}
+		}()
+		// Attribute usage to the model that actually served the response, not the
+		// one we started with — they differ whenever a fallback ran.
+		servedProvider, servedModel := provider, model
+		if callMetadata.ServedModel != "" {
+			servedModel = callMetadata.ServedModel
+		}
+		if callMetadata.ServedProvider != "" {
+			servedProvider = callMetadata.ServedProvider
+		}
+		TrackTokenUsage(
+			bgCtx,
+			conversationId,
+			messageId,
+			agentId,
+			agentName,
+			servedProvider,
+			servedModel,
+			accountId,
+			userId,
+			totalTokenInfo,
+			callMetadata.LatencySeconds,
+			callMetadata.RetryAttempt,
+			callMetadata.FallbackFromModel,
+			callMetadata.FallbackChain,
+			trackContent,
+			content,
+			stopReason,
+			tracePrompt,
+			traceResponse,
+			callMetadata.TTFTMs,
+			callMetadata.WasStreaming,
+			configSourceForRecord(callMetadata),
+		)
+	}
+
+	if metricsPool := GetMetricsWorkerPool(); metricsPool != nil {
+		err = metricsPool.Submit(context.Background(), trackFn)
+		if err != nil {
+			ctx.GetLogger().Error("Failed to submit token tracking task to pool, falling back to goroutine", "error", err)
+			go trackFn()
+		}
+	} else {
+		// Fallback for early initialization or tests
+		go trackFn()
+	}
+
+	ctx.GetLogger().Info("GenerateAndTrackLLMContent complete", "total_duration", time.Since(t0).String(), "agent", agentName, "model", model)
+
+	// Clean up markdown content if needed
+	if cleanupMarkdown {
+		cleanupMarkdownInResponse(completion)
+	}
+
+	return completion, nil
+}
+
+func IsSLMEnabled(accountId string, agentName string) bool {
+	if accountId == "" {
+		return false
+	}
+	if agentName == "" {
+		return false
+	}
+	sllmModel := ""
+	modelKey := fmt.Sprintf(llmModelFormat, agentName)
+	sllmModel = config.Config.GetString(modelKey, sllmModel)
+	return sllmModel != ""
+}
+
+func GetModelNameForAgent(agentName string) string {
+	modelKey := fmt.Sprintf(llmModelFormat, agentName)
+	return config.Config.GetString(modelKey, "")
+}
+
+func IsAgentToolSupported(agentName string) bool {
+	toolKey := fmt.Sprintf("agent_tool_support_%s", agentName)
+	isAgentToolSupported := config.Config.GetString(toolKey, "")
+	if isAgentToolSupported != "" && strings.ToLower(isAgentToolSupported) == "true" {
+		return true
+	}
+	return false
+}
+
+func IsAgentsFollowupEnabled() bool {
+	followupKey := "agents_followup_enabled"
+	isFollowupEnabled := config.Config.GetString(followupKey, "")
+	if isFollowupEnabled != "" && strings.ToLower(isFollowupEnabled) == "true" {
+		return true
+	}
+	return false
+}
+
+func SanatizeMarkdownCodeBlock(content string) string {
+	content = strings.TrimSpace(content)
+	if codeBlockPrefixRegex.MatchString(content) {
+		content = codeBlockPrefixRegex.ReplaceAllString(content, "")
+		// Also remove the trailing ``` if present
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	}
+	//only clean when there is prefix.. else may result in inconsistent markdown
+	if strings.HasPrefix(content, "`") && strings.HasSuffix(content, "`") {
+		content = strings.TrimPrefix(content, "`")
+		content = strings.TrimSuffix(content, "`")
+	}
+	return content
+}
+
+// getDetailedTokenInfo extracts comprehensive token information including cache details from the LLM response.
+// It handles different structures from providers like Google AI and Anthropic.
+func getDetailedTokenInfo(response *llms.ContentResponse, cacheResp *CacheResponse) *TokenInfo {
+	info := &TokenInfo{}
+
+	// Safety check for nil response or empty choices
+	if response == nil || len(response.Choices) == 0 {
+		return info
+	}
+
+	generateInfo := response.Choices[0].GenerationInfo
+	if generateInfo == nil {
+		return info
+	}
+
+	// Standard token fields (e.g., "input_tokens", "output_tokens")
+	// Note: For Anthropic, "InputTokens" in the response refers to the non-cached tokens.
+	// "PromptTokens"/"CompletionTokens" is the OpenAI naming langchaingo emits for
+	// every OpenAI-compatible client (openai, azure, and any custom gateway). Without
+	// these keys those providers report zero tokens and therefore zero cost — which
+	// is what made provider=openai spend invisible.
+	// inputIncludesCache records the convention the count above came from, so the
+	// reconciliation below knows whether cached tokens are already counted in it.
+	inputIncludesCache := false
+	if val, ok := generateInfo["InputTokens"]; ok {
+		info.InputTokens = extractInt(val)
+	} else if val, ok := generateInfo["input_tokens"]; ok {
+		info.InputTokens = extractInt(val)
+	} else if val, ok := generateInfo["PromptTokens"]; ok {
+		info.InputTokens = extractInt(val)
+		// OpenAI: prompt_tokens is the total and already contains
+		// prompt_tokens_details.cached_tokens, same convention as Google AI.
+		inputIncludesCache = true
+	}
+
+	if val, ok := generateInfo["OutputTokens"]; ok {
+		info.OutputTokens = extractInt(val)
+	} else if val, ok := generateInfo["output_tokens"]; ok {
+		info.OutputTokens = extractInt(val)
+	} else if val, ok := generateInfo["CompletionTokens"]; ok {
+		info.OutputTokens = extractInt(val)
+	}
+
+	// Anthropic-specific cache fields
+	if val, ok := generateInfo["CacheReadInputTokens"]; ok {
+		info.CacheReadTokens = extractInt(val)
+	}
+	if val, ok := generateInfo["CacheCreationInputTokens"]; ok {
+		info.CacheCreationTokens = extractInt(val)
+	}
+	if val, ok := generateInfo["CacheCreation1hInputTokens"]; ok {
+		info.CacheCreation1hTokens = extractInt(val)
+	}
+
+	// Google AI cache fields (for compatibility)
+	if val, ok := generateInfo["CachedTokens"]; ok {
+		// If we have Anthropic's more specific field, prefer it. Otherwise, use Google's.
+		if info.CacheReadTokens == 0 {
+			info.CacheReadTokens = extractInt(val)
+		}
+	}
+
+	// OpenAI-compatible cache field (prompt_tokens_details.cached_tokens). There is
+	// no matching creation field: OpenAI caches automatically and bills no separate
+	// write, unlike Anthropic's explicit 1.25x cache-creation charge.
+	if val, ok := generateInfo["PromptCachedTokens"]; ok {
+		if info.CacheReadTokens == 0 {
+			info.CacheReadTokens = extractInt(val)
+		}
+	}
+
+	// Reconcile "InputTokens" to a unified "total input (fresh + cached)" convention.
+	// Providers disagree on what input_tokens means when caching is active:
+	//   - Anthropic: input_tokens is the NON-cached (fresh) portion; total = fresh + cache_read.
+	//   - Google AI: PromptTokenCount is ALREADY the total effective prompt size and INCLUDES
+	//     cached tokens, per https://ai.google.dev/api/generate-content
+	//     ("this includes the number of tokens in the cached content"). Adding cache_read here
+	//     would double-count the cached portion — inflating InputTokens by ~2× on cache hits,
+	//     which corrupts downstream cache-hit-rate display and per-token cost calculations.
+	//   - OpenAI-compatible: prompt_tokens likewise INCLUDES cached_tokens, per
+	//     https://platform.openai.com/docs/guides/prompt-caching — flagged by
+	//     inputIncludesCache above rather than by a marker key, since langchaingo's
+	//     OpenAI client emits no equivalent of NonCachedInputTokens.
+	// The googleai client sets NonCachedInputTokens (see llms/googleai/googleai.go) precisely
+	// so we can detect its convention; presence of that key means "already includes cache".
+	if _, marker := generateInfo["NonCachedInputTokens"]; !marker && !inputIncludesCache {
+		info.InputTokens += info.CacheReadTokens
+	}
+
+	// Calculate total tokens
+	if val, ok := generateInfo["total_tokens"]; ok {
+		info.TotalTokens = extractInt(val)
+	} else {
+		info.TotalTokens = info.InputTokens + info.OutputTokens
+	}
+
+	// If cacheResp is provided, add cache creation tokens to CacheCreationTokens
+	if cacheResp != nil && cacheResp.CacheInfo != nil {
+		info.CacheCreationTokens += int(cacheResp.CacheInfo.CacheCreationTokens)
+	}
+
+	// Thinking tokens (Gemini 2.5+ thinking models). Provider clients populate
+	// "ThinkingTokens" in GenerationInfo from usage.ThoughtsTokenCount.
+	if val, ok := generateInfo["ThinkingTokens"]; ok {
+		info.ThinkingTokens = extractInt(val)
+	}
+
+	return info
+}
+
+// extractInt is a helper to extract int from various types
+func extractInt(val any) int {
+	switch v := val.(type) {
+	case int:
+		return v
+	case int32:
+		return int(v)
+	case int64:
+		return int(v)
+	case *int32:
+		if v != nil {
+			return int(*v)
+		}
+	case *int64:
+		if v != nil {
+			return int(*v)
+		}
+	}
+	return 0
+}
+
+// streamingTracker captures the timestamp of the first streamed chunk so
+// callers can compute time-to-first-token (TTFT) per LLM call. It is created
+// fresh per attempt inside tryWithModel so retries don't leak state.
+type streamingTracker struct {
+	mu        sync.Mutex
+	started   time.Time
+	firstSeen time.Time
+	captured  bool // first chunk timestamp recorded
+	streamed  bool // any chunk seen at all (was_streaming)
+}
+
+func newStreamingTracker() *streamingTracker {
+	return &streamingTracker{started: time.Now()}
+}
+
+// option returns the llms.CallOption that records the first-chunk timestamp.
+// Logs each chunk at Debug to preserve the previous diagnostic behaviour.
+func (s *streamingTracker) option() llms.CallOption {
+	return llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
+		if chunk == nil {
+			slog.Debug("Received nil chunk from LLM, continuing...")
+			return nil
+		}
+		if len(chunk) > 0 {
+			s.mu.Lock()
+			if !s.captured {
+				s.firstSeen = time.Now()
+				s.captured = true
+			}
+			s.streamed = true
+			s.mu.Unlock()
+			slog.Debug("Received LLM chunk", "size", len(chunk))
+		}
+		return nil
+	})
+}
+
+// ttftMs returns ms from started → first chunk, or nil if no chunk arrived.
+func (s *streamingTracker) ttftMs() *int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.captured {
+		return nil
+	}
+	v := s.firstSeen.Sub(s.started).Milliseconds()
+	return &v
+}
+
+// wasStreaming reports whether at least one chunk was observed.
+func (s *streamingTracker) wasStreaming() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.streamed
+}
+
+// WithThinkingLevel returns a CallOption that sets the thinking level for
+// models that support chain-of-thought reasoning (e.g. Gemini 2.5+, Gemini 3).
+// Valid levels: "minimal", "low", "medium", "high".
+// Use "none" to explicitly clear a previously set thinking level (e.g. for
+// non-thinking models where a caller already set a level that must be suppressed).
+// This uses the same metadata key as llms/googleai.WithThinkingLevel.
+func WithThinkingLevel(level string) llms.CallOption {
+	return func(o *llms.CallOptions) {
+		if level == "" {
+			return
+		}
+		if o.Metadata == nil {
+			o.Metadata = make(map[string]any)
+		}
+		if strings.EqualFold(level, "none") {
+			delete(o.Metadata, "ThinkingLevel")
+			return
+		}
+		o.Metadata["ThinkingLevel"] = level
+	}
+}
+
+// WithThinkingBudget sets a hard numeric ceiling (in tokens) on thinking/reasoning
+// generation, unlike WithThinkingLevel's qualitative hint. tokens < 0 is the
+// "no override" sentinel and is a no-op; tokens == 0 means "disable thinking".
+// ttftDeadlineSeconds extends the flat TTFT deadline to cover a call's thinking phase.
+//
+// A thinking model emits nothing on the wire while reasoning, so time-to-first-token
+// scales with the thinking budget — measured p95 TTFT is ~6s under 1k thinking tokens
+// but ~264s at 8k+. Applying the flat deadline to every call would abandon legitimate
+// deep-reasoning work; the budget is known before dispatch, so it is converted to time
+// at a conservative rate and added on top.
+//
+// A call with no thinking budget keeps exactly the flat deadline, so this can only ever
+// extend a deadline, never shorten one. Rate 0 disables the adjustment entirely.
+func ttftDeadlineSeconds(flatSeconds int, opts llms.CallOptions) int {
+	rate := config.Config.LlmProviderTTFTThinkingTokensPerSec
+	if rate <= 0 {
+		return flatSeconds
+	}
+	maxSeconds := config.Config.LlmProviderTTFTTimeoutMaxSeconds
+	if maxSeconds <= 0 || maxSeconds < flatSeconds {
+		maxSeconds = flatSeconds
+	}
+
+	budget, ok := thinkingBudgetFromOptions(opts)
+	if !ok {
+		return flatSeconds
+	}
+	if budget < 0 {
+		// Uncapped thinking: no budget to derive an allowance from, so fall back to the
+		// ceiling rather than guessing low and truncating a valid call.
+		return maxSeconds
+	}
+	return min(flatSeconds+budget/rate, maxSeconds)
+}
+
+// sustainedGenDeadlineSeconds layers the sustained-generation deadline on top
+// of the TTFT deadline calculation instead of using a flat constant. A
+// thinking-aware TTFT deadline (ttftDeadlineSeconds) can exceed a flat
+// sustained-gen constant at higher thinking levels — e.g. ~193s TTFT vs a flat
+// 60s sustained-gen on "high" — which would silently make sustained-gen fire
+// first on every such call and turn TTFT's thinking-budget calculation into
+// dead code (PR #36332 review). Deriving sustained-gen from the same
+// calculation, plus a fixed safety headroom, guarantees TTFT always gets its
+// full configured chance to fire first, while sustained-gen still catches the
+// failure mode TTFT structurally cannot see: a stream that starts and never
+// stops.
+//
+// floorSeconds (the resolved LlmProviderSustainedGenTimeoutSeconds) remains
+// the lower bound — for a call with no thinking budget, or a low thinking
+// level, the TTFT deadline alone would be too short a sustained-gen budget.
+func sustainedGenDeadlineSeconds(floorSeconds int, provider string, opts llms.CallOptions) int {
+	ttft := ttftDeadlineSeconds(resolveTTFTFlatSeconds(provider), opts)
+	return max(ttft, floorSeconds) + config.Config.LlmProviderSustainedGenHeadroomSeconds
+}
+
+// thinkingBudgetFromOptions reads the thinking allowance a call was dispatched with.
+// Prefers the numeric budget; falls back to the qualitative level's own ceiling so
+// providers using the string ThinkingLevel API are covered too.
+func thinkingBudgetFromOptions(opts llms.CallOptions) (int, bool) {
+	if opts.Metadata == nil {
+		return 0, false
+	}
+	if v, ok := opts.Metadata["ThinkingBudget"]; ok {
+		if budget, ok := v.(int); ok {
+			return budget, true
+		}
+	}
+	if v, ok := opts.Metadata["ThinkingLevel"]; ok {
+		if level, ok := v.(string); ok {
+			if budget, ok := thinkingLevelBudgets[strings.ToLower(level)]; ok {
+				return budget, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func WithThinkingBudget(tokens int) llms.CallOption {
+	return func(o *llms.CallOptions) {
+		if tokens < 0 {
+			return
+		}
+		if o.Metadata == nil {
+			o.Metadata = make(map[string]any)
+		}
+		o.Metadata["ThinkingBudget"] = tokens
+	}
+}
+
+// SentinelOmitTemperature is the sentinel value indicating temperature should be omitted from provider calls.
+const SentinelOmitTemperature = -1.0
+
+// withoutTemperature returns a CallOption that clears Temperature from CallOptions
+// by setting it to SentinelOmitTemperature (-1.0).
+//
+// The sentinel is the whole signal. Do NOT also record this in
+// CallOptions.Metadata: the OpenAI-compatible client forwards that map verbatim
+// as the request's `metadata` field, which only accepts string values, so a
+// boolean there fails every call with
+// "Invalid type for 'metadata.without_temperature': expected a string".
+func withoutTemperature() llms.CallOption {
+	return func(o *llms.CallOptions) {
+		o.Temperature = SentinelOmitTemperature
+	}
+}
+
+// "nemotron-3" then "-" or end: excludes 3.5 / 30 until they are validated.
+var nemotron3 = regexp.MustCompile(`(?i)nemotron-3(-|$)`)
+
+// modelSamplingOptions go after the caller's options so they win. Nemotron 3 -> its model
+// card's tool-calling 0.6 / top_p 0.95, fixed on purpose: vendor contract, not a tenant knob
+// (greedy 0.0 leaks tool calls as text, #38236). Assumes rejects temperature => rejects top_p.
+func modelSamplingOptions(provider, model string) []llms.CallOption {
+	if !ModelSupportsTemperature(provider, model) {
+		return []llms.CallOption{withoutTemperature()}
+	}
+	if nemotron3.MatchString(model) {
+		return []llms.CallOption{llms.WithTemperature(0.6), llms.WithTopP(0.95)}
+	}
+	return nil
+}
+
+// resolveThinkingBudget returns the thinking-token ceiling for the given model
+// tier, or -1 if nothing should be applied. The global override wins whenever
+// it's >= 0 (0 means "disable thinking", a real value, not "unset"); an
+// unrecognized tier falls back to the Retrieval budget.
+func resolveThinkingBudget(tier ModelTier) int {
+	if config.Config.LlmProviderThinkingBudget >= 0 {
+		return config.Config.LlmProviderThinkingBudget
+	}
+	var tierBudget int
+	switch tier {
+	case ModelTierReasoning:
+		tierBudget = config.Config.LlmThinkingBudgetReasoning
+	case ModelTierSummary, ModelTierClassification:
+		// Classification is a lightweight tier that otherwise resolves as summary.
+		tierBudget = config.Config.LlmThinkingBudgetSummary
+	default:
+		tierBudget = config.Config.LlmThinkingBudgetRetrieval
+	}
+	if tierBudget <= 0 {
+		return -1
+	}
+	return tierBudget
+}
+
+// thinkingLevelBudgets maps a qualitative thinking level to an absolute token
+// ceiling. A level is only a HINT the provider may exceed — measured in
+// production, calls carrying an explicit level ran to ~62.9k thinking tokens
+// (the model's own ceiling) and took 250-300s, because the caller-supplied
+// level suppressed the budget entirely.
+//
+// These bounds reflect the caller's stated intent rather than falling back to
+// the tier ceiling: a "low"/fast-task call asked to think as little as
+// possible, so giving it the same allowance as an untagged call would defeat
+// the request. At the ~220 thinking-tokens/sec observed on gemini-3.5-flash,
+// "low" bounds a fast task to ~9s instead of ~285s.
+var thinkingLevelBudgets = map[string]int{
+	ThinkingLevelMinimal: 512,
+	ThinkingLevelLow:     2048,
+	ThinkingLevelMedium:  8192,
+	ThinkingLevelHigh:    16384,
+}
+
+// resolveThinkingBudgetForLevel returns the thinking-token ceiling for a call
+// that carries an explicit level, bounded by the tier's own ceiling so a level
+// can never buy more thinking than the agent's tier permits.
+//
+// Returns -1 (no budget) when the tier itself resolves to -1: that means the
+// operator deliberately uncapped the tier (config 0) or disabled budgets
+// globally, and a level must not reintroduce a cap they turned off. An
+// unrecognized level falls back to the tier ceiling — still bounded.
+func resolveThinkingBudgetForLevel(level string, tier ModelTier) int {
+	// "none" means the model cannot think at all — ClampThinkingLevelForModel
+	// returns it for flash-lite. Attaching ANY budget here (including 0, which
+	// Gemini reads as the real value "disable thinking") would put a
+	// ThinkingConfig on a request that must not carry one: isThinkingModel
+	// matches on the `gemini-3` prefix, so gemini-3.5-flash-lite would receive
+	// it. Without this guard "none" misses thinkingLevelBudgets and falls
+	// through to the tier budget — i.e. a positive ceiling on a non-thinking
+	// model, which is exactly backwards. Live path: memory_extractor,
+	// acknowledgment_agent and vote_subject all pass an explicit level and run
+	// predominantly on flash-lite.
+	if strings.EqualFold(strings.TrimSpace(level), ThinkingLevelNone) {
+		return -1
+	}
+	tierBudget := resolveThinkingBudget(tier)
+	if tierBudget < 0 {
+		return -1
+	}
+	levelBudget, ok := thinkingLevelBudgets[strings.ToLower(strings.TrimSpace(level))]
+	if !ok {
+		return tierBudget
+	}
+	return min(levelBudget, tierBudget)
+}
+
+// isMaxTokensStop returns true when the stop reason indicates the response was
+// truncated due to reaching the max output-token limit.
+// Comparison is case-insensitive to handle provider variations:
+//
+//	Google AI (new genai SDK) : "MAX_TOKENS"
+//	Google AI (old SDK) / Vertex: "FinishReasonMaxTokens"
+//	Bedrock Anthropic          : "max_tokens"
+//	Azure / OpenAI             : "length"
+func isMaxTokensStop(stopReason string) bool {
+	r := strings.ToLower(stopReason)
+	return r == "max_tokens" || r == "finishreasonmaxtokens" || r == "length"
+}
+
+// hasThinkingLevelOption returns true if any of the provided options already
+// contain an explicit ThinkingLevel entry in their metadata. This prevents
+// the auto-apply logic from overwriting a caller-supplied value.
+func hasThinkingLevelOption(options []llms.CallOption) bool {
+	combined := &llms.CallOptions{}
+	for _, o := range options {
+		o(combined)
+	}
+	if combined.Metadata == nil {
+		return false
+	}
+	_, ok := combined.Metadata["ThinkingLevel"]
+	return ok
+}
+
+func getAgentNameFromAgentId(agentId string) string {
+	agentName, err := getStore().GetAgentNameFromAgentId(agentId)
+	if err != nil {
+		return ""
+	}
+	return agentName
+}
+
+// attachTenantIDForEgressFilter attaches the security-context tenant id to
+// ctx so the egressfilter wrapper can resolve per-tenant overrides. Silently
+// leaves ctx untouched when the SecurityContext is nil, the tenant id is
+// empty, or the tenant id is not a valid UUID — in any of those cases,
+// egressfilter.Resolve falls back to env defaults (fail-open).
+func attachTenantIDForEgressFilter(ctx context.Context, sc *security.SecurityContext) context.Context {
+	if sc == nil {
+		return ctx
+	}
+	tid := sc.GetTenantId()
+	if tid == "" {
+		return ctx
+	}
+	parsed, err := uuid.Parse(tid)
+	if err != nil {
+		return ctx
+	}
+	return egressfilter.WithTenantID(ctx, parsed)
+}
+
+// isEmptyCompletion reports whether a completion carries no usable payload and
+// should be treated as a broken generation (retry / model fallback).
+//
+// A response carrying TOOL CALLS is complete even with empty text. The
+// emptiness check predates provider-native tool calling, when every valid
+// response was text and "no text" reliably meant a broken generation. A native
+// tool-calling planner (react_4) routinely produces a turn whose entire payload
+// is a tool_use block with no prose — observed live as stopReason=STOP,
+// toolCalls=1, outputTokens=25. Counting that as empty burned the
+// retry/fallback budget on healthy responses and then failed the turn outright.
+func isEmptyCompletion(completion *llms.ContentResponse) bool {
+	if completion == nil || len(completion.Choices) == 0 {
+		return true
+	}
+	choice := completion.Choices[0]
+	return len(choice.ToolCalls) == 0 && choice.Content == ""
+}
+
+func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
+	if rc == nil {
+		return nil, fmt.Errorf("retryContext is nil")
+	}
+	if rc.ctx == nil {
+		return nil, fmt.Errorf("request context is nil")
+	}
+	if rc.llm == nil {
+		rc.lastErr = fmt.Errorf("llm model is nil")
+		errorMsg := fmt.Sprintf("[%s] %s", rc.currentModel, safeError(rc.lastErr))
+		rc.errorHistory = append(rc.errorHistory, errorMsg)
+		rc.ctx.GetLogger().Error("LLM model is nil", "model", rc.currentModel)
+		return nil, rc.lastErr
+	}
+
+	start := time.Now()
+	// Use context with timeout (10 minutes default for thinking models, capped by parent)
+	previousContext := rc.ctx.GetContext()
+	if previousContext == nil {
+		previousContext = context.Background()
+	}
+
+	// Calculate remaining budget
+	elapsed := time.Since(rc.totalStart)
+	remaining := rc.maxTotalDuration - elapsed
+	if remaining <= 0 {
+		return nil, fmt.Errorf("LLM global retry budget exhausted (%v elapsed)", elapsed)
+	}
+
+	// Dynamic timeout: max individual call timeout OR remaining budget
+	callTimeout := time.Duration(config.Config.LlmServerMaxIndividualCallTimeoutMinutes) * time.Minute
+	if remaining < callTimeout {
+		callTimeout = remaining
+	}
+
+	ctx, cancel := context.WithTimeout(previousContext, callTimeout)
+	defer cancel()
+
+	// Attach tenant id so egressfilter.Resolve() can look up per-tenant
+	// overrides on the LLM call path. See attachTenantIDForEgressFilter
+	// for the missing-tenant / parse-failure / missing-SC fallback rules.
+	ctx = attachTenantIDForEgressFilter(ctx, rc.ctx.GetSecurityContext())
+	// Attach the running agent's name so egressfilter surfaces it on the
+	// FilterEvent for dashboard queries (and to drive a future per-agent
+	// suppression policy phase). Empty agentName is a no-op.
+	ctx = egressfilter.WithAgentName(ctx, rc.agentName)
+
+	// Apply cache for current model (if enabled)
+	// This ensures cache is always correct for the current model, including fallback models
+	messagesToSend := rc.promptMessages
+	optionsToSend := append([]llms.CallOption(nil), rc.options...)
+	optionsToSend = append(optionsToSend, modelSamplingOptions(rc.currentProvider, rc.currentModel)...)
+	rc.lastCacheInfo = nil // Reset cache info
+	rc.lastTTFTMs = nil
+	rc.lastWasStreaming = false
+
+	// Per-attempt streaming tracker — captures first-chunk timestamp for TTFT.
+	// Created here (not in GenerateAndTrackLLMContent) so each retry/fallback
+	// attempt records its own TTFT against its own start time.
+	tracker := newStreamingTracker()
+	tracker.started = start
+	optionsToSend = append(optionsToSend, tracker.option())
+
+	// TTFT timeout: cancel and retry same-model if no first chunk arrives within
+	// the configured deadline, instead of waiting out the full callTimeout. Only
+	// armed for streaming calls — non-streaming has no "first chunk" concept.
+	// Enable is per-provider (see getLLMTTFTTimeout): the timer fires only when
+	// LLM_PROVIDER_TTFT_TIMEOUT_ENABLED_<PROVIDER> is explicitly true for the
+	// current provider. Captured in the outer scope so the error log at the end
+	// prints the same value the timer actually used.
+	var watchdogFired atomic.Bool
+	var watchdogTimer *time.Timer
+	watchdogSeconds := 0
+	// done closes a race where the timer fires (Timer.Stop() doesn't wait for an
+	// in-flight callback) at the same instant GenerateContent returns for an
+	// unrelated reason, which would otherwise mislabel that error as a timeout.
+	var done atomic.Bool
+	watchdogOpts := llms.CallOptions{}
+	for _, opt := range optionsToSend {
+		opt(&watchdogOpts)
+	}
+	// armTTFTWatchdog starts the deadline. It is called immediately before
+	// GenerateContent rather than here, because everything between this point and the
+	// send — the cache round-trip and, most importantly, waiting for a concurrency
+	// permit — is queue time, not the model failing to respond. Arming early would let
+	// a call that is merely queued behind LLMServerMaxConcurrentLlmCalls be cancelled
+	// as if the model had gone silent.
+	armTTFTWatchdog := func() {
+		if enabled, s := getLLMTTFTTimeout(rc.currentProvider); enabled && s > 0 && watchdogOpts.StreamingFunc != nil {
+			watchdogSeconds = ttftDeadlineSeconds(s, watchdogOpts)
+			watchdogTimer = time.AfterFunc(time.Duration(watchdogSeconds)*time.Second, func() {
+				if !done.Load() && !tracker.wasStreaming() {
+					watchdogFired.Store(true)
+					cancel()
+				}
+			})
+		}
+	}
+	defer func() {
+		if watchdogTimer != nil {
+			watchdogTimer.Stop()
+		}
+	}()
+
+	// Sustained-generation timeout: cancel and retry same-model if TOTAL call
+	// duration exceeds the deadline, regardless of streaming state — unlike the
+	// TTFT watchdog above, which only guards the gap before the first token and
+	// has zero visibility into what happens after streaming starts. Catches a
+	// call that streams normally for a few seconds and then keeps generating far
+	// longer than any ReAct decision step should (observed: up to 188s on a
+	// single call, well past the point a legitimate "pick next tool" response
+	// would ever need). Enable is per-provider (see getLLMSustainedGenTimeout),
+	// same opt-in-after-validation shape as the TTFT watchdog.
+	var sustainedGenFired atomic.Bool
+	var sustainedGenTimer *time.Timer
+	sustainedGenSeconds := 0
+	// armSustainedGenWatchdog starts the deadline. Like armTTFTWatchdog above, it is
+	// called immediately before GenerateContent rather than here, for the same reason:
+	// everything between this point and the send — the cache round-trip and, most
+	// importantly, waiting for a concurrency permit — is queue time, not generation
+	// time. Arming early would let a call merely queued behind
+	// LLMServerMaxConcurrentLlmCalls burn its whole budget waiting for a permit, then
+	// get cancelled and retried as if the model itself were running away.
+	armSustainedGenWatchdog := func() {
+		if enabled, s := getLLMSustainedGenTimeout(rc.currentProvider); enabled && s > 0 {
+			sustainedGenSeconds = sustainedGenDeadlineSeconds(s, rc.currentProvider, watchdogOpts)
+			sustainedGenTimer = time.AfterFunc(time.Duration(sustainedGenSeconds)*time.Second, func() {
+				if !done.Load() {
+					sustainedGenFired.Store(true)
+					cancel()
+				}
+			})
+		}
+	}
+	defer func() {
+		if sustainedGenTimer != nil {
+			sustainedGenTimer.Stop()
+		}
+	}()
+
+	if rc.conversationId != "" && rc.enableCaching {
+		rc.ctx.GetLogger().Debug("Applying cache for current model",
+			"model", rc.currentModel,
+			"provider", rc.currentProvider,
+			"conversationId", rc.conversationId,
+			"agentId", rc.agentId)
+
+		cacheManager := GetCacheManager()
+		appendAgentName := rc.agentName != ""
+		apiKey := getLLMApiKey(rc.accountId, rc.currentProvider, rc.agentName, appendAgentName, rc.resolution)
+		// Resolve the endpoint with the SAME layering the generation client uses,
+		// so cache create/reference and generation all resolve to the same key
+		// through the AI Gateway. Empty = talk to Google directly (default).
+		endpoint := getLLMApiEndpoint(rc.accountId, rc.currentProvider, rc.agentName, appendAgentName, rc.resolution)
+
+		// Pull tenant_id from security context so the lifecycle row gets the right
+		// tenant scoping for budget rollups. Best-effort — caller-context loss here
+		// only degrades tenant-level reporting, not the LLM call.
+		tenantId := ""
+		if sc := rc.ctx.GetSecurityContext(); sc != nil {
+			tenantId = sc.GetTenantId()
+		}
+		// Native tool declarations must be baked into the cached content: Google AI
+		// rejects a request that sets both CachedContent and tools. Materialize the
+		// caller's options to recover them. Callers that pass no tools (react_3 and
+		// every summarizer) yield an empty slice, leaving the cache path unchanged.
+		cacheCallOpts := llms.CallOptions{}
+		for _, opt := range optionsToSend {
+			opt(&cacheCallOpts)
+		}
+
+		cacheReq := &CacheRequest{
+			TenantId:       tenantId,
+			AccountId:      rc.accountId,
+			ConversationId: rc.conversationId,
+			AgentName:      rc.agentName,
+			Model:          rc.currentModel, // Uses CURRENT model (important for fallbacks)
+			Provider:       rc.currentProvider,
+			Messages:       rc.promptMessages,
+			ApiKey:         apiKey,
+			Endpoint:       endpoint,
+			Scope:          rc.cacheScope,
+			Capabilities:   rc.capabilities,
+			PromptVariant:  rc.promptVariant,
+			Tools:          cacheCallOpts.Tools,
+		}
+
+		cacheResp := cacheManager.ApplyCache(ctx, cacheReq)
+		if cacheResp.Error != nil {
+			rc.ctx.GetLogger().Warn("Cache operation failed, continuing without cache",
+				"error", cacheResp.Error,
+				"model", rc.currentModel,
+				"provider", rc.currentProvider,
+				"conversationId", rc.conversationId)
+		} else {
+			// Store cache info for token tracking
+			rc.lastCacheInfo = cacheResp
+
+			// Use modified messages (reduced for Google AI, marked for Anthropic)
+			messagesToSend = cacheResp.Messages
+
+			// Add cache-specific options (e.g., CachedContentName for Google AI)
+			if len(cacheResp.Options) > 0 {
+				// Guard: CacheInfo.Model records which model this cached content belongs to.
+				// If it doesn't match rc.currentModel the provider will reject the request
+				// (Google AI 400: "model used by GenerateContent and CachedContent must be same").
+				// Drop cache options and restore full messages so the call still succeeds.
+				if cacheResp.CacheInfo != nil && cacheResp.CacheInfo.Model != "" &&
+					cacheResp.CacheInfo.Model != rc.currentModel {
+					rc.ctx.GetLogger().Error("Cache model mismatch: skipping cached content to prevent API error",
+						"cacheModel", cacheResp.CacheInfo.Model,
+						"currentModel", rc.currentModel,
+						"cacheName", cacheResp.CacheInfo.CacheName,
+						"conversationId", rc.conversationId)
+					messagesToSend = rc.promptMessages // restore full messages
+					rc.lastCacheInfo = nil             // no cache was referenced; keeps cacheMode accurate
+				} else {
+					optionsToSend = append(optionsToSend, cacheResp.Options...)
+					rc.ctx.GetLogger().Info("Cache applied successfully",
+						"model", rc.currentModel,
+						"provider", rc.currentProvider,
+						"cacheHit", cacheResp.CacheHit,
+						"conversationId", rc.conversationId,
+						"originalMessages", len(rc.promptMessages),
+						"messagesInRequest", len(messagesToSend),
+						"messagesSavedByCache", len(rc.promptMessages)-len(messagesToSend),
+						"optionsAdded", len(cacheResp.Options))
+				}
+			} else {
+				rc.ctx.GetLogger().Debug("Cache check completed, no cache options applied",
+					"model", rc.currentModel,
+					"cacheHit", cacheResp.CacheHit,
+					"conversationId", rc.conversationId)
+			}
+		}
+	}
+
+	// Generate content with potentially cached messages/options
+	sem := getLlmSemaphore(rc.accountId, rc.currentProvider, rc.currentModel)
+	semStart := time.Now()
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+		waitDuration := time.Since(semStart)
+		if waitDuration > 100*time.Millisecond {
+			rc.ctx.GetLogger().Info("LLM concurrency semaphore wait", "duration", waitDuration.String(), "model", rc.currentModel, "provider", rc.currentProvider)
+		}
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	if rc.hasMalformedFunctionCall || (rc.lastErr != nil && strings.Contains(rc.lastErr.Error(), "llm returned empty content")) {
+		if rc.hasMalformedFunctionCall {
+			messagesToSend = append(messagesToSend, llms.TextParts(llms.ChatMessageTypeHuman,
+				"IMPORTANT: Do NOT use native function calls. Your previous response was rejected because you used native function call format. "+
+					"You MUST respond in plain text using the XML tag format shown in your instructions. "+
+					"You MUST call a tool first before giving a final answer — do NOT output <final_answer> yet. "+
+					"Use <thought_action><thought>...</thought><action><tool_name>TOOL</tool_name><tool_input>INPUT</tool_input></action></thought_action> to call a tool."))
+		} else {
+			messagesToSend = append(messagesToSend, llms.TextParts(llms.ChatMessageTypeHuman, "Think STEP BY STEP very carefully to decide next steps to solve the problem. If <scratchpad> is available, use it to get more context on what is done and what is required to be done. If <scratchpad> is not available, use the instructions to get more context on what is done and what is required to be done."))
+		}
+	}
+
+	// Arm the TTFT and sustained-generation deadlines only now: the request is about to
+	// go on the wire, so from here on silence (or a runaway) really is the model, not
+	// queue time. tracker.started is deliberately left at the call start so the
+	// persisted ttft_ms keeps its existing meaning and stays comparable with historical
+	// rows; only the watchdogs' own clocks start here. The TTFT deadline is calibrated
+	// against that (larger) recorded TTFT, so measuring from the send point can only
+	// leave more headroom, never less.
+	armTTFTWatchdog()
+	armSustainedGenWatchdog()
+
+	fingerprint := fingerprintPrompt(messagesToSend, optionsToSend)
+	rc.ctx.GetLogger().Info("LLM GenerateContent call starting", "model", rc.currentModel, "provider", rc.currentProvider, "conversationId", rc.conversationId, "agent", rc.agentName, "agentId", rc.agentId, "messages", len(messagesToSend), "cacheMode", cacheModeOf(&LLMCallMetadata{CacheInfo: rc.lastCacheInfo}), "toolsHash", fingerprint.Tools, "messageHashes", fingerprint.Messages, "ttft_watchdog_seconds", watchdogSeconds, "sustained_gen_watchdog_seconds", sustainedGenSeconds)
+	completion, err := rc.llm.GenerateContent(ctx, messagesToSend, optionsToSend...)
+	// done must be set before Stop(), which doesn't wait for an in-flight callback.
+	done.Store(true)
+	if watchdogTimer != nil {
+		watchdogTimer.Stop()
+	}
+	if sustainedGenTimer != nil {
+		sustainedGenTimer.Stop()
+	}
+	// Record latency for EVERY outcome, before any error branch returns. The failure
+	// paths below return early, so assigning this only on success would leave
+	// rc.lastLatency holding the previous attempt's value — and a timed-out attempt,
+	// the one case where the elapsed time is the whole point, would be reported with a
+	// stale (small) latency by both the slow-model check and the timeout usage row.
+	generationDuration := time.Since(start)
+	rc.lastLatency = generationDuration.Seconds()
+	if err != nil && watchdogFired.Load() {
+		// Must match isTransientError ("timeout") to trigger a same-model retry, and must
+		// NOT contain "deadline exceeded" or isDeadlineExceededError routes to fallback models instead.
+		// The message is unchanged by wrapping ErrTTFTTimeout — its text is the "ttft timeout"
+		// prefix this string already carried — but it makes the cause machine-detectable.
+		err = fmt.Errorf("%w: model did not emit a first token within %ds, timeout — retrying same model: %w",
+			ErrTTFTTimeout, watchdogSeconds, err)
+
+		// The cause is passed explicitly rather than staged through rc.lastErr: that
+		// field is shared retry state which later attempts overwrite, so mutating it
+		// here to hand one value to one callee would be a side effect the rest of the
+		// retry machinery has to reason about.
+		//
+		// Record here, not on the retry/fallback paths. A TTFT timeout routes to a
+		// same-model retry (handleTransientError), which persists nothing, so these
+		// attempts were invisible in llm_conversation_token_usage — the watchdog fired
+		// in production without leaving a single row. This is also the only site that
+		// knows the cancel was watchdog-initiated rather than caller-initiated.
+		//
+		// This is the AUTHORITATIVE record for a TTFT timeout. Downstream sites that
+		// would otherwise persist the same attempt — tryFallbackModel and the
+		// end-of-sequence failure row — skip it via alreadyRecordedAtSource, or the
+		// one abandoned attempt is counted two or three times.
+		recordAbandonedAttempt(rc, rc.currentModel, rc.currentProvider, err)
+	}
+	if err != nil && sustainedGenFired.Load() {
+		// Same retry-classification requirement as the TTFT branch above: must
+		// contain "timeout" (isTransientError) and must NOT contain "deadline
+		// exceeded" (isDeadlineExceededError), so this retries the same model
+		// instead of routing to fallbacks — a runaway single call is not evidence
+		// the model/provider itself is unhealthy.
+		err = fmt.Errorf("sustained generation timeout: model exceeded %ds total call duration, timeout — retrying same model: %w",
+			sustainedGenSeconds, err)
+	}
+	// A response carrying tool calls is COMPLETE even with empty text. This check
+	// predates provider-native tool calling, when every valid response was text and
+	// "no text" reliably meant a broken generation. A native tool-calling planner
+	// (react_4) routinely gets a turn whose entire payload is a tool_use block with
+	// no prose — observed live as stopReason=STOP, toolCalls=1, outputTokens=25.
+	// Treating that as empty burned the retry/fallback budget on healthy responses
+	// and then failed the turn outright.
+	if err == nil && isEmptyCompletion(completion) {
+		stopReason := ""
+		var toolCallCount int
+		var promptTokens, outputTokens, thinkingTokens int
+		var safetyRatings any
+		if completion != nil && len(completion.Choices) > 0 {
+			c := completion.Choices[0]
+			stopReason = c.StopReason
+			toolCallCount = len(c.ToolCalls)
+			if c.GenerationInfo != nil {
+				// Each provider lays this out slightly differently; read the
+				// most common keys. Missing keys are harmless (default zero).
+				promptTokens = extractInt(c.GenerationInfo["PromptTokens"])
+				if promptTokens == 0 {
+					promptTokens = extractInt(c.GenerationInfo["input_tokens"])
+				}
+				outputTokens = extractInt(c.GenerationInfo["CompletionTokens"])
+				if outputTokens == 0 {
+					outputTokens = extractInt(c.GenerationInfo["output_tokens"])
+				}
+				thinkingTokens = extractInt(c.GenerationInfo["ThinkingTokens"])
+				safetyRatings = c.GenerationInfo["safety_ratings"] // Gemini SAFETY key
+				if safetyRatings == nil {
+					safetyRatings = c.GenerationInfo["SAFETY"]
+				}
+			}
+		}
+		// Total input chars across messages — coarse proxy for "did we send a huge prompt".
+		// Cheaper to compute than tokens and useful for cross-checking against provider limits.
+		inputChars := 0
+		for _, m := range messagesToSend {
+			for _, p := range m.Parts {
+				if tp, ok := p.(llms.TextContent); ok {
+					inputChars += len(tp.Text)
+				}
+			}
+		}
+		rc.ctx.GetLogger().Warn("LLM returned empty content",
+			"model", rc.currentModel,
+			"provider", rc.currentProvider,
+			"stopReason", stopReason,
+			"toolCalls", toolCallCount,
+			"promptTokens", promptTokens,
+			"outputTokens", outputTokens,
+			"thinkingTokens", thinkingTokens,
+			"inputMessages", len(messagesToSend),
+			"inputChars", inputChars,
+			"safetyRatings", safetyRatings,
+		)
+		if strings.EqualFold(stopReason, "MALFORMED_FUNCTION_CALL") {
+			err = errors.New("llm returned empty content: MALFORMED_FUNCTION_CALL")
+			rc.hasMalformedFunctionCall = true // sticky: preserved across all retries
+		} else {
+			err = errors.New("llm returned empty content")
+		}
+		rc.lastErr = err
+		rc.errorHistory = append(rc.errorHistory, fmt.Sprintf("[%s] %s", rc.currentModel, err.Error()))
+		return nil, err
+	}
+	latency := rc.lastLatency // recorded immediately after GenerateContent, above
+	rc.ctx.GetLogger().Info("LLM GenerateContent call complete", "duration", generationDuration.String(), "model", rc.currentModel, "provider", rc.currentProvider)
+	rc.lastTTFTMs = tracker.ttftMs()
+	rc.lastWasStreaming = tracker.wasStreaming()
+	provider := rc.currentProvider
+	model := rc.currentModel
+	status := "success"
+	if err != nil {
+		status = "fail"
+	}
+	common.MetricsLLMRequestsTotal(provider, model, status, rc.accountId)
+	common.MetricsLLMLatencySeconds(provider, model, rc.accountId, latency)
+	if err != nil {
+		rc.lastErr = err
+		errorMsg := fmt.Sprintf("[%s] %s", rc.currentModel, safeError(err))
+		rc.errorHistory = append(rc.errorHistory, errorMsg)
+
+		// Rate-limit headers, when the provider sent any, are appended here rather
+		// than logged at the client: this is the first site with the request's
+		// account, conversation and trace attached, so a throttling event is
+		// attributable to the turn that caused it.
+		logAttrs := []any{"error", err, "model", rc.currentModel, "agent", rc.agentName, "agentId", rc.agentId}
+		logAttrs = append(logAttrs, common.RateLimitLogAttrs(err)...)
+		rc.ctx.GetLogger().Warn("Failed to generate content", logAttrs...)
+		return nil, err
+	}
+	if completion == nil || completion.Choices == nil {
+		err = fmt.Errorf("llm returned invalid completion response")
+		rc.lastErr = err
+		errorMsg := fmt.Sprintf("[%s] %s", rc.currentModel, safeError(err))
+		rc.errorHistory = append(rc.errorHistory, errorMsg)
+		rc.ctx.GetLogger().Warn("LLM returned nil completion, will retry", "model", rc.currentModel, "agent", rc.agentName, "agentId", rc.agentId)
+		return nil, err
+	}
+	if len(completion.Choices) == 0 {
+		err = fmt.Errorf("llm returned empty choices in completion response")
+		rc.lastErr = err
+		errorMsg := fmt.Sprintf("[%s] %s", rc.currentModel, safeError(err))
+		rc.errorHistory = append(rc.errorHistory, errorMsg)
+		rc.ctx.GetLogger().Warn("LLM returned empty choices, will retry", "model", rc.currentModel, "agent", rc.agentName, "agentId", rc.agentId)
+		return nil, err
+	}
+
+	// Record success to close circuit breaker (if it was half-open, this confirms recovery)
+	RecordModelSuccess(rc.currentProvider, rc.currentModel)
+	rc.ctx.GetLogger().Info("Received LLM chunk", "model", rc.currentModel, "provider", rc.currentProvider, "agent", rc.agentName, "agentId", rc.agentId, "stopReason", completion.Choices[0].StopReason)
+	return completion, nil
+}
+
+// requestStatusForError maps a call error to the request_status persisted on the usage
+// row. A hung call is separated from an ordinary failure because it costs the full
+// per-call deadline — the single largest latency contributor measured — and needs to be
+// queryable on its own rather than blending into the general "failure" bucket.
+// ErrTTFTTimeout marks a call the TTFT watchdog abandoned because no first token
+// arrived within the deadline.
+//
+// It exists because the watchdog cancels a context.WithTimeout early, which surfaces
+// as context.Canceled — indistinguishable from a caller-side abort (user navigated
+// away, parent gave up). Those must not be reported as provider timeouts, so the
+// distinction cannot be recovered from the error sentinel alone and has to be stamped
+// at the one site that knows.
+var ErrTTFTTimeout = errors.New("ttft timeout")
+
+func requestStatusForError(err error) string {
+	// DeadlineExceeded covers the whole-call ceiling; ErrTTFTTimeout covers the
+	// watchdog abandoning a stream that produced nothing.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrTTFTTimeout) {
+		return "timeout"
+	}
+	return "failure"
+}
+
+// alreadyRecordedAtSource reports whether this error was already persisted at the point
+// it occurred, so downstream failure-recording sites must not persist it again.
+//
+// Only TTFT timeouts qualify: they are recorded at the watchdog site in tryWithModel,
+// which is the sole place that knows the cancel was watchdog-initiated rather than
+// caller-initiated. Every other failure is still recorded downstream as before.
+func alreadyRecordedAtSource(err error) bool {
+	return errors.Is(err, ErrTTFTTimeout)
+}
+
+// recordAbandonedAttempt persists a usage row for a timed-out model we are giving up on.
+//
+// Without this, an attempt that hangs and is then rescued by a fallback leaves NO row
+// at all: only the successful call is recorded, so the time the hung attempt burned is
+// invisible in llm_conversation_token_usage. A hung primary therefore hid a five-minute
+// stall behind an adjacent row that looked entirely healthy — the gap was only
+// recoverable by diffing timestamps between consecutive rows.
+//
+// Deliberately limited to timeouts. Other abandoned attempts (quota, transient) either
+// fail fast or are already captured by the end-of-sequence failure row, so recording
+// them here would double-count the same event against that row.
+func recordAbandonedAttempt(rc *retryContext, model, provider string, cause error) {
+	if rc == nil || rc.ctx == nil || cause == nil {
+		return
+	}
+	// Single source of truth for "was this a timeout", shared with the row's own
+	// request_status. Covers both the whole-call ceiling (DeadlineExceeded) and the
+	// TTFT watchdog (ErrTTFTTimeout, which surfaces as context.Canceled underneath).
+	if requestStatusForError(cause) != "timeout" {
+		return
+	}
+	RecordTokenUsageFailure(rc.ctx, rc.conversationId, rc.messageId, rc.agentId, rc.agentName,
+		provider, model, rc.accountId, rc.userId,
+		// Only latency and attempt are carried: recordTokenUsageFailure persists neither
+		// TTFT nor was_streaming, and for a hung stream TTFT is nil by definition — no
+		// chunk ever arrived — so there is nothing to report even if it did.
+		&LLMCallMetadata{
+			LatencySeconds: rc.lastLatency,
+			RetryAttempt:   rc.attemptCount,
+		}, cause)
+}
+
+// fallbackChain returns the untried attempts for rc: the legacy list raw (unchanged
+// behaviour, primary's creds), then the integration's configured fallback on its own
+// slot. A configured fallback that no longer resolves is logged & recorded, never substituted.
+func fallbackChain(rc *retryContext, raw string) []FallbackModel {
+	fallbacks := parseFallbackModels(raw)
+	if fb, err := configuredFallback(rc.ctx, rc.accountId, rc.resolution); err != nil {
+		rc.ctx.GetLogger().Error("Configured fallback unavailable", "error", err)
+		rc.errorHistory = append(rc.errorHistory, err.Error())
+	} else if fb != nil {
+		fallbacks = append(fallbacks, *fb)
+	}
+	out := fallbacks[:0]
+	for _, fb := range fallbacks {
+		if !rc.triedModels[fb.key()] {
+			out = append(out, fb)
+		}
+	}
+	return out
+}
+
+// withFallbackMaxTokens caps a configured fallback's max_tokens at its own model's limit:
+// options are sized for the primary (Gemini 65536 -> gpt-4o-mini rejects >16384).
+func withFallbackMaxTokens(opts []llms.CallOption, accountId string, fb FallbackModel) []llms.CallOption {
+	limit := ResolveMaxOutputTokens(accountId, fb.Provider, fb.Model)
+	if limit <= 0 {
+		limit = DefaultMaxOutputTokensFloor
+	}
+	var current llms.CallOptions
+	for _, o := range opts {
+		o(&current)
+	}
+	if current.MaxTokens > 0 && current.MaxTokens <= limit {
+		return opts
+	}
+	return append(append([]llms.CallOption(nil), opts...), llms.WithMaxTokens(limit))
+}
+
+func tryFallbackModel(rc *retryContext, next FallbackModel, attempt int) (*llms.ContentResponse, error) {
+	if rc == nil || rc.ctx == nil {
+		return nil, errors.New("invalid retry context")
+	}
+	nextModel := next.Model
+	if nextModel == "" || rc.triedModels[next.key()] {
+		return nil, errors.New("invalid or already tried model")
+	}
+
+	rc.setLiveFallback(next)
+
+	// Save current state before mutation
+	previousModel := rc.currentModel
+	previousLLM := rc.llm
+	previousProvider := rc.currentProvider
+	previousResolution := rc.resolution
+	previousOptions := rc.options
+
+	// The model we are leaving behind failed; record that attempt before its latency
+	// and error are overwritten by the fallback's own result. A TTFT timeout is skipped
+	// because tryWithModel already persisted it at the moment the watchdog fired.
+	if !alreadyRecordedAtSource(rc.lastErr) {
+		recordAbandonedAttempt(rc, previousModel, previousProvider, rc.lastErr)
+	}
+
+	rc.triedModels[next.key()] = true
+	rc.ctx.GetLogger().Info("Trying fallback model",
+		"previousError", safeError(rc.lastErr),
+		"previousModel", previousModel,
+		"nextModel", nextModel,
+		"nextProvider", next.Provider,
+		"attempt", attempt+1)
+
+	// Legacy entry -> primary's provider & resolution. Configured fallback -> its own
+	// slot's resolution, so client, cache-path key & context size all use that slot.
+	provider, resolution := next.Provider, rc.resolution
+	if next.Resolution != nil {
+		resolution = next.Resolution
+	} else {
+		provider = GetLLMProvider(rc.ctx, rc.accountId, rc.agentName, false, rc.conversationId, rc.resolution)
+	}
+	newLLM, err := NewLLMModel(provider, nextModel, rc.agentName, false, rc.accountId, resolution)
+	if err != nil {
+		rc.ctx.GetLogger().Warn("Failed to create fallback model",
+			"model", nextModel,
+			"error", safeError(err))
+		errorMsg := fmt.Sprintf("[%s] Failed to initialize: %s", nextModel, safeError(err))
+		rc.errorHistory = append(rc.errorHistory, errorMsg)
+		return nil, err
+	}
+
+	// Update state and track fallback
+	rc.currentModel = nextModel
+	rc.currentProvider = provider
+	rc.resolution = resolution
+	rc.llm = newLLM
+	if next.Resolution != nil {
+		rc.options = withFallbackMaxTokens(rc.options, rc.accountId, next)
+	}
+	rc.fallbackFromModel = &previousModel                      // Track immediate previous model
+	rc.fallbackChain = append(rc.fallbackChain, previousModel) // Add to chain
+
+	completion, err := tryWithModel(rc)
+	if err != nil {
+		// Revert state on failure
+		rc.currentModel = previousModel
+		rc.currentProvider = previousProvider
+		rc.resolution = previousResolution
+		rc.options = previousOptions
+		rc.llm = previousLLM
+		rc.fallbackFromModel = nil                                    // Clear immediate fallback
+		rc.fallbackChain = rc.fallbackChain[:len(rc.fallbackChain)-1] // Remove last from chain
+		return nil, err
+	}
+
+	return completion, nil
+}
+
+func logAttemptError(rc *retryContext, attempt, maxAttempts int) {
+	if rc == nil || rc.ctx == nil {
+		return
+	}
+	if !isRetryableError(rc.lastErr) {
+		rc.ctx.GetLogger().Error("Encountered non-retryable error, giving up",
+			"error", safeError(rc.lastErr),
+			"attempt", attempt+1,
+			"errorHistory", rc.errorHistory)
+	} else {
+		rc.ctx.GetLogger().Error("Maximum retry attempts reached",
+			"error", safeError(rc.lastErr),
+			"attempt", attempt+1,
+			"maxAttempts", maxAttempts,
+			"errorHistory", rc.errorHistory)
+	}
+}
+
+// serializePromptMessages converts prompt messages to a JSON string for trace logging.
+func serializePromptMessages(messages []llms.MessageContent) string {
+	type tracePart struct {
+		Type    string `json:"type"`
+		Text    string `json:"text,omitempty"`
+		Name    string `json:"name,omitempty"`
+		Content string `json:"content,omitempty"`
+	}
+	type traceMessage struct {
+		Role  string      `json:"role"`
+		Parts []tracePart `json:"parts"`
+	}
+
+	out := make([]traceMessage, 0, len(messages))
+	for _, msg := range messages {
+		tm := traceMessage{Role: string(msg.Role)}
+		for _, part := range msg.Parts {
+			switch p := part.(type) {
+			case llms.TextContent:
+				tm.Parts = append(tm.Parts, tracePart{Type: "text", Text: p.Text})
+			case llms.ToolCall:
+				tm.Parts = append(tm.Parts, tracePart{Type: "tool_call", Name: p.FunctionCall.Name, Content: p.FunctionCall.Arguments})
+			case llms.ToolCallResponse:
+				tm.Parts = append(tm.Parts, tracePart{Type: "tool_result", Name: p.Name, Content: p.Content})
+			default:
+				tm.Parts = append(tm.Parts, tracePart{Type: fmt.Sprintf("%T", part), Text: fmt.Sprintf("%+v", part)})
+			}
+		}
+		out = append(out, tm)
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return fmt.Sprintf("[serialization error: %v]", err)
+	}
+	return string(b)
+}
+
+// sanitizeMessageContent sanitizes UTF-8 in message content
+func sanitizeMessageContent(messages []llms.MessageContent) []llms.MessageContent {
+	sanitized := make([]llms.MessageContent, len(messages))
+	for i, msg := range messages {
+		newParts := make([]llms.ContentPart, len(msg.Parts))
+		copy(newParts, msg.Parts)
+
+		// Sanitize text parts
+		for j, part := range newParts {
+			if textPart, ok := part.(llms.TextContent); ok {
+				newParts[j] = llms.TextContent{Text: sanitizeUTF8Input(textPart.Text)}
+			}
+		}
+
+		sanitized[i] = llms.MessageContent{
+			Role:  msg.Role,
+			Parts: newParts,
+		}
+	}
+	return sanitized
+}
+
+// sanitizeUTF8Input removes invalid UTF-8 sequences from input strings
+func sanitizeUTF8Input(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	// Replace invalid UTF-8 with an empty string. This is more robust and available in Go 1.21+.
+	return strings.ToValidUTF8(s, "")
+}
+
+// configSourceOf reports the slot a resolution came from, preferring the pinned
+// id when the request pinned one — that is the slot actually dialed, whereas
+// Source names the layer the walk stopped at.
+func configSourceOf(res *LLMConfigResolution) string {
+	if res == nil {
+		return ""
+	}
+	if res.PinnedConfigSource != "" {
+		return res.PinnedConfigSource
+	}
+	if res.chosenConfigSource != "" {
+		return res.chosenConfigSource
+	}
+	return res.Source
+}
+
+// buildCallMetadata creates metadata from retry context for token tracking
+func buildCallMetadata(rc *retryContext, success bool) *LLMCallMetadata {
+	metadata := &LLMCallMetadata{
+		LatencySeconds:    rc.lastLatency,
+		RetryAttempt:      rc.attemptCount,
+		FallbackFromModel: rc.fallbackFromModel,
+		FallbackChain:     rc.fallbackChain, // Copy the full fallback chain
+		RequestStatus:     "success",
+		ErrorMessage:      nil,
+		CacheInfo:         rc.lastCacheInfo, // Include cache info from last call
+		TTFTMs:            rc.lastTTFTMs,
+		WasStreaming:      rc.lastWasStreaming,
+		ServedModel:       rc.currentModel,
+		ServedProvider:    rc.currentProvider,
+		ConfigSource:      configSourceOf(rc.resolution),
+	}
+
+	if !success && rc.lastErr != nil {
+		metadata.RequestStatus = "failure"
+		errMsg := safeError(rc.lastErr)
+		metadata.ErrorMessage = &errMsg
+	}
+
+	return metadata
+}
+
+// ============================================================================
+// STRATEGY HANDLERS: Three specialized retry strategies for different error types
+// ============================================================================
+
+// handleTokenLimitError handles token limit errors using intelligent chunking with context preservation
+// STRATEGY 1: Split messages into chunks, process sequentially with cumulative summaries
+func handleTokenLimitError(rc *retryContext) (*llms.ContentResponse, *LLMCallMetadata, error) {
+	ctx := rc.ctx
+
+	rc.setLiveSummarising()
+	ctx.GetLogger().Info("STRATEGY 1: Token limit error detected, applying chunking with context preservation",
+		"agentId", rc.agentId,
+		"model", rc.currentModel,
+		"provider", rc.currentProvider)
+
+	maxTokens := ResolveModelMaxContext(rc.resolution, rc.currentModel)
+	// budget reserves room for the model's output: the recovered prompt + the
+	// generation must BOTH fit the window (total-window semantics). Targeting the
+	// full window would let the resend (input + output) overflow again. This is
+	// the same usable-input budget the summarizer chunks to.
+	budget := summarizationChunkSize(maxTokens, rc.currentModel)
+
+	// Calculate initial token distribution before summarization
+	totalTokens, err := CalculateTotalTokens(ctx, rc.promptMessages, rc.currentProvider, rc.currentModel)
+	if err != nil {
+		ctx.GetLogger().Warn("Failed to calculate initial tokens, using estimation", "error", err)
+		totalTokens = 0
+		for _, msg := range rc.promptMessages {
+			totalTokens += estimateMessageTokens(msg)
+		}
+	}
+
+	// Calculate how many chunks would be needed
+	chunkSize := int(float64(maxTokens) * 0.7) // 70% of max tokens per chunk
+	chunksNeeded := int(math.Ceil(float64(totalTokens) / float64(chunkSize)))
+
+	ctx.GetLogger().Info("Token limit error analysis",
+		"totalTokens", totalTokens,
+		"maxTokens", maxTokens,
+		"exceedsBy", totalTokens-maxTokens,
+		"messageCount", len(rc.promptMessages),
+		"chunkSize", chunkSize,
+		"chunksNeeded", chunksNeeded)
+
+	// Log individual message token counts
+	for i, msg := range rc.promptMessages {
+		msgTokens, err := calculateMessageTokens(ctx, msg, rc.currentProvider, rc.currentModel)
+		if err != nil {
+			msgTokens = estimateMessageTokens(msg)
+		}
+		ctx.GetLogger().Info("Message token analysis",
+			"messageIndex", i,
+			"messageRole", msg.Role,
+			"messageTokens", msgTokens,
+			"percentOfMax", fmt.Sprintf("%.1f%%", float64(msgTokens)/float64(maxTokens)*100))
+	}
+
+	// Step 1: Loop until total tokens are within limit
+	// Summarize all large messages, check total, repeat if needed
+	ctx.GetLogger().Info("Step 1: Starting recursive summarization loop",
+		"maxTokens", maxTokens)
+
+	// Safe limit per message = chunk size (70% of max) - overhead
+	safeMessageLimit := int(float64(maxTokens) * 0.7 * 0.7) // 49% of max tokens per message
+	maxIterations := 10                                     // Safety limit to prevent infinite loops
+	iteration := 0
+
+	for iteration < maxIterations {
+		iteration++
+		summarizedAnyMessage := false
+
+		ctx.GetLogger().Info("Summarization iteration starting",
+			"iteration", iteration,
+			"maxIterations", maxIterations)
+
+		// Per-iteration token cache so we can reuse counts when picking
+		// a fallback message after the per-message threshold pass.
+		msgTokenCounts := make([]int, len(rc.promptMessages))
+		for i, msg := range rc.promptMessages {
+			tokens, err := calculateMessageTokens(ctx, msg, rc.currentProvider, rc.currentModel)
+			if err != nil {
+				tokens = estimateMessageTokens(msg)
+			}
+			msgTokenCounts[i] = tokens
+		}
+
+		// Summarize all messages that exceed safe limit
+		for i, msg := range rc.promptMessages {
+			msgTokens := msgTokenCounts[i]
+
+			if msgTokens > safeMessageLimit {
+				// Track whether this message was actually changed this iteration;
+				// if not, the total is unchanged and we skip the expensive recount.
+				changedThisMsg := false
+				ctx.GetLogger().Warn("Individual message exceeds safe limit, attempting to downsample or summarize",
+					"messageIndex", i,
+					"iteration", iteration,
+					"messageTokens", msgTokens,
+					"safeLimit", safeMessageLimit)
+				if textContent, isText := msg.Parts[0].(llms.TextContent); isText {
+					var summarizedText string
+					// Use feature flag to switch between summarization strategies
+					if config.Config.LlmSummarizationParallelEnabled {
+						summarizedText = SummarizeLargeMessageChunkedParallel(
+							ctx, rc.llm, textContent.Text,
+							rc.currentProvider, rc.currentModel, maxTokens,
+							rc.accountId, rc.agentId,
+							rc.conversationId, rc.messageId, rc.userId,
+						)
+					} else {
+						// Original sequential summarization
+						summarizedText = SummarizeLargeMessageChunked(
+							ctx, rc.llm, textContent.Text,
+							rc.currentProvider, rc.currentModel, maxTokens,
+							rc.accountId, rc.agentId,
+							rc.conversationId, rc.messageId, rc.userId,
+						)
+					}
+					// Guard: if summarization failed and returned empty string,
+					// hard-truncate as a fallback. Keeping the original would leave tokens
+					// unreduced (loop breaks with no progress), and sending an empty string
+					// causes 400: required oneof field 'data' must have one initialized field.
+					// Hard-truncating ensures forward progress while preserving leading content.
+					if summarizedText == "" {
+						// Cons~4 chars/token is a reasonable estimate for mixed technical content.
+						const bytesPerToken = 4
+						safeTruncBytes := safeMessageLimit * bytesPerToken
+						truncated := common.TruncateHead(textContent.Text, safeTruncBytes)
+						if truncated != textContent.Text {
+							ctx.GetLogger().Warn("Summarization returned empty string, falling back to hard-truncation",
+								"messageIndex", i, "originalTokens", msgTokens,
+								"safeMessageLimit", safeMessageLimit, "safeTruncBytes", safeTruncBytes)
+							rc.promptMessages[i] = llms.MessageContent{
+								Role: msg.Role,
+								Parts: []llms.ContentPart{
+									llms.TextContent{Text: truncated + "\n[message hard-truncated: content exceeded summarization capacity]"},
+								},
+							}
+							changedThisMsg = true
+							summarizedAnyMessage = true
+						} else {
+							ctx.GetLogger().Warn("Summarization returned empty string and message already at safe byte limit, keeping original",
+								"messageIndex", i, "originalTokens", msgTokens)
+						}
+					} else {
+						rc.promptMessages[i] = llms.MessageContent{
+							Role: msg.Role,
+							Parts: []llms.ContentPart{
+								llms.TextContent{Text: summarizedText},
+							},
+						}
+						changedThisMsg = true
+						summarizedAnyMessage = true
+					}
+				}
+
+				// Stop-at-budget: once the prompt fits the window, skip the
+				// remaining over-limit messages instead of summarizing them too
+				// (avoids extra summarization LLM calls). Only recount when this
+				// message actually changed — tokenization is CPU-heavy and an
+				// unchanged message leaves the total unchanged.
+				if changedThisMsg {
+					if t, terr := CalculateTotalTokens(ctx, rc.promptMessages, rc.currentProvider, rc.currentModel); terr == nil && t <= budget {
+						ctx.GetLogger().Info("plannerexecutor: token-limit recovery now under budget, stopping summarization early",
+							"totalTokens", t, "budget", budget, "maxTokens", maxTokens, "iteration", iteration)
+						break
+					}
+				}
+			}
+		}
+
+		// Calculate total tokens after summarization
+		totalTokens, err := CalculateTotalTokens(
+			ctx,
+			rc.promptMessages,
+			rc.currentProvider,
+			rc.currentModel,
+		)
+
+		if err != nil {
+			ctx.GetLogger().Error("Failed to calculate total tokens",
+				"error", err,
+				"iteration", iteration)
+			return nil, buildCallMetadata(rc, false), fmt.Errorf("token calculation failed: %w", err)
+		}
+
+		ctx.GetLogger().Info("Token analysis after summarization",
+			"iteration", iteration,
+			"totalTokens", totalTokens,
+			"maxTokens", maxTokens,
+			"summarizedAnyMessage", summarizedAnyMessage)
+
+		// Check if total is within budget (leaves room for the output)
+		if totalTokens <= budget {
+			ctx.GetLogger().Info("Total tokens now within budget, trying LLM call",
+				"iteration", iteration,
+				"totalTokens", totalTokens,
+				"budget", budget,
+				"maxTokens", maxTokens)
+
+			// Try LLM call
+			completion, err := tryWithModel(rc)
+			if err == nil {
+				ctx.GetLogger().Info("Successfully handled token limit after summarization",
+					"iterations", iteration)
+				return completion, buildCallMetadata(rc, true), nil
+			}
+
+			ctx.GetLogger().Warn("LLM call failed despite tokens being within limit",
+				"iteration", iteration,
+				"error", err)
+			// Continue to next iteration to further summarize
+		}
+
+		// If no messages crossed the per-message threshold but the total still
+		// exceeds maxTokens, we have many small-but-cumulatively-large messages.
+		// Force-summarize the single largest text message to make forward progress
+		// rather than breaking immediately — otherwise multi-turn conversations
+		// early-exit at iteration 1 and surface a misleading internal-error
+		// response.
+		if !summarizedAnyMessage {
+			largestIdx, largestTokens := largestTextMessageIndex(rc.promptMessages, msgTokenCounts, -1)
+			if largestIdx < 0 {
+				ctx.GetLogger().Warn("No text messages available to summarize but total still exceeds limit",
+					"iteration", iteration,
+					"totalTokens", totalTokens,
+					"maxTokens", maxTokens)
+				break
+			}
+
+			ctx.GetLogger().Warn("No message exceeded per-message threshold; force-summarizing largest message",
+				"iteration", iteration,
+				"largestMessageIndex", largestIdx,
+				"largestMessageTokens", largestTokens,
+				"safeLimit", safeMessageLimit,
+				"totalTokens", totalTokens,
+				"maxTokens", maxTokens)
+
+			msg := rc.promptMessages[largestIdx]
+			textContent := msg.Parts[0].(llms.TextContent)
+			var summarizedText string
+			if config.Config.LlmSummarizationParallelEnabled {
+				summarizedText = SummarizeLargeMessageChunkedParallel(
+					ctx, rc.llm, textContent.Text,
+					rc.currentProvider, rc.currentModel, maxTokens,
+					rc.accountId, rc.agentId,
+					rc.conversationId, rc.messageId, rc.userId,
+				)
+			} else {
+				summarizedText = SummarizeLargeMessageChunked(
+					ctx, rc.llm, textContent.Text,
+					rc.currentProvider, rc.currentModel, maxTokens,
+					rc.accountId, rc.agentId,
+					rc.conversationId, rc.messageId, rc.userId,
+				)
+			}
+			if summarizedText == "" {
+				const bytesPerToken = 4
+				safeTruncBytes := safeMessageLimit * bytesPerToken
+				truncated := common.TruncateHead(textContent.Text, safeTruncBytes)
+				if truncated == textContent.Text {
+					ctx.GetLogger().Warn("Largest message already at safe byte limit and summarization returned empty; cannot reduce further",
+						"messageIndex", largestIdx, "originalTokens", largestTokens)
+					break
+				}
+				ctx.GetLogger().Warn("Largest-message summarization returned empty string, falling back to hard-truncation",
+					"messageIndex", largestIdx, "originalTokens", largestTokens)
+				rc.promptMessages[largestIdx] = llms.MessageContent{
+					Role: msg.Role,
+					Parts: []llms.ContentPart{
+						llms.TextContent{Text: truncated + "\n[message hard-truncated: content exceeded summarization capacity]"},
+					},
+				}
+			} else if len(summarizedText) >= len(textContent.Text) {
+				// Summarization returned content no smaller than the original.
+				// Replacing-and-continuing would re-select this same message every
+				// iteration (it stays the largest, still under the per-message
+				// threshold) until maxIterations with zero progress. Stop instead.
+				ctx.GetLogger().Warn("Largest-message summarization made no progress; cannot reduce further",
+					"messageIndex", largestIdx, "originalTokens", largestTokens,
+					"summarizedBytes", len(summarizedText), "originalBytes", len(textContent.Text))
+				break
+			} else {
+				rc.promptMessages[largestIdx] = llms.MessageContent{
+					Role:  msg.Role,
+					Parts: []llms.ContentPart{llms.TextContent{Text: summarizedText}},
+				}
+			}
+			continue
+		}
+
+		ctx.GetLogger().Info("Total still exceeds limit, continuing to next iteration",
+			"iteration", iteration,
+			"totalTokens", totalTokens,
+			"maxTokens", maxTokens)
+	}
+
+	if iteration >= maxIterations {
+		ctx.GetLogger().Error("Failed to reduce tokens to limit after max iterations",
+			"maxIterations", maxIterations)
+	}
+
+	// Preserve the underlying provider error in the chain so callers (and
+	// llm_conversation_token_usage.error_message) can see what actually failed,
+	// not just our summary string.
+	if rc.lastErr != nil {
+		return nil, buildCallMetadata(rc, false),
+			fmt.Errorf("failed to handle token limit error after %d iterations: %w", iteration, rc.lastErr)
+	}
+	return nil, buildCallMetadata(rc, false),
+		fmt.Errorf("failed to handle token limit error after %d iterations", iteration)
+}
+
+// largestTextMessageIndex returns the index of the message in `messages`
+// with the highest token count whose first part is a TextContent (the only
+// kind we know how to summarise), or -1 if no such message exists.
+// Caller passes a parallel slice of pre-computed token counts.
+//
+// protectIdx is skipped entirely; pass -1 to consider every message. The
+// pre-flight cap uses it to keep the user's turn out of a byte-slicing trim —
+// that message carries the question, and losing it makes the model answer
+// something nobody asked.
+func largestTextMessageIndex(messages []llms.MessageContent, tokens []int, protectIdx int) (int, int) {
+	bestIdx := -1
+	bestTokens := -1
+	for i, msg := range messages {
+		if i == protectIdx {
+			continue
+		}
+		if len(msg.Parts) == 0 {
+			continue
+		}
+		if _, ok := msg.Parts[0].(llms.TextContent); !ok {
+			continue
+		}
+		if i < len(tokens) && tokens[i] > bestTokens {
+			bestTokens = tokens[i]
+			bestIdx = i
+		}
+	}
+	return bestIdx, bestTokens
+}
+
+// lastHumanTextMessageIndex returns the index of the final human turn, or -1.
+// That turn holds the user's question (and, in ReAct, the scratchpad appended
+// to it), so it is the one message a size-driven trim must not silently drop.
+func lastHumanTextMessageIndex(messages []llms.MessageContent) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != llms.ChatMessageTypeHuman {
+			continue
+		}
+		if len(messages[i].Parts) == 0 {
+			continue
+		}
+		if _, ok := messages[i].Parts[0].(llms.TextContent); ok {
+			return i
+		}
+	}
+	return -1
+}
+
+// fallbackCause records why the fallback path was entered. Quota exhaustion and
+// endpoint-unavailable share this path, so the terminal "no fallbacks" error has
+// to name the real failure rather than assume quota — an operator told a 503 is a
+// quota problem goes and checks billing.
+type fallbackCause int
+
+const (
+	fallbackCauseQuota fallbackCause = iota
+	fallbackCauseUnavailable
+)
+
+// circuitOpenError maps a breaker trip cause to the user-facing sentinel. Kept
+// beside fallbackCause so the two stay in step: every cause needs an answer here.
+func circuitOpenError(cause fallbackCause, detail common.RateLimitDetail) error {
+	if cause == fallbackCauseQuota {
+		return RateLimitedError(detail)
+	}
+	return ErrLLMServiceUnavailable
+}
+
+func (c fallbackCause) reason() string {
+	switch c {
+	case fallbackCauseUnavailable:
+		return "Endpoint unavailable"
+	case fallbackCauseQuota:
+		return "Quota/rate limit error detected"
+	default:
+		return "Unknown fallback cause"
+	}
+}
+
+// handleQuotaError handles quota/rate limit errors by trying fallback models
+// STRATEGY 2: Try each configured fallback model until one succeeds
+func handleQuotaError(rc *retryContext, fallbackModels []FallbackModel, recordPrimaryHit bool, cause fallbackCause) (*llms.ContentResponse, *LLMCallMetadata, error) {
+	ctx := rc.ctx
+
+	// Record rate limit hit to open circuit breaker for the primary model.
+	// Skipped when called from the transient-error exhaustion path or when the
+	// circuit is already open — in those cases the model had timeouts rather than
+	// quota issues, and tripping the circuit would give it an inaccurate label.
+	if recordPrimaryHit {
+		RecordModelRateLimitHit(rc.currentProvider, rc.currentModel, rc.lastErr)
+		common.MetricsLLMRateLimitHitsTotal(rc.currentProvider, rc.currentModel, rc.accountId)
+	}
+
+	ctx.GetLogger().Info("STRATEGY 2: trying fallback models",
+		"reason", cause.reason(),
+		"agentId", rc.agentId,
+		"primaryModel", rc.currentModel,
+		"fallbackCount", len(fallbackModels))
+
+	// Validate fallback models exist. Having none is a deliberate configuration
+	// choice — the tier is meant to surface the failure rather than silently
+	// answer from a different model — so the error is the user-facing contract
+	// and must state the real cause and that no fallback is configured.
+	if len(fallbackModels) == 0 {
+		ctx.GetLogger().Warn("No fallback models configured for this tier",
+			"model", rc.currentModel, "provider", rc.currentProvider, "cause", cause.reason())
+		wrapped := ensureLastErr(rc, cause)
+		if cause == fallbackCauseUnavailable {
+			return nil, buildCallMetadata(rc, false),
+				fmt.Errorf("model %s (%s) is currently unavailable and no fallback model is configured for this tier: %w",
+					rc.currentModel, rc.currentProvider, wrapped)
+		}
+		return nil, buildCallMetadata(rc, false),
+			fmt.Errorf("quota exceeded on model %s and no fallback model is configured for this tier: %w",
+				rc.currentModel, wrapped)
+	}
+
+	// Try each fallback model
+	for i, fb := range fallbackModels {
+		model := fb.Model
+		ctx.GetLogger().Info("Attempting fallback model",
+			"fallbackModel", model,
+			"fallbackProvider", fb.Provider,
+			"attemptNumber", i+1,
+			"totalFallbacks", len(fallbackModels),
+			"primaryModel", rc.currentModel)
+
+		// Skip if already tried
+		if rc.triedModels[fb.key()] {
+			ctx.GetLogger().Debug("Skipping already tried model",
+				"model", model)
+			continue
+		}
+
+		// Try this fallback model
+		completion, err := tryFallbackModel(rc, fb, i)
+
+		if err == nil {
+			// Success!
+			ctx.GetLogger().Info("STRATEGY 2 SUCCESS: Fallback model succeeded",
+				"fallbackModel", model,
+				"attemptNumber", i+1,
+				"originalModel", rc.currentModel)
+			return completion, buildCallMetadata(rc, true), nil
+		}
+
+		// Analyze failure reason
+		if isQuotaError(err) {
+			// Record rate limit hit for the fallback model too
+			fallbackProvider := fb.Provider
+			if fallbackProvider == "" {
+				fallbackProvider = GetLLMProvider(rc.ctx, rc.accountId, rc.agentName, false, rc.conversationId, rc.resolution)
+			}
+			RecordModelRateLimitHit(fallbackProvider, model, err)
+			common.MetricsLLMRateLimitHitsTotal(fallbackProvider, model, rc.accountId)
+			ctx.GetLogger().Warn("Fallback model also has quota issues, trying next",
+				"model", model,
+				"error", safeError(err))
+			// Brief delay before next fallback to avoid hitting shared quota pools
+			time.Sleep(time.Second + time.Duration(rand.Int64N(int64(time.Second))))
+			continue
+		}
+
+		if isTokenLimitError(err) {
+			ctx.GetLogger().Warn("Fallback model has token limit issue (different context window?)",
+				"model", model,
+				"error", safeError(err))
+			// Could try chunking with this model, but for now just try next fallback
+			continue
+		}
+
+		if isTransientError(err) {
+			// continue to next fallback — deliberately NOT delegating back to
+			// handleTransientError, which would re-enter generateLLMContentWithRetry's
+			// strategy router and create an unbounded recursion. Skipping the fallback
+			// and trying the next one is the correct termination-safe behaviour here.
+			ctx.GetLogger().Warn("Fallback model has transient error, trying next",
+				"model", model,
+				"error", safeError(err))
+			continue
+		}
+
+		// Other error type
+		ctx.GetLogger().Warn("Fallback model failed with non-retryable error, trying next",
+			"model", model,
+			"error", safeError(err))
+	}
+
+	// All fallbacks exhausted. Preserve the original cause — the operator needs
+	// to know we entered fallback because the primary was unavailable (not because
+	// of quota) even if the last fallback failed for a different reason. Without
+	// this branch a 503 that also exhausts fallbacks still reads as "quota".
+	ctx.GetLogger().Error("STRATEGY 2 FAILED: All fallback models exhausted",
+		"triedModels", len(rc.triedModels),
+		"fallbackCount", len(fallbackModels),
+		"primaryModel", rc.currentModel,
+		"cause", cause.reason())
+
+	// rc.triedModels is seeded with the primary at line 2664, so its length is
+	// (1 + fallback attempts) — reporting fallback count uses len(fallbackModels).
+	wrapped := ensureLastErr(rc, cause)
+	if cause == fallbackCauseUnavailable {
+		return nil, buildCallMetadata(rc, false),
+			fmt.Errorf("model %s (%s) and all %d fallback model(s) are currently unavailable: %w",
+				rc.currentModel, rc.currentProvider, len(fallbackModels), wrapped)
+	}
+	return nil, buildCallMetadata(rc, false),
+		fmt.Errorf("quota exceeded on primary model %s and all %d fallback model(s) also failed: %w",
+			rc.currentModel, len(fallbackModels), wrapped)
+}
+
+// ensureLastErr returns a non-nil error for wrapping in the terminal message
+// (rc.lastErr if set, otherwise the sentinel matching `cause`) AND
+// assigns it back to rc.lastErr when it started nil. Two failure modes solved
+// together:
+//
+//  1. On entry paths that dispatch to handleQuotaError without a captured
+//     upstream error (notably the circuit-open shortcut, which classifies the
+//     endpoint as down before any call was attempted), %w on nil would render
+//     as `%!w(<nil>)` and hide the real cause.
+//  2. buildCallMetadata gates failure recording on `!success && rc.lastErr != nil`
+//     (see line 1908), so a nil lastErr on a terminal failure would incorrectly
+//     record RequestStatus:"success" in metrics and token-usage rows.
+//
+// Only assigns when nil so an already-captured, more-descriptive error from an
+// earlier fallback attempt is preserved.
+func ensureLastErr(rc *retryContext, cause fallbackCause) error {
+	if rc.lastErr == nil {
+		rc.lastErr = circuitOpenError(cause, common.UnknownRateLimitDetail())
+	}
+	return rc.lastErr
+}
+
+// handleTransientError handles temporary errors (timeouts, 500s) with exponential backoff retry
+// STRATEGY 3: Retry original model with exponential backoff for temporary issues
+func handleTransientError(rc *retryContext, maxAttempts int) (*llms.ContentResponse, *LLMCallMetadata, error) {
+	ctx := rc.ctx
+
+	ctx.GetLogger().Info("STRATEGY 3: Transient error detected, retrying with exponential backoff",
+		"agentId", rc.agentId,
+		"model", rc.currentModel,
+		"error", safeError(rc.lastErr),
+		"maxAttempts", maxAttempts)
+
+	// Context deadline exceeded means the model accepted the connection but hung for the
+	// full timeout period without sending data. Retrying the same model will almost certainly
+	// hit the same timeout again, wasting the entire retry budget. Skip straight to fallbacks.
+	if isDeadlineExceededError(rc.lastErr) {
+		ctx.GetLogger().Warn("STRATEGY 3: Deadline exceeded — skipping same-model retries, trying fallback models directly",
+			"model", rc.currentModel,
+			"agentId", rc.agentId)
+		goto tryFallbacks
+	}
+
+	// Retry with exponential backoff
+	for attempt := 1; attempt < maxAttempts; attempt++ {
+		rc.attemptCount = attempt
+
+		// Calculate exponential backoff: 2^(attempt-1) * initialBackoff + 0-50% jitter.
+		// Guard base > 0 to avoid rand.Int64N(0) panic when initialBackoffSeconds = 0.
+		base := time.Duration(math.Pow(2, float64(attempt-1))) *
+			time.Duration(config.Config.LlmServerLlmInitialBackoffSeconds) * time.Second
+		jitter := time.Duration(0)
+		if base > 0 {
+			jitter = time.Duration(rand.Int64N(int64(base) / 2))
+		}
+		backoffDuration := base + jitter
+
+		// Abort retries early if the parent context is already expired — retrying
+		// would fail immediately and waste backoff time.
+		if rc.ctx.GetContext() != nil && rc.ctx.GetContext().Err() != nil {
+			ctx.GetLogger().Info("Parent context already expired, aborting transient error retry",
+				"attempt", attempt, "ctxErr", rc.ctx.GetContext().Err())
+			break
+		}
+
+		ctx.GetLogger().Info("Applying exponential backoff before retry",
+			"duration", backoffDuration,
+			"attempt", attempt,
+			"maxAttempts", maxAttempts,
+			"previousError", safeError(rc.lastErr))
+
+		rc.setLiveRetry(backoffDuration, attempt+1, maxAttempts)
+		time.Sleep(backoffDuration)
+
+		// Retry with original model
+		completion, err := tryWithModel(rc)
+
+		if err == nil {
+			// Success!
+			ctx.GetLogger().Info("STRATEGY 3 SUCCESS: Transient error resolved after retry",
+				"attempt", attempt,
+				"model", rc.currentModel)
+			return completion, buildCallMetadata(rc, true), nil
+		}
+
+		// Check if error type changed
+		if isTokenLimitError(err) {
+			ctx.GetLogger().Info("Error type changed to token limit during retry, switching to Strategy 1",
+				"attempt", attempt)
+			return handleTokenLimitError(rc)
+		}
+
+		if isQuotaError(err) {
+			common.MetricsLLMRateLimitHitsTotal(rc.currentProvider, rc.currentModel, rc.accountId)
+			ctx.GetLogger().Info("Error type changed to quota error during retry, switching to Strategy 2",
+				"attempt", attempt)
+
+			// Check if conversation has explicit model configuration. Either
+			// mode (blanket or per-tier) counts as "explicit" for the purpose
+			// of skipping the global fallback chain — the user picked
+			// something specific and we shouldn't quietly substitute a
+			// fallback model from the account default.
+			conversationHasExplicitModel := false
+			if rc.conversationId != "" {
+				if p, m, tierOverrides, _, err := conversationOverride(rc.conversationId); err == nil {
+					if (p != "" && m != "") || tierOverrides.HasAny() {
+						conversationHasExplicitModel = true
+						ctx.GetLogger().Info("Conversation has explicit model, skipping fallbacks in retry",
+							"provider", p,
+							"model", m,
+							"has_tier_overrides", tierOverrides.HasAny())
+					}
+				}
+			}
+
+			// Get fallback models (skip if conversation has explicit model)
+			var fallbackModels []FallbackModel
+			if !conversationHasExplicitModel {
+				fallbackModels = fallbackChain(rc, getLLMFallbackModelName(rc.accountId, rc.agentName, ModelTierFromContext(rc.ctx), true))
+			}
+			return handleQuotaError(rc, fallbackModels, true, fallbackCauseQuota) // actual quota error mid-retry
+		}
+
+		if !isRetryableError(err) {
+			ctx.GetLogger().Error("Error became non-retryable during retry",
+				"attempt", attempt,
+				"error", safeError(err))
+			return nil, buildCallMetadata(rc, false),
+				fmt.Errorf("error became non-retryable: %w", err)
+		}
+
+		// Still transient, continue retrying
+		ctx.GetLogger().Warn("Retry attempt failed, will try again",
+			"attempt", attempt,
+			"maxAttempts", maxAttempts,
+			"error", safeError(err))
+	}
+
+tryFallbacks:
+	// Max attempts reached (or deadline exceeded skip) — try fallback models before giving up
+	ctx.GetLogger().Warn("STRATEGY 3: Trying fallback models",
+		"maxAttempts", maxAttempts,
+		"model", rc.currentModel)
+
+	// No legacy list still leaves the integration's configured fallback to try.
+	if fallbackModels := fallbackChain(rc, getLLMFallbackModelName(rc.accountId, rc.agentName, ModelTierFromContext(rc.ctx), true)); len(fallbackModels) > 0 {
+		// Delegate to handleQuotaError to try fallback models.
+		// Termination is guaranteed:
+		//   1. fallbackModels is a finite, pre-filtered list (triedModels excludes already-attempted models).
+		//   2. handleQuotaError iterates the list once; errors from each fallback (quota, transient,
+		//      token-limit, non-retryable) are handled with a `continue` or an early return — it never
+		//      re-enters generateLLMContentWithRetry's strategy-routing loop.
+		//   3. When all fallbacks are exhausted, handleQuotaError returns an error directly.
+		//
+		// Note: handleQuotaError calls RecordModelRateLimitHit for the primary model.
+		// When invoked from this transient-error path that label is semantically imprecise
+		// (timeouts ≠ rate limits), but the circuit-breaker backpressure it introduces is
+		// still a useful safety net while the model is in a degraded state.
+		return handleQuotaError(rc, fallbackModels, false, fallbackCauseUnavailable) // transient exhaustion (timeouts, not quota) — do not trip circuit
+	}
+
+	// No fallbacks available
+	ctx.GetLogger().Error("STRATEGY 3 FAILED: Max retry attempts reached and no fallback models available",
+		"maxAttempts", maxAttempts,
+		"lastError", safeError(rc.lastErr),
+		"model", rc.currentModel)
+
+	return nil, buildCallMetadata(rc, false),
+		fmt.Errorf("transient error persisted after %d attempts: %w", maxAttempts, rc.lastErr)
+}
+
+// ============================================================================
+// MAIN RETRY FUNCTION: Routes to appropriate strategy based on error type
+// ============================================================================
+
+// generateLLMContentWithRetry attempts to generate content with retries and backoff
+// Returns the completion and metadata about the call for token tracking
+func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, promptMessages []llms.MessageContent, options []llms.CallOption, agentName string, agentId string, accountId string, conversationId string, messageId string, disableRetry bool, userId string, resolution ...*LLMConfigResolution) (*llms.ContentResponse, *LLMCallMetadata, error) {
+	// Optimization: Use provided resolution context if available
+	var res *LLMConfigResolution
+	if len(resolution) > 0 {
+		res = resolution[0]
+	}
+
+	// Validate inputs
+	if ctx == nil {
+		return nil, nil, fmt.Errorf("request context is nil")
+	}
+
+	// Ensure maxAttempts has a sensible default
+	maxAttempts := config.Config.LlmProviderMaxRetries
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+
+	// Sanitize input messages to prevent UTF-8 errors
+	promptMessages = sanitizeMessageContent(promptMessages)
+
+	// Initialize retry context with deep copy of messages
+	originalMessages := make([]llms.MessageContent, len(promptMessages))
+	copy(originalMessages, promptMessages)
+
+	// Global budget for the entire retry sequence (including initial attempt)
+	totalStart := time.Now()
+	maxTotalDuration := time.Duration(config.Config.LlmServerGlobalRetryBudgetMinutes) * time.Minute
+	// If it's a thinking model or a complex task, we might want to allow more time,
+	// but this is a solid "safety ceiling" for a single agent step.
+
+	disableCaching, _ := ctx.GetContext().Value(ContextKeyDisableCaching).(bool)
+	cacheScope, _ := ctx.GetContext().Value(ContextKeyCacheScope).(CacheScope)
+	if cacheScope == "" {
+		cacheScope = CacheScopeConversation
+	}
+	capabilities, _ := ctx.GetContext().Value(ContextKeyCapabilities).(toolcore.AgentCapabilities)
+	promptVariant := PromptVariantFromCtx(ctx)
+
+	rc := &retryContext{
+		ctx:              ctx,
+		llm:              llm,
+		promptMessages:   promptMessages,
+		options:          options,
+		agentId:          agentId,
+		agentName:        agentName,
+		triedModels:      make(map[string]bool),
+		errorHistory:     make([]string, 0),
+		accountId:        accountId,
+		conversationId:   conversationId,
+		messageId:        messageId,
+		userId:           userId,
+		totalStart:       totalStart,
+		maxTotalDuration: maxTotalDuration,
+		enableCaching:    config.Config.LlmEnableCaching && !disableCaching,
+		cacheScope:       cacheScope,
+		capabilities:     capabilities,
+		promptVariant:    promptVariant,
+	}
+	defer rc.clearLiveStatus()
+
+	// Use the provided resolution or resolve it now
+	if res == nil {
+		res, _ = ResolveLLMConfig(ctx, accountId, agentName, conversationId)
+	}
+	// Keep the tier-aware resolution on rc so the cache-path getLLMApiKey (and
+	// any other downstream key lookup) resolves the same tier-specific key the
+	// client was built with — provider/model are already threaded via res here.
+	rc.resolution = res
+
+	rc.currentProvider = GetLLMProvider(ctx, accountId, rc.agentName, true, conversationId, res)
+	rc.currentModel = GetLLMModelName(ctx, accountId, rc.currentProvider, rc.agentName, true, conversationId, res)
+
+	// Sync rc.currentModel/rc.currentProvider with any runtime overrides applied by the caller
+	// when creating rc.llm. If these diverge, the cache key will reference a different model
+	// than the one actually used in GenerateContent, causing Google AI 400 errors.
+	rc.currentProvider, rc.currentModel = syncModelWithContextOverrides(ctx, rc.currentProvider, rc.currentModel, accountId, rc.agentName, conversationId)
+
+	rc.triedModels[rc.currentModel] = true
+
+	// Check if conversation has explicit model configuration
+	conversationHasExplicitModel := res != nil && res.IsOverridden
+
+	// Parse and validate fallback models
+	fallbackModelsRaw := getLLMFallbackModelName(accountId, rc.agentName, ModelTierFromContext(rc.ctx), true, res)
+	var fallbackModels []FallbackModel
+	if !conversationHasExplicitModel {
+		// Built even with no legacy list: it still carries the configured fallback.
+		fallbackModels = fallbackChain(rc, fallbackModelsRaw)
+	} else {
+		ctx.GetLogger().Info("Skipping fallback models because conversation has explicit model configuration")
+		disableRetry = true
+	}
+
+	// ============================================================================
+	// DISABLE RETRY PATH: Single attempt only (used during summarization to prevent recursion)
+	// ============================================================================
+	if disableRetry {
+		ctx.GetLogger().Info("Retry disabled, single attempt only", "agentId", agentId)
+		rc.attemptCount = 0
+		if completion, err := tryWithModel(rc); err == nil {
+			return completion, buildCallMetadata(rc, true), nil
+		}
+		logAttemptError(rc, 0, 1)
+		return nil, buildCallMetadata(rc, false), ErrLlmUnableToGenerate(rc.lastErr)
+	}
+
+	// ============================================================================
+	// INITIAL ATTEMPT: Try primary model first
+	// ============================================================================
+
+	// Check circuit breaker before trying primary model
+	if status := modelCircuitStatus(rc.currentProvider, rc.currentModel); status.Open {
+		ctx.GetLogger().Warn("Circuit breaker open for primary model, skipping to fallbacks",
+			append([]any{"provider", rc.currentProvider, "model", rc.currentModel}, status.logAttrs()...)...)
+
+		if len(fallbackModels) > 0 {
+			return handleQuotaError(rc, fallbackModels, false, status.Cause) // circuit already open — do not extend cooldown
+		}
+		// No fallback: fail fast rather than hammer a known-down endpoint. Cooldown is
+		// still active here — modelCircuitStatus half-opens once it expires, so a later
+		// request probes recovery. The sentinel follows the trip cause: a caller
+		// throttled by a 429 must be told it was a rate limit, not a network fault,
+		// and which limit it was so "wait a moment" isn't offered for a daily cap.
+		ctx.GetLogger().Warn("Circuit open and no fallback configured — failing fast",
+			append([]any{"provider", rc.currentProvider, "model", rc.currentModel}, status.logAttrs()...)...)
+		return nil, buildCallMetadata(rc, false), circuitOpenError(status.Cause, status.Detail)
+	}
+
+	ctx.GetLogger().Info("Starting LLM content generation",
+		"agentId", agentId,
+		"model", rc.currentModel,
+		"provider", rc.currentProvider,
+		"messageCount", len(promptMessages))
+
+	rc.attemptCount = 0
+	completion, err := tryWithModel(rc)
+
+	if err == nil {
+		// Success on first try!
+		ctx.GetLogger().Info("Primary model call successful",
+			"model", rc.currentModel,
+			"agentId", agentId)
+		return completion, buildCallMetadata(rc, true), nil
+	}
+
+	rc.lastErr = err
+
+	// The caller's own context ended (its budget or the request itself): that says
+	// nothing about the endpoint, so no retries, no fallbacks and no breaker trip.
+	if cerr := ctx.GetContext().Err(); cerr != nil {
+		ctx.GetLogger().Info("Caller context done, not retrying", "model", rc.currentModel, "agentId", agentId, "cause", cerr.Error())
+		return nil, buildCallMetadata(rc, false), err
+	}
+
+	// ============================================================================
+	// SLOW MODEL DETECTION: If first call was unusually slow and failed, skip retries and use fallbacks
+	// Threshold: 60% of max individual call timeout (e.g. 3 mins if timeout is 5 mins), min 3 mins.
+	// ============================================================================
+	slowModelThresholdSeconds := math.Max(180.0, float64(config.Config.LlmServerMaxIndividualCallTimeoutMinutes)*60.0*0.6)
+	if rc.lastLatency > slowModelThresholdSeconds {
+		ctx.GetLogger().Warn("Slow model call detected, bypassing primary model retries",
+			"latency", rc.lastLatency,
+			"threshold", slowModelThresholdSeconds,
+			"model", rc.currentModel,
+			"error", safeError(err))
+
+		if len(fallbackModels) > 0 {
+			ctx.GetLogger().Info("Routing to STRATEGY 2 (Fallback) due to slow primary model")
+			return handleQuotaError(rc, fallbackModels, false, fallbackCauseUnavailable)
+		}
+	}
+
+	// ============================================================================
+	// ERROR ROUTING: Classify error and route to appropriate strategy
+	// ============================================================================
+	ctx.GetLogger().Warn("Primary model failed, analyzing error type",
+		"error", safeError(err),
+		"model", rc.currentModel,
+		"agentId", agentId)
+
+	// Check if we're already in summarization mode (prevent infinite recursion)
+	isSummarization, _ := rc.ctx.GetContext().Value(summarizationCtxKey).(bool)
+
+	// Route based on error type
+	if isAffordableWithFewerTokens(rc.lastErr) {
+		// A fallback's lower max_tokens can still fit the remaining credit.
+		return handleQuotaError(rc, fallbackModels, false, fallbackCauseQuota)
+	} else if kind := classifyLLMFailure(rc.lastErr); kind.NeedsSettingsFix() {
+		// Credits, keys and model names don't recover on retry.
+		ctx.GetLogger().Warn("Primary model needs a settings fix, skipping retries", "kind", string(kind), "model", rc.currentModel, "agentId", agentId)
+		return handleSettingsFixError(rc, fallbackModels, kind)
+	} else if isTokenLimitError(rc.lastErr) {
+		// STRATEGY 1: Token Limit → Chunking with Context Preservation
+		if isSummarization {
+			ctx.GetLogger().Error("Token limit error during summarization (recursive), cannot handle",
+				"error", safeError(rc.lastErr))
+			return nil, buildCallMetadata(rc, false),
+				fmt.Errorf("token limit error occurred during summarization itself: %w", rc.lastErr)
+		}
+		ctx.GetLogger().Info("Routing to STRATEGY 1: Token Limit Handling")
+		return handleTokenLimitError(rc)
+
+	} else if isQuotaError(rc.lastErr) {
+		// STRATEGY 2: Quota/Rate Limit → Fallback Models
+		ctx.GetLogger().Info("Routing to STRATEGY 2: Quota/Rate Limit Handling")
+		return handleQuotaError(rc, fallbackModels, true, fallbackCauseQuota) // genuine quota error — trip circuit
+
+	} else if isEmptyResponseError(rc.lastErr) {
+		// STRATEGY 3a: Empty LLM Response → immediate retry first, then bounded backoff.
+		// Empty responses are a model behaviour issue (e.g. gemini-3-flash-preview instability),
+		// NOT a network issue. Most cases resolve on the first immediate retry (DB data shows
+		// retry_attempt=1 succeeds in the majority of cases). We avoid adding unnecessary latency
+		// by retrying immediately on attempt 1, then applying a small backoff on attempt 2.
+		// Total retries kept at 2 to avoid long waits in multi-step agent plans.
+		ctx.GetLogger().Warn("Routing to STRATEGY 3a: Empty LLM Response — immediate + bounded backoff retry", "model", rc.currentModel, "agentId", agentId)
+		const (
+			emptyResponseMaxRetries = 2
+			emptyResponseMaxBackoff = 5 * time.Second
+		)
+		for attempt := 1; attempt <= emptyResponseMaxRetries; attempt++ {
+			rc.attemptCount = attempt
+
+			// Attempt 1: retry immediately (most empty responses are transient model flukes)
+			// Attempt 2+: small backoff (2s base, capped at 5s)
+			if attempt > 1 {
+				const baseBackoff = 2 * time.Second
+				base := time.Duration(math.Pow(2, float64(attempt-2))) * baseBackoff
+				jitter := time.Duration(0)
+				if base > 0 {
+					jitter = time.Duration(rand.Int64N(int64(base) / 2))
+				}
+				backoff := min(base+jitter, emptyResponseMaxBackoff)
+				ctx.GetLogger().Warn("Empty response backoff before retry",
+					"attempt", attempt, "backoff", backoff, "model", rc.currentModel)
+				rc.setLiveRetry(backoff, attempt+1, emptyResponseMaxRetries+1)
+				time.Sleep(backoff)
+			} else {
+				ctx.GetLogger().Warn("Empty response immediate retry",
+					"attempt", attempt, "model", rc.currentModel)
+			}
+
+			completion, retryErr := tryWithModel(rc)
+			if retryErr == nil {
+				return completion, buildCallMetadata(rc, true), nil
+			}
+			ctx.GetLogger().Warn("Empty response retry failed", "attempt", attempt, "error", safeError(retryErr))
+			rc.lastErr = retryErr
+		}
+
+		// Same-model retries exhausted. An empty response on the SAME prompt+model tends
+		// to repeat (the model deterministically emits nothing on that input), so more
+		// same-model retries won't help — but a DIFFERENT model usually produces content.
+		// Escalate to the fallback chain (same mechanism as quota handling, minus the
+		// rate-limit bookkeeping: an empty is a model-behaviour fluke, not a quota event).
+		// This recovers the "intermittent empty → internal error" case (e.g. a simple
+		// follow-up on a large scratchpad) instead of hard-failing. tryFallbackModel
+		// reverts rc state on failure, so a fallback that also empties just moves on.
+		for i, fb := range fallbackModels {
+			if rc.triedModels[fb.key()] {
+				continue
+			}
+			ctx.GetLogger().Warn("Empty response persisted on primary; escalating to fallback model",
+				"primaryModel", rc.currentModel, "fallbackModel", fb.Model, "fallbackProvider", fb.Provider, "agentId", agentId)
+			completion, fbErr := tryFallbackModel(rc, fb, i)
+			if fbErr == nil {
+				ctx.GetLogger().Info("STRATEGY 3a SUCCESS: fallback model produced content after empty primary",
+					"fallbackModel", fb.Model, "fallbackProvider", fb.Provider, "agentId", agentId)
+				return completion, buildCallMetadata(rc, true), nil
+			}
+			rc.lastErr = fbErr
+		}
+
+		ctx.GetLogger().Error("Empty response persisted after same-model retries and fallbacks, giving up",
+			"model", rc.currentModel, "agentId", agentId)
+		return nil, buildCallMetadata(rc, false), ErrLlmUnableToGenerate(rc.lastErr)
+
+	} else if isCircuitTrippingError(rc.lastErr) {
+		// Endpoint down/unreachable (503, connection refused, timeout): open the
+		// breaker so every pod backs off, then reuse the fallback path. Trip here (not
+		// via handleQuotaError's recordPrimaryHit) so the breaker metric fires, not the
+		// rate-limit one.
+		ctx.GetLogger().Warn("Endpoint unavailable — tripping circuit and routing to fallbacks",
+			"model", rc.currentModel, "provider", rc.currentProvider, "error", safeError(rc.lastErr))
+		// The HF client trips the breaker itself after repeated failures and surfaces a
+		// sentinel error; don't re-record here or the cooldown double-escalates.
+		if !errors.Is(rc.lastErr, huggingfaceclient.ErrCircuitOpen) && !errors.Is(rc.lastErr, huggingfaceclient.ErrCircuitTripped) {
+			RecordModelFailure(rc.currentProvider, rc.currentModel)
+		}
+		return handleQuotaError(rc, fallbackModels, false, fallbackCauseUnavailable)
+
+	} else if isTransientError(rc.lastErr) {
+		// STRATEGY 3: Transient Error → Retry with Exponential Backoff
+		ctx.GetLogger().Info("Routing to STRATEGY 3: Transient Error Handling")
+		return handleTransientError(rc, maxAttempts)
+
+	} else if isCacheError(rc.lastErr) {
+		// Cache Error (403/404 CachedContent not found, model mismatch, or expired cache)
+		// Invalidate stale cache pointer, disable caching for this call, and retry in-place with full messages.
+		goCtx := context.Background()
+		tenantId := ""
+		if ctx != nil {
+			goCtx = context.WithoutCancel(ctx.GetContext())
+			if sc := ctx.GetSecurityContext(); sc != nil {
+				tenantId = sc.GetTenantId()
+			}
+			ctx.GetLogger().Warn("Cache error detected, invalidating cache and retrying in-place with full messages",
+				"error", safeError(rc.lastErr), "model", rc.currentModel, "agentId", agentId)
+		}
+
+		appendAgentName := rc.agentName != ""
+		apiKey := getLLMApiKey(rc.accountId, rc.currentProvider, rc.agentName, appendAgentName, rc.resolution)
+		endpoint := getLLMApiEndpoint(rc.accountId, rc.currentProvider, rc.agentName, appendAgentName, rc.resolution)
+		cacheReq := &CacheRequest{
+			TenantId:       tenantId,
+			AccountId:      rc.accountId,
+			ConversationId: rc.conversationId,
+			AgentName:      rc.agentName,
+			Model:          rc.currentModel,
+			Provider:       rc.currentProvider,
+			ApiKey:         apiKey,
+			Endpoint:       endpoint,
+			Scope:          rc.cacheScope,
+			Capabilities:   rc.capabilities,
+			PromptVariant:  rc.promptVariant,
+		}
+		if cm := GetCacheManager(); cm != nil {
+			_ = cm.InvalidateCache(goCtx, cacheReq)
+		}
+
+		rc.enableCaching = false
+		rc.attemptCount = 1
+		completion, retryErr := tryWithModel(rc)
+		if retryErr == nil {
+			return completion, buildCallMetadata(rc, true), nil
+		}
+		if ctx != nil {
+			ctx.GetLogger().Error("In-place retry without cache failed", "error", safeError(retryErr), "model", rc.currentModel)
+		}
+		return nil, buildCallMetadata(rc, false), ErrLlmUnableToGenerate(retryErr)
+
+	} else if isProgramError(rc.lastErr) {
+		// Program error (nil pointer, etc.) — retry once in case of race condition
+		ctx.GetLogger().Error("Program error detected, retrying once",
+			"error", safeError(rc.lastErr), "model", rc.currentModel, "agentId", agentId)
+		rc.attemptCount = 1
+		time.Sleep(time.Duration(config.Config.LlmServerLlmInitialBackoffSeconds) * time.Second)
+		completion, retryErr := tryWithModel(rc)
+		if retryErr == nil {
+			return completion, buildCallMetadata(rc, true), nil
+		}
+		ctx.GetLogger().Error("Program error persisted after retry",
+			"error", safeError(retryErr), "model", rc.currentModel)
+		return nil, buildCallMetadata(rc, false), ErrLlmUnableToGenerate(retryErr)
+
+	} else {
+		// NON-RETRYABLE ERROR: Give up immediately
+		ctx.GetLogger().Error("Non-retryable error encountered",
+			"error", safeError(rc.lastErr),
+			"model", rc.currentModel,
+			"agentId", agentId)
+		logAttemptError(rc, 0, 1)
+		return nil, buildCallMetadata(rc, false), ErrLlmUnableToGenerate(rc.lastErr)
+	}
+}
+
+// isTokenLimitError checks if the error is specifically related to token limits or message size
+// This indicates the prompt is too long for the model's context window.
+//
+// Substrings here MUST be specific to context-window overflow. Loose matches
+// (e.g. bare "too large", or "400" + "token") misclassify Bedrock
+// validation/throttling errors as token-limit and route them into
+// handleTokenLimitError, which then early-exits and surfaces a misleading
+// "failed to handle token limit error" to the caller.
+func isTokenLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errMsg := strings.ToLower(safeError(err))
+
+	// Unambiguous context-window phrases.
+	if strings.Contains(errMsg, "token limit") ||
+		strings.Contains(errMsg, "context length") ||
+		strings.Contains(errMsg, "context window") ||
+		strings.Contains(errMsg, "maximum tokens") ||
+		strings.Contains(errMsg, "too many tokens") ||
+		strings.Contains(errMsg, "maximum context") ||
+		strings.Contains(errMsg, "prompt is too long") ||
+		strings.Contains(errMsg, "exceeds maximum context") ||
+		strings.Contains(errMsg, "input is too long") {
+		return true
+	}
+
+	// "too large" appears in legitimate Bedrock/OpenAI token-limit errors
+	// (e.g. "Input is too large for requested model") but also in unrelated
+	// payload-size 413s. Require co-occurrence with an input/prompt/context
+	// qualifier so we only catch the prompt-overflow variant.
+	if strings.Contains(errMsg, "too large") &&
+		(strings.Contains(errMsg, "input") ||
+			strings.Contains(errMsg, "prompt") ||
+			strings.Contains(errMsg, "context") ||
+			strings.Contains(errMsg, "message")) {
+		return true
+	}
+
+	return false
+}
+
+// isQuotaError checks if the error is related to API quota or rate limits
+// This indicates we should try fallback models with different quota pools
+func isQuotaError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errMsg := strings.ToLower(safeError(err))
+	return strings.Contains(errMsg, "quota exceeded") ||
+		strings.Contains(errMsg, "quota_exceeded") ||
+		strings.Contains(errMsg, "rate limit") ||
+		strings.Contains(errMsg, "rate_limit") ||
+		strings.Contains(errMsg, "429") ||
+		strings.Contains(errMsg, "too many requests") ||
+		strings.Contains(errMsg, "billing limit") ||
+		strings.Contains(errMsg, "insufficient quota") ||
+		strings.Contains(errMsg, "resource exhausted")
+}
+
+// isOutOfCreditError matches provider billing exhaustion (Anthropic, OpenAI, OpenRouter wording).
+func isOutOfCreditError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := strings.ToLower(safeError(err))
+	for _, p := range []string{"credit balance is too low", "no credits remaining", "more credits", "available credits", "insufficient_quota"} {
+		if strings.Contains(errMsg, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isTransientError checks if the error is temporary and might succeed on retry
+// This includes network issues, timeouts, and temporary server errors
+func isTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errMsg := strings.ToLower(safeError(err))
+	return strings.Contains(errMsg, "timeout") ||
+		strings.Contains(errMsg, "timed out") ||
+		strings.Contains(errMsg, "408") ||
+		strings.Contains(errMsg, "500") ||
+		strings.Contains(errMsg, "502") ||
+		strings.Contains(errMsg, "503") ||
+		strings.Contains(errMsg, "504") ||
+		strings.Contains(errMsg, "gateway") ||
+		strings.Contains(errMsg, "connection") ||
+		strings.Contains(errMsg, "network") ||
+		strings.Contains(errMsg, "streaming error") ||
+		strings.Contains(errMsg, "model has timed out") ||
+		strings.Contains(errMsg, "deadline exceeded")
+}
+
+// fourxxStatusRe matches a 4xx code only in HTTP-status positions — at the message start
+// or right after a status keyword. This deliberately ignores bare 4xx-looking numbers
+// elsewhere (a model name like "claude-401", a duration like "400 ms", or the ":443"
+// HTTPS port in a connection error) so those never suppress a genuine outage trip.
+var fourxxStatusRe = regexp.MustCompile(`(^|(?:status|code|http|resp|response|returned)\s*:?\s*)4\d{2}\b`)
+
+// isCircuitTrippingError reports whether the error means the endpoint itself is down
+// or unreachable — open the breaker so all pods back off instead of retrying into a
+// dead endpoint. Narrower than isTransientError (a 500/502 proxy blip is not the
+// endpoint being down) and excludes all 4xx client/config/quota errors.
+func isCircuitTrippingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// The HF client's own breaker already decided the endpoint is down — route to fallback
+	// regardless of the wrapped status (it can wrap a 503 or a repeated 429), so check the
+	// sentinels before the 4xx exclusion below.
+	if errors.Is(err, huggingfaceclient.ErrCircuitOpen) || errors.Is(err, huggingfaceclient.ErrCircuitTripped) {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	errMsg := strings.ToLower(safeError(err))
+	// Exclude any 4xx (400/401/403/404/409/429…) even when the message carries a trip
+	// substring like "timed out" — a client/quota error must never trip the breaker.
+	if fourxxStatusRe.MatchString(errMsg) {
+		return false
+	}
+	return strings.Contains(errMsg, "503") ||
+		strings.Contains(errMsg, "service unavailable") ||
+		strings.Contains(errMsg, "service_unavailable") ||
+		strings.Contains(errMsg, "connection refused") ||
+		strings.Contains(errMsg, "connection reset") ||
+		strings.Contains(errMsg, "no such host") ||
+		strings.Contains(errMsg, "i/o timeout") ||
+		strings.Contains(errMsg, "timed out") ||
+		strings.Contains(errMsg, "deadline exceeded")
+}
+
+// isDeadlineExceededError checks if the error is specifically a context deadline exceeded.
+// This is a subset of transient errors that indicates the model hung for the full timeout
+// period without responding — retrying the same model is futile, so we skip straight to
+// fallback models instead of burning the retry budget on exponential backoff.
+func isDeadlineExceededError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := strings.ToLower(safeError(err))
+	return strings.Contains(errMsg, "deadline exceeded")
+}
+
+// isEmptyResponseError checks if the LLM returned a structurally valid but empty response.
+// This is distinct from transient errors (network, timeouts) — empty responses are a model
+// behaviour issue and must NOT be retried with exponential backoff.
+func isEmptyResponseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(safeError(err)), "llm returned empty content")
+}
+
+// isCacheError checks if the error is specifically related to Google AI or Anthropic caching
+func isCacheError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errMsg := strings.ToLower(safeError(err))
+	return strings.Contains(errMsg, "cachedcontent not found") ||
+		strings.Contains(errMsg, "cache not found") ||
+		strings.Contains(errMsg, "cached_content_not_found") ||
+		(strings.Contains(errMsg, "403") && strings.Contains(errMsg, "cachedcontent")) ||
+		(strings.Contains(errMsg, "404") && strings.Contains(errMsg, "cachedcontent")) ||
+		// Model mismatch between cached content and inference request (Google AI 400)
+		(strings.Contains(errMsg, "cachedcontent") && strings.Contains(errMsg, "has to be the same")) ||
+		// Bedrock rejecting a cache marker or its TTL on a model without them
+		(strings.Contains(errMsg, "validationexception") &&
+			(strings.Contains(errMsg, "cache") || strings.Contains(errMsg, "ttl")))
+}
+
+// isProgramError checks if the error is a programming bug (nil pointer, panic recovery)
+// These get 1 retry max since they could be caused by a race condition
+func isProgramError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := strings.ToLower(safeError(err))
+	return strings.Contains(errMsg, "invalid memory address") ||
+		strings.Contains(errMsg, "nil pointer dereference")
+}
+
+// isRetryableError checks if an error is retryable (any type that we can handle)
+// Returns true for token limits, quota errors, transient errors, cache errors, and program errors
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// egressfilter blocks are by definition non-retryable: the same payload
+	// produces the same block deterministically, and the wrapper short-
+	// circuits before the provider is contacted so there is no transient
+	// state worth retrying. Early-out keeps future heuristics added below
+	// from accidentally reclassifying these as retryable (e.g. a string
+	// matcher catching "blocked" in the message).
+	if errors.Is(err, egressfilter.ErrSecretsBlocked) {
+		return false
+	}
+
+	// All our specific error types are retryable
+	return isTokenLimitError(err) || isQuotaError(err) || isTransientError(err) || isEmptyResponseError(err) || isCacheError(err) || isProgramError(err)
+}
+
+// ClassifyUserFacingLLMError maps an internal LLM error to a typed, HTTP-coded,
+// user-safe error (one of the ErrLLM* values) for the known failure modes,
+// using the same detectors that drive the retry/fallback logic. Returning the
+// typed error lets it propagate through the normal error path so the executor
+// surfaces its clean Message as the assistant reply with the right status code,
+// instead of a generic "internal error".
+//
+// Returns nil when the error doesn't match a known class, so callers fall back
+// to their existing generic handling (and never leak the raw provider error).
+func ClassifyUserFacingLLMError(err error) error {
+	// Order matters: the quota/throttle check MUST come before the token-limit
+	// check. AWS Bedrock surfaces 429 throttling as a wrapped "token limit
+	// error ... ThrottlingException: Too many tokens" string that matches both
+	// isQuotaError and isTokenLimitError. It is a capacity event, not a
+	// context-window overflow, so it must be classified as rate-limited —
+	// otherwise the user is wrongly told to shorten a request that was the
+	// right size.
+	if err == nil {
+		return nil
+	}
+	// A failed model call already carries its own message.
+	var failure *LLMFailure
+	if errors.As(err, &failure) {
+		return err
+	}
+
+	// Idempotence: an error this function already produced is returned unchanged
+	// rather than re-derived from its own message text. The detectors below match
+	// on wording, and our own wording collides with them — isTokenLimitError
+	// matches "token limit", so the rate-limit message "per-minute token limit"
+	// reads back as a context-window overflow and the user is told to shorten a
+	// correctly-sized request. The plain sentinels only round-tripped before by
+	// accident of their phrasing; this stops depending on that.
+	var rateLimited RateLimitedLLMError
+	switch {
+	case errors.As(err, &rateLimited):
+		return rateLimited
+	case errors.Is(err, ErrLLMRateLimited):
+		return ErrLLMRateLimited
+	case errors.Is(err, ErrLLMRequestTooLarge):
+		return ErrLLMRequestTooLarge
+	case errors.Is(err, ErrLLMServiceUnavailable):
+		return ErrLLMServiceUnavailable
+	case errors.Is(err, ErrLLMOutOfCredit):
+		return ErrLLMOutOfCredit
+	}
+
+	switch {
+	case isOutOfCreditError(err): // before quota: OpenAI sends it as a 429
+		return ErrLLMOutOfCredit
+	case isQuotaError(err):
+		// Specialised by which limit the provider named, so a daily cap isn't
+		// answered with "wait a moment". Falls back to the plain sentinel when
+		// the provider said nothing usable.
+		return RateLimitedError(common.RateLimitDetailFromError(err))
+	case isTokenLimitError(err):
+		return ErrLLMRequestTooLarge
+	case isTransientError(err):
+		return ErrLLMServiceUnavailable
+	default:
+		return nil
+	}
+}
+
+// EgressBlockedMessage returns the user-safe block message and true when err is
+// (or wraps) an egressfilter enforce block. The message is built inside the
+// egressfilter package specifically to be safe to show verbatim — it never
+// echoes the matched secret or detector internals, only an audit id and a
+// remediation hint. Callers surface it as the assistant's *response text*
+// (not a generic internal error), matching the documented design that a block
+// is persisted as the agent's response. The returned string always contains
+// egressfilter.BlockedMessageMarker, so the executor still classifies the step
+// as a non-answer.
+func EgressBlockedMessage(err error) (string, bool) {
+	if se, ok := egressfilter.AsError(err); ok {
+		return se.Error(), true
+	}
+	if errors.Is(err, egressfilter.ErrSecretsBlocked) {
+		return egressfilter.BlockedMessageMarker, true
+	}
+	return "", false
+}
+
+// syncModelWithContextOverrides returns the effective provider and model for an LLM call,
+// accounting for runtime context keys that may have changed the llm client from what the
+// config-based resolution returned. It must be called after the config-based resolution so
+// that rc.currentModel/currentProvider stay in sync with the model actually used in rc.llm.
+//
+// Priority (highest wins):
+//  1. ContextKeyLlmModelOverride — explicit runtime override from QueryConfig / conversation
+//  2. ContextKeyModelTier        — a category was opted into for this call
+//  3. baseProvider / baseModel   — unchanged (config resolution already correct)
+//
+// When rc.currentModel diverges from the model used in rc.llm, the cache key references
+// the wrong model, causing a Google AI 400:
+// "Model used by GenerateContent request and CachedContent has to be the same."
+func syncModelWithContextOverrides(ctx *security.RequestContext, baseProvider, baseModel, accountId, agentName, conversationId string) (provider, model string) {
+	provider = baseProvider
+	model = baseModel
+
+	if om, ok := ctx.GetContext().Value(ContextKeyLlmModelOverride).(string); ok && om != "" {
+		model = om
+		if op, ok := ctx.GetContext().Value(ContextKeyLlmProviderOverride).(string); ok && op != "" {
+			provider = op
+		}
+		return
+	}
+
+	if ModelTierFromContext(ctx) != "" {
+		// The call opted into a category — ResolveLLMConfig resolves the
+		// category-specific (or lite-fallback) model.
+		//
+		// IMPORTANT: pass the real agentName and conversationId. Calling with
+		// empty strings re-resolves globally and flips the model mid-call
+		// (per-agent / per-conversation overrides get ignored), which thrashes
+		// the Google AI cache layer — every conversation turn deletes the
+		// previous CachedContent slot, then sibling sub-agents holding that
+		// cache name in flight hit 403 PERMISSION_DENIED.
+		if res, err := ResolveLLMConfig(ctx, accountId, agentName, conversationId); err == nil && res.Model != "" {
+			// Set both provider AND model. The tier layer can flip provider
+			// (e.g., LLM_TIER_PROVIDER_SUMMARY=openai with global=googleai);
+			// returning the new model under the old provider would hand the
+			// caller a mismatched pair and the SDK init would fail.
+			provider = res.Provider
+			model = res.Model
+		}
+	}
+	return
+}
+
+// RecordTokenUsageFailure persists a failure row to llm_conversation_token_usage
+// when an LLM call exhausts retries. Token counts are zero (the call never
+// produced a usable response), but the raw provider error string and the
+// model/provider that failed are captured so the run is debuggable from the
+// DB rather than only from logs.
+//
+// Runs asynchronously via the metrics worker pool to avoid adding DB latency
+// to the user-facing error response.
+func RecordTokenUsageFailure(
+	ctx *security.RequestContext,
+	conversationId string,
+	messageId string,
+	agentId string,
+	agentName string,
+	provider string,
+	model string,
+	accountId string,
+	userId string,
+	callMetadata *LLMCallMetadata,
+	rawErr error,
+) {
+	if rawErr == nil {
+		return
+	}
+
+	// Build the agent UUID pointer (only set if we have a real, non-nil UUID).
+	var agentUUID *string
+	if parsedUUID, err := uuid.Parse(agentId); err == nil && parsedUUID != uuid.Nil {
+		agentUUID = &agentId
+	}
+
+	// Prefer the raw error string so we capture the underlying provider
+	// message, not just our wrapper text. errors.Unwrap chains through
+	// fmt.Errorf("...: %w", err) so the deepest error is included via
+	// safeError on the top-level err.
+	errMsg := safeError(rawErr)
+
+	var latencyPtr *float64
+	var retryAttempt int
+	var fallbackFromModel *string
+	var fallbackChainJSON *string
+	if callMetadata != nil {
+		l := callMetadata.LatencySeconds
+		latencyPtr = &l
+		retryAttempt = callMetadata.RetryAttempt
+		fallbackFromModel = callMetadata.FallbackFromModel
+		if len(callMetadata.FallbackChain) > 0 {
+			if chainBytes, err := common.MarshalJson(callMetadata.FallbackChain); err == nil {
+				chainStr := string(chainBytes)
+				fallbackChainJSON = &chainStr
+			}
+		}
+	}
+
+	requestStatus := requestStatusForError(rawErr)
+	if requestStatus == "timeout" {
+		requestStatus = "failure"
+	}
+
+	cacheTTL := config.Config.LlmCacheTTLMinutes
+	record := &TokenUsageRecord{
+		ID:                ClaimUsageID(ctx),
+		LLMConfigSource:   configSourceForRecord(callMetadata),
+		ConversationID:    conversationId,
+		MessageID:         messageId,
+		AgentID:           agentUUID,
+		AgentName:         agentName,
+		AccountID:         accountId,
+		UserID:            userId,
+		LLMProvider:       provider,
+		LLMModel:          model,
+		InputTokens:       0,
+		OutputTokens:      0,
+		RetryAttempt:      retryAttempt,
+		FallbackFromModel: fallbackFromModel,
+		FallbackChain:     fallbackChainJSON,
+		LatencySeconds:    latencyPtr,
+		RequestStatus:     requestStatus,
+		ErrorMessage:      &errMsg,
+		CacheTTLMinutes:   &cacheTTL,
+	}
+	record.ModelTier, record.TaskType = tierAttributionForRecord(ctx)
+	applyUsageLink(ctx, record)
+
+	bgCtx := security.NewRequestContext(context.Background(), ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+	insertFn := func() {
+		// Best-effort: skip if the DAO is unavailable rather than panicking this
+		// background goroutine on a nil interface (see trackTokenUsage). The
+		// recover also covers a typed-nil DAO — a non-nil interface wrapping a
+		// nil concrete (e.g. a test fake embedding a nil IConversationDao) — that
+		// the `== nil` check below cannot catch.
+		defer func() {
+			if r := recover(); r != nil {
+				// Fall back to slog.Default() — bgCtx's logger can be nil (some
+				// test contexts pass a nil logger), and logging on it here would
+				// be a second, unrecovered panic.
+				logger := slog.Default()
+				if bgCtx != nil && bgCtx.GetLogger() != nil {
+					logger = bgCtx.GetLogger()
+				}
+				logger.Error("recordTokenUsageFailure: recovered from panic in background token-usage write", "panic", r)
+			}
+		}()
+		dao := getStore()
+		if dao == nil {
+			bgCtx.GetLogger().Debug("recordTokenUsageFailure: skipping — conversation DAO unavailable")
+			return
+		}
+		if err := dao.InsertTokenUsage(record); err != nil {
+			bgCtx.GetLogger().Error("recordTokenUsageFailure: failed to insert failure row", "error", err,
+				"agentName", agentName, "messageId", messageId, "model", model)
+		}
+	}
+
+	if metricsPool := GetMetricsWorkerPool(); metricsPool != nil {
+		if submitErr := metricsPool.Submit(context.Background(), insertFn); submitErr != nil {
+			ctx.GetLogger().Error("recordTokenUsageFailure: pool submit failed, falling back to goroutine", "error", submitErr)
+			go insertFn()
+		}
+	} else {
+		go insertFn()
+	}
+}
+
+// TrackTokenUsage tracks token usage for an agent including cache breakdown
+func TrackTokenUsage(
+	ctx *security.RequestContext,
+	conversationId string,
+	messageId string,
+	agentId string,
+	agentName string,
+	provider string,
+	model string,
+	accountId string,
+	userId string,
+	tokenInfo *TokenInfo,
+	latency float64,
+	retryAttempt int,
+	fallbackFromModel *string,
+	fallbackChain []string,
+	trackContent bool,
+	content string,
+	stopReason *string,
+	promptMessagesJSON *string,
+	responseContent *string,
+	ttftMs *int64,
+	wasStreaming bool,
+	configSource *string,
+) {
+	if tokenInfo == nil {
+		return
+	}
+
+	if agentId == "" {
+		callerName := agentName
+		if callerName == "" {
+			callerName = "unknown"
+		}
+		ctx.GetLogger().Warn("llm: tracking token usage without agent ID",
+			"caller", callerName, "conversationId", conversationId,
+			"accountId", accountId, "provider", provider, "model", model,
+			"inputTokens", tokenInfo.InputTokens, "outputTokens", tokenInfo.OutputTokens)
+		common.MetricsAgentOperationsTotal(callerName, "no_agent_id", accountId)
+	}
+
+	// Log cache breakdown for debugging and cost tracking
+	if tokenInfo.CacheReadTokens > 0 {
+		ctx.GetLogger().Debug("Token usage breakdown",
+			"agentId", agentId,
+			"totalInput", tokenInfo.InputTokens,
+			"cacheReadTokens", tokenInfo.CacheReadTokens,
+			"cacheCreationTokens", tokenInfo.CacheCreationTokens,
+			"nonCachedTokens", tokenInfo.InputTokens-tokenInfo.CacheReadTokens,
+			"outputTokens", tokenInfo.OutputTokens,
+			"cacheSavings", fmt.Sprintf("%.1f%%", float64(tokenInfo.CacheReadTokens)/float64(PromptTokens(provider, tokenInfo.InputTokens, tokenInfo.CacheCreationTokens))*100))
+	}
+
+	// Parse agentId to check if it's a valid UUID (skip nil UUID which indicates a failed agent record creation)
+	var agentUUID *string
+	if parsedUUID, err := uuid.Parse(agentId); err == nil && parsedUUID != uuid.Nil {
+		agentUUID = &agentId
+	}
+
+	// Calculate cache hit rate
+	var cacheHitRate *float64
+	if prompt := PromptTokens(provider, tokenInfo.InputTokens, tokenInfo.CacheCreationTokens); prompt > 0 && tokenInfo.CacheReadTokens > 0 {
+		rate := (float64(tokenInfo.CacheReadTokens) / float64(prompt)) * 100
+		cacheHitRate = &rate
+	}
+
+	// Calculate content length
+	var contentLength *int
+	if trackContent && content != "" {
+		length := len(content)
+		contentLength = &length
+	}
+
+	latencyPtr := &latency
+
+	// Convert fallback chain to JSON string
+	var fallbackChainJSON *string
+	if len(fallbackChain) > 0 {
+		chainBytes, err := common.MarshalJson(fallbackChain)
+		if err == nil {
+			chainStr := string(chainBytes)
+			fallbackChainJSON = &chainStr
+		} else {
+			ctx.GetLogger().Warn("trackTokenUsage: failed to marshal fallback chain", "error", err)
+		}
+	}
+
+	// Best-effort tracking: if the conversation DAO is unavailable (e.g. the
+	// metastore DB is down, or in hermetic tests), skip silently rather than
+	// dereferencing a nil interface and panicking this background goroutine —
+	// which would otherwise crash the process.
+	dao := getStore()
+	if dao == nil {
+		ctx.GetLogger().Debug("llm: skipping token usage tracking — conversation DAO unavailable")
+		return
+	}
+
+	// Cost at insert time, using pricing as of now. Nil (not 0) when the
+	// (provider, model) has no llm_model_pricing entry, so readers can tell
+	// "unpriced" from "actually free" and fall back to a live pricing JOIN.
+	//
+	// Priced against the request's tenant so a tenant's own rate for a model
+	// (V843) is what gets stored. This is the path that matters most: the
+	// aggregate queries prefer this stored cost_usd, so getting it right here
+	// means custom-priced models report correctly everywhere downstream.
+	nonCachedInputTokens := tokenInfo.InputTokens - tokenInfo.CacheReadTokens
+	if nonCachedInputTokens < 0 {
+		nonCachedInputTokens = 0
+	}
+	// Anthropic 1-hour cache writes bill at 2x input: the 1.25x creation rate
+	// already applied to every write, plus 0.75x input, priced here as extra
+	// non-cached input. Cost only; the stored token counts stay real. Exact
+	// while the model's creation rate is 1.25x input and it has no long-context
+	// tier, which holds for every built-in Anthropic pricing row.
+	pricedNonCached := nonCachedInputTokens + tokenInfo.CacheCreation1hTokens*3/4
+	var costUsd *float64
+	if cost, err := dao.GetConversationCost(provider, model, pricedNonCached, tokenInfo.CacheReadTokens, tokenInfo.CacheCreationTokens, tokenInfo.OutputTokens, tokenInfo.ThinkingTokens, PricingTenantFromContext(ctx)); err == nil {
+		costUsd = &cost
+	} else {
+		ctx.GetLogger().Debug("trackTokenUsage: no pricing data for cost calc", "provider", provider, "model", model, "error", err)
+	}
+
+	// Create token usage record for new table.
+	// cache_ttl_minutes is NOT written — TTL was the wrong dimension for
+	// per-call cost (storage moved to llm_cache_lifecycle). Column will be
+	// dropped in a follow-up migration; new rows leave it NULL.
+	record := &TokenUsageRecord{
+		ID:                  ClaimUsageID(ctx),
+		LLMConfigSource:     configSource,
+		ConversationID:      conversationId,
+		MessageID:           messageId,
+		AgentID:             agentUUID,
+		AgentName:           agentName,
+		AccountID:           accountId,
+		UserID:              userId,
+		LLMProvider:         provider,
+		LLMModel:            model,
+		InputTokens:         tokenInfo.InputTokens,
+		OutputTokens:        tokenInfo.OutputTokens,
+		CachedInputTokens:   tokenInfo.CacheReadTokens,
+		CacheCreationTokens: tokenInfo.CacheCreationTokens,
+		CostUsd:             costUsd,
+		IsCacheHit:          tokenInfo.CacheReadTokens > 0,
+		CacheHitRate:        cacheHitRate,
+		RetryAttempt:        retryAttempt,
+		FallbackFromModel:   fallbackFromModel,
+		FallbackChain:       fallbackChainJSON,
+		LatencySeconds:      latencyPtr,
+		RequestStatus:       "success",
+		ErrorMessage:        nil,
+		ContentLength:       contentLength,
+		StopReason:          stopReason,
+		PromptMessages:      promptMessagesJSON,
+		ResponseContent:     responseContent,
+	}
+	record.ModelTier, record.TaskType = tierAttributionForRecord(ctx)
+	applyUsageLink(ctx, record)
+
+	// Thinking tokens (Gemini 2.5+ thinking models). Stored only when non-zero
+	// so non-thinking-model rows stay NULL — distinguishes "model didn't think"
+	// from "we didn't capture it".
+	if tokenInfo.ThinkingTokens > 0 {
+		tt := tokenInfo.ThinkingTokens
+		record.ThinkingTokens = &tt
+	}
+
+	// Streaming-latency breakdown. was_streaming is always written (false for
+	// non-streaming new rows) so dashboards can distinguish post-V722 rows
+	// from legacy rows (which are NULL). ttft / itl / tps are populated only
+	// when the call actually streamed AND we observed a first chunk. ITL is
+	// computed in floating point so sub-ms generation on fast models doesn't
+	// truncate to 0.
+	ws := wasStreaming
+	record.WasStreaming = &ws
+	if wasStreaming && ttftMs != nil {
+		record.TTFTMs = ttftMs
+		latencyMs := int64(latency * 1000)
+		generationMs := latencyMs - *ttftMs
+		if tokenInfo.OutputTokens > 0 && generationMs > 0 {
+			itl := float64(generationMs) / float64(tokenInfo.OutputTokens)
+			record.ITLMsAvg = &itl
+			tps := float64(tokenInfo.OutputTokens) / (float64(generationMs) / 1000.0)
+			record.TokensPerSecond = &tps
+		}
+	}
+
+	// Insert into new token usage table
+	err := dao.InsertTokenUsage(record)
+	if err != nil {
+		ctx.GetLogger().Error("llm: unable to insert token usage", "error", err)
+	}
+
+	// Update thought content on the agent record (if applicable)
+	if agentUUID != nil && trackContent && content != "" {
+		if err := dao.UpdateConversationAgentThought(*agentUUID, content); err != nil {
+			ctx.GetLogger().Error("llm: unable to update agent thought", "error", err)
+		}
+	}
+}
+
+// cleanupMarkdownInResponse cleans up markdown content in the response
+func cleanupMarkdownInResponse(completion *llms.ContentResponse) {
+	if completion == nil || len(completion.Choices) == 0 {
+		return
+	}
+
+	content := completion.Choices[0].Content
+	completion.Choices[0].Content = SanatizeMarkdownCodeBlock(content)
+}
+
+func GetLLMIntegrationConfig(ctx *security.RequestContext, accountId string, overrides ...map[string]string) (map[string]string, error) {
+	// Opt-in escape hatch: when LLM_CONFIG_IGNORE_DB is set, drop the DB-global,
+	// DB-tier and DB-agent layers so the ENV layers decide provider/model.
+	// Intended for local runs against a DB whose tenant config points at models
+	// the operator cannot use. Placed before the overrides check on purpose: a
+	// caller-supplied dbConfig is DB-sourced too. Layers are named rather than
+	// numbered here because this file's inline comments count up (L4-L6) while
+	// the llm_config.go docstring counts down (2-4) for the same three layers.
+	// This does not cover the two DB reads that bypass this function --
+	// GetConversationOverride and integrationConfigForPin; see that docstring.
+	if config.Config.GetBool("LLM_CONFIG_IGNORE_DB", false) {
+		return nil, nil
+	}
+	if len(overrides) > 0 && overrides[0] != nil {
+		return overrides[0], nil
+	}
+	if accountId == "" {
+		slog.Debug("getLLMIntegrationConfig: empty accountId, returning nil")
+		return nil, nil
+	}
+
+	slog.Debug("Getting LLM integration config", "accountId", accountId)
+
+	llmIntegrationConfigCacheMutex.RLock()
+	cacheEntry, found := llmIntegrationConfigCache[accountId]
+	llmIntegrationConfigCacheMutex.RUnlock()
+	if found && time.Since(cacheEntry.ts) < llmIntegrationConfigCacheTTL() {
+		slog.Debug("LLM integration config found in cache", "accountId", accountId, "configKeys", len(cacheEntry.config))
+		return cloneConfigMap(cacheEntry.config), nil
+	}
+	slog.Debug("LLM integration config not in cache or expired, fetching from DB", "accountId", accountId)
+
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		slog.Error("Failed to get database manager for LLM integration config", "error", err, "accountId", accountId)
+		return nil, err
+	}
+
+	// Try account-level config first
+	configMap, err := fetchLLMIntegrationConfigByAccount(ctx, dbManager, accountId)
+	if err != nil {
+		return nil, err
+	}
+
+	if configMap != nil {
+		slog.Debug("LLM integration config loaded (account-level)", "accountId", accountId, "configKeys", len(configMap))
+	}
+	// Cache the resolved result (account-level or nil) under the account key.
+	// This avoids repeated DB queries for accounts without their own config.
+	llmIntegrationConfigCacheMutex.Lock()
+	llmIntegrationConfigCache[accountId] = struct {
+		config map[string]string
+		ts     time.Time
+	}{config: configMap, ts: time.Now()}
+	llmIntegrationConfigCacheMutex.Unlock()
+
+	if configMap == nil {
+		slog.Debug("No LLM integration config found (account-level)", "accountId", accountId)
+	}
+	// Copied on the way out for the same reason as the cache-hit path: the map
+	// just went into the cache, so handing the caller this reference would let a
+	// write reach shared state.
+	return cloneConfigMap(configMap), nil
+}
+
+// cloneConfigMap shallow-copies a cached config map so callers can never write
+// through to shared state. Values are strings, so a shallow copy is a full one.
+// nil in, nil out — callers distinguish "no config" from "empty config".
+func cloneConfigMap(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]string, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+// GetLLMIntegrationsForAccount returns every enabled LLM integration the account
+// can see, one entry per integration, with encrypted values decrypted. Backs the
+// db:<uuid> source ids: GetAllConfiguredModels emits a pickable row per slot per
+// integration, and resolveFromPinnedSource accepts only ids present in this list.
+//
+// Visibility is llmPickableForAccount: integrations linked to this cloud account,
+// this tenant's integrations linked to no account, and the tenant default.
+// Another tenant's integration can never appear here, which is what makes the
+// pin path tenant-safe without a second authorization check.
+// cloneIntegrations deep-copies cached integrations before they leave the
+// accessor. Slices and maps are reference types, so handing out the cached ones
+// makes every caller a potential cache mutator — and a write while another
+// goroutine reads is a fatal concurrent-map panic, not a subtle bug. Copying
+// here rather than at each call site means callers can't get it wrong, and the
+// cost is trivial: a handful of integrations, read a few times per request.
+func cloneIntegrations(src []LLMIntegration) []LLMIntegration {
+	out := make([]LLMIntegration, len(src))
+	for i, integ := range src {
+		out[i] = LLMIntegration{
+			Id:     integ.Id,
+			Name:   integ.Name,
+			Config: make(map[string]string, len(integ.Config)),
+		}
+		for k, v := range integ.Config {
+			out[i].Config[k] = v
+		}
+	}
+	return out
+}
+
+func GetLLMIntegrationsForAccount(ctx *security.RequestContext, accountId string) ([]LLMIntegration, error) {
+	if accountId == "" {
+		return nil, nil
+	}
+
+	llmIntegrationsCacheMutex.RLock()
+	entry, found := llmIntegrationsCache[accountId]
+	llmIntegrationsCacheMutex.RUnlock()
+	if found && time.Since(entry.ts) < llmIntegrationConfigCacheTTL() {
+		return cloneIntegrations(entry.integrations), nil
+	}
+
+	tenantId, err := security.GetTenantIdFromAccountId(accountId)
+	if err != nil {
+		return nil, fmt.Errorf("getLLMIntegrationsForAccount: failed to resolve tenant for account %s: %w", accountId, err)
+	}
+	// Bind NULL rather than "" when the account has no tenant — tenant_id is a
+	// uuid column and an empty string fails to cast.
+	var tenantParam any
+	if tenantId != "" {
+		tenantParam = tenantId
+	}
+
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("getLLMIntegrationsForAccount: failed to get database manager: %w", err)
+	}
+
+	// Which of these the account may pick is decided by llmPickableForAccount,
+	// so the flags come back with every row. Rows outside the tenant are never
+	// read unless they are linked to this account.
+	query := llmIntegrationRowsSelect + `
+			  WHERE i."type" = 'llm' AND i.status = 'enabled'
+				AND (i.tenant_id = :tenant_id
+					 OR EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
+								WHERE ia.integration_id = i.id AND ia.cloud_account_id = :ac_id))`
+	params := map[string]any{"ac_id": accountId, "tenant_id": tenantParam}
+	integrations, err := queryLLMIntegrations(ctx, dbManager, query, params, llmPickableForAccount, accountId)
+	if err != nil {
+		return nil, fmt.Errorf("getLLMIntegrationsForAccount: %w", err)
+	}
+
+	llmIntegrationsCacheMutex.Lock()
+	llmIntegrationsCache[accountId] = struct {
+		integrations []LLMIntegration
+		ts           time.Time
+	}{integrations: integrations, ts: time.Now()}
+	llmIntegrationsCacheMutex.Unlock()
+
+	slog.Debug("Loaded LLM integrations for account", "accountId", accountId, "count", len(integrations))
+	return integrations, nil
+}
+
+// llmIntegrationRowsSelect is the shared column list for queryLLMIntegrations:
+// one row per config value, with the flags llmCandidate needs. Callers append
+// the WHERE clause and bind :ac_id (use NULL when there is no account).
+// i.name and icv.name are aliased apart: the scan is positional, but two
+// columns called "name" is a trap worth removing.
+const llmIntegrationRowsSelect = `SELECT i.id AS integration_id, i.name AS integration_name,
+					 icv.name AS config_key, icv.value AS config_value, icv.is_encrypted,
+					 EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
+							 WHERE ia.integration_id = i.id AND ia.cloud_account_id = :ac_id) AS linked,
+					 EXISTS (SELECT 1 FROM integrations_cloud_accounts ia
+							 WHERE ia.integration_id = i.id) AS has_accounts,
+					 EXISTS (SELECT 1 FROM integration_config_values d
+							 WHERE d.integration_id = i.id AND d.name = 'default_llm_provider' AND d.value = 'true') AS tenant_default
+			  FROM integrations i
+			  JOIN integration_config_values icv ON i.id = icv.integration_id`
+
+// queryLLMIntegrations runs a llmIntegrationRowsSelect query and keeps the
+// integrations `keep` accepts, decrypted and sorted by name then id so lists
+// built from them are stable.
+func queryLLMIntegrations(ctx *security.RequestContext, dbManager *common.DatabaseManager, query string,
+	params map[string]any, keep func(llmCandidate) bool, logId string) ([]LLMIntegration, error) {
+	var rows *sqlx.Rows
+	var err error
+	if ctx != nil {
+		rows, err = dbManager.Db.NamedQueryContext(ctx.GetContext(), query, params)
+	} else {
+		rows, err = dbManager.Db.NamedQuery(query, params)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query failed for %s: %w", logId, err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Warn("LLM Integration: unable to close rows", "error", err)
+		}
+	}()
+
+	byId := map[string]*LLMIntegration{}
+	for rows.Next() {
+		var id string
+		var integrationName, key, value sql.NullString
+		var isEncrypted sql.NullBool
+		var c llmCandidate
+		if err := rows.Scan(&id, &integrationName, &key, &value, &isEncrypted, &c.Linked, &c.HasAccounts, &c.TenantDefault); err != nil {
+			return nil, fmt.Errorf("failed to scan row for %s: %w", logId, err)
+		}
+		if !keep(c) {
+			continue
+		}
+		if !key.Valid || key.String == "" {
+			slog.Warn("LLM integration config: row has empty name; skipping", "scope", logId, "integrationId", id)
+			continue
+		}
+		plain := value.String
+		if isEncrypted.Valid && isEncrypted.Bool && plain != "" {
+			decrypted, decErr := common.Decrypt(plain)
+			if decErr != nil {
+				slog.Warn("LLM integration config: failed to decrypt encrypted field; skipping row",
+					"error", decErr, "scope", logId, "integrationId", id, "key", key.String)
+				continue
+			}
+			plain = decrypted
+		}
+		integ, ok := byId[id]
+		if !ok {
+			integ = &LLMIntegration{Id: id, Name: integrationName.String, Config: map[string]string{}}
+			byId[id] = integ
+		}
+		integ.Config[key.String] = plain
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed iterating rows for %s: %w", logId, err)
+	}
+
+	integrations := make([]LLMIntegration, 0, len(byId))
+	for _, integ := range byId {
+		integrations = append(integrations, *integ)
+	}
+	sort.Slice(integrations, func(a, b int) bool {
+		if integrations[a].Name != integrations[b].Name {
+			return integrations[a].Name < integrations[b].Name
+		}
+		return integrations[a].Id < integrations[b].Id
+	})
+	return integrations, nil
+}
+
+// tenantWideLLMIntegrations is replaced in tests, which have no database.
+var tenantWideLLMIntegrations = getTenantWideLLMIntegrations
+
+// getTenantWideLLMIntegrations returns a tenant's enabled integrations that a
+// config saved with no accounts may reference: those linked to no account, and
+// the tenant default.
+func getTenantWideLLMIntegrations(ctx *security.RequestContext, tenantId string) ([]LLMIntegration, error) {
+	if tenantId == "" {
+		return nil, nil
+	}
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("getTenantWideLLMIntegrations: failed to get database manager: %w", err)
+	}
+	query := llmIntegrationRowsSelect + `
+			  WHERE i."type" = 'llm' AND i.status = 'enabled' AND i.tenant_id = :tenant_id`
+	params := map[string]any{"ac_id": nil, "tenant_id": tenantId}
+	keep := func(c llmCandidate) bool { return !c.HasAccounts || c.TenantDefault }
+	return queryLLMIntegrations(ctx, dbManager, query, params, keep, tenantId)
+}
+
+// fetchLLMIntegrationConfigByAccount queries LLM integration config linked to a specific cloud account.
+//
+// An account may have several enabled LLM integrations, so the integration is
+// chosen first and its config read second — see selectAccountLLMIntegration for
+// the choice rules. When no single integration can be chosen this returns
+// (nil, nil), which walks the caller down to the ENV layers.
+func fetchLLMIntegrationConfigByAccount(ctx *security.RequestContext, dbManager *common.DatabaseManager, accountId string) (map[string]string, error) {
+	integrationId, err := selectAccountLLMIntegration(ctx, dbManager, accountId)
+	if err != nil || integrationId == "" {
+		return nil, err
+	}
+	query := `SELECT i.id, icv.name, icv.value, icv.is_encrypted FROM integrations i
+			  JOIN integration_config_values icv ON i.id = icv.integration_id
+			  WHERE i.id = :integration_id`
+	return execLLMIntegrationConfigQuery(ctx, dbManager, query, map[string]any{"integration_id": integrationId}, accountId)
+}
+
+// selectAccountLLMIntegration picks the LLM integration an account resolves
+// against, returning "" to fall through to ENV. The rule lives in
+// chooseAccountLLMIntegration; this only loads the candidates: integrations
+// linked to the account, plus the account's tenant default whether or not it is
+// linked to the account.
+func selectAccountLLMIntegration(ctx *security.RequestContext, dbManager *common.DatabaseManager, accountId string) (string, error) {
+	query := `SELECT i.id,
+				  bool_or(ia.cloud_account_id IS NOT NULL) AS linked,
+				  bool_or(COALESCE(ia.default_llm_provider, false)) AS account_default,
+				  bool_or(COALESCE(icv.value = 'true', false)) AS tenant_default
+			  FROM integrations i
+			  LEFT JOIN integrations_cloud_accounts ia ON ia.integration_id = i.id AND ia.cloud_account_id = :ac_id
+			  LEFT JOIN integration_config_values icv ON icv.integration_id = i.id AND icv.name = 'default_llm_provider'
+			  WHERE i."type" = 'llm' AND i.status = 'enabled'
+				AND (ia.cloud_account_id IS NOT NULL
+					 OR (icv.value = 'true' AND i.tenant_id = (SELECT tenant FROM cloud_accounts WHERE id = :ac_id)))
+			  GROUP BY i.id`
+	params := map[string]any{"ac_id": accountId}
+
+	var rows *sqlx.Rows
+	var err error
+	if ctx != nil {
+		rows, err = dbManager.Db.NamedQueryContext(ctx.GetContext(), query, params)
+	} else {
+		rows, err = dbManager.Db.NamedQuery(query, params)
+	}
+	if err != nil {
+		slog.Error("Failed to list LLM integrations for account", "error", err, "accountId", accountId)
+		return "", err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Warn("LLM Integration: unable to close rows", "error", err)
+		}
+	}()
+
+	var candidates []llmCandidate
+	for rows.Next() {
+		var c llmCandidate
+		if err := rows.Scan(&c.Id, &c.Linked, &c.AccountDefault, &c.TenantDefault); err != nil {
+			slog.Error("Failed to scan LLM integration row", "error", err, "accountId", accountId)
+			return "", err
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("iterating LLM integration rows", "error", err, "accountId", accountId)
+		return "", err
+	}
+	return chooseAccountLLMIntegration(accountId, candidates), nil
+}
+
+// execLLMIntegrationConfigQuery runs a named query and scans results into a config map.
+// Values flagged with is_encrypted are decrypted before being returned so callers
+// always see plaintext regardless of storage format. A decrypt failure is logged
+// and the row is skipped — we'd rather fall back to the default credential chain
+// or ENV-scoped value than hand the SDK an unusable ciphertext string.
+func execLLMIntegrationConfigQuery(ctx *security.RequestContext, dbManager *common.DatabaseManager, query string, params map[string]any, logId string) (map[string]string, error) {
+	var rows *sqlx.Rows
+	var err error
+	if ctx != nil {
+		rows, err = dbManager.Db.NamedQueryContext(ctx.GetContext(), query, params)
+	} else {
+		rows, err = dbManager.Db.NamedQuery(query, params)
+	}
+	if err != nil {
+		slog.Error("Failed to query LLM integration config from DB", "error", err, "id", logId)
+		return nil, err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Warn("LLM Integration: unable to close rows", "error", err)
+		}
+	}()
+	var configMap map[string]string
+	var foundRow bool
+	var seenId string
+	for rows.Next() {
+		var id string
+		// name, value, is_encrypted are NULL-able in integration_config_values; scan
+		// into Null* and treat NULL is_encrypted as false (conservative default).
+		var name, value sql.NullString
+		var isEncrypted sql.NullBool
+		if err := rows.Scan(&id, &name, &value, &isEncrypted); err != nil {
+			slog.Error("Failed to scan LLM integration config row", "error", err, "id", logId)
+			return nil, err
+		}
+		if seenId == "" {
+			seenId = id
+		} else if id != seenId {
+			slog.Error("LLM integration config: result set spans multiple integrations; refusing to merge",
+				"id", logId, "integrationId", seenId, "otherIntegrationId", id)
+			return nil, ErrAmbiguousLLMConfig
+		}
+		if !name.Valid || name.String == "" {
+			slog.Warn("LLM integration config: row has empty name; skipping", "id", logId, "integrationId", id)
+			continue
+		}
+		plain := value.String
+		if isEncrypted.Valid && isEncrypted.Bool && plain != "" {
+			decrypted, decErr := common.Decrypt(plain)
+			if decErr != nil {
+				slog.Warn("LLM integration config: failed to decrypt encrypted field; skipping row",
+					"error", decErr, "id", logId, "integrationId", id, "key", name.String)
+				continue
+			}
+			plain = decrypted
+		}
+		if !foundRow {
+			configMap = make(map[string]string)
+			foundRow = true
+		}
+		configMap[name.String] = plain
+		slog.Debug("Found LLM integration config value", "id", logId, "integrationId", id, "key", name.String, "hasValue", plain != "", "isEncrypted", isEncrypted.Valid && isEncrypted.Bool)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("iterating LLM integration config rows", "error", err, "id", logId)
+		return nil, err
+	}
+	if !foundRow {
+		return nil, nil
+	}
+	return configMap, nil
+}
+
+// normalizeModel removes vendor prefixes, timestamps and common suffixes
+// so we can match a wide range of vendor/platform model-id variants.
+func normalizeModel(m string) string {
+	m = strings.ToLower(strings.TrimSpace(m))
+
+	// remove vendor prefix like "anthropic.", "amazon.", "meta.", "google.", "vertex.", "openai."
+	if idx := strings.Index(m, "."); idx != -1 {
+		pfx := m[:idx]
+		if pfx == "anthropic" || pfx == "amazon" || pfx == "meta" ||
+			pfx == "google" || pfx == "vertex" || pfx == "openai" {
+			m = m[idx+1:]
+		}
+	}
+
+	// unify some separators and remove common platform suffixes
+	m = strings.ReplaceAll(m, "@", "-")
+	m = strings.ReplaceAll(m, ":", "-")
+
+	// remove timestamps like -20250805 or -20250522
+	reDates := regexp.MustCompile(`-\d{6,8}`)
+	m = reDates.ReplaceAllString(m, "")
+
+	// remove -vN variants e.g., -v1, -v2
+	reV := regexp.MustCompile(`-v\d+`)
+	m = reV.ReplaceAllString(m, "")
+
+	// collapse duplicate hyphens and trim
+	for strings.Contains(m, "--") {
+		m = strings.ReplaceAll(m, "--", "-")
+	}
+	m = strings.Trim(m, "-")
+
+	return m
+}
+
+func safeError(err error) string {
+	if err == nil {
+		return "unknown error (nil)"
+	}
+	return err.Error()
+}

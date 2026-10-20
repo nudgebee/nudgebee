@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -445,7 +446,7 @@ Output Format:
 	messagecontent := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf(prompt, query, answer, "%d")),
 	}
-	response, err := core.GenerateAndTrackLLMContent(&security.RequestContext{}, userId, accountId, conversationId, messageId, agentId, false, messagecontent, true)
+	response, err := llmruntime.GenerateAndTrackLLMContent(&security.RequestContext{}, userId, accountId, conversationId, messageId, agentId, false, messagecontent, true)
 	if err != nil {
 		return 0
 	}

@@ -18,6 +18,7 @@ import (
 	"nudgebee/llm/audit"
 	"nudgebee/llm/common"
 	"nudgebee/llm/events"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
@@ -728,7 +729,7 @@ func remediationLLM(ctx *security.RequestContext, userId, accountId, conversatio
 	return func(system, human string) (string, error) {
 		// conversationId only bills the call; a one-shot plan prompt must not
 		// create a conversation cache entry.
-		resp, err := agentcore.GenerateAndTrackLLMContent(toolcore.WithPromptCachingDisabled(ctx), userId, accountId, conversationId, "", remediationPlannerAgent, false, []llms.MessageContent{
+		resp, err := llmruntime.GenerateAndTrackLLMContent(toolcore.WithPromptCachingDisabled(ctx), userId, accountId, conversationId, "", remediationPlannerAgent, false, []llms.MessageContent{
 			{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: system}}},
 			{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: human}}},
 		}, true)

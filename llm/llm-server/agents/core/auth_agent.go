@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools"
@@ -258,7 +259,7 @@ func inferToolRequestTypeFromPrompt(ctx *security.RequestContext, request NBAgen
 		ConversationId: request.ConversationId,
 		MessageId:      request.MessageId,
 		AgentId:        request.AgentId,
-		Tier:           modelTierFromContext(ctx),
+		Tier:           llmruntime.ModelTierFromContext(ctx),
 	}, toolRequestTypeTask(prompt), wrapUntrustedToolInput(action.ToolInput))
 	if err != nil {
 		ctx.GetLogger().Error("auth: unable to execute llm model for infering tool request type", "error", err, "agent", agent.GetName(), "tool", toolName)

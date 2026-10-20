@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -24,7 +25,7 @@ func TestConstructScratchPad_PlanSummaryObservationTruncation(t *testing.T) {
 		},
 		{
 			Action: NBAgentPlannerToolAction{
-				Tool:      ToolLlm,
+				Tool:      llmruntime.ToolLlm,
 				ToolID:    "llm_1",
 				ToolInput: "summarize",
 			},

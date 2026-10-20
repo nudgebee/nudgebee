@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -65,7 +66,7 @@ func (l DatadogServiceAgent) GetSystemPrompt(ctx *security.RequestContext, query
 			"Input: datadog service query",
 			"Output: JSON response containing service details from Datadog.",
 		},
-		core.ToolLlm: {
+		llmruntime.ToolLlm: {
 			"Use this tool for reasoning, generating the initial Datadog event query string, or summarizing the results.",
 			"Input: A clear instruction or question.",
 		},
@@ -102,7 +103,7 @@ func (l DatadogServiceAgent) GetSystemPrompt(ctx *security.RequestContext, query
 }
 
 func (p DatadogServiceAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	toolsList := []string{tools.ToolDatadogServices, core.ToolLlm}
+	toolsList := []string{tools.ToolDatadogServices, llmruntime.ToolLlm}
 
 	tools := make([]toolcore.NBTool, 0, len(toolsList))
 	for _, toolName := range toolsList {

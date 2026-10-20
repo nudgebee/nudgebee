@@ -2,7 +2,7 @@ package core
 
 import (
 	"errors"
-	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"strings"
 	"testing"
@@ -117,9 +117,9 @@ func TestMatchClassificationLabels(t *testing.T) {
 func stubClassificationTier(t *testing.T, source string) {
 	t.Helper()
 	old := classificationTierResolve
-	classificationTierResolve = func(rc *security.RequestContext, _, _, _ string) (*LLMConfigResolution, error) {
-		assert.Equal(t, ModelTierClassification, modelTierFromContext(rc), "probe asks about the classification tier")
-		return &LLMConfigResolution{Source: source}, nil
+	classificationTierResolve = func(rc *security.RequestContext, _, _, _ string) (*llmruntime.LLMConfigResolution, error) {
+		assert.Equal(t, llmruntime.ModelTierClassification, llmruntime.ModelTierFromContext(rc), "probe asks about the classification tier")
+		return &llmruntime.LLMConfigResolution{Source: source}, nil
 	}
 	t.Cleanup(func() { classificationTierResolve = old })
 }
@@ -127,33 +127,33 @@ func stubClassificationTier(t *testing.T, source string) {
 func TestClassificationTier(t *testing.T) {
 	ctx := testRequestContext()
 	call := ClassificationCall{AccountId: "acct"}
-	for source, want := range map[string]ModelTier{
-		"env-tier":              ModelTierClassification,
-		"db-tier":               ModelTierClassification,
-		"context-override-tier": ModelTierClassification,
-		"conversation-tier":     ModelTierClassification,
-		"db-global":             ModelTierSummary, // account default would win: use summary instead
-		"env-global":            ModelTierSummary,
-		"db-agent":              ModelTierSummary,
-		"pinned:abc":            ModelTierSummary,
+	for source, want := range map[string]llmruntime.ModelTier{
+		"env-tier":              llmruntime.ModelTierClassification,
+		"db-tier":               llmruntime.ModelTierClassification,
+		"context-override-tier": llmruntime.ModelTierClassification,
+		"conversation-tier":     llmruntime.ModelTierClassification,
+		"db-global":             llmruntime.ModelTierSummary, // account default would win: use summary instead
+		"env-global":            llmruntime.ModelTierSummary,
+		"db-agent":              llmruntime.ModelTierSummary,
+		"pinned:abc":            llmruntime.ModelTierSummary,
 	} {
 		stubClassificationTier(t, source)
 		assert.Equal(t, want, ClassificationTier(ctx, call), source)
 	}
 
 	old := classificationTierResolve
-	classificationTierResolve = func(*security.RequestContext, string, string, string) (*LLMConfigResolution, error) {
+	classificationTierResolve = func(*security.RequestContext, string, string, string) (*llmruntime.LLMConfigResolution, error) {
 		return nil, errors.New("db down")
 	}
 	t.Cleanup(func() { classificationTierResolve = old })
-	assert.Equal(t, ModelTierSummary, ClassificationTier(ctx, call), "resolution error falls back to summary")
+	assert.Equal(t, llmruntime.ModelTierSummary, ClassificationTier(ctx, call), "resolution error falls back to summary")
 }
 
 func TestClassify_StampsTier(t *testing.T) {
-	var tiers []ModelTier
+	var tiers []llmruntime.ModelTier
 	old := classificationGenerate
 	classificationGenerate = func(rc *security.RequestContext, _, _, _, _, _ string, _ bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
-		tiers = append(tiers, modelTierFromContext(rc))
+		tiers = append(tiers, llmruntime.ModelTierFromContext(rc))
 		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "EDIT"}}}, nil
 	}
 	t.Cleanup(func() { classificationGenerate = old })
@@ -166,19 +166,10 @@ func TestClassify_StampsTier(t *testing.T) {
 	_, err = Classify(testRequestContext(), ClassificationCall{AccountId: "acct"}, intentTask(), "x")
 	require.NoError(t, err)
 
-	_, err = Classify(testRequestContext(), ClassificationCall{AccountId: "acct", Tier: ModelTierRetrieval}, intentTask(), "x")
+	_, err = Classify(testRequestContext(), ClassificationCall{AccountId: "acct", Tier: llmruntime.ModelTierRetrieval}, intentTask(), "x")
 	require.NoError(t, err)
 
-	assert.Equal(t, []ModelTier{ModelTierSummary, ModelTierClassification, ModelTierRetrieval}, tiers)
-}
-
-func TestClassificationTierUsesSummaryThinkingBudget(t *testing.T) {
-	oldSummary, oldRetrieval := config.Config.LlmThinkingBudgetSummary, config.Config.LlmThinkingBudgetRetrieval
-	t.Cleanup(func() {
-		config.Config.LlmThinkingBudgetSummary, config.Config.LlmThinkingBudgetRetrieval = oldSummary, oldRetrieval
-	})
-	config.Config.LlmThinkingBudgetSummary, config.Config.LlmThinkingBudgetRetrieval = 512, 4096
-	assert.Equal(t, 512, resolveThinkingBudget(ModelTierClassification))
+	assert.Equal(t, []llmruntime.ModelTier{llmruntime.ModelTierSummary, llmruntime.ModelTierClassification, llmruntime.ModelTierRetrieval}, tiers)
 }
 
 func TestClassificationRetryPrompt(t *testing.T) {
@@ -200,13 +191,13 @@ func TestClassificationTier_RealResolver(t *testing.T) {
 	pinGlobalModel(t, "googleai", "global-model")
 
 	t.Run("nothing configured resolves as summary", func(t *testing.T) {
-		assert.Equal(t, ModelTierSummary, ClassificationTier(ctx, ClassificationCall{}))
+		assert.Equal(t, llmruntime.ModelTierSummary, ClassificationTier(ctx, ClassificationCall{}))
 	})
 
 	t.Run("server config defines the tier", func(t *testing.T) {
 		setEnvKey(t, "llm_tier_provider_classification", "googleai")
 		setEnvKey(t, "llm_tier_model_classification", "classification-model")
-		assert.Equal(t, ModelTierClassification, ClassificationTier(ctx, ClassificationCall{}))
+		assert.Equal(t, llmruntime.ModelTierClassification, ClassificationTier(ctx, ClassificationCall{}))
 	})
 
 	t.Run("account config defines the tier", func(t *testing.T) {
@@ -214,7 +205,7 @@ func TestClassificationTier_RealResolver(t *testing.T) {
 			"llm_tier_provider_classification": "googleai",
 			"llm_tier_model_classification":    "classification-model",
 		})
-		assert.Equal(t, ModelTierClassification, ClassificationTier(ctx, ClassificationCall{AccountId: "acct-classification-db-tier"}))
+		assert.Equal(t, llmruntime.ModelTierClassification, ClassificationTier(ctx, ClassificationCall{AccountId: "acct-classification-db-tier"}))
 	})
 
 	t.Run("server-only tier does not override an account's own global model", func(t *testing.T) {
@@ -224,7 +215,7 @@ func TestClassificationTier_RealResolver(t *testing.T) {
 			"llm_provider":   "googleai",
 			"llm_model_name": "account-global-model",
 		})
-		assert.Equal(t, ModelTierSummary, ClassificationTier(ctx, ClassificationCall{AccountId: "acct-classification-db-global"}))
+		assert.Equal(t, llmruntime.ModelTierSummary, ClassificationTier(ctx, ClassificationCall{AccountId: "acct-classification-db-global"}))
 	})
 }
 
@@ -233,7 +224,7 @@ func TestGetAllConfiguredModels_ListsClassificationTier(t *testing.T) {
 	setEnvKey(t, "llm_tier_provider_classification", "googleai")
 	setEnvKey(t, "llm_tier_model_classification", "classification-model")
 
-	got, err := GetAllConfiguredModels("")
+	got, err := llmruntime.GetAllConfiguredModels("")
 	require.NoError(t, err)
 	found := false
 	for _, m := range got {
@@ -248,12 +239,12 @@ func TestGetAllConfiguredModels_ListsClassificationTier(t *testing.T) {
 func TestClassifyMessage_UsesClassifyAndKeepsFallback(t *testing.T) {
 	stubClassificationTier(t, "db-global")
 	var agentIDs []string
-	var tiers []ModelTier
+	var tiers []llmruntime.ModelTier
 	answers := []string{"Investigation"}
 	old := classificationGenerate
 	classificationGenerate = func(rc *security.RequestContext, _, _, _, _, agentId string, _ bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
 		agentIDs = append(agentIDs, agentId)
-		tiers = append(tiers, modelTierFromContext(rc))
+		tiers = append(tiers, llmruntime.ModelTierFromContext(rc))
 		require.NotEmpty(t, answers, "Classify made more LLM calls than this test scripted")
 		a := answers[0]
 		answers = answers[1:]
@@ -266,7 +257,7 @@ func TestClassifyMessage_UsesClassifyAndKeepsFallback(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ClassificationInvestigation, got)
 	assert.Equal(t, []string{ClassificationInvestigation}, agentIDs, "agent id keeps keying LLM config and cost")
-	assert.Equal(t, []ModelTier{ModelTierSummary}, tiers, "unconfigured classification tier resolves as summary")
+	assert.Equal(t, []llmruntime.ModelTier{llmruntime.ModelTierSummary}, tiers, "unconfigured classification tier resolves as summary")
 
 	answers = []string{"hmm", "not sure", "no idea"}
 	got, err = ClassifyMessage(testRequestContext(), "u", "a", "c", "m", msg, nil)

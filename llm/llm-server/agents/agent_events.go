@@ -7,6 +7,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/events"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
@@ -1290,7 +1291,7 @@ func (m EventSummaryTool) Call(nbRequestContext toolcore.NbToolContext, input to
 		llms.TextParts(llms.ChatMessageTypeSystem, eventPrompt),
 		llms.TextParts(llms.ChatMessageTypeHuman, batchInstruction+"\n\n --- JSON Data -- \n"+batchedEventData),
 	}
-	completion, err := core.GenerateAndTrackLLMContent(nbRequestContext.Ctx, nbRequestContext.UserId, nbRequestContext.AccountId, nbRequestContext.ConversationId, nbRequestContext.MessageId, nbRequestContext.ParentAgentId, true, messageContent, true)
+	completion, err := llmruntime.GenerateAndTrackLLMContent(nbRequestContext.Ctx, nbRequestContext.UserId, nbRequestContext.AccountId, nbRequestContext.ConversationId, nbRequestContext.MessageId, nbRequestContext.ParentAgentId, true, messageContent, true)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("eventsummary: unable to generate content", "error", err)
 		return toolcore.NBToolResponse{}, err

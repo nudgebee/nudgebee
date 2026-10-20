@@ -4,7 +4,7 @@ The ReAct3 planner splits its prompt into **system messages** (stable, cacheable
 
 ## Cache Scopes
 
-Defined in `agents/core/llm_cache.go`. Agents declare their scope by implementing the `NBAgentCacheScopeProvider` interface.
+Defined in `llms/runtime/llm_cache.go`. Agents declare their scope by implementing the `NBAgentCacheScopeProvider` interface.
 
 | Scope | TTL | Shared across | Cache key format | Used by |
 |-------|-----|---------------|-----------------|---------|

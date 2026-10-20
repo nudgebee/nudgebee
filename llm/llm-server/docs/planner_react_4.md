@@ -335,7 +335,7 @@ rebuilds history from persisted turns instead of rebuilding a scratchpad string.
 | `agents/core/planner_react_shared.go` | Shared symbols (extend, don't fork) |
 | `agents/core/executor.go` | ReAct4 resolution + capability gate |
 | `agents/core/executor_planner.go` | Reused: parallel exec, write pre-flight (args serialized) |
-| `agents/core/llm_common.go` | Remove `hasMalformedFunctionCall` suppression; add `WithTools` on native path |
+| `llms/runtime/llm_common.go` | Remove `hasMalformedFunctionCall` suppression; add `WithTools` on native path |
 | `agents/prompts_repo/planner_react_4_base.txt` | Thin base prompt (no XML grammar) |
 | `llms/*/` | Verify tool defs land in the cached prefix per provider |
 | `tools/tool_notebook.go` (new) | `update_notebook` tool |

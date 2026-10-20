@@ -7,6 +7,7 @@ import (
 	"math"
 	"nudgebee/llm/config"
 	"nudgebee/llm/llms/decision"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"strconv"
 	"strings"
@@ -30,10 +31,6 @@ import (
 //
 // It is read from the configuration the call's LLM fallback would use: the
 // conversation's pin, otherwise the account's LLM integration, otherwise ENV.
-
-// ModelTierDecision is the configuration slot of the decision model. It is not
-// a model tier: no chat call resolves through it and it cannot be pinned.
-const ModelTierDecision ModelTier = "decision"
 
 const (
 	classificationBackendDecision = "decision"
@@ -115,10 +112,10 @@ type decisionBackend struct {
 // pick, then the request pin, then the conversation pin. A pinned call uses that
 // integration only, so its text never reaches a decision model configured
 // elsewhere; an unpinned call uses the account's LLM integration, or ENV.
-var decisionConfigSource = func(ctx *security.RequestContext, accountId, conversationId string, tier ModelTier) (map[string]string, string) {
-	pin, _ := effectivePin(ctx, conversationId, tier)
+var decisionConfigSource = func(ctx *security.RequestContext, accountId, conversationId string, tier llmruntime.ModelTier) (map[string]string, string) {
+	pin, _ := llmruntime.EffectivePin(ctx, conversationId, tier)
 	if pin != "" {
-		p, err := ParseConfigSourceId(pin)
+		p, err := llmruntime.ParseConfigSourceId(pin)
 		if err != nil {
 			return nil, "pin-invalid"
 		}
@@ -141,19 +138,19 @@ var decisionConfigSource = func(ctx *security.RequestContext, accountId, convers
 
 // Config readers behind decisionConfigSource; variables so tests can stub the DB.
 var (
-	decisionPinConfig     = integrationConfigForPin
+	decisionPinConfig     = llmruntime.IntegrationConfigForPin
 	decisionAccountConfig = func(ctx *security.RequestContext, accountId string) (map[string]string, error) {
-		return getLLMIntegrationConfig(ctx, accountId)
+		return llmruntime.GetLLMIntegrationConfig(ctx, accountId)
 	}
 )
 
 func envDecisionConfig() map[string]string {
 	cfg := map[string]string{}
 	for _, key := range []string{
-		fmt.Sprintf(llmTierProviderFormat, ModelTierDecision),
-		fmt.Sprintf(llmTierModelFormat, ModelTierDecision),
-		fmt.Sprintf(llmTierApiKeyFormat, ModelTierDecision),
-		fmt.Sprintf(llmTierApiEndpointFormat, ModelTierDecision),
+		fmt.Sprintf(llmruntime.LlmTierProviderFormat, llmruntime.ModelTierDecision),
+		fmt.Sprintf(llmruntime.LlmTierModelFormat, llmruntime.ModelTierDecision),
+		fmt.Sprintf(llmruntime.LlmTierApiKeyFormat, llmruntime.ModelTierDecision),
+		fmt.Sprintf(llmruntime.LlmTierApiEndpointFormat, llmruntime.ModelTierDecision),
 		llmDecisionMinConfidenceKey,
 	} {
 		if v := config.Config.GetString(key, ""); v != "" {
@@ -175,10 +172,10 @@ func decisionBackendFor(ctx *security.RequestContext, call ClassificationCall, t
 		return nil, false
 	}
 	b := &decisionBackend{
-		provider:      cfg[fmt.Sprintf(llmTierProviderFormat, ModelTierDecision)],
-		model:         cfg[fmt.Sprintf(llmTierModelFormat, ModelTierDecision)],
-		apiKey:        cfg[fmt.Sprintf(llmTierApiKeyFormat, ModelTierDecision)],
-		endpoint:      cfg[fmt.Sprintf(llmTierApiEndpointFormat, ModelTierDecision)],
+		provider:      cfg[fmt.Sprintf(llmruntime.LlmTierProviderFormat, llmruntime.ModelTierDecision)],
+		model:         cfg[fmt.Sprintf(llmruntime.LlmTierModelFormat, llmruntime.ModelTierDecision)],
+		apiKey:        cfg[fmt.Sprintf(llmruntime.LlmTierApiKeyFormat, llmruntime.ModelTierDecision)],
+		endpoint:      cfg[fmt.Sprintf(llmruntime.LlmTierApiEndpointFormat, llmruntime.ModelTierDecision)],
 		minConfidence: minConfidence,
 		source:        source,
 	}
@@ -244,7 +241,7 @@ func classifyWithDecision(ctx *security.RequestContext, call ClassificationCall,
 		options[i] = decision.Option{Label: opt.Label, Description: opt.Description}
 	}
 	dm := &decisionModel{backend: b, instructions: strings.TrimSpace(task.Instructions), options: options}
-	model := wrapOutboundModel(dm, b.provider, b.model)
+	model := llmruntime.WrapOutboundModel(dm, b.provider, b.model)
 
 	parent := ctx.GetContext()
 	if parent == nil {
@@ -303,14 +300,14 @@ func trackDecisionUsage(ctx *security.RequestContext, call ClassificationCall, b
 	}
 	bgCtx := decisionUsageContext(ctx)
 	policyFor(ctx).AddTokens(ctx, choice.InputTokens)
-	info := &TokenInfo{InputTokens: choice.InputTokens, TotalTokens: choice.InputTokens}
+	info := &llmruntime.TokenInfo{InputTokens: choice.InputTokens, TotalTokens: choice.InputTokens}
 	source := "decision:" + b.source
 	trackFn := func() {
-		trackTokenUsage(bgCtx, call.ConversationId, call.MessageId, call.AgentId, decisionAgentName(call.AgentId),
+		llmruntime.TrackTokenUsage(bgCtx, call.ConversationId, call.MessageId, call.AgentId, decisionAgentName(call.AgentId),
 			b.provider, b.model, call.AccountId, userId, info, latency.Seconds(), 0, nil, nil,
 			false, "", nil, nil, nil, nil, false, &source)
 	}
-	if pool := GetMetricsWorkerPool(); pool != nil {
+	if pool := llmruntime.GetMetricsWorkerPool(); pool != nil {
 		if err := pool.Submit(context.Background(), trackFn); err == nil {
 			return
 		}
@@ -322,11 +319,11 @@ func trackDecisionUsage(ctx *security.RequestContext, call ClassificationCall, b
 // It carries the decision tier, so the row is not counted under the caller's
 // tier (the approval check runs inside a reasoning-tier turn).
 func decisionUsageContext(ctx *security.RequestContext) *security.RequestContext {
-	bg := detachedRequestContext(ctx)
+	bg := llmruntime.DetachedRequestContext(ctx)
 	if bg == nil || bg.GetContext() == nil {
 		return bg
 	}
-	return bg.WithContext(context.WithValue(bg.GetContext(), ContextKeyModelTier, ModelTierDecision))
+	return bg.WithContext(context.WithValue(bg.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierDecision))
 }
 
 // decisionAgentName is the agent name for the usage row, looked up from the
@@ -351,7 +348,7 @@ var runShadow = func(f func()) { go f() }
 // both answers as classification_shadow. It never changes the decision; it runs
 // on a detached context so it outlives the request without delaying it.
 func shadowDecision(ctx *security.RequestContext, call ClassificationCall, task ClassificationTask, input string, b *decisionBackend, llm ClassificationDecision) {
-	bg := detachedRequestContext(ctx)
+	bg := llmruntime.DetachedRequestContext(ctx)
 	runShadow(func() {
 		// A background goroutine has no request recovery: a panic here must not
 		// take the server down.

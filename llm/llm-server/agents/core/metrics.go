@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"sync"
 
 	"go.opentelemetry.io/otel"
@@ -72,7 +73,7 @@ func InitMetrics() {
 
 		if metricsLLMConcurrencyInUse != nil && metricsLLMConcurrencyMax != nil {
 			_, err = coreMeter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
-				for key, s := range GetLlmConcurrencyStats() {
+				for key, s := range llmruntime.GetLlmConcurrencyStats() {
 					attr := metric.WithAttributes(attribute.String("key", key))
 					o.ObserveInt64(metricsLLMConcurrencyInUse, int64(s.CurrentInUse), attr)
 					o.ObserveInt64(metricsLLMConcurrencyMax, int64(s.MaxConcurrent), attr)

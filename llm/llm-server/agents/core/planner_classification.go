@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
@@ -84,7 +85,7 @@ func (p *ClassificationPlanner) Plan(
 	llmCtx := p.ctx
 	if cacheProvider, ok := p.nbAgent.(NBAgentCacheScopeProvider); ok {
 		llmCtx = security.NewRequestContext(
-			context.WithValue(p.ctx.GetContext(), ContextKeyCacheScope, cacheProvider.GetCacheScope()),
+			context.WithValue(p.ctx.GetContext(), llmruntime.ContextKeyCacheScope, cacheProvider.GetCacheScope()),
 			p.ctx.GetSecurityContext(),
 			p.ctx.GetLogger(),
 			p.ctx.GetTracer(),

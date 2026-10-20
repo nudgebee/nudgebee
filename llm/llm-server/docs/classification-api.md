@@ -87,7 +87,7 @@ Every decision is logged as `classification_decision` (task, labels, valid, back
 - **LLM backend:** `classifyWithLLM` calls `GenerateAndTrackLLMContent` with `llms.WithTemperature(0)` and `WithThinkingLevel(ThinkingLevelFastTask)`.
   - It does not use structured enum output, because our provider adapters have no common option for it.
   - Production Gemini returned an exact label for 211 of 211 real workflow-intent messages.
-- **Tier:** `ModelTierClassification` in `agents/core/llm_config.go`, configured with the usual `llm_tier_*_classification` keys.
+- **Tier:** `ModelTierClassification` in `llms/runtime/llm_config.go`, configured with the usual `llm_tier_*_classification` keys.
   - **Resolution:** `classificationTier` probes `ResolveLLMConfig` with that tier and uses it only when `Source` is `env-tier`, `db-tier`, `context-override-tier` or `conversation-tier`. `TestClassificationTier_RealResolver` pins those labels.
   - **Other tier settings:** the thinking budget is the summary budget. Context size, the connection test and the model picker (`GetAllConfiguredModels`) cover the tier. The tier-layer `Source` values are the `llmConfigSource*Tier` constants.
 - **Metrics:** `nb_llm_classification_decisions` (task, backend, valid, ok) and `nb_llm_classification_decision_latency` (task, backend).
