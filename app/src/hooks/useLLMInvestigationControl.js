@@ -34,6 +34,21 @@ const parseReferences = (raw) => {
   const parsed = typeof raw === 'string' ? safeJSONParse(raw) : raw;
   return Array.isArray(parsed) ? parsed : [];
 };
+// Steps numbered by the planner: every tool call of the agent except the critique's review rows
+// and sub-steps a call fanned out into, oldest first.
+const orderedCitationSteps = (toolCalls) =>
+  (toolCalls || [])
+    .filter((t) => {
+      if (!t?.id || t.tool_name === 'react_critique') {
+        return false;
+      }
+      const meta = typeof t.metadata === 'string' ? safeJSONParse(t.metadata) : t.metadata;
+      return !meta?.parent_tool_call_id;
+    })
+    .map((t, index) => ({ t, index, at: Date.parse(t.created_at) || 0 }))
+    .sort((a, b) => a.at - b.at || a.index - b.index)
+    .map(({ t }) => ({ rowId: t.id, toolId: t.tool_id }));
+
 export const buildDrawerTasks = (agents, message) => {
   const list = (agents || []).filter((agent) => agent.agent_name !== 'router');
   const agentIds = new Set(list.map((agent) => String(agent.id)));
@@ -153,6 +168,11 @@ export const buildDrawerTasks = (agents, message) => {
       // The input the parent sent this sub-agent (e.g. delegate_agent's prompt) —
       // Tool Details shows it as the step's Query box.
       toolParameters: spawnerTool?.parameters,
+      // The parent's call that started this sub-agent; an answer citing that call opens this row.
+      spawnerToolCallId: spawnerTool?.id,
+      // The top-level agent's own steps in the order they ran. An answer saved before citations
+      // carried a step's id cites it by its number (E5); this list maps that number to the step.
+      citationSteps: isRootAgent ? orderedCitationSteps(toolCalls) : undefined,
       isPlannerAction: Boolean(spawnerTool),
       created_at: agent.created_at,
       updated_at: agent.updated_at,

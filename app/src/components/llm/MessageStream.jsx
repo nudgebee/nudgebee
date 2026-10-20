@@ -14,6 +14,7 @@ import api from '@api1/ask-nudgebee';
 import { useWatchFeatureEnabled } from '@hooks/useTenantBranding';
 import { TERMINAL_WATCH_STATUSES, WATCH_FOLLOWUP_BUDGET_MS, countAwaitingFollowups, reconcilePendingFollowups } from './utils/watchFollowup';
 import { actionableTasks } from './utils/taskClassification';
+import { findCitedTask, findLegacyCitedTask } from './utils/citationLinks';
 import { isFollowupTask, summarizeFollowups } from './utils/followupRecord';
 import FollowupHistory from './common/FollowupHistory';
 
@@ -359,7 +360,7 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
   // expand the card and scroll to it. Otherwise (completed group) open the right drawer
   // with that task pre-expanded.
   const handleNavigateToTask = useCallback(
-    (groupIndex, taskOriginalIndex) => {
+    (groupIndex, taskOriginalIndex, citation) => {
       const group = groupedMessages[groupIndex];
       if (!group) {
         return;
@@ -367,6 +368,27 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
       const hasResponse = group.children.some((c) => (c.tool ?? c.type) === 'response');
       const tasks = group.children.filter((c) => (c.tool ?? c.type) !== 'question' && (c.tool ?? c.type) !== 'response');
       if (tasks.length === 0) {
+        return;
+      }
+
+      // A step citation in the answer: open the step it names (an old step-number citation by
+      // step order), or the full list of steps when the step is not part of this answer.
+      if (citation && hasResponse) {
+        const response = group.children.find((c) => (c.tool ?? c.type) === 'response');
+        const drawerTasks = response?.drawerTasks ?? tasks;
+        const cited = citation.rowId
+          ? findCitedTask(citation.rowId, response?.drawerTasks)
+          : findLegacyCitedTask(citation.step, response?.drawerTasks);
+        if (cited) {
+          openTasksDrawer({ tasks: drawerTasks, expandedTaskKey: cited.id });
+          return;
+        }
+        if (taskOriginalIndex == null) {
+          openTasksDrawer({ tasks: drawerTasks });
+          return;
+        }
+      }
+      if (taskOriginalIndex == null) {
         return;
       }
 

@@ -26,6 +26,38 @@ import { getGraphqlErrorMessage } from '@lib/errorMessages';
 import { toast } from '@ui/Toast';
 import { reportContainsInvestigation } from '@utils/investigationReport';
 import { formatClockCompact } from '@shared/format/Datetime';
+import { buildDrawerTasks } from '@hooks/useLLMInvestigationControl';
+import EvidenceDrawer from '@components/llm/common/EvidenceDrawer';
+import { citationChipSx, findCitedTask, findLegacyCitedTask, parseCitationHref } from '@components/llm/utils/citationLinks';
+
+// The analysis message's steps, listed with a note, when no single step can be opened.
+const evidenceList = (steps, analysisMessageId, note) => {
+  // Without the analysis's own message id, the latest message is the analysis; with one that is
+  // not in the session, no other message's steps stand in for it.
+  const analysis = analysisMessageId ? steps.messages.find((m) => m.id === analysisMessageId) : steps.messages[steps.messages.length - 1];
+  if (!analysis) {
+    return { open: true, tasks: [], conversationId: steps.conversationId, note: 'The steps of this analysis could not be found.' };
+  }
+  return { open: true, tasks: analysis?.tasks || [], conversationId: steps.conversationId, note };
+};
+
+// What the evidence drawer shows for a citation, from the session's loaded steps — or null when a
+// cited step is not among them yet, so the caller reads the session again.
+const evidenceForCitation = (citation, steps, analysisMessageId) => {
+  if (citation.rowId) {
+    const owner = steps.messages.find((m) => findCitedTask(citation.rowId, m.tasks));
+    return owner ? { open: true, tasks: owner.tasks, task: findCitedTask(citation.rowId, owner.tasks), conversationId: steps.conversationId } : null;
+  }
+  const list = evidenceList(
+    steps,
+    analysisMessageId,
+    'This analysis was written before its citations pointed at a step, so here are all the steps it took.'
+  );
+  const byOrder = findLegacyCitedTask(citation.step, list.tasks);
+  return byOrder
+    ? { ...list, task: byOrder, note: 'Matched by step order: this analysis was written before its citations pointed at an exact step.' }
+    : list;
+};
 
 // The model returns prose with single newlines between paragraphs, which markdown
 // collapses into one run-on paragraph, so a blank line is inserted between them.
@@ -316,6 +348,10 @@ class AskAiCard {
       // section (see effectiveActiveSectionId below).
       const [activeSectionId, setActiveSectionId] = useState(null);
       const [selectedAnalysisVersion, setSelectedAnalysisVersion] = useState('live');
+      // The steps behind the analysis, opened from one of its citations.
+      const [evidence, setEvidence] = useState({ open: false });
+      // The session's steps as last read for a citation; see openCitation.
+      const evidenceStepsRef = useRef(null);
       const lastFetchedConvIdRef = useRef(null);
       const isMountedRef = useRef(true);
       // One fetcher for the follow-up poll loop. Holds cursor + merged Maps,
@@ -572,6 +608,11 @@ class AskAiCard {
         };
       }, [hasFetchedInitial]);
 
+      // A new answer or re-run can add steps the kept copy does not have.
+      useEffect(() => {
+        evidenceStepsRef.current = null;
+      }, [followUpMessages.length, localAiData?.message_id]);
+
       // Fetch follow-up questions when analysis completes
       useEffect(() => {
         if (localAiData?.status?.toLowerCase() !== 'completed') return;
@@ -687,6 +728,53 @@ class AskAiCard {
           }
         },
         [event, followUpLoading, fetchSuggestions, clearSuggestions]
+      );
+
+      // A citation in the analysis or a follow-up answer opens the step it names. The session's
+      // steps are read once and kept; they are read again only after a new follow-up answer, or
+      // when a link names a step the kept copy does not have yet.
+      const openCitation = useCallback(
+        (href) => {
+          const citation = parseCitationHref(href);
+          if (!citation || !event?.fingerprint || !event?.cloud_account_id) {
+            return false;
+          }
+          const kept = evidenceStepsRef.current && evidenceForCitation(citation, evidenceStepsRef.current, localAiData?.message_id);
+          if (kept) {
+            setEvidence(kept);
+            return true;
+          }
+          setEvidence({ open: true, loading: true });
+          followUpFetcherRef.current
+            .fetch({ accountId: event.cloud_account_id, sessionId: `event-${event.fingerprint}` })
+            .then((res) => {
+              if (!isMountedRef.current) return;
+              const conversation = res?.data?.data?.llm_conversations?.[0];
+              // A read overtaken by the follow-up poll comes back without the conversation; it is
+              // not an empty session, so it is neither shown nor kept.
+              if (!conversation) {
+                setEvidence({ open: true, tasks: [], note: 'The steps could not be loaded. Close this and try again.' });
+                return;
+              }
+              const steps = {
+                conversationId: conversation?.id,
+                messages: (conversation?.llm_conversation_messages || []).map((m) => ({
+                  id: m.id,
+                  tasks: buildDrawerTasks(m.llm_conversation_agents, m),
+                })),
+              };
+              evidenceStepsRef.current = steps;
+              setEvidence(
+                evidenceForCitation(citation, steps, localAiData?.message_id) ||
+                  evidenceList(steps, localAiData?.message_id, 'That step is not in this analysis any more, so here are all the steps it took.')
+              );
+            })
+            .catch(() => {
+              if (isMountedRef.current) setEvidence({ open: true, tasks: [], note: 'The steps could not be loaded. Close this and try again.' });
+            });
+          return true;
+        },
+        [event?.fingerprint, event?.cloud_account_id, localAiData?.message_id]
       );
 
       if (!localAiData) {
@@ -1204,7 +1292,8 @@ class AskAiCard {
                           )}
                           <MarkDowns
                             data={cleanContent(activeSection.content)}
-                            sx={{ width: '100%', padding: noPadding ? '0px' : undefined, maxHeight: 'none', overflowY: 'visible' }}
+                            sx={{ ...citationChipSx, width: '100%', padding: noPadding ? '0px' : undefined, maxHeight: 'none', overflowY: 'visible' }}
+                            onLinkClick={openCitation}
                           />
                         </>
                       ) : (
@@ -1251,7 +1340,11 @@ class AskAiCard {
                   </Box>
                 ) : (
                   <Box key={msg.messageId || `fu-a-${idx}`} sx={{ mb: 'var(--ds-space-4)' }}>
-                    <MarkDowns data={msg.text} sx={{ width: '100%', padding: '0px', maxHeight: 'none', overflowY: 'visible' }} />
+                    <MarkDowns
+                      data={msg.text}
+                      sx={{ ...citationChipSx, width: '100%', padding: '0px', maxHeight: 'none', overflowY: 'visible' }}
+                      onLinkClick={openCitation}
+                    />
                   </Box>
                 )
               )}
@@ -1308,6 +1401,17 @@ class AskAiCard {
               </Box>
             </Box>
           )}
+          <EvidenceDrawer
+            open={Boolean(evidence.open)}
+            loading={evidence.loading}
+            tasks={evidence.tasks}
+            activeTask={evidence.task}
+            note={evidence.note}
+            accountId={event?.cloud_account_id}
+            conversationId={evidence.conversationId}
+            onClose={() => setEvidence({ open: false })}
+            onSelectTask={(task) => setEvidence((prev) => ({ ...prev, task }))}
+          />
         </div>
       );
     };

@@ -7,6 +7,7 @@ import { Box, Typography } from '@mui/material';
 import { ds } from '@utils/colors';
 import CodeAnalysisRenderer, { isCodeAnalysisShape } from './code-analysis/CodeAnalysisRenderer';
 import AgentChart from './AgentChart';
+import { citationChipSx, parseCitationHref } from '../utils/citationLinks';
 
 // Matches an agent-emitted ```nb-chart fenced block and captures its JSON body.
 // The agent embeds these to render an inline chart alongside its tables.
@@ -199,6 +200,15 @@ const LLMAnswerRenderer = ({ toolCall, messages = [], onNavigateToTask, groupInd
         return false;
       }
 
+      // A step citation is resolved by the stream from the answer's own steps. An old
+      // step-number citation is not guessed at: the stream opens the step list instead.
+      const citation = parseCitationHref(href);
+      if (citation && onNavigateToTask) {
+        const direct = citation.rowId ? matchToolCall(href, linkText, messages) : null;
+        onNavigateToTask(groupIndex, direct ? direct.originalIndex : null, citation);
+        return true;
+      }
+
       // Try to find a matching tool call and navigate to its task card
       const matched = matchToolCall(href, linkText, messages);
       if (matched && onNavigateToTask) {
@@ -212,6 +222,8 @@ const LLMAnswerRenderer = ({ toolCall, messages = [], onNavigateToTask, groupInd
   );
 
   const onLinkClickProp = messages.length > 0 ? handleLinkClick : undefined;
+  // Step citations read as chips only where a click opens them.
+  const chipSx = onLinkClickProp ? citationChipSx : {};
 
   const renderContent = () => {
     if (!toolCall.text || (typeof toolCall.text === 'string' && toolCall.text.trim() === '')) {
@@ -341,10 +353,10 @@ const LLMAnswerRenderer = ({ toolCall, messages = [], onNavigateToTask, groupInd
         </pre>
       );
     } catch {
-      return renderMarkdownWithCharts(cleanedText, { maxHeight: '100%', width: '100%', overflowX: 'auto', p: 0 }, onLinkClickProp);
+      return renderMarkdownWithCharts(cleanedText, { ...chipSx, maxHeight: '100%', width: '100%', overflowX: 'auto', p: 0 }, onLinkClickProp);
     }
 
-    return renderMarkdownWithCharts(cleanedText, { width: '100%', overflowX: 'auto', p: 0 }, onLinkClickProp);
+    return renderMarkdownWithCharts(cleanedText, { ...chipSx, width: '100%', overflowX: 'auto', p: 0 }, onLinkClickProp);
   };
 
   return <>{renderContent()}</>;
