@@ -175,3 +175,53 @@ func TestBuildStepReferenceParts_UsesPlannerStepIDs(t *testing.T) {
 	assert.NotContains(t, guide, "E1 =")
 	assert.Contains(t, supporting, "[E5 (cloudwatch)]")
 }
+
+func TestExpandBareCitations(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"single", "uptime 47h [Kubectl - E4], cpu", "uptime 47h [Kubectl - E4](#task-E4), cpu"},
+		{"numbers share the label before them", "[Shell Execute - E1, E9, E10].",
+			"[Shell Execute - E1](#task-E1), [Shell Execute - E9](#task-E9), [Shell Execute - E10](#task-E10)."},
+		{"each part keeps its own label", "[CLI Logs/Metrics - E3, Nudgebee - E4]",
+			"[CLI Logs/Metrics - E3](#task-E3), [Nudgebee - E4](#task-E4)"},
+		{"lowercase number", "[logs - e2]", "[logs - E2](#task-E2)"},
+		{"a markdown link is kept", "[Logs - E3](#task-E3)", "[Logs - E3](#task-E3)"},
+		{"an image is kept", "![chart - E3]", "![chart - E3]"},
+		{"other brackets are kept", "level [INFO] and arr[0] and [see docs]", "level [INFO] and arr[0] and [see docs]"},
+		{"double bracket from old answers", "[[events - E3](#task-E3)", "[[events - E3](#task-E3)"},
+		{"code is kept", "run `x[E3]` then\n```\nrow[E4]\n```\nsee [Logs - E5]", "run `x[E3]` then\n```\nrow[E4]\n```\nsee [Logs - E5](#task-E5)"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, _ := expandBareCitations(c.in, func(string) bool { return true })
+			assert.Equal(t, c.want, got)
+		})
+	}
+}
+
+func TestLinkStepCitations_BareCitations(t *testing.T) {
+	const agent = "agent-1"
+	row2, row9 := "00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000009"
+	finder := &fakeRowFinder{rows: []ToolCallRowRef{
+		{ID: row2, ToolID: "tool-b", AgentID: agent},
+		{ID: row9, ToolID: "tool-i", AgentID: agent},
+	}}
+	got := linkStepCitations(citationTestCtx(), finder, "conv", agent, "msg", "k8s", "acct",
+		"Restarted twice [Kubectl - E2, E9]; maintenance window [Site24x7 Alert - E0].",
+		[]ToolInvocation{citedStep("E2", "tool-b"), citedStep("E9", "tool-i")})
+	assert.Equal(t, "Restarted twice [Kubectl - E2](#task-"+row2+"), [Kubectl - E9](#task-"+row9+"); maintenance window [Site24x7 Alert - E0].", got,
+		"a bare citation links like any other; a bracket naming no step of this run is left as written")
+}
+
+func TestExpandBareCitations_OnlyStepsOfThisRun(t *testing.T) {
+	isStep := func(id string) bool { return id == "E2" }
+	got, n := expandBareCitations("[Kubectl - E2] and [Error - E404] and [Logs - E2, E7]", isStep)
+	assert.Equal(t, "[Kubectl - E2](#task-E2) and [Error - E404] and [Logs - E2, E7]", got)
+	assert.Equal(t, 1, n)
+}
+
+func TestLinkStepCitations_LookupErrorKeepsAnswer(t *testing.T) {
+	in := "Restarted [Kubectl - E2]."
+	got := linkStepCitations(citationTestCtx(), &fakeRowFinder{err: errors.New("db down")}, "conv", "agent-1", "msg", "k8s", "acct", in,
+		[]ToolInvocation{citedStep("E2", "tool-b")})
+	assert.Equal(t, in, got)
+}

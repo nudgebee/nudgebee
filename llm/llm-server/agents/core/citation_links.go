@@ -25,6 +25,14 @@ var (
 	anyStepLink      = regexp.MustCompile(`\[([^\[\]]*)\]\(#task-([^)\s]*)\)`)
 	rowIDTarget      = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	displayIDNumber  = regexp.MustCompile(`^E(\d+)$`)
+	// A citation written without a link: [Kubectl - E4], [Shell Execute - E1, E9],
+	// [Logs - E3, Metrics - E5]. Only the bracket's content is matched here; the
+	// caller checks that no "(" follows, which would make it a markdown link.
+	bareCitation     = regexp.MustCompile(`\[([^\[\]]+)\]`)
+	bareCitationBody = regexp.MustCompile(`(?i)^\s*(?:[^,\[\]]*?\s*-\s*)?E\d+(?:\s*,\s*(?:[^,\[\]]*?\s*-\s*)?E\d+)*\s*$`)
+	bareCitationPart = regexp.MustCompile(`(?i)^\s*(?:(.*?)\s*-\s*)?(E\d+)\s*$`)
+	// Fenced blocks and inline code: a bracket inside quotes output, not a citation.
+	markdownCode = regexp.MustCompile("(?s)```.*?```|`[^`\n]*`")
 )
 
 // ToolCallRowRef identifies one stored tool-call row.
@@ -100,7 +108,12 @@ const (
 // links to the tool-call rows of the cited steps. invocations are the steps of
 // this agent run. A lookup failure leaves the answer unchanged.
 func linkStepCitations(ctx *security.RequestContext, finder toolCallRowFinder, conversationID, agentID, messageID, agentName, accountID, text string, invocations []ToolInvocation) string {
-	if finder == nil || agentID == "" || !anyStepLink.MatchString(text) {
+	if finder == nil || agentID == "" {
+		return text
+	}
+	original := text
+	text, bare := expandBareCitations(text, func(id string) bool { return hasDisplayID(invocations, id) })
+	if !anyStepLink.MatchString(text) {
 		return text
 	}
 
@@ -131,7 +144,7 @@ func linkStepCitations(ctx *security.RequestContext, finder toolCallRowFinder, c
 		rows, err := finder.FindToolCallRows(conversationID, wanted)
 		if err != nil {
 			ctx.GetLogger().Error("citations: unable to look up tool-call rows, answer keeps step numbers", "agent", agentName, "error", err)
-			return text
+			return original
 		}
 		rowIDs, rowProblem = pickToolCallRows(rows, wanted, agentID, messageID)
 	}
@@ -176,8 +189,85 @@ func linkStepCitations(ctx *security.RequestContext, finder toolCallRowFinder, c
 	for outcome, n := range outcomes {
 		common.MetricsCitationLinks(agentName, outcome, accountID, n)
 	}
-	ctx.GetLogger().Info("citations: linked step citations to tool-call rows", "agent", agentName, "linked", outcomes[citationLinked], "outcomes", outcomes)
+	ctx.GetLogger().Info("citations: linked step citations to tool-call rows", "agent", agentName, "linked", outcomes[citationLinked], "outcomes", outcomes, "bare_citations_expanded", bare)
 	return linked
+}
+
+// expandBareCitations turns citations the model wrote without a link into one
+// step link per number, so they are linked to rows like any other:
+// "[Shell Execute - E1, E9]" becomes "[Shell Execute - E1](#task-E1), [Shell
+// Execute - E9](#task-E9)"; a number without a label takes the one before it.
+// Brackets that hold anything else or a number this run has no step for (an
+// error code like [HTTP - E404]), and markdown links and images, are kept.
+func expandBareCitations(text string, isStep func(string) bool) (string, int) {
+	matches := bareCitation.FindAllStringSubmatchIndex(text, -1)
+	if len(matches) == 0 {
+		return text, 0
+	}
+	code := markdownCode.FindAllStringIndex(text, -1)
+	inCode := func(pos int) bool {
+		for _, c := range code {
+			if pos >= c[0] && pos < c[1] {
+				return true
+			}
+		}
+		return false
+	}
+	var b strings.Builder
+	last, expanded := 0, 0
+	for _, m := range matches {
+		start, end := m[0], m[1]
+		body := text[m[2]:m[3]]
+		isLink := end < len(text) && text[end] == '('
+		isImage := start > 0 && text[start-1] == '!'
+		if isLink || isImage || inCode(start) || !bareCitationBody.MatchString(body) || !allSteps(body, isStep) {
+			continue
+		}
+		b.WriteString(text[last:start])
+		expanded++
+		label := ""
+		for i, part := range strings.Split(body, ",") {
+			pm := bareCitationPart.FindStringSubmatch(part)
+			if pm == nil {
+				continue
+			}
+			if pm[1] != "" {
+				label = pm[1]
+			}
+			step := strings.ToUpper(pm[2])
+			shown := step
+			if label != "" {
+				shown = label + " - " + step
+			}
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString("[" + shown + "](#task-" + step + ")")
+		}
+		last = end
+	}
+	b.WriteString(text[last:])
+	return b.String(), expanded
+}
+
+// allSteps reports whether every number in a citation list names a step.
+func allSteps(body string, isStep func(string) bool) bool {
+	for _, part := range strings.Split(body, ",") {
+		pm := bareCitationPart.FindStringSubmatch(part)
+		if pm == nil || !isStep(strings.ToUpper(pm[2])) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasDisplayID(invocations []ToolInvocation, id string) bool {
+	for _, inv := range invocations {
+		if inv.DisplayID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // pickToolCallRows chooses, per tool id, the row the answer's step wrote. A
