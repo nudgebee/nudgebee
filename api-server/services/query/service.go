@@ -221,7 +221,20 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 		return executeChronosphereQuery(context, requestedAccountId, query, tableDef, startTime)
 	}
 
-	queryText, err := generateSqlQuery(context, requestedAccountId, query, tableDef, accountScope)
+	// Fetch one extra row beyond the effective limit so a full page can be told
+	// apart from a truncated one (#26060) without a second count query.
+	effectiveLimit := query.Limit
+	if effectiveLimit <= 0 {
+		effectiveLimit = 1000
+	}
+	overfetchQuery := query
+	overfetchQuery.Limit = effectiveLimit + 1
+	if overfetchQuery.Limit <= 0 {
+		// effectiveLimit was near the int max; +1 wrapped around. Don't overfetch.
+		overfetchQuery.Limit = effectiveLimit
+	}
+
+	queryText, err := generateSqlQuery(context, requestedAccountId, overfetchQuery, tableDef, accountScope)
 	if err != nil {
 		return QueryResponse{
 			Errors: []common.Error{
@@ -233,7 +246,7 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 
 	context.GetLogger().Info(fmt.Sprintf("Query To Execute %s", queryText))
 
-	rowsMap, err := executeSqlQuery(context.GetContext(), sourceType, queryText, queryArgs, query.Limit)
+	rowsMap, err := executeSqlQuery(context.GetContext(), sourceType, queryText, queryArgs, overfetchQuery.Limit)
 	if err != nil {
 		if errors.Is(err, ErrQueryCancelled) {
 			// The caller left before the answer was ready. Reported as its own
@@ -254,8 +267,13 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 			ExecutionTimeMs: time.Since(startTime).Milliseconds(),
 		}, nil
 	}
+	hasMore := len(rowsMap) > effectiveLimit
+	if hasMore {
+		rowsMap = rowsMap[:effectiveLimit]
+	}
 	return QueryResponse{
 		Rows:            rowsMap,
+		HasMore:         hasMore,
 		ExecutionTimeMs: time.Since(startTime).Milliseconds(),
 	}, nil
 }
