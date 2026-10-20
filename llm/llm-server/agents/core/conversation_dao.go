@@ -2756,6 +2756,26 @@ func (chat *ConversationDao) SaveConversationToolCall(conversationID, accountID,
 	return nil
 }
 
+// FindToolCallRows returns the tool-call rows of a conversation whose tool_id is
+// one of toolIDs. A tool_id is a hash of the call, so the same id can appear
+// once per message and per agent; callers pick the row that fits.
+func (chat *ConversationDao) FindToolCallRows(conversationID string, toolIDs []string) ([]ToolCallRowRef, error) {
+	if conversationID == "" || len(toolIDs) == 0 {
+		return nil, nil
+	}
+	var rows []ToolCallRowRef
+	err := chat.dbManager.Db.Select(&rows, `
+		SELECT id::text AS id, tool_id, COALESCE(agent_id::text, '') AS agent_id,
+		       COALESCE(message_id::text, '') AS message_id, created_at
+		FROM llm_conversation_tool_calls
+		WHERE conversation_id = $1::uuid AND tool_id = ANY($2::text[])`,
+		conversationID, pq.Array(toolIDs))
+	if err != nil {
+		return nil, fmt.Errorf("history: unable to find tool call rows: %w", err)
+	}
+	return rows, nil
+}
+
 // FinalizeInFlightToolCalls flips any tool_calls for the given message that are
 // still 'in_progress' to 'error'. Called by handleConversationRequest's
 // finalize-on-exit defer so a planner-turn panic (or any abnormal exit before

@@ -1690,7 +1690,7 @@ func (o *NBReActPlanner3) Plan(
 	// contains prior tool invocations: new DisplayIDs will continue from
 	// where the previous session left off rather than restarting at E1.
 	if o.stepCount == 0 && len(intermediateSteps) > 0 {
-		o.stepCount = len(intermediateSteps)
+		o.stepCount = nextStepCountSeed(intermediateSteps)
 	}
 
 	agentName := o.nbAgent.GetName()

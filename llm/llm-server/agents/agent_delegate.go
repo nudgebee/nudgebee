@@ -306,7 +306,7 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 	if resp.Status == core.ConversationStatusFailed {
 		responseData := "Sub-agent failed to provide a response."
 		if len(resp.Response) > 0 {
-			responseData = resp.Response[0]
+			responseData = core.StripUnresolvedStepLinks(resp.Response[0])
 		}
 		return toolcore.NBToolResponse{
 			Data:              responseData,
@@ -319,8 +319,10 @@ func (t *delegateAgentTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTo
 	}
 
 	if len(resp.Response) > 0 {
+		// An E-number in the sub-agent's answer names one of its own steps;
+		// the parent would cite it as one of its own.
 		return toolcore.NBToolResponse{
-			Data:              resp.Response[0],
+			Data:              core.StripUnresolvedStepLinks(resp.Response[0]),
 			Status:            toolcore.NBToolResponseStatusSuccess,
 			Type:              toolcore.NBToolResponseTypeText,
 			IsTerminal:        parentTerminal,

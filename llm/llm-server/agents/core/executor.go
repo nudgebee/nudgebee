@@ -947,6 +947,14 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		referencesJson = string(rb)
 	}
 
+	// Point the answer's step citations at the tool-call rows before it is
+	// stored; this agent row is final once written.
+	citationAgentID := ""
+	if agentId != uuid.Nil {
+		citationAgentID = agentId.String()
+	}
+	response.Response = linkStepCitations(ctx, citationRowFinder(), request.ConversationId, citationAgentID, request.MessageId, agentName, accountID, response.Response, response.Invocations)
+
 	dbErr := GetConversationDao().UpdateConversationAgentResponse(agentId.String(), response.Response, finalDbStatus, response.State, limitedSummary, agentStepResponseJson, referencesJson)
 	if dbErr != nil {
 		ctx.GetLogger().Error("agentexecutor: unable to save agent call", "error", dbErr)
@@ -1071,6 +1079,10 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 			// run as react_3 and assign sequential DisplayIDs, so the formatter must
 			// build the step-reference guide for them too — not just declared-react_3 agents.
 			agentResponse = FormatAgentResponse(ctx, request, agentResponse, resolveEffectivePlannerType(agent.GetPlannerType()))
+			// The formatter writes citations from its step guide as E-numbers.
+			if len(agentResponse.Response) > 0 {
+				agentResponse.Response[0] = linkStepCitations(ctx, citationRowFinder(), request.ConversationId, citationAgentID, request.MessageId, agentName, accountID, agentResponse.Response[0], agentResponse.AgentStepResponse)
+			}
 		}
 	}
 

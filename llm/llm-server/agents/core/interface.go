@@ -251,9 +251,14 @@ type NBAgentPlannerToolAction struct {
 	// assigned by the ReAct3 planner as steps are generated, for use in citations
 	// and the response formatter. Empty for planner types that do not run react_3
 	// (tool / classification agents).
-	DisplayID  string                            `json:"display_id,omitempty"`
-	Dependency []string                          `json:"dependency"`
-	Condition  NBAgentPlannerToolActionCondition `json:"condition"`
+	DisplayID string `json:"display_id,omitempty"`
+	// SourceToolID is the ToolID of the step whose result this action reused
+	// from the turn cache. A cache hit takes the new action's ToolID but runs
+	// nothing and writes no tool-call row, so a citation of this step has to
+	// resolve to the row of the step that actually ran. Empty when the action ran.
+	SourceToolID string                            `json:"source_tool_id,omitempty"`
+	Dependency   []string                          `json:"dependency"`
+	Condition    NBAgentPlannerToolActionCondition `json:"condition"`
 	// TurnID groups the actions that the model emitted in a SINGLE completion
 	// (a parallel tool-call batch). react_4 flattens each action into its own
 	// step, so without this marker the rebuilt history splits one assistant turn
@@ -393,6 +398,11 @@ type ToolInvocation struct {
 	// Failed is true when the step's tool reported failure, so a wrapper that
 	// forwards Response.Content upward doesn't relabel an error as success.
 	Failed bool
+	// DisplayID is the step's citation id (E1, E2, …) as the planner showed it
+	// to the model. SourceToolID is set when the step reused a cached result
+	// (see NBAgentPlannerToolAction.SourceToolID).
+	DisplayID    string `json:",omitempty"`
+	SourceToolID string `json:",omitempty"`
 }
 
 type NBAgentPlanner interface {

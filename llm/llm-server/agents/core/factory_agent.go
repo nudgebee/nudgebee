@@ -457,7 +457,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 	} else if resp.Status == ConversationStatusFailed {
 		responseData := "Agent failed to provide a response."
 		if len(resp.Response) > 0 {
-			responseData = resp.Response[0]
+			responseData = StripUnresolvedStepLinks(resp.Response[0])
 		}
 		return toolcore.NBToolResponse{
 			Data:              responseData,
@@ -490,8 +490,10 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 				}, nil
 			}
 		}
+		// An E-number in the sub-agent's answer names one of its own steps;
+		// the parent would cite it as one of its own.
 		return toolcore.NBToolResponse{
-			Data:              resp.Response[0],
+			Data:              StripUnresolvedStepLinks(resp.Response[0]),
 			Type:              toolcore.NBToolResponseTypeText,
 			Status:            toolcore.NBToolResponseStatusSuccess,
 			IsTerminal:        parentTerminal,

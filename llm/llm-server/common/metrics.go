@@ -17,6 +17,7 @@ var (
 	metricsApiRequestsTotal       metric.Int64Counter
 
 	metricsAgentOperationsTotal       metric.Int64Counter
+	metricsCitationLinks              metric.Int64Counter
 	metricsAgentLatencySeconds        metric.Float64Histogram
 	metricsToolOperationsTotal        metric.Int64Counter
 	metricsToolReportedFailure        metric.Int64Counter
@@ -155,6 +156,14 @@ func InitMetrics() {
 		)
 		if err != nil {
 			slog.Error("metrics: failed to create nb_llm_agent_operations metric", "error", err)
+		}
+
+		metricsCitationLinks, err = meter.Int64Counter(
+			"nb_llm_citation_links",
+			metric.WithDescription("Step citations in agent answers, by whether they were linked to a tool-call row"),
+		)
+		if err != nil {
+			slog.Error("metrics: failed to create nb_llm_citation_links metric", "error", err)
 		}
 
 		// Histogram names omit the unit suffix; the OTel SDK propagates
@@ -488,6 +497,20 @@ func MetricsAgentOperationsTotal(agent, status, accountID string) {
 	metricsAgentOperationsTotal.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String("agent", agent),
 		attribute.String("status", status),
+		attribute.String("account_id", accountID),
+	))
+}
+
+// MetricsCitationLinks counts step citations in an agent answer. outcome is
+// "linked" or the reason a citation was left as plain text.
+func MetricsCitationLinks(agent, outcome, accountID string, count int) {
+	InitMetrics()
+	if metricsCitationLinks == nil || count <= 0 {
+		return
+	}
+	metricsCitationLinks.Add(context.Background(), int64(count), metric.WithAttributes(
+		attribute.String("agent", agent),
+		attribute.String("outcome", outcome),
 		attribute.String("account_id", accountID),
 	))
 }

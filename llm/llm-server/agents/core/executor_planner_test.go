@@ -1445,6 +1445,7 @@ func TestUnmarshal_DropsWaitingStepsOnResume(t *testing.T) {
 				NativeToolInput:  `{"title":"bug","_thought":"Creating the approved issue."}`,
 				MemoryRefs:       []NBAgentPlannerToolActionMemoryRef{{Position: 1, Note: "preferred tracker"}},
 				DisplayID:        "E2",
+				SourceToolID:     "ran-earlier-2",
 				TurnID:           "turn-2",
 				ThoughtSignature: []byte{0x01, 0x02, 0xfe, 0xff},
 			},
@@ -1486,6 +1487,7 @@ func TestUnmarshal_DropsWaitingStepsOnResume(t *testing.T) {
 	restoredAction := restored.currentAction[0]
 	assert.Equal(t, "pending-1", restoredAction.ToolID)
 	assert.Equal(t, "E2", restoredAction.DisplayID)
+	assert.Equal(t, "ran-earlier-2", restoredAction.SourceToolID)
 	assert.Equal(t, "turn-2", restoredAction.TurnID)
 	assert.Equal(t, `{"title":"bug","_thought":"Creating the approved issue."}`, restoredAction.NativeToolInput)
 	assert.Equal(t, []NBAgentPlannerToolActionMemoryRef{{Position: 1, Note: "preferred tracker"}}, restoredAction.MemoryRefs)
@@ -2008,6 +2010,7 @@ func TestUnmarshal_PreservesReAct4ActionFieldsOnResume(t *testing.T) {
 					MemoryRefs:       []NBAgentPlannerToolActionMemoryRef{{Position: 2, Note: "default namespace"}},
 					Log:              "checking pods",
 					DisplayID:        "E3",
+					SourceToolID:     "ran-earlier-3",
 					TurnID:           "t7-2",
 					ThoughtSignature: []byte{0x01, 0x02, 0xfe, 0xff},
 				},
@@ -2034,6 +2037,7 @@ func TestUnmarshal_PreservesReAct4ActionFieldsOnResume(t *testing.T) {
 
 	got := restored.steps[0].Action
 	assert.Equal(t, "E3", got.DisplayID, "citations must still resolve after a resume")
+	assert.Equal(t, "ran-earlier-3", got.SourceToolID, "a cached step's citation must still open the row that ran")
 	assert.Equal(t, "t7-2", got.TurnID, "batch grouping must survive or siblings replay unsigned")
 	assert.Equal(t, `{"command":"get pods","_thought":"Checking pods."}`, got.NativeToolInput,
 		"provider-native arguments must survive so replay does not alter the signed function call")

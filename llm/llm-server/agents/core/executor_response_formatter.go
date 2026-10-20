@@ -103,7 +103,13 @@ func buildStepReferenceParts(response NBAgentResponse, plannerType AgentPlannerT
 			toolName = t.Call.FunctionCall.Name
 		}
 		if buildGuide {
-			stepID := fmt.Sprintf("E%d", i+1)
+			// The planner's own id, which the answer already cites. Counting by
+			// position drifts from it whenever a step was dropped, replaced or
+			// reused from the cache, and the guide then relabels citations.
+			stepID := t.DisplayID
+			if stepID == "" {
+				stepID = fmt.Sprintf("E%d", i+1)
+			}
 			if toolName != "" {
 				refGuideLines = append(refGuideLines, fmt.Sprintf("- %s = %s", stepID, toolName))
 			}

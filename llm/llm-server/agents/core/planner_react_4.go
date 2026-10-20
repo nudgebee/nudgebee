@@ -491,9 +491,11 @@ func (o *NBReActPlanner4) Plan(
 	// Resume safety: stepCount is not marshaled, so a resumed conversation starts
 	// a fresh planner with stepCount == 0. Re-seed it from the prior step count so
 	// new DisplayIDs (E<n>) and synthesized tool-call IDs continue past the
-	// pre-suspension steps instead of colliding with them. Mid-turn this is a
-	// no-op: len(intermediateSteps) already equals the running count.
-	o.stepCount = len(intermediateSteps)
+	// pre-suspension steps instead of colliding with them. The highest
+	// DisplayID wins over the step count: a failed step replaced in place by its
+	// successful retry carries a newer number without growing the list, and
+	// re-using that number would show the model two results with the same E<n>.
+	o.stepCount = nextStepCountSeed(intermediateSteps)
 	o.refreshNotebookFromSteps(intermediateSteps)
 	firstPlanCallOfTurn := o.beginPlanCall()
 
@@ -1723,7 +1725,7 @@ func (o *NBReActPlanner4) renderTurn(steps []NBAgentPlannerToolActionStep, group
 			Parts: []llms.ContentPart{llms.ToolCallResponse{
 				ToolCallID: step.Action.ToolID,
 				Name:       step.Action.Tool,
-				Content:    o.renderObservation(step, idx, totalSteps, compressionActive, maxObs),
+				Content:    withDisplayIDPrefix(step.Action.DisplayID, o.renderObservation(step, idx, totalSteps, compressionActive, maxObs)),
 			}},
 		})
 	}

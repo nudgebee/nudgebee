@@ -522,6 +522,20 @@ func (e *plannerExecutor) accumulateSteps(steps []NBAgentPlannerToolActionStep) 
 	return upgraded
 }
 
+// reuseCachedStep turns a turn-cache hit into a step for the new action. The
+// step takes the new action's ToolID and DisplayID, because that is the call
+// and the number the model sees; SourceToolID keeps the ToolID of the step
+// that actually ran, since a cache hit writes no tool-call row of its own and a
+// citation of it has to open that earlier row. A cached step that was itself a
+// cache hit keeps the SourceToolID it already carries.
+func reuseCachedStep(cached *NBAgentPlannerToolActionStep, action NBAgentPlannerToolAction) {
+	if cached.Action.SourceToolID == "" {
+		cached.Action.SourceToolID = cached.Action.ToolID
+	}
+	cached.Action.ToolID = action.ToolID
+	cached.Action.DisplayID = action.DisplayID
+}
+
 func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, _ ...chains.ChainCallOption) (map[string]any, error) {
 	defer func() {
 		hits, misses, entries := e.toolCallCache.Stats()
@@ -2391,7 +2405,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	} else if cachedStep, found := e.toolCallCache.Get(action.Tool, action.ToolInput); found {
 		e.ctx.GetLogger().Info("plannerexecutor: returning cached result for duplicate tool call",
 			"tool", action.Tool, "toolId", action.ToolID, "phase", "pre-rewrite")
-		cachedStep.Action.ToolID = action.ToolID
+		reuseCachedStep(&cachedStep, action)
 		cachedStep.IsDuplicateCacheHit = !cachedStep.IsTerminal
 		return cachedStep, nil, nil
 	}
@@ -2419,7 +2433,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			if cachedStep, found := e.toolCallCache.Get(action.Tool, action.ToolInput); found {
 				e.ctx.GetLogger().Info("plannerexecutor: returning cached result for duplicate tool call",
 					"tool", action.Tool, "toolId", action.ToolID, "phase", "post-rewrite")
-				cachedStep.Action.ToolID = action.ToolID
+				reuseCachedStep(&cachedStep, action)
 				// Also cache under original input for future pre-rewrite hits. Cache the
 				// step BEFORE flagging it, so the stored entry stays a clean result.
 				e.toolCallCache.Put(action.Tool, originalInput, cachedStep)
@@ -4194,9 +4208,11 @@ func (e *plannerExecutor) GetToolInvocations() []ToolInvocation {
 				Name:       call.Tool,
 				Content:    response,
 			},
-			Log:        call.Log,
-			References: step.References,
-			Failed:     step.Status == ToolStatusFailure,
+			Log:          call.Log,
+			References:   step.References,
+			Failed:       step.Status == ToolStatusFailure,
+			DisplayID:    call.DisplayID,
+			SourceToolID: call.SourceToolID,
 		})
 	}
 
@@ -4381,8 +4397,11 @@ func (e *plannerExecutor) Unmarshal(previousState []byte) error {
 				// parallel batch is split into separate assistant messages, which
 				// strips the signature from every sibling but the first. Losing
 				// either turns an approved write into a dead conversation.
-				DisplayID: toString(getVal(actionData, "display_id")),
-				TurnID:    toString(getVal(actionData, "turn_id")),
+				// SourceToolID lets a citation of a cache-hit step resolve to the
+				// row of the step that actually ran.
+				DisplayID:    toString(getVal(actionData, "display_id")),
+				SourceToolID: toString(getVal(actionData, "source_tool_id")),
+				TurnID:       toString(getVal(actionData, "turn_id")),
 			}
 			// []byte marshals to a base64 STRING, so it has to be decoded back or the
 			// signature survives serialization as unusable text.
@@ -4501,6 +4520,7 @@ func (e *plannerExecutor) Unmarshal(previousState []byte) error {
 				Dependency:      dependencies,
 				Condition:       actionCondition,
 				DisplayID:       toString(getVal(actionMap, "display_id")),
+				SourceToolID:    toString(getVal(actionMap, "source_tool_id")),
 				TurnID:          toString(getVal(actionMap, "turn_id")),
 			}
 			// currentAction is the source of truth for a WAITING tool when resume
