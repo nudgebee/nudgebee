@@ -144,7 +144,7 @@ const buildLokiSelectorForScoping = (queryItems, excludeLabel) => {
   const matchers = [];
   byLabel.forEach((entries, label) => {
     if (entries.length === 1) {
-      matchers.push(renderLokiMatcher(label, entries[0].operator, entries[0].value));
+      matchers.push({ label, operator: entries[0].operator, value: entries[0].value });
       return;
     }
     // Same merge rule as buildLabelMatchersForScoping: a label can only appear once in a
@@ -152,12 +152,23 @@ const buildLokiSelectorForScoping = (queryItems, excludeLabel) => {
     // into `!~"a|b"`. Any other combination has no single valid matcher -- skip scoping by
     // that label rather than guess wrong.
     if (entries.every((e) => e.operator === '_eq')) {
-      matchers.push(renderLokiMatcher(label, '_regex', entries.map((e) => escapeRegExpValue(e.value)).join('|')));
+      matchers.push({ label, operator: '_regex', value: entries.map((e) => escapeRegExpValue(e.value)).join('|') });
     } else if (entries.every((e) => e.operator === '_neq')) {
-      matchers.push(renderLokiMatcher(label, '_nregex', entries.map((e) => escapeRegExpValue(e.value)).join('|')));
+      matchers.push({ label, operator: '_nregex', value: entries.map((e) => escapeRegExpValue(e.value)).join('|') });
     }
   });
-  return matchers.length ? `{${matchers.join(',')}}` : '';
+  if (matchers.length === 0) return '';
+
+  // Loki rejects a selector with no positive (=, =~) matcher at all -- "queries require
+  // at least one regexp or equality matcher that does not have an empty-compatible
+  // value" (reproduced live: a lone `!=`/`!~` chip, or an all-`!=` merge, errors the
+  // lookup outright). Mirrors the fallback loki.go's extractLabelSelectors already
+  // applies to the real submitted query: prepend a catch-all positive match on the
+  // first matcher's label so the selector stays valid.
+  if (!matchers.some((m) => m.operator === '_eq' || m.operator === '_regex')) {
+    matchers.unshift({ label: matchers[0].label, operator: '_regex', value: '.+' });
+  }
+  return `{${matchers.map((m) => renderLokiMatcher(m.label, m.operator, m.value)).join(',')}}`;
 };
 
 // For PromQL-family providers (isPromQLFamilyProvider), a label can only appear once
