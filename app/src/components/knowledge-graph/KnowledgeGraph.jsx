@@ -53,7 +53,14 @@ import EdgeDetails from '@components/k8s/details/EdgeDetails';
 import Datetime from '@shared/format/Datetime';
 import KGSettings from './KGSettings';
 import { downloadRelationshipsCsv, downloadGraphImage, IMAGE_MAX_NODES } from './kgExport';
-import { parseUniqueKey, formatTypeBadge, decodeFilterOptions, computeFilterOptionsClientSide } from './kgFilterCascade';
+import {
+  parseUniqueKey,
+  formatTypeBadge,
+  decodeFilterOptions,
+  computeFilterOptionsClientSide,
+  buildAccountOptions,
+  TENANT_ACCOUNT_LABEL,
+} from './kgFilterCascade';
 import { getAutoFitCenter } from './kgViewport';
 import { getFocusCenter } from './kgFocusView';
 import { getCurrentTenant, isTenantAdmin } from '@lib/auth';
@@ -2380,16 +2387,10 @@ const ServiceMapContent = ({ cardElevation, height }) => {
     setPinnedNodeId(null);
   }, [clearPinHighlight]);
 
+  const currentTenantId = getCurrentTenant()?.id;
   const accountOptions = useMemo(
-    () =>
-      accounts
-        ?.filter((ac) => kgFilterOptions?.accountIds?.includes(ac.id))
-        ?.map((acc) => ({
-          label: acc.label || acc.account_name,
-          value: acc.id || acc.value,
-          group: acc.cloud_provider || 'Other',
-        })) || [],
-    [accounts, kgFilterOptions?.accountIds]
+    () => buildAccountOptions(accounts, kgFilterOptions?.accountIds, kgFilterOptions?.accountSources, currentTenantId),
+    [accounts, kgFilterOptions?.accountIds, kgFilterOptions?.accountSources, currentTenantId]
   );
 
   return (
@@ -2538,8 +2539,9 @@ const ServiceMapContent = ({ cardElevation, height }) => {
               <FilterWithInfo
                 info={
                   <InfoTip title='Account'>
-                    Scope the graph to specific cloud accounts. Only resources owned by the selected account(s) are shown. Leave empty to include
-                    every connected AWS, GCP, Azure and Kubernetes account.
+                    Scope the graph to specific accounts: AWS, GCP, Azure and Kubernetes accounts, and GitHub, GitLab and PagerDuty integrations.
+                    Users, groups and nodes declared outside any account are under {TENANT_ACCOUNT_LABEL}. Only nodes owned by the selected account(s)
+                    are shown. Leave empty to include every account.
                   </InfoTip>
                 }
               >

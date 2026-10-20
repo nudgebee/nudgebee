@@ -78,6 +78,9 @@ export function decodeFilterOptions(data) {
   const nodeSpecificTypeMap = {};
   const nodeAccountMap = {};
   const nodeBucketId = {};
+  // account id -> { provider, name } read off the first canonical key the account owns.
+  // The server rewrites the key's account segment to the account / integration name.
+  const accountSources = {};
 
   for (let i = 0; i < nodeKeys.length; i++) {
     const uk = nodeKeys[i];
@@ -85,7 +88,14 @@ export function decodeFilterOptions(data) {
     nodeIdMap[uk] = id;
     if (nodeClusterIdx[i] >= 0) nodeClusterMap[uk] = clusterDict[nodeClusterIdx[i]];
     if (nodeSpecificTypeIdx[i] >= 0) nodeSpecificTypeMap[uk] = specificTypeDict[nodeSpecificTypeIdx[i]];
-    if (nodeAccountIdx[i] >= 0) nodeAccountMap[id] = accountIds[nodeAccountIdx[i]];
+    if (nodeAccountIdx[i] >= 0) {
+      const accountId = accountIds[nodeAccountIdx[i]];
+      nodeAccountMap[id] = accountId;
+      if (!accountSources[accountId]) {
+        const parsed = parseUniqueKey(uk);
+        if (parsed?.account) accountSources[accountId] = { provider: parsed.provider, name: parsed.account };
+      }
+    }
     if (nodeBucketIdx[i] >= 0) nodeBucketId[uk] = nodeBucketIdx[i];
   }
 
@@ -95,6 +105,7 @@ export function decodeFilterOptions(data) {
     nodeClusterMap,
     nodeSpecificTypeMap,
     nodeAccountMap,
+    accountSources,
     nodeTypeList: Object.keys(nodeTypes),
     specificTypesByNodeType: nodeTypes,
     labelKeys: d.label_keys || [],
@@ -105,6 +116,40 @@ export function decodeFilterOptions(data) {
     lastSyncTime: d.last_sync_time || null,
     nodeCount: d.node_count ?? nodeKeys.length,
   };
+}
+
+// Account filter group for the tenant-scoped integrations, whose ids are integration ids,
+// not cloud accounts (see TenantScopedSource in knowledge_graph/core/service.go).
+const INTEGRATION_ACCOUNT_GROUP = { github: 'GitHub', gitlab: 'GitLab', pagerduty: 'PagerDuty' };
+
+// Label of the entry for nodes owned by the tenant itself: users, groups and nodes
+// declared outside any account. Matches the subtitle those nodes carry on the canvas.
+export const TENANT_ACCOUNT_LABEL = 'Not in a connected account';
+
+// Account filter options: every account id that owns nodes. Connected cloud and Kubernetes
+// accounts come from the accounts list; the rest (GitHub / GitLab / PagerDuty integrations,
+// the tenant's own id) are named from the node keys they own.
+export function buildAccountOptions(accounts, accountIds, accountSources, tenantId) {
+  const ids = Array.isArray(accountIds) ? accountIds : [];
+  const idsSet = new Set(ids);
+  const known = new Set();
+  const options = (accounts || [])
+    .filter((ac) => idsSet.has(ac.id))
+    .map((acc) => {
+      known.add(acc.id);
+      return { label: acc.label || acc.account_name, value: acc.id || acc.value, group: acc.cloud_provider || 'Other' };
+    });
+  ids
+    .filter((id) => !known.has(id))
+    .forEach((id) => {
+      const source = accountSources?.[id];
+      if (id === tenantId || source?.provider === 'external') {
+        options.push({ label: TENANT_ACCOUNT_LABEL, value: id, group: 'Other', searchText: 'users groups' });
+        return;
+      }
+      options.push({ label: source?.name || id, value: id, group: INTEGRATION_ACCOUNT_GROUP[source?.provider] || 'Other' });
+    });
+  return options;
 }
 
 // Filter the label/attribute key list to those present in the scoped node set.
