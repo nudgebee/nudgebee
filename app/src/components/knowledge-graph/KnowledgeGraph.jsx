@@ -885,7 +885,7 @@ FilterWithInfo.propTypes = {
   children: PropTypes.node.isRequired,
 };
 
-const ServiceMapContent = ({ cardElevation }) => {
+const ServiceMapContent = ({ cardElevation, height }) => {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const { fitView, getNodes, getEdges } = useReactFlow();
@@ -2316,7 +2316,7 @@ const ServiceMapContent = ({ cardElevation }) => {
         display='grid'
         gridTemplateColumns={`${isFilterCollapsed ? ds.space.mul(0, 20) : ds.space.mul(0, 185)} 1fr`}
         gap='var(--ds-space-2)'
-        sx={{ height: 'calc(100vh - 148px)', overflow: 'hidden', padding: 'var(--ds-space-2) 0px', isolation: 'isolate' }}
+        sx={{ height, boxSizing: 'border-box', overflow: 'hidden', padding: 'var(--ds-space-2) 0px', isolation: 'isolate' }}
       >
         {/* Collapsed rail — a slim strip with an expand control so the canvas can be broadened */}
         {isFilterCollapsed && (
@@ -3063,10 +3063,10 @@ const ServiceMapContent = ({ cardElevation }) => {
   );
 };
 
-export default function KnowledgeGraphServiceMapWrapper({ cardElevation = 'raised' }) {
+export default function KnowledgeGraphServiceMapWrapper({ cardElevation = 'raised', height = 'calc(100vh - 132px)' }) {
   return (
     <ReactFlowProvider>
-      <ServiceMapContent cardElevation={cardElevation} />
+      <ServiceMapContent cardElevation={cardElevation} height={height} />
     </ReactFlowProvider>
   );
 }
@@ -3075,4 +3075,10 @@ KnowledgeGraphServiceMapWrapper.propTypes = {
   // Card elevation for the filter panel: 'flat' when mounted inside a modal (b-Cortex),
   // where a raised shadow would stack on the modal surface; 'raised' on a page (Troubleshoot).
   cardElevation: PropTypes.oneOf(['raised', 'flat']),
+  // Outer (border-box) height of the filters + canvas grid. The default sizes it
+  // to the viewport for the Troubleshoot page — the same box as the old
+  // content-box calc(100vh - 148px) plus its 2 × 8px vertical padding. A host
+  // with its own bounded box (the b-Cortex modal) passes '100%' so the canvas
+  // fills that box instead of running past it (#41509).
+  height: PropTypes.string,
 };
