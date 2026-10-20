@@ -8,6 +8,7 @@ import ReactFlow, {
   MarkerType,
   useReactFlow,
   useStore,
+  useStoreApi,
   Handle,
   Position,
   MiniMap,
@@ -53,6 +54,7 @@ import Datetime from '@shared/format/Datetime';
 import KGSettings from './KGSettings';
 import { downloadRelationshipsCsv, downloadGraphImage, IMAGE_MAX_NODES } from './kgExport';
 import { parseUniqueKey, formatTypeBadge, decodeFilterOptions, computeFilterOptionsClientSide } from './kgFilterCascade';
+import { getAutoFitCenter } from './kgViewport';
 import { getCurrentTenant, isTenantAdmin } from '@lib/auth';
 import PropTypes from 'prop-types';
 
@@ -888,7 +890,8 @@ FilterWithInfo.propTypes = {
 const ServiceMapContent = ({ cardElevation, height }) => {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const { fitView, getNodes, getEdges } = useReactFlow();
+  const { fitView, getNodes, getEdges, setCenter } = useReactFlow();
+  const reactFlowStore = useStoreApi();
 
   const [isFilterLoading, setIsFilterLoading] = useState(true);
   const [isGraphLoading, setIsGraphLoading] = useState(true);
@@ -1900,7 +1903,19 @@ const ServiceMapContent = ({ cardElevation, height }) => {
         if (currentLayoutId !== layoutIdRef.current) return;
         setNodes(layouted.nodes);
         setEdges(layouted.edges);
-        setTimeout(() => window.requestAnimationFrame(() => fitView({ minZoom: FIT_VIEW_MIN_ZOOM })), 50);
+        // A graph too big to fit at FIT_VIEW_MIN_ZOOM would be centred on its bounding box,
+        // which can be empty space (#41135); centre on the node nearest it instead.
+        setTimeout(
+          () =>
+            window.requestAnimationFrame(() => {
+              if (currentLayoutId !== layoutIdRef.current) return;
+              const { width, height } = reactFlowStore.getState();
+              const center = getAutoFitCenter(layouted.nodes, width, height, FIT_VIEW_MIN_ZOOM);
+              if (center) setCenter(center.x, center.y, { zoom: FIT_VIEW_MIN_ZOOM });
+              else fitView({ minZoom: FIT_VIEW_MIN_ZOOM });
+            }),
+          50
+        );
       } finally {
         if (currentLayoutId === layoutIdRef.current) {
           setIsGraphLoading(false);
@@ -1908,7 +1923,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
       }
     };
     runLayout();
-  }, [initialNodes, initialEdges, fitView, setNodes, setEdges, isLimitExceeded]);
+  }, [initialNodes, initialEdges, fitView, setCenter, reactFlowStore, setNodes, setEdges, isLimitExceeded]);
 
   // PNG export: isExportingImage turned off onlyRenderVisibleElements; wait two
   // frames for the off-screen nodes to reach the DOM, then capture.
