@@ -191,4 +191,40 @@ describe('FilterDropdown', () => {
     fireEvent.click(screen.getByText('Fruit'));
     expect(screen.getAllByText('Ghost')).toHaveLength(1);
   });
+
+  // #40704: the Knowledge Graph highlights matching nodes from the search text itself,
+  // so the text must reach the caller while typing — not only when an option is picked.
+  it('reports search text as the user types and keeps a controlled search across close', () => {
+    const Harness = ({ onSearchChange }: { onSearchChange: (q: string) => void }) => {
+      const [q, setQ] = React.useState('');
+      return (
+        <FilterDropdown
+          options={options}
+          onSelect={jest.fn()}
+          label='Fruit'
+          searchValue={q}
+          onSearchChange={(next) => {
+            setQ(next);
+            onSearchChange(next);
+          }}
+        />
+      );
+    };
+    const onSearchChange = jest.fn();
+    render(<Harness onSearchChange={onSearchChange} />);
+    fireEvent.click(screen.getByText('Fruit'));
+    // Shown even with fewer than 8 options, since the caller acts on the text.
+    fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: 'an' } });
+    expect(onSearchChange).toHaveBeenLastCalledWith('an');
+    expect(screen.getByText('Banana')).toBeInTheDocument();
+    expect(screen.queryByText('Cherry')).not.toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByPlaceholderText(/search/i), { key: 'Escape' });
+    fireEvent.click(screen.getByText('Fruit'));
+    expect(screen.getByPlaceholderText(/search/i)).toHaveValue('an');
+    expect(onSearchChange).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: '' } });
+    expect(onSearchChange).toHaveBeenLastCalledWith('');
+  });
 });

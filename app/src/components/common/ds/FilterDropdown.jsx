@@ -43,6 +43,11 @@
  * you still want the full text to be searchable (e.g. a row showing a node name
  * while remaining searchable by its namespace/region).
  *
+ * Live search: pass `searchValue` + `onSearchChange` to own the search text
+ * (controlled). `onSearchChange(text)` fires as the user types; a controlled
+ * search keeps its text when the panel closes and always shows the search box,
+ * so a caller can act on the text itself (e.g. highlight matches on a canvas)
+ * rather than only on a picked option.
  *
  *   API surface preserved verbatim from the legacy component (see the test at
  *   __tests__/components/common/FilterDropdownButton.test.jsx — covers this
@@ -828,9 +833,20 @@ function FilterDropdownButton({
   required = false,
   size = 'sm',
   icon,
+  searchValue,
+  onSearchChange,
 }) {
   const [anchorEl, setAnchorEl] = useState(null);
-  const [search, setSearch] = useState('');
+  const [internalSearch, setInternalSearch] = useState('');
+  const isSearchControlled = searchValue !== undefined;
+  const search = isSearchControlled ? searchValue : internalSearch;
+  const setSearch = useCallback(
+    (next) => {
+      if (!isSearchControlled) setInternalSearch(next);
+      onSearchChange?.(next);
+    },
+    [isSearchControlled, onSearchChange]
+  );
   const searchRef = useRef(null);
   // Captured on open and left untouched on close so the panel doesn't visibly
   // shrink to the {MIN_POPOVER_WIDTH}px floor while it fades out (anchorEl is already null
@@ -1072,14 +1088,15 @@ function FilterDropdownButton({
 
   useEffect(() => {
     if (!open) {
-      setSearch('');
+      // A controlled search belongs to the caller, so it survives the panel closing.
+      if (!isSearchControlled) setInternalSearch('');
       return;
     }
     // autoFocus on InputBase is unreliable inside MUI Popover — the popover
     // reclaims focus after mounting. Explicitly focus after the open transition.
     const timer = setTimeout(() => searchRef.current?.focus(), 0);
     return () => clearTimeout(timer);
-  }, [open]);
+  }, [open, isSearchControlled]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Escape') {
@@ -1300,8 +1317,8 @@ function FilterDropdownButton({
         }}
         onKeyDown={handleKeyDown}
       >
-        {/* Search - show when more than 8 options, or always when freeSolo */}
-        {(options.length > 8 || freeSolo) && (
+        {/* Search - show when more than 8 options, or always when freeSolo or the caller owns the search text */}
+        {(options.length > 8 || freeSolo || isSearchControlled) && (
           <Box sx={{ margin: `${ds.space.mul(0, 5)} ${ds.space.mul(0, 5)} ${ds.space.mul(0, 3)} ${ds.space.mul(0, 5)}`, position: 'relative' }}>
             <SearchIcon />
             <InputBase
@@ -1506,6 +1523,8 @@ FilterDropdownButton.propTypes = {
   required: PropTypes.bool,
   size: PropTypes.oneOf(['sm', 'md', 'lg']),
   icon: PropTypes.node,
+  searchValue: PropTypes.string,
+  onSearchChange: PropTypes.func,
 };
 FilterDropdownButton.displayName = 'FilterDropdownButton';
 

@@ -935,6 +935,8 @@ const ServiceMapContent = ({ cardElevation, height }) => {
   // Pin / search / focus mode state
   const [pinnedNodeId, setPinnedNodeId] = useState(null);
   const [searchResetKey, setSearchResetKey] = useState(0);
+  // Text in the "Search nodes…" box; every node whose name or type contains it is highlighted.
+  const [nodeSearchQuery, setNodeSearchQuery] = useState('');
   const [focusedNodeId, setFocusedNodeId] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // True while the PNG export runs: ReactFlow renders every node (not just the
@@ -963,6 +965,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      clearTimeout(nodeSearchDebounceRef.current);
     };
   }, []);
 
@@ -1778,6 +1781,8 @@ const ServiceMapContent = ({ cardElevation, height }) => {
   // consistent before and after navigation, the same way search/focus already reset.
   useEffect(() => {
     setSearchResetKey((k) => k + 1);
+    setNodeSearchQuery('');
+    clearTimeout(nodeSearchDebounceRef.current);
     setFocusedNodeId(null);
     originalPositionsRef.current = null;
     clearPinHighlight();
@@ -1805,6 +1810,11 @@ const ServiceMapContent = ({ cardElevation, height }) => {
       clearPinHighlight();
       setPinnedNodeId(null);
       setSearchResetKey((k) => k + 1);
+      setNodeSearchQuery('');
+      clearTimeout(nodeSearchDebounceRef.current);
+      // Drop the search highlight now, not only after the focus layout resolves: that layout
+      // can be superseded (e.g. focus exited mid-layout) and would leave stale highlights.
+      handleNodeSearch('');
 
       const currentLayoutId = ++focusLayoutIdRef.current;
       const layouted = await getLayoutedElements(subNodes, subEdges);
@@ -1829,7 +1839,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
 
       setTimeout(() => fitView({ duration: 300, padding: 0.2, minZoom: FIT_VIEW_MIN_ZOOM }), 100);
     },
-    [getNodes, getEdges, setNodes, setEdges, fitView, clearPinHighlight]
+    [getNodes, getEdges, setNodes, setEdges, fitView, clearPinHighlight, handleNodeSearch]
   );
 
   const exitFocusMode = useCallback(() => {
@@ -2705,6 +2715,12 @@ const ServiceMapContent = ({ cardElevation, height }) => {
               popoverWidth={ds.space.mul(0, 210)}
               popoverAlign='center'
               size='sm'
+              searchValue={nodeSearchQuery}
+              onSearchChange={(q) => {
+                setNodeSearchQuery(q);
+                clearTimeout(nodeSearchDebounceRef.current);
+                nodeSearchDebounceRef.current = setTimeout(() => handleNodeSearch(q), 200);
+              }}
               onSelect={(event) => {
                 const val = event.target.value;
                 if (!val) {

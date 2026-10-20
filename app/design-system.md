@@ -1230,6 +1230,8 @@ Toolbar/filter value picker (pill trigger, clear-X). **Variants:** `multiple`, `
 | `required`             | `boolean`                  | `false`                     | —   |
 | `disabled`             | `boolean`                  | `false`                     | —   |
 | `isOptionsLoading`     | `boolean`                  | `false`                     | —   |
+| `searchValue`          | `string` (controlled)      | — (kept when panel closes)  | —   |
+| `onSearchChange`       | `(text) => void`           | — (fires while typing)      | —   |
 
 API preserved verbatim from the legacy component (see `__tests__/components/common/FilterDropdownButton.test.jsx`). An option's `icon` renders as a 16px leading `SafeIcon`.
 **Don't:** use for form inputs (use `Select`); render single-select when the user must always pick exactly one (use `Select`).
