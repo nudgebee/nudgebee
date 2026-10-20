@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Box, TextField, Popper, Paper, List, ListItem, ListItemText, Typography, ClickAwayListener, InputAdornment } from '@mui/material';
+import { Box, Popper, Paper, List, ListItem, ListItemText, Typography, ClickAwayListener } from '@mui/material';
 import { Button } from '@ui/Button';
+import { Input } from '@ui/Input';
 import DataObjectIcon from '@mui/icons-material/DataObject';
 import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
@@ -293,9 +294,10 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
 
   // Handle input changes
   const handleChange = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-      const newValue = event.target.value;
-      const position = event.target.selectionStart || 0;
+    (newValue: string) => {
+      // ds/Input's onChange hands back the value, not the event — read the
+      // caret position off the forwarded ref instead of event.target.
+      const position = textFieldRef.current?.selectionStart ?? newValue.length;
 
       // Mark as user typing to prevent sync loop
       isUserTypingRef.current = true;
@@ -314,7 +316,7 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
       setShowSuggestions(newSuggestions.length > 0);
 
       if (newSuggestions.length > 0) {
-        setAnchorEl(event.target);
+        setAnchorEl(textFieldRef.current);
       } else {
         setShowSuggestions(false);
       }
@@ -386,43 +388,6 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
     setIsPickerMode(false);
   }, []);
 
-  const getFieldStyle = () => {
-    const hasError = !!error;
-    return {
-      fontSize: 'var(--ds-text-small)',
-      '& .MuiOutlinedInput-root': {
-        borderRadius: 'var(--ds-radius-md)',
-        backgroundColor: 'white',
-        fontSize: 'var(--ds-text-body-lg)',
-        ...(hasError && {
-          '&.Mui-error fieldset': {
-            borderColor: 'var(--ds-red-500)',
-            borderWidth: '1px',
-          },
-        }),
-        '& fieldset': {
-          borderColor: 'var(--ds-gray-200)',
-        },
-        '&:hover fieldset': {
-          borderColor: 'var(--ds-blue-400)',
-        },
-        '&.Mui-focused fieldset': {
-          borderColor: 'var(--ds-blue-500)',
-          borderWidth: '2px',
-        },
-      },
-      '& .MuiInputBase-input': {
-        padding: 'var(--ds-space-2) var(--ds-space-3)',
-        '&::placeholder': {
-          color: 'var(--ds-brand-200)',
-          fontWeight: 'var(--ds-font-weight-regular)',
-          fontSize: 'var(--ds-text-small)',
-          opacity: 1,
-        },
-      },
-    };
-  };
-
   const fieldContainer = {
     display: 'flex',
     flexDirection: 'column',
@@ -436,35 +401,16 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
     mb: 0.5,
   };
 
-  const inputProps = useMemo(() => {
+  const trailingIcon = useMemo(() => {
     if (multiline || disabled || !validationStatus) return undefined;
     if (validationStatus === 'valid') {
-      return {
-        endAdornment: (
-          <InputAdornment position='end'>
-            <CheckIcon sx={{ color: 'var(--ds-green-500)', fontSize: 18 }} data-testid='url-valid-icon' />
-          </InputAdornment>
-        ),
-      };
+      return <CheckIcon sx={{ color: 'var(--ds-green-500)', fontSize: 18 }} data-testid='url-valid-icon' />;
     }
     if (validationStatus === 'invalid') {
-      return {
-        endAdornment: (
-          <InputAdornment position='end'>
-            <CloseIcon sx={{ color: 'var(--ds-red-500)', fontSize: 18 }} data-testid='url-invalid-icon' />
-          </InputAdornment>
-        ),
-      };
+      return <CloseIcon sx={{ color: 'var(--ds-red-500)', fontSize: 18 }} data-testid='url-invalid-icon' />;
     }
     return undefined;
   }, [multiline, disabled, validationStatus]);
-
-  const errorTextStyle = {
-    color: 'var(--ds-red-500)',
-    fontSize: 'var(--ds-text-small)',
-    fontWeight: 'var(--ds-font-weight-medium)',
-    mt: 1,
-  };
 
   return (
     <Box sx={{ ...fieldContainer, position: 'relative', width: fullWidth ? '100%' : 'auto' }}>
@@ -475,22 +421,20 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
       )}
 
       <Box sx={{ display: 'flex', alignItems: multiline ? 'flex-start' : 'center', gap: 0.5, width: '100%' }}>
-        <TextField
-          inputRef={textFieldRef}
+        <Input
+          ref={textFieldRef}
           value={localValue}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           disabled={disabled}
-          multiline={multiline}
-          rows={rows}
-          maxRows={maxRows}
-          error={!!error}
+          type={multiline ? 'textarea' : 'text'}
+          rows={multiline ? rows : undefined}
+          minRows={multiline ? rows : undefined}
+          maxRows={multiline ? maxRows : undefined}
+          error={error}
           required={required}
-          fullWidth={fullWidth}
-          variant='outlined'
-          InputProps={inputProps}
-          sx={getFieldStyle()}
+          trailingIcon={trailingIcon}
         />
         {allSuggestions.length > 0 && !disabled && (
           <Box ref={pickerButtonRef} sx={{ mt: multiline ? '4px' : 0 }}>
@@ -507,8 +451,6 @@ const TemplateTextField: React.FC<TemplateTextFieldProps> = ({
           </Box>
         )}
       </Box>
-
-      {error && <Typography sx={errorTextStyle}>{error}</Typography>}
 
       {/* Suggestions Popper */}
       <Popper open={showSuggestions} anchorEl={anchorEl} placement='bottom-start' sx={{ zIndex: 1300 }}>
