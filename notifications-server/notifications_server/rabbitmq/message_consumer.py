@@ -67,6 +67,19 @@ class Consumer:
             return
         except Exception as e:
             LOG.error(f"Connection attempt to rabbitmq failed: {e}")
+            await self._discard_connection()
+
+    async def _discard_connection(self):
+        # A setup failure can leave the connection open with no consumer, and the robust
+        # connection only restores what was declared before the failure. Dropping it lets
+        # the run loop retry the whole setup.
+        connection, self._connection, self._channel = self._connection, None, None
+        if connection is None or connection.is_closed:
+            return
+        try:
+            await connection.close()
+        except Exception as e:
+            LOG.warning(f"Failed to close RabbitMQ connection after a setup failure: {e}")
 
     @staticmethod
     async def on_reconnect(connection: aio_pika.RobustConnection):
