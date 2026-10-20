@@ -113,6 +113,53 @@ const buildLabelMatchersForScoping = (queryItems, excludeLabel) => {
   return matchers;
 };
 
+// Loki counterpart of buildLabelMatchersForScoping above (nudgebee-enterprise#19998):
+// scope a label's value lookup by sibling chips as a LogQL stream selector, the same
+// chaining the Prometheus picker got. LogQL selectors use the same four matcher
+// operators as PromQL (=, !=, =~, !~); GetSupportedOperators() in loki.go also lists
+// contains/like-family operators, but those are line/label filters valid only in the
+// query pipeline, not inside `{...}`, so they're excluded here.
+const LOKI_SELECTOR_OPERATORS = ['_eq', '_neq', '_regex', '_nregex'];
+const renderLokiMatcher = (label, operator, value) => {
+  switch (operator) {
+    case '_neq':
+      return `${label}!="${value}"`;
+    case '_regex':
+      return `${label}=~"${value}"`;
+    case '_nregex':
+      return `${label}!~"${value}"`;
+    default:
+      return `${label}="${value}"`;
+  }
+};
+const buildLokiSelectorForScoping = (queryItems, excludeLabel) => {
+  const byLabel = new Map();
+  (queryItems || []).forEach((chip) => {
+    const operator = normalizeLegacyOperator(chip.operator);
+    if (chip.label === excludeLabel || !chip.value || !LOKI_SELECTOR_OPERATORS.includes(operator)) return;
+    if (!byLabel.has(chip.label)) byLabel.set(chip.label, []);
+    byLabel.get(chip.label).push({ operator, value: chip.value });
+  });
+
+  const matchers = [];
+  byLabel.forEach((entries, label) => {
+    if (entries.length === 1) {
+      matchers.push(renderLokiMatcher(label, entries[0].operator, entries[0].value));
+      return;
+    }
+    // Same merge rule as buildLabelMatchersForScoping: a label can only appear once in a
+    // selector, so collapse same-label `=` chips into `=~"a|b"` and same-label `!=` chips
+    // into `!~"a|b"`. Any other combination has no single valid matcher -- skip scoping by
+    // that label rather than guess wrong.
+    if (entries.every((e) => e.operator === '_eq')) {
+      matchers.push(renderLokiMatcher(label, '_regex', entries.map((e) => escapeRegExpValue(e.value)).join('|')));
+    } else if (entries.every((e) => e.operator === '_neq')) {
+      matchers.push(renderLokiMatcher(label, '_nregex', entries.map((e) => escapeRegExpValue(e.value)).join('|')));
+    }
+  });
+  return matchers.length ? `{${matchers.join(',')}}` : '';
+};
+
 // For PromQL-family providers (isPromQLFamilyProvider), a label can only appear once
 // in a selector's match list. generateQuery can merge repeated `=` or repeated `!=`
 // chips on the same label into one regex matcher, but any other combination (mixing
@@ -934,12 +981,13 @@ const LogQueryBuilderAutocomplete = ({
   // Providers whose logs builder offers line filters (the Operations panel).
   const hasLineOperations = ['loki', 'otel_clickhouse', 'newrelic', 'dynatrace', 'loggly'].includes(logProvider);
 
-  // Prometheus label-value lookups are scoped by sibling chips (buildLabelMatchersForScoping
-  // above), so the per-label value cache below goes stale the moment those chips change --
-  // e.g. reopening the `pod` dropdown after swapping `namespace` must refetch, not replay the
-  // previous namespace's cached pod list.
+  // Prometheus and Loki label-value lookups are scoped by sibling chips
+  // (buildLabelMatchersForScoping / buildLokiSelectorForScoping above), so the per-label
+  // value cache below goes stale the moment those chips change -- e.g. reopening the `pod`
+  // dropdown after swapping `namespace` must refetch, not replay the previous namespace's
+  // cached pod list.
   useEffect(() => {
-    if (logProvider === 'prometheus' && providerType === 'metrics') {
+    if ((logProvider === 'prometheus' && providerType === 'metrics') || logProvider === 'loki') {
       setValues({});
     }
   }, [JSON.stringify(queryBlocks), logProvider, providerType]);
@@ -993,12 +1041,19 @@ const LogQueryBuilderAutocomplete = ({
             },
           });
         } else if (logProvider === 'loki') {
+          const activeBlock = getActiveBlock();
+          const selector = buildLokiSelectorForScoping(activeBlock?.queryItems, labelName);
+          // Request.query is forwarded to the relay as a raw querystring tail on Loki's
+          // label-values call (see the pre-existing `start=..&end=..` fallback this is built
+          // alongside) -- Loki's real API takes query/start/end as independent params, so the
+          // selector has to be added as a `query=` pair in that same string, not sent bare.
+          const timeRangeQuery = `start=${params.startTime * 1000000}&end=${params.endTime * 1000000}`;
           response = await observability.fetchLogLabelValues({
             account_id: accountId,
             label_name: findLabel.label,
             ...(providerOverride ? { log_provider: providerOverride } : {}),
             request: {
-              query: `start=${params.startTime * 1000000}&end=${params.endTime * 1000000}`,
+              query: selector ? `query=${encodeURIComponent(selector)}&${timeRangeQuery}` : timeRangeQuery,
             },
           });
         } else if (
