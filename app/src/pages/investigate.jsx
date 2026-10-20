@@ -420,9 +420,14 @@ const Investigate = () => {
   // Ensure allCluster is loaded for source detection (ClusterDropdown may not be rendered)
   useEffect(() => {
     if (!allCluster || allCluster.length === 0) {
-      homeApi.getCloudAccounts().then((res) => {
-        if (isMountedRef.current) setAllCluster(transformClusters(res));
-      });
+      homeApi
+        .getCloudAccounts()
+        .then((res) => {
+          if (isMountedRef.current) setAllCluster(transformClusters(res));
+        })
+        .catch((err) => {
+          console.error('Failed to load cloud accounts', err);
+        });
     }
   }, []);
 
@@ -812,6 +817,9 @@ const Investigate = () => {
       })
       .then((res) => {
         if (!cancelled && isMountedRef.current) setAlertRules(res?.data?.event_rules?.map((d) => d.alert) || []);
+      })
+      .catch((err) => {
+        if (!cancelled) console.error('Failed to load alert rules', err);
       });
     return () => {
       cancelled = true;
@@ -930,18 +938,23 @@ const Investigate = () => {
     let cancelled = false;
     resetState();
     loadData(id);
-    apiRecommendations.listEventResolutions(id).then((resolutions) => {
-      // Only mark this id "loaded" once the fetch actually lands uncancelled —
-      // setting it synchronously up front let React StrictMode's dev-mode
-      // double-invoke poison the guard above: its throwaway first pass would
-      // set the ref before the real second pass ran, so the second pass's
-      // early-return skipped this call entirely and the first pass's own
-      // result was then discarded by its `cancelled` cleanup, leaving
-      // eventResolutions permanently empty.
-      if (cancelled) return;
-      loadedEventIdRef.current = id;
-      if (isMountedRef.current) setEventResolutions(resolutions);
-    });
+    apiRecommendations
+      .listEventResolutions(id)
+      .then((resolutions) => {
+        // Only mark this id "loaded" once the fetch actually lands uncancelled —
+        // setting it synchronously up front let React StrictMode's dev-mode
+        // double-invoke poison the guard above: its throwaway first pass would
+        // set the ref before the real second pass ran, so the second pass's
+        // early-return skipped this call entirely and the first pass's own
+        // result was then discarded by its `cancelled` cleanup, leaving
+        // eventResolutions permanently empty.
+        if (cancelled) return;
+        loadedEventIdRef.current = id;
+        if (isMountedRef.current) setEventResolutions(resolutions);
+      })
+      .catch((err) => {
+        if (!cancelled) console.error('Failed to load event resolutions', err);
+      });
     return () => {
       cancelled = true;
     };
@@ -1105,6 +1118,9 @@ const Investigate = () => {
             // component instance may still be holding (issue #32906).
             setSentFeedback({});
           }
+        })
+        .catch((err) => {
+          if (!cancelled) console.error('Failed to load feedback for session', err);
         });
 
       if (row?.fingerprint) {
@@ -1117,15 +1133,20 @@ const Investigate = () => {
   }, [row.id]);
 
   function getTicketData() {
-    apiIntegrations.getTicketByReferenceId(row?.fingerprint).then((response) => {
-      if (!isMountedRef.current) return;
-      const jiraData = response?.data || [];
-      if (jiraData.length > 0) {
-        setTicketData({ ticket_id: response.data[0]?.ticket_id, url: response.data[0]?.url });
-      } else {
-        setTicketData({ ticket_id: '', url: '' });
-      }
-    });
+    apiIntegrations
+      .getTicketByReferenceId(row?.fingerprint)
+      .then((response) => {
+        if (!isMountedRef.current) return;
+        const jiraData = response?.data || [];
+        if (jiraData.length > 0) {
+          setTicketData({ ticket_id: response.data[0]?.ticket_id, url: response.data[0]?.url });
+        } else {
+          setTicketData({ ticket_id: '', url: '' });
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load linked ticket', err);
+      });
   }
 
   useEffect(() => {
@@ -1742,61 +1763,69 @@ const Investigate = () => {
 
   // Memoized: avoids re-running 3 regexes on every render (was called 5× inline with same args)
   const handleGenerateRCA = (regenerate = false) => {
-    apiKubernetes.generateRCA(id, router.query.accountId, true, regenerate).then((response) => {
-      if (response?.status) {
-        const responseStatus = response.status.toUpperCase();
-        const rcaCard = new RCACard();
-        rcaCard.event = row;
-        rcaCard.renderContent = true;
-        if (hasWriteAccess(router.query.accountId)) {
-          rcaCard.onRegenerate = () => handleGenerateRCARef.current(true);
-        }
-
-        if (responseStatus === RCA_STATUS.COMPLETED) {
-          // Already completed (re-trigger of existing RCA) — show results directly
-          rcaCard.rcaData = {
-            ...response,
-            file_details: {},
-            status: response.status,
-            summary: response.summary,
-            analysis: response.analysis,
-            outdated: response.outdated,
-            format_source: response.format_source,
-            generated_at: response.generated_at,
-          };
-          rcaCard.insightData = [{ message: 'RCA report is ready', severity: 'Info' }];
-        } else if (responseStatus === RCA_STATUS.FAILED) {
-          rcaCard.rcaData = {
-            ...response,
-            status: response.status,
-            status_reason: response.status_reason,
-            analysis: response.analysis,
-            generated_at: response.generated_at,
-          };
-          rcaCard.insightData = [{ message: response.status_reason || 'RCA hit a snag — try re-triggering or check back later', severity: 'Error' }];
-        } else {
-          // IN_PROGRESS — start polling
-          rcaCard.rcaData = { ...response, status: RCA_STATUS.IN_PROGRESS };
-          rcaCard.insightData = [{ message: 'RCA is underway — check back shortly for results', severity: 'Info' }];
-          startRcaPolling();
-        }
-
-        if (handleCardDataUpdate) {
-          rcaCard.setDataUpdateCallback(handleCardDataUpdate);
-        }
-        setMatchedOptions((prev) => {
-          const existingIndex = prev.findIndex((option) => option.id === 'RCACard');
-          if (existingIndex !== -1) {
-            const next = [...prev];
-            next[existingIndex] = rcaCard;
-            return next;
+    apiKubernetes
+      .generateRCA(id, router.query.accountId, true, regenerate)
+      .then((response) => {
+        if (response?.status) {
+          const responseStatus = response.status.toUpperCase();
+          const rcaCard = new RCACard();
+          rcaCard.event = row;
+          rcaCard.renderContent = true;
+          if (hasWriteAccess(router.query.accountId)) {
+            rcaCard.onRegenerate = () => handleGenerateRCARef.current(true);
           }
-          return [...prev, rcaCard];
-        });
-        setGenerateRcaVisible(false);
-        setTabValue(2); // Switch to RCA tab
-      }
-    });
+
+          if (responseStatus === RCA_STATUS.COMPLETED) {
+            // Already completed (re-trigger of existing RCA) — show results directly
+            rcaCard.rcaData = {
+              ...response,
+              file_details: {},
+              status: response.status,
+              summary: response.summary,
+              analysis: response.analysis,
+              outdated: response.outdated,
+              format_source: response.format_source,
+              generated_at: response.generated_at,
+            };
+            rcaCard.insightData = [{ message: 'RCA report is ready', severity: 'Info' }];
+          } else if (responseStatus === RCA_STATUS.FAILED) {
+            rcaCard.rcaData = {
+              ...response,
+              status: response.status,
+              status_reason: response.status_reason,
+              analysis: response.analysis,
+              generated_at: response.generated_at,
+            };
+            rcaCard.insightData = [
+              { message: response.status_reason || 'RCA hit a snag — try re-triggering or check back later', severity: 'Error' },
+            ];
+          } else {
+            // IN_PROGRESS — start polling
+            rcaCard.rcaData = { ...response, status: RCA_STATUS.IN_PROGRESS };
+            rcaCard.insightData = [{ message: 'RCA is underway — check back shortly for results', severity: 'Info' }];
+            startRcaPolling();
+          }
+
+          if (handleCardDataUpdate) {
+            rcaCard.setDataUpdateCallback(handleCardDataUpdate);
+          }
+          setMatchedOptions((prev) => {
+            const existingIndex = prev.findIndex((option) => option.id === 'RCACard');
+            if (existingIndex !== -1) {
+              const next = [...prev];
+              next[existingIndex] = rcaCard;
+              return next;
+            }
+            return [...prev, rcaCard];
+          });
+          setGenerateRcaVisible(false);
+          setTabValue(2); // Switch to RCA tab
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to generate RCA', { id, accountId: router.query.accountId, err });
+        snackbar.error('Failed to generate RCA. Try again.');
+      });
   };
   handleGenerateRCARef.current = handleGenerateRCA;
 
@@ -2013,6 +2042,9 @@ const Investigate = () => {
           labels.push(getDateString(item.created_at));
         });
         setTrendChartData({ data, labels });
+      })
+      .catch((err) => {
+        if (!cancelled) console.error('Failed to load event trend chart data', err);
       })
       .finally(() => {
         if (!cancelled && isMountedRef.current) setIsTrendChartLoading(false);
