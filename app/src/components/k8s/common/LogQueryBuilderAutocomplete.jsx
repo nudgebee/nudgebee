@@ -32,7 +32,7 @@ import { Button as DsButton } from '@ui/Button';
 import { Chip as DsChip } from '@ui/Chip';
 import { Input } from '@ui/Input';
 import DsTooltip from '@ui/Tooltip';
-import { generateQuery } from './LogGenerateQuery';
+import { generateQuery, isPromQLFamilyProvider } from './LogGenerateQuery';
 import { getLineOperators } from './QueryBuilder';
 import { getOperatorsForLabel, getOperatorDisplayLabel, narrowOperatorsForLabel, normalizeLegacyOperator } from './operatorCatalog';
 
@@ -78,6 +78,66 @@ import { ds } from '@utils/colors';
 const shouldNormalizeOperators = (provider) => provider !== 'service_map' && provider !== 'knowledge_graph';
 const normalizeChip = (chip) => (chip?.operator ? { ...chip, operator: normalizeLegacyOperator(chip.operator) } : chip);
 const normalizeOperation = (op) => (op?.op ? { ...op, op: normalizeLegacyOperator(op.op) } : op);
+
+// Grafana-style chaining for the Prometheus label-value picker (nudgebee-enterprise#19997):
+// scope a label's value lookup by the other label=value chips already selected, so
+// picking `pod` after `namespace=foo` only offers pods that exist in that namespace.
+// Only operators the backend's PromQL matcher builder supports qualify (GetSupportedOperators);
+// the label currently being queried is excluded so its own dropdown doesn't self-filter.
+const PROMQL_MATCHER_OPERATORS = ['_eq', '_neq', '_regex'];
+const escapeRegExpValue = (value) => (typeof value === 'string' ? value : '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const buildLabelMatchersForScoping = (queryItems, excludeLabel) => {
+  const byLabel = new Map();
+  (queryItems || []).forEach((chip) => {
+    const operator = normalizeLegacyOperator(chip.operator);
+    if (chip.label === excludeLabel || !chip.value || !PROMQL_MATCHER_OPERATORS.includes(operator)) return;
+    if (!byLabel.has(chip.label)) byLabel.set(chip.label, []);
+    byLabel.get(chip.label).push({ operator, value: chip.value });
+  });
+
+  const matchers = [];
+  byLabel.forEach((entries, label) => {
+    if (entries.length === 1) {
+      matchers.push({ label, operator: entries[0].operator, value: entries[0].value });
+      return;
+    }
+    // Multiple chips on the same label (e.g. two `namespace=` selections) mean OR in the
+    // UI, which a repeated `=` matcher can't express in PromQL -- `{namespace="a",
+    // namespace="b"}` ANDs to zero series instead. Collapse same-label `_eq` entries into
+    // one regex-alternation matcher; anything else (mixed/non-eq operators) has no single
+    // correct combination, so skip scoping by that label rather than guess wrong.
+    if (entries.every((e) => e.operator === '_eq')) {
+      matchers.push({ label, operator: '_regex', value: entries.map((e) => escapeRegExpValue(e.value)).join('|') });
+    }
+  });
+  return matchers;
+};
+
+// For PromQL-family providers (isPromQLFamilyProvider), a label can only appear once
+// in a selector's match list. generateQuery can merge repeated `=` or repeated `!=`
+// chips on the same label into one regex matcher, but any other combination (mixing
+// `=`/`!=`, or anything alongside `_regex`/`_nregex`) has no single valid PromQL
+// matcher -- block adding that chip instead of silently building a query that will
+// fail (nudgebee-enterprise#19997 follow-up). Returns a user-facing reason, or null
+// when the chip is fine to add.
+const MATCHER_OPERATORS = ['_eq', '_neq', '_regex', '_nregex'];
+const describeChipConflict = (queryItems, label, operator, logProvider, providerType) => {
+  const normalizedOperator = normalizeLegacyOperator(operator);
+  if (!isPromQLFamilyProvider(logProvider, providerType) || !MATCHER_OPERATORS.includes(normalizedOperator)) {
+    return null;
+  }
+  const existingOperators = (queryItems || []).filter((chip) => chip.label === label).map((chip) => normalizeLegacyOperator(chip.operator));
+  if (existingOperators.length === 0) {
+    return null;
+  }
+  const combined = new Set([...existingOperators, normalizedOperator]);
+  const mergeable = combined.size === 1 && (combined.has('_eq') || combined.has('_neq'));
+  if (mergeable) {
+    return null;
+  }
+  return `"${label}" already has a filter with a different operator -- only repeating "=" or only repeating "!=" on the same label is supported.`;
+};
+
 const normalizeBlock = (block) => ({
   ...block,
   queryItems: Array.isArray(block?.queryItems) ? block.queryItems.map(normalizeChip) : block?.queryItems,
@@ -874,6 +934,16 @@ const LogQueryBuilderAutocomplete = ({
   // Providers whose logs builder offers line filters (the Operations panel).
   const hasLineOperations = ['loki', 'otel_clickhouse', 'newrelic', 'dynatrace', 'loggly'].includes(logProvider);
 
+  // Prometheus label-value lookups are scoped by sibling chips (buildLabelMatchersForScoping
+  // above), so the per-label value cache below goes stale the moment those chips change --
+  // e.g. reopening the `pod` dropdown after swapping `namespace` must refetch, not replay the
+  // previous namespace's cached pod list.
+  useEffect(() => {
+    if (logProvider === 'prometheus' && providerType === 'metrics') {
+      setValues({});
+    }
+  }, [JSON.stringify(queryBlocks), logProvider, providerType]);
+
   // Fetch values for a specific label
   const fetchValuesForLabel = async (labelName) => {
     if (values[labelName]) {
@@ -969,7 +1039,10 @@ const LogQueryBuilderAutocomplete = ({
           response = await observability.metricsLabelValueList(
             accountId,
             findLabel.label,
-            { metric_name: activeBlock.selectedMetric },
+            {
+              metric_name: activeBlock.selectedMetric,
+              ...(logProvider === 'prometheus' ? { label_matchers: buildLabelMatchersForScoping(activeBlock.queryItems, labelName) } : {}),
+            },
             providerOverride ? { metricProvider: providerOverride } : undefined
           );
         } else if (logProvider === 'ES' && providerType === 'metrics') {
@@ -1364,6 +1437,11 @@ const LogQueryBuilderAutocomplete = ({
         );
         if (validOperator) {
           const activeBlock = getActiveBlock();
+          const conflict = describeChipConflict(activeBlock.queryItems, label, validOperator.value, logProvider, providerType);
+          if (conflict) {
+            snackbar.error(conflict);
+            return;
+          }
           const newChip = { label, operator: validOperator.value, value, id: chipIdCounter.current++ };
           const updatedChips = [...activeBlock.queryItems, newChip];
 
@@ -1496,6 +1574,15 @@ const LogQueryBuilderAutocomplete = ({
     } else if (suggestion.type === 'value') {
       // When value is selected, immediately create a chip
       const activeBlock = getActiveBlock();
+      const conflict = describeChipConflict(activeBlock.queryItems, pendingChip.label, pendingChip.operator, logProvider, providerType);
+      if (conflict) {
+        snackbar.error(conflict);
+        setInputValue('');
+        setPendingChip({ label: '', operator: '', value: '' });
+        setCurrentStep('label');
+        setSuggestions([]);
+        return;
+      }
       const newChip = {
         label: pendingChip.label,
         operator: pendingChip.operator,
