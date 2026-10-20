@@ -55,6 +55,7 @@ import KGSettings from './KGSettings';
 import { downloadRelationshipsCsv, downloadGraphImage, IMAGE_MAX_NODES } from './kgExport';
 import { parseUniqueKey, formatTypeBadge, decodeFilterOptions, computeFilterOptionsClientSide } from './kgFilterCascade';
 import { getAutoFitCenter } from './kgViewport';
+import { getFocusCenter } from './kgFocusView';
 import { getCurrentTenant, isTenantAdmin } from '@lib/auth';
 import PropTypes from 'prop-types';
 
@@ -890,7 +891,7 @@ FilterWithInfo.propTypes = {
 const ServiceMapContent = ({ cardElevation, height }) => {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const { fitView, getNodes, getEdges, setCenter } = useReactFlow();
+  const { fitView, getNodes, getEdges, setCenter, getViewport, setViewport } = useReactFlow();
   const reactFlowStore = useStoreApi();
 
   const [isFilterLoading, setIsFilterLoading] = useState(true);
@@ -961,6 +962,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
   const adjacencyMapRef = useRef(new Map());
   const layoutIdRef = useRef(0);
   const originalPositionsRef = useRef(null);
+  const preFocusViewportRef = useRef(null);
   const focusLayoutIdRef = useRef(0);
   const nodeDetailRequestRef = useRef(0);
   const edgeDetailRequestRef = useRef(0);
@@ -1819,6 +1821,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
 
       if (!originalPositionsRef.current) {
         originalPositionsRef.current = new Map(currentNodes.map((n) => [n.id, n.position]));
+        preFocusViewportRef.current = getViewport();
       }
 
       const connectedIds = new Set([nodeId, ...(adjacencyMapRef.current.get(nodeId) || [])]);
@@ -1856,13 +1859,30 @@ const ServiceMapContent = ({ cardElevation, height }) => {
       );
       setEdges((eds) => eds.map((e) => ({ ...e, hidden: !connectedIds.has(e.source) || !connectedIds.has(e.target) })));
 
-      setTimeout(() => fitView({ duration: 300, padding: 0.2, minZoom: FIT_VIEW_MIN_ZOOM }), 100);
+      setTimeout(() => {
+        // Focus was left (exitFocusMode bumps the id) or moved to another node meanwhile.
+        if (currentLayoutId !== focusLayoutIdRef.current) return;
+        // Too many neighbours to fit at the min zoom: centre on the focused node instead of the
+        // subgraph's bounds, which would leave the focused node off screen (#41141).
+        const { width, height } = reactFlowStore.getState();
+        const center = getFocusCenter(
+          getNodes().filter((n) => !n.hidden),
+          nodeId,
+          width,
+          height,
+          FIT_VIEW_MIN_ZOOM,
+          0.2
+        );
+        if (center) setCenter(center.x, center.y, { zoom: FIT_VIEW_MIN_ZOOM, duration: 300 });
+        else fitView({ duration: 300, padding: 0.2, minZoom: FIT_VIEW_MIN_ZOOM });
+      }, 100);
     },
-    [getNodes, getEdges, setNodes, setEdges, fitView, clearPinHighlight, handleNodeSearch]
+    [getNodes, getEdges, setNodes, setEdges, fitView, setCenter, getViewport, reactFlowStore, clearPinHighlight, handleNodeSearch]
   );
 
   const exitFocusMode = useCallback(() => {
     const snapshot = originalPositionsRef.current;
+    const viewport = preFocusViewportRef.current;
     setNodes((nds) =>
       nds.map((n) => ({
         ...n,
@@ -1872,10 +1892,12 @@ const ServiceMapContent = ({ cardElevation, height }) => {
     );
     setEdges((eds) => eds.map((e) => ({ ...e, hidden: false })));
     originalPositionsRef.current = null;
+    preFocusViewportRef.current = null;
     focusLayoutIdRef.current++;
     setFocusedNodeId(null);
-    setTimeout(() => fitView({ duration: 300, minZoom: FIT_VIEW_MIN_ZOOM }), 50);
-  }, [setNodes, setEdges, fitView]);
+    // Return to the pan/zoom the user had before focusing, not a fresh fit of the whole graph.
+    setTimeout(() => (viewport ? setViewport(viewport, { duration: 300 }) : fitView({ duration: 300, minZoom: FIT_VIEW_MIN_ZOOM })), 50);
+  }, [setNodes, setEdges, fitView, setViewport]);
 
   // Keep the stable ref pointer up to date whenever enterFocusMode changes (adjacency map update)
   useEffect(() => {
