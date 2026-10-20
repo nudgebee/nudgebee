@@ -3,6 +3,7 @@ import html
 import json
 import logging
 import re
+import time
 import uuid
 from datetime import datetime, timedelta
 
@@ -28,7 +29,7 @@ from notifications_server.models.models import (
 )
 from notifications_server.utils.datetime_utils import utc_now
 from notifications_server.utils.transformer import Transformer
-from notifications_server.services.cache import Cache
+from notifications_server.services.cache import SLACK_USERS_FRESH_SECONDS, Cache
 from notifications_server.services.ms_teams.identity import sender_email
 from notifications_server.services.ms_teams.bot_sender import (
     APP_NOT_IN_TEAM,
@@ -55,6 +56,15 @@ from botbuilder.schema import ConversationAccount, ChannelAccount, ConversationR
 
 cache = Cache()
 LOG = logging.getLogger(__name__)
+
+USER_LIST_RATE_LIMITED = "Slack is limiting how often users can be listed. Try again in a minute."
+USER_LIST_UNAVAILABLE = "Unable to list users"
+USER_LIST_RECONNECT = "Slack access was revoked or lacks the users:read scope. Reconnect Slack in Integrations."
+# Slack errors a retry can't fix: the token or its scopes need a reconnect.
+SLACK_RECONNECT_ERRORS = {"invalid_auth", "not_authed", "token_revoked", "account_inactive", "missing_scope"}
+# After a 429, users.list is not called again for this tenant+team until Retry-After
+# passes (per pod). (tenant, team_id) -> epoch seconds.
+_slack_users_backoff = {}
 
 # Adaptive Card constants
 ADAPTIVE_CARD_SCHEMA_KEY = "$schema"
@@ -92,6 +102,16 @@ def extract_event_fingerprint(conversation_id: str) -> str:
     if conversation_id.startswith(EVENT_CONVERSATION_PREFIX):
         return conversation_id[len(EVENT_CONVERSATION_PREFIX) :]
     return conversation_id
+
+
+def _slack_retry_after(error):
+    """The Retry-After value of a Slack 429 as a string ("" if absent), or None when not rate-limited."""
+    response = getattr(error, "response", None)
+    headers = {str(k).lower(): v for k, v in (getattr(response, "headers", None) or {}).items()}
+    error_code = response.get("error") if hasattr(response, "get") else None
+    if getattr(response, "status_code", None) != 429 and error_code != "ratelimited":
+        return None
+    return str(headers.get("retry-after", "")).strip()
 
 
 class CommonService:
@@ -231,16 +251,53 @@ class CommonService:
                 return {"data": []}
 
             if platform == "slack":
-                return self.get_slack_users(messaging_platform)
-            elif platform == "discord":
-                return {"data": []}  # Discord bots need privileged intents to list members
-            return {}
+                return self.get_slack_users(messaging_platform, tenant)
+            return {"data": []}  # discord: bots need privileged intents to list members
+        except SlackApiError as e:
+            self.session.rollback()
+            LOG.error("Slack users.list failed for tenant %s: %s", tenant, e)
+            error_code = e.response.get("error") if hasattr(e.response, "get") else None
+            if error_code in SLACK_RECONNECT_ERRORS:
+                return {"error": {"code": "reconnect_required", "message": USER_LIST_RECONNECT}}
+            return {"error": {"code": "provider_error", "message": USER_LIST_UNAVAILABLE}}
         except Exception as e:
             self.session.rollback()
             LOG.critical("Unable to get user list for %s, %s", platform, e)
-            return {}
+            return {"error": {"code": "internal_error", "message": USER_LIST_UNAVAILABLE}}
 
-    def get_slack_users(self, messaging_platform):
+    def get_slack_users(self, messaging_platform, tenant):
+        team_id = messaging_platform.team_id
+        cached = cache.get_cached_slack_users(tenant, team_id)
+        if cached and time.time() - cached.get("cached_at", 0) < SLACK_USERS_FRESH_SECONDS:
+            return {"data": cached["users"]}
+        backoff_key = (tenant, team_id)
+        wait = _slack_users_backoff.get(backoff_key, 0) - time.time()
+        if wait > 0:
+            if cached:
+                return {"data": cached["users"]}
+            return {"error": {"code": "rate_limited", "message": USER_LIST_RATE_LIMITED, "retry_after": int(wait) + 1}}
+        try:
+            users = self._fetch_slack_users(messaging_platform)
+        except SlackApiError as e:
+            retry_after = _slack_retry_after(e)
+            if retry_after is None:
+                raise
+            _slack_users_backoff[backoff_key] = time.time() + (int(retry_after) if retry_after.isdigit() else 30)
+            if cached:
+                LOG.warning("Slack rate limited users.list for tenant %s, serving the cached list", tenant)
+                return {"data": cached["users"]}
+            LOG.warning("Slack rate limited users.list for tenant %s, retry after %ss", tenant, retry_after)
+            return {
+                "error": {
+                    "code": "rate_limited",
+                    "message": USER_LIST_RATE_LIMITED,
+                    "retry_after": int(retry_after) if retry_after.isdigit() else None,
+                }
+            }
+        cache.cache_slack_users(tenant, team_id, users)
+        return {"data": users}
+
+    def _fetch_slack_users(self, messaging_platform):
         users = []
         next_cursor = None
 
@@ -270,7 +327,7 @@ class CommonService:
             else:
                 break
 
-        return {"data": users}
+        return users
 
     def get_ms_teams_channels(self, messaging_platform):
         return {"data": self._ms_teams_installed_channels(messaging_platform.tenant_id)}

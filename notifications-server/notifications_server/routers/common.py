@@ -136,6 +136,11 @@ async def list_channels(request: Request, body: HasuraActionPayload):
         return JSONResponse({"error": {"message": "Unable to list channels"}})
 
 
+def _list_users_sync(platform, tenant):
+    with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
+        return controller.list_users(platform, tenant)
+
+
 @router.post("/users/list", dependencies=[Depends(verify_action_token)])
 async def list_users(request: Request, body: HasuraActionPayload):
     try:
@@ -143,14 +148,16 @@ async def list_users(request: Request, body: HasuraActionPayload):
         if not tenant:
             return JSONResponse({"error": {"message": ERROR_TENANT_NOT_FOUND}})
 
-        platform = body.input.platform
-
-        with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
-            users = controller.list_users(platform, tenant)
-            return JSONResponse(content=users)
+        # Slack paging and the DB lookup block; keep them off the event loop (#41063).
+        users = await run_in_threadpool(_list_users_sync, body.input.platform, tenant)
+        if isinstance(users, dict) and isinstance(users.get("error"), dict):
+            code = users["error"].get("code")
+            status = 429 if code == "rate_limited" else 500 if code == "internal_error" else 502
+            return JSONResponse(users, status_code=status)
+        return JSONResponse(content=users)
     except Exception:
         LOG.exception("Error in list_users endpoint")
-        return JSONResponse({"error": {"message": "Unable to list users"}})
+        return JSONResponse({"error": {"message": "Unable to list users"}}, status_code=500)
 
 
 def _list_watchable_sync(tenant, team_id):

@@ -109,6 +109,19 @@ describe('SubTasksEditor action picker', () => {
     await act(async () => {});
   });
 
+  it('shows a retryable error instead of "No users available" when the user list fails', async () => {
+    mockUserList.mockReset();
+    mockUserList.mockRejectedValueOnce(new Error('rate limited')).mockResolvedValue({ data: { data: [{ id: 'U1', display_name: 'Alice' }] } });
+    render(<Harness onChangeSpy={jest.fn()} />);
+    fireEvent.click(screen.getByTestId('foreach-empty-add-subtask-btn'));
+    pickAction('Send DM');
+
+    expect(await screen.findByText('Could not load users. Try again in a moment.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(mockUserList).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText('Could not load users. Try again in a moment.')).not.toBeInTheDocument());
+  });
+
   it('deletes without a confirm prompt when params equal the auto-fill in a different key order', () => {
     const spy = jest.fn();
     const initial = [{ id: 'task_1', type: 'k8s.get_resource', params: { output_format: 'json', account_id: 'acct-1' } }];

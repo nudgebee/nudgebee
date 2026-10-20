@@ -34,6 +34,14 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="redis-cache")
 # logging a warning.
 FORBID_EVENT_LOOP_CALLS_ENV = "NOTIFICATIONS_FORBID_EVENT_LOOP_REDIS"
 
+# Slack users.list is rate-limited to a few calls a minute (#41063). A copy under
+# 5 minutes old is served as is; an older one is kept only to answer a 429.
+SLACK_USERS_FRESH_SECONDS = 300
+SLACK_USERS_KEEP_SECONDS = 86400
+# Used with the memory provider, or while Redis is unreachable or cooling down;
+# a Redis error on a live client is logged, not retried here. key -> (expires_at, entry).
+_memory_slack_users = {}
+
 
 def _teams_analysis_key(event_id):
     return f"event_analysis_poll:ms_teams:{event_id}"
@@ -786,6 +794,43 @@ class Cache:
         except redis.RedisError as e:
             LOG.exception(f"Error caching user name for {user_id}: {e}")
             return False
+
+    def _slack_users_redis(self):
+        if not settings.redis.is_enabled:
+            return None
+        return self._ensure_connection()
+
+    def get_cached_slack_users(self, tenant_id, team_id):
+        """Return {"users": [...], "cached_at": epoch seconds}, or None."""
+        key = f"slack_users_list:{tenant_id}:{team_id}"
+        client = self._slack_users_redis()
+        if client:
+            try:
+                raw = client.get(key)
+                return json.loads(raw) if raw else None
+            except (redis.RedisError, ValueError) as e:
+                LOG.exception(f"Error reading cached Slack users for team {team_id}: {e}")
+                return None
+        held = _memory_slack_users.get(key, (0, None))
+        expires_at, entry = held
+        if expires_at <= time.time():
+            # Drop only the entry we read; a concurrent writer may have replaced it.
+            if _memory_slack_users.get(key) is held:
+                _memory_slack_users.pop(key, None)
+            return None
+        return entry
+
+    def cache_slack_users(self, tenant_id, team_id, users):
+        key = f"slack_users_list:{tenant_id}:{team_id}"
+        entry = {"users": users, "cached_at": time.time()}
+        client = self._slack_users_redis()
+        if client:
+            try:
+                client.set(key, json.dumps(entry), ex=SLACK_USERS_KEEP_SECONDS)
+            except redis.RedisError as e:
+                LOG.exception(f"Error caching Slack users for team {team_id}: {e}")
+            return
+        _memory_slack_users[key] = (time.time() + SLACK_USERS_KEEP_SECONDS, entry)
 
     def get_cached_team_domain(self, team_id):
         if not self._ensure_connection():

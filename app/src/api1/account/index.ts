@@ -281,17 +281,17 @@ const apiAccount = {
     }
   },
   getNotificationUserList: async function (platform: string) {
-    try {
-      const response = await queryGraphQL(GET_NOTIFICATION_USER_LIST, 'GetUserList', {
-        platform: platform,
-      });
-      return {
-        data: response?.data?.data?.notification_get_user_list || [],
-      };
-    } catch (err) {
-      console.error('Failed to get notification user list:', err);
-      throw err;
+    const response = await queryGraphQL(GET_NOTIFICATION_USER_LIST, 'GetUserList', { platform });
+    // The gateway answers an upstream failure with HTTP 200 and an errors array;
+    // throw so the picker shows an error, not "No users available" (#41063).
+    if (response?.data?.errors?.length) {
+      throw new Error(response.data.errors[0]?.message || 'Failed to list users');
     }
+    const result = response?.data?.data?.notification_get_user_list;
+    if (!Array.isArray(result?.data)) {
+      throw new Error('User list response had no users array');
+    }
+    return { data: result };
   },
   getMessagingPlatform: async function (platform_type: string) {
     try {
