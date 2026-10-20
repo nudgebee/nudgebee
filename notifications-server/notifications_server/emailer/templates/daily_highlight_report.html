@@ -29,6 +29,32 @@
   </div>
 
   <!-- OVERVIEW TABLE (data table — proper th headers) -->
+  {% set max_overview_clusters = 30 %}
+  {% set overview_rows = [] %}
+  {%- for account in insights.data.cloud_accounts %}
+    {%- set c_app = (highlight1.data.app_events.rows | selectattr('account_id', 'equalto', account.id) | first) %}
+    {%- set c_node = (highlight1.data.node_events.rows | selectattr('account_id', 'equalto', account.id) | first) %}
+    {%- set c_pod = (highlight1.data.pod_events.rows | selectattr('account_id', 'equalto', account.id) | first) %}
+    {%- set ev_count = (c_app.event_count if c_app else 0) + (c_node.event_count if c_node else 0) + (c_pod.event_count if c_pod else 0) %}
+    {%- set recs = highlight1.data.recommendation_groupings.rows | selectattr('account_id', 'equalto', account.id) | list %}
+    {%- set cluster_savings = recs | map(attribute='sum_estimated_savings') | sum %}
+    {%- set sec_events = insights.data.recommendation_security_groupings_v2.rows | selectattr('account_id', 'equalto', account.id) | list %}
+    {%- set sec_critical = sec_events | map(attribute='count_severity_critical') | sum %}
+    {%- set sec_high = sec_events | map(attribute='count_severity_high') | sum %}
+    {%- set has_data = (ev_count > 0) or (recs | length > 0) or (sec_events | length > 0) %}
+    {%- if has_data %}
+      {%- set _ = overview_rows.append({
+        'account': account,
+        'ev_count': ev_count,
+        'cluster_savings': cluster_savings,
+        'sec_critical': sec_critical,
+        'sec_high': sec_high,
+        'activity_score': ev_count + (recs | length) + (sec_events | length),
+      }) %}
+    {%- endif %}
+  {%- endfor %}
+  {% set ranked_overview_rows = overview_rows | sort(attribute='activity_score', reverse=True) %}
+
   <table style="border-collapse:collapse; border-spacing:0; width:100%; font-family:'DM Sans',Arial,sans-serif;">
     <thead>
       <tr style="background:#F8F9FA;">
@@ -40,18 +66,12 @@
       </tr>
     </thead>
     <tbody>
-      {% for account in insights.data.cloud_accounts %}
-        {% set c_app = (highlight1.data.app_events.rows | selectattr('account_id', 'equalto', account.id) | first) %}
-        {% set c_node = (highlight1.data.node_events.rows | selectattr('account_id', 'equalto', account.id) | first) %}
-        {% set c_pod = (highlight1.data.pod_events.rows | selectattr('account_id', 'equalto', account.id) | first) %}
-        {% set ev_count = (c_app.event_count if c_app else 0) + (c_node.event_count if c_node else 0) + (c_pod.event_count if c_pod else 0) %}
-        {% set recs = highlight1.data.recommendation_groupings.rows | selectattr('account_id', 'equalto', account.id) | list %}
-        {% set cluster_savings = recs | map(attribute='sum_estimated_savings') | sum %}
-        {% set sec_events = insights.data.recommendation_security_groupings_v2.rows | selectattr('account_id', 'equalto', account.id) | list %}
-        {% set sec_critical = sec_events | map(attribute='count_severity_critical') | sum %}
-        {% set sec_high = sec_events | map(attribute='count_severity_high') | sum %}
-        {% set has_data = (ev_count > 0) or (recs | length > 0) or (sec_events | length > 0) %}
-        {% if has_data %}
+      {% for row in ranked_overview_rows[:max_overview_clusters] %}
+        {% set account = row.account %}
+        {% set ev_count = row.ev_count %}
+        {% set cluster_savings = row.cluster_savings %}
+        {% set sec_critical = row.sec_critical %}
+        {% set sec_high = row.sec_high %}
       <tr style="border-bottom:1px solid #F0F0F0;">
         <td style="padding:10px 12px; font-size:13px; color:#0D1B2A; font-weight:500;">
           <a href="{{ base_url }}/kubernetes/details/{{ account.id }}" style="color:#0D1B2A; text-decoration:none;">{{ account.account_name }}</a>
@@ -78,38 +98,82 @@
           </a>
         </td>
       </tr>
-        {% endif %}
       {% endfor %}
     </tbody>
   </table>
 
-  <!-- DETAIL SECTIONS — only clusters with data -->
-  {% for account in insights.data.cloud_accounts %}
-    {% set current_app_event_row = highlight1.data.app_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
-    {% set previous_app_event_row = highlight2.data.app_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
-    {% set current_app_events = current_app_event_row.event_count if current_app_event_row else 0 %}
-    {% set previous_app_events = previous_app_event_row.event_count if previous_app_event_row else 0 %}
+  {% set overview_hidden_count = ranked_overview_rows | length - max_overview_clusters %}
+  {% if overview_hidden_count > 0 %}
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:12px; color:#6B7280; line-height:1.6; margin:6px 0 0;">
+    +{{ overview_hidden_count }} more cluster{{ 's' if overview_hidden_count != 1 else '' }} with activity
+    &nbsp;<a href="{{ base_url }}/home?accountId={{ ranked_overview_rows[0].account.id }}" style="color:{{ _primary_color }}; text-decoration:none; font-weight:500;">open NudgeBee</a> to see the rest.
+  </p>
+  {% endif %}
 
-    {% set current_node_event_row = highlight1.data.node_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
-    {% set previous_node_event_row = highlight2.data.node_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
-    {% set current_node_events = current_node_event_row.event_count if current_node_event_row else 0 %}
-    {% set previous_node_events = previous_node_event_row.event_count if previous_node_event_row else 0 %}
+  <!-- DETAIL SECTIONS — top clusters by attention; the rest stay linked from the overview table above (Gmail clips the mail past ~102KB — see issue #41716) -->
+  {% set max_detail_clusters = 8 %}
+  {% set max_insights_per_cluster = 5 %}
+  {% set accounts_with_data = [] %}
+  {%- for account in insights.data.cloud_accounts %}
+    {%- set current_app_event_row = highlight1.data.app_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
+    {%- set previous_app_event_row = highlight2.data.app_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
+    {%- set current_app_events = current_app_event_row.event_count if current_app_event_row else 0 %}
+    {%- set previous_app_events = previous_app_event_row.event_count if previous_app_event_row else 0 %}
+    {%- set current_node_event_row = highlight1.data.node_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
+    {%- set previous_node_event_row = highlight2.data.node_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
+    {%- set current_node_events = current_node_event_row.event_count if current_node_event_row else 0 %}
+    {%- set previous_node_events = previous_node_event_row.event_count if previous_node_event_row else 0 %}
+    {%- set current_pod_event_row = highlight1.data.pod_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
+    {%- set previous_pod_event_row = highlight2.data.pod_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
+    {%- set current_pod_events = current_pod_event_row.event_count if current_pod_event_row else 0 %}
+    {%- set previous_pod_events = previous_pod_event_row.event_count if previous_pod_event_row else 0 %}
+    {%- set total_highlights = current_app_events + current_node_events + current_pod_events %}
+    {%- set recommendations = highlight1.data.recommendation_groupings.rows | selectattr('account_id', 'equalto', account.id) | list %}
+    {%- set total_recommendations = recommendations | length %}
+    {%- set insights_list = insights.data.insight | selectattr('account_id', 'equalto', account.id) | rejectattr('type', 'equalto', 'Optimization') | list %}
+    {%- set total_insights = insights_list | length %}
+    {%- set security_events = insights.data.recommendation_security_groupings_v2.rows | selectattr('account_id', 'equalto', account.id) | list %}
+    {%- set total_security_events = security_events | length %}
+    {%- set total_data = total_highlights + total_recommendations + total_insights + total_security_events %}
+    {%- if total_data > 0 %}
+      {%- set _ = accounts_with_data.append({
+        'account': account,
+        'current_app_events': current_app_events,
+        'previous_app_events': previous_app_events,
+        'current_node_events': current_node_events,
+        'previous_node_events': previous_node_events,
+        'current_pod_events': current_pod_events,
+        'previous_pod_events': previous_pod_events,
+        'total_highlights': total_highlights,
+        'recommendations': recommendations,
+        'total_recommendations': total_recommendations,
+        'insights_list': insights_list,
+        'total_insights': total_insights,
+        'security_events': security_events,
+        'total_security_events': total_security_events,
+        'total_data': total_data,
+      }) %}
+    {%- endif %}
+  {%- endfor %}
 
-    {% set current_pod_event_row = highlight1.data.pod_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
-    {% set previous_pod_event_row = highlight2.data.pod_events.rows | selectattr('account_id', 'equalto', account.id) | first %}
-    {% set current_pod_events = current_pod_event_row.event_count if current_pod_event_row else 0 %}
-    {% set previous_pod_events = previous_pod_event_row.event_count if previous_pod_event_row else 0 %}
+  {% set ranked_accounts = accounts_with_data | sort(attribute='total_data', reverse=True) %}
 
-    {% set total_highlights = current_app_events + current_node_events + current_pod_events %}
-    {% set recommendations = highlight1.data.recommendation_groupings.rows | selectattr('account_id', 'equalto', account.id) | list %}
-    {% set total_recommendations = recommendations | length %}
-    {% set insights_list = insights.data.insight | selectattr('account_id', 'equalto', account.id) | rejectattr('type', 'equalto', 'Optimization') | list %}
-    {% set total_insights = insights_list | length %}
-    {% set security_events = insights.data.recommendation_security_groupings_v2.rows | selectattr('account_id', 'equalto', account.id) | list %}
-    {% set total_security_events = security_events | length %}
-    {% set total_data = total_highlights + total_recommendations + total_insights + total_security_events %}
+  {% for entry in ranked_accounts[:max_detail_clusters] %}
+    {% set account = entry.account %}
+    {% set current_app_events = entry.current_app_events %}
+    {% set previous_app_events = entry.previous_app_events %}
+    {% set current_node_events = entry.current_node_events %}
+    {% set previous_node_events = entry.previous_node_events %}
+    {% set current_pod_events = entry.current_pod_events %}
+    {% set previous_pod_events = entry.previous_pod_events %}
+    {% set total_highlights = entry.total_highlights %}
+    {% set recommendations = entry.recommendations %}
+    {% set total_recommendations = entry.total_recommendations %}
+    {% set insights_list = entry.insights_list %}
+    {% set total_insights = entry.total_insights %}
+    {% set security_events = entry.security_events %}
+    {% set total_security_events = entry.total_security_events %}
 
-    {% if total_data > 0 %}
     <!-- Cluster divider -->
     <div style="border-top:2px dotted #D1D5DB; margin:28px 0 0;"></div>
 
@@ -123,7 +187,7 @@
     <div style="font-family:'DM Sans',Arial,sans-serif; font-size:11px; font-weight:600; color:#6B7280; letter-spacing:0.8px; text-transform:uppercase; margin:0 0 6px;">
       INSIGHTS
     </div>
-    {% for insight in insights_list %}
+    {% for insight in insights_list[:max_insights_per_cluster] %}
     {% set apps_count = insight.applications | default([], true) | length %}
     {% set insight_text = (insight.title ~ ' detected for (' ~ apps_count ~ ') workloads') if (insight.type == 'Troubleshooting' and apps_count > 0) else insight.title %}
     {% if insight.type in ('Troubleshooting', 'Performance') %}{% set insight_cta = 'Investigate' %}
@@ -146,6 +210,13 @@
       {% endif %}
     </p>
     {% endfor %}
+    {% if total_insights > max_insights_per_cluster %}
+    <p style="font-family:'DM Sans',Arial,sans-serif; font-size:12px; color:#6B7280; line-height:1.6; margin:0 0 4px; padding-left:16px;">
+      +{{ total_insights - max_insights_per_cluster }} more insight{{ 's' if (total_insights - max_insights_per_cluster) != 1 else '' }}
+      &nbsp;<a href="{{ base_url }}/kubernetes/details/{{ account.id }}?utm=email#summary"
+        style="color:{{ _primary_color }}; text-decoration:none; font-weight:500;">view all &rarr;</a>
+    </p>
+    {% endif %}
     {% endif %}
 
     {#- RECOMMENDED ACTIONS -#}
@@ -281,6 +352,14 @@
     {% endfor %}
     {% endif %}
 
-    {% endif %}
   {% endfor %}
+
+  {% set hidden_count = ranked_accounts | length - max_detail_clusters %}
+  {% if hidden_count > 0 %}
+  <div style="border-top:2px dotted #D1D5DB; margin:28px 0 0;"></div>
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#6B7280; line-height:1.6; margin:16px 0 0;">
+    {{ hidden_count }} more cluster{{ 's' if hidden_count != 1 else '' }} need{{ 's' if hidden_count == 1 else '' }} attention — see the Cluster table above, or
+    <a href="{{ base_url }}/home?accountId={{ ranked_accounts[0].account.id }}" style="color:{{ _primary_color }}; text-decoration:none; font-weight:500;">open NudgeBee</a> for full detail.
+  </p>
+  {% endif %}
 {% endblock %}
