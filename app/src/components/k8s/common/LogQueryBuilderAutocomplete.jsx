@@ -1613,7 +1613,10 @@ const LogQueryBuilderAutocomplete = ({
 
       // Input shows the friendly label (=, contains, ...) while pendingChip
       // holds the backend token so the eventually-created chip is correct.
-      const operatorDisplay = suggestion.label ?? suggestion.value;
+      // Enter re-parses the input by splitting on whitespace, so a multi-word label
+      // like `= (equals)` would leak `(equals)` into the value — write the operator's
+      // token instead whenever the label would not survive that split.
+      const operatorDisplay = suggestion.label && !/\s/.test(suggestion.label) ? suggestion.label : suggestion.value ?? suggestion.label;
       const newInputValue = pendingChip.label + ' ' + operatorDisplay + ' ';
       setPendingChip({ ...pendingChip, operator: suggestion.value });
       setInputValue(newInputValue);
