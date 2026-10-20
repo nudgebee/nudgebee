@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import dynamic from 'next/dynamic';
-import { headerMenuExtras } from '@lib/authHooks';
+import { headerMenuExtras, navSections } from '@lib/authHooks';
 import Box from '@mui/material/Box';
 import { Typography } from '@mui/material';
 import DOMPurify from 'dompurify';
@@ -520,6 +520,19 @@ const Header1 = ({ showBorder = false }) => {
         showActiveCluster: false,
       },
     ];
+    // Routes of sections an extension registers (registerNavSection) carry their own title.
+    for (const section of navSections()) {
+      for (const h of section.headers ?? []) {
+        baseOptions.push({
+          name: h.name,
+          route: h.route,
+          icon: h.icon,
+          showActiveCluster: false,
+          clusterDetailButton: false,
+          showBackButton: !!h.showBackButton,
+        });
+      }
+    }
     return baseOptions;
   }, [selectedCluster]);
 

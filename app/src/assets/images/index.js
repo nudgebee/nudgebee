@@ -304,6 +304,8 @@ export * as GraphOutlineIcon from '@assets/troubleshoot/graph-up.svg';
 /** @deprecated Use WorkflowIconBlue instead */
 export * as WorkflowIconBlue from '@assets/workflow/workflow-icon-blue.icon.svg';
 export * as WorkflowIconWhite from '@assets/workflow/workflow-icon-white.icon.svg';
+export * as BeesIconWhite from '@assets/bees/bees-white.svg';
+export * as BeesIconBlue from '@assets/bees/bees-blue.svg';
 
 export * as NotificationOutlineIcon from '@assets/new/bell-outline-icon.svg';
 export * as HelpOutlineIcon from '@assets/new/help-circle-outline.svg';

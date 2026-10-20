@@ -8,7 +8,7 @@ import { signOut } from 'next-auth/react';
 import Head from 'next/head';
 import Link from 'next/link';
 import { renderSlot } from '@lib/slots';
-import { userManagementFilters } from '@lib/authHooks';
+import { NAV_COUNTS_EVENT, navSections, userManagementFilters } from '@lib/authHooks';
 
 // Internal Imports
 import { LayoutHeaderActionSlot } from '@shared/layout/LayoutHeaderActionSlot';
@@ -65,6 +65,7 @@ import FirstLoginTour from '@components/onboarding/FirstLoginTour';
 import PendingAgentInstallBanner, { PendingAgentInstallBannerHostContext } from '@components/integrations/PendingAgentInstallBanner';
 import SectionFirstVisitTour from '@components/onboarding/SectionFirstVisitTour';
 import Tooltip from '@ui/Tooltip';
+import Chip from '@ui/Chip';
 import { Divider } from '@ui/Divider';
 import ApiTokens from '@shared/settings/ApiTokens';
 import { tenantSwitcher } from '@lib/tenantSwitcherService';
@@ -186,8 +187,12 @@ const navigateTo = (router, targetPath) => {
   router.push(targetPath);
 };
 
-/** True when the route currently rendered is the one this sub-item points at. */
-const isSubItemActive = (subPath, router) => {
+/** True when the route currently rendered is the one this sub-item points at. A
+ * sub-item with `activePaths` is active on exactly those routes. */
+const isSubItemActive = (subPath, router, activePaths) => {
+  if (activePaths) {
+    return activePaths.includes(router.pathname);
+  }
   const [base, hash] = subPath.split('#');
   if (!router.pathname.startsWith(base)) {
     return false;
@@ -230,7 +235,7 @@ const SubNavFlyout = ({ item, anchorEl, onMouseEnter, onMouseLeave, onNavigate }
             component={sub.disabled ? 'div' : Link}
             href={sub.disabled ? undefined : sub.path}
             disabled={sub.disabled}
-            selected={isSubItemActive(sub.path, router)}
+            selected={isSubItemActive(sub.path, router, sub.activePaths)}
             onClick={(e) => {
               e.preventDefault();
               if (sub.disabled) {
@@ -244,6 +249,13 @@ const SubNavFlyout = ({ item, anchorEl, onMouseEnter, onMouseLeave, onNavigate }
               <SafeIcon src={sub.icon} alt='' width={FLYOUT_ICON_PX} height={FLYOUT_ICON_PX} />
             </Box>
             {sub.text}
+            {sub.count > 0 && (
+              <Box component='span' sx={styles.flyoutItemCount}>
+                <Chip size='xs' tone='warning' id={`${sub.id}-count`}>
+                  {sub.count}
+                </Chip>
+              </Box>
+            )}
           </MenuItem>
         );
         const entry =
@@ -420,6 +432,54 @@ const PageLayout = ({ children }) => {
       .then(setLlmAnalyserEnabled)
       .catch(() => setLlmAnalyserEnabled(false));
   }, []);
+
+  // Sections an extension registers (navSections), shown when their feature flag
+  // is on. A page change reuses counts read in the last minute; refreshNavCounts()
+  // reads them again at once, so a count moves as soon as what it counts is acted on.
+  const [extraSections, setExtraSections] = useState([]);
+  const [countsAsked, setCountsAsked] = useState(0);
+  const countsRead = useRef({ asked: -1, at: 0, bySection: {} });
+  useEffect(() => {
+    const onCounts = () => setCountsAsked((n) => n + 1);
+    window.addEventListener(NAV_COUNTS_EVENT, onCounts);
+    return () => window.removeEventListener(NAV_COUNTS_EVENT, onCounts);
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const read = countsRead.current;
+    const reuse = read.asked === countsAsked && Date.now() - read.at < 60_000;
+    if (!reuse) {
+      countsRead.current = { asked: countsAsked, at: Date.now(), bySection: {} };
+    }
+    const bySection = countsRead.current.bySection;
+    Promise.all(
+      navSections().map(async (section) => {
+        if (section.feature && !(await hasFeatureAccess(section.feature).catch(() => false))) {
+          return null;
+        }
+        if (section.loadCounts && !bySection[section.id]) {
+          // A failed read is not kept: the next page change asks again.
+          bySection[section.id] = section.loadCounts().catch(() => {
+            delete bySection[section.id];
+            return {};
+          });
+        }
+        const counts = section.loadCounts ? await bySection[section.id] : {};
+        return { ...section, subItems: section.subItems.map((sub) => ({ ...sub, count: counts[sub.id] })) };
+      })
+    ).then((sections) => {
+      if (cancelled) {
+        return;
+      }
+      const next = sections.filter(Boolean);
+      // Keep the same array when nothing changed, so the menu is not rebuilt on every page.
+      const key = (list) => JSON.stringify(list.map((s) => [s.id, s.subItems.map((sub) => sub.count)]));
+      setExtraSections((prev) => (key(prev) === key(next) ? prev : next));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [router.pathname, countsAsked]);
 
   const menuItems = useMemo(() => {
     const isAdmin = !!(session?.roles?.includes('tenant_admin') || session?.roles?.includes('account_admin'));
@@ -700,6 +760,10 @@ const PageLayout = ({ children }) => {
         ],
       });
     }
+    for (const section of extraSections) {
+      const at = items.findIndex((item) => item.id === section.before);
+      items.splice(at === -1 ? items.length : at, 0, section);
+    }
     if (!isGrantsOnlyUser(selectedCluster?.value)) return items;
     // An entry is reachable when the user holds :Read on ANY of the modules behind
     // it. Almost every entry has exactly one (`module`); `Optimize` declares two
@@ -722,7 +786,7 @@ const PageLayout = ({ children }) => {
         ? gated
         : { ...gated, disabled: true, disabledTooltip: subItems[0].disabledTooltip };
     });
-  }, [selectedCluster?.value, session, llmAnalyserEnabled, assistantName, nubiIconUrl]);
+  }, [selectedCluster?.value, session, llmAnalyserEnabled, assistantName, nubiIconUrl, extraSections]);
 
   // Route/Page Type Detection
   const pageFlags = useMemo(
@@ -1161,6 +1225,9 @@ const styles = {
       '& .flyout-item-icon': { opacity: 1 },
       '&:hover': { backgroundColor: FLYOUT_ITEM_HOVER_BG },
     },
+  },
+  flyoutItemCount: {
+    ml: 'auto',
   },
   flyoutItemIcon: {
     display: 'inline-flex',

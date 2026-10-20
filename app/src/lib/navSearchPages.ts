@@ -162,6 +162,13 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Tickets', label: 'All Tickets', path: '/tickets#tickets' },
   { group: 'Tickets', label: 'All Tickets - Assigned to me', path: '/tickets#assigned-me' },
 
+  // A section an extension registers (registerNavSection, id 'bees-sidenav'),
+  // only for tenants with its feature flag; GlobalPageSearch.jsx hides these
+  // rows otherwise (canAccessBees).
+  { group: 'Bees', label: 'Bees', path: '/bees' },
+  { group: 'Bees', label: 'Bee Catalog', path: '/bees/catalog' },
+  { group: 'Bees', label: 'Bee Approvals', path: '/bees/approvals' },
+
   // Users, Groups, Ownership, Roles and Audit Log all consolidated into one
   // "Access & Users" top-level tab as sibling sub-tabs (AnchorComponent's
   // parent/child hash routing) — Users is the default sub-tab, so its path

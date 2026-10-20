@@ -220,6 +220,13 @@ const featureRecommendedContent = (baseTitle, assistantName) => ({
       'You need a role the built-ins do not express: auditor, workflow operator, cost analyst. Turning it back off is safe, definitions just stop applying.',
     why: 'Built-in roles are coarse. Because this switches on the grant mechanism that performs permission checks, it is admin-only and has a deployment-wide kill switch.',
   },
+  WORKER_BEES: {
+    description:
+      'AI teammates with one job each: when their trigger fires they look into the problem, decide, and act, ask you first, or leave it alone, as far as each one is allowed.',
+    whenToTurnOn:
+      'You want recurring problems handled the same way every time, starting with suggestions only and widening once the track record is good.',
+    why: 'A bee changes things only through its own automations, capped by each change’s risk, so it stays opt-in per tenant. Every bee starts at Suggest only until an admin moves its dial.',
+  },
   OPTIMIZE: {
     description: 'Cost optimisation product tier: rightsizing, spend analysis and recommendations.',
     whenToTurnOn: 'Not a toggle. It changes with the plan.',
@@ -240,6 +247,7 @@ const FEATURE_NAVIGATION = {
   LLM_ANALYSER: { route: '/optimise#llm-analyser' },
   AI_COST_REPORT: { route: '/optimise#llm-analyser' },
   CUSTOM_ROLES: { route: '/user-management#access-users/roles' },
+  WORKER_BEES: { route: '/bees' },
   CHANNEL_AWARENESS: { route: '/user-management#integrations' },
   OPTIMIZE: { route: '/optimise' },
   UPGRADE_PLANNER: {

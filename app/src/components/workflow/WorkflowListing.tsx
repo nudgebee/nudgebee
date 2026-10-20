@@ -23,6 +23,7 @@ import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
 import { hasWriteAccess, hasPermission, missingPermissionMessage, getUserSession } from '@lib/auth';
+import { renderSlot } from '@lib/slots';
 import { readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
 import { readPersistedAccounts, writePersistedAccounts } from './utils/accountFilterPersistence';
 import { workflowFilterKey, type PersistedWorkflowFilters } from './utils/listingFilterPersistence';
@@ -1325,6 +1326,7 @@ const WorkflowListing: React.FC = () => {
                     >
                       {workflow.name || '-'}
                     </Link>
+                    {renderSlot('AutomationRowBadge', { workflowId: workflow.id })}
                     <Box
                       sx={{
                         display: 'flex',

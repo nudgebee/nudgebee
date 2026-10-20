@@ -35,6 +35,7 @@ import { getGraphqlErrorMessage } from '@lib/errorMessages';
 import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { useData } from '@context/DataContext';
+import { navSections } from '@lib/authHooks';
 import { getSessionAccountIds, hasFeatureAccess, hasPermission, hasReadAccess, isTenantWideRole, isUiFeatureEnabled } from '@lib/auth';
 import { trackProductEvent } from '@lib/productAnalytics';
 import { useTenantBranding } from '@hooks/useTenantBranding';
@@ -53,7 +54,7 @@ import TroubleshootIconBlue from '@assets/header/TroubleshootIconBlue.icon.svg';
 import WorkflowIconBlue from '@assets/workflow/workflow-icon-blue.icon.svg';
 import BCortexIcon from '@assets/ask-nudgebee/bcortex-icon.icon.svg';
 import { checkConnections } from '@shared/widgets/ClusterStatusIndicator';
-import { AgentIconBlue, dashboardIcon1, KubernetesClusterIcon, VmIcon } from '@assets';
+import { AgentIconBlue, BeesIconBlue, dashboardIcon1, KubernetesClusterIcon, VmIcon } from '@assets';
 import {
   navSearchPages,
   accountScopedSearchFragments,
@@ -118,6 +119,7 @@ const NAV_SEARCH_GROUP_ICON = {
   Overview: recoloredSidebarIcon(KubernetesClusterIcon),
   VM: recoloredSidebarIcon(VmIcon),
   'b-Cortex': recoloredSidebarIcon(BCortexIcon),
+  Bees: BeesIconBlue,
 };
 
 // Keyboard-hint bar rendered below the options list — static markup (no
@@ -1245,6 +1247,18 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
   // tenant-scoped, so hasReadAccess (per-account) never sees that grant and the
   // row went missing for grant holders. Keep in lockstep with optimise/index.jsx.
   const canAccessAiGateway = isUiFeatureEnabled('llmGateway') && (hasReadAccess(selectedCluster?.value) || hasPermission('llm', 'Read'));
+  // The Bees rows lead to a section an extension registers (navSections); shown
+  // when it is registered and its feature flag is on, as the side navigation does.
+  const [canAccessBees, setCanAccessBees] = useState(false);
+  useEffect(() => {
+    const section = navSections().find((s) => s.id === 'bees-sidenav');
+    if (!section) {
+      return;
+    }
+    (section.feature ? hasFeatureAccess(section.feature) : Promise.resolve(true))
+      .then((v) => setCanAccessBees(Boolean(v)))
+      .catch(() => setCanAccessBees(false));
+  }, []);
 
   // Provider-agnostic "some account" resolution — used by Automation/Agent
   // Health's search entries (no K8s/AWS/Azure/GCP/CloudFoundry concept to key
@@ -1301,6 +1315,9 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
       if (opt.label === 'AI Gateway' && !canAccessAiGateway) {
         return false;
       }
+      if (opt.group === 'Bees' && !canAccessBees) {
+        return false;
+      }
       return true;
     },
     [
@@ -1314,6 +1331,7 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
       canAccessLlmAnalyser,
       canAccessLlmAnalyserCostReport,
       canAccessAiGateway,
+      canAccessBees,
     ]
   );
 
