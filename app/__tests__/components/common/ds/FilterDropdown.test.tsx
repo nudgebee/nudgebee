@@ -123,6 +123,37 @@ describe('FilterDropdown', () => {
     expect(screen.getByLabelText('k8s')).toBeInTheDocument();
   });
 
+  it('shows a long type chip in full instead of cutting it at a character count', () => {
+    // #40702: same-named k8s rows differ only by namespace, which sits after the
+    // cluster in the chip. A fixed 15-char cut rendered every row as
+    // "iteration-test ...", so the rows looked identical without hovering.
+    const rowOptions = [
+      { label: 'benchmark-server', value: 'a', badge: 'Service', type: 'iteration-test \u00b7 nudgebee', typeTextTransform: 'none' },
+      { label: 'benchmark-server', value: 'b', badge: 'Service', type: 'iteration-test \u00b7 benchmark', typeTextTransform: 'none' },
+    ];
+    render(<FilterDropdown options={rowOptions} value={[]} onSelect={jest.fn()} label='Node' multiple />);
+    fireEvent.click(screen.getByText('Node'));
+    expect(screen.getByText('iteration-test \u00b7 nudgebee')).toBeInTheDocument();
+    expect(screen.getByText('iteration-test \u00b7 benchmark')).toBeInTheDocument();
+    expect(screen.queryByText(/\.\.\.$/)).not.toBeInTheDocument();
+  });
+
+  it('puts the full type chip text in a tooltip when the chip is clipped', async () => {
+    // jsdom has no layout, so fake an element that overflows its box.
+    const scroll = jest.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockReturnValue(300);
+    const client = jest.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(100);
+    try {
+      const longType = 'a-very-long-cluster-name-for-testing \u00b7 a-very-long-namespace';
+      render(<FilterDropdown options={[{ label: 'svc', value: 'a', type: longType }]} value={[]} onSelect={jest.fn()} label='Node' multiple />);
+      fireEvent.click(screen.getByText('Node'));
+      fireEvent.mouseOver(screen.getByText(longType));
+      expect(await screen.findByRole('tooltip')).toHaveTextContent(longType);
+    } finally {
+      scroll.mockRestore();
+      client.mockRestore();
+    }
+  });
+
   it('matches search against opt.searchText, not just the visible label', () => {
     // Short labels, but the full key lives in searchText (KG node-row shape).
     const nodeOptions = Array.from({ length: 9 }, (_, i) => ({

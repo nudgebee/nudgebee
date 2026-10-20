@@ -33,8 +33,10 @@
  * a second dimension per row (e.g. a KG node's type on the left while the right
  * chip shows its namespace/region). Optional; rows without it are unchanged.
  * Both flank the label, which is the growth slot: `badge` and `type` are capped
- * at 150px/160px (or 35%/40% of a narrower row, whichever is smaller) and hand
- * whatever they don't use to the label.
+ * at 150px/240px (or 35%/40% of a narrower row, whichever is smaller) and hand
+ * whatever they don't use to the label. The `type` chip clips with a CSS
+ * ellipsis at that cap (full text in a tooltip only when clipped), so it shows
+ * in full whenever the row has room.
  *
  * Option search: search matches an option's visible label plus an optional
  * `searchText` field. Set `searchText` when the label is intentionally short but
@@ -60,7 +62,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Box, Popover, Typography, InputBase } from '@mui/material';
 import { Label } from '@ui/Label';
-import CustomTooltip from '@ui/Tooltip';
+import CustomTooltip, { OverflowTooltip } from '@ui/Tooltip';
 import { ds } from '@utils/colors';
 import PropTypes from 'prop-types';
 import { toKebabCase } from '@utils/common';
@@ -70,6 +72,8 @@ import SafeIcon from '@shared/icons/SafeIcon';
 
 const VIRTUALIZATION_THRESHOLD = 200;
 const OPTION_HEIGHT = 36;
+// Module-level so the memoized OptionItem passes Label a stable style object.
+const CHIP_LABEL_STYLE = { boxSizing: 'border-box' };
 const OVERSCAN_COUNT = 10;
 // Floor for the options panel so a narrow trigger (e.g. compact toolbar
 // filters) still opens a panel wide enough to read labels comfortably.
@@ -240,11 +244,17 @@ const OptionItem = React.memo(function OptionItem({ opt, selected, multiple, onT
       )}
       <OptionLabel label={getLabel(opt)} />
       {opt?.type && (
-        <Box sx={{ ml: 'auto', flexShrink: 0, maxWidth: 'min(160px, 40%)' }}>
+        <Box sx={{ ml: 'auto', flexShrink: 0, maxWidth: 'min(240px, 40%)' }}>
           {/* Label capitalizes by default; pass typeTextTransform='none' for
               chips holding case-sensitive identifiers (k8s namespace, region,
-              vpc/resource id) so their casing is preserved verbatim. */}
-          <Label text={opt.type} textTransform={opt.typeTextTransform} maxWidth='100%' displayTooltip tooltipCharLimit={15} />
+              vpc/resource id) so their casing is preserved verbatim.
+              Truncate by width, not by character count: a fixed char limit cut
+              "cluster · namespace" to "cluster ..." even on a wide panel, so
+              same-named rows in different namespaces looked identical.
+              border-box keeps the chip's padding inside the cap at full width. */}
+          <Label text={opt.type} textTransform={opt.typeTextTransform} maxWidth='100%' customLabelStyle={CHIP_LABEL_STYLE}>
+            <OverflowTooltip text={opt.type} />
+          </Label>
         </Box>
       )}
     </Box>
