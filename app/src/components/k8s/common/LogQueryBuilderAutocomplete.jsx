@@ -1185,6 +1185,8 @@ const LogQueryBuilderAutocomplete = ({
           if (onQueryItemsChange && queryBlocks.length === 1) {
             onQueryItemsChange(updatedChips);
           }
+          // A lookup queued by later keystrokes would re-arm the step for this label (#41139).
+          if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
           setInputValue('');
           setPendingChip({ label: '', operator: '', value: '' });
           setCurrentStep('label');
@@ -1450,6 +1452,9 @@ const LogQueryBuilderAutocomplete = ({
           if (onQueryItemsChange && queryBlocks.length === 1) {
             onQueryItemsChange(updatedChips);
           }
+          // Drop the debounced lookup for the text just committed: firing after this
+          // reset, it would put the field back on the "value for <label>" step (#41139).
+          if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
           setInputValue('');
           setPendingChip({ label: '', operator: '', value: '' });
           setCurrentStep('label');
@@ -1492,6 +1497,9 @@ const LogQueryBuilderAutocomplete = ({
   };
 
   const handleSuggestionSelect = async (suggestion) => {
+    // A pick supersedes the debounced lookup for the text typed before it; left
+    // pending, it would overwrite the step this pick sets (#41139).
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     setShowSuggestions(false);
     setSelectedIndex(-1);
 
