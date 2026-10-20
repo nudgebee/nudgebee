@@ -2,12 +2,12 @@ import MarkDowns from '@shared/viewers/MarkDowns';
 import CustomTable from '@shared/tables/CustomTable2';
 import { getTableDataFromArrayOfObject } from '@lib/util';
 import PropTypes from 'prop-types';
-import React, { useCallback } from 'react';
+import React, { useCallback, useContext } from 'react';
 import { Box, Typography } from '@mui/material';
 import { ds } from '@utils/colors';
 import CodeAnalysisRenderer, { isCodeAnalysisShape } from './code-analysis/CodeAnalysisRenderer';
 import AgentChart from './AgentChart';
-import { citationChipSx, parseCitationHref } from '../utils/citationLinks';
+import { CitationClickContext, citationChipSx, parseCitationHref } from '../utils/citationLinks';
 
 // Matches an agent-emitted ```nb-chart fenced block and captures its JSON body.
 // The agent embeds these to render an inline chart alongside its tables.
@@ -221,7 +221,10 @@ const LLMAnswerRenderer = ({ toolCall, messages = [], onNavigateToTask, groupInd
     [messages, onNavigateToTask, groupIndex]
   );
 
-  const onLinkClickProp = messages.length > 0 ? handleLinkClick : undefined;
+  // Without the conversation's messages (an answer shown inside Tool Details), a citation is
+  // opened by the drawer around it, when there is one.
+  const openCitationInDrawer = useContext(CitationClickContext);
+  const onLinkClickProp = messages.length > 0 ? handleLinkClick : openCitationInDrawer || undefined;
   // Step citations read as chips only where a click opens them.
   const chipSx = onLinkClickProp ? citationChipSx : {};
 

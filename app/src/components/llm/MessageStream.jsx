@@ -14,7 +14,7 @@ import api from '@api1/ask-nudgebee';
 import { useWatchFeatureEnabled } from '@hooks/useTenantBranding';
 import { TERMINAL_WATCH_STATUSES, WATCH_FOLLOWUP_BUDGET_MS, countAwaitingFollowups, reconcilePendingFollowups } from './utils/watchFollowup';
 import { actionableTasks } from './utils/taskClassification';
-import { findCitedTask, findLegacyCitedTask } from './utils/citationLinks';
+import { CitationClickContext, findCitedTask, findLegacyCitedTask, parseCitationHref } from './utils/citationLinks';
 import { isFollowupTask, summarizeFollowups } from './utils/followupRecord';
 import FollowupHistory from './common/FollowupHistory';
 
@@ -267,6 +267,21 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
       setSecondary({ open: false, task: null });
     },
     [itemProps?.handleTokenUsageHover]
+  );
+
+  // A citation inside a step shown in the drawer — a sub-agent's answer cites that sub-agent's
+  // steps — opens the cited step beside the list.
+  const openCitationInDrawer = useCallback(
+    (href) => {
+      const citation = parseCitationHref(href);
+      const cited = citation?.rowId && drawer.kind === 'tasks' ? findCitedTask(citation.rowId, drawer.data?.tasks) : null;
+      if (!cited) {
+        return false;
+      }
+      setSecondary({ open: true, task: cited });
+      return true;
+    },
+    [drawer.kind, drawer.data]
   );
 
   const openContextsDrawer = useCallback((references) => {
@@ -541,42 +556,45 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
         );
       })}
 
-      <CustomDrawer
-        open={drawer.open}
-        onClose={closeDrawer}
-        title={drawer.title}
-        width='38%'
-        onWidthChange={setPrimaryWidth}
-        resizable={false}
-        variant={drawer.kind === 'tasks' ? 'modern' : 'default'}
-      >
-        <Box sx={{ color: 'var(--ds-gray-700)' }}>
-          {renderDrawerContent({
-            drawer,
-            secondary,
-            itemProps,
-            onOpenToolDetails: openSecondaryToolDetails,
-          })}
-        </Box>
-      </CustomDrawer>
+      {/* Only the Tasks drawer lists steps to open; elsewhere citations stay plain links. */}
+      <CitationClickContext.Provider value={drawer.kind === 'tasks' ? openCitationInDrawer : null}>
+        <CustomDrawer
+          open={drawer.open}
+          onClose={closeDrawer}
+          title={drawer.title}
+          width='38%'
+          onWidthChange={setPrimaryWidth}
+          resizable={false}
+          variant={drawer.kind === 'tasks' ? 'modern' : 'default'}
+        >
+          <Box sx={{ color: 'var(--ds-gray-700)' }}>
+            {renderDrawerContent({
+              drawer,
+              secondary,
+              itemProps,
+              onOpenToolDetails: openSecondaryToolDetails,
+            })}
+          </Box>
+        </CustomDrawer>
 
-      <SecondaryDrawer
-        open={secondary.open && drawer.open && drawer.kind === 'tasks'}
-        onClose={closeSecondary}
-        title='Tool Details'
-        rightOffset={primaryWidth}
-        defaultWidth='45%'
-        variant='modern'
-      >
-        {secondary.task && (
-          <ToolDetails
-            toolCall={secondary.task}
-            accountId={itemProps.accountId}
-            conversationId={itemProps.conversationId}
-            getReasoningForTool={itemProps?.getReasoningForTool}
-          />
-        )}
-      </SecondaryDrawer>
+        <SecondaryDrawer
+          open={secondary.open && drawer.open && drawer.kind === 'tasks'}
+          onClose={closeSecondary}
+          title='Tool Details'
+          rightOffset={primaryWidth}
+          defaultWidth='45%'
+          variant='modern'
+        >
+          {secondary.task && (
+            <ToolDetails
+              toolCall={secondary.task}
+              accountId={itemProps.accountId}
+              conversationId={itemProps.conversationId}
+              getReasoningForTool={itemProps?.getReasoningForTool}
+            />
+          )}
+        </SecondaryDrawer>
+      </CitationClickContext.Provider>
     </Box>
   );
 };

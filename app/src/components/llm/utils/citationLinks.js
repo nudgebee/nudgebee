@@ -1,3 +1,5 @@
+import { createContext } from 'react';
+
 // Answers cite the steps they rest on as markdown links: `[Kubectl - E3](#task-<row id>)`.
 // The server writes the id of the tool-call row the step stored. Answers saved
 // before that carry the step number instead (`#task-E3`), which only meant
@@ -80,3 +82,10 @@ export const citationChipSx = {
     border: '1px solid transparent',
   },
 };
+
+/**
+ * How a drawer opens a cited step from text rendered inside it — a sub-agent's answer in Tool
+ * Details cites that sub-agent's own steps. Receives the link's href, returns true when it opened
+ * the step. Null outside a drawer that lists the steps.
+ */
+export const CitationClickContext = createContext(null);

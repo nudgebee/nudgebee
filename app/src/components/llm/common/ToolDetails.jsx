@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useContext, useState } from 'react';
+import { CitationClickContext, citationChipSx } from '../utils/citationLinks';
 import PropTypes from 'prop-types';
 import { Box, Typography, Grid } from '@mui/material';
 import { ds } from '@utils/colors';
@@ -495,6 +496,17 @@ const renderPrometheusCharts = (metricsQueryObject) => (
   </Grid>
 );
 
+// A step's response rendered as markdown. When it is a sub-agent's answer, its citations name
+// that sub-agent's steps and the drawer around it opens them.
+const AnswerMarkDowns = ({ sx, ...props }) => {
+  const openCitation = useContext(CitationClickContext);
+  return <MarkDowns {...props} sx={openCitation ? { ...citationChipSx, ...sx } : sx} onLinkClick={openCitation || undefined} />;
+};
+
+AnswerMarkDowns.propTypes = {
+  sx: PropTypes.object,
+};
+
 const renderResponseText = (responseText, toolCall) => {
   if (!responseText) {
     return null;
@@ -526,7 +538,7 @@ const renderResponseText = (responseText, toolCall) => {
         // Render as markdown if content contains markdown indicators
         if (/^#{1,6}\s|(\*\*|__).+(\*\*|__)|^[*-]\s|^\d+\.\s|```/m.test(output)) {
           return (
-            <MarkDowns
+            <AnswerMarkDowns
               data={prettifyJsonFencesInMarkdown(output)}
               sx={{ width: '100%', overflowX: 'auto', p: 0, fontSize: 'var(--ds-text-small)' }}
             />
@@ -564,7 +576,10 @@ const renderResponseText = (responseText, toolCall) => {
   const rawText = responseText.replace(/\\n/g, '\n');
   if (/^#{1,6}\s|(\*\*|__).+(\*\*|__)|^[*-]\s|^\d+\.\s|```/m.test(rawText)) {
     return (
-      <MarkDowns data={prettifyJsonFencesInMarkdown(rawText)} sx={{ width: '100%', overflowX: 'auto', p: 0, fontSize: 'var(--ds-text-small)' }} />
+      <AnswerMarkDowns
+        data={prettifyJsonFencesInMarkdown(rawText)}
+        sx={{ width: '100%', overflowX: 'auto', p: 0, fontSize: 'var(--ds-text-small)' }}
+      />
     );
   }
 

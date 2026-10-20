@@ -1,7 +1,7 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import LLMAnswerRenderer from '@components/llm/common/LLMAnswerRenderer';
-import { findCitedTask, findLegacyCitedTask, parseCitationHref } from '@components/llm/utils/citationLinks';
+import { CitationClickContext, findCitedTask, findLegacyCitedTask, parseCitationHref } from '@components/llm/utils/citationLinks';
 import { buildDrawerTasks } from '@hooks/useLLMInvestigationControl';
 
 // The markdown viewer is replaced by one button per link so a test can click a citation.
@@ -141,5 +141,28 @@ describe('LLMAnswerRenderer citations', () => {
     render(<LLMAnswerRenderer toolCall={toolCall} messages={messages} onNavigateToTask={onNavigateToTask} groupIndex={2} />);
     fireEvent.click(screen.getByText('Shell Execute - E1'));
     expect(onNavigateToTask).toHaveBeenCalledWith(2, null, { legacy: true, step: 1 });
+  });
+});
+
+describe('citations inside a step shown in a drawer', () => {
+  // A sub-agent's answer is rendered in Tool Details without the conversation's messages.
+  const answer = { text: `Error spike found [Fetch Logs Direct - E5](#task-${ROW}).` };
+
+  it('are opened by the drawer around them', () => {
+    const openInDrawer = jest.fn(() => true);
+    render(
+      <CitationClickContext.Provider value={openInDrawer}>
+        <LLMAnswerRenderer toolCall={answer} messages={[]} />
+      </CitationClickContext.Provider>
+    );
+    fireEvent.click(screen.getByText('Fetch Logs Direct - E5'));
+    expect(openInDrawer).toHaveBeenCalledWith(`#task-${ROW}`, 'Fetch Logs Direct - E5');
+  });
+
+  it('are plain links outside a drawer', () => {
+    const onNavigateToTask = jest.fn();
+    render(<LLMAnswerRenderer toolCall={answer} messages={[]} onNavigateToTask={onNavigateToTask} />);
+    fireEvent.click(screen.getByText('Fetch Logs Direct - E5'));
+    expect(onNavigateToTask).not.toHaveBeenCalled();
   });
 });

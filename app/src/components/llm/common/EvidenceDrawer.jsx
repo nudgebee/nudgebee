@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import PropTypes from 'prop-types';
 import { Box } from '@mui/material';
 import CustomDrawer, { SecondaryDrawer } from '@shared/CustomDrawer';
@@ -7,6 +7,7 @@ import { Banner } from '@ui/Banner';
 import TasksDrawerContent from './TasksDrawerContent';
 import ToolDetails from './ToolDetails';
 import { actionableTasks } from '../utils/taskClassification';
+import { CitationClickContext, findCitedTask, parseCitationHref } from '../utils/citationLinks';
 
 const taskKey = (task) => task?.id ?? task?.tool_id ?? null;
 
@@ -18,8 +19,21 @@ const taskKey = (task) => task?.id ?? task?.tool_id ?? null;
 const EvidenceDrawer = ({ open, loading, tasks, activeTask, note, accountId, conversationId, onClose, onSelectTask }) => {
   const [primaryWidth, setPrimaryWidth] = useState(0);
   const list = tasks || [];
+  // A citation inside a step shown here — a sub-agent's answer cites its own steps — opens that step.
+  const openCitation = useCallback(
+    (href) => {
+      const citation = parseCitationHref(href);
+      const cited = citation?.rowId ? findCitedTask(citation.rowId, tasks) : null;
+      if (!cited) {
+        return false;
+      }
+      onSelectTask(cited);
+      return true;
+    },
+    [tasks, onSelectTask]
+  );
   return (
-    <>
+    <CitationClickContext.Provider value={openCitation}>
       <CustomDrawer
         open={open}
         onClose={onClose}
@@ -56,7 +70,7 @@ const EvidenceDrawer = ({ open, loading, tasks, activeTask, note, accountId, con
       >
         {activeTask && <ToolDetails toolCall={activeTask} accountId={accountId} conversationId={conversationId} />}
       </SecondaryDrawer>
-    </>
+    </CitationClickContext.Provider>
   );
 };
 
