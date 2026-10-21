@@ -1200,7 +1200,7 @@ func (s *WorkflowDao) GetState(ctx context.Context, workflowID string) ([]model.
 	return items, nil
 }
 
-func (s *WorkflowDao) SetState(ctx context.Context, workflowID string, updates []model.WorkflowStateUpdate) error {
+func (s *WorkflowDao) SetState(ctx context.Context, workflowID string, updates []model.WorkflowStateUpdate) (err error) {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -1362,7 +1362,7 @@ func (s *WorkflowDao) UpdateInternal(ctx context.Context, tenantID, accountID, i
 	return nil
 }
 
-func (s *WorkflowDao) Delete(ctx context.Context, tenantID, accountID, id string) error {
+func (s *WorkflowDao) Delete(ctx context.Context, tenantID, accountID, id string) (err error) {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -1391,7 +1391,7 @@ func (s *WorkflowDao) Delete(ctx context.Context, tenantID, accountID, id string
 	return nil
 }
 
-func (s *WorkflowDao) UpdateWorkflowStatus(ctx context.Context, tenantID, accountID, id, updatedBy string, status model.WorkflowStatus) error {
+func (s *WorkflowDao) UpdateWorkflowStatus(ctx context.Context, tenantID, accountID, id, updatedBy string, status model.WorkflowStatus) (err error) {
 	// Multi-tenant fail-fast: blank scoping IDs would collapse the WHERE clause
 	// on the UPDATE to "WHERE id=… AND tenant_id='' AND account_id=''", which
 	// matches no production row but is a noisy footgun in tests / fixtures and
@@ -1437,7 +1437,7 @@ func (s *WorkflowDao) UpdateWorkflowStatus(ctx context.Context, tenantID, accoun
 	return nil
 }
 
-func (s *WorkflowDao) SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status model.WorkflowExecutionStatus, executionTime time.Time, statusMessage string, version *int) error {
+func (s *WorkflowDao) SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status model.WorkflowExecutionStatus, executionTime time.Time, statusMessage string, version *int) (err error) {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)

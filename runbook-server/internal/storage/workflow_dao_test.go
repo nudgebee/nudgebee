@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"regexp"
 	"testing"
+	"time"
 
 	"nudgebee/runbook/internal/model"
 
@@ -184,4 +185,40 @@ func TestWorkflowDaoFindAccountID(t *testing.T) {
 	assert.ErrorIs(t, err, sql.ErrNoRows)
 
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// These writes commit in a deferred func that assigns err = tx.Commit(). That
+// only reaches the caller when err is the named result; with an unnamed result
+// a failed commit was reported as success.
+func TestWorkflowDao_TxWritesReturnCommitError(t *testing.T) {
+	newDao := func(t *testing.T) (*WorkflowDao, sqlmock.Sqlmock) {
+		mockDB, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = mockDB.Close() })
+		return &WorkflowDao{db: sqlx.NewDb(mockDB, "postgres")}, mock
+	}
+	commitErr := sql.ErrConnDone
+	ctx := context.Background()
+	cases := map[string]func(*WorkflowDao) error{
+		"SetState": func(d *WorkflowDao) error {
+			return d.SetState(ctx, "wf", []model.WorkflowStateUpdate{{Key: "k", Value: 1}})
+		},
+		"Delete": func(d *WorkflowDao) error { return d.Delete(ctx, "t", "a", "wf") },
+		"UpdateWorkflowStatus": func(d *WorkflowDao) error {
+			return d.UpdateWorkflowStatus(ctx, "t", "a", "wf", "", model.WorkflowStatus("active"))
+		},
+		"SetLastExecutionStatus": func(d *WorkflowDao) error {
+			return d.SetLastExecutionStatus(ctx, "t", "a", "wf", model.WorkflowExecutionStatus("success"), time.Now(), "", nil)
+		},
+	}
+	for name, call := range cases {
+		t.Run(name, func(t *testing.T) {
+			dao, mock := newDao(t)
+			mock.ExpectBegin()
+			mock.ExpectExec(".*").WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit().WillReturnError(commitErr)
+			require.ErrorIs(t, call(dao), commitErr)
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
 }
