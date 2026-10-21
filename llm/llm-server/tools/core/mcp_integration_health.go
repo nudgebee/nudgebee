@@ -397,9 +397,39 @@ func (dbMCPHealthStore) update(integrationID, scope string, fn func(prev mcpHeal
 
 // MCPIntegrationHealthChanged tells every llm-server replica, this one
 // included, to drop the MCP tools it cached for an integration whose health
-// changed. Set by the api package (cache-invalidation fanout); nil in tests.
-// accountIds is empty for a direct integration, meaning every account.
-var MCPIntegrationHealthChanged func(integrationID string, accountIds []string)
+// changed. accountIds is empty for a direct integration, meaning every
+// account. A variable so tests can observe the calls.
+var MCPIntegrationHealthChanged = func(integrationID string, accountIds []string) {
+	var keys []string
+	if len(accountIds) > 0 {
+		keys = make([]string, len(accountIds))
+		for i, accountId := range accountIds {
+			keys[i] = integrationID + ":" + accountId
+		}
+	} else {
+		keys = []string{integrationID}
+	}
+	common.ReplicaBroadcast(context.Background(), common.ChangeMCPIntegrationHealth, keys...)
+}
+
+func init() {
+	common.OnReplicaBroadcast(common.ChangeMCPIntegrationHealth, common.ReplicaHandler{
+		OnKeys: func(keys []string) {
+			for _, key := range keys {
+				integrationID, accountId, scoped := strings.Cut(key, ":")
+				switch {
+				case integrationID == "" || (scoped && accountId == ""):
+					continue // malformed key
+				case scoped:
+					evictMCPIntegrationTools(integrationID, []string{accountId})
+				default:
+					evictMCPIntegrationTools(integrationID, nil)
+				}
+			}
+		},
+		OnAll: common.ReplicaNoResync,
+	})
+}
 
 // recordMCPHealth stores one outcome and handles a status change. It returns
 // the scope's verdict after the outcome, and whether one is known.
@@ -447,9 +477,7 @@ func recordMCPHealth(accountId string, cfg mcpIntegrationConfig, o mcpOutcome, a
 			accounts = []string{scope}
 		}
 		evictMCPIntegrationTools(cfg.IntegrationID, accounts)
-		if MCPIntegrationHealthChanged != nil {
-			MCPIntegrationHealthChanged(cfg.IntegrationID, accounts)
-		}
+		MCPIntegrationHealthChanged(cfg.IntegrationID, accounts)
 	} else if prev.FailingSince == nil && next.FailingSince != nil {
 		// First failure of a connected integration: it is held as connected,
 		// and this pod may still be serving its real tools for up to 30 min.
@@ -465,12 +493,6 @@ func recordMCPHealth(accountId string, cfg mcpIntegrationConfig, o mcpOutcome, a
 // reads its health again.
 func evictMCPIntegrationTools(integrationID string, accountIds []string) {
 	mcpIntegrationToolCacheInstance.deleteIntegration(integrationID, accountIds)
-}
-
-// EvictMCPIntegrationTools is evictMCPIntegrationTools for the
-// cache-invalidation consumer.
-func EvictMCPIntegrationTools(integrationID string, accountIds []string) {
-	evictMCPIntegrationTools(integrationID, accountIds)
 }
 
 // mcpSuspectProbes holds the scopes this pod is probing, so concurrent timed-out

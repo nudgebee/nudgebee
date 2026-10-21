@@ -23,34 +23,6 @@ import (
 type cacheInvalidationMessage struct {
 	AccountId  string   `json:"account_id"`
 	AccountIds []string `json:"account_ids"`
-	// KnowledgeBases marks a change to a tenant's organisation knowledge
-	// bases (published by llm-server). Its caches are keyed per account, so
-	// every replica clears them for all accounts; no integration work runs.
-	KnowledgeBases bool   `json:"knowledge_bases,omitempty"`
-	TenantId       string `json:"tenant_id,omitempty"`
-	// McpIntegrationId marks a change of one MCP integration's health
-	// (published by llm-server, #40994). Replicas drop only the MCP tool lists
-	// holding that integration — in AccountIds, or in every account when it is
-	// empty — instead of running the full per-account refresh below.
-	McpIntegrationId string `json:"mcp_integration_id,omitempty"`
-}
-
-// publishMCPIntegrationHealthChange tells every replica (this one included)
-// that an MCP integration's health changed.
-func publishMCPIntegrationHealthChange(integrationId string, accountIds []string) {
-	msg := cacheInvalidationMessage{McpIntegrationId: integrationId, AccountIds: accountIds}
-	if err := common.MqPublishFanout(config.Config.RabbitMqLLMCacheInvalidationExchange, msg); err != nil {
-		slog.Error("cache-invalidation: unable to publish MCP integration health change", "error", err, "integration_id", integrationId)
-	}
-}
-
-// publishOrgKnowledgeInvalidation tells every replica (this one included)
-// that a tenant's organisation knowledge bases changed.
-func publishOrgKnowledgeInvalidation(tenantId string) {
-	msg := cacheInvalidationMessage{KnowledgeBases: true, TenantId: tenantId}
-	if err := common.MqPublishFanout(config.Config.RabbitMqLLMCacheInvalidationExchange, msg); err != nil {
-		slog.Error("cache-invalidation: unable to publish knowledge base invalidation", "error", err, "tenant_id", tenantId)
-	}
 }
 
 // services-server sends integration_changed (keys: account ids) after every
@@ -74,9 +46,6 @@ func init() {
 	if testing.Testing() {
 		return
 	}
-
-	knowledge.OrgKnowledgeCacheInvalidator = publishOrgKnowledgeInvalidation
-	core.MCPIntegrationHealthChanged = publishMCPIntegrationHealthChange
 
 	// Refuse to start the consumer if ServerName is unset. The fanout
 	// queue name is "<exchange>_<ServerName>", so an empty ServerName
@@ -117,19 +86,6 @@ func processCacheInvalidationMessage(_ context.Context, data []byte) error {
 	if err := common.UnmarshalJson(data, &msg); err != nil {
 		slog.Error("cache-invalidation: unable to decode message — dropping",
 			"error", err, "data", string(data))
-		return nil
-	}
-
-	if msg.McpIntegrationId != "" {
-		core.EvictMCPIntegrationTools(msg.McpIntegrationId, msg.AccountIds)
-		return nil
-	}
-
-	if msg.KnowledgeBases {
-		// Not an integration change: do not run the per-account integration
-		// refresh and KB sync below.
-		knowledge.ClearKnowledgeBaseCaches()
-		slog.Info("cache-invalidation: knowledge base caches cleared", "tenant_id", msg.TenantId)
 		return nil
 	}
 

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -19,8 +20,6 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
-
-const CacheChannelToolInvalidation = "llm_tool_invalidation"
 
 type toolCache struct {
 	mutex sync.RWMutex
@@ -82,10 +81,13 @@ func init() {
 		}),
 	}
 
-	common.CacheSubscribe(CacheChannelToolInvalidation, func(accountId string) {
-		slog.Info("received global tool invalidation", "account_id", accountId)
-		// Internal invalidation only (don't broadcast again)
-		invalidateCachesForAccount(accountId)
+	common.OnReplicaBroadcast(common.ChangeToolConfig, common.ReplicaHandler{
+		OnKeys: func(accountIds []string) {
+			for _, accountId := range accountIds {
+				invalidateCachesForAccount(accountId)
+			}
+		},
+		OnAll: common.ReplicaNoResync,
 	})
 }
 
@@ -223,10 +225,9 @@ func (c *toolCache) delete(accountId string) {
 }
 
 // invalidateCachesForAccount drops every cache derived from this account's tools
-// and integrations. It runs on the originating replica (via updateToolCache),
-// on every peer replica (via the CacheChannelToolInvalidation subscriber), and
-// on every replica for an integration change (InvalidateAccountIntegrationCache),
-// so it must stay idempotent.
+// and integrations. It runs on the originating replica and every peer for a
+// tool_config_changed broadcast, and on every replica for an integration change
+// (InvalidateAccountIntegrationCache), so it must stay idempotent.
 func invalidateCachesForAccount(accountId string) {
 	toolCacheInstance.delete(accountId)
 	enabledToolsCacheInstance.delete(accountId)
@@ -245,11 +246,8 @@ func updateToolCache(accountId string) {
 	// Load fresh data from DB and update cache
 	tools := loadCustomNbToolsFromDB(accountId)
 	toolCacheInstance.set(accountId, tools)
-	invalidateCachesForAccount(accountId)
-	// Broadcast to other replicas
-	if err := common.CachePublish(CacheChannelToolInvalidation, accountId); err != nil {
-		slog.Error("tools: failed to broadcast tool invalidation", "error", err, "account_id", accountId)
-	}
+	// Runs invalidateCachesForAccount here, then on every other replica.
+	common.ReplicaBroadcast(context.Background(), common.ChangeToolConfig, accountId)
 }
 
 func InvalidateToolCache(accountId string) {

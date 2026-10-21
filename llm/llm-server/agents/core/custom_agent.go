@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"nudgebee/llm/common"
@@ -79,10 +80,9 @@ func (c *customAgentToolsCache) delete(accountId, agentName string) {
 // InvalidateCustomAgentToolsCache evicts cached tool lists for a custom agent.
 // Must be called after any Create / Update / Delete that changes the agent's tool list.
 func InvalidateCustomAgentToolsCache(accountId, agentName string) {
-	customAgentToolsCacheInst.delete(accountId, agentName)
-	if err := common.CachePublish(CacheChannelAgentConfigInvalidation, accountId+":"+agentName); err != nil {
-		slog.Error("custom_agent: failed to broadcast agent invalidation", "error", err, "account_id", accountId, "agent", agentName)
-	}
+	// The agent cache invalidators (customAgentToolsCacheInst among them) run
+	// here and on every other replica.
+	common.ReplicaBroadcast(context.Background(), common.ChangeAgentConfig, agentConfigKey(accountId, agentName))
 }
 
 type nbCustomAgent struct {

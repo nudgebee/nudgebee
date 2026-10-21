@@ -116,9 +116,9 @@ func TestOrganisationKBIsIndexedForItsTenant(t *testing.T) {
 func TestWideningUpdatesTheRowThenRescopesTheCollection(t *testing.T) {
 	mock := registerMockMetastore(t)
 	common.ResetDatabaseManager(common.Metastore)
-	oldURL, oldInvalidator := config.Config.RAGServerUrl, OrgKnowledgeCacheInvalidator
+	oldURL := config.Config.RAGServerUrl
 	var scopeBody map[string]any
-	var invalidatedTenant string
+	orgCacheKept := seedOrgKnowledgeCache(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/api/v1/kb/scope", r.URL.Path)
 		body, _ := io.ReadAll(r.Body)
@@ -127,8 +127,7 @@ func TestWideningUpdatesTheRowThenRescopesTheCollection(t *testing.T) {
 	}))
 	defer server.Close()
 	config.Config.RAGServerUrl = server.URL
-	OrgKnowledgeCacheInvalidator = func(tenantId string) { invalidatedTenant = tenantId }
-	t.Cleanup(func() { config.Config.RAGServerUrl, OrgKnowledgeCacheInvalidator = oldURL, oldInvalidator })
+	t.Cleanup(func() { config.Config.RAGServerUrl = oldURL })
 
 	mock.ExpectQuery(`SELECT name, COALESCE\(account_id::text, ''\) AS account_id, tenant_id::text AS tenant_id`).
 		WithArgs("kb-1").
@@ -152,7 +151,7 @@ func TestWideningUpdatesTheRowThenRescopesTheCollection(t *testing.T) {
 	assert.Equal(t, "organisation", kb.Visibility)
 	assert.Equal(t, orgTestTenant, scopeBody["tenant_id"])
 	assert.NotContains(t, scopeBody, "account_id")
-	assert.Equal(t, orgTestTenant, invalidatedTenant)
+	assert.False(t, orgCacheKept(), "widening clears the organisation caches")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -192,9 +191,6 @@ func TestSelectedAccountsMustBelongToTheOrganisation(t *testing.T) {
 func TestAccountAdminSwitchesAnOrganisationKBOffForTheirAccount(t *testing.T) {
 	mock := registerMockMetastore(t)
 	common.ResetDatabaseManager(common.Metastore)
-	oldInvalidator := OrgKnowledgeCacheInvalidator
-	OrgKnowledgeCacheInvalidator = func(string) {}
-	t.Cleanup(func() { OrgKnowledgeCacheInvalidator = oldInvalidator })
 
 	mock.ExpectQuery(`FROM llm_knowledgebases kb JOIN cloud_accounts ca ON ca.id = \$2 AND ca.tenant = kb.tenant_id\s+WHERE kb.id = \$1 AND kb.account_id IS NULL`).
 		WithArgs("kb-1", orgTestAccount).
@@ -241,20 +237,18 @@ func TestAccountKBNamedLikeAnOrganisationKBClearsTheOrganisationCaches(t *testin
 	common.ResetDatabaseManager(common.Metastore)
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	require.NoError(t, err)
-	var invalidated []string
-	oldInvalidator := OrgKnowledgeCacheInvalidator
-	OrgKnowledgeCacheInvalidator = func(tenantId string) { invalidated = append(invalidated, tenantId) }
-	t.Cleanup(func() { OrgKnowledgeCacheInvalidator = oldInvalidator })
+	orgCacheKept := seedOrgKnowledgeCache(t)
 
 	mock.ExpectQuery(`WHERE kb.account_id IS NULL AND LOWER\(BTRIM\(kb.name\)\) = ANY\(\$2\)`).
 		WithArgs(orgTestAccount, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"tenant_id"}).AddRow(orgTestTenant))
 	invalidateIfOrgKBNameClash(dbms, orgTestAccount, " DB Failover ")
-	assert.Equal(t, []string{orgTestTenant}, invalidated)
+	assert.False(t, orgCacheKept(), "the organisation caches must be cleared")
 
+	orgCacheKept = seedOrgKnowledgeCache(t)
 	mock.ExpectQuery(`WHERE kb.account_id IS NULL`).WillReturnRows(sqlmock.NewRows([]string{"tenant_id"}))
 	invalidateIfOrgKBNameClash(dbms, orgTestAccount, "Payments runbook")
-	assert.Len(t, invalidated, 1, "no organisation KB has that name")
+	assert.True(t, orgCacheKept(), "no organisation KB has that name")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -315,4 +309,17 @@ func TestOrganisationKBsCountAsMappedToAllAgents(t *testing.T) {
 	assert.Contains(t, join, "SELECT id, '*', $1::uuid, FALSE FROM llm_knowledgebases WHERE id = ANY($3::uuid[]) AND integration_id IS NULL",
 		"each visible manual organisation KB is a wildcard mapping row for the account; an integration's (#40605) is "+
 			"reached only through the account's own mappings, as before")
+}
+
+// seedOrgKnowledgeCache caches an entry that clearing the organisation
+// knowledge caches removes, and returns a check for whether it is still there.
+func seedOrgKnowledgeCache(t *testing.T) func() bool {
+	t.Helper()
+	key := "org-kb-test/" + t.Name()
+	require.NoError(t, common.CacheSet(CacheNamespaceLlmKbMapping, key, []byte("cached")))
+	t.Cleanup(func() { _ = common.CacheDelete(CacheNamespaceLlmKbMapping, key) })
+	return func() bool {
+		_, ok := common.CacheGet(CacheNamespaceLlmKbMapping, key)
+		return ok
+	}
 }

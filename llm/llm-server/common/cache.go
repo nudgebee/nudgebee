@@ -253,23 +253,6 @@ func CachePublish(channel string, message string) error {
 	return nil
 }
 
-func CacheSubscribe(channel string, handler func(message string)) {
-	if config.Config.CacheProvider == "redis" {
-		redisClient, err := getRedisClient()
-		if err != nil || redisClient == nil {
-			slog.Warn("cache: cannot subscribe to redis channel, client unavailable", "channel", channel, "error", err)
-			return
-		}
-		pubsub := redisClient.Subscribe(context.Background(), channel)
-		go func() {
-			ch := pubsub.Channel()
-			for msg := range ch {
-				handler(msg.Payload)
-			}
-		}()
-	}
-}
-
 // releaseLockScript releases a distributed lock only if the caller still owns it
 // (compare-and-delete), so a slow holder whose lock already expired and was
 // re-acquired by a peer can't delete the peer's lock.

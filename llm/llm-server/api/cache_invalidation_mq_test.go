@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"nudgebee/llm/common"
-	"nudgebee/llm/knowledge"
 	"nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
@@ -70,25 +69,9 @@ func TestProcessCacheInvalidationMessage_DedupsAccountIds(t *testing.T) {
 	assert.False(t, presentB, "cache for account %s should be cleared", b)
 }
 
-func TestProcessCacheInvalidationMessage_KnowledgeBaseChangeClearsSkillCaches(t *testing.T) {
-	const key = "skill:acct-org-kb-test:db failover"
-	assert.NoError(t, common.CacheSet(knowledge.CacheNamespaceLlmSkillContent, key, []byte(`{"id":"org-kb"}`)))
-	const accountId = "acct-org-kb-mcp"
-	core.SetMCPIntegrationToolCache(accountId, []core.NBTool{})
-	defer core.ClearMCPIntegrationToolCache(accountId)
-
-	err := processCacheInvalidationMessage(context.Background(), []byte(`{"knowledge_bases":true,"tenant_id":"tenant-1","account_ids":["`+accountId+`"]}`))
-	assert.NoError(t, err)
-
-	_, found := common.CacheGet(knowledge.CacheNamespaceLlmSkillContent, key)
-	assert.False(t, found, "skill body cache should be cleared for every account")
-	_, present := core.GetMCPIntegrationToolCache(accountId)
-	assert.True(t, present, "a knowledge base change must not run the integration refresh")
-}
-
 // #40994: a health change of one MCP integration drops only the tool lists that
-// hold it, and does not run the full per-account refresh.
-func TestProcessCacheInvalidationMessage_MCPIntegrationHealthChange(t *testing.T) {
+// hold it. It travels as the mcp_integration_health_changed replica broadcast.
+func TestMCPIntegrationHealthChanged_DropsOnlyListsHoldingTheIntegration(t *testing.T) {
 	const withIt, withOther, scoped = "acct-mcp-health-a", "acct-mcp-health-b", "acct-mcp-health-c"
 	core.SetMCPIntegrationToolCache(withIt, []core.NBTool{core.NewMCPIntegrationToolForTest("int-down", "down_a")})
 	core.SetMCPIntegrationToolCache(withOther, []core.NBTool{core.NewMCPIntegrationToolForTest("int-up", "up_a")})
@@ -98,14 +81,14 @@ func TestProcessCacheInvalidationMessage_MCPIntegrationHealthChange(t *testing.T
 	}
 
 	// Scoped to one account (a vm_agent integration).
-	assert.NoError(t, processCacheInvalidationMessage(context.Background(), []byte(`{"mcp_integration_id":"int-down","account_ids":["`+scoped+`"]}`)))
+	core.MCPIntegrationHealthChanged("int-down", []string{scoped})
 	_, present := core.GetMCPIntegrationToolCache(scoped)
 	assert.False(t, present)
 	_, present = core.GetMCPIntegrationToolCache(withIt)
 	assert.True(t, present, "other accounts are left alone when the change is scoped")
 
 	// Every account (a direct integration).
-	assert.NoError(t, processCacheInvalidationMessage(context.Background(), []byte(`{"mcp_integration_id":"int-down"}`)))
+	core.MCPIntegrationHealthChanged("int-down", nil)
 	_, present = core.GetMCPIntegrationToolCache(withIt)
 	assert.False(t, present)
 	_, present = core.GetMCPIntegrationToolCache(withOther)

@@ -1489,16 +1489,26 @@ func (c *agentConfigCache) delete(accountId, agent string) {
 	delete(c.data, key)
 }
 
-const CacheChannelAgentConfigInvalidation = "llm_agent_config_invalidation"
+// agentConfigKey is the agent_config_changed key for one agent of one account.
+func agentConfigKey(accountId, agentName string) string {
+	return accountId + ":" + agentName
+}
 
 func init() {
-	common.CacheSubscribe(CacheChannelAgentConfigInvalidation, func(message string) {
-		parts := strings.Split(message, ":")
-		if len(parts) == 2 {
-			slog.Info("received global agent config invalidation", "account_id", parts[0], "agent", parts[1])
-			agentConfigCacheInstance.delete(parts[0], parts[1])
-			InvalidateAllAgentCaches(parts[0], parts[1])
-		}
+	common.OnReplicaBroadcast(common.ChangeAgentConfig, common.ReplicaHandler{
+		OnKeys: func(keys []string) {
+			for _, key := range keys {
+				accountId, agentName, ok := strings.Cut(key, ":")
+				// An empty agent name means "every agent of the account" to
+				// the caches below, so a malformed key must not reach them.
+				if !ok || accountId == "" || agentName == "" {
+					continue
+				}
+				agentConfigCacheInstance.delete(accountId, agentName)
+				InvalidateAllAgentCaches(accountId, agentName)
+			}
+		},
+		OnAll: common.ReplicaNoResync,
 	})
 }
 
@@ -1607,11 +1617,7 @@ func CreateAgentExtension(context *security.RequestContext, accountId string, ag
 			return AgentExtension{}, err
 		}
 
-		agentConfigCacheInstance.delete(accountId, agent.AgentName)
-		InvalidateAllAgentCaches(accountId, agent.AgentName)
-		if err := common.CachePublish(CacheChannelAgentConfigInvalidation, accountId+":"+agent.AgentName); err != nil {
-			getLogger(context).Error("failed to broadcast agent config invalidation", "error", err)
-		}
+		common.ReplicaBroadcast(context.GetContext(), common.ChangeAgentConfig, agentConfigKey(accountId, agent.AgentName))
 
 		rowsAffected, err := result.RowsAffected()
 		if err != nil {

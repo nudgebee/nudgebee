@@ -26,7 +26,11 @@ const (
 	ChangeEgressFilter         = "egressfilter_changed"          // keys: tenant ids
 	ChangeConversationOverride = "conversation_override_changed" // keys: conversation ids
 	// Sent by services-server; same value as its ChangeIntegration.
-	ChangeIntegration = "integration_changed" // keys: account ids
+	ChangeIntegration          = "integration_changed"            // keys: account ids
+	ChangeMCPIntegrationHealth = "mcp_integration_health_changed" // keys: "<integration id>[:<account id>]"
+	ChangeToolConfig           = "tool_config_changed"            // keys: account ids
+	ChangeAgentConfig          = "agent_config_changed"           // keys: "<account id>:<agent name>"
+	ChangeGlobalContext        = "global_context_changed"         // keys: "<tenant id>:<account id>"
 )
 
 // ReplicaMessage is the wire format: what changed, never the new value.
@@ -45,6 +49,13 @@ type ReplicaHandler struct {
 	// (re)subscribe, because pub/sub does not redeliver missed messages.
 	OnAll func()
 }
+
+// ReplicaNoResync is the OnAll for caches that are not dropped wholesale after
+// a reconnect: account-keyed caches spread over registered invalidators, some
+// in the shared Redis store (which a resync on every pod must not wipe), or
+// ones that are expensive to rebuild. A change missed while disconnected waits
+// for the cache's own expiry, as it did on the channels these replaced.
+func ReplicaNoResync() {}
 
 var (
 	replicaHandlersMu sync.Mutex

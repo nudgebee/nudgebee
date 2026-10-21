@@ -1,9 +1,7 @@
 package agents
 
 import (
-	"log/slog"
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
@@ -33,14 +31,6 @@ func init() {
 	})
 	toolcore.RegisterToolCacheInvalidator(func(accountId string) {
 		InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorName)
-	})
-
-	common.CacheSubscribe("agent_invalidation", func(message string) {
-		parts := strings.Split(message, ":")
-		if len(parts) == 2 {
-			slog.Info("received global agent invalidation", "account_id", parts[0], "agent", parts[1])
-			InvalidateAgentSupportedToolsCache(parts[0], parts[1])
-		}
 	})
 }
 

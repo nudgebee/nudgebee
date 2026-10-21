@@ -498,15 +498,11 @@ func setKBCollectionScope(kbId string, owner kbOwner) error {
 	return nil
 }
 
-// OrgKnowledgeCacheInvalidator tells every llm-server replica that the
-// organisation knowledge bases of a tenant changed. Set by the api package
-// (it owns the cache-invalidation fanout); the local caches are always
-// cleared directly as well.
-var OrgKnowledgeCacheInvalidator func(tenantId string)
-
 // ClearKnowledgeBaseCaches drops every cached skill body and per-agent skill
-// menu on this replica. Organisation KB changes are rare admin actions, and
-// those caches are keyed per account, so the whole namespace goes.
+// menu. Organisation KB changes are rare admin actions, and those caches are
+// keyed per account, so the whole namespace goes. With CACHE_PROVIDER=redis the
+// namespaces live in the shared store, so one call clears them for every
+// replica; nothing needs to be broadcast.
 func ClearKnowledgeBaseCaches() {
 	if err := common.CacheClear(CacheNamespaceLlmSkillContent); err != nil {
 		slog.Error("kb: failed to clear skill content cache", "error", err)
@@ -545,7 +541,5 @@ func invalidateIfOrgKBNameClash(dbms *common.DatabaseManager, accountId string, 
 
 func invalidateOrgKnowledgeCaches(tenantId string) {
 	ClearKnowledgeBaseCaches()
-	if OrgKnowledgeCacheInvalidator != nil {
-		OrgKnowledgeCacheInvalidator(tenantId)
-	}
+	slog.Info("kb: organisation knowledge caches cleared", "tenant_id", tenantId)
 }

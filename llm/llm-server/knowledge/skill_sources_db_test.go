@@ -44,16 +44,15 @@ func (f *fakeSkillRepo) fetch(_ context.Context, _, _, _, knownCommit string) (s
 
 func stubSkillSourceFetch(t *testing.T, repo *fakeSkillRepo) *[]string {
 	t.Helper()
-	oldFetch, oldIndex, oldInvalidator := FetchSkillSource, submitSkillIndexing, OrgKnowledgeCacheInvalidator
+	oldFetch, oldIndex := FetchSkillSource, submitSkillIndexing
 	var indexed []string
 	FetchSkillSource = repo.fetch
 	submitSkillIndexing = func(_ *security.RequestContext, _ kbOwner, kbId, _ string) error {
 		indexed = append(indexed, kbId)
 		return nil
 	}
-	OrgKnowledgeCacheInvalidator = func(string) {}
 	t.Cleanup(func() {
-		FetchSkillSource, submitSkillIndexing, OrgKnowledgeCacheInvalidator = oldFetch, oldIndex, oldInvalidator
+		FetchSkillSource, submitSkillIndexing = oldFetch, oldIndex
 	})
 	return &indexed
 }
@@ -459,15 +458,15 @@ func TestSyncLeavesUntouchedSkillsAlone_DB(t *testing.T) {
 		"skills/loki/SKILL.md":           skillMD("loki", "Query Loki."),
 	}}
 	indexed := stubSkillSourceFetch(t, repo)
-	invalidations := 0
-	OrgKnowledgeCacheInvalidator = func(string) { invalidations++ }
+	orgCacheKept := seedOrgKnowledgeCache(t)
 	sourceId := insertSkillSource(t, db, s, KBVisibilityOrganisation)
 	sc := security.NewRequestContextForTenantAdminWithUser(context.Background(), s.tenant, s.user)
 
 	_, err := SyncSkillSource(sc, sourceId)
 	require.NoError(t, err)
 	require.Len(t, *indexed, 2)
-	require.Equal(t, 1, invalidations)
+	require.False(t, orgCacheKept(), "the first sync clears the organisation caches")
+	orgCacheKept = seedOrgKnowledgeCache(t)
 	_, err = db.Exec(`UPDATE llm_knowledgebases SET status = 'active', updated_at = '2020-01-01' WHERE source_id = $1`, sourceId)
 	require.NoError(t, err)
 
@@ -477,7 +476,7 @@ func TestSyncLeavesUntouchedSkillsAlone_DB(t *testing.T) {
 	assert.Equal(t, 2, report.Found)
 	assert.Zero(t, report.Updated+report.Added+report.Archived)
 	assert.Len(t, *indexed, 2, "nothing re-indexed")
-	assert.Equal(t, 1, invalidations, "caches untouched")
+	assert.True(t, orgCacheKept(), "caches untouched")
 	var touched int
 	require.NoError(t, db.Get(&touched, `SELECT count(*) FROM llm_knowledgebases WHERE source_id = $1 AND updated_at > '2020-01-01'`, sourceId))
 	assert.Zero(t, touched, "no skill row rewritten")
@@ -493,7 +492,7 @@ func TestSyncLeavesUntouchedSkillsAlone_DB(t *testing.T) {
 	require.NoError(t, db.Get(&touched, `SELECT count(*) FROM llm_knowledgebases WHERE source_id = $1 AND updated_at > '2020-01-01'`, sourceId))
 	assert.Equal(t, 1, touched)
 	assert.Len(t, *indexed, 2)
-	assert.Equal(t, 2, invalidations)
+	assert.False(t, orgCacheKept(), "an updated skill clears the caches")
 }
 
 // Without a GitHub token a source is synced on schedule at most hourly; with
