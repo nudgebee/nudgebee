@@ -662,14 +662,20 @@ func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequ
 			}
 			return strings.Join(names, "\n") + trailingNewline(names), true, nil
 		}
+		// STATUS and LAST-SEEN are not kubectl columns: they say whether the
+		// cluster's Nudgebee agent is connected, so commands are not sent to
+		// clusters that cannot answer.
+		connections := tools.ClusterConnectionsFor(contexts)
 		var b strings.Builder
-		b.WriteString("CURRENT   NAME   CLUSTER   AUTHINFO   NAMESPACE\n")
+		b.WriteString("CURRENT   NAME   CLUSTER   AUTHINFO   STATUS   LAST-SEEN\n")
 		for _, target := range aliases {
 			marker := " "
 			if strings.EqualFold(target.Name, current) {
 				marker = "*"
 			}
-			fmt.Fprintf(&b, "%s         %s   %s   nubi-user   \n", marker, target.Name, target.Name)
+			connection, known := connections[tools.KubernetesTargetAccountID(target.Config)]
+			status, lastSeen := tools.ClusterStatusColumns(connection, known)
+			fmt.Fprintf(&b, "%s         %s   %s   nubi-user   %s   %s\n", marker, target.Name, target.Name, status, lastSeen)
 		}
 		return b.String(), true, nil
 	}

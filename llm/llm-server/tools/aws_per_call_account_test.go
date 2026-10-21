@@ -3,6 +3,7 @@ package tools
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -246,4 +247,58 @@ func TestKubectlConfigDiscoveryRoutesThroughShim(t *testing.T) {
 	_, err = shell.Call(kubectlCallCtx(t, account, shell), core.NBToolCallRequest{Command: "kubectl config get-contexts"})
 	require.NoError(t, err)
 	require.Equal(t, "kubectl config get-contexts", capture.command)
+}
+
+func TestRenderExecutionTargetsMarksDisconnectedClusters(t *testing.T) {
+	const account = "render-targets-connection"
+	awsFixture(t, account)
+	StubTenantAccounts(t, "tenant", map[string][]core.ToolConfig{
+		ToolExecuteKubectlCommand: {
+			{Name: "k8s-prod", Values: []core.ToolConfigValue{{Name: "id", Value: "prod-id"}}},
+			{Name: "k8s-dev", Values: []core.ToolConfigValue{{Name: "id", Value: "dev-id"}}},
+			{Name: "a-poc", Values: []core.ToolConfigValue{{Name: "id", Value: "poc-id"}}},
+			{Name: "k8s-qa", Values: []core.ToolConfigValue{{Name: "id", Value: "qa-id"}}},
+		},
+	})
+	StubClusterConnections(t, map[string]ClusterConnection{
+		"dev-id": {Connected: true},
+		"poc-id": {Connected: false},
+	})
+	sc := security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{account, "prod-id", "dev-id", "poc-id", "qa-id"})
+	saved := map[string]string{ToolExecuteKubectlCommand: "k8s-prod"}
+
+	block := RenderExecutionTargets(sc, account, saved, []string{core.ToolExecuteShellCommand})
+	require.Contains(t, block, "Kubernetes clusters: current k8s-prod; others you can use: k8s-dev, k8s-qa, a-poc (not connected).",
+		"disconnected clusters are listed last and marked; clusters with no agent row are listed as before")
+	require.Contains(t, block, "Clusters marked not connected have no connected Nudgebee agent")
+}
+
+func TestRenderExecutionTargetsWithoutDisconnectedClustersAddsNoNote(t *testing.T) {
+	const account = "render-targets-connection-ok"
+	awsFixture(t, account)
+	StubTenantAccounts(t, "tenant", map[string][]core.ToolConfig{
+		ToolExecuteKubectlCommand: {
+			{Name: "k8s-prod", Values: []core.ToolConfigValue{{Name: "id", Value: "prod-id"}}},
+			{Name: "k8s-dev", Values: []core.ToolConfigValue{{Name: "id", Value: "dev-id"}}},
+		},
+	})
+	StubClusterConnections(t, map[string]ClusterConnection{"dev-id": {Connected: true}})
+	sc := security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{account, "prod-id", "dev-id"})
+
+	block := RenderExecutionTargets(sc, account, map[string]string{ToolExecuteKubectlCommand: "k8s-prod"}, []string{core.ToolExecuteShellCommand})
+	require.Contains(t, block, "others you can use: k8s-dev.")
+	require.NotContains(t, block, "not connected")
+}
+
+func TestClusterStatusColumns(t *testing.T) {
+	seen := time.Date(2026, 10, 21, 15, 54, 30, 0, time.UTC)
+	status, last := ClusterStatusColumns(ClusterConnection{Connected: true, LastSeen: &seen}, true)
+	require.Equal(t, "Connected", status)
+	require.Equal(t, "2026-10-21T15:54Z", last)
+	status, last = ClusterStatusColumns(ClusterConnection{}, true)
+	require.Equal(t, "Disconnected", status)
+	require.Equal(t, "never", last)
+	status, last = ClusterStatusColumns(ClusterConnection{}, false)
+	require.Equal(t, "Unknown", status)
+	require.Equal(t, "-", last)
 }

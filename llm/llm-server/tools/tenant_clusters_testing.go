@@ -51,3 +51,19 @@ func StubAccountTargets(t testingCleanup, byID map[string]*core.ExecutionTarget)
 	describeAccount = func(id string) *core.ExecutionTarget { return byID[id] }
 	t.Cleanup(func() { describeAccount = previous })
 }
+
+// StubClusterConnections replaces the agent connection lookup for one test.
+func StubClusterConnections(t testingCleanup, byAccount map[string]ClusterConnection) {
+	t.Helper()
+	previous := ClusterConnections
+	ClusterConnections = func(accountIDs []string) (map[string]ClusterConnection, error) {
+		result := map[string]ClusterConnection{}
+		for _, id := range accountIDs {
+			if c, ok := byAccount[id]; ok {
+				result[id] = c
+			}
+		}
+		return result, nil
+	}
+	t.Cleanup(func() { ClusterConnections = previous })
+}

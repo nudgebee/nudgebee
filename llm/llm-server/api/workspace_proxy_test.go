@@ -677,6 +677,19 @@ func TestVirtualKubectlConfigUsesAuthorizedContexts(t *testing.T) {
 	require.Equal(t, "k8s-dev\nk8s-prod\nk8s-dev-1\n", result)
 	require.NotContains(t, result, "k8s-secret")
 
+	tools.StubClusterConnections(t, map[string]tools.ClusterConnection{
+		workspaceAccount:     {Connected: true},
+		"virtual-config-dev": {Connected: false},
+	})
+	request.Command = "kubectl config get-contexts"
+	result, handled, err = virtualKubectlConfig(ctx, request, "k8s-prod")
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.Contains(t, result, "CURRENT   NAME   CLUSTER   AUTHINFO   STATUS   LAST-SEEN\n")
+	require.Contains(t, result, "*         k8s-prod   k8s-prod   nubi-user   Connected   never\n")
+	require.Contains(t, result, "k8s-dev   k8s-dev   nubi-user   Disconnected   never\n")
+	require.Contains(t, result, "k8s-dev-1   k8s-dev-1   nubi-user   Unknown   -\n", "a cluster with no agent row has no status")
+
 	request.Command = "kubectl config current-context"
 	result, handled, err = virtualKubectlConfig(ctx, request, "k8s-prod")
 	require.NoError(t, err)
