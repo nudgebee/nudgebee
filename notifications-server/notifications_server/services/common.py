@@ -2,7 +2,6 @@ import asyncio
 import html
 import json
 import logging
-import os
 import re
 import uuid
 from datetime import datetime, timedelta
@@ -2140,8 +2139,8 @@ class CommonService:
     # ==================== Teams Bot Messaging Methods ====================
 
     def _init_bot_framework(self, channel_auth_tenant):
-        app_id = os.environ.get("MS_TEAMS_CLIENT_ID")
-        app_password = os.environ.get("MS_TEAMS_CLIENT_SECRET")
+        app_id = settings.ms_teams.client_id
+        app_password = settings.ms_teams.client_secret
         if app_id and app_password:
             LOG.debug(f"Initializing Bot Framework adapter with App ID: {app_id[:8]}...")
             # A SingleTenant bot must take its Bot Connector token from its own

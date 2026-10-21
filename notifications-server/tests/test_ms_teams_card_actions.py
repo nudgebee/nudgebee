@@ -11,7 +11,10 @@ from unittest import mock
 import pytest
 
 from notifications_server.configs import settings
-from notifications_server.message_templates.ms_teams.finding import get_ms_teams_finding_message_template
+from notifications_server.message_templates.ms_teams.finding import (
+    DESCRIPTION_LIMIT,
+    get_ms_teams_finding_message_template,
+)
 from notifications_server.services import actions as actions_module
 from notifications_server.services import actions_common
 from notifications_server.services import events as events_module
@@ -386,6 +389,23 @@ def test_a_card_too_large_for_the_menu_is_still_sent_without_it():
     assert not ca.has_actions(card), "no room for the menu"
     assert card["actions"][0]["title"] == "View", "the alert itself is still built"
     assert ca.has_actions(get_ms_teams_finding_message_template(FINDING, NB_TENANT))
+
+
+def test_a_long_description_is_truncated_so_the_card_still_fits():
+    # Regression for #41715: an uncut description this long used to push the
+    # card past Teams' size limit, so the alert never arrived at all.
+    finding = {**FINDING, "description": "d" * 30_000}
+    card = get_ms_teams_finding_message_template(finding, NB_TENANT)
+    description_text = card["body"][2]["text"]
+    assert len(description_text) <= DESCRIPTION_LIMIT
+    assert description_text.endswith("...")
+    assert ca.fits(card), "a trimmed description must still fit Teams' size limit"
+
+
+def test_a_short_description_is_left_untouched():
+    finding = {**FINDING, "description": "short and sweet"}
+    card = get_ms_teams_finding_message_template(finding, NB_TENANT)
+    assert card["body"][2]["text"] == "short and sweet"
 
 
 def test_a_click_on_a_card_older_than_its_buttons_says_so(store):
