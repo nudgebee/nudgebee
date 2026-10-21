@@ -167,7 +167,7 @@ func TestAnthropicNativeToolRoundTrip(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	assertNativeToolRoundTrip(t, wrapAnthropicChoiceNormalizer(model))
+	assertNativeToolRoundTrip(t, model)
 
 	recordedRequests := requests.snapshot()
 	require.Len(t, recordedRequests, 2)

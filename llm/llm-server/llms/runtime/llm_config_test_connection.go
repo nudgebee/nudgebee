@@ -534,8 +534,7 @@ func newAnthropicFromConfig(model string, cfg map[string]string) (llms.Model, er
 	if err != nil {
 		return nil, err
 	}
-	// Claude 5 responses lead with a thinking choice; promote the text choice.
-	return wrapAnthropicChoiceNormalizer(llm), nil
+	return llm, nil
 }
 
 func newHuggingFaceFromConfig(model string, cfg map[string]string) (llms.Model, error) {

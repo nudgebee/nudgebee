@@ -1515,47 +1515,6 @@ func anthropicCacheHTTPClient() *http.Client {
 	}
 }
 
-// anthropicChoiceNormalizer fixes Claude 5-family responses under langchaingo
-// v0.1.14: processAnthropicResponse emits one Choice PER CONTENT BLOCK in
-// order, and sonnet-5's adaptive reasoning returns [thinking, text] — so
-// Choices[0] is the thinking block with Content == "", and every caller that
-// reads Choices[0] concludes "llm returned empty content". This decorator
-// moves the first choice carrying actual content (text or tool calls) to the
-// front; thinking-only choices keep riding behind it with their
-// GenerationInfo intact.
-type anthropicChoiceNormalizer struct {
-	inner llms.Model
-}
-
-func wrapAnthropicChoiceNormalizer(inner llms.Model) llms.Model {
-	if inner == nil {
-		return inner
-	}
-	return &anthropicChoiceNormalizer{inner: inner}
-}
-
-func (a *anthropicChoiceNormalizer) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
-	resp, err := a.inner.GenerateContent(ctx, messages, options...)
-	if err != nil || resp == nil || len(resp.Choices) < 2 {
-		return resp, err
-	}
-	if resp.Choices[0] != nil && (strings.TrimSpace(resp.Choices[0].Content) != "" || len(resp.Choices[0].ToolCalls) > 0) {
-		return resp, err
-	}
-	for i := 1; i < len(resp.Choices); i++ {
-		c := resp.Choices[i]
-		if c != nil && (strings.TrimSpace(c.Content) != "" || len(c.ToolCalls) > 0) {
-			resp.Choices[0], resp.Choices[i] = resp.Choices[i], resp.Choices[0]
-			break
-		}
-	}
-	return resp, err
-}
-
-func (a *anthropicChoiceNormalizer) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
-	return llms.GenerateFromSinglePrompt(ctx, a, prompt, options...)
-}
-
 func getAnthropicLLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {
 	slog.Debug("Initializing Anthropic LLM", "provider", provider, "modelName", modelName, "agentName", agentName, "appendAgentName", appendAgentName, "accountId", accountId)
 
@@ -1585,8 +1544,7 @@ func getAnthropicLLM(provider, modelName, agentName string, appendAgentName bool
 		return nil, err
 	}
 	slog.Info("Using Anthropic LLM", "model", modelName, "agentName", agentName)
-	// Claude 5 responses lead with a thinking choice; promote the text choice.
-	return wrapAnthropicChoiceNormalizer(llm), nil
+	return llm, nil
 }
 
 func getVertexAILLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {
@@ -1850,6 +1808,12 @@ func getOpenAILLM(provider, modelName, agentName string, appendagentName bool, a
 		opts = append(opts, openai.WithChatTemplateKwargs(map[string]any{"enable_thinking": false}))
 		slog.Debug("Disabling model-side thinking via chat_template_kwargs", "provider", provider, "model", modelName, "agentName", agentName)
 	}
+	if strings.EqualFold(provider, ProviderCustom) {
+		// Self-hosted/gateway models behind `custom` (vLLM, SGLang, ...) often serve a strict
+		// chat template (e.g. Qwen's) that rejects more than one system message. planner_react_3.go
+		// sends several.
+		opts = append(opts, openai.WithMergedSystemMessages())
+	}
 	opts = append(opts, openai.WithHTTPClient(newOpenAIHTTPClient(authClient)))
 	llm, err := openai.New(opts...)
 	if err != nil {
@@ -1857,19 +1821,7 @@ func getOpenAILLM(provider, modelName, agentName string, appendagentName bool, a
 		return nil, err
 	}
 	slog.Info("Using OpenAI LLM", "model", modelName, "agentName", agentName, "apiType", apiType)
-	var wrapped llms.Model = llm
-	if strings.EqualFold(provider, ProviderCustom) {
-		// Self-hosted/gateway models behind `custom` (vLLM, SGLang, ...) often serve a strict
-		// chat template (e.g. Qwen's) that rejects more than one system message. planner_react_3.go
-		// sends several. See openai_system_message_merge.go.
-		wrapped = wrapMergeSystemMessages(wrapped)
-	}
-	// Strip llm-server-internal thinking keys (ThinkingBudget/ThinkingLevel) from Metadata so
-	// they never serialize into the outbound OpenAI `metadata` field — the langchaingo openai
-	// client only filters "openai:"-prefixed keys, and strict OpenAI-compatible providers (Vertex
-	// via the NB AI Gateway) reject non-string metadata. Covers `custom` too (getCustomLLM
-	// delegates here). See openai_thinking_metadata.go.
-	return wrapStripInternalThinkingMetadata(wrapped), nil
+	return llm, nil
 }
 
 // getCustomLLM serves any provider exposing OpenAI's Chat Completions
@@ -1986,7 +1938,7 @@ func newAzureOpenAIModel(p azureOpenAIParams) (llms.Model, error) {
 	if err != nil {
 		return nil, fmt.Errorf("azure: failed to create client: %w", err)
 	}
-	return wrapStripInternalThinkingMetadata(llm), nil
+	return llm, nil
 }
 
 func getAzureOpenAILLM(provider, modelName, agentName string, appendAgentName bool, accountId string, resolution ...*LLMConfigResolution) (llms.Model, error) {

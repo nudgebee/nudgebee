@@ -141,7 +141,7 @@ Not strictly enforced (no `.golangci.yml` config). Follow stdlib → external �
 - **`llms/classify/`** — `Classify`: answers a fixed-choice question (a label from a set of options) with the configured LLM (strict label matching, corrective retries) or, when one is configured per decision, a dedicated decision model (`llms/decision`) used as primary or in shadow. Imported by `agents/core` (e.g. `ClassificationPlanner`), never the reverse
 - **`prompts/`** — all system prompts as YAML under `prompts/default/v1/` (Go-embedded via `prompts/loader.go`)
 - **`tools/`** — tool implementations for external system integrations
-- **`llms/`** — LLM provider clients (Bedrock, Azure, OpenAI, Vertex AI, etc.)
+- **`llms/`** — LLM provider clients (Bedrock, Azure, OpenAI, Vertex AI, etc.), forked from langchaingo. A client applies fixes for how its own provider's API behaves inside its own `GenerateContent`, not as wrappers (e.g. the Anthropic client puts the content choice first, the OpenAI client drops our internal thinking keys from `metadata` and merges system messages when built `WithMergedSystemMessages()`); anything that reads our config, capability tables or services stays in `llms/runtime`
 - **`config/`** — service configuration management
 - **`common/`** — shared utilities, MQ handling, schedulers, worker pools
 - **`security/`** — authentication, authorization, RequestContext. Outbound LLM payload inspection (credential gate, future redact / tokenize) is the egressfilter package — see [docs/llm-egress-filter.md](docs/llm-egress-filter.md).

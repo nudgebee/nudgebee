@@ -13,7 +13,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tmc/langchaingo/llms"
 )
 
 // The transport must rewrite a string `system` into the cacheable block-array
@@ -105,31 +104,4 @@ func TestAnthropicSystemCacheTransport_HonorsPerRequestOptOut(t *testing.T) {
 
 	_, isString := got["system"].(string)
 	assert.True(t, isString, "system stays a plain string when the request opts out of caching")
-}
-
-type fakeChoicesModel struct{ resp *llms.ContentResponse }
-
-func (f *fakeChoicesModel) GenerateContent(context.Context, []llms.MessageContent, ...llms.CallOption) (*llms.ContentResponse, error) {
-	return f.resp, nil
-}
-func (f *fakeChoicesModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
-	return "", nil
-}
-
-// A [thinking, text] response must surface the text choice first; a plain
-// text response is untouched.
-func TestAnthropicChoiceNormalizer_PromotesTextChoice(t *testing.T) {
-	inner := &fakeChoicesModel{resp: &llms.ContentResponse{Choices: []*llms.ContentChoice{
-		{Content: "", GenerationInfo: map[string]any{"ThinkingContent": "hmm"}},
-		{Content: "<thought_action>real answer</thought_action>"},
-	}}}
-	resp, err := wrapAnthropicChoiceNormalizer(inner).GenerateContent(context.Background(), nil)
-	require.NoError(t, err)
-	assert.Contains(t, resp.Choices[0].Content, "real answer")
-	assert.Len(t, resp.Choices, 2, "thinking choice preserved behind")
-
-	single := &fakeChoicesModel{resp: &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "only"}}}}
-	resp, err = wrapAnthropicChoiceNormalizer(single).GenerateContent(context.Background(), nil)
-	require.NoError(t, err)
-	assert.Equal(t, "only", resp.Choices[0].Content)
 }
