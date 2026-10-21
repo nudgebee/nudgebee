@@ -2437,9 +2437,12 @@ func forecastTrendGuidance(source string) string {
 		"In Quick Investigation, before the cause, state the trend from the Collected Evidence insights: the value on " +
 		"each day (\"by day (daily mean)\"), the current value, the rate of increase, and CPU usage per pod against the " +
 		"CPU limit. Show the daily values as a small markdown table (day | value | CPU usage per pod) inside Quick " +
-		"Investigation, not under a heading of its own. For a projection, also state when the threshold is expected to " +
-		"be reached and the suggested CPU limit from the forecast insight; for a breach, say that the climb is still " +
-		"rising when the insight says so. Then explain what is driving the climb."
+		"Investigation, not under a heading of its own. When the forecast insight lists a \"projected daily mean\", " +
+		"continue the same table with one row per projected day after the observed days, marking each day " +
+		"\"(projected)\" and leaving its CPU usage per pod as \"-\"; never invent rows the insights do not give. For a " +
+		"projection, also state when the threshold is expected to be reached and the suggested CPU limit from the " +
+		"forecast insight; for a breach, say that the climb is still rising when the insight says so. Then explain " +
+		"what is driving the climb."
 }
 
 // capNamespace / capWorkload are the event's resolved workload
