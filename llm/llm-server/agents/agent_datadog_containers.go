@@ -15,7 +15,7 @@ func init() {
 	toolInput := "Provide container data question in natural language"
 	toolOutput := "The tool will return the datadog container data retrieved your query"
 
-	core.RegisterNBAgentFactoryAndToolAndPrioritizeAgentResponseForTool(DatadogContainersAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(DatadogContainersAgentName, func(accountId string) (core.NBAgent, error) {
 		return DatadogContainersAgent{accountId: accountId}, nil
 	}, toolDescription, toolInput, toolOutput)
 }

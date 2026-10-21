@@ -1208,6 +1208,29 @@ func parseEventLabels(labelsStr string) map[string]any {
 	return result
 }
 
+// summaryAccountID is the account whose cloud the summary describes: the
+// events' own account when they all belong to one the caller can read (an
+// event found by id on another account), else the call's data account.
+func summaryAccountID(nbRequestContext toolcore.NbToolContext, eventData []events.Event) string {
+	own := nbRequestContext.DataAccountID()
+	if len(eventData) == 0 {
+		return own
+	}
+	account := eventData[0].CloudAccountId
+	for _, event := range eventData[1:] {
+		if event.CloudAccountId != account {
+			return own
+		}
+	}
+	if account == "" || account == own || nbRequestContext.Ctx == nil {
+		return own
+	}
+	if sc := nbRequestContext.Ctx.GetSecurityContext(); sc == nil || !sc.HasAccountAccess(account, security.SecurityAccessTypeRead) {
+		return own
+	}
+	return account
+}
+
 func (m EventSummaryTool) Call(nbRequestContext toolcore.NbToolContext, input toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
 	dataContext := input.Context
 	if len(dataContext) == 0 {
@@ -1277,7 +1300,7 @@ func (m EventSummaryTool) Call(nbRequestContext toolcore.NbToolContext, input to
 	}
 
 	// Add account context (cloud provider) as a hidden system instruction
-	if cloudProvider := GetCloudProviderForAccount(nbRequestContext.DataAccountID()); cloudProvider != "" {
+	if cloudProvider := GetCloudProviderForAccount(summaryAccountID(nbRequestContext, eventData)); cloudProvider != "" {
 		eventPrompt = eventPrompt + "\n\n[INTERNAL INSTRUCTION - DO NOT INCLUDE IN OUTPUT]: The infrastructure runs on " + cloudProvider + ". Use this context to guide your analysis approach, but do NOT mention the cloud provider context, infrastructure type, or deployment controller details in your output. Your response must remain provider-agnostic. Focus only on the evidence and findings."
 	}
 

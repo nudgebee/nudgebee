@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"nudgebee/llm/agents"
 	"nudgebee/llm/agents/core"
-	_ "nudgebee/llm/agents/signoz"
 	"nudgebee/llm/budget"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"

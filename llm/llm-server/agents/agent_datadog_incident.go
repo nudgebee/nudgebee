@@ -17,7 +17,7 @@ func init() {
 	toolInput := "Provide incidents data question in natural language"
 	toolOutput := "The tool will return incidents data from your question"
 
-	core.RegisterNBAgentFactoryAndTool(DatadogIncidentAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(DatadogIncidentAgentName, func(accountId string) (core.NBAgent, error) {
 		return NewDatadogIncidentAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }
@@ -30,7 +30,7 @@ func init() {
 	toolDescription := `Retrieves Datadog incidents. Input should be a natural language question about incidents.`
 	toolInput := "Provide a question about Datadog incidents in natural language."
 	toolOutput := "The tool will return the Datadog incident data retrieved for your query."
-	core.RegisterNBAgentFactoryAndTool(DatadogIncidentAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(DatadogIncidentAgentName, func(accountId string) (core.NBAgent, error) {
 		return NewDatadogIncidentAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }

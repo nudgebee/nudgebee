@@ -13,7 +13,7 @@ func init() {
 	toolInput := "Provide software catalog data question in natural language"
 	toolOutput := "The tool will return software catalog data from your question"
 
-	core.RegisterNBAgentFactoryAndTool(AgentDatadogSoftwareCatalogName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(AgentDatadogSoftwareCatalogName, func(accountId string) (core.NBAgent, error) {
 		return NewDatadogSoftwareCatalogAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }

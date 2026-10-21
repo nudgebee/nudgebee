@@ -63,7 +63,7 @@ func TestObservabilityQueryToolsAreReads(t *testing.T) {
 		tools.DatadogSoftwareCatalogTool{}, tools.DatadogTracesExecuteTool{},
 		tools.NewRelicAPMServicesTool{}, tools.NewRelicInfrastructureContainersTool{},
 		tools.NewRelicInfrastructureHostsTool{}, tools.NewRelicResourceSearchTool{},
-		tools.SignozExecuteTool{}, tools.ESMetricsQueryTool{}, tools.SplunkMetricsQueryTool{},
+		tools.ESMetricsQueryTool{}, tools.SplunkMetricsQueryTool{},
 	} {
 		inference, ok := tool.(toolcore.ToolRequestInference)
 		if !assert.True(t, ok, "%s declares its request type", tool.Name()) {

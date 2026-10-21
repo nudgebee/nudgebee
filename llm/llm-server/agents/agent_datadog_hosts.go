@@ -13,7 +13,7 @@ func init() {
 	toolInput := "Provide hosts data question in natural language"
 	toolOutput := "The tool will return hosts data from your question"
 
-	core.RegisterNBAgentFactoryAndTool(AgentDatadogHostsName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(AgentDatadogHostsName, func(accountId string) (core.NBAgent, error) {
 		return NewDatadogHostsAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }

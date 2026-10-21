@@ -18,7 +18,7 @@ func init() {
 	toolDescription := `Retrieves Datadog traces. Input should be a natural language question about traces.`
 	toolInput := "Provide traces question in natural language"
 	toolOutput := "The tool will return the datadog traces data retrieved your query"
-	core.RegisterNBAgentFactoryAndTool(DatadogTracesAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(DatadogTracesAgentName, func(accountId string) (core.NBAgent, error) {
 		return NewDatadogTracesAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }

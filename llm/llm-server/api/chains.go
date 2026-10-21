@@ -14,7 +14,6 @@ import (
 
 	"nudgebee/llm/agents"
 	"nudgebee/llm/agents/core"
-	_ "nudgebee/llm/agents/signoz"
 	"nudgebee/llm/analytics"
 	"nudgebee/llm/audit"
 	"nudgebee/llm/budget"

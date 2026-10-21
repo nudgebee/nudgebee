@@ -944,6 +944,16 @@ func castIsoTimestampLiterals(sql string) string {
 }
 
 func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	// A lookup of one event by id runs on the account the event belongs to.
+	if matches := idLookupPredicateRe.FindAllStringSubmatch(input.Command, -1); len(matches) == 1 {
+		return onEventAccount(nbRequestContext, matches[0][1], func(c core.NbToolContext) (core.NBToolResponse, error) {
+			return m.call(c, input)
+		})
+	}
+	return m.call(nbRequestContext, input)
+}
+
+func (m EventsExecuteTool) call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	nbRequestContext = nbRequestContext.ForTarget()
 	// Validate that the input is actually SQL, not descriptive text
 	if isDescriptiveText(input.Command) {

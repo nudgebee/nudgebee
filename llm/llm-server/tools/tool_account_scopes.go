@@ -16,7 +16,7 @@ func init() {
 		"metrics_labels_list", "metrics_list", "metrics_series_match", "nudgebee_agent_health_get",
 		"prometheus_execute", "propose_recommendation_apply", "recommendation_execute",
 		"recommendation_resolution_execute", "search_metrics", "security_execute",
-		"service_dependency_graph_execute", "signoz_log_execute", "spend_allocation", "spend_forecast",
+		"service_dependency_graph_execute", "spend_allocation", "spend_forecast",
 		"spend_summary", "traces_execute", "traces_execute_chronosphere", "traces_execute_default",
 		"traces_execute_jaeger", "traces_execute_v2",
 	)
