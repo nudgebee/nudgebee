@@ -52,17 +52,12 @@ func getProvider(modelID string) string {
 }
 
 func isRegion(part string) bool {
-	// Expand as needed
-	regions := map[string]bool{
-		"us":     true,
-		"eu":     true,
-		"ap":     true,
-		"sa":     true,
-		"af":     true,
-		"me":     true,
-		"global": true,
+	switch part {
+	case "us", "us-gov", "eu", "ap", "apac", "jp", "au", "ca", "sa", "af", "me", "global":
+		return true
+	default:
+		return false
 	}
-	return regions[part]
 }
 
 // NewClient creates a new Bedrock client.

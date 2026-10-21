@@ -70,6 +70,12 @@ func TestResolveMaxOutputTokens_BedrockCrossRegionIds(t *testing.T) {
 	assert.Equal(t, 65536, ResolveMaxOutputTokens("", "bedrock", "us.anthropic.claude-sonnet-4-6-20260115-v1:0"))
 	// EU region profile.
 	assert.Equal(t, 65536, ResolveMaxOutputTokens("", "bedrock", "eu.anthropic.claude-opus-4-8-v1:0"))
+	// GovCloud profile.
+	assert.Equal(t, 65536, ResolveMaxOutputTokens("", "bedrock", "us-gov.anthropic.claude-sonnet-4-6"))
+	// Every other region prefix the Bedrock client accepts.
+	for _, prefix := range []string{"ap.", "apac.", "jp.", "au.", "ca.", "sa.", "af.", "me.", "global."} {
+		assert.Equal(t, 65536, ResolveMaxOutputTokens("", "bedrock", prefix+"anthropic.claude-sonnet-4-6"), prefix)
+	}
 	// Dotted-but-prefixed (Vertex-style) id resolves too.
 	assert.Equal(t, 65536, ResolveMaxOutputTokens("", "vertexai", "anthropic.claude-sonnet-4.6"))
 	// Vertex's custom endpoint form uses a slash rather than a dotted vendor prefix.

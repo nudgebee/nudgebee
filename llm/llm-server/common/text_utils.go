@@ -105,7 +105,7 @@ func StripFirstAgentMention(query string) string {
 // canonicalModelRegionPrefixes and canonicalModelVendorPrefixes are stripped, in
 // order, by CanonicalModelID. Longest/most-specific entries aren't required since
 // each list is checked with HasPrefix and stops at the first match.
-var canonicalModelRegionPrefixes = []string{"us.", "eu.", "apac.", "jp.", "au.", "ca.", "global."}
+var canonicalModelRegionPrefixes = []string{"us.", "us-gov.", "eu.", "ap.", "apac.", "jp.", "au.", "ca.", "sa.", "af.", "me.", "global."}
 var canonicalModelVendorPrefixes = []string{"anthropic.", "amazon.", "meta.", "google.", "vertex.", "vertex/", "openai.", "azure.", "mistral.", "cohere.", "ai21.", "models/"}
 
 // trailingInvocationVersionRE strips a trailing Bedrock-style invocation version
