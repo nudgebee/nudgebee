@@ -330,6 +330,12 @@ def _ids_match(rule_id, payload_id):
 # *findings* stay troubleshoot findings.
 RULE_SOURCE_CATEGORIES = {"troubleshoot", "optimize", "slo", "cloud"}
 
+# Finding sources that are not themselves a category but belong to one other
+# than "troubleshoot". "forecast" findings are projected CPU SLO breaches, so an
+# SLO rule receives them. They stay finding-shaped (filters, fingerprint) and
+# are kept out of the SLO digest, which is keyed on the message source "slo".
+FINDING_SOURCE_CATEGORIES = {"forecast": "slo"}
+
 # Non-finding messages from runbook-server. They carry a top-level `event_type`
 # and `parameters.account_id`; rules select them by event type.
 AUTOMATION_SOURCE = "automation"
@@ -389,7 +395,9 @@ def _excluded(rule, account_id, namespace, workload, aggregation_key):
 
 
 def _finding_rule_source(source):
-    return source if source in RULE_SOURCE_CATEGORIES else "troubleshoot"
+    if source in RULE_SOURCE_CATEGORIES:
+        return source
+    return FINDING_SOURCE_CATEGORIES.get(source, "troubleshoot")
 
 
 def _event_type_matches(rule, source, event_type):

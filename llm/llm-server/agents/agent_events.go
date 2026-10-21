@@ -235,6 +235,11 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			"Output: the classification record, or a clear note that none was recorded.",
 			"Use it to answer how an event was classified and why — complements get_event_triage_explanation (dedup chain/firing history).",
 		},
+		tools.ToolMetricForecast: {
+			"Use for 'will <workload> breach its CPU SLO / hit CPU throttling / run out of CPU?', and to re-check the forecast behind a CPUThrottlingPredicted, CPUSaturationPredicted, CPUThrottlingSLOBreached or CPUSaturationSLOBreached event (take namespace and workload from the event's subject and owner, kind from its workload_kind label, metric from its condition label).",
+			"Input: workload_namespace, workload_name and metric (cpu_throttling|cpu_saturation), optional kind and threshold (%).",
+			"Output: an explicit status plus eta_hours, current_pct, threshold_pct, suggested_limit (in limit_unit) and a daily table; quote them as evidence. insufficient_history means under 48h of data since the last limit change.",
+		},
 		tools.ToolTriageRuleEvents: {
 			"Use this tool to list the events a specific triage rule matched (rule effectiveness).",
 			"Input: rule_id (from get_triage_rules), optional limit.",
@@ -616,7 +621,7 @@ func (p AgentEvents) GetSupportedTools(ctx *security.RequestContext) []toolcore.
 		tools.EventsExecuteTool{}, tools.AnomalyExecuteTool{}, EventSummaryTool{}, tools.GetEventEvidenceTool{},
 		tools.TriageExplanationTool{}, tools.TriageRulesTool{}, tools.ThresholdSuggestionsTool{}, tools.TriageDryRunTool{},
 		tools.EventRulesTool{}, tools.EventClassificationTool{}, tools.TriageRuleEventsTool{},
-		tools.IncidentAssemblyTool{},
+		tools.IncidentAssemblyTool{}, tools.MetricForecastTool{},
 	}
 }
 

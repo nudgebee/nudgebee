@@ -324,6 +324,34 @@ mutation SLODelete($data: SLODeleteRequest!) {
 }
 `;
 
+export const FORECAST = `
+mutation Forecast($data: ForecastGenerateRequest!) {
+  forecast_generate(request: $data) {
+    data {
+      status
+      reason
+      condition
+      threshold_pct
+      current_pct
+      slope_pct_per_day
+      eta_hours
+      level
+      per_pod_limit
+      suggested_limit
+      limit_unit
+      evaluated_at
+      daily {
+        date
+        value_pct
+        per_pod_usage
+        per_pod_limit
+        projected
+      }
+    }
+  }
+}
+`;
+
 export const SLO_REPORT = `
 query SLOReport {
   slo_report_v2(where: __WHERE__, order_by: [{column: "updated_at", order: desc}]) {
@@ -403,6 +431,7 @@ query GetSLOConfigs {
       threshold
       created_at
       updated_at
+      last_forecast
     }
   }
 }
@@ -597,6 +626,15 @@ const apiKubernetes1 = {
       data: data,
     });
     return response;
+  },
+  /** Check now: the forecast of one workload metric preset against a threshold. Creates no event. */
+  async generateForecast(data: { account_id: string; workload_namespace: string; workload_name: string; metric: string; threshold: number }) {
+    const response = await queryGraphQL(FORECAST, 'Forecast', { data });
+    const result = response?.data?.data?.forecast_generate?.data;
+    if (!result) {
+      throw new Error(response?.data?.errors?.[0]?.message || 'Could not run the forecast');
+    }
+    return result;
   },
   async getEventRules(query: any, limit: number, offset: number) {
     if (query.accountId === 'demo') {

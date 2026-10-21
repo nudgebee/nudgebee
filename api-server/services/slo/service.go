@@ -1,6 +1,7 @@
 package slo
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -29,19 +30,53 @@ func Execute() error {
 	if err != nil {
 		return err
 	}
+	// One run at a time across all pods (see executeLockKey).
+	unlock, ok, err := tryExecuteLock(context.Background(), dbms.Db)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		slog.Warn("slo: previous run still in progress, skipping this one")
+		return nil
+	}
+	defer unlock()
 	var sloConfigs []string
 	if err = dbms.Db.Select(&sloConfigs, `SELECT distinct s.cloud_account_id FROM public.slo_config s inner join agent a on s.cloud_account_id = a.cloud_account_id  where s.enabled = true and a.status = 'CONNECTED'`); err != nil {
 		return err
 	}
-	for _, accountId := range sloConfigs {
-		err := ExecuteSLO(accountId)
-		if err != nil {
-			slog.Error("slo: error running slo config", "error", err, "cloud account id", accountId)
+	// Two passes: every account's classic SLOs first, then the CPU SLO forecasts. A
+	// forecast fetches three days of samples, so evaluating it in the same pass would
+	// delay the next account's availability and latency SLOs behind it.
+	for _, forecasts := range []bool{false, true} {
+		for _, accountId := range sloConfigs {
+			if err := executeAccountSLOs(accountId, forecasts); err != nil {
+				slog.Error("slo: error running slo config", "error", err, "cloud account id", accountId, "forecasts", forecasts)
+			}
 		}
 	}
 	return nil
 }
+
+// ExecuteSLO evaluates every enabled SLO of one account, classic SLOs before forecasts.
 func ExecuteSLO(accountId string) error {
+	if accountId == "" {
+		return fmt.Errorf("slo: ExecuteSLO called with empty accountId")
+	}
+	return errors.Join(executeAccountSLOs(accountId, false), executeAccountSLOs(accountId, true))
+}
+
+// configsOfPass picks the configs one pass evaluates: the forecast (CPU) SLOs, or the rest.
+func configsOfPass(configs []DBSLOConfig, forecasts bool) []DBSLOConfig {
+	out := make([]DBSLOConfig, 0, len(configs))
+	for _, c := range configs {
+		if isForecastConfig(c) == forecasts {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func executeAccountSLOs(accountId string, forecasts bool) error {
 	if accountId == "" {
 		return fmt.Errorf("slo: ExecuteSLO called with empty accountId")
 	}
@@ -57,7 +92,7 @@ func ExecuteSLO(accountId string) error {
 		FROM public.slo_config WHERE cloud_account_id=$1 AND enabled = true`, accountId); err != nil {
 		return err
 	}
-	for _, config := range sloConfigs {
+	for _, config := range configsOfPass(sloConfigs, forecasts) {
 		err := executeSLOConfig(config, accountId, dbms)
 		if err != nil {
 			slog.Error("slo: error running slo config", "error", err, "configId", config.Id, "accountId", accountId)
@@ -67,6 +102,9 @@ func ExecuteSLO(accountId string) error {
 }
 
 func executeSLOConfig(config DBSLOConfig, accountId string, dbms *database.DatabaseManager) error {
+	if isForecastConfig(config) {
+		return executeForecastConfig(config, accountId, dbms)
+	}
 	reports, err := executeSlo(config, accountId)
 	if err != nil {
 		slog.Error("slo: error executing slo", "error", err, "configId", config.Id, "accountId", accountId)
@@ -383,6 +421,16 @@ func CreateOrUpdateSLOConfig(context *security.RequestContext, sloConfigRequest 
 			filterGoodQuery = AvailabilityGoodQuery(sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
 			filterBadQuery = AvailabilityBadQuery(sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
 			method = "good_bad_ratio"
+		} else if isForecastType(config.Name) {
+			if err := validateForecastConfig(context, sloConfigRequest, config); err != nil {
+				return data, err
+			}
+			// goal and window are written explicitly: DBSLOConfig scans them into
+			// non-nullable fields, and one NULL row would fail ExecuteSLO for every
+			// SLO on the account. The threshold is a percent.
+			config.Name = strings.ToLower(config.Name)
+			config.Goal = 0
+			method = forecastMethod
 		} else {
 			return data, fmt.Errorf("invalid config provided %s", config.Name)
 		}
@@ -402,8 +450,12 @@ func CreateOrUpdateSLOConfig(context *security.RequestContext, sloConfigRequest 
 			// A disabled config never evaluates again, so it never has another
 			// chance to close its own event — same failure class as delete (see
 			// DeleteSLOConfig).
-			fingerprint := sloFingerprint(sloConfigRequest.AccountId, config.Name, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace)
-			closeSLOEventByFingerprint(dbms, context.GetSecurityContext().GetTenantId(), sloConfigRequest.AccountId, fingerprint)
+			if isForecastType(config.Name) {
+				closeForecastEvents(context.GetSecurityContext().GetTenantId(), sloConfigRequest.AccountId, config.Name, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace)
+			} else {
+				fingerprint := sloFingerprint(sloConfigRequest.AccountId, config.Name, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace)
+				closeSLOEventByFingerprint(dbms, context.GetSecurityContext().GetTenantId(), sloConfigRequest.AccountId, fingerprint)
+			}
 		}
 		data["success"] = true
 	}
@@ -472,6 +524,10 @@ func DeleteSLOConfig(context *security.RequestContext, request SLODeleteRequest)
 	}
 
 	for _, name := range deletedConfigNames {
+		if isForecastType(name) {
+			closeForecastEvents(sc.GetTenantId(), request.AccountId, name, request.WorkloadName, request.Namespace)
+			continue
+		}
 		fingerprint := sloFingerprint(request.AccountId, name, request.WorkloadName, request.Namespace)
 		closeSLOEventByFingerprint(dbms, sc.GetTenantId(), request.AccountId, fingerprint)
 	}
@@ -507,7 +563,7 @@ func GetSLOConfig(context *security.RequestContext, sloListRequest SLOListReques
 		return nil, err
 	}
 
-	query := fmt.Sprintf(`SELECT id, "name", description, schedule, created_by, updated_by, filter_good_query, filter_bad_query, threshold, created_at, updated_at, "method", histogram_query, cloud_account_id, tenant_id, "window", workload_name, workload_namespace, goal, enabled FROM public.slo_config where %s`, whereClause)
+	query := fmt.Sprintf(`SELECT id, "name", description, schedule, created_by, updated_by, filter_good_query, filter_bad_query, threshold, created_at, updated_at, "method", histogram_query, cloud_account_id, tenant_id, "window", workload_name, workload_namespace, goal, enabled, last_forecast FROM public.slo_config where %s`, whereClause)
 	// Use sqlx.In to handle slice arguments and prevent SQL injection
 	query, args, err = sqlx.In(query, args...)
 	if err != nil {
@@ -524,12 +580,12 @@ func GetSLOConfig(context *security.RequestContext, sloListRequest SLOListReques
 	for _, config := range sloConfigs {
 		configKey := fmt.Sprintf("%s-%s-%s", config.Name, config.WorkloadName, config.Namespace)
 		if response, ok := sloResponseMap[configKey]; ok {
-			configResponse := SLOConfigResponse{Id: config.Id, Name: config.Name, Goal: config.Goal, Threshold: config.ThresholdBucket, Enabled: config.Enabled}
+			configResponse := SLOConfigResponse{Id: config.Id, Name: config.Name, Goal: config.Goal, Threshold: config.ThresholdBucket, Enabled: config.Enabled, LastForecast: lastForecastJSON(config.LastForecast)}
 			response.Config = append(response.Config, configResponse)
 			sloResponseMap[configKey] = response
 		} else {
 			response := SLOResponse{Id: config.Id, AccountId: config.CloudAccountId, WorkloadName: config.WorkloadName, Namespace: config.Namespace, Config: make([]SLOConfigResponse, 0)}
-			configResponse := SLOConfigResponse{Id: config.Id, Name: config.Name, Goal: config.Goal, Threshold: config.ThresholdBucket, Enabled: config.Enabled}
+			configResponse := SLOConfigResponse{Id: config.Id, Name: config.Name, Goal: config.Goal, Threshold: config.ThresholdBucket, Enabled: config.Enabled, LastForecast: lastForecastJSON(config.LastForecast)}
 			response.Config = append(response.Config, configResponse)
 			sloResponseMap[configKey] = response
 		}

@@ -5133,6 +5133,21 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin
       - role: tenant_admin
+  - name: forecast_generate
+    comment: Forecast when a workload metric preset (CPU throttling, CPU or memory saturation) will cross a threshold, on demand (creates no event)
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/slo'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 100
+    permissions:
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
   - name: slo_config_create
     comment: Create an SLO configuration
     definition:

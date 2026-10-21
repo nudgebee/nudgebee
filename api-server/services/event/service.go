@@ -664,7 +664,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 			Resource:       cr,
 			ProviderConfig: query.ProviderConfig,
 		}
-	} else if *r.AggregationKey == "CPUThrottlingHigh" {
+	} else if isCPUThrottlingResolvable(*r.AggregationKey) {
 		if common.IsEmptyStringPointer(r.SubjectOwnerKind) || common.IsEmptyStringPointer(r.SubjectOwner) {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: kind or owner is not correct")
 		}
@@ -704,6 +704,11 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 							slog.Warn("Unknown type for evidence item", "type", fmt.Sprintf("%T", v))
 						}
 					}
+				}
+				if containerName == "" {
+					// A CPU SLO forecast has no alert-labels table; it names the one
+					// container with a CPU limit in its labels, when there is one.
+					containerName = labelValue(r.Labels, "container")
 				}
 				if containerName == "" {
 					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: container name cannot be empty")
@@ -5404,4 +5409,29 @@ func stampEvidencesWithSourceWorkflow(evidences []any, source *models.EvidenceSo
 		}
 		additionalInfo[evidenceSourceWorkflowKey] = stamp
 	}
+}
+
+// isCPUThrottlingResolvable reports whether an event takes the CPU throttling fixes
+// (resize the CPU limit, add replicas, restart): the CPUThrottlingHigh alert, and the
+// CPU SLO forecasts and breach alerts.
+func isCPUThrottlingResolvable(aggregationKey string) bool {
+	switch aggregationKey {
+	case "CPUThrottlingHigh", "CPUThrottlingPredicted", "CPUSaturationPredicted",
+		"CPUThrottlingSLOBreached", "CPUSaturationSLOBreached":
+		return true
+	}
+	return false
+}
+
+// labelValue reads one string label from an event's labels JSON.
+func labelValue(labels *models.Json, key string) string {
+	if labels == nil || !labels.IsObject() {
+		return ""
+	}
+	m, ok := labels.Object().(map[string]any)
+	if !ok {
+		return ""
+	}
+	v, _ := m[key].(string)
+	return v
 }

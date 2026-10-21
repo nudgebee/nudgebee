@@ -22,6 +22,47 @@ import { sloFingerprint } from '@lib/eventFingerprint';
 import { toast as snackbar } from '@ui/Toast';
 import { hasWriteAccess } from '@lib/auth';
 import SafeIcon from '@shared/icons/SafeIcon';
+import { CPU_SLO_TYPES, forecastStatus, forecastSummary, isBreachedCpuSlo, isCpuSloName, parseForecast } from '@components/k8s/common/cpuForecast';
+
+// The four event keys a CPU SLO raises (see the backend forecast package).
+const CPU_FORECAST_EVENT_KEYS = ['CPUThrottlingPredicted', 'CPUSaturationPredicted', 'CPUThrottlingSLOBreached', 'CPUSaturationSLOBreached'];
+
+// The status cell: FIRING with the firing SLOs' names, or OK.
+const sloStatusCell = (firingNames: string[]) => ({
+  component: (
+    <>
+      <Label text={firingNames.length > 0 ? `FIRING` : 'OK'} />
+      {firingNames.length > 0 ? <Text secondaryText value={`[${firingNames.join(', ')}]`} /> : null}
+    </>
+  ),
+});
+
+// CPU SLOs write no report rows, so a breach is read from their latest forecast.
+const breachedCpuSloNames = (row: any[]) =>
+  (row[0]?.drilldownQuery?.cpuConfigs ?? []).filter(isBreachedCpuSlo).map((c: any) => snakeToTitleCase(String(c.name)));
+
+// One line per CPU SLO on the workload: its forecast status and summary.
+const CpuForecastCell = ({ configs }: { configs: any[] }) => {
+  if (configs.length === 0) return <Text value='-' />;
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+      {configs.map((c: any) => {
+        const forecast = parseForecast(c.last_forecast);
+        const status = forecastStatus(forecast);
+        const type = CPU_SLO_TYPES.find((t) => t.name === String(c.name).toLowerCase());
+        return (
+          <Box key={c.name}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+              <Text value={`${type?.title ?? c.name} ≤ ${Number(c.threshold)}%`} />
+              <Label text={status.text} tone={status.tone} size='sm' />
+            </Box>
+            <Text secondaryText value={forecastSummary(forecast)} />
+          </Box>
+        );
+      })}
+    </Box>
+  );
+};
 
 interface KubernetesSLOConfigsProps {
   accountId: string;
@@ -104,7 +145,8 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
     { name: 'Status (30D)', width: '12%' },
     { name: 'Latency', width: '12%' },
     { name: 'Availability', width: '12%' },
-    { name: 'Observation (30D)', width: '30%' },
+    { name: 'Observation (30D)', width: '20%' },
+    { name: 'CPU Forecast', width: '20%' },
     { name: '', width: '8%' },
   ];
 
@@ -142,7 +184,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
         const workloadFqdn: string[] = [];
         if (filteredData.length > 0) {
           const groupedWorkloads = filteredData.reduce((acc: any, cur: any) => {
-            const { workload_name, workload_namespace, name, threshold, goal, id, enabled, window, created_at, updated_at } = cur;
+            const { workload_name, workload_namespace, name, threshold, goal, id, enabled, window, created_at, updated_at, last_forecast } = cur;
             const key = `${workload_namespace}_${workload_name}`;
 
             if (!acc[key]) {
@@ -156,7 +198,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
               };
             }
 
-            acc[key].config.push({ name, threshold, goal, id, enabled });
+            acc[key].config.push({ name, threshold, goal, id, enabled, last_forecast });
 
             return acc;
           }, {});
@@ -168,6 +210,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
             let latency;
             let availabilityConfig = [];
             let latencyConfig = [];
+            const cpuConfigs = (m.config || []).filter((n: any) => isCpuSloName(n.name));
             if (m.config && m.config.length > 0) {
               availabilityConfig = m.config.filter((n: any) => n.name == 'availability');
               if (availabilityConfig && availabilityConfig.length == 1) {
@@ -191,6 +234,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
                 drilldownQuery: {
                   availabilityConfig: availabilityConfig[0],
                   latencyConfig: latencyConfig[0],
+                  cpuConfigs,
                   workloadName: m.workload_name,
                   workloadNamespace: m.workload_namespace,
                 },
@@ -212,6 +256,9 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
               },
               {
                 component: <ThreeDotLoader />,
+              },
+              {
+                component: <CpuForecastCell configs={cpuConfigs} />,
               },
               {
                 // Namespace admins may update SLOs in their namespaces; delete stays account-level.
@@ -312,16 +359,8 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
                   }
                 }
 
-                const filterFiringStatusConfig = item.filter((g: any) => g.status == 'FIRING');
-                const firingStatusConfig = filterFiringStatusConfig.map((g: any) => snakeToTitleCase(g.config_name))?.join(', ');
-                element[3] = {
-                  component: (
-                    <>
-                      <Label text={filterFiringStatusConfig.length > 0 ? `FIRING` : 'OK'} />
-                      {firingStatusConfig ? <Text secondaryText value={`[${firingStatusConfig}]`} /> : null}
-                    </>
-                  ),
-                };
+                const firingNames = item.filter((g: any) => g.status == 'FIRING').map((g: any) => snakeToTitleCase(g.config_name));
+                element[3] = sloStatusCell([...firingNames, ...breachedCpuSloNames(element)]);
                 element[6] = {
                   text: <Typography style={{ whiteSpace: 'pre-line' }}>{observation}</Typography>,
                 };
@@ -329,6 +368,9 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
                 element[6] = {
                   text: '-',
                 };
+                if (breachedCpuSloNames(element).length > 0) {
+                  element[3] = sloStatusCell(breachedCpuSloNames(element));
+                }
               }
             }
             setTableData([...tableData]);
@@ -337,6 +379,9 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
               element[6] = {
                 text: '-',
               };
+              if (breachedCpuSloNames(element).length > 0) {
+                element[3] = sloStatusCell(breachedCpuSloNames(element));
+              }
             }
             setTableData([...tableData]);
           }
@@ -407,6 +452,14 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
                   value: 2,
                   key: 'slo-availability-traces',
                 },
+                {
+                  componentFn: function (opt: any, drilldownQuery: any) {
+                    return <SLOCpuAlerts drilldownQuery={drilldownQuery} accountId={accountId} />;
+                  },
+                  text: 'CPU Alerts',
+                  value: 4,
+                  key: 'slo-cpu-alerts',
+                },
                 ...(sharedVariableForFindingIds.length > 0
                   ? [
                       {
@@ -463,7 +516,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
         confirmDisabled={deleting}
       >
         <Typography>
-          {`Delete the availability and latency SLOs for ${deleteTarget?.workloadName} in ${deleteTarget?.workloadNamespace}? Their historical reports will be removed too.`}
+          {`Delete all SLOs on ${deleteTarget?.workloadName} in ${deleteTarget?.workloadNamespace}? Their historical reports will be removed and open CPU forecast alerts closed.`}
         </Typography>
       </Modal>
     </>
@@ -668,6 +721,33 @@ const SLOEvent = ({ drilldownQuery = {} as any, accountId = '', sharedVariableFo
     );
   }
   return <Typography>No Event Available</Typography>;
+};
+
+// The forecast and breach alerts of a workload's CPU SLOs; each row opens the alert.
+const SLOCpuAlerts = ({ drilldownQuery = {} as any, accountId = '' }) => {
+  // Fixed once per mount: the events table resets its paging whenever its query
+  // changes, and a window ending at "now" would change on every re-render.
+  const [range] = useState(() => ({ startTime: getLast30Days(new Date()).getTime(), endTime: new Date().getTime() }));
+  if (!drilldownQuery.cpuConfigs?.length) {
+    return <Typography>No CPU SLO on this workload</Typography>;
+  }
+  return (
+    <KubernetesEventsTable
+      accountId={accountId}
+      enableTrendChart={false}
+      enableFilters={false}
+      heading={''}
+      defaultQuery={{
+        namespace: drilldownQuery.workloadNamespace,
+        workloadName: drilldownQuery.workloadName,
+        startTime: range.startTime,
+        endTime: range.endTime,
+        aggregation_key: CPU_FORECAST_EVENT_KEYS,
+        finding_type: '',
+      }}
+      showTimeFilter={false}
+    />
+  );
 };
 
 const SLOTraces = ({ drilldownQuery = {} as any, accountId = '', type = '' }) => {

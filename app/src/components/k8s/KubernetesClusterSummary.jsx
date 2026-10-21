@@ -33,6 +33,7 @@ import { useRouter } from 'next/router';
 import { Button as DSButton } from '@ui/Button';
 import { getInsightRoute } from './common/insightRoutes';
 import Link from 'next/link';
+import { isBreachedCpuSlo } from '@components/k8s/common/cpuForecast';
 
 export const SummaryBlock = ({ title, children, greenColor, redColor, sx, hideTitle = false, height = '' }) => {
   const getBorderColor = (greenColor, redColor) => {
@@ -228,28 +229,28 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
         setTotalSlo(totalConfiguredCount);
 
         const sloResponseData = observationResponse?.data?.data?.slo_report_observation_v2?.rows || [];
+        const statusMap = {};
+        sloResponseData.forEach((item) => {
+          const key = `${item.workload_namespace}/${item.workload_name}`;
+          if (!statusMap[key]) {
+            statusMap[key] = item.status;
+          } else if (item.status === 'FIRING') {
+            statusMap[key] = 'FIRING';
+          }
+        });
+        // CPU SLOs write no report rows; their breach is in their latest forecast.
+        configuredSLOs.forEach((config) => {
+          if (isBreachedCpuSlo(config)) {
+            statusMap[`${config.workload_namespace}/${config.workload_name}`] = 'FIRING';
+          }
+        });
 
-        if (sloResponseData.length > 0) {
-          const statusMap = {};
-          sloResponseData.forEach((item) => {
-            const key = `${item.workload_namespace}/${item.workload_name}`;
-            if (!statusMap[key]) {
-              statusMap[key] = item.status;
-            } else if (item.status === 'FIRING') {
-              statusMap[key] = 'FIRING';
-            }
-          });
+        const firingArray = Object.entries(statusMap)
+          .filter(([, status]) => status === 'FIRING')
+          .map(([key]) => key);
 
-          const firingArray = Object.entries(statusMap)
-            .filter(([, status]) => status === 'FIRING')
-            .map(([key]) => key);
-
-          setFiringSlo(firingArray.length);
-          setFiringWorkloads(firingArray);
-        } else {
-          setFiringSlo(0);
-          setFiringWorkloads([]);
-        }
+        setFiringSlo(firingArray.length);
+        setFiringWorkloads(firingArray);
       } catch (error) {
         console.error(error);
       }

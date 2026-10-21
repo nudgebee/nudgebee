@@ -1,0 +1,561 @@
+package forecast
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"nudgebee/services/common"
+	"nudgebee/services/config"
+	"nudgebee/services/event"
+	eventtypes "nudgebee/services/event/types"
+	"nudgebee/services/internal/database"
+	"nudgebee/services/observability"
+)
+
+// Source is events.source for every forecast event.
+const Source = "forecast"
+
+// Close reasons, stamped into the closed event's labels. The re-fire cooldown skips
+// closes that say nothing about the workload's health: the user removing the SLO, or
+// a forecast moving between urgency levels.
+const (
+	CloseClean       = "clean"
+	CloseBreached    = "breached"
+	CloseLevelChange = "level_change"
+	CloseUnwatched   = "unwatched"
+)
+
+// sloCadence is how often the SLO run evaluates a CPU SLO. A clean evaluation closes
+// an event only once its last projecting run is more than one cadence old, which
+// means two consecutive clean runs.
+const sloCadence = time.Hour
+
+// AggregationKey is the event type of a projected breach of condition.
+func AggregationKey(c Condition) string {
+	if c == ConditionSaturation {
+		return "CPUSaturationPredicted"
+	}
+	return "CPUThrottlingPredicted"
+}
+
+// BreachedAggregationKey is the event type of an actual breach of condition's SLO.
+func BreachedAggregationKey(c Condition) string {
+	if c == ConditionSaturation {
+		return "CPUSaturationSLOBreached"
+	}
+	return "CPUThrottlingSLOBreached"
+}
+
+// Target identifies the SLO a forecast belongs to.
+type Target struct {
+	TenantId    string
+	AccountId   string
+	AccountName string
+	SLOConfigId string
+}
+
+// fingerprint is one per workload, condition and level. "|" cannot appear in a UUID,
+// a DNS-1123 name or the enums, so two workloads can never share one (see
+// anomalyFingerprint for the collision "-" allowed).
+func fingerprint(t Target, res Result, level Level) string {
+	return strings.Join([]string{"cpuforecast", t.AccountId, res.Namespace, res.Kind, res.Workload, string(res.Condition), string(level)}, "|")
+}
+
+// Seams for tests.
+var (
+	openFiring       = openFiringEvent
+	inCooldown       = recentlyClosed
+	closeFiring      = closeFiringEvents
+	upsertEvent      = func(e event.Event) error { _, err := event.InsertEvent(e, "", event.ScheduledDetection()); return err }
+	publishResolve   = publishResolved
+	limitedContainer = onlyLimitedContainer
+	nowFn            = func() time.Time { return time.Now().UTC() }
+)
+
+// Sync applies one evaluation to the workload's forecast events. A failed evaluation
+// says nothing about the workload, so it changes nothing.
+func Sync(t Target, res Result, series Series) error {
+	switch res.Status {
+	case StatusError:
+		return nil
+	case StatusBreached:
+		// The prediction came true: the warnings give way to the breach alert, which
+		// carries the same trend evidence.
+		if err := closeBoth(t, res, CloseBreached, false); err != nil {
+			return err
+		}
+		return raiseLevel(t, res, series, LevelBreached)
+	case StatusProjected:
+		// Below the threshold again: the breach alert closes once that holds for two
+		// runs, the same damping as a warning.
+		if err := closeFiring(t, fingerprint(t, res, LevelBreached), CloseClean, true); err != nil {
+			return err
+		}
+		return raise(t, res, series)
+	default:
+		return closeAll(t, res, CloseClean, true)
+	}
+}
+
+// CloseAll closes every open forecast event of an SLO whose watch has ended: the SLO
+// was disabled or deleted.
+func CloseAll(t Target, namespace, kind, workload string, c Condition) error {
+	return closeAll(t, Result{Namespace: namespace, Kind: normalizeKind(kind), Workload: workload, Condition: c}, CloseUnwatched, false)
+}
+
+// closeAll closes the warnings and the breach alert.
+func closeAll(t Target, res Result, reason string, stable bool) error {
+	return errors.Join(
+		closeBoth(t, res, reason, stable),
+		closeFiring(t, fingerprint(t, res, LevelBreached), reason, stable),
+	)
+}
+
+func closeBoth(t Target, res Result, reason string, stable bool) error {
+	var errs []error
+	for _, level := range []Level{LevelMedium, LevelHigh} {
+		if err := closeFiring(t, fingerprint(t, res, level), reason, stable); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func raise(t Target, res Result, series Series) error {
+	other := LevelHigh
+	if res.Level == LevelHigh {
+		other = LevelMedium
+	}
+	// Close the other level first, so triage never sees two open forecasts on one
+	// workload and an escalation is a fresh insert that notifies.
+	if err := closeFiring(t, fingerprint(t, res, other), CloseLevelChange, false); err != nil {
+		return err
+	}
+	return raiseLevel(t, res, series, res.Level)
+}
+
+// raiseLevel updates the open event of level, or inserts a new firing of it when none
+// is open and the level is not cooling down.
+func raiseLevel(t Target, res Result, series Series, level Level) error {
+	fp := fingerprint(t, res, level)
+	findingId, startsAt, err := openFiring(t, fp)
+	if err != nil {
+		return err
+	}
+	now := nowFn()
+	if findingId == "" {
+		cooling, err := inCooldown(t, fp, now.Add(-time.Duration(config.Config.NBForecastRefireCooldownHours)*time.Hour))
+		if err != nil {
+			return err
+		}
+		if cooling {
+			return nil
+		}
+		// One finding_id per firing, as webhook alerts do: a re-crossing after a close
+		// is a new row, so it is triaged, notified and investigated again.
+		findingId = fmt.Sprintf("%s-%d", fp, now.Unix())
+		startsAt = now
+	}
+	return upsertEvent(buildEvent(t, res, series, level, fp, findingId, startsAt))
+}
+
+func buildEvent(t Target, res Result, series Series, level Level, fp, findingId string, startsAt time.Time) event.Event {
+	key := AggregationKey(res.Condition)
+	priority := eventtypes.EventPriority(res.Level)
+	if level == LevelBreached {
+		key = BreachedAggregationKey(res.Condition)
+		priority = eventtypes.EventPriority(LevelHigh)
+	}
+	title := Title(res)
+	labels := map[string]string{
+		"workload_kind": res.Kind,
+		"condition":     string(res.Condition),
+	}
+	if t.SLOConfigId != "" {
+		labels["slo_config_id"] = t.SLOConfigId
+	}
+	// The resolution path sizes one container. The forecast is workload-wide, so a
+	// container is named only when exactly one has a CPU limit; otherwise the event
+	// offers replicas and restart, not a resize.
+	if c := limitedContainer(t, res); c != "" {
+		labels["container"] = c
+	}
+	return event.Event{
+		AccountId:        t.AccountId,
+		Tenant:           t.TenantId,
+		Source:           Source,
+		Title:            title,
+		Description:      title,
+		Failure:          "false",
+		FindingType:      key,
+		Category:         key,
+		AggregationKey:   key,
+		Priority:         priority,
+		SubjectName:      res.Workload,
+		SubjectNamespace: res.Namespace,
+		SubjectType:      res.Kind,
+		SubjectOwner:     res.Workload,
+		SubjectOwnerKind: res.Kind,
+		Cluster:          t.AccountName,
+		Status:           "FIRING",
+		StartsAt:         &startsAt,
+		FindingId:        findingId,
+		Fingerprint:      fp,
+		Labels:           labels,
+		Evidences:        Evidences(res, series),
+	}
+}
+
+// Title states the projection in one line, e.g.
+// "order-service: CPU throttling projected to reach 25% in ~38h (now 15%)", or the
+// breach: "order-service: CPU throttling breached its 75% SLO (now 78%, rising 24 pp/day)".
+func Title(res Result) string {
+	what := conditionNoun(res.Condition)
+	ofLimit := Presets[res.Condition].OfLimit
+	if res.Status == StatusBreached {
+		slo := trimFloat(res.ThresholdPct) + "%"
+		if ofLimit {
+			slo += " of limit"
+		}
+		trend := ""
+		if res.SlopePctPerDay > 0 {
+			trend = fmt.Sprintf(", rising %s pp/day", trimFloat(res.SlopePctPerDay))
+		}
+		return fmt.Sprintf("%s: %s breached its %s SLO (now %s%%%s)", res.Workload, what, slo, trimFloat(res.CurrentPct), trend)
+	}
+	eta := "soon"
+	if res.ETAHours != nil {
+		eta = "in ~" + humanHours(*res.ETAHours)
+	}
+	suffix := ""
+	if ofLimit {
+		suffix = " of its limit"
+	}
+	return fmt.Sprintf("%s: %s projected to reach %s%%%s %s (now %s%%)",
+		res.Workload, what, trimFloat(res.ThresholdPct), suffix, eta, trimFloat(res.CurrentPct))
+}
+
+func conditionNoun(c Condition) string {
+	if p, ok := Presets[c]; ok {
+		return p.Noun
+	}
+	return string(c)
+}
+
+// resourceOf names the limited resource of c, e.g. "CPU" or "memory".
+func resourceOf(c Condition) string {
+	if p, ok := Presets[c]; ok {
+		return p.Resource
+	}
+	return "resource"
+}
+
+// quantity formats a limit or usage figure: cores as millicores ("350m"), the way
+// Kubernetes writes them, and any other unit as "<value> <unit>".
+func quantity(v float64, unit string) string {
+	if unit != "" && unit != UnitCores {
+		return trimFloat(v) + " " + unit
+	}
+	return trimFloat(v*1000) + "m"
+}
+
+// slopePhrase words the fitted slope; a breach can be fitted on a window whose trend
+// is flat or falling, and "rising -3 pp/day" would misreport it.
+func slopePhrase(slope float64) string {
+	switch {
+	case slope > 0:
+		return fmt.Sprintf("rising %s pp/day", trimFloat(slope))
+	case slope < 0:
+		return fmt.Sprintf("falling %s pp/day", trimFloat(-slope))
+	default:
+		return "flat"
+	}
+}
+
+func humanHours(h float64) string {
+	if h < 48 {
+		return fmt.Sprintf("%.0fh", max(h, 1))
+	}
+	return fmt.Sprintf("%.1f days", h/24)
+}
+
+func trimFloat(v float64) string {
+	return strings.TrimSuffix(strings.TrimRight(fmt.Sprintf("%.1f", v), "0"), ".")
+}
+
+// Evidences are rebuilt on every run from the series the forecast was fitted on, so
+// the chart under the event is exactly what fired.
+func Evidences(res Result, series Series) []any {
+	out := []any{summaryEvidence(res), tableEvidence(res)}
+	p := Presets[res.Condition]
+	seen := map[observability.UtilisationKey]bool{}
+	for _, key := range []observability.UtilisationKey{p.Value, p.Usage, p.Limit} {
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		if r, ok := series[string(key)]; ok && len(r.Payload) > 0 {
+			out = append(out, observability.UtilisationEvidence(r, evidenceTitle(key)))
+		}
+	}
+	return out
+}
+
+var evidenceTitles = map[observability.UtilisationKey]string{
+	observability.KeyCPUThrottlingRatio: "CPU throttling (share of CFS periods)",
+	observability.KeyCPUUsageLimited:    "CPU usage (cores, containers with a CPU limit)",
+	observability.KeyCPULimit:           "CPU limit (cores, all pods)",
+}
+
+func evidenceTitle(key observability.UtilisationKey) string {
+	if t, ok := evidenceTitles[key]; ok {
+		return t
+	}
+	return string(key)
+}
+
+func summaryEvidence(res Result) eventtypes.EventEvidence {
+	var b strings.Builder
+	fmt.Fprintf(&b, "**%s**\n\n", Title(res))
+	fmt.Fprintf(&b, "- Threshold: %s%%\n", trimFloat(res.ThresholdPct))
+	fmt.Fprintf(&b, "- Now (last 6h): %s%%, %s\n", trimFloat(res.CurrentPct), slopePhrase(res.SlopePctPerDay))
+	if res.Status == StatusBreached && len(res.Daily) > 0 {
+		first := res.Daily[0]
+		fmt.Fprintf(&b, "- Breached after a gradual climb: %s%% on %s to %s%% now; see the daily trend\n",
+			trimFloat(first.ValuePct), first.Date, trimFloat(res.CurrentPct))
+	}
+	if res.ETAAt != nil {
+		fmt.Fprintf(&b, "- Projected breach: %s UTC\n", res.ETAAt.Format("2006-01-02 15:04"))
+	}
+	resource := resourceOf(res.Condition)
+	fmt.Fprintf(&b, "- Fitted on %d hours of data since the %s limit last changed\n", res.HoursOfData, resource)
+	if res.PerPodLimit > 0 {
+		fmt.Fprintf(&b, "- %s limit per pod: %s", resource, quantity(res.PerPodLimit, res.LimitUnit))
+		if res.SuggestedLimit > 0 {
+			fmt.Fprintf(&b, "; suggested: %s", quantity(res.SuggestedLimit, res.LimitUnit))
+		}
+		b.WriteString("\n")
+	}
+	return eventtypes.EventEvidence{
+		Type:    "markdown",
+		Insight: trendInsights(res),
+		Data:    map[string]any{"data": b.String(), "name": conditionNoun(res.Condition) + " forecast"},
+		AdditionalInfo: map[string]any{
+			"action_name":        "metric_forecast",
+			"actual_action_name": "metric_forecast",
+		},
+	}
+}
+
+// trendInsights states the climb and the forecast as plain sentences. Insights are the
+// part of an evidence item Nubi's investigation reads inline; the markdown body and
+// the table reach it only as a file it may not open, so without these its report
+// explains the cause but not the trend that led to the alert.
+func trendInsights(res Result) []eventtypes.EventEvidenceInsight {
+	severity := "warning"
+	if res.Status == StatusBreached {
+		severity = "critical"
+	}
+	var observed []DailyRow
+	var projected []string
+	for _, d := range res.Daily {
+		if d.Projected {
+			projected = append(projected, fmt.Sprintf("%s %s%%", d.Date, trimFloat(d.ValuePct)))
+		} else {
+			observed = append(observed, d)
+		}
+	}
+	insights := []eventtypes.EventEvidenceInsight{}
+	if len(observed) > 0 {
+		days := make([]string, 0, len(observed))
+		for _, d := range observed {
+			days = append(days, fmt.Sprintf("%s %s%%", d.Date, trimFloat(d.ValuePct)))
+		}
+		msg := fmt.Sprintf("%s by day (daily mean): %s; now %s%% (last 6h), %s",
+			conditionNoun(res.Condition), strings.Join(days, ", "), trimFloat(res.CurrentPct), slopePhrase(res.SlopePctPerDay))
+		first, last := observed[0], observed[len(observed)-1]
+		if first.PerPodUsage > 0 && last.PerPodUsage > 0 && res.PerPodLimit > 0 {
+			msg += fmt.Sprintf(". %s usage per pod went from %s to %s against a %s limit", resourceOf(res.Condition),
+				quantity(first.PerPodUsage, res.LimitUnit), quantity(last.PerPodUsage, res.LimitUnit), quantity(res.PerPodLimit, res.LimitUnit))
+		}
+		insights = append(insights, eventtypes.EventEvidenceInsight{Message: msg, Severity: severity})
+	}
+	switch {
+	case res.Status == StatusBreached:
+		msg := fmt.Sprintf("Breached the %s%% SLO after a gradual climb", trimFloat(res.ThresholdPct))
+		if res.SlopePctPerDay > 0 {
+			msg += fmt.Sprintf("; still rising, so it will get worse unless the %s limit is raised or the load drops", resourceOf(res.Condition))
+		}
+		insights = append(insights, eventtypes.EventEvidenceInsight{Message: msg, Severity: severity})
+	case res.ETAAt != nil && res.ETAHours != nil:
+		msg := fmt.Sprintf("Forecast: reaches the %s%% SLO around %s UTC (in ~%s)",
+			trimFloat(res.ThresholdPct), res.ETAAt.Format("2006-01-02 15:04"), humanHours(*res.ETAHours))
+		if len(projected) > 0 {
+			msg += "; projected daily mean: " + strings.Join(projected, ", ")
+		}
+		if res.SuggestedLimit > 0 {
+			msg += fmt.Sprintf(". Suggested %s limit per pod: %s, sized for the usage projected a day past the breach",
+				resourceOf(res.Condition), quantity(res.SuggestedLimit, res.LimitUnit))
+		}
+		insights = append(insights, eventtypes.EventEvidenceInsight{Message: msg, Severity: severity})
+	}
+	return insights
+}
+
+func tableEvidence(res Result) eventtypes.EventEvidence {
+	rows := make([][]string, 0, len(res.Daily))
+	for _, d := range res.Daily {
+		kind := "observed"
+		if d.Projected {
+			kind = "projected"
+		}
+		limit := ""
+		if d.PerPodLimit > 0 {
+			limit = quantity(d.PerPodLimit, res.LimitUnit)
+		}
+		usage := ""
+		if d.PerPodUsage > 0 {
+			usage = quantity(d.PerPodUsage, res.LimitUnit)
+		}
+		rows = append(rows, []string{d.Date, trimFloat(d.ValuePct) + "%", usage, limit, kind})
+	}
+	return eventtypes.EventEvidence{
+		Type:    "table",
+		Insight: []eventtypes.EventEvidenceInsight{},
+		Data: map[string]any{
+			"column_renderers": map[string]any{},
+			"headers": []string{"day", string(res.Condition),
+				strings.ToLower(resourceOf(res.Condition)) + " usage per pod", strings.ToLower(resourceOf(res.Condition)) + " limit per pod", ""},
+			"rows":       rows,
+			"table_name": "Daily trend",
+		},
+		AdditionalInfo: map[string]any{
+			"action_name":        "metric_forecast",
+			"actual_action_name": "metric_forecast",
+		},
+	}
+}
+
+func openFiringEvent(t Target, fp string) (string, time.Time, error) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	var row struct {
+		FindingId string    `db:"finding_id"`
+		StartsAt  time.Time `db:"starts_at"`
+	}
+	err = dbms.Db.Get(&row, `SELECT finding_id, starts_at FROM events
+		WHERE tenant = $1 AND cloud_account_id = $2 AND fingerprint = $3 AND source = $4 AND status = 'FIRING'
+		ORDER BY starts_at DESC LIMIT 1`, t.TenantId, t.AccountId, fp, Source)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", time.Time{}, nil
+	}
+	return row.FindingId, row.StartsAt, err
+}
+
+func recentlyClosed(t Target, fp string, since time.Time) (bool, error) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return false, err
+	}
+	var cooling bool
+	err = dbms.Db.Get(&cooling, `SELECT EXISTS (SELECT 1 FROM events
+		WHERE tenant = $1 AND cloud_account_id = $2 AND fingerprint = $3 AND source = $4
+		  AND status = 'RESOLVED' AND ends_at > $5
+		  AND COALESCE(labels->>'close_reason', '') NOT IN ($6, $7))`,
+		t.TenantId, t.AccountId, fp, Source, since, CloseUnwatched, CloseLevelChange)
+	return cooling, err
+}
+
+// closeFiringEvents resolves the open event of fp. With stable set it only closes an
+// event whose last projecting run is over one cadence old, so a single clean run
+// between two projecting ones does not close and reopen it.
+func closeFiringEvents(t Target, fp, reason string, stable bool) error {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return err
+	}
+	now := nowFn()
+	notAfter := now
+	if stable {
+		notAfter = now.Add(-sloCadence * 3 / 2)
+	}
+	// ends_at and updated_at are `timestamp` without a zone; binding UTC values from Go
+	// keeps them consistent with every other write (see closeAnomalyEventIfOpen).
+	rows, err := dbms.Db.Queryx(`UPDATE events
+		   SET status = 'RESOLVED',
+		       ends_at = $5,
+		       updated_at = $5,
+		       nb_status = CASE
+		                     WHEN nb_status IN ('OPEN', 'ACKNOWLEDGED', 'INVESTIGATING', 'ACTION_REQUIRED')
+		                     THEN 'RESOLVED' ELSE nb_status
+		                   END,
+		       labels = COALESCE(labels, '{}'::jsonb) || jsonb_build_object('close_reason', $6::text)
+		 WHERE tenant = $1 AND cloud_account_id = $2 AND fingerprint = $3 AND source = $4
+		   AND status = 'FIRING' AND updated_at <= $7
+		 RETURNING id`, t.TenantId, t.AccountId, fp, Source, now, reason, notAfter)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		publishResolve(id)
+	}
+	return nil
+}
+
+// onlyLimitedContainer returns the one container of the workload's live pods that has
+// a CPU limit, or "" when there are none or several.
+func onlyLimitedContainer(t Target, res Result) string {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return ""
+	}
+	var names []string
+	err = dbms.Db.Select(&names, `SELECT DISTINCT c->>'name' FROM k8s_pods kp,
+		  jsonb_array_elements(CASE WHEN jsonb_typeof(kp.meta->'config'->'containers') = 'array'
+		                            THEN kp.meta->'config'->'containers' ELSE '[]'::jsonb END) c
+		WHERE kp.cloud_account_id = $1 AND kp.namespace = $2 AND kp.workload_name = $3
+		  AND lower(kp.workload_type) = $4 AND kp.is_active IS NOT FALSE
+		  AND COALESCE(c->'resources'->'limits'->>'cpu', '') <> ''`,
+		t.AccountId, res.Namespace, res.Workload, res.Kind)
+	if err != nil {
+		slog.Warn("forecast: could not read the workload's containers", "error", err, "workload", res.Workload)
+		return ""
+	}
+	if len(names) != 1 {
+		return ""
+	}
+	return names[0]
+}
+
+// publishResolved delivers the resolved notification the way anomaly closes do;
+// a status change alone notifies no one.
+func publishResolved(eventId string) {
+	err := common.MqPublish(
+		config.Config.RabbitMqEventPostProcessExchange,
+		config.Config.RabbitMqEventPostProcessQueue,
+		map[string]any{"event_id": eventId, "notify_resolved": true},
+		common.MqPublishWithExpiration(time.Hour),
+		common.MqPublishWithBackgroundRetry(),
+	)
+	if err != nil {
+		slog.Error("forecast: failed to publish resolved event", "error", err, "event_id", eventId)
+	}
+}

@@ -39,6 +39,11 @@ def test_rule_category_sources_pass_through():
         assert _finding_rule_source(category) == category
 
 
+def test_forecast_source_maps_to_slo_category():
+    # CPU SLO breach forecasts belong with the SLO rules, not troubleshoot.
+    assert _finding_rule_source("forecast") == "slo"
+
+
 # ----------------------------- finding filter tuple -----------------------------
 
 
@@ -72,6 +77,26 @@ def test_optimize_finding_keeps_optimize_category():
         parameters={"finding": {"cloud_account_id": "acc-2"}},
     )
     assert source == "optimize"
+
+
+def test_forecast_finding_reads_finding_fields_not_slo_alert_fields():
+    # Categorised as slo, but still a finding: the slo_alert keys are ignored.
+    source, account_id, namespace, workload, agg = _filters(
+        "finding",
+        source="forecast",
+        parameters={
+            "account_id": "slo-acc",
+            "namespace": "slo-ns",
+            "workload": "slo-wl",
+            "finding": {
+                "cloud_account_id": "acc-6",
+                "subject_namespace": "prod",
+                "subject_owner": "api",
+                "aggregation_key": "CPUThrottlingPredicted",
+            },
+        },
+    )
+    assert (source, account_id, namespace, workload, agg) == ("slo", "acc-6", "prod", "api", "CPUThrottlingPredicted")
 
 
 def test_finding_account_id_falls_back_to_account_id_key():

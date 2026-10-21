@@ -109,7 +109,10 @@ type AlertIdentity struct {
 // are legitimate context about the thing you opened.
 func isDerivedSignal(a AlertIdentity) bool {
 	switch strings.ToLower(a.FindingType) {
-	case "slo", "anomaly":
+	// CPU SLO forecasts and breaches are derived from a threshold, like SLO
+	// violations: one must never lead or join a real crashloop or OOM incident.
+	case "slo", "anomaly", "cputhrottlingpredicted", "cpusaturationpredicted",
+		"cputhrottlingslobreached", "cpusaturationslobreached":
 		return true
 	}
 	return false

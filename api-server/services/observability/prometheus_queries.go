@@ -617,6 +617,24 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 				httpWorkloadScope, healthCheckPathsRegex())
 		case KeyCPUThrottling:
 			queries[metricKey] = fmt.Sprintf(`sum by (container_id) (rate(container_resources_cpu_throttled_seconds_total{__CLUSTER__ container_id=~".*%s/%s.*"}[5m]))`, safeMeta.Namespace, safeMeta.Name)
+		case KeyCPUThrottlingRatio:
+			// cAdvisor's CFS counters, summed across the workload's containers before
+			// dividing, so a container with a limit counts in proportion to its periods.
+			// A container without a limit runs no CFS periods and so adds nothing to
+			// either side. A cluster that scrapes cAdvisor twice doubles both sides,
+			// which cancels. The `> 0` guard makes an idle window absent, not +Inf.
+			queries[metricKey] = fmt.Sprintf(
+				`sum(rate(container_cpu_cfs_throttled_periods_total{__CLUSTER__ %s}[`+rateW+`]))`+
+					` / (sum(rate(container_cpu_cfs_periods_total{__CLUSTER__ %s}[`+rateW+`])) > 0)`,
+				containerFilter, containerFilter)
+		case KeyCPUUsageLimited:
+			// Usage of the containers kube-state-metrics reports a CPU limit for, so it
+			// divides by cpu_limit (the same containers) without counting a container
+			// that has no limit on one side only.
+			queries[metricKey] = fmt.Sprintf(
+				`sum(rate(container_cpu_usage_seconds_total{__CLUSTER__ %s}[5m])`+
+					` and on (namespace, pod, container) (%s (kube_pod_container_resource_limits{__CLUSTER__ %sresource="cpu"}) > 0))`,
+				containerFilter, promSpecPerContainer, containerFilter)
 		case KeyCPURequest:
 			queries[metricKey] = promSpecTotal("kube_pod_container_resource_requests", fmt.Sprintf(`__CLUSTER__ %sresource="cpu"`, containerFilter))
 		case KeyCPULimit:

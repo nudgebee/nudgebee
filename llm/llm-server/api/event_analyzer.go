@@ -2407,6 +2407,25 @@ func eventKnowledgeHints(event events.Event) []string {
 	return hints
 }
 
+// forecastTrendGuidance asks the report to lead with the climb a CPU SLO forecast
+// alert was raised on. Those alerts (source "forecast", from api-server's forecast
+// package) fire on a trend over days, and their insights carry it: without this the
+// investigation explains what is consuming CPU but never says how the throttling got
+// there or where it is heading, which is the point of the alert.
+func forecastTrendGuidance(source string) string {
+	if source != "forecast" {
+		return ""
+	}
+	return "\n\n## CPU SLO Forecast Alert\n" +
+		"This alert was raised by Nudgebee's CPU SLO forecast on a gradual climb over days, not on a single spike. " +
+		"In Quick Investigation, before the cause, state the trend from the Collected Evidence insights: the value on " +
+		"each day (\"by day (daily mean)\"), the current value, the rate of increase, and CPU usage per pod against the " +
+		"CPU limit. Show the daily values as a small markdown table (day | value | CPU usage per pod) inside Quick " +
+		"Investigation, not under a heading of its own. For a projection, also state when the threshold is expected to " +
+		"be reached and the suggested CPU limit from the forecast insight; for a breach, say that the climb is still " +
+		"rising when the insight says so. Then explain what is driving the climb."
+}
+
 // capNamespace / capWorkload are the event's resolved workload
 // (resolveEventWorkload); the caller resolves them once and reuses them.
 func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Event, request EventAnalysisRequest, response EventAnalysisResponse, parsedLabels map[string]any, anaylsisRepo *events.EventAnalysisRepository, pending map[string]string, window investigationWindow, hasWindow bool, capNamespace, capWorkload string) (string, string, bool, string, *tools.RunbookRef, *services_server.EventCodeCapabilities, string, error) {
@@ -2489,6 +2508,7 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 			"\n\n## Collected Evidence\nThe following evidence was already gathered for this event. Treat it as part of the provided data and use it in your assessment before judging whether data is sufficient:\n\n" +
 			core.TruncateHead(evidenceContext, maxInvestigationEvidenceBytes)
 	}
+	eventAnalsysisPrompt += forecastTrendGuidance(event.Source)
 
 	// #41579: the assembly is fetched here and put in the prompt. The
 	// orchestrator does not declare get_event_incident_assembly, so the

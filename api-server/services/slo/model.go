@@ -1,6 +1,9 @@
 package slo
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type DBSLOConfig struct {
 	Id          string  `json:"id" validate:"required" db:"id"`
@@ -26,6 +29,9 @@ type DBSLOConfig struct {
 	Enabled         bool       `json:"enabled,omitempty" db:"enabled,omitempty"`
 	WorkloadName    string     `json:"workload_name" db:"workload_name,omitempty"`
 	Namespace       string     `json:"workload_namespace" db:"workload_namespace,omitempty"`
+	// LastForecast is the latest forecast.Result of a CPU SLO, as JSON; NULL for
+	// every other SLO type.
+	LastForecast *string `json:"last_forecast,omitempty" db:"last_forecast"`
 }
 
 type SLOConfig struct {
@@ -166,6 +172,8 @@ type SLOConfigResponse struct {
 	Threshold float64 `json:"threshold" validate:"required"`
 	Enabled   bool    `json:"enabled,omitempty"`
 	Goal      float64 `json:"goal,omitempty"`
+	// LastForecast is the latest forecast of a CPU SLO; absent for other types.
+	LastForecast json.RawMessage `json:"last_forecast,omitempty"`
 }
 
 type DBSLOReport struct {

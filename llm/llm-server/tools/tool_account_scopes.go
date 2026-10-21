@@ -7,7 +7,7 @@ import toolcore "nudgebee/llm/tools/core"
 // TestEveryToolDeclaresAnAccountScope fails.
 func init() {
 	toolcore.DeclareAccountScope(toolcore.AccountScopeFollowsTarget,
-		"es_metrics_query", "splunk_metrics_query",
+		"es_metrics_query", "splunk_metrics_query", "metric_forecast",
 		"cloud_resource_search_execute", "kg_search_nodes",
 		"aggregate_events", "anomaly_execute", "dryrun_triage_rule", "events_execute", "get_event_by_id",
 		"get_event_classification", "get_event_evidence", "get_event_incident_assembly",

@@ -315,6 +315,19 @@ type appConfig struct {
 	FeatureAnomalyStableCloseEnabled bool `mapstructure:"feature_anomaly_stable_close_enabled"`
 	NBAnomalyCloseStableHours        int  `mapstructure:"nb_anomaly_close_stable_hours"`
 
+	// CPU SLO breach forecasting (docs/cpu-throttling-forecast-spec.md). Providers is
+	// the comma-separated list of metrics providers whose utilisation keys meet the
+	// contract the forecast relies on (summed, honouring step, with pod_count); a
+	// provider joins by fixing its keys, never by a branch in the forecast.
+	NBForecastProviders            string  `mapstructure:"nb_forecast_providers"`
+	NBForecastMinHours             int     `mapstructure:"nb_forecast_min_hours"`
+	NBForecastMinRiseThrottlingPct float64 `mapstructure:"nb_forecast_min_rise_throttling_pct"`
+	NBForecastMinRiseSaturationPct float64 `mapstructure:"nb_forecast_min_rise_saturation_pct"`
+	NBForecastMaxETAHours          float64 `mapstructure:"nb_forecast_max_eta_hours"`
+	NBForecastHighWithinHours      float64 `mapstructure:"nb_forecast_high_within_hours"`
+	NBForecastRefireCooldownHours  int     `mapstructure:"nb_forecast_refire_cooldown_hours"`
+	NBForecastFetchTimeoutSeconds  int     `mapstructure:"nb_forecast_fetch_timeout_seconds"`
+
 	NBSpendAnomalyBaselineDays               int     `mapstructure:"nb_spend_anomaly_baseline_days"`
 	NBSpendAnomalyZScoreThreshold            float64 `mapstructure:"nb_spend_anomaly_zscore_threshold"`
 	NBSpendAnomalyMinAbsChange               float64 `mapstructure:"nb_spend_anomaly_min_abs_change"`
@@ -674,6 +687,14 @@ func init() {
 	viper.SetDefault("nb_anomaly_evaluation_hours", 1)
 	viper.SetDefault("feature_anomaly_stable_close_enabled", false)
 	viper.SetDefault("nb_anomaly_close_stable_hours", 3)
+	viper.SetDefault("nb_forecast_providers", "prometheus")
+	viper.SetDefault("nb_forecast_min_hours", 48)
+	viper.SetDefault("nb_forecast_min_rise_throttling_pct", 5)
+	viper.SetDefault("nb_forecast_min_rise_saturation_pct", 10)
+	viper.SetDefault("nb_forecast_max_eta_hours", 0)
+	viper.SetDefault("nb_forecast_high_within_hours", 48)
+	viper.SetDefault("nb_forecast_refire_cooldown_hours", 24)
+	viper.SetDefault("nb_forecast_fetch_timeout_seconds", 60)
 
 	viper.SetDefault("feature_event_point_in_time_close_enabled", true)
 	viper.SetDefault("feature_scheduled_alert_workflow_refire_enabled", false)

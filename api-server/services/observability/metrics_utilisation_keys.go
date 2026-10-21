@@ -13,17 +13,26 @@ type UtilisationKey string
 
 const (
 	// Workload and node usage, requests and limits, summed into one series.
-	KeyCPUUsage          UtilisationKey = "cpu_usage"
-	KeyCPURequest        UtilisationKey = "cpu_request"
-	KeyCPULimit          UtilisationKey = "cpu_limit"
-	KeyMemoryUsage       UtilisationKey = "memory_usage"
-	KeyMemoryRequest     UtilisationKey = "memory_request"
-	KeyMemoryLimit       UtilisationKey = "memory_limit"
-	KeyCPUUsageLine      UtilisationKey = "cpu_usage_line"
-	KeyMemoryUsageLine   UtilisationKey = "memory_usage_line"
-	KeyCPUUsageTrend     UtilisationKey = "cpu_usage_trend"
-	KeyMemUsageTrend     UtilisationKey = "mem_usage_trend"
-	KeyCPUThrottling     UtilisationKey = "cpu_throttling"
+	KeyCPUUsage        UtilisationKey = "cpu_usage"
+	KeyCPURequest      UtilisationKey = "cpu_request"
+	KeyCPULimit        UtilisationKey = "cpu_limit"
+	KeyMemoryUsage     UtilisationKey = "memory_usage"
+	KeyMemoryRequest   UtilisationKey = "memory_request"
+	KeyMemoryLimit     UtilisationKey = "memory_limit"
+	KeyCPUUsageLine    UtilisationKey = "cpu_usage_line"
+	KeyMemoryUsageLine UtilisationKey = "memory_usage_line"
+	KeyCPUUsageTrend   UtilisationKey = "cpu_usage_trend"
+	KeyMemUsageTrend   UtilisationKey = "mem_usage_trend"
+	KeyCPUThrottling   UtilisationKey = "cpu_throttling"
+	// KeyCPUThrottlingRatio is the share of CFS periods in which the workload was
+	// throttled, as a ratio 0–1. It is not cpu_throttling, which is throttled seconds
+	// per second and cannot be held against a percentage threshold such as the 25% of
+	// kube-prometheus's CPUThrottlingHigh.
+	KeyCPUThrottlingRatio UtilisationKey = "cpu_throttling_ratio"
+	// KeyCPUUsageLimited is CPU usage in cores of only the containers that have a CPU
+	// limit. Divided by cpu_limit it is a share of that limit; cpu_usage would also
+	// count containers without a limit and overstate it.
+	KeyCPUUsageLimited   UtilisationKey = "cpu_usage_limited"
 	KeyCPUAllocatable    UtilisationKey = "cpu_allocatable"
 	KeyMemoryAllocatable UtilisationKey = "memory_allocatable"
 
@@ -163,6 +172,8 @@ var utilisationKeys = func() map[UtilisationKey]bool {
 		KeyCPUUsageTrend,
 		KeyMemUsageTrend,
 		KeyCPUThrottling,
+		KeyCPUThrottlingRatio,
+		KeyCPUUsageLimited,
 		KeyCPUAllocatable,
 		KeyMemoryAllocatable,
 		KeyCPUReal,

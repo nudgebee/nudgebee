@@ -8462,6 +8462,8 @@ var table_metadata = map[string]TableDefinition{
 			"workload_namespace": {Type: ColumnDefinitionTypeString},
 			"goal":               {Type: ColumnDefinitionTypeString},
 			"enabled":            {Type: ColumnDefinitionTypeBoolean},
+			// The latest forecast of a CPU SLO (forecast.Result); NULL for other types.
+			"last_forecast": {Type: ColumnDefinitionTypeJson},
 		},
 	},
 	"slo_report_v2": {

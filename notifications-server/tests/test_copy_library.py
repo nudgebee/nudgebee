@@ -26,6 +26,10 @@ def test_event_keys_map_to_curated_copy():
     assert display_name("KubePodCrashLooping") == "Crash loop"
     assert display_name("pod_oom_killer_enricher") == "Out of memory (OOM-killed)"
     assert display_name("CPUThrottlingHigh") == "CPU throttling"
+    assert display_name("CPUThrottlingPredicted") == "CPU throttling breach predicted"
+    assert display_name("CPUSaturationPredicted") == "CPU saturation breach predicted"
+    assert display_name("CPUThrottlingSLOBreached") == "CPU throttling SLO breached"
+    assert display_name("CPUSaturationSLOBreached") == "CPU saturation SLO breached"
     assert display_name("Kubernetes Warning Event") == "Warning events"
 
 
