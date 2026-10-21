@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"nudgebee/llm/agents/core"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 )
@@ -152,32 +151,32 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	// All metrics queries key off session_id, but callers may pass a conversation id
 	// (e.g. workflow/autopilot conversations opened by conversation_id, whose session_id is
 	// a wf__… id). Normalize once here so every downstream lookup resolves either way.
-	request.ConversationId = core.GetConversationDao().ResolveSessionId(request.ConversationId)
+	request.ConversationId = GetStore().ResolveSessionId(request.ConversationId)
 
 	// Get aggregated token usage (for backward compatibility)
-	agents, err := core.GetConversationDao().GetConversationTokenUsage(request.ConversationId, request.AccountId)
+	agents, err := GetStore().GetConversationTokenUsage(request.ConversationId, request.AccountId)
 	if err != nil {
 		return ConversationUsageMetricsResponse{}, err
 	}
 
 	// Get detailed token usage records for new metrics
-	detailedRecords, err := core.GetConversationDao().GetConversationTokenUsageDetailed(request.ConversationId, request.AccountId)
+	detailedRecords, err := GetStore().GetConversationTokenUsageDetailed(request.ConversationId, request.AccountId)
 	if err != nil {
 		return ConversationUsageMetricsResponse{}, err
 	}
 
 	// Get tool calls statistics
-	toolStats, err := core.GetConversationDao().GetConversationToolCallsStats(request.ConversationId, request.AccountId)
+	toolStats, err := GetStore().GetConversationToolCallsStats(request.ConversationId, request.AccountId)
 	if err != nil {
 		// Log error but don't fail - tool stats are optional
-		toolStats = core.ToolCallsStats{}
+		toolStats = ToolCallsStats{}
 	}
 
 	// Get time breakdown
-	timeBreakdown, err := core.GetConversationDao().GetConversationTimeBreakdown(request.ConversationId, request.AccountId)
+	timeBreakdown, err := GetStore().GetConversationTimeBreakdown(request.ConversationId, request.AccountId)
 	if err != nil {
 		// Log error but don't fail - time breakdown is optional
-		timeBreakdown = core.TimeBreakdown{}
+		timeBreakdown = TimeBreakdown{}
 	}
 
 	// Organize data into hierarchical structure
@@ -237,7 +236,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	// at/after it. This makes a tool's details show only the reasoning that led to that
 	// call (slices sum to the agent total) instead of repeating the agent total on each.
 	reasoningByToolCall := make(map[string]ToolReasoning)
-	toolAgents, taErr := core.GetConversationDao().GetConversationToolCallAgents(request.ConversationId, request.AccountId)
+	toolAgents, taErr := GetStore().GetConversationToolCallAgents(request.ConversationId, request.AccountId)
 	if taErr != nil {
 		// Non-fatal: the response is still correct without reasoning attribution.
 		// But it must be visible — this query failed on every call for as long as
@@ -246,7 +245,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 			"error", taErr, "conversation_id", request.ConversationId)
 	} else {
 		// Tool calls grouped by agent, each list already chronological (query ORDER BY).
-		toolsByAgent := make(map[string][]core.ToolCallAgent)
+		toolsByAgent := make(map[string][]ToolCallAgent)
 		for _, ta := range toolAgents {
 			toolsByAgent[ta.AgentID] = append(toolsByAgent[ta.AgentID], ta)
 		}
@@ -357,7 +356,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 	// storage rolls up into account/tenant budgets, not conversation metrics.
 	// tenant_id pulled from security context for defense-in-depth tenant isolation.
 	tenantId := ctx.GetSecurityContext().GetTenantId()
-	if storageCost, scErr := core.GetConversationDao().GetConversationLifecycleStorageCost(request.ConversationId, tenantId); scErr == nil {
+	if storageCost, scErr := GetStore().GetConversationLifecycleStorageCost(request.ConversationId, tenantId); scErr == nil {
 		totalCost += storageCost
 	}
 
@@ -366,7 +365,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 
 	// Per message, from the same per-call records and prices, so the message
 	// popover no longer has to estimate savings on its own.
-	recordsByMessage := make(map[string][]core.TokenUsageDetailedRecord)
+	recordsByMessage := make(map[string][]TokenUsageDetailedRecord)
 	for _, record := range detailedRecords {
 		recordsByMessage[record.MessageID] = append(recordsByMessage[record.MessageID], record)
 	}
@@ -463,7 +462,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 }
 
 // calculateModelUsageStats aggregates statistics by model
-func calculateModelUsageStats(records []core.TokenUsageDetailedRecord, tenantId string) []ModelUsageStat {
+func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId string) []ModelUsageStat {
 	if len(records) == 0 {
 		return []ModelUsageStat{}
 	}
@@ -575,7 +574,7 @@ func calculateModelUsageStats(records []core.TokenUsageDetailedRecord, tenantId 
 // Then sum and subtract the actual cost. The difference is what caching
 // saved (or, if negative, cost) for the period — accounting for both the
 // cached-read discount and any cache-write premium (e.g. Anthropic 1.25x).
-func calculateCacheSavings(records []core.TokenUsageDetailedRecord, actualCost float64, costs map[string]llmruntime.ModelPricing) CacheSavingsInfo {
+func calculateCacheSavings(records []TokenUsageDetailedRecord, actualCost float64, costs map[string]llmruntime.ModelPricing) CacheSavingsInfo {
 	totalCachedTokens := 0
 	totalPromptTokens := 0
 	estimatedCostWithoutCache := 0.0
@@ -623,7 +622,7 @@ func calculateCacheSavings(records []core.TokenUsageDetailedRecord, actualCost f
 }
 
 // calculateSuccessRate computes success rate and request counts
-func calculateSuccessRate(records []core.TokenUsageDetailedRecord) (*float64, int, int, int) {
+func calculateSuccessRate(records []TokenUsageDetailedRecord) (*float64, int, int, int) {
 	totalRequests := len(records)
 	successfulRequests := 0
 	failedRequests := 0
@@ -650,7 +649,7 @@ func calculateSuccessRate(records []core.TokenUsageDetailedRecord) (*float64, in
 // calculateStreamingLatencyStats averages ttft_ms and itl_ms_avg over the calls
 // that recorded them. Non-streaming and legacy rows carry NULL and are skipped
 // rather than counted as zero, which would drag both averages toward 0.
-func calculateStreamingLatencyStats(records []core.TokenUsageDetailedRecord) (avgTtftMs *float64, avgItlMs *float64) {
+func calculateStreamingLatencyStats(records []TokenUsageDetailedRecord) (avgTtftMs *float64, avgItlMs *float64) {
 	var ttftSum, itlSum float64
 	var ttftN, itlN int
 	for _, r := range records {
@@ -674,7 +673,7 @@ func calculateStreamingLatencyStats(records []core.TokenUsageDetailedRecord) (av
 	return
 }
 
-func calculateLatencyStats(records []core.TokenUsageDetailedRecord) (*float64, *float64) {
+func calculateLatencyStats(records []TokenUsageDetailedRecord) (*float64, *float64) {
 	totalLatency := 0.0
 	latencyCount := 0
 
@@ -705,7 +704,7 @@ func calculateLatencyStats(records []core.TokenUsageDetailedRecord) (*float64, *
 // 100% (#38129). CreatedAt is the call's completion time (see
 // InsertTokenUsage), so each call's interval is approximated as
 // [CreatedAt-LatencySeconds, CreatedAt].
-func calculateMergedApiTimeSeconds(records []core.TokenUsageDetailedRecord) *float64 {
+func calculateMergedApiTimeSeconds(records []TokenUsageDetailedRecord) *float64 {
 	type span struct{ start, end time.Time }
 
 	spans := make([]span, 0, len(records))

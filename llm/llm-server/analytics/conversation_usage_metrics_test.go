@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"nudgebee/llm/agents/core"
 	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/stretchr/testify/assert"
@@ -14,7 +13,7 @@ import (
 
 func TestModelUsageStatsCalculation(t *testing.T) {
 	// Test the helper function directly
-	records := []core.TokenUsageDetailedRecord{
+	records := []TokenUsageDetailedRecord{
 		{
 			ConversationID:      "test-conv",
 			MessageID:           "msg-1",
@@ -139,7 +138,7 @@ func TestModelUsageStatsCalculation_PerCallTiering(t *testing.T) {
 
 	// Two calls, each with a 150K-token prompt (under the 200K threshold
 	// individually) but summing to 300K across the conversation.
-	records := []core.TokenUsageDetailedRecord{
+	records := []TokenUsageDetailedRecord{
 		{LLMProvider: "googleai", LLMModel: "gemini-3.1-pro-preview", InputTokens: 150_000, RequestStatus: "success"},
 		{LLMProvider: "googleai", LLMModel: "gemini-3.1-pro-preview", InputTokens: 150_000, RequestStatus: "success"},
 	}
@@ -175,7 +174,7 @@ func TestModelUsageStatsCalculation_PrefersStoredCost(t *testing.T) {
 		},
 	})
 
-	records := []core.TokenUsageDetailedRecord{
+	records := []TokenUsageDetailedRecord{
 		// Billed at insert time — must be taken verbatim.
 		{
 			LLMProvider: "googleai", LLMModel: "gemini-3-flash-preview",
@@ -207,7 +206,7 @@ func TestModelUsageStatsCalculation_CountsUnpricedCalls(t *testing.T) {
 		},
 	})
 
-	records := []core.TokenUsageDetailedRecord{
+	records := []TokenUsageDetailedRecord{
 		{LLMProvider: "custom", LLMModel: "free-model", InputTokens: 1_000, RequestStatus: "success"},
 		{LLMProvider: "custom", LLMModel: "new-model", InputTokens: 1_000, RequestStatus: "success"},
 		{LLMProvider: "custom", LLMModel: "new-model", InputTokens: 1_000, RequestStatus: "success"},
@@ -235,7 +234,7 @@ func TestModelUsageStatsCalculation_PricingLookupFailedFlagsNothing(t *testing.T
 	t.Cleanup(func() { llmruntime.SetUsageStore(original) })
 	llmruntime.SetUsageStore(&fixedPricingDao{err: errors.New("db unavailable")})
 
-	records := []core.TokenUsageDetailedRecord{
+	records := []TokenUsageDetailedRecord{
 		{LLMProvider: "custom", LLMModel: "new-model", InputTokens: 1_000, RequestStatus: "success"},
 	}
 	stats := calculateModelUsageStats(records, "")
@@ -245,7 +244,7 @@ func TestModelUsageStatsCalculation_PricingLookupFailedFlagsNothing(t *testing.T
 
 func TestCacheSavingsCalculation(t *testing.T) {
 	// Test cache savings calculation
-	records := []core.TokenUsageDetailedRecord{
+	records := []TokenUsageDetailedRecord{
 		{
 			LLMProvider:         "anthropic",
 			LLMModel:            "claude-3-5-sonnet",
@@ -288,7 +287,7 @@ func TestCacheSavingsCalculation(t *testing.T) {
 }
 
 func TestSuccessRateCalculation(t *testing.T) {
-	records := []core.TokenUsageDetailedRecord{
+	records := []TokenUsageDetailedRecord{
 		{RequestStatus: "success"},
 		{RequestStatus: "success"},
 		{RequestStatus: "success"},
@@ -305,7 +304,7 @@ func TestSuccessRateCalculation(t *testing.T) {
 }
 
 func TestLatencyStatsCalculation(t *testing.T) {
-	records := []core.TokenUsageDetailedRecord{
+	records := []TokenUsageDetailedRecord{
 		{LatencySeconds: sql.NullFloat64{Float64: 1.0, Valid: true}},
 		{LatencySeconds: sql.NullFloat64{Float64: 2.0, Valid: true}},
 		{LatencySeconds: sql.NullFloat64{Float64: 3.0, Valid: true}},
@@ -327,7 +326,7 @@ func TestLatencyStatsCalculation(t *testing.T) {
 // the calls overlap almost entirely.
 func TestMergedApiTimeCalculation_ConcurrentSubAgents(t *testing.T) {
 	end := time.Date(2026, 1, 1, 12, 0, 10, 0, time.UTC)
-	records := []core.TokenUsageDetailedRecord{
+	records := []TokenUsageDetailedRecord{
 		{CreatedAt: end, LatencySeconds: sql.NullFloat64{Float64: 10.0, Valid: true}},
 		{CreatedAt: end, LatencySeconds: sql.NullFloat64{Float64: 10.0, Valid: true}},
 		{CreatedAt: end, LatencySeconds: sql.NullFloat64{Float64: 10.0, Valid: true}},
@@ -344,7 +343,7 @@ func TestMergedApiTimeCalculation_ConcurrentSubAgents(t *testing.T) {
 // common (non-parallel) case.
 func TestMergedApiTimeCalculation_SequentialCalls(t *testing.T) {
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	records := []core.TokenUsageDetailedRecord{
+	records := []TokenUsageDetailedRecord{
 		{CreatedAt: base.Add(2 * time.Second), LatencySeconds: sql.NullFloat64{Float64: 2.0, Valid: true}},  // [0s,2s]
 		{CreatedAt: base.Add(10 * time.Second), LatencySeconds: sql.NullFloat64{Float64: 3.0, Valid: true}}, // [7s,10s]
 		{CreatedAt: base, LatencySeconds: sql.NullFloat64{Valid: false}},                                    // ignored
@@ -357,7 +356,7 @@ func TestMergedApiTimeCalculation_SequentialCalls(t *testing.T) {
 }
 
 func TestMergedApiTimeCalculation_NoValidRecords(t *testing.T) {
-	records := []core.TokenUsageDetailedRecord{
+	records := []TokenUsageDetailedRecord{
 		{LatencySeconds: sql.NullFloat64{Valid: false}},
 		{LatencySeconds: sql.NullFloat64{Float64: 0, Valid: true}},
 	}

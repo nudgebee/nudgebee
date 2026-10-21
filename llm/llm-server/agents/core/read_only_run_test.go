@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nudgebee/llm/common"
+	"nudgebee/llm/memory"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -105,6 +106,7 @@ func TestReadOnlyRunCompletesInsteadOfWaitingForApproval(t *testing.T) {
 	previousDao := GetConversationDao()
 	SetConversationDao(readOnlyLoopDao{})
 	defer SetConversationDao(previousDao)
+	defer memory.SetStore(memory.SetStore(readOnlyLoopMemory{}))
 
 	tool := &MockClassifiedTool{
 		MockContextCapturingTool: MockContextCapturingTool{NameVal: "write_tool"},
@@ -150,6 +152,7 @@ func TestSameLoopWithoutReadOnlyRunAsksForApproval(t *testing.T) {
 	previousDao := GetConversationDao()
 	SetConversationDao(readOnlyLoopDao{})
 	defer SetConversationDao(previousDao)
+	defer memory.SetStore(memory.SetStore(readOnlyLoopMemory{}))
 
 	tool := &MockClassifiedTool{
 		MockContextCapturingTool: MockContextCapturingTool{NameVal: "write_tool"},
@@ -176,7 +179,10 @@ func (readOnlyLoopDao) SaveConversationMessage(_, _, _, _ string, _ MessageRole,
 
 func (readOnlyLoopDao) UpdateConversationAgentWithFollowup(_, _ string) error { return nil }
 
-func (readOnlyLoopDao) LoadLongTermMemories(_ string, _ string, _ int) ([]string, error) {
+// readOnlyLoopMemory is a memory store with nothing in it.
+type readOnlyLoopMemory struct{ memory.Store }
+
+func (readOnlyLoopMemory) LoadLongTermMemories(_ string, _ string, _ int) ([]string, error) {
 	return nil, nil
 }
 

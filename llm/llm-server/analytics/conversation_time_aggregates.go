@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 )
@@ -79,7 +78,7 @@ func HandleConversationTimeAggregatesApi(ctx *security.RequestContext, request C
 		return ConversationTimeAggregatesResponse{}, fmt.Errorf("HandleConversationTimeAggregatesApi: %w", err)
 	}
 
-	filter := core.ConversationTimeAggregatesFilter{
+	filter := ConversationTimeAggregatesFilter{
 		AccountIDs:            accountIDs,
 		StartDate:             startDate,
 		EndDate:               endDate,
@@ -89,7 +88,7 @@ func HandleConversationTimeAggregatesApi(ctx *security.RequestContext, request C
 		EventScoped:           request.EventScoped,
 	}
 
-	aggregates, err := core.GetConversationDao().GetConversationTimeAggregates(filter)
+	aggregates, err := GetStore().GetConversationTimeAggregates(filter)
 	if err != nil {
 		return ConversationTimeAggregatesResponse{}, err
 	}

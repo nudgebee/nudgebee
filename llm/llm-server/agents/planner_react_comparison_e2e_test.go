@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/analytics"
 	"nudgebee/llm/config"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
@@ -273,10 +274,10 @@ func runReact4ComparisonCase(t *testing.T, sc *security.RequestContext, accountI
 	// silently reports 0 tokens / $0 — the query succeeds, it just matches nothing.
 	// Poll until the count stops growing rather than sleeping a fixed amount:
 	// a 4-call run settles in a second, an 80-call run does not.
-	var metrics []core.TokenMetrics
+	var metrics []analytics.TokenMetrics
 	prevCount := -1
 	for attempt := 0; attempt < 10; attempt++ {
-		m, tErr := core.GetConversationDao().GetConversationTokenUsage(conversationID, accountID)
+		m, tErr := analytics.GetStore().GetConversationTokenUsage(conversationID, accountID)
 		if tErr != nil {
 			slog.Warn("react4 comparison: token usage read failed", "case", c.name, "planner", planner, "error", tErr)
 			break

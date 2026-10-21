@@ -8,6 +8,7 @@ import (
 	"nudgebee/llm/agents/asserts"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	"nudgebee/llm/memory"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"os"
@@ -300,10 +301,10 @@ func runTest(t *testing.T, agent core.NBAgent, tc k8sTestCase) core.NBAgentRespo
 // waitForMemory polls the long-term memory store for entries matching every keyword
 // in `keywords`. Returns the matched memory and true on the first hit, or zero-value
 // and false after `attempts` rounds (`interval` between rounds).
-func waitForMemory(t *testing.T, accountId string, keywords []string, attempts int, interval time.Duration) (core.LongTermMemory, bool) {
+func waitForMemory(t *testing.T, accountId string, keywords []string, attempts int, interval time.Duration) (memory.LongTermMemory, bool) {
 	t.Helper()
 	for i := 0; i < attempts; i++ {
-		memories, err := core.GetConversationDao().ListLongTermMemories(accountId, "", nil, "", "", 50, 0)
+		memories, err := memory.GetStore().ListLongTermMemories(accountId, "", nil, "", "", 50, 0)
 		if err == nil {
 			for _, m := range memories {
 				if containsAll(m.Content, keywords) {
@@ -315,14 +316,14 @@ func waitForMemory(t *testing.T, accountId string, keywords []string, attempts i
 		fmt.Printf("attempt %d: memory not yet present, retrying in %s…\n", i+1, interval)
 		time.Sleep(interval)
 	}
-	return core.LongTermMemory{}, false
+	return memory.LongTermMemory{}, false
 }
 
 // countMemoriesMatching returns the number of long-term memories whose content
 // contains every keyword in `keywords`.
 func countMemoriesMatching(t *testing.T, accountId string, keywords []string) int {
 	t.Helper()
-	memories, err := core.GetConversationDao().ListLongTermMemories(accountId, "", nil, "", "", 50, 0)
+	memories, err := memory.GetStore().ListLongTermMemories(accountId, "", nil, "", "", 50, 0)
 	assert.Nil(t, err)
 	count := 0
 	for _, m := range memories {
@@ -440,7 +441,7 @@ func TestK8sAgent_MemoryCreation(t *testing.T) {
 		mem, found := waitForMemory(t, accountId, keywords, 12, 5*time.Second)
 		assert.True(t, found, "memory not found in DB within 60 s")
 		if found {
-			assert.Equal(t, core.MemoryTypeUserPreference, mem.MemoryType)
+			assert.Equal(t, memory.MemoryTypeUserPreference, mem.MemoryType)
 		}
 	}
 

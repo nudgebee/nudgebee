@@ -4,15 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	llmruntime "nudgebee/llm/llms/runtime"
+	"nudgebee/llm/memory"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
@@ -56,7 +54,7 @@ var (
 		agent NBAgent,
 		request NBAgentRequest,
 		fact MemoryFact,
-		memType MemoryType,
+		memType memory.MemoryType,
 		confidence float64,
 		memoryWriteSucceeded bool,
 	) error {
@@ -262,7 +260,7 @@ func isAcceptableMemoryFact(fact MemoryFact) (bool, string) {
 		}
 	}
 
-	typedPreference := strings.EqualFold(fact.Type, string(MemoryTypeUserPreference)) && fact.Subject != ""
+	typedPreference := strings.EqualFold(fact.Type, string(memory.MemoryTypeUserPreference)) && fact.Subject != ""
 	if !typedPreference {
 		if len([]rune(trimmed)) < minMemoryContentChars {
 			return false, "too_short"
@@ -305,7 +303,7 @@ func isAcceptableMemoryFact(fact MemoryFact) (bool, string) {
 // Filters in place: the input slice is freshly allocated by FindSimilarMemories
 // per call and both call sites reassign to the same variable, so reusing the
 // underlying array is safe and avoids an extra allocation per retrieval.
-func filterAcceptableMemories(memories []LongTermMemory) []LongTermMemory {
+func filterAcceptableMemories(memories []memory.LongTermMemory) []memory.LongTermMemory {
 	out := memories[:0]
 	for _, m := range memories {
 		if ok, _ := isAcceptableMemoryFact(MemoryFact{Content: m.Content, Type: string(m.MemoryType)}); ok {
@@ -378,7 +376,7 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 		if response != "" && len(response) < 500 {
 			dedupQuery = request.Query + " " + response
 		}
-		if existingMemories, err := GetConversationDao().LoadLongTermMemories(request.AccountId, dedupQuery, 10); err == nil && len(existingMemories) > 0 {
+		if existingMemories, err := memory.GetStore().LoadLongTermMemories(request.AccountId, dedupQuery, 10); err == nil && len(existingMemories) > 0 {
 			existingMemoriesStr = "- " + strings.Join(existingMemories, "\n- ")
 		}
 	}
@@ -445,16 +443,16 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 			preferenceOnly := notebook == "" || toolCallCount == 0
 
 			for _, fact := range parsedFacts {
-				memType := MemoryTypeInvestigationResult
+				memType := memory.MemoryTypeInvestigationResult
 				if fact.Type != "" {
-					memType = MemoryType(fact.Type).Validate()
+					memType = memory.MemoryType(fact.Type).Validate()
 				} else if fact.IsPattern {
-					memType = MemoryTypePattern
+					memType = memory.MemoryTypePattern
 				} else if fact.IsWorkflow {
-					memType = MemoryTypeWorkflow
+					memType = memory.MemoryTypeWorkflow
 				}
 
-				if preferenceOnly && memType != MemoryTypeUserPreference {
+				if preferenceOnly && memType != memory.MemoryTypeUserPreference {
 					ctx.GetLogger().Debug("agentexecutor: skipping non-preference fact (no notebook context)", "type", memType)
 					stats.Skipped++
 					continue
@@ -521,7 +519,7 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 					// Legacy path: similarity dedup + save to llm_conversation_memory
 					// + AddMemoryToRAG. Runs only when the memory module is off
 					// for this tenant.
-					similar, serr := GetConversationDao().FindSimilarMemories(request.AccountId, fact.Content, 3)
+					similar, serr := memory.GetStore().FindSimilarMemories(request.AccountId, fact.Content, 3)
 					if serr != nil {
 						ctx.GetLogger().Warn("agentexecutor: content-based dedup probe failed, proceeding with save", "error", serr)
 					} else if len(similar) > 0 && similar[0].SimilarityScore >= memoryDedupSimilarityThreshold {
@@ -534,7 +532,7 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 						continue
 					}
 
-					_, err := GetConversationDao().SaveLongTermMemory(
+					_, err := memory.GetStore().SaveLongTermMemory(
 						request.AccountId,
 						request.ConversationId,
 						request.MessageId,
@@ -599,7 +597,7 @@ func handleMemoryUpdate(ctx *security.RequestContext, request NBAgentRequest, fa
 	// FindSimilarMemories (not RetrieveRelevantMemories) so this maintenance lookup does
 	// not increment use_count as a side effect, and returns SimilarityScore for the guard
 	// below. Also avoids a race between the async pool increment and CarryOverMemoryUseCount.
-	existingMemories, err := GetConversationDao().FindSimilarMemories(request.AccountId, fact.OldContent, 5)
+	existingMemories, err := memory.GetStore().FindSimilarMemories(request.AccountId, fact.OldContent, 5)
 	if err != nil {
 		ctx.GetLogger().Warn("agentexecutor: failed to load memories for update via semantic search", "error", err)
 		return
@@ -608,7 +606,7 @@ func handleMemoryUpdate(ctx *security.RequestContext, request NBAgentRequest, fa
 	// Only accept the top result when it is genuinely similar to OldContent.
 	// Without a threshold RAG always returns the closest match even when unrelated,
 	// which would silently update the wrong memory.
-	var matchedMemory *LongTermMemory
+	var matchedMemory *memory.LongTermMemory
 	if len(existingMemories) > 0 && existingMemories[0].SimilarityScore >= memoryDedupSimilarityThreshold {
 		matchedMemory = &existingMemories[0]
 	}
@@ -616,13 +614,13 @@ func handleMemoryUpdate(ctx *security.RequestContext, request NBAgentRequest, fa
 	if matchedMemory != nil {
 		memType := matchedMemory.MemoryType
 		if memType == "" {
-			memType = MemoryTypeInvestigationResult
+			memType = memory.MemoryTypeInvestigationResult
 		}
 
 		// Insert the new version FIRST. Only delete the old one when the insert
 		// succeeds, which closes the data-loss window of the previous delete-then-insert
 		// ordering (where a transient DB error on insert would leave neither version).
-		newID, saveErr := GetConversationDao().SaveLongTermMemory(
+		newID, saveErr := memory.GetStore().SaveLongTermMemory(
 			request.AccountId,
 			request.ConversationId,
 			request.MessageId,
@@ -636,9 +634,9 @@ func handleMemoryUpdate(ctx *security.RequestContext, request NBAgentRequest, fa
 
 		// Carry over the old memory's use_count so frequently-referenced memories don't
 		// lose their access history when their content is merely clarified or extended.
-		GetConversationDao().CarryOverMemoryUseCount(matchedMemory.ID.String(), newID, request.AccountId)
+		memory.GetStore().CarryOverMemoryUseCount(matchedMemory.ID.String(), newID, request.AccountId)
 
-		deleteErr := GetConversationDao().DeleteLongTermMemory(matchedMemory.ID.String(), request.AccountId)
+		deleteErr := memory.GetStore().DeleteLongTermMemory(matchedMemory.ID.String(), request.AccountId)
 		if deleteErr != nil {
 			// New version is already saved; old version is a now-duplicate but not lost.
 			ctx.GetLogger().Warn("agentexecutor: saved new memory but failed to delete old version (duplicate exists)", "error", deleteErr, "old_id", matchedMemory.ID)
@@ -647,12 +645,12 @@ func handleMemoryUpdate(ctx *security.RequestContext, request NBAgentRequest, fa
 	}
 
 	// If old fact not found, save as new
-	_, err = GetConversationDao().SaveLongTermMemory(
+	_, err = memory.GetStore().SaveLongTermMemory(
 		request.AccountId,
 		request.ConversationId,
 		request.MessageId,
 		fact.Content,
-		MemoryTypeInvestigationResult,
+		memory.MemoryTypeInvestigationResult,
 	)
 	if err != nil {
 		ctx.GetLogger().Error("agentexecutor: failed to save new memory", "error", err)
@@ -677,7 +675,7 @@ func retrieveAndBuildMemoryNotebook(ctx *security.RequestContext, request NBAgen
 		// Use FindSimilarMemories (not RetrieveRelevantMemories) so use_count is only
 		// incremented for memories that actually make it into the final notebook —
 		// buildStructuredMemoryNotebook may filter some as redundant with convFacts.
-		allMemories, memErr := GetConversationDao().FindSimilarMemories(request.AccountId, request.Query, 10)
+		allMemories, memErr := memory.GetStore().FindSimilarMemories(request.AccountId, request.Query, 10)
 		if memErr != nil {
 			ctx.GetLogger().Warn("agentexecutor: failed to load long-term memories", "error", memErr)
 			return ""
@@ -687,14 +685,14 @@ func retrieveAndBuildMemoryNotebook(ctx *security.RequestContext, request NBAgen
 			return ""
 		}
 
-		patterns := []LongTermMemory{}
-		workflows := []LongTermMemory{}
-		facts := []LongTermMemory{}
+		patterns := []memory.LongTermMemory{}
+		workflows := []memory.LongTermMemory{}
+		facts := []memory.LongTermMemory{}
 		for _, m := range allMemories {
 			switch m.MemoryType {
-			case MemoryTypePattern:
+			case memory.MemoryTypePattern:
 				patterns = append(patterns, m)
-			case MemoryTypeWorkflow:
+			case memory.MemoryTypeWorkflow:
 				workflows = append(workflows, m)
 			default:
 				facts = append(facts, m)
@@ -705,13 +703,13 @@ func retrieveAndBuildMemoryNotebook(ctx *security.RequestContext, request NBAgen
 		if notebook != "" {
 			// Determine which memories survived the convFacts redundancy filter and
 			// increment use_count only for those — they are what the agent actually sees.
-			var surfaced []LongTermMemory
+			var surfaced []memory.LongTermMemory
 			for _, m := range allMemories {
 				if !isRedundantWithConversationContext(m.Content, convFacts) {
 					surfaced = append(surfaced, m)
 				}
 			}
-			GetConversationDao().IncrementMemoryUsage(request.AccountId, surfaced)
+			memory.GetStore().IncrementMemoryUsage(request.AccountId, surfaced)
 			saveMemoryReferences(ctx, request, surfaced)
 		}
 		return notebook
@@ -729,16 +727,16 @@ func retrieveAndBuildMemoryNotebook(ctx *security.RequestContext, request NBAgen
 // so that non-preference memories returned by the RAG search don't get their use_count
 // inflated — only the preferences actually surfaced to the agent are counted.
 func retrieveUserPreferenceNotebook(ctx *security.RequestContext, request NBAgentRequest, convFacts []string) string {
-	allMemories, err := GetConversationDao().FindSimilarMemories(request.AccountId, request.Query, 10)
+	allMemories, err := memory.GetStore().FindSimilarMemories(request.AccountId, request.Query, 10)
 	if err != nil {
 		ctx.GetLogger().Warn("agentexecutor: failed to load user preference memories", "error", err)
 		return ""
 	}
 	allMemories = filterAcceptableMemories(allMemories)
 
-	var prefs []LongTermMemory
+	var prefs []memory.LongTermMemory
 	for _, m := range allMemories {
-		if m.MemoryType == MemoryTypeUserPreference && !isRedundantWithConversationContext(m.Content, convFacts) {
+		if m.MemoryType == memory.MemoryTypeUserPreference && !isRedundantWithConversationContext(m.Content, convFacts) {
 			prefs = append(prefs, m)
 		}
 	}
@@ -747,7 +745,7 @@ func retrieveUserPreferenceNotebook(ctx *security.RequestContext, request NBAgen
 	}
 
 	// Increment use_count only for the preferences that will actually be shown.
-	GetConversationDao().IncrementMemoryUsage(request.AccountId, prefs)
+	memory.GetStore().IncrementMemoryUsage(request.AccountId, prefs)
 
 	var sb strings.Builder
 	sb.WriteString("**User Preferences (apply these to your response):**\n")
@@ -759,7 +757,7 @@ func retrieveUserPreferenceNotebook(ctx *security.RequestContext, request NBAgen
 }
 
 // saveMemoryReferences asynchronously records which memories were surfaced for this agent call.
-func saveMemoryReferences(ctx *security.RequestContext, request NBAgentRequest, memories []LongTermMemory) {
+func saveMemoryReferences(ctx *security.RequestContext, request NBAgentRequest, memories []memory.LongTermMemory) {
 	if len(memories) == 0 {
 		return
 	}
@@ -785,7 +783,7 @@ func saveMemoryReferences(ctx *security.RequestContext, request NBAgentRequest, 
 	}
 }
 
-// memoryConfidence returns a quality score for a MemoryType that reflects how
+// memoryConfidence returns a quality score for a memory.MemoryType that reflects how
 // reliable and reusable the fact is expected to be. Used to sort memories within
 // each section so the most trustworthy facts appear first.
 //
@@ -793,13 +791,13 @@ func saveMemoryReferences(ctx *security.RequestContext, request NBAgentRequest, 
 //	0.8 — pattern, workflow: validated by recurrence or multi-step procedure
 //	0.7 — architectural_fact, configuration_insight, dependency_mapping, troubleshooting_guide
 //	0.5 — investigation_result (default one-time finding)
-func memoryConfidence(mt MemoryType) float64 {
+func memoryConfidence(mt memory.MemoryType) float64 {
 	switch mt {
-	case MemoryTypeUserPreference:
+	case memory.MemoryTypeUserPreference:
 		return 0.9
-	case MemoryTypePattern, MemoryTypeWorkflow:
+	case memory.MemoryTypePattern, memory.MemoryTypeWorkflow:
 		return 0.8
-	case MemoryTypeArchitecturalFact, MemoryTypeConfigInsight, MemoryTypeDependencyMapping, MemoryTypeTroubleshooting:
+	case memory.MemoryTypeArchitecturalFact, memory.MemoryTypeConfigInsight, memory.MemoryTypeDependencyMapping, memory.MemoryTypeTroubleshooting:
 		return 0.7
 	default:
 		return 0.5
@@ -817,9 +815,9 @@ func memoryConfidence(mt MemoryType) float64 {
 // does not apply. Every other type is scaled by the number of tool calls the
 // turn executed: 0 → heavy penalty (belt-and-suspenders with the extraction
 // grounding gate), 1 → light penalty, ≥2 → full type confidence.
-func groundedConfidence(mt MemoryType, toolCallCount int) float64 {
+func groundedConfidence(mt memory.MemoryType, toolCallCount int) float64 {
 	base := memoryConfidence(mt)
-	if mt == MemoryTypeUserPreference {
+	if mt == memory.MemoryTypeUserPreference {
 		return base
 	}
 	switch toolCallCount {
@@ -858,7 +856,7 @@ func isRedundantWithConversationContext(content string, convFacts []string) bool
 // convFacts contains the fact contents already present in the per-conversation
 // context; any LTM entry that duplicates one of these is suppressed to keep
 // the injected context concise.
-func buildStructuredMemoryNotebook(patterns, workflows, facts []LongTermMemory, convFacts []string) string {
+func buildStructuredMemoryNotebook(patterns, workflows, facts []memory.LongTermMemory, convFacts []string) string {
 	var sb strings.Builder
 
 	sb.WriteString("**Knowledge Base (from previous investigations):**\n\n")
@@ -946,50 +944,4 @@ func buildStructuredMemoryNotebook(patterns, workflows, facts []LongTermMemory, 
 	sb.WriteString("• If a pattern matches current symptoms, mention it in your reasoning\n")
 
 	return sb.String()
-}
-
-// StartMemoryTTLCleanup runs a periodic job that deletes stale long-term memories.
-// Two independent criteria are applied:
-//   - Never-used memories older than MemoryTTLNeverUsedDays (default 90d)
-//   - Memories not accessed in MemoryTTLStaleDays (default 180d)
-//
-// Set MemoryTTLCleanupIntervalHours = 0 to disable. Respects context cancellation for
-// clean shutdown.
-func StartMemoryTTLCleanup(ctx context.Context) {
-	intervalHours := config.Config.MemoryTTLCleanupIntervalHours
-	if intervalHours <= 0 {
-		slog.Info("memory-ttl: cleanup disabled (llm_memory_ttl_cleanup_interval_hours=0)")
-		return
-	}
-
-	// purgeStaleMemories is on the concrete *ConversationDao, not the interface.
-	// The underlying type is always *ConversationDao in production; fail fast if not.
-	dao, ok := GetConversationDao().(*ConversationDao)
-	if !ok {
-		slog.Error("memory-ttl: DAO is not *ConversationDao, cleanup disabled")
-		return
-	}
-
-	interval := time.Duration(intervalHours) * time.Hour
-	slog.Info("memory-ttl: starting cleanup job",
-		"interval_hours", intervalHours,
-		"never_used_days", config.Config.MemoryTTLNeverUsedDays,
-		"stale_days", config.Config.MemoryTTLStaleDays,
-	)
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	// Run once at startup, then on each tick.
-	dao.purgeStaleMemories()
-
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("memory-ttl: cleanup job stopped")
-			return
-		case <-ticker.C:
-			dao.purgeStaleMemories()
-		}
-	}
 }

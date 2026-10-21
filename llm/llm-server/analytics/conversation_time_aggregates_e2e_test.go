@@ -19,14 +19,14 @@ func TestGetConversationTimeAggregates_RollupShape(t *testing.T) {
 	RequireEnv(t, "TEST_ACCOUNT")
 	accountID := os.Getenv("TEST_ACCOUNT")
 
-	filter := core.ConversationTimeAggregatesFilter{
+	filter := ConversationTimeAggregatesFilter{
 		AccountIDs:            []string{accountID},
 		StartDate:             time.Now().Add(-7 * 24 * time.Hour),
 		EndDate:               time.Now(),
 		ExcludedTitles:        []string{EventDetailsRetrievalTitle},
 		ExcludedTitlePrefixes: []string{EventDetailsRetrievalTitlePrefix},
 	}
-	result, err := core.GetConversationDao().GetConversationTimeAggregates(filter)
+	result, err := GetStore().GetConversationTimeAggregates(filter)
 
 	assert.Nil(t, err)
 	assert.GreaterOrEqual(t, result.CompletedCount, 0)
@@ -51,7 +51,7 @@ func TestGetConversationTimeAggregates_RollupShape(t *testing.T) {
 	// window and swamp every real investigation in it.
 	assert.LessOrEqual(t,
 		result.TotalWallTimeSeconds,
-		float64(result.CompletedCount*core.MaxMeasuredDurationSeconds),
+		float64(result.CompletedCount*MaxMeasuredDurationSeconds),
 		"wall time must stay within maxMeasuredDurationSeconds per completed conversation")
 }
 
@@ -60,13 +60,13 @@ func TestGetConversationTimeAggregates_NoAccounts(t *testing.T) {
 		t.Skip("Skipping test: database not available")
 	}
 
-	filter := core.ConversationTimeAggregatesFilter{
+	filter := ConversationTimeAggregatesFilter{
 		AccountIDs: nil,
 		StartDate:  time.Now().Add(-24 * time.Hour),
 		EndDate:    time.Now(),
 	}
-	result, err := core.GetConversationDao().GetConversationTimeAggregates(filter)
+	result, err := GetStore().GetConversationTimeAggregates(filter)
 
 	assert.Nil(t, err)
-	assert.Equal(t, core.ConversationTimeAggregates{}, result, "empty accountIDs must return zero without touching the DB")
+	assert.Equal(t, ConversationTimeAggregates{}, result, "empty accountIDs must return zero without touching the DB")
 }

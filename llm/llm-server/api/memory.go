@@ -4,8 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
-	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	"nudgebee/llm/memory"
 	"nudgebee/llm/security"
 
 	"github.com/gin-gonic/gin"
@@ -69,9 +69,9 @@ func memoryCreate(c *gin.Context, context *security.RequestContext, payload map[
 	}
 
 	// Validate and default MemoryType
-	mType := core.MemoryType(request.Memory.MemoryType).Validate()
+	mType := memory.MemoryType(request.Memory.MemoryType).Validate()
 	if mType == "" {
-		mType = core.MemoryTypeUserPreference
+		mType = memory.MemoryTypeUserPreference
 	}
 
 	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
@@ -82,7 +82,7 @@ func memoryCreate(c *gin.Context, context *security.RequestContext, payload map[
 		return
 	}
 
-	id, err := core.GetConversationDao().SaveLongTermMemory(request.AccountId, request.Memory.ConversationId, request.Memory.MessageId, request.Memory.Content, mType)
+	id, err := memory.GetStore().SaveLongTermMemory(request.AccountId, request.Memory.ConversationId, request.Memory.MessageId, request.Memory.Content, mType)
 	if err != nil {
 		slog.Error("memory: failed to create", "error", err, "account_id", request.AccountId)
 		c.JSON(500, BuildApiResponse(nil, []error{
@@ -126,7 +126,7 @@ func memoryList(c *gin.Context, context *security.RequestContext, payload map[st
 		messageIds = []string{request.MessageId}
 	}
 
-	memories, err := core.GetConversationDao().ListLongTermMemories(request.AccountId, request.ConversationId, messageIds, request.MemoryType, request.Query, request.Limit, request.Offset)
+	memories, err := memory.GetStore().ListLongTermMemories(request.AccountId, request.ConversationId, messageIds, request.MemoryType, request.Query, request.Limit, request.Offset)
 	if err != nil {
 		slog.Error("memory: failed to list", "error", err, "account_id", request.AccountId)
 		c.JSON(500, BuildApiResponse(nil, []error{
@@ -167,7 +167,7 @@ func memoryDelete(c *gin.Context, context *security.RequestContext, payload map[
 		return
 	}
 
-	err = core.GetConversationDao().DeleteLongTermMemory(request.Id, request.AccountId)
+	err = memory.GetStore().DeleteLongTermMemory(request.Id, request.AccountId)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(404, BuildApiResponse(nil, []error{

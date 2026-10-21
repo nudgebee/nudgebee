@@ -3,7 +3,6 @@ package analytics
 import (
 	"testing"
 
-	"nudgebee/llm/agents/core"
 	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/stretchr/testify/assert"
@@ -18,7 +17,7 @@ var sonnet5Pricing = map[string]llmruntime.ModelPricing{
 // Anthropic stores cache writes outside input_tokens. Without caching those
 // tokens would still have been sent, so they belong in the "without cache" cost.
 func TestCacheSavingsWithoutCacheIncludesAnthropicCacheWrites(t *testing.T) {
-	records := []core.TokenUsageDetailedRecord{{
+	records := []TokenUsageDetailedRecord{{
 		LLMProvider: "anthropic", LLMModel: "claude-sonnet-5",
 		InputTokens: 1_000_000, CachedInputTokens: 900_000, CacheCreationTokens: 500_000,
 		OutputTokens: 10_000,
@@ -32,7 +31,7 @@ func TestCacheSavingsWithoutCacheIncludesAnthropicCacheWrites(t *testing.T) {
 // Google AI already counts every prompt token in input; its cache writes must
 // not be added a second time.
 func TestCacheSavingsWithoutCacheUnchangedForGoogleAI(t *testing.T) {
-	records := []core.TokenUsageDetailedRecord{{
+	records := []TokenUsageDetailedRecord{{
 		LLMProvider: "googleai", LLMModel: "gemini-3.8-flash",
 		InputTokens: 1_000_000, CachedInputTokens: 800_000, CacheCreationTokens: 200_000,
 	}}

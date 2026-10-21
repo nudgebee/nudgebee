@@ -24,6 +24,7 @@ import (
 	"nudgebee/llm/budget"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/memory"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
@@ -344,7 +345,7 @@ func main() {
 	}
 
 	// Periodically delete never-used and stale long-term memories.
-	go core.StartMemoryTTLCleanup(syncCtx)
+	go memory.StartMemoryTTLCleanup(syncCtx)
 
 	// Expire stale WAITING conversations so the Waiting list stays an inbox.
 	if err := core.RegisterWaitingConversationExpiry(syncCtx); err != nil {

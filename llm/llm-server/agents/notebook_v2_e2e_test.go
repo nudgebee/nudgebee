@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/analytics"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	llmruntime "nudgebee/llm/llms/runtime"
@@ -247,11 +248,11 @@ func runNotebookV2Case(t *testing.T, sc *security.RequestContext, accountID, use
 
 // settledTokenUsage polls until the usage row count stops growing. Note that
 // GetConversationTokenUsage filters on the SESSION id despite its parameter name.
-func settledTokenUsage(sessionID, accountID string) []core.TokenMetrics {
-	var metrics []core.TokenMetrics
+func settledTokenUsage(sessionID, accountID string) []analytics.TokenMetrics {
+	var metrics []analytics.TokenMetrics
 	prev := -1
 	for attempt := 0; attempt < 10; attempt++ {
-		m, err := core.GetConversationDao().GetConversationTokenUsage(sessionID, accountID)
+		m, err := analytics.GetStore().GetConversationTokenUsage(sessionID, accountID)
 		if err != nil {
 			return metrics
 		}

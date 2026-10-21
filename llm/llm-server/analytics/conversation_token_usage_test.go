@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"errors"
@@ -25,7 +25,7 @@ func TestGetConversationTokenUsage_PerCallTiering(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	// 1) pricing (fetchModelPricing → GetConversationCosts) runs first.
 	mock.ExpectQuery("FROM llm_model_pricing").
@@ -80,7 +80,7 @@ func TestGetConversationTokenUsage_PrefersStoredCostUsd(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	mock.ExpectQuery("FROM llm_model_pricing").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -116,7 +116,7 @@ func TestGetConversationTokenUsage_CountsUnpricedCalls(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	mock.ExpectQuery("FROM llm_model_pricing").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -152,7 +152,7 @@ func TestGetConversationTokenUsage_PricingLookupFailedFlagsNothing(t *testing.T)
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	mock.ExpectQuery("FROM llm_model_pricing").WillReturnError(errors.New("db unavailable"))
 	mock.ExpectQuery("FROM llm_conversation_token_usage").

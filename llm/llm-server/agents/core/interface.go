@@ -464,42 +464,6 @@ type MemoryFact struct {
 	DecisionType string `json:"decision_type,omitempty"`
 }
 
-type MemoryType string
-
-func (m MemoryType) Validate() MemoryType {
-	switch string(m) {
-	case "user_preference":
-		return MemoryTypeUserPreference
-	case "pattern":
-		return MemoryTypePattern
-	case "workflow":
-		return MemoryTypeWorkflow
-	case "investigation_result":
-		return MemoryTypeInvestigationResult
-	case "architectural_fact":
-		return MemoryTypeArchitecturalFact
-	case "dependency_mapping":
-		return MemoryTypeDependencyMapping
-	case "troubleshooting_guide":
-		return MemoryTypeTroubleshooting
-	case "configuration_insight":
-		return MemoryTypeConfigInsight
-	default:
-		return MemoryTypeInvestigationResult
-	}
-}
-
-const (
-	MemoryTypeInvestigationResult MemoryType = "investigation_result"
-	MemoryTypeArchitecturalFact   MemoryType = "architectural_fact"
-	MemoryTypeDependencyMapping   MemoryType = "dependency_mapping"
-	MemoryTypeTroubleshooting     MemoryType = "troubleshooting_guide"
-	MemoryTypeConfigInsight       MemoryType = "configuration_insight"
-	MemoryTypeUserPreference      MemoryType = "user_preference"
-	MemoryTypePattern             MemoryType = "pattern"
-	MemoryTypeWorkflow            MemoryType = "workflow"
-)
-
 // AgentPlannerType names either a DECLARED intent — what an agent's
 // GetPlannerType() returns to describe the kind of work it does — or the runtime
 // ENGINE the executor resolves that intent to. Agents only ever declare an intent
