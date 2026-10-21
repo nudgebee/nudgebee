@@ -124,7 +124,7 @@ const (
 	ModelTierReasoning ModelTier = "reasoning"
 	ModelTierRetrieval ModelTier = "retrieval"
 	ModelTierSummary   ModelTier = "summary"
-	// ModelTierClassification is used by core.Classify for fixed-choice decisions.
+	// ModelTierClassification is used by classify.Classify for fixed-choice decisions.
 	// It is configured like the other tiers (llm_tier_model_classification, …);
 	// when no classification model is configured it resolves as ModelTierSummary.
 	ModelTierClassification ModelTier = "classification"

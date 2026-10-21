@@ -93,16 +93,24 @@ type ConversationPort interface {
 	GetConversationOverride(conversationId string) (string, string, ConversationTierOverrides, string, error)
 	// AddRunTokens counts an LLM call's tokens against the run's budget.
 	AddRunTokens(ctx *security.RequestContext, tokens int)
+	// PeekAgentNameFromAgentId is GetAgentNameFromAgentId that never opens a
+	// database connection: it errors when none is open yet.
+	PeekAgentNameFromAgentId(agentId string) (string, error)
 }
 
 var conversationPort ConversationPort
 
-// SetConversationPort installs the conversation side of the runtime.
-func SetConversationPort(port ConversationPort) {
-	conversationPort = port
+// SetConversationPort installs the conversation side of the runtime and
+// returns the one it replaced.
+func SetConversationPort(port ConversationPort) (previous ConversationPort) {
+	previous, conversationPort = conversationPort, port
+	return previous
 }
 
-var errNoConversationOverride = errors.New("llm: conversation override lookup is not installed")
+var (
+	errNoConversationOverride = errors.New("llm: conversation override lookup is not installed")
+	errNoConversationPort     = errors.New("llm: conversation port is not installed")
+)
 
 func conversationOverride(conversationId string) (string, string, ConversationTierOverrides, string, error) {
 	if conversationPort == nil {
@@ -111,8 +119,19 @@ func conversationOverride(conversationId string) (string, string, ConversationTi
 	return conversationPort.GetConversationOverride(conversationId)
 }
 
-func addRunTokens(ctx *security.RequestContext, tokens int) {
+// AddRunTokens counts tokens against the run's budget, for LLM calls made
+// outside the runtime's own call path (e.g. a decision model).
+func AddRunTokens(ctx *security.RequestContext, tokens int) {
 	if conversationPort != nil {
 		conversationPort.AddRunTokens(ctx, tokens)
 	}
+}
+
+// PeekAgentNameFromAgentId returns the agent's name without opening a database
+// connection; it errors when none is open yet or no port is installed.
+func PeekAgentNameFromAgentId(agentId string) (string, error) {
+	if conversationPort == nil {
+		return "", errNoConversationPort
+	}
+	return conversationPort.PeekAgentNameFromAgentId(agentId)
 }

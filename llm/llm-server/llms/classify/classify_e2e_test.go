@@ -1,6 +1,6 @@
 //go:build e2e
 
-package core
+package classify
 
 import (
 	"context"
@@ -21,7 +21,7 @@ import (
 // (default "default,retrieval,summary"; "default" leaves the tier unset, so the
 // classification tier applies, resolving as summary when it is not configured).
 //
-//	make test-e2e-one TEST=TestClassifyE2E PKG=./agents/core/
+//	make test-e2e-one TEST=TestClassifyE2E PKG=./llms/classify/
 func TestClassifyE2E(t *testing.T) {
 	env := RequireEnv(t, "TEST_ACCOUNT", "TEST_USER")
 	tiers := os.Getenv("CLASSIFY_E2E_TIERS")

@@ -1,4 +1,4 @@
-package core
+package classify
 
 import (
 	"errors"
@@ -28,8 +28,8 @@ func intentTask() ClassificationTask {
 func stubGenerate(t *testing.T, answers []string, err error) *[][]llms.MessageContent {
 	t.Helper()
 	calls := &[][]llms.MessageContent{}
-	old := classificationGenerate
-	classificationGenerate = func(_ *security.RequestContext, _, _, _, _, _ string, _ bool, msgs []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	old := ClassificationGenerate
+	ClassificationGenerate = func(_ *security.RequestContext, _, _, _, _, _ string, _ bool, msgs []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
 		*calls = append(*calls, append([]llms.MessageContent(nil), msgs...))
 		if err != nil {
 			return nil, err
@@ -37,7 +37,7 @@ func stubGenerate(t *testing.T, answers []string, err error) *[][]llms.MessageCo
 		answer := answers[len(*calls)-1]
 		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: answer}}}, nil
 	}
-	t.Cleanup(func() { classificationGenerate = old })
+	t.Cleanup(func() { ClassificationGenerate = old })
 	return calls
 }
 
@@ -73,7 +73,7 @@ func TestClassify_LLMBackend(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, d.Valid)
 		assert.Empty(t, d.Label())
-		assert.Len(t, *calls, classificationLLMAttempts)
+		assert.Len(t, *calls, ClassificationLLMAttempts)
 	})
 
 	t.Run("provider error is returned", func(t *testing.T) {
@@ -107,7 +107,7 @@ func TestMatchClassificationLabels(t *testing.T) {
 		{multi, " , ", nil, false},
 	}
 	for _, c := range cases {
-		labels, ok := matchClassificationLabels(c.task, c.raw)
+		labels, ok := MatchClassificationLabels(c.task, c.raw)
 		assert.Equal(t, c.ok, ok, c.raw)
 		assert.Equal(t, c.labels, labels, c.raw)
 	}
@@ -116,12 +116,12 @@ func TestMatchClassificationLabels(t *testing.T) {
 // stubClassificationTier makes the classification tier resolve through source.
 func stubClassificationTier(t *testing.T, source string) {
 	t.Helper()
-	old := classificationTierResolve
-	classificationTierResolve = func(rc *security.RequestContext, _, _, _ string) (*llmruntime.LLMConfigResolution, error) {
+	old := ClassificationTierResolve
+	ClassificationTierResolve = func(rc *security.RequestContext, _, _, _ string) (*llmruntime.LLMConfigResolution, error) {
 		assert.Equal(t, llmruntime.ModelTierClassification, llmruntime.ModelTierFromContext(rc), "probe asks about the classification tier")
 		return &llmruntime.LLMConfigResolution{Source: source}, nil
 	}
-	t.Cleanup(func() { classificationTierResolve = old })
+	t.Cleanup(func() { ClassificationTierResolve = old })
 }
 
 func TestClassificationTier(t *testing.T) {
@@ -141,22 +141,22 @@ func TestClassificationTier(t *testing.T) {
 		assert.Equal(t, want, ClassificationTier(ctx, call), source)
 	}
 
-	old := classificationTierResolve
-	classificationTierResolve = func(*security.RequestContext, string, string, string) (*llmruntime.LLMConfigResolution, error) {
+	old := ClassificationTierResolve
+	ClassificationTierResolve = func(*security.RequestContext, string, string, string) (*llmruntime.LLMConfigResolution, error) {
 		return nil, errors.New("db down")
 	}
-	t.Cleanup(func() { classificationTierResolve = old })
+	t.Cleanup(func() { ClassificationTierResolve = old })
 	assert.Equal(t, llmruntime.ModelTierSummary, ClassificationTier(ctx, call), "resolution error falls back to summary")
 }
 
 func TestClassify_StampsTier(t *testing.T) {
 	var tiers []llmruntime.ModelTier
-	old := classificationGenerate
-	classificationGenerate = func(rc *security.RequestContext, _, _, _, _, _ string, _ bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	old := ClassificationGenerate
+	ClassificationGenerate = func(rc *security.RequestContext, _, _, _, _, _ string, _ bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
 		tiers = append(tiers, llmruntime.ModelTierFromContext(rc))
 		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "EDIT"}}}, nil
 	}
-	t.Cleanup(func() { classificationGenerate = old })
+	t.Cleanup(func() { ClassificationGenerate = old })
 
 	stubClassificationTier(t, "db-global")
 	_, err := Classify(testRequestContext(), ClassificationCall{AccountId: "acct"}, intentTask(), "x")
@@ -234,33 +234,4 @@ func TestGetAllConfiguredModels_ListsClassificationTier(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "a configured classification model must appear in the model picker")
-}
-
-func TestClassifyMessage_UsesClassifyAndKeepsFallback(t *testing.T) {
-	stubClassificationTier(t, "db-global")
-	var agentIDs []string
-	var tiers []llmruntime.ModelTier
-	answers := []string{"Investigation"}
-	old := classificationGenerate
-	classificationGenerate = func(rc *security.RequestContext, _, _, _, _, agentId string, _ bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
-		agentIDs = append(agentIDs, agentId)
-		tiers = append(tiers, llmruntime.ModelTierFromContext(rc))
-		require.NotEmpty(t, answers, "Classify made more LLM calls than this test scripted")
-		a := answers[0]
-		answers = answers[1:]
-		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: a}}}, nil
-	}
-	t.Cleanup(func() { classificationGenerate = old })
-
-	msg := ConversationMessage{Message: "why is checkout slow?"}
-	got, err := ClassifyMessage(testRequestContext(), "u", "a", "c", "m", msg, nil)
-	require.NoError(t, err)
-	assert.Equal(t, ClassificationInvestigation, got)
-	assert.Equal(t, []string{ClassificationInvestigation}, agentIDs, "agent id keeps keying LLM config and cost")
-	assert.Equal(t, []llmruntime.ModelTier{llmruntime.ModelTierSummary}, tiers, "unconfigured classification tier resolves as summary")
-
-	answers = []string{"hmm", "not sure", "no idea"}
-	got, err = ClassifyMessage(testRequestContext(), "u", "a", "c", "m", msg, nil)
-	require.NoError(t, err)
-	assert.Equal(t, ClassificationOthers, got, "an invalid answer still maps to others")
 }

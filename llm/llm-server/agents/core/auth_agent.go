@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"nudgebee/llm/config"
+	"nudgebee/llm/llms/classify"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
@@ -253,7 +254,7 @@ func inferToolRequestTypeFromPrompt(ctx *security.RequestContext, request NBAgen
 	// The gate runs on the calling agent's tier. A caller with no tier gets the
 	// classification tier (summary until configured) instead of the account's
 	// global model. Tracked without content, as before.
-	decision, err := Classify(ctx, ClassificationCall{
+	decision, err := classify.Classify(ctx, classify.ClassificationCall{
 		UserId:         request.UserId,
 		AccountId:      request.AccountId,
 		ConversationId: request.ConversationId,
@@ -304,11 +305,11 @@ const (
 
 // toolRequestTypeTask is the classification task for a tool's request-type
 // prompt. Unknown routes to approval; write and execute count as create.
-func toolRequestTypeTask(prompt string) ClassificationTask {
-	return ClassificationTask{
+func toolRequestTypeTask(prompt string) classify.ClassificationTask {
+	return classify.ClassificationTask{
 		Name:         "tool_request_type",
 		Instructions: prompt + toolRequestTypeSharedRules,
-		Options: []ClassificationOption{
+		Options: []classify.ClassificationOption{
 			{Label: string(toolcore.ToolRequestTypeRead)},
 			{Label: string(toolcore.ToolRequestTypeCreate)},
 			{Label: string(toolcore.ToolRequestTypeUpdate)},

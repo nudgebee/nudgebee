@@ -138,6 +138,7 @@ Not strictly enforced (no `.golangci.yml` config). Follow stdlib → external �
 - **`agents/`** — autonomous agent implementations (190+ agent files)
 - **`agents/core/`** — agent framework: planner, executor, critiquer logic
 - **`llms/runtime/`** — the LLM runtime every agent calls through: model config and tier resolution, model construction, the generate/track call path, prompt caching, circuit breaker, token counting and usage recording. Imported as `llmruntime`. It owns its data (token-usage rows, model pricing and cost, the image-support catalog, cache lifecycle rows) through `UsageStore` in `llm_store.go`, and never imports `agents/core`: what it needs from the conversation (agent name and thought, live status, conversation model overrides, the run budget) comes through `ConversationPort`, which `agents/core` implements and installs from `init()` (`agents/core/runtime_install.go`)
+- **`llms/classify/`** — `Classify`: answers a fixed-choice question (a label from a set of options) with the configured LLM (strict label matching, corrective retries) or, when one is configured per decision, a dedicated decision model (`llms/decision`) used as primary or in shadow. Imported by `agents/core` (e.g. `ClassificationPlanner`), never the reverse
 - **`prompts/`** — all system prompts as YAML under `prompts/default/v1/` (Go-embedded via `prompts/loader.go`)
 - **`tools/`** — tool implementations for external system integrations
 - **`llms/`** — LLM provider clients (Bedrock, Azure, OpenAI, Vertex AI, etc.)
@@ -148,7 +149,7 @@ Not strictly enforced (no `.golangci.yml` config). Follow stdlib → external �
 - **`relay/`** — relay server communication for Kubernetes operations
 - **`ee/`** — enterprise-only extensions, stripped from the OSS build. Each fills an exported hook in `agents/core` from `init()` and is blank-imported from `cmd/imports_enterprise.go` (e.g. `ee/memory/corebridge` installs memory-v2 into `agents/core/memory.go`'s hooks, and `ee/memory/httpapi` registers the memory-v2 routes through `api.HandleMemoryV2ApisFn`)
 
-Import graph is clean: `agents/core/` → `llms/runtime/` → `tools/core/` (one-way). No circular dependencies.
+Import graph is clean: `agents/core/` → `llms/classify/` → `llms/runtime/` → `tools/core/` (one-way). No circular dependencies.
 
 ### Agent Architecture
 

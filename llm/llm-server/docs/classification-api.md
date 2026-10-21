@@ -79,19 +79,19 @@ Every decision is logged as `classification_decision` (task, labels, valid, back
 
 ## Implementation notes
 
-- **API:** `core.Classify(ctx, ClassificationCall, ClassificationTask, input) → ClassificationDecision` in `agents/core/classify.go`.
+- **API:** `classify.Classify(ctx, ClassificationCall, ClassificationTask, input) → ClassificationDecision` in `llms/classify/classify.go`.
   - `ClassificationTask` has `Name`, `Instructions`, `Options []ClassificationOption{Label, Description}` and `Multi`.
   - `ClassificationDecision` has `Labels`, `Valid`, `Raw`, `Backend` and `Latency`. Decision models add `Confidence`, `Probabilities`, `Model` and `FellBack`.
   - `ClassificationCall` carries the ids that `GenerateAndTrackLLMContent` needs. `AgentId` is the calling agent's id, because it drives API-key resolution and cost attribution.
   - `Tier` picks the model tier; empty means the classification tier. `KeepCallerTier` instead runs on whatever tier the caller's context has, including none, for callers whose model must not change when they move onto the API (classification-type agents, which keep their own tier). The tool-approval check passes the calling agent's tier, so only a caller with no tier lands on the classification tier.
-- **LLM backend:** `classifyWithLLM` calls `GenerateAndTrackLLMContent` with `llms.WithTemperature(0)` and `WithThinkingLevel(ThinkingLevelFastTask)`.
+- **LLM backend:** `ClassifyWithLLM` calls `GenerateAndTrackLLMContent` with `llms.WithTemperature(0)` and `WithThinkingLevel(ThinkingLevelFastTask)`.
   - It does not use structured enum output, because our provider adapters have no common option for it.
   - Production Gemini returned an exact label for 211 of 211 real workflow-intent messages.
 - **Tier:** `ModelTierClassification` in `llms/runtime/llm_config.go`, configured with the usual `llm_tier_*_classification` keys.
   - **Resolution:** `classificationTier` probes `ResolveLLMConfig` with that tier and uses it only when `Source` is `env-tier`, `db-tier`, `context-override-tier` or `conversation-tier`. `TestClassificationTier_RealResolver` pins those labels.
   - **Other tier settings:** the thinking budget is the summary budget. Context size, the connection test and the model picker (`GetAllConfiguredModels`) cover the tier. The tier-layer `Source` values are the `llmConfigSource*Tier` constants.
 - **Metrics:** `nb_llm_classification_decisions` (task, backend, valid, ok) and `nb_llm_classification_decision_latency` (task, backend).
-- **Decision models:** `agents/core/classify_decision.go` and the `llms/decision` client.
+- **Decision models:** `llms/classify/classify_decision.go` and the `llms/decision` client.
   - Keys: `llm_tier_provider_decision` (`cloudflare`, `typesafe` or `openai`), `llm_tier_model_decision` (`clef` / `clef-flash`, `jev-latest`, `gpt-6-luna`), `llm_tier_api_key_decision` (the provider's API key, encrypted), `llm_tier_api_endpoint_decision` (Cloudflare only: account id or a base URL; TypeSafe and OpenAI use fixed URLs and ignore it) and `llm_tier_min_confidence_decision` (default 0.9). The same keys work as ENV variables.
   - Models per provider: `decision.Models` in llm-server and `decisionModels` in api-server (kept in sync). An OpenAI refusal (`type: refusal`) is treated like a low-confidence answer: the LLM decides.
   - A decision token belongs to its provider: a save that changes `llm_tier_provider_decision` does not carry the stored token forward, so it must include a new one.

@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
+	"nudgebee/llm/llms/classify"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -347,12 +348,12 @@ func TestInferToolRequestTypeFromPrompt_Answers(t *testing.T) {
 // classification tier, which is the summary tier until one is configured.
 func TestInferToolRequestTypeFromPrompt_Tier(t *testing.T) {
 	var tier llmruntime.ModelTier
-	old := classificationGenerate
-	classificationGenerate = func(ctx *security.RequestContext, _, _, _, _, _ string, _ bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	old := classify.ClassificationGenerate
+	classify.ClassificationGenerate = func(ctx *security.RequestContext, _, _, _, _, _ string, _ bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
 		tier = llmruntime.ModelTierFromContext(ctx)
 		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "read"}}}, nil
 	}
-	t.Cleanup(func() { classificationGenerate = old })
+	t.Cleanup(func() { classify.ClassificationGenerate = old })
 
 	tool := mockInferenceTool{mockTool: mockTool{name: "mock_cli"}, prompt: "Classify the command"}
 	agent := mockAgentWithTools{mockPlainAgent: mockPlainAgent{name: "test_agent"}, tools: []toolcore.NBTool{tool}}

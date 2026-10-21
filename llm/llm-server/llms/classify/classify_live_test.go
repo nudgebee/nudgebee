@@ -1,4 +1,4 @@
-package core
+package classify
 
 // Opt-in live check of the classification API on real cheap models. It drives
 // Classify end to end (prompt, call options, strict matching, retries) with the
@@ -90,14 +90,14 @@ func TestClassifyLive(t *testing.T) {
 			client, err := googleai.New(context.Background(), googleai.WithAPIKey(key), googleai.WithBaseURL(endpoint), googleai.WithDefaultModel(model))
 			require.NoError(t, err)
 			calls := 0
-			old := classificationGenerate
-			classificationGenerate = func(rc *security.RequestContext, _, _, _, _, _ string, _ bool, msgs []llms.MessageContent, _ bool, opts ...llms.CallOption) (*llms.ContentResponse, error) {
+			old := ClassificationGenerate
+			ClassificationGenerate = func(rc *security.RequestContext, _, _, _, _, _ string, _ bool, msgs []llms.MessageContent, _ bool, opts ...llms.CallOption) (*llms.ContentResponse, error) {
 				calls++
 				ctx, cancel := context.WithTimeout(rc.GetContext(), 60*time.Second)
 				defer cancel()
 				return client.GenerateContent(ctx, msgs, withModelThinking(model, opts)...)
 			}
-			t.Cleanup(func() { classificationGenerate = old })
+			t.Cleanup(func() { ClassificationGenerate = old })
 
 			for _, suite := range []struct {
 				task  ClassificationTask

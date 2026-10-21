@@ -836,7 +836,7 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 	if callMetadata.ServedProvider != "" {
 		budgetProvider = callMetadata.ServedProvider
 	}
-	addRunTokens(ctx, RunBudgetTokens(budgetProvider, *totalTokenInfo))
+	AddRunTokens(ctx, RunBudgetTokens(budgetProvider, *totalTokenInfo))
 
 	// Token metrics
 	if totalTokenInfo.InputTokens > 0 {

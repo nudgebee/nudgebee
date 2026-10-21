@@ -9,6 +9,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/llms/classify"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
@@ -765,7 +766,7 @@ func (a *WorkflowBuilderAgent) handleEntry(ctx *security.RequestContext, request
 // existing workflow ("also fetch comments and summarise") are recognised as edits rather than being
 // funnelled into failure diagnosis.
 //
-// The decision goes through the common classification API (core.Classify), so its model or backend
+// The decision goes through the common classification API (classify.Classify), so its model or backend
 // can change without touching this code; the fallback below stays here.
 //
 // Conservative defaults: on classifier error or an unparseable answer it returns EDIT when a
@@ -778,7 +779,7 @@ func (a *WorkflowBuilderAgent) classifyTurnIntent(ctx *security.RequestContext, 
 	}
 
 	call, task := turnIntentClassification(request, hasWorkflow)
-	decision, err := core.Classify(ctx, call, task, request.Query)
+	decision, err := classify.Classify(ctx, call, task, request.Query)
 	if err != nil {
 		ctx.GetLogger().Warn("workflow_builder: turn intent classification failed, using fallback", "error", err, "fallback", fallback)
 		return fallback
@@ -787,10 +788,10 @@ func (a *WorkflowBuilderAgent) classifyTurnIntent(ctx *security.RequestContext, 
 	return parseTurnIntent(decision.Label(), hasWorkflow)
 }
 
-// turnIntentClassification builds the turn-intent decision for core.Classify: the call stays on the
+// turnIntentClassification builds the turn-intent decision for classify.Classify: the call stays on the
 // retrieval tier (today's model; moving it to the classification tier is a later switch), and the
 // options' descriptions are short because the full rules are in the instructions.
-func turnIntentClassification(request core.NBAgentRequest, hasWorkflow bool) (core.ClassificationCall, core.ClassificationTask) {
+func turnIntentClassification(request core.NBAgentRequest, hasWorkflow bool) (classify.ClassificationCall, classify.ClassificationTask) {
 	instructions := fmt.Sprintf(`You classify a user's message in an automation-builder chat into exactly one of three intents. There %s currently an automation open in the editor.
 
 ANSWER — the user wants information, an explanation, or a diagnosis with NO change requested. Examples:
@@ -823,7 +824,7 @@ Rules:
   no question about why, is a request to repair it: EDIT.
 - If genuinely ambiguous between ANSWER and a change, prefer the change (EDIT if an automation is
   open, otherwise CREATE).`, map[bool]string{true: "IS", false: "is NOT"}[hasWorkflow])
-	call := core.ClassificationCall{
+	call := classify.ClassificationCall{
 		UserId:         request.UserId,
 		AccountId:      request.AccountId,
 		ConversationId: request.ConversationId,
@@ -832,10 +833,10 @@ Rules:
 		Tier:           llmruntime.ModelTierRetrieval,
 		TrackContent:   true,
 	}
-	task := core.ClassificationTask{
+	task := classify.ClassificationTask{
 		Name:         "workflow_turn_intent",
 		Instructions: instructions,
-		Options: []core.ClassificationOption{
+		Options: []classify.ClassificationOption{
 			{Label: string(turnIntentAnswer), Description: "The user wants information, an explanation, a diagnosis or status, with no change requested."},
 			{Label: string(turnIntentEdit), Description: "The user wants to change or repair the automation that is open."},
 			{Label: string(turnIntentCreate), Description: "The user wants to build a new automation from scratch."},
@@ -847,7 +848,7 @@ Rules:
 // parseTurnIntent maps the classifier's label to a turnIntent. It downgrades EDIT to CREATE when no
 // workflow is loaded (nothing to edit), and turns an empty label — an invalid answer — into the
 // hasWorkflow-aware fallback (EDIT when a workflow is open, else CREATE), never silently ANSWER.
-// core.Classify only ever returns an exact label or "", so the substring matching below is lenient
+// classify.Classify only ever returns an exact label or "", so the substring matching below is lenient
 // beyond what it needs to be; it is kept for the existing table of raw answers.
 func parseTurnIntent(answer string, hasWorkflow bool) turnIntent {
 	up := strings.ToUpper(strings.TrimSpace(answer))

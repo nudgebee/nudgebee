@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"log/slog"
+	"nudgebee/llm/llms/classify"
 	"nudgebee/llm/security"
 	"strings"
 
@@ -80,17 +81,17 @@ func ClassifyMessage(ctx *security.RequestContext, userId, accountId, conversati
 		msg.Message,
 		strings.Join(tools, ", "))
 
-	task := ClassificationTask{
+	task := classify.ClassificationTask{
 		Name:         "productivity_category",
 		Instructions: "Classify this user message, using the tools that were executed for it, into one of the categories.",
-		Options: []ClassificationOption{
+		Options: []classify.ClassificationOption{
 			{Label: ClassificationInvestigation, Description: "The message is about troubleshooting, debugging, searching logs, analyzing metrics, checking traces, service status, slowness, or errors."},
 			{Label: ClassificationOthers, Description: "A general query, greeting, help request, or any other topic not directly related to active investigation/troubleshooting."},
 		},
 	}
 	// No tier: this background job uses the classification tier. AgentId stays
 	// "investigation" as before, because it keys this call's LLM config and cost.
-	decision, err := Classify(ctx, ClassificationCall{
+	decision, err := classify.Classify(ctx, classify.ClassificationCall{
 		UserId:         userId,
 		AccountId:      accountId,
 		ConversationId: conversationId,

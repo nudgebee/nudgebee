@@ -22,6 +22,7 @@ import (
 
 	"github.com/tmc/langchaingo/llms"
 
+	"nudgebee/llm/llms/classify"
 	"nudgebee/llm/llms/decision"
 	"nudgebee/llm/llms/googleai"
 	"nudgebee/llm/security"
@@ -234,9 +235,9 @@ func TestApprovalReplayRun(t *testing.T) {
 	// label matching), with the provider call swapped for a direct one so no
 	// usage rows are written.
 	if gem != nil {
-		oldGenerate := classificationGenerate
-		t.Cleanup(func() { classificationGenerate = oldGenerate })
-		classificationGenerate = func(_ *security.RequestContext, _, _, _, _, _ string, _ bool, messages []llms.MessageContent, _ bool, options ...llms.CallOption) (*llms.ContentResponse, error) {
+		oldGenerate := classify.ClassificationGenerate
+		t.Cleanup(func() { classify.ClassificationGenerate = oldGenerate })
+		classify.ClassificationGenerate = func(_ *security.RequestContext, _, _, _, _, _ string, _ bool, messages []llms.MessageContent, _ bool, options ...llms.CallOption) (*llms.ContentResponse, error) {
 			return gem.GenerateContent(goCtx, messages, options...)
 		}
 	}
@@ -276,7 +277,7 @@ func TestApprovalReplayRun(t *testing.T) {
 			if gem != nil {
 				for run := 0; run < llmRuns; run++ {
 					start := time.Now()
-					d, err := classifyWithLLM(ctx, ClassificationCall{KeepCallerTier: true}, task, input)
+					d, err := classify.ClassifyWithLLM(ctx, classify.ClassificationCall{KeepCallerTier: true}, task, input)
 					v := replayVerdict{Label: normalizeVerdict(d.Label()), Raw: d.Raw, LatencyMs: time.Since(start).Milliseconds()}
 					if err != nil {
 						v.Error = err.Error()
@@ -305,7 +306,7 @@ func TestApprovalReplayRun(t *testing.T) {
 // askDecision asks the decision model the approval check's question, as
 // classifyWithDecision does, without the usage row or the 2 s budget (the
 // latency is recorded instead).
-func askDecision(ctx context.Context, dc *decision.Client, task ClassificationTask, input string) *replayVerdict {
+func askDecision(ctx context.Context, dc *decision.Client, task classify.ClassificationTask, input string) *replayVerdict {
 	options := make([]decision.Option, len(task.Options))
 	for i, opt := range task.Options {
 		options[i] = decision.Option{Label: opt.Label, Description: opt.Description}
@@ -317,9 +318,9 @@ func askDecision(ctx context.Context, dc *decision.Client, task ClassificationTa
 		v.Error = err.Error()
 		return v
 	}
-	conf := decisionConfidence(choice)
+	conf := classify.DecisionConfidence(choice)
 	v.Raw, v.Confidence, v.Probs = choice.Choice, &conf, choice.Probabilities
-	if labels, ok := matchClassificationLabels(task, choice.Choice); ok && !choice.Refused {
+	if labels, ok := classify.MatchClassificationLabels(task, choice.Choice); ok && !choice.Refused {
 		v.Label = normalizeVerdict(labels[0])
 	}
 	return v

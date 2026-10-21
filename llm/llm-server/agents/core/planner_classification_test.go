@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"nudgebee/llm/llms/classify"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
@@ -129,14 +130,14 @@ func TestClassificationPlanner_KeepsTierAndCacheScope(t *testing.T) {
 	var scope any
 	var agentID string
 	var track bool
-	old := classificationGenerate
-	classificationGenerate = func(ctx *security.RequestContext, _, _, _, _, agentId string, trackContent bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	old := classify.ClassificationGenerate
+	classify.ClassificationGenerate = func(ctx *security.RequestContext, _, _, _, _, agentId string, trackContent bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
 		tier = llmruntime.ModelTierFromContext(ctx)
 		scope = ctx.GetContext().Value(llmruntime.ContextKeyCacheScope)
 		agentID, track = agentId, trackContent
 		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "Not Found"}}}, nil
 	}
-	t.Cleanup(func() { classificationGenerate = old })
+	t.Cleanup(func() { classify.ClassificationGenerate = old })
 
 	goCtx := context.WithValue(context.Background(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning)
 	ctx := security.NewRequestContext(goCtx, security.NewRequestContextForSuperAdmin().GetSecurityContext(), slog.Default(), nil, nil)

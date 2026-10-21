@@ -1,6 +1,8 @@
 package core
 
 import (
+	"errors"
+
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 )
@@ -32,6 +34,16 @@ func (runtimeConversation) GetConversationOverride(conversationId string) (strin
 func (runtimeConversation) AddRunTokens(ctx *security.RequestContext, tokens int) {
 	policyFor(ctx).AddTokens(ctx, tokens)
 }
+
+func (runtimeConversation) PeekAgentNameFromAgentId(agentId string) (string, error) {
+	dao := PeekConversationDao()
+	if dao == nil {
+		return "", errNoConversationDao
+	}
+	return dao.GetAgentNameFromAgentId(agentId)
+}
+
+var errNoConversationDao = errors.New("conversation DAO is not open")
 
 func init() {
 	llmruntime.SetConversationPort(runtimeConversation{})

@@ -1,4 +1,4 @@
-package core
+package classify
 
 import (
 	"context"
@@ -340,13 +340,13 @@ func TestClassify_ModeOff(t *testing.T) {
 	assert.Empty(t, *states, "off never asks the decision model")
 }
 
-// agentNameDAO answers the agent-name lookup for decisionAgentName.
-type agentNameDAO struct {
-	IConversationDao
+// agentNamePort answers the agent-name lookup for decisionAgentName.
+type agentNamePort struct {
+	llmruntime.ConversationPort
 	names map[string]string
 }
 
-func (d *agentNameDAO) GetAgentNameFromAgentId(agentId string) (string, error) {
+func (d *agentNamePort) PeekAgentNameFromAgentId(agentId string) (string, error) {
 	if name, ok := d.names[agentId]; ok {
 		return name, nil
 	}
@@ -365,9 +365,8 @@ func TestDecisionUsageContext_UsesDecisionTier(t *testing.T) {
 
 func TestDecisionAgentName(t *testing.T) {
 	const known, unknown = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
-	previous := PeekConversationDao()
-	SetConversationDao(&agentNameDAO{names: map[string]string{known: "k8s_orchestrator"}})
-	t.Cleanup(func() { SetConversationDao(previous) })
+	previous := llmruntime.SetConversationPort(&agentNamePort{names: map[string]string{known: "k8s_orchestrator"}})
+	t.Cleanup(func() { llmruntime.SetConversationPort(previous) })
 
 	assert.Equal(t, "k8s_orchestrator", decisionAgentName(known))
 	assert.Equal(t, unknown, decisionAgentName(unknown), "an unknown id is kept")

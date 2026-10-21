@@ -1,8 +1,9 @@
-package core
+package classify
 
 import (
 	"context"
 	"fmt"
+	"nudgebee/llm/common"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"strings"
@@ -23,9 +24,9 @@ import (
 // Backend names reported on ClassificationDecision.Backend.
 const (
 	classificationBackendLLM = "llm"
-	// classificationLLMAttempts is the first call plus two corrective retries,
+	// ClassificationLLMAttempts is the first call plus two corrective retries,
 	// matching ClassificationPlanner.
-	classificationLLMAttempts = 3
+	ClassificationLLMAttempts = 3
 )
 
 // ClassificationTask describes one fixed-choice decision.
@@ -125,7 +126,7 @@ func Classify(ctx *security.RequestContext, call ClassificationCall, task Classi
 		}
 		tried = &dd
 	}
-	d, err := classifyWithLLM(ctx, call, task, input)
+	d, err := ClassifyWithLLM(ctx, call, task, input)
 	if tried != nil {
 		d.FellBack = true
 		d.Confidence, d.Probabilities, d.Model, d.DecisionAnswer = tried.Confidence, tried.Probabilities, tried.Model, tried.Raw
@@ -142,11 +143,11 @@ func Classify(ctx *security.RequestContext, call ClassificationCall, task Classi
 	return d, nil
 }
 
-// matchClassificationLabels canonicalizes raw against the task's options. A
+// MatchClassificationLabels canonicalizes raw against the task's options. A
 // single-select answer must be exactly one option; a multi-select answer is
 // comma-separated and rejected wholesale if any token is unknown, as in
 // ClassificationPlanner.validateAnswer.
-func matchClassificationLabels(task ClassificationTask, raw string) ([]string, bool) {
+func MatchClassificationLabels(task ClassificationTask, raw string) ([]string, bool) {
 	canonical := func(token string) string {
 		token = strings.Trim(strings.TrimSpace(token), ".\"'`*")
 		for _, opt := range task.Options {
@@ -183,11 +184,11 @@ func matchClassificationLabels(task ClassificationTask, raw string) ([]string, b
 // ---------------------------------------------------------------------------
 // LLM backend
 
-// classificationGenerate is GenerateAndTrackLLMContent; a variable so tests can stub it.
-var classificationGenerate = llmruntime.GenerateAndTrackLLMContent
+// ClassificationGenerate is GenerateAndTrackLLMContent; a variable so tests can stub it.
+var ClassificationGenerate = llmruntime.GenerateAndTrackLLMContent
 
-// classifyWithLLM is the LLM backend: strict label matching with corrective retries.
-func classifyWithLLM(ctx *security.RequestContext, call ClassificationCall, task ClassificationTask, input string) (ClassificationDecision, error) {
+// ClassifyWithLLM is the LLM backend: strict label matching with corrective retries.
+func ClassifyWithLLM(ctx *security.RequestContext, call ClassificationCall, task ClassificationTask, input string) (ClassificationDecision, error) {
 	llmCtx := ctx
 	if !call.KeepCallerTier {
 		llmCtx = security.NewRequestContext(
@@ -200,8 +201,8 @@ func classifyWithLLM(ctx *security.RequestContext, call ClassificationCall, task
 		llms.TextParts(llms.ChatMessageTypeHuman, input),
 	}
 	d := ClassificationDecision{Backend: classificationBackendLLM}
-	for attempt := 1; attempt <= classificationLLMAttempts; attempt++ {
-		result, err := classificationGenerate(llmCtx, call.UserId, call.AccountId, call.ConversationId, call.MessageId,
+	for attempt := 1; attempt <= ClassificationLLMAttempts; attempt++ {
+		result, err := ClassificationGenerate(llmCtx, call.UserId, call.AccountId, call.ConversationId, call.MessageId,
 			call.AgentId, call.TrackContent, messages, true, llms.WithTemperature(0.0), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 		if err != nil {
 			return d, fmt.Errorf("llm backend: %w", err)
@@ -210,11 +211,11 @@ func classifyWithLLM(ctx *security.RequestContext, call ClassificationCall, task
 			return d, fmt.Errorf("llm backend: empty response")
 		}
 		d.Raw = result.Choices[0].Content
-		if labels, ok := matchClassificationLabels(task, d.Raw); ok {
+		if labels, ok := MatchClassificationLabels(task, d.Raw); ok {
 			d.Labels, d.Valid = labels, true
 			return d, nil
 		}
-		if attempt < classificationLLMAttempts {
+		if attempt < ClassificationLLMAttempts {
 			ctx.GetLogger().Warn("classify: llm returned an invalid option, retrying",
 				"task", task.Name, "answer", TruncateForLog(d.Raw), "attempt", attempt)
 			messages = append(messages,
@@ -238,9 +239,9 @@ func classificationCallTier(ctx *security.RequestContext, call ClassificationCal
 	return ClassificationTier(ctx, call)
 }
 
-// classificationTierResolve resolves the LLM config for a call; a variable so
+// ClassificationTierResolve resolves the LLM config for a call; a variable so
 // tests can stub it.
-var classificationTierResolve = llmruntime.ResolveLLMConfig
+var ClassificationTierResolve = llmruntime.ResolveLLMConfig
 
 // classificationTierSources are the ResolveLLMConfig sources that mean the
 // resolved model came from a layer defining the tier itself.
@@ -260,7 +261,7 @@ func ClassificationTier(ctx *security.RequestContext, call ClassificationCall) l
 		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierClassification),
 		ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter(),
 	)
-	res, err := classificationTierResolve(tierCtx, call.AccountId, call.AgentId, call.ConversationId)
+	res, err := ClassificationTierResolve(tierCtx, call.AccountId, call.AgentId, call.ConversationId)
 	if err == nil && res != nil && classificationTierSources[res.Source] {
 		return llmruntime.ModelTierClassification
 	}
@@ -301,7 +302,7 @@ func classificationRetryPrompt(task ClassificationTask, answer string) string {
 }
 
 func TruncateForLog(s string) string {
-	return TruncateHead(strings.TrimSpace(s), 200) // UTF-8 safe
+	return common.TruncateHead(strings.TrimSpace(s), 200) // UTF-8 safe
 }
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"nudgebee/llm/llms/classify"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -56,12 +57,12 @@ func NewClassificationPlanner(
 
 // task is the agent's decision for Classify: its system message as the
 // instructions and its options as the labels.
-func (p *ClassificationPlanner) task() ClassificationTask {
-	opts := make([]ClassificationOption, len(p.options))
+func (p *ClassificationPlanner) task() classify.ClassificationTask {
+	opts := make([]classify.ClassificationOption, len(p.options))
 	for i, o := range p.options {
-		opts[i] = ClassificationOption{Label: o}
+		opts[i] = classify.ClassificationOption{Label: o}
 	}
-	return ClassificationTask{
+	return classify.ClassificationTask{
 		Name:         "agent:" + p.nbAgent.GetName(),
 		Instructions: p.systemMessage,
 		Options:      opts,
@@ -94,7 +95,7 @@ func (p *ClassificationPlanner) Plan(
 	}
 
 	// The agent's own tier (stamped by the executor) is kept, as before.
-	decision, err := Classify(llmCtx, ClassificationCall{
+	decision, err := classify.Classify(llmCtx, classify.ClassificationCall{
 		UserId:         p.request.UserId,
 		AccountId:      p.request.AccountId,
 		ConversationId: p.request.ConversationId,
@@ -108,7 +109,7 @@ func (p *ClassificationPlanner) Plan(
 		return nil, nil, err
 	}
 	if !decision.Valid {
-		err := fmt.Errorf("LLM returned an invalid option after %d attempts: '%s'. Valid options are: %v", classificationLLMAttempts, strings.TrimSpace(decision.Raw), p.options)
+		err := fmt.Errorf("LLM returned an invalid option after %d attempts: '%s'. Valid options are: %v", classify.ClassificationLLMAttempts, strings.TrimSpace(decision.Raw), p.options)
 		logger.Error("classification_planner: failed after retries", "error", err)
 		return nil, nil, err
 	}

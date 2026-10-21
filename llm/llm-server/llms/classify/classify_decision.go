@@ -1,4 +1,4 @@
-package core
+package classify
 
 import (
 	"context"
@@ -262,9 +262,9 @@ func classifyWithDecision(ctx *security.RequestContext, call ClassificationCall,
 	d.Raw = choice.Choice
 	d.Model = choice.Model
 	d.Probabilities = choice.Probabilities
-	conf := decisionConfidence(choice) // 0 for a refusal
+	conf := DecisionConfidence(choice) // 0 for a refusal
 	d.Confidence = &conf
-	labels, ok := matchClassificationLabels(task, choice.Choice)
+	labels, ok := MatchClassificationLabels(task, choice.Choice)
 	if choice.Refused || !ok || conf < b.minConfidence {
 		return d, false, nil
 	}
@@ -272,9 +272,9 @@ func classifyWithDecision(ctx *security.RequestContext, call ClassificationCall,
 	return d, true, nil
 }
 
-// decisionConfidence is the provider's confidence, or the chosen option's
+// DecisionConfidence is the provider's confidence, or the chosen option's
 // probability when the provider does not report one.
-func decisionConfidence(c decision.Choice) float64 {
+func DecisionConfidence(c decision.Choice) float64 {
 	if c.Confidence != nil {
 		return *c.Confidence
 	}
@@ -299,7 +299,7 @@ func trackDecisionUsage(ctx *security.RequestContext, call ClassificationCall, b
 		userId = security.GetSystemUserId()
 	}
 	bgCtx := decisionUsageContext(ctx)
-	policyFor(ctx).AddTokens(ctx, choice.InputTokens)
+	llmruntime.AddRunTokens(ctx, choice.InputTokens)
 	info := &llmruntime.TokenInfo{InputTokens: choice.InputTokens, TotalTokens: choice.InputTokens}
 	source := "decision:" + b.source
 	trackFn := func() {
@@ -333,10 +333,8 @@ func decisionAgentName(agentId string) string {
 	if _, err := uuid.Parse(agentId); err != nil {
 		return agentId
 	}
-	if dao := PeekConversationDao(); dao != nil {
-		if name, err := dao.GetAgentNameFromAgentId(agentId); err == nil && name != "" {
-			return name
-		}
+	if name, err := llmruntime.PeekAgentNameFromAgentId(agentId); err == nil && name != "" {
+		return name
 	}
 	return agentId
 }
@@ -359,7 +357,7 @@ func shadowDecision(ctx *security.RequestContext, call ClassificationCall, task 
 		}()
 		start := time.Now()
 		dd, accepted, err := classifyWithDecision(bg, call, task, input, b)
-		labels, valid := matchClassificationLabels(task, dd.Raw)
+		labels, valid := MatchClassificationLabels(task, dd.Raw)
 		attrs := []any{
 			"task", task.Name, "llm_labels", strings.Join(llm.Labels, ","),
 			"decision_answer", TruncateForLog(dd.Raw), "decision_model", dd.Model,
