@@ -10,6 +10,7 @@ import { configKeyForSource, isWholeConfigSource } from '@utils/llmConfigSource'
 import { getBrandTitle } from '@hooks/useTenantBranding';
 import { getUpstreamStatus, mapUpstreamError } from '@lib/errorMessages';
 import { collectAutoApprovals } from '@components/llm/utils/followupRecord';
+import { buildMessagePlan } from '@components/llm/plan/planState';
 
 // metadata arrives as a JSON string or an already-parsed object.
 const parseMessageMetadata = (metadata) => {
@@ -337,6 +338,13 @@ const parseConversationMessages = (conversationMessages, accountId) => {
       const responseReferences = [];
       let agentsWithoutRouter = conversationMessage?.llm_conversation_agents?.filter((r) => r.agent_name !== 'router') ?? [];
 
+      // Structured plan (#41443): when the notebook row carries one, the plan card
+      // shows it, so the row is not also listed as a task card.
+      const messagePlan = buildMessagePlan(agentsWithoutRouter);
+      if (messagePlan) {
+        agentsWithoutRouter = agentsWithoutRouter.filter((r) => r.id !== messagePlan.notebookAgentId);
+      }
+
       // Planner Logic
       let hasPlanner = false;
       let plannerId = null;
@@ -374,6 +382,7 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           user: conversationMessage?.user?.display_name || 'System',
           attachments: conversationMessage.attachments || [],
           liveStatus: parseMessageMetadata(conversationMessage.metadata)?.live_status,
+          plan: messagePlan || undefined,
         };
 
         if (conversationMessage.ack_message?.trim()) {
@@ -449,6 +458,8 @@ const parseConversationMessages = (conversationMessages, accountId) => {
 
         if (isOrchestratorAgent(agent?.agent_name)) {
           (agent?.llm_conversation_tool_calls || []).forEach((t) => {
+            // The plan card shows plan updates; no separate task row for them.
+            if (messagePlan && t.tool_name === 'update_notebook_v2') return;
             if (t.child_agent_id) {
               plannerIdChildMapping[t.child_agent_id] = t.tool_id;
               messageSequence.push(t.child_agent_id);

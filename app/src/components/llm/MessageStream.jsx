@@ -17,6 +17,8 @@ import { actionableTasks } from './utils/taskClassification';
 import { CitationClickContext, findCitedTask, findLegacyCitedTask, parseCitationHref } from './utils/citationLinks';
 import { isFollowupTask, summarizeFollowups } from './utils/followupRecord';
 import FollowupHistory from './common/FollowupHistory';
+import PlanCard from './plan/PlanCard';
+import { filterDrawerTasksForStep } from './plan/planState';
 
 const taskKey = (task) => task?.id ?? task?.tool_id ?? task?.originalIndex ?? null;
 
@@ -499,6 +501,18 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
               onShowFullText={() => handleShowFullText(group.question.originalIndex)}
               {...itemProps}
             />
+            {group.question.plan && (
+              <PlanCard
+                plan={group.question.plan}
+                live={!response}
+                // Once answered, a step's calls open in the Tasks drawer like the rest of the turn.
+                onOpenStep={
+                  response
+                    ? (stepId) => openTasksDrawer({ tasks: filterDrawerTasksForStep(drawerTasks, group.question.plan.nodeIdsByStep?.[stepId]) })
+                    : undefined
+                }
+              />
+            )}
             {showInlineTasks &&
               tasks.map((task, taskIdx) => {
                 const isLastTaskInGroup = taskIdx === tasks.length - 1;

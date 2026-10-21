@@ -72,6 +72,8 @@ export interface ConversationV3Agent {
   parent_agent_id: string | null;
   status: string;
   references: string | null;
+  /** Structured plan JSON, only on the synthetic `notebook` agent (#41443). */
+  plan_state: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -261,6 +261,7 @@ var capabilityScopeTable = map[string]CapabilityScope{
 	"spend_summary":                           CapabilityScopeNarrow,
 	"think":                                   CapabilityScopeNarrow,
 	"update_notebook":                         CapabilityScopeNarrow,
+	"update_notebook_v2":                      CapabilityScopeNarrow, // tool_notebook_v2.go: typed steps (id/kind/status enums), no outbound calls
 	"vm_list_execute":                         CapabilityScopeNarrow,
 	"watch_cancel":                            CapabilityScopeNarrow,
 	"watch_list":                              CapabilityScopeNarrow,

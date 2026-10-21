@@ -31,7 +31,7 @@ func init() {
 		"nudgebee_docs_search", "nudgebee_integration_diagnose", "nudgebee_integration_get_status",
 		"nudgebee_integrations_count", "nudgebee_integrations_list", "search_docs", "search_execute",
 		"search_skills", "standard_diagnostic_grep", "think", "ticket_master", "ticket_master_v2",
-		"update_notebook",
+		"update_notebook", "update_notebook_v2",
 	)
 	toolcore.DeclareOriginBound(toolcore.OriginBoundWrite,
 		"recommendation_apply", "recommendation_execute_cli", "recommendation_record_ticket_resolution",

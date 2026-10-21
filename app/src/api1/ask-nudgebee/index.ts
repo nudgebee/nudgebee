@@ -102,6 +102,7 @@ const GET_LLM_CONVERSATION_V3_QUERY = `
         parent_agent_id
         status
         references
+        plan_state
         created_at
         updated_at
       }

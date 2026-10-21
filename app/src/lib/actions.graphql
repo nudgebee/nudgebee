@@ -8517,6 +8517,7 @@ type AiConversationAgent {
   parent_agent_id: String
   status: String
   references: String
+  plan_state: String
   created_at: timestamptz!
   updated_at: timestamptz!
 }

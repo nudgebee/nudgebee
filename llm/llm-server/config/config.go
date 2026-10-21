@@ -867,6 +867,11 @@ type appConfig struct {
 	// to ReAct3 prompt-based tool calling), "react3" (forces ReAct3 XML tool calling),
 	// or "react4" (forces ReAct4 native tool calling).
 	LlmServerPlannerEngine string `mapstructure:"llm_server_planner_engine"`
+	// NotebookV2Enabled swaps ReAct4's free-text update_notebook for the
+	// structured update_notebook_v2 plan (steps + hypotheses with status) on
+	// top-level runs of built-in agents, with a finish check that sends an
+	// answer back while plan steps are still open. Off: unchanged. Spec: #41443.
+	NotebookV2Enabled bool `mapstructure:"llm_server_notebook_v2_enabled"`
 	// LlmServerThinkToolEnabled gates injection of the `think` tool into the
 	// six orchestrator agents (k8s / aws / azure / gcp / datadog / finops).
 	// Default flipped to false 2026-07-12 after 30d prod data showed the
@@ -1762,6 +1767,7 @@ func init() {
 	viper.SetDefault("llm_memory_inject_enabled", false)
 	viper.SetDefault("llm_memory_tools_enabled", false)
 	viper.SetDefault("llm_memory_prestep_enabled", false)
+	viper.SetDefault("llm_server_notebook_v2_enabled", false)
 	viper.SetDefault("llm_memory_prestep_timeout_seconds", 5)
 	viper.SetDefault("llm_memory_rag_timeout_ms", 800)
 	viper.SetDefault("llm_memory_rag_overfetch_multiplier", 3)

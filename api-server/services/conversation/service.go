@@ -318,6 +318,7 @@ SELECT
     a.parent_agent_id::text AS parent_agent_id,
     a.status                AS status,
     a.references            AS references,
+    CASE WHEN a.agent_name = 'notebook' THEN a.state END AS plan_state,
     a.created_at            AS created_at,
     a.updated_at            AS updated_at
 FROM llm_conversation_agent a

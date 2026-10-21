@@ -64,6 +64,10 @@ const ToolExecuteShellCommand = "shell_execute"
 // import this package, avoiding a duplicated literal or an import cycle.
 const NotebookToolName = "update_notebook"
 
+// NotebookV2ToolName is the structured-plan successor of update_notebook,
+// loaded instead of it by ReAct4 when NotebookV2Enabled is on (#41443).
+const NotebookV2ToolName = "update_notebook_v2"
+
 type NBToolCommand struct {
 	Name        string     `json:"name"`
 	Description string     `json:"description"`

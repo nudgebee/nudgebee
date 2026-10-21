@@ -135,6 +135,7 @@ func isNotebookToolName(toolName string) bool {
 	lower := strings.ToLower(strings.TrimSpace(toolName))
 	switch lower {
 	case "update_notebook",
+		"update_notebook_v2",
 		"notebook",
 		"create_notebook",
 		"write_notebook",
@@ -1324,6 +1325,20 @@ func (o *NBReActPlanner3) persistNotebook(content string, turnIdx int, stats not
 
 type conversationNotebookUpdater interface {
 	UpdateConversationNotebook(agentID, response, responseSummary string) error
+}
+
+// conversationNotebookStateUpdater writes the structured plan JSON of the
+// synthetic notebook row (update_notebook_v2, #41443).
+type conversationNotebookStateUpdater interface {
+	UpdateConversationNotebookState(agentID, state string) error
+}
+
+func updateConversationNotebookState(dao IConversationDao, agentID, state string) error {
+	updater, ok := dao.(conversationNotebookStateUpdater)
+	if !ok || agentID == "" {
+		return errors.New("conversation DAO does not support notebook state updates")
+	}
+	return updater.UpdateConversationNotebookState(agentID, state)
 }
 
 func updateConversationNotebook(dao IConversationDao, agentID, content, breadcrumb string) error {

@@ -1291,6 +1291,30 @@ func (chat *ConversationDao) UpdateConversationNotebook(agentID, response, respo
 	return err
 }
 
+// UpdateConversationNotebookState stores the structured plan JSON
+// (update_notebook_v2, #41443) on the synthetic notebook row's state column,
+// which the chat poll reads to draw the plan card. updated_at is bumped so the
+// delta poll picks the change up.
+func (chat *ConversationDao) UpdateConversationNotebookState(agentID, state string) error {
+	result, err := chat.dbManager.Db.Exec(
+		`UPDATE llm_conversation_agent
+		 SET state = $2, updated_at = now()
+		 WHERE id = $1 AND agent_name = $3 AND status = 'success'`,
+		agentID, state, notebookDummyAgent,
+	)
+	if err != nil {
+		return fmt.Errorf("history: failed to update notebook state: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("history: failed to verify notebook state update: %w", err)
+	}
+	if rowsAffected != 1 {
+		return fmt.Errorf("history: notebook state update affected %d rows", rowsAffected)
+	}
+	return nil
+}
+
 // maxWaitingAncestorSweepHops caps how far up the parent chain the sweep walks.
 // Real chains are 1–2 hops (orchestrator → delegate_agent → child); the cap is
 // a runaway-loop backstop for a corrupted parent_agent_id chain. Sized to match

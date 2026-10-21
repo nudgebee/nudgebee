@@ -287,6 +287,14 @@ type NBAgentPlannerToolAction struct {
 	ExecutionParallelismLimit int    `json:"execution_parallelism_limit,omitempty"`
 	SequentialFallbackReason  string `json:"sequential_fallback_reason,omitempty"`
 	PlannerIteration          int    `json:"planner_iteration,omitempty"`
+	// PlanStep is the id of the update_notebook_v2 plan step this call serves:
+	// the model's reserved _plan_step argument, else the step in progress when
+	// the call was made (#41443). Persisted in the tool-call row's metadata so
+	// the UI can group calls under their step. Empty without a structured plan.
+	PlanStep string `json:"plan_step,omitempty"`
+	// PlanStepInferred is set when PlanStep came from the step in progress
+	// rather than the model naming it, so link quality can be measured.
+	PlanStepInferred bool `json:"plan_step_inferred,omitempty"`
 	// ThoughtSignature is the provider's opaque record of the reasoning that
 	// produced THIS tool call. Gemini 2.5/3.x thinking models return one with
 	// each native function call and require it replayed verbatim whenever that

@@ -141,7 +141,7 @@ func withResolvedToolTarget(additionalDetails map[string]any, queryConfig toolco
 }
 
 func actionExecutionMetadata(action NBAgentPlannerToolAction) map[string]any {
-	if action.ExecutionBatchID == "" && action.PlannerIteration <= 0 {
+	if action.ExecutionBatchID == "" && action.PlannerIteration <= 0 && action.PlanStep == "" {
 		return nil
 	}
 	metadata := map[string]any{}
@@ -158,6 +158,12 @@ func actionExecutionMetadata(action NBAgentPlannerToolAction) map[string]any {
 	}
 	if action.SequentialFallbackReason != "" {
 		metadata["sequential_fallback_reason"] = action.SequentialFallbackReason
+	}
+	if action.PlanStep != "" {
+		metadata["plan_step"] = action.PlanStep
+		if action.PlanStepInferred {
+			metadata["plan_step_inferred"] = true
+		}
 	}
 	return metadata
 }
