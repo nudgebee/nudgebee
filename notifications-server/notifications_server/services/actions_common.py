@@ -1014,7 +1014,8 @@ def _post_investigation_content(service, context, content, preamble, mention=Fal
     if not content:
         return True
     preamble = (preamble or "").strip()
-    body = Transformer.markdown_to_slack_markdown(content)
+    citation_page_url = settings.urls.investigate_url(context.account_id, context.event_id, utm_source="slack")
+    body = Transformer.markdown_to_slack_markdown(content, citation_page_url)
     text = f"{preamble}\n\n{body}" if preamble else body
     if mention:
         text = f"{text}\n\n<@{context.slack_user_id}>"

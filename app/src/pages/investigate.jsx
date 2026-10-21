@@ -920,7 +920,11 @@ const Investigate = () => {
         start_at: result[0]?.starts_at,
       });
       const autoInvestigateHash = k8sAutoInvestigate === 'true' ? `&autoInvestigate=${k8sAutoInvestigate}` : '';
-      router.push(`/investigate?id=${eventId}&accountId=${result[0]?.cloud_account_id}${autoInvestigateHash}`, undefined, { shallow: true });
+      // Keep the hash: a link from a Slack post names the cited step there (#task-<id>).
+      const hash = typeof window === 'undefined' ? '' : window.location.hash;
+      router.push(`/investigate?id=${eventId}&accountId=${result[0]?.cloud_account_id}${autoInvestigateHash}${hash}`, undefined, {
+        shallow: true,
+      });
     }
   }
 

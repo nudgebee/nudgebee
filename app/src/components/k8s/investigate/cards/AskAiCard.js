@@ -363,6 +363,9 @@ class AskAiCard {
       }
 
       useEffect(() => {
+        // Set on mount too: Strict Mode mounts, unmounts and mounts again, and the cleanup in
+        // between would otherwise leave it false and drop every later response.
+        isMountedRef.current = true;
         return () => {
           isMountedRef.current = false;
         };
@@ -776,6 +779,15 @@ class AskAiCard {
         },
         [event?.fingerprint, event?.cloud_account_id, localAiData?.message_id]
       );
+
+      // A link from outside the app (a Slack post of this analysis) names its step in the URL
+      // hash; open it once the analysis has loaded.
+      const hashCitationOpenedRef = useRef(false);
+      useEffect(() => {
+        if (hashCitationOpenedRef.current || !localAiData || typeof window === 'undefined') return;
+        if (!parseCitationHref(window.location.hash)) return;
+        hashCitationOpenedRef.current = openCitation(window.location.hash);
+      }, [localAiData, openCitation]);
 
       if (!localAiData) {
         return <ConversationLoader label='Loading the analysis' />;
