@@ -1120,3 +1120,62 @@ func TestPrometheusCall_TargetedCallSavesToConversationWorkspace(t *testing.T) {
 	assert.Equal(t, "conversation-account", capture.account)
 	assert.Equal(t, "target-account", f.request.AccountId, "the query itself still reads the target account")
 }
+
+// TestPromQLRejectsOnlyDots pins which queries the syntax gate is allowed to wave
+// through on a non-Prometheus backend. An OTel-named backend reports names like
+// k8s.pod.memory.working_set and answers that exact spelling, so the dots are the
+// backend's own naming, not a mistake. Everything else the Prometheus grammar
+// rejects must still be rejected.
+func TestPromQLRejectsOnlyDots(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		query string
+		want  bool
+	}{
+		{"bare otel metric name", `k8s.pod.memory.working_set`, true},
+		{"segment starting with a digit", `composite.k8s.apiserver.request.5xx.rate`, true},
+		{"segment that is a number and a letter", `kafka.request.time.99p`, true},
+		{"otel name with otel labels", `k8s.container_memory_usage_bytes{k8s.namespace.name="demo"}`, true},
+		{"otel name inside a function", `sum by (service) (http.server.request.duration_bucket)`, true},
+		{"valid promql needs no help", `rate(container_cpu_usage_seconds_total[5m])`, false},
+		{"float literal is not a dotted name", `node_load1 > 0.5`, false},
+		{"natural language stays rejected", `the CPU utilization for pod X. Is it high?`, false},
+		{"broken brackets stay rejected", `sum by (pod (k8s.pod.cpu.usage)`, false},
+		{"comma-separated batch stays rejected", `k8s.pod.cpu.usage, k8s.pod.memory.usage`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, promQLRejectsOnlyDots(tc.query))
+		})
+	}
+}
+
+// TestBackendAcceptsDottedNames pins the allowlist. Only backends checked against
+// dev are on it; everything else — including a backend that merely is not
+// Prometheus — keeps the syntax gate, so an unverified one fails the way it does
+// today rather than in a new way.
+func TestBackendAcceptsDottedNames(t *testing.T) {
+	for _, tc := range []struct {
+		provider string
+		want     bool
+	}{
+		{"solarwinds", true},
+		{"SolarWinds", true},
+		{" signoz ", true},
+		{"prometheus", false},
+		{"cubeapm", false},
+		{"openobserve", false},
+		{"datadog", false},
+		{"", false},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			assert.Equal(t, tc.want, backendAcceptsDottedNames(tc.provider))
+		})
+	}
+}
+
+// TestMetricsBackendAcceptsDottedNamesWithoutAccount keeps the gate on when the
+// account is unknown: the resolver falls back to "prometheus", which is not on
+// the list.
+func TestMetricsBackendAcceptsDottedNamesWithoutAccount(t *testing.T) {
+	assert.False(t, metricsBackendAcceptsDottedNames(""))
+}

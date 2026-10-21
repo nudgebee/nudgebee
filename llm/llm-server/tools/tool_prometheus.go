@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -308,6 +309,56 @@ func validatePromQLSyntax(query string) string {
 	return ""
 }
 
+// dottedIdentifier matches a bare `a.b` name. Only the first segment has to start
+// with a letter or an underscore, which is what keeps a float or a duration out —
+// those start with a digit. Later segments may: `composite.k8s.apiserver.request.5xx.rate`
+// and `kafka.request.time.99p` are real names on these backends.
+var dottedIdentifier = regexp.MustCompile(`[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)+`)
+
+// promQLRejectsOnlyDots reports whether the only thing Prometheus's grammar
+// objected to is the dots inside identifiers. It re-parses the query with every
+// dotted name underscored and returns true only when that version is valid, so a
+// query that is malformed for any other reason — natural language, a stray
+// bracket — still fails the gate. The rewrite decides; it is never sent.
+func promQLRejectsOnlyDots(query string) bool {
+	underscored := dottedIdentifier.ReplaceAllStringFunc(query, func(s string) string {
+		return strings.ReplaceAll(s, ".", "_")
+	})
+	if underscored == query {
+		return false
+	}
+	_, err := promQLParser.ParseExpr(underscored)
+	return err == nil
+}
+
+// dottedMetricBackends are the backends whose own catalogue is written in dotted
+// OTel names and that answer a query carrying them. Verified per backend against
+// dev rather than inferred from the provider being "not Prometheus": SolarWinds
+// answers the dotted name and 404s every other spelling, and SigNoz is quoted
+// into `{"k8s.pod.cpu.usage"}` by api-server before the query is sent.
+//
+// A backend that is not listed keeps the gate, so an unverified one fails the way
+// it does today instead of in a new way. Add to this only with evidence that the
+// backend's names carry dots and that it accepts them.
+var dottedMetricBackends = map[string]bool{
+	"solarwinds": true,
+	"signoz":     true,
+}
+
+// backendAcceptsDottedNames is the membership test on its own, so every backend
+// can be exercised without an environment wired up for it.
+func backendAcceptsDottedNames(provider string) bool {
+	return dottedMetricBackends[strings.ToLower(strings.TrimSpace(provider))]
+}
+
+// metricsBackendAcceptsDottedNames resolves the account's metrics backend through
+// the same helper the discovery tools use, so the two cannot disagree about which
+// one it is. An unknown account and a failed lookup both resolve to "prometheus",
+// which is not on the list and so keeps the gate.
+func metricsBackendAcceptsDottedNames(accountId string) bool {
+	return backendAcceptsDottedNames(MetricsDiscoveryProvider(accountId))
+}
+
 func (m PrometheusExecuteTool) cleanupQuery(query string) string {
 	query = strings.TrimSpace(query)
 	foundClusterMetrics := false
@@ -429,6 +480,11 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 	}
 	stepSeconds, stepNote := resolvePromStep(requestedStep, endTime.Sub(startTime))
 
+	queryAccountId := nbRequestContext.AccountId
+	if target := nbRequestContext.QueryConfig.DelegatedTarget; target != nil && target.AccountID != "" {
+		queryAccountId = target.AccountID
+	}
+
 	for _, q := range queries {
 
 		// Validate PromQL syntax locally before hitting the relay server.
@@ -436,18 +492,24 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 		// or invalid label matchers in ~0ms — no network round-trip needed.
 		// Returns a structured, actionable error so the LLM can self-correct
 		// without escalating to the promql_query sub-agent (saves ~565s/run).
+		//
+		// The grammar is Prometheus's, but the backend is whatever the account
+		// configured. An OTel-named one reports metrics as
+		// `k8s.pod.memory.working_set` through metrics_list and answers that exact
+		// name, which this parser rejects for the dots. So when the dots are the
+		// only objection and the backend is one of those, let it judge its own names.
 		if parseErr := validatePromQLSyntax(q); parseErr != "" {
-			nbRequestContext.Ctx.GetLogger().Warn("prometheus: PromQL syntax error detected before relay call", "query", q, "error", parseErr)
-			return core.NBToolResponse{
-				Data:   parseErr,
-				Status: core.NBToolResponseStatusError,
-			}, nil
+			if promQLRejectsOnlyDots(q) && metricsBackendAcceptsDottedNames(queryAccountId) {
+				nbRequestContext.Ctx.GetLogger().Info("prometheus: dotted metric name kept for a backend that uses them", "query", q)
+			} else {
+				nbRequestContext.Ctx.GetLogger().Warn("prometheus: PromQL syntax error detected before relay call", "query", q, "error", parseErr)
+				return core.NBToolResponse{
+					Data:   parseErr,
+					Status: core.NBToolResponseStatusError,
+				}, nil
+			}
 		}
 
-		queryAccountId := nbRequestContext.AccountId
-		if target := nbRequestContext.QueryConfig.DelegatedTarget; target != nil && target.AccountID != "" {
-			queryAccountId = target.AccountID
-		}
 		apiDataAny, err := m.executePromQl(nbRequestContext, q, queryAccountId, map[string]any{
 			"end_time":     endTime.UTC().Format("2006-01-02T15:04:05Z07:00"),
 			"start_time":   startTime.UTC().Format("2006-01-02T15:04:05Z07:00"),
