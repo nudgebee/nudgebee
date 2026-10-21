@@ -6,6 +6,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
+	toolcore "nudgebee/llm/tools/core"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -70,6 +71,11 @@ func agentListAgent(c *gin.Context, context *security.RequestContext, payload ma
 		return
 	}
 	resp := core.ListAgents(context, accountIdPayload, allowOnlyEnabled)
+	// Organisation agents this account switched off, so the agent list can
+	// switch them back on. Pickers don't ask for them.
+	if includeSwitchedOff, _ := payload["include_switched_off"].(bool); includeSwitchedOff && !allowOnlyEnabled {
+		resp = append(resp, core.ListSwitchedOffOrgAgents(context, accountIdPayload)...)
+	}
 	c.JSON(200, BuildApiResponse(resp, nil))
 }
 
@@ -102,8 +108,10 @@ func agentCreateAgent(c *gin.Context, context *security.RequestContext, payload 
 		return
 	}
 
-	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
+	// Check if user has access to account. An organisation agent needs a
+	// tenant admin, which the service checks.
+	orgAgent := request.Agent.Visibility != "" && request.Agent.Visibility != toolcore.VisibilityAccount
+	if !orgAgent && !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiAgents) {
 		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
@@ -129,18 +137,14 @@ func agentCreateAgent(c *gin.Context, context *security.RequestContext, payload 
 }
 
 func agentDeleteAgent(c *gin.Context, context *security.RequestContext, payload map[string]any) {
-	if payload["account_id"] == nil || payload["account_id"] == "" {
-		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
-		return
-	}
-
 	if payload["name"] == nil || payload["name"] == "" {
 		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, name is required")}))
 		return
 	}
+	// An empty account_id deletes an organisation agent (tenant admin, checked by the service).
 	accountIdPayload, okAccount := payload["account_id"].(string)
-	if !okAccount || accountIdPayload == "" {
-		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id must be a non-empty string")}))
+	if payload["account_id"] != nil && !okAccount {
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id must be a string")}))
 		return
 	}
 	namePayload, okName := payload["name"].(string)
@@ -150,7 +154,7 @@ func agentDeleteAgent(c *gin.Context, context *security.RequestContext, payload 
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(accountIdPayload, security.SecurityAccessTypeDelete) &&
+	if accountIdPayload != "" && !context.GetSecurityContext().HasAccountAccess(accountIdPayload, security.SecurityAccessTypeDelete) &&
 		!grantedWrite(context.GetSecurityContext(), accountIdPayload, moduleAiAgents) {
 		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
@@ -202,12 +206,8 @@ func agentUpdateAgent(c *gin.Context, context *security.RequestContext, payload 
 		return
 	}
 
-	if request.AccountId == "" {
-		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
-		return
-	}
-
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
+	// An empty account_id updates an organisation agent (tenant admin, checked by the service).
+	if request.AccountId != "" && !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiAgents) {
 		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
@@ -461,10 +461,78 @@ func handleAgentsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 			common.MetricsApiRequestsTotal("agents_extension_delete")
 			deleteAgentExtension(c, context, payload)
 			return
+		case "ai_update_agent_visibility":
+			common.MetricsApiRequestsTotal("agents_visibility_update")
+			agentUpdateVisibility(c, context, payload)
+			return
+		case "ai_update_agent_account_override":
+			common.MetricsApiRequestsTotal("agents_account_override_update")
+			agentUpdateAccountOverride(c, context, payload)
+			return
+		case "ai_list_agent_account_overrides":
+			common.MetricsApiRequestsTotal("agents_account_overrides_list")
+			agentListAccountOverrides(c, context, payload)
+			return
 		default:
 			c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, unsupported action")}))
 			return
 		}
 	})
 
+}
+
+// orgItemVisibilityRequest changes who can use an organisation agent or tool.
+type orgItemVisibilityRequest struct {
+	Id              string   `json:"id"`
+	Visibility      string   `json:"visibility"`
+	AccountIds      []string `json:"account_ids"`
+	TargetAccountId string   `json:"target_account_id"`
+}
+
+// orgItemAccountOverrideRequest switches an organisation agent or tool on or
+// off for one account.
+type orgItemAccountOverrideRequest struct {
+	Id        string `json:"id"`
+	AccountId string `json:"account_id"`
+	Enabled   bool   `json:"enabled"`
+}
+
+func agentUpdateVisibility(c *gin.Context, context *security.RequestContext, payload map[string]any) {
+	request := orgItemVisibilityRequest{}
+	if err := common.DecodeMapToStruct(payload, &request); err != nil || request.Id == "" || request.Visibility == "" {
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, id and visibility are required")}))
+		return
+	}
+	if err := core.SetCustomAgentVisibility(context, request.Id, request.Visibility, request.AccountIds, request.TargetAccountId); err != nil {
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
+		return
+	}
+	c.JSON(200, BuildApiResponse(map[string]any{"status": "ok"}, nil))
+}
+
+func agentUpdateAccountOverride(c *gin.Context, context *security.RequestContext, payload map[string]any) {
+	request := orgItemAccountOverrideRequest{}
+	if err := common.DecodeMapToStruct(payload, &request); err != nil || request.Id == "" || request.AccountId == "" {
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, id and account_id are required")}))
+		return
+	}
+	if err := core.SetCustomAgentAccountSwitch(context, request.Id, request.AccountId, request.Enabled); err != nil {
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
+		return
+	}
+	c.JSON(200, BuildApiResponse(map[string]any{"status": "ok"}, nil))
+}
+
+func agentListAccountOverrides(c *gin.Context, context *security.RequestContext, payload map[string]any) {
+	id, _ := payload["id"].(string)
+	if id == "" {
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, id is required")}))
+		return
+	}
+	resp, err := core.ListCustomAgentAccountSwitches(context, id)
+	if err != nil {
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
+		return
+	}
+	c.JSON(200, BuildApiResponse(resp, nil))
 }

@@ -2563,6 +2563,11 @@ func DeleteTenant(ctx *security.RequestContext, request TenantDeleteRequest) (Te
 		{name: "llm_global_contexts"},
 		{name: "llm_knowledgebases"},
 		{name: "llm_rags"},
+		// Custom agents and tools: organisation ones (#41073) have no account,
+		// so account deletion does not reach them. Their per-account switches
+		// cascade.
+		{name: "llm_agents"},
+		{name: "llm_tools"},
 		// marketplace (EE-only data; table is empty in OSS so the delete
 		// is a no-op there). Listed here rather than under ee/ because
 		// the tenant-delete table list is a hardcoded array with no

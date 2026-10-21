@@ -23,6 +23,9 @@ type toolCreateRequest struct {
 		Config       map[string]any        `json:"config"`
 		Status       core.ToolStatus       `json:"status"`
 		InputSchema  core.ToolSchema       `json:"schema" db:"input_schema"`
+		// Visibility is account (default), organisation or selected_accounts (#41073).
+		Visibility string   `json:"visibility"`
+		AccountIds []string `json:"account_ids"`
 	} `json:"tool"`
 }
 
@@ -70,6 +73,11 @@ func toolListTool(c *gin.Context, context *security.RequestContext, payload map[
 	}
 
 	resp := core.ListTools(context, accountIdPayload)
+	// Organisation tools this account switched off, so the tool list can
+	// switch them back on. Pickers don't ask for them.
+	if includeSwitchedOff, _ := payload["include_switched_off"].(bool); includeSwitchedOff {
+		resp = append(resp, core.ListSwitchedOffOrgTools(accountIdPayload)...)
+	}
 	customAgents := agentcore.ListCustomAgents(context, accountIdPayload, true)
 	for _, agent := range customAgents {
 		// Add custom agents as tools
@@ -85,6 +93,7 @@ func toolListTool(c *gin.Context, context *security.RequestContext, payload map[
 			Config: map[string]any{
 				"agent_id": agent.Id,
 			},
+			Visibility: agent.Visibility,
 		})
 	}
 	c.JSON(200, BuildApiResponse(filterToolsByType(resp, payload), nil))
@@ -167,8 +176,10 @@ func toolCreateTool(c *gin.Context, context *security.RequestContext, payload ma
 		return
 	}
 
-	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
+	// Check if user has access to account. An organisation tool needs a
+	// tenant admin, which the service checks.
+	orgTool := request.Tool.Visibility != "" && request.Tool.Visibility != core.VisibilityAccount
+	if !orgTool && !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiTools) {
 		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
@@ -200,6 +211,8 @@ func toolCreateTool(c *gin.Context, context *security.RequestContext, payload ma
 		NBToolType:   core.NBToolTypeTool,
 		ExecutorType: request.Tool.ExecutorType,
 		CreatedBy:    context.GetSecurityContext().GetUserId(),
+		Visibility:   request.Tool.Visibility,
+		AccountIds:   request.Tool.AccountIds,
 	})
 	if err != nil {
 		c.JSON(500, BuildApiResponse(nil, []error{
@@ -214,18 +227,14 @@ func toolCreateTool(c *gin.Context, context *security.RequestContext, payload ma
 }
 
 func toolDeleteTool(c *gin.Context, context *security.RequestContext, payload map[string]any) {
-	if payload["account_id"] == nil || payload["account_id"] == "" {
-		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
-		return
-	}
-
 	if payload["name"] == nil || payload["name"] == "" {
 		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, name is required")}))
 		return
 	}
+	// An empty account_id deletes an organisation tool (tenant admin, checked by the service).
 	accountIdPayload, okAccount := payload["account_id"].(string)
-	if !okAccount || accountIdPayload == "" {
-		c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, account_id must be a non-empty string")}))
+	if payload["account_id"] != nil && !okAccount {
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, account_id must be a string")}))
 		return
 	}
 	namePayload, okName := payload["name"].(string)
@@ -235,7 +244,7 @@ func toolDeleteTool(c *gin.Context, context *security.RequestContext, payload ma
 	}
 
 	// Check if user has access to account
-	if !context.GetSecurityContext().HasAccountAccess(accountIdPayload, security.SecurityAccessTypeDelete) &&
+	if accountIdPayload != "" && !context.GetSecurityContext().HasAccountAccess(accountIdPayload, security.SecurityAccessTypeDelete) &&
 		!grantedWrite(context.GetSecurityContext(), accountIdPayload, moduleAiTools) {
 		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
@@ -287,12 +296,8 @@ func toolUpdateTool(c *gin.Context, context *security.RequestContext, payload ma
 		return
 	}
 
-	if request.AccountId == "" {
-		c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, account_id is required")}))
-		return
-	}
-
-	if !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
+	// An empty account_id updates an organisation tool (tenant admin, checked by the service).
+	if request.AccountId != "" && !context.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) &&
 		!grantedWrite(context.GetSecurityContext(), request.AccountId, moduleAiTools) {
 		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
@@ -380,6 +385,18 @@ func handleToolsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		case "ai_delete_tool":
 			common.MetricsApiRequestsTotal("tools_delete")
 			toolDeleteTool(c, context, payload)
+			return
+		case "ai_update_tool_visibility":
+			common.MetricsApiRequestsTotal("tools_visibility_update")
+			toolUpdateVisibility(c, context, payload)
+			return
+		case "ai_update_tool_account_override":
+			common.MetricsApiRequestsTotal("tools_account_override_update")
+			toolUpdateAccountOverride(c, context, payload)
+			return
+		case "ai_list_tool_account_overrides":
+			common.MetricsApiRequestsTotal("tools_account_overrides_list")
+			toolListAccountOverrides(c, context, payload)
 			return
 		default:
 			c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, unsupported action")}))
@@ -495,4 +512,44 @@ func handleToolsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		c.JSON(200, BuildApiResponse(response, nil))
 	})
 
+}
+
+func toolUpdateVisibility(c *gin.Context, context *security.RequestContext, payload map[string]any) {
+	request := orgItemVisibilityRequest{}
+	if err := common.DecodeMapToStruct(payload, &request); err != nil || request.Id == "" || request.Visibility == "" {
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, id and visibility are required")}))
+		return
+	}
+	if err := core.SetCustomToolVisibility(context, request.Id, request.Visibility, request.AccountIds, request.TargetAccountId); err != nil {
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
+		return
+	}
+	c.JSON(200, BuildApiResponse(map[string]any{"status": "ok"}, nil))
+}
+
+func toolUpdateAccountOverride(c *gin.Context, context *security.RequestContext, payload map[string]any) {
+	request := orgItemAccountOverrideRequest{}
+	if err := common.DecodeMapToStruct(payload, &request); err != nil || request.Id == "" || request.AccountId == "" {
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, id and account_id are required")}))
+		return
+	}
+	if err := core.SetCustomToolAccountSwitch(context, request.Id, request.AccountId, request.Enabled); err != nil {
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
+		return
+	}
+	c.JSON(200, BuildApiResponse(map[string]any{"status": "ok"}, nil))
+}
+
+func toolListAccountOverrides(c *gin.Context, context *security.RequestContext, payload map[string]any) {
+	id, _ := payload["id"].(string)
+	if id == "" {
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, id is required")}))
+		return
+	}
+	resp, err := core.ListCustomToolAccountSwitches(context, id)
+	if err != nil {
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
+		return
+	}
+	c.JSON(200, BuildApiResponse(resp, nil))
 }

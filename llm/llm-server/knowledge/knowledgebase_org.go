@@ -19,13 +19,15 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	toolcore "nudgebee/llm/tools/core"
 )
 
-// Knowledge base visibility values (llm_knowledgebases.visibility).
+// Knowledge base visibility values (llm_knowledgebases.visibility), the same
+// as custom agents and tools use.
 const (
-	KBVisibilityAccount          = "account"
-	KBVisibilityOrganisation     = "organisation"
-	KBVisibilitySelectedAccounts = "selected_accounts"
+	KBVisibilityAccount          = toolcore.VisibilityAccount
+	KBVisibilityOrganisation     = toolcore.VisibilityOrganisation
+	KBVisibilitySelectedAccounts = toolcore.VisibilitySelectedAccounts
 )
 
 const errKBOrgAdminOnly = "only a tenant admin can manage organisation knowledge bases"

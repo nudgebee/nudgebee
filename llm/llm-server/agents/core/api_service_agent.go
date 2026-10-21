@@ -61,6 +61,13 @@ type AgentDto struct {
 	// them to render an Account column.
 	AccountId   string `json:"account_id,omitempty" db:"account_id"`
 	AccountName string `json:"account_name,omitempty" db:"account_name"`
+	// Visibility is account, organisation or selected_accounts (#41073).
+	Visibility string `json:"visibility,omitempty" db:"visibility"`
+	// AccountIds is the selection when creating a selected_accounts agent.
+	AccountIds []string `json:"account_ids,omitempty"`
+	// SwitchedOff marks an organisation agent this account switched off; only
+	// the agent list returns those.
+	SwitchedOff bool `json:"switched_off,omitempty"`
 }
 
 type AgentUpdateDto struct {
@@ -188,17 +195,36 @@ func ListAgents(context *security.RequestContext, accountId string, allowOnlyEna
 }
 
 func CreateCustomAgent(context *security.RequestContext, accountId string, agent AgentDto, rags []AgentRagDto, overrideAgent bool) (AgentDto, error) {
-	if accountId == "" {
+	if agent.Visibility == "" {
+		agent.Visibility = toolcore.VisibilityAccount
+	}
+	if !toolcore.ValidOrgItemVisibility(agent.Visibility) {
+		return AgentDto{}, fmt.Errorf("agent: invalid visibility %s", agent.Visibility)
+	}
+	org := agent.Visibility != toolcore.VisibilityAccount
+	if accountId == "" && !org {
 		return AgentDto{}, errors.New("accountId is required")
+	}
+	if org && accountId != "" && !context.GetSecurityContext().HasAccountAccess(accountId, "read") {
+		return AgentDto{}, errors.New("auth: unauthorized")
+	}
+	if org && len(rags) > 0 {
+		return AgentDto{}, errors.New("agent: attach documents to an organisation agent through an organisation knowledge base")
 	}
 
 	agent.Name = strings.TrimSpace(agent.Name)
 	if agent.Name == "" {
 		return AgentDto{}, errors.New("agent.name is required")
 	}
-	_, ok := GetAgent(context, accountId, agent.Name)
-	// check if agent name is already used
-	if ok && !overrideAgent {
+	// check if agent name is already used: an organisation agent may not take
+	// any built-in name; an account agent only one that resolves for its account.
+	builtIn := false
+	if org {
+		builtIn = isSystemAgentName(agent.Name)
+	} else {
+		_, builtIn = GetAgent(context, accountId, agent.Name)
+	}
+	if builtIn && !overrideAgent {
 		return AgentDto{}, fmt.Errorf("agent %s is already used", agent.Name)
 	}
 
@@ -217,9 +243,24 @@ func CreateCustomAgent(context *security.RequestContext, accountId string, agent
 		return AgentDto{}, errors.New("auth: tenantId is required")
 	}
 
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		getLogger(context).Error("agent: failed to get database manager", "error", err)
+		return AgentDto{}, err
+	}
+
 	//validate tool/agent
 	agent.ExecutorType = AgentPlannerTypeReAct
-	if len(agent.Tools) > 0 {
+	if org && !toolcore.CanManageOrgItems(context, tenantId) {
+		return AgentDto{}, errors.New("auth: unauthorized")
+	}
+	if org {
+		executorType, err := validateOrgAgentTools(dbms.Db, tenantId, accountId, agent.Name, agent.Tools)
+		if err != nil {
+			return AgentDto{}, err
+		}
+		agent.ExecutorType = executorType
+	} else if len(agent.Tools) > 0 {
 		for _, tool := range agent.Tools {
 			if tool == "" {
 				return AgentDto{}, errors.New("agent.tools cannot contain empty tool names")
@@ -254,26 +295,27 @@ func CreateCustomAgent(context *security.RequestContext, accountId string, agent
 	if agent.Status == "" {
 		agent.Status = AgentStatusEnabled
 	}
-	dbms, err := common.GetDatabaseManager(common.Metastore)
-	if err != nil {
-		getLogger(context).Error("agent: failed to get database manager", "error", err)
-		return AgentDto{}, err
-	}
 
 	// validate if user has access
-	if !context.GetSecurityContext().HasAccountAccess(accountId, "write") {
-		getLogger(context).Error("agent: failed to get account access")
-		return AgentDto{}, errors.New("auth: unauthorized")
-	}
+	if org {
+		if !toolcore.CanManageOrgItems(context, tenantId) {
+			return AgentDto{}, errors.New("auth: unauthorized")
+		}
+	} else {
+		if !context.GetSecurityContext().HasAccountAccess(accountId, "write") {
+			getLogger(context).Error("agent: failed to get account access")
+			return AgentDto{}, errors.New("auth: unauthorized")
+		}
 
-	// check if agent exists
-	agentIds, err := getCustomAgentIdByNameAndAccountId(context, accountId, agent.Name)
-	if err != nil {
-		getLogger(context).Error("agent: failed to get agent", "error", err)
-		return AgentDto{}, err
-	}
-	if len(agentIds) > 0 {
-		return AgentDto{}, errors.New("agent with same name already exists")
+		// check if agent exists
+		agentIds, err := getCustomAgentIdByNameAndAccountId(context, accountId, agent.Name)
+		if err != nil {
+			getLogger(context).Error("agent: failed to get agent", "error", err)
+			return AgentDto{}, err
+		}
+		if len(agentIds) > 0 {
+			return AgentDto{}, errors.New("agent with same name already exists")
+		}
 	}
 
 	agentConfigJson := []byte("{}")
@@ -297,11 +339,23 @@ func CreateCustomAgent(context *security.RequestContext, accountId string, agent
 	nullableCreatedBy := sql.NullString{String: agent.CreatedBy, Valid: agent.CreatedBy != ""}
 
 	agentAny, err := dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
-		_, err = tx.Exec("insert into llm_agents (id, name, description, config, type, status, system_prompt, system_prompt_variables, executor_type, tools, created_by, tenant_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
-			agent.Id, agent.Name, agent.Description, string(agentConfigJson), agent.Type, agent.Status, agent.SystemPrompt, string(systemPromptVariablesJson), agent.ExecutorType, string(agentToolsJson), nullableCreatedBy, tenantId)
+		if err := toolcore.CheckOrgItemName(tx, toolcore.OrgAgentKind, tenantId, agent.Name, "", org); err != nil {
+			return nil, err
+		}
+		_, err = tx.Exec("insert into llm_agents (id, name, description, config, type, status, system_prompt, system_prompt_variables, executor_type, tools, created_by, tenant_id, visibility) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+			agent.Id, agent.Name, agent.Description, string(agentConfigJson), agent.Type, agent.Status, agent.SystemPrompt, string(systemPromptVariablesJson), agent.ExecutorType, string(agentToolsJson), nullableCreatedBy, tenantId, agent.Visibility)
 		if err != nil {
 			getLogger(context).Error("agent: failed to insert agent", "error", err)
-			return AgentDto{}, err
+			return nil, err
+		}
+
+		if org {
+			if agent.Visibility == toolcore.VisibilitySelectedAccounts {
+				if err := toolcore.ReplaceOrgItemSelection(tx, toolcore.OrgAgentKind, agent.Id, tenantId, context.GetSecurityContext().GetUserId(), agent.AccountIds); err != nil {
+					return nil, err
+				}
+			}
+			return agent, nil
 		}
 
 		_, err = tx.Exec("insert into llm_agents_installation (agent_id, account_id, id) values ($1, $2, $3)",
@@ -357,9 +411,93 @@ func CreateCustomAgent(context *security.RequestContext, accountId string, agent
 		// Don't return the audit error as it shouldn't affect the main operation
 	}
 
-	InvalidateCustomAgentToolsCache(accountId, agent.Name)
+	if org {
+		invalidateOrgAgentCaches(tenantId, []string{accountId}, agent.Name)
+	} else {
+		InvalidateCustomAgentToolsCache(accountId, agent.Name)
+	}
 
 	return agentAny.(AgentDto), nil
+}
+
+// isSystemAgentName reports whether name is a built-in agent (or one of its aliases).
+func isSystemAgentName(name string) bool {
+	for agent := range nbSystemAgents {
+		if strings.EqualFold(agent, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// invalidateOrgAgentCaches drops the cached tool lists of the named agents in
+// every account of tenantId, on every replica. The accounts in now, typically
+// the request's, are done before it returns.
+func invalidateOrgAgentCaches(tenantId string, now []string, names ...string) {
+	toolcore.ForEachTenantAccount(tenantId, now, func(accountId string) {
+		for _, name := range names {
+			if name != "" {
+				InvalidateCustomAgentToolsCache(accountId, name)
+			}
+		}
+	})
+}
+
+// validateOrgAgentTools checks the tool list of an organisation agent: it must
+// work the same in every account, so it may name built-in tools,
+// organisation-wide tools and agents, and MCP or automation tools of the
+// request account, but not a custom tool or agent that only some accounts have.
+func validateOrgAgentTools(q sqlx.Queryer, tenantId, accountId, selfName string, tools []string) (AgentPlannerType, error) {
+	executorType := AgentPlannerTypeReAct
+tools:
+	for _, tool := range tools {
+		if tool == "" {
+			return "", errors.New("agent.tools cannot contain empty tool names")
+		}
+		if strings.EqualFold(tool, selfName) {
+			return "", errors.New("agent.tools cannot contain name of agent itself")
+		}
+		if toolcore.IsSystemToolName(tool) {
+			if nbTool, ok := toolcore.GetNBTool(accountId, tool); ok && nbTool.GetType() == toolcore.NBToolTypeAgent {
+				executorType = AgentPlannerTypeOrchestrating
+			}
+			continue
+		}
+		if isSystemAgentName(tool) {
+			executorType = AgentPlannerTypeOrchestrating
+			continue
+		}
+		for _, k := range []toolcore.OrgItemKind{toolcore.OrgToolKind, toolcore.OrgAgentKind} {
+			visibilities, err := toolcore.TenantItemVisibilities(q, k, tenantId, tool)
+			if err != nil {
+				return "", err
+			}
+			if len(visibilities) == 0 {
+				continue
+			}
+			if visibilities[0] != toolcore.VisibilityOrganisation {
+				return "", fmt.Errorf("agent.tools contains %s, which not every account can use; an organisation agent can use built-in, organisation-wide and MCP tools only", tool)
+			}
+			if k.Label == toolcore.OrgAgentKind.Label {
+				executorType = AgentPlannerTypeOrchestrating
+			}
+			continue tools
+		}
+		if accountId != "" {
+			if nbTool, ok := toolcore.GetNBTool(accountId, tool); ok {
+				if nbTool.GetType() == toolcore.NBToolTypeAgent {
+					executorType = AgentPlannerTypeOrchestrating
+				}
+				continue
+			}
+		} else if toolcore.IsTenantMCPToolName(q, tenantId, tool) {
+			// Created without an account: an MCP tool is known only by its
+			// integration's prefix.
+			continue
+		}
+		return "", fmt.Errorf("agent.tools contains tool %s which does not exist", tool)
+	}
+	return executorType, nil
 }
 
 // Define a struct to return both original and updated agent
@@ -545,11 +683,7 @@ func verifyCustomAgentOwnedByAccount(tx *sqlx.Tx, accountId string, agentId stri
 }
 
 func UpdateCustomAgent(context *security.RequestContext, accountId string, agent AgentUpdateDto) (AgentUpdateDto, error) {
-	// Input validation
-	if accountId == "" {
-		return AgentUpdateDto{}, errors.New("accountId is required")
-	}
-
+	// Input validation (the account is checked below: an organisation agent needs none)
 	if agent.Name == nil {
 		return AgentUpdateDto{}, errors.New("agent.name is required")
 	}
@@ -569,33 +703,6 @@ func UpdateCustomAgent(context *security.RequestContext, accountId string, agent
 		agent.UpdatedBy = context.GetSecurityContext().GetUserId()
 	}
 
-	// Authorization check
-	if !context.GetSecurityContext().HasAccountAccess(accountId, "write") {
-		return AgentUpdateDto{}, handleAgentError(context, errors.New("auth: unauthorized"), "agent: failed to get account access")
-	}
-
-	// Validate new tools and recompute executor_type when the tool list is being changed.
-	// Mirrors the same logic as CreateCustomAgent so the stored planner type stays correct.
-	if agent.Tools != nil {
-		executorType := AgentPlannerTypeReAct
-		for _, tool := range agent.Tools {
-			if tool == "" {
-				return AgentUpdateDto{}, errors.New("agent.tools cannot contain empty tool names")
-			}
-			nbTool, exists := toolcore.GetNBTool(accountId, tool)
-			if !exists {
-				_, existAgent := GetCustomNbAgent(context, accountId, tool, AgentStatusEnabled)
-				if !existAgent {
-					return AgentUpdateDto{}, fmt.Errorf("agent.tools contains tool %s which does not exist", tool)
-				}
-				executorType = AgentPlannerTypeOrchestrating
-			} else if nbTool.GetType() == toolcore.NBToolTypeAgent {
-				executorType = AgentPlannerTypeOrchestrating
-			}
-		}
-		agent.ExecutorType = &executorType
-	}
-
 	// Get database connection
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -603,11 +710,75 @@ func UpdateCustomAgent(context *security.RequestContext, accountId string, agent
 	}
 
 	// Execute database operations in a transaction
+	var owner toolcore.OrgItemOwner
 	resultAny, err := dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
-		// The access check above is on the request's account; the agent itself
-		// is addressed by id, so it must be a custom agent installed in that account.
-		if err := verifyCustomAgentOwnedByAccount(tx, accountId, agent.Id); err != nil {
+		// Authorization check: an account agent is changed under the account that
+		// owns it; an organisation agent by a tenant admin of its tenant.
+		o, err := toolcore.LockOrgItemOwner(tx, toolcore.OrgAgentKind, agent.Id)
+		if err != nil {
 			return nil, err
+		}
+		owner = o
+		if owner.IsOrg() {
+			if !toolcore.CanManageOrgItems(context, owner.TenantId) {
+				return nil, handleAgentError(context, errors.New("auth: unauthorized"), "agent: not a tenant admin of the organisation agent")
+			}
+			if accountId != "" && !context.GetSecurityContext().HasAccountAccess(accountId, "read") {
+				return nil, errors.New("auth: unauthorized")
+			}
+			if agent.Tools != nil {
+				executorType, err := validateOrgAgentTools(tx, owner.TenantId, accountId, *agent.Name, agent.Tools)
+				if err != nil {
+					return nil, err
+				}
+				agent.ExecutorType = &executorType
+			}
+		} else {
+			if accountId == "" {
+				return nil, errors.New("accountId is required")
+			}
+			if !context.GetSecurityContext().HasAccountAccess(accountId, "write") {
+				return nil, handleAgentError(context, errors.New("auth: unauthorized"), "agent: failed to get account access")
+			}
+			// The access check is on the request's account; the agent itself is
+			// addressed by id, so it must be a custom agent installed in that account.
+			if err := verifyCustomAgentOwnedByAccount(tx, accountId, agent.Id); err != nil {
+				return nil, err
+			}
+			// Validate new tools and recompute executor_type when the tool list is being changed.
+			// Mirrors the same logic as CreateCustomAgent so the stored planner type stays correct.
+			if agent.Tools != nil {
+				executorType := AgentPlannerTypeReAct
+				for _, tool := range agent.Tools {
+					if tool == "" {
+						return nil, errors.New("agent.tools cannot contain empty tool names")
+					}
+					nbTool, exists := toolcore.GetNBTool(accountId, tool)
+					if !exists {
+						_, existAgent := GetCustomNbAgent(context, accountId, tool, AgentStatusEnabled)
+						if !existAgent {
+							return nil, fmt.Errorf("agent.tools contains tool %s which does not exist", tool)
+						}
+						executorType = AgentPlannerTypeOrchestrating
+					} else if nbTool.GetType() == toolcore.NBToolTypeAgent {
+						executorType = AgentPlannerTypeOrchestrating
+					}
+				}
+				agent.ExecutorType = &executorType
+			}
+		}
+		if !strings.EqualFold(owner.Name, *agent.Name) {
+			if isSystemAgentName(*agent.Name) {
+				return nil, fmt.Errorf("agent: %s is a built-in agent name; choose another name", *agent.Name)
+			}
+			if err := toolcore.CheckOrgItemName(tx, toolcore.OrgAgentKind, owner.TenantId, *agent.Name, agent.Id, owner.IsOrg()); err != nil {
+				return nil, err
+			}
+			if owner.IsOrg() {
+				if err := toolcore.CheckNotUsedByOrgAgents(tx, toolcore.OrgAgentKind, owner.TenantId, owner.Name); err != nil {
+					return nil, err
+				}
+			}
 		}
 
 		// Fetch the original agent values before updating for auditing purposes
@@ -692,9 +863,13 @@ func UpdateCustomAgent(context *security.RequestContext, accountId string, agent
 
 	// Evict cached tool list only after the transaction commits so concurrent requests
 	// never see a warm cache backed by the pre-commit (now-stale) state.
-	InvalidateCustomAgentToolsCache(accountId, result.Original.Name)
-	if agent.Name != nil && *agent.Name != "" && *agent.Name != result.Original.Name {
-		InvalidateCustomAgentToolsCache(accountId, *agent.Name)
+	if owner.IsOrg() {
+		invalidateOrgAgentCaches(owner.TenantId, []string{accountId}, result.Original.Name, *agent.Name)
+	} else {
+		InvalidateCustomAgentToolsCache(accountId, result.Original.Name)
+		if agent.Name != nil && *agent.Name != "" && *agent.Name != result.Original.Name {
+			InvalidateCustomAgentToolsCache(accountId, *agent.Name)
+		}
 	}
 
 	// Create audit entry with both original and updated agent states
@@ -780,23 +955,44 @@ func DeleteCustomAgent(context *security.RequestContext, accountId string, name 
 		return err
 	}
 
-	// validate if user has access
-	if !context.GetSecurityContext().HasAccountAccess(accountId, "write") {
-		getLogger(context).Error("agent: failed to get account access", "error", err)
-		return errors.New("auth: unauthorized")
-	}
+	// An empty account deletes an organisation agent of the caller's tenant.
+	orgTenantId := ""
+	var agentIds []string
+	if accountId == "" {
+		orgTenantId = context.GetSecurityContext().GetTenantId()
+		if !toolcore.CanManageOrgItems(context, orgTenantId) {
+			return errors.New("auth: unauthorized")
+		}
+		if err := dbms.Db.Select(&agentIds, "select id::text from llm_agents where tenant_id = $1::uuid and lower(name) = lower($2) and type = $3 and visibility <> 'account'", orgTenantId, name, AgentTypeCustom); err != nil {
+			return fmt.Errorf("agent: failed to get organisation agent: %w", err)
+		}
+	} else {
+		// validate if user has access
+		if !context.GetSecurityContext().HasAccountAccess(accountId, "write") {
+			getLogger(context).Error("agent: failed to get account access", "error", err)
+			return errors.New("auth: unauthorized")
+		}
 
-	// check if agent exists
-	agentIds, err := getCustomAgentIdByNameAndAccountId(context, accountId, name)
-	if err != nil {
-		getLogger(context).Error("agent: failed to get agent", "error", err)
-		return err
+		// check if agent exists
+		agentIds, err = getCustomAgentIdByNameAndAccountId(context, accountId, name)
+		if err != nil {
+			getLogger(context).Error("agent: failed to get agent", "error", err)
+			return err
+		}
 	}
 	if len(agentIds) == 0 {
 		return errors.New("agent: agent not found")
 	}
 
 	_, err = dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
+		if orgTenantId != "" {
+			if _, err := toolcore.LockOrgItemOwner(tx, toolcore.OrgAgentKind, agentIds[0]); err != nil {
+				return nil, err
+			}
+			if err := toolcore.CheckNotUsedByOrgAgents(tx, toolcore.OrgAgentKind, orgTenantId, name); err != nil {
+				return nil, err
+			}
+		}
 		_, err = tx.Exec("delete from llm_agents_installation where agent_id = $1", agentIds[0])
 		if err != nil {
 			getLogger(context).Error("agent: failed to delete agent", "error", err)
@@ -812,7 +1008,11 @@ func DeleteCustomAgent(context *security.RequestContext, accountId string, name 
 	})
 
 	// Evict cached tool list for the deleted agent.
-	InvalidateCustomAgentToolsCache(accountId, name)
+	if orgTenantId != "" {
+		invalidateOrgAgentCaches(orgTenantId, nil, name)
+	} else {
+		InvalidateCustomAgentToolsCache(accountId, name)
+	}
 
 	// Fetch complete agent details for audit before deletion
 	var completeAgent AgentDto
@@ -949,6 +1149,12 @@ func serializeRowToAgent(context *security.RequestContext, rows *sqlx.Rows) (Age
 			agent.AccountName = v
 		}
 	}
+	switch v := agentMap["visibility"].(type) {
+	case string:
+		agent.Visibility = v
+	case []byte:
+		agent.Visibility = string(v)
+	}
 
 	return agent, nil
 }
@@ -987,6 +1193,7 @@ func ListCustomAgentsForTenant(context *security.RequestContext, allowOnlyEnable
 	                 JOIN llm_agents_installation lgi ON lg.id::text = lgi.agent_id
 	            LEFT JOIN cloud_accounts ca           ON lgi.account_id = ca.id
 	                WHERE lg.type = $1
+	                  AND lg.visibility = 'account'
 	                  AND ca.tenant = $2::uuid`
 
 	seesAllAccountsInTenant := secCtx.IsSuperAdmin() ||
@@ -999,24 +1206,30 @@ func ListCustomAgentsForTenant(context *security.RequestContext, allowOnlyEnable
 		query string
 		args  []any
 	)
+	// Organisation agents have no installation row and no account.
+	orgSelect := ` UNION ALL SELECT lg.*, '' AS account_id, '' AS account_name
+	                 FROM llm_agents lg
+	                WHERE lg.type = $1 AND lg.visibility <> 'account' AND lg.tenant_id = $2::uuid`
+	statusFilter := ""
 	if seesAllAccountsInTenant {
-		query = baseSelect
 		args = []any{AgentTypeCustom, tenantID}
 		if allowOnlyEnabled {
-			query += ` AND lg.status = $3`
+			statusFilter = ` AND lg.status = $3`
 			args = append(args, "enabled")
 		}
+		query = baseSelect + statusFilter + orgSelect + statusFilter
 	} else {
 		accountIDs := secCtx.GetAccountIds()
 		if len(accountIDs) == 0 {
 			return []AgentDto{}
 		}
-		query = baseSelect + ` AND lgi.account_id = ANY($3::uuid[])`
 		args = []any{AgentTypeCustom, tenantID, pq.Array(accountIDs)}
 		if allowOnlyEnabled {
-			query += ` AND lg.status = $4`
+			statusFilter = ` AND lg.status = $4`
 			args = append(args, "enabled")
 		}
+		query = baseSelect + ` AND lgi.account_id = ANY($3::uuid[])` + statusFilter + orgSelect + statusFilter +
+			` AND (lg.visibility = 'organisation' OR EXISTS (SELECT 1 FROM llm_agent_account_overrides o WHERE o.agent_id = lg.id AND o.enabled AND o.account_id = ANY($3::uuid[])))`
 	}
 
 	rows, err = dbms.Db.Queryx(query, args...)
@@ -1099,10 +1312,11 @@ func ListCustomAgents(context *security.RequestContext, accountId string, allowO
 	agents := make([]AgentDto, 0)
 
 	var rows *sqlx.Rows
+	scope := toolcore.OrgAgentKind.AccountScope("lg", 1)
 	if allowOnlyEnabled {
-		rows, err = dbms.Db.Queryx("select lg.* from llm_agents lg join llm_agents_installation lgi on lg.id::text = lgi.agent_id::text where lgi.account_id = $1 and lg.type = $2 and status = $3 ", accountId, AgentTypeCustom, "enabled")
+		rows, err = dbms.Db.Queryx("select lg.* from llm_agents lg where lg.type = $2 and lg.status = $3 and "+scope, accountId, AgentTypeCustom, "enabled")
 	} else {
-		rows, err = dbms.Db.Queryx("select lg.* from llm_agents lg join llm_agents_installation lgi on lg.id::text = lgi.agent_id::text where lgi.account_id = $1 and lg.type = $2 ", accountId, AgentTypeCustom)
+		rows, err = dbms.Db.Queryx("select lg.* from llm_agents lg where lg.type = $2 and "+scope, accountId, AgentTypeCustom)
 	}
 	if err != nil {
 		getLogger(context).Error("ListCustomAgents: failed to query custom agents", "error", err, "accountId", accountId, "allowOnlyEnabled", allowOnlyEnabled)
@@ -1140,7 +1354,7 @@ func GetCustomNbAgent(context *security.RequestContext, accountId string, name s
 		return nil, false
 	}
 	agents := make([]AgentDto, 0, 1)
-	rows, err := dbms.Db.Queryx("select lg.* from llm_agents lg join llm_agents_installation lgi on lg.id::text = lgi.agent_id::text where lgi.account_id = $1 and lg.type = $2 and lower(lg.name) = $3", accountId, AgentTypeCustom, strings.ToLower(name))
+	rows, err := dbms.Db.Queryx("select lg.* from llm_agents lg where lg.type = $2 and lower(lg.name) = $3 and "+toolcore.OrgAgentKind.AccountScope("lg", 1), accountId, AgentTypeCustom, strings.ToLower(name))
 	if err != nil {
 		getLogger(context).Error("GetCustomNbAgent: failed to query custom agent by name", "error", err, "accountId", accountId, "agentName", name)
 		return nil, false
@@ -1183,7 +1397,7 @@ func ListCustomNbAgent(context *security.RequestContext, accountId string, statu
 		getLogger(context).Error("ListCustomNbAgent: failed to get database manager", "error", err)
 		return nil
 	}
-	query := "select lg.* from llm_agents lg join llm_agents_installation lgi on lg.id::text = lgi.agent_id::text where lgi.account_id = $1 and lg.type = $2"
+	query := "select lg.* from llm_agents lg where lg.type = $2 and " + toolcore.OrgAgentKind.AccountScope("lg", 1)
 	args := []any{accountId, AgentTypeCustom}
 	if status != "" {
 		query += " and lg.status = $3"

@@ -12,10 +12,10 @@ import Text from '@shared/format/Text';
 import CreateTool from './CreateTool';
 import OwnerTypeBadge from './common/OwnerTypeBadge';
 import { Modal } from '@ui/Modal';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, isTenantAdmin } from '@lib/auth';
 import { PlusIcon, EditIcon, ErrorIcon, DeleteIconRed } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { snakeToTitleCase } from 'src/utils/common';
+import { parseHttpResponseBodyMessage, snakeToTitleCase } from 'src/utils/common';
 import { toast as snackbar } from '@ui/Toast';
 import { Box, Stack, Typography } from '@mui/material';
 import Tooltip from '@ui/Tooltip';
@@ -23,6 +23,10 @@ import { Chip } from '@ui/Chip';
 import { ds } from 'src/utils/colors';
 import { TOOL_CONFIGURATION_WARNING } from '@data/constants';
 import { HybridScopeChips } from '@components/llm/ScopeChip';
+import PeopleOutlineIcon from '@mui/icons-material/PeopleOutline';
+import KnowledgeBaseSharingModal from '@components/llm/KnowledgeBaseSharingModal';
+import OrgAccountSwitch from '@components/llm/OrgAccountSwitch';
+import { getScopeOptions, isOrgItem, ORG_SCOPE_DESCRIPTIONS } from '@components/llm/OrgScopeField';
 
 // "Created By" is a binary distinction on tool.type — the backend only ever
 // emits 'system' or 'custom', so the options are fixed (not derived from data).
@@ -77,7 +81,16 @@ const ListTools = ({ accountId, stickyTable = false }) => {
   // Edit / Delete: each row carries the account it belongs to (account_id),
   // which those actions run against.
   const isTenantWide = !accountId;
-  const toolAccountId = (tool) => (isTenantWide ? tool?.account_id || '' : accountId);
+  const tenantAdmin = isTenantAdmin();
+  // Organisation tools (#41073) belong to the tenant: no account_id, and
+  // visibility says which accounts see them. Writes to one go through its owner
+  // (empty account_id) and need a tenant admin; in an account's view its switch
+  // is that account's own on/off (switched_off), not the tool's status.
+  const isOrgTool = (tool) => tool?.type === 'custom' && isOrgItem(tool);
+  const toolAccountId = (tool) => {
+    if (isOrgTool(tool)) return '';
+    return isTenantWide ? tool?.account_id || '' : accountId;
+  };
   const [data, setData] = React.useState([]);
   const [originalData, setOriginalData] = React.useState([]);
   const [loading, setLoading] = React.useState(false);
@@ -92,6 +105,13 @@ const ListTools = ({ accountId, stickyTable = false }) => {
   const [deleteModal, setDeleteModal] = React.useState(false);
   const [isDeleting, setIsDeleting] = React.useState(false);
   const [toolToDelete, setToolToDelete] = React.useState(null);
+  // "Who can use it" dialog target (tenant admins).
+  const [sharingTool, setSharingTool] = React.useState(null);
+  // Stable target for the dialog, which reloads whenever its item changes.
+  const sharingItem = React.useMemo(
+    () => (sharingTool ? { id: sharingTool.id, name: snakeToTitleCase(sharingTool.name), visibility: sharingTool.visibility } : null),
+    [sharingTool]
+  );
 
   React.useEffect(() => {
     listTools();
@@ -158,7 +178,8 @@ const ListTools = ({ accountId, stickyTable = false }) => {
     try {
       const response = await apiAskNudgebee.deleteTool(toolAccountId(toolToDelete), toolToDelete.name);
       if (!(response?.data?.data?.ai_delete_tool?.data?.status === 'ok')) {
-        snackbar.error('Failed to delete tool');
+        const reason = parseHttpResponseBodyMessage(response?.data);
+        snackbar.error(reason ? `Failed to delete tool - ${reason}` : 'Failed to delete tool');
         return;
       }
       snackbar.success(`Tool "${snakeToTitleCase(toolToDelete.name)}" deleted successfully`);
@@ -177,7 +198,7 @@ const ListTools = ({ accountId, stickyTable = false }) => {
     setLoading(true);
     apiAskNudgebee
       // Agents are listed on the Agents tab, so the Tools list asks for tools only.
-      .listTools({ accountId, nbToolType: 'tool' })
+      .listTools({ accountId, nbToolType: 'tool', includeSwitchedOff: true })
       .then((res) => {
         const listToolsResponse = res?.data?.data?.ai_list_tools?.data ?? [];
         const allTools = listToolsResponse.map((tool) => tool);
@@ -185,10 +206,24 @@ const ListTools = ({ accountId, stickyTable = false }) => {
         if (listToolsResponse.length > 0) {
           const tools = listToolsResponse.map((tool) => {
             const rowAccountId = toolAccountId(tool);
+            const orgTool = isOrgTool(tool);
+            // An organisation tool is read-only for account admins; only a
+            // tenant admin edits, re-scopes or deletes it.
+            const canEditTool = orgTool ? tenantAdmin : Boolean(rowAccountId) && hasWriteAccess(rowAccountId);
             const actionCell = {
               component:
-                tool.type === 'custom' && tool.nb_tool_type == 'tool' && Boolean(rowAccountId) && hasWriteAccess(rowAccountId) ? (
+                tool.type === 'custom' && tool.nb_tool_type == 'tool' && canEditTool ? (
                   <Stack direction='row' alignItems='center' spacing={1}>
+                    {tenantAdmin && (
+                      <Button
+                        tone='secondary'
+                        size='xs'
+                        composition='icon-only'
+                        icon={<PeopleOutlineIcon sx={{ fontSize: ds.text.title, color: ds.gray[700] }} />}
+                        aria-label='Who can use it'
+                        onClick={() => setSharingTool(tool)}
+                      />
+                    )}
                     <Button
                       tone='secondary'
                       size='xs'
@@ -222,7 +257,14 @@ const ListTools = ({ accountId, stickyTable = false }) => {
                         </Tooltip>
                       )}
                     </Box>
-                    <OwnerTypeBadge type={tool.type} systemSuffix='System' userLabel='User Created' />
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
+                      <OwnerTypeBadge type={tool.type} systemSuffix='System' userLabel='User Created' />
+                      {orgTool && (
+                        <Box component='span' sx={{ display: 'inline-flex' }} data-testid='tool-org-badge'>
+                          <Label text={tool.visibility === 'selected_accounts' ? 'Selected accounts' : 'Organisation'} tone='info' />
+                        </Box>
+                      )}
+                    </Box>
                   </Box>
                 ),
                 rawData: { name: tool.name, type: tool.type, status: tool.status, approval: tool.approval },
@@ -231,7 +273,24 @@ const ListTools = ({ accountId, stickyTable = false }) => {
                 component: <Text value={tool.description || '-'} showAutoEllipsis requiredToolTip lineClamp={2} />,
               },
               {
-                component: <Label text={tool.status} />,
+                component:
+                  orgTool && !isTenantWide ? (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+                      <Label text={tool.status} />
+                      <OrgAccountSwitch
+                        item={tool}
+                        name={snakeToTitleCase(tool.name)}
+                        noun='tool'
+                        accountId={accountId}
+                        tenantAdmin={tenantAdmin}
+                        setOverride={apiAskNudgebee.setToolAccountOverride}
+                        onChanged={() => listTools()}
+                        testId='tool-account-switch'
+                      />
+                    </Box>
+                  ) : (
+                    <Label text={tool.status} />
+                  ),
               },
               {
                 component: <ApprovalChip approval={tool.approval} />,
@@ -290,8 +349,28 @@ const ListTools = ({ accountId, stickyTable = false }) => {
           allTools={allTools}
           editMode={editMode}
           toolData={selectedTool}
+          scopeOptions={getScopeOptions(tenantAdmin, accountId)}
+          initialVisibility={tenantAdmin ? 'organisation' : 'account'}
         />
       </Modal>
+      <KnowledgeBaseSharingModal
+        open={Boolean(sharingTool)}
+        onClose={() => setSharingTool(null)}
+        item={sharingItem}
+        noun='tool'
+        saveVisibility={apiAskNudgebee.updateToolVisibility}
+        listOverrides={apiAskNudgebee.listToolAccountOverrides}
+        accountOption={
+          sharingTool && !isOrgTool(sharingTool)
+            ? { label: isTenantWide ? 'Its account' : 'This account', targetAccountId: toolAccountId(sharingTool) }
+            : sharingTool && accountId
+            ? { label: 'This account', targetAccountId: accountId }
+            : null
+        }
+        descriptions={ORG_SCOPE_DESCRIPTIONS}
+        testId='tool-sharing-modal'
+        onSaved={listTools}
+      />
       <Modal
         handleClose={() => {
           if (isDeleting) return;
@@ -331,7 +410,7 @@ const ListTools = ({ accountId, stickyTable = false }) => {
             <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
               Tools
               {/* Hybrid: system catalog + custom tools per account. */}
-              <HybridScopeChips accountId={accountId} />
+              <HybridScopeChips accountId={accountId} tenantWritable={tenantAdmin} />
             </Box>
           }
           actions={
@@ -347,7 +426,8 @@ const ListTools = ({ accountId, stickyTable = false }) => {
               >
                 Integration
               </Button>
-              {!isTenantWide && hasWriteAccess(accountId) && (
+              {/* Tenant admins can also add organisation tools from the tenant-wide view. */}
+              {((!isTenantWide && hasWriteAccess(accountId)) || (isTenantWide && tenantAdmin)) && (
                 <Button
                   tone='primary'
                   size='sm'

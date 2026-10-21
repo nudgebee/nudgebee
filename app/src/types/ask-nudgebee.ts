@@ -229,12 +229,16 @@ export interface DeleteSavedConversationRequest {
 
 export interface ListAgentsRequest {
   accountId: string | number;
+  /** Also return organisation agents this account switched off (management lists only). */
+  includeSwitchedOff?: boolean;
 }
 
 export interface ListToolsRequest {
   accountId: string | number;
   /** Only entries of this type; omitted returns tools and agents. */
   nbToolType?: 'tool' | 'agent';
+  /** Also return organisation tools this account switched off (management lists only). */
+  includeSwitchedOff?: boolean;
 }
 
 // Agent/tool definitions are open-ended objects; only account_id is required.

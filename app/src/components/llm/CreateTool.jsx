@@ -9,15 +9,16 @@ import { Select } from '@ui/Select';
 import { Switch } from '@ui/Switch';
 import { isSuperAdmin, isTenantAdmin } from '@lib/auth';
 import { toast as snackbar } from '@ui/Toast';
-import { getLlmIdentifierValidationMessage } from 'src/utils/common';
+import { getLlmIdentifierValidationMessage, parseHttpResponseBodyMessage } from 'src/utils/common';
 import { ds } from '@utils/colors';
+import OrgScopeField, { isOrgScope, SCOPE_SELECTED_ACCOUNTS } from './OrgScopeField';
 
 const STATUS_OPTIONS = [
   { value: 'enabled', label: 'Enabled' },
   { value: 'disabled', label: 'Disabled' },
 ];
 
-const CreateTool = ({ accountId, handleClose, allTools, editMode = false, toolData = null }) => {
+const CreateTool = ({ accountId, handleClose, allTools, editMode = false, toolData = null, scopeOptions = null, initialVisibility = 'account' }) => {
   const [description, setDescription] = React.useState(editMode && toolData ? toolData.description : '');
   const [name, setName] = React.useState(editMode && toolData ? toolData.name : '');
   const [toolType] = React.useState(editMode && toolData ? (toolData.executor_type || '').toLowerCase() : 'container');
@@ -37,6 +38,11 @@ const CreateTool = ({ accountId, handleClose, allTools, editMode = false, toolDa
       ? toolData.config.command[0]
       : ''
   );
+  // "Who can use it" — tenant admins creating a tool (#41073); edits change it
+  // from the list's "Who can use it" action instead.
+  const showScope = !editMode && Array.isArray(scopeOptions) && scopeOptions.length > 0;
+  const [visibility, setVisibility] = React.useState(initialVisibility);
+  const [scopeAccountIds, setScopeAccountIds] = React.useState([]);
   const [loading, setLoading] = React.useState(false);
   const [errors, setErrors] = React.useState({
     name: '',
@@ -85,6 +91,10 @@ const CreateTool = ({ accountId, handleClose, allTools, editMode = false, toolDa
     if (!validateForm()) {
       return;
     }
+    if (showScope && visibility === SCOPE_SELECTED_ACCOUNTS && scopeAccountIds.length === 0) {
+      snackbar.error('Pick at least one account to share this tool with');
+      return;
+    }
     setLoading(true);
 
     const baseToolData = {
@@ -111,9 +121,16 @@ const CreateTool = ({ accountId, handleClose, allTools, editMode = false, toolDa
       };
     }
 
+    const toOrg = showScope && isOrgScope(visibility);
     const toolPayload = {
-      account_id: accountId,
-      tool: { ...baseToolData, executor_type: executorType, ...specificToolConfig },
+      // An organisation tool belongs to the tenant, not to one account.
+      account_id: toOrg ? '' : accountId,
+      tool: {
+        ...baseToolData,
+        executor_type: executorType,
+        ...specificToolConfig,
+        ...(showScope ? { visibility, account_ids: visibility === SCOPE_SELECTED_ACCOUNTS ? scopeAccountIds : [] } : {}),
+      },
     };
 
     if (editMode && toolData && toolData.id) {
@@ -126,8 +143,11 @@ const CreateTool = ({ accountId, handleClose, allTools, editMode = false, toolDa
       .then((res) => {
         const apiResponseData = editMode ? res?.data?.data?.ai_update_tool?.data : res?.data?.data?.ai_create_tool?.data;
 
-        if (res?.data?.errors) {
-          snackbar.error(`Failed to ${editMode ? 'update' : 'create'} tool`);
+        const actionErrors = editMode ? res?.data?.data?.ai_update_tool?.errors : res?.data?.data?.ai_create_tool?.errors;
+        if (res?.data?.errors || actionErrors?.length > 0) {
+          // Surface the backend's reason (e.g. a name already used in another account).
+          const reason = parseHttpResponseBodyMessage(res?.data) || actionErrors?.[0]?.message;
+          snackbar.error(`Failed to ${editMode ? 'update' : 'create'} tool${reason ? ` - ${reason}` : ''}`);
           setLoading(false);
           return;
         }
@@ -169,6 +189,18 @@ const CreateTool = ({ accountId, handleClose, allTools, editMode = false, toolDa
           placeholder='Describe what this tool does'
           error={errors.description || undefined}
         />
+
+        {showScope && (
+          <OrgScopeField
+            noun='tool'
+            options={scopeOptions}
+            visibility={visibility}
+            onVisibilityChange={setVisibility}
+            accountIds={scopeAccountIds}
+            onAccountIdsChange={setScopeAccountIds}
+            disabled={loading}
+          />
+        )}
 
         {editMode && (
           <Box sx={{ width: ds.space.mul(5, 10) }}>
@@ -262,6 +294,8 @@ CreateTool.propTypes = {
   allTools: PropTypes.arrayOf(PropTypes.object),
   editMode: PropTypes.bool,
   toolData: PropTypes.object,
+  scopeOptions: PropTypes.arrayOf(PropTypes.shape({ value: PropTypes.string, label: PropTypes.string })),
+  initialVisibility: PropTypes.string,
 };
 
 export default CreateTool;

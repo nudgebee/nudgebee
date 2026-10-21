@@ -2095,6 +2095,76 @@ actions:
       - role: account_admin
       - role: tenant_admin
     comment: Switch an organisation knowledge base on or off for one account
+  - name: ai_update_agent_visibility
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/agents'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Move a custom agent between account and organisation scope, or change which accounts an organisation agent reaches
+  - name: ai_update_agent_account_override
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/agents'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: tenant_admin
+    comment: Switch an organisation agent on or off for one account
+  - name: ai_list_agent_account_overrides
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/agents'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: List the per-account switches of an organisation agent
+  - name: ai_update_tool_visibility
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/tools'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Move a custom tool between account and organisation scope, or change which accounts an organisation tool reaches
+  - name: ai_update_tool_account_override
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/tools'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: tenant_admin
+    comment: Switch an organisation tool on or off for one account
+  - name: ai_list_tool_account_overrides
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/tools'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: List the per-account switches of an organisation tool
   - name: ai_update_tool
     comment: Update a custom agent tool
     definition:

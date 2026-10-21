@@ -558,6 +558,42 @@ type Mutation {
 }
 
 type Mutation {
+  ai_update_agent_visibility(
+    request: UpdateOrgItemVisibilityRequest!
+  ): UpdateKBEnabledResponse
+}
+
+type Mutation {
+  ai_update_agent_account_override(
+    request: UpdateOrgItemAccountOverrideRequest!
+  ): UpdateKBEnabledResponse
+}
+
+type Query {
+  ai_list_agent_account_overrides(
+    request: ListOrgItemAccountOverridesRequest!
+  ): ListKBAccountOverridesResponse
+}
+
+type Mutation {
+  ai_update_tool_visibility(
+    request: UpdateOrgItemVisibilityRequest!
+  ): UpdateKBEnabledResponse
+}
+
+type Mutation {
+  ai_update_tool_account_override(
+    request: UpdateOrgItemAccountOverrideRequest!
+  ): UpdateKBEnabledResponse
+}
+
+type Query {
+  ai_list_tool_account_overrides(
+    request: ListOrgItemAccountOverridesRequest!
+  ): ListKBAccountOverridesResponse
+}
+
+type Mutation {
   ai_update_tool(
     request: UpdateToolRequest!
   ): UpdateToolResponse
@@ -4558,12 +4594,16 @@ input SaveLLMConversationRequest {
 
 input ListAgentRequest {
   account_id: String!
+  "Also return organisation agents this account switched off."
+  include_switched_off: Boolean
 }
 
 input ListToolRequest {
   account_id: String!
   "Only entries of this type (tool or agent); omitted returns both."
   nb_tool_type: String
+  "Also return organisation tools this account switched off."
+  include_switched_off: Boolean
 }
 
 input AIListModelsRequest {
@@ -4613,6 +4653,8 @@ input AgentRequest {
   system_prompt_variables: [String]
   tools: [String]
   rags: [RagDataInput]
+  visibility: String
+  account_ids: [String]
 }
 
 input CreateToolRequest {
@@ -4627,6 +4669,8 @@ input ToolRequest {
   schema: jsonb
   executor_type: String
   config: jsonb
+  visibility: String
+  account_ids: [String]
 }
 
 input DeleteAgentRequest {
@@ -5753,6 +5797,23 @@ input UpdateKBAccountOverrideRequest {
 
 input ListKBAccountOverridesRequest {
   kb_id: String!
+}
+
+input UpdateOrgItemVisibilityRequest {
+  id: String!
+  visibility: String!
+  account_ids: [String!]
+  target_account_id: String
+}
+
+input UpdateOrgItemAccountOverrideRequest {
+  id: String!
+  account_id: String!
+  enabled: Boolean!
+}
+
+input ListOrgItemAccountOverridesRequest {
+  id: String!
 }
 
 type KBAccountOverride {

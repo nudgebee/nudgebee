@@ -37,6 +37,94 @@ const EVENT_DETAILS_RETRIEVAL_TITLE = 'Event details retrieval by ID';
 // Per-env watch flag: /v1/watches mounts only when LLM_SERVER_WATCH_ENABLED is on; a 404 latches it off for the page session.
 let watchFeatureDisabled = false;
 
+// --- Organisation custom agents / tools (#41073) ---------------------------
+// Same shape as the organisation knowledge-base calls: { data, errors } with a
+// readable message from the backend in errors[0].message.
+type OrgItemResult<T> = { data: T | null; errors: { message: string }[] };
+
+const orgItemErrorMessage = (response: any, fallback: string): string =>
+  response?.data?.errors?.[0]?.extensions?.internal?.response?.body?.errors?.[0]?.message ||
+  (response?.data?.errors?.[0]?.message !== 'internal error' && response?.data?.errors?.[0]?.message) ||
+  fallback;
+
+const runOrgItemAction = async <T>(action: string, operation: string, gql: string, request: Record<string, unknown>, fallback: string) => {
+  try {
+    const response = await queryGraphQL(gql, operation, { request });
+    if (response?.data?.errors?.length > 0) {
+      return { data: null, errors: [{ message: orgItemErrorMessage(response, fallback) }] } as OrgItemResult<T>;
+    }
+    const result = response?.data?.data?.[action];
+    if (result) {
+      if (result.errors?.length > 0) {
+        return { data: null, errors: result.errors } as OrgItemResult<T>;
+      }
+      return { data: result.data as T, errors: [] } as OrgItemResult<T>;
+    }
+    return { data: null, errors: [{ message: fallback }] } as OrgItemResult<T>;
+  } catch (error) {
+    console.error(`failed to run ${action}-`, error);
+    return { data: null, errors: [{ message: fallback }] } as OrgItemResult<T>;
+  }
+};
+
+const updateOrgItemVisibility = (action: string, id: string, visibility: string, accountIds: string[], targetAccountId: string) =>
+  runOrgItemAction(
+    action,
+    'UpdateOrgItemVisibility',
+    `mutation UpdateOrgItemVisibility($request: UpdateOrgItemVisibilityRequest!) {
+      ${action}(request: $request) {
+        data
+        errors {
+          message
+        }
+      }
+    }`,
+    { id, visibility, account_ids: accountIds, target_account_id: targetAccountId },
+    'Failed to change who can use it'
+  );
+
+const setOrgItemAccountOverride = async (action: string, accountId: string, id: string, enabled: boolean) => {
+  if (accountId === 'demo') {
+    return { data: null, errors: [{ message: 'Demo account does not have access.' }] };
+  }
+  return runOrgItemAction(
+    action,
+    'UpdateOrgItemAccountOverride',
+    `mutation UpdateOrgItemAccountOverride($request: UpdateOrgItemAccountOverrideRequest!) {
+      ${action}(request: $request) {
+        data
+        errors {
+          message
+        }
+      }
+    }`,
+    { id, account_id: accountId, enabled },
+    'Failed to switch it for this account'
+  );
+};
+
+const listOrgItemAccountOverrides = async (action: string, id: string) => {
+  const result = await runOrgItemAction<{ account_id: string; account_name: string; enabled: boolean }[]>(
+    action,
+    'ListOrgItemAccountOverrides',
+    `query ListOrgItemAccountOverrides($request: ListOrgItemAccountOverridesRequest!) {
+      ${action}(request: $request) {
+        data {
+          account_id
+          account_name
+          enabled
+        }
+        errors {
+          message
+        }
+      }
+    }`,
+    { id },
+    'Failed to load account switches'
+  );
+  return { data: result.data || [], errors: result.errors };
+};
+
 // --- ai_get_conversation_v3 helpers ----------------------------------------
 // The new action returns flat arrays; consumers want the legacy nested shape
 // (llm_conversations[].llm_conversation_messages[].llm_conversation_agents[]
@@ -816,6 +904,7 @@ const api = {
     `;
     const query: any = {};
     query.account_id = data.accountId;
+    if (data.includeSwitchedOff) query.include_switched_off = true;
     try {
       const response = await queryGraphQL(LIST_AGENTS.replaceAll('__WHERE__', gqlStringify(query)), 'ListAgents', {});
       // An agent that belongs to an extension (a Worker Bee's) runs only inside
@@ -844,6 +933,7 @@ const api = {
     const query: any = {};
     query.account_id = data.accountId;
     if (data.nbToolType) query.nb_tool_type = data.nbToolType;
+    if (data.includeSwitchedOff) query.include_switched_off = true;
     try {
       const response = await queryGraphQL(LIST_TOOLS.replaceAll('__WHERE__', gqlStringify(query)), 'ListTools', {});
       return response;
@@ -1136,6 +1226,34 @@ const api = {
       console.error('failed to delete tool-', error);
       return null;
     }
+  },
+  /**
+   * Change who can use a custom agent (tenant admins only): the organisation,
+   * selected accounts, or back to one account (visibility 'account' with
+   * targetAccountId).
+   */
+  async updateAgentVisibility(id: string, visibility: string, accountIds: string[] = [], targetAccountId = '') {
+    return updateOrgItemVisibility('ai_update_agent_visibility', id, visibility, accountIds, targetAccountId);
+  },
+  /** Switch an organisation agent on or off for one account only. */
+  async setAgentAccountOverride(accountId: string, id: string, enabled: boolean) {
+    return setOrgItemAccountOverride('ai_update_agent_account_override', accountId, id, enabled);
+  },
+  /** The per-account switches of an organisation agent (tenant admins). */
+  async listAgentAccountOverrides(id: string) {
+    return listOrgItemAccountOverrides('ai_list_agent_account_overrides', id);
+  },
+  /** Tool equivalent of updateAgentVisibility. */
+  async updateToolVisibility(id: string, visibility: string, accountIds: string[] = [], targetAccountId = '') {
+    return updateOrgItemVisibility('ai_update_tool_visibility', id, visibility, accountIds, targetAccountId);
+  },
+  /** Switch an organisation tool on or off for one account only. */
+  async setToolAccountOverride(accountId: string, id: string, enabled: boolean) {
+    return setOrgItemAccountOverride('ai_update_tool_account_override', accountId, id, enabled);
+  },
+  /** The per-account switches of an organisation tool (tenant admins). */
+  async listToolAccountOverrides(id: string) {
+    return listOrgItemAccountOverrides('ai_list_tool_account_overrides', id);
   },
   async createAgentExtension(data: CreateAgentExtensionRequest) {
     if (data?.account_id === 'demo') {
