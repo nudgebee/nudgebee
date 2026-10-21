@@ -132,9 +132,20 @@ const renderUserTooltip = (user?: { display_name?: string; username?: string } |
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
       <Text value={user.display_name} sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }} />
-      {!!user.username && <Text value={user.username} sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }} />}
+      {isPersonUsername(user.username) && <Text value={user.username} sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }} />}
     </Box>
   );
+};
+
+// A person signs in with an email; an account that is not a person (one an extension
+// creates to act on its own) has a username that is not one.
+const isPersonUsername = (username?: string) => !!username && username.includes('@');
+
+// The byline names a person by first name, and any other account by its whole name, so
+// "Release Checker Bot" does not read as "Release".
+const bylineName = (user?: { display_name?: string; username?: string } | null) => {
+  if (!user?.display_name) return '';
+  return !user.username || isPersonUsername(user.username) ? user.display_name.split(' ')[0] : user.display_name;
 };
 
 interface WorkflowActionsCellProps {
@@ -1349,7 +1360,7 @@ const WorkflowListing: React.FC = () => {
                           <Tooltip title={renderUserTooltip(workflow.created_by_user)} arrow placement='top'>
                             <span>
                               <Text
-                                value={`· ${workflow.created_by_user.display_name.split(' ')[0]}`}
+                                value={`· ${bylineName(workflow.created_by_user)}`}
                                 sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', cursor: 'default' }}
                               />
                             </span>
@@ -1369,7 +1380,7 @@ const WorkflowListing: React.FC = () => {
                           <Tooltip title={renderUserTooltip(workflow.updated_by_user)} arrow placement='top'>
                             <span>
                               <Text
-                                value={`· ${workflow.updated_by_user.display_name.split(' ')[0]}`}
+                                value={`· ${bylineName(workflow.updated_by_user)}`}
                                 sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', cursor: 'default' }}
                               />
                             </span>
