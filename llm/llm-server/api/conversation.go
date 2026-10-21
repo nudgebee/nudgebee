@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
+	"time"
 
 	"nudgebee/llm/knowledge"
 	llmruntime "nudgebee/llm/llms/runtime"
@@ -45,6 +47,15 @@ type ConversationModelListApiRequest struct {
 // a price applies to every account in the tenant, so scoping the read to one
 // would only invite the idea that it could differ between them.
 type ModelPricingListApiRequest struct{}
+
+// EvalTestedModelsListApiRequest asks for the eval-tested models one config
+// row can use: its provider, its AWS region (Bedrock only) and whether the row
+// is the decision slot.
+type EvalTestedModelsListApiRequest struct {
+	Provider string `json:"provider"`
+	Region   string `json:"region"`
+	Decision bool   `json:"decision"`
+}
 
 // ModelPricingUpsertApiRequest carries the rates a tenant is setting. There is
 // deliberately no tenant_id field: taking it from the request body would let a
@@ -346,6 +357,37 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			return
 		}
 		c.JSON(200, BuildApiResponse(map[string]any{"prices": prices}, nil))
+	})
+
+	groupV2.POST("/ai_list_eval_tested_models", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("ai_list_eval_tested_models")
+		var request EvalTestedModelsListApiRequest
+		agentContext, ok := bindPricingRequest(c, tracer, meter, &request)
+		if !ok {
+			return
+		}
+		// Same audience as ai_list_model_pricing: the people who configure LLMs.
+		if agentContext == nil {
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			return
+		}
+		sc := agentContext.GetSecurityContext()
+		if sc == nil || (!sc.IsTenantAdmin() && !sc.IsTenantReadAdmin() && !sc.IsAccountAdmin() && !sc.IsAccountReadAdmin() &&
+			!sc.IsSuperAdmin() && !sc.IsSuperAdminReadonly()) {
+			c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			return
+		}
+		if strings.TrimSpace(request.Provider) == "" {
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "api: provider is required"}}))
+			return
+		}
+		models, err := llmruntime.ListEvalTestedModels(request.Provider, request.Region, request.Decision, time.Now())
+		if err != nil {
+			agentContext.GetLogger().Error("api: error listing eval-tested models", "error", err)
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			return
+		}
+		c.JSON(200, BuildApiResponse(map[string]any{"models": models}, nil))
 	})
 
 	groupV2.POST("/ai_upsert_model_pricing", func(c *gin.Context) {
