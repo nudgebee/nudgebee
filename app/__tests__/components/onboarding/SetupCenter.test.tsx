@@ -127,22 +127,52 @@ jest.mock('@components/llm/KnowledgeBaseFormModal', () => ({
 // it gets the same treatment rather than being the one exception.
 jest.mock('@ui/Modal', () => ({
   __esModule: true,
+  // Mirrors the real Modal's standard Confirm/Cancel footer (shown whenever
+  // `confirmText` is set and no freeform `actionButtons` were given) closely
+  // enough to click through it — K8sAgentInstallDialog's regenerate-key
+  // confirmation step relies on this.
   Modal: ({
     open,
     title,
     children,
     actionButtons,
+    confirmText,
+    onConfirm,
+    handleClose,
+    onClose,
+    isCancelRequired = true,
+    isConfirmRequired = true,
   }: {
     open: boolean;
     title?: React.ReactNode;
     children?: React.ReactNode;
     actionButtons?: React.ReactNode;
+    confirmText?: string;
+    onConfirm?: () => void;
+    handleClose?: () => void;
+    onClose?: () => void;
+    isCancelRequired?: boolean;
+    isConfirmRequired?: boolean;
   }) =>
     open ? (
       <div data-testid='ds-modal-stub'>
         <div data-testid='ds-modal-stub-title'>{title}</div>
         {children}
         {actionButtons}
+        {!actionButtons && confirmText !== undefined && (
+          <>
+            {isCancelRequired && (
+              <button type='button' onClick={() => (handleClose ?? onClose)?.()}>
+                Cancel
+              </button>
+            )}
+            {isConfirmRequired && (
+              <button type='button' onClick={onConfirm}>
+                {confirmText}
+              </button>
+            )}
+          </>
+        )}
       </div>
     ) : null,
 }));
@@ -1232,6 +1262,11 @@ describe('per-account chips on the Accounts item', () => {
 
     fireEvent.click(pendingChip);
     expect(await screen.findByTestId('ds-modal-stub')).toBeInTheDocument();
+    // Regenerating invalidates whatever key already exists, so it needs an
+    // explicit confirm first — see the confirmation-step tests below.
+    expect(mockGenerateAgentToken).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate key' }));
+
     await waitFor(() => expect(mockGenerateAgentToken).toHaveBeenCalledWith(k8s.id, 'k8s'));
     expect(await screen.findByText(/new-key:new-secret/)).toBeInTheDocument();
   });
@@ -1245,10 +1280,28 @@ describe('per-account chips on the Accounts item', () => {
 
     const accountItem = await screen.findByTestId('setup-item-account');
     fireEvent.click(chipFor(accountItem, 'prod'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Regenerate key' }));
 
     await waitFor(() => expect(mockGenerateAgentToken).toHaveBeenCalledWith(k8s.id, 'k8s'));
     expect(await screen.findByTestId('k8s-agent-install-checking')).toBeInTheDocument();
     expect(screen.queryByTestId('k8s-agent-install-waiting')).not.toBeInTheDocument();
+  });
+
+  it('asks for confirmation before regenerating the K8s install key, and regenerates nothing on Cancel', async () => {
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth([k8s.id], 'PENDING'));
+    render(<SetupCenter />);
+
+    const accountItem = await screen.findByTestId('setup-item-account');
+    fireEvent.click(chipFor(accountItem, 'prod'));
+
+    const modal = await screen.findByTestId('ds-modal-stub');
+    expect(within(modal).getByText(/stops working the moment a new one is generated/)).toBeInTheDocument();
+    expect(mockGenerateAgentToken).not.toHaveBeenCalled();
+
+    fireEvent.click(within(modal).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByTestId('ds-modal-stub')).not.toBeInTheDocument();
+    expect(mockGenerateAgentToken).not.toHaveBeenCalled();
   });
 
   it('reopens the Proxy Agent form from a pending self-hosted account chip', async () => {
