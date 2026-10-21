@@ -47,6 +47,10 @@ type StepRequirement struct {
 	// integration params it reads (TestEveryIntegrationFieldIsChecked).
 	needs  func(params map[string]any) []need
 	fields []string
+	// also is a platform grant the service a through step calls checks besides
+	// the use grant (ticket-server checks tickets). Authorize does not check it,
+	// a person's role carries it; ServiceNeeds lists it for a bee's install.
+	also *need
 }
 
 // IntegrationParam is the param a through step names its integration in (a
@@ -118,6 +122,13 @@ func dynamic(needs func(map[string]any) []need, fields ...string) StepRequiremen
 
 // none is a step that needs no permission.
 func none(tier int) StepRequirement { return StepRequirement{Tier: tier} }
+
+// alsoNeeds adds <module>:<class> to a through step, for a service that checks
+// the caller's module grant as well as the integration.
+func (r StepRequirement) alsoNeeds(module, class string) StepRequirement {
+	r.also = &need{module: module, class: class}
+	return r
+}
 
 // at sets the requirement's tier.
 func (r StepRequirement) at(tier int) StepRequirement {
@@ -242,17 +253,20 @@ var stepRequirements = map[string]StepRequirement{
 	"slack.join_channel":                write("notifications").at(TierChange),
 	"google_chat.join_space":            write("notifications").at(TierChange),
 
-	"tickets.acknowledge":  through(classExecute, "integration_id", tickets.IncidentPlatforms()...).at(TierRead),
-	"tickets.add_comment":  through(classExecute, "integration_id", tickets.TicketPlatforms()...).at(TierRead),
-	"tickets.assign":       through(classExecute, "integration_id", tickets.TicketPlatforms()...).at(TierRead),
+	// ticket-server checks tickets:Read (get, comments, add_comment) or
+	// tickets:Write (the rest) on the account besides the integration. create
+	// is not checked there.
+	"tickets.acknowledge":  through(classExecute, "integration_id", tickets.IncidentPlatforms()...).alsoNeeds("tickets", classWrite).at(TierRead),
+	"tickets.add_comment":  through(classExecute, "integration_id", tickets.TicketPlatforms()...).alsoNeeds("tickets", classRead).at(TierRead),
+	"tickets.assign":       through(classExecute, "integration_id", tickets.TicketPlatforms()...).alsoNeeds("tickets", classWrite).at(TierRead),
 	"tickets.create":       through(classExecute, "integration_id", tickets.TicketPlatforms()...).at(TierRead),
-	"tickets.escalate":     through(classExecute, "integration_id", tickets.IncidentPlatforms()...).at(TierRead),
-	"tickets.get":          through(classRead, "integration_id", tickets.TicketPlatforms()...).at(TierRead),
-	"tickets.get_comments": through(classRead, "integration_id", tickets.TicketPlatforms()...).at(TierRead),
-	"tickets.resolve":      through(classExecute, "integration_id", tickets.IncidentPlatforms()...).at(TierChange),
-	"tickets.transition":   through(classExecute, "integration_id", tickets.TicketPlatforms()...).at(TierChange),
+	"tickets.escalate":     through(classExecute, "integration_id", tickets.IncidentPlatforms()...).alsoNeeds("tickets", classWrite).at(TierRead),
+	"tickets.get":          through(classRead, "integration_id", tickets.TicketPlatforms()...).alsoNeeds("tickets", classRead).at(TierRead),
+	"tickets.get_comments": through(classRead, "integration_id", tickets.TicketPlatforms()...).alsoNeeds("tickets", classRead).at(TierRead),
+	"tickets.resolve":      through(classExecute, "integration_id", tickets.IncidentPlatforms()...).alsoNeeds("tickets", classWrite).at(TierChange),
+	"tickets.transition":   through(classExecute, "integration_id", tickets.TicketPlatforms()...).alsoNeeds("tickets", classWrite).at(TierChange),
 	// Can set a ticket's status, the same effect as transition and resolve.
-	"tickets.update": through(classExecute, "integration_id", tickets.TicketPlatforms()...).at(TierChange),
+	"tickets.update": through(classExecute, "integration_id", tickets.TicketPlatforms()...).alsoNeeds("tickets", classWrite).at(TierChange),
 
 	"vertical_rightsize_generate": execute("recommendations").at(TierRead),
 }
@@ -462,6 +476,16 @@ func StepNeeds(ctx context.Context, taskName string, params map[string]any, reso
 		grants = append(grants, g...)
 	}
 	return grants, nil
+}
+
+// ServiceNeeds is the grant the service a step calls checks on the caller
+// besides the step's own needs, if any. A bee's install grants it, as the bee
+// has no role to carry it.
+func ServiceNeeds(taskName string) []Grant {
+	if r, ok := stepRequirements[taskName]; ok && r.also != nil {
+		return []Grant{{Module: r.also.module, Class: r.also.class}}
+	}
+	return nil
 }
 
 // RequirementFor returns the declared requirement for a task type.
