@@ -70,4 +70,7 @@ func ErrorInternal(message string) Error {
 	}
 }
 
-var ErrWorkerPoolTimeout = errors.New("worker pool submission timed out")
+var (
+	ErrWorkerPoolTimeout = errors.New("worker pool submission timed out")
+	ErrWorkerPoolStopped = errors.New("worker pool is stopped")
+)
