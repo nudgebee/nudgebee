@@ -174,6 +174,10 @@ const MODULE_OVERRIDES: Record<string, string> = {
   // (get_resource plus all enrichers and external observability fetches), not just
   // cluster resources.
   relay_forward_request: 'k8s',
+  // Run now starts a bee's trigger workflow on an account, the same right as
+  // running any automation there: workflows:Execute, as the handler checks it
+  // (runbook-server ExecuteWorkflow), not a separate bees grant.
+  bees_execute_run: 'workflows',
 };
 
 // Modules that are never grantable via a custom role, and so never appear in the

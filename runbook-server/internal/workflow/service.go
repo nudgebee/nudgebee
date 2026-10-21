@@ -1170,21 +1170,34 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 		return "", err // Return validation error
 	}
 
+	var runWorkflowID string
+	if triggerType != model.WorkflowTriggerSchedule {
+		runWorkflowID = uuid.New().String()
+	} else {
+		runWorkflowID = id
+	}
+
 	// A bound automation runs only when the run gate allows it. Checked on
 	// this shared tail so no execution path skips it.
-	var boundRunStarted func(executionID string)
-	var approval *RunApproval
+	var decision RunDecision
 	if wf.Binding.IsAutomation() {
 		if s.runGate == nil {
 			return "", errBoundAutomationUnavailable()
 		}
-		decision, err := s.runGate.CheckRun(ctx, accountId, wf, memo, triggerType, inputs)
-		if err != nil {
+		var err error
+		if decision, err = s.runGate.CheckRun(ctx, accountId, wf, memo, triggerType, inputs); err != nil {
 			return "", err
 		}
-		boundRunStarted = decision.Started
-		approval = decision.Approval
+	} else if wf.Binding.IsTrigger() && triggerType == model.WorkflowTriggerManual && s.runGate != nil {
+		// A person starting an agent's trigger by hand: the extension decides,
+		// and says whose rights the run has.
+		var err error
+		if decision, err = s.runGate.CheckTriggerRun(ctx, accountId, wf, memo, inputs, runWorkflowID); err != nil {
+			return "", err
+		}
 	}
+	boundRunStarted := decision.Started
+	approval := decision.Approval
 	// Only the run tail decides whether a run waits on an approval gate.
 	wf.ApprovalGate = ""
 	if approval != nil {
@@ -1194,13 +1207,6 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 		}
 		wf.Definition = gated
 		wf.ApprovalGate = approval.Ref
-	}
-
-	var runWorkflowID string
-	if triggerType != model.WorkflowTriggerSchedule {
-		runWorkflowID = uuid.New().String()
-	} else {
-		runWorkflowID = id
 	}
 
 	searchAttributes := make(map[string]any)
@@ -1279,9 +1285,20 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 
 	ensureUpdatedByUser(wf)
 	setTriggeredByUser(wf, ctx.GetSecurityContext().GetUserId())
-	wf.RestrictToAccountConfigs = !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead)
-	principal, err := s.runPrincipal(ctx, wf)
+	// A run that acts as its stored owner is not the requester's: it does not
+	// get the requester's tenant-wide configs.
+	wf.RestrictToAccountConfigs = decision.RunAsOwner || !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead)
+	var principal string
+	var err error
+	if decision.RunAsOwner {
+		principal, err = s.workflowOwner(ctx.GetContext(), wf.TenantID, wf)
+	} else {
+		principal, err = s.runPrincipal(ctx, wf)
+	}
 	if err != nil {
+		if decision.NotStarted != nil {
+			decision.NotStarted(err)
+		}
 		return "", err
 	}
 	wf.PrincipalUserID = principal
@@ -1291,6 +1308,9 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	// gRPC roundtrip; matches the retrigger path below).
 	we, err := s.temporalClient.ExecuteWorkflow(ctx.GetContext(), options, s.workflowExecutor.ExecuteWorkflowInternal, wf, inputs)
 	if err != nil {
+		if decision.NotStarted != nil {
+			decision.NotStarted(err)
+		}
 		return "", err
 	}
 	if boundRunStarted != nil {

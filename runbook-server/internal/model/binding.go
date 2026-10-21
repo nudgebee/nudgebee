@@ -30,3 +30,8 @@ type WorkflowBinding struct {
 func (b *WorkflowBinding) IsAutomation() bool {
 	return b != nil && b.Role == BindingRoleAutomation
 }
+
+// IsTrigger reports whether b binds the hidden automation that starts its agent.
+func (b *WorkflowBinding) IsTrigger() bool {
+	return b != nil && b.Role == BindingRoleTrigger
+}

@@ -17,6 +17,12 @@ type RunGate interface {
 	// CheckRun is called on the shared run tail for every run of a bound
 	// automation, whatever started it. On success it says how the run starts.
 	CheckRun(ctx *security.RequestContext, accountID string, wf *model.Workflow, memo map[string]any, trigger model.WorkflowTrigger, inputs map[string]any) (RunDecision, error)
+	// CheckTriggerRun is called on the shared run tail when a person starts a
+	// workflow bound as a trigger by hand (its other starts never reach the
+	// gate). runKey is the Temporal workflow id the run will have, so the
+	// extension can find this run from inside it. On success it says how the
+	// run starts.
+	CheckTriggerRun(ctx *security.RequestContext, accountID string, wf *model.Workflow, memo map[string]any, inputs map[string]any, runKey string) (RunDecision, error)
 	// DecideApproval is called when a person answers a run's approval gate
 	// in the app, before the answer reaches the run. It refuses a decider who
 	// may not decide (an approver must be allowed every step the run would
@@ -38,6 +44,13 @@ type RunDecision struct {
 	// Approval, when set, puts an approval in front of the run's own steps:
 	// none of them runs until a person approves it through DecideApproval.
 	Approval *RunApproval
+	// RunAsOwner makes the workflow's owner, as stored, the run's principal
+	// instead of the requester, who stays the one recorded as starting it. A
+	// gate can only choose the stored owner, never name another user.
+	RunAsOwner bool
+	// NotStarted, when set, is called when the run was allowed but did not
+	// start.
+	NotStarted func(cause error)
 }
 
 // RunApproval is the approval a run waits on before its own steps.
@@ -61,10 +74,11 @@ type RunGateDeps struct {
 	Workflows WorkflowWriter
 }
 
-// WorkflowWriter creates and deletes workflows as the request's user.
+// WorkflowWriter creates, deletes and runs workflows as the request's user.
 type WorkflowWriter interface {
 	CreateWorkflow(ctx *security.RequestContext, accountId string, wf model.Workflow) (string, string, error)
 	DeleteWorkflow(ctx *security.RequestContext, accountId, id string) error
+	ExecuteWorkflow(ctx *security.RequestContext, accountId, id string, triggerType model.WorkflowTrigger, inputs map[string]any) (string, error)
 }
 
 var runGateFactory func(RunGateDeps) RunGate

@@ -215,6 +215,16 @@ describe('RBAC enforcement matrix — account-scoped grants', () => {
 
   // relay_forward_request is the one non-query-engine action on the ledger; it
   // is the live-cluster proxy, so a regression here silently widens k8s access.
+  // Run now is the right to run automations on that account, checked per account by its handler.
+  // Its route is in the enterprise overlay (src/ee/actions.yaml), absent from the OSS build.
+  (routes['bees_execute_run'] ? it : it.skip)('admits bees_execute_run on a workflows:Execute grant, account-scoped included', () => {
+    expect(routes['bees_execute_run']?.permission).toBe('workflows:Execute');
+    expect(actionHasCustomGrant('bees_execute_run', routes['bees_execute_run'], ['workflows:Execute'])).toBe(true);
+    expect(actionHasCustomGrant('bees_execute_run', routes['bees_execute_run'], ['scoped:workflows:Execute'])).toBe(true);
+    expect(actionHasCustomGrant('bees_execute_run', routes['bees_execute_run'], ['scoped:workflows:Read'])).toBe(false);
+    expect(actionHasCustomGrant('bees_execute_run', routes['bees_execute_run'], ['bees:Execute'])).toBe(false);
+  });
+
   it('keeps relay_forward_request on the verified-handler ledger as k8s:Read', () => {
     expect(routes['relay_forward_request']?.permission).toBe('k8s:Read');
     expect(actionHasCustomGrant('relay_forward_request', routes['relay_forward_request'], ['scoped:k8s:Read'])).toBe(true);

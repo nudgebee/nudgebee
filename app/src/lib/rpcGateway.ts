@@ -283,7 +283,11 @@ const SCOPED_PERMISSION_PREFIX = 'scoped:';
 //     re-checks the account in the request body against the caller's k8s grant
 //     (CanReadAccountData for reads, HasScopedPermission(k8s,Write) for writes),
 //     so an account-scoped k8s grant is safe to admit here.
-export const ACCOUNT_ENFORCED_ACTIONS = new Set<string>(['relay_forward_request']);
+//   bees_execute_run — runbook-server starts the trigger through ExecuteWorkflow,
+//     which checks account_id from the request against the caller's workflows
+//     grant (HasAccountAccess Create, else HasScopedPermission workflows
+//     Execute/Write on that account), so an account-scoped workflows grant is safe.
+export const ACCOUNT_ENFORCED_ACTIONS = new Set<string>(['relay_forward_request', 'bees_execute_run']);
 
 export function actionHasCustomGrant(actionName: string, route: Pick<RpcRoute, 'permission' | 'handler'>, permissions: string[]): boolean {
   const perm = route.permission;
