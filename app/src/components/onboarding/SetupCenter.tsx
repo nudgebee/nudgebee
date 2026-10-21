@@ -1196,15 +1196,18 @@ const PanelBody = ({
 
   const scorable = panel.items.filter((i) => !i.planned);
   const anyItemPending = panel.items.some((i) => i.state === 'partial');
-  // `connectedBy` names every provider with a real, non-disabled account row —
-  // a K8s cluster still waiting on its agent is in there too. The badge says
-  // "connected", so it only counts once the item's own state agrees: a row
-  // that exists but is still `partial` must not read as finished here, even
-  // though the glyph beside it already (correctly) shows the spinner.
+  // `connectedBy` names every provider *type* with a real, non-disabled
+  // account row — a K8s cluster still waiting on its agent is in there too,
+  // and so is a second AWS account that's still mid-sync. The badge says
+  // "connected", so it must count accounts whose own row state is `done`,
+  // not provider types that merely have a row — `item.accounts` (one entry
+  // per real account, each carrying its own `rowState`) is what can tell
+  // "exists" from "done" apart; `connectedBy.length` can't.
+  const doneAccountsCount = panel.id === 'accounts' ? panel.items[0]?.accounts?.filter((a) => a.state === 'done').length ?? 0 : 0;
   const countLabel =
     panel.id === 'accounts'
-      ? panel.items[0]?.state === 'done' && panel.items[0].connectedBy.length
-        ? `${panel.items[0].connectedBy.length} connected`
+      ? doneAccountsCount > 0
+        ? `${doneAccountsCount} connected`
         : ''
       : scorable.length > 0
       ? `${scorable.filter((i) => i.state === 'done').length} of ${scorable.length}`
@@ -1829,8 +1832,10 @@ const SetupCenter = () => {
 
         {/* Module chips. Changing them changes what is required, never what is
             shown — an item no selected module needs fades rather than
-            disappearing, so nobody is quietly cut off from a capability. */}
-        {canWrite && (
+            disappearing, so nobody is quietly cut off from a capability.
+            Gated on `!isFreshTenant`: with zero accounts there is nothing
+            below yet for the filter to apply to. */}
+        {canWrite && !isFreshTenant && (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', flexWrap: 'wrap', mt: 'var(--ds-space-3)' }}>
             <Typography
               sx={{

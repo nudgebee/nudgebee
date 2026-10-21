@@ -194,7 +194,7 @@ const K8sAgentInstallDialog = ({ open, onClose, account }) => {
               </Chip>
             ))}
           </Box>
-          <Box sx={{ backgroundColor: 'var(--ds-brand-800)', borderRadius: ds.radius.sm, overflow: 'hidden' }}>
+          <Box sx={{ backgroundColor: 'var(--ds-brand-700)', borderRadius: ds.radius.sm, overflow: 'hidden' }}>
             <Box sx={terminalBarSx}>
               <TerminalDots />
             </Box>
@@ -214,6 +214,14 @@ const K8sAgentInstallDialog = ({ open, onClose, account }) => {
             </Link>
           </Typography>
         </Box>
+        {accountId && agentPhase === 'checking' && !isLoading && (
+          <Box data-testid='k8s-agent-install-checking'>
+            <ProgressLinear surface='section' tone='info' aria-label='Checking for an existing connection' />
+            <Box sx={{ mt: ds.space[2] }}>
+              <Banner tone='info' surface='section' message='Checking whether the agent has already reported in…' />
+            </Box>
+          </Box>
+        )}
         {accountId && agentPhase === 'waiting' && (
           <Box data-testid='k8s-agent-install-waiting'>
             <ProgressLinear surface='section' tone='info' aria-label='Waiting for the agent to connect' />

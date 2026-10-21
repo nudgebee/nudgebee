@@ -1236,6 +1236,21 @@ describe('per-account chips on the Accounts item', () => {
     expect(await screen.findByText(/new-key:new-secret/)).toBeInTheDocument();
   });
 
+  it('shows a checking indicator on the reopened install dialog while its first agent-health poll is in flight, not a blank gap', async () => {
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    mockListK8sAccAgentHealth
+      .mockResolvedValueOnce(agentHealth([k8s.id], 'PENDING')) // the checklist's own mount-time health check
+      .mockReturnValue(new Promise(() => {})); // the reopened dialog's own first poll — left pending on purpose
+    render(<SetupCenter />);
+
+    const accountItem = await screen.findByTestId('setup-item-account');
+    fireEvent.click(chipFor(accountItem, 'prod'));
+
+    await waitFor(() => expect(mockGenerateAgentToken).toHaveBeenCalledWith(k8s.id, 'k8s'));
+    expect(await screen.findByTestId('k8s-agent-install-checking')).toBeInTheDocument();
+    expect(screen.queryByTestId('k8s-agent-install-waiting')).not.toBeInTheDocument();
+  });
+
   it('reopens the Proxy Agent form from a pending self-hosted account chip', async () => {
     const selfHosted = { id: 'sh-1', cloud_provider: 'SelfHosted', account_name: 'vm-prod', status: 'active' };
     mockGetAllAccount.mockResolvedValue(payload([selfHosted]));
@@ -1258,6 +1273,30 @@ describe('per-account chips on the Accounts item', () => {
     const accountItem = await screen.findByTestId('setup-item-account');
     const doneChip = chipFor(accountItem, 'prod');
     expect(doneChip.tagName.toLowerCase()).toBe('span');
+  });
+});
+
+describe('accounts panel "N connected" badge', () => {
+  // Was counting every provider *type* with a row (`connectedBy.length`), so
+  // a still-pending K8s account next to a done AWS one read as "2 connected".
+  it('counts only accounts whose own row is done, not every provider type with a row', async () => {
+    const aws = { id: 'aws-1', cloud_provider: 'AWS', account_name: 'prod-aws', status: 'active' };
+    mockGetAllAccount.mockResolvedValue(payload([k8s, aws]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth([k8s.id], 'PENDING'));
+    render(<SetupCenter />);
+
+    const toggle = await screen.findByTestId('setup-panel-toggle-accounts');
+    expect(within(toggle).getByText('1 connected')).toBeInTheDocument();
+    expect(within(toggle).queryByText('2 connected')).not.toBeInTheDocument();
+  });
+
+  it('shows no badge at all once the only account is still pending', async () => {
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth([k8s.id], 'PENDING'));
+    render(<SetupCenter />);
+
+    const toggle = await screen.findByTestId('setup-panel-toggle-accounts');
+    expect(within(toggle).queryByText(/connected/)).not.toBeInTheDocument();
   });
 });
 
@@ -1515,6 +1554,15 @@ describe('module chips', () => {
     render(<SetupCenter />);
 
     await screen.findByText(/You need write access/);
+    expect(screen.queryByTestId('setup-module-ts')).not.toBeInTheDocument();
+  });
+
+  it('hides the filter on a fresh tenant — nothing below it to filter until an account exists', async () => {
+    mockGetAllAccount.mockResolvedValue(payload());
+    render(<SetupCenter />);
+
+    await screen.findByText('Set up Nudgebee');
+    expect(screen.queryByText('Set up for')).not.toBeInTheDocument();
     expect(screen.queryByTestId('setup-module-ts')).not.toBeInTheDocument();
   });
 });
