@@ -129,42 +129,11 @@ RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     ripgrep \
     the_silver_searcher \
     ca-certificates \
-    aws-cli \
     python3 \
     py3-pip \
     py3-pyflakes \
     bash
 
-# Install Google Cloud SDK
-RUN ARCH=$(uname -m) && \
-    if [ "$ARCH" = "x86_64" ]; then \
-        curl -O https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz && \
-        tar -xf google-cloud-cli-linux-x86_64.tar.gz && \
-        rm google-cloud-cli-linux-x86_64.tar.gz; \
-    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then \
-        curl -O https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-arm.tar.gz && \
-        tar -xf google-cloud-cli-linux-arm.tar.gz && \
-        rm google-cloud-cli-linux-arm.tar.gz; \
-    fi && \
-    ./google-cloud-sdk/install.sh --quiet --usage-reporting false --path-update false --command-completion false && \
-    ./google-cloud-sdk/bin/gcloud components install beta alpha --quiet && \
-    rm -rf ./google-cloud-sdk/.install/.backup ./google-cloud-sdk/.install/.download && \
-    rm -rf ./google-cloud-sdk/platform/bundledpythonunix ./google-cloud-sdk/bin/gcloud-crc32c && \
-    rm -rf /root/.config/gcloud
-# Run gcloud on the system interpreter (which carries cryptography>=48, installed
-# below) instead of the SDK's bundled python. The bundle ships a frozen
-# cryptography (46.x) + pip that Google patches only on its own cadence, so it
-# accrued HIGH/MEDIUM CVEs we cannot apt/apk-upgrade; deleting it removes them.
-# gcloud-crc32c is a Go binary that only accelerates `gcloud storage` transfers
-# (unused here — GCS access goes through the Go SDK), so it is dead weight
-# carrying stdlib CVEs from Google's build toolchain. Validated: gcloud resolves
-# /usr/bin/python3 and the service-account auth crypto path works with the bundle
-# removed.
-ENV CLOUDSDK_PYTHON=/usr/bin/python3
-# Keep writable HOME directories out of PATH. Workspace commands may persist
-# files under HOME, but must not be able to shadow image-owned tools or relay
-# shims such as kubectl, ssh, git, and gh.
-ENV PATH=/app/google-cloud-sdk/bin:$PATH
 # Keep dependency/build caches in explicit, workspace-owned locations so the
 # runtime can share them across worktrees and remove them safely when idle.
 ENV GOCACHE=/tmp/code-analysis/shared-cache/go-build \
@@ -176,42 +145,6 @@ ENV GOCACHE=/tmp/code-analysis/shared-cache/go-build \
     PNPM_HOME=/tmp/code-analysis/shared-cache/node/pnpm \
     MAVEN_OPTS=-Dmaven.repo.local=/tmp/code-analysis/shared-cache/maven \
     GRADLE_USER_HOME=/tmp/code-analysis/shared-cache/gradle
-
-# Install Azure CLI in a venv to isolate its dependencies (e.g. urllib3 2.x)
-# from system Python packages used by apk-installed aws-cli.
-# The system packages aws-cli runs on are then upgraded past Alpine's py3-*
-# builds, which lag these fixes: certifi (GHSA-6q48-6c7w-9gw2), urllib3
-# (GHSA-mf9v-mfxr-j63j), and setuptools' vendored jaraco.context and wheel
-# (84.2.1 vendors 6.1.0 / 0.46.3; GHSA-58pv-8j8x-9vj2, GHSA-8rrh-rw8j-w5fx).
-RUN apk add --no-cache --virtual .build-deps \
-    gcc \
-    musl-dev \
-    python3-dev \
-    libffi-dev \
-    openssl-dev \
-    cargo \
-    make \
-    linux-headers && \
-    python3 -m venv /opt/azure-cli-venv && \
-    /opt/azure-cli-venv/bin/pip install --no-cache-dir --upgrade pip && \
-    /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli "cryptography>=48.0.1" && \
-    ln -s /opt/azure-cli-venv/bin/az /usr/local/bin/az && \
-    pip install --no-cache-dir --break-system-packages --upgrade \
-        "cryptography>=48.0.1" "certifi>=2026.10.18" "urllib3>=2.7.0,<3" "jmespath>=1.1.0" "setuptools>=84.2.1" && \
-    apk del .build-deps
-# urllib3 2.8.0 warns on the `strict` argument Alpine's botocore still passes, once
-# per aws call. Silence that one warning so it stays out of command output.
-ENV PYTHONWARNINGS=ignore::FutureWarning:urllib3.poolmanager
-
-# Pre-install Azure CLI extensions to a fixed directory.
-# AZURE_EXTENSION_DIR decouples extension storage from AZURE_CONFIG_DIR,
-# ensuring extensions remain available when AZURE_CONFIG_DIR is overridden
-# per-session for auth isolation. Without this, dynamic extension installs
-# (e.g. log-analytics) trigger a CLI re-execution that loses login state.
-ENV AZURE_EXTENSION_DIR=/opt/azure-cli-extensions
-RUN mkdir -p /opt/azure-cli-extensions && \
-    az extension add --name log-analytics && \
-    az extension add --name costmanagement
 
 # Install build & development tools for code verification
 # These enable the agent to run build/lint/test commands on cloned repositories.
@@ -253,7 +186,6 @@ RUN apk add --no-cache \
 
 # Install common linters and package managers
 # Python tools are installed in a venv to avoid polluting system site-packages
-# (e.g. poetry pulls in urllib3 2.x which breaks apk-installed aws-cli)
 # Alpine's npm package lags npm's own dependency fixes (tar, minimatch, pacote), so
 # replace it with a pinned npm from the same major. The prefix keeps it out of the
 # paths `apk del` removes, and the apk copy has to go or scanners keep reporting it.
@@ -332,7 +264,7 @@ RUN adduser -D -g '' appuser
 # Create workspace directory and set ownership
 RUN mkdir -p /tmp/code-analysis && \
     mkdir -p /app/workspaces && \
-    chown -R appuser:appuser /tmp/code-analysis /app /opt/azure-cli-extensions
+    chown -R appuser:appuser /tmp/code-analysis /app
 
 # Copy binary from builder
 COPY --from=builder /app/code-analysis-agent .
