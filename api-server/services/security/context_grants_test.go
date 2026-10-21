@@ -95,3 +95,22 @@ func TestGrantChecksFailClosedOnNilRequestContext(t *testing.T) {
 		t.Fatal("CanAccessTenant on nil RequestContext = true, want false")
 	}
 }
+
+// The checks live on SecurityContext with the action key passed in; the
+// RequestContext methods only supply the key.
+func TestSecurityContextGrantChecksTakeTheActionKey(t *testing.T) {
+	sc := &SecurityContext{tenantId: "t1", accountIds: []string{"a1"}, customPermissions: map[string]bool{"cloud:Execute": true}}
+	if !sc.CanAccessAccount("a1", SecurityAccessTypeUpdate, "cloud:Execute") {
+		t.Fatal("cloud:Execute grant should pass for its own action key")
+	}
+	if sc.CanAccessAccount("a1", SecurityAccessTypeUpdate, "accounts:Write") {
+		t.Fatal("a grant for another module must not pass")
+	}
+	if sc.CanAccessAccount("a1", SecurityAccessTypeUpdate, "") {
+		t.Fatal("no action key means built-in roles only")
+	}
+	var missing *SecurityContext
+	if missing.CanAccessAccount("a1", SecurityAccessTypeRead, "cloud:Read") || missing.CanAccessTenant(SecurityAccessTypeRead, "cloud:Read") {
+		t.Fatal("a nil security context must fail closed")
+	}
+}

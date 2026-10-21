@@ -129,7 +129,7 @@ func handleCloudListNotificationTargets(actionPayload *ActionRequest, c *gin.Con
 
 	// Gate on access to the target account. tenant_admin passes for any
 	// account in the tenant; account_admin only for its assigned accounts.
-	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !ctx.CanAccessAccount(request.AccountId, security.SecurityAccessTypeRead) {
 		c.JSON(403, []common.Error{
 			{
 				Message: "access denied for account: " + request.AccountId,
@@ -417,7 +417,7 @@ func handleCloudApplyCommand(actionPayload *ActionRequest, c *gin.Context, ctx *
 	// Gate on access to the target account. tenant_admin passes for any
 	// account in the tenant; account_admin only for its assigned accounts.
 	// Required because callers now include account_admin (actions.yaml).
-	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.CanAccessAccount(request.AccountId, security.SecurityAccessTypeUpdate) {
 		c.JSON(403, []common.Error{
 			{
 				Message: "access denied for account: " + request.AccountId,
@@ -510,7 +510,7 @@ func handleCloudExecuteCommand(actionPayload *ActionRequest, c *gin.Context, ctx
 	// Gate on access to the target account. tenant_admin passes for any
 	// account in the tenant; account_admin only for its assigned accounts.
 	// Required because callers now include account_admin (actions.yaml).
-	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.CanAccessAccount(request.AccountId, security.SecurityAccessTypeUpdate) {
 		c.JSON(403, []common.Error{
 			{
 				Message: "access denied for account: " + request.AccountId,

@@ -37,7 +37,7 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 	}
 
 	if tableDef.Source == database.AgentMetrices {
-		return processAgentMetrices(query, context, startTime)
+		return processAgentMetrices(query, context, startTime, tableDef.PermissionModule)
 	}
 
 	if tableDef.SourceGenerator != nil {

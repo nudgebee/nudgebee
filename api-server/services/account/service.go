@@ -1529,7 +1529,7 @@ func CloudUpdateCloudformationPermissions(context *security.RequestContext, req 
 		return CloudUpdateCloudformationPermissionsResponse{}, err
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeUpdate) {
+	if !context.CanAccessAccount(req.AccountId, security.SecurityAccessTypeUpdate) {
 		return CloudUpdateCloudformationPermissionsResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 
@@ -1848,7 +1848,7 @@ func AwsEventBridgeOnboardUrl(context *security.RequestContext, req AwsEventBrid
 }
 
 func SetupGCPMonitoringWebhook(ctx *security.RequestContext, req GcpMonitoringWebhookSetupRequest) (GcpMonitoringWebhookSetupResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.CanAccessAccount(req.AccountId, security.SecurityAccessTypeUpdate) {
 		return GcpMonitoringWebhookSetupResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 
@@ -1913,7 +1913,7 @@ func SetupGCPMonitoringWebhook(ctx *security.RequestContext, req GcpMonitoringWe
 }
 
 func CheckGCPMonitoringPermission(ctx *security.RequestContext, req GcpCheckMonitoringPermissionRequest) (GcpCheckMonitoringPermissionResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeRead) {
+	if !ctx.CanAccessAccount(req.AccountId, security.SecurityAccessTypeRead) {
 		return GcpCheckMonitoringPermissionResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 
@@ -2230,7 +2230,7 @@ func ValidateCloudCredentials(context *security.RequestContext, query ValidateCl
 		// has two credential shapes: assume_role is stored in plaintext, while
 		// access_secret is encrypted at rest.
 		if query.AccountID != "" {
-			if !context.GetSecurityContext().HasAccountAccess(query.AccountID, security.SecurityAccessTypeRead) {
+			if !context.CanAccessAccount(query.AccountID, security.SecurityAccessTypeRead) {
 				return ValidateCloudCredentialsResponse{}, common.ErrorUnauthorized("unauthorized")
 			}
 			acct, err := GetAccount(context, query.AccountID)
@@ -2331,7 +2331,7 @@ func ValidateCloudCredentials(context *security.RequestContext, query ValidateCl
 		// server-side, for callers (e.g. Edit Billing Config) that only have
 		// billing fields and no raw service account key.
 		if query.AccountID != "" {
-			if !context.GetSecurityContext().HasAccountAccess(query.AccountID, security.SecurityAccessTypeRead) {
+			if !context.CanAccessAccount(query.AccountID, security.SecurityAccessTypeRead) {
 				return ValidateCloudCredentialsResponse{}, common.ErrorUnauthorized("unauthorized")
 			}
 			acct, err := GetAccount(context, query.AccountID)
@@ -2747,7 +2747,7 @@ func UpdateAccountByAction(context *security.RequestContext, request AccountUpda
 	// account in the tenant; account_admin only for its assigned accounts.
 	// Required because callers now include per-account roles (actions.yaml)
 	// and the UPDATE below is scoped by tenant only.
-	if !context.GetSecurityContext().HasAccountAccess(request.Id, security.SecurityAccessTypeUpdate) {
+	if !context.CanAccessAccount(request.Id, security.SecurityAccessTypeUpdate) {
 		return AccountUpdateResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 

@@ -251,6 +251,15 @@ describe('permissionCatalog', () => {
     // Agent health + cluster catalog are re-homed under the accounts module.
     expect(classifyAction('agents_list_health')).toEqual({ module: 'accounts', class: 'Read' });
     expect(classifyAction('k8s_cluster_groupings_v2')).toEqual({ module: 'accounts', class: 'Read' });
+    // Changing how Nudgebee connects to a cloud account is account management.
+    expect(classifyAction('cloud_account_update')).toEqual({ module: 'accounts', class: 'Write' });
+    expect(classifyAction('cloud_update_cloudformation_permissions')).toEqual({ module: 'accounts', class: 'Write' });
+    expect(classifyAction('cloud_setup_monitoring_webhook')).toEqual({ module: 'accounts', class: 'Execute' });
+    expect(classifyAction('cloud_check_credentials')).toEqual({ module: 'accounts', class: 'Read' });
+    expect(classifyAction('cloud_check_monitoring_permission')).toEqual({ module: 'accounts', class: 'Read' });
+    // Resource-level cloud actions stay under cloud.
+    expect(classifyAction('cloud_execute_command')).toEqual({ module: 'cloud', class: 'Execute' });
+    expect(classifyAction('cloud_resource_attributes_upsert')).toEqual({ module: 'cloud', class: 'Write' });
     expect(classifyAction('k8s_pods_v2')).toEqual({ module: 'k8s', class: 'Read' });
     expect(classifyAction('ticket_add_comment')).toEqual({ module: 'tickets', class: 'Write' });
   });

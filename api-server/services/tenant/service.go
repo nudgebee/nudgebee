@@ -2283,7 +2283,7 @@ func UpsertCloudResourceAttributes(ctx *security.RequestContext, request CloudRe
 	// (Replaces a blanket IsTenantAdmin check — this also enforces that each
 	// object's account actually belongs to the caller's tenant.)
 	for _, obj := range request.Objects {
-		if !ctx.GetSecurityContext().HasAccountAccess(obj.AccountId, security.SecurityAccessTypeUpdate) {
+		if !ctx.CanAccessAccount(obj.AccountId, security.SecurityAccessTypeUpdate) {
 			return CloudResourceAttributesUpsertResponse{}, common.ErrorUnauthorized("Not Allowed")
 		}
 	}

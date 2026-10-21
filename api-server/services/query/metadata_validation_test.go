@@ -336,3 +336,34 @@ func TestAccountScopableModulesPinned(t *testing.T) {
 	}
 	assert.Equal(t, want, got, "account-scopable module set changed — sync app/src/lib/permissionCatalog.ts ACCOUNT_SCOPABLE_MODULES")
 }
+
+// The cloud account pages (resource list and details, spend trend, metric
+// charts) read these tables; a cloud:Read custom grant must reach them as it
+// does the other cloud tables.
+func TestCloudSurfaceTablesUseCloudPermissionModule(t *testing.T) {
+	for _, name := range []string{
+		"resource_groupings_v2",
+		"resource_details_v2",
+		"resource_spend_trend_v2",
+		"cloud_resource_metrics_v2",
+		"cloud_metric_groupings_v2",
+	} {
+		def, ok := table_metadata[name]
+		if assert.True(t, ok, "table %s not found", name) {
+			assert.Equal(t, "cloud", def.PermissionModule, "table %s should map to the cloud permission module", name)
+		}
+	}
+}
+
+// A tenant-wide custom grant skips the per-account filter, leaving the tenant
+// filter as the only restriction, and that filter is added only through
+// TenantIdColumnName. A PermissionModule table without one would let a grant
+// holder read every tenant's rows.
+func TestPermissionModuleTablesDeclareTenantColumn(t *testing.T) {
+	for name, def := range table_metadata {
+		if def.PermissionModule == "" {
+			continue
+		}
+		assert.NotEmpty(t, def.TenantIdColumnName, "table %s has PermissionModule %q but no TenantIdColumnName", name, def.PermissionModule)
+	}
+}

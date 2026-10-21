@@ -5704,6 +5704,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.AgentMetrices,
 		Def:                 "cloud_resource_metric",
 		Name:                "cloud_metric_groupings_v2",
+		PermissionModule:    "cloud",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -6914,6 +6915,7 @@ var table_metadata = map[string]TableDefinition{
 			return baseQuery, request, nil
 		},
 		Name:                "resource_groupings_v2",
+		PermissionModule:    "cloud",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -9041,6 +9043,7 @@ var table_metadata = map[string]TableDefinition{
 			baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", spendsWhereStr)
 			return baseQuery, request, nil
 		},
+		PermissionModule:    "cloud",
 		TenantIdColumnName:  "tenant",
 		AccountIdColumnName: "account",
 		NamespaceColumnName: "namespace",
@@ -9468,6 +9471,7 @@ var table_metadata = map[string]TableDefinition{
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			return "spends s LEFT JOIN cloud_resourses cr ON s.cloud_resource_id = cr.id AND s.cloud_account = cr.account", request, nil
 		},
+		PermissionModule:    "cloud",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -11139,6 +11143,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:                Derived,
 		Source:              getSource("cloud_resource_metrics_v2"),
 		Name:                "cloud_resource_metrics_v2",
+		PermissionModule:    "cloud",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
 		// cloud_account_id and tenant_id stay uuid: every caller filters on

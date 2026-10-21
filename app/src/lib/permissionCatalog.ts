@@ -178,6 +178,16 @@ const MODULE_OVERRIDES: Record<string, string> = {
   // running any automation there: workflows:Execute, as the handler checks it
   // (runbook-server ExecuteWorkflow), not a separate bees grant.
   bees_execute_run: 'workflows',
+  // How Nudgebee connects to a cloud account is account management, not work on
+  // its resources: the account's connection data (endpoints, project, cost-report
+  // bucket), the IAM permissions Nudgebee holds in it, the monitoring webhook it
+  // provisions there, and the checks run with its stored credentials. Governed
+  // by accounts, so a role meant for cloud resources cannot repoint the connection.
+  cloud_account_update: 'accounts',
+  cloud_update_cloudformation_permissions: 'accounts',
+  cloud_setup_monitoring_webhook: 'accounts',
+  cloud_check_credentials: 'accounts',
+  cloud_check_monitoring_permission: 'accounts',
 };
 
 // Modules that are never grantable via a custom role, and so never appear in the

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"nudgebee/services/common"
@@ -95,6 +96,12 @@ func buildContextFromPayload(c *gin.Context, h *ActionRequest, tracer *trace.Tra
 			logger.Error("error creating security context", "error", err)
 			return nil, err
 		}
+	}
+	// The tenant-admin constructor returns nil when it cannot load the tenant's
+	// accounts. Refuse here, once, rather than let a handler run with no identity.
+	if securityContext == nil {
+		logger.Error("security context unavailable", "tenant_id", tenantId)
+		return nil, errors.New("security context unavailable")
 	}
 
 	// Extract super-admin roles from allowed-roles. Full and readonly are
