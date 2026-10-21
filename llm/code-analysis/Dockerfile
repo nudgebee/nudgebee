@@ -70,11 +70,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # workspace nbctl proxy with the per-command execution token, never the
 # backend directly, and the proxy only serves read-only metrics and logs. Only
 # llm-server puts it to use, behind llm_server_workspace_nbctl_enabled. Built
-# from source like glab so the image builds for either architecture. The
-# commit is nbctl main with #120 (list-metrics, raw -o json,
-# NUDGEBEE_ENABLED_COMMANDS) and #122 (count series, truncation, label kinds);
-# switch to a release tag once nbctl cuts one.
-ARG NBCTL_VERSION=a6fd9f4d7b408a8defcbc8c5d3145d58acc4686b
+# from source like glab so the image builds for either architecture. v0.0.4
+# has logs query -o json as one object ({logs, series, truncated, partial,
+# total}); llm-server's nbctl shell hint describes that shape, so bump the two
+# together.
+ARG NBCTL_VERSION=v0.0.4
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \

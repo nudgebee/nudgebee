@@ -77,6 +77,7 @@ var nbctlWorkspaceDocuments = map[string]struct {
     total_relation
     series
     series_note
+    partial
     aggregations_raw
     total_raw
   }
