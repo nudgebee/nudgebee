@@ -90,8 +90,17 @@ func ExecuteQuery(serviceRequest ServicesQueryRequest) (map[string]string, error
 	return response, err
 }
 
+// ScanImageActionPermission is the grant key the app gateway classifies
+// security_scan_image as. This call goes to the server directly, not through
+// the gateway, so it sends the key itself: without it the server honours only
+// built-in roles, and a custom-role caller (an automation account) is refused. The
+// grant is still checked on the caller (session user). Pinned to the
+// classification by app/src/lib/__tests__/permissionCatalog.test.ts.
+const ScanImageActionPermission = "security:Execute"
+
 func ExecuteScanImageQuery(scanImageRequest ScanImageServiceRequest) (map[string]string, error) {
 	response := make(map[string]string)
+	scanImageRequest.Action.Permission = ScanImageActionPermission
 
 	resp, err := common.HttpPost(fmt.Sprintf("%s/rpc/recommendation", config.Config.ServiceEndpoint), common.HttpWithHeaders(map[string]string{
 		"Content-Type":   contentTypeJson,

@@ -255,6 +255,18 @@ describe('permissionCatalog', () => {
     expect(classifyAction('ticket_add_comment')).toEqual({ module: 'tickets', class: 'Write' });
   });
 
+  // llm-server calls security_scan_image directly, not through the gateway, so
+  // it sends this action's grant key itself (services_server/service.go). A
+  // change to the classification must change that key too.
+  it('matches the grant key llm-server sends with security_scan_image', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), '..', 'llm/llm-server/services_server/service.go'), 'utf8');
+    const sent = src.match(/ScanImageActionPermission\s*=\s*"([^"]+)"/);
+    expect(sent).toBeTruthy();
+    const c = classifyAction('security_scan_image');
+    expect(c).not.toBeNull();
+    expect(`${c!.module}:${c!.class}`).toBe(sent![1]);
+  });
+
   // The editor explains a grant by listing the actions behind it. Only ~40% of
   // actions carry a yaml `comment:`, so the raw-name fallback is the common
   // case and must stay lossless — never an invented description.

@@ -736,7 +736,9 @@ func RetryRecommendationResolution(ctx *security.RequestContext, query RetryReco
 
 func ScanImage(ctx *security.RequestContext, query RecommendationScanImageRequest) (RecommendationApplyResponse, error) {
 
-	if !ctx.GetSecurityContext().HasAccountAccess(query.AccountId, security.SecurityAccessTypeCreate) {
+	// Grant-aware: a custom role holding the action's grant on this account
+	// (automation accounts hold one) may scan, not only the built-in roles.
+	if !ctx.CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
 		return RecommendationApplyResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 
