@@ -121,6 +121,8 @@ export default function App({ Component, pageProps }: AppProps<{ session: Sessio
             {/* Exact match: the substring checks below would also strip chrome from
                 any future route containing 'status' (e.g. /kubernetes/status). */}
             {router.pathname === '/status' ||
+            // Opened from an approval email, often by someone with no session.
+            router.pathname === '/automation/approvals/[token]' ||
             router.pathname.indexOf('signin') >= 0 ||
             router.pathname.indexOf('signup') >= 0 ||
             router.pathname.indexOf('signup_verify') >= 0 ||
