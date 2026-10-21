@@ -34,9 +34,15 @@ const (
 	metricSeriesMaxFileBytes = 20 << 20
 	// metricSeriesMaxAnalyzed is how many series one call reports.
 	metricSeriesMaxAnalyzed = 10
-	// A forecast needs at least this many points over at least this span.
-	metricSeriesMinForecastPoints    = 8
-	metricSeriesMinForecastSpanHours = 2.0
+	// Reading a shape (level shifts, a held level, a trend) needs at least this
+	// many points, over any span. A forecast also reaches no further ahead than
+	// metricSeriesExtrapolationMul x the span it rests on, so the history a
+	// forecast needs scales with how far ahead it looks: 20 minutes of a climb
+	// can say what happens within the hour, three days within about nine.
+	metricSeriesMinForecastPoints = 8
+	// A held level must last at least this long, as well as
+	// metricSeriesStepWindow readings.
+	metricSeriesMinHold = time.Minute
 	// A trend is steady when the line explains at least this share of the
 	// variance (r2), the fitted change over the window is material (at least
 	// twice the residual standard deviation and at least 1% of the series
@@ -58,7 +64,11 @@ const (
 	metricSeriesStepMinRangeShare = 0.10
 	metricSeriesStepWindow        = 5
 	metricSeriesMaxSteps          = 3
-	// A projection longer than this multiple of the observed span is flagged.
+	metricSeriesOversampledShare  = 0.05
+	// A climb taken in steps needs at least this many shifts the same way: two
+	// points make a line out of any pair of unrelated changes.
+	metricSeriesMinClimbSteps = 3
+	// A forecast reaches at most this multiple of the span it rests on.
 	metricSeriesExtrapolationMul = 3.0
 	// z for a 95% interval on the slope.
 	metricSeriesZ95 = 1.96
@@ -115,9 +125,12 @@ func (t MetricSeriesAnalysisTool) Description() string {
 		"copied from that step's result; never guess a name. Or pass points inline. " +
 		"Reads Prometheus/metrics tool files, AWS CloudWatch get-metric-data and get-metric-statistics, Azure az monitor metrics list, GCP time-series list, " +
 		"and any JSON with matching timestamps/values arrays. " +
-		"Returns per series: baseline (first/last/min/median/p95/max), least-squares trend with r2 and whether it is steady, step changes, data gaps, " +
+		"Returns per series: a plain summary to quote, baseline (first/last/min/median/max), the trend and whether it is steady, " +
+		"step changes (from, to, at) and the level held since the last one, data gaps, " +
 		"and per threshold whether it is past now, the percent of samples past it, the number of crossings, and a time-to-reach range or the reason none is given. " +
-		"Quote only numbers it returns, and cite this step."
+		"Step changes work on any window with 8 or more points, so it also shows how a suspected cause's metric moved over the incident window; " +
+		"a forecast reaches at most 3x the span of data it rests on. " +
+		"Use its summary as your own sentence (no quotation marks), quote only numbers it returns, and cite this step."
 }
 
 func (t MetricSeriesAnalysisTool) InputSchema() core.ToolSchema {
@@ -1013,9 +1026,23 @@ type seriesAnalysis struct {
 	GapCount          int                   `json:"gap_count"`
 	Gaps              []seriesGap           `json:"gaps,omitempty"`
 	Baseline          seriesBaseline        `json:"baseline"`
+	HistoryNote       string                `json:"history_note,omitempty"`
 	Trend             *seriesTrend          `json:"trend,omitempty"`
 	StepChanges       []seriesStep          `json:"step_changes,omitempty"`
+	HeldLevel         *float64              `json:"held_level,omitempty"`
+	HeldSince         string                `json:"held_since,omitempty"`
+	TrendSinceShift   *seriesTrend          `json:"trend_since_shift,omitempty"`
 	Thresholds        []seriesThresholdStat `json:"thresholds,omitempty"`
+
+	// For the summary: the most recent level shift, the samples at or after
+	// it, and the unrounded held level.
+	latestStep     *msStep
+	samplesSince   int
+	heldLevelExact float64
+	// climbSteps is the number of level shifts that form a climb taken in
+	// steps (msStaircase), or 0; climbSince is the first of them.
+	climbSteps int
+	climbSince time.Time
 }
 
 type seriesGap struct {
@@ -1029,20 +1056,21 @@ type seriesBaseline struct {
 	Last   float64 `json:"last"`
 	Min    float64 `json:"min"`
 	Median float64 `json:"median"`
-	P95    float64 `json:"p95"`
+	P95    float64 `json:"-"` // kept out of the model's input: it quoted it as evidence
 	Max    float64 `json:"max"`
 }
 
 type seriesTrend struct {
 	RatePerHour float64 `json:"rate_per_hour"`
 	RatePerDay  float64 `json:"rate_per_day"`
-	R2          float64 `json:"r2"`
+	R2          float64 `json:"-"` // kept out of the model's input: "steady" carries the verdict
 	Direction   string  `json:"direction"`
 	Steady      bool    `json:"steady"`
 	Note        string  `json:"note,omitempty"`
 
 	// Unrounded fit, for the forecast.
 	slope, intercept, slopeSE float64
+	spanH                     float64 // hours the fit covers
 	stepDominated             bool
 }
 
@@ -1062,6 +1090,17 @@ type seriesThresholdStat struct {
 	Crossings         int          `json:"crossings"`
 	TimeToReach       *seriesReach `json:"time_to_reach,omitempty"`
 	NotForecastReason string       `json:"not_forecast_reason,omitempty"`
+	// Episodes: stretches past the threshold, a dip of one reading inside one
+	// not splitting it. Minutes are the typical (median) and longest length of
+	// the ended ones, and how long the one still running has lasted.
+	Episodes              int     `json:"episodes,omitempty"`
+	EpisodeTypicalMin     float64 `json:"episode_typical_minutes,omitempty"`
+	EpisodeLongestMin     float64 `json:"episode_longest_minutes,omitempty"`
+	CurrentEpisodeMin     float64 `json:"current_episode_minutes,omitempty"`
+	LastEpisodeEnded      string  `json:"last_episode_ended,omitempty"`
+	ongoingSince          time.Time
+	wholeWindow           bool
+	endedEpisodeDurations []float64
 }
 
 type seriesReach struct {
@@ -1087,6 +1126,16 @@ func buildMetricSeriesReport(source string, series []msSeries, notes []string, t
 		report.Series = append(report.Series, analyzeMetricSeries(s, thresholds))
 	}
 	report.SeriesAnalyzed = len(report.Series)
+	// An alert's saved history holds a "now" view and a "normal level" view:
+	// what is happening and what comes next are read from the now view, the
+	// normal view says what is usual. Lead with the now view.
+	for i, a := range report.Series {
+		if i > 0 && strings.HasPrefix(a.Name, AlertHistoryNowView) {
+			report.Series[0], report.Series[i] = report.Series[i], report.Series[0]
+			report.Notes = append(report.Notes, "series 1 ("+AlertHistoryNowView+") is the current one: lead with it for what is happening and what comes next; series 2 ("+AlertHistoryNormalView+") gives the usual level")
+			break
+		}
+	}
 	if report.SeriesSkipped > 0 {
 		report.Notes = append(report.Notes, fmt.Sprintf("analyzed the first %d of %d matching series; pass match to select others", metricSeriesMaxAnalyzed, report.SeriesMatched))
 	}
@@ -1145,19 +1194,69 @@ func analyzeMetricSeries(s msSeries, thresholds []msThreshold) seriesAnalysis {
 		}
 	}
 
-	steps, stepSum := msStepChanges(pts, rng)
-	for _, st := range steps {
-		out.StepChanges = append(out.StepChanges, seriesStep{
-			At: st.at.Format(time.RFC3339), From: msRound(st.from), To: msRound(st.to), Delta: msRound(st.to - st.from),
-		})
+	if n < metricSeriesMinForecastPoints {
+		out.HistoryNote = fmt.Sprintf("only %s, too few to read a shape or a trend", msHistoryCounts(n, spanH))
+	} else {
+		steps, all, stepSum := msStepChanges(pts, rng)
+		for _, st := range steps {
+			out.StepChanges = append(out.StepChanges, seriesStep{
+				At: st.at.Format(time.RFC3339), From: msRound(st.from), To: msRound(st.to), Delta: msRound(st.to - st.from),
+			})
+		}
+		out.climbSteps = msStaircase(all, end)
+		if out.climbSteps > 0 {
+			// Repeated jumps the same way, still coming at their usual pace, are a
+			// climb taken in steps: read forward as one trend, not from the last
+			// level as if it had stopped there.
+			out.latestStep = &all[len(all)-1]
+			out.climbSince = all[0].at
+			out.Trend = msTrend(pts, spanH, median, rng, 0, 0)
+		} else {
+			if len(all) > 0 {
+				latest := all[len(all)-1]
+				out.latestStep = &latest
+				out.samplesSince = n - latest.idx
+				// The level holds only if what came after stayed near it: a
+				// jump the series later came back from (an episode that ended)
+				// is history, not the level it holds now.
+				if med := msMedianOf(pts[latest.idx:]); out.samplesSince >= metricSeriesStepWindow && end.Sub(latest.at) >= metricSeriesMinHold &&
+					math.Abs(med-latest.to) <= math.Abs(latest.to-latest.from)/2 {
+					out.heldLevelExact = med
+					held := msRound(out.heldLevelExact)
+					out.HeldLevel = &held
+					out.HeldSince = latest.at.Format(time.RFC3339)
+				} else if out.samplesSince >= metricSeriesStepWindow {
+					out.latestStep = nil // came back: no current level to read forward from
+				}
+			}
+			out.Trend = msTrend(pts, spanH, median, rng, stepSum, len(steps))
+		}
 	}
 
-	if n >= 3 && spanH > 0 {
-		out.Trend = msTrend(pts, spanH, median, rng, stepSum, len(steps))
+	// Forecast from the current level: once a level shift has held, a line fitted
+	// across the whole window mixes the levels before and after it, so only the
+	// points since the shift are projected.
+	fc := msForecastBasis{pts: pts, spanH: spanH, trend: out.Trend}
+	if out.HeldLevel != nil {
+		seg := pts[out.latestStep.idx:]
+		segSpan := seg[len(seg)-1].at.Sub(seg[0].at).Hours()
+		fc = msForecastBasis{pts: seg, spanH: segSpan, since: out.HeldSince}
+		if len(seg) >= metricSeriesMinForecastPoints {
+			segVals := make([]float64, len(seg))
+			for i, p := range seg {
+				segVals[i] = p.v
+			}
+			lo, hi := segVals[0], segVals[0]
+			for _, v := range segVals {
+				lo, hi = math.Min(lo, v), math.Max(hi, v)
+			}
+			fc.trend = msTrend(seg, segSpan, msQuantile(segVals, 0.5), hi-lo, 0, 0)
+			out.TrendSinceShift = fc.trend
+		}
 	}
 
 	for _, th := range thresholds {
-		out.Thresholds = append(out.Thresholds, msThresholdStat(pts, spanH, out.Trend, th))
+		out.Thresholds = append(out.Thresholds, msThresholdStat(pts, spanH, out.Trend, fc, th))
 	}
 	out.Summary = msSummary(out, spanH)
 	return out
@@ -1180,15 +1279,18 @@ func msQuantile(sorted []float64, q float64) float64 {
 
 type msStep struct {
 	at       time.Time
+	idx      int // index of the first point at the new level
 	from, to float64
 }
 
 // msStepChanges finds level shifts (see metricSeriesStepFactor). It returns the
-// largest metricSeriesMaxSteps in time order, and the signed sum of all.
-func msStepChanges(pts []msPoint, rng float64) ([]msStep, float64) {
+// largest metricSeriesMaxSteps in time order, every accepted shift in time
+// order (before the magnitude cut, so a smaller but later shift is not lost),
+// and the signed sum of all.
+func msStepChanges(pts []msPoint, rng float64) ([]msStep, []msStep, float64) {
 	n := len(pts)
 	if n < 3 || rng <= 0 {
-		return nil, 0
+		return nil, nil, 0
 	}
 	diffs := make([]float64, n-1)
 	abs := make([]float64, n-1)
@@ -1196,7 +1298,25 @@ func msStepChanges(pts []msPoint, rng float64) ([]msStep, float64) {
 		diffs[i] = pts[i+1].v - pts[i].v
 		abs[i] = math.Abs(diffs[i])
 	}
-	sortedAbs := append([]float64(nil), abs...)
+	// The typical change. A query finer than the scrape interval repeats the
+	// last value between scrapes; counting those repeats would make the typical
+	// change zero and every new scrape a "jump". When changes are frequent (at
+	// least metricSeriesOversampledShare of readings, and at least
+	// metricSeriesMinForecastPoints of them) the series is read as oversampled
+	// and the typical change is taken over readings that changed. A gauge that
+	// really is constant and changes rarely (a replica count) keeps the median
+	// over all readings, so each of its changes still counts.
+	changed := make([]float64, 0, len(abs))
+	for _, d := range abs {
+		if d > 0 {
+			changed = append(changed, d)
+		}
+	}
+	typical := abs
+	if len(changed) >= metricSeriesMinForecastPoints && float64(len(changed)) >= metricSeriesOversampledShare*float64(len(abs)) {
+		typical = changed
+	}
+	sortedAbs := append([]float64(nil), typical...)
 	sort.Float64s(sortedAbs)
 	medAbs := msQuantile(sortedAbs, 0.5)
 
@@ -1239,9 +1359,10 @@ func msStepChanges(pts []msPoint, rng float64) ([]msStep, float64) {
 		if (shift > 0) != (jump > 0) || math.Abs(shift) < 0.5*math.Abs(jump) || math.Abs(shift) < metricSeriesStepMinRangeShare*rng {
 			continue
 		}
-		accepted = append(accepted, msStep{at: pts[g.last+1].at, from: medBefore, to: medAfter})
+		accepted = append(accepted, msStep{at: pts[g.last+1].at, idx: g.last + 1, from: medBefore, to: medAfter})
 		sum += shift
 	}
+	all := append([]msStep(nil), accepted...)
 	sort.SliceStable(accepted, func(i, j int) bool {
 		return math.Abs(accepted[i].to-accepted[i].from) > math.Abs(accepted[j].to-accepted[j].from)
 	})
@@ -1249,7 +1370,32 @@ func msStepChanges(pts []msPoint, rng float64) ([]msStep, float64) {
 		accepted = accepted[:metricSeriesMaxSteps]
 	}
 	sort.SliceStable(accepted, func(i, j int) bool { return accepted[i].at.Before(accepted[j].at) })
-	return accepted, sum
+	return accepted, all, sum
+}
+
+// msStaircase returns how many level shifts form a climb taken in steps, or 0:
+// at least metricSeriesMinClimbSteps shifts, all the same way, with the latest no longer ago than
+// twice the usual spacing between them (a climb that has stopped is a held
+// level, read forward from where it stopped).
+func msStaircase(all []msStep, end time.Time) int {
+	if len(all) < metricSeriesMinClimbSteps {
+		return 0
+	}
+	up := all[0].to > all[0].from
+	gaps := make([]float64, 0, len(all)-1)
+	for i, st := range all {
+		if (st.to > st.from) != up {
+			return 0
+		}
+		if i > 0 {
+			gaps = append(gaps, st.at.Sub(all[i-1].at).Seconds())
+		}
+	}
+	sort.Float64s(gaps)
+	if end.Sub(all[len(all)-1].at).Seconds() > 2*msQuantile(gaps, 0.5) {
+		return 0
+	}
+	return len(all)
 }
 
 func msMedianOf(pts []msPoint) float64 {
@@ -1307,57 +1453,195 @@ func msTrend(pts []msPoint, spanH, median, rng, stepSum float64, stepCount int) 
 		math.Abs(stepSum) >= metricSeriesStepShareOfTrend*math.Abs(change)
 	t := &seriesTrend{
 		RatePerHour: msRound(b), RatePerDay: msRound(b * 24), R2: math.Round(r2*1000) / 1000,
-		Direction: direction, slope: b, intercept: a, slopeSE: se, stepDominated: stepDominated,
+		Direction: direction, slope: b, intercept: a, slopeSE: se, spanH: spanH, stepDominated: stepDominated,
 	}
 	switch {
 	case stepDominated:
 		t.Note = fmt.Sprintf("most of the change came in %d level shift(s), not a steady trend", stepCount)
 	case r2 < metricSeriesSteadyR2:
-		t.Note = fmt.Sprintf("no steady trend (r2=%s)", msFmtR2(r2))
+		t.Note = "no steady trend"
 	case !material:
-		t.Note = fmt.Sprintf("change over the window is within noise (r2=%s)", msFmtR2(r2))
+		t.Note = "change over the window is within noise"
 	default:
 		t.Steady = true
 	}
 	return t
 }
 
-func msThresholdStat(pts []msPoint, spanH float64, trend *seriesTrend, th msThreshold) seriesThresholdStat {
-	past := func(v float64) bool {
-		if th.Direction == "below" {
-			return v < th.Value
-		}
-		return v > th.Value
+func msHistoryCounts(n int, spanH float64) string {
+	return fmt.Sprintf("%d points over %s", n, msFmtSpan(spanH))
+}
+
+// msPast is true when v is on the alerting side of th.
+func msPast(v float64, th msThreshold) bool {
+	if th.Direction == "below" {
+		return v < th.Value
 	}
+	return v > th.Value
+}
+
+const msNextLevelHint = "to say what happens next, pass the next level this metric can reach (a higher severity threshold or a hard limit) as a threshold"
+
+// msForecastBasis is what a threshold forecast projects: the whole window, or
+// only the points since a held level shift (since is then its time). trend is
+// nil when those points are too few to fit.
+type msForecastBasis struct {
+	pts   []msPoint
+	spanH float64
+	trend *seriesTrend
+	since string
+}
+
+func msThresholdStat(pts []msPoint, spanH float64, trend *seriesTrend, fc msForecastBasis, th msThreshold) seriesThresholdStat {
 	out := seriesThresholdStat{Label: th.Label, Value: th.Value, Direction: th.Direction}
-	count := 0
+	count, runStart := 0, 0
 	for i, p := range pts {
-		if past(p.v) {
+		if msPast(p.v, th) {
 			count++
-			if i > 0 && !past(pts[i-1].v) {
+			if i > 0 && !msPast(pts[i-1].v, th) {
 				out.Crossings++
+				runStart = i
 			}
 		}
 	}
 	n := len(pts)
 	out.PctTimePast = msRound(100 * float64(count) / float64(n))
 	last := pts[n-1].v
-	out.CurrentlyPast = past(last)
+	out.CurrentlyPast = msPast(last, th)
+	msEpisodeStats(&out, pts, th)
 
 	switch {
+	case trend == nil:
+		out.NotForecastReason = "too few points for a trend: " + msHistoryCounts(n, spanH)
+	case out.CurrentlyPast && runStart == 0:
+		out.NotForecastReason = "already past for the whole window; " + msNextLevelHint
 	case out.CurrentlyPast:
-		out.NotForecastReason = "already past"
-	case n < metricSeriesMinForecastPoints || spanH < metricSeriesMinForecastSpanHours || trend == nil:
-		out.NotForecastReason = fmt.Sprintf("insufficient history: %d points over %s h (need >= %d points over >= %s h)",
-			n, msFmt(spanH), metricSeriesMinForecastPoints, msFmt(metricSeriesMinForecastSpanHours))
-	case !trend.Steady:
-		out.NotForecastReason = trend.Note
-	case (th.Direction == "above" && trend.slope <= 0) || (th.Direction == "below" && trend.slope >= 0):
+		out.NotForecastReason = "already past since " + pts[runStart].at.Format(time.RFC3339) + "; " + msNextLevelHint
+	case fc.trend == nil:
+		out.NotForecastReason = "level shifted at " + fc.since + "; " + msHistoryCounts(len(fc.pts), fc.spanH) + " since, too few to forecast from"
+	case !fc.trend.Steady && fc.since != "":
+		out.NotForecastReason = "holding since " + fc.since + ": " + fc.trend.Note
+	case !fc.trend.Steady:
+		out.NotForecastReason = fc.trend.Note
+	case (th.Direction == "above" && fc.trend.slope <= 0) || (th.Direction == "below" && fc.trend.slope >= 0):
 		out.NotForecastReason = "moving away from the threshold"
 	default:
-		out.TimeToReach = msReach(pts, spanH, trend, th, last)
+		reach := msReach(fc.pts, fc.spanH, fc.trend, th, last)
+		if reach.HoursEstimate > metricSeriesExtrapolationMul*fc.spanH {
+			out.NotForecastReason = fmt.Sprintf("at this rate about %s away, more than %sx the %s of data it rests on: too far ahead to forecast from it",
+				msFmtSpan(reach.HoursEstimate), msFmt(metricSeriesExtrapolationMul), msFmtSpan(fc.spanH))
+			break
+		}
+		out.TimeToReach = reach
 	}
 	return out
+}
+
+// msEpisodeStats fills the threshold's episodes: runs of readings past it, a
+// single reading back inside not ending one (flapping on the line is one
+// episode, not many). An episode lasts from its first reading past the
+// threshold to its last, plus one typical step.
+func msEpisodeStats(out *seriesThresholdStat, pts []msPoint, th msThreshold) {
+	n := len(pts)
+	if n < 2 {
+		return
+	}
+	gaps := make([]float64, 0, n-1)
+	for i := 1; i < n; i++ {
+		gaps = append(gaps, pts[i].at.Sub(pts[i-1].at).Minutes())
+	}
+	sort.Float64s(gaps)
+	step := msQuantile(gaps, 0.5)
+	type run struct{ from, to int }
+	var runs []run
+	for i, p := range pts {
+		if !msPast(p.v, th) {
+			continue
+		}
+		if k := len(runs); k > 0 && i-runs[k-1].to <= 2 {
+			runs[k-1].to = i
+			continue
+		}
+		runs = append(runs, run{i, i})
+	}
+	out.Episodes = len(runs)
+	if len(runs) == 0 {
+		return
+	}
+	minutes := func(r run) float64 { return pts[r.to].at.Sub(pts[r.from].at).Minutes() + step }
+	ended := runs
+	if last := runs[len(runs)-1]; last.to == n-1 {
+		out.CurrentEpisodeMin = msRound(minutes(last))
+		out.ongoingSince = pts[last.from].at
+		out.wholeWindow = last.from == 0
+		ended = runs[:len(runs)-1]
+	}
+	if len(ended) == 0 {
+		return
+	}
+	durs := make([]float64, len(ended))
+	for i, r := range ended {
+		durs[i] = minutes(r)
+	}
+	out.endedEpisodeDurations = durs
+	sorted := append([]float64(nil), durs...)
+	sort.Float64s(sorted)
+	out.EpisodeTypicalMin = msRound(msQuantile(sorted, 0.5))
+	out.EpisodeLongestMin = msRound(sorted[len(sorted)-1])
+	out.LastEpisodeEnded = pts[min(ended[len(ended)-1].to+1, n-1)].at.Format(time.RFC3339)
+}
+
+// msEpisodeWords says how the threshold's episodes went. It makes no count
+// forecast: on dev alerts cut three days back, "about N more" was within 2x of
+// what followed for 3 of 7 — episodes cluster. That they recur is the claim
+// the history supports.
+func msEpisodeWords(th seriesThresholdStat, spanH float64) string {
+	if th.Episodes == 0 {
+		return ""
+	}
+	span := msSpanWords(spanH)
+	if th.Episodes == 1 {
+		if th.CurrentEpisodeMin > 0 && th.wholeWindow {
+			return "past it for the whole " + span
+		}
+		if th.CurrentEpisodeMin > 0 {
+			return fmt.Sprintf("since %s (%s), the first time in %s", msWhen(th.ongoingSince), msMinutesWords(th.CurrentEpisodeMin), span)
+		}
+		return fmt.Sprintf("past it once in %s, for %s", span, msMinutesWords(th.EpisodeLongestMin))
+	}
+	w := fmt.Sprintf("past it %d times in %s", th.Episodes, span)
+	if len(th.endedEpisodeDurations) > 0 {
+		w += fmt.Sprintf(", usually for %s (longest %s)", msMinutesWords(th.EpisodeTypicalMin), msMinutesWords(th.EpisodeLongestMin))
+	}
+	switch {
+	case th.CurrentEpisodeMin > 0 && len(th.endedEpisodeDurations) > 0 && th.CurrentEpisodeMin > th.EpisodeLongestMin:
+		w += fmt.Sprintf("; this time for %s so far, longer than any before", msMinutesWords(th.CurrentEpisodeMin))
+	case th.CurrentEpisodeMin > 0:
+		w += fmt.Sprintf("; this time for %s so far", msMinutesWords(th.CurrentEpisodeMin))
+	case th.LastEpisodeEnded != "":
+		if t, err := time.Parse(time.RFC3339, th.LastEpisodeEnded); err == nil {
+			w += "; the last ended " + msWhen(t)
+		}
+	}
+	return w + "; likely to keep recurring"
+}
+
+// msBursty names the first threshold the series crossed in two or more
+// separate episodes, or "": a flat median with bursts is not "flat".
+func msBursty(a seriesAnalysis) string {
+	for _, th := range a.Thresholds {
+		if th.Episodes >= 2 {
+			return th.Label
+		}
+	}
+	return ""
+}
+
+func msMinutesWords(m float64) string {
+	if m < 90 {
+		return msFmt(math.Round(m)) + " min"
+	}
+	return msSpanWords(m / 60)
 }
 
 // msReach projects the fitted line to the threshold; the range uses the slope
@@ -1412,70 +1696,173 @@ func msHoursDuration(h float64) time.Duration {
 	return time.Duration(h * float64(time.Hour))
 }
 
+// msSummary is the series in plain words, for the model to quote: where it is
+// now, where it is heading, and when it reaches each threshold. The statistics
+// behind it (fit, r2, range, level shifts) are in the other fields.
 func msSummary(a seriesAnalysis, spanH float64) string {
-	var b strings.Builder
 	t := a.Trend
+	rt := a.TrendSinceShift
+	held := t != nil && a.HeldLevel != nil
+	var lead string
 	switch {
 	case t == nil:
-		fmt.Fprintf(&b, "Too short to judge a trend (%d points over %s)", a.Points, msFmtSpan(spanH))
-	case t.stepDominated:
-		word := "up"
-		if t.slope < 0 {
-			word = "down"
-		}
-		parts := make([]string, 0, len(a.StepChanges))
-		for _, st := range a.StepChanges {
-			parts = append(parts, fmt.Sprintf("%s to %s at %s", msFmt(st.From), msFmt(st.To), st.At))
-		}
-		fmt.Fprintf(&b, "Stepped %s in %d level shift(s) (%s), not a steady trend", word, len(a.StepChanges), strings.Join(parts, "; "))
+		lead = fmt.Sprintf("Only %d points over %s, too few to say how it moved; it was between %s and %s",
+			a.Points, msSpanWords(spanH), msFmt(a.Baseline.Min), msFmt(a.Baseline.Max))
+	case a.climbSteps > 0 && t.Steady:
+		lead = fmt.Sprintf("%s in %d steps since %s, about %s (%s to %s)",
+			msTitle(t.Direction), a.climbSteps, msWhen(a.climbSince), msRateWords(t), msFmt(a.Baseline.First), msFmt(a.Baseline.Last))
+	case a.climbSteps > 0:
+		lead = fmt.Sprintf("Went %s in %d uneven steps since %s (%s to %s)",
+			msUpDown(a.latestStep), a.climbSteps, msWhen(a.climbSince), msFmt(a.Baseline.First), msFmt(a.Baseline.Last))
+	case held && rt != nil && rt.Steady:
+		lead = fmt.Sprintf("Jumped %s from %s on %s and has kept %s since, about %s",
+			msUpDown(a.latestStep), msFmt(a.latestStep.from), msWhen(a.latestStep.at), msVerbing(rt.Direction), msRateWords(rt))
+	case held:
+		lead = fmt.Sprintf("Jumped %s from %s to about %s on %s and has held there since",
+			msUpDown(a.latestStep), msFmt(a.latestStep.from), msFmt(*a.HeldLevel), msWhen(a.latestStep.at))
+	case a.latestStep != nil && !t.Steady:
+		lead = fmt.Sprintf("Jumped %s from %s to %s on %s, %d reading(s) ago, too recent to tell whether it holds",
+			msUpDown(a.latestStep), msFmt(a.latestStep.from), msFmt(a.latestStep.to), msWhen(a.latestStep.at), a.samplesSince)
 	case t.Steady:
-		fmt.Fprintf(&b, "%s steadily", msTitle(t.Direction))
+		lead = fmt.Sprintf("%s about %s (%s to %s over %s)", msTitle(t.Direction), msRateWords(t), msFmt(a.Baseline.Min), msFmt(a.Baseline.Max), msSpanWords(spanH))
+	case t.Direction == "flat" && msBursty(a) != "":
+		lead = fmt.Sprintf("Mostly at about %s over %s, with bursts past %s", msFmt(a.Baseline.Median), msSpanWords(spanH), msBursty(a))
 	case t.Direction == "flat":
-		b.WriteString("Flat")
+		lead = fmt.Sprintf("Flat at about %s over %s; nothing in the data points to a change", msFmt(a.Baseline.Median), msSpanWords(spanH))
 	default:
-		fmt.Fprintf(&b, "%s but not steadily", msTitle(t.Direction))
+		lead = fmt.Sprintf("Went up and down between %s and %s over %s with no clear direction; if it keeps behaving this way, expect the same range over the next %s",
+			msFmt(a.Baseline.Min), msFmt(a.Baseline.Max), msSpanWords(spanH), msSpanWords(spanH))
 	}
-	if t != nil {
-		fmt.Fprintf(&b, ": %s to %s over %s, trend %s (r2 %s)", msFmt(a.Baseline.Min), msFmt(a.Baseline.Max), msFmtSpan(spanH), msFmtRate(t, spanH), msFmtR2(t.R2))
-	} else {
-		fmt.Fprintf(&b, ": %s to %s", msFmt(a.Baseline.Min), msFmt(a.Baseline.Max))
-	}
-	if t != nil && !t.stepDominated && len(a.StepChanges) > 0 {
-		fmt.Fprintf(&b, "; %d level shift(s)", len(a.StepChanges))
-	}
+	parts := []string{lead}
 	if a.GapCount > 0 {
-		fmt.Fprintf(&b, "; %d gap(s) in the data", a.GapCount)
+		parts = append(parts, fmt.Sprintf("%d gap(s) in the data", a.GapCount))
 	}
+	rateSaid := false
 	for _, th := range a.Thresholds {
-		b.WriteString("; ")
-		switch {
-		case th.CurrentlyPast:
-			fmt.Fprintf(&b, "past %s now", th.Label)
-		case th.TimeToReach != nil:
-			r := th.TimeToReach
-			if r.HoursHigh != nil {
-				fmt.Fprintf(&b, "reaches %s in ~%s (%s to %s)", th.Label, msFmtSpan(r.HoursEstimate), msFmtSpan(r.HoursLow), msFmtSpan(*r.HoursHigh))
-			} else {
-				fmt.Fprintf(&b, "reaches %s in ~%s (at the earliest %s; no upper bound)", th.Label, msFmtSpan(r.HoursEstimate), msFmtSpan(r.HoursLow))
-			}
-		default:
-			fmt.Fprintf(&b, "no forecast to %s (%s)", th.Label, msShortReason(th.NotForecastReason, t))
-		}
-		if th.PctTimePast > 0 {
-			fmt.Fprintf(&b, ", past it %s%% of samples, %d crossing(s)", msFmt(th.PctTimePast), th.Crossings)
-		}
+		parts = append(parts, msThresholdWords(a, th, held, &rateSaid))
 	}
-	return b.String()
+	moving := func(tr *seriesTrend) bool { return tr != nil && tr.Steady && tr.Direction != "flat" }
+	if len(a.Thresholds) == 0 && ((moving(t) && !held) || (held && moving(rt))) {
+		parts = append(parts, "critical level not known, so no time to reach it")
+	}
+	return strings.Join(parts, "; ") + "."
 }
 
-// msShortReason drops what the summary already said: the r2 and the level
-// shifts.
-func msShortReason(reason string, t *seriesTrend) string {
-	if t != nil && t.stepDominated && reason == t.Note {
-		return "level shifts, not a steady trend"
+// msThresholdWords says where the series stands against one threshold.
+// rateSaid keeps "at that rate" to the first forecast of the summary.
+func msThresholdWords(a seriesAnalysis, th seriesThresholdStat, held bool, rateSaid *bool) string {
+	var w string
+	switch {
+	case held && msPast(a.heldLevelExact, msThreshold{Value: th.Value, Direction: th.Direction}):
+		w = fmt.Sprintf("already past %s at that level", th.Label)
+	case th.CurrentlyPast:
+		w = fmt.Sprintf("past %s now", th.Label)
+	case th.TimeToReach != nil:
+		w = fmt.Sprintf("reaches %s in about %s (%s)", th.Label, msSpanWords(th.TimeToReach.HoursEstimate), msReachWindow(th.TimeToReach))
+		if !*rateSaid {
+			w, *rateSaid = "at that rate it "+w, true
+		}
+	case held && (a.TrendSinceShift == nil || !a.TrendSinceShift.Steady || a.TrendSinceShift.Direction == "flat"):
+		w = fmt.Sprintf("stays %s %s at that level", msSide(th.Direction), th.Label)
+	case a.Trend == nil:
+		w = fmt.Sprintf("%s now", msStanding(th))
+	default:
+		w = fmt.Sprintf("%s now, no forecast (%s)", msStanding(th), msPlainReason(th.NotForecastReason, a.Trend))
 	}
-	short, _, _ := strings.Cut(reason, " (r2=")
-	return short
+	// A held level already past says the same as one episode still running.
+	if ep := msEpisodeWords(th, a.SpanHours); ep != "" && (!strings.HasPrefix(w, "already past") || th.Episodes != 1) {
+		w += "; " + ep
+	}
+	return w
+}
+
+func msStanding(th seriesThresholdStat) string {
+	return fmt.Sprintf("%s %s", msSide(th.Direction), th.Label)
+}
+
+// msSide is where a series not past th sits: below an "above" threshold.
+func msSide(direction string) string {
+	if direction == "below" {
+		return "above"
+	}
+	return "below"
+}
+
+func msUpDown(st *msStep) string {
+	if st.to < st.from {
+		return "down"
+	}
+	return "up"
+}
+
+func msVerbing(direction string) string {
+	switch direction {
+	case "rising":
+		return "rising"
+	case "falling":
+		return "falling"
+	}
+	return "steady"
+}
+
+// msPlainReason is a not_forecast_reason in a few words.
+func msPlainReason(reason string, t *seriesTrend) string {
+	switch {
+	case strings.HasPrefix(reason, "moving away"):
+		return "moving away from it"
+	case strings.HasPrefix(reason, "at this rate about"):
+		return "too far ahead for the data it rests on"
+	case strings.HasPrefix(reason, "too few points"):
+		return "too little data"
+	case t != nil && t.stepDominated:
+		return "the change came in jumps, not a steady trend"
+	case strings.Contains(reason, "within noise"):
+		return "no change beyond normal noise"
+	default:
+		return "no steady trend"
+	}
+}
+
+// msRateWords is a trend's rate per day over two days or more, else per hour.
+func msRateWords(t *seriesTrend) string {
+	if t.spanH >= 48 {
+		return msFmt(math.Abs(t.RatePerDay)) + " a day"
+	}
+	return msFmt(math.Abs(t.RatePerHour)) + " an hour"
+}
+
+func msSpanWords(h float64) string {
+	switch {
+	case h < 1:
+		return msFmt(math.Round(h*60)) + " minutes"
+	case h < 48:
+		return msFmt(math.Round(h*10)/10) + " hours"
+	default:
+		return msFmt(math.Round(h/24*10)/10) + " days"
+	}
+}
+
+func msWhen(t time.Time) string {
+	return t.UTC().Format("Jan 2 15:04 UTC")
+}
+
+// msReachWindow is when a forecast lands, as calendar days.
+func msReachWindow(r *seriesReach) string {
+	day := func(s string) string {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return s
+		}
+		return t.UTC().Format("Jan 2")
+	}
+	switch {
+	case r.Latest == "":
+		return "not before " + day(r.Earliest)
+	case day(r.Earliest) == day(r.Latest):
+		return "around " + day(r.Earliest)
+	default:
+		return "between " + day(r.Earliest) + " and " + day(r.Latest)
+	}
 }
 
 func msTitle(s string) string {
@@ -1483,17 +1870,6 @@ func msTitle(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
-}
-
-func msFmtRate(t *seriesTrend, spanH float64) string {
-	if spanH >= 48 {
-		return msFmt(t.RatePerDay) + "/day"
-	}
-	return msFmt(t.RatePerHour) + "/h"
-}
-
-func msFmtR2(r2 float64) string {
-	return strconv.FormatFloat(math.Round(r2*100)/100, 'f', 2, 64)
 }
 
 func msFmtSpan(h float64) string {
@@ -1512,8 +1888,17 @@ func msRound(x float64) float64 {
 	if x == 0 || math.IsNaN(x) || math.IsInf(x, 0) {
 		return 0
 	}
-	mag := math.Pow(10, 3-math.Floor(math.Log10(math.Abs(x))))
-	r := math.Round(x*mag) / mag
+	exp := 3 - math.Floor(math.Log10(math.Abs(x)))
+	var r float64
+	if exp >= 0 {
+		mag := math.Pow(10, exp)
+		r = math.Round(x*mag) / mag
+	} else {
+		// Dividing by a fractional power of ten leaves float residue on large
+		// values (2.421e8 came out as 242099999.99999997); a whole power is exact.
+		div := math.Pow(10, -exp)
+		r = math.Round(x/div) * div
+	}
 	if math.IsInf(r, 0) || math.IsNaN(r) {
 		return x
 	}
@@ -1521,9 +1906,20 @@ func msRound(x float64) float64 {
 }
 
 // msFmt renders a number for the summary with 4 significant digits.
+// msFmt writes a number for the summary. Large values get a decimal suffix
+// (261.2M, not 2.612e+08): the model copies these strings into the answer.
 func msFmt(x float64) string {
 	r := msRound(x)
-	if a := math.Abs(r); a != 0 && (a >= 1e7 || a < 1e-4) {
+	a := math.Abs(r)
+	for _, u := range []struct {
+		div    float64
+		suffix string
+	}{{1e12, "T"}, {1e9, "G"}, {1e6, "M"}} {
+		if a >= u.div {
+			return strconv.FormatFloat(r/u.div, 'g', 4, 64) + u.suffix
+		}
+	}
+	if a != 0 && a < 1e-4 {
 		return strconv.FormatFloat(r, 'g', 4, 64)
 	}
 	return strconv.FormatFloat(r, 'f', -1, 64)

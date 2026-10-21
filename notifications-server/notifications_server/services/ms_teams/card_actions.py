@@ -29,6 +29,7 @@ from notifications_server.services.messaging_installations import ms_teams_aad_t
 from notifications_server.services.ms_teams.bot_sender import TeamsBotError, card_activity, get_sender
 from notifications_server.utils.action_requests import ActionRequestBody, sign_action_request, verify_action_request
 from notifications_server.utils.datetime_utils import utc_now
+from notifications_server.utils.nb_chart import split_nb_chart_segments
 
 LOG = logging.getLogger(__name__)
 
@@ -867,6 +868,16 @@ def _run_analysis(job) -> None:
             _active_analyses -= 1
 
 
+CHART_NOTE = "_Chart: open the investigation in Nudgebee to view it._"
+
+
+def _charts_as_notes(text: str) -> str:
+    """The text with each nb-chart block replaced by a one-line note: a Teams
+    message has no chart element, and the chart's JSON spec would otherwise
+    post as raw text (and use up the size limit)."""
+    return "".join(CHART_NOTE if segment.is_chart else segment.text for segment in split_nb_chart_segments(text))
+
+
 def _cut(text: str, event_id) -> str:
     """The text within WRITEUP_LIMIT bytes (Teams limits a message's size, not
     its characters), ending with a link to the rest."""
@@ -926,7 +937,7 @@ async def _analyze(job) -> None:
         content = (content or "").strip()
         if not content:
             return True
-        text = _cut(f"{preamble}\n\n{content}" if preamble else content, event_id)
+        text = _cut(_charts_as_notes(f"{preamble}\n\n{content}" if preamble else content), event_id)
         return await service.teams_reply(activity, text, job["aad_tenant_id"])
 
     async def stamp(text):

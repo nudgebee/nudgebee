@@ -907,6 +907,30 @@ def test_long_analysis_text_is_cut_by_size_with_a_link():
     assert fenced.split("\n\n…")[0].count("```") == 2, "a cut code block is closed before the link"
 
 
+def test_charts_in_the_analysis_post_as_a_note_not_their_json():
+    spec = json.dumps(
+        {
+            "type": "line",
+            "title": "Memory",
+            "labels": [f"t{i}" for i in range(3000)],
+            "series": [{"key": "used", "data": list(range(3000))}],
+        }
+    )
+    assert len(spec.encode()) > ca.WRITEUP_LIMIT, "the chart alone would push the reply past the size limit"
+    chart = f"```nb-chart\n{spec}\n```"
+    writeup = f"Memory climbed to the limit.\n\n{chart}\n\nThen the pod was killed.\n\n{chart}"
+    posted, stamps = _analyze([_result("COMPLETED", detailed_response=writeup)])
+    assert posted == [f"Here's the full write-up:\n\n{writeup.replace(chart, ca.CHART_NOTE)}"]
+    assert '"series"' not in posted[0] and "investigate?id=" not in posted[0], "nothing left to cut"
+    assert stamps == ["Analyzed by Nubi. See the thread."]
+
+
+def test_only_chart_blocks_become_notes():
+    text = 'Before\n\n```json\n{"a": 1}\n```\n\n```nb-chart\n{"type": "bar", "labels": []}\n```\nAfter'
+    assert ca._charts_as_notes(text) == f'Before\n\n```json\n{{"a": 1}}\n```\n\n{ca.CHART_NOTE}\nAfter'
+    assert ca._charts_as_notes("no charts here") == "no charts here"
+
+
 def test_a_slow_start_isnt_a_failure_and_gets_a_longer_timeout():
     done = _result("COMPLETED", detailed_response="the write-up")
     posted, stamps = _analyze([None, done])

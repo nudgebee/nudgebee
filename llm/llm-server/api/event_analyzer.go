@@ -3209,6 +3209,9 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 					eventAnalsysisPrompt = eventAnalsysisPrompt + "\n\n" + structuredEvidenceNote(file, eventData.Evidences)
 				}
 			}
+			if note := saveAlertMetricHistory(ctx, eventAnalysisRepo, request.AccountId, parentConversationId, eventData, parsedLabels, window, hasWindow); note != "" {
+				eventAnalsysisPrompt = eventAnalsysisPrompt + "\n\n" + note
+			}
 			// Persist any oversized prompt inputs the guardrail condensed to a
 			// workspace-file pointer. Best-effort: on failure the pointer simply
 			// resolves to a missing file (an empty grep), never a hard error.
