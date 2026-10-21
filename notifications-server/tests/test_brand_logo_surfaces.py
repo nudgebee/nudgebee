@@ -83,7 +83,8 @@ def test_teams_welcome_card_has_no_image_without_a_logo(connected, brand):
     assert _images(card) == []
     header = card["body"][0]
     assert header["type"] == "ColumnSet" and len(header["columns"]) == 1
-    assert "Welcome to Contoso Ops!" in json.dumps(card)
+    assert f"Welcome to {settings.urls.assistant_name}!" in json.dumps(card)
+    assert "your Contoso Ops assistant" in json.dumps(card)
 
 
 def _gchat_cards():

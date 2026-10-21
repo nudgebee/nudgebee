@@ -2274,6 +2274,8 @@ class CommonService:
         from notifications_server.services.bot_messages import SIGNUP_URL
 
         branding_name = settings.urls.branding_name
+        # The app's name in Teams, which the store requires the welcome to use.
+        assistant_name = settings.urls.assistant_name
         branding_logo = settings.urls.branding_logo_url
         # A brand with no logo gets no image: an Image with an empty url is not a valid element.
         logo_columns = []
@@ -2302,7 +2304,7 @@ class CommonService:
                             "items": [
                                 {
                                     "type": "TextBlock",
-                                    "text": f"Welcome to {branding_name}!",
+                                    "text": f"Welcome to {assistant_name}!",
                                     "weight": "Bolder",
                                     "size": "Large",
                                 }
@@ -2312,7 +2314,10 @@ class CommonService:
                 },
                 {
                     "type": "TextBlock",
-                    "text": f"Hi there! I'm your {branding_name} assistant. Here's what I can help you with:",
+                    "text": (
+                        f"Hi there! I'm {assistant_name}, your {branding_name} assistant. "
+                        "Here's what I can help you with:"
+                    ),
                     "wrap": True,
                 },
                 {
@@ -2330,7 +2335,7 @@ class CommonService:
             card["body"].append(
                 {
                     "type": "TextBlock",
-                    "text": f"Mention **@{branding_name}** in a channel or a thread to ask a question.",
+                    "text": f"Mention **@{assistant_name}** in a channel or a thread to ask a question.",
                     "wrap": True,
                 }
             )

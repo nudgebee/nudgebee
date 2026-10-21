@@ -139,6 +139,19 @@ def test_a_connected_tenant_is_welcomed_without_sign_up():
     assert "Mention" in text
 
 
+def test_the_welcome_uses_the_app_name_and_the_brand(monkeypatch):
+    monkeypatch.setattr(settings.urls, "assistant_name", "Nubi")
+    monkeypatch.setattr(settings.urls, "branding_name", "Acme")
+    for connected in (True, False):
+        card = CommonService.create_teams_welcome_card(connected)
+        texts = [b.get("text", "") for b in card["body"]]
+        texts += [i["text"] for c in card["body"][0]["columns"] for i in c["items"] if i.get("text")]
+        assert "Welcome to Nubi!" in texts
+        assert any(t.startswith("Hi there! I'm Nubi, your Acme assistant.") for t in texts)
+    connected_text = json.dumps(CommonService.create_teams_welcome_card(True))
+    assert "@Nubi" in connected_text and "@Acme" not in connected_text
+
+
 def test_an_unconnected_tenant_is_asked_to_connect():
     card = CommonService.create_teams_welcome_card(False)
     assert _action_titles(card) == ["Connect Microsoft Teams"]
