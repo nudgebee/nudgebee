@@ -2715,6 +2715,15 @@ func buildEventSummaryQuery(eventId string) string {
 	return buildEventBriefQuery(eventId, false)
 }
 
+// investigationConversationTitle names an event investigation's conversation.
+// The Investigations tab and the investigation counts find the event by the id
+// in this title, so it is set here rather than left to title generation: once
+// step 1 ran through the plain LLM agent (#41579), every investigation was
+// titled "Processing LLM Request" and dropped out of both.
+func investigationConversationTitle(eventId string) string {
+	return "Event details - " + eventId
+}
+
 // buildEventBriefQuery is the step-1 instruction. With prefetched=false it asks
 // the events agent to call the tools; with prefetched=true (#41579) the reads
 // have already run (buildDirectEventBriefQuery appends their outputs), so the
@@ -3091,7 +3100,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			if directBrief {
 				summaryQuery = buildDirectEventBriefQuery(ctx, request, eventData.Id, parsedLabels)
 			}
-			summaryResp, err := core.HandleConversationSessionRequest(ctx, eventSummaryAgent, request.UserId, request.AccountId, parentConversationId, summaryQuery, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithEnableCritique(false), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels}), core.ConversationSessionRequestWithoutConversationHistory())
+			summaryResp, err := core.HandleConversationSessionRequest(ctx, eventSummaryAgent, request.UserId, request.AccountId, parentConversationId, summaryQuery, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithTitle(investigationConversationTitle(request.EventId)), core.ConversationSessionRequestWithEnableCritique(false), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels}), core.ConversationSessionRequestWithoutConversationHistory())
 			if err != nil {
 				if errors.Is(err, core.ErrConversationInProgress) {
 					ctx.GetLogger().Info("analyzer: summary already in progress via conversation", "session_id", parentConversationId)
@@ -3253,7 +3262,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 				"named_repo", namedRepo,
 				"prompt_offers_code_analyzer", strings.Contains(eventAnalsysisPrompt, "`code_analyzer` is available"),
 				"prompt_bytes", len(eventAnalsysisPrompt))
-			rootcauseAnalysis, err := core.HandleConversationSessionRequest(core.WithReadOnlyRun(ctx), rootcauseAgent, request.UserId, request.AccountId, parentConversationId, eventAnalsysisPrompt, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels, EventId: request.EventId, KnowledgeHints: eventKnowledgeHints(eventData), Namespace: workloadNamespace, Workload: workloadName, GitRepo: namedRepo}), core.ConversationSessionRequestWitAdditionalSystemPrompt(accountPrompt), core.ConversationSessionRequestWithEnableCritique(true), core.ConversationSessionRequestWithoutConversationHistory())
+			rootcauseAnalysis, err := core.HandleConversationSessionRequest(core.WithReadOnlyRun(ctx), rootcauseAgent, request.UserId, request.AccountId, parentConversationId, eventAnalsysisPrompt, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithTitle(investigationConversationTitle(request.EventId)), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels, EventId: request.EventId, KnowledgeHints: eventKnowledgeHints(eventData), Namespace: workloadNamespace, Workload: workloadName, GitRepo: namedRepo}), core.ConversationSessionRequestWitAdditionalSystemPrompt(accountPrompt), core.ConversationSessionRequestWithEnableCritique(true), core.ConversationSessionRequestWithoutConversationHistory())
 
 			if err != nil {
 				if errors.Is(err, core.ErrConversationInProgress) {
@@ -4219,6 +4228,7 @@ func runCodeFixStage(ctx *security.RequestContext, request EventAnalysisRequest,
 		llmResponse, err = core.HandleConversationSessionRequest(
 			ctx, llm, request.UserId, request.AccountId, parentConversationId, string(llmParamsJSON),
 			core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation),
+			core.ConversationSessionRequestWithTitle(investigationConversationTitle(request.EventId)),
 			core.ConversationSessionRequestWithConfig(eventConfig),
 			core.ConversationSessionRequestWithEnableCritique(true),
 			core.ConversationSessionRequestWithoutConversationHistory(),

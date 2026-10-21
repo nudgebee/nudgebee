@@ -160,3 +160,8 @@ func TestMergeLatestMessageConfig_ResumeKeepsApprovals(t *testing.T) {
 
 	assert.Equal(t, map[string]string{"kubectl_execute": "yes", "helm_execute": "yes"}, merged.ToolConfirmations)
 }
+
+func TestResolveSessionRequestConfigs_TitleOption(t *testing.T) {
+	assert.Equal(t, "Event details - x", resolveSessionRequestConfigs(ConversationSessionRequestWithTitle("Event details - x")).title)
+	assert.Empty(t, resolveSessionRequestConfigs().title)
+}

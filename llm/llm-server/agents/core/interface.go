@@ -205,6 +205,9 @@ type NBAgentRequest struct {
 	// the /llm/response webhook — see ConversationApiRequest.ReplyRef. Never
 	// read by any agent; carried only for sendReplyToNotificationServer.
 	ReplyRef string `json:"reply_ref,omitempty"`
+	// Title, when set, names a new conversation instead of the query-derived or
+	// LLM-generated title. For automated runs whose title other code reads.
+	Title string `json:"title,omitempty"`
 }
 
 // DO not use for API calls

@@ -396,6 +396,7 @@ type additionalConversationSessionRequestConfig struct {
 	channelContextRefs    map[string]any
 	replyRef              string
 	skipHistory           bool
+	title                 string
 }
 
 type ConversationSessionRequestConfig interface {
@@ -716,6 +717,24 @@ func ConversationSessionRequestWithReplyRef(replyRef string) ConversationSession
 	}
 }
 
+type sessionRequestWithTitle struct {
+	title string
+}
+
+func (h sessionRequestWithTitle) apply(c *additionalConversationSessionRequestConfig) {
+	c.title = h.title
+}
+
+// ConversationSessionRequestWithTitle names the conversation this request
+// creates, skipping title generation. It has no effect when the conversation
+// already exists. Event investigations use it to keep the event id in the
+// title, which the Investigations tab and the investigation counts match on.
+func ConversationSessionRequestWithTitle(title string) ConversationSessionRequestConfig {
+	return sessionRequestWithTitle{
+		title: title,
+	}
+}
+
 type sessionRequestWithoutConversationHistory struct{}
 
 func (h sessionRequestWithoutConversationHistory) apply(c *additionalConversationSessionRequestConfig) {
@@ -833,6 +852,7 @@ func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgen
 		ChannelContext:        defaultConfig.channelContext,
 		ChannelContextRefs:    defaultConfig.channelContextRefs,
 		ReplyRef:              defaultConfig.replyRef,
+		Title:                 defaultConfig.title,
 	}
 
 	response, err := handleConversationRequest(ctx, agentRequest, agent, sessionId, defaultConfig.source)
@@ -1275,7 +1295,9 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			// async title-generation task finishes).
 			var title string
 			initialTitleSource := common.StripLeadingAgentMention(request.Query)
-			if derived, ok := common.DeriveTitleFromJSONQuery(initialTitleSource); ok {
+			if request.Title != "" {
+				title = request.Title
+			} else if derived, ok := common.DeriveTitleFromJSONQuery(initialTitleSource); ok {
 				// Webhook/alert triggers send a JSON payload as the query; unwrap it to
 				// a readable field so the placeholder isn't the raw `{"description":...`
 				// envelope. Matters most for single-shot classifiers (e.g.
@@ -1618,8 +1640,9 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 
 	// Single-shot internal classifiers (e.g. webhook_subject_name_extractor) get a
 	// throwaway conversation per call with no user-facing title — skip the
-	// summary_agent title generation for them.
-	if request.Query != "" && newConversation && !isSingleShotClassifier(agent) {
+	// summary_agent title generation for them. A request that set its own title
+	// keeps it.
+	if request.Query != "" && newConversation && request.Title == "" && !isSingleShotClassifier(agent) {
 		generateConversationTitleAsync(ctx, request.ConversationId, request.MessageId, request.AccountId, agent.GetName(), request.Query, request.UserId)
 	}
 
