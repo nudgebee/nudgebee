@@ -2299,11 +2299,19 @@ func buildCodeCapabilityBlock(caps *services_server.EventCodeCapabilities, names
 	var b strings.Builder
 	b.WriteString("\n\n## Code Analysis\n")
 	if caps.Source != nil {
-		fmt.Fprintf(&b, "The application source for `%s` in `%s` is `%s`", workload, namespace, caps.Source.Repo)
+		if namespace == "" {
+			// A VM service: no workload or namespace to name.
+			fmt.Fprintf(&b, "The application source for this VM service is `%s`", caps.Source.Repo)
+		} else {
+			fmt.Fprintf(&b, "The application source for `%s` in `%s` is `%s`", workload, namespace, caps.Source.Repo)
+		}
 		if caps.Source.Commit != "" {
 			fmt.Fprintf(&b, " at commit `%s`", caps.Source.Commit)
 		}
 		b.WriteString(". `code_analyzer` is available.\n")
+		if caps.Source.Branch != "" {
+			fmt.Fprintf(&b, "- The service runs the `%s` branch: pass it as the branch to `code_analyzer`.\n", caps.Source.Branch)
+		}
 		b.WriteString("- When incident-window evidence supports a code defect, call `code_analyzer` in **explore mode** with the resource, time window, observed failure, causal mechanism, and distinctive log strings (including any filename:lineno). Ask it to verify the mechanism against the deployed revision and identify the exact repo-relative file(s). A log-string match alone does not establish a defect. Keep optional hardening suggestions in prose; they do not justify an automated change plan.\n")
 		b.WriteString(codeAlreadyThereRule)
 		// Only ~2.5% of workloads carry a revision annotation today and they are
@@ -2338,27 +2346,35 @@ func buildCodeCapabilityBlock(caps *services_server.EventCodeCapabilities, names
 // it concerns, not a mapping to what is deployed, so the code-fix stage stays
 // behind the annotation-resolved capabilities. It makes no claim about a
 // deployed revision for the same reason.
-func buildNamedRepoBlock(repo, branch string) string {
+func buildNamedRepoBlock(repo string) string {
 	if repo == "" {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("\n\n## Code Analysis\n")
 	fmt.Fprintf(&b, "This event names the repository `%s`. `code_analyzer` is available.\n", repo)
-	if branch != "" {
-		fmt.Fprintf(&b, "- The service runs the `%s` branch: pass it as the branch to `code_analyzer`.\n", branch)
-	}
 	b.WriteString("- When the evidence supports a code defect, call `code_analyzer` in **explore mode** with the observed failure, the causal mechanism, and distinctive log strings (including any filename:lineno). If the event names a branch or commit, pass it, so the code read is the code that failed. Ask it to verify the mechanism and identify the exact repo-relative file(s). A log-string match alone does not establish a defect.\n")
 	b.WriteString(codeAlreadyThereRule)
 	return b.String()
+}
+
+// vmServiceContainerID is the node-agent container_id an alert kept, which for a
+// systemd service is its cgroup path. Event webhooks store their labels flat;
+// other sources nest them under "labels", so both are read.
+func vmServiceContainerID(parsedLabels map[string]any) string {
+	if containerID, _ := parsedLabels["container_id"].(string); containerID != "" {
+		return containerID
+	}
+	labels, _ := parsedLabels["labels"].(map[string]any)
+	containerID, _ := labels["container_id"].(string)
+	return containerID
 }
 
 // vmServiceCodeLink returns the repository and branch a user linked to the VM
 // service an alert is about. Only an alert that kept the series' container_id
 // label names its service; a host-level alert has no link to look up.
 func vmServiceCodeLink(ctx *security.RequestContext, eventId string, parsedLabels map[string]any) services_server.VMServiceCodeLink {
-	labels, _ := parsedLabels["labels"].(map[string]any)
-	containerID, _ := labels["container_id"].(string)
+	containerID := vmServiceContainerID(parsedLabels)
 	if containerID == "" {
 		return services_server.VMServiceCodeLink{}
 	}
@@ -2479,18 +2495,22 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 			}
 			eventAnalsysisPrompt = eventAnalsysisPrompt + buildCodeCapabilityBlock(codeCapabilities, capNamespace, capWorkload)
 		}
-		// No annotation maps this event to code, but its own labels may name the
-		// repository. That repository is offered for verifying a cause and is
-		// deliberately kept out of codeCapabilities, which is what the code-fix
-		// stage gates on.
+		// No annotation maps this event to code. A VM service the user linked to a
+		// repository is a source capability like a workload's git.repo annotation,
+		// so the code-fix stage can act on it. Otherwise the event's own labels
+		// may name a repository, which is offered for verifying a cause and kept
+		// out of codeCapabilities, the thing the code-fix stage gates on.
 		if !codeCapabilities.HasAny() {
-			var namedBranch string
 			if link := vmServiceCodeLink(ctx, request.EventId, parsedLabels); link.Repo != "" {
-				namedRepo, namedBranch = link.Repo, link.Branch
+				namedRepo = link.Repo
+				codeCapabilities = &services_server.EventCodeCapabilities{
+					Source: &services_server.SourceCapability{Repo: link.Repo, Branch: link.Branch},
+				}
+				eventAnalsysisPrompt = eventAnalsysisPrompt + buildCodeCapabilityBlock(codeCapabilities, "", "")
 			} else {
 				namedRepo = agents.IntegrationRepoNamedBy(ctx, request.AccountId, eventLabelValues(parsedLabels))
+				eventAnalsysisPrompt = eventAnalsysisPrompt + buildNamedRepoBlock(namedRepo)
 			}
-			eventAnalsysisPrompt = eventAnalsysisPrompt + buildNamedRepoBlock(namedRepo, namedBranch)
 		}
 	}
 
@@ -4147,6 +4167,9 @@ func runCodeFixStage(ctx *security.RequestContext, request EventAnalysisRequest,
 		params["git_repo"] = caps.Source.Repo
 		if caps.Source.Commit != "" {
 			params["git_commit"] = caps.Source.Commit
+		}
+		if caps.Source.Branch != "" {
+			params["target_branch"] = caps.Source.Branch
 		}
 	}
 	llmParamsJSON, err := json.Marshal(params)

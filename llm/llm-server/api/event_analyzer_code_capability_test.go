@@ -58,11 +58,11 @@ func TestBuildCodeCapabilityBlock(t *testing.T) {
 
 func TestBuildNamedRepoBlock(t *testing.T) {
 	t.Run("no repository named adds nothing", func(t *testing.T) {
-		assert.Empty(t, buildNamedRepoBlock("", ""))
+		assert.Empty(t, buildNamedRepoBlock(""))
 	})
 
 	t.Run("offers code analysis without the change-plan contract", func(t *testing.T) {
-		b := buildNamedRepoBlock("https://github.com/example-org/payments", "")
+		b := buildNamedRepoBlock("https://github.com/example-org/payments")
 		assert.Contains(t, b, "This event names the repository `https://github.com/example-org/payments`")
 		// The dispatch log keys on this sentence to record that the offer was made.
 		assert.Contains(t, b, "`code_analyzer` is available")
@@ -74,10 +74,35 @@ func TestBuildNamedRepoBlock(t *testing.T) {
 	})
 }
 
-func TestBuildNamedRepoBlockBranch(t *testing.T) {
-	b := buildNamedRepoBlock("https://github.com/example-org/payments", "release")
+// A VM service has no workload, namespace or deployed commit; its linked
+// repository is the only mapping, and it must still ask for a change plan.
+func TestBuildCodeCapabilityBlockVMService(t *testing.T) {
+	caps := &services_server.EventCodeCapabilities{
+		Source: &services_server.SourceCapability{Repo: "https://github.com/nudgebee/node-agent", Branch: "release"},
+	}
+	b := buildCodeCapabilityBlock(caps, "", "")
+	assert.Contains(t, b, "The application source for this VM service is `https://github.com/nudgebee/node-agent`")
 	assert.Contains(t, b, "runs the `release` branch")
-	assert.NotContains(t, buildNamedRepoBlock("https://github.com/example-org/payments", ""), "branch: pass it")
+	assert.Contains(t, b, "<change_plan>")
+	assert.Contains(t, b, "establish whether it is already there")
+	assert.NotContains(t, b, " in ``")
+	assert.NotContains(t, b, "the revision the running image was built from")
+
+	caps.Source.Branch = ""
+	assert.NotContains(t, buildCodeCapabilityBlock(caps, "", ""), "branch: pass it")
+}
+
+func TestVMServiceContainerID(t *testing.T) {
+	const unit = "/system.slice/nudgebee-node-agent.service"
+	t.Run("flat labels, as an event webhook stores them", func(t *testing.T) {
+		assert.Equal(t, unit, vmServiceContainerID(map[string]any{"container_id": unit, "severity": "high"}))
+	})
+	t.Run("labels nested under labels", func(t *testing.T) {
+		assert.Equal(t, unit, vmServiceContainerID(map[string]any{"labels": map[string]any{"container_id": unit}}))
+	})
+	t.Run("a host-level alert names no service", func(t *testing.T) {
+		assert.Empty(t, vmServiceContainerID(map[string]any{"instance_id": "i-1"}))
+	})
 }
 
 func TestEventLabelValues(t *testing.T) {

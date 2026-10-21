@@ -63,6 +63,9 @@ func HasKnownRepoAnnotation(annotations map[string]string) bool {
 type SourceCapability struct {
 	Repo   string `json:"repo"`
 	Commit string `json:"commit"` // workloads.nudgebee.com/git.hash — the deployed commit
+	// Branch is the branch a VM service was linked to. A VM has no deployed
+	// commit, so this is all that says which code it runs; empty for workloads.
+	Branch string `json:"branch,omitempty"`
 }
 
 // DeploymentCapability names the Helm values file that controls a workload's
