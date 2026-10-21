@@ -30,7 +30,8 @@ SELECT 'EVENT_AUTO_AI_SUMMARY', d.tenant_id, d.account_id, 'disabled'
        SELECT 1 FROM public.feature_flag a
         WHERE a.feature_id = 'EVENT_AUTO_AI_SUMMARY'
           AND a.tenant_id = d.tenant_id
-          AND a.account_id IS NOT DISTINCT FROM d.account_id);
+          AND a.account_id IS NOT DISTINCT FROM d.account_id)
+ON CONFLICT (tenant_id, feature_id) DO NOTHING;
 
 DELETE FROM public.feature_flag WHERE feature_id IN ('EVENT_DEBUG_ANALYSIS_DISABLED', 'GENERATE_RCA');
 
