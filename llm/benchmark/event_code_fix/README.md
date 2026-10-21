@@ -104,6 +104,14 @@ re-run **resumes**, skipping anything already scored — same reasoning as
 `swebench/run_swebench.py`: losing a run to a dropped port-forward should
 cost minutes, not the whole run.
 
+## VM accounts
+
+`type: vm_event` scenarios (010-013) run the same pipeline against a VM account:
+a fault is injected on a real host, the alert goes to the account's event
+webhook, and the metrics/logs queries the investigation issued are scored for
+host scoping and non-empty results. CLI only; see [`vm/README.md`](vm/README.md)
+for the fleet variables and prerequisites.
+
 ## Running from the benchmark dashboard
 
 Scenarios 001–007 are also registered as the **`event_code_fix`** agent in the
