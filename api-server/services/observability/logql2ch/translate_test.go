@@ -164,7 +164,7 @@ func TestTranslate_FullSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`concat('pod="', pod, '"') AS series`,
+		`concat('pod="', replaceAll(replaceAll(pod, '\\', '\\\\'), '"', '\\"'), '"') AS series`,
 		"1700000100 + intDiv(toUnixTimestamp64Nano(Timestamp) - 1700000100000000000 + 300000000000 - 1, 300000000000) * 300 AS t",
 		"toFloat64(count()) / 300 AS v, any([toString(pod)]) AS lv",
 		"Timestamp > fromUnixTimestamp64Nano(toInt64(1699999800000000000)) AND Timestamp <= fromUnixTimestamp64Nano(toInt64(1700001900000000000))",
@@ -245,8 +245,12 @@ func TestTranslate_Cases(t *testing.T) {
 		{`{namespace="a"} | logfmt | method="GET"`, `namespace = 'a' AND extractKeyValuePairs(Body, '=', ' ', '"')['method'] = 'GET'`},
 		{`{namespace="a"} | json | __error__=""`, `namespace = 'a' AND isValidJSON(Body) AND JSONType(Body) = 'Object'`},
 		{`{namespace="a"} | json | __error__!=""`, `namespace = 'a' AND NOT (isValidJSON(Body) AND JSONType(Body) = 'Object')`},
-		// After a parser a stream label keeps its meaning.
+		// After a parser a stream label keeps its meaning, and a parsed key that
+		// clashes with one is <label>_extracted, as Loki names it.
 		{`{namespace="a"} | json | pod="p"`, `namespace = 'a' AND pod = 'p'`},
+		{`{namespace="a"} | json | pod_extracted="p"`, `namespace = 'a' AND multiIf(JSONType(Body, 'pod') = 'String', JSONExtractString(Body, 'pod'), JSONType(Body, 'pod') IN ('Int64', 'UInt64', 'Double', 'Bool'), JSONExtractRaw(Body, 'pod'), JSONType(Body, 'pod_extracted') = 'String', JSONExtractString(Body, 'pod_extracted'), JSONType(Body, 'pod_extracted') IN ('Int64', 'UInt64', 'Double', 'Bool'), JSONExtractRaw(Body, 'pod_extracted'), JSONType(Body, 'pod', 'extracted') = 'String', JSONExtractString(Body, 'pod', 'extracted'), JSONType(Body, 'pod', 'extracted') IN ('Int64', 'UInt64', 'Double', 'Bool'), JSONExtractRaw(Body, 'pod', 'extracted'), '') = 'p'`},
+		{`{namespace="a"} | logfmt | stream_extracted="x"`, `namespace = 'a' AND if(mapContains(extractKeyValuePairs(Body, '=', ' ', '"'), 'stream'), extractKeyValuePairs(Body, '=', ' ', '"')['stream'], extractKeyValuePairs(Body, '=', ' ', '"')['stream_extracted']) = 'x'`},
+		{`{namespace="a"} | json | foo_extracted="x"`, `namespace = 'a' AND multiIf(JSONType(Body, 'foo_extracted') = 'String', JSONExtractString(Body, 'foo_extracted'), JSONType(Body, 'foo_extracted') IN ('Int64', 'UInt64', 'Double', 'Bool'), JSONExtractRaw(Body, 'foo_extracted'), JSONType(Body, 'foo', 'extracted') = 'String', JSONExtractString(Body, 'foo', 'extracted'), JSONType(Body, 'foo', 'extracted') IN ('Int64', 'UInt64', 'Double', 'Bool'), JSONExtractRaw(Body, 'foo', 'extracted'), '') = 'x'`},
 		// Comments and the pipeline after the range.
 		{"{namespace=\"a\"} # all of a\n|= \"x\"", `namespace = 'a' AND position(Body, 'x') > 0`},
 		// Empty-value line filters keep Loki's meaning (|= "" keeps all, != "" drops all).
@@ -313,6 +317,11 @@ func TestTranslate_Rejects(t *testing.T) {
 		{`{level="trace"}`, KindBadRequest, `level "trace" is not one of`},
 		{`{namespace="a", level!="err"}`, KindBadRequest, `level "err" is not one of`},
 		{`{level=~"warn|trace"}`, KindBadRequest, `level "trace" is not one of`},
+		// The derived level is a word, so these could only ever match nothing.
+		{`{namespace="a"} | level > 3`, KindBadRequest, "level is a word"},
+		{`{namespace="a"} | level == 1`, KindBadRequest, "level is a word"},
+		{`{namespace="a"} | level=~""`, KindBadRequest, "matches no level"},
+		{`{namespace="a", level=~" *"}`, KindBadRequest, "matches no level"},
 		{strings.Repeat("(", 65) + `{namespace="a"}` + strings.Repeat(")", 65), KindInvalid, "nesting deeper than 64"},
 		{`{namespace="a"} | ` + strings.Repeat("(", 65) + `pod="p"` + strings.Repeat(")", 65), KindInvalid, "nesting deeper than 64"},
 		{`{namespace="a"} |= "` + strings.Repeat("x", 64<<10) + `"`, KindBadRequest, "longer than 64 KiB"},

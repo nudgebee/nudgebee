@@ -287,7 +287,8 @@ LIMIT %d`,
 }
 
 // series renders the Loki label set of a metric series as sorted k="v" pairs,
-// and an lv column holding the raw values.
+// and an lv column holding the raw values. A value's \ and " are escaped, as
+// Loki prints them, so a value can't pass for a separator and merge two series.
 func (t *translator) series(labels []string) (string, string, error) {
 	if len(labels) == 0 {
 		return "''", "", nil
@@ -305,8 +306,8 @@ func (t *translator) series(labels []string) (string, string, error) {
 		if i == 0 {
 			sep = "'"
 		}
-		pieces = append(pieces, sep+l+`="'`)
-		pieces = append(pieces, p...)
+		pieces = append(pieces, sep+l+`="'`,
+			"replaceAll(replaceAll("+joinPieces(p)+", "+quote(`\`)+", "+quote(`\\`)+"), "+quote(`"`)+", "+quote(`\"`)+")")
 		values = append(values, "toString("+joinPieces(p)+")")
 	}
 	pieces = append(pieces, `'"'`)
@@ -407,12 +408,28 @@ func (t *translator) resolvePieces(name string) ([]string, bool, error) {
 // looked up as each nested path it could stand for, the top-level key first.
 // Loki also replaces other characters in a key with `_` ("http.status" is
 // http_status too); such keys are not reachable here.
+//
+// A parsed key named like a stream label doesn't replace it: Loki adds it as
+// <label>_extracted, so that name reads the key, and then a key literally
+// named <label>_extracted.
 func (t *translator) extracted(name string) string {
+	names := []string{name}
+	if l, ok := strings.CutSuffix(name, "_extracted"); ok && isStreamLabel(l) {
+		names = []string{l, name}
+	}
 	if t.parser == "logfmt" {
-		return "extractKeyValuePairs(Body, '=', ' ', '\"')[" + quote(name) + "]"
+		const kv = "extractKeyValuePairs(Body, '=', ' ', '\"')"
+		if len(names) == 2 {
+			return fmt.Sprintf("if(mapContains(%[1]s, %[2]s), %[1]s[%[2]s], %[1]s[%[3]s])", kv, quote(names[0]), quote(names[1]))
+		}
+		return kv + "[" + quote(name) + "]"
+	}
+	var paths [][]string
+	for _, n := range names {
+		paths = append(paths, jsonPaths(n)...)
 	}
 	var arms []string
-	for _, path := range jsonPaths(name) {
+	for _, path := range paths {
 		p := quoteAll(path)
 		arms = append(arms,
 			fmt.Sprintf("JSONType(Body, %[1]s) = 'String', JSONExtractString(Body, %[1]s)", p),
@@ -483,7 +500,8 @@ func matchCond(expr string, isLevel bool, op, value string, pos int) (string, er
 		}
 		return expr + " " + op + " " + quote(value), nil
 	case "=~", "!~":
-		if _, err := regexp.Compile("^(?:" + value + ")$"); err != nil {
+		re, err := regexp.Compile("^(?:" + value + ")$")
+		if err != nil {
 			return "", invalidf(pos, "bad regex %q: %v", value, err)
 		}
 		if isLevel && namesValue.MatchString(value) {
@@ -506,6 +524,11 @@ func matchCond(expr string, isLevel bool, op, value string, pos int) (string, er
 				in = " NOT IN ("
 			}
 			return expr + in + strings.Join(parts, ", ") + ")", nil
+		}
+		if isLevel && op == "=~" && !slices.ContainsFunc(levelColumnValues, re.MatchString) {
+			// level is never empty (unknown when nothing says), so level=~"" would
+			// silently match nothing.
+			return "", badRequestf("level=~%q matches no level; level is one of %s", value, strings.Join(levelColumnValues, ", "))
 		}
 		c := "match(" + expr + ", " + quote("^(?:"+value+")$") + ")"
 		if op == "!~" {
@@ -629,6 +652,9 @@ func (t *translator) labelCmp(c labelCmp) (string, error) {
 	}
 	if !c.numeric {
 		return matchCond(expr, isLevel, tokOp(c.op), c.str, c.pos)
+	}
+	if isLevel {
+		return "", badRequestf("level is a word (%s), so it can't be compared with a number", strings.Join(levelColumnValues, ", "))
 	}
 	op := tokOp(c.op)
 	if op == "==" {

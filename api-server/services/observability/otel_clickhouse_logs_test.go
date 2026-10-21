@@ -423,6 +423,11 @@ func TestOtelClickhouseLogs_QueriesStopInClickHouseAtTheDeadline(t *testing.T) {
 	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancelExpired()
 	assert.Equal(t, "SELECT 1 SETTINGS max_execution_time = 1 FORMAT JSONCompact", withExecutionLimit(expired, "SELECT 1"))
+	// A deadline past the reader user's ceiling asks for the ceiling: ClickHouse
+	// refuses a setting above it (Code 452) instead of clamping it.
+	long, cancelLong := context.WithTimeout(context.Background(), time.Hour)
+	defer cancelLong()
+	assert.Equal(t, "SELECT 1 SETTINGS max_execution_time = 600 FORMAT JSONCompact", withExecutionLimit(long, "SELECT 1"))
 }
 
 // The agent adds FORMAT JSONCompact only to a statement with no "FORMAT " anywhere in it,

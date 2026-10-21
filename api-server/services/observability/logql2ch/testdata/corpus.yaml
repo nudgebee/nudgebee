@@ -384,7 +384,7 @@ entries:
     step: 5m
     agg: count
     series: |-
-      concat('namespace="', namespace, '"')
+      concat('namespace="', replaceAll(replaceAll(namespace, '\\', '\\\\'), '"', '\\"'), '"')
     where: |-
       match(namespace, '^(?:shop|payments)$') AND position(Body, 'ERROR') > 0
   - id: sum-all
@@ -410,7 +410,7 @@ entries:
     step: 5m
     agg: rate
     series: |-
-      concat('pod="', pod, '"')
+      concat('pod="', replaceAll(replaceAll(pod, '\\', '\\\\'), '"', '\\"'), '"')
     where: |-
       namespace = 'shop' AND container = 'web'
     notes: 'Each point t counts (t-step, t]: the line at exactly start is counted at t=start, so pod web-7d9f8-abc12 has 7 points and web-7d9f8-def34 has 5; a line at start+5m lands on start+5m, not start+10m.'
@@ -424,12 +424,15 @@ entries:
     step: 5m
     agg: count
     series: |-
-      concat('app="', workload, '",container="', container,
-             '",filename="', LogAttributes['log.file.path'],
-             '",job="', namespace, '/', workload,
-             '",namespace="', namespace, '",node_name="', node,
-             '",pod="', pod, '",service_name="', ServiceName,
-             '",stream="', stream, '"')
+      concat('app="', replaceAll(replaceAll(workload, '\\', '\\\\'), '"', '\\"'),
+             '",container="', replaceAll(replaceAll(container, '\\', '\\\\'), '"', '\\"'),
+             '",filename="', replaceAll(replaceAll(LogAttributes['log.file.path'], '\\', '\\\\'), '"', '\\"'),
+             '",job="', replaceAll(replaceAll(concat(namespace, '/', workload), '\\', '\\\\'), '"', '\\"'),
+             '",namespace="', replaceAll(replaceAll(namespace, '\\', '\\\\'), '"', '\\"'),
+             '",node_name="', replaceAll(replaceAll(node, '\\', '\\\\'), '"', '\\"'),
+             '",pod="', replaceAll(replaceAll(pod, '\\', '\\\\'), '"', '\\"'),
+             '",service_name="', replaceAll(replaceAll(ServiceName, '\\', '\\\\'), '"', '\\"'),
+             '",stream="', replaceAll(replaceAll(stream, '\\', '\\\\'), '"', '\\"'), '"')
     where: |-
       namespace = 'jobs' AND position(Body, 'timeout') > 0
     notes: Without an aggregation, Loki keeps every stream label; the SQL rebuilds them from the alias map.
@@ -482,7 +485,7 @@ entries:
     step: 5m
     agg: count
     series: |-
-      concat('namespace="', namespace, '"')
+      concat('namespace="', replaceAll(replaceAll(namespace, '\\', '\\\\'), '"', '\\"'), '"')
     where: |-
       match(namespace, '^(?:.+)$') AND isValidJSON(Body) AND JSONType(Body) = 'Object'
     notes: Without __error__="" Loki fails the query on the first line that is not JSON, so the translator refuses that form. Loki's json parser needs an object, so 42 or [1, 2] is an error too (TestStack_JSONMatchesLoki).

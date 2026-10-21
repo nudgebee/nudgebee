@@ -41,6 +41,9 @@ const (
 	// (label values, log groups); otelLogsProbeTimeout bounds the schema probe.
 	otelLogsTimeout      = 30 * time.Second
 	otelLogsProbeTimeout = 5 * time.Second
+	// otelLogsMaxExecutionSecs is the agent's read-only ClickHouse user's ceiling on
+	// max_execution_time (k8s-agent's clickhouse.reader.maxExecutionTimeCeiling).
+	otelLogsMaxExecutionSecs = 600
 )
 
 // otelClickhouseLogLabelMapping is Loki's (canonical names are Loki names,
@@ -430,13 +433,15 @@ const otelLogsFormat = " FORMAT JSONCompact"
 // itself at ctx's deadline, then the output format. The deadline only ends our wait:
 // neither the relay nor the agent cancels the query in ClickHouse, so without the limit
 // a costly scan (an LLM's `|~` over 30 days) keeps running in the customer's cluster
-// after we gave up on it.
+// after we gave up on it. A deadline past the reader user's ceiling asks for the
+// ceiling, since ClickHouse refuses a value above it rather than clamping it.
 func withExecutionLimit(ctx context.Context, sql string) string {
 	secs := int(otelLogsTimeout / time.Second)
 	if deadline, ok := ctx.Deadline(); ok {
 		secs = int(math.Ceil(time.Until(deadline).Seconds()))
 	}
-	return fmt.Sprintf("%s SETTINGS max_execution_time = %d%s", sql, max(secs, 1), otelLogsFormat)
+	secs = min(max(secs, 1), otelLogsMaxExecutionSecs)
+	return fmt.Sprintf("%s SETTINGS max_execution_time = %d%s", sql, secs, otelLogsFormat)
 }
 
 // otelLogsExec runs one statement on the agent's ClickHouse; a var so tests
