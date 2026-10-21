@@ -145,13 +145,13 @@ type appConfig struct {
 
 	RabbitMqTroubleshootExchange string `mapstructure:"rabbit_mq_troubleshoot_exchange"`
 	RabbitMqTroubleshootQueue    string `mapstructure:"rabbit_mq_troubleshoot_queue"`
+	// llm-server's task queue: work one llm-server replica does once
+	// ({type, keys, sender}). Values must match llm-server's defaults for the
+	// same keys.
+	RabbitMqLlmServerTasksExchange string `mapstructure:"rabbit_mq_llm_server_tasks_exchange"`
+	RabbitMqLlmServerTasksQueue    string `mapstructure:"rabbit_mq_llm_server_tasks_queue"`
 
 	AuditPublishEnabled bool `mapstructure:"audit_publish_enabled"`
-	// Fan-out exchange used to broadcast integration cache invalidation
-	// events to every llm-server replica. Each llm-server pod binds an
-	// auto-delete + exclusive queue to it so every pod receives every
-	// message.
-	RabbitMqLLMCacheInvalidationExchange string `mapstructure:"rabbit_mq_llm_cache_invalidation_exchange"`
 
 	AutoPilotUrl string `mapstructure:"auto_pilot_url"`
 
@@ -578,7 +578,8 @@ func init() {
 
 	viper.SetDefault("rabbit_mq_troubleshoot_exchange", "llm_server_event_investigate")
 	viper.SetDefault("rabbit_mq_troubleshoot_queue", "llm_server_event_investigate")
-	viper.SetDefault("rabbit_mq_llm_cache_invalidation_exchange", "llm_cache_invalidation")
+	viper.SetDefault("rabbit_mq_llm_server_tasks_exchange", "llm_server_tasks")
+	viper.SetDefault("rabbit_mq_llm_server_tasks_queue", "llm_server_tasks")
 
 	viper.SetDefault("rabbit_mq_user_onboard_queue", "notifications")
 	viper.SetDefault("rabbit_mq_user_onboard_exchange", "notifications_exchange")

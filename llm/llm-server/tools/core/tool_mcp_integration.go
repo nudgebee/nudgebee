@@ -127,24 +127,21 @@ func mcpToolsAvailableSnapshot() []common.ToolsAvailableEntry {
 	return out
 }
 
-// InvalidateAccountIntegrationCache busts every llm-server cache that
-// depends on integration state for the given account, in this process and
-// across all replicas (via the existing Redis pub/sub channel).
+// InvalidateAccountIntegrationCache drops, on this replica, every llm-server
+// cache that depends on integration state for the given account (shared Redis
+// entries included, via the registered invalidators). Every replica runs it
+// for the same change (replica broadcast or fanout), so it must not reload or
+// broadcast again: doing so made each replica re-send a tool invalidation to
+// all the others.
 //
-// Callers (api-server) invoke this after any successful integration
-// mutation — create / update status / delete — regardless of integration
-// type. The broad scope is deliberate: MCP integrations alter the agent
-// tool list, LLM provider integrations alter cached provider credentials,
-// and future integration types may add their own caches via
-// RegisterToolCacheInvalidator. Treating "an integration changed" as a
-// single coherent event avoids silent staleness when a new integration
-// adds a cache that nobody remembered to wire into the per-type rules.
-//
-// Delegates to InvalidateToolCache so the work goes through the existing,
-// already-tested invalidation chain (custom tools, DTO views, MCP tools,
-// LLM provider config, account config summary) and broadcast.
+// The broad scope is deliberate: MCP integrations alter the agent tool list,
+// LLM provider integrations alter cached provider credentials, and future
+// integration types may add their own caches via RegisterToolCacheInvalidator.
+// Treating "an integration changed" as a single coherent event avoids silent
+// staleness when a new integration adds a cache that nobody remembered to wire
+// into the per-type rules.
 func InvalidateAccountIntegrationCache(accountId string) {
-	InvalidateToolCache(accountId)
+	invalidateCachesForAccount(accountId)
 }
 
 // get returns a defensive copy of the cached slice so callers can never

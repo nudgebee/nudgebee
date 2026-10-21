@@ -334,8 +334,8 @@ func ensureKBForIntegration(ctx context.Context, dbms *common.DatabaseManager, i
 }
 
 // EnsureIntegrationKBsForAccount runs the integration-KB sync for the tenant
-// of one cloud account. Called from the cache-invalidation consumer right after
-// an integration mutation (create / status change / delete / link change) so the
+// of one cloud account. Called from the cache-invalidation consumer (relay-server
+// changes) right after an integration mutation (create / status change / delete / link change) so the
 // KB list reflects the new state within seconds instead of waiting up to
 // KBSyncIntervalMinutes (default 30) for the next periodic tick.
 //
@@ -364,7 +364,30 @@ func EnsureIntegrationKBsForAccount(accountId string) {
 		slog.Error("kb_sync: failed to resolve the account's tenant", "account_id", accountId, "error", err)
 		return
 	}
+	ensureIntegrationKBsForTenant(ctx, dbms, tenantID, accountId)
+}
 
+// EnsureIntegrationKBsForTenant is EnsureIntegrationKBsForAccount when the
+// tenant is already known: the sync_integration_kbs task services-server
+// publishes once per integration change. One run covers every account of the
+// tenant, since the sync is per tenant.
+func EnsureIntegrationKBsForTenant(tenantID string) {
+	if tenantID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		slog.Error("kb_sync: failed to get database manager", "tenant_id", tenantID, "error", err)
+		return
+	}
+	ensureIntegrationKBsForTenant(ctx, dbms, tenantID, "")
+}
+
+// ensureIntegrationKBsForTenant is the shared fast path; accountId is only
+// logged (empty when the caller started from the tenant).
+func ensureIntegrationKBsForTenant(ctx context.Context, dbms *common.DatabaseManager, tenantID, accountId string) {
 	var integrations []integrationKBRow
 	if err := dbms.Db.SelectContext(ctx, &integrations, eligibleIntegrationsQuery, tenantID); err != nil {
 		slog.Error("kb_sync: per-tenant fetch failed", "tenant_id", tenantID, "error", err)

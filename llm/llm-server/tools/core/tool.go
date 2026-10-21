@@ -223,9 +223,10 @@ func (c *toolCache) delete(accountId string) {
 }
 
 // invalidateCachesForAccount drops every cache derived from this account's tools
-// and integrations. Both the originating replica (via updateToolCache) and every
-// peer replica (via the CacheChannelToolInvalidation subscriber) run it, so it
-// must stay idempotent.
+// and integrations. It runs on the originating replica (via updateToolCache),
+// on every peer replica (via the CacheChannelToolInvalidation subscriber), and
+// on every replica for an integration change (InvalidateAccountIntegrationCache),
+// so it must stay idempotent.
 func invalidateCachesForAccount(accountId string) {
 	toolCacheInstance.delete(accountId)
 	enabledToolsCacheInstance.delete(accountId)

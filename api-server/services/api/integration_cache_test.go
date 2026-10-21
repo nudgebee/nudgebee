@@ -1,9 +1,13 @@
 package api
 
 import (
+	"encoding/json"
 	"testing"
 
+	"nudgebee/services/config"
+
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mergeAccountIds feeds invalidateIntegrationCaches. The case that matters is the
@@ -62,4 +66,14 @@ func TestInvalidateIntegrationCachesEmptyIsNoOp(t *testing.T) {
 		invalidateIntegrationCaches(nil, nil)
 		invalidateIntegrationCaches(nil, []string{})
 	}, "empty account set must return before touching ctx or any publisher")
+}
+
+// llm-server's task consumer (api/llm_server_tasks_mq.go) decodes this JSON,
+// and both services default the exchange and queue to the same name.
+func TestLlmServerTask_WireFormat(t *testing.T) {
+	b, err := json.Marshal(llmServerTask{Type: llmTaskSyncIntegrationKBs, Keys: []string{"tenant-1"}, Sender: "services-server/pod-a"})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"sync_integration_kbs","keys":["tenant-1"],"sender":"services-server/pod-a"}`, string(b))
+	assert.Equal(t, "llm_server_tasks", config.Config.RabbitMqLlmServerTasksExchange)
+	assert.Equal(t, "llm_server_tasks", config.Config.RabbitMqLlmServerTasksQueue)
 }

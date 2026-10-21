@@ -111,3 +111,22 @@ func TestProcessCacheInvalidationMessage_MCPIntegrationHealthChange(t *testing.T
 	_, present = core.GetMCPIntegrationToolCache(withOther)
 	assert.True(t, present, "a list without the integration is kept")
 }
+
+// services-server sends integration changes as the integration_changed
+// replica broadcast; it must clear the same caches the fanout message does.
+func TestIntegrationChangedBroadcast_ClearsCacheForListedAccounts(t *testing.T) {
+	const a, b, other = "acct-integration-change-a", "acct-integration-change-b", "acct-integration-change-other"
+	for _, id := range []string{a, b, other} {
+		core.SetMCPIntegrationToolCache(id, []core.NBTool{})
+		defer core.ClearMCPIntegrationToolCache(id)
+	}
+
+	common.ReplicaBroadcast(context.Background(), common.ChangeIntegration, a, b, a, "")
+
+	for _, id := range []string{a, b} {
+		_, present := core.GetMCPIntegrationToolCache(id)
+		assert.False(t, present, "cache for account %s should be cleared", id)
+	}
+	_, present := core.GetMCPIntegrationToolCache(other)
+	assert.True(t, present, "an account that was not listed keeps its cache")
+}

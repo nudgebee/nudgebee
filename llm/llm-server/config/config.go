@@ -573,11 +573,16 @@ type appConfig struct {
 	// workflow activity that is suspended waiting for the result).
 	RabbitMqEventInvestigateCompletedExchange   string `mapstructure:"rabbit_mq_event_investigate_completed_exchange"`
 	RabbitMqEventInvestigateCompletedRoutingKey string `mapstructure:"rabbit_mq_event_investigate_completed_routing_key"`
-	// Fan-out exchange used by api-server to broadcast integration cache
+	// Fan-out exchange relay-server (and llm-server itself) use to broadcast cache
 	// invalidation events to every llm-server replica. Each pod binds an
 	// auto-delete + exclusive queue ("<exchange>_<ServerName>") so every
 	// pod receives every message.
 	RabbitMqLLMCacheInvalidationExchange string `mapstructure:"rabbit_mq_llm_cache_invalidation_exchange"`
+	// llm-server's task queue: work other services ask one llm-server replica
+	// to do once ({type, keys, sender}). Values must match services-server's
+	// defaults for the same keys.
+	RabbitMqLlmServerTasksExchange string `mapstructure:"rabbit_mq_llm_server_tasks_exchange"`
+	RabbitMqLlmServerTasksQueue    string `mapstructure:"rabbit_mq_llm_server_tasks_queue"`
 
 	// notifications-server's inbound exchange, shared with api-server and
 	// cloud-collector. Values must match api-server's defaults for the same keys
@@ -1529,6 +1534,8 @@ func init() {
 	viper.SetDefault("llm_server_mq_troubleshoot_exchange", "llm_server_event_investigate")
 	viper.SetDefault("llm_server_mq_troubleshoot_queue", "llm_server_event_investigate")
 	viper.SetDefault("rabbit_mq_llm_cache_invalidation_exchange", "llm_cache_invalidation")
+	viper.SetDefault("rabbit_mq_llm_server_tasks_exchange", "llm_server_tasks")
+	viper.SetDefault("rabbit_mq_llm_server_tasks_queue", "llm_server_tasks")
 
 	viper.SetDefault("rabbit_mq_event_investigate_completed_exchange", "llm_server_event_investigate_completed")
 	viper.SetDefault("rabbit_mq_event_investigate_completed_routing_key", "llm_server_event_investigate_completed")

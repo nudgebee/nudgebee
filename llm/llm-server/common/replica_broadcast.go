@@ -25,6 +25,8 @@ const replicaBroadcastChannel = "nb_replica_broadcast"
 const (
 	ChangeEgressFilter         = "egressfilter_changed"          // keys: tenant ids
 	ChangeConversationOverride = "conversation_override_changed" // keys: conversation ids
+	// Sent by services-server; same value as its ChangeIntegration.
+	ChangeIntegration = "integration_changed" // keys: account ids
 )
 
 // ReplicaMessage is the wire format: what changed, never the new value.
