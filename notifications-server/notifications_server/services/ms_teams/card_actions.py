@@ -14,7 +14,6 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
 from typing import Callable, Optional
 
 import requests
@@ -23,10 +22,11 @@ from sqlalchemy.orm import Session
 from notifications_server import sync_engine
 from notifications_server.configs.settings import URLRoutes, settings
 from notifications_server.models.models import SentNotifications
-from notifications_server.services import auto_optimize_approval
+from notifications_server.services import auto_optimize_approval, workflow_approval
 from notifications_server.services.cache import Cache
 from notifications_server.services.messaging_installations import ms_teams_aad_tenant_owner
 from notifications_server.services.ms_teams.bot_sender import TeamsBotError, card_activity, get_sender
+from notifications_server.services.workflow_approval import Decision
 from notifications_server.utils.action_requests import ActionRequestBody, sign_action_request, verify_action_request
 from notifications_server.utils.datetime_utils import utc_now
 from notifications_server.utils.nb_chart import split_nb_chart_segments
@@ -647,20 +647,6 @@ async def _suppress_claimed(activity, reply, card_ref, params, tenant_id, user_i
     )
 
 
-def _post_approval(token: str, status: str) -> Optional[int]:
-    """The workflow server's HTTP status for the decision, or None when it
-    couldn't be reached."""
-    try:
-        # The token comes from signed data and is colon-joined ids; it's still
-        # escaped so nothing in it can change the path.
-        url = f"{settings.services.workflow_server.rstrip('/')}/approvals/{quote(token, safe=':')}"
-        response = requests.post(url, json={"status": status}, timeout=30)
-        return response.status_code
-    except requests.RequestException as e:
-        LOG.warning("Recording a Teams approval decision failed: %s", e)
-        return None
-
-
 async def _approve(common_service, activity, user_email, aad_tenant_id) -> None:
     # Imported here: actions_common imports events, which imports this module.
     from notifications_server.services.actions import validate_and_get_user_tenants
@@ -709,6 +695,9 @@ async def _approve(common_service, activity, user_email, aad_tenant_id) -> None:
 
 async def _approve_claimed(activity, reply, card_ref, params, user_email) -> None:
     """Records the decision, once the click is checked and claimed."""
+    # Imported here: actions_common imports events, which imports this module.
+    from notifications_server.services.actions_common import USER_NOT_FOUND_MESSAGE
+
     started = await asyncio.to_thread(begin, card_ref, APPROVE, lambda c: with_status(c, "Recording your decision…"))
     if started is REFUSED:
         return await reply(APPROVAL_ANSWERED)
@@ -726,13 +715,17 @@ async def _approve_claimed(activity, reply, card_ref, params, user_email) -> Non
         else:
             not_decided = decided.message
     else:
-        status_code = await asyncio.to_thread(_post_approval, params["token"], params["status"])
-        if status_code is not None and status_code < 300:
+        decision = await asyncio.to_thread(workflow_approval.decide, params["token"], params["status"], user_email)
+        if decision is Decision.DECIDED:
             outcome = f"{clicker} chose **{_label(params['status'])}**"
-        elif status_code == 409:
+        elif decision is Decision.ANSWERED:
             outcome = APPROVAL_ANSWERED
-        elif status_code == 404:
+        elif decision is Decision.NOT_FOUND:
             outcome = APPROVAL_EXPIRED
+        elif decision is Decision.NOT_A_USER:
+            not_decided = USER_NOT_FOUND_MESSAGE
+        elif decision is Decision.NO_ACCESS:
+            not_decided = workflow_approval.no_access_message()
         else:
             not_decided = APPROVAL_FAILED
     if not_decided:

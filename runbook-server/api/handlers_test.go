@@ -151,6 +151,11 @@ func (m *MockWorkflowService) CompleteApprovalTaskFromUI(ctx *security.RequestCo
 	return args.Error(0)
 }
 
+func (m *MockWorkflowService) CompleteApprovalTaskByToken(ctx *security.RequestContext, token, status string) error {
+	args := m.Called(ctx, token, status)
+	return args.Error(0)
+}
+
 func (m *MockWorkflowService) CancelWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string) error {
 	args := m.Called(ctx, accountId, workflowId, executionId)
 	return args.Error(0)

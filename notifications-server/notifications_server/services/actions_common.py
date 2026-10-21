@@ -446,6 +446,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
                 message_ts=message_ts,
                 token=token,
                 status=status,
+                user_email=user_email,
             )
             self.action_service.handle_approval_action(params=params)
             return json.dumps({"status": "success"})
@@ -470,7 +471,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
         self.common_service.slack_reply_in_thread(channel_id, team_id, message_ts, text)
         return json.dumps({"status": "settled" if outcome.settled else "not_decided"})
 
-    def handle_workflow_approval_selection(self, channel_id, team_id, _, action, data):
+    def handle_workflow_approval_selection(self, channel_id, team_id, user_email, action, data):
         try:
             selected_option = action.get("selected_option", {})
             status = selected_option.get("value", "")
@@ -495,6 +496,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
                 message_ts=message_ts,
                 token=token,
                 status=status,
+                user_email=user_email,
             )
             self.action_service.handle_approval_action(params=params)
             return json.dumps({"status": "success"})

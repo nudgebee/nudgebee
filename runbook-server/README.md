@@ -474,7 +474,7 @@ Both `/runs/*` and `/executions/*` are accepted (aliases of each other).
 
 | Method | Path | What it does |
 |---|---|---|
-| `POST` | `/approvals/:token` | Resolves a paused approval task. The token is signed with `approval_signing_key`. |
+| `POST` | `/approvals/:token` | Resolves a paused approval task. The token is signed with `approval_signing_key`. Slack and Teams approval cards don't use it: they send the card's token to the `workflow_complete_approval` action, which decides as the clicking user. |
 
 ### Tasks
 

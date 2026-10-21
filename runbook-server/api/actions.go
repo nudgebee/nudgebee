@@ -726,6 +726,14 @@ func (s *Server) handleCancelWorkflowExecution(c *gin.Context, sc *security.Requ
 }
 
 func (s *Server) handleCompleteWorkflowApproval(c *gin.Context, sc *security.RequestContext, args map[string]any) {
+	// A chat approval card carries the approval token instead of the run's ids.
+	if token, _ := args["token"].(string); token != "" {
+		status, _ := args["status"].(string)
+		err := s.workflowService.CompleteApprovalTaskByToken(sc, token, status)
+		s.respondToApproval(c, err, http.StatusInternalServerError, "by", "token")
+		return
+	}
+
 	accountID, ok := args["account_id"].(string)
 	if !ok || accountID == "" {
 		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("account_id is required")}))
@@ -753,15 +761,20 @@ func (s *Server) handleCompleteWorkflowApproval(c *gin.Context, sc *security.Req
 	}
 	comments, _ := args["comments"].(string)
 
-	if err := s.workflowService.CompleteApprovalTaskFromUI(sc, accountID, workflowID, executionID, taskID, status, comments); err != nil {
+	err := s.workflowService.CompleteApprovalTaskFromUI(sc, accountID, workflowID, executionID, taskID, status, comments)
+	s.respondToApproval(c, err, http.StatusBadRequest, "workflowID", workflowID, "executionID", executionID, "taskID", taskID)
+}
+
+func (s *Server) respondToApproval(c *gin.Context, err error, internalStatus int, logArgs ...any) {
+	if err != nil {
 		var commonErr common.Error
 		if errors.As(err, &commonErr) {
-			s.logger.Warn("failed to complete approval via RPC", "workflowID", workflowID, "executionID", executionID, "taskID", taskID, "error", err)
+			s.logger.Warn("failed to complete approval via RPC", append(logArgs, "error", err)...)
 			c.JSON(commonErr.Code, buildApiResponse(nil, []error{errors.New(commonErr.Message)}))
 			return
 		}
-		s.logger.Error("failed to complete approval via RPC", "workflowID", workflowID, "executionID", executionID, "taskID", taskID, "error", err)
-		c.JSON(http.StatusBadRequest, common.ErrorActionInternal("failed to complete approval"))
+		s.logger.Error("failed to complete approval via RPC", append(logArgs, "error", err)...)
+		c.JSON(internalStatus, common.ErrorActionInternal("failed to complete approval"))
 		return
 	}
 

@@ -16,7 +16,9 @@ from notifications_server.services import actions as actions_module
 from notifications_server.services import actions_common
 from notifications_server.services import events as events_module
 from notifications_server.services import message as message_module
+from notifications_server.services import workflow_approval
 from notifications_server.services.ms_teams import card_actions as ca
+from notifications_server.services.workflow_approval import Decision
 
 NB_TENANT = "aaaaaaaa-1111-4111-8111-111111111111"
 OTHER_TENANT = "bbbbbbbb-2222-4222-8222-222222222222"
@@ -586,13 +588,13 @@ def _approval_click(card, option=0):
     )
 
 
-def _run_approval(activity, *, status_code=200, user=("user-1", [NB_TENANT]), claimed=True):
+def _run_approval(activity, *, decision=Decision.DECIDED, user=("user-1", [NB_TENANT]), claimed=True):
     common = SimpleNamespace(teams_reply=mock.AsyncMock())
     sender = mock.Mock()
     with (
         mock.patch.object(ca, "_tenant_for", return_value=uuid.UUID(NB_TENANT)),
         mock.patch.object(actions_module, "validate_and_get_user_tenants", return_value=user),
-        mock.patch.object(ca, "_post_approval", return_value=status_code) as post,
+        mock.patch.object(ca.workflow_approval, "decide", return_value=decision) as post,
         mock.patch.object(ca.Cache, "claim_card_action", return_value=claimed),
         mock.patch.object(ca.Cache, "release_card_action") as release,
         mock.patch.object(ca, "get_sender", return_value=sender),
@@ -604,7 +606,7 @@ def _run_approval(activity, *, status_code=200, user=("user-1", [NB_TENANT]), cl
 
 def test_approving_records_the_decision_and_stamps_the_card(approval_store):
     result = _run_approval(_approval_click(approval_store.card))
-    assert result.post.call_args.args == ("run-1:task-2", "approve")
+    assert result.post.call_args.args == ("run-1:task-2", "approve", "dana@example.com")
     last = result.sender.update.call_args_list[-1].args[3].attachments[0].content
     assert last["body"][-1]["text"] == "Dana chose **Approve**"
     assert not ca.has_actions(last), "the buttons are gone once it's answered"
@@ -620,19 +622,19 @@ def test_a_second_decision_on_the_same_card_is_refused(approval_store):
 
 
 def test_an_answered_or_expired_approval_is_shown_as_such(approval_store):
-    answered = _run_approval(_approval_click(approval_store.card), status_code=409)
+    answered = _run_approval(_approval_click(approval_store.card), decision=Decision.ANSWERED)
     assert answered.replies == [ca.APPROVAL_ANSWERED]
 
 
 def test_an_expired_approval_is_shown_as_expired(approval_store):
-    expired = _run_approval(_approval_click(approval_store.card), status_code=404)
+    expired = _run_approval(_approval_click(approval_store.card), decision=Decision.NOT_FOUND)
     assert expired.replies == [ca.APPROVAL_EXPIRED]
     assert not ca.has_actions(approval_store.stored()["card"])
 
 
 def test_a_failed_decision_can_be_retried(approval_store):
-    for status_code in (500, None):
-        result = _run_approval(_approval_click(approval_store.card), status_code=status_code)
+    for decision in (Decision.FAILED, Decision.INVALID):
+        result = _run_approval(_approval_click(approval_store.card), decision=decision)
         assert result.replies == [ca.APPROVAL_FAILED]
         result.release.assert_called_once()
         assert approval_store.stored()["actions"] == {}
@@ -643,6 +645,19 @@ def test_someone_outside_the_workspace_cannot_decide(approval_store):
     result = _run_approval(_approval_click(approval_store.card), user=("user-9", [OTHER_TENANT]))
     result.post.assert_not_called()
     assert result.replies == [actions_common.USER_NOT_FOUND_MESSAGE]
+
+
+def test_a_user_without_approval_access_cannot_decide(approval_store):
+    result = _run_approval(_approval_click(approval_store.card), decision=Decision.NO_ACCESS)
+    assert result.replies == [workflow_approval.no_access_message()]
+    assert approval_store.stored()["actions"] == {}
+    assert ca.has_actions(approval_store.stored()["card"])
+
+
+def test_a_user_outside_the_accounts_tenant_cannot_decide(approval_store):
+    result = _run_approval(_approval_click(approval_store.card), decision=Decision.NOT_A_USER)
+    assert result.replies == [actions_common.USER_NOT_FOUND_MESSAGE]
+    assert ca.has_actions(approval_store.stored()["card"])
 
 
 def test_tampered_approval_data_is_refused(approval_store):
@@ -661,7 +676,7 @@ def test_a_choice_set_approval_reads_the_picked_option(approval_store):
     activity = _approval_click(card)
     activity.value = {ca.ACTION_KEY: ca.APPROVE, ca.APPROVAL_CHOICE: choice_set["choices"][2]["value"]}
     result = _run_approval(activity)
-    assert result.post.call_args.args == ("run-1:task-2", "defer")
+    assert result.post.call_args.args == ("run-1:task-2", "defer", "dana@example.com")
 
 
 def test_an_approval_prompt_too_large_for_its_buttons_is_still_sent():
@@ -695,19 +710,6 @@ def test_a_decision_releases_its_claim_and_an_unexpected_error_replies(approval_
         failed = _run_approval(_approval_click(approval_store.card))
     assert failed.replies == [ca.APPROVAL_FAILED]
     failed.release.assert_called_once()
-
-
-def test_the_approval_token_is_escaped_in_the_url(monkeypatch):
-    monkeypatch.setattr(settings.services, "workflow_server", "http://workflow-server/")
-    with mock.patch.object(ca.requests, "post", return_value=SimpleNamespace(status_code=200)) as post:
-        assert ca._post_approval("run-1:task-2", "approve") == 200
-        ca._post_approval("run/../x?y#z w", "approve")
-    urls = [c.args[0] for c in post.call_args_list]
-    assert urls == [
-        "http://workflow-server/approvals/run-1:task-2",
-        "http://workflow-server/approvals/run%2F..%2Fx%3Fy%23z%20w",
-    ]
-    assert post.call_args.kwargs["json"] == {"status": "approve"}
 
 
 # ------------------------------- Ask Nubi -------------------------------

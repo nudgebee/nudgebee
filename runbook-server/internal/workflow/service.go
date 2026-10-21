@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -66,6 +67,7 @@ type WorkflowService interface {
 	UpdateWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string, inputs map[string]any) error
 	CompleteApprovalTask(ctx *security.RequestContext, token, status string, result any) error
 	CompleteApprovalTaskFromUI(ctx *security.RequestContext, accountID, workflowID, executionID, taskID, status, comments string) error
+	CompleteApprovalTaskByToken(ctx *security.RequestContext, token, status string) error
 	CancelWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string) error
 	PauseWorkflow(ctx *security.RequestContext, accountId, id string) error
 	ResumeWorkflow(ctx *security.RequestContext, accountId, id string) error
@@ -3740,6 +3742,72 @@ func (s *Service) CompleteApprovalTaskFromUI(ctx *security.RequestContext, accou
 		map[string]any{"source": "ui"},
 	)
 	return nil
+}
+
+// CompleteApprovalTaskByToken records a decision taken on a chat approval card
+// as the caller, who must be allowed to approve in the app and belong to the
+// run's tenant. The token still identifies the approval; it no longer decides
+// who may answer it.
+func (s *Service) CompleteApprovalTaskByToken(ctx *security.RequestContext, token, status string) error {
+	parts := strings.Split(token, ":")
+	if len(parts) != 5 || slices.Contains(parts, "") {
+		return common.ErrorBadRequest("invalid approval token")
+	}
+	if status == "" {
+		return common.ErrorBadRequest("status is required")
+	}
+	accountID, temporalID, runID, taskID := parts[1], parts[2], parts[3], parts[4]
+	// The gate is answered through its run gate, which needs the automation;
+	// the card never carries one (the gate is always in_app).
+	if taskID == model.ApprovalGateTaskID {
+		return common.ErrorUnauthorized("this approval can only be answered in the app, by a person allowed to make its changes")
+	}
+
+	if ctx == nil || ctx.GetSecurityContext() == nil {
+		return common.ErrorUnauthorized("account not accessible")
+	}
+	sc := ctx.GetSecurityContext()
+	if !sc.HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) && !canRunWorkflows(sc, accountID) {
+		return common.ErrorUnauthorized("account not accessible")
+	}
+
+	describeResp, err := s.temporalClient.DescribeWorkflowExecution(ctx.GetContext(), temporalID, runID)
+	if err != nil {
+		var notFound *serviceerror.NotFound
+		if errors.As(err, &notFound) {
+			return common.ErrorNotFound("approval not found")
+		}
+		return fmt.Errorf("describe workflow execution: %w", err)
+	}
+	info := describeResp.GetWorkflowExecutionInfo()
+	// The account in the token is plain text; the run's own attributes say
+	// whose it is. A run of another tenant or account reads as not found.
+	if s.searchAttrString(info.GetSearchAttributes(), model.SearchAttrTenantID) != sc.GetTenantId() ||
+		s.searchAttrString(info.GetSearchAttributes(), model.SearchAttrAccountID) != accountID {
+		return common.ErrorNotFound("approval not found")
+	}
+	if runStatus := mapTemporalStatusToModelStatus(info.GetStatus()); runStatus != model.WorkflowExecutionStatusRunning {
+		return common.Error{Code: 409, Message: fmt.Sprintf("execution is no longer running (%s); approval cannot be recorded", runStatus)}
+	}
+	// The ids were checked, but the task token in front of them is what gets
+	// completed; it must be the one this run is waiting on.
+	queryResp, err := s.temporalClient.QueryWorkflow(ctx.GetContext(), temporalID, runID, "getApprovalToken", taskID)
+	if err != nil {
+		var queryFailed *serviceerror.QueryFailed
+		if errors.As(err, &queryFailed) {
+			return common.ErrorNotFound("approval not found")
+		}
+		return fmt.Errorf("resolve approval token: %w", err)
+	}
+	var pending string
+	if err := queryResp.Get(&pending); err != nil {
+		return fmt.Errorf("decode approval token: %w", err)
+	}
+	if subtle.ConstantTimeCompare([]byte(pending), []byte(token)) != 1 {
+		return common.ErrorNotFound("approval not found")
+	}
+
+	return s.CompleteApprovalTask(ctx, token, status, nil)
 }
 
 // fetchApprovalIMContext reads the IM thread coordinates the approval activity
