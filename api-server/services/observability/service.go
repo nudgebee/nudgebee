@@ -2470,12 +2470,25 @@ var allProviderCaps = map[string]providerStaticCaps{
 		SupportsRawQuery:      true,
 		TraceSource:           "otel",
 	},
+	// SupportsCrossZoneCommunication is true only here, and this is the only provider it
+	// can be true for. The Cross-Zone tab does not go through a TraceSource reader: it
+	// reads traces_groupings_v2 over /rpc/query, grouping on workload_zone and
+	// destination_workload_zone. Only this provider's definition of that table projects
+	// those two columns -- from the node agent's materialized columns, or from
+	// ResourceAttributes['cloud.availability_zone'] / query.DestinationZoneExpr where
+	// they are absent. The bigquery definition has no zone columns at all, and every
+	// other trace provider resolves the same table to the agent's ClickHouse by default
+	// (getSourceByAccountId routes elsewhere only for a bigquery agent feature, a
+	// chronosphere Prometheus URL or an azure_app_insights traces integration), so
+	// advertising it there would answer the tab either out of a store that holds none of
+	// that account's traces or out of a backend that cannot run the query at all.
 	"otel_clickhouse": {
-		SupportsServiceMap:     true,
-		SupportsTraceGrouping:  true,
-		SupportsHeatmap:        true,
-		SupportsRawQuery:       true,
-		TraceSourcePassthrough: true,
+		SupportsServiceMap:             true,
+		SupportsTraceGrouping:          true,
+		SupportsHeatmap:                true,
+		SupportsRawQuery:               true,
+		SupportsCrossZoneCommunication: true,
+		TraceSourcePassthrough:         true,
 	},
 	"observe": {
 		SupportsServiceMap:    true,

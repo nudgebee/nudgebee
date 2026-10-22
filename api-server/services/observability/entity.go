@@ -488,7 +488,7 @@ type ProviderCapabilities struct {
 	SupportsServiceMap             bool `json:"supports_service_map"`
 	SupportsTraceGrouping          bool `json:"supports_trace_grouping"`
 	SupportsHeatmap                bool `json:"supports_heatmap"`
-	SupportsCrossZoneCommunication bool `json:"supports_cross_zone_communication"` // traces only; false by default for all providers
+	SupportsCrossZoneCommunication bool `json:"supports_cross_zone_communication"` // traces only; true for otel_clickhouse, false for every other provider
 	SupportsRawQuery               bool `json:"supports_raw_query"`
 	SupportsLogGroups              bool `json:"supports_log_groups"`
 	// Interface-derived at runtime (optional interface — not all providers implement it)
