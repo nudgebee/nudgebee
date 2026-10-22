@@ -146,21 +146,20 @@ class NotificationProcessor:
             failed_platforms = getattr(e, "failed_platforms", None)
             if failed_platforms:
                 task["retry_platforms"] = failed_platforms
-            if self._death_count(headers) >= settings.notifications.task_retry_count:
+            try:
+                attempt = int((headers or {}).get("nb-retry-count") or 0)
+            except (ValueError, TypeError):
+                attempt = 0
+            out = {k: v for k, v in (headers or {}).items() if k in ("traceparent", "tracestate")}
+            if attempt >= settings.notifications.task_retry_count:
                 LOG.error(
                     "Task exhausted %d retries, moving to DLQ from: %s",
                     settings.notifications.task_retry_count,
                     headers,
                 )
-                await self.task_producer.publish_dlq_message(task)
+                await self.task_producer.publish_dlq_message(task, headers={**out, "nb-retry-count": attempt})
             else:
-                await self.task_producer.publish_delayed_message(task)
-
-    @staticmethod
-    def _death_count(headers) -> int:
-        # RabbitMQ appends/increments an "x-death" header entry each time a message
-        # is dead-lettered back onto this queue via the delayed-retry path.
-        return sum(entry.get("count", 0) for entry in (headers or {}).get("x-death") or [])
+                await self.task_producer.publish_delayed_message(task, headers={**out, "nb-retry-count": attempt + 1})
 
     async def _route_task(self, task, headers):
         kind = task.get("kind")

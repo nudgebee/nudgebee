@@ -25,12 +25,15 @@ class _FakeMessageService:
 class _FakeTaskProducer:
     def __init__(self):
         self.calls = []
+        self.headers = None
 
-    async def publish_delayed_message(self, message):
+    async def publish_delayed_message(self, message, headers=None):
         self.calls.append(("delayed", message))
+        self.headers = headers
 
-    async def publish_dlq_message(self, message):
+    async def publish_dlq_message(self, message, headers=None):
         self.calls.append(("dlq", message))
+        self.headers = headers
 
 
 def _processor(responses, task_producer=None):
@@ -77,7 +80,7 @@ def test_process_task_retries_via_delayed_queue_below_the_cap():
     processor = _processor([{"platform": "slack", "status": "failed"}], producer)
     task = json.dumps({"kind": "notification", "tenant_id": "t1", "parameters": {"message": "hi"}}).encode()
 
-    headers = {"x-death": [{"count": settings.notifications.task_retry_count - 1}]}
+    headers = {"nb-retry-count": settings.notifications.task_retry_count - 1}
     asyncio.run(processor.process_task(headers, task))
 
     assert producer.calls == [
@@ -86,6 +89,7 @@ def test_process_task_retries_via_delayed_queue_below_the_cap():
             {"kind": "notification", "tenant_id": "t1", "parameters": {"message": "hi"}, "retry_platforms": ["slack"]},
         )
     ]
+    assert producer.headers == {"nb-retry-count": settings.notifications.task_retry_count}
 
 
 def test_process_task_moves_to_dlq_once_the_cap_is_reached():
@@ -93,7 +97,7 @@ def test_process_task_moves_to_dlq_once_the_cap_is_reached():
     processor = _processor([{"platform": "slack", "status": "failed"}], producer)
     task = json.dumps({"kind": "notification", "tenant_id": "t1", "parameters": {"message": "hi"}}).encode()
 
-    headers = {"x-death": [{"count": settings.notifications.task_retry_count}]}
+    headers = {"nb-retry-count": settings.notifications.task_retry_count}
     asyncio.run(processor.process_task(headers, task))
 
     assert producer.calls == [
@@ -102,6 +106,7 @@ def test_process_task_moves_to_dlq_once_the_cap_is_reached():
             {"kind": "notification", "tenant_id": "t1", "parameters": {"message": "hi"}, "retry_platforms": ["slack"]},
         )
     ]
+    assert producer.headers == {"nb-retry-count": settings.notifications.task_retry_count}
 
 
 def test_process_task_retry_only_targets_the_platform_that_failed():
@@ -117,17 +122,72 @@ def test_process_task_retry_only_targets_the_platform_that_failed():
     )
     task = json.dumps({"kind": "notification", "tenant_id": "t1", "parameters": {"message": "hi"}}).encode()
 
-    headers = {"x-death": [{"count": settings.notifications.task_retry_count - 1}]}
+    headers = {"nb-retry-count": settings.notifications.task_retry_count - 1}
     asyncio.run(processor.process_task(headers, task))
 
     [(_, retried_task)] = producer.calls
     assert retried_task["retry_platforms"] == ["ms_teams"]
 
 
-def test_death_count_sums_all_x_death_entries():
-    assert NotificationProcessor._death_count({"x-death": [{"count": 2}, {"count": 3}]}) == 5
+def test_process_task_forwards_trace_context_and_filters_other_headers():
+    producer = _FakeTaskProducer()
+    processor = _processor([{"platform": "slack", "status": "failed"}], producer)
+    task = json.dumps({"kind": "notification", "tenant_id": "t1", "parameters": {"message": "hi"}}).encode()
+
+    headers = {
+        "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        "tracestate": "congo=t61rcWkgMzE",
+        "compression": "application/x-gzip",
+        "x-death": [{"count": 1}],
+    }
+    asyncio.run(processor.process_task(headers, task))
+
+    assert producer.headers == {
+        "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        "tracestate": "congo=t61rcWkgMzE",
+        "nb-retry-count": 1,
+    }
 
 
-def test_death_count_is_zero_without_an_x_death_header():
-    assert NotificationProcessor._death_count({}) == 0
-    assert NotificationProcessor._death_count(None) == 0
+def test_failing_notification_task_retries_until_dlq():
+    """Regression test: inject a failing notification task, verify that nb-retry-count
+    increments across retry intervals until it reaches task_retry_count,
+    and confirm the task is published to the DLQ instead of looping indefinitely."""
+    producer = _FakeTaskProducer()
+    processor = _processor([{"platform": "slack", "status": "failed"}], producer)
+    task_payload = {"kind": "notification", "tenant_id": "t1", "parameters": {"message": "hi"}}
+    task_bytes = json.dumps(task_payload).encode()
+
+    headers = {}
+    for retry in range(settings.notifications.task_retry_count):
+        producer.calls.clear()
+        producer.headers = None
+        asyncio.run(processor.process_task(headers, task_bytes))
+        assert producer.calls == [("delayed", {**task_payload, "retry_platforms": ["slack"]})]
+        headers = producer.headers
+        assert headers["nb-retry-count"] == retry + 1
+
+    producer.calls.clear()
+    producer.headers = None
+    asyncio.run(processor.process_task(headers, task_bytes))
+    assert producer.calls == [("dlq", {**task_payload, "retry_platforms": ["slack"]})]
+    assert producer.headers == {"nb-retry-count": settings.notifications.task_retry_count}
+
+
+@pytest.mark.parametrize("invalid_value", [None, "", "not-an-int", {}, []])
+def test_process_task_handles_malformed_retry_count_header_defensively(invalid_value):
+    producer = _FakeTaskProducer()
+    processor = _processor([{"platform": "slack", "status": "failed"}], producer)
+    task = json.dumps({"kind": "notification", "tenant_id": "t1", "parameters": {"message": "hi"}}).encode()
+
+    headers = {"nb-retry-count": invalid_value}
+    asyncio.run(processor.process_task(headers, task))
+
+    # Should default attempt to 0 and publish retry with nb-retry-count = 1
+    assert producer.calls == [
+        (
+            "delayed",
+            {"kind": "notification", "tenant_id": "t1", "parameters": {"message": "hi"}, "retry_platforms": ["slack"]},
+        )
+    ]
+    assert producer.headers == {"nb-retry-count": 1}

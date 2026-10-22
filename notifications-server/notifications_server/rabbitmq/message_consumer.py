@@ -216,7 +216,7 @@ class Consumer:
             LOG.info("RabbitMQ connection closed")
         LOG.info("Consumer stopped")
 
-    async def _publish_message(self, message, queue):
+    async def _publish_message(self, message, queue, headers=None):
         if self._connection is None or self._connection.is_closed:
             LOG.error("Failed to publish message. RabbitMQ connection not available")
             return
@@ -231,17 +231,21 @@ class Consumer:
 
         try:
             await self._channel.default_exchange.publish(
-                Message(body=json.dumps(message).encode(), delivery_mode=aio_pika.DeliveryMode.PERSISTENT),
+                Message(
+                    body=json.dumps(message).encode(),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    headers=headers,
+                ),
                 routing_key=queue,
             )
         except Exception as e:
             LOG.error(f"Failed to publish message to queue {queue}: {e}")
 
-    async def publish_message(self, message):
-        await self._publish_message(message, self.queue)
+    async def publish_message(self, message, headers=None):
+        await self._publish_message(message, self.queue, headers=headers)
 
-    async def publish_delayed_message(self, message):
-        await self._publish_message(message, self.delayed_queue)
+    async def publish_delayed_message(self, message, headers=None):
+        await self._publish_message(message, self.delayed_queue, headers=headers)
 
-    async def publish_dlq_message(self, message):
-        await self._publish_message(message, self.dlq_queue)
+    async def publish_dlq_message(self, message, headers=None):
+        await self._publish_message(message, self.dlq_queue, headers=headers)
