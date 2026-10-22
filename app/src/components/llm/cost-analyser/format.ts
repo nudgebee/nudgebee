@@ -93,9 +93,12 @@ function dayKey(d: Date): string {
 }
 
 function weekKey(d: Date): string {
-  // ISO-ish week number for bucketing (good enough for the prototype).
-  const onejan = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  const week = Math.ceil(((d.getTime() - onejan.getTime()) / 86_400_000 + onejan.getUTCDay() + 1) / 7);
+  // ISO-8601 week number (weeks start Monday). Must agree with the backend's
+  // date_trunc('week', …), which buckets Monday-first — a Sunday-first count here
+  // puts Sunday's rows in a week label the chart never draws, dropping their cost.
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7));
+  const week = Math.ceil(((t.getTime() - Date.UTC(t.getUTCFullYear(), 0, 1)) / 86_400_000 + 1) / 7);
   return `W${week}`;
 }
 
