@@ -359,7 +359,7 @@ func syncSkillSourceByID(sc *security.RequestContext, id string, force bool) (Sk
 	}
 
 	knownCommit := ""
-	if !force && src.Status == SkillSourceStatusActive && src.LastCommit != nil {
+	if !force && src.Status == SkillSourceStatusActive && src.LastCommit != nil && !sourceHasFailedSkills(dbms, id) {
 		knownCommit = *src.LastCommit
 	}
 	report, syncErr := syncSkillSource(sc, dbms, src, knownCommit)
@@ -422,13 +422,30 @@ func syncSkillSource(sc *security.RequestContext, dbms *common.DatabaseManager, 
 	if err := dbms.Db.Select(&existing, `
 		SELECT id, name, status, COALESCE(skill_meta->>'source_path', '') AS source_path, COALESCE(skill_meta->>'body_sha', '') AS body_sha,
 		       COALESCE(skill_meta->>'content_sha', '') AS content_sha
-		FROM llm_knowledgebases WHERE source_id = $1`, src.Id); err != nil {
+		FROM llm_knowledgebases WHERE source_id = $1 ORDER BY updated_at`, src.Id); err != nil {
 		return report, err
 	}
 	byPath := map[string]syncedRow{}
 	for _, r := range existing {
 		byPath[r.SourcePath] = r
 	}
+	// A skill whose folder moved in the repo keeps its row: a row this sync
+	// would archive (or already archived) still holds the skill's name, so a
+	// new row would be refused as a name clash, on every sync after it too.
+	inRepo := map[string]bool{}
+	for _, pkg := range skills {
+		inRepo[pkg.Meta.SourcePath] = true
+	}
+	// Only rows whose path left the repo: one still there is matched by path
+	// (archived or not), and must not be taken twice. existing is ordered by
+	// updated_at, so of two such rows with one name the latest is taken.
+	movable := map[string]syncedRow{}
+	for _, r := range existing {
+		if !inRepo[r.SourcePath] {
+			movable[strings.ToLower(r.Name)] = r
+		}
+	}
+	moved := map[string]bool{}
 
 	userId := sc.GetSecurityContext().GetUserId()
 	owner := kbOwner{TenantId: src.TenantId}
@@ -439,6 +456,19 @@ func syncSkillSource(sc *security.RequestContext, dbms *common.DatabaseManager, 
 	// changed is set by any add, update or archive; a sync that changed no
 	// skill leaves the knowledge caches alone.
 	changed := false
+	// Rows written so far are indexed and the caches cleared even when the
+	// sync stops on an error: they were set to processing, and nothing else
+	// would ever submit them.
+	defer func() {
+		if changed {
+			invalidateOrgKnowledgeCaches(src.TenantId)
+		}
+		for _, job := range embed {
+			if err := submitSkillIndexing(sc, owner, job.id, job.body); err != nil {
+				_ = updateKBStatusError(dbms, job.id, fmt.Sprintf("failed to submit indexing: %v", err))
+			}
+		}
+	}()
 
 	for _, pkg := range skills {
 		if pkg.Body == "" {
@@ -484,7 +514,15 @@ func syncSkillSource(sc *security.RequestContext, dbms *common.DatabaseManager, 
 			return report, err
 		}
 
-		if row, ok := byPath[path]; ok {
+		row, ok := byPath[path]
+		if !ok {
+			if r, m := movable[lname]; m {
+				row, ok = r, true
+				delete(movable, lname)
+				moved[r.Id] = true
+			}
+		}
+		if ok {
 			if row.ContentSHA == contentSHA && strings.EqualFold(row.Name, pkg.Name) &&
 				row.Status != string(KBStatusArchived) && row.Status != string(KBStatusError) {
 				continue // unchanged: no write, no re-index
@@ -561,7 +599,7 @@ func syncSkillSource(sc *security.RequestContext, dbms *common.DatabaseManager, 
 	}
 
 	for _, row := range existing {
-		if found[row.SourcePath] || row.Status == string(KBStatusArchived) {
+		if found[row.SourcePath] || moved[row.Id] || row.Status == string(KBStatusArchived) {
 			continue
 		}
 		if err := updateKBStatus(dbms, row.Id, string(KBStatusArchived)); err != nil {
@@ -570,16 +608,23 @@ func syncSkillSource(sc *security.RequestContext, dbms *common.DatabaseManager, 
 		report.Archived++
 		changed = true
 	}
-
-	if changed {
-		invalidateOrgKnowledgeCaches(src.TenantId)
-	}
-	for _, job := range embed {
-		if err := submitSkillIndexing(sc, owner, job.id, job.body); err != nil {
-			_ = updateKBStatusError(dbms, job.id, fmt.Sprintf("failed to submit indexing: %v", err))
-		}
-	}
 	return report, nil
+}
+
+// sourceHasFailedSkills reports whether a source has a skill whose indexing
+// failed over an hour ago. An unchanged commit would otherwise skip the
+// reconcile that re-indexes it, and the skill would stay out of answers until
+// the repository changed. The hour spaces out retries of a skill that keeps
+// failing: a download and a re-index each time.
+func sourceHasFailedSkills(dbms *common.DatabaseManager, sourceId string) bool {
+	var failed bool
+	if err := dbms.Db.Get(&failed, `
+		SELECT EXISTS (SELECT 1 FROM llm_knowledgebases
+		               WHERE source_id = $1 AND status = $2 AND updated_at < NOW() - INTERVAL '1 hour')`,
+		sourceId, string(KBStatusError)); err != nil {
+		return true // reconcile: costs a download, never leaves a skill broken
+	}
+	return failed
 }
 
 // submitSkillIndexing (re)builds a synced skill's search collection from its

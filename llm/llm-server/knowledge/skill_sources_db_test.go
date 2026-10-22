@@ -556,3 +556,154 @@ func TestConversationHasSkillScripts_DB(t *testing.T) {
 	assert.True(t, ConversationHasSkillScripts(s.a, other), "a legacy alias, and a failed copy, still count")
 	assert.False(t, ConversationHasSkillScripts(s.a, "not-a-uuid"))
 }
+
+// A skill whose folder moved in the repo keeps its row, and stays there on the
+// next syncs: the new path used to be refused as a name clash with the old row,
+// which then got archived and held the name for good.
+func TestSkillSourceSyncKeepsAMovedSkill_DB(t *testing.T) {
+	db := kbTestDB(t)
+	s := seedKBTenantCommitted(t, db)
+	repo := &fakeSkillRepo{t: t, commit: "c1", files: map[string]string{"skills/foo/SKILL.md": skillMD("foo", "x")}}
+	indexed := stubSkillSourceFetch(t, repo)
+	sourceId := insertSkillSource(t, db, s, KBVisibilityOrganisation)
+	sc := security.NewRequestContextForTenantAdminWithUser(context.Background(), s.tenant, s.user)
+	_, err := SyncSkillSource(sc, sourceId)
+	require.NoError(t, err)
+	var fooId string
+	require.NoError(t, db.Get(&fooId, `SELECT id FROM llm_knowledgebases WHERE source_id = $1 AND name = 'foo'`, sourceId))
+	mustExec(t, db, `UPDATE llm_knowledgebases SET status = 'active' WHERE id = $1`, fooId)
+
+	repo.commit = "c2"
+	repo.files = map[string]string{"skills/tools/foo/SKILL.md": skillMD("foo", "x")}
+	for i := 0; i < 2; i++ {
+		report, err := SyncSkillSource(sc, sourceId)
+		require.NoError(t, err)
+		assert.Empty(t, report.Skipped, "sync %d", i+1)
+		assert.Zero(t, report.Archived, "sync %d", i+1)
+		var rows []struct {
+			Id     string `db:"id"`
+			Status string `db:"status"`
+			Path   string `db:"path"`
+		}
+		require.NoError(t, db.Select(&rows, `SELECT id, status, skill_meta->>'source_path' AS path FROM llm_knowledgebases WHERE source_id = $1`, sourceId))
+		require.Len(t, rows, 1, "sync %d", i+1)
+		assert.Equal(t, fooId, rows[0].Id, "the same row moved")
+		assert.Equal(t, "skills/tools/foo", rows[0].Path)
+		assert.Equal(t, "active", rows[0].Status, "same text: not re-indexed")
+	}
+	assert.Equal(t, []string{fooId}, *indexed, "indexed once, on the first sync")
+}
+
+// A skill whose indexing failed is re-indexed by the next scheduled sync even
+// when the repository has not changed: the unchanged-commit shortcut used to
+// leave it out of answers until someone clicked Sync now.
+func TestScheduledSyncRepairsAFailedSkill_DB(t *testing.T) {
+	db := kbTestDB(t)
+	s := seedKBTenantCommitted(t, db)
+	repo := &fakeSkillRepo{t: t, commit: "c1", files: map[string]string{"skills/foo/SKILL.md": skillMD("foo", "x")}}
+	indexed := stubSkillSourceFetch(t, repo)
+	sourceId := insertSkillSource(t, db, s, KBVisibilityOrganisation)
+	sc := security.NewRequestContextForTenantAdminWithUser(context.Background(), s.tenant, s.user)
+	_, err := SyncSkillSource(sc, sourceId)
+	require.NoError(t, err)
+	var fooId string
+	require.NoError(t, db.Get(&fooId, `SELECT id FROM llm_knowledgebases WHERE source_id = $1`, sourceId))
+
+	// Healthy and unchanged: no download.
+	mustExec(t, db, `UPDATE llm_knowledgebases SET status = 'active' WHERE id = $1`, fooId)
+	downloads := repo.downloads
+	_, err = syncSkillSourceByID(sc, sourceId, false)
+	require.NoError(t, err)
+	assert.Equal(t, downloads, repo.downloads)
+
+	// Indexing failed just now: retried later, not on every sync.
+	mustExec(t, db, `UPDATE llm_knowledgebases SET status = 'error', updated_at = NOW() WHERE id = $1`, fooId)
+	_, err = syncSkillSourceByID(sc, sourceId, false)
+	require.NoError(t, err)
+	assert.Equal(t, downloads, repo.downloads)
+
+	// Failed over an hour ago: the scheduled sync downloads and re-indexes it.
+	mustExec(t, db, `UPDATE llm_knowledgebases SET updated_at = NOW() - INTERVAL '2 hours' WHERE id = $1`, fooId)
+	*indexed = nil
+	_, err = syncSkillSourceByID(sc, sourceId, false)
+	require.NoError(t, err)
+	assert.Equal(t, downloads+1, repo.downloads)
+	assert.Equal(t, []string{fooId}, *indexed)
+	var status string
+	require.NoError(t, db.Get(&status, `SELECT status FROM llm_knowledgebases WHERE id = $1`, fooId))
+	assert.NotEqual(t, "error", status)
+}
+
+// A sync that stops on an error still indexes the skills it already wrote:
+// they were set to processing, and nothing else would ever submit them.
+func TestSyncErrorStillIndexesWrittenSkills_DB(t *testing.T) {
+	db := kbTestDB(t)
+	s := seedKBTenantCommitted(t, db)
+	// The second skill's name is longer than the name column (only warned
+	// about by the parser), so its insert fails after the first one's.
+	long := strings.Repeat("x", 300)
+	repo := &fakeSkillRepo{t: t, commit: "c1", files: map[string]string{
+		"skills/a-first/SKILL.md": skillMD("a-first", "x"),
+		"skills/z-long/SKILL.md":  skillMD(long, "y"),
+	}}
+	indexed := stubSkillSourceFetch(t, repo)
+	sourceId := insertSkillSource(t, db, s, KBVisibilityOrganisation)
+	sc := security.NewRequestContextForTenantAdminWithUser(context.Background(), s.tenant, s.user)
+
+	_, err := SyncSkillSource(sc, sourceId)
+	require.Error(t, err)
+	var firstId string
+	require.NoError(t, db.Get(&firstId, `SELECT id FROM llm_knowledgebases WHERE source_id = $1 AND name = 'a-first'`, sourceId))
+	assert.Equal(t, []string{firstId}, *indexed)
+}
+
+// An archived row whose path is still in the repo is matched by its path, not
+// taken over by another skill with its old name (review, #41652 follow-up): a
+// row claimed twice in one sync lost one of the two skills.
+func TestSkillSourceSyncDoesNotTakeAnArchivedRowTwice_DB(t *testing.T) {
+	db := kbTestDB(t)
+	s := seedKBTenantCommitted(t, db)
+	repo := &fakeSkillRepo{t: t, commit: "c1", files: map[string]string{"skills/p/SKILL.md": skillMD("x-skill", "x")}}
+	stubSkillSourceFetch(t, repo)
+	sourceId := insertSkillSource(t, db, s, KBVisibilityOrganisation)
+	sc := security.NewRequestContextForTenantAdminWithUser(context.Background(), s.tenant, s.user)
+	_, err := SyncSkillSource(sc, sourceId)
+	require.NoError(t, err)
+	mustExec(t, db, `UPDATE llm_knowledgebases SET status = 'archived' WHERE source_id = $1`, sourceId)
+
+	var rowId string
+	require.NoError(t, db.Get(&rowId, `SELECT id FROM llm_knowledgebases WHERE source_id = $1`, sourceId))
+
+	// The skill at p is renamed y-skill; a new skill at a (processed first)
+	// uses the old name x-skill.
+	repo.commit = "c2"
+	repo.files = map[string]string{"skills/a/SKILL.md": skillMD("x-skill", "new"), "skills/p/SKILL.md": skillMD("y-skill", "x")}
+	type row struct {
+		Id   string `db:"id"`
+		Name string `db:"name"`
+		Path string `db:"path"`
+	}
+	rows := func() []row {
+		var out []row
+		require.NoError(t, db.Select(&out, `SELECT id, name, skill_meta->>'source_path' AS path FROM llm_knowledgebases WHERE source_id = $1 ORDER BY path`, sourceId))
+		return out
+	}
+
+	// First sync: the row stays with p (renamed); a waits, its name still held.
+	report, err := SyncSkillSource(sc, sourceId)
+	require.NoError(t, err)
+	require.Len(t, report.Skipped, 1)
+	assert.Equal(t, "skills/a", report.Skipped[0].SourcePath)
+	assert.Equal(t, []row{{rowId, "y-skill", "skills/p"}}, rows())
+
+	// Next sync: the name is free, a gets its own row; neither skill is lost.
+	repo.commit = "c3"
+	report, err = SyncSkillSource(sc, sourceId)
+	require.NoError(t, err)
+	assert.Empty(t, report.Skipped)
+	got := rows()
+	require.Len(t, got, 2)
+	assert.Equal(t, row{got[0].Id, "x-skill", "skills/a"}, got[0])
+	assert.NotEqual(t, rowId, got[0].Id)
+	assert.Equal(t, row{rowId, "y-skill", "skills/p"}, got[1])
+}
