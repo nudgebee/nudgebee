@@ -42,7 +42,7 @@
     "typescript": "^6.0.3"
   },
   "overrides": {
-    "follow-redirects": "^1.16.0"
+    "follow-redirects": "^1.16.1"
   },
   "dependencies": {
     "@axe-core/playwright": "^4.13.0",
