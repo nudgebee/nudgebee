@@ -47,16 +47,14 @@ export interface TimeSeriesChartProps {
   colorFor?: (key: string, index: number) => string;
   /** Render the per-series totals legend below the chart (default true). */
   showLegend?: boolean;
-  /**
-   * What the legend shows per series: `total` (sum of its points, default) or
-   * `latest` (its last point). Use `latest` for gauges such as CPU % or memory,
-   * whose points don't add up to anything meaningful.
-   */
-  legendValue?: 'total' | 'latest';
   height?: number;
   id?: string;
   /** Click a column/point to drill; receives its label + index. */
   onSelectPoint?: (label: string, index: number) => void;
+  /** Series keys drawn as thin dotted reference lines (thresholds), without a fill. */
+  referenceKeys?: string[];
+  /** Legend value: the series total (default) or its latest value — a level metric's samples do not sum. */
+  legendValue?: 'total' | 'last';
 }
 
 /** Top→bottom gradient per bar (full colour → lighter) for depth. */
@@ -100,10 +98,11 @@ export function TimeSeriesChart({
   integerY = false,
   colorFor = paletteColorFor,
   showLegend = true,
-  legendValue = 'total',
   height = 264,
   id,
   onSelectPoint,
+  referenceKeys,
+  legendValue = 'total',
 }: TimeSeriesChartProps) {
   const isBar = shape === 'bar';
   const isArea = shape === 'area';
@@ -126,26 +125,31 @@ export function TimeSeriesChart({
         }
         // line / area: a single line reads richer with a fill; many thin strokes
         // keep subtle gradient fills so they layer without mud. `area` forces fills.
-        const fill = isArea || series.length <= 3;
+        // Reference lines are strokes only.
+        const reference = Boolean(referenceKeys?.includes(key));
+        const fill = !reference && (isArea || series.length <= 3);
         return {
           label: key,
           data,
           borderColor: color,
           backgroundColor: fill ? areaFill(color, isArea) : color,
-          fill: isArea ? (i === 0 ? 'origin' : '-1') : fill ? 'origin' : false,
-          borderWidth: isArea ? 1.5 : 2.5,
+          fill: isArea && !reference ? (i === 0 ? 'origin' : '-1') : fill ? 'origin' : false,
+          borderWidth: reference || isArea ? 1.5 : 2.5,
+          ...(reference ? { borderDash: [2, 3] } : {}),
           pointRadius: 0,
           pointHoverRadius: 4,
           pointBackgroundColor: color,
           tension: 0.35,
         };
       }),
-    [series, colorFor, isBar, isArea]
+    [series, colorFor, isBar, isArea, referenceKeys]
   );
 
   const seriesTotals = React.useMemo(() => {
     const totals: Record<string, number> = {};
-    series.forEach(({ key, data }) => (totals[key] = legendValue === 'latest' ? data[data.length - 1] ?? 0 : data.reduce((s, v) => s + (v ?? 0), 0)));
+    series.forEach(({ key, data }) => {
+      totals[key] = legendValue === 'last' ? data[data.length - 1] ?? 0 : data.reduce((s, v) => s + (v ?? 0), 0);
+    });
     return totals;
   }, [series, legendValue]);
 

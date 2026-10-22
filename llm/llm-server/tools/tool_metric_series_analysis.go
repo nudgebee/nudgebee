@@ -34,6 +34,9 @@ const (
 	metricSeriesMaxFileBytes = 20 << 20
 	// metricSeriesMaxAnalyzed is how many series one call reports.
 	metricSeriesMaxAnalyzed = 10
+	// metricSeriesMaxCharts is how many of them get a chart, shown with the
+	// step in the UI.
+	metricSeriesMaxCharts = 3
 	// Reading a shape (level shifts, a held level, a trend) needs at least this
 	// many points, over any span. A forecast also reaches no further ahead than
 	// metricSeriesExtrapolationMul x the span it rests on, so the history a
@@ -259,10 +262,84 @@ func (t MetricSeriesAnalysisTool) Call(nbCtx core.NbToolContext, input core.NBTo
 		return metricSeriesFailure(fmt.Sprintf("Error formatting response: %s", err.Error())), nil
 	}
 	return core.NBToolResponse{
-		Data:   string(data),
-		Type:   core.NBToolResponseTypeJson,
-		Status: core.NBToolResponseStatusSuccess,
+		Data:     string(data),
+		Type:     core.NBToolResponseTypeJson,
+		Status:   core.NBToolResponseStatusSuccess,
+		Metadata: core.MetricChartMetadata(metricSeriesCharts(series, match, thresholds)),
 	}, nil
+}
+
+// metricSeriesCharts charts the series the report leads with, each with the
+// thresholds it was checked against as flat lines, so the step shows the data
+// it read. The charts are saved with the step for the UI; the model is not
+// told about them.
+func metricSeriesCharts(series []msSeries, match string, thresholds []msThreshold) map[string]json.RawMessage {
+	var picked []msSeries
+	for _, s := range series {
+		if msMatches(s, match) && len(s.points) > 0 {
+			picked = append(picked, s)
+		}
+		if len(picked) == metricSeriesMaxAnalyzed {
+			break
+		}
+	}
+	for i, s := range picked {
+		if i > 0 && strings.HasPrefix(s.name, AlertHistoryNowView) {
+			picked[0], picked[i] = picked[i], picked[0]
+			break
+		}
+	}
+	charts := map[string]json.RawMessage{}
+	for i := 0; i < len(picked) && i < metricSeriesMaxCharts; i++ {
+		s := picked[i]
+		ts := make([]int64, len(s.points))
+		vals := make([]float64, len(s.points))
+		for k, p := range s.points {
+			ts[k], vals[k] = p.at.Unix(), p.v
+		}
+		lines := []core.MetricChartSeries{{Labels: map[string]string{"line": "value"}, Timestamps: ts, Values: vals}}
+		for _, th := range thresholds {
+			flat := make([]float64, len(ts))
+			for k := range flat {
+				flat[k] = th.Value
+			}
+			name := th.Label
+			if name == "" {
+				name = "threshold"
+			}
+			name = fmt.Sprintf("%s (%s %s)", name, th.Direction, msFmt(th.Value))
+			lines = append(lines, core.MetricChartSeries{Labels: map[string]string{"line": name}, Timestamps: ts, Values: flat, Reference: true})
+		}
+		// The name without its label set: the step's query already shows which
+		// series this is, and a pod's labels fill the title.
+		title := s.base
+		if title == "" {
+			title = s.name
+		}
+		if r := []rune(title); len(r) > 80 {
+			title = string(r[:79]) + "…"
+		}
+		chart, ok := core.BuildMetricChart(title, lines)
+		if !ok {
+			continue
+		}
+		// BuildMetricChart ranks lines by size; the series leads, ahead of the
+		// thresholds, so it takes the first colour and legend entry.
+		chart.LeadSeries("value")
+		ref, err := core.AddMetricChart(charts, chart)
+		if err != nil {
+			continue
+		}
+		// Charts are saved keyed by ref, and neither JSON objects nor JSONB
+		// keep insertion order; the first hex digit after "chart_" carries the
+		// position so a renderer sorting by ref shows the lead series first.
+		ordered := fmt.Sprintf("chart_%x%s", i, ref[len("chart_")+1:])
+		charts[ordered] = charts[ref]
+		if ordered != ref {
+			delete(charts, ref)
+		}
+	}
+	return charts
 }
 
 func metricSeriesFailure(msg string) core.NBToolResponse {
@@ -286,7 +363,9 @@ type msPoint struct {
 }
 
 type msSeries struct {
-	name      string
+	name string
+	// base is the name without its label set, for a chart title.
+	base      string
 	labels    map[string]string
 	statistic string
 	points    []msPoint
@@ -864,7 +943,7 @@ func (w *msWalker) addGCPSeries(m map[string]any, pts []any) {
 		}
 	}
 	labels["metric"] = metricType
-	s := msSeries{name: msTruncate(msLabelName(metricType, labels, "metric")), labels: labels}
+	s := msSeries{name: msTruncate(msLabelName(metricType, labels, "metric")), base: metricType, labels: labels}
 	for _, item := range pts {
 		p, ok := item.(map[string]any)
 		if !ok {
@@ -951,7 +1030,7 @@ func msSeriesFromValuesTimestamps(m map[string]any, parentKey string) (msSeries,
 	if mn, ok := labels["__name__"]; ok {
 		base = mn
 	}
-	s.name = msTruncate(msLabelName(base, labels, "__name__"))
+	s.name, s.base = msTruncate(msLabelName(base, labels, "__name__")), base
 	if s.name == "" {
 		s.name = "series"
 	}

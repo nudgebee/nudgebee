@@ -1,7 +1,9 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +176,24 @@ func TestAnalyzeMetricSeries_AlertHistoryLeadsWithNow(t *testing.T) {
 	require.Len(t, series, 2)
 	assert.True(t, strings.HasPrefix(series[0].(map[string]any)["name"].(string), AlertHistoryNowView), "the now view leads")
 	assert.Contains(t, fmt.Sprint(out["notes"]), "is the current one")
+
+	// Each view gets a chart with the threshold as a flat line, the now view's
+	// ref sorting first.
+	require.NotNil(t, resp.Metadata)
+	require.Len(t, resp.Metadata.Charts, 2)
+	refs := make([]string, 0, 2)
+	for ref := range resp.Metadata.Charts {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	var lead core.MetricChart
+	require.NoError(t, json.Unmarshal(resp.Metadata.Charts[refs[0]], &lead))
+	assert.Equal(t, AlertHistoryNowView+" (UTC)", lead.Title, "the title leaves out the label set")
+	raw := string(resp.Metadata.Charts[refs[0]])
+	assert.True(t, strings.Index(raw, `"key":"value"`) < strings.Index(raw, `"key":"SLO 500 ms`), "the series leads the thresholds: %s", raw)
+	assert.Contains(t, raw, `"key":"SLO 500 ms (above 0.5)"`)
+	assert.Equal(t, []string{"SLO 500 ms (above 0.5)"}, lead.Reference, "thresholds are drawn as reference lines")
+	assert.NotContains(t, fmt.Sprint(resp.Data), "chart_", "the model is not told about the charts")
 }
 
 func TestNarrowToAlert(t *testing.T) {

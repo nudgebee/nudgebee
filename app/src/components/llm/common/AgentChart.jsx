@@ -1,5 +1,5 @@
 import PropTypes from 'prop-types';
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Box, Typography } from '@mui/material';
 import { ds } from '@utils/colors';
 import Chart from '@ui/Chart';
@@ -23,7 +23,9 @@ import { SERIES_PALETTE } from '@shared/charts/chartPlugins';
  *     "labels": ["storage-loki-0", ...],
  *     "series": [{ "key": "Provisioned", "data": [100, ...] }, ...],  // bar/line/area
  *     "values": [3.4, 23.2, ...],                                     // doughnut (alt to series)
- *     "format": "gi" | "usd" | "percent" | "number" | "bytes" | "bytes_per_second" | "seconds"
+ *     "format": "gi" | "usd" | "percent" | "number" | "bytes" | "bytes_per_second" | "seconds",
+ *     "source": "metrics",                // optional: built from queried metric data
+ *     "reference": ["critical (below 5)"] // optional, line only: constant lines (thresholds), drawn thin
  *   }
  */
 
@@ -40,6 +42,11 @@ const ALLOWED_TYPES = ['bar', 'line', 'area', 'doughnut', 'pie'];
 const CIRCULAR_TYPES = ['doughnut', 'pie'];
 
 const numberFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 });
+const smallFmt = new Intl.NumberFormat('en-US', { maximumSignificantDigits: 2 });
+
+// formatNumber keeps two significant digits below 1, so a level near zero
+// (0.0046% of a volume free) does not read as 0.
+const formatNumber = (v) => (v !== 0 && Math.abs(v) < 1 ? smallFmt.format(v) : numberFmt.format(v));
 
 const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
 
@@ -72,8 +79,8 @@ const formatSeconds = (v) => {
 export const FORMATTERS = {
   usd: (v) => `$${numberFmt.format(v)}`,
   gi: (v) => `${numberFmt.format(v)} Gi`,
-  percent: (v) => `${numberFmt.format(v)}%`,
-  number: (v) => numberFmt.format(v),
+  percent: (v) => `${formatNumber(v)}%`,
+  number: formatNumber,
   // Units of metric charts built from query results (#40909).
   bytes: formatBytes,
   bytes_per_second: (v) => `${formatBytes(v)}/s`,
@@ -101,8 +108,6 @@ export const parseChartSpec = (raw) => {
   }
   const format = FORMATTERS[raw.format] ? raw.format : 'number';
   const title = typeof raw.title === 'string' ? raw.title : '';
-  // Charts built from queried metrics (#40909) plot gauges, not amounts.
-  const fromMetrics = raw.source === 'metrics';
 
   if (CIRCULAR_TYPES.includes(type)) {
     // Doughnut/pie accept either `values` or the first series' data.
@@ -131,11 +136,17 @@ export const parseChartSpec = (raw) => {
     }
     series.push({ key: s.key, data: s.data });
   }
-  return { type, title, labels, series, format, fromMetrics };
+  // A chart built from queried metrics plots levels and rates, whose samples do
+  // not add up: its legend shows each line's latest value instead of a total.
+  const metric = raw.source === 'metrics';
+  const keys = new Set(series.map((s) => s.key));
+  const reference = type === 'line' && Array.isArray(raw.reference) ? raw.reference.filter((k) => keys.has(k)) : [];
+  return { type, title, labels, series, format, metric, reference };
 };
 
 const AgentChart = ({ spec }) => {
-  const parsed = parseChartSpec(spec);
+  // Memoized so the arrays handed to the chart keep their identity across renders.
+  const parsed = useMemo(() => parseChartSpec(spec), [spec]);
   if (!parsed) {
     return null;
   }
@@ -206,9 +217,11 @@ const AgentChart = ({ spec }) => {
         shape={parsed.type}
         format={fmt}
         compactFormat={fmt}
-        integerY={parsed.format === 'number'}
-        legendValue={parsed.fromMetrics ? 'latest' : 'total'}
+        // Counts get whole-number ticks; a metric's levels are not counts.
+        integerY={parsed.format === 'number' && !parsed.metric}
         height={260}
+        {...(parsed.metric ? { legendValue: 'last' } : {})}
+        {...(parsed.reference.length > 0 ? { referenceKeys: parsed.reference } : {})}
       />
     );
   }

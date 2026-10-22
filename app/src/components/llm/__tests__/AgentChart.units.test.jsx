@@ -11,8 +11,8 @@ describe('AgentChart metric units', () => {
 
   it('marks charts built from queried metrics, so the legend shows latest values', () => {
     const spec = { type: 'line', labels: ['10:00'], series: [{ key: 'a', data: [1] }] };
-    expect(parseChartSpec({ ...spec, source: 'metrics' }).fromMetrics).toBe(true);
-    expect(parseChartSpec(spec).fromMetrics).toBe(false);
+    expect(parseChartSpec({ ...spec, source: 'metrics' }).metric).toBe(true);
+    expect(parseChartSpec(spec).metric).toBe(false);
   });
 
   it('scales bytes to binary units', () => {
@@ -29,5 +29,13 @@ describe('AgentChart metric units', () => {
     expect(FORMATTERS.seconds(600)).toBe('10 min');
     expect(FORMATTERS.seconds(5400)).toBe('90 min');
     expect(FORMATTERS.seconds(9000)).toBe('2.5 h');
+  });
+
+  it('keeps two significant digits below 1, so a level near zero does not read as 0', () => {
+    expect(FORMATTERS.number(0.0046)).toBe('0.0046');
+    expect(FORMATTERS.percent(0.0046)).toBe('0.0046%');
+    expect(FORMATTERS.number(0)).toBe('0');
+    expect(FORMATTERS.number(12.34)).toBe('12.3');
+    expect(FORMATTERS.number(1234567)).toBe('1,234,567');
   });
 });

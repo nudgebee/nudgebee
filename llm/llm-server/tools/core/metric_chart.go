@@ -37,6 +37,8 @@ type MetricChartSeries struct {
 	Labels     map[string]string
 	Timestamps []int64
 	Values     []float64
+	// Reference marks a constant line (a threshold), which renderers draw thin.
+	Reference bool
 }
 
 // MetricChart is the nb-chart spec rendered by AgentChart.jsx and nb_chart.py.
@@ -53,6 +55,8 @@ type MetricChart struct {
 	RestLatest float64 `json:"rest_latest,omitempty"`
 	// SeriesTotal counts the plottable series the backend returned, charted or not.
 	SeriesTotal int `json:"series_total,omitempty"`
+	// Reference names the series that are constant lines (thresholds).
+	Reference []string `json:"reference,omitempty"`
 }
 
 const metricChartSource = "metrics"
@@ -78,7 +82,7 @@ func BuildMetricChart(title string, series []MetricChartSeries) (MetricChart, bo
 		if n == 0 {
 			continue
 		}
-		usable = append(usable, MetricChartSeries{Labels: s.Labels, Timestamps: s.Timestamps[:n], Values: s.Values[:n]})
+		usable = append(usable, MetricChartSeries{Labels: s.Labels, Timestamps: s.Timestamps[:n], Values: s.Values[:n], Reference: s.Reference})
 	}
 	if len(usable) == 0 {
 		return MetricChart{}, false
@@ -123,8 +127,22 @@ func BuildMetricChart(title string, series []MetricChartSeries) (MetricChart, bo
 			data[k] = byTs[ts]
 		}
 		chart.Data = append(chart.Data, metricChartData{Key: keys[i], Data: data})
+		if s.Reference {
+			chart.Reference = append(chart.Reference, keys[i])
+		}
 	}
 	return chart, true
+}
+
+// LeadSeries moves the series named key to the front, if the chart has it.
+func (c *MetricChart) LeadSeries(key string) {
+	for i, d := range c.Data {
+		if d.Key == key {
+			copy(c.Data[1:i+1], c.Data[:i])
+			c.Data[0] = d
+			return
+		}
+	}
 }
 
 // AddMetricChart adds chart to charts, the set a tool call returns in its
