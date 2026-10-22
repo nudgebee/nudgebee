@@ -70,8 +70,7 @@ type slackCards struct {
 
 // remediationSlackOn reports whether the account's remediation loop is posted to Slack.
 func remediationSlackOn(accountId string) bool {
-	// No token: notifications-server refuses every send, so none is made.
-	return config.Config.NotificationServerToken != "" && events.RemediationLoopOn(accountId)
+	return events.RemediationLoopOn(accountId)
 }
 
 // decisionRowForCard is one CommandExecution row of the alert as a card reads it.
@@ -331,10 +330,11 @@ var (
 var postToAlertThread = func(ctx context.Context, posts threadPosts) (int, error) {
 	// Headers first: HttpWithHeaders replaces the header map, so after the body it would drop the
 	// Content-Type HttpWithJsonBody sets, and notifications-server would refuse the body.
-	options := []common.HttpOption{
-		common.HttpWithHeaders(map[string]string{"X-ACTION-TOKEN": config.Config.NotificationServerToken}),
-		common.HttpWithJsonBody(posts), common.HttpWithContext(ctx),
+	var options []common.HttpOption
+	if config.Config.NotificationServerToken != "" {
+		options = append(options, common.HttpWithHeaders(map[string]string{"X-ACTION-TOKEN": config.Config.NotificationServerToken}))
 	}
+	options = append(options, common.HttpWithJsonBody(posts), common.HttpWithContext(ctx))
 	resp, err := common.HttpPost(config.Config.NotificationServerUrl+"/api/remediation/thread", options...)
 	if err != nil {
 		return 0, fmt.Errorf("postToAlertThread: %w", err)

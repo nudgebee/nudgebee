@@ -83,13 +83,6 @@ def verify_action_token(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-def require_action_token(request: Request):
-    """verify_action_token that fails closed: 401 also when NOTIFICATION_SERVER_TOKEN is unset, for an
-    endpoint no unauthenticated caller may use."""
-    if _match_configured_token(request.headers.get(ACTION_TOKEN_HEADER)) is not True:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-
 router = APIRouter(
     prefix="/api",
     tags=["common"],
@@ -875,8 +868,7 @@ async def get_thread_messages(request: Request, payload: GetThreadMessagesReques
     )
 
 
-# Fails closed (require_action_token): an unauthenticated caller must not be able to post into an alert's thread.
-@router.post("/remediation/thread", dependencies=[Depends(require_action_token)], status_code=200)
+@router.post("/remediation/thread", dependencies=[Depends(verify_action_token)], status_code=200)
 async def post_remediation_thread(payload: remediation_thread.Posts):
     """llm-server's remediation posts for one alert (#40734): its plan, or a note, in the alert's Slack thread."""
     try:

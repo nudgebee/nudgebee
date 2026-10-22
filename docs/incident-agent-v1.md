@@ -19,7 +19,6 @@ The loop is off by default and turned on per tenant, for all of the tenant's acc
 | Setting | Where | Effect |
 |---|---|---|
 | `EVENT_REMEDIATION_LOOP` | tenant feature flag | The follow-up, the alert-plan chat tools, alert-thread chat in Slack, and the plan posted in the alert's Slack thread |
-| `NOTIFICATION_SERVER_TOKEN` | shared `nudgebee` secret (llm-server and notifications-server both load it) | Needed for anything to be posted in Slack; without it nothing is sent |
 | `LLM_SERVER_REMEDIATION_FOLLOWUP_MAX_RUNS` (3; 0 for no cap) | llm-server env | Plans of one alert in 24 hours whose runs get a follow-up and a proposal; every step of a counted plan is checked |
 
 People who should Run from Slack need their Slack account linked in Identity Sync.

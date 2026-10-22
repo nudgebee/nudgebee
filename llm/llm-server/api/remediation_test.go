@@ -2579,9 +2579,8 @@ func TestPostPlanToThreadIsOffUnlessTheLoopIsOn(t *testing.T) {
 		})
 	}
 	slackOn(t, "acct-1", true)
-	assert.True(t, remediationSlackOn("acct-1"))
-	config.Config.NotificationServerToken = ""
-	assert.False(t, remediationSlackOn("acct-1"), "no token: notifications-server would refuse every send")
+	swap(t, &config.Config.NotificationServerToken, "")
+	assert.True(t, remediationSlackOn("acct-1"), "no token: sent without X-ACTION-TOKEN, like every other notifications-server call")
 }
 
 // A send is retried on a failure or a server error, not on a refusal; 202 (thread pending) is final.
@@ -2777,6 +2776,13 @@ func TestPostToAlertThreadSendsJSONWithTheToken(t *testing.T) {
 	assert.Equal(t, "application/json", got.contentType)
 	assert.Equal(t, "secret", got.token)
 	assert.Equal(t, "remediation:t:a:e1:v:0", got.body.Posts[0].Token)
+
+	// No token configured: still sent, without the header, like every other notifications-server call.
+	swap(t, &config.Config.NotificationServerToken, "")
+	_, err = postToAlertThread(context.Background(), threadPosts{EventId: "e1"})
+	require.NoError(t, err)
+	assert.Equal(t, "application/json", got.contentType)
+	assert.Empty(t, got.token)
 }
 
 // A step's After links to the step it names, and to nothing when it names no step of the plan.
