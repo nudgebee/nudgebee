@@ -1253,7 +1253,7 @@ func processTaskLoop(
 						tempTplCtx := templateContext.Clone()
 						tempTplCtx.Matrix = combo
 
-						processedParams, err := ProcessValue(expandedTask.Params, tempTplCtx)
+						processedParams, err := ProcessTaskParams(expandedTask.Type, expandedTask.Params, tempTplCtx)
 						if err != nil {
 							logger.Error("Failed to process params for expanded matrix task", "taskID", expandedTask.ID, "error", err)
 							return completedTasks, nil, fmt.Errorf("failed to process params for expanded matrix task %s: %w", expandedTask.ID, err)
@@ -1341,7 +1341,7 @@ func processTaskLoop(
 					}
 				}
 
-				processedParams, err := ProcessValue(paramsToProcess, tplCtx)
+				processedParams, err := ProcessTaskParams(task.Type, paramsToProcess, tplCtx)
 				if err != nil {
 					logger.Error("Failed to process params for task", "taskID", task.ID, "error", err)
 					return completedTasks, nil, fmt.Errorf("failed to process params for task %s: %w", task.ID, err)

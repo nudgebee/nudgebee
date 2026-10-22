@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"nudgebee/runbook/internal/model"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"text/template"
@@ -115,7 +116,7 @@ func (c *TemplateContext) Render(tpl string) (string, error) {
 
 // renderGo renders a template string using Go's text/template engine.
 func (c *TemplateContext) renderGo(tpl string) (string, error) {
-	t, err := template.New("").Parse(tpl)
+	t, err := template.New("").Funcs(template.FuncMap{"shq": func(v any) (string, error) { return shellQuote(fmt.Sprint(v)) }}).Parse(tpl)
 	if err != nil {
 		return "", err
 	}
@@ -241,6 +242,80 @@ func (c *TemplateContext) Clone() *TemplateContext {
 		clone.Self[k] = v
 	}
 	return clone
+}
+
+var (
+	shellSafeValue  = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
+	templateExprRe  = regexp.MustCompile(`(?s)\{\{(-?)(.*?)(-?)\}\}`)
+	shellOperatorRe = regexp.MustCompile(`^(;|&&|\|\||&|\|)$`)
+	// goNonPrinting matches Go template actions that print nothing (control
+	// flow, comments, variable declarations); wrapping them would break the template.
+	goNonPrinting = regexp.MustCompile(`^\s*(/\*|(if|else|end|range|with|template|define|block|break|continue)\b|\$\w+\s*:?=)`)
+)
+
+// shellQuote makes v a single shell word. Values made only of plain characters
+// pass through unchanged; anything else is single-quoted. A bare operator is
+// refused: the agent re-tokenises the command, so even quoted it would read as
+// an operator.
+func shellQuote(v string) (string, error) {
+	if shellOperatorRe.MatchString(v) {
+		return "", fmt.Errorf("value %q cannot be used as a command argument", v)
+	}
+	if v == "" {
+		return "''", nil
+	}
+	if shellSafeValue.MatchString(v) {
+		return v, nil
+	}
+	return "'" + strings.ReplaceAll(v, "'", `'"'"'`) + "'", nil
+}
+
+// RenderCommand renders a CLI task's command template with every substituted
+// value quoted as one argument, so an input can never add an operator or an
+// extra flag. Only the template's own text is trusted.
+func (c *TemplateContext) RenderCommand(tpl string) (string, error) {
+	quoted := templateExprRe.ReplaceAllStringFunc(tpl, func(m string) string {
+		sub := templateExprRe.FindStringSubmatch(m)
+		if c.templateEngine == "go" {
+			if goNonPrinting.MatchString(sub[2]) {
+				return m
+			}
+			return "{{" + sub[1] + " shq (" + sub[2] + ") " + sub[3] + "}}"
+		}
+		return "{{" + sub[1] + " (" + sub[2] + ") | shq " + sub[3] + "}}"
+	})
+	return c.Render(quoted)
+}
+
+// cliCommandTasks are the task types whose "command" param is parsed by a
+// shell-like tokeniser on the agent.
+var cliCommandTasks = map[string]bool{"k8s.cli": true, "cloud.k8s.cli": true, "cicd.argocd.cli": true}
+
+// ProcessTaskParams is ProcessValue for a task's params, quoting the command of
+// CLI tasks (see RenderCommand).
+func ProcessTaskParams(taskType string, params map[string]any, ctx *TemplateContext) (any, error) {
+	cmd, ok := params["command"].(string)
+	if !cliCommandTasks[taskType] || !ok {
+		return ProcessValue(params, ctx)
+	}
+	rest := make(map[string]any, len(params))
+	for k, v := range params {
+		if k != "command" {
+			rest[k] = v
+		}
+	}
+	processed, err := ProcessValue(rest, ctx)
+	if err != nil {
+		return nil, err
+	}
+	out, _ := processed.(map[string]any)
+	if out == nil {
+		out = map[string]any{}
+	}
+	if out["command"], err = ctx.RenderCommand(cmd); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func Render(tpl string, ctx *TemplateContext) (string, error) {
