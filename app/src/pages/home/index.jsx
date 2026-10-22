@@ -111,8 +111,9 @@ const getApplicationLink = (rule, workloadFqdn) => {
 
 // VM insights (insight_rules.json unique_id 131/132) are CVE rows for a self-hosted
 // fleet, not k8s workload rows.
-const isSelfHostedVmRule = (rule) =>
-  Array.isArray(rule?.cloud_providers) && rule.cloud_providers.some((p) => String(p).toLowerCase() === 'selfhosted');
+const isSelfHostedRule = (rule) => Array.isArray(rule?.cloud_providers) && rule.cloud_providers.some((p) => String(p).toLowerCase() === 'selfhosted');
+// Event rules that also cover a VM fleet (firing alerts) are not CVE rows — the backend link already points at the Events tab.
+const isSelfHostedVmRule = (rule) => isSelfHostedRule(rule) && rule?.source !== 'Event';
 
 // The backend (Go computeRedirectURL) emits a complete, filter-applied relative URL
 // and stores it on the insight row, so consume it verbatim — except for a VM fleet's
@@ -381,11 +382,16 @@ const ServiceChipRow = ({ applications, rule, accountId, maxShown = 4 }) => {
         // the investigate page for that event; otherwise fall back to the rule link.
         const investigateId = app.event_id && accountId ? app.event_id : null;
         const vmVulnHref = isVmVulnChip && accountId ? `/vm?accountId=${accountId}&vulnId=${encodeURIComponent(app.name)}#instances` : null;
-        const href = investigateId || vmVulnHref ? null : getApplicationLink(rule, `${app.name}:${app.namespace}`);
+        // A VM fleet's firing-alert chips (uid 133) carry the alert name; open the Events tab on just that alert.
+        const vmAlertHref =
+          isSelfHostedRule(rule) && rule?.source === 'Event' && accountId
+            ? `/vm?accountId=${accountId}&eventAggregationKey=${encodeURIComponent(app.name)}&eventStatus=FIRING#alerts`
+            : null;
+        const href = investigateId || vmVulnHref || vmAlertHref ? null : getApplicationLink(rule, `${app.name}:${app.namespace}`);
         const onClick = investigateId
           ? () => router.push(`/investigate?id=${investigateId}&accountId=${accountId}`)
-          : vmVulnHref
-          ? () => window.open(vmVulnHref, '_blank')
+          : vmVulnHref || vmAlertHref
+          ? () => window.open(vmVulnHref || vmAlertHref, '_blank')
           : href
           ? () => window.open(href, '_blank')
           : undefined;
@@ -409,7 +415,8 @@ const ServiceChipRow = ({ applications, rule, accountId, maxShown = 4 }) => {
       })}
       {overflow > 0 &&
         (() => {
-          const moreHref = rule?.redirect_url || null;
+          // Same target the row opens, so a VM fleet's "+N more" keeps the severity filter.
+          const moreHref = buildInsightLink({ rule, account_id: accountId });
           return (
             <Chip
               variant='count'
@@ -1993,7 +2000,8 @@ const Home = () => {
         <Grid item xs={12} lg={9} sx={{ pt: '0px !important' }}>
           <K8sAccountModal openModal={showModal} handleClose={closeModal} />
           <>
-            {!isSelfHostedProvider(selectedCluster?.cloud_provider) && (
+            {/* A VM fleet has no Troubleshoot baseline to show, so its card appears only while alerts are firing. */}
+            {(!isSelfHostedProvider(selectedCluster?.cloud_provider) || troubleshootItems.length > 0) && (
               <CardsBlock
                 title='Troubleshoot'
                 subtitle={troubleshootSubtitle}
@@ -2013,7 +2021,12 @@ const Home = () => {
                     icon={<KeyboardArrowRightIcon />}
                     iconPlacement='end'
                     onClick={() =>
-                      window.open(`/troubleshoot?accountId=${selectedCluster?.value || ''}&accountIds=${selectedCluster?.value || ''}`, '_blank')
+                      window.open(
+                        isSelfHostedProvider(selectedCluster?.cloud_provider)
+                          ? `/vm?accountId=${selectedCluster?.value || ''}#alerts`
+                          : `/troubleshoot?accountId=${selectedCluster?.value || ''}&accountIds=${selectedCluster?.value || ''}`,
+                        '_blank'
+                      )
                     }
                   >
                     View all issues

@@ -30,7 +30,7 @@ interface Counts {
 
 /**
  * The Events/Errors block of the Summary: the severity counts, then the first rows of
- * the Alerts tab's own list — same columns, same row actions — rather than a second
+ * the Events tab's own list — same columns, same row actions — rather than a second
  * way of summarising them.
  */
 const VmEventsCard = ({ accountId, onViewAll }: { accountId: string; onViewAll: () => void }) => {

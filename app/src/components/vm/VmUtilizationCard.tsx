@@ -16,7 +16,7 @@ const PAGE_SIZE = 200;
 const MAX_PAGES = 10;
 
 /** Every VM of the account, page by page, so a reporting VM past the first page is still offered. */
-const listAllVms = async (accountId: string): Promise<VmResource[]> => {
+export const listAllVms = async (accountId: string): Promise<VmResource[]> => {
   const all: VmResource[] = [];
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const { rows, total } = await apiVm.listVms({ accountId, limit: PAGE_SIZE, offset: page * PAGE_SIZE });

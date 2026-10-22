@@ -2,10 +2,15 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Typography } from '@mui/material';
 import Chart from '@ui/Chart';
 import { Button } from '@ui/Button';
+import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
+import { isRollingShortcut } from '@shared/widgets/dateRangeShortcuts';
 import { ProgressLinear } from '@ui/ProgressLinear';
 import { Skeleton } from '@ui/Skeleton';
 import apiVm, { VmMetricResult, VmResource } from '@api1/vm';
 import { CellText, useLatestRequest } from './common';
+import { Gauge } from './VmMetricsGauges';
+import CustomTable from '@shared/tables/CustomTable';
+import { usePagination } from '@hooks/usePagination';
 import { useVmServiceRepos, VmServiceGitModal } from './VmServiceGit';
 import {
   cpuChart,
@@ -21,15 +26,52 @@ import {
 } from './vmMetricsData';
 import { ds } from '@utils/colors';
 
-const RANGES = [
-  { label: '1h', ms: 60 * 60 * 1000 },
-  { label: '6h', ms: 6 * 60 * 60 * 1000 },
-  { label: '24h', ms: 24 * 60 * 60 * 1000 },
+const SERVICE_HEADERS = [
+  { name: 'Service', width: '30%' },
+  { name: 'CPU (cores)', width: '14%' },
+  { name: 'Memory', width: '14%' },
+  { name: 'Disk used', width: '14%' },
+  { name: 'Repository', width: '28%' },
 ];
+
+const HOUR_MS = 60 * 60 * 1000;
+
+interface TimeRange {
+  startTime: number;
+  endTime: number;
+  /** Window of a rolling "last N" shortcut; 0 for an absolute range. */
+  shortcutClickTime: number;
+}
+
+const SHORTCUTS = [
+  'Last 15 Minutes',
+  'Last 30 Minutes',
+  'Last 1 Hour',
+  'Last 3 Hours',
+  'Last 6 Hours',
+  'Last 12 Hours',
+  'Last 24 Hours',
+  'Current Week',
+];
+
+/** How far back the picker lets an absolute range start. */
+const MIN_DATE_DAYS = 14;
+
+const rangeKey = (range: TimeRange) => `${range.startTime}-${range.endTime}-${range.shortcutClickTime}`;
+
+const defaultRange = (): TimeRange => ({ startTime: Date.now() - HOUR_MS, endTime: Date.now(), shortcutClickTime: HOUR_MS });
+
+/** A rolling shortcut ends now each time it is read, so Refresh moves it; an absolute range stays put. */
+const resolveRange = (range: TimeRange) =>
+  isRollingShortcut(range.shortcutClickTime)
+    ? { start: Date.now() - range.shortcutClickTime, end: Date.now() }
+    : { start: range.startTime, end: range.endTime };
 
 interface VmMetricsProps {
   accountId: string;
   vm: VmResource;
+  /** Shown at the left of the controls row, so a host's own picker shares a line with the range filter. */
+  leading?: React.ReactNode;
 }
 
 const Panel = ({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) => (
@@ -66,8 +108,8 @@ const LoadingPlaceholder = ({ vmName }: { vmName: string }) => (
 );
 
 /** CPU, memory, disk and per-service metrics for one self-hosted VM, shown in the VM row's expandable area. */
-const VmMetrics = ({ accountId, vm }: VmMetricsProps) => {
-  const [rangeMs, setRangeMs] = useState(RANGES[0].ms);
+const VmMetrics = ({ accountId, vm, leading }: VmMetricsProps) => {
+  const [range, setRange] = useState<TimeRange>(defaultRange);
   const [results, setResults] = useState<VmMetricResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -86,8 +128,8 @@ const VmMetrics = ({ accountId, vm }: VmMetricsProps) => {
     setLoading(true);
     setError(undefined);
     try {
-      const end = Date.now();
-      const data = await apiVm.getVmMetrics({ accountId, vm: vmRef.current, startDate: end - rangeMs, endDate: end });
+      const { start, end } = resolveRange(range);
+      const data = await apiVm.getVmMetrics({ accountId, vm: vmRef.current, startDate: start, endDate: end });
       if (!isCurrent()) return;
       setResults(data);
     } catch (err: any) {
@@ -97,7 +139,7 @@ const VmMetrics = ({ accountId, vm }: VmMetricsProps) => {
     } finally {
       if (isCurrent()) setLoading(false);
     }
-  }, [accountId, vm.id, rangeMs, latestRequest]);
+  }, [accountId, vm.id, range, latestRequest]);
 
   useEffect(() => {
     load();
@@ -112,6 +154,22 @@ const VmMetrics = ({ accountId, vm }: VmMetricsProps) => {
   // A repository set here wins over the one the service declares itself.
   const repoFor = (row: ServiceRow) =>
     links[row.containerId]?.repo ? links[row.containerId] : row.agentRepo ? { repo: row.agentRepo, branch: row.agentBranch || '' } : undefined;
+  const { page, rowsPerPage, changePage, setPage } = usePagination(10);
+  // Services come back whole, so the table is paged here rather than by the server.
+  useEffect(() => setPage(0), [vm.id, rangeKey(range), services.length, setPage]);
+  const serviceTableData = services.slice(page * rowsPerPage, (page + 1) * rowsPerPage).map((row) => [
+    { component: <CellText text={row.service} subtext={row.service !== row.containerId ? row.containerId : undefined} mono /> },
+    { component: <CellText text={formatCores(row.cpuCores)} /> },
+    { component: <CellText text={formatBytes(row.memoryBytes)} /> },
+    { component: <CellText text={formatBytes(row.diskBytes)} /> },
+    {
+      component: (
+        <Button id={`vm-service-repo-btn-${row.service}`} tone='secondary' size='sm' onClick={() => setRepoService(row)}>
+          {repoFor(row)?.repo.replace(/^https?:\/\//, '') || 'Link repository'}
+        </Button>
+      ),
+    },
+  ]);
   const reasons = useMemo(() => emptyReasons(results), [results]);
 
   const cores = latest(results, 'cpu_total');
@@ -121,18 +179,18 @@ const VmMetrics = ({ accountId, vm }: VmMetricsProps) => {
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4], padding: ds.space[4] }}>
-      <Box sx={{ display: 'flex', gap: ds.space[2], alignItems: 'center' }}>
-        {RANGES.map((r) => (
-          <Button
-            key={r.label}
-            id={`vm-metrics-range-${r.label}-${vm.id}`}
-            size='sm'
-            tone={r.ms === rangeMs ? 'primary' : 'secondary'}
-            onClick={() => setRangeMs(r.ms)}
-          >
-            {r.label}
-          </Button>
-        ))}
+      <Box sx={{ display: 'flex', gap: ds.space[2], alignItems: 'flex-end' }}>
+        {leading}
+        <Box sx={{ flex: 1 }} />
+        <CustomDateTimeRangePicker
+          passedSelectedDateTime={range}
+          onChange={(result: any) => {
+            const val = result?.selection ?? result;
+            if (val) setRange({ startTime: val.startTime, endTime: val.endTime, shortcutClickTime: val.shortcutClickTime || 0 });
+          }}
+          minDate={new Date(Date.now() - MIN_DATE_DAYS * 24 * HOUR_MS) as any}
+          shortCuts={SHORTCUTS}
+        />
         <Button id={`vm-metrics-refresh-${vm.id}`} size='sm' tone='secondary' onClick={load} disabled={loading}>
           Refresh
         </Button>
@@ -179,6 +237,11 @@ const VmMetrics = ({ accountId, vm }: VmMetricsProps) => {
               <Chart.TimeSeries {...diskIo} shape='line' format={(v) => v.toFixed(2)} id={`vm-disk-${vm.id}`} height={180} />
             </Panel>
             <Panel title='Disk space' subtitle='Used and total across disks'>
+              {diskUsed !== undefined && diskTotal ? (
+                <Box sx={{ display: 'flex', justifyContent: 'center', marginBottom: ds.space[2] }}>
+                  <Gauge label='Used' value={Math.round((diskUsed / diskTotal) * 100)} scale={2} />
+                </Box>
+              ) : null}
               <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700] }}>
                 {diskUsed === undefined ? '—' : `${formatBytes(diskUsed)} used${diskTotal !== undefined ? ` of ${formatBytes(diskTotal)}` : ''}`}
               </Typography>
@@ -186,44 +249,18 @@ const VmMetrics = ({ accountId, vm }: VmMetricsProps) => {
           </Box>
 
           <Panel title='Services' subtitle='Latest value per service'>
-            {services.length ? (
-              <Box component='table' sx={{ width: '100%', borderCollapse: 'collapse', fontSize: ds.text.small }}>
-                <thead>
-                  <tr>
-                    {['Service', 'CPU (cores)', 'Memory', 'Disk used', 'Repository'].map((h) => (
-                      <Box component='th' key={h} sx={{ textAlign: 'left', color: ds.gray[500], fontWeight: ds.weight.medium, padding: ds.space[1] }}>
-                        {h}
-                      </Box>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {services.map((row) => (
-                    <tr key={row.containerId}>
-                      <Box component='td' sx={{ padding: ds.space[1] }}>
-                        <CellText text={row.service} subtext={row.service !== row.containerId ? row.containerId : undefined} mono />
-                      </Box>
-                      <Box component='td' sx={{ padding: ds.space[1] }}>
-                        {formatCores(row.cpuCores)}
-                      </Box>
-                      <Box component='td' sx={{ padding: ds.space[1] }}>
-                        {formatBytes(row.memoryBytes)}
-                      </Box>
-                      <Box component='td' sx={{ padding: ds.space[1] }}>
-                        {formatBytes(row.diskBytes)}
-                      </Box>
-                      <Box component='td' sx={{ padding: ds.space[1] }}>
-                        <Button id={`vm-service-repo-btn-${row.service}`} tone='secondary' size='sm' onClick={() => setRepoService(row)}>
-                          {repoFor(row)?.repo.replace(/^https?:\/\//, '') || 'Link repository'}
-                        </Button>
-                      </Box>
-                    </tr>
-                  ))}
-                </tbody>
-              </Box>
-            ) : (
-              <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>No per-service data in this range.</Typography>
-            )}
+            <CustomTable
+              id='vm-services-table'
+              headers={SERVICE_HEADERS}
+              tableData={serviceTableData}
+              rowsPerPage={rowsPerPage}
+              pageNumber={page + 1}
+              totalRows={services.length}
+              onPageChange={changePage}
+              emptyHeading='No per-service data'
+              emptySubHeading='No per-service data in this range.'
+              showUpdatedEmptyData={true}
+            />
           </Panel>
         </Box>
       ) : null}

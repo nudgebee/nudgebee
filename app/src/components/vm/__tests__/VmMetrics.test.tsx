@@ -8,6 +8,12 @@ jest.mock('@api1/vm', () => ({
   SEVERITY_ORDER: ['Critical', 'High', 'Medium', 'Low', 'Info'],
   default: { getVmMetrics: jest.fn() },
 }));
+jest.mock('@shared/widgets/CustomDateTimeRangePicker', () => ({
+  __esModule: true,
+  default: ({ onChange }: any) => (
+    <button onClick={() => onChange({ selection: { startTime: 0, endTime: 1, shortcutClickTime: 6 * 60 * 60 * 1000 } })}>6h</button>
+  ),
+}));
 jest.mock('@ui/Chart', () => ({
   __esModule: true,
   default: { TimeSeries: ({ id }: { id: string }) => <div data-testid={id} /> },
@@ -140,15 +146,15 @@ describe('VmMetrics', () => {
     await waitFor(() => expect(apiVm.getVmMetrics).toHaveBeenCalledTimes(2));
   });
 
-  it('refetches with a wider window when the range changes', async () => {
+  it('refetches with the picked window when the range changes', async () => {
     (apiVm.getVmMetrics as jest.Mock).mockResolvedValue([]);
     render(<VmMetrics accountId='acc-1' vm={vm} />);
     await waitFor(() => expect(apiVm.getVmMetrics).toHaveBeenCalledTimes(1));
 
-    await userEvent.setup().click(screen.getByRole('button', { name: '24h' }));
+    await userEvent.setup().click(screen.getByRole('button', { name: '6h' }));
 
     await waitFor(() => expect(apiVm.getVmMetrics).toHaveBeenCalledTimes(2));
     const call = (apiVm.getVmMetrics as jest.Mock).mock.calls[1][0];
-    expect(call.endDate - call.startDate).toBe(24 * 60 * 60 * 1000);
+    expect(call.endDate - call.startDate).toBe(6 * 60 * 60 * 1000);
   });
 });
