@@ -14,10 +14,12 @@ import (
 )
 
 func init() {
-	// Register AWS LoadBalancer to K8s enricher factory with the global registry
+	// Register AWS LoadBalancer to K8s enricher factory with the global registry.
+	// Runs after k8s_ec2: linkBackendPoolToWorkload walks the K8s Node → EC2
+	// RUNS_ON edges that k8s_ec2 adds in this same phase.
 	RegisterCrossSourceEnricherFactory("aws_lb_k8s", func(logger *slog.Logger) core.CrossSourceEnricherInterface {
 		return NewLoadBalancerK8sEnricher(logger)
-	}, "Enriches AWS LoadBalancer nodes with edges to K8s Service/Workload nodes")
+	}, "Enriches AWS LoadBalancer nodes with edges to K8s Service/Workload nodes", "k8s_ec2")
 }
 
 // keyFormat is the format string for creating lookup keys: "account:namespace:name"
