@@ -124,7 +124,11 @@ collect:
 	body := string(raw)
 	file := saveOverflowToWorkspace(ctx, accountId, sessionId, alertHistoryFileName(event.Id), body)
 	if file == "" {
-		return ""
+		// Say so, rather than nothing: without it the investigation reads the
+		// alert's few minutes of evidence as the metric's history.
+		return fmt.Sprintf("## Alert Metric History\nThe history of the metric this alert compares (`%s`) was fetched but could not be saved to the workspace, so there is no history file. "+
+			"The event evidence covers only the minutes around the alert; query the metric over a longer window before saying how it moved or when it reaches the next level.",
+			core.TruncateHead(series, 300))
 	}
 	ctx.GetLogger().Info("analyzer: alert metric history saved", "event_id", event.Id, "file", file)
 	return fmt.Sprintf("## Alert Metric History\nThe metric this alert compares (`%s`; it fires when %s %s), up to %s, is saved as `%s` in %d views, one series each: %s. "+

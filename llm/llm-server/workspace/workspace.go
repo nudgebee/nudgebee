@@ -1300,6 +1300,32 @@ func classifyAndLogResult(result executeResponse, logger *slog.Logger, podName s
 	return result.Response, cmdErr
 }
 
+// workspaceFileAPIClient is the direct-to-pod client for the file API (list,
+// read, stream, save, delete). It fails fast only when the pod cannot be
+// reached (the dial), so a caller outside the cluster still falls back to the
+// k8s proxy quickly, but gives a reachable pod time to answer and send the
+// file. With a 200 ms header / 500 ms total limit, a pod slow on a session's
+// first request, or a large file, fell through to the proxy, which fails on
+// clusters that do not allow pods/proxy: on dev, 74 of 1153 saves in a week,
+// every one of them lost.
+//
+// It is shared, so idle connections are pooled like the manager's own client
+// (idle ones closed after 90 s): workspace pods come and go, and an unbounded
+// idle pool would keep connections to every old pod IP.
+var workspaceFileAPIClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ResponseHeaderTimeout: 10 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+	},
+	Timeout: 30 * time.Second,
+}
+
 func (w *workspaceManager) callWorkspaceAPI(ctx *security.RequestContext, accountId string, method string, endpoint string, queryParams map[string]string, body any) ([]byte, error) {
 	if accountId == "" {
 		return nil, fmt.Errorf("workspace: accountId is required")
@@ -1372,12 +1398,7 @@ func (w *workspaceManager) callWorkspaceAPI(ctx *security.RequestContext, accoun
 	// Note: method is GET, POST, DELETE etc.
 	directUrl := buildURL(fmt.Sprintf("http://%s:%d%s", podIP, config.Config.LlmServerWorkspacePort, endpoint))
 
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			ResponseHeaderTimeout: 200 * time.Millisecond,
-		},
-		Timeout: 500 * time.Millisecond,
-	}
+	httpClient := workspaceFileAPIClient
 	req, err := http.NewRequestWithContext(ctx.GetContext(), method, directUrl, bytes.NewBuffer(bodyBytes))
 	if err == nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -1734,12 +1755,7 @@ func (w *workspaceManager) callWorkspaceAPIStream(ctx *security.RequestContext, 
 	// 2. Try Direct IP Execution
 	directUrl := buildURL(fmt.Sprintf("http://%s:%d%s", podIP, config.Config.LlmServerWorkspacePort, endpoint))
 
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			ResponseHeaderTimeout: 200 * time.Millisecond,
-		},
-		Timeout: 500 * time.Millisecond,
-	}
+	httpClient := workspaceFileAPIClient
 	req, err := http.NewRequestWithContext(ctx.GetContext(), method, directUrl, bytes.NewBuffer(bodyBytes))
 	if err == nil {
 		req.Header.Set("Content-Type", "application/json")
