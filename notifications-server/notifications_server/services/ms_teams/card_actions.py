@@ -572,7 +572,7 @@ async def _suppress(common_service, activity, user_email, aad_tenant_id) -> None
     cache = Cache()
     # The claim covers the action while it runs; once it's done, the stored card
     # refuses repeats.
-    if not cache.claim_card_action(claim, CLAIM_SECONDS):
+    if not (await cache.aio.claim_card_action(claim, CLAIM_SECONDS)):
         return await reply(STILL_SUPPRESSING)
     try:
         await _suppress_claimed(activity, reply, card_ref, params, tenant_id, user_id, user_email)
@@ -580,7 +580,7 @@ async def _suppress(common_service, activity, user_email, aad_tenant_id) -> None
         LOG.exception("Suppressing from Teams failed: %s", e)
         await reply(UNABLE_TO_PROCESS_REQUEST)
     finally:
-        cache.release_card_action(claim)
+        await cache.aio.release_card_action(claim)
 
 
 async def _suppress_claimed(activity, reply, card_ref, params, tenant_id, user_id, user_email) -> None:
@@ -682,7 +682,7 @@ async def _approve(common_service, activity, user_email, aad_tenant_id) -> None:
     cache = Cache()
     # The claim covers the decision while it's recorded; once it's done, the
     # stored card refuses repeats.
-    if not cache.claim_card_action(claim, CLAIM_SECONDS):
+    if not (await cache.aio.claim_card_action(claim, CLAIM_SECONDS)):
         return await reply(STILL_RECORDING)
     try:
         await _approve_claimed(activity, reply, card_ref, params, user_email)
@@ -690,7 +690,7 @@ async def _approve(common_service, activity, user_email, aad_tenant_id) -> None:
         LOG.exception("Recording a Teams approval failed: %s", e)
         await reply(APPROVAL_FAILED)
     finally:
-        cache.release_card_action(claim)
+        await cache.aio.release_card_action(claim)
 
 
 async def _approve_claimed(activity, reply, card_ref, params, user_email) -> None:
@@ -795,7 +795,7 @@ async def _ask_nubi(common_service, activity, user_email, aad_tenant_id) -> None
     event_id = params["event_id"]
     cache = Cache()
     token = uuid.uuid4().hex
-    if not cache.claim_teams_analysis(event_id, _analysis_claim_ttl(kickoff=True), token):
+    if not (await cache.aio.claim_teams_analysis(event_id, _analysis_claim_ttl(kickoff=True), token)):
         return await reply(STILL_ANALYZING)
     with _analyses_lock:
         if _active_analyses >= settings.slack.event_analysis_max_pollers:
@@ -804,7 +804,7 @@ async def _ask_nubi(common_service, activity, user_email, aad_tenant_id) -> None
             busy = False
             _active_analyses += 1
     if busy:
-        cache.release_teams_analysis(event_id, token)
+        await cache.aio.release_teams_analysis(event_id, token)
         return await reply(ANALYSIS_BUSY)
 
     started = False
@@ -830,7 +830,7 @@ async def _ask_nubi(common_service, activity, user_email, aad_tenant_id) -> None
         started = True
     finally:
         if not started:
-            cache.release_teams_analysis(event_id, token)
+            await cache.aio.release_teams_analysis(event_id, token)
             with _analyses_lock:
                 _active_analyses -= 1
             await asyncio.to_thread(_clear_analysis_stamp, card_ref)
@@ -944,7 +944,7 @@ async def _analyze(job) -> None:
         token = job["token"]
         while time.monotonic() < job["deadline"]:
             kickoff = calls == 0
-            cache.refresh_teams_analysis(event_id, _analysis_claim_ttl(kickoff=kickoff), token)
+            await cache.aio.refresh_teams_analysis(event_id, _analysis_claim_ttl(kickoff=kickoff), token)
             timeout = (
                 ANALYSIS_KICKOFF_TIMEOUT_SECONDS if kickoff else settings.slack.event_analysis_poll_timeout_seconds
             )
@@ -971,7 +971,7 @@ async def _analyze(job) -> None:
                 failures = 0
                 if await _take_result(result, progress, post, stamp):
                     return
-            cache.refresh_teams_analysis(event_id, _analysis_claim_ttl(), token)
+            await cache.aio.refresh_teams_analysis(event_id, _analysis_claim_ttl(), token)
             await asyncio.sleep(settings.slack.event_analysis_poll_seconds)
         await stamp("Still analyzing. Check the event in NudgeBee.")
     finally:
@@ -1051,7 +1051,7 @@ async def _feedback(common_service, activity, user_email, aad_tenant_id) -> None
     card_ref = (tenant_id, channel_id, message_id)
     claim = f"{tenant_id}:{message_id}:{FEEDBACK}"
     cache = Cache()
-    if not cache.claim_card_action(claim, CLAIM_SECONDS):
+    if not (await cache.aio.claim_card_action(claim, CLAIM_SECONDS)):
         return await reply(FEEDBACK_ALREADY)
     try:
         started = await asyncio.to_thread(begin, card_ref, FEEDBACK, lambda c: c)
@@ -1073,4 +1073,4 @@ async def _feedback(common_service, activity, user_email, aad_tenant_id) -> None
         LOG.exception("Recording Teams feedback failed: %s", e)
         await reply(FEEDBACK_FAILED)
     finally:
-        cache.release_card_action(claim)
+        await cache.aio.release_card_action(claim)

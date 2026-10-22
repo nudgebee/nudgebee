@@ -239,6 +239,11 @@ async def unwatch_channel(request: Request, body: Dict[Any, Any]):
         return JSONResponse({"error": {"message": "Unable to disable channel watch"}}, status_code=500)
 
 
+def _join_channel_sync(**kwargs):
+    with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
+        return controller.join_channel(**kwargs)
+
+
 @router.post("/channels/join", status_code=201, dependencies=[Depends(verify_action_token)])
 async def join_channel(request: Request, payload: Dict[Any, Any], background_tasks: BackgroundTasks):
     try:
@@ -278,23 +283,23 @@ async def join_channel(request: Request, payload: Dict[Any, Any], background_tas
                 status_code=400,
             )
 
-        with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
-            result = controller.join_channel(
-                platform=platform.lower(),
-                account_id=account_id,
-                tenant_id=tenant_id,
-                channel_id=channel_id,
-                session_id=session_id,
-                bind_session_id=bind_session_id,
-                team_id=team_id,
-                text=text,
-                bind_account=bind_account,
-            )
+        result = await run_in_threadpool(
+            _join_channel_sync,
+            platform=platform.lower(),
+            account_id=account_id,
+            tenant_id=tenant_id,
+            channel_id=channel_id,
+            session_id=session_id,
+            bind_session_id=bind_session_id,
+            team_id=team_id,
+            text=text,
+            bind_account=bind_account,
+        )
 
-            if "error" in result:
-                return JSONResponse(result, status_code=400)
+        if "error" in result:
+            return JSONResponse(result, status_code=400)
 
-            return JSONResponse(content=result)
+        return JSONResponse(content=result)
     except Exception:
         LOG.exception("Error in join_channel endpoint")
         return JSONResponse({"error": {"message": "Unable to join channel"}}, status_code=500)
@@ -555,7 +560,7 @@ async def invalidate_messaging_cache(body: Dict[Any, Any]):
     tenant = body.get("tenant_id")
     if not tenant:
         raise HTTPException(status_code=400, detail="tenant_id is required")
-    _get_message_service().cache.delete_cached_installations(tenant)
+    await _get_message_service().cache.aio.delete_cached_installations(tenant)
     return JSONResponse({"success": True})
 
 
@@ -575,7 +580,7 @@ async def notify_google_chat_binding(body: Dict[Any, Any]):
     # A bind/unbind adds or removes the tenant's synthesized google_chat install, so
     # drop the cached installations to pick up the change on the next send.
     if tenant:
-        _get_message_service().cache.delete_cached_installations(tenant)
+        await _get_message_service().cache.aio.delete_cached_installations(tenant)
     if event == "bound":
         text = f"✅ This space is now connected to {settings.urls.branding_name}. Mention me to get started."
         result = GoogleChatAppClient.post_message(space=space_id, message=text, tenant=tenant)
@@ -665,7 +670,7 @@ async def invalidate_rules_cache(body: Dict[Any, Any]):
     tenant = body.get("tenant_id")
     if not tenant:
         raise HTTPException(status_code=400, detail="tenant_id is required")
-    NotificationRulesService(engine).invalidate_cached_rules(tenant)
+    await NotificationRulesService(engine).invalidate_cached_rules(tenant)
     return JSONResponse({"success": True})
 
 

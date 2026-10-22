@@ -18,6 +18,7 @@ from notifications_server.services.events import Events
 from notifications_server.services.ms_teams import answer_card as ac
 from notifications_server.services.ms_teams import card_actions as ca
 from notifications_server.services.ms_teams import thinking
+from notifications_server.services.cache import AsyncCache
 
 NB_TENANT = "aaaaaaaa-1111-4111-8111-111111111111"
 ACCOUNT = "cccccccc-3333-4333-8333-333333333333"
@@ -183,6 +184,7 @@ def _events():
         create_teams_account_picked_card=CommonService.create_teams_account_picked_card,
     )
     events.cache = mock.Mock()
+    events.cache.aio = AsyncCache(events.cache)
     events.session = mock.Mock()
     return events
 

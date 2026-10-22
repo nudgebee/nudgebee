@@ -492,9 +492,9 @@ class NotificationRulesService:
 
                 # Double-invalidation: clear before commit to prevent concurrent reads
                 # from re-caching stale data during the commit window
-                self._invalidate_cache(tenant_id)
+                await self._invalidate_cache(tenant_id)
                 await session.commit()
-                self._invalidate_cache(tenant_id)
+                await self._invalidate_cache(tenant_id)
                 await self._create_audit_entry(rule_id, tenant_id, user_id, fields, is_update=existing_rule is not None)
 
                 return {"id": str(rule_id)}
@@ -612,8 +612,8 @@ class NotificationRulesService:
                 )
             await self._get_tenant_account_names(session, tenant_id, list(dict.fromkeys(account_ids)))
 
-    def invalidate_cached_rules(self, tenant_id):
-        self._invalidate_cache(tenant_id)
+    async def invalidate_cached_rules(self, tenant_id):
+        await self._invalidate_cache(tenant_id)
 
     async def get_default_policies(self, tenant_id):
         """{source: {"action", "mappings"}} for the tenant's saved defaults. Read in
@@ -621,7 +621,7 @@ class NotificationRulesService:
         migration) cannot abort the caller's transaction; that case reads as no
         saved defaults and is not cached."""
         if self.cache and self.cache.redis_client:
-            cached = await asyncio.to_thread(self.cache.get_default_policies, tenant_id)
+            cached = await self.cache.aio.get_default_policies(tenant_id)
             if cached is not None:
                 return cached
         async with BaseDB.async_session(self.engine)() as session:
@@ -638,7 +638,7 @@ class NotificationRulesService:
                 LOG.exception("Error loading notification default policies for tenant %s: %s", tenant_id, e)
                 return {}
         if self.cache and self.cache.redis_client:
-            await asyncio.to_thread(self.cache.cache_default_policies, tenant_id, policies)
+            await self.cache.aio.cache_default_policies(tenant_id, policies)
         return policies
 
     async def get_default_policy(self, tenant_id, source):
@@ -718,9 +718,9 @@ class NotificationRulesService:
                         .values(tenant_id=tenant_id, source=source, **values)
                         .on_conflict_do_update(index_elements=["tenant_id", "source"], set_=values)
                     )
-                self._invalidate_cache(tenant_id)
+                await self._invalidate_cache(tenant_id)
                 await session.commit()
-                self._invalidate_cache(tenant_id)
+                await self._invalidate_cache(tenant_id)
             except Exception as e:
                 if isinstance(e, ProgrammingError) and _is_missing_schema(e):
                     return {
@@ -808,9 +808,9 @@ class NotificationRulesService:
                 LOG.debug("Removing mapping for platform: %s", platform)
                 await session.delete(existing_mappings[platform])
 
-    def _invalidate_cache(self, tenant_id):
+    async def _invalidate_cache(self, tenant_id):
         if self.cache and self.cache.redis_client:
-            self.cache.delete_cached_notification_rules(tenant_id)
+            await self.cache.aio.delete_cached_notification_rules(tenant_id)
             LOG.info("Cache invalidated for tenant: %s", tenant_id)
 
     @staticmethod
@@ -840,7 +840,7 @@ class NotificationRulesService:
 
     async def get_notification_rules(self, tenant_id):
         if self.cache and self.cache.redis_client:
-            cached = await asyncio.to_thread(self.cache.get_notification_rules, tenant_id)
+            cached = await self.cache.aio.get_notification_rules(tenant_id)
             if cached:
                 return cached
 
@@ -862,7 +862,7 @@ class NotificationRulesService:
                 rule.missing_columns = frozenset()
             scope_loaded = await self._attach_account_ids(session, tenant_id, rules)
             if rules and scope_loaded and self.cache and self.cache.redis_client:
-                await asyncio.to_thread(self.cache.cache_notification_rules, tenant_id, rules)
+                await self.cache.aio.cache_notification_rules(tenant_id, rules)
             return rules
 
     @staticmethod

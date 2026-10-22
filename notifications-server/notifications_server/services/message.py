@@ -24,7 +24,7 @@ from notifications_server.configs import settings
 
 from notifications_server.models.enums import PlatformTypes
 from notifications_server.schemas.message import SendMessageRequest
-from notifications_server.services.cache import Cache
+from notifications_server.services.cache import Cache, run_in_cache_thread
 from notifications_server.services.delivery_errors import (
     AUTH_FAILED,
     INTERNAL_ERROR,
@@ -799,8 +799,8 @@ class GroupedMessageHandler:
             if not redis:
                 return {"status": "ignored"}
 
-            await asyncio.to_thread(redis.lpush, key, json.dumps(payload, default=str))
-            await asyncio.to_thread(redis.expire, key, settings.notifications.grouped_redis_ttl_seconds)
+            await run_in_cache_thread(redis.lpush, key, json.dumps(payload, default=str))
+            await run_in_cache_thread(redis.expire, key, settings.notifications.grouped_redis_ttl_seconds)
 
             if key not in self._group_tasks:
                 delay_seconds = settings.notifications.grouped_flush_delay_seconds
@@ -808,7 +808,7 @@ class GroupedMessageHandler:
                 task = asyncio.create_task(self._delayed_flush(key, delay_seconds))
                 self._group_tasks[key] = {"task": task, "scheduled_at": utc_now()}
 
-            length = await asyncio.to_thread(redis.llen, key)
+            length = await run_in_cache_thread(redis.llen, key)
             LOG.info("Enqueued grouped msg to %s (count=%d)", key, length)
             return {"status": "queued"}
         except Exception as e:
@@ -819,7 +819,7 @@ class GroupedMessageHandler:
             LOG.debug("Starting delayed flush timer for %s (%d seconds)", key, delay_seconds)
             await asyncio.sleep(delay_seconds)
             redis = self.cache.redis_client
-            if not redis or (await asyncio.to_thread(redis.llen, key)) == 0:
+            if not redis or (await run_in_cache_thread(redis.llen, key)) == 0:
                 LOG.info("No messages left for key %s before scheduled flush, skipping", key)
                 return
 
@@ -842,7 +842,7 @@ class GroupedMessageHandler:
                 return {"status": "failed", "error": "redis_unavailable"}
 
             try:
-                raw_list = await asyncio.to_thread(redis.lrange, key, 0, -1)
+                raw_list = await run_in_cache_thread(redis.lrange, key, 0, -1)
                 if not raw_list:
                     LOG.info("No messages to flush for key %s", key)
                     return {"status": "ok"}
@@ -874,7 +874,7 @@ class GroupedMessageHandler:
                     )
                     if not routes:
                         LOG.debug("Nothing to send for %s: every alert was stopped by the rules", key)
-                        await asyncio.to_thread(redis.delete, key)
+                        await run_in_cache_thread(redis.delete, key)
                         return {"status": "ok"}
 
                     platform_responses = []
@@ -897,7 +897,7 @@ class GroupedMessageHandler:
                     if platform_responses and all(
                         resp.get("status") == "success" for resp in platform_responses if isinstance(resp, dict)
                     ):
-                        await asyncio.to_thread(redis.delete, key)
+                        await run_in_cache_thread(redis.delete, key)
                         LOG.debug("Successfully flushed and deleted Redis key %s", key)
                         return {"status": "ok"}
                     else:
@@ -1118,7 +1118,7 @@ class MessageService:
     # ----------------------------- Installation loading -----------------------------
     async def get_installed_platforms_from_cache_or_db(self, session, tenant_id):
         if self.cache and self.cache.redis_client:
-            installed_platforms = await asyncio.to_thread(self.cache.get_installations, tenant_id)
+            installed_platforms = await self.cache.aio.get_installations(tenant_id)
             if installed_platforms is not None:
                 return installed_platforms
 
@@ -1130,7 +1130,7 @@ class MessageService:
                 session.expunge(ip)
 
         if installed_platforms and self.cache and self.cache.redis_client:
-            await asyncio.to_thread(self.cache.cache_installations, tenant_id, installed_platforms)
+            await self.cache.aio.cache_installations(tenant_id, installed_platforms)
 
         if installed_platforms:
             return installed_platforms
@@ -2055,13 +2055,13 @@ class MessageService:
     async def commit_session_and_clear_cache(self, ip, session):
         await MessageService._persist_installation(ip, session)
         if self.cache and self.cache.redis_client:
-            self.cache.delete_cached_installations(ip.tenant_id)
+            await self.cache.aio.delete_cached_installations(ip.tenant_id)
 
     @staticmethod
     async def commit_session_and_clear_cache_static(ip, session):
         await MessageService._persist_installation(ip, session)
         if cache and cache.redis_client:
-            cache.delete_cached_installations(ip.tenant_id)
+            await cache.aio.delete_cached_installations(ip.tenant_id)
 
     @staticmethod
     async def _persist_installation(ip, session):

@@ -1814,7 +1814,7 @@ class Events:
                     conversation_ref, response_text, teams_account_id
                 )
 
-            event_cache.update_event_entry(conversation_id, status="COMPLETED")
+            await event_cache.aio.update_event_entry(conversation_id, status="COMPLETED")
             LOG.debug("Teams conversation marked as COMPLETED.")
 
         except Exception as e:
@@ -1857,7 +1857,7 @@ class Events:
                 )
 
             if cached_entry:
-                event_cache.update_event_entry(conversation_id, agent_id=agent_id, message_id=message_id)
+                await event_cache.aio.update_event_entry(conversation_id, agent_id=agent_id, message_id=message_id)
 
         except (json.JSONDecodeError, KeyError) as e:
             LOG.warning(f"Failed to parse Teams follow-up response as JSON: {e}. Using raw response.")
@@ -1885,7 +1885,7 @@ class Events:
                 await self.common_service.teams_reply_from_conversation_reference(
                     conversation_ref, message, cached_entry.get("teams_id")
                 )
-            event_cache.update_event_entry(conversation_id, status="FAILED")
+            await event_cache.aio.update_event_entry(conversation_id, status="FAILED")
         except Exception as e:
             LOG.error("Failed to send Teams error reply: %s", e)
 
@@ -1996,7 +1996,7 @@ class Events:
         await self.common_service.teams_reply(activity, get_empty_message_response(), teams_account_id)
 
     async def _handle_exit(self, activity, thread_ts, teams_account_id):
-        self.cache.remove_event_entry(thread_ts)
+        await self.cache.aio.remove_event_entry(thread_ts)
         await self.common_service.teams_reply(activity, get_exit_message(), teams_account_id)
 
     async def _handle_processing_error(self, activity, exception, teams_account_id):
@@ -2057,10 +2057,10 @@ class Events:
                 await self._handle_exit(activity, thread_ts, teams_account_id)
                 return
 
-            cached_entry = self.cache.get_event_entry(thread_ts)
+            cached_entry = await self.cache.aio.get_event_entry(thread_ts)
             if cached_entry and cached_entry.get("account_id"):
                 LOG.debug(f"Continuing existing Teams conversation for {conversation_id}")
-                self.cache.update_event_entry(thread_ts, text=cleaned_text)
+                await self.cache.aio.update_event_entry(thread_ts, text=cleaned_text)
                 await self._process_teams_message(activity, cached_entry, cleaned_text, teams_account_id)
                 return
 
@@ -2106,11 +2106,11 @@ class Events:
             "platform": "ms_teams",
             "conversation_reference": conversation_ref,
         }
-        self.cache.cache_event_entry(thread_ts, event_entry)
+        await self.cache.aio.cache_event_entry(thread_ts, event_entry)
 
         alert = self._teams_alert_of_thread(conversation_id, teams_account_id, tenants)
         if alert:
-            self.cache.update_event_entry(thread_ts, alert_context=alert["context"])
+            await self.cache.aio.update_event_entry(thread_ts, alert_context=alert["context"])
             account_id = alert["account_id"]
             if account_id and await self._validate_user_access_to_account_async(
                 user_id, alert["tenant_id"], account_id
@@ -2130,7 +2130,9 @@ class Events:
         valid_accounts = await self._get_valid_accounts_async(user_id, tenants)
 
         if valid_accounts:
-            self.cache.update_event_entry(thread_ts, offered_account_ids=[acc["id"] for acc in valid_accounts])
+            await self.cache.aio.update_event_entry(
+                thread_ts, offered_account_ids=[acc["id"] for acc in valid_accounts]
+            )
             card = self.common_service.create_teams_cluster_selection_card(valid_accounts)
             await self.common_service.teams_reply_with_card(activity, card, teams_account_id)
             LOG.debug(f"Sent account selection card with {len(valid_accounts)} options to Teams user")
@@ -2189,8 +2191,8 @@ class Events:
         mapped_tenant_id = account_details.get("tenant")
 
         # Update cache state
-        self.cache.update_event_entry(thread_ts, tenant_id=mapped_tenant_id, account_id=account_id)
-        updated_entry = self.cache.get_event_entry(thread_ts)
+        await self.cache.aio.update_event_entry(thread_ts, tenant_id=mapped_tenant_id, account_id=account_id)
+        updated_entry = await self.cache.aio.get_event_entry(thread_ts)
         session_id = updated_entry.get("session_id", thread_ts)
 
         # UI URL
@@ -2209,7 +2211,7 @@ class Events:
 
     async def _handle_teams_cluster_selection_and_query_llm(self, activity, cluster_id, thread_ts, teams_account_id):
         try:
-            cached_entry = self.cache.get_event_entry(thread_ts)
+            cached_entry = await self.cache.aio.get_event_entry(thread_ts)
 
             if not cached_entry:
                 LOG.warning(f"No cached entry found for thread {thread_ts}")
@@ -2238,10 +2240,10 @@ class Events:
             account_id = account.get("id")
             tenant_id = account.get("tenant")
 
-            self.cache.update_event_entry(thread_ts, tenant_id=tenant_id, account_id=account_id)
+            await self.cache.aio.update_event_entry(thread_ts, tenant_id=tenant_id, account_id=account_id)
 
             # Get the cached entry to access session_id for UI link
-            updated_entry = self.cache.get_event_entry(thread_ts)
+            updated_entry = await self.cache.aio.get_event_entry(thread_ts)
             session_id = updated_entry.get("session_id", thread_ts)
 
             url = f"{settings.base_url}/ask-nudgebee?accountId={account_id}&session_id={session_id}"
@@ -2279,7 +2281,7 @@ class Events:
     ):
         cached_entry, thinking = None, False
         try:
-            cached_entry = self.cache.get_event_entry(thread_ts)
+            cached_entry = await self.cache.aio.get_event_entry(thread_ts)
 
             if not cached_entry:
                 LOG.warning(f"No cached entry found for thread {thread_ts}")
@@ -2313,7 +2315,7 @@ class Events:
             # Query LLM server with selected option
             await self.async_query_llm_server(payload, headers)
             if thinking:
-                teams_thinking.start_poller(thread_ts)
+                await teams_thinking.start_poller(thread_ts)
 
         except Exception as e:
             LOG.error(f"Failed to handle Teams followup selection: {e}")
@@ -2353,7 +2355,9 @@ class Events:
 
             await self.async_query_llm_server(payload, headers)
             if thinking:
-                teams_thinking.start_poller(thread_ts)
+                await teams_thinking.start_poller(thread_ts)
+            if alert_context:
+                await self.cache.aio.update_event_entry(thread_ts, alert_context_sent=True)
 
         except aiohttp.ClientError as e:
             LOG.error(f"Failed to process Teams message: {e}")
@@ -2495,11 +2499,11 @@ class Events:
 
             # Check for existing conversation in cache (handles continuing conversations
             # before any user validation, same as Slack's cached_entry check)
-            cached_entry = self.cache.get_event_entry(thread_name)
+            cached_entry = await self.cache.aio.get_event_entry(thread_name)
             if cached_entry and cached_entry.get("account_id"):
                 LOG.debug("Continuing existing Google Chat conversation for thread %s", thread_name)
-                self.cache.update_event_entry(thread_name, text=message_text)
-                cached_entry = self.cache.get_event_entry(thread_name)
+                await self.cache.aio.update_event_entry(thread_name, text=message_text)
+                cached_entry = await self.cache.aio.get_event_entry(thread_name)
                 tenant_id = cached_entry["tenant_id"]
                 await self._process_gchat_message(cached_entry, message_text, space_name, thread_name, tenant_id)
                 return
@@ -2536,7 +2540,7 @@ class Events:
                 return
 
             if message_text.lower() in ("exit", "/exit"):
-                self.cache.remove_event_entry(thread_name)
+                await self.cache.aio.remove_event_entry(thread_name)
                 self.common_service.gchat_reply_in_thread(space_name, thread_name, get_exit_message(), tenant_id)
                 return
 
@@ -2544,7 +2548,7 @@ class Events:
             # thread was anchored by a "Join Notification Channel" workflow action,
             # follow-ups carry the incident's session + account so the bot answers
             # with the incident's context instead of starting a fresh conversation.
-            incident_binding = self.cache.get_channel_session_mapping(thread_name, space_name)
+            incident_binding = await self.cache.aio.get_channel_session_mapping(thread_name, space_name)
             incident_session_id, incident_account_id = self._resolve_incident_binding(incident_binding, tenant_id)
             session_id = incident_session_id or thread_name
 
@@ -2561,7 +2565,7 @@ class Events:
                 "platform": "google_chat",
                 "tenant_id": tenant_id,
             }
-            self.cache.cache_event_entry(thread_name, event_entry)
+            await self.cache.aio.cache_event_entry(thread_name, event_entry)
 
             if incident_account_id:
                 # Account is known from the incident binding — skip account selection.
@@ -2595,7 +2599,7 @@ class Events:
             await self._handle_gchat_mapped_account(valid_accounts[0], thread_name, space_name, tenant_id, message_text)
             return
 
-        self.cache.update_event_entry(thread_name, offered_account_ids=[acc["id"] for acc in valid_accounts])
+        await self.cache.aio.update_event_entry(thread_name, offered_account_ids=[acc["id"] for acc in valid_accounts])
         self._request_gchat_account_confirmation(space_name, thread_name, valid_accounts, tenant_id)
 
     async def _handle_gchat_card_click(self, event_data: dict):
@@ -2608,7 +2612,7 @@ class Events:
             thread_name = event_data.get("message", {}).get("thread", {}).get("name")
 
             # Card clicks always have a cached entry from the original message
-            cached_entry = self.cache.get_event_entry(thread_name)
+            cached_entry = await self.cache.aio.get_event_entry(thread_name)
             if not cached_entry or not cached_entry.get("tenant_id"):
                 LOG.warning("No cached entry for Google Chat card click in thread %s", thread_name)
                 return
@@ -2660,9 +2664,9 @@ class Events:
 
         account_name = account.get("account_name")
         account_tenant = account.get("tenant")
-        self.cache.update_event_entry(thread_name, tenant_id=account_tenant, account_id=account_id)
+        await self.cache.aio.update_event_entry(thread_name, tenant_id=account_tenant, account_id=account_id)
 
-        updated_entry = self.cache.get_event_entry(thread_name)
+        updated_entry = await self.cache.aio.get_event_entry(thread_name)
         session_id = updated_entry.get("session_id", thread_name)
         url = f"{settings.base_url}/ask-nudgebee?accountId={account_id}&session_id={session_id}"
         confirmation = get_account_selected_confirmation(account_name)
@@ -2780,8 +2784,8 @@ class Events:
         account_name = account_details.get("account_name")
         mapped_tenant_id = account_details.get("tenant")
 
-        self.cache.update_event_entry(thread_name, tenant_id=mapped_tenant_id, account_id=account_id)
-        updated_entry = self.cache.get_event_entry(thread_name)
+        await self.cache.aio.update_event_entry(thread_name, tenant_id=mapped_tenant_id, account_id=account_id)
+        updated_entry = await self.cache.aio.get_event_entry(thread_name)
         session_id = updated_entry.get("session_id", thread_name)
 
         url = f"{settings.base_url}/ask-nudgebee?accountId={account_id}&session_id={session_id}"

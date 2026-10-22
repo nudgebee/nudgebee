@@ -1017,7 +1017,7 @@ def test_teams_analysis_claims_dont_touch_slacks():
 
     cache = Cache.__new__(Cache)
     cache.redis_client = FakeRedis()
-    cache._ensure_connection = lambda: None
+    cache._ensure_connection = lambda: cache.redis_client
     teams_key = "event_analysis_poll:ms_teams:event-1"
     cache.claim_event_analysis_poller("event-1", 60)
     assert "event_analysis_poll:event-1" in store, "Slack's key is unchanged"

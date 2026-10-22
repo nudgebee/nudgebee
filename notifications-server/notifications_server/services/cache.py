@@ -1,4 +1,12 @@
+import asyncio
+import contextvars
+import functools
+import os
+import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+
 import redis
 import json
 import logging
@@ -14,9 +22,176 @@ LOG = logging.getLogger(__name__)
 # out real contention without risking a busy-retry loop under sustained load.
 _UPDATE_EVENT_ENTRY_MAX_RETRIES = 5
 
+# After a connection error or timeout ends a Redis operation, Redis is skipped
+# for this long: reads miss, writes are dropped, claims fail open.
+COOL_DOWN_SECONDS = 30
+
+# Cache.aio runs on its own threads, so a slow Redis can't use up the default
+# executor that asyncio's DNS lookups and the other to_thread calls share.
+_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="redis-cache")
+
+# Set under pytest: a sync Cache call on a running event loop raises instead of
+# logging a warning.
+FORBID_EVENT_LOOP_CALLS_ENV = "NOTIFICATIONS_FORBID_EVENT_LOOP_REDIS"
+
 
 def _teams_analysis_key(event_id):
     return f"event_analysis_poll:ms_teams:{event_id}"
+
+
+class RedisCoolingDown(redis.exceptions.ConnectionError):
+    """Raised instead of reaching Redis while it is being skipped."""
+
+
+def _is_outage(error):
+    return isinstance(error, (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError)) and not isinstance(
+        error, RedisCoolingDown
+    )
+
+
+class _CoolDown:
+    """Whether Redis is being skipped. One per process: redis-py copies the Retry
+    for every connection, so this can't live on it."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._until = 0.0
+        self.trips = 0
+
+    def skipping(self):
+        return time.monotonic() < self._until
+
+    def admit(self):
+        """False while skipping. When the cool-down ends, the first caller is let
+        through to probe Redis and the cool-down restarts for everyone else, until
+        the probe succeeds (close) or fails (trip)."""
+        if not self._until:
+            return True
+        with self._lock:
+            if not self._until:
+                # A probe closed it while we waited for the lock.
+                return True
+            now = time.monotonic()
+            if now < self._until:
+                return False
+            self._until = now + COOL_DOWN_SECONDS
+            return True
+
+    def trip(self, error):
+        with self._lock:
+            was_open = not self._until
+            self._until = time.monotonic() + COOL_DOWN_SECONDS
+            self.trips += 1
+        if was_open:
+            LOG.warning(f"Redis is unreachable; skipping it for {COOL_DOWN_SECONDS}s. {error}")
+
+    def close(self):
+        if not self._until:
+            return
+        with self._lock:
+            was_skipping = bool(self._until)
+            self._until = 0.0
+        if was_skipping:
+            LOG.info("Redis is reachable again")
+
+    def reset(self):
+        with self._lock:
+            self._until = 0.0
+            self.trips = 0
+
+
+_cool_down = _CoolDown()
+_retry_state = threading.local()
+
+
+class _CoolDownRetry(redis.retry.Retry):
+    """redis-py runs every connect, command, health check and pipeline through
+    call_with_retry, often one inside another. The outermost call is refused while
+    Redis is being skipped. A connection error or timeout that ends a call at any
+    depth starts the cool-down, and an operation already under way stops retrying
+    once it has started."""
+
+    def call_with_retry(self, do, fail, is_retryable=None, with_failure_count=False):
+        depth = getattr(_retry_state, "depth", 0)
+        if depth == 0:
+            if not _cool_down.admit():
+                raise RedisCoolingDown("Skipping Redis while it is unreachable")
+            _retry_state.trips_at_start = _cool_down.trips
+        trips_at_start = _retry_state.trips_at_start
+
+        def attempt():
+            if _cool_down.trips != trips_at_start:
+                raise RedisCoolingDown("Redis became unreachable during this operation")
+            return do()
+
+        def on_failure(error, *fail_args):
+            try:
+                return fail(error, *fail_args)
+            except Exception:
+                # While a key is WATCHed, redis-py turns a lost connection into a
+                # WatchError here, which callers retry; it still ends this call.
+                if _is_outage(error):
+                    _cool_down.trip(error)
+                raise
+
+        def retryable(error):
+            if isinstance(error, RedisCoolingDown):
+                return False
+            return is_retryable(error) if is_retryable else True
+
+        _retry_state.depth = depth + 1
+        try:
+            result = super().call_with_retry(attempt, on_failure, retryable, with_failure_count)
+        except Exception as e:
+            if _is_outage(e):
+                _cool_down.trip(e)
+            raise
+        finally:
+            _retry_state.depth = depth
+        if depth == 0:
+            _cool_down.close()
+        return result
+
+
+async def run_in_cache_thread(fn, *args, **kwargs):
+    """Run a blocking Redis call on the cache's threads and await its result."""
+    loop = asyncio.get_running_loop()
+    call = functools.partial(contextvars.copy_context().run, fn, *args, **kwargs)
+    return await loop.run_in_executor(_EXECUTOR, call)
+
+
+class AsyncCache:
+    """Cache.aio: every Cache method, awaitable, running off the event loop."""
+
+    def __init__(self, cache):
+        self._cache = cache
+
+    def __getattr__(self, name):
+        method = getattr(self._cache, name)
+
+        async def call(*args, **kwargs):
+            return await run_in_cache_thread(method, *args, **kwargs)
+
+        return call
+
+
+_warned_loop_sites = set()
+
+
+def _check_not_on_event_loop():
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    message = "Sync Redis call on a running event loop; use `await cache.aio.<method>()`"
+    if os.environ.get(FORBID_EVENT_LOOP_CALLS_ENV):
+        raise RuntimeError(message)
+    # Frames: this function, _ensure_connection, the Cache method, its caller.
+    caller = sys._getframe(3)
+    site = (caller.f_code.co_filename, caller.f_lineno)
+    if site not in _warned_loop_sites:
+        _warned_loop_sites.add(site)
+        LOG.warning(f"{message} (at {site[0]}:{site[1]})")
 
 
 class Cache:
@@ -29,6 +204,10 @@ class Cache:
             self.redis_client = Cache._redis_client
         else:
             self.redis_client = None
+
+    @property
+    def aio(self):
+        return AsyncCache(self)
 
     @staticmethod
     def _create_redis_client():
@@ -49,7 +228,7 @@ class Cache:
                 retry_on_error=[redis.exceptions.ConnectionError, redis.exceptions.TimeoutError],
                 socket_connect_timeout=5,
                 socket_timeout=5,
-                retry=redis.retry.Retry(redis.backoff.ExponentialBackoff(), 3),
+                retry=_CoolDownRetry(redis.backoff.ExponentialBackoff(), 3),
             )
         except Exception as e:
             LOG.exception(f"Unable to create Redis client. {e}")
@@ -62,15 +241,19 @@ class Cache:
         return client
 
     def _ensure_connection(self):
-        """Ensure Redis connection is alive, reconnect if needed"""
+        """The client to use, creating it if needed; None while Redis is disabled,
+        unavailable or being skipped."""
+        _check_not_on_event_loop()
         if not self.redis_client:
             LOG.warning("Redis client is None. Attempting to create new connection...")
             Cache._redis_client = self._create_redis_client()
             self.redis_client = Cache._redis_client
+        if _cool_down.skipping():
+            return None
+        return self.redis_client
 
     def cache_installations(self, tenant_id, installations):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return
         key = f"notification_installations:{tenant_id}"
         with self.redis_client.pipeline() as pipe:
@@ -88,8 +271,7 @@ class Cache:
                 LOG.exception(f"Error caching installations for tenant {tenant_id}: {e}")
 
     def get_installations(self, tenant_id):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return None
         key = f"notification_installations:{tenant_id}"
         try:
@@ -103,8 +285,7 @@ class Cache:
         return None
 
     def delete_cached_installations(self, tenant_id):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return
         key = f"notification_installations:{tenant_id}"
         with self.redis_client.pipeline() as pipe:
@@ -116,8 +297,7 @@ class Cache:
                 LOG.exception(f"Error deleting cache entry for key '{key}': {e}")
 
     def cache_notification_rules(self, tenant_id, rules):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return
         key = f"notification_rules:v5:{tenant_id}"
         with self.redis_client.pipeline() as pipe:
@@ -132,8 +312,7 @@ class Cache:
                 LOG.exception(f"Error caching notification rules for tenant {tenant_id}: {e}")
 
     def get_notification_rules(self, tenant_id):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return None
         key = f"notification_rules:v5:{tenant_id}"
         try:
@@ -149,8 +328,7 @@ class Cache:
         return None
 
     def delete_cached_notification_rules(self, tenant_id):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return
         key = f"notification_rules:v5:{tenant_id}"
         with self.redis_client.pipeline() as pipe:
@@ -168,8 +346,7 @@ class Cache:
                 LOG.exception(f"Error deleting cache entry for key '{key}': {e}")
 
     def cache_default_policies(self, tenant_id, policies):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return
         key = f"notification_defaults:v1:{tenant_id}"
         try:
@@ -178,8 +355,7 @@ class Cache:
             LOG.exception(f"Error caching notification default policies for tenant {tenant_id}: {e}")
 
     def get_default_policies(self, tenant_id):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return None
         try:
             cached = self.redis_client.get(f"notification_defaults:v1:{tenant_id}")
@@ -189,8 +365,7 @@ class Cache:
         return json.loads(cached) if cached else None
 
     def cache_event_entry(self, thread_ts, event_entry):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return
         key = f"chat_event:{thread_ts}"
         with self.redis_client.pipeline() as pipe:
@@ -205,8 +380,7 @@ class Cache:
                 LOG.exception(f"Error caching event entry {thread_ts}: {e}")
 
     def get_event_entry(self, thread_ts):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return None
         key = f"chat_event:{thread_ts}"
         try:
@@ -235,8 +409,7 @@ class Cache:
         writes channel_context_used) — WATCH detects a conflicting write between
         our read and write and retries with a fresh copy, instead of silently
         clobbering it with a stale merge."""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return False
         key = f"chat_event:{thread_ts}"
         updates = {k: v for k, v in kwargs.items() if v is not None}
@@ -271,8 +444,7 @@ class Cache:
     def remove_event_keys(self, thread_ts, keys):
         # update_event_entry can't clear a field: it drops None values so other
         # callers can do partial updates. Deleting keys needs an explicit path.
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return False
         key = f"chat_event:{thread_ts}"
         try:
@@ -296,8 +468,7 @@ class Cache:
         """Clear this turn's Teams Thinking card from the entry and return its
         activity id, but only while claim is still the entry's claim, so a newer
         turn's card is never taken. None when it isn't."""
-        self._ensure_connection()
-        if not self.redis_client or not claim:
+        if not self._ensure_connection() or not claim:
             return None
         key = f"chat_event:{thread_ts}"
         for _ in range(_UPDATE_EVENT_ENTRY_MAX_RETRIES):
@@ -328,8 +499,7 @@ class Cache:
     def lock_teams_message(self, activity_id, token, ttl_seconds):
         """Serialises updates to one Teams message. True when token now holds it.
         Fails open (True) when Redis is unavailable."""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return True
         try:
             return bool(self.redis_client.set(f"teams_message_lock:{activity_id}", token, nx=True, ex=ttl_seconds))
@@ -339,8 +509,7 @@ class Cache:
 
     def unlock_teams_message(self, activity_id, token):
         """Releases the lock only if token still holds it."""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return
         key = f"teams_message_lock:{activity_id}"
         try:
@@ -359,8 +528,7 @@ class Cache:
             LOG.exception(f"Error unlocking Teams message {activity_id}: {e}")
 
     def remove_event_entry(self, thread_ts):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return False
         key = f"chat_event:{thread_ts}"
         with self.redis_client.pipeline() as pipe:
@@ -378,8 +546,7 @@ class Cache:
         # re-serialized every time the entry's text/state is updated. Written on
         # every turn — including an empty list — so a later image-less turn does
         # not resend a prior turn's image.
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return
         key = f"chat_images:{thread_ts}"
         with self.redis_client.pipeline() as pipe:
@@ -391,8 +558,7 @@ class Cache:
                 LOG.exception(f"Error caching thread images {thread_ts}: {e}")
 
     def get_thread_images(self, thread_ts):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return []
         key = f"chat_images:{thread_ts}"
         try:
@@ -412,8 +578,7 @@ class Cache:
         # from the raw event text — the cleaned query has had every <@U…> token
         # stripped by the time retrieval sees it. Stashed per turn, alongside the
         # images, for the same reason: it belongs to this turn, not the entry.
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return
         key = f"chat_mentions:{thread_ts}"
         with self.redis_client.pipeline() as pipe:
@@ -428,8 +593,7 @@ class Cache:
         """Reads and clears. Button and dropdown followups reach retrieval
         without re-stashing, and inheriting a previous turn's targets would make
         Nubi answer "what did @john say" for a question that named nobody."""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return []
         key = f"chat_mentions:{thread_ts}"
         try:
@@ -454,8 +618,7 @@ class Cache:
         platform) under watch_id so the terminal callback can retire it.
         nx=True -> atomic SET NX, doubling as a claim: only one concurrent
         watch_registered wins. False if already claimed or on any Redis error."""
-        self._ensure_connection()
-        if not self.redis_client or not watch_id:
+        if not self._ensure_connection() or not watch_id:
             return False
         key = f"watch_status:{watch_id}"
         try:
@@ -471,8 +634,7 @@ class Cache:
 
     def get_watch_status(self, watch_id):
         """Return the stored watch status coordinates, or None if absent/expired."""
-        self._ensure_connection()
-        if not self.redis_client or not watch_id:
+        if not self._ensure_connection() or not watch_id:
             return None
         key = f"watch_status:{watch_id}"
         try:
@@ -489,8 +651,7 @@ class Cache:
 
     def remove_watch_status(self, watch_id):
         """Drop the watch status entry once its message has been finalized."""
-        self._ensure_connection()
-        if not self.redis_client or not watch_id:
+        if not self._ensure_connection() or not watch_id:
             return False
         key = f"watch_status:{watch_id}"
         try:
@@ -502,8 +663,7 @@ class Cache:
 
     def cache_channel_session_mapping(self, channel_id, team_id, session_id, account_id=None, tenant_id=None):
         """Cache the mapping between channel_id and session_id from /channels/join"""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return False
         key = f"channel_session:{team_id}:{channel_id}"
         with self.redis_client.pipeline() as pipe:
@@ -532,8 +692,7 @@ class Cache:
         Returns:
             dict with keys: session_id, account_id, tenant_id (or None if not found/expired)
         """
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return None
         key = f"channel_session:{team_id}:{channel_id}"
         try:
@@ -555,8 +714,7 @@ class Cache:
 
     def remove_channel_session_mapping(self, channel_id, team_id):
         """Remove the channel-to-session_id mapping"""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return False
         key = f"channel_session:{team_id}:{channel_id}"
         with self.redis_client.pipeline() as pipe:
@@ -580,8 +738,7 @@ class Cache:
         return f"watched_channels:{platform}:{team_id}"
 
     def add_watched_channel(self, platform, team_id, channel_id):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return False
         try:
             self.redis_client.sadd(self._watched_channels_key(platform, team_id), channel_id)
@@ -591,8 +748,7 @@ class Cache:
             return False
 
     def remove_watched_channel(self, platform, team_id, channel_id):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return False
         try:
             self.redis_client.srem(self._watched_channels_key(platform, team_id), channel_id)
@@ -604,8 +760,7 @@ class Cache:
     def is_channel_watched(self, platform, team_id, channel_id):
         """True/False from the mirror, or None when Redis is unavailable so the
         caller can fall back to the messaging_channel_watch table."""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return None
         try:
             return bool(self.redis_client.sismember(self._watched_channels_key(platform, team_id), channel_id))
@@ -614,8 +769,7 @@ class Cache:
             return None
 
     def get_cached_user_name(self, team_id, user_id):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return None
         try:
             return self.redis_client.get(f"slack_user_name:{team_id}:{user_id}")
@@ -624,8 +778,7 @@ class Cache:
             return None
 
     def cache_user_name(self, team_id, user_id, display_name, ttl_seconds=86400):
-        self._ensure_connection()
-        if not self.redis_client or not display_name:
+        if not self._ensure_connection() or not display_name:
             return False
         try:
             self.redis_client.set(f"slack_user_name:{team_id}:{user_id}", display_name, ex=ttl_seconds)
@@ -635,8 +788,7 @@ class Cache:
             return False
 
     def get_cached_team_domain(self, team_id):
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return None
         try:
             return self.redis_client.get(f"slack_team_domain:{team_id}")
@@ -647,8 +799,7 @@ class Cache:
     def cache_team_domain(self, team_id, domain, ttl_seconds=86400):
         """Empty string is a valid value — it negative-caches a workspace whose
         domain could not be resolved, so failures don't retry the API per mention."""
-        self._ensure_connection()
-        if not self.redis_client or domain is None:
+        if not self._ensure_connection() or domain is None:
             return False
         try:
             self.redis_client.set(f"slack_team_domain:{team_id}", domain, ex=ttl_seconds)
@@ -661,8 +812,7 @@ class Cache:
         """True the first time an event id is seen, False on Slack's retries.
         Fails open (True) when Redis is unavailable — the storage layer upserts,
         so a duplicate is harmless, whereas dropping a real message is not."""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return True
         try:
             return bool(self.redis_client.set(f"channel_event:{event_id}", "1", nx=True, ex=ttl_seconds))
@@ -674,8 +824,7 @@ class Cache:
         """First click on a card action wins (True) until the claim expires.
         Only a fast path: the stored card is what refuses repeats. Fails open
         (True) when Redis is unavailable."""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return True
         try:
             return bool(self.redis_client.set(f"card_action:{key}", "1", nx=True, ex=ttl_seconds))
@@ -686,8 +835,7 @@ class Cache:
     def release_card_action(self, key):
         """Drops a claim taken by claim_card_action, so a retry after a failure
         isn't ignored until the claim expires."""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return
         try:
             self.redis_client.delete(f"card_action:{key}")
@@ -700,8 +848,7 @@ class Cache:
         each spawning their own poller. Fails open (True) when Redis is
         unavailable, so an outage degrades to "no dedup" rather than
         silently dropping the poller."""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return True
         try:
             return bool(self.redis_client.set(f"event_analysis_poll:{event_id}", "1", nx=True, ex=ttl_seconds))
@@ -715,8 +862,7 @@ class Cache:
         refresh_teams_analysis. token identifies the worker that owns it.
         Separate from Slack's claim, so neither platform silences the other.
         Fails open (True) when Redis is unavailable."""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return True
         try:
             return bool(self.redis_client.set(_teams_analysis_key(event_id), token, nx=True, ex=ttl_seconds))
@@ -731,8 +877,7 @@ class Cache:
     def refresh_teams_analysis(self, event_id, ttl_seconds, token):
         """Keeps a live worker's claim from expiring, re-taking it if it lapsed
         and nobody else took it; a dead worker's runs out."""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return
         try:
             if self._teams_analysis_owner(event_id) in (None, token):
@@ -742,8 +887,7 @@ class Cache:
 
     def release_teams_analysis(self, event_id, token):
         """Releases the claim only if this worker still owns it."""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return
         try:
             if self._teams_analysis_owner(event_id) == token:
@@ -756,8 +900,7 @@ class Cache:
         this, a claim only ever clears on its own after the full TTL, so any
         retry for the same event stays blocked for that long even though no
         poller is actually running any more."""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return
         try:
             self.redis_client.delete(f"event_analysis_poll:{event_id}")
@@ -766,8 +909,7 @@ class Cache:
 
     def rebuild_watched_channels(self, platform, team_id, channel_ids):
         """Reseed one workspace's mirror from the DB truth (e.g. after a flush)."""
-        self._ensure_connection()
-        if not self.redis_client:
+        if not self._ensure_connection():
             return False
         key = self._watched_channels_key(platform, team_id)
         with self.redis_client.pipeline() as pipe:

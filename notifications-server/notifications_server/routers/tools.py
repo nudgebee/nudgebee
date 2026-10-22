@@ -72,8 +72,11 @@ async def ms_teams_oauth_redirect(request: Request, data: Dict[Any, Any]):
             f"MS Teams tenant {aad_tenant_id} is already linked to another tenant; refusing install for {tenant_id}"
         )
         raise HTTPException(status_code=400, detail=MS_TEAMS_TENANT_ALREADY_LINKED)
-    service = MsTeamsService(sync_engine)
-    service.save_teams_installation(teams_app.client_id, tenant_id, token_result, account, user_email)
+    await run_in_threadpool(
+        lambda: MsTeamsService(sync_engine).save_teams_installation(
+            teams_app.client_id, tenant_id, token_result, account, user_email
+        )
+    )
     success_html = render_success_page("MS-Teams", settings.base_url)
 
     return HTMLResponse(content=success_html)

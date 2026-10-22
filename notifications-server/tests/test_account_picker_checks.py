@@ -9,6 +9,7 @@ import pytest
 
 from notifications_server.services.actions import CLUSTER_NOT_FOUND
 from notifications_server.services.events import Events
+from notifications_server.services.cache import AsyncCache
 
 TENANT = "aaaaaaaa-1111-4111-8111-111111111111"
 OTHER_TENANT = "bbbbbbbb-2222-4222-8222-222222222222"
@@ -26,6 +27,7 @@ def _events():
     events.common_service.teams_reply_with_card = mock.AsyncMock()
     events.common_service.teams_update_clicked_card = mock.AsyncMock(return_value=True)
     events.cache = mock.Mock()
+    events.cache.aio = AsyncCache(events.cache)
     events.session = mock.Mock()
     return events
 

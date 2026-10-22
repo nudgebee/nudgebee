@@ -53,9 +53,11 @@ async def get_cached_or_fallback_entry(
 ) -> tuple[Dict[str, Any], str, str, Optional[str], Optional[str]]:
     conversation_id = payload.conversation_id
 
-    channel_id, thread_ts, team_id, account_id = _parse_conversation(common_service, conversation_id, payload)
+    channel_id, thread_ts, team_id, account_id = await asyncio.to_thread(
+        _parse_conversation, common_service, conversation_id, payload
+    )
 
-    cached_entry = await asyncio.to_thread(event_cache.get_event_entry, thread_ts)
+    cached_entry = await event_cache.aio.get_event_entry(thread_ts)
 
     if not cached_entry and not team_id and payload.tenant_id:
         team_id = await asyncio.to_thread(_lookup_team_id, payload.tenant_id)
@@ -69,7 +71,7 @@ async def get_cached_or_fallback_entry(
             "session_id": conversation_id,
             "is_thread": False,
         }
-        event_cache.cache_event_entry(thread_ts, cached_entry)
+        await event_cache.aio.cache_event_entry(thread_ts, cached_entry)
 
     if not cached_entry:
         LOG.warning(
@@ -297,7 +299,8 @@ async def handle_llm_response(request: Request, background_tasks: BackgroundTask
             elif platform == "google_chat":
                 background_tasks.add_task(handler, payload, cached_entry, thread_ts)
             else:
-                handler(payload, cached_entry, channel_id, thread_ts, team_id)
+                # The Slack handlers are sync: Slack API, database and cache calls.
+                await asyncio.to_thread(handler, payload, cached_entry, channel_id, thread_ts, team_id)
 
             return {"status": "success"}
 

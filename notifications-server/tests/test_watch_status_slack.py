@@ -74,7 +74,7 @@ class _FakePipeline:
 def _fake_cache():
     cache = Cache()
     cache.redis_client = _FakeRedis()
-    cache._ensure_connection = lambda: None  # noqa: SLF001 - skip real connection
+    cache._ensure_connection = lambda: cache.redis_client  # noqa: SLF001 - skip real connection
     return cache
 
 
@@ -343,10 +343,10 @@ def _events_with_shared_event_cache(monkeypatch):
     shared = _FakeRedis()
     cache = Cache()
     cache.redis_client = shared
-    cache._ensure_connection = lambda: None  # noqa: SLF001
+    cache._ensure_connection = lambda: cache.redis_client  # noqa: SLF001
     ev_cache = Cache()
     ev_cache.redis_client = shared
-    ev_cache._ensure_connection = lambda: None  # noqa: SLF001
+    ev_cache._ensure_connection = lambda: ev_cache.redis_client  # noqa: SLF001
     monkeypatch.setattr(events_module, "event_cache", ev_cache)
     common = MagicMock()
     common.slack_reply_in_thread_as_blocks.side_effect = ["999.111", "888.222"]
