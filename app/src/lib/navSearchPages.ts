@@ -674,7 +674,6 @@ export const bCortexSearchFragments: BCortexSearchFragment[] = [
     label: 'Account Context',
     slug: 'bcortex/knowledge/account-context',
     tab: 'account-context',
-    memoryOnly: true,
   },
 
   { label: 'Knowledge Graph', slug: 'bcortex/knowledge-graph', tab: 'knowledge-graph' },
