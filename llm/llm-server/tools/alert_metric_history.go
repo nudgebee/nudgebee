@@ -89,8 +89,9 @@ func flipComparison(op parser.ItemType) parser.ItemType {
 // [{metric, timestamps, values}]}). A series belongs to the alert when every label it
 // shares with alertLabels agrees (see labelAgrees); a lone series belongs to
 // it whatever its labels. When several belong (the pods of one workload), the
-// one furthest toward the alert's level at the end is taken: that is the one
-// alerting. ok is false when none belongs: a wrong file named in the
+// one still reporting latest is taken — a pod replaced before the alert stops
+// early and is not the one alerting — and among those, the one furthest toward
+// the alert's level at the end. ok is false when none belongs: a wrong file named in the
 // investigation prompt would be read as the alert's own history.
 func FetchAlertMetricHistory(ctx security.RequestContext, accountId, series, op string, alertLabels map[string]string, start, end time.Time, step time.Duration) (any, bool, error) {
 	query := func(q string) ([]any, error) {
@@ -134,7 +135,7 @@ func alertSeries(all []any, alertLabels map[string]string, op string) any {
 		return all[0]
 	}
 	var picked any
-	best := 0.0
+	var bestTs, best float64
 	for _, s := range all {
 		m, _ := s.(map[string]any)
 		metric, _ := m["metric"].(map[string]any)
@@ -156,12 +157,13 @@ func alertSeries(all []any, alertLabels map[string]string, op string) any {
 		if !agrees || shared == 0 {
 			continue
 		}
-		last, ok := lastValue(m["values"])
+		ts, last, ok := lastPoint(m)
 		if !ok {
 			continue
 		}
-		if picked == nil || (strings.HasPrefix(op, "<") && last < best) || (!strings.HasPrefix(op, "<") && last > best) {
-			picked, best = s, last
+		nearer := (strings.HasPrefix(op, "<") && last < best) || (!strings.HasPrefix(op, "<") && last > best)
+		if picked == nil || ts > bestTs || (ts == bestTs && nearer) {
+			picked, bestTs, best = s, ts, last
 		}
 	}
 	return picked
@@ -174,14 +176,21 @@ func labelAgrees(series, alert string) bool {
 	return series == alert || strings.HasPrefix(series, alert+"-")
 }
 
-func lastValue(values any) (float64, bool) {
-	vs, _ := values.([]any)
+// lastPoint returns the timestamp and value of a series' last numeric point.
+func lastPoint(series map[string]any) (ts, value float64, ok bool) {
+	vs, _ := series["values"].([]any)
+	tss, _ := series["timestamps"].([]any)
 	for i := len(vs) - 1; i >= 0; i-- {
-		if f, ok := vs[i].(float64); ok {
-			return f, true
+		f, isNum := vs[i].(float64)
+		if !isNum {
+			continue
 		}
+		if i < len(tss) {
+			ts, _ = tss[i].(float64)
+		}
+		return ts, f, true
 	}
-	return 0, false
+	return 0, 0, false
 }
 
 // cloudWatchAlarm is the part of a CloudWatch DescribeAlarms entry (the stored

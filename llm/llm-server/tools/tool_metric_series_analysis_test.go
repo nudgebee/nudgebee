@@ -906,3 +906,35 @@ func TestAnalyzeMetricSeries_PastForTheWholeWindow(t *testing.T) {
 	assert.Contains(t, a.Summary, "past 4xx share 5% now; past it for the whole 47.5 hours.")
 	assert.NotContains(t, a.Summary, "the first time")
 }
+
+func TestAnalyzeMetricSeries_SteadyTrendReadsFirstToLast(t *testing.T) {
+	// A steady fall is told in the order it moved; min to max read as a rise.
+	var pts []string
+	for i := 0; i < 20; i++ {
+		pts = append(pts, fmt.Sprintf("[%d,%g]", 1760954400+i*60, 10-0.25*float64(i)))
+	}
+	resp, out := callAnalyzeMetricSeries(t, `{"points":[`+strings.Join(pts, ",")+`]}`, nil)
+	require.Equal(t, core.NBToolResponseStatusSuccess, resp.Status, resp.Data)
+	summary := out["series"].([]any)[0].(map[string]any)["summary"].(string)
+	assert.Contains(t, summary, "Falling")
+	assert.Contains(t, summary, "(10 to 5.25 over", summary)
+}
+
+func TestMsReachWindow(t *testing.T) {
+	high := 0.3
+	tests := []struct {
+		name string
+		r    seriesReach
+		want string
+	}{
+		{"minutes away: clock times", seriesReach{HoursEstimate: 0.28, HoursHigh: &high, Earliest: "2026-10-22T09:52:26Z", Latest: "2026-10-22T09:53:22Z"}, "between Oct 22 09:52 UTC and Oct 22 09:53 UTC"},
+		{"same minute", seriesReach{HoursEstimate: 0.28, HoursHigh: &high, Earliest: "2026-10-22T09:52:10Z", Latest: "2026-10-22T09:52:50Z"}, "around Oct 22 09:52 UTC"},
+		{"days away: calendar days", seriesReach{HoursEstimate: 33, HoursHigh: &high, Earliest: "2026-10-23T18:00:00Z", Latest: "2026-10-23T22:00:00Z"}, "around Oct 23"},
+		{"no upper bound", seriesReach{HoursEstimate: 40, Earliest: "2026-10-24T01:00:00Z"}, "not before Oct 24"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, msReachWindow(&tt.r))
+		})
+	}
+}

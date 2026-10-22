@@ -97,6 +97,17 @@ func TestFetchAlertMetricHistory(t *testing.T) {
 		assert.Equal(t, "checkout-7c9d8f-b2", body.(map[string]any)["metric"].(map[string]any)["pod"], "not the other workload checkoutv2, whose last value is higher")
 	})
 
+	t.Run("a pod replaced before the alert is not the alerting one, however high it ended", func(t *testing.T) {
+		payload = []core.ObservabilityMetricsQuerySeries{
+			{Metric: map[string]string{"namespace": "demo", "pod": "checkout-777f-old"}, Timestamps: []int64{1, 2}, Values: []float64{0.9, 0.94}},
+			{Metric: map[string]string{"namespace": "demo", "pod": "checkout-5cfd-new"}, Timestamps: []int64{3, 4, 5}, Values: []float64{0.3, 0.4, 0.52}},
+		}
+		body, ok, err := FetchAlertMetricHistory(security.RequestContext{}, "acct", "cpu", ">", map[string]string{"namespace": "demo", "pod": "checkout"}, end.Add(-time.Hour), end, time.Minute)
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, "checkout-5cfd-new", body.(map[string]any)["metric"].(map[string]any)["pod"])
+	})
+
 	t.Run("no candidate: nothing is saved", func(t *testing.T) {
 		payload = []core.ObservabilityMetricsQuerySeries{
 			series(map[string]string{"service_name": "cart"}),

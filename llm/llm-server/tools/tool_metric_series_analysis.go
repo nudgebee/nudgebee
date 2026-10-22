@@ -1724,7 +1724,9 @@ func msSummary(a seriesAnalysis, spanH float64) string {
 		lead = fmt.Sprintf("Jumped %s from %s to %s on %s, %d reading(s) ago, too recent to tell whether it holds",
 			msUpDown(a.latestStep), msFmt(a.latestStep.from), msFmt(a.latestStep.to), msWhen(a.latestStep.at), a.samplesSince)
 	case t.Steady:
-		lead = fmt.Sprintf("%s about %s (%s to %s over %s)", msTitle(t.Direction), msRateWords(t), msFmt(a.Baseline.Min), msFmt(a.Baseline.Max), msSpanWords(spanH))
+		// First to last, in the order it moved: min to max read as a rise on a
+		// falling series.
+		lead = fmt.Sprintf("%s about %s (%s to %s over %s)", msTitle(t.Direction), msRateWords(t), msFmt(a.Baseline.First), msFmt(a.Baseline.Last), msSpanWords(spanH))
 	case t.Direction == "flat" && msBursty(a) != "":
 		lead = fmt.Sprintf("Mostly at about %s over %s, with bursts past %s", msFmt(a.Baseline.Median), msSpanWords(spanH), msBursty(a))
 	case t.Direction == "flat":
@@ -1846,22 +1848,28 @@ func msWhen(t time.Time) string {
 	return t.UTC().Format("Jan 2 15:04 UTC")
 }
 
-// msReachWindow is when a forecast lands, as calendar days.
+// msReachWindow is when a forecast lands: calendar days for a day or more
+// ahead, clock times for less ("around Oct 22" said nothing about a reach
+// 17 minutes away).
 func msReachWindow(r *seriesReach) string {
-	day := func(s string) string {
+	layout := "Jan 2"
+	if r.HoursEstimate < 24 {
+		layout = "Jan 2 15:04 UTC"
+	}
+	at := func(s string) string {
 		t, err := time.Parse(time.RFC3339, s)
 		if err != nil {
 			return s
 		}
-		return t.UTC().Format("Jan 2")
+		return t.UTC().Format(layout)
 	}
 	switch {
 	case r.Latest == "":
-		return "not before " + day(r.Earliest)
-	case day(r.Earliest) == day(r.Latest):
-		return "around " + day(r.Earliest)
+		return "not before " + at(r.Earliest)
+	case at(r.Earliest) == at(r.Latest):
+		return "around " + at(r.Earliest)
 	default:
-		return "between " + day(r.Earliest) + " and " + day(r.Latest)
+		return "between " + at(r.Earliest) + " and " + at(r.Latest)
 	}
 }
 
