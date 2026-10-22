@@ -27,3 +27,12 @@ func TestJobCleanup(t *testing.T) {
 	CleanupData(ctx, "anomaly")
 	CleanupData(ctx, "slo_report")
 }
+
+// Installs without the legacy relationships table drop its guard rather than fail
+// the whole inactive-resources sweep with "relation does not exist".
+func TestRelationshipGuards(t *testing.T) {
+	assert.Empty(t, relationshipGuards(false))
+	guard := relationshipGuards(true)
+	assert.Contains(t, guard, "crr.source_id = cr.id")
+	assert.Contains(t, guard, "crr.destination_id = cr.id")
+}

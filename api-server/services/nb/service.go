@@ -98,6 +98,7 @@ type dataCleanupJob struct {
 }
 
 func CleanupData(ctx *security.RequestContext, job ...string) {
+	hasRelationships := metastoreTableExists(ctx, "cloud_resource_relationships")
 	cleanupJobs :=
 		[]dataCleanupJob{
 			{
@@ -427,7 +428,8 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 				//   which would otherwise hit RESTRICT on recommendation_resolution(recommendation_id)
 				//   and abort the batch.
 				// - cloud_resource_relationships (source_id & destination_id) and dw_queries:
-				//   guards against NO ACTION / RESTRICT foreign key violations.
+				//   guards against NO ACTION / RESTRICT foreign key violations. The
+				//   relationships table is legacy and missing on newer installs; see relationshipGuards.
 				// - k8s_pods, k8s_workloads, k8s_nodes, insight, workload_criticality: no FK, so
 				//   deleting would leave dangling resource id links. k8s rows age out via the
 				//   k8s_* sweeps above, after which the resource becomes eligible on a later run.
@@ -446,8 +448,7 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 					  AND NOT EXISTS (SELECT 1 FROM application_group_mapping agm WHERE agm.cloud_resource_id = cr.id)
 					  AND NOT EXISTS (SELECT 1 FROM cloud_resource_attributes cra WHERE cra.resource_id = cr.id)
 					  AND NOT EXISTS (SELECT 1 FROM recommendation r WHERE r.resource_id = cr.id)
-					  AND NOT EXISTS (SELECT 1 FROM cloud_resource_relationships crr WHERE crr.source_id = cr.id)
-					  AND NOT EXISTS (SELECT 1 FROM cloud_resource_relationships crr WHERE crr.destination_id = cr.id)
+					  %s
 					  AND NOT EXISTS (SELECT 1 FROM dw_queries dwq WHERE dwq.resource_id = cr.id)
 					  AND NOT EXISTS (SELECT 1 FROM k8s_pods kp WHERE kp.cloud_resource_id = cr.id)
 					  AND NOT EXISTS (SELECT 1 FROM k8s_workloads kw WHERE kw.cloud_resource_id = cr.id)
@@ -456,7 +457,7 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 					  AND NOT EXISTS (SELECT 1 FROM workload_criticality wc WHERE wc.cloud_resource_id = cr.id)
 					LIMIT %d
 				) DELETE FROM cloud_resourses WHERE id IN (SELECT id FROM to_del)`,
-					config.Config.NBRetentionDaysInactiveCloudResources, cleanupBatchSize),
+					config.Config.NBRetentionDaysInactiveCloudResources, relationshipGuards(hasRelationships), cleanupBatchSize),
 			},
 			{
 				// Pod/workload CPU and memory profiling dumps (JSONB profile payloads).
@@ -537,6 +538,33 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 			}
 		}
 	}
+}
+
+// relationshipGuards keeps resources that a cloud_resource_relationships row points at.
+// The table is legacy: installs created without it (test, fresh installs) skip the
+// guard, which is safe there because no foreign key to it exists.
+func relationshipGuards(tableExists bool) string {
+	if !tableExists {
+		return ""
+	}
+	return `AND NOT EXISTS (SELECT 1 FROM cloud_resource_relationships crr WHERE crr.source_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM cloud_resource_relationships crr WHERE crr.destination_id = cr.id)`
+}
+
+// metastoreTableExists reports whether a metastore table exists. When it cannot tell,
+// it answers true, so a guard that depends on the table is kept.
+func metastoreTableExists(ctx *security.RequestContext, table string) bool {
+	databaseManager, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		ctx.GetLogger().Warn("nb: cannot check table, assuming it exists", "error", err, "table", table)
+		return true
+	}
+	var exists bool
+	if err := databaseManager.Db.QueryRow("SELECT to_regclass($1) IS NOT NULL", table).Scan(&exists); err != nil {
+		ctx.GetLogger().Warn("nb: cannot check table, assuming it exists", "error", err, "table", table)
+		return true
+	}
+	return exists
 }
 
 func executeMetastoreJob(ctx *security.RequestContext, jobName, query string) error {
