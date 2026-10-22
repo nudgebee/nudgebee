@@ -489,6 +489,14 @@ type appConfig struct {
 	RabbitMqWebhookProcessQueue       string `mapstructure:"rabbit_mq_webhook_process_queue"`
 	RabbitMqWebhookProcessConcurrency int    `mapstructure:"rabbit_mq_webhook_process_concurrency"`
 
+	// Agent first-connect queue: the initial recommendation scans and the
+	// server-side OpenCost sync a K8s agent's first connect kicks off. Queued so
+	// the work runs on the worker deployment and survives a pod restart instead
+	// of running in a goroutine on whichever API pod took the /v1/audit call.
+	// Turn the feature off to fall back to that in-process path without a release.
+	FeatureAgentConnectQueueEnabled bool `mapstructure:"feature_agent_connect_queue_enabled"`
+	RabbitMqAgentConnectConcurrency int  `mapstructure:"rabbit_mq_agent_connect_concurrency"`
+
 	// LLM investigation-completed callback consumer. llm-server publishes a
 	// completion envelope here when an event investigation reaches a terminal
 	// state; this consumer runs the downstream event processors that were
@@ -787,6 +795,12 @@ func init() {
 	viper.SetDefault("rabbit_mq_webhook_process_exchange", "webhook_process_exchange")
 	viper.SetDefault("rabbit_mq_webhook_process_queue", "webhook_process")
 	viper.SetDefault("rabbit_mq_webhook_process_concurrency", 5)
+
+	// Agent first-connect queue configuration. Concurrency stays above 1 on
+	// purpose: a tenant onboarding several clusters at once must not have the
+	// last one's scans wait behind everyone else's OpenCost sync.
+	viper.SetDefault("feature_agent_connect_queue_enabled", true)
+	viper.SetDefault("rabbit_mq_agent_connect_concurrency", 5)
 
 	// LLM investigation-completed callback consumer. Exchange + routing key
 	// MUST match llm-server's publisher defaults; queue MUST differ from
