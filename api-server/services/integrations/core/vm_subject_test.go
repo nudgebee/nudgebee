@@ -82,3 +82,22 @@ func TestResolveVMSubject(t *testing.T) {
 		assert.NoError(t, pkgMock.ExpectationsWereMet())
 	})
 }
+
+func TestVMServiceName(t *testing.T) {
+	cases := map[string]string{
+		"/system.slice/nb-bench-oom.service": "nb-bench-oom.service",
+		"/docker/orders-api":                 "orders-api",
+		"/system.slice/":                     "",
+		"/user.slice/user-1000.slice":        "",
+		"/system.slice/a.slice":              "",
+		"":                                   "",
+	}
+	for id, want := range cases {
+		if got := VMServiceName(map[string]string{"container_id": id}); got != want {
+			t.Errorf("VMServiceName(%q) = %q, want %q", id, got, want)
+		}
+	}
+	if got := VMServiceName(nil); got != "" {
+		t.Errorf("nil labels = %q, want empty", got)
+	}
+}

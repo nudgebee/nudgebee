@@ -89,3 +89,23 @@ func firstLabel(labels map[string]string, keys []string) string {
 	}
 	return ""
 }
+
+// VMServiceName names the systemd unit or container a VM alert is about, from the
+// node-agent `container_id` label (`/system.slice/<unit>.service`, `/docker/<name>`).
+// Empty for a host-level alert, and for login sessions, slices and scopes, which
+// are not services (same rule as the service map).
+func VMServiceName(labels map[string]string) string {
+	id := strings.TrimSpace(labels["container_id"])
+	switch {
+	case strings.HasPrefix(id, "/system.slice/"):
+		unit := strings.TrimPrefix(id, "/system.slice/")
+		if strings.HasSuffix(unit, ".service") && !strings.Contains(unit, "/") {
+			return unit
+		}
+	case strings.HasPrefix(id, "/docker/"):
+		if name := strings.TrimPrefix(id, "/docker/"); name != "" && !strings.Contains(name, "/") {
+			return name
+		}
+	}
+	return ""
+}

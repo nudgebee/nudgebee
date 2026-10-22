@@ -3585,18 +3585,52 @@ func applyNodeSubjectCorrection(sc *security.RequestContext, dbms *database.Data
 // applyVMSubject links an alert on a VM account to the VM it is about. An alert
 // whose subject fell back to the raw `instance` label is renamed to the VM; one
 // that already names a service keeps that name and only gains the link.
+//
+// It also sets the subject owner, which is what the events list shows as the
+// application: the service the alert is about when its labels name one,
+// otherwise the VM itself (a disk, CPU or memory alert is about the host).
 func applyVMSubject(sc *security.RequestContext, webhookEvent *Event) {
-	if webhookEvent.CloudResourceId != "" {
+	if !vmSubjectLookupNeeded(webhookEvent) {
 		return
 	}
 	vm, ok := integrationcore.ResolveVMSubject(sc, webhookEvent.AccountId, integrationcore.VMSubjectInput{Labels: webhookEvent.Labels})
 	if !ok {
 		return
 	}
-	webhookEvent.CloudResourceId = vm.CloudResourceID
-	if strings.EqualFold(webhookEvent.SubjectType, "instance") {
-		webhookEvent.SubjectType = "vm"
-		webhookEvent.SubjectName = vm.Name
+	setVMSubjectFields(webhookEvent, vm)
+}
+
+// vmSubjectLookupNeeded is false when there is nothing for the VM lookup to add: the
+// event is already linked, already has an owner of its own (a Kubernetes workload,
+// say) and names no service in its labels. Skipping it keeps the per-event hot path
+// free of a query for those events. A service label still goes through the lookup,
+// which is what confirms the account is a VM account before the owner is set.
+func vmSubjectLookupNeeded(webhookEvent *Event) bool {
+	if webhookEvent.CloudResourceId == "" {
+		return true
+	}
+	if integrationcore.VMServiceName(webhookEvent.Labels) != "" {
+		return true
+	}
+	return webhookEvent.SubjectOwner == "" || webhookEvent.SubjectOwner == webhookEvent.CloudResourceId
+}
+
+// setVMSubjectFields applies a resolved VM to the event: the link, the subject
+// rename and the owner.
+func setVMSubjectFields(webhookEvent *Event, vm integrationcore.VMSubject) {
+	if webhookEvent.CloudResourceId == "" {
+		webhookEvent.CloudResourceId = vm.CloudResourceID
+		if strings.EqualFold(webhookEvent.SubjectType, "instance") {
+			webhookEvent.SubjectType = "vm"
+			webhookEvent.SubjectName = vm.Name
+		}
+	}
+	if service := integrationcore.VMServiceName(webhookEvent.Labels); service != "" {
+		webhookEvent.SubjectOwner = service
+		webhookEvent.SubjectOwnerKind = "service"
+	} else if webhookEvent.SubjectOwner == "" || webhookEvent.SubjectOwner == vm.CloudResourceID {
+		webhookEvent.SubjectOwner = vm.Name
+		webhookEvent.SubjectOwnerKind = "vm"
 	}
 }
 
