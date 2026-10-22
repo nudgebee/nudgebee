@@ -42,6 +42,7 @@ import {
 import { toast as snackbar } from '@ui/Toast';
 import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
 import { canEditTenantSettings, fetchFeatureFlagsForTenant, missingPermissionMessage } from '@lib/auth';
+import { HIDDEN_FEATURES, displayedFromStored, effectiveFeatureChoice } from '@lib/featureFlags';
 import { useSession } from 'next-auth/react';
 import apiUserManagement from '@api1/user';
 
@@ -344,18 +345,9 @@ const FeatureToggleCell = ({ feature, choice, canEdit, saving, onChange }) => {
   );
 };
 
-// Rows in public.feature that are not settings. TROUBLESHOOT anchors the billing 'incidents'
-// dimension (billing_feature_mapping), so it stays in the table but is not a toggle.
-const HIDDEN_FEATURES = new Set(['TROUBLESHOOT']);
-
 const FEATURE_STATUS_DEFAULT = 'default';
 
-// A flag can store the opposite of its name ('enabled' means OFF); feature.stored_value_inverted marks those.
-const displayedFromStored = (status, inverted) => {
-  const on = status === 'enabled';
-  return (inverted ? !on : on) ? 'on' : 'off';
-};
-
+// Write-path inverse of displayedFromStored (settings-only, so it stays here rather than in the shared lib).
 const storedFromDisplayed = (choice, inverted) => {
   if (choice === 'default') {
     return FEATURE_STATUS_DEFAULT;
@@ -363,9 +355,6 @@ const storedFromDisplayed = (choice, inverted) => {
   const on = choice === 'on';
   return (inverted ? !on : on) ? 'enabled' : 'disabled';
 };
-
-// Resolves the tri-state stored choice to what the flag is actually doing, using the catalog's polarity when unset.
-const effectiveFeatureChoice = (feature, choice) => (choice === 'default' ? (feature.polarity === 'default_on' ? 'on' : 'off') : choice);
 
 // Synthetic id for the "All" tab ahead of the per-category feature tabs.
 const ALL_FEATURES_GROUP_ID = 'all';

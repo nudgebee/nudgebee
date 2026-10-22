@@ -4,7 +4,7 @@ import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
 // One batched document for the admin Overview cards' counts. The gateway parses
 // every root field, dispatches each to its own action in parallel, and merges
 // the results by alias into a single response — so this is ONE HTTP call for
-// nine counts instead of nine calls (same mechanism the /overview page and
+// seven counts instead of seven calls (same mechanism the /overview page and
 // GET_USERS_BY_TENANT already rely on). A field that fails (e.g. customroles on
 // a tenant without the feature) comes back as `null` in `data` with an entry in
 // `errors`; the rest still return, so the counts stay fail-soft per-alias.
@@ -21,8 +21,15 @@ import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
 //
 // Not here: `channels` (needs the messaging-platform + integration merge that
 // apiNotifications.getInstalledTools does — a raw messagingplatforms_list count
-// misses integration-based channels) and `roles` count when the custom-roles
-// feature is off (returns null, dropped by the card).
+// misses integration-based channels); `flags` (the real "features on" count
+// needs each feature's catalog polarity + stored_value_inverted to resolve
+// default-on and inverted flags — a raw status="enabled" aggregate under-counts
+// both; AdminOverviewCards computes it via countFeaturesOn); and `connected`
+// (must match the Integrations page's "Connected N" = distinct provider tiles
+// with an active account, merged across accounts + legacy messaging_platforms +
+// integrations — a single-table integrations_aggregate misses the first two;
+// AdminOverviewCards computes it via countConnectedProviders). `roles` stays, but
+// its count is null when the custom-roles feature is off (dropped by the card).
 // customroles_list is an Enterprise action. The gateway refuses a whole batched
 // document when any field has no route, so on OSS the field is left out rather
 // than failing every count; roles then comes back null and its stat is dropped.
@@ -36,8 +43,6 @@ query AdminOverviewCounts {
   accounts: accounts_aggregate(where: { status: { _eq: "active" } }) { rows { count } }
   providers: integrations_aggregate(where: { type: { _eq: "llm" }, status: { _eq: "enabled" } }) { rows { count } }
   mcps: integrations_aggregate(where: { type: { _eq: "mcp" }, status: { _eq: "enabled" } }) { rows { count } }
-  connected: integrations_aggregate(where: { status: { _eq: "enabled" } }) { rows { count } }
-  flags: featureflags_list(where: { account_id: { _is_null: true } }) { rows { status } }
 ${ROLES_FIELD}}
 `;
 
@@ -48,8 +53,6 @@ export interface AdminOverviewCounts {
   accounts: number | null;
   providers: number | null;
   mcps: number | null;
-  connected: number | null;
-  flags: number | null;
   roles: number | null;
 }
 
@@ -66,8 +69,6 @@ export async function getAdminOverviewCounts(): Promise<AdminOverviewCounts> {
     accounts: cnt(d.accounts),
     providers: cnt(d.providers),
     mcps: cnt(d.mcps),
-    connected: cnt(d.connected),
-    flags: Array.isArray(d.flags?.rows) ? d.flags.rows.filter((r: any) => r.status === 'enabled').length : null,
     roles: Array.isArray(d.roles?.roles) ? d.roles.roles.length : null,
   };
 }
