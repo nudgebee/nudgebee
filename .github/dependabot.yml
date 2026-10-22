@@ -29,7 +29,7 @@ updates:
       routine-updates:
         update-types: ["minor", "patch"]
 
-  - package-ecosystem: "pip"
+  - package-ecosystem: "uv"
     directory: "/llm/rag-server"
     schedule:
       interval: "weekly"
@@ -38,7 +38,7 @@ updates:
       routine-updates:
         update-types: ["minor", "patch"]
 
-  - package-ecosystem: "pip"
+  - package-ecosystem: "uv"
     directory: "/llm/benchmark"
     schedule:
       interval: "weekly"
