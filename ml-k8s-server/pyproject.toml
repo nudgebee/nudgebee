@@ -16,7 +16,7 @@ gunicorn = "23.0.0"
 # stubs
 boto3-stubs = "1.43.98"
 pandas-stubs = "2.0.3.230814"
-types-tensorflow = "2.18.0.20260827"
+types-tensorflow = "2.18.0.20261009"
 sqlalchemy-stubs = "0.4"
 types-requests = "2.33.0.20261006"
 python-json-logger = ">=2.0.7,<5.0.0"
