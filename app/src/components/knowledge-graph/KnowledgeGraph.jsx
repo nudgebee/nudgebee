@@ -332,17 +332,20 @@ const AdaptiveServiceNode = memo(
               </span>
             )}
           </div>
-          <button
-            className='info-btn'
-            onClick={(e) => {
-              e.stopPropagation();
-              if (data.onInfoClick) {
-                data.onInfoClick(data.properties);
-              }
-            }}
-          >
-            <InfoOutlinedIcon style={{ fontSize: 18 }} />
-          </button>
+          <Tooltip title='View node details' placement='top'>
+            <button
+              className='info-btn'
+              aria-label='View node details'
+              onClick={(e) => {
+                e.stopPropagation();
+                if (data.onInfoClick) {
+                  data.onInfoClick(data.properties);
+                }
+              }}
+            >
+              <InfoOutlinedIcon style={{ fontSize: 18 }} />
+            </button>
+          </Tooltip>
           <Button
             className='focus-btn'
             icon={<FilterCenterFocusIcon style={{ fontSize: ds.text.bodyLg }} />}
