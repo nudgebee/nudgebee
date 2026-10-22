@@ -711,7 +711,14 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					containerName = labelValue(r.Labels, "container")
 				}
 				if containerName == "" {
-					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: container name cannot be empty")
+					// An event's labels are fixed when it is first raised, so an alert
+					// raised before its container was known still has none; the workload
+					// inventory answers when exactly one container has a CPU limit.
+					containerName = SingleLimitedContainer(common.StrVal(r.CloudAccountId), common.StrVal(r.SubjectNamespace),
+						common.StrVal(r.SubjectOwnerKind), common.StrVal(r.SubjectOwner), "cpu")
+				}
+				if containerName == "" {
+					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: container name cannot be empty; the workload has no single container with a CPU limit")
 				}
 				recommendationRequest = adapter.ApplyRecommendationRequest{
 					Data: query.Data.(map[string]any),

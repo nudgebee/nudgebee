@@ -20,6 +20,7 @@ import {
   revertTargetLabel,
 } from '@components/k8s/investigate/changeRollback';
 import { useRollbackCheck } from '@components/k8s/investigate/useRollbackCheck';
+import { CPU_LIMIT_ALERT_KEYS } from '@data/investigateConstants';
 
 // What a rollback's rolling restart looks like for each kind — a DaemonSet restarts a pod on every
 // node, which "rolling restart" alone does not tell anyone approving it.
@@ -393,7 +394,7 @@ const InvestigateResolution = ({
           </Box>
         </div>
       );
-    } else if (aggregationKey === 'CPUThrottlingHigh' || aggregationKey === 'PodMemoryReachingLimit') {
+    } else if (CPU_LIMIT_ALERT_KEYS.includes(aggregationKey) || aggregationKey === 'PodMemoryReachingLimit') {
       return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)', my: 'var(--ds-space-4)' }}>
           <RadioGroup value={selectedOption} onChange={handleRadioChange}>
@@ -404,7 +405,7 @@ const InvestigateResolution = ({
                 label={
                   <Input
                     value={requestBody.size || ''}
-                    label={aggregationKey === 'CPUThrottlingHigh' ? 'Increase CPU To' : 'Increase Memory To'}
+                    label={CPU_LIMIT_ALERT_KEYS.includes(aggregationKey) ? 'Increase CPU To' : 'Increase Memory To'}
                     type='number'
                     onChange={(value) => setRequestBody({ size: value, increase_replicas: '', restart: false, revert: false })}
                     size='sm'
@@ -492,7 +493,7 @@ const InvestigateResolution = ({
         snackbar.error('Required fields cannot be empty');
         valid = false;
       }
-    } else if (aggregationKey === 'CPUThrottlingHigh' || aggregationKey === 'PodMemoryReachingLimit') {
+    } else if (CPU_LIMIT_ALERT_KEYS.includes(aggregationKey) || aggregationKey === 'PodMemoryReachingLimit') {
       if (!requestBody.size && !requestBody.increase_replicas && !requestBody.restart) {
         snackbar.error('Select atleast one type of resolution');
         valid = false;

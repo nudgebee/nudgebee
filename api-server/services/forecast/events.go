@@ -520,29 +520,10 @@ func closeFiringEvents(t Target, fp, reason string, stable bool) error {
 	return nil
 }
 
-// onlyLimitedContainer returns the one container of the workload's live pods that has
-// a CPU limit, or "" when there are none or several.
+// onlyLimitedContainer returns the one container of the workload that has a CPU limit,
+// or "" when there are none or several.
 func onlyLimitedContainer(t Target, res Result) string {
-	dbms, err := database.GetDatabaseManager(database.Metastore)
-	if err != nil {
-		return ""
-	}
-	var names []string
-	err = dbms.Db.Select(&names, `SELECT DISTINCT c->>'name' FROM k8s_pods kp,
-		  jsonb_array_elements(CASE WHEN jsonb_typeof(kp.meta->'config'->'containers') = 'array'
-		                            THEN kp.meta->'config'->'containers' ELSE '[]'::jsonb END) c
-		WHERE kp.cloud_account_id = $1 AND kp.namespace = $2 AND kp.workload_name = $3
-		  AND lower(kp.workload_type) = $4 AND kp.is_active IS NOT FALSE
-		  AND COALESCE(c->'resources'->'limits'->>'cpu', '') <> ''`,
-		t.AccountId, res.Namespace, res.Workload, res.Kind)
-	if err != nil {
-		slog.Warn("forecast: could not read the workload's containers", "error", err, "workload", res.Workload)
-		return ""
-	}
-	if len(names) != 1 {
-		return ""
-	}
-	return names[0]
+	return event.SingleLimitedContainer(t.AccountId, res.Namespace, res.Kind, res.Workload, "cpu")
 }
 
 // publishResolved delivers the resolved notification the way anomaly closes do;
