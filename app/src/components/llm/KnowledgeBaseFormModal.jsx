@@ -17,6 +17,7 @@ import { ds } from '@utils/colors';
 import SafeIcon from '@shared/icons/SafeIcon';
 import MentionContentInput from '@components/llm/MentionContentInput';
 import KnowledgeContextTags from '@components/llm/KnowledgeContextTags';
+import { getKbNameError } from '@components/llm/kbName';
 import { KB_FORMAT_PDF, KB_FORMAT_TEXT, MAX_UPLOAD_BYTES, arrayBufferToBase64, isPdfFile, isTextFile } from '@components/llm/kbUploadFormat';
 
 const MAX_CONTENT_LENGTH = 40000;
@@ -286,20 +287,9 @@ const KnowledgeBaseFormModal = ({
   const handleSubmit = () => {
     const trimmedName = name?.trim() || '';
 
-    if (!trimmedName) {
-      snackbar.error('Please enter a valid name for the knowledge base');
-      return;
-    }
-    if (!/^[a-zA-Z]/.test(trimmedName)) {
-      snackbar.error('Name must start with a letter (a-z or A-Z)');
-      return;
-    }
-    if (!/^[a-zA-Z]\w*$/.test(trimmedName)) {
-      snackbar.error('Name can only contain letters, numbers, and underscores');
-      return;
-    }
-    if (trimmedName.length < 3 || trimmedName.length > 50) {
-      snackbar.error('Name must be between 3 and 50 characters');
+    const nameError = getKbNameError(trimmedName);
+    if (nameError) {
+      snackbar.error(nameError);
       return;
     }
     if (showScope && visibility === SCOPE_SELECTED_ACCOUNTS && scopeAccountIds.length === 0) {
@@ -486,7 +476,7 @@ const KnowledgeBaseFormModal = ({
                     Name Rules
                   </div>
                   {[
-                    { label: 'Allowed characters', value: 'a-z, A-Z, 0-9, underscore ( _ )' },
+                    { label: 'Allowed characters', value: 'a-z, A-Z, 0-9, hyphen ( - ), underscore ( _ )' },
                     { label: 'Must start with', value: 'a letter (a-z or A-Z)' },
                     { label: 'Length', value: '3 to 50 characters' },
                   ].map(({ label, value }, i) => (

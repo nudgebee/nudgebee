@@ -507,7 +507,7 @@ func buildKnowledgeCandidateMenuCollect(ctx *security.RequestContext, request NB
 			Title:   strings.TrimSpace(title),
 			Source:  strings.TrimSpace(source),
 			URL:     strings.TrimSpace(url),
-			Snippet: TruncateHead(content, 240),
+			Snippet: TruncateHead(knowledge.KnowledgeSnippetText(doc, content), 240),
 			Content: content,
 		}
 		if i < len(refs) {

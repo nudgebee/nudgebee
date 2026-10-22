@@ -558,6 +558,34 @@ type Mutation {
 }
 
 type Mutation {
+  ai_create_kb_skill_source(
+    request: CreateKBSkillSourceRequest!
+  ): KBSkillSourceResponse
+}
+
+type Query {
+  ai_list_kb_skill_sources: ListKBSkillSourcesResponse
+}
+
+type Mutation {
+  ai_update_kb_skill_source(
+    request: UpdateKBSkillSourceRequest!
+  ): KBSkillSourceResponse
+}
+
+type Mutation {
+  ai_sync_kb_skill_source(
+    request: KBSkillSourceIdRequest!
+  ): SyncKBSkillSourceResponse
+}
+
+type Mutation {
+  ai_delete_kb_skill_source(
+    request: KBSkillSourceIdRequest!
+  ): DeleteKBResponse
+}
+
+type Mutation {
   ai_update_agent_visibility(
     request: UpdateOrgItemVisibilityRequest!
   ): UpdateKBEnabledResponse
@@ -5828,6 +5856,72 @@ type ListKBAccountOverridesResponse {
   errors: [Error]
 }
 
+input CreateKBSkillSourceRequest {
+  repo: String!
+  folder: String
+  branch: String
+  visibility: String
+  account_ids: [String!]
+}
+
+input UpdateKBSkillSourceRequest {
+  id: String!
+  visibility: String!
+  account_ids: [String!]
+}
+
+input KBSkillSourceIdRequest {
+  id: String!
+}
+
+type KBSkillSource {
+  id: String!
+  tenant_id: String!
+  provider: String!
+  repo: String!
+  folder: String
+  branch: String
+  visibility: String!
+  account_ids: [String!]
+  last_commit: String
+  last_synced_at: timestamp
+  status: String!
+  error_message: String
+  sync_report: jsonb
+  skill_count: Int
+  created_at: timestamp
+  updated_at: timestamp
+}
+
+type KBSkillSourceResponse {
+  data: KBSkillSource
+  errors: [Error]
+}
+
+type ListKBSkillSourcesResponse {
+  data: [KBSkillSource]
+  errors: [Error]
+}
+
+type KBSkippedSkill {
+  source_path: String
+  reason: String
+}
+
+type KBSkillSourceSyncReport {
+  commit: String
+  found: Int
+  added: Int
+  updated: Int
+  archived: Int
+  skipped: [KBSkippedSkill]
+}
+
+type SyncKBSkillSourceResponse {
+  data: KBSkillSourceSyncReport
+  errors: [Error]
+}
+
 type UpdateKBVisibilityResponse {
   data: KnowledgebaseOutput
   errors: [Error]
@@ -10126,6 +10220,8 @@ type KnowledgebaseOutput {
   shapes: [String!]
   capabilities: [String!]
   capability_details: [CapabilityDetail!]
+  source_id: String
+  skill_meta: jsonb
 }
 
 type CapabilityDetail {

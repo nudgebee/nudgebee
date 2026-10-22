@@ -49,40 +49,9 @@ func (m LoadSkillsTool) callWorkspaceKnowledge(ctx core.NbToolContext, input cor
 		return knowledgeFailure(fmt.Errorf("select exactly one skill name or candidate ID"))
 	}
 	name = names[0]
-	keyword, _ := input.Arguments["keyword"].(string)
-	if len(keyword) > 256 {
-		return knowledgeFailure(fmt.Errorf("keyword exceeds 256 bytes"))
-	}
-	_, hasKeyword := input.Arguments["keyword"]
-	rawStartLine, hasStartLine := input.Arguments["start_line"]
-	rawStartByte, hasStartByte := input.Arguments["start_byte"]
-	if hasStartByte && (hasKeyword || hasStartLine) {
-		return knowledgeFailure(fmt.Errorf("start_byte cannot be combined with keyword or start_line"))
-	}
-	start := 1
-	if hasStartLine {
-		value, err := strconv.Atoi(fmt.Sprint(rawStartLine))
-		if err != nil || value < 1 {
-			return knowledgeFailure(fmt.Errorf("start_line must be a positive integer"))
-		}
-		start = value
-	}
-	var startByte int64
-	if hasStartByte {
-		if value, ok := rawStartByte.(float64); ok {
-			// Tool JSON numbers arrive as float64. Formatting large values can
-			// produce exponent notation, which ParseInt would reject.
-			if value < 0 || value > float64(knowledge.MaxKnowledgeDocumentBytes) || value != float64(int64(value)) {
-				return knowledgeFailure(fmt.Errorf("start_byte must be a non-negative integer within the document limit"))
-			}
-			startByte = int64(value)
-		} else {
-			value, err := strconv.ParseInt(fmt.Sprint(rawStartByte), 10, 64)
-			if err != nil || value < 0 || value > knowledge.MaxKnowledgeDocumentBytes {
-				return knowledgeFailure(fmt.Errorf("start_byte must be a non-negative integer within the document limit"))
-			}
-			startByte = value
-		}
+	keyword, start, startByte, err := parseKnowledgeReadArgs(input)
+	if err != nil {
+		return knowledgeFailure(err)
 	}
 	deadline, cancel := context.WithTimeout(ctx.Ctx.GetContext(), 90*time.Second)
 	defer cancel()
@@ -171,6 +140,47 @@ func (m LoadSkillsTool) callWorkspaceKnowledge(ctx core.NbToolContext, input cor
 	return core.NBToolResponse{Status: core.NBToolResponseStatusSuccess, Type: core.NBToolResponseTypeText, Data: result, References: refs}, nil
 }
 
+// parseKnowledgeReadArgs reads load_skills' paging arguments: keyword,
+// start_line (from 1) and start_byte (not combinable with the other two).
+func parseKnowledgeReadArgs(input core.NBToolCallRequest) (string, int, int64, error) {
+	keyword, _ := input.Arguments["keyword"].(string)
+	if len(keyword) > 256 {
+		return "", 0, 0, fmt.Errorf("keyword exceeds 256 bytes")
+	}
+	_, hasKeyword := input.Arguments["keyword"]
+	rawStartLine, hasStartLine := input.Arguments["start_line"]
+	rawStartByte, hasStartByte := input.Arguments["start_byte"]
+	if hasStartByte && (hasKeyword || hasStartLine) {
+		return "", 0, 0, fmt.Errorf("start_byte cannot be combined with keyword or start_line")
+	}
+	start := 1
+	if hasStartLine {
+		value, err := strconv.Atoi(fmt.Sprint(rawStartLine))
+		if err != nil || value < 1 {
+			return "", 0, 0, fmt.Errorf("start_line must be a positive integer")
+		}
+		start = value
+	}
+	var startByte int64
+	if hasStartByte {
+		if value, ok := rawStartByte.(float64); ok {
+			// Tool JSON numbers arrive as float64. Formatting large values can
+			// produce exponent notation, which ParseInt would reject.
+			if value < 0 || value > float64(knowledge.MaxKnowledgeDocumentBytes) || value != float64(int64(value)) {
+				return "", 0, 0, fmt.Errorf("start_byte must be a non-negative integer within the document limit")
+			}
+			startByte = int64(value)
+		} else {
+			value, err := strconv.ParseInt(fmt.Sprint(rawStartByte), 10, 64)
+			if err != nil || value < 0 || value > knowledge.MaxKnowledgeDocumentBytes {
+				return "", 0, 0, fmt.Errorf("start_byte must be a non-negative integer within the document limit")
+			}
+			startByte = value
+		}
+	}
+	return keyword, start, startByte, nil
+}
+
 func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager, c *knowledge.KnowledgeCandidate) error {
 	select {
 	case knowledgeSaveSlots <- struct{}{}:
@@ -240,6 +250,12 @@ func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager,
 	}
 	identity := sha256.Sum256([]byte(ctx.AccountId + "\x00" + ctx.ConversationId + "\x00" + c.Collection + "\x00" + c.DocumentID + "\x00" + c.FileSHA256))
 	path := fmt.Sprintf("knowledge/%x.txt", identity)
+	// A skill goes to its own folder, where copying the skill for its scripts
+	// ("<skill>/") writes the same SKILL.md: one copy, one place. Other
+	// knowledge, and a skill whose name can't be a folder, keep the hashed path.
+	if dir := skillDirName(c.Title); c.KBID != "" && skillDirNameRe.MatchString(dir) {
+		path = "skills/" + dir + "/" + knowledge.SkillMarkdown
+	}
 	data, err := io.ReadAll(io.LimitReader(temp, knowledge.MaxKnowledgeDocumentBytes+1))
 	if err != nil {
 		return fmt.Errorf("read knowledge for workspace save: %w", err)

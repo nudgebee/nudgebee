@@ -1154,6 +1154,21 @@ func handleKnowledgebaseApis(r *gin.Engine, tracer trace.Tracer, meter metric.Me
 		case "ai_list_kb_account_overrides":
 			common.MetricsApiRequestsTotal("kb_list_account_overrides")
 			kbListAccountOverrides(c, context, payload)
+		case "ai_create_kb_skill_source":
+			common.MetricsApiRequestsTotal("kb_create_skill_source")
+			kbCreateSkillSource(c, context, payload)
+		case "ai_list_kb_skill_sources":
+			common.MetricsApiRequestsTotal("kb_list_skill_sources")
+			kbListSkillSources(c, context, payload)
+		case "ai_update_kb_skill_source":
+			common.MetricsApiRequestsTotal("kb_update_skill_source")
+			kbUpdateSkillSourceVisibility(c, context, payload)
+		case "ai_sync_kb_skill_source":
+			common.MetricsApiRequestsTotal("kb_sync_skill_source")
+			kbSyncSkillSource(c, context, payload)
+		case "ai_delete_kb_skill_source":
+			common.MetricsApiRequestsTotal("kb_delete_skill_source")
+			kbDeleteSkillSource(c, context, payload)
 		default:
 			c.JSON(400, BuildApiResponse(nil, []error{errors.New("kb: invalid payload, unsupported action")}))
 		}

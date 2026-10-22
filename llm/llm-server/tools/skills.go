@@ -2,7 +2,10 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"strings"
@@ -66,7 +69,8 @@ func (m LoadSkillsTool) Name() string {
 }
 
 func (m LoadSkillsTool) Description() string {
-	const procedureReadGuidance = " For a potentially relevant SOP/procedure, finish reading its applicability, scope and prerequisites before dependent investigation or delegation; do not launch those actions in parallel with this load. If it does not apply, proceed without following it; a title match alone does not establish applicability."
+	const skillFileGuidance = " To read a file a loaded skill refers to (for example references/api.md), use skill_name '<skill name>/<file path>'. To run a skill's scripts, first use skill_name '<skill name>/' (trailing slash) to copy its folder into the workspace."
+	const procedureReadGuidance = skillFileGuidance + " For a potentially relevant SOP/procedure, finish reading its applicability, scope and prerequisites before dependent investigation or delegation; do not launch those actions in parallel with this load. If it does not apply, proceed without following it; a title match alone does not establish applicability."
 	if config.Config.LlmServerKnowledgeWorkspaceEnabled {
 		return `Loads one exact account skill or discovered candidate ID. Large indexed documents are saved to the workspace. Use keyword or start_line to read bounded sections through this tool. Integration names return document candidates for selection. Unknown names are never substituted.` + procedureReadGuidance + " Continue truncated reads using the returned start_byte cursor when present, or refine keyword/start_line."
 	}
@@ -166,7 +170,13 @@ func extractSkillName(val any) string {
 }
 
 func (m LoadSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-	skillName := m.ParseSkillName(input)
+	skillName := resolveSkillCandidatePath(ctx, m.ParseSkillName(input))
+	if skill, ok := splitSkillFolderName(skillName); ok {
+		return m.callSkillFolder(ctx, skill)
+	}
+	if skill, file, ok := splitSkillFileName(skillName); ok {
+		return m.callSkillFile(ctx, input, skill, file)
+	}
 	if config.Config.LlmServerKnowledgeWorkspaceEnabled {
 		return m.callWorkspaceKnowledge(ctx, input, skillName)
 	}
@@ -483,7 +493,7 @@ func cacheSearchKnowledgeCandidates(ctx core.NbToolContext, docs knowledge.RAGSe
 			ID: id, ReferenceID: url, Title: truncateRunesExact(title, 240),
 			Source: source, URL: url,
 			Content: content,
-			Snippet: truncateRunesExact(content, 240),
+			Snippet: truncateRunesExact(knowledge.KnowledgeSnippetText(doc, content), 240),
 		}
 		knowledge.SetKnowledgeDocumentHandle(&candidate, doc)
 		candidate.KBID = knowledge.ManualKnowledgeID(doc)
@@ -927,4 +937,70 @@ func (m LoadSkillsTool) ParseSkillName(input core.NBToolCallRequest) string {
 	}
 
 	return strings.TrimSpace(skillName)
+}
+
+// splitSkillFileName splits "<skill>/<path>" (a file of a multi-file skill).
+// Skill names never contain "/", so the first one separates them.
+func splitSkillFileName(name string) (string, string, bool) {
+	name = strings.TrimSpace(name)
+	if strings.Contains(name, ",") || strings.HasPrefix(strings.ToLower(name), "knowledge:") {
+		return "", "", false
+	}
+	skill, file, ok := strings.Cut(name, "/")
+	if !ok || strings.TrimSpace(skill) == "" || strings.TrimSpace(file) == "" {
+		return "", "", false
+	}
+	return strings.TrimSpace(skill), strings.TrimSpace(file), true
+}
+
+var getSkillFileFn = knowledge.GetSkillFile
+
+// resolveSkillCandidatePath turns "knowledge:<id>/<path>" (or "knowledge:<id>/")
+// into "<skill name>/<path>": a skill found through search is known to the
+// agent by its candidate id, so it addresses the skill's files and folder by
+// that id too. Anything else is returned unchanged.
+func resolveSkillCandidatePath(ctx core.NbToolContext, name string) string {
+	trimmed := strings.TrimSpace(name)
+	if !strings.HasPrefix(strings.ToLower(trimmed), "knowledge:") || strings.Contains(trimmed, ",") {
+		return name
+	}
+	id, rest, ok := strings.Cut(trimmed, "/")
+	if !ok {
+		return name
+	}
+	c, found := knowledge.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, strings.TrimSpace(id))
+	if !found || c.KBID == "" || strings.TrimSpace(c.Title) == "" {
+		return name
+	}
+	return strings.TrimSpace(c.Title) + "/" + rest
+}
+
+// callSkillFile reads one file of a skill the account can see, with the same
+// keyword / start_line / start_byte paging as a document.
+func (m LoadSkillsTool) callSkillFile(ctx core.NbToolContext, input core.NBToolCallRequest, skill, file string) (core.NBToolResponse, error) {
+	keyword, start, startByte, err := parseKnowledgeReadArgs(input)
+	if err != nil {
+		return knowledgeFailure(err)
+	}
+	f, err := getSkillFileFn(ctx.Ctx, ctx.AccountId, skill, file)
+	switch {
+	case errors.Is(err, knowledge.ErrSkillFileNotFound):
+		return knowledgeFailure(fmt.Errorf("skill %q has no file %q", skill, file))
+	case err != nil:
+		return knowledgeFailure(err)
+	case f == nil:
+		return knowledgeFailure(fmt.Errorf("no skill named %q", skill))
+	}
+	sum := sha256.Sum256([]byte(f.Content))
+	text, err := readKnowledgeLinesFromByte(strings.NewReader(f.Content), hex.EncodeToString(sum[:]), keyword, start, startByte, knowledge.KnowledgePurpose(knowledge.KBTypeManual, ""))
+	if err != nil {
+		return knowledgeFailure(err)
+	}
+	common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, m.Name(), "success", ctx.AccountId)
+	return core.NBToolResponse{
+		Status:     core.NBToolResponseStatusSuccess,
+		Type:       core.NBToolResponseTypeText,
+		Data:       fmt.Sprintf("File %s of skill %s (%d bytes). Use keyword or start_line for selective reads.\n%s", f.Path, f.SkillName, len(f.Content), text),
+		References: []core.NBToolResponseReference{{Text: f.SkillName + "/" + f.Path, Url: f.SkillID, Type: "skill"}},
+	}, nil
 }

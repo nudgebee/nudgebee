@@ -2751,7 +2751,13 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			// default rendering shows the raw tool input, which for id-driven
 			// tools describes nothing the approver can judge.
 			destination := e.destinationOf(tool, action, target)
-			confirmationQuestion := confirmationQuestionWithTarget(confirmationQuestionForAction(tool, action), action, *requestType, destination)
+			question := confirmationQuestionForAction(tool, action)
+			if question == "" && runsSkillCode(e.agentRequest.AccountId, e.agentRequest.ConversationId, action.Tool, action.ToolInput) {
+				// Asked only because the conversation holds a skill's scripts:
+				// "update resources on cluster X" would mislead.
+				question = tools.SkillConversationQuestion(action.ToolInput)
+			}
+			confirmationQuestion := confirmationQuestionWithTarget(question, action, *requestType, destination)
 			isFollowupFound := false
 			if e.agentRequest.QueryConfig.ToolConfirmations != nil {
 				if previousData, exists := e.agentRequest.QueryConfig.ToolConfirmations[confirmationKey]; exists {

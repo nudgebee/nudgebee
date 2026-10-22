@@ -79,6 +79,7 @@ require (
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
+	mvdan.cc/sh/v3 v3.12.0
 )
 
 require github.com/aws/aws-sdk-go-v2/service/sts v1.51.1 // indirect

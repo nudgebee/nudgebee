@@ -111,6 +111,20 @@ func KnowledgeDocumentIdentity(doc RAGSearchResult) string {
 
 // ManualKnowledgeID accepts the canonical manual collection identity, never a
 // similarly named metadata field attached to an external document.
+// KnowledgeDescriptionKey holds a manual knowledge base's description (an
+// Agent Skills "description": what the skill is for and when to use it).
+const KnowledgeDescriptionKey = "kb_description"
+
+// KnowledgeSnippetText is what a candidate menu previews for a document: a
+// skill's description when it has one, which says what it is for, otherwise
+// the content itself.
+func KnowledgeSnippetText(doc RAGSearchResult, content string) string {
+	if d, _ := doc.Metadata[KnowledgeDescriptionKey].(string); strings.TrimSpace(d) != "" {
+		return d
+	}
+	return content
+}
+
 func ManualKnowledgeID(doc RAGSearchResult) string {
 	collection, _ := doc.Metadata["collection"].(string)
 	id, _ := doc.Metadata["kb_id"].(string)

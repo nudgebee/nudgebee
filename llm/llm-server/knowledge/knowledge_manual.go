@@ -31,12 +31,15 @@ func ResolveManualKnowledge(ctx *security.RequestContext, accountID string, docs
 		Data     string `db:"data"`
 		Format   string `db:"data_format"`
 		Category string `db:"note_category"`
+		// What the skill is for; candidate menus show it instead of the
+		// opening of the body.
+		Description string `db:"description"`
 	}
 	var rows []manual
 	db, err := knowledgeDatabase(common.Metastore)
 	if err == nil {
 		scope, scopeArgs := KBAccountScope("", 1, 3, VisibleOrgKnowledgebaseIDs(ctx.GetContext(), accountID))
-		err = db.Db.SelectContext(ctx.GetContext(), &rows, `SELECT id, name, CASE WHEN data_format = 'pdf' THEN '' ELSE LEFT(data, 4097) END AS data, COALESCE(data_format, '') AS data_format, COALESCE(note_category, '') AS note_category FROM llm_knowledgebases WHERE `+scope+` AND id::text = ANY($2::text[]) AND status = 'active' AND enabled AND COALESCE(kb_type, 'manual') = 'manual'`, append([]any{accountID, pq.Array(ids)}, scopeArgs...)...)
+		err = db.Db.SelectContext(ctx.GetContext(), &rows, `SELECT id, name, CASE WHEN data_format = 'pdf' THEN '' ELSE LEFT(data, 4097) END AS data, COALESCE(data_format, '') AS data_format, COALESCE(note_category, '') AS note_category, COALESCE(description, '') AS description FROM llm_knowledgebases WHERE `+scope+` AND id::text = ANY($2::text[]) AND status = 'active' AND enabled AND COALESCE(kb_type, 'manual') = 'manual'`, append([]any{accountID, pq.Array(ids)}, scopeArgs...)...)
 	}
 	if err != nil {
 		ctx.GetLogger().Warn("knowledge: unable to resolve manual identities", "error", err)
@@ -96,6 +99,9 @@ func ResolveManualKnowledge(ctx *security.RequestContext, accountID string, docs
 			metadata["title"] = row.Name
 			metadata["source"] = "manual"
 			metadata["note_category"] = row.Category
+			if d := strings.TrimSpace(row.Description); d != "" {
+				metadata[KnowledgeDescriptionKey] = d
+			}
 			doc.Metadata = metadata
 		}
 		out = append(out, doc)

@@ -194,7 +194,12 @@ type Knowledgebase struct {
 	CreatedAt     time.Time      `json:"created_at" db:"created_at"`
 	UpdatedAt     time.Time      `json:"updated_at" db:"updated_at"`
 	DocumentCount *int           `json:"document_count,omitempty" db:"document_count"`
-	LastLoadedAt  *time.Time     `json:"last_loaded_at,omitempty" db:"last_loaded_at"`
+	// SourceId links a skill synced from a skill source (read-only here).
+	SourceId *string `json:"source_id,omitempty" db:"source_id"`
+	// SkillMeta holds an Agent Skills folder's details (source path, commit,
+	// requirements, warnings, file list). Never the file contents.
+	SkillMeta    *json.RawMessage `json:"skill_meta,omitempty" db:"skill_meta"`
+	LastLoadedAt *time.Time       `json:"last_loaded_at,omitempty" db:"last_loaded_at"`
 	// ErrorMessage carries the reason for the most recent failed load when
 	// Status == "error", letting the card show *why* a KB failed. Persisted on
 	// the KB row (set wherever status flips to error, cleared on
@@ -623,7 +628,7 @@ const kbFullRowSelect = `
 		       kb.status, kb.enabled, kb.kb_type, kb.kb_source, kb.integration_id,
 		       COALESCE(kb.note_category, '') as note_category, kb.context_tags,
 		       kb.created_at, kb.updated_at,
-		       kb.document_count, kb.last_loaded_at,
+		       kb.document_count, kb.last_loaded_at, kb.source_id, kb.skill_meta,
 		       COALESCE(cu.display_name, '') as created_by,
 		       COALESCE(uu.display_name, '') as updated_by,
 		       kb.error_message
@@ -720,7 +725,7 @@ func ListKnowledgebasesForTenant(sc *security.RequestContext) ([]Knowledgebase, 
 		       kb.kb_type, kb.kb_source, kb.integration_id,
 		       COALESCE(kb.note_category, '') as note_category, kb.context_tags,
 		       kb.created_at, kb.updated_at,
-		       kb.document_count, kb.last_loaded_at,
+		       kb.document_count, kb.last_loaded_at, kb.source_id, kb.skill_meta,
 		       COALESCE(cu.display_name, '') as created_by,
 		       COALESCE(uu.display_name, '') as updated_by,
 		       kb.error_message,
@@ -785,7 +790,7 @@ func ListKnowledgebases(sc *security.RequestContext, accountId string) ([]Knowle
 		       kb.kb_type, kb.kb_source, kb.integration_id,
 		       COALESCE(kb.note_category, '') as note_category, kb.context_tags,
 		       kb.created_at, kb.updated_at,
-		       kb.document_count, kb.last_loaded_at,
+		       kb.document_count, kb.last_loaded_at, kb.source_id, kb.skill_meta,
 		       COALESCE(cu.display_name, '') as created_by,
 		       COALESCE(uu.display_name, '') as updated_by,
 		       kb.error_message
@@ -837,7 +842,7 @@ func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, up
 		       kb.status, kb.enabled, kb.context_tags,
 		       COALESCE(kb.kb_type, 'manual') as kb_type,
 		       kb.created_at, kb.updated_at,
-		       kb.document_count, kb.last_loaded_at,
+		       kb.document_count, kb.last_loaded_at, kb.source_id,
 		       COALESCE(cu.display_name, '') as created_by,
 		       COALESCE(uu.display_name, '') as updated_by
 		FROM llm_knowledgebases kb
@@ -849,6 +854,9 @@ func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, up
 			return errors.New(errKBNotFound)
 		}
 		return err
+	}
+	if existingKB.SourceId != nil {
+		return ErrSyncedSkillReadOnly
 	}
 
 	// Check if name is being changed and conflicts with another KB
@@ -1133,6 +1141,13 @@ func SetKnowledgebaseEnabled(sc *security.RequestContext, accountId, kbId string
 
 // DeleteKnowledgebase deletes a knowledge base and its vector collection
 func DeleteKnowledgebase(sc *security.RequestContext, accountId, kbId string) error {
+	return deleteKnowledgebase(sc, accountId, kbId, false)
+}
+
+// deleteKnowledgebase deletes one knowledge base. A skill synced from a skill
+// source can only be deleted by hand once archived (gone from its repo);
+// removing the source itself passes allowSynced.
+func deleteKnowledgebase(sc *security.RequestContext, accountId, kbId string, allowSynced bool) error {
 	if kbId == "" {
 		return errors.New(errKBIDRequired)
 	}
@@ -1152,7 +1167,7 @@ func DeleteKnowledgebase(sc *security.RequestContext, accountId, kbId string) er
 
 	// Get KB details for audit before deletion
 	var kb Knowledgebase
-	err = dbms.Db.Get(&kb, "SELECT id, name, COALESCE(account_id::text, '') AS account_id, tenant_id, kb_type, status, enabled, integration_id FROM llm_knowledgebases WHERE id = $1 AND "+ownerPredicate, kbId, ownerArg)
+	err = dbms.Db.Get(&kb, "SELECT id, name, COALESCE(account_id::text, '') AS account_id, tenant_id, kb_type, status, enabled, integration_id, source_id FROM llm_knowledgebases WHERE id = $1 AND "+ownerPredicate, kbId, ownerArg)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return errors.New(errKBNotFound)
@@ -1164,6 +1179,9 @@ func DeleteKnowledgebase(sc *security.RequestContext, accountId, kbId string) er
 	// one (its integration has been disabled) may be deleted, for cleanup.
 	if kb.KBType == KBTypeIntegration && kb.Status != string(KBStatusArchived) {
 		return errors.New(errKBIntegrationDelete)
+	}
+	if kb.SourceId != nil && !allowSynced && kb.Status != string(KBStatusArchived) {
+		return ErrSyncedSkillReadOnly
 	}
 
 	// Read the mappings before the DELETE — the rows go with the KB, and the
@@ -1951,7 +1969,7 @@ func ListAgentKBs(sc *security.RequestContext, accountId, agentId string) ([]Kno
 		       COALESCE(kb.kb_type, 'manual') as kb_type,
 		       kb.kb_source, kb.integration_id,
 		       kb.created_at, kb.updated_at,
-		       kb.document_count, kb.last_loaded_at,
+		       kb.document_count, kb.last_loaded_at, kb.source_id, kb.skill_meta,
 		       COALESCE(cu.display_name, '') as created_by,
 		       COALESCE(uu.display_name, '') as updated_by,
 		       m.always_load

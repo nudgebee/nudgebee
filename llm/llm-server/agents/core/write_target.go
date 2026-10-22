@@ -177,6 +177,13 @@ func (e *plannerExecutor) confirmationKeyOf(nameToTool map[string]toolcore.NBToo
 // another. A write that does not switch keeps its key.
 func (e *plannerExecutor) approvalKey(tool toolcore.NBTool, action NBAgentPlannerToolAction, target *writeTarget) string {
 	key := confirmationKeyWithTarget(confirmationKeyForAction(tool, action), target)
+	if runsSkillCode(e.agentRequest.AccountId, e.agentRequest.ConversationId, action.Tool, action.ToolInput) {
+		// A skill's code is approved per command: a shell command's key is
+		// otherwise the tool or its cluster, so a "yes" to one script (or to
+		// a file read written as python3 -c, or to a kubectl write on the
+		// same cluster) would run every later one unasked.
+		return key + "#" + strings.TrimSpace(action.ToolInput)
+	}
 	if target == nil && e.namesWhereItRunsAnyway(tool, action, key) {
 		// "kubectl --context k8s-dev" in a k8s-dev conversation is the same
 		// write as without it; one approval covers both.

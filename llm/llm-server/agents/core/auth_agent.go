@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"nudgebee/llm/config"
+	"nudgebee/llm/knowledge"
 	"nudgebee/llm/llms/classify"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
@@ -13,6 +14,20 @@ import (
 
 	toolcore "nudgebee/llm/tools/core"
 )
+
+// runsSkillCode reports whether a shell_execute call may run a synced skill's
+// code, which asks for approval, every time (see approvalKey). In a
+// conversation holding a skill's scripts that is any command that runs code:
+// they are third-party code, and the classifiers can't see what a script, a
+// copy of it or an inline rewrite does. In any conversation it is a command
+// naming a skill folder: the workspace is shared by the account's
+// conversations, so another conversation's copy is reachable by path.
+func runsSkillCode(accountId, conversationId, toolName, input string) bool {
+	return strings.EqualFold(toolName, toolcore.ToolExecuteShellCommand) &&
+		tools.ShellCommandRunsCode(input) &&
+		(tools.ShellCommandNamesSkillFolder(input) ||
+			knowledge.ConversationHasSkillScripts(accountId, conversationId))
+}
 
 func IsAgentToolAuthorizedToProcessRequest(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest, action NBAgentPlannerToolAction) (*NBAgentPlannerFinishAction, *toolcore.ToolRequestType, error) {
 	return authorizeToolRequest(ctx, agent, request, action, nil)
@@ -177,6 +192,10 @@ func authorizeToolRequest(ctx *security.RequestContext, agent NBAgent, request N
 				}
 				requestType = llmReqType
 			}
+		}
+		if (requestType == "" || requestType == toolcore.ToolRequestTypeRead) &&
+			runsSkillCode(request.AccountId, request.ConversationId, toolName, action.ToolInput) {
+			requestType = toolcore.ToolRequestTypeUpdate
 		}
 		// Neither the static rules nor an LLM prompt decided: the call runs as
 		// a read below. Logged so these calls can be reviewed (#39880 C7).

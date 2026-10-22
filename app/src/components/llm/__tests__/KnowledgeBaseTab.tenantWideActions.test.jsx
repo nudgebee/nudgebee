@@ -23,6 +23,7 @@ jest.mock('@api1/knowledge-base', () => ({
     unmapKnowledgeBaseFromAgent: jest.fn(),
     getKBLoadHistory: jest.fn(),
     testRetrieval: jest.fn(),
+    listSkillSources: jest.fn(),
   },
 }));
 jest.mock('@api1/ask-nudgebee', () => ({ __esModule: true, default: { listAgents: jest.fn(), listTools: jest.fn() } }));
@@ -59,6 +60,12 @@ jest.mock('@components/llm/KnowledgeBaseFormModal', () => ({
 jest.mock('@components/llm/KnowledgeBaseSharingModal', () => ({
   __esModule: true,
   default: ({ open, knowledgeBase }) => (open ? <span>{`sharing:${knowledgeBase?.name}`}</span> : null),
+}));
+jest.mock('@components/llm/SkillSourcesSection', () => ({
+  __esModule: true,
+  default: ({ sources }) => <span>{`skill-sources:${sources.length}`}</span>,
+  SkillDetailsModal: ({ open, knowledgeBase }) => (open ? <span>{`skill-details:${knowledgeBase?.skill_meta?.source_path}`}</span> : null),
+  shortCommit: (sha) => (sha ? String(sha).slice(0, 7) : ''),
 }));
 jest.mock('@components/llm/MemoryTable', () => ({
   MemoryTable: ({ columns, rows }) => (
@@ -139,6 +146,7 @@ beforeEach(() => {
   apiKnowledgeBase.deleteKnowledgeBase.mockResolvedValue(ok());
   apiKnowledgeBase.retriggerKB.mockResolvedValue(ok());
   apiKnowledgeBase.setKnowledgeBaseEnabled.mockResolvedValue(ok());
+  apiKnowledgeBase.listSkillSources.mockResolvedValue(ok([]));
   apiAskNudgebee.listAgents.mockResolvedValue({ data: { data: { ai_list_agents: { data: [] } } } });
   apiAskNudgebee.listTools.mockResolvedValue({ data: { data: { ai_list_tools: { data: [] } } } });
 });
@@ -344,5 +352,55 @@ describe('KnowledgeBaseTab organisation KBs', () => {
 
     await waitFor(() => expect(apiKnowledgeBase.updateKnowledgeBaseVisibility).toHaveBeenCalledWith('kb-o', 'account', [], 'acct-1'));
     await waitFor(() => expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).toHaveBeenCalledWith('acct-1', 'kb-o', '*'));
+  });
+});
+
+// A skill synced from a skill source: an organisation KB whose content and
+// scope belong to the source.
+const syncedKb = {
+  id: 'kb-s',
+  name: 'pdf-processing',
+  kb_type: 'manual',
+  status: 'active',
+  enabled: true,
+  account_id: '',
+  visibility: 'organisation',
+  source_id: 'src-1',
+  skill_meta: { source_path: 'skills/pdf-processing', commit: 'abcdef1234567' },
+};
+
+describe('KnowledgeBaseTab synced skills', () => {
+  it('marks a synced skill, names its source and commit, and hides Edit and Delete', async () => {
+    isTenantAdmin.mockReturnValue(true);
+    apiKnowledgeBase.getKnowledgeBases.mockResolvedValue(ok([syncedKb]));
+    apiKnowledgeBase.listSkillSources.mockResolvedValue(ok([{ id: 'src-1', repo: 'acme/skills', status: 'active' }]));
+    render(<KnowledgeBaseTab accountId='' />);
+
+    const row = await screen.findByTestId('row-pdf-processing');
+    expect(within(row).getByTestId('kb-synced-badge')).toHaveTextContent('Synced');
+    await waitFor(() => expect(within(row).getByTestId('kb-synced-source')).toHaveTextContent('acme/skills · abcdef1'));
+    expect(within(row).queryByRole('button', { name: 'Edit knowledge base' })).not.toBeInTheDocument();
+    expect(within(row).queryByText('menu:Delete')).not.toBeInTheDocument();
+    // The enabled switch stays.
+    expect(within(row).getByRole('checkbox')).toBeEnabled();
+
+    fireEvent.click(within(row).getByText('menu:Skill details'));
+    expect(await screen.findByText('skill-details:skills/pdf-processing')).toBeInTheDocument();
+
+    // Repositories live in their own tab next to User and Integration.
+    expect(screen.queryByText('skill-sources:1')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('tab:sources'));
+    expect(await screen.findByText('skill-sources:1')).toBeInTheDocument();
+  });
+
+  it('falls back to the source path for a non-admin, and offers Delete once the skill is archived', async () => {
+    apiKnowledgeBase.getKnowledgeBases.mockResolvedValue(ok([{ ...syncedKb, status: 'archived' }]));
+    render(<KnowledgeBaseTab accountId='acct-1' />);
+
+    const row = await screen.findByTestId('row-pdf-processing');
+    expect(within(row).getByTestId('kb-synced-source')).toHaveTextContent('skills/pdf-processing · abcdef1');
+    expect(within(row).getByText('menu:Delete')).toBeInTheDocument();
+    expect(apiKnowledgeBase.listSkillSources).not.toHaveBeenCalled();
+    expect(screen.queryByText('tab:sources')).not.toBeInTheDocument();
   });
 });

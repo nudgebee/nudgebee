@@ -87,12 +87,47 @@ func resolveKBDataSize(data, format string) (int64, error) {
 	return int64(len(data)), nil
 }
 
+// skillIndexHeading is indexed ahead of a described skill's body. A skill's
+// description says what it is for and when to use it (in the Agent Skills
+// format it is the text written for discovery), and its body often opens with
+// setup steps instead, so without it a question phrased like the description
+// can miss the skill. Only the indexed text changes; the stored body is the
+// skill as written.
+func skillIndexHeading(name, description string) string {
+	description = strings.TrimSpace(description)
+	if description == "" {
+		return ""
+	}
+	return "# " + strings.TrimSpace(name) + "\n\n" + description + "\n\n"
+}
+
+// withSkillHeading prepends skillIndexHeading for a manual knowledge base that
+// has a description. A failed lookup indexes the body alone, as before.
+func withSkillHeading(owner kbOwner, kbId, data string) string {
+	dbms, err := knowledgeDatabase(common.Metastore)
+	if err != nil {
+		return data
+	}
+	ownerPredicate, ownerArg := owner.predicate(2)
+	var row struct {
+		Name        string `db:"name"`
+		Description string `db:"description"`
+	}
+	if err := dbms.Db.Get(&row,
+		`SELECT name, COALESCE(description, '') AS description FROM llm_knowledgebases
+		 WHERE id = $1 AND `+ownerPredicate+` AND COALESCE(kb_type, 'manual') = 'manual'`,
+		kbId, ownerArg); err != nil {
+		return data
+	}
+	return skillIndexHeading(row.Name, row.Description) + data
+}
+
 func resolveKBIngestPayload(
 	sc *security.RequestContext,
 	owner kbOwner, kbId, data, format string,
 ) (ragData, ragFormat, filename string, err error) {
 	if format != string(KBFormatPDF) {
-		return data, format, "", nil
+		return withSkillHeading(owner, kbId, data), format, "", nil
 	}
 
 	dbms, dbErr := knowledgeDatabase(common.Metastore)

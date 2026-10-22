@@ -349,11 +349,38 @@ func TestKnowledgeManualChunkMaterialization(t *testing.T) {
 type knowledgeUploadCapture struct {
 	workspace.WorkspaceManager
 	bytes int64
+	path  string
 }
 
 func (w *knowledgeUploadCapture) CallAPIOrLazyCreate(_ *security.RequestContext, _ string, _ string, _ string, _ map[string]string, body any) ([]byte, error) {
 	w.bytes = int64(len(body.(map[string]string)["content"]))
+	w.path = body.(map[string]string)["path"]
 	return nil, nil
+}
+
+// A large skill is saved as SKILL.md in its own folder, where copying the
+// skill for its scripts writes the same file; other knowledge, and a skill
+// whose name can't be a folder name, keep the hashed knowledge/ path.
+func TestKnowledgeLargeSkillGoesToItsFolder(t *testing.T) {
+	body := strings.Repeat("step\n", 2000)
+	for title, want := range map[string]string{
+		"PromQL Helper": "skills/promql-helper/SKILL.md",
+		"..":            "knowledge/",
+		"":              "knowledge/",
+	} {
+		t.Run(title, func(t *testing.T) {
+			db, mock := skillFetchingDB(t)
+			defer func() { _ = db.Close() }()
+			c := knowledge.KnowledgeCandidate{KBID: "manual", Title: title, Collection: "kb_manual", Version: "v", Bytes: int64(len(body))}
+			ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: t.Name(), ConversationId: "conv"}
+			mock.ExpectQuery(`SELECT substring`).WithArgs(ctx.AccountId, c.KBID, 1, 256*1024, c.Version).WillReturnRows(sqlmock.NewRows([]string{"data"}).AddRow(body))
+			mock.ExpectQuery(`SELECT substring`).WithArgs(ctx.AccountId, c.KBID, 256*1024+1, 256*1024, c.Version).WillReturnRows(sqlmock.NewRows([]string{"data"}).AddRow(""))
+			wm := &knowledgeUploadCapture{}
+			require.NoError(t, materializeKnowledge(ctx, wm, &c))
+			require.True(t, strings.HasPrefix(wm.path, want), wm.path)
+			require.Equal(t, wm.path, c.Path)
+		})
+	}
 }
 
 func TestKnowledgeWorkspaceRefreshesManualPurpose(t *testing.T) {

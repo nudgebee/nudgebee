@@ -213,9 +213,10 @@ func SetKnowledgebaseVisibility(sc *security.RequestContext, kbId, visibility st
 		Visibility string `db:"visibility"`
 		KBType     string `db:"kb_type"`
 		Status     string `db:"status"`
+		Synced     bool   `db:"synced"`
 	}
 	err = dbms.Db.Get(&kb, `SELECT name, COALESCE(account_id::text, '') AS account_id, tenant_id::text AS tenant_id,
-		visibility, COALESCE(kb_type, 'manual') AS kb_type, status FROM llm_knowledgebases WHERE id = $1`, kbId)
+		visibility, COALESCE(kb_type, 'manual') AS kb_type, status, source_id IS NOT NULL AS synced FROM llm_knowledgebases WHERE id = $1`, kbId)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Knowledgebase{}, errors.New(errKBNotFound)
@@ -224,6 +225,10 @@ func SetKnowledgebaseVisibility(sc *security.RequestContext, kbId, visibility st
 	}
 	if !canManageOrgKBs(sc, kb.TenantId, security.SecurityAccessTypeUpdate) {
 		return Knowledgebase{}, errors.New(errKBOrgAdminOnly)
+	}
+	// A synced skill's reach is its source's: change the source instead.
+	if kb.Synced {
+		return Knowledgebase{}, ErrSyncedSkillReadOnly
 	}
 	// An integration's knowledge base is an organisation row (#40605): it can be
 	// shared with every account or restricted to selected ones, never moved into
@@ -450,7 +455,7 @@ func getKBForOwner(dbms *common.DatabaseManager, kbId string) (Knowledgebase, er
 		       COALESCE(kb.description, '') as description, kb.data_format, kb.data_filename,
 		       COALESCE(kb.data_size_bytes, 0) as data_size_bytes, kb.status, kb.enabled, kb.kb_type, kb.kb_source,
 		       kb.integration_id, COALESCE(kb.note_category, '') as note_category, kb.context_tags,
-		       kb.created_at, kb.updated_at, kb.document_count, kb.last_loaded_at, kb.error_message
+		       kb.created_at, kb.updated_at, kb.document_count, kb.last_loaded_at, kb.error_message, kb.source_id, kb.skill_meta
 		FROM llm_knowledgebases kb WHERE kb.id = $1`, kbId)
 	if err != nil {
 		return Knowledgebase{}, fmt.Errorf("kb: failed to read knowledgebase: %w", err)

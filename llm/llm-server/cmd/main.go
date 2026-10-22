@@ -15,6 +15,7 @@ import (
 
 	"nudgebee/llm/knowledge"
 	llmruntime "nudgebee/llm/llms/runtime"
+	"nudgebee/llm/tools"
 
 	"github.com/gin-gonic/gin"
 
@@ -325,6 +326,14 @@ func main() {
 		return nil
 	}, 5*time.Minute); err != nil {
 		slog.Warn("main: failed to register workspace stale sweep job", "error", err)
+	}
+
+	// Skill sources (#41514): download from GitHub with the tenant's GitHub
+	// integration token, and re-sync each source once per KB sync interval.
+	knowledge.GitHubTokenResolver = tools.ResolveTenantGithubToken
+	knowledge.FetchSkillSource = knowledge.FetchGitHubSkillSource
+	if err := common.NewLeaderIntervalJob("skill_source_sync", knowledge.SyncDueSkillSources, 10*time.Minute); err != nil {
+		slog.Warn("main: failed to register skill source sync job", "error", err)
 	}
 
 	// Weekly event-analysis digest. Convergent + leader-elected: the job fills

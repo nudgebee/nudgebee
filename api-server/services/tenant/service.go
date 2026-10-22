@@ -2562,6 +2562,8 @@ func DeleteTenant(ctx *security.RequestContext, request TenantDeleteRequest) (Te
 		{name: "llm_conversations"},
 		{name: "llm_global_contexts"},
 		{name: "llm_knowledgebases"},
+		// After llm_knowledgebases: synced skills reference their source.
+		{name: "llm_kb_skill_sources"},
 		{name: "llm_rags"},
 		// Custom agents and tools: organisation ones (#41073) have no account,
 		// so account deletion does not reach them. Their per-account switches
