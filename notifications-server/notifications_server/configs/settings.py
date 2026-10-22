@@ -744,7 +744,7 @@ class NotificationSettings(BaseSettings):
     max_detailed_evidences: int = Field(
         3, validation_alias=AliasChoices("MAX_DETAILED_EVIDENCES", "max_detailed_evidences")
     )
-    task_retry_count: int = Field(5, validation_alias=AliasChoices("TASK_RETRY_COUNT", "task_retry_count"))
+    task_retry_count: int = Field(3, validation_alias=AliasChoices("TASK_RETRY_COUNT", "task_retry_count"))
     slow_task_threshold_seconds: int = Field(
         30, validation_alias=AliasChoices("SLOW_TASK_THRESHOLD_SECONDS", "slow_task_threshold_seconds")
     )

@@ -243,7 +243,7 @@ The email footer links to the Privacy and Terms pages only when the host's row s
 
 ## RabbitMQ Message Format
 
-The consumer reads JSON messages from the `notifications` queue. Failed messages are sent to a delayed queue (`notifications_delayed`) and retried via the `dlx` dead-letter exchange after `RABBITMQ_DEAD_LETTER_DELAY_MS` ms.
+The consumer reads JSON messages from the `notifications` queue. Failed messages are sent to a delayed queue (`notifications_delayed_v2`) and dead-lettered back onto `notifications` after `RABBITMQ_DEAD_LETTER_DELAY_MS` ms. After `TASK_RETRY_COUNT` attempts, a message is parked in `notifications_dlq` instead of being retried again.
 
 Message envelope (see `notifications_server/schemas/message.py` for the full Pydantic model):
 
@@ -319,7 +319,7 @@ The Next.js frontend handles the user-facing callback paths and proxies to notif
 
 **Google Chat events not arriving** — Chat-app event URL is configured per-project in the Google Cloud console; verifying it requires returning a `200 OK` to Google's verification ping at the URL. Confirm the consumer is running (RabbitMQ + DB up) before the URL verification.
 
-**Notifications stuck in the queue** — Check the consumer is running (`docker logs notifications-server` or the pod logs). Failed messages go to `notifications_delayed` and retry after `RABBITMQ_DEAD_LETTER_DELAY_MS`; if they keep landing there, the message body is malformed or the platform credentials are wrong.
+**Notifications stuck in the queue** — Check the consumer is running (`docker logs notifications-server` or the pod logs). Failed messages go to `notifications_delayed_v2` and retry after `RABBITMQ_DEAD_LETTER_DELAY_MS`, up to `TASK_RETRY_COUNT` times; after that they land in `notifications_dlq` and stop retrying. Inspect `notifications_dlq` for messages that are permanently failing due to a malformed body or bad platform credentials.
 
 **Emails not sent** — `EMAIL_SERVER_PASSWORD` cleartext leaks happen via misconfigured SMTP debug logging. Verify `EMAIL_SERVER_HOST` resolves, port `EMAIL_SERVER_PORT` is open from the pod (`kubectl exec -- nc -zv host port`), and the SMTP server accepts `EMAIL_FROM` as a sender (some relays reject unverified domains).
 

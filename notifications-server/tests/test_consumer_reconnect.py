@@ -68,7 +68,8 @@ async def _cleanup(queue: str) -> None:
         try:
             channel = await conn.channel()
             await channel.queue_delete(queue)
-            await channel.queue_delete(queue + "_delayed")
+            await channel.queue_delete(queue + "_delayed_v2")
+            await channel.queue_delete(queue + "_dlq")
             await channel.exchange_delete(queue + "_exchange")
         finally:
             await conn.close()

@@ -81,7 +81,13 @@ class NotificationProcessor:
     async def send_notification(self, task):
         parsed: SendMessageRequest = self._parse_and_validate_task(task)
 
-        await self._message_service.send_message(parsed)
+        responses = await self._message_service.send_message(parsed)
+        failures = [r for r in (responses or []) if isinstance(r, dict) and r.get("status") == "failed"]
+        if failures:
+            # send_message already catches and logs platform-level exceptions, returning
+            # a "failed" PlatformResponse instead of raising — so without this, a send
+            # that errors out looks identical to one that succeeded and is never retried.
+            raise RuntimeError(f"Notification send failed: {failures}")
         LOG.debug("Notification processed successfully")
 
     async def perform_email(self, email_task):
@@ -126,7 +132,21 @@ class NotificationProcessor:
                 finding.pop("evidences", None)
             LOG.exception("Failed to process task: %s from: %s", e, headers)
             LOG.debug("Payload: %s", json.dumps(task))
-            await self.task_producer.publish_delayed_message(task)
+            if self._death_count(headers) >= settings.notifications.task_retry_count:
+                LOG.error(
+                    "Task exhausted %d retries, moving to DLQ from: %s",
+                    settings.notifications.task_retry_count,
+                    headers,
+                )
+                await self.task_producer.publish_dlq_message(task)
+            else:
+                await self.task_producer.publish_delayed_message(task)
+
+    @staticmethod
+    def _death_count(headers) -> int:
+        # RabbitMQ appends/increments an "x-death" header entry each time a message
+        # is dead-lettered back onto this queue via the delayed-retry path.
+        return sum(entry.get("count", 0) for entry in (headers or {}).get("x-death") or [])
 
     async def _route_task(self, task, headers):
         kind = task.get("kind")
