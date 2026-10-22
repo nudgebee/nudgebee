@@ -1,4 +1,5 @@
 import { safeJSONParse } from 'src/utils/common';
+import { parseDateValue } from '@shared/format/Datetime';
 
 // One status vocabulary for every remediation path on an event.
 //
@@ -19,17 +20,26 @@ export const RESOLUTION_SLOW_AFTER_MS = 2 * 60 * 1000;
  * @param {number} now         injectable clock, so the slow-run threshold is testable
  * @returns {{label: string, tone: string, actor: string, isSlow: boolean}}
  */
-// data is stored as jsonb and arrives either parsed or as a string depending on the caller.
-const readVerify = (resolution) => {
-  const data = typeof resolution?.data === 'string' ? safeJSONParse(resolution.data) : resolution?.data;
-  return data?.verify ?? null;
+// readData is a stored resolution row's data, parsed: jsonb arrives parsed or as a string depending on the caller.
+export const readData = (resolution) => (typeof resolution?.data === 'string' ? safeJSONParse(resolution.data) : resolution?.data) || {};
+
+const readVerify = (resolution) => readData(resolution).verify ?? null;
+
+/**
+ * Whether a remediation run is a fix NudgeBee saw work: it ran and reported exit code 0 (not: no exit
+ * code, unknown outcome, operator-marked). Mirrors llm-server verifiedSuccess.
+ * @param {object} resolution
+ */
+export const verifiedSuccess = (resolution) => {
+  const data = readData(resolution);
+  return resolution?.status === 'Success' && data.exit_code_reported === true && data.manual !== true;
 };
 
 export const describeResolution = (resolution, now = Date.now()) => {
   const status = resolution?.status;
   const startedAt = resolution?.updated_at || resolution?.created_at;
   const startedMs = startedAt ? new Date(startedAt).getTime() : NaN;
-  const isRunning = status !== 'Success' && status !== 'Failed';
+  const isRunning = status !== 'Success' && status !== 'Failed' && status !== 'Unknown' && status !== 'Declined';
   const isSlow = isRunning && Number.isFinite(startedMs) && now - startedMs > RESOLUTION_SLOW_AFTER_MS;
 
   // resolver_type distinguishes a person from Nubi or an automation acting on its own. For a person
@@ -37,6 +47,18 @@ export const describeResolution = (resolution, now = Date.now()) => {
   // the more useful label.
   const actor = resolution?.resolver_type === 'User' ? resolution?.resolver_display_name || 'a user' : resolution?.resolver_type || '';
 
+  // A person declined the proposed step: nothing ran.
+  if (status === 'Declined') return { label: 'Declined', tone: 'neutral', actor, isSlow: false };
+  // A remediation run whose result never came back may have run: neither done nor failed.
+  if (status === 'Unknown') {
+    return { label: 'Outcome unknown', tone: 'warning', actor, isSlow: false, detail: 'no result came back; the command may have run' };
+  }
+  if (status === 'Success' && resolution?.type === 'CommandExecution' && !verifiedSuccess(resolution)) {
+    if (readData(resolution).manual === true) {
+      return { label: 'Done', tone: 'success', actor, isSlow: false, detail: 'reported done, not verified' };
+    }
+    return { label: 'Outcome unverified', tone: 'warning', actor, isSlow: false, detail: 'no exit code was reported' };
+  }
   if (status === 'Success') {
     // A verify, when one ran, is what makes "Done" mean more than "dispatched". Its result lives on
     // the attempt it checked (data.verify), never as a resolution of its own.
@@ -307,3 +329,77 @@ export const describeUndoTarget = (card, event) => {
   if (event?.subject_namespace && event?.subject_name) return `${event.subject_namespace}/${event.subject_name}`;
   return event?.subject_name || '';
 };
+
+const trimmed = (value) => (typeof value === 'string' ? value.trim() : '');
+
+// decisionsByStep keys runs by plan version + step, newest wins. not_sent runs decide nothing and are skipped,
+// so they never hide an earlier unknown outcome (the server's rule too).
+export function decisionsByStep(rows) {
+  const out = {};
+  (rows || []).forEach((r) => {
+    if (r?.type !== 'CommandExecution') return;
+    const data = readData(r);
+    if (!data.plan_version || !data.step || data.not_sent === true) return;
+    const key = `${data.plan_version}|${data.step}`;
+    if (!out[key] || (r.created_at || '') > (out[key].created_at || '')) out[key] = r;
+  });
+  return out;
+}
+
+// appliedCommands maps each command (or "change:<action>") NudgeBee saw succeed, or the operator marked
+// done, to when. A run with no exit code or an unknown outcome is not applied.
+export function appliedCommands(rows) {
+  const map = {};
+  (rows || []).forEach((r) => {
+    if (r?.type !== 'CommandExecution' || !(verifiedSuccess(r) || (r.status === 'Success' && readData(r).manual === true))) return;
+    const cmd = trimmed(r.type_reference_id) || trimmed(readData(r).command);
+    if (cmd && !map[cmd]) map[cmd] = r.updated_at || r.created_at || '';
+  });
+  return map;
+}
+
+// latestFollowup is NudgeBee's follow-up check of the newest run that has one (#40734): the run's
+// data.followup, with the run's id. Null when no run has been checked.
+export function latestFollowup(rows) {
+  let best = null;
+  (rows || []).forEach((r) => {
+    const f = r?.type === 'CommandExecution' ? readData(r).followup : null;
+    if (f && (!best || (r.created_at || '') > best.createdAt)) best = { ...f, runId: r.id, createdAt: r.created_at || '' };
+  });
+  return best;
+}
+
+// FOLLOWUP_WAIT_MS: how long after a run settles the page looks for its follow-up check. The server claims one
+// within a minute (leader tick), only with the tenant's loop on; elsewhere none comes, so the page stops soon after.
+const FOLLOWUP_WAIT_MS = 3 * 60 * 1000;
+
+// awaitingFollowup: the newest run settled within FOLLOWUP_WAIT_MS and has no follow-up check yet, so one
+// may start while the page is open.
+export function awaitingFollowup(rows, now = Date.now()) {
+  let newest = null;
+  (rows || []).forEach((r) => {
+    if (r?.type === 'CommandExecution' && (!newest || (r.created_at || '') > (newest.created_at || ''))) newest = r;
+  });
+  if (!newest || newest.status === 'InProgress' || newest.status === 'Declined') return false;
+  const data = readData(newest);
+  if (data.followup || data.not_sent === true) return false;
+  const at = parseDateValue(newest.updated_at || newest.created_at || '').getTime();
+  return !Number.isNaN(at) && now - at < FOLLOWUP_WAIT_MS;
+}
+
+// FOLLOWUP_GIVE_UP_MS: the server gives up a follow-up this long after it was claimed (followupGiveUp). One it
+// never ends (the tenant's loop turned off mid-check) would otherwise keep the page polling for as long as it is open.
+const FOLLOWUP_GIVE_UP_MS = 2 * 60 * 60 * 1000;
+const timeOf = (value) => (value ? parseDateValue(value).getTime() : NaN);
+
+// followupPoll: whether the page should keep polling for NudgeBee's follow-up check (one is due or checking
+// now), and, while one waits for a re-check it asked for, when that is due: the page then waits until then
+// rather than polling.
+export function followupPoll(rows, now = Date.now()) {
+  const f = latestFollowup(rows);
+  if (!f || f.done_at) return { live: awaitingFollowup(rows, now), wakeAt: null };
+  const recheck = timeOf(f.recheck_at);
+  if (recheck > now) return { live: false, wakeAt: recheck };
+  const last = Math.max(timeOf(f.claimed_at) || 0, recheck || 0);
+  return { live: !last || now - last < FOLLOWUP_GIVE_UP_MS, wakeAt: null };
+}

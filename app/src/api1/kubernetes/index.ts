@@ -742,8 +742,8 @@ query AiRemediationGet($accountId: String!, $eventId: String) {
 `;
 
 export const AI_REMEDIATION_EXECUTE = `
-mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String, $executeCommand: String, $action: String) {
-  ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot, execute_command: $executeCommand, action: $action) {
+mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String, $executeCommand: String, $action: String, $acknowledgeUnknown: Boolean, $planVersion: String, $reason: String) {
+  ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot, execute_command: $executeCommand, action: $action, acknowledge_unknown: $acknowledgeUnknown, plan_version: $planVersion, reason: $reason) {
     data
   }
 }
@@ -3588,8 +3588,12 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     // The action's execute command, sent on a verify run so the server can attach the result to the
     // attempt it checked rather than filing it as an attempt of its own.
     executeCommand?: string,
-    // The plan action, sent with slot "manual" to record a step the operator did outside NudgeBee.
-    action?: string
+    // The plan action, sent with slot "manual" or "decline" to name a step.
+    action?: string,
+    // acknowledgeUnknown: the person confirmed that the last run of this command, whose outcome is unknown,
+    // may have run. planVersion: the plan version the person reviewed; every decision carries it.
+    // reason: the person's optional reason for declining.
+    opts: { acknowledgeUnknown?: boolean; planVersion?: string; reason?: string } = {}
   ) {
     if (accountId === 'demo') return null;
     const response = await queryGraphQL(AI_REMEDIATION_EXECUTE, 'AiRemediationExecute', {
@@ -3600,6 +3604,9 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       slot: slot || null,
       executeCommand: executeCommand || null,
       action: action || null,
+      acknowledgeUnknown: opts.acknowledgeUnknown || null,
+      planVersion: opts.planVersion || null,
+      reason: opts.reason || null,
     });
     // Throws with the server's reason on a rejected request (a 400), so the panel can show it.
     return unwrapGraphQL(response, 'Remediation request failed.')?.ai_remediation_execute?.data;

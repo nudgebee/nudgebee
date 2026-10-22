@@ -358,6 +358,9 @@ type Mutation {
     slot: String
     execute_command: String
     action: String
+    acknowledge_unknown: Boolean
+    plan_version: String
+    reason: String
   ): AIResponse
 }
 

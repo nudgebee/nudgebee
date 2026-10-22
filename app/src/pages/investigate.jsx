@@ -33,6 +33,7 @@ import {
   describeChoiceTitle,
   cardOffersAction,
   readableStatusMessage,
+  followupPoll,
 } from '@components/k8s/investigate/resolutionStatus';
 import EventRaisePrPanel from '@components/k8s/investigate/cards/EventRaisePrPanel';
 import { ANNOTATIONS } from '@lib/annotationKeys';
@@ -333,7 +334,9 @@ const remediationRunLabel = (run, options = []) => {
 // Stable identity for a task card; matches the React key the list renders with.
 const getCardKey = (option) => option?.id || option?.text;
 
-const hasInProgressResolution = (resolutions) => Array.isArray(resolutions) && resolutions.some((r) => r?.status === 'InProgress');
+// A run in flight, or NudgeBee's follow-up check of one due or checking now (#40734).
+const hasInProgressResolution = (resolutions) =>
+  Array.isArray(resolutions) && (resolutions.some((r) => r?.status === 'InProgress') || followupPoll(resolutions).live);
 
 const Investigate = () => {
   const router = useRouter();
@@ -1037,6 +1040,14 @@ const Investigate = () => {
   // triggered earlier or from the listing page) should poll too.
   useEffect(() => {
     if (hasInProgressResolution(eventResolutions)) startResolutionsPoll();
+  }, [eventResolutions, startResolutionsPoll]);
+
+  // A follow-up check waiting for the re-check it asked for: poll again when that is due, not until then.
+  useEffect(() => {
+    const { wakeAt } = followupPoll(eventResolutions);
+    if (!wakeAt) return undefined;
+    const timer = setTimeout(startResolutionsPoll, Math.max(wakeAt - Date.now(), 0) + 5000);
+    return () => clearTimeout(timer);
   }, [eventResolutions, startResolutionsPoll]);
 
   // The Raise-PR panel dispatches this after a successful apply. The PR
@@ -3121,6 +3132,7 @@ const Investigate = () => {
                                   savedPlan={remediationPlan}
                                   savedPlanReady={remediationPlanReady}
                                   onPlanChange={handleRemediationPlanChange}
+                                  resolutions={eventResolutions}
                                 />
                               </Box>
                             ) : null}
