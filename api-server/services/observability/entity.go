@@ -103,6 +103,61 @@ type FetchLogsResult struct {
 	TotalRaw        json.RawMessage `json:"total_raw,omitempty"`
 }
 
+// FetchLogAggregateRequest asks for the number of log lines matching a filter, counted
+// by the log backend, optionally per group and per time bucket (logs_aggregate).
+type FetchLogAggregateRequest struct {
+	AccountId         string `json:"account_id" validate:"required"`
+	LogProvider       string `json:"log_provider"`
+	LogProviderSource string `json:"log_provider_source"`
+	// StartTime and EndTime are unix milliseconds, as on FetchLogRequest.
+	StartTime    int64                   `json:"start_time"`
+	EndTime      int64                   `json:"end_time"`
+	QueryRequest LogsQueryBuilderRequest `json:"query_request"`
+	// GroupBy names up to three labels to count by: canonical names (pod, namespace)
+	// or provider fields. Empty counts all matching lines as one group.
+	GroupBy []string `json:"group_by"`
+	// Interval is the bucket size (30s, 10m, 1h, 1d). Empty gives one count per group
+	// for the whole window.
+	Interval string `json:"interval"`
+	// Limit is the most groups returned, largest first; default 100, at most 1000.
+	Limit int `json:"limit"`
+	// Request carries provider parameters, as on FetchLogRequest (e.g. index).
+	Request map[string]any `json:"request"`
+}
+
+// FetchLogAggregateResult is the answer to logs_aggregate. Field names match
+// FetchLogsResult where the two overlap (series, total, series_note, suggestion).
+type FetchLogAggregateResult struct {
+	// Series has one entry per group, labelled with the group_by names as the caller
+	// wrote them. With an interval, one point per bucket, stamped at the bucket's
+	// start; without one, a single point at the window's end.
+	Series []Result `json:"series"`
+	// Total is every matching line in the window, grouped or not.
+	Total int64 `json:"total"`
+	// Ungrouped counts the matching lines that have no value for a group_by label;
+	// they are in Total and in no series.
+	Ungrouped int64 `json:"ungrouped"`
+	// GroupsTotal is how many groups matched; GroupsOmitted how many of them Limit left
+	// out. When Complete is false the backend could not list every group, and
+	// GroupsTotal is a lower bound.
+	GroupsTotal   int  `json:"groups_total"`
+	GroupsOmitted int  `json:"groups_omitted"`
+	Complete      bool `json:"complete"`
+	// Interval is the bucket size actually used: the requested one, or a wider one
+	// when the window would hold too many buckets. Empty without an interval.
+	Interval string `json:"interval,omitempty"`
+	// StartTime and EndTime (unix ms) are the window actually counted. With an
+	// interval it is the requested window widened to whole buckets.
+	StartTime  int64  `json:"start_time"`
+	EndTime    int64  `json:"end_time"`
+	Query      string `json:"query"`
+	Provider   string `json:"provider"`
+	SeriesNote string `json:"series_note,omitempty"`
+	// Suggestion explains a count of zero when the filter names a label or value
+	// the backend does not have (the logs_query empty-result diagnosis).
+	Suggestion string `json:"suggestion,omitempty"`
+}
+
 type SearchResponse struct {
 	Hits struct {
 		Hits []struct {
@@ -438,6 +493,9 @@ type ProviderCapabilities struct {
 	SupportsLogGroups              bool `json:"supports_log_groups"`
 	// Interface-derived at runtime (optional interface — not all providers implement it)
 	SupportsAutoQuery bool `json:"supports_auto_query"`
+	// SupportsLogCountBy says logs_aggregate can count this source's lines natively
+	// (the source implements LogAggregateSource).
+	SupportsLogCountBy bool `json:"supports_log_count_by"`
 	// Whether Create Alert can write a rule for this provider + account. Decided
 	// for the two Prometheus transports (the agent must be connected to land a
 	// PrometheusRule CR; a direct Prometheus must declare a ruler); every other

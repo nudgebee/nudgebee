@@ -1068,51 +1068,9 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		}
 	}
 
-	filteringMap := getMergedLabelMapping(ctx, fetchLogRequest.AccountId, source)
-	fetchLogRequest.SortFields = convertOrderByWithMapping(fetchLogRequest.SortFields, filteringMap)
-	var expandedKeys map[string]bool
-	fetchLogRequest.QueryRequest.Where, expandedKeys = expandCanonicalLabelKeys(fetchLogRequest.QueryRequest.Where, source, filteringMap)
-	fetchLogRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchLogRequest.QueryRequest.Where, filteringMap)
-
-	// Let the integration strip keys it does not support from the where clause.
-	// If the integration does not implement QueryRequestKeyFilter, nothing is removed.
-	if filter, ok := source.(QueryRequestKeyFilter); ok {
-		if ignoredKeys := filter.GetIgnoredQueryRequestKeys(); len(ignoredKeys) > 0 {
-			fetchLogRequest.QueryRequest.Where = removeKeysFromWhereClause(fetchLogRequest.QueryRequest.Where, ignoredKeys)
-		}
-	}
-
-	// Reconcile the clause with the labels' data types: reject an operator the type
-	// cannot support (e.g. a regex on an INT column, which Pinot answers with a raw
-	// backend error), and render each value as the column's native type — the UI sends
-	// chip values as strings, so a numeric column would otherwise be compared against a
-	// quoted string. Runs here because field
-	// names are now in provider space — the space QueryLabels reports types in — and
-	// because keys the integration strips above should not be validated. Placed before
-	// GetQuery so the unsupported query is never built. The builder already hides these
-	// operators per label; this guards the callers that bypass it (code mode, saved
-	// URLs, the LLM agent, direct API). Fails open when the type cannot be established.
-	if err := applyLabelDataTypes(ctx, source, &fetchLogRequest); err != nil {
+	filteringMap, expandedKeys, err := prepareLogRequestWhere(ctx, source, &fetchLogRequest)
+	if err != nil {
 		return FetchLogsResult{}, err
-	}
-
-	// Always-apply per-account default filters (e.g. a central Pinot scoped to
-	// cluster_id) configured on the log integration. AND them into the where clause
-	// here — after label-mapping and key-strip — so the operator-entered
-	// provider-native columns are used verbatim (not renamed, not stripped).
-	ApplyDefaultLogFilters(ctx, &fetchLogRequest)
-
-	// Auto-convert: if no raw query but where clause exists, generate query from where clause.
-	// Some providers (e.g. Signoz, Datadog) handle where clauses natively in QueryLogs
-	// and don't implement GetQuery, so a GetQuery error is logged but not fatal.
-	if fetchLogRequest.Query == "" && hasWhereData(fetchLogRequest.QueryRequest.Where) {
-		generatedQuery, err := source.GetQuery(ctx, fetchLogRequest)
-		if err != nil {
-			slog.Warn("FetchLogs: GetQuery failed, falling back to QueryLogs with where clause",
-				"error", err, "account_id", fetchLogRequest.AccountId)
-		} else if generatedQuery != "" {
-			fetchLogRequest.Query = generatedQuery
-		}
 	}
 
 	// Snapshot the label names AND equality values the caller referenced BEFORE the query
@@ -1121,19 +1079,7 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	var referencedLabels map[string]struct{}
 	var referencedValues map[string][]whereFieldValue
 	if fetchLogRequest.ValidateRequest {
-		referencedLabels = map[string]struct{}{}
-		collectWhereFieldNames(fetchLogRequest.QueryRequest.Where, referencedLabels)
-		for k := range expandedSecondaryKeys(source) {
-			delete(referencedLabels, k)
-		}
-		referencedValues = map[string][]whereFieldValue{}
-		collectWhereFieldValues(fetchLogRequest.QueryRequest.Where, referencedValues)
-		// An expanded `app = redis` names redis under every workload kind; it is
-		// a value of one of them, so checking each key alone would call a right
-		// value unknown (e.g. "not a CronJob name").
-		for k := range expandedKeys {
-			delete(referencedValues, k)
-		}
+		referencedLabels, referencedValues = snapshotReferencedWhere(source, fetchLogRequest.QueryRequest.Where, expandedKeys)
 	}
 
 	var logs []OutputLog
@@ -1159,57 +1105,17 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		}
 	}
 
-	// Resolve the provider for the result. The canonical (v2) path sends an empty
-	// LogProvider and lets us resolve the account default, so fall back to the
-	// resolved default provider when the request didn't name one.
-	provider := fetchLogRequest.LogProvider
-	if provider == "" {
-		if resolved, _, _, perr := getLogsMetricsTracesProviderWithIntegration(ctx, fetchLogRequest.AccountId, "", "logs", fetchLogRequest.LogProviderSource); perr == nil {
-			provider = resolved
-		}
-	}
+	provider := resolveResultLogProvider(ctx, fetchLogRequest.AccountId, fetchLogRequest.LogProvider, fetchLogRequest.LogProviderSource)
 
 	// A query that matched nothing — or that failed with a backend error — is frequently
-	// caused by a mistyped label NAME (e.g. "service_nam") or a mistyped label VALUE (e.g.
-	// namespace="prodd"). Some backends silently return zero rows for an unknown label/value
-	// (Loki); others reject the query (ClickHouse). Either way the caller — notably an LLM
-	// agent — can't tell what to fix. When the caller opts in via ValidateRequest, run an
-	// ordered diagnosis and, on a hit, return a 200 with empty Logs and the actionable message
-	// in Suggestion — (1) unknown label names, then (2) unknown label values with closest-match
-	// suggestions — rather than an error: the diagnosis successfully determined what to fix, it
-	// didn't fail. Best-effort: each check fails open (returns nil) when it can't establish the
-	// provider's label/value set, so a legitimately-empty query falls through unchanged.
+	// caused by a mistyped label NAME or VALUE; see diagnoseEmptyLogQuery. When the caller
+	// opts in via ValidateRequest, a hit returns a 200 with empty Logs and the actionable
+	// message in Suggestion rather than an error: the diagnosis successfully determined
+	// what to fix, it didn't fail.
 	countsOnly := countsQueryMatched(details)
 	if fetchLogRequest.ValidateRequest && (err != nil || (len(logs) == 0 && !countsOnly)) {
-		// One structured line per diagnosis run, so the trigger rate and hit rate are
-		// queryable in Loki (filter on msg="log_query_empty_result_diagnosis"). "outcome"
-		// distinguishes which check produced the hint the agent then rewrites against
-		// (unknown_label_name / unknown_label_value) from a genuinely-empty result (none).
-		logger := ctx.GetLogger()
-		outcome := "none"
-		defer func() {
-			logger.Info("log_query_empty_result_diagnosis",
-				"account_id", fetchLogRequest.AccountId,
-				"provider", fetchLogRequest.LogProvider,
-				"had_backend_error", err != nil,
-				"referenced_labels", len(referencedLabels),
-				"referenced_value_fields", len(referencedValues),
-				"outcome", outcome)
-		}()
-
-		if verr := validateReferencedLabels(ctx, source, fetchLogRequest, referencedLabels, filteringMap); verr != nil {
-			outcome = "unknown_label_name"
-			return FetchLogsResult{Logs: []OutputLog{}, Query: usedQuery, Provider: provider, Suggestion: verr.Error()}, nil
-		}
-		// Value suggestions only apply to a query that ran cleanly but matched nothing.
-		// On a backend error the empty result isn't a "wrong value" signal — the value-set
-		// fetch would be unreliable and the real error is the more useful thing to surface —
-		// so gate this specifically on an empty (non-errored) result.
-		if err == nil && len(logs) == 0 {
-			if verr := validateReferencedLabelValues(ctx, source, fetchLogRequest, referencedValues); verr != nil {
-				outcome = "unknown_label_value"
-				return FetchLogsResult{Logs: []OutputLog{}, Query: usedQuery, Provider: provider, Suggestion: verr.Error()}, nil
-			}
+		if suggestion := diagnoseEmptyLogQuery(ctx, source, fetchLogRequest, referencedLabels, referencedValues, filteringMap, err, len(logs) == 0); suggestion != "" {
+			return FetchLogsResult{Logs: []OutputLog{}, Query: usedQuery, Provider: provider, Suggestion: suggestion}, nil
 		}
 	}
 	if err != nil {
@@ -1225,6 +1131,139 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	result := FetchLogsResult{Logs: logs, Query: usedQuery, Provider: provider, Partial: partial}
 	applyLogQueryDetails(&result, details, fetchLogRequest.Limit, fetchLogRequest.Offset, partial, fetchLogRequest.IncludeRaw)
 	return result, nil
+}
+
+// prepareLogRequestWhere moves a request's where clause from canonical names into the
+// source's provider space and builds the native query from it, the same way for every
+// caller that queries a LogSource (FetchLogs, FetchLogAggregate). It returns the merged
+// canonical→provider label mapping and the keys label expansion produced, which the
+// empty-result diagnosis needs.
+func prepareLogRequestWhere(ctx *security.RequestContext, source LogSource, req *FetchLogRequest) (map[string]string, map[string]bool, error) {
+	filteringMap := getMergedLabelMapping(ctx, req.AccountId, source)
+	req.SortFields = convertOrderByWithMapping(req.SortFields, filteringMap)
+	var expandedKeys map[string]bool
+	req.QueryRequest.Where, expandedKeys = expandCanonicalLabelKeys(req.QueryRequest.Where, source, filteringMap)
+	req.QueryRequest.Where = convertWhereClauseWithMApping(req.QueryRequest.Where, filteringMap)
+
+	// Let the integration strip keys it does not support from the where clause.
+	// If the integration does not implement QueryRequestKeyFilter, nothing is removed.
+	if filter, ok := source.(QueryRequestKeyFilter); ok {
+		if ignoredKeys := filter.GetIgnoredQueryRequestKeys(); len(ignoredKeys) > 0 {
+			req.QueryRequest.Where = removeKeysFromWhereClause(req.QueryRequest.Where, ignoredKeys)
+		}
+	}
+
+	// Reconcile the clause with the labels' data types: reject an operator the type
+	// cannot support (e.g. a regex on an INT column, which Pinot answers with a raw
+	// backend error), and render each value as the column's native type — the UI sends
+	// chip values as strings, so a numeric column would otherwise be compared against a
+	// quoted string. Runs here because field
+	// names are now in provider space — the space QueryLabels reports types in — and
+	// because keys the integration strips above should not be validated. Placed before
+	// GetQuery so the unsupported query is never built. The builder already hides these
+	// operators per label; this guards the callers that bypass it (code mode, saved
+	// URLs, the LLM agent, direct API). Fails open when the type cannot be established.
+	if err := applyLabelDataTypes(ctx, source, req); err != nil {
+		return nil, nil, err
+	}
+
+	// Always-apply per-account default filters (e.g. a central Pinot scoped to
+	// cluster_id) configured on the log integration. AND them into the where clause
+	// here — after label-mapping and key-strip — so the operator-entered
+	// provider-native columns are used verbatim (not renamed, not stripped).
+	ApplyDefaultLogFilters(ctx, req)
+
+	// Auto-convert: if no raw query but where clause exists, generate query from where clause.
+	// Some providers (e.g. Signoz, Datadog) handle where clauses natively in QueryLogs
+	// and don't implement GetQuery, so a GetQuery error is logged but not fatal.
+	if req.Query == "" && hasWhereData(req.QueryRequest.Where) {
+		generatedQuery, err := source.GetQuery(ctx, *req)
+		if err != nil {
+			slog.Warn("FetchLogs: GetQuery failed, falling back to QueryLogs with where clause",
+				"error", err, "account_id", req.AccountId)
+		} else if generatedQuery != "" {
+			req.Query = generatedQuery
+		}
+	}
+	return filteringMap, expandedKeys, nil
+}
+
+// snapshotReferencedWhere records the label names and equality values a prepared where
+// clause references, for diagnoseEmptyLogQuery. Take it before the query runs, so a time
+// range or other filter the backend injects during execution is not mistaken for a
+// user-supplied label/value.
+func snapshotReferencedWhere(source LogSource, where query.QueryWhereClause, expandedKeys map[string]bool) (map[string]struct{}, map[string][]whereFieldValue) {
+	referencedLabels := map[string]struct{}{}
+	collectWhereFieldNames(where, referencedLabels)
+	for k := range expandedSecondaryKeys(source) {
+		delete(referencedLabels, k)
+	}
+	referencedValues := map[string][]whereFieldValue{}
+	collectWhereFieldValues(where, referencedValues)
+	// An expanded `app = redis` names redis under every workload kind; it is
+	// a value of one of them, so checking each key alone would call a right
+	// value unknown (e.g. "not a CronJob name").
+	for k := range expandedKeys {
+		delete(referencedValues, k)
+	}
+	return referencedLabels, referencedValues
+}
+
+// diagnoseEmptyLogQuery explains a query that matched nothing or failed, and returns the
+// actionable message, or "" when it finds nothing to blame.
+//
+// Such a result is frequently caused by a mistyped label NAME (e.g. "service_nam") or a
+// mistyped label VALUE (e.g. namespace="prodd"). Some backends silently return zero rows
+// for an unknown label/value (Loki); others reject the query (ClickHouse). Either way the
+// caller — notably an LLM agent — can't tell what to fix. The diagnosis is ordered: (1)
+// unknown label names, then (2) unknown label values with closest-match suggestions.
+// Best-effort: each check fails open when it can't establish the provider's label/value
+// set, so a legitimately-empty query falls through unchanged.
+func diagnoseEmptyLogQuery(ctx *security.RequestContext, source LogSource, req FetchLogRequest, referencedLabels map[string]struct{}, referencedValues map[string][]whereFieldValue, filteringMap map[string]string, backendErr error, empty bool) string {
+	// One structured line per diagnosis run, so the trigger rate and hit rate are
+	// queryable in Loki (filter on msg="log_query_empty_result_diagnosis"). "outcome"
+	// distinguishes which check produced the hint the agent then rewrites against
+	// (unknown_label_name / unknown_label_value) from a genuinely-empty result (none).
+	logger := ctx.GetLogger()
+	outcome := "none"
+	defer func() {
+		logger.Info("log_query_empty_result_diagnosis",
+			"account_id", req.AccountId,
+			"provider", req.LogProvider,
+			"had_backend_error", backendErr != nil,
+			"referenced_labels", len(referencedLabels),
+			"referenced_value_fields", len(referencedValues),
+			"outcome", outcome)
+	}()
+
+	if verr := validateReferencedLabels(ctx, source, req, referencedLabels, filteringMap); verr != nil {
+		outcome = "unknown_label_name"
+		return verr.Error()
+	}
+	// Value suggestions only apply to a query that ran cleanly but matched nothing.
+	// On a backend error the empty result isn't a "wrong value" signal — the value-set
+	// fetch would be unreliable and the real error is the more useful thing to surface —
+	// so gate this specifically on an empty (non-errored) result.
+	if backendErr == nil && empty {
+		if verr := validateReferencedLabelValues(ctx, source, req, referencedValues); verr != nil {
+			outcome = "unknown_label_value"
+			return verr.Error()
+		}
+	}
+	return ""
+}
+
+// resolveResultLogProvider names the provider a result came from. The canonical (v2)
+// path sends an empty LogProvider and lets us resolve the account default, so fall back
+// to the resolved default provider when the request didn't name one.
+func resolveResultLogProvider(ctx *security.RequestContext, accountId, logProvider, logProviderSource string) string {
+	if logProvider != "" {
+		return logProvider
+	}
+	if resolved, _, _, err := getLogsMetricsTracesProviderWithIntegration(ctx, accountId, "", "logs", logProviderSource); err == nil {
+		return resolved
+	}
+	return ""
 }
 
 // lineContentFields are where-clause fields that filter the log message body
@@ -2556,6 +2595,7 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 			resolvedSource = source
 			caps.SupportedOperators = source.GetSupportedOperators()
 			_, caps.SupportsAutoQuery = source.(PlaybookQueryGenerator)
+			_, caps.SupportsLogCountBy = source.(LogAggregateSource)
 			// Full canonical to provider merge: provider default, then tenant, account,
 			// provider config and finally the integration's own mapping. Skip the merge
 			// when accountId is empty: with no account the lookup can only return the
