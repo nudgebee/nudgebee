@@ -1060,56 +1060,6 @@ func ListAllToolConfigs(context *security.RequestContext, accountId string) ([]T
 	return configs, nil
 }
 
-func DeleteToolConfig(ctx *security.RequestContext, accountId string, toolName string, toolConfigName string) error {
-	dbms, err := common.GetDatabaseManager(common.Metastore)
-	if err != nil {
-		slog.Error("tools: failed to get database manager", "error", err)
-		return err
-	}
-	tool, found := GetNBTool(accountId, toolName)
-	if !found {
-		return errors.New("tools: tool not found - " + toolName)
-	}
-
-	toolConfigProvider, ok := tool.(NBToolConfig)
-	if !ok {
-		return nil
-	}
-
-	_, err = dbms.Exec(`
-        DELETE FROM integration_config_values
-        WHERE integration_id IN (
-            SELECT i.id
-            FROM integrations i
-            JOIN integrations_cloud_accounts ia ON i.id = ia.integration_id
-            WHERE ia.cloud_account_id = $1
-              AND i.type = $2
-              AND LOWER(i.name) = LOWER($3)
-        )
-    `, accountId, toolConfigProvider.ConfigSchema(ctx).ConfigType, toolConfigName)
-	if err != nil {
-		slog.Error("unable to delete values for tool config",
-			"error", err,
-			"config_type", toolConfigProvider.ConfigSchema(ctx).ConfigType,
-			"config_name", toolConfigName)
-		return errors.New("tools: unable to delete values for tool config")
-	}
-
-	_, err = dbms.Exec(`
-        DELETE FROM integrations
-        WHERE id IN (
-            SELECT i.id
-            FROM integrations i
-            JOIN integrations_cloud_accounts ia ON i.id = ia.integration_id
-            WHERE ia.cloud_account_id = $1
-              AND i.type = $2
-              AND LOWER(i.name) = LOWER($3)
-        )
-    `, accountId, toolConfigProvider.ConfigSchema(ctx).ConfigType, toolConfigName)
-
-	return err
-}
-
 // unmarshalLabelsToStringMap parses a JSON labels string into map[string]string,
 // converting any non-string values (e.g. numeric ports) to their string representation.
 func unmarshalLabelsToStringMap(configLabels *string) map[string]string {

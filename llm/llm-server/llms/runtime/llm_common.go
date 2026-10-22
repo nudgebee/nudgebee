@@ -979,20 +979,6 @@ func IsSLMEnabled(accountId string, agentName string) bool {
 	return sllmModel != ""
 }
 
-func GetModelNameForAgent(agentName string) string {
-	modelKey := fmt.Sprintf(llmModelFormat, agentName)
-	return config.Config.GetString(modelKey, "")
-}
-
-func IsAgentToolSupported(agentName string) bool {
-	toolKey := fmt.Sprintf("agent_tool_support_%s", agentName)
-	isAgentToolSupported := config.Config.GetString(toolKey, "")
-	if isAgentToolSupported != "" && strings.ToLower(isAgentToolSupported) == "true" {
-		return true
-	}
-	return false
-}
-
 func IsAgentsFollowupEnabled() bool {
 	followupKey := "agents_followup_enabled"
 	isFollowupEnabled := config.Config.GetString(followupKey, "")

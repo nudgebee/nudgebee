@@ -2865,27 +2865,6 @@ func (chat *ConversationDao) UpdateConversationMessageContext(messageId string, 
 	return nil
 }
 
-func (chat *ConversationDao) GetConversationContext(conversationId string) (map[string]any, error) {
-	query := `SELECT context::text FROM llm_conversations WHERE id = $1`
-	var context sql.NullString
-	err := chat.dbManager.Db.QueryRow(query, conversationId).Scan(&context)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("history: failed to get context: %w", err)
-	}
-	if context.String == "" {
-		return nil, nil
-	}
-	var contextMap map[string]any
-	err = common.UnmarshalJson([]byte(context.String), &contextMap)
-	if err != nil {
-		return nil, fmt.Errorf("history: failed to unmarshal context: %w", err)
-	}
-	return contextMap, nil
-}
-
 func (chat *ConversationDao) UpdateMessageAcknowledgement(messageId, accountId, ackMessage string) error {
 	query := `
 	UPDATE llm_conversation_messages

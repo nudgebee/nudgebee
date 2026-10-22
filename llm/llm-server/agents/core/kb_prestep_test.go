@@ -380,36 +380,6 @@ func TestBuildKnowledgeCandidateMenuIsCompactAndLoadable(t *testing.T) {
 	assert.True(t, candidate.ExcerptOnly)
 }
 
-func TestBuildKnowledgeCandidateMenuKeepsSectionsFromSameURLLoadable(t *testing.T) {
-	ctx := security.NewRequestContextForSuperAdmin()
-	request := NBAgentRequest{
-		AccountId:      "account-section-test",
-		ConversationId: "conversation-section-test",
-		MessageId:      "message-section-test",
-	}
-	docs := knowledge.RAGSearchResults{
-		{Document: "Section one procedure", Metadata: map[string]any{"url": "https://docs.example/runbook"}},
-		{Document: "Section two procedure", Metadata: map[string]any{"url": "https://docs.example/runbook"}},
-	}
-
-	menu := buildKnowledgeCandidateMenu(ctx, request, docs, nil)
-	var ids []string
-	for _, line := range strings.Split(menu, "\n") {
-		if _, rest, ok := strings.Cut(line, "id: "); ok {
-			ids = append(ids, strings.Fields(rest)[0])
-		}
-	}
-	require.Len(t, ids, 2)
-	assert.NotEqual(t, ids[0], ids[1])
-
-	first, ok := knowledge.LoadKnowledgeCandidate(request.AccountId, request.ConversationId, request.MessageId, ids[0])
-	require.True(t, ok)
-	second, ok := knowledge.LoadKnowledgeCandidate(request.AccountId, request.ConversationId, request.MessageId, ids[1])
-	require.True(t, ok)
-	assert.Equal(t, "Section one procedure", first.Content)
-	assert.Equal(t, "Section two procedure", second.Content)
-}
-
 func TestFormatRetrievedKBBlock(t *testing.T) {
 	t.Run("empty docs return empty string", func(t *testing.T) {
 		assert.Equal(t, "", formatRetrievedKBBlock(nil))

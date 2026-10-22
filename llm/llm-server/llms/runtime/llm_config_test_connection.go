@@ -91,24 +91,6 @@ type probeTarget struct {
 	err error
 }
 
-// TestLLMProviderConnection probes the primary (provider, model) pair from cfg.
-// Retained as a thin shim around the multi-target probe for callers that only
-// care about the primary; the HTTP handler uses TestLLMProviderConnectionAll
-// to enumerate global + tiers + agents + fallbacks. New code should call
-// TestLLMProviderConnectionAll directly.
-func TestLLMProviderConnection(ctx context.Context, cfg map[string]string) error {
-	provider := cfg[cfgKeyProvider]
-	model := cfg[cfgKeyModel]
-	if provider == "" || model == "" {
-		return errors.New("llm_provider and llm_model_name are required")
-	}
-	res := probeOne(ctx, probeTarget{provider: provider, model: model, source: "global", cfg: cfg})
-	if !res.OK && !res.Untestable {
-		return fmt.Errorf("connectivity probe to %s failed: %s", provider, res.Error)
-	}
-	return nil
-}
-
 // TestLLMProviderConnectionAll enumerates every (provider, model) pair in cfg
 // (global, tier overrides, agent overrides, and each chain's fallbacks),
 // probes them in parallel with bounded concurrency, and returns the per-target

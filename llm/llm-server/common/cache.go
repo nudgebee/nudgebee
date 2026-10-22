@@ -7,10 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"nudgebee/llm/config"
-	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -20,7 +17,6 @@ import (
 	"github.com/eko/gocache/store/bigcache/v4"
 	redis_store "github.com/eko/gocache/store/redis/v4"
 	"github.com/redis/go-redis/v9"
-	"github.com/samber/lo"
 )
 
 var cacheManager *cache.Cache[any]
@@ -39,12 +35,6 @@ type CacheNamespaceOption func(o *cacheNamespaceOptions)
 func CacheNamespaceWithExpiration(expiration time.Duration) CacheNamespaceOption {
 	return func(o *cacheNamespaceOptions) {
 		o.Expiration = expiration
-	}
-}
-
-func CacheNamespaceWithMaxSizeMb(size int) CacheNamespaceOption {
-	return func(o *cacheNamespaceOptions) {
-		o.MaxSizeMb = size
 	}
 }
 
@@ -247,50 +237,6 @@ func CacheClear(namespace string) error {
 		return err
 	}
 	return cache.Invalidate(context.Background(), store.WithInvalidateTags([]string{"namespace:" + namespace}))
-}
-
-func CacheListNamesapces() []string {
-	return slices.Collect(maps.Keys(cacheManagers))
-}
-
-func CacheListKeys(namespace string) ([]string, error) {
-	_, err := cacheGetManager(namespace)
-	if err != nil {
-		return nil, errors.New("cache: namespace not found")
-	}
-
-	if config.Config.CacheProvider == "redis" {
-		redisClient, err := getRedisClient()
-		if err != nil || redisClient == nil {
-			return nil, errors.New("cache: redis client unavailable")
-		}
-		keys := redisClient.Keys(context.Background(), namespace+":*").Val()
-		keys = lo.Map(keys, func(key string, i int) string {
-			return strings.TrimPrefix(key, namespace+":")
-		})
-		return keys, nil
-	}
-
-	syncCacheManagers.Lock()
-	bigCacheClient, ok := cacheClient.(*bigcache_store.BigCache)
-	syncCacheManagers.Unlock()
-	if !ok || bigCacheClient == nil {
-		return nil, errors.New("cache: local cache client unavailable")
-	}
-
-	iterator := bigCacheClient.Iterator()
-	keys := make([]string, 0)
-	for iterator.SetNext() {
-		k, err := iterator.Value()
-		if err != nil {
-			return nil, err
-		}
-		if strings.HasPrefix(k.Key(), namespace+":") {
-			key := strings.TrimPrefix(k.Key(), namespace+":")
-			keys = append(keys, key)
-		}
-	}
-	return keys, nil
 }
 
 func CachePublish(channel string, message string) error {

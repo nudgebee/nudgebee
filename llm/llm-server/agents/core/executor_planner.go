@@ -423,13 +423,6 @@ type ActionNode struct {
 	Result       NBAgentPlannerToolActionStep
 }
 
-type ActionGraph struct {
-	Nodes     map[string]*ActionNode // Map of toolID to node
-	Ready     chan *ActionNode       // Channel for nodes ready to execute
-	Results   chan *ActionNode       // Channel for completed nodes
-	ErrorChan chan error             // Channel for errors
-}
-
 type plannerExecutor struct {
 	ctx                 *security.RequestContext
 	agentPlanner        NBAgentPlanner
@@ -4754,24 +4747,6 @@ func validateToolInput(tool toolcore.NBTool, request toolcore.NBToolCallRequest)
 		),
 	}
 	return &resp
-}
-
-// delegationSkillScope returns the skill-mapping names a sub-agent should inherit
-// from its delegating parent: the parent's own inherited chain with the parent's name
-// appended. It always returns a fresh slice (never aliases parentInherited) so a
-// caller mutating the result can't write into the parent's backing array. An empty
-// parentAgentName is a no-op that still returns a copy.
-func delegationSkillScope(parentInherited []string, parentAgentName string) []string {
-	if parentAgentName == "" {
-		if len(parentInherited) == 0 {
-			return nil
-		}
-		return append([]string(nil), parentInherited...)
-	}
-	scope := make([]string, 0, len(parentInherited)+1)
-	scope = append(scope, parentInherited...)
-	scope = append(scope, parentAgentName)
-	return scope
 }
 
 func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentRequest, parentAgentName string, tool toolcore.NBTool, input string, previousHistory []llms.MessageContent, queryContext string, toolId string, followupAnswer string, requestType toolcore.ToolRequestType) (resp toolcore.NBToolResponse, err error) {

@@ -505,19 +505,3 @@ func TestConstructScratchPad_EmptyResultIsNotFailureFraming(t *testing.T) {
 		assert.Contains(t, res, "Recommended Next Steps")
 	})
 }
-
-// TestHasToolFailureMajority_EmptyCountsAsSuccess pins that empty-but-successful
-// results are counted with successes, not against them, so a plan of only
-// silent-success writes is NOT treated as a tool-failure majority (#29875).
-func TestHasToolFailureMajority_EmptyCountsAsSuccess(t *testing.T) {
-	tag := func(failed, empty, success int) string {
-		return fmt.Sprintf("<data_quality failed=\"%d\" empty=\"%d\" success=\"%d\" total=\"%d\">\n", failed, empty, success, failed+empty+success)
-	}
-
-	assert.False(t, hasToolFailureMajority(tag(0, 2, 0)), "empty-only must not be a failure majority")
-	assert.False(t, hasToolFailureMajority(tag(1, 3, 0)), "empties outnumber the single failure → not a majority")
-	assert.False(t, hasToolFailureMajority(tag(0, 1, 1)), "empty + success → not a failure majority")
-	assert.True(t, hasToolFailureMajority(tag(2, 0, 0)), "failures with no usable data → majority")
-	assert.True(t, hasToolFailureMajority(tag(3, 0, 1)), "genuine failures outnumber successes → majority")
-	assert.False(t, hasToolFailureMajority("no tag here"), "missing tag → false")
-}

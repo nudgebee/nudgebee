@@ -10,11 +10,9 @@ import (
 	"nudgebee/llm/prompts"
 
 	"nudgebee/llm/security"
-	"sort"
 	"strings"
 	"time"
 
-	"github.com/lithammer/fuzzysearch/fuzzy"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -57,50 +55,6 @@ type IntentInfo struct {
 // GetContextManager returns the singleton instance of ConversationContextManager
 func GetContextManager() *ConversationContextManager {
 	return &ConversationContextManager{}
-}
-
-func (m *ConversationContextManager) SummarizeConversationContext(ctx *security.RequestContext, userId string, accountId string, conversationId string, messageId string, query string, history string) (string, error) {
-	// If query or history is empty, nothing to summarize
-	if query == "" || history == "" {
-		return "", nil
-	}
-
-	systemPrompt := `You are a helpful assistant that reviews conversation history to extract context relevant to answering the user's latest question.
-Only include facts that are still valid and do not require re-evaluation. This includes configuration details, user preferences, previously asked questions, or static descriptions.
-Do NOT include prior answers to questions that involve real-time, dynamic, or frequently changing information (e.g., system counts, current status, metrics, time-based data).
-Be brief, accurate, and return only factual information. If nothing is useful or valid, return an empty string.`
-
-	userPrompt := fmt.Sprintf("Current user question:\n%s\n\nConversation history:\n%s\n\nBased on the conversation history, extract only valid and reusable information relevant to the current question. If nothing is relevant or still valid, return an empty string.", query, history)
-
-	mclist := []llms.MessageContent{
-		{
-			Role:  llms.ChatMessageTypeSystem,
-			Parts: []llms.ContentPart{llms.TextContent{Text: systemPrompt}},
-		},
-		{
-			Role:  llms.ChatMessageTypeHuman,
-			Parts: []llms.ContentPart{llms.TextContent{Text: userPrompt}},
-		},
-	}
-
-	summaryCtx := security.NewRequestContext(
-		context.WithValue(context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary), llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal),
-		ctx.GetSecurityContext(),
-		ctx.GetLogger(),
-		ctx.GetTracer(),
-		ctx.GetMeter(),
-	)
-
-	llmResponse, err := llmruntime.GenerateAndTrackLLMContent(summaryCtx, userId, accountId, conversationId, messageId, "conversation_context_summary", false, mclist, true, llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
-	if err != nil {
-		return "", err
-	}
-
-	if llmResponse != nil && len(llmResponse.Choices) > 0 {
-		return llmResponse.Choices[0].Content, nil
-	}
-
-	return "", nil
 }
 
 // context propagation work in progress
@@ -1315,81 +1269,6 @@ func ExtractUnifiedContext(raw []byte) (*LlmUnifiedExtraction, error) {
 		ConversationState: parsed.ConversationState,
 		MemoryFacts:       out,
 	}, nil
-}
-
-func MergeFacts(oldFacts, newFacts []LlmMemoryFact) []LlmMemoryFact {
-	// 1. Start with all new facts (trust latest LLM extraction as the primary source)
-	result := make([]LlmMemoryFact, 0, len(oldFacts)+len(newFacts))
-	result = append(result, newFacts...)
-
-	// 2. Identify which old facts should be carried forward ("Safety Net")
-	for _, of := range oldFacts {
-		isRepresented := false
-
-		// Check if any new fact is "essentially the same" as this old fact
-		for _, nf := range newFacts {
-			if areFactsSimilar(of, nf) {
-				isRepresented = true
-				break
-			}
-		}
-
-		if !isRepresented {
-			// If the LLM omitted an old fact, we only carry it forward if:
-			// a) It's highly salient (threshold 0.5+) — we don't carry forward trivia.
-			// b) It doesn't appear to be superseded (handled by similarity check above).
-			if of.Salience >= 0.5 {
-				result = append(result, of)
-			}
-		}
-	}
-
-	// 3. Cap total facts to avoid unbounded growth. Keep highest-salience facts.
-	maxFacts := config.Config.MaxMemoryFactsPerConversation
-	if maxFacts < 10 {
-		maxFacts = 10
-	}
-	if len(result) > maxFacts {
-		sort.Slice(result, func(i, j int) bool {
-			return result[i].Salience > result[j].Salience
-		})
-		result = result[:maxFacts]
-	}
-	return result
-}
-
-func areFactsSimilar(f1, f2 LlmMemoryFact) bool {
-	// Exact match
-	if f1.Content == f2.Content {
-		return true
-	}
-
-	// Type mismatch usually means different facts even if wording is similar
-	if f1.Type != f2.Type {
-		return false
-	}
-
-	s1 := strings.ToLower(strings.TrimSpace(f1.Content))
-	s2 := strings.ToLower(strings.TrimSpace(f2.Content))
-
-	// Normalization check
-	if s1 == s2 {
-		return true
-	}
-
-	// Fuzzy check: Levenshtein distance
-	dist := fuzzy.LevenshteinDistance(s1, s2)
-	maxLen := len(s1)
-	if len(s2) > maxLen {
-		maxLen = len(s2)
-	}
-
-	if maxLen == 0 {
-		return true
-	}
-
-	// Heuristic: If similarity is > 85%, they are likely the same fact
-	return float64(dist)/float64(maxLen) < 0.15
 }
 
 func dedupeStrings(in []string) []string {

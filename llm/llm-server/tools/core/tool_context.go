@@ -18,7 +18,6 @@ const (
 )
 
 var ErrUnableToFetchData = errors.New("error: unable to fetch data")
-var ErrUserNotAuthorized = errors.New("error: user is not authoirized to perform this action")
 
 // Lives in tools/core (not agents/core) to avoid a circular import.
 // TierModelPick is one task's choice: which credential serves it and which
@@ -559,16 +558,4 @@ func (c NbToolContext) ForTarget() NbToolContext {
 	c.TargetAccountId = c.AccountId
 	c.QueryConfig.DelegatedTarget = nil
 	return c
-}
-
-// updateMessageHistory updates the message history with the assistant's
-// response and requested tool calls.
-func UpdateMessageHistory(messageHistory []llms.MessageContent, resp *llms.ContentResponse) []llms.MessageContent {
-	respchoice := resp.Choices[0]
-
-	assistantResponse := llms.TextParts(llms.ChatMessageTypeAI, respchoice.Content)
-	for _, tc := range respchoice.ToolCalls {
-		assistantResponse.Parts = append(assistantResponse.Parts, tc)
-	}
-	return append(messageHistory, assistantResponse)
 }

@@ -2108,14 +2108,6 @@ func (o *NBReActPlanner4) persistNotebook(content string, turnIdx int, stats not
 	return true
 }
 
-// extractNotebookContent pulls the notebook body from a native tool-call
-// arguments payload, which is a JSON string like {"content":"..."}. Falls back
-// to the raw string when it is not JSON with a content field.
-func extractNotebookContent(args string) string {
-	content, _ := extractNotebookUpdate(args)
-	return content
-}
-
 func extractNotebookUpdate(args string) (content string, appendEntry bool) {
 	args = strings.TrimSpace(args)
 	if args == "" {

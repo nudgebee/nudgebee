@@ -244,14 +244,6 @@ type claimShadowResult struct {
 	Content     string
 }
 
-func evaluateClaimShadow(ctx *security.RequestContext, request NBAgentRequest, input, answer, notebook string, steps []NBAgentPlannerToolActionStep) claimShadowResult {
-	detail, status := prepareClaimCapture(ctx, request.AccountId, input, answer, notebook, steps)
-	if status != "" {
-		return claimShadowResult{Status: status}
-	}
-	return generateClaimShadow(ctx, request, detail)
-}
-
 func generateClaimShadow(ctx *security.RequestContext, request NBAgentRequest, detail claimCaptureDetail) claimShadowResult {
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, detail.Prompt),

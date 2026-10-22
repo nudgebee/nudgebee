@@ -27,15 +27,6 @@ func logsUIRef(nbRequestContext core.NbToolContext, qb core.QueryBuilder) core.N
 	return core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"monitoring", "logs"}, "Query Logs", params, "")
 }
 
-func NewNBLogTool(accountId string) (*NBLogTool, error) {
-	logProvider, err := GetLogProvider(accountId)
-	if err != nil {
-		slog.Error("logs: unable to get log provider", "error", err)
-		return nil, err
-	}
-	return NewNBLogToolWithProvider(accountId, logProvider), nil
-}
-
 // NewNBLogToolWithProvider builds against an already-resolved provider, so labels
 // come from the same backend the caller is querying (may be a request override).
 func NewNBLogToolWithProvider(accountId string, logProvider services_server.ObservabilityProvider) *NBLogTool {

@@ -421,7 +421,6 @@ func TestMCPDiscoveryRetryAfter(t *testing.T) {
 // result (#39635).
 func TestMCPTools_ResultCanChange(t *testing.T) {
 	assert.True(t, ResultCanChange(mcpIntegrationTool{toolName: "qa_browser_snapshot"}))
-	assert.True(t, ResultCanChange(nbCustomMCPTool{}))
 	assert.True(t, ResultCanChange(nbCustomContainerTool{}))
 	assert.False(t, ResultCanChange(nil))
 	assert.False(t, ResultCanChange(newMCPUnavailableTool(mcpIntegrationConfig{}, "x")))

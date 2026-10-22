@@ -1,7 +1,6 @@
 package agents
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"nudgebee/llm/agents/core"
@@ -336,33 +335,6 @@ func (p *PromqlAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlann
 		return toolResponse[:maxPromqlToolResponseChars] + "\n... (truncated - use a more specific keyword to narrow results)"
 	}
 	return toolResponse
-}
-
-// buildPromQLPattern constructs the regex pattern using all available Prometheus functions
-func buildPromQLPattern() *regexp.Regexp {
-	functions := getAvailablePrometheusFunctions()
-	functionList := strings.Join(functions, "|")
-	patternTemplate := `(?i)\b(?:%s)\s*\((?:[^)(]+|\((?:[^)(]+|\([^)(]*\))*\))*\)(?:\s+(?:by|without)\s+\([^)]+\))?|[a-zA-Z_:][a-zA-Z0-9_:]*\{[^}]+\}|[a-zA-Z_:][a-zA-Z0-9_:]*\[[^\]]+\]`
-	return regexp.MustCompile(fmt.Sprintf(patternTemplate, functionList))
-}
-
-// Initialize the promqlPattern once
-var promqlPattern = buildPromQLPattern()
-
-func ExtractPromQLExprs(input string) []string {
-	var queries []string
-	scanner := bufio.NewScanner(strings.NewReader(input))
-	for scanner.Scan() {
-		line := scanner.Text()
-		matches := promqlPattern.FindAllString(line, -1)
-		for _, m := range matches {
-			m = strings.TrimSpace(m)
-			if len(m) > 0 {
-				queries = append(queries, m)
-			}
-		}
-	}
-	return queries
 }
 
 func getAvailablePrometheusFunctions() []string {

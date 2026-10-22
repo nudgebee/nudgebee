@@ -456,13 +456,6 @@ collect:
 	return out, traceIDs
 }
 
-// buildKnowledgeCandidateMenu stores bounded excerpts and handles for on-demand
-// loading and renders only a compact index into ReAct prompts. Discovery is
-// account-wide; agent mappings are not required for a candidate to appear.
-func buildKnowledgeCandidateMenu(ctx *security.RequestContext, request NBAgentRequest, docs knowledge.RAGSearchResults, refs []AgentReference) string {
-	return buildKnowledgeCandidateMenuCollect(ctx, request, docs, refs, nil)
-}
-
 func buildKnowledgeCandidateMenuCollect(ctx *security.RequestContext, request NBAgentRequest, docs knowledge.RAGSearchResults, refs []AgentReference, candidates *[]knowledge.KnowledgeCandidate) string {
 	if len(docs) == 0 {
 		return ""

@@ -532,8 +532,6 @@ func withAccountSourcedTools(cached []NBTool, accountId string) []NBTool {
 
 func getToolStatus(tool NBTool) ToolStatus {
 	switch t := tool.(type) {
-	case nbCustomMCPTool:
-		return t.tool.Status
 	case nbCustomContainerTool:
 		return t.tool.Status
 	case mcpIntegrationTool:

@@ -507,14 +507,6 @@ func TestReAct4_ParseCompletion_SynthesizedIDsAreUniqueForIdenticalCalls(t *test
 		"identical parallel calls with omitted ids must still get distinct synthesized ids")
 }
 
-func TestReAct4_ExtractNotebookContent(t *testing.T) {
-	assert.Equal(t, "hi", extractNotebookContent(`{"content":"hi"}`))
-	assert.Equal(t, "raw text", extractNotebookContent("raw text"))
-	assert.Equal(t, "", extractNotebookContent("   "))
-	// JSON without a content field falls back to the raw string.
-	assert.Equal(t, `{"other":"x"}`, extractNotebookContent(`{"other":"x"}`))
-}
-
 func TestReAct4_ExtractNotebookUpdate(t *testing.T) {
 	content, appendEntry := extractNotebookUpdate(`{"content":"new evidence","append":true}`)
 	assert.Equal(t, "new evidence", content)

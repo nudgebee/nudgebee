@@ -482,7 +482,7 @@ func (m mcpIntegrationTool) Call(ctx NbToolContext, input NBToolCallRequest) (NB
 // envelope (`{"result":{"content":[{"type":"text","text":"..."}]}}`) escapes
 // every quote and newline of the real output and adds nothing the model can
 // use. Text parts are joined with newlines; any other part (image, resource)
-// is kept as its JSON, matching nbCustomMCPTool.Call. A result with no
+// is kept as its JSON. A result with no
 // content returns its structuredContent JSON if it has one, else "" — the
 // executor classifies "" as an empty result and gives the model its
 // no-output message. A reply without a result (a JSON-RPC error object,

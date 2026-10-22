@@ -2,14 +2,9 @@ package core
 
 import (
 	"errors"
-	"fmt"
 )
 
 var errAgentNotFound = errors.New("error: agent not found")
-
-var errPlannerUnableToGeneratePlan = errors.New("error: planner unable to create plan")
-
-var errToolNotFound = errors.New("error: tool not found")
 
 var ErrConversationInProgress = errors.New("conversation: conversation is already in progress")
 
@@ -25,20 +20,3 @@ var ErrConversationPendingFollowup = errors.New("conversation: previous turn is 
 // stop re-execution — proceeding would create duplicate agent/tool rows
 // alongside the preserved-but-in-flight ones.
 var ErrCleanupRefusedActiveFollowup = errors.New("conversation: cleanup refused; active followup references agents from this message")
-
-func ErrPlannerUnableToGeneratePlan(err error) error {
-	if err == nil {
-		return errPlannerUnableToGeneratePlan
-	}
-	if errors.Is(err, errPlannerUnableToGeneratePlan) {
-		return err
-	}
-	return errors.Join(errPlannerUnableToGeneratePlan, err)
-}
-
-func ErrToolNotFound(toolName string) error {
-	if toolName == "" {
-		return errToolNotFound
-	}
-	return fmt.Errorf("%w: %s", errToolNotFound, toolName)
-}

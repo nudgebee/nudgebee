@@ -19,14 +19,6 @@ func TestGetCurrentPrometheusOtelHosts(t *testing.T) {
 	assert.NotEmpty(t, data)
 }
 
-func TestGetCurrentK8sAccountState(t *testing.T) {
-	if os.Getenv("TEST_ACCOUNT") == "" {
-		t.Skip("requires a live services backend; set TEST_ACCOUNT to run")
-	}
-	data := GetCurrentK8sAccountState(os.Getenv("TEST_ACCOUNT"), 100)
-	assert.NotEmpty(t, data)
-}
-
 func TestResourceSearchTool_SearchDbForResources(t *testing.T) {
 	if os.Getenv("TEST_ACCOUNT") == "" {
 		t.Skip("TEST_ACCOUNT not set")

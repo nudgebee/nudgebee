@@ -42,20 +42,6 @@ func ErrorActionInternal(message string) ErrorAction {
 	}
 }
 
-func ErrorUnauthorized(message string) Error {
-	return Error{
-		Message: message,
-		Code:    403,
-	}
-}
-
-func ErrorUnauthenticated(message string) Error {
-	return Error{
-		Message: message,
-		Code:    401,
-	}
-}
-
 func ErrorNotFound(message string) Error {
 	return Error{
 		Message: message,

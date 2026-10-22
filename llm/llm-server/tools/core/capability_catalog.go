@@ -588,27 +588,6 @@ func doRunbookTasksRequest(ctx *security.RequestContext, accountId, tenantId, us
 	return respBytes, nil
 }
 
-// UnclassifiedCapabilities returns the names of every capability the live
-// catalog reports that capabilityScopeTable does not yet cover. This is the
-// visible signal for classification drift between this checked-in table and
-// what's actually registered in either service — surface it (a startup log
-// line, a metric, a periodic check) rather than letting new capabilities
-// sit invisibly unclassified. Deliberately does not attempt to guess a
-// classification for them; see the package doc comment for why.
-func UnclassifiedCapabilities(ctx *security.RequestContext, accountId string) ([]string, error) {
-	catalog, err := GetCapabilityCatalog(ctx, accountId)
-	if err != nil {
-		return nil, err
-	}
-	var unclassified []string
-	for _, entry := range catalog {
-		if entry.Scope == CapabilityScopeUnclassified {
-			unclassified = append(unclassified, entry.Name)
-		}
-	}
-	return unclassified, nil
-}
-
 // SyncCapabilityCatalog writes the live, classified capability catalog into
 // llm_kb_capability_entries (migration V977) as entry_type = 'platform_capability'
 // rows — the shared, polymorphic table rag-server reads directly over its own

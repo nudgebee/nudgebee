@@ -100,18 +100,6 @@ func DecodeMapToStruct(m map[string]any, s any) error {
 	return decoder.Decode(m)
 }
 
-func EncodeToJsonSafe(data any) string {
-	if data == nil {
-		return ""
-	}
-	str, err := MarshalJson(data)
-	if err != nil {
-		panic(err)
-	}
-
-	return string(str)
-}
-
 func DecodeYamlToMap(data string) (map[string]any, error) {
 	var result map[string]any
 	err := yaml.Unmarshal([]byte(data), &result)
@@ -126,24 +114,6 @@ func EncodeYaml(data any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return result, nil
-}
-
-func StructToMap(obj any) (map[string]any, error) {
-	objValue := reflect.ValueOf(obj)
-	if objValue.Kind() != reflect.Struct {
-		return nil, errors.New("DecodeMapToStruct: s is nil")
-	}
-
-	objType := objValue.Type()
-	result := make(map[string]any)
-
-	for i := 0; i < objType.NumField(); i++ {
-		field := objType.Field(i)
-		fieldValue := objValue.Field(i).Interface()
-		result[field.Name] = fieldValue
-	}
-
 	return result, nil
 }
 

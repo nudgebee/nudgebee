@@ -228,13 +228,6 @@ type NBAgentResponse struct {
 	References            []toolcore.NBToolResponseReference `json:"references,omitempty"`
 }
 
-type LlmToolResponse struct {
-	MessageContent []llms.MessageContent `json:"message_content"`
-	ChainName      string                `json:"chain_name"`
-	ResponseData   any                   `json:"response_data"`
-	Query          string                `json:"query"`
-}
-
 type NBAgentPlannerToolActionCondition struct {
 	Prompt           string   `json:"prompt,omitempty"`
 	Expression       string   `json:"expression,omitempty"`

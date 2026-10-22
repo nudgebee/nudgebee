@@ -285,11 +285,6 @@ const (
 	NBToolCallAdditionalDetailsFollowupRequest = nbToolCallAdditionalDatailsFollowupRequest
 )
 
-type AgentTool interface {
-	toolcore.NBTool
-	GetAgent(ctx *security.RequestContext) NBAgent
-}
-
 type nbAgentTool struct {
 	name              string
 	description       string
