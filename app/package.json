@@ -85,7 +85,7 @@
     "@babel/core": "^7.29.6",
     "@babel/preset-env": "^7.29.2",
     "@babel/preset-react": "^8.0.1",
-    "@babel/preset-typescript": "^7.29.7",
+    "@babel/preset-typescript": "^8.0.7",
     "@babel/runtime": "^7.26.10",
     "@svgr/webpack": "^8.1.0",
     "@testing-library/dom": "^10.4.2",
