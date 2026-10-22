@@ -70,6 +70,22 @@ const (
 	metricSeriesMinClimbSteps = 3
 	// A forecast reaches at most this multiple of the span it rests on.
 	metricSeriesExtrapolationMul = 3.0
+	// A climb that began recently (a leak, a pool filling, a backlog starting)
+	// is read from where it began, since a line over the whole window is flat
+	// from the readings before it. Only short recent stretches risk lining up
+	// by chance, so the climb must fit tighter than a whole-window trend
+	// (metricSeriesOnsetMinR2) and move at least metricSeriesOnsetNoiseMul x
+	// the standard deviation of the readings before it. Series longer than
+	// metricSeriesOnsetMaxPoints are not searched.
+	metricSeriesOnsetMinR2     = 0.8
+	metricSeriesOnsetNoiseMul  = 3.0
+	metricSeriesOnsetMaxPoints = 3000
+	// A climb also goes one way: at least metricSeriesOnsetSameWayShare of its
+	// readings move with it (a random walk drifts as often one way as the
+	// other), and its last metricSeriesOnsetRecentShare still moves at no less
+	// than half its rate (a climb that has levelled off is a level, not a climb).
+	metricSeriesOnsetSameWayShare = 0.75
+	metricSeriesOnsetRecentShare  = 0.25
 	// z for a 95% interval on the slope.
 	metricSeriesZ95 = 1.96
 	// metricSeriesMaxDepth bounds the JSON walk.
@@ -1032,6 +1048,8 @@ type seriesAnalysis struct {
 	HeldLevel         *float64              `json:"held_level,omitempty"`
 	HeldSince         string                `json:"held_since,omitempty"`
 	TrendSinceShift   *seriesTrend          `json:"trend_since_shift,omitempty"`
+	ClimbingSince     string                `json:"climbing_since,omitempty"`
+	TrendSinceClimb   *seriesTrend          `json:"trend_since_climb,omitempty"`
 	Thresholds        []seriesThresholdStat `json:"thresholds,omitempty"`
 
 	// For the summary: the most recent level shift, the samples at or after
@@ -1043,6 +1061,10 @@ type seriesAnalysis struct {
 	// steps (msStaircase), or 0; climbSince is the first of them.
 	climbSteps int
 	climbSince time.Time
+	// onset is the first point of a climb that began recently (msRecentClimb),
+	// or nil; levelBefore is the median of the readings before it.
+	onset       *msPoint
+	levelBefore float64
 }
 
 type seriesGap struct {
@@ -1255,11 +1277,154 @@ func analyzeMetricSeries(s msSeries, thresholds []msThreshold) seriesAnalysis {
 		}
 	}
 
+	// A climb that began recently: nothing above read the window, so forecast
+	// from where the climb began.
+	if out.Trend != nil && !out.Trend.Steady && out.climbSteps == 0 && out.HeldLevel == nil {
+		if k, tr := msRecentClimb(pts, rng); tr != nil {
+			seg := pts[k:]
+			out.onset = &pts[k]
+			out.levelBefore = msMedianOf(pts[:k])
+			out.ClimbingSince = pts[k].at.Format(time.RFC3339)
+			out.TrendSinceClimb = tr
+			fc = msForecastBasis{pts: seg, spanH: seg[len(seg)-1].at.Sub(seg[0].at).Hours(), trend: tr}
+		}
+	}
+
 	for _, th := range thresholds {
 		out.Thresholds = append(out.Thresholds, msThresholdStat(pts, spanH, out.Trend, fc, th))
 	}
 	out.Summary = msSummary(out, spanH)
 	return out
+}
+
+// msRecentClimb finds a steady climb at the end of the series that began after
+// a stretch that did not climb with it: the split that best fits "level, then a
+// line" (least squares). It returns the index of the climb's first point and
+// its trend, or -1 and nil when there is none: too few points on either side,
+// a climb that does not fit tightly (metricSeriesOnsetMinR2), one that does
+// not move clearly beyond the noise before it (metricSeriesOnsetNoiseMul) and
+// at least metricSeriesStepMinRangeShare of the range, one that does not go
+// one way (metricSeriesOnsetSameWayShare) or has levelled off
+// (metricSeriesOnsetRecentShare), or one that has not gone past where the
+// readings before it usually were.
+func msRecentClimb(pts []msPoint, rng float64) (int, *seriesTrend) {
+	n := len(pts)
+	minPts := metricSeriesMinForecastPoints
+	if n < 2*minPts || n > metricSeriesOnsetMaxPoints || rng <= 0 {
+		return -1, nil
+	}
+	best, bestSSE := -1, math.Inf(1)
+	for k := minPts; k <= n-minPts; k++ {
+		if sse := msLevelSSE(pts[:k]) + msLineSSE(pts[k:]); sse < bestSSE {
+			best, bestSSE = k, sse
+		}
+	}
+	if best < 0 { // only a non-finite reading leaves no split; parsing drops those
+		return -1, nil
+	}
+	head, seg := pts[:best], pts[best:]
+	// The split puts readings still at the old level into the climb as readily
+	// as into the level; trim them, so the climb is dated from its first
+	// reading off the level and the fit is not flattened by them. What is left
+	// must still be enough to read.
+	level, noise := msMedianOf(head), metricSeriesOnsetNoiseMul*msStdDev(head)
+	for len(seg) > 0 && math.Abs(seg[0].v-level) <= noise {
+		best++
+		seg = seg[1:]
+	}
+	if len(seg) < minPts {
+		return -1, nil
+	}
+	segSpan := seg[len(seg)-1].at.Sub(seg[0].at).Hours()
+	if segSpan <= 0 {
+		return -1, nil
+	}
+	lo, hi := seg[0].v, seg[0].v
+	segVals := make([]float64, len(seg))
+	for i, p := range seg {
+		segVals[i] = p.v
+		lo, hi = math.Min(lo, p.v), math.Max(hi, p.v)
+	}
+	sort.Float64s(segVals)
+	tr := msTrend(seg, segSpan, msQuantile(segVals, 0.5), hi-lo, 0, 0)
+	if tr == nil || !tr.Steady || tr.Direction == "flat" || tr.R2 < metricSeriesOnsetMinR2 {
+		return -1, nil
+	}
+	change := math.Abs(tr.slope * segSpan)
+	if change < metricSeriesOnsetNoiseMul*msStdDev(head) || change < metricSeriesStepMinRangeShare*rng {
+		return -1, nil
+	}
+	sameWay := 0
+	for i := 1; i < len(seg); i++ {
+		if (seg[i].v-seg[i-1].v)*tr.slope > 0 {
+			sameWay++
+		}
+	}
+	if float64(sameWay) < metricSeriesOnsetSameWayShare*float64(len(seg)-1) {
+		return -1, nil
+	}
+	recent := seg[len(seg)-1-max(2, int(metricSeriesOnsetRecentShare*float64(len(seg)))):]
+	recentH := recent[len(recent)-1].at.Sub(recent[0].at).Hours()
+	if moved := (recent[len(recent)-1].v - recent[0].v) * math.Copysign(1, tr.slope); moved < 0.5*math.Abs(tr.slope)*recentH {
+		return -1, nil
+	}
+	// A climb is new ground: it has gone past where the readings before it
+	// usually were. The rising half of a daily cycle never leaves its own range.
+	headVals := make([]float64, len(head))
+	for i, p := range head {
+		headVals[i] = p.v
+	}
+	sort.Float64s(headVals)
+	last := seg[len(seg)-1].v
+	if (tr.slope > 0 && last <= msQuantile(headVals, 0.95)) || (tr.slope < 0 && last >= msQuantile(headVals, 0.05)) {
+		return -1, nil
+	}
+	return best, tr
+}
+
+// msLevelSSE is the squared error of the points around their mean.
+func msLevelSSE(pts []msPoint) float64 {
+	sd := msStdDev(pts)
+	return sd * sd * float64(len(pts))
+}
+
+// msStdDev is the population standard deviation of the points' values.
+func msStdDev(pts []msPoint) float64 {
+	if len(pts) == 0 {
+		return 0
+	}
+	var sum, sq float64
+	for _, p := range pts {
+		sum += p.v
+	}
+	mean := sum / float64(len(pts))
+	for _, p := range pts {
+		sq += (p.v - mean) * (p.v - mean)
+	}
+	return math.Sqrt(sq / float64(len(pts)))
+}
+
+// msLineSSE is the squared error of the points around their least-squares line.
+func msLineSSE(pts []msPoint) float64 {
+	n := float64(len(pts))
+	start := pts[0].at
+	var sx, sy float64
+	for _, p := range pts {
+		sx += p.at.Sub(start).Hours()
+		sy += p.v
+	}
+	mx, my := sx/n, sy/n
+	var sxx, sxy, syy float64
+	for _, p := range pts {
+		dx, dy := p.at.Sub(start).Hours()-mx, p.v-my
+		sxx += dx * dx
+		sxy += dx * dy
+		syy += dy * dy
+	}
+	if sxx == 0 {
+		return syy
+	}
+	return math.Max(syy-sxy*sxy/sxx, 0)
 }
 
 // msQuantile is the linear-interpolated quantile of sorted values.
@@ -1517,6 +1682,10 @@ func msThresholdStat(pts []msPoint, spanH float64, trend *seriesTrend, fc msFore
 		out.NotForecastReason = "already past for the whole window; " + msNextLevelHint
 	case out.CurrentlyPast:
 		out.NotForecastReason = "already past since " + pts[runStart].at.Format(time.RFC3339) + "; " + msNextLevelHint
+	case last == th.Value:
+		// On the threshold, not past it: a pool of 20 with 20 in use is full,
+		// and "reaches it in about 0 minutes" said so as a forecast.
+		out.NotForecastReason = "at the threshold now; " + msNextLevelHint
 	case fc.trend == nil:
 		out.NotForecastReason = "level shifted at " + fc.since + "; " + msHistoryCounts(len(fc.pts), fc.spanH) + " since, too few to forecast from"
 	case !fc.trend.Steady && fc.since != "":
@@ -1720,6 +1889,10 @@ func msSummary(a seriesAnalysis, spanH float64) string {
 	case held:
 		lead = fmt.Sprintf("Jumped %s from %s to about %s on %s and has held there since",
 			msUpDown(a.latestStep), msFmt(a.latestStep.from), msFmt(*a.HeldLevel), msWhen(a.latestStep.at))
+	case a.onset != nil && a.TrendSinceClimb != nil:
+		lead = fmt.Sprintf("%s since %s, about %s (%s to %s); at about %s before that",
+			msTitle(a.TrendSinceClimb.Direction), msWhen(a.onset.at), msRateWords(a.TrendSinceClimb),
+			msFmt(a.onset.v), msFmt(a.Baseline.Last), msFmt(a.levelBefore))
 	case a.latestStep != nil && !t.Steady:
 		lead = fmt.Sprintf("Jumped %s from %s to %s on %s, %d reading(s) ago, too recent to tell whether it holds",
 			msUpDown(a.latestStep), msFmt(a.latestStep.from), msFmt(a.latestStep.to), msWhen(a.latestStep.at), a.samplesSince)
@@ -1759,6 +1932,8 @@ func msThresholdWords(a seriesAnalysis, th seriesThresholdStat, held bool, rateS
 		w = fmt.Sprintf("already past %s at that level", th.Label)
 	case th.CurrentlyPast:
 		w = fmt.Sprintf("past %s now", th.Label)
+	case strings.HasPrefix(th.NotForecastReason, "at the threshold now"):
+		w = fmt.Sprintf("at %s now", th.Label)
 	case th.TimeToReach != nil:
 		w = fmt.Sprintf("reaches %s in about %s (%s)", th.Label, msSpanWords(th.TimeToReach.HoursEstimate), msReachWindow(th.TimeToReach))
 		if !*rateSaid {
@@ -1829,6 +2004,9 @@ func msPlainReason(reason string, t *seriesTrend) string {
 func msRateWords(t *seriesTrend) string {
 	if t.spanH >= 48 {
 		return msFmt(math.Abs(t.RatePerDay)) + " a day"
+	}
+	if t.spanH < 1 {
+		return msFmt(math.Abs(t.RatePerHour)/60) + " a minute"
 	}
 	return msFmt(math.Abs(t.RatePerHour)) + " an hour"
 }

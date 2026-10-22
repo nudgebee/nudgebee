@@ -938,3 +938,117 @@ func TestMsReachWindow(t *testing.T) {
 		})
 	}
 }
+
+// msFlatThenRamp is n flat readings at level with a small wobble, then a
+// straight climb of perPoint per reading for rampN readings.
+func msFlatThenRamp(n int, level, wobble float64, rampN int, perPoint float64) []float64 {
+	out := make([]float64, 0, n+rampN)
+	for i := 0; i < n; i++ {
+		out = append(out, level+wobble*math.Sin(float64(i)*1.7))
+	}
+	for j := 1; j <= rampN; j++ {
+		out = append(out, level+perPoint*float64(j))
+	}
+	return out
+}
+
+func TestAnalyzeMetricSeries_RecentClimbIsForecastFromItsStart(t *testing.T) {
+	full := []msThreshold{{Value: 1, Direction: "above", Label: "full pool (100%)"}}
+
+	t.Run("connection pool filling one connection a minute after two flat hours", func(t *testing.T) {
+		// The series an alert investigation had at alert time on a test
+		// cluster: 112 one-minute readings at 0, then 0.05 more each minute (one
+		// leaked connection of 20). The pool filled 12 minutes later. Before
+		// this, a line over the 2 hours read "flat, no forecast".
+		a := buildMetricSeriesReport("f", []msSeries{msTestSeries(time.Minute, msFlatThenRamp(112, 0, 0, 8, 0.05))}, nil, full, "").Series[0]
+		require.NotNil(t, a.TrendSinceClimb)
+		assert.Equal(t, "rising", a.TrendSinceClimb.Direction)
+		assert.InDelta(t, 3, a.TrendSinceClimb.RatePerHour, 0.01)
+		assert.Equal(t, msTestStart.Add(112*time.Minute).Format(time.RFC3339), a.ClimbingSince)
+		reach := a.Thresholds[0].TimeToReach
+		require.NotNil(t, reach, a.Thresholds[0].NotForecastReason)
+		assert.InDelta(t, 0.2, reach.HoursEstimate, 0.01, "0.4 to 1 at 0.05 a minute is 12 minutes")
+		assert.True(t, strings.HasPrefix(a.Summary, "Rising since Oct 1 01:52 UTC, about 0.05 a minute (0.05 to 0.4); at about 0 before that"), a.Summary)
+		assert.Contains(t, a.Summary, "at that rate it reaches full pool (100%) in about 12 minutes")
+	})
+
+	t.Run("free space falling after a flat day is forecast to the floor", func(t *testing.T) {
+		floor := []msThreshold{{Value: 10, Direction: "below", Label: "10% free"}}
+		a := buildMetricSeriesReport("f", []msSeries{msTestSeries(15*time.Minute, msFlatThenRamp(96, 60, 0.3, 12, -2))}, nil, floor, "").Series[0]
+		require.NotNil(t, a.TrendSinceClimb)
+		assert.Equal(t, "falling", a.TrendSinceClimb.Direction)
+		reach := a.Thresholds[0].TimeToReach
+		require.NotNil(t, reach, a.Thresholds[0].NotForecastReason)
+		// 36 to 10 at 2 per 15 minutes is 13 readings: 3.25 hours.
+		assert.InDelta(t, 3.25, reach.HoursEstimate, 0.2)
+		assert.True(t, strings.HasPrefix(a.Summary, "Falling since "), a.Summary)
+	})
+
+	t.Run("noise whose last readings happen to line up is not a climb", func(t *testing.T) {
+		vals := msNoisy(120, 50, 4, 11)
+		for i := 0; i < 8; i++ {
+			vals[112+i] = 49 + 0.4*float64(i) // a 2.8 rise: inside the noise
+		}
+		a := buildMetricSeriesReport("f", []msSeries{msTestSeries(time.Minute, vals)}, nil, []msThreshold{{Value: 80, Direction: "above", Label: "limit"}}, "").Series[0]
+		assert.Nil(t, a.TrendSinceClimb)
+		assert.Empty(t, a.ClimbingSince)
+		assert.Nil(t, a.Thresholds[0].TimeToReach)
+	})
+
+	t.Run("the rising half of a daily cycle is not a climb", func(t *testing.T) {
+		vals := make([]float64, 0, 2*96+30)
+		for i := 0; i < cap(vals); i++ {
+			vals = append(vals, 50+20*math.Sin(2*math.Pi*float64(i)/96))
+		}
+		a := buildMetricSeriesReport("f", []msSeries{msTestSeries(15*time.Minute, vals)}, nil, []msThreshold{{Value: 90, Direction: "above", Label: "limit"}}, "").Series[0]
+		assert.Nil(t, a.TrendSinceClimb, a.Summary)
+		assert.Nil(t, a.Thresholds[0].TimeToReach)
+	})
+
+	t.Run("too short a climb is not read", func(t *testing.T) {
+		a := buildMetricSeriesReport("f", []msSeries{msTestSeries(time.Minute, msFlatThenRamp(112, 0, 0, 5, 0.05))}, nil, full, "").Series[0]
+		assert.Nil(t, a.TrendSinceClimb, a.Summary)
+	})
+}
+
+func TestAnalyzeMetricSeries_RecentClimbRejectsDriftAndPlateau(t *testing.T) {
+	limit := []msThreshold{{Value: 1e6, Direction: "above", Label: "limit"}}
+
+	t.Run("random walks rarely read as a climb", func(t *testing.T) {
+		climbs := 0
+		for seed := int64(0); seed < 2000; seed++ {
+			r := rand.New(rand.NewSource(seed))
+			vals, x := make([]float64, 120), 0.0
+			for i := range vals {
+				x += r.NormFloat64()
+				vals[i] = x
+			}
+			if a := buildMetricSeriesReport("f", []msSeries{msTestSeries(time.Minute, vals)}, nil, limit, "").Series[0]; a.TrendSinceClimb != nil {
+				climbs++
+			}
+		}
+		assert.LessOrEqual(t, climbs, 20, "at most 1% of 2000 random walks")
+	})
+
+	t.Run("a climb that has levelled off is not still rising", func(t *testing.T) {
+		vals := msFlatThenRamp(100, 5, 0, 10, 1)
+		for i := 0; i < 6; i++ {
+			vals = append(vals, vals[len(vals)-1])
+		}
+		a := buildMetricSeriesReport("f", []msSeries{msTestSeries(time.Minute, vals)}, nil, limit, "").Series[0]
+		assert.Nil(t, a.TrendSinceClimb, a.Summary)
+	})
+}
+
+func TestAnalyzeMetricSeries_OnTheThresholdIsNotAForecast(t *testing.T) {
+	// A pool of 20 climbing one a minute that has just reached 20: full now, not
+	// "reaches it in about 0 minutes".
+	a := buildMetricSeriesReport("f", []msSeries{msTestSeries(time.Minute, msLinear(21, 0, 1, 0))}, nil,
+		[]msThreshold{{Value: 20, Direction: "above", Label: "pool exhaustion (20 connections)"}}, "").Series[0]
+	th := a.Thresholds[0]
+	assert.Nil(t, th.TimeToReach)
+	assert.False(t, th.CurrentlyPast)
+	assert.True(t, strings.HasPrefix(th.NotForecastReason, "at the threshold now"), th.NotForecastReason)
+	assert.Contains(t, a.Summary, "at pool exhaustion (20 connections) now")
+	assert.NotContains(t, a.Summary, "in about 0 minutes")
+}
