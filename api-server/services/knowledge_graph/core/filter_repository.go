@@ -661,7 +661,7 @@ type UpsertResult struct {
 // (= "all") flow_sources filter into its concrete members when computing what a save
 // removed. Keep in sync with the UI list and the registered flow sources in
 // knowledge_graph/flow_sources/.
-var toggleableFlowSources = []string{"datadog-apm", "ebpf", "newrelic-apm", "traces"}
+var toggleableFlowSources = []string{"datadog-apm", "ebpf", "elastic-apm", "newrelic-apm", "traces"}
 
 // expandIfEmpty returns universe when sel is empty, otherwise sel. An empty
 // account_ids / flow_sources list means "all" everywhere the filter is consumed, so

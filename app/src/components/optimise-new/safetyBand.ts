@@ -254,7 +254,7 @@ const PROVENANCE_BUCKETS: Array<{ sources: string[]; label: string }> = [
   { sources: ['manual'], label: 'User-declared' },
   { sources: ['traces', 'gcp-cloud-traces'], label: 'Observed in traces' },
   { sources: ['ebpf'], label: 'Observed traffic' },
-  { sources: ['datadog-apm', 'newrelic-apm'], label: 'Observed via APM' },
+  { sources: ['datadog-apm', 'elastic-apm', 'newrelic-apm'], label: 'Observed via APM' },
   { sources: ['k8s', 'aws', 'gcp', 'azure'], label: 'Platform metadata' },
 ];
 
@@ -277,6 +277,7 @@ const SOURCE_DISPLAY: Record<string, string> = {
   traces: 'Traces',
   'gcp-cloud-traces': 'GCP Cloud Traces',
   'datadog-apm': 'Datadog APM',
+  'elastic-apm': 'Elastic APM',
   'newrelic-apm': 'New Relic APM',
   k8s: 'Kubernetes metadata',
   aws: 'AWS metadata',

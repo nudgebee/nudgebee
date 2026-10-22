@@ -28,6 +28,7 @@ const FLOW_SOURCES = [
   { id: 'ebpf', label: 'eBPF' },
   { id: 'traces', label: 'Traces' },
   { id: 'datadog-apm', label: 'Datadog APM' },
+  { id: 'elastic-apm', label: 'Elastic APM' },
   { id: 'newrelic-apm', label: 'New Relic APM' },
 ];
 
