@@ -33,6 +33,7 @@ from notifications_server.message_templates.ms_teams.grouped_slo_notification im
     get_grouped_slo_alerts_ms_teams_template,
 )
 from notifications_server.message_templates.slack.grouped_slo_notification import (
+    MAX_SLO_ITEMS,
     get_grouped_slo_alerts_template,
     get_slo_aggregated_message_params,
 )
@@ -467,6 +468,29 @@ class TestMsTeams:
         texts = _teams_texts(render("ms_teams", [_event(0)] + [_resolved(i) for i in range(10, 18)]))
         assert len([text for text in texts if " · resolved " in text]) == 5
         assert texts[-1] == "+3 more resolved"
+
+    def test_per_account_cap_and_its_own_overflow_count(self):
+        # Regression for #41712: one busy account used to render every firing
+        # breach with no cap, which could push the card past Teams' size limit.
+        texts = _teams_texts(render("ms_teams", [_event(i) for i in range(8)]))
+        assert len([text for text in texts if text.startswith("• SLO:")]) == MAX_SLO_ITEMS
+        assert "+3 more" in texts
+
+    def test_other_accounts_are_unaffected_by_a_busy_one(self):
+        events = [_event(i) for i in range(8)] + [_event(20, account="acc-2", account_name="prod-us")]
+        texts = _teams_texts(render("ms_teams", events))
+        assert any("svc-20" in text for text in texts)
+
+    def test_many_accounts_drop_from_the_tail_once_the_card_is_too_large(self):
+        from notifications_server.services.ms_teams import card_actions
+
+        events = [_event(i, account=f"acc-{i}", account_name=f"cluster-{i}") for i in range(80)]
+        card = render("ms_teams", events)
+
+        assert card_actions.fits(card)
+        texts = _teams_texts(card)
+        assert any(text.startswith("+") and "more accounts with SLO breaches" in text for text in texts)
+        assert not any("cluster-79" in text for text in texts)
 
 
 @pytest.mark.usefixtures("flag_on")
