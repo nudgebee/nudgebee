@@ -1886,6 +1886,10 @@ const IntegrationDynamicFormModal = ({
     prometheus_alertmanager_webhook: {
       endpoint: 'prometheus-alertmanager',
       message: 'Configure the following url in your monitoring and alerting webhook subscription',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/prometheus_alertmanager_webhook/'),
+        text: 'how to configure Alertmanager Webhook',
+      },
     },
     datadog_webhook: {
       endpoint: 'datadog',
