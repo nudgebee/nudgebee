@@ -183,3 +183,44 @@ func TestApplyConversationModelConfig_NoResetLeavesConfigAlone(t *testing.T) {
 	assert.Empty(t, stub.clearCalls, "an ordinary turn must never clear")
 	require.Len(t, stub.blanketCalls, 1)
 }
+
+// The chat UI resends the picked model with every message. Only a pick that
+// matches what the conversation stores is skipped; anything that would change
+// the row is still written.
+func TestConversationModelUnchanged(t *testing.T) {
+	str := func(s string) *string { return &s }
+	stored := Conversation{LlmProvider: str("openai"), LlmModel: str("gpt-4o")}
+	withSource := Conversation{LlmProvider: str("openai"), LlmModel: str("gpt-4o"), LlmConfigSource: str("db:int-1")}
+	withTiers := Conversation{LlmProvider: str("openai"), LlmModel: str("gpt-4o"), LlmTierOverrides: &llmruntime.ConversationTierOverrides{
+		Picks: map[string]llmruntime.TierModelPick{"reasoning": {Provider: "anthropic", Model: "claude-opus-4-7"}},
+	}}
+	tierPick := llmruntime.ConversationTierOverrides{Picks: map[string]llmruntime.TierModelPick{"reasoning": {Provider: "openai", Model: "gpt-4o"}}}
+	none := llmruntime.ConversationTierOverrides{}
+
+	cases := []struct {
+		name     string
+		conv     Conversation
+		provider string
+		model    string
+		tiers    llmruntime.ConversationTierOverrides
+		source   string
+		reset    bool
+		want     bool
+	}{
+		{"same blanket pick", stored, "openai", "gpt-4o", none, "", false, true},
+		{"same pick and same config source", withSource, "openai", "gpt-4o", none, "db:int-1", false, true},
+		{"different model", stored, "openai", "gpt-4o-mini", none, "", false, false},
+		{"different provider", stored, "azure", "gpt-4o", none, "", false, false},
+		{"new config source", stored, "openai", "gpt-4o", none, "db:int-1", false, false},
+		{"stored tier picks the blanket write would clear", withTiers, "openai", "gpt-4o", none, "", false, false},
+		{"tier picks in the request", stored, "openai", "gpt-4o", tierPick, "", false, false},
+		{"reset", stored, "openai", "gpt-4o", none, "", true, false},
+		{"no model in the request", stored, "", "", none, "", false, false},
+		{"nothing stored yet", Conversation{}, "openai", "gpt-4o", none, "", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, conversationModelUnchanged(tc.conv, tc.provider, tc.model, tc.tiers, tc.source, tc.reset))
+		})
+	}
+}

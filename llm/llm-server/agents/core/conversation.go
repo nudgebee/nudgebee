@@ -953,6 +953,25 @@ func markConversationActive(ctx *security.RequestContext, conversationId string,
 // llmConfigSource is handled outside the switch: pinning a config slot is
 // independent of picking a model, so it persists whichever of the two branches
 // below applies — or neither.
+// conversationModelUnchanged reports whether a turn's blanket model pick is
+// what the conversation already stores, so writing it again would change
+// nothing. The chat UI sends the picked model with every message; without this
+// each message rewrote the row and told every replica to drop its cached copy.
+// Anything else (a reset, tier picks, a new config source, stored tier picks
+// the blanket write would clear) still goes through the write.
+func conversationModelUnchanged(conv Conversation, llmProvider, llmModel string, llmTierOverrides llmruntime.ConversationTierOverrides, llmConfigSource string, llmConfigReset bool) bool {
+	if llmConfigReset || llmTierOverrides.HasAny() || llmProvider == "" || llmModel == "" {
+		return false
+	}
+	if conv.LlmTierOverrides.HasAny() {
+		return false
+	}
+	if llmConfigSource != "" && lo.FromPtr(conv.LlmConfigSource) != llmConfigSource {
+		return false
+	}
+	return lo.FromPtr(conv.LlmProvider) == llmProvider && lo.FromPtr(conv.LlmModel) == llmModel
+}
+
 func applyConversationModelConfig(ctx *security.RequestContext, dao IConversationDao, conversationId, llmProvider, llmModel string, llmTierOverrides llmruntime.ConversationTierOverrides, llmConfigSource string, llmConfigReset bool) {
 	// A reset drops everything and takes no other write: the picker sends it
 	// only when nothing is selected, so there is nothing to persist after it.
@@ -1245,7 +1264,9 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			// blanket and per-tier picks are mutually exclusive, so persisting a
 			// blanket pick clears the stored tier picks — and a rejected turn
 			// must not cost the user their model selection.
-			applyConversationModelConfig(ctx, GetConversationDao(), request.ConversationId, llmProvider, llmModel, llmTierOverrides, request.QueryConfig.LlmConfigSource, request.QueryConfig.LlmConfigReset)
+			if !conversationModelUnchanged(conversation, llmProvider, llmModel, llmTierOverrides, request.QueryConfig.LlmConfigSource, request.QueryConfig.LlmConfigReset) {
+				applyConversationModelConfig(ctx, GetConversationDao(), request.ConversationId, llmProvider, llmModel, llmTierOverrides, request.QueryConfig.LlmConfigSource, request.QueryConfig.LlmConfigReset)
+			}
 
 			if isFollowupResume {
 				request.ConversationId = conversation.ID.String()
@@ -1356,7 +1377,8 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		}
 
 		// Handle existing conversation found by session ID - update model if needed
-		if !newConversation && llmProvider != "" && llmModel != "" {
+		if !newConversation && llmProvider != "" && llmModel != "" &&
+			!conversationModelUnchanged(conversation, llmProvider, llmModel, llmruntime.ConversationTierOverrides{}, "", false) {
 			err = GetConversationDao().UpdateConversationModel(conversation.ID.String(), llmProvider, llmModel)
 			if err != nil {
 				ctx.GetLogger().Warn("conversation: failed to update sticky model configuration", "error", err)

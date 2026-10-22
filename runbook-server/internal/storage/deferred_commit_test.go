@@ -30,7 +30,16 @@ func TestDeferredCommitUsesNamedErrResult(t *testing.T) {
 		}
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil || !deferAssignsCommitToErr(fn.Body) {
+			if !ok || fn.Body == nil {
+				continue
+			}
+			found, shadowed := deferAssignsCommitToErr(fn.Body)
+			if !found {
+				continue
+			}
+			if shadowed {
+				t.Errorf("%s: %s declares err := ...Commit() in a defer, a new variable that hides the result, so a failed commit is lost",
+					fset.Position(fn.Pos()), fn.Name.Name)
 				continue
 			}
 			if !hasNamedErrResult(fn.Type) {
@@ -41,8 +50,9 @@ func TestDeferredCommitUsesNamedErrResult(t *testing.T) {
 	}
 }
 
-func deferAssignsCommitToErr(body *ast.BlockStmt) bool {
-	found := false
+// deferAssignsCommitToErr reports whether a deferred func sets err from a
+// Commit call, and whether it does so with := (declaring a new err).
+func deferAssignsCommitToErr(body *ast.BlockStmt) (found, shadowed bool) {
 	ast.Inspect(body, func(n ast.Node) bool {
 		d, ok := n.(*ast.DeferStmt)
 		if !ok {
@@ -64,12 +74,13 @@ func deferAssignsCommitToErr(body *ast.BlockStmt) bool {
 			}
 			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Commit" {
 				found = true
+				shadowed = shadowed || as.Tok == token.DEFINE
 			}
 			return true
 		})
 		return !found
 	})
-	return found
+	return found, shadowed
 }
 
 func hasNamedErrResult(ft *ast.FuncType) bool {
