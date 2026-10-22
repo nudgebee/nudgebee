@@ -152,6 +152,14 @@ var webhookLabelHelpProducers = map[string]func(t *testing.T) map[string]string{
 			"result": {"host": "web-1", "source": "/var/log/checkout.log", "index": "main", "sourcetype": "checkout"}
 		}`)
 	},
+	IntegrationOrionWebhook: func(t *testing.T) map[string]string {
+		labels := mapOrionAlertToEvent("integration-1", "acct", mustParseOrion(t, orionBody(nil))).Investigation.Labels
+		// orion_identity is only set when object_url carries no NetObject.
+		fallback := mapOrionAlertToEvent("integration-1", "acct",
+			mustParseOrion(t, orionBody(map[string]string{"object_url": "<omit>"}))).Investigation.Labels
+		labels["orion_identity"] = fallback["orion_identity"]
+		return labels
+	},
 	IntegrationElasticsearchWebhook: func(t *testing.T) map[string]string {
 		payload := canonicalKibanaPayload()
 		payload["alert"].(map[string]any)["uuid"] = "6f1c2a9e-0b7d-4c1a-9e55-3d2b8f4a7c10" // Kibana 8.8+

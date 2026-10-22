@@ -64,6 +64,7 @@ export const INTEGRATION_DESCRIPTIONS: Record<string, string> = {
   DYNATRACE_WEBHOOK: 'Receive Dynatrace problem notifications as events through a webhook.',
   SOLARWINDS_WEBHOOK: 'Receive SolarWinds Observability alerts as events through a webhook.',
   CUBEAPM_WEBHOOK: 'Receive CubeAPM alerts as events through an inbound webhook.',
+  ORION_WEBHOOK: 'Receive alerts from self-hosted SolarWinds Platform (Orion) as events from an alert action.',
   ELASTICSEARCH_WEBHOOK: 'Receive Elasticsearch Watcher alerts as events through a webhook.',
   OPENOBSERVE_WEBHOOK: 'Receive OpenObserve alerts as events through an inbound webhook.',
   SIGNOZ_WEBHOOK: 'Receive SigNoz alerts as events through a webhook notification channel.',

@@ -43,6 +43,7 @@ describe('buildWebhookUrl', () => {
     ['cubeapm_webhook', 'cubeapm'],
     ['signoz_webhook', 'signoz'],
     ['event_webhook', 'event'],
+    ['orion_webhook', 'orion'],
   ];
 
   it.each(cases)('derives the %s endpoint', (integrationName, endpoint) => {

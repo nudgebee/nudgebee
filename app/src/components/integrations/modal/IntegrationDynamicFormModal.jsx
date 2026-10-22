@@ -140,6 +140,23 @@ const CANONICAL_TRACE_FIELD_OPTIONS = ALL_TRACE_LABEL_FIELDS.map(({ field }) => 
 const TRACE_CONCEPT_LABELS = Object.fromEntries(ALL_TRACE_LABEL_FIELDS.map(({ field, label }) => [field, label]));
 const TRACE_CONCEPT_ORDER = ALL_TRACE_LABEL_FIELDS.map(({ field }) => field);
 
+// Body for SolarWinds Orion's "Send a GET or POST Request to a Web Server" alert
+// action. Paste it into the alert's trigger action, and the same body with
+// "status": "resolved" into its reset action. Contract: integrations/orion_webhook.go.
+const ORION_WEBHOOK_BODY = `{
+  "status": "firing",
+  "alert_def_id": "\${N=Alerting;M=AlertDefID}",
+  "alert_active_id": "\${N=Alerting;M=AlertActiveID}",
+  "alert_name": "\${N=Alerting;M=AlertName}",
+  "object": "\${N=SwisEntity;M=Caption}",
+  "object_type": "\${N=Alerting;M=ObjectType}",
+  "object_url": "\${N=SwisEntity;M=DetailsUrl}",
+  "ip": "\${N=SwisEntity;M=IP_Address}",
+  "severity": "\${N=Alerting;M=Severity}",
+  "message": "\${N=Alerting;M=AlertMessage}",
+  "url": "\${N=Alerting;M=AlertDetailsUrl}"
+}`;
+
 // Example request body for the event webhook, shown in its setup modal.
 // Contract: api-server/services/integrations/event_webhook.go.
 const EVENT_WEBHOOK_EXAMPLE = `{
@@ -1959,6 +1976,14 @@ const IntegrationDynamicFormModal = ({
       template: EVENT_WEBHOOK_EXAMPLE,
       templateMessage:
         'Send one alert, or {"events": [...]} with up to 100. Required: id (one occurrence), fingerprint (same on every occurrence), status (firing or resolved), title, rule_name. A resolve closes the alert with the same id and must carry the same labels. Optional: severity (critical, high, medium, low, info), description, starts_at / ends_at (RFC 3339), subject, source_tool, url, labels (string values only). An invalid request is rejected with the reason.',
+    },
+    orion_webhook: {
+      endpoint: 'orion',
+      message:
+        'In SolarWinds Platform (Orion), add a "Send a GET or POST Request to a Web Server" action to each alert: method POST, content type application/json, this URL',
+      template: ORION_WEBHOOK_BODY,
+      templateMessage:
+        'Paste this body into the alert\'s Trigger action. Add the same action under Reset Actions with "status": "resolved". Every value is an Orion variable, so the body is the same for every alert. A request with a missing field is rejected with the reason.',
     },
     cubeapm_webhook: {
       endpoint: 'cubeapm',

@@ -128,6 +128,7 @@ export const ALERT_PROVIDERS: OnboardingProviderDef[] = [
   { route: 'ZENDUTY_WEBHOOK', label: 'Zenduty', types: ['zenduty_webhook'] },
   { route: 'SERVICENOW_WEBHOOK', label: 'ServiceNow', types: ['servicenow_webhook'] },
   { route: 'SOLARWINDS_WEBHOOK', label: 'SolarWinds', types: ['solarwinds_webhook'] },
+  { route: 'ORION_WEBHOOK', label: 'SolarWinds Platform (Orion)', types: ['orion_webhook'] },
   { route: 'ELASTICSEARCH_WEBHOOK', label: 'Elasticsearch', types: ['elasticsearch_webhook'] },
   { route: 'EVENT_WEBHOOK', label: 'Event webhook', types: ['event_webhook'] },
 ];

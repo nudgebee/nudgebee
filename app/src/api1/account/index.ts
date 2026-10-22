@@ -514,6 +514,7 @@ const apiAccount = {
         'openobserve_webhook',
         'workflow_webhook',
         'event_webhook',
+        'orion_webhook',
         'google_chat_space',
         'slack',
         'ms_teams',

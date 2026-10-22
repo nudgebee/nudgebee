@@ -252,6 +252,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'workflow_webhook'} />;
           case 'event_webhook':
             return <ListIntegrations integrationName={'event_webhook'} />;
+          case 'orion_webhook':
+            return <ListIntegrations integrationName={'orion_webhook'} />;
           case 'vm_agent':
             return <ListIntegrations integrationName={'vm_agent'} />;
           case 'mssql':

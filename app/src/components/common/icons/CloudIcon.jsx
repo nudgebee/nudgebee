@@ -178,7 +178,11 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     cloud_provider.toUpperCase() === 'SPLUNK_WEBHOOK'
   ) {
     Icon = SplunkIcon;
-  } else if (cloud_provider.toUpperCase() === 'SOLARWINDS' || cloud_provider.toUpperCase() === 'SOLARWINDS_WEBHOOK') {
+  } else if (
+    cloud_provider.toUpperCase() === 'SOLARWINDS' ||
+    cloud_provider.toUpperCase() === 'SOLARWINDS_WEBHOOK' ||
+    cloud_provider.toUpperCase() === 'ORION_WEBHOOK'
+  ) {
     Icon = SolarWindsIcon;
   } else if (cloud_provider.toUpperCase() === 'BITBUCKET') {
     Icon = BitBucketIcon;

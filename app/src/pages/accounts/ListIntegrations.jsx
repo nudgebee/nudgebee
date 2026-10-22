@@ -157,6 +157,7 @@ const ListIntegrations = ({ integrationName }) => {
     'elasticsearch_webhook',
     'openobserve_webhook',
     'event_webhook',
+    'orion_webhook',
   ];
   const integrationWebhooks = [
     'pagerduty_webhook',
@@ -174,6 +175,7 @@ const ListIntegrations = ({ integrationName }) => {
     'elasticsearch_webhook',
     'openobserve_webhook',
     'event_webhook',
+    'orion_webhook',
   ];
   const agentManagedIntegrations = ['ES', 'loki', 'prometheus', 'otel_clickhouse', 'jaeger'];
   const hideConnectionInfo =

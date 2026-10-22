@@ -120,6 +120,7 @@ var eventAnalysisSources = map[string]bool{
 	"cubeapm_webhook":                 true,
 	"signoz_webhook":                  true,
 	"event_webhook":                   true,
+	"orion_webhook":                   true,
 }
 
 const (

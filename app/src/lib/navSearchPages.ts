@@ -310,6 +310,7 @@ export const integrationProviders: string[] = [
   'CUBEAPM_WEBHOOK',
   'SIGNOZ_WEBHOOK',
   'EVENT_WEBHOOK',
+  'ORION_WEBHOOK',
   // database
   'POSTGRES',
   'MYSQL',

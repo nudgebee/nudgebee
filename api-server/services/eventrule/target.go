@@ -199,6 +199,8 @@ var muteEventSources = map[string][]string{
 	"prometheus_alertmanager_webhook": promMuteSources,
 	// pagerduty_webhook events are keyed by the alert name (100% on dev).
 	"pagerduty_webhook": promMuteSources,
+	// Orion events carry the alert name as aggregation_key, as the rule does.
+	"orion_webhook": {"orion_webhook"},
 }
 
 // MuteEventSources returns the event sources a mute of this rule source covers,

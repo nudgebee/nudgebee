@@ -313,6 +313,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'SOLARWINDS_WEBHOOK':
       label = 'SolarWinds Webhook';
       break;
+    case 'ORION_WEBHOOK':
+      label = 'SolarWinds Platform (Orion) Webhook';
+      break;
     case 'WORKFLOW_WEBHOOK':
       label = 'Automation Webhook';
       break;
