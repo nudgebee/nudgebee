@@ -34,9 +34,10 @@ def _events():
 
 @pytest.fixture(autouse=True)
 def db():
-    with mock.patch("notifications_server.services.events.Session"), mock.patch(
-        "notifications_server.services.events.get_account_by_id", return_value=dict(ACCOUNT)
-    ) as get_account:
+    with (
+        mock.patch("notifications_server.services.events.Session"),
+        mock.patch("notifications_server.services.events.get_account_by_id", return_value=dict(ACCOUNT)) as get_account,
+    ):
         yield get_account
 
 

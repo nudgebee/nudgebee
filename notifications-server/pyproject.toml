@@ -1,8 +1,67 @@
-[tool.poetry]
+[project]
 name = "notifications_server"
 version = "0.1.0"
 description = "Notification service for NudgeBee"
-authors = ["Nudgebee <dev@nudgebee.com>"]
+authors = [{ name = "Nudgebee", email = "dev@nudgebee.com" }]
+requires-python = ">=3.11,<4"
+dependencies = [
+    "python-dotenv>=1.2.2,<2",
+    "fastapi==0.141.1",
+    "slack-bolt==1.30.0",
+    # Direct dep: webhook_auth.py uses slack_sdk.signature.SignatureVerifier for the
+    # inbound Slack HMAC gate. Pinned explicitly (not just transitively via slack-bolt)
+    # so the security boundary can't break under a slack-bolt resolution change.
+    "slack-sdk==3.45.0",
+    "sqlalchemy[asyncio]>=2.0.48,<3",
+    "aio_pika==10.1.1",
+    "uvicorn>=0.34.2,<0.55.0",
+    "psycopg2-binary>=2.9.11,<3",
+    "asyncpg>=0.31,<0.33",
+    "requests==2.34.2",
+    "python-json-logger==4.2.0",
+    "pydantic==2.14.1",
+    "pydantic-settings>=2.13.1,<3",
+    "markdown2>=2.5.5,<3",
+    "tabulate==0.10.0",
+    "docutils>=0.23.0,<0.24",
+    "msal==1.39.0",
+    "jinja2>=3.1.6,<4",
+    "google-auth-oauthlib>=1.3.1,<2",
+    "google-api-python-client>=2.192.0,<3",
+    "oauth2client>=4.1.3,<5",
+    "redis>=8.0.0,<9",
+    "botbuilder-core>=4.17.1,<5",
+    "aiohttp>=3.14.0,<4",
+    "python-dateutil>=2.9.0.post0,<3",
+    "nh3>=0.3.4,<0.4",
+    # Direct dep: security/secrets.py uses AES-256-GCM (AESGCM) to encrypt integration
+    # secrets at rest, byte-compatible with api-server. Pinned explicitly (it is otherwise
+    # only a transitive dep via msal/pyjwt) so the crypto boundary can't break under a
+    # resolution change.
+    "cryptography==50.0.2",
+    "opentelemetry-api>=1.45.1,<2",
+    "opentelemetry-sdk>=1.45.1,<2",
+    "opentelemetry-instrumentation-fastapi>=0.66b1,<0.67",
+    "opentelemetry-instrumentation-requests>=0.66b1,<0.67",
+    "opentelemetry-instrumentation-aiohttp-client>=0.66b1,<0.67",
+    "reportlab>=5.0.0,<6",
+    # mermaid_graph.py's flowchart Image tier: a thin binding over the local
+    # `dot` CLI (installed via the Dockerfile's `apk add graphviz`) - no
+    # browser, no network call. See notifications_server/utils/mermaid_graph.py.
+    "graphviz>=0.21,<0.22",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit==4.7.0",
+    "black>=26.3.1,<27",
+    "mypy==2.4.0",
+    "flake8==7.4.1",
+    "sqlglot==30.23.0",
+    "pytest>=8.3,<10.0",
+    "pypdf>=6.15.0,<7",
+    "aiosqlite>=0.22.1,<0.23",
+]
 
 
 [tool.black]
@@ -22,63 +81,6 @@ exclude = '''
 )/
 '''
 
-[tool.poetry.dependencies]
-python = "^3.11"
-python-dotenv = "^1.2.2"
-fastapi = "0.141.1"
-slack-bolt = "1.30.0"
-# Direct dep: webhook_auth.py uses slack_sdk.signature.SignatureVerifier for the
-# inbound Slack HMAC gate. Pinned explicitly (not just transitively via slack-bolt)
-# so the security boundary can't break under a slack-bolt resolution change.
-slack-sdk = "3.45.0"
-sqlalchemy = {version = "^2.0.48", extras = ["asyncio"]}
-aio_pika = "10.1.1"
-uvicorn = ">=0.34.2,<0.55.0"
-psycopg2-binary = "^2.9.11"
-asyncpg = ">=0.31,<0.33"
-requests = "2.34.2"
-python-json-logger = "4.2.0"
-pydantic = "2.14.1"
-pydantic-settings = "^2.13.1"
-markdown2 = "^2.5.5"
-tabulate = "0.10.0"
-docutils = "^0.23.0"
-msal = "1.39.0"
-jinja2 = "^3.1.6"
-google-auth-oauthlib = "^1.3.1"
-google-api-python-client = "^2.192.0"
-oauth2client = "^4.1.3"
-redis = "^8.0.0"
-botbuilder-core = "^4.17.1"
-aiohttp = "^3.14.0"
-python-dateutil = "^2.9.0.post0"
-nh3 = "^0.3.4"
-# Direct dep: security/secrets.py uses AES-256-GCM (AESGCM) to encrypt integration
-# secrets at rest, byte-compatible with api-server. Pinned explicitly (it is otherwise
-# only a transitive dep via msal/pyjwt) so the crypto boundary can't break under a
-# resolution change.
-cryptography = "50.0.2"
-opentelemetry-api = "^1.45.1"
-opentelemetry-sdk = "^1.45.1"
-opentelemetry-instrumentation-fastapi = "^0.66b1"
-opentelemetry-instrumentation-requests = "^0.66b1"
-opentelemetry-instrumentation-aiohttp-client = "^0.66b1"
-reportlab = "^5.0.0"
-# mermaid_graph.py's flowchart Image tier: a thin binding over the local
-# `dot` CLI (installed via the Dockerfile's `apk add graphviz`) - no
-# browser, no network call. See notifications_server/utils/mermaid_graph.py.
-graphviz = "^0.21"
-
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-
-[tool.poetry.group.dev.dependencies]
-pre-commit = "4.7.0"
-black = "^26.3.1"
-mypy = "2.4.0"
-flake8 = "7.4.1"
-sqlglot = "30.23.0"
-pytest = ">=8.3,<10.0"
-pypdf = "^6.15.0"
-aiosqlite = "^0.22.1"
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -9,7 +9,7 @@ Part of the [Nudgebee](https://github.com/nudgebee/nudgebee) monorepo. See the r
 ### Prerequisites
 
 - Python 3.11+
-- [Poetry](https://python-poetry.org/docs/#installation)
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - Running Postgres (`postgres:16`) and RabbitMQ (`rabbitmq:3-management`)
 
 Bring up the infra containers from the repo root:
@@ -22,7 +22,7 @@ docker compose up -d postgres rabbitmq
 
 ```bash
 cd notifications-server
-poetry install
+uv sync
 ```
 
 ### 2. Configure environment
@@ -53,7 +53,7 @@ Add credentials only for the channels you intend to test (Slack, Teams, Google C
 ### 3. Run the server
 
 ```bash
-poetry run uvicorn notifications_server.server:app --host 0.0.0.0 --port 8080 --reload
+uv run uvicorn notifications_server.server:app --host 0.0.0.0 --port 8080 --reload
 ```
 
 Listens on <http://localhost:8080>. Health check: <http://localhost:8080/health>.
@@ -61,18 +61,18 @@ Listens on <http://localhost:8080>. Health check: <http://localhost:8080/health>
 ### 4. Run tests
 
 ```bash
-poetry run pytest
+uv run pytest
 ```
 
 ### 5. Lint
 
 ```bash
-poetry run black --check .
-poetry run flake8 .
-poetry run mypy notifications_server
+uv run black --check .
+uv run flake8 .
+uv run mypy notifications_server
 ```
 
-Auto-fix formatting: `poetry run black .`
+Auto-fix formatting: `uv run black .`
 
 ## Architecture
 
@@ -328,5 +328,5 @@ The Next.js frontend handles the user-facing callback paths and proxies to notif
 
 This service follows the monorepo conventions documented in the root [CONTRIBUTING.md](../CONTRIBUTING.md). In short:
 
-- Run `poetry run black .`, `poetry run flake8 .`, `poetry run mypy notifications_server`, and `poetry run pytest` before pushing.
+- Run `uv run black .`, `uv run flake8 .`, `uv run mypy notifications_server`, and `uv run pytest` before pushing.
 - Open PRs against `main`; CI deploys to test and prod via subsequent automated PRs.

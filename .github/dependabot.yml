@@ -11,7 +11,7 @@
 version: 2
 updates:
   # ── Python services ────────────────────────────────────────────────
-  - package-ecosystem: "pip"
+  - package-ecosystem: "uv"
     directory: "/notifications-server"
     schedule:
       interval: "weekly"
