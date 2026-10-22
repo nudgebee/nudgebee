@@ -94,6 +94,20 @@ func (s *Service) SetRunGate(g RunGate) {
 	s.runGate = g
 }
 
+// RunFinishedFunc is told, from the activity that records a run's last status,
+// that the execution of a bound automation (its Temporal run id) ended with
+// status and message. It runs on whichever worker records the status, so it
+// may not rely on state the run's starter held.
+type RunFinishedFunc func(ctx context.Context, wf model.Workflow, executionID string, status model.WorkflowExecutionStatus, message string) error
+
+var runFinished RunFinishedFunc
+
+// RegisterRunFinished sets the function told when a bound automation's run
+// ends. Call it from an init().
+func RegisterRunFinished(f RunFinishedFunc) {
+	runFinished = f
+}
+
 // errBoundAutomationUnavailable refuses a bound automation when no gate is
 // registered: only its agent may start it, and nothing here can tell.
 var errBoundAutomationUnavailable = func() error {
