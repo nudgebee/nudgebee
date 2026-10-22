@@ -92,6 +92,10 @@ const MODULE_ALIASES: Record<string, string> = {
   anomaly: 'anomalies',
   application: 'applications',
   audit: 'audits',
+  // bees_* are the Worker Bee pages and actions: a bee is a set of automations,
+  // so they share the workflows grant (bees_install/_uninstall/_update_modes
+  // stay tenant-admin in the handler whatever the grant).
+  bees: 'workflows',
   event: 'events',
   // Feature flags are tenant settings, not a domain of their own. Their two
   // reads (featureflags_list, features_list) are app-bootstrap calls EVERY role

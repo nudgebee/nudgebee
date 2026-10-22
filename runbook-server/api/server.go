@@ -196,6 +196,9 @@ func (s *Server) setupRoutes() {
 	for _, hook := range tenantRouteHooks {
 		hook(s.router, s.getTenantRequestDetails)
 	}
+	for _, hook := range identifiedRouteHooks {
+		hook(s.router, s.getIdentifiedRequestDetails)
+	}
 }
 
 // HealthResponse is the body returned by the liveness endpoint.

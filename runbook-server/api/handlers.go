@@ -107,6 +107,26 @@ func (s *Server) getTenantRequestDetails(c *gin.Context) (*security.RequestConte
 	return sc, true
 }
 
+// getIdentifiedRequestDetails builds the context from the request and requires
+// only a tenant. It checks no access level: the endpoint must check the caller
+// per account (a tenant-wide route here would otherwise be open to any user of
+// the tenant). Unlike getTenantRequestDetails, an account-scoped role passes.
+func (s *Server) getIdentifiedRequestDetails(c *gin.Context) (*security.RequestContext, bool) {
+	sc, err := s.securityContextBuilder.BuildContextFromRequestPayload(c.Request.Context(), c, map[string]string{}, s.tracer, s.meter, s.logger)
+	if err != nil || sc == nil || sc.GetSecurityContext() == nil {
+		if err != nil {
+			s.logger.Error("failed to build security context", "error", err)
+		}
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return nil, false
+	}
+	if sc.GetSecurityContext().GetTenantId() == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unable to identify tenant"})
+		return nil, false
+	}
+	return sc, true
+}
+
 func (s *Server) createWorkflow(c *gin.Context) {
 
 	sc, accountID, processRequest := s.getRequestDetails(c)

@@ -1205,6 +1205,19 @@ describe('actionHasCustomGrant (dynamic-RBAC gate)', () => {
     }
   });
 
+  it('bee page reads: a workflows grant, scoped or global, admits them; the tenant-admin actions stay unreachable by scoped grants', () => {
+    for (const name of ['bees_list', 'bees_get_install', 'bees_list_runs', 'bees_list_approvals']) {
+      const route = { permission: 'workflows:Read', handler: '{{WORKFLOW_SERVER_URL}}/bees/x' };
+      expect(classifyAction(name)).toEqual({ module: 'workflows', class: 'Read' });
+      expect(actionHasCustomGrant(name, route, ['workflows:Read'])).toBe(true);
+      expect(actionHasCustomGrant(name, route, ['scoped:workflows:Read'])).toBe(true);
+      expect(actionHasCustomGrant(name, route, ['scoped:k8s:Read'])).toBe(false);
+    }
+    for (const name of ['bees_install', 'bees_uninstall', 'bees_check_install', 'bees_update_modes']) {
+      expect(ACCOUNT_ENFORCED_ACTIONS.has(name)).toBe(false);
+    }
+  });
+
   it('relay_forward_request: a k8s:Read grant admits the live-cluster relay proxy', () => {
     // Re-homed from the non-grantable `relay` module to k8s at the Read bar.
     expect(classifyAction('relay_forward_request')).toEqual({ module: 'k8s', class: 'Read' });

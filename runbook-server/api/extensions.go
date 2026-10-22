@@ -32,3 +32,13 @@ var tenantRouteHooks []func(router *gin.Engine, details TenantDetails)
 func RegisterTenantRoutes(hook func(router *gin.Engine, details TenantDetails)) {
 	tenantRouteHooks = append(tenantRouteHooks, hook)
 }
+
+var identifiedRouteHooks []func(router *gin.Engine, details TenantDetails)
+
+// RegisterIdentifiedRoutes adds an extension's routes that only need the caller
+// identified: a signed-in person and their tenant, with no access level checked
+// at the edge. The endpoint checks what the caller may do, per account (the
+// Worker Bee pages, which account-scoped roles use). Call it from an init().
+func RegisterIdentifiedRoutes(hook func(router *gin.Engine, details TenantDetails)) {
+	identifiedRouteHooks = append(identifiedRouteHooks, hook)
+}
