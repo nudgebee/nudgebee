@@ -221,6 +221,41 @@ def test_rollup_without_account_sections_is_sent_whole(monkeypatch):
     assert service.rule_matcher.seen == [("recommendation_nudge_digest", "optimize", None)]
 
 
+# ----------------------------- retry scoping -----------------------------
+
+
+def test_retry_platforms_restricts_fan_out_to_the_failed_platform(monkeypatch):
+    """A retry must not resend to a platform that already succeeded last
+    attempt (#41040 regression): request.retry_platforms, set by
+    NotificationProcessor on a partial failure, has to narrow installed_platforms
+    before trigger_notification fans the message out."""
+    service = _service({}, monkeypatch)
+    service.installs = [
+        SimpleNamespace(id="slack-1", platform="slack", channels=DEFAULT, to_channel=None),
+        SimpleNamespace(id="teams-1", platform="ms_teams", channels=DEFAULT, to_channel=None),
+    ]
+    sent_platforms = []
+
+    async def trigger(_session, _fingerprint, platforms, _kwargs, _parameters, _responses, _tenant, _type):
+        sent_platforms.extend(ip.platform for ip in platforms)
+        return [{"status": "success"}]
+
+    service.trigger_notification = trigger
+
+    request = SimpleNamespace(
+        tenant_id=TENANT,
+        type="generic",
+        source="prometheus",
+        thread=None,
+        retry_platforms=["ms_teams"],
+        dict=lambda **_kwargs: {"type": "generic", "source": "prometheus", "parameters": {"message": "hi"}},
+    )
+
+    asyncio.run(service.send_message(request))
+
+    assert sent_platforms == ["ms_teams"]
+
+
 # ----------------------------- grouped alerts -----------------------------
 
 

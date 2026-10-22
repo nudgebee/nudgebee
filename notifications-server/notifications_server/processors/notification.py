@@ -13,6 +13,16 @@ from notifications_server.services.rules import NotificationRulesService
 LOG = logging.getLogger(__name__)
 
 
+class NotificationSendFailed(RuntimeError):
+    """A notification send failed on at least one platform. Carries which
+    platforms failed so a retry can be scoped to just those — platforms that
+    already succeeded must not be delivered to again."""
+
+    def __init__(self, message, failed_platforms):
+        super().__init__(message)
+        self.failed_platforms = failed_platforms
+
+
 class NotificationProcessor:
     def __init__(self, task_producer, engine, slack_app, teams_app):
         self.task_producer = task_producer
@@ -87,7 +97,8 @@ class NotificationProcessor:
             # send_message already catches and logs platform-level exceptions, returning
             # a "failed" PlatformResponse instead of raising — so without this, a send
             # that errors out looks identical to one that succeeded and is never retried.
-            raise RuntimeError(f"Notification send failed: {failures}")
+            failed_platforms = sorted({r.get("platform") for r in failures if r.get("platform")})
+            raise NotificationSendFailed(f"Notification send failed: {failures}", failed_platforms)
         LOG.debug("Notification processed successfully")
 
     async def perform_email(self, email_task):
@@ -132,6 +143,9 @@ class NotificationProcessor:
                 finding.pop("evidences", None)
             LOG.exception("Failed to process task: %s from: %s", e, headers)
             LOG.debug("Payload: %s", json.dumps(task))
+            failed_platforms = getattr(e, "failed_platforms", None)
+            if failed_platforms:
+                task["retry_platforms"] = failed_platforms
             if self._death_count(headers) >= settings.notifications.task_retry_count:
                 LOG.error(
                     "Task exhausted %d retries, moving to DLQ from: %s",

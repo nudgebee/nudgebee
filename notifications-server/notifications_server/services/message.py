@@ -977,6 +977,9 @@ class MessageService:
                     return outcome.response
 
                 installed_platforms = await self.get_installed_platforms_from_cache_or_db(session, tenant_id)
+                installed_platforms = self._scope_to_retry_platforms(
+                    installed_platforms, getattr(request, "retry_platforms", None)
+                )
                 if not installed_platforms:
                     return [failed_response("", reason="No messaging platform installation found for this tenant")]
 
@@ -1091,6 +1094,16 @@ class MessageService:
             return installed_platforms
 
         return []
+
+    @staticmethod
+    def _scope_to_retry_platforms(installed_platforms, retry_platforms):
+        """Narrow delivery to the platforms that failed last attempt. Set on
+        request by NotificationProcessor.send_notification when it re-queues a
+        partially-failed send — the platforms that already succeeded must not
+        be delivered to again on retry."""
+        if not retry_platforms:
+            return installed_platforms
+        return [ip for ip in installed_platforms if ip.platform in retry_platforms]
 
     # ----------------------------- Rule and channel helpers -----------------------------
     async def match_notification_rules(self, session, tenant_id, type_, kwargs):
