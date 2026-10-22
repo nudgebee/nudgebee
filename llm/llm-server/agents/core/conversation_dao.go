@@ -233,7 +233,6 @@ type IConversationDao interface {
 	TerminateConversation(context *security.RequestContext, accountId, conversationId string) error
 	CountWaitingSubAgents(parentAgentId, messageId string) (int, error)
 	MarkInProgressConversationAsKilled() error
-	GetConversationOptimizationProfile(sessionID, accountID string) (OptimizationProfile, *optSavingsIndex, error)
 	SaveClaimCritiqueAudit(ctx context.Context, record *ClaimCritiqueAuditRecord) error
 	GetConversationWithMessages(conversationId string, accountId string) (*ConversationWithMessages, error)
 	GetLatestConversationBySessionIDWithMessages(sessionID string, accountId string) (*ConversationWithMessages, error)

@@ -17,12 +17,7 @@ type KBRerankVerdict struct {
 }
 
 // KBRerankFn judges which knowledge-base candidate answers the query, and is
-// set by agents/core in init.
-//
-// The indirection exists because the LLM call needs agents/core's tiered,
-// cache-scoped invocation and token tracking, while agents/core imports this
-// package — so this side cannot call it directly. Same arrangement as
-// memory.RerankFn, for the same reason.
+// set to llmJudgeKBChunks (kb_rerank.go) in init. Tests replace it.
 //
 // Candidates are the matched chunks rather than whole documents: the chunk is
 // what the retrieval score refers to, and scoring whole documents would put tens

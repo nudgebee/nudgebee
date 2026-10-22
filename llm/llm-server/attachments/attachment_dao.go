@@ -1,4 +1,4 @@
-package core
+package attachments
 
 import (
 	"crypto/sha256"
@@ -78,11 +78,12 @@ func GetAttachmentDAO() IAttachmentDAO {
 	return attachmentDAO
 }
 
-// SetAttachmentDAO replaces the singleton (for testing).
-func SetAttachmentDAO(dao IAttachmentDAO) {
+// SetAttachmentDAO replaces the singleton and returns the one it replaced (for testing).
+func SetAttachmentDAO(dao IAttachmentDAO) (previous IAttachmentDAO) {
 	attachmentDAOMutex.Lock()
 	defer attachmentDAOMutex.Unlock()
-	attachmentDAO = dao
+	previous, attachmentDAO = attachmentDAO, dao
+	return previous
 }
 
 // computeContentHash returns a hex-encoded SHA-256 hash of the given data.

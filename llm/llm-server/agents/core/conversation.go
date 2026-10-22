@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"nudgebee/llm/attachments"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/knowledge"
@@ -391,7 +392,7 @@ type additionalConversationSessionRequestConfig struct {
 	isResume              bool
 	isQueuedDispatch      bool
 	runProfile            *RunProfile
-	images                []ImageAttachment
+	images                []attachments.ImageAttachment
 	channelContext        string
 	channelContextRefs    map[string]any
 	replyRef              string
@@ -653,14 +654,14 @@ func ConversationSessionRequestWithRunProfile(profile *RunProfile) ConversationS
 }
 
 type sessionRequestWithImages struct {
-	images []ImageAttachment
+	images []attachments.ImageAttachment
 }
 
 func (h sessionRequestWithImages) apply(c *additionalConversationSessionRequestConfig) {
 	c.images = h.images
 }
 
-func ConversationSessionRequestWithImages(images []ImageAttachment) ConversationSessionRequestConfig {
+func ConversationSessionRequestWithImages(images []attachments.ImageAttachment) ConversationSessionRequestConfig {
 	return sessionRequestWithImages{
 		images: images,
 	}
@@ -1573,7 +1574,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 
 		// Save image attachments (non-fatal: message is saved even if attachment storage fails)
 		if len(request.Images) > 0 {
-			dao := GetAttachmentDAO()
+			dao := attachments.GetAttachmentDAO()
 			if dao != nil {
 				_, attachErr := dao.SaveAttachments(request.MessageId, conversation.ID.String(), request.AccountId, request.Images)
 				if attachErr != nil {

@@ -1,9 +1,8 @@
-package core
+package attachments
 
 import (
 	"context"
 	"encoding/base64"
-	"log/slog"
 	"net"
 	"net/url"
 	"strings"
@@ -11,11 +10,8 @@ import (
 
 	"nudgebee/llm/common"
 	llmruntime "nudgebee/llm/llms/runtime"
-	"nudgebee/llm/security"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -460,17 +456,6 @@ func TestAppendImagesToLastHumanMessage_MultipleHumanMessages(t *testing.T) {
 
 // --- Phase 6: Image Description Tests ---
 
-func TestImageDescriptionPrompt_NotEmpty(t *testing.T) {
-	assert.NotEmpty(t, imageDescriptionPrompt)
-	assert.Contains(t, imageDescriptionPrompt, "image description")
-}
-
-func TestImageDescriptionPrompt_HasGuidance(t *testing.T) {
-	// Prompt should guide the LLM to produce concise, technical descriptions
-	assert.Contains(t, imageDescriptionPrompt, "concise")
-	assert.Contains(t, imageDescriptionPrompt, "200 characters")
-}
-
 func TestContentHashMatching_Base64(t *testing.T) {
 	// Verify that the hash matching logic in GenerateImageDescriptionsAsync
 	// correctly pairs request images with stored attachments
@@ -509,171 +494,13 @@ func TestContentHashMatching_DataURIStripped(t *testing.T) {
 	assert.Equal(t, hashFromStripped, hashFromRaw)
 }
 
-func TestGenerateImageDescriptionsAsync_NoImages(t *testing.T) {
-	// Should be a no-op when there are no images
-	request := NBAgentRequest{
-		Images: nil,
-	}
-	// Should not panic
-	GenerateImageDescriptionsAsync(nil, request)
-}
-
-func TestGenerateImageDescriptionsAsync_NoDAO(t *testing.T) {
-	// Should be a no-op when DAO is nil
-	old := attachmentDAO
-	attachmentDAO = nil
-	defer func() { attachmentDAO = old }()
-
-	request := NBAgentRequest{
-		Images: []ImageAttachment{{Data: pngBase64(), MIMEType: "image/png"}},
-	}
-	// Should not panic even with nil DAO
-	GenerateImageDescriptionsAsync(nil, request)
-}
-
-// --- parseImageContextResponse ---
-
-func TestParseImageContextResponse_TaggedFormat(t *testing.T) {
-	content := "<summary>\nPod foo-bar is CrashLoopBackOff.\n</summary>\n" +
-		"<descriptions>\n1. Screenshot of pod status showing CrashLoopBackOff.\n" +
-		"2. Grafana graph showing a CPU spike at 14:02.\n</descriptions>"
-
-	summary, descs := parseImageContextResponse(content)
-	assert.Equal(t, "Pod foo-bar is CrashLoopBackOff.", summary)
-	assert.Equal(t, []string{
-		"Screenshot of pod status showing CrashLoopBackOff.",
-		"Grafana graph showing a CPU spike at 14:02.",
-	}, descs)
-}
-
-func TestParseImageContextResponse_NoTags_FallsBackToWholeContent(t *testing.T) {
-	content := "  Just a plain untagged response.  "
-	summary, descs := parseImageContextResponse(content)
-	assert.Equal(t, "Just a plain untagged response.", summary)
-	assert.Nil(t, descs)
-}
-
-func TestParseImageContextResponse_SummaryOnly_NoDescriptions(t *testing.T) {
-	content := "<summary>Only a summary here.</summary>"
-	summary, descs := parseImageContextResponse(content)
-	assert.Equal(t, "Only a summary here.", summary)
-	assert.Nil(t, descs)
-}
-
-func TestParseImageContextResponse_CaseInsensitiveTags(t *testing.T) {
-	content := "<SUMMARY>Upper case tags.</SUMMARY>\n<Descriptions>\n1. one image.\n</Descriptions>"
-	summary, descs := parseImageContextResponse(content)
-	assert.Equal(t, "Upper case tags.", summary)
-	assert.Equal(t, []string{"one image."}, descs)
-}
-
-// --- contentHashForImage ---
-
 func TestContentHashForImage_MatchesComputeContentHash(t *testing.T) {
 	raw := pngBase64()
 	img := ImageAttachment{Data: raw}
-	assert.Equal(t, computeContentHash([]byte(raw)), contentHashForImage(img))
+	assert.Equal(t, computeContentHash([]byte(raw)), ContentHashForImage(img))
 
 	urlImg := ImageAttachment{URL: "https://example.com/img.png"}
-	assert.Equal(t, computeContentHash([]byte("https://example.com/img.png")), contentHashForImage(urlImg))
+	assert.Equal(t, computeContentHash([]byte("https://example.com/img.png")), ContentHashForImage(urlImg))
 
-	assert.Equal(t, "", contentHashForImage(ImageAttachment{}))
-}
-
-// --- saveImageDescriptions ---
-
-// mockAttachmentDAO is a minimal hand-written IAttachmentDAO for testing
-// saveImageDescriptions without a real database.
-type mockAttachmentDAO struct {
-	attachments []ConversationAttachment
-	updated     map[string]string
-	loadErr     error
-	updateErr   error
-}
-
-func (m *mockAttachmentDAO) SaveAttachments(messageID, conversationID, accountID string, images []ImageAttachment) ([]uuid.UUID, error) {
-	return nil, nil
-}
-func (m *mockAttachmentDAO) LoadAttachments(messageID, accountID string) ([]ConversationAttachment, error) {
-	return m.attachments, m.loadErr
-}
-func (m *mockAttachmentDAO) LoadAttachmentDescriptions(messageIDs []string, accountID string) (map[string][]AttachmentDescription, error) {
-	return nil, nil
-}
-func (m *mockAttachmentDAO) UpdateAttachmentDescription(attachmentID, accountID, description string) error {
-	if m.updateErr != nil {
-		return m.updateErr
-	}
-	if m.updated == nil {
-		m.updated = make(map[string]string)
-	}
-	m.updated[attachmentID] = description
-	return nil
-}
-func (m *mockAttachmentDAO) PurgeExpiredAttachments(retentionDays int) (int64, error) {
-	return 0, nil
-}
-
-func testRequestContext() *security.RequestContext {
-	return security.NewRequestContext(context.Background(), nil, slog.Default(), nil, nil)
-}
-
-func TestSaveImageDescriptions_WritesMatchingAttachmentsByContentHash(t *testing.T) {
-	old := attachmentDAO
-	defer func() { attachmentDAO = old }()
-
-	img1 := ImageAttachment{Data: pngBase64(), MIMEType: "image/png"}
-	img2 := ImageAttachment{URL: "https://example.com/img.png", MIMEType: "image/png"}
-	att1ID, att2ID := uuid.New(), uuid.New()
-
-	mock := &mockAttachmentDAO{
-		attachments: []ConversationAttachment{
-			{ID: att1ID, ContentHash: contentHashForImage(img1)},
-			{ID: att2ID, ContentHash: contentHashForImage(img2)},
-		},
-	}
-	attachmentDAO = mock
-
-	request := NBAgentRequest{MessageId: "msg-1", AccountId: "acc-1", Images: []ImageAttachment{img1, img2}}
-	saveImageDescriptions(testRequestContext(), request, []string{"first image desc", "second image desc"})
-
-	require.Len(t, mock.updated, 2)
-	assert.Equal(t, "first image desc", mock.updated[att1ID.String()])
-	assert.Equal(t, "second image desc", mock.updated[att2ID.String()])
-}
-
-func TestSaveImageDescriptions_CountMismatch_NoWrites(t *testing.T) {
-	old := attachmentDAO
-	defer func() { attachmentDAO = old }()
-
-	img1 := ImageAttachment{Data: pngBase64(), MIMEType: "image/png"}
-	mock := &mockAttachmentDAO{
-		attachments: []ConversationAttachment{{ID: uuid.New(), ContentHash: contentHashForImage(img1)}},
-	}
-	attachmentDAO = mock
-
-	request := NBAgentRequest{MessageId: "msg-1", AccountId: "acc-1", Images: []ImageAttachment{img1}}
-	// Two descriptions for one image — mismatch, must defer to async fallback.
-	saveImageDescriptions(testRequestContext(), request, []string{"a", "b"})
-
-	assert.Empty(t, mock.updated)
-}
-
-func TestSaveImageDescriptions_SkipsAttachmentThatAlreadyHasDescription(t *testing.T) {
-	old := attachmentDAO
-	defer func() { attachmentDAO = old }()
-
-	img1 := ImageAttachment{Data: pngBase64(), MIMEType: "image/png"}
-	existing := "already described"
-	mock := &mockAttachmentDAO{
-		attachments: []ConversationAttachment{
-			{ID: uuid.New(), ContentHash: contentHashForImage(img1), Description: &existing},
-		},
-	}
-	attachmentDAO = mock
-
-	request := NBAgentRequest{MessageId: "msg-1", AccountId: "acc-1", Images: []ImageAttachment{img1}}
-	saveImageDescriptions(testRequestContext(), request, []string{"new description"})
-
-	assert.Empty(t, mock.updated, "must not overwrite an existing description")
+	assert.Equal(t, "", ContentHashForImage(ImageAttachment{}))
 }

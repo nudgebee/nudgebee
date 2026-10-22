@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"nudgebee/llm/attachments"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/knowledge"
@@ -1271,9 +1272,9 @@ func getExistingHistory(request NBAgentRequest, ctx *security.RequestContext) ([
 	}
 
 	// Load attachment descriptions for all history messages (best-effort)
-	var attachmentDescs map[string][]AttachmentDescription
+	var attachmentDescs map[string][]attachments.AttachmentDescription
 	if len(messageIDs) > 0 {
-		if dao := GetAttachmentDAO(); dao != nil {
+		if dao := attachments.GetAttachmentDAO(); dao != nil {
 			attachmentDescs, err = dao.LoadAttachmentDescriptions(messageIDs, request.AccountId)
 			if err != nil {
 				ctx.GetLogger().Warn("agentexecutor: failed to load attachment descriptions for history", "error", err)
@@ -1348,7 +1349,7 @@ func followupTypeOf(messageConfig string) FollowupType {
 }
 
 // formatAttachmentDescriptions builds a text summary of image attachments for history replay.
-func formatAttachmentDescriptions(descs []AttachmentDescription) string {
+func formatAttachmentDescriptions(descs []attachments.AttachmentDescription) string {
 	var descriptions []string
 	for _, d := range descs {
 		if d.Description != nil && *d.Description != "" {

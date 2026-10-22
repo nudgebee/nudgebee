@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"testing"
@@ -223,7 +223,7 @@ func TestGetConversationOptimizationProfile_Aggregates(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	dao := &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	dao := &Store{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
 
 	// 1) pricing
 	mock.ExpectQuery("FROM llm_model_pricing").WillReturnRows(sqlmock.NewRows([]string{

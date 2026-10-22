@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"nudgebee/llm/attachments"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -68,7 +69,7 @@ func (o *PromptPlanner) Plan(
 	}
 
 	// Attach images from the current request to the last human message
-	mcList = AppendImagesToLastHumanMessage(mcList, o.request.Images)
+	mcList = attachments.AppendImagesToLastHumanMessage(mcList, o.request.Images)
 
 	result, err := llmruntime.GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, true, mcList, true, llms.WithTools(nbToolsToLlmTools(o.tools)), llms.WithTemperature(0.1))
 	if err != nil {

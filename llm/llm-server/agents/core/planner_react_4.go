@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"nudgebee/llm/attachments"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/llms/googleai"
@@ -534,7 +535,7 @@ func (o *NBReActPlanner4) Plan(
 		plannerInput = clarificationContinuationInput(o.request.QueryConfig.OriginalUserQuery, input)
 	}
 	messages := o.buildMessages(plannerInput, intermediateSteps)
-	messages = AppendImagesToLastHumanMessage(messages, o.request.Images)
+	messages = attachments.AppendImagesToLastHumanMessage(messages, o.request.Images)
 	if note, ok := finalIterationsNote(ctx); ok {
 		messages = appendNoteToLastMessage(messages, note)
 	}

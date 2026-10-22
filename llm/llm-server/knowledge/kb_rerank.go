@@ -1,4 +1,4 @@
-package core
+package knowledge
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"strings"
 
-	"nudgebee/llm/knowledge"
 	llmruntime "nudgebee/llm/llms/runtime"
 
 	"nudgebee/llm/config"
@@ -17,11 +16,9 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-// Wire the knowledge-base judge into the retrieval paths. Done here rather than
-// in tools/core because the LLM call needs this package's tiered, cache-scoped
-// invocation and token tracking, and tools/core cannot import this package.
+// Wire the knowledge-base judge into the retrieval paths through KBRerankFn.
 func init() {
-	knowledge.KBRerankFn = llmJudgeKBChunks
+	KBRerankFn = llmJudgeKBChunks
 }
 
 // kbJudgeSystemPrompt is the STATIC (cacheable) instruction prefix, so it must
@@ -70,8 +67,8 @@ func llmJudgeKBChunks(
 	rc *security.RequestContext,
 	accountID, userID, conversationID, messageID, query string,
 	chunks []string,
-) (knowledge.KBRerankVerdict, bool) {
-	none := knowledge.KBRerankVerdict{Keep: knowledge.KBRerankNone}
+) (KBRerankVerdict, bool) {
+	none := KBRerankVerdict{Keep: KBRerankNone}
 	if !config.Config.KBRerankEnabled || rc == nil || len(chunks) == 0 {
 		return none, false
 	}
@@ -128,8 +125,8 @@ func llmJudgeKBChunks(
 // here is relevant", the other is "I have no verdict, keep what you had". The
 // last usable object wins, so a model that reasons in JSON before concluding is
 // read by its conclusion.
-func parseKBJudgeVerdict(content string, n int) (knowledge.KBRerankVerdict, bool) {
-	none := knowledge.KBRerankVerdict{Keep: knowledge.KBRerankNone}
+func parseKBJudgeVerdict(content string, n int) (KBRerankVerdict, bool) {
+	none := KBRerankVerdict{Keep: KBRerankNone}
 	matches := kbJudgeObjectRe.FindAllString(content, -1)
 	for i := len(matches) - 1; i >= 0; i-- {
 		var raw struct {
@@ -160,7 +157,7 @@ func parseKBJudgeVerdict(content string, n int) (knowledge.KBRerankVerdict, bool
 				score = math.Max(0, math.Min(1, f))
 			}
 		}
-		return knowledge.KBRerankVerdict{Keep: best - 1, Score: score}, true
+		return KBRerankVerdict{Keep: best - 1, Score: score}, true
 	}
 	return none, false
 }

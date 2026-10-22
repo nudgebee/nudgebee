@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"nudgebee/llm/attachments"
 	"nudgebee/llm/knowledge"
 	llmruntime "nudgebee/llm/llms/runtime"
 
@@ -637,9 +638,9 @@ func handleConversationApis(r *gin.Engine, tracer trace.Tracer, meter metric.Met
 			},
 			"image_support": map[string]any{
 				"enabled":            true,
-				"max_per_message":    core.GetImageMaxPerMessage(),
-				"max_size_mb":        core.GetImageMaxSizeMB(),
-				"allowed_mime_types": core.GetAllowedImageMIMETypes(),
+				"max_per_message":    attachments.GetImageMaxPerMessage(),
+				"max_size_mb":        attachments.GetImageMaxSizeMB(),
+				"allowed_mime_types": attachments.GetAllowedImageMIMETypes(),
 			},
 		}
 

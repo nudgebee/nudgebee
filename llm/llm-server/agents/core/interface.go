@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"nudgebee/llm/attachments"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -63,14 +64,6 @@ const (
 	ConversationSourceTriageClassification ConversationSource = "triage_classification"
 )
 
-// ImageAttachment represents an image attached to an agent request.
-// Exactly one of Data or URL must be set.
-type ImageAttachment struct {
-	Data     string `json:"data,omitempty"`      // Base64-encoded image data
-	URL      string `json:"url,omitempty"`       // URL pointing to the image
-	MIMEType string `json:"mime_type,omitempty"` // MIME type — only image/png and image/jpeg are accepted
-}
-
 // DO not use for API calls
 type NBAgentRequest struct {
 	KnowledgePolicy         KnowledgePolicy        `json:"-"`
@@ -91,14 +84,14 @@ type NBAgentRequest struct {
 	AccountContext string `json:"account_context,omitempty"`
 	// AccountPrompt is request/entry-point-specific additional guidance (for
 	// example event-analysis instructions) and stays in the dynamic human turn.
-	AccountPrompt      string                     `json:"account_prompt"`
-	SessionId          string                     `json:"session_id"`
-	ConversationSource ConversationSource         `json:"source"`
-	EnableCritique     bool                       `json:"enable_critique"`
-	ClientTools        []toolcore.NBToolCommand   `json:"client_tools"`
-	Capabilities       toolcore.AgentCapabilities `json:"capabilities"`
-	PreviousState      string                     `json:"previous_state"`
-	Images             []ImageAttachment          `json:"images,omitempty"`
+	AccountPrompt      string                        `json:"account_prompt"`
+	SessionId          string                        `json:"session_id"`
+	ConversationSource ConversationSource            `json:"source"`
+	EnableCritique     bool                          `json:"enable_critique"`
+	ClientTools        []toolcore.NBToolCommand      `json:"client_tools"`
+	Capabilities       toolcore.AgentCapabilities    `json:"capabilities"`
+	PreviousState      string                        `json:"previous_state"`
+	Images             []attachments.ImageAttachment `json:"images,omitempty"`
 	// SkillsContext carries fully-rendered skill content (a `<skills>...</skills>` block)
 	// for agents whose planner type is AgentPlannerTypeCustom AND whose Execute()
 	// makes direct LLM calls (loganalysis, logs_default.generateFinalResponse,

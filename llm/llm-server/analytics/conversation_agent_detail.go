@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	"nudgebee/llm/agents/core"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 )
@@ -218,7 +217,7 @@ func (chat *Store) GetConversationAgentDetail(sessionID, accountID, agentID, mod
 			ToolID:          t.ToolID,
 			ToolType:        t.ToolType,
 			Status:          t.Status,
-			IsError:         core.IsToolError(t.Status),
+			IsError:         IsToolError(t.Status),
 			Parameters:      t.Parameters,
 			Response:        t.Response,
 			Thought:         t.Thought,
@@ -304,7 +303,7 @@ func (chat *Store) GetConversationAgentDetail(sessionID, accountID, agentID, mod
 			Model:               m.Model,
 			Provider:            m.Provider,
 			Status:              m.RequestStatus,
-			IsError:             core.IsModelError(m.RequestStatus, m.ErrorMessage),
+			IsError:             IsModelError(m.RequestStatus, m.ErrorMessage),
 			ErrorMessage:        m.ErrorMessage,
 			StopReason:          m.StopReason,
 			IsCacheHit:          m.IsCacheHit,

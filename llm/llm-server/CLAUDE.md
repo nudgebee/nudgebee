@@ -133,8 +133,9 @@ Not strictly enforced (no `.golangci.yml` config). Follow stdlib → external �
 
 - **`cmd/`** — application entry point, server initialization
 - **`api/`** — HTTP API handlers (conversations, agents, tools, RAG, events)
-- **`analytics/`** — AI Cost Analyser and cost-report reads plus their HTTP handlers, including the per-conversation usage reports (token usage, time breakdown, tool-call stats) on its `Store` (imports `agents/core`, never the reverse)
+- **`analytics/`** — AI Cost Analyser and cost-report reads plus their HTTP handlers, including the per-conversation usage reports (token usage, time breakdown, tool-call stats) on its `Store` and the conversation cost optimizer behind "export & analyze" (imports `agents/core`, never the reverse)
 - **`memory/`** — the legacy long-term memory store (`llm_conversation_memory`): `memory.GetStore()` / `SetStore` and the TTL cleanup job. The extraction and prompt logic that uses it stays in `agents/core/memory.go`; memory-v2 is `ee/memory/`. Imports neither `agents/core` nor `api`
+- **`attachments/`** — image attachments: validation, encoding into LLM messages, storage (`GetAttachmentDAO`) and retention. Describing images with the vision model stays in `agents/core/image_context.go`
 - **`knowledge/`** — knowledge bases and skills: CRUD, integration sync, documents, RAG client, global context, skill selection (imports `tools/core`; `tools/core` never imports it)
 - **`agents/`** — autonomous agent implementations (190+ agent files)
 - **`agents/core/`** — agent framework: planner, executor, critiquer logic

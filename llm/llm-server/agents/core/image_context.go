@@ -2,17 +2,11 @@ package core
 
 import (
 	"context"
-	"encoding/base64"
-	"fmt"
-	"log/slog"
-	"net/http"
 	"regexp"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
-	"nudgebee/llm/common"
+	"nudgebee/llm/attachments"
 	"nudgebee/llm/config"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
@@ -20,250 +14,9 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-const (
-	defaultImageMaxPerMessage = 4
-	defaultImageMaxSizeMB     = 1.5
-)
-
-var allowedImageMIMETypes = map[string]bool{
-	"image/png":  true,
-	"image/jpeg": true,
-}
-
-// GetImageMaxPerMessage returns the maximum number of images allowed per message.
-func GetImageMaxPerMessage() int {
-	return config.Config.GetInt("llm_server_image_max_per_message", defaultImageMaxPerMessage)
-}
-
-// GetImageMaxSizeMB returns the maximum allowed image size in megabytes.
-func GetImageMaxSizeMB() float64 {
-	return config.Config.GetFloat64("llm_server_image_max_size_mb", defaultImageMaxSizeMB)
-}
-
-// GetAllowedImageMIMETypes returns the sorted list of accepted image MIME types.
-// Exposed so callers (e.g. the ai_list_models capability response) can advertise
-// the allowlist to clients without duplicating it.
-func GetAllowedImageMIMETypes() []string {
-	types := make([]string, 0, len(allowedImageMIMETypes))
-	for t := range allowedImageMIMETypes {
-		types = append(types, t)
-	}
-	sort.Strings(types)
-	return types
-}
-
-// ValidateImages checks that the given images conform to all constraints:
-// count limit, mutual exclusivity of data/url, MIME allowlist, size limit, and SSRF safety.
-// Returns nil if all images are valid, or an error describing the first violation.
-//
-// Side effect: ValidateImages mutates the input slice. For data-only inputs it sets
-// MIMEType from sniffed bytes. For URL inputs it fetches the image, replaces URL with
-// inline base64 data, and sets MIMEType from the response. Callers that need the
-// original payload preserved must pass a copy.
-//
-// URL inputs are fetched concurrently with a bounded per-image timeout to limit
-// the total wall-clock cost on the request hot path.
-func ValidateImages(ctx context.Context, images []ImageAttachment) error {
-	if len(images) == 0 {
-		return nil
-	}
-
-	maxCount := GetImageMaxPerMessage()
-	if maxCount > 0 && len(images) > maxCount {
-		return fmt.Errorf("too many images: %d provided, maximum is %d", len(images), maxCount)
-	}
-
-	maxSizeBytes := int(GetImageMaxSizeMB() * 1024 * 1024)
-
-	// First pass: validate data-only images and check exclusivity. Cheap, sequential.
-	urlIndices := make([]int, 0)
-	for i := range images {
-		img := &images[i]
-		hasData := img.Data != ""
-		hasURL := img.URL != ""
-
-		if hasData == hasURL {
-			return fmt.Errorf("image[%d]: exactly one of data or url must be set", i)
-		}
-
-		if hasData {
-			raw := stripDataURIPrefix(img.Data)
-			decoded, err := decodeBase64(raw)
-			if err != nil {
-				return fmt.Errorf("image[%d]: invalid base64 data: %w", i, err)
-			}
-			if len(decoded) > maxSizeBytes {
-				return fmt.Errorf("image[%d]: decoded size %d bytes exceeds maximum %d bytes", i, len(decoded), maxSizeBytes)
-			}
-
-			detected := detectMIMEType(decoded)
-			if img.MIMEType == "" {
-				img.MIMEType = detected
-			} else if img.MIMEType != detected {
-				return fmt.Errorf("image[%d]: declared mime_type %q does not match detected %q", i, img.MIMEType, detected)
-			}
-
-			if !allowedImageMIMETypes[img.MIMEType] {
-				return fmt.Errorf("image[%d]: unsupported mime_type %q, allowed: image/png, image/jpeg", i, img.MIMEType)
-			}
-		} else {
-			urlIndices = append(urlIndices, i)
-		}
-	}
-
-	// Second pass: fetch URL images concurrently. Each fetch is bounded by
-	// urlFetchTimeout so the request goroutine is never blocked beyond that
-	// regardless of how many images are submitted.
-	if len(urlIndices) > 0 {
-		var wg sync.WaitGroup
-		errs := make([]error, len(urlIndices))
-		for k, idx := range urlIndices {
-			wg.Add(1)
-			go func(slot int, imgIdx int) {
-				defer wg.Done()
-				img := &images[imgIdx]
-				mimeType, data, err := common.FetchImageSafely(ctx, img.URL, common.SafeFetchOptions{
-					MaxSizeBytes:        int64(maxSizeBytes),
-					Timeout:             urlFetchTimeout,
-					AllowedMIMEPrefixes: []string{"image/"},
-				})
-				if err != nil {
-					errs[slot] = fmt.Errorf("image[%d]: %w", imgIdx, err)
-					return
-				}
-				if img.MIMEType != "" && img.MIMEType != mimeType {
-					errs[slot] = fmt.Errorf("image[%d]: declared mime_type %q does not match downloaded %q", imgIdx, img.MIMEType, mimeType)
-					return
-				}
-				if !allowedImageMIMETypes[mimeType] {
-					errs[slot] = fmt.Errorf("image[%d]: unsupported mime_type %q, allowed: image/png, image/jpeg", imgIdx, mimeType)
-					return
-				}
-				img.MIMEType = mimeType
-				img.Data = base64.StdEncoding.EncodeToString(data)
-				img.URL = ""
-			}(k, idx)
-		}
-		wg.Wait()
-		for _, e := range errs {
-			if e != nil {
-				return e
-			}
-		}
-	}
-
-	return nil
-}
-
-const urlFetchTimeout = 8 * time.Second
-
-// detectMIMEType sniffs the actual MIME type from raw image bytes.
-func detectMIMEType(data []byte) string {
-	ct := http.DetectContentType(data)
-	// DetectContentType may return params like "text/plain; charset=utf-8", strip them
-	if idx := strings.Index(ct, ";"); idx != -1 {
-		ct = ct[:idx]
-	}
-	return strings.TrimSpace(ct)
-}
-
-// decodeBase64 attempts to decode base64 data, trying standard encoding first,
-// then URL-safe encoding, and finally with padding normalization.
-// This handles input from frontends that may use URL-safe alphabet or omit padding.
-func decodeBase64(data string) ([]byte, error) {
-	// Try standard encoding first (most common)
-	if decoded, err := base64.StdEncoding.DecodeString(data); err == nil {
-		return decoded, nil
-	}
-	// Try URL-safe encoding (some frontends use - and _ instead of + and /)
-	if decoded, err := base64.URLEncoding.DecodeString(data); err == nil {
-		return decoded, nil
-	}
-	// Try without padding (common in web APIs)
-	if decoded, err := base64.RawStdEncoding.DecodeString(data); err == nil {
-		return decoded, nil
-	}
-	if decoded, err := base64.RawURLEncoding.DecodeString(data); err == nil {
-		return decoded, nil
-	}
-	return nil, fmt.Errorf("data is not valid base64 in any supported encoding")
-}
-
-// stripDataURIPrefix removes a data URI prefix from base64 data.
-// Handles: "data:image/png;base64,<b64>", "data:image/png;<b64>", or raw "<b64>".
-func stripDataURIPrefix(data string) string {
-	// data:image/png;base64,iVBOR...
-	if idx := strings.Index(data, "base64,"); idx != -1 {
-		return data[idx+7:]
-	}
-	// data:image/png;iVBOR...
-	if strings.HasPrefix(data, "data:") {
-		if idx := strings.Index(data, ";"); idx != -1 {
-			return data[idx+1:]
-		}
-	}
-	return data
-}
-
 // --- Phase 3: Vision Detection & Graceful Degradation ---
 
 // --- Phase 4: Image → LLM Content Part Conversion ---
-
-// ImageAttachmentToContentPart converts an ImageAttachment to a langchaingo ContentPart.
-// For base64 data: decodes and returns BinaryContent.
-// For URL: returns ImageURLContent.
-// Returns a text fallback if conversion fails.
-func ImageAttachmentToContentPart(img ImageAttachment) llms.ContentPart {
-	if img.Data != "" {
-		raw := stripDataURIPrefix(img.Data)
-		decoded, err := decodeBase64(raw)
-		if err != nil {
-			slog.Warn("image: failed to decode base64 image data", "error", err)
-			return llms.TextContent{Text: "[Image could not be decoded]"}
-		}
-		mimeType := img.MIMEType
-		if mimeType == "" {
-			mimeType = detectMIMEType(decoded)
-		}
-		return llms.BinaryContent{
-			MIMEType: mimeType,
-			Data:     decoded,
-		}
-	}
-	if img.URL != "" {
-		return llms.ImageURLContent{URL: img.URL}
-	}
-	return llms.TextContent{Text: "[Image could not be decoded]"}
-}
-
-// AppendImagesToLastHumanMessage appends image content parts to the last human message in the list.
-// If no human message exists, a new one is added. This is the shared helper used by all planners.
-func AppendImagesToLastHumanMessage(mcList []llms.MessageContent, images []ImageAttachment) []llms.MessageContent {
-	if len(images) == 0 {
-		return mcList
-	}
-
-	// Convert images to content parts
-	imageParts := make([]llms.ContentPart, 0, len(images))
-	for _, img := range images {
-		imageParts = append(imageParts, ImageAttachmentToContentPart(img))
-	}
-
-	// Find the last human message and append image parts to it
-	for i := len(mcList) - 1; i >= 0; i-- {
-		if mcList[i].Role == llms.ChatMessageTypeHuman {
-			mcList[i].Parts = append(mcList[i].Parts, imageParts...)
-			return mcList
-		}
-	}
-
-	// No human message found — create one with images
-	mcList = append(mcList, llms.MessageContent{
-		Role:  llms.ChatMessageTypeHuman,
-		Parts: imageParts,
-	})
-	return mcList
-}
 
 // resolveVisionCapableTier decides whether attached images can be sent to an
 // LLM at all, and if so, whether the lite/summary tier should handle it.
@@ -353,7 +106,7 @@ func ExtractImageContext(ctx *security.RequestContext, request NBAgentRequest) s
 	// Build multimodal message with all images + the user query
 	parts := make([]llms.ContentPart, 0, len(request.Images)+1)
 	for _, img := range request.Images {
-		parts = append(parts, ImageAttachmentToContentPart(img))
+		parts = append(parts, attachments.ImageAttachmentToContentPart(img))
 	}
 	parts = append(parts, llms.TextContent{Text: "Extract all technical details from the attached image(s)."})
 
@@ -438,20 +191,6 @@ func parseImageContextResponse(content string) (summary string, perImageDescript
 	return summary, perImageDescriptions
 }
 
-// contentHashForImage computes the same content-addressed hash used when the
-// attachment was persisted (see AttachmentDAO.SaveAttachments), so a request
-// image can be matched back to its stored attachment record. Returns "" for
-// an image with neither Data nor URL set.
-func contentHashForImage(img ImageAttachment) string {
-	if img.Data != "" {
-		return computeContentHash([]byte(stripDataURIPrefix(img.Data)))
-	}
-	if img.URL != "" {
-		return computeContentHash([]byte(img.URL))
-	}
-	return ""
-}
-
 // saveImageDescriptions writes one description per request image to its
 // matching attachment record, when the count lines up 1:1 with request.Images
 // (same order they were sent to the LLM in). Attachments that already have a
@@ -466,18 +205,18 @@ func saveImageDescriptions(ctx *security.RequestContext, request NBAgentRequest,
 		return
 	}
 
-	dao := GetAttachmentDAO()
+	dao := attachments.GetAttachmentDAO()
 	if dao == nil {
 		return
 	}
-	attachments, err := dao.LoadAttachments(request.MessageId, request.AccountId)
+	saved, err := dao.LoadAttachments(request.MessageId, request.AccountId)
 	if err != nil {
 		ctx.GetLogger().Warn("image: failed to load attachments for description write", "error", err)
 		return
 	}
 
 	for i, img := range request.Images {
-		hash := contentHashForImage(img)
+		hash := attachments.ContentHashForImage(img)
 		if hash == "" {
 			continue
 		}
@@ -485,7 +224,7 @@ func saveImageDescriptions(ctx *security.RequestContext, request NBAgentRequest,
 		if len(desc) > 500 {
 			desc = TruncateHead(desc, 497) + "..."
 		}
-		for _, att := range attachments {
+		for _, att := range saved {
 			if att.ContentHash != hash || (att.Description != nil && *att.Description != "") {
 				continue
 			}
@@ -509,7 +248,7 @@ Be factual and specific. Do not speculate beyond what is visible. Keep the descr
 
 // generateImageDescription uses a lightweight LLM call to describe a single image.
 // Returns an empty string if the description cannot be generated or the model lacks vision.
-func generateImageDescription(ctx *security.RequestContext, accountId, conversationId, messageId, userId string, img ImageAttachment) string {
+func generateImageDescription(ctx *security.RequestContext, accountId, conversationId, messageId, userId string, img attachments.ImageAttachment) string {
 	provider, model := resolveEffectiveVisionProvider(ctx, accountId, "", conversationId)
 
 	useLite, ok := resolveVisionCapableTier(accountId, provider, model)
@@ -519,7 +258,7 @@ func generateImageDescription(ctx *security.RequestContext, accountId, conversat
 	}
 
 	parts := []llms.ContentPart{
-		ImageAttachmentToContentPart(img),
+		attachments.ImageAttachmentToContentPart(img),
 		llms.TextContent{Text: "Describe this image concisely."},
 	}
 
@@ -570,7 +309,7 @@ func GenerateImageDescriptionsAsync(ctx *security.RequestContext, request NBAgen
 		return
 	}
 
-	dao := GetAttachmentDAO()
+	dao := attachments.GetAttachmentDAO()
 	if dao == nil {
 		return
 	}
@@ -590,23 +329,23 @@ func GenerateImageDescriptionsAsync(ctx *security.RequestContext, request NBAgen
 			ctx.GetTracer(),
 			ctx.GetMeter(),
 		)
-		attachments, err := dao.LoadAttachments(request.MessageId, request.AccountId)
+		saved, err := dao.LoadAttachments(request.MessageId, request.AccountId)
 		if err != nil {
 			bgCtx.GetLogger().Warn("image: failed to load attachments for description generation",
 				"message_id", request.MessageId, "error", err)
 			return
 		}
 
-		for _, att := range attachments {
+		for _, att := range saved {
 			// Skip if description already exists
 			if att.Description != nil && *att.Description != "" {
 				continue
 			}
 
 			// Find the matching ImageAttachment from the request to pass to the LLM
-			var matchedImg *ImageAttachment
+			var matchedImg *attachments.ImageAttachment
 			for i, img := range request.Images {
-				if hash := contentHashForImage(img); hash != "" && hash == att.ContentHash {
+				if hash := attachments.ContentHashForImage(img); hash != "" && hash == att.ContentHash {
 					matchedImg = &request.Images[i]
 					break
 				}

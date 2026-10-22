@@ -15,6 +15,7 @@ import (
 	"nudgebee/llm/agents"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/analytics"
+	"nudgebee/llm/attachments"
 	"nudgebee/llm/audit"
 	"nudgebee/llm/budget"
 	"nudgebee/llm/common"
@@ -44,20 +45,20 @@ type ActionRequest struct {
 
 type ConversationApiRequest struct {
 	// QueueOnly forbids falling through to foreground async execution.
-	QueueOnly      bool                       `json:"queue_only"`
-	Query          string                     `json:"query" mapstructure:"required" validate:"required"`
-	ConversationId string                     `json:"conversation_id"`
-	SessionId      string                     `json:"session_id"`
-	AccountId      string                     `json:"account_id"`
-	UserId         string                     `json:"user_id" mapstructure:"required"`
-	MessageId      string                     `json:"message_id"`
-	AgentId        string                     `json:"agent_id"`
-	Async          *bool                      `json:"async"`
-	Config         toolcore.NBQueryConfig     `json:"config"`
-	Source         core.ConversationSource    `json:"source"`
-	ClientTools    []toolcore.NBToolCommand   `json:"client_tools"`
-	Capabilities   toolcore.AgentCapabilities `json:"capabilities"`
-	Images         []core.ImageAttachment     `json:"images,omitempty"`
+	QueueOnly      bool                          `json:"queue_only"`
+	Query          string                        `json:"query" mapstructure:"required" validate:"required"`
+	ConversationId string                        `json:"conversation_id"`
+	SessionId      string                        `json:"session_id"`
+	AccountId      string                        `json:"account_id"`
+	UserId         string                        `json:"user_id" mapstructure:"required"`
+	MessageId      string                        `json:"message_id"`
+	AgentId        string                        `json:"agent_id"`
+	Async          *bool                         `json:"async"`
+	Config         toolcore.NBQueryConfig        `json:"config"`
+	Source         core.ConversationSource       `json:"source"`
+	ClientTools    []toolcore.NBToolCommand      `json:"client_tools"`
+	Capabilities   toolcore.AgentCapabilities    `json:"capabilities"`
+	Images         []attachments.ImageAttachment `json:"images,omitempty"`
 	// ChannelContext carries conversation from a watched messaging channel.
 	// Callers must never merge it into Query — keeping it separate is what lets
 	// the agent treat it as reference material rather than as a request.
@@ -308,7 +309,7 @@ func queueConversationMessage(
 	// Attachment refs intentionally have no message FK. Persist them before
 	// publishing QUEUED so a completion cannot claim a partially saved request.
 	if len(request.Images) > 0 {
-		dao := core.GetAttachmentDAO()
+		dao := attachments.GetAttachmentDAO()
 		if dao == nil {
 			return uuid.Nil, errors.New("attachment storage unavailable")
 		}
@@ -515,15 +516,15 @@ func dispatchQueuedMessage(parent *security.RequestContext, conversation core.Co
 			fail(fmt.Errorf("queued message agent unavailable: %v", err))
 			return
 		}
-		var images []core.ImageAttachment
-		if dao := core.GetAttachmentDAO(); dao != nil {
-			attachments, loadErr := dao.LoadAttachments(msg.ID.String(), msg.AccountID.String())
+		var images []attachments.ImageAttachment
+		if dao := attachments.GetAttachmentDAO(); dao != nil {
+			saved, loadErr := dao.LoadAttachments(msg.ID.String(), msg.AccountID.String())
 			if loadErr != nil {
 				fail(loadErr)
 				return
 			}
-			for _, attachment := range attachments {
-				images = append(images, core.ImageAttachment{Data: attachment.Data, MIMEType: attachment.MIMEType})
+			for _, attachment := range saved {
+				images = append(images, attachments.ImageAttachment{Data: attachment.Data, MIMEType: attachment.MIMEType})
 			}
 		}
 		channelContext := ""
@@ -618,7 +619,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		if len(request.Images) > 0 {
-			if err := core.ValidateImages(c.Request.Context(), request.Images); err != nil {
+			if err := attachments.ValidateImages(c.Request.Context(), request.Images); err != nil {
 				c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 					common.Error{
 						Message: "api: " + err.Error(),

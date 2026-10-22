@@ -1,4 +1,4 @@
-package core
+package analytics
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"nudgebee/llm/agents/core"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
@@ -262,7 +263,7 @@ func tmKey(agent, model string) string { return agent + "\x00" + model }
 
 // GetConversationOptimizationProfile builds the bounded profile + the savings
 // index for one conversation (session) within an account.
-func (chat *ConversationDao) GetConversationOptimizationProfile(sessionID, accountID string) (OptimizationProfile, *optSavingsIndex, error) {
+func (chat *Store) GetConversationOptimizationProfile(sessionID, accountID string) (OptimizationProfile, *optSavingsIndex, error) {
 	if sessionID == "" || accountID == "" {
 		return OptimizationProfile{}, nil, fmt.Errorf("GetConversationOptimizationProfile: session_id and account_id are required")
 	}
@@ -747,7 +748,7 @@ func GenerateConversationOptimization(ctx *security.RequestContext, sessionID, a
 		return ConversationOptimization{}, fmt.Errorf("GenerateConversationOptimization: session_id and account_id are required")
 	}
 
-	profile, idx, err := GetConversationDao().GetConversationOptimizationProfile(sessionID, accountID)
+	profile, idx, err := GetStore().GetConversationOptimizationProfile(sessionID, accountID)
 	if err != nil {
 		return ConversationOptimization{}, err
 	}
@@ -773,7 +774,7 @@ func GenerateConversationOptimization(ctx *security.RequestContext, sessionID, a
 		return ConversationOptimization{}, fmt.Errorf("GenerateConversationOptimization: loading prompt: %w", err)
 	}
 	messages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, WithAgentInstructions(NBAgentRequest{AgentInstructions: agentInstructions}, optimizerPrompt)),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(core.NBAgentRequest{AgentInstructions: agentInstructions}, optimizerPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, string(profileJSON)),
 	}
 	// Track this analysis call's token usage against the OPTIMIZER conversation

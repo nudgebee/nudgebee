@@ -7,7 +7,6 @@ import (
 	"math"
 	"time"
 
-	"nudgebee/llm/agents/core"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 )
@@ -202,7 +201,7 @@ func (chat *Store) GetConversationTree(sessionID, accountID string) (Conversatio
 			created_at, cost_usd
 		FROM llm_conversation_token_usage
 		WHERE %s
-		ORDER BY created_at`, core.ConvScopeCTE)
+		ORDER BY created_at`, ConvScopeCTE)
 	if err := chat.dbManager.Db.Select(&mcScans, mcQuery, args...); err != nil {
 		slog.Error("GetConversationTree: model_calls query failed", "error", err)
 		return ConversationTree{}, fmt.Errorf("GetConversationTree model_calls: %w", err)
@@ -291,7 +290,7 @@ func (chat *Store) GetConversationTree(sessionID, accountID string) (Conversatio
 			created_at, updated_at
 		FROM llm_conversation_messages
 		WHERE %s
-		ORDER BY created_at`, core.ConvScopeCTE)
+		ORDER BY created_at`, ConvScopeCTE)
 	if err := chat.dbManager.Db.Select(&msgScans, msgQuery, args...); err != nil {
 		slog.Error("GetConversationTree: messages query failed", "error", err)
 		return ConversationTree{}, fmt.Errorf("GetConversationTree messages: %w", err)
@@ -336,7 +335,7 @@ func (chat *Store) GetConversationTree(sessionID, accountID string) (Conversatio
 			COALESCE(EXTRACT(EPOCH FROM (updated_at - created_at)), 0) AS duration_seconds
 		FROM llm_conversation_agent
 		WHERE %s
-		ORDER BY created_at`, core.ConvScopeCTE)
+		ORDER BY created_at`, ConvScopeCTE)
 	if err := chat.dbManager.Db.Select(&agentScans, agentQuery, args...); err != nil {
 		slog.Error("GetConversationTree: agents query failed", "error", err)
 		return ConversationTree{}, fmt.Errorf("GetConversationTree agents: %w", err)
@@ -387,7 +386,7 @@ func (chat *Store) GetConversationTree(sessionID, accountID string) (Conversatio
 			COALESCE(EXTRACT(EPOCH FROM (updated_at - created_at)), 0) AS duration_seconds
 		FROM llm_conversation_tool_calls
 		WHERE %s AND metadata->>'parent_tool_call_id' IS NULL
-		ORDER BY created_at`, core.ConvScopeCTE)
+		ORDER BY created_at`, ConvScopeCTE)
 	if err := chat.dbManager.Db.Select(&toolScans, toolQuery, args...); err != nil {
 		slog.Error("GetConversationTree: tool_calls query failed", "error", err)
 		return ConversationTree{}, fmt.Errorf("GetConversationTree tool_calls: %w", err)
