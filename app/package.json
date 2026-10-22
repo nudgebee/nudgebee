@@ -95,7 +95,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/jsonwebtoken": "^9.0.2",
     "@types/node": "^25.5.0",
-    "@types/nodemailer": "^6.4.15",
+    "@types/nodemailer": "^8.0.2",
     "@types/prismjs": "^1.26.6",
     "@types/react": "^18.0.15",
     "@types/react-dom": "^19.2.3",
