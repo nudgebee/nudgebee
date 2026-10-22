@@ -44,6 +44,15 @@ const (
 	RecommendationStatusInProgress RecommendationStatus = "InProgress"
 )
 
+// PopeyeNamespaceSQL derives a Popeye finding's namespace from its
+// "namespace/Kind/name" account_object_id (a Namespace finding's namespace is
+// its name). The payload is a list, so the payload-based lookups beside it find
+// nothing. Expects the recommendation aliased as r; llm-server's
+// popeyeNamespaceSQL is a copy and must change with it.
+const PopeyeNamespaceSQL = `CASE WHEN r.rule_name ~ '.+_misconfigurations$' AND r.account_object_id ~ '^[^/]*/[^/]+/.'
+	THEN NULLIF(CASE split_part(r.account_object_id, '/', 2) WHEN 'Namespace' THEN split_part(r.account_object_id, '/', 3)
+		ELSE split_part(r.account_object_id, '/', 1) END, '') END`
+
 type RecommendationResolutionType string
 type RecommendationResolutionStatus string
 type RecommendationResolutionResolverType string

@@ -9,6 +9,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/internal/database/models"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"regexp"
@@ -3863,7 +3864,7 @@ var table_metadata = map[string]TableDefinition{
 					 WHEN cr.meta -> 'config' ->> 'namespace' IS NOT NULL THEN cr.meta -> 'config' ->> 'namespace'
 					 WHEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace'
 					 WHEN r.recommendation -> 'metadata' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'metadata' ->> 'namespace'
-					 ELSE r.recommendation ->> 'namespace'
+					 ELSE COALESCE(r.recommendation ->> 'namespace', ` + models.PopeyeNamespaceSQL + `)
 				END as resource_k8s_namespace,
 				cr.meta as resource_meta,
 				CASE
@@ -5900,7 +5901,8 @@ var table_metadata = map[string]TableDefinition{
 								cr.meta -> 'config' ->> 'namespace',
 								r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace',
 								r.recommendation -> 'metadata' ->> 'namespace',
-								r.recommendation ->> 'namespace'
+								r.recommendation ->> 'namespace',
+								` + models.PopeyeNamespaceSQL + `
 							) as resource_k8s_namespace,
 							cr.meta as resource_meta,
 							cr."name" as resource_name,

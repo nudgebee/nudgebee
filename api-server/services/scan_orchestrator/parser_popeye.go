@@ -41,11 +41,8 @@ import (
 // from, write the same list under "sanitizers" with a "sanitizer" name per
 // section and no "report_time". The issues map is identical in both.
 //
-// The collector's handle_popeye_report joined service_keys against
-// k8s_pods/k8s_workloads to map each row to a resource_id. PR-C-1 ships the
-// structural parser without that DB enrichment — every row becomes a
-// "general" recommendation keyed on namespace/Kind/name. The DB-side mapping
-// lands in the cron handler PR alongside upsert/archive logic.
+// Every row is keyed on namespace/Kind/name. Persist links rows to their
+// resource (linkPopeyeResources); the parser itself does no DB lookups.
 
 type popeyeReport struct {
 	Popeye struct {

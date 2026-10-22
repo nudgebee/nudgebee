@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/internal/database/models"
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/security"
 	"sync"
@@ -472,7 +473,7 @@ func recomputeFinOpsScoresWith(ctx *security.RequestContext, dbms *database.Data
 				WHEN cr.meta -> 'config' ->> 'namespace' IS NOT NULL THEN cr.meta -> 'config' ->> 'namespace'
 				WHEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace'
 				WHEN r.recommendation -> 'metadata' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'metadata' ->> 'namespace'
-				ELSE r.recommendation ->> 'namespace'
+				ELSE COALESCE(r.recommendation ->> 'namespace', ` + models.PopeyeNamespaceSQL + `)
 			END AS resource_k8s_namespace,
 			r.resource_id,
 			-- k8s volume rules have no cloud_resourses row; their payload is the
