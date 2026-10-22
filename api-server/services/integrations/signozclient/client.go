@@ -246,8 +246,7 @@ func CheckAPIKey(ctx context.Context, hc *http.Client, creds Credentials) error 
 	case http.StatusNotFound, http.StatusMethodNotAllowed:
 		return fmt.Errorf("%w at %s", ErrNotSigNozAPI, base)
 	default:
-		msg, _ := errorMessage(body)
-		return fmt.Errorf("SigNoz %s returned HTTP %d: %s", apiKeyProbePath, resp.StatusCode, msg)
+		return StatusError(apiKeyProbePath, resp.StatusCode, body)
 	}
 }
 
@@ -323,8 +322,7 @@ func sessionContext(ctx context.Context, hc *http.Client, base, email string) (b
 	case status == http.StatusNotFound || status == http.StatusMethodNotAllowed:
 		return false, contextData{}, nil
 	case status != http.StatusOK:
-		msg, _ := errorMessage(body)
-		return false, contextData{}, fmt.Errorf("SigNoz %s returned HTTP %d: %s", path, status, msg)
+		return false, contextData{}, StatusError(path, status, body)
 	}
 
 	var env envelope
@@ -416,13 +414,19 @@ func classify(path string, status int, body []byte) error {
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden || code == "incorrect_password":
 		return ErrInvalidCredentials
-	case status == http.StatusBadRequest:
+	// A 400 is only reported as a rejected request when SigNoz said why; with
+	// no message there is nothing to show, so it falls through to StatusError.
+	case status == http.StatusBadRequest && msg != "":
 		return &RequestRejectedError{Path: path, Message: msg}
 	default:
-		return fmt.Errorf("SigNoz %s returned HTTP %d: %s", path, status, msg)
+		return StatusError(path, status, body)
 	}
 }
 
+// errorMessage returns SigNoz's own error message and code from a response
+// body. It reports an empty message for a body that is not a SigNoz error
+// envelope, so callers never put a foreign page's contents in a user-facing
+// error — use StatusError to describe those.
 func errorMessage(body []byte) (msg, code string) {
 	var env envelope
 	if json.Unmarshal(body, &env) == nil && len(env.Error) > 0 {
@@ -438,11 +442,38 @@ func errorMessage(body []byte) (msg, code string) {
 	if len(env.Errors) > 0 && env.Errors[0].Msg != "" {
 		return env.Errors[0].Msg, ""
 	}
-	s := strings.TrimSpace(string(body))
-	if len(s) > 200 {
-		s = s[:200] + "…"
+	return "", ""
+}
+
+// StatusError describes a failed SigNoz response for a user to read. SigNoz's
+// own message is used when the body carries one; a body that is not a SigNoz
+// error envelope did not come from SigNoz — it is a proxy's or tunnel's page —
+// so it is logged rather than shown. Echoing it filled the integration form's
+// error popup with raw page source (#41200).
+func StatusError(path string, status int, body []byte) error {
+	if msg, _ := errorMessage(body); msg != "" {
+		return fmt.Errorf("SigNoz %s returned HTTP %d: %s", path, status, msg)
 	}
-	return s, ""
+	slog.Warn("signoz: error response carried no SigNoz message",
+		"path", path, "status", status, "body", bodyForLog(body))
+	switch status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return fmt.Errorf("SigNoz is not reachable (HTTP %d) — SigNoz, or a proxy or tunnel in front of it, is unavailable", status)
+	default:
+		return fmt.Errorf("SigNoz %s returned HTTP %d", path, status)
+	}
+}
+
+// logBodyLimit bounds how much of an unreadable body reaches the log line.
+const logBodyLimit = 512
+
+func bodyForLog(body []byte) string {
+	if len(body) > logBodyLimit {
+		// Cut the bytes before converting: a query response can be megabytes.
+		// ToValidUTF8 drops a rune the cut may have split.
+		return strings.ToValidUTF8(strings.TrimSpace(string(body[:logBodyLimit])), "") + "…"
+	}
+	return strings.TrimSpace(string(body))
 }
 
 // call performs one login round trip with its own timeout and returns the
