@@ -51,6 +51,8 @@ type MetricChart struct {
 	Source string `json:"source"`
 	// RestLatest sums the latest values of the series not charted.
 	RestLatest float64 `json:"rest_latest,omitempty"`
+	// SeriesTotal counts the plottable series the backend returned, charted or not.
+	SeriesTotal int `json:"series_total,omitempty"`
 }
 
 const metricChartSource = "metrics"
@@ -66,7 +68,7 @@ type metricChartData struct {
 	Data []float64 `json:"data"`
 }
 
-// BuildMetricChart returns a line chart of the top series by |max|, on the
+// BuildMetricChart returns a line chart of the top series by mean |value|, on the
 // timestamps they share, thinned evenly to metricChartMaxPoints. Values are the
 // backend's own, never interpolated. ok is false when there is nothing to plot.
 func BuildMetricChart(title string, series []MetricChartSeries) (MetricChart, bool) {
@@ -81,7 +83,10 @@ func BuildMetricChart(title string, series []MetricChartSeries) (MetricChart, bo
 	if len(usable) == 0 {
 		return MetricChart{}, false
 	}
-	sort.SliceStable(usable, func(i, j int) bool { return seriesMaxAbs(usable[i]) > seriesMaxAbs(usable[j]) })
+	// Ranked by the mean, not the peak: one bad point (a counter reset, a scrape gap)
+	// must not pick which series are drawn.
+	sort.SliceStable(usable, func(i, j int) bool { return seriesMeanAbs(usable[i]) > seriesMeanAbs(usable[j]) })
+	total := len(usable)
 
 	// The most significant series sets the time axis. The next ones join, in rank
 	// order, only while the chart keeps nearly all of that axis: a series missing
@@ -106,7 +111,7 @@ func BuildMetricChart(title string, series []MetricChartSeries) (MetricChart, bo
 	shared = thin(shared, metricChartMaxPoints)
 
 	keys := seriesKeys(usable)
-	chart := MetricChart{Type: "line", Title: strings.TrimSpace(title + " (UTC)"), Format: "number", Source: metricChartSource, RestLatest: rest}
+	chart := MetricChart{Type: "line", Title: strings.TrimSpace(title + " (UTC)"), Format: "number", Source: metricChartSource, RestLatest: rest, SeriesTotal: total}
 	chart.Labels = timeLabels(shared)
 	for i, s := range usable {
 		byTs := make(map[int64]float64, len(s.Timestamps))
@@ -154,6 +159,15 @@ func MetricChartNote(ref, title string) string {
 	return fmt.Sprintf("Chart%s: chart_ref %q. Only if the user asked for a chart or graph, put "+
 		"```nb-chart\n{\"chart_ref\":%q}\n``` in your answer (optional: \"top\" N series; \"type\" area, or bar/pie of latest values; \"title\"; \"format\" bytes/bytes_per_second/seconds/percent/number when the unit is not shown); never type chart numbers.",
 		title, ref, ref)
+}
+
+// MetricChartCoverageNote tells the model when the chart leaves series out, so the
+// answer does not describe it as showing all of them. Empty when nothing was left out.
+func MetricChartCoverageNote(c MetricChart) string {
+	if c.SeriesTotal <= len(c.Data) {
+		return ""
+	}
+	return fmt.Sprintf(" It shows %d of %d series, highest average first; say so if you mention the chart.", len(c.Data), c.SeriesTotal)
 }
 
 // The quotes may arrive JSON-escaped: tool results are often a JSON document.
@@ -314,14 +328,18 @@ func thin(ts []int64, limit int) []int64 {
 	return out
 }
 
-func seriesMaxAbs(s MetricChartSeries) float64 {
-	m := math.Inf(-1)
+func seriesMeanAbs(s MetricChartSeries) float64 {
+	sum, n := 0.0, 0
 	for _, v := range s.Values {
-		if a := math.Abs(v); !math.IsNaN(a) && !math.IsInf(a, 0) && a > m {
-			m = a
+		if a := math.Abs(v); !math.IsNaN(a) && !math.IsInf(a, 0) {
+			sum += a
+			n++
 		}
 	}
-	return m
+	if n == 0 {
+		return math.Inf(-1)
+	}
+	return sum / float64(n)
 }
 
 func sharedTimestamps(series []MetricChartSeries) []int64 {

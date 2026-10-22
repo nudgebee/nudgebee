@@ -334,7 +334,7 @@ func esChartNotes(nbRequestContext core.NbToolContext, response core.Observabili
 			nbRequestContext.Ctx.GetLogger().Warn(tool+": unable to build chart", "error", err.Error())
 			continue
 		}
-		notes = append(notes, core.MetricChartNote(ref, chart.Title))
+		notes = append(notes, core.MetricChartNote(ref, chart.Title)+core.MetricChartCoverageNote(chart))
 	}
 	return notes, charts
 }

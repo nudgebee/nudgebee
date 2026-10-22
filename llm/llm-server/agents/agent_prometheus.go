@@ -74,7 +74,7 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 		"    - Pod CPU: `sum(rate(container_cpu_usage_seconds_total{pod=~\"POD_NAME.*\", namespace=\"NS\"}[5m])) by (pod)`",
 		"    - Pod Memory: `container_memory_usage_bytes{pod=~\"POD_NAME.*\", namespace=\"NS\"}`",
 		"    - Namespace Memory (Usage): `sum(container_memory_usage_bytes{namespace=\"NS\", container!=\"\"})`",
-		"    - Node CPU: `100 - (avg by (instance) (irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)`",
+		"    - Node CPU: `100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)`",
 		"    **CPU Utilization % (container usage divided by node allocatable — NOT cores):**",
 		"    - Container CPU % per pod: `(sum by(pod,namespace)(rate(container_cpu_usage_seconds_total{namespace=\"NS\"}[5m])) / on(pod,namespace) group_left() kube_pod_container_resource_limits{resource=\"cpu\",namespace=\"NS\"}) * 100`",
 		"    - Node CPU % (sum across all pods on node): `sum by(node)(rate(container_cpu_usage_seconds_total[5m])) / on(node) group_left() max by(node)(kube_node_status_allocatable{resource=\"cpu\"}) * 100`",

@@ -51,8 +51,39 @@ func TestBuildMetricChart_RanksKeysAndLabels(t *testing.T) {
 	assert.Equal(t, "cpu (UTC)", chart.Title)
 	assert.Equal(t, []string{"10:00", "10:05"}, chart.Labels)
 	require.Len(t, chart.Data, metricChartMaxSeries, "top series only")
-	assert.Equal(t, "n7", chart.Data[0].Key, "largest |max| first, keyed by the label that differs")
+	assert.Equal(t, "n7", chart.Data[0].Key, "largest mean |value| first, keyed by the label that differs")
 	assert.Equal(t, []float64{7, -14}, chart.Data[0].Data, "exact backend values")
+}
+
+func TestBuildMetricChart_OneBadPointDoesNotPickTheSeries(t *testing.T) {
+	const t0 = 1792231200
+	// "glitch" is mostly idle but has one counter-reset point far below zero;
+	// "busy" is high throughout. Ranked by the mean, busy comes first.
+	glitch := chartSeries(map[string]string{"instance": "glitch"}, t0, 60, -164.5, 5, 5, 5, 5, 5)
+	busy := chartSeries(map[string]string{"instance": "busy"}, t0, 60, 60, 62, 61, 63, 60, 61)
+
+	chart, ok := BuildMetricChart("cpu", []MetricChartSeries{glitch, busy})
+
+	require.True(t, ok)
+	require.Len(t, chart.Data, 2)
+	assert.Equal(t, "busy", chart.Data[0].Key)
+	assert.Equal(t, -164.5, chart.Data[1].Data[0], "values are still the backend's own")
+}
+
+func TestMetricChartCoverageNote(t *testing.T) {
+	const t0 = 1792231200
+	var series []MetricChartSeries
+	for i := range 8 {
+		series = append(series, chartSeries(map[string]string{"node": fmt.Sprintf("n%d", i)}, t0, 300, float64(i), float64(i)))
+	}
+	chart, ok := BuildMetricChart("cpu", series)
+	require.True(t, ok)
+	assert.Equal(t, 8, chart.SeriesTotal)
+	assert.Contains(t, MetricChartCoverageNote(chart), "6 of 8 series")
+
+	all, ok := BuildMetricChart("cpu", series[:2])
+	require.True(t, ok)
+	assert.Empty(t, MetricChartCoverageNote(all), "nothing left out, no note")
 }
 
 func TestBuildMetricChart_ThinsEvenlyKeepingEnds(t *testing.T) {

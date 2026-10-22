@@ -101,6 +101,8 @@ export const parseChartSpec = (raw) => {
   }
   const format = FORMATTERS[raw.format] ? raw.format : 'number';
   const title = typeof raw.title === 'string' ? raw.title : '';
+  // Charts built from queried metrics (#40909) plot gauges, not amounts.
+  const fromMetrics = raw.source === 'metrics';
 
   if (CIRCULAR_TYPES.includes(type)) {
     // Doughnut/pie accept either `values` or the first series' data.
@@ -129,7 +131,7 @@ export const parseChartSpec = (raw) => {
     }
     series.push({ key: s.key, data: s.data });
   }
-  return { type, title, labels, series, format };
+  return { type, title, labels, series, format, fromMetrics };
 };
 
 const AgentChart = ({ spec }) => {
@@ -205,6 +207,7 @@ const AgentChart = ({ spec }) => {
         format={fmt}
         compactFormat={fmt}
         integerY={parsed.format === 'number'}
+        legendValue={parsed.fromMetrics ? 'latest' : 'total'}
         height={260}
       />
     );

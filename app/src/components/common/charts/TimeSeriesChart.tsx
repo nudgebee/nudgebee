@@ -47,6 +47,12 @@ export interface TimeSeriesChartProps {
   colorFor?: (key: string, index: number) => string;
   /** Render the per-series totals legend below the chart (default true). */
   showLegend?: boolean;
+  /**
+   * What the legend shows per series: `total` (sum of its points, default) or
+   * `latest` (its last point). Use `latest` for gauges such as CPU % or memory,
+   * whose points don't add up to anything meaningful.
+   */
+  legendValue?: 'total' | 'latest';
   height?: number;
   id?: string;
   /** Click a column/point to drill; receives its label + index. */
@@ -94,6 +100,7 @@ export function TimeSeriesChart({
   integerY = false,
   colorFor = paletteColorFor,
   showLegend = true,
+  legendValue = 'total',
   height = 264,
   id,
   onSelectPoint,
@@ -138,9 +145,9 @@ export function TimeSeriesChart({
 
   const seriesTotals = React.useMemo(() => {
     const totals: Record<string, number> = {};
-    series.forEach(({ key, data }) => (totals[key] = data.reduce((s, v) => s + (v ?? 0), 0)));
+    series.forEach(({ key, data }) => (totals[key] = legendValue === 'latest' ? data[data.length - 1] ?? 0 : data.reduce((s, v) => s + (v ?? 0), 0)));
     return totals;
-  }, [series]);
+  }, [series, legendValue]);
 
   const compactFormat = compactFormatProp ?? compactCurrency;
   // A caller's compact formatter wins over plain 'int' labels (200M, not 200000000).

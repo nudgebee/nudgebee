@@ -9,6 +9,12 @@ describe('AgentChart metric units', () => {
     expect(parseChartSpec({ ...spec, format: 'furlongs' }).format).toBe('number');
   });
 
+  it('marks charts built from queried metrics, so the legend shows latest values', () => {
+    const spec = { type: 'line', labels: ['10:00'], series: [{ key: 'a', data: [1] }] };
+    expect(parseChartSpec({ ...spec, source: 'metrics' }).fromMetrics).toBe(true);
+    expect(parseChartSpec(spec).fromMetrics).toBe(false);
+  });
+
   it('scales bytes to binary units', () => {
     expect(FORMATTERS.bytes(512)).toBe('512 B');
     expect(FORMATTERS.bytes(152043520)).toBe('145 MiB');

@@ -990,7 +990,7 @@ func promChartNotes(nbRequestContext core.NbToolContext, queries []string, serie
 			nbRequestContext.Ctx.GetLogger().Warn("prometheus: unable to build chart", "error", err.Error())
 			continue
 		}
-		notes = append(notes, core.MetricChartNote(ref, chart.Title))
+		notes = append(notes, core.MetricChartNote(ref, chart.Title)+core.MetricChartCoverageNote(chart))
 	}
 	return notes, charts
 }
