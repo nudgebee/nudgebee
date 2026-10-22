@@ -1594,6 +1594,10 @@ func init() {
 	viper.SetDefault("llm_server_workspace_resource_limit_storage", "5Gi")
 	viper.SetDefault("llm_server_workspace_resource_request_cpu", "250m")
 	viper.SetDefault("llm_server_workspace_resource_request_memory", "256Mi")
+	// Empty means in-cluster config, then $KUBECONFIG / ~/.kube/config with its
+	// current context. Registered so local runs can pin the workspace cluster.
+	viper.SetDefault("llm_server_workspace_kubeconfig_path", "")
+	viper.SetDefault("llm_server_workspace_kube_context", "")
 	// 58s: see WorkspaceHTTPClientTimeout / workspaceCommandTimeoutBuffer doc
 	// comments above — this default is computed, not hand-picked, so it can't
 	// silently drift out of sync with the HTTP client timeout it must stay under.

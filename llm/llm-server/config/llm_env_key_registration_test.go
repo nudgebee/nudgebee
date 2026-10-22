@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -40,6 +41,51 @@ func TestLLMEnvKeysAreRegisteredWithViper(t *testing.T) {
 		"llm_server_cli_pipeline_status_enabled",
 		"llm_server_remediation_followup_max_runs",
 	} {
+		assert.True(t, known[key],
+			"%s has no viper.SetDefault, so its environment variable will never reach Config", key)
+	}
+}
+
+// unregisteredKeys are tagged fields that still have no viper.SetDefault, so
+// their environment variables are ignored today. Registering one starts
+// applying any value a deployment already sets, so each needs its own check;
+// remove a key from here when it gets its default.
+var unregisteredKeys = map[string]bool{
+	"otel_traces_exporter":                             true,
+	"otel_exporter_otlp_traces_endpoint":               true,
+	"otel_metrics_exporter":                            true,
+	"otel_exporter_otlp_metrics_endpoint":              true,
+	"otel_logs_exporter":                               true,
+	"llm_server_log_provider_override":                 true,
+	"llm_model_lite_name":                              true,
+	"llm_server_fetch_logs_wall_clock_timeout_seconds": true,
+	"llm_server_image_max_per_message":                 true,
+	"llm_server_image_max_size_mb":                     true,
+	"llm_server_security_mode":                         true,
+	"llm_server_preflight_max_message_bytes":           true,
+	"llm_server_skill_selection_top_k":                 true,
+	"llm_server_scratchpad_summary_max_len":            true,
+	"llm_server_scratchpad_summary_min_bytes":          true,
+	"llm_server_scratchpad_summary_timeout_ms":         true,
+}
+
+// Every tagged field must be settable from the environment, so a new key added
+// with a tag and no default fails here instead of being silently ignored.
+func TestEveryConfigKeyIsRegisteredWithViper(t *testing.T) {
+	known := map[string]bool{}
+	for _, k := range viper.AllKeys() {
+		known[k] = true
+	}
+	tp := reflect.TypeOf(Config)
+	for i := 0; i < tp.NumField(); i++ {
+		key := tp.Field(i).Tag.Get("mapstructure")
+		if key == "" || key == "-" {
+			continue
+		}
+		if unregisteredKeys[key] {
+			assert.False(t, known[key], "%s is registered now; remove it from unregisteredKeys", key)
+			continue
+		}
 		assert.True(t, known[key],
 			"%s has no viper.SetDefault, so its environment variable will never reach Config", key)
 	}
