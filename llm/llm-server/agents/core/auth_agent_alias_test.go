@@ -382,3 +382,19 @@ func TestInferToolRequestTypeFromPrompt_Tier(t *testing.T) {
 		})
 	}
 }
+
+// #40734: the alert's follow-up check (StrictReadOnly) dispatches only its agent's own tools; the same call
+// in any other turn still reaches the builtin fallback.
+func TestStrictReadOnlyTurnDispatchesOnlyTheAgentsTools(t *testing.T) {
+	agent := mockAgentWithTools{mockPlainAgent: mockPlainAgent{name: "test_agent"}, tools: []toolcore.NBTool{mockTool{name: "own_read"}}}
+	ctx := security.NewRequestContextForSuperAdmin()
+	strict := NBAgentRequest{AccountId: "test-account", QueryConfig: toolcore.NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true}}
+	_, _, err := IsAgentToolAuthorizedToProcessRequest(ctx, agent, strict, NBAgentPlannerToolAction{Tool: "own_read"})
+	require.NoError(t, err)
+	_, _, err = IsAgentToolAuthorizedToProcessRequest(ctx, agent, strict, NBAgentPlannerToolAction{Tool: toolcore.ToolExecuteShellCommand})
+	require.ErrorContains(t, err, "not one of test_agent's tools in this check")
+	_, _, err = IsAgentToolAuthorizedToProcessRequest(ctx, agent, NBAgentRequest{AccountId: "test-account"}, NBAgentPlannerToolAction{Tool: toolcore.ToolExecuteShellCommand})
+	if err != nil {
+		require.NotContains(t, err.Error(), "in this check")
+	}
+}

@@ -2315,6 +2315,7 @@ func HandleConversationMessageRequest(ctx *security.RequestContext, accountId, c
 func inheritableMessageConfig(prev toolcore.NBQueryConfig) toolcore.NBQueryConfig {
 	prev.SkipConversationHistory = false
 	prev.ReadOnlyRun = false
+	prev.StrictReadOnly = false
 	prev.ToolConfirmations = nil
 	return prev
 }

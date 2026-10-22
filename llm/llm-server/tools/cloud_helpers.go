@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"cmp"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -380,4 +382,103 @@ func GetCloudProviderForAccount(accountId string) string {
 		return ""
 	}
 	return cloudProvider
+}
+
+// CloudReadRejection returns the account's CLI tool for command, or why it isn't an unconfirmed read: shell syntax,
+// cloudReadDeniedCalls, another provider's CLI, or not a read per the CLI's rules. Used by
+// the panel's verify/outcome checks, which a person runs and reads.
+func CloudReadRejection(ctx *security.RequestContext, accountId, provider, command string) (string, error) {
+	if command == "" {
+		return "", errors.New("pass one cloud CLI command")
+	}
+	if hasUnquotedShellSyntax(command) || hasFileRedirection(command) {
+		return "", errors.New("run one command, without pipes, redirection or other shell syntax")
+	}
+	if why := cloudReadDenied(command); why != "" {
+		return "", errors.New(why)
+	}
+	substrate := RemediationSubstrateFor(provider, command)
+	if substrate.Reject != "" || substrate.CloudCliTool == "" {
+		return "", errors.New(cmp.Or(substrate.Reject, "only this account's cloud CLI (aws, az or gcloud) can be read here"))
+	}
+	tool, ok := core.GetNBTool(accountId, substrate.CloudCliTool)
+	inference, classifies := tool.(core.ToolRequestInference)
+	if !ok || !classifies {
+		return "", fmt.Errorf("%s is not available on this account", substrate.CloudCliTool)
+	}
+	if requestType, err := inference.InferToolRequestType(ctx, substrate.CloudCliTool, command); err != nil || requestType != core.ToolRequestTypeRead {
+		return "", errors.New("this command is not one the CLI's rules classify as a read, so it was not sent. Use a describe, get or list command")
+	}
+	return substrate.CloudCliTool, nil
+}
+
+// cloudReadDeniedFlags point the CLI at another identity, profile, endpoint or configuration, or read a local file.
+var cloudReadDeniedFlags = []string{"--endpoint-url", "--profile", "--impersonate-service-account", "--account", "--configuration", "--with-decryption", "--cli-input-json", "--cli-input-yaml"}
+
+// cloudReadDeniedCalls return credentials, secrets or tokens to the caller, change the CLI's identity or
+// configuration (a kubeconfig), or write local files. The CLIs' static rules class several of them as reads.
+// ponytail: a fixed list; a credential-returning call not on it passes if the CLI's rules call it a read.
+var cloudReadDeniedCalls = [][]string{
+	{"sts", "get-session-token"}, {"sts", "get-federation-token"}, {"sts", "assume-role"}, {"sts", "assume-role-with-saml"}, {"sts", "assume-role-with-web-identity"},
+	{"secretsmanager", "get-secret-value"}, {"secretsmanager", "batch-get-secret-value"},
+	{"ecr", "get-login-password"}, {"ecr", "get-authorization-token"}, {"ecr-public", "get-login-password"},
+	{"kms", "decrypt"}, {"rds", "generate-db-auth-token"}, {"eks", "get-token"}, {"codeartifact", "get-authorization-token"},
+	{"eks", "update-kubeconfig"}, {"sso", "get-role-credentials"}, {"ec2", "get-password-data"}, {"cognito-identity", "get-credentials-for-identity"},
+	{"lightsail", "get-instance-access-details"}, {"storage", "account", "keys", "list"}, {"storage", "account", "show-connection-string"},
+	{"auth", "print-access-token"}, {"auth", "print-identity-token"}, {"auth", "application-default", "print-access-token"}, {"auth", "login"}, {"auth", "activate-service-account"},
+	{"config", "set"}, {"config", "unset"}, {"config", "configurations", "activate"}, {"secrets", "versions", "access"},
+	{"account", "get-access-token"}, {"account", "set"}, {"keyvault", "secret", "show"}, {"keyvault", "secret", "download"}, {"login"}, {"acr", "login"},
+	{"keys", "list"}, {"list-keys"}, {"credential", "show"}, {"appsettings", "list"}, {"list-publishing-credentials"}, {"get-credentials"},
+	{"blob", "download"}, {"s3api", "get-object"}, {"s3", "cp"}, {"s3", "sync"},
+}
+
+// cloudReadDenied is why command is not sent although it may read, or "".
+func cloudReadDenied(command string) string {
+	var words []string // the command's words that are not flags; a flag's value stays among them
+	for i, w := range strings.Fields(strings.ToLower(command)) {
+		name, _, _ := strings.Cut(w, "=")
+		if slices.Contains(cloudReadDeniedFlags, name) {
+			return fmt.Sprintf("%s points the CLI at another identity, endpoint or configuration, or decrypts a secret; it is not sent", name)
+		}
+		if i > 0 && !strings.HasPrefix(w, "-") {
+			words = append(words, w)
+		}
+	}
+	for _, call := range cloudReadDeniedCalls {
+		if inOrder(words, call) {
+			return fmt.Sprintf("%q returns credentials or secrets, or changes the CLI's identity or configuration; it is not sent", strings.Join(call, " "))
+		}
+	}
+	return ""
+}
+
+// inOrder reports whether call's words all appear in words, in order, with anything between them (a flag's
+// value, as in "aws sts --region x get-session-token").
+func inOrder(words, call []string) bool {
+	next := 0
+	for _, w := range words {
+		if next < len(call) && w == call[next] {
+			next++
+		}
+	}
+	return next == len(call)
+}
+
+// readOnlyCheckRefusal is why kubectl_execute or a cloud CLI tool refuses a call in the follow-up check
+// (NBQueryConfig.StrictReadOnly), or nil: nobody can approve there, so only strict kubectl reads of the
+// account's own cluster run. Cloud CLIs fail closed: no deny-list covers every call that returns a secret.
+func readOnlyCheckRefusal(ctx core.NbToolContext, tool string, input core.NBToolCallRequest) error {
+	if !ctx.QueryConfig.StrictReadOnly {
+		return nil
+	}
+	if tool != ToolExecuteKubectlCommand {
+		return errors.New("read-only check: the cloud CLI is not available here; use the metrics and event tools")
+	}
+	if v, _ := input.Arguments["cluster"].(string); strings.TrimSpace(v) != "" {
+		return errors.New(`read-only check: omit "cluster"; this check reads only the alert's own cluster`)
+	}
+	if err := ValidateKubectlReadOnly(strings.TrimSpace(input.Command)); err != nil {
+		return fmt.Errorf("read-only check: %w", err)
+	}
+	return nil
 }

@@ -137,6 +137,7 @@ func TestInheritableMessageConfig_NewMessageDropsApprovals(t *testing.T) {
 		ToolConfirmations:       map[string]string{"kubectl_execute": "yes"},
 		SkipConversationHistory: true,
 		ReadOnlyRun:             true,
+		StrictReadOnly:          true,
 	}
 
 	var next toolcore.NBQueryConfig
@@ -146,6 +147,7 @@ func TestInheritableMessageConfig_NewMessageDropsApprovals(t *testing.T) {
 	assert.Empty(t, next.ToolConfirmations)
 	assert.False(t, next.SkipConversationHistory)
 	assert.False(t, next.ReadOnlyRun)
+	assert.False(t, next.StrictReadOnly, "a person's next turn is not the follow-up check")
 	assert.Equal(t, "yes", prev.ToolConfirmations["kubectl_execute"], "the stored message keeps its own approvals")
 }
 

@@ -189,13 +189,19 @@ var capabilityScopeTable = map[string]CapabilityScope{
 	"metrics_list":                      CapabilityScopeNarrow,
 	"nudgebee_docs_search":              CapabilityScopeNarrow,
 	"remediation_generate":              CapabilityScopeNarrow,
-	"search_docs":                       CapabilityScopeNarrow,
-	"search_metrics":                    CapabilityScopeNarrow,
-	"search_skills":                     CapabilityScopeNarrow,
-	"service_dependency_graph_execute":  CapabilityScopeNarrow,
-	"trigger_cis_scan":                  CapabilityScopeNarrow,
-	"trigger_image_scan":                CapabilityScopeNarrow,
-	"workflow_search":                   CapabilityScopeNarrow,
+	// The alert's plan (#40734): plan version, step number, an action enum, and a command that must be the
+	// step's own; a plan object run through generation's validator; minutes and a reason.
+	"get_remediation_plan":             CapabilityScopeNarrow,
+	"propose_fix":                      CapabilityScopeNarrow,
+	"run_step":                         CapabilityScopeNarrow,
+	"schedule_recheck":                 CapabilityScopeNarrow,
+	"search_docs":                      CapabilityScopeNarrow,
+	"search_metrics":                   CapabilityScopeNarrow,
+	"search_skills":                    CapabilityScopeNarrow,
+	"service_dependency_graph_execute": CapabilityScopeNarrow,
+	"trigger_cis_scan":                 CapabilityScopeNarrow,
+	"trigger_image_scan":               CapabilityScopeNarrow,
+	"workflow_search":                  CapabilityScopeNarrow,
 
 	// Datadog / New Relic *_execute tools: the free-text field only filters one fixed read
 	// endpoint, so narrow is arguable, but the input shape is a single free-text field and

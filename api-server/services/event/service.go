@@ -2457,7 +2457,9 @@ func extractRevertPaths(r models.Event, undo bool) []any {
 func hasInProgressRecommendation(existingRecommendations []models.EventResolution, cardId string) (bool, string) {
 	recommendationResolutionId := common.GenerateUUID()
 	for _, resolution := range existingRecommendations {
-		if resolution.Status != models.RecommendationResolutionStatusInProgress {
+		// A remediation run (CommandExecution) is InProgress while llm-server's command is out and carries
+		// no card_id: it is never a card's own in-flight fix to reuse and overwrite.
+		if resolution.Status != models.RecommendationResolutionStatusInProgress || resolution.Type == "CommandExecution" {
 			continue
 		}
 		obj, _ := resolution.Data.Object().(map[string]any)
@@ -2481,10 +2483,11 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		return err
 	}
 
-	// only check resolutions that are in progress and are user resolutions
+	// only check resolutions that are in progress and are user resolutions. A remediation run
+	// (CommandExecution) is settled by llm-server, which sent it; it has no adapter here.
 	rows, err := dbms.Db.Queryx(`SELECT id, created_at, updated_at, event_id, type, data, status, type_reference_id,
 			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
-		FROM event_resolution WHERE status = $1 AND resolver_type = $2`, models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionResolverTypeUser)
+		FROM event_resolution WHERE status = $1 AND resolver_type = $2 AND type <> 'CommandExecution'`, models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionResolverTypeUser)
 	if err != nil {
 		ctx.GetLogger().Error("error getting event resolutions", "error", err)
 		return err

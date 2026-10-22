@@ -35,7 +35,7 @@ func init() {
 	)
 	toolcore.DeclareOriginBound(toolcore.OriginBoundWrite,
 		"recommendation_apply", "recommendation_execute_cli", "recommendation_record_ticket_resolution",
-		"recommendation_set_dismissal", "remediation_execute", "remediation_generate", "trigger_cis_scan",
+		"recommendation_set_dismissal", "remediation_execute", "remediation_generate", "run_step", "trigger_cis_scan",
 		"trigger_image_scan", "watch_cancel", "watch_resource",
 	)
 	// Run against the target account's own integration, picked by
@@ -52,6 +52,9 @@ func init() {
 		"oracle_query_execute", "postgres_query_execute", "rabbit_execute", "redis_command_executer",
 	)
 	toolcore.DeclareOriginBound(toolcore.OriginBoundConversationState,
+		"propose_fix",          // NudgeBee's own plan for the conversation's alert; nothing in the account changes
+		"schedule_recheck",     // when NudgeBee looks at the conversation's alert again; nothing in the account changes
+		"get_remediation_plan", // NudgeBee's own plan for the conversation's alert, read only
 		"watch_list", "watch_status", "workflow_config_delete", "workflow_config_get",
 		"workflow_config_list", "workflow_config_save", "workflow_create", "workflow_delete",
 		"workflow_delete_version", "workflow_dry_run", "workflow_examples", "workflow_execution_cancel",

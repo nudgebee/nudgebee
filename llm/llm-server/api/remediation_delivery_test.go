@@ -14,6 +14,23 @@ func facts(provider string, connected bool, refusals map[string]executorRefusal)
 	return executorFacts{provider: provider, connected: connected, refusals: refusals, now: time.Now().UTC()}
 }
 
+// Every kind of step main runs is runnable: kubectl, helm, argocd and shell through the agent, a cloud
+// CLI in the workspace. Nothing is gated on a switch.
+func TestEveryExecutorKindIsRunnable(t *testing.T) {
+	for _, cmd := range []string{
+		"kubectl rollout restart deployment api -n shop",
+		"helm rollback api 3 -n shop",
+		"argocd app sync api",
+		"systemctl restart nginx",
+	} {
+		mode, reason, _ := deliveryFor(RemediationAction{ExecuteCommand: cmd}, facts("k8s", true, nil))
+		require.Equal(t, DeliveryRun, mode, cmd)
+		require.Empty(t, reason, cmd)
+	}
+	mode, _, _ := deliveryFor(RemediationAction{ExecuteCommand: "aws lambda update-function-configuration --function-name f --timeout 30"}, facts("aws", true, nil))
+	require.Equal(t, DeliveryRun, mode)
+}
+
 // An agent that cannot authenticate is never marked connected, so nothing NudgeBee sends reaches the
 // cluster: the restart is the operator's to run.
 func TestDisconnectedAgentMakesClusterCommandsTheOperators(t *testing.T) {
@@ -92,7 +109,7 @@ func TestRefusalsFromAttempts(t *testing.T) {
 	rows := []attemptRow{ // newest first
 		{Command: "kubectl set resources deployment api -n shop --limits=memory=1Gi", Status: "Success", Manual: true, CreatedAt: now},
 		{Command: "kubectl set env deployment api -n shop A=b", Status: "Failed", Error: `kubectl: verb "set" not in read-only allowlist`, CreatedAt: now.Add(-time.Minute)},
-		{Command: "kubectl rollout restart deployment api -n shop", Status: "Success", CreatedAt: now.Add(-2 * time.Minute)},
+		{Command: "kubectl rollout restart deployment api -n shop", Status: "Success", ExitCodeReported: true, CreatedAt: now.Add(-2 * time.Minute)},
 		{Command: "kubectl rollout restart deployment web -n shop", Status: "Failed", Error: `Error from server (Forbidden): deployments.apps "web" is forbidden: User "u" cannot patch resource "deployments"`, CreatedAt: now.Add(-3 * time.Minute)},
 		{Command: "aws lambda delete-function-concurrency --function-name f", Status: "Failed", Error: "agent connection lost", CreatedAt: now},
 	}
@@ -107,6 +124,20 @@ func TestRefusalsFromAttempts(t *testing.T) {
 		{Command: "kubectl set env deployment api -n shop A=b", Status: "Failed", Error: `kubectl: verb "set" not in read-only allowlist`, CreatedAt: now.Add(-time.Minute)},
 	}, "k8s")
 	require.Contains(t, masked, "kubectl|set|deployment|shop")
+
+	// Only a verified success clears a refusal: a run with no exit code, an unknown outcome or one still
+	// running says nothing about whether the executor may run the verb now.
+	for _, later := range []attemptRow{
+		{Status: "Success"},
+		{Status: "Unknown"},
+		{Status: "InProgress"},
+	} {
+		later.Command, later.CreatedAt = "kubectl set env deployment api -n shop A=c", now
+		got := refusalsFromAttempts([]attemptRow{later,
+			{Command: "kubectl set env deployment api -n shop A=b", Status: "Failed", Error: `kubectl: verb "set" not in read-only allowlist`, CreatedAt: now.Add(-time.Minute)},
+		}, "k8s")
+		require.Contains(t, got, "kubectl|set|deployment|shop", later.Status)
+	}
 }
 
 // The cloud workspace puts the CLI's AccessDenied on stdout and only "exit status 254" in the error field.

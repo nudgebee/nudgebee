@@ -73,6 +73,12 @@ func authorizeToolRequest(ctx *security.RequestContext, agent NBAgent, request N
 		}
 	}
 
+	// The alert's follow-up check (#40734) runs unattended: it dispatches only its agent's own tools, with no
+	// builtin, watch, notebook, client, discovered or registry fallback below.
+	if !found && request.QueryConfig.StrictReadOnly {
+		return nil, nil, fmt.Errorf("auth: %s is not one of %s's tools in this check", toolName, agent.GetName())
+	}
+
 	if !found && request.AccountId != "" {
 		// check if it's a builtin tool like load_skills, search_skills or shell_execute
 		if strings.EqualFold(toolName, "load_skills") || strings.EqualFold(toolName, "search_skills") || strings.EqualFold(toolName, toolcore.ToolExecuteShellCommand) {

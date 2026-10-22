@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"nudgebee/llm/common"
+	"nudgebee/llm/events"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools"
@@ -818,18 +819,74 @@ func renderAttempt(a attempt) string {
 	}
 	if isManualAttempt(a.Data) {
 		if change, ok := strings.CutPrefix(a.Ref, operatorChangePrefix); ok {
-			return fmt.Sprintf("- %s on %s: the operator made the change %q outside NudgeBee", at, scope, truncate(change, 200)) + firedAfterNote(a)
+			return fmt.Sprintf("- %s on %s: the operator made the change %q outside NudgeBee", at, scope, truncate(change, 200)) + followupNote(a.Data) + firedAfterNote(a)
 		}
-		return fmt.Sprintf("- %s on %s: the operator ran %s outside NudgeBee", at, scope, truncate(a.Ref, 200)) + firedAfterNote(a)
+		return fmt.Sprintf("- %s on %s: the operator ran %s outside NudgeBee", at, scope, truncate(a.Ref, 200)) + followupNote(a.Data) + firedAfterNote(a)
 	}
-	line := fmt.Sprintf("- %s on %s: ran %s -> %s", at, scope, truncate(a.Ref, 200), strings.ToLower(firstNonEmpty(a.Status, "unknown")))
+	if a.Status == events.RunStatusDeclined {
+		return fmt.Sprintf("- %s on %s: a person declined %s", at, scope, truncate(a.Ref, 200)) + declineReasonNote(a.Data) + firedAfterNote(a)
+	}
+	line := fmt.Sprintf("- %s on %s: ran %s -> %s", at, scope, truncate(a.Ref, 200), runOutcomeText(a.Status, readRunFacts(a.Data)))
 	if a.Reason != "" {
 		line += ", " + a.Reason
 	}
 	if v := verifyOutcome(a.Data); v != "" {
 		line += ", " + v
 	}
-	return line + firedAfterNote(a)
+	return line + followupNote(a.Data) + firedAfterNote(a)
+}
+
+// followupNote is what NudgeBee's own follow-up check found after a run (remediation_followup.go): the
+// findings it proposed a new plan with, or its report. Quoted, because the agent wrote it.
+func followupNote(data []byte) string {
+	var d struct {
+		Followup *struct {
+			Findings string `json:"findings"`
+			Summary  string `json:"summary"`
+		} `json:"followup"`
+	}
+	if json.Unmarshal(data, &d) != nil || d.Followup == nil {
+		return ""
+	}
+	found := strings.TrimSpace(firstNonEmpty(d.Followup.Findings, d.Followup.Summary))
+	if found == "" {
+		return ""
+	}
+	return fmt.Sprintf("; NudgeBee's follow-up check after it found: %q", truncate(found, 400))
+}
+
+// runOutcomeText is how a NudgeBee run ended, for the planner. A success the agent did not confirm with
+// an exit code, a run still in flight and one whose outcome is unknown are each said as such, never as
+// a success or a failure.
+func runOutcomeText(status string, f runFacts) string {
+	switch status {
+	case events.RunStatusSuccess:
+		if verifiedSuccess(status, f) {
+			return "success"
+		}
+		return "outcome unverified (no exit code was reported)"
+	case events.RunStatusFailed:
+		if f.NotSent {
+			return "failed, not run"
+		}
+		return "failed"
+	case events.RunStatusInProgress:
+		return "still running, no result yet"
+	case events.RunStatusUnknown:
+		return "outcome unknown (no result came back; it may have run)"
+	}
+	return strings.ToLower(firstNonEmpty(status, "unknown"))
+}
+
+// declineReasonNote is the reason a person gave for declining a step, if any.
+func declineReasonNote(data []byte) string {
+	var d struct {
+		Reason string `json:"reason"`
+	}
+	if json.Unmarshal(data, &d) != nil || strings.TrimSpace(d.Reason) == "" {
+		return ""
+	}
+	return fmt.Sprintf(" (reason: %q)", truncate(strings.TrimSpace(d.Reason), 200))
 }
 
 // isManualAttempt reports a step the operator marked done outside NudgeBee ("I ran this").

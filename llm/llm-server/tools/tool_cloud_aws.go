@@ -148,6 +148,9 @@ func (t AwsCliTool) InputSchema() core.ToolSchema {
 }
 
 func (t AwsCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	if err := readOnlyCheckRefusal(nbRequestContext, t.Name(), input); err != nil {
+		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+	}
 
 	command := strings.TrimSpace(input.Command)
 	requested := RequestedAwsAccount(input.Arguments)

@@ -1245,9 +1245,6 @@ func (r *EventAnalysisRepository) GetKnowledgebase(ctx *security.RequestContext,
 	return EventKnowledgebase{}, false
 }
 
-// InsertRemediationExecution records that a remediation command was run against the event's cluster,
-// so the panel can show "already applied" on reload. type=CommandExecution, resolver NBLLM (attributed
-// to the acting user via resolver_id); type_reference_id is the command so the UI can match it to an action.
 // RecordRemediationVerification merges a verify result into the execute attempt it checked, under
 // data.verify. It updates the newest matching attempt rather than inserting a row: a verify is a
 // fact about an attempt, not an attempt of its own, and filing it separately counted one remediation
@@ -1261,7 +1258,8 @@ func (r *EventAnalysisRepository) RecordRemediationVerification(ctx *security.Re
 		return fmt.Errorf("RecordRemediationVerification: marshal: %w", err)
 	}
 	// type_reference_id holds the execute command, which is how an attempt is identified. Scoped to
-	// CommandExecution so a same-named reference on another resolution type cannot be hit.
+	// CommandExecution so a same-named reference on another resolution type cannot be hit, and to runs
+	// that ended: not one still running, a declined step or one the operator marked done.
 	res, err := r.dbManager.Db.Exec(
 		`UPDATE event_resolution
 		    SET data = jsonb_set(COALESCE(data, '{}'::jsonb), '{verify}', $3::jsonb, true),
@@ -1269,6 +1267,7 @@ func (r *EventAnalysisRepository) RecordRemediationVerification(ctx *security.Re
 		  WHERE id = (
 		        SELECT id FROM event_resolution
 		         WHERE event_id = $1 AND type = 'CommandExecution' AND type_reference_id = $2
+		           AND status IN `+SettledRunStatuses+` AND COALESCE(data->>'manual', '') <> 'true'
 		         ORDER BY created_at DESC
 		         LIMIT 1
 		  )`,
@@ -1281,31 +1280,6 @@ func (r *EventAnalysisRepository) RecordRemediationVerification(ctx *security.Re
 	if affected, err := res.RowsAffected(); err == nil && affected == 0 {
 		ctx.GetLogger().Info("remediation: no execute attempt to attach verification to",
 			"event_id", eventId, "execute_command", executeCommand)
-	}
-	return nil
-}
-
-func (r *EventAnalysisRepository) InsertRemediationExecution(ctx *security.RequestContext, eventId, userId, command string, dataJSON string, statusMessage string, success bool) error {
-	status := "Success"
-	if !success {
-		status = "Failed"
-	}
-	_, err := r.dbManager.Db.Exec(
-		`INSERT INTO event_resolution (id, event_id, type, data, status, type_reference_id, resolver_type, resolver_id, status_message) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		common.GenerateUUID(),
-		eventId,
-		"CommandExecution",
-		dataJSON,
-		status,
-		command,
-		// A person clicked run; the model only proposed the command. Recording NBLLM here attributed
-		// the action to the assistant and hid the human behind it, because the resolutions list shows
-		// resolver_type and never resolver_id. "User" is what actually happened.
-		"User",
-		userId,
-		statusMessage)
-	if err != nil {
-		return fmt.Errorf("InsertRemediationExecution: %w", err)
 	}
 	return nil
 }
@@ -1354,4 +1328,14 @@ func (r *EventAnalysisRepository) SetAccountRCAFormat(ctx *security.RequestConte
 	`
 	_, err := r.dbManager.Db.Exec(query, accountId, format)
 	return err
+}
+
+// AlertFingerprintOfSession is the alert fingerprint of an alert's conversation, event-<fingerprint>, and
+// whether session is one. An RCA session (event-rca-<fingerprint>) is not.
+func AlertFingerprintOfSession(session string) (string, bool) {
+	if strings.HasPrefix(session, SessionIdPrefixEventRCA) {
+		return "", false
+	}
+	fingerprint, ok := strings.CutPrefix(session, SessionIdPrefixEvent)
+	return fingerprint, ok && fingerprint != ""
 }

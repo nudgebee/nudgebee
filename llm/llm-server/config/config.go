@@ -843,7 +843,12 @@ type appConfig struct {
 	CacheRedisServerPort         int    `mapstructure:"redis_server_port"`
 
 	// Feature flags
-	RemediationAgentEnabled         bool `mapstructure:"remediation_agent_enabled"`
+	RemediationAgentEnabled bool `mapstructure:"remediation_agent_enabled"`
+	// RemediationFollowupMaxRuns caps the plans of one alert in 24 hours whose runs get a follow-up and a new
+	// proposal (api/remediation_followup.go); every step of a counted plan is checked. Past it the follow-up
+	// only reports that a person must decide.
+	// 0 or less is no cap.
+	RemediationFollowupMaxRuns      int  `mapstructure:"llm_server_remediation_followup_max_runs"`
 	LlmSummarizationParallelEnabled bool `mapstructure:"llm_server_summarization_parallel_enabled"`
 	// LlmServerPreflightMaxMessageBytes is the per-message byte cap applied before every LLM call.
 	// Messages exceeding this are hard-truncated to prevent token-limit errors from large payloads.
@@ -1645,6 +1650,7 @@ func init() {
 	viper.SetDefault("llm_server_summarization_workers", 2)
 	viper.SetDefault("llm_server_summarization_queue_size", 100)
 	viper.SetDefault("remediation_agent_enabled", false)
+	viper.SetDefault("llm_server_remediation_followup_max_runs", 3)
 
 	viper.SetDefault("kb_sync_interval_minutes", 30)
 	viper.SetDefault("kb_processing_stale_minutes", 30)

@@ -2917,6 +2917,19 @@ func readEventDirectBriefFlag(ctx *security.RequestContext, accountId string) bo
 var errEventReportPersistence = errors.New("event report persistence requires retry")
 
 func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request EventAnalysisRequest) (result EventAnalysisResponse, runErr error) {
+	// Every investigation completion path ends here; with the loop on, the alert's plan is built now (#40734).
+	// Only a completion the database confirms counts: the returned status isn't the record (the last return has none).
+	defer func() {
+		if runErr != nil || strings.EqualFold(result.Status, string(events.AnalysisStatusInProgress)) || !remediationSlackOn(request.AccountId) {
+			return
+		}
+		if dbManager, err := common.GetDatabaseManager(common.Metastore); err == nil {
+			if confirmed, terminal := getConfirmedTerminalAnalysis(ctx, request, dbManager); terminal &&
+				strings.EqualFold(confirmed.Status, string(events.AnalysisStatusCompleted)) {
+				planAfterInvestigation(ctx, request.AccountId, request.EventId)
+			}
+		}
+	}()
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("unable to get db", "error", err)

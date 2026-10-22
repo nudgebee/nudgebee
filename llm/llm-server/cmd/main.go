@@ -342,6 +342,15 @@ func main() {
 		slog.Warn("main: failed to register event analysis digest job", "error", err)
 	}
 
+	// Marks Unknown any remediation run whose result was never recorded (#40734).
+	if err := api.RegisterRemediationRunReaper(); err != nil {
+		slog.Warn("main: failed to register remediation run reaper", "error", err)
+	}
+	// Follows up each settled run read-only for tenants with the remediation loop on (#40734).
+	if err := api.RegisterRemediationFollowups(); err != nil {
+		slog.Warn("main: failed to register remediation follow-ups", "error", err)
+	}
+
 	// Daily LLM usage rollup that budget checks read (#40241). Convergent +
 	// leader-elected: rebuilds yesterday, today and any day not yet built.
 	if err := budget.RegisterUsageRollupJob(); err != nil {

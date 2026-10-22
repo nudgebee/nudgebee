@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"regexp"
 	"testing"
 
@@ -8,6 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	toolcore "nudgebee/llm/tools/core"
 )
 
 // Regression tests for GH #37367.
@@ -89,4 +92,27 @@ func TestRunProfileRoundTripsThroughTheRow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, profile, conv.RunProfile)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// #40734: the follow-up check starts a turn only in an idle conversation, saving its message with its config
+// and claiming the conversation in the same transaction.
+func TestStartIdleTurn(t *testing.T) {
+	for _, idle := range []bool{false, true} {
+		dao, mock := setupConversationDAOMock(t)
+		mock.ExpectBegin()
+		mock.ExpectQuery(regexp.QuoteMeta("FOR UPDATE OF c")).WithArgs("c1", "a1").WillReturnRows(sqlmock.NewRows([]string{"idle"}).AddRow(idle))
+		if idle {
+			mock.ExpectExec(regexp.QuoteMeta("INSERT INTO llm_conversation_messages")).
+				WithArgs("m1", "a1", "c1", MessageRoleHuman, "check", MessageTypeGeneration, sqlmock.AnyArg(), "remediation", uuid.Nil, `{"read_only_run":true,"strict_read_only":true,"capabilities":{}}`).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec(regexp.QuoteMeta("UPDATE llm_conversations SET status = 'IN_PROGRESS'")).WithArgs("c1").WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit()
+		} else {
+			mock.ExpectRollback()
+		}
+		started, err := dao.StartIdleTurn(context.Background(), "c1", "a1", "m1", "check", "remediation", toolcore.NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true})
+		require.NoError(t, err)
+		assert.Equal(t, idle, started)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	}
 }

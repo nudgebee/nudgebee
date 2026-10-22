@@ -89,7 +89,7 @@ func (a *AzureOrchestratorAgent) IsWatchCapable() bool { return true }
 func (a *AzureOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
 	// Reduced cloud core (azure_execute + SDG + events + recommendations + delegate
 	// + search_tools); specialists reached on-demand via search_tools.
-	return getCloudLeanSupportedTools(ctx, a.accountId, a.GetName(), tools.ToolExecuteAzureCliCommand)
+	return withAlertPlanTools(ctx, a.accountId, getCloudLeanSupportedTools(ctx, a.accountId, a.GetName(), tools.ToolExecuteAzureCliCommand))
 }
 
 func (a *AzureOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {

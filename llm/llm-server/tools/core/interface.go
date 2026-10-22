@@ -58,6 +58,14 @@ const (
 
 const ToolExecuteShellCommand = "shell_execute"
 
+// The alert's remediation tools (#40734), defined in the api package, which owns plans and runs.
+const (
+	ToolGetRemediationPlan = "get_remediation_plan"
+	ToolProposeFix         = "propose_fix"
+	ToolScheduleRecheck    = "schedule_recheck"
+	ToolRunStep            = "run_step"
+)
+
 // NotebookToolName is the registered name of the update_notebook control tool.
 // Canonical here (in tools/core) because both the tool implementation (package
 // tools) and the ReAct4 planner (package agents/core) reference it and both

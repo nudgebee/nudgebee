@@ -113,7 +113,7 @@ func (l *K8sLeanAgent) GetSupportedTools(ctx *security.RequestContext) []toolcor
 	// Reduced k8s core (kubectl_execute + logs/events/metrics/traces + SDG +
 	// resource_search + recommendations + delegate_agent + search_tools);
 	// specialists reached on-demand via search_tools + delegate_agent.
-	return getTrimmedK8sSupportedTools(ctx, l.accountId, l.GetName())
+	return withAlertPlanTools(ctx, l.accountId, getTrimmedK8sSupportedTools(ctx, l.accountId, l.GetName()))
 }
 
 func (l *K8sLeanAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {

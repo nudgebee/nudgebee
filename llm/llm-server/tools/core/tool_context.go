@@ -125,6 +125,11 @@ type NBQueryConfig struct {
 	// it is never inherited by the conversation's next turn.
 	ReadOnlyRun bool `json:"read_only_run,omitempty"`
 
+	// StrictReadOnly narrows a read-only turn further: kubectl_execute and the cloud CLI tools run only a
+	// strict read on the account's own target (tools.readOnlyCheckRefusal). Set by the alert's follow-up
+	// check (#40734), not by other read-only runs. Inherited like ReadOnlyRun.
+	StrictReadOnly bool `json:"strict_read_only,omitempty"`
+
 	// Memory overrides the server-wide memory settings for this one request.
 	// Grouped rather than three flat flags because they are one concern, and a
 	// reader should not have to know that a "rerank" flag relates to a "memory"
@@ -155,7 +160,7 @@ func (q NBQueryConfig) IsEmpty() bool {
 		q.CurrentCluster == "" && q.CurrentClusterId == "" && q.K8sOrchestratorMode == "" &&
 		q.LlmProvider == "" && q.LlmModelName == "" && len(q.LlmTierModels) == 0 && q.LlmConfigSource == "" && !q.LlmConfigReset && len(q.ToolConfigs) == 0 && q.DelegatedTarget == nil &&
 		len(q.ClientTools) == 0 && q.Capabilities.IsEmpty() && len(q.ToolConfirmations) == 0 &&
-		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == "" && !q.SkipConversationHistory && !q.ReadOnlyRun &&
+		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == "" && !q.SkipConversationHistory && !q.ReadOnlyRun && !q.StrictReadOnly &&
 		len(q.DiscoveredTools) == 0 && q.Memory.IsEmpty()
 }
 
@@ -360,6 +365,9 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	}
 	if !q.ReadOnlyRun {
 		q.ReadOnlyRun = src.ReadOnlyRun
+	}
+	if !q.StrictReadOnly {
+		q.StrictReadOnly = src.StrictReadOnly
 	}
 	if src.ToolConfigs != nil {
 		q.ToolConfigs = lo.Assign(src.ToolConfigs, q.ToolConfigs)

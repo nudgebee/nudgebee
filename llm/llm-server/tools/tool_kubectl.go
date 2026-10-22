@@ -121,14 +121,24 @@ func injectKubectlAutoTail(command string) (string, bool) {
 	return command + tailFlag, true
 }
 
-var kubectlGlobalFlagsWithValue = map[string]bool{
-	"--as": true, "--as-group": true, "--as-uid": true,
-	"--cache-dir": true, "--certificate-authority": true,
-	"--client-certificate": true, "--client-key": true,
-	"--cluster": true, "--context": true, "--kubeconfig": true,
-	"--namespace": true, "-n": true, "--request-timeout": true,
-	"--server": true, "--tls-server-name": true, "--token": true,
-	"--user": true, "-v": true,
+// kubectlConnectionFlags choose the cluster, context or identity kubectl talks to; each takes a value.
+var kubectlConnectionFlags = []string{
+	"--as", "--as-group", "--as-uid", "--certificate-authority", "--client-certificate", "--client-key",
+	"--cluster", "--context", "--kubeconfig", "--server", "--tls-server-name", "--token", "--user",
+}
+
+var kubectlGlobalFlagsWithValue = func() map[string]bool {
+	flags := map[string]bool{"--cache-dir": true, "--namespace": true, "-n": true, "--request-timeout": true, "-v": true}
+	for _, f := range kubectlConnectionFlags {
+		flags[f] = true
+	}
+	return flags
+}()
+
+// kubectlReadSubcommands are the subcommands that only inspect state, of commands that can also write.
+var kubectlReadSubcommands = map[string]map[string]bool{
+	"rollout": {"status": true, "history": true},
+	"auth":    {"can-i": true},
 }
 
 var kubectlReadVerbs = map[string]bool{
@@ -1152,6 +1162,9 @@ func validateKubectlCommandAccess(command string) error {
 }
 
 func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	if err := readOnlyCheckRefusal(nbRequestContext, m.Name(), input); err != nil {
+		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+	}
 
 	command := strings.TrimSpace(input.Command)
 	requested, err := RequestedKubernetesCluster(command, input.Arguments)
@@ -1509,8 +1522,7 @@ func InferKubectlVerbType(command string) core.ToolRequestType {
 	if len(parts) > 1 {
 		subcommand := parts[1]
 		if (verb == "config" && (subcommand == "current-context" || subcommand == "get-contexts" || subcommand == "get-clusters" || subcommand == "view")) ||
-			(verb == "rollout" && (subcommand == "status" || subcommand == "history")) ||
-			(verb == "auth" && subcommand == "can-i") {
+			kubectlReadSubcommands[verb][subcommand] {
 			return core.ToolRequestTypeRead
 		}
 	}
@@ -1608,4 +1620,116 @@ func (m KubectlExecuteTool) ConfigSchema(ctx *security.RequestContext) core.Tool
 		ConfigSource: core.ToolConfigSourceAccount,
 		Properties:   map[string]core.ToolSchemaProperty{},
 	}
+}
+
+// kubectlTargetFlags point kubectl at another cluster, context or identity than the agent's own. A
+// remediation command runs on the cluster of the account it was approved for, as the agent, so none of
+// them may appear in one. kubectlTargetShorthands are their one-letter forms.
+var kubectlTargetFlags = append([]string{"--username", "--password", "--insecure-skip-tls-verify"}, kubectlConnectionFlags...)
+var kubectlTargetShorthands = "s" // -s is --server
+
+// kubectlShorthandsWithValue end a cluster of one-letter flags: the rest of the word is their value
+// (-nshop is -n shop), so letters after them are not flags. Any letter not listed is read as a flag,
+// which can only make a check refuse more, never less.
+const kubectlShorthandsWithValue = "nloLc"
+
+// kubectlFlagHit returns the first flag in words that is one of longFlags (as --flag or --flag=value)
+// or whose one-letter form is in shorthands, read the way kubectl's flag parser reads a cluster such as
+// -Aw (-A -w) or -shttps://x (-s https://x). "" when there is none.
+func kubectlFlagHit(words []string, longFlags []string, shorthands string) string {
+	for _, w := range words {
+		if strings.HasPrefix(w, "--") {
+			for _, flag := range longFlags {
+				if w == flag || strings.HasPrefix(w, flag+"=") {
+					return flag
+				}
+			}
+			continue
+		}
+		if len(w) < 2 || w[0] != '-' {
+			continue
+		}
+		for _, c := range w[1:] {
+			if strings.ContainsRune(shorthands, c) {
+				return "-" + string(c)
+			}
+			if strings.ContainsRune(kubectlShorthandsWithValue, c) {
+				break
+			}
+		}
+	}
+	return ""
+}
+
+// KubectlTargetOverride returns the first flag pointing a kubectl command at another cluster/identity, or "kubectl
+// config" (it changes the agent's kubeconfig); "" if none. Unparseable commands count as an override (fail closed).
+func KubectlTargetOverride(command string) string {
+	words, ok := splitShellWords(strings.TrimSpace(command))
+	if !ok || len(words) < 2 {
+		return "unparseable command"
+	}
+	verb, _, ok := kubectlVerbAndArgs(words[1:])
+	if !ok {
+		return "unparseable command" // a flag before the verb it cannot place: refuse rather than guess
+	}
+	if verb == "config" {
+		return "kubectl config"
+	}
+	return kubectlFlagHit(words, kubectlTargetFlags, kubectlTargetShorthands)
+}
+
+// strictKubectlReadVerbs are the kubectl commands that only read cluster state and end on their own:
+// narrower than the agent tool's kubectlReadVerbs, which also allows port-forward, proxy and wait.
+var strictKubectlReadVerbs = map[string]bool{
+	"get": true, "describe": true, "logs": true, "top": true, "events": true, "explain": true,
+	"api-resources": true, "api-versions": true, "version": true,
+}
+
+// strictKubectlUnboundedFlags make a read stream or reach beyond the resource API: watching or following
+// never ends on its own, a file or kustomization argument reads the agent's filesystem, a template file
+// does too, and --raw requests any API path. strictKubectlUnboundedShorthands are their one-letter forms.
+var strictKubectlUnboundedFlags = []string{"--watch", "--watch-only", "--follow", "--filename", "--kustomize", "--template-file", "--raw"}
+
+const strictKubectlUnboundedShorthands = "wfk"
+
+// strictKubectlFileOutputs are output formats that read a template from the agent's filesystem.
+var strictKubectlFileOutputs = []string{"go-template-file", "jsonpath-file", "template-file", "custom-columns-file"}
+
+// ValidateKubectlReadOnly reports why a command is not a strict kubectl read: one kubectl command, with
+// a read verb first and only reading flags, on the agent's own cluster and identity. NudgeBee runs a
+// command without a person's confirmation (a verify, the outcome check) only when this returns nil.
+func ValidateKubectlReadOnly(command string) error {
+	if err := ValidateKubectlRelayCommand(command); err != nil {
+		return err
+	}
+	words, ok := splitShellWords(strings.TrimSpace(command))
+	if !ok || len(words) < 2 {
+		return errors.New("kubectl: not a single kubectl command")
+	}
+	verb := words[1]
+	switch {
+	case strings.HasPrefix(verb, "-"):
+		return errors.New("kubectl: put the verb first (kubectl get ..., not kubectl -n x get ...)")
+	case strictKubectlReadVerbs[verb]:
+	case kubectlReadSubcommands[verb] != nil:
+		if len(words) < 3 || !kubectlReadSubcommands[verb][words[2]] {
+			return fmt.Errorf("kubectl: %q is not a read", strings.Join(words[1:min(3, len(words))], " "))
+		}
+	default:
+		return fmt.Errorf("kubectl: %q is not a read", verb)
+	}
+	if flag := KubectlTargetOverride(command); flag != "" {
+		return fmt.Errorf("kubectl: %s points the command away from the account's own cluster", flag)
+	}
+	if flag := kubectlFlagHit(words[2:], strictKubectlUnboundedFlags, strictKubectlUnboundedShorthands); flag != "" {
+		return fmt.Errorf("kubectl: %s is not allowed in a check NudgeBee runs without a confirmation", flag)
+	}
+	for _, w := range words[2:] {
+		for _, format := range strictKubectlFileOutputs {
+			if strings.Contains(w, format) {
+				return fmt.Errorf("kubectl: output %q reads a file and is not allowed in a check NudgeBee runs without a confirmation", format)
+			}
+		}
+	}
+	return nil
 }

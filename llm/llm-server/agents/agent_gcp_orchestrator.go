@@ -89,7 +89,7 @@ func (a *GcpOrchestratorAgent) IsWatchCapable() bool { return true }
 func (a *GcpOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
 	// Reduced cloud core (gcloud_execute + SDG + events + recommendations + delegate
 	// + search_tools); specialists reached on-demand via search_tools.
-	return getCloudLeanSupportedTools(ctx, a.accountId, a.GetName(), tools.ToolExecuteGcpCliCommand)
+	return withAlertPlanTools(ctx, a.accountId, getCloudLeanSupportedTools(ctx, a.accountId, a.GetName(), tools.ToolExecuteGcpCliCommand))
 }
 
 func (a *GcpOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {

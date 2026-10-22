@@ -246,6 +246,7 @@ type IConversationDao interface {
 	ListAgentReferences(accountId, conversationId string, messageIds []string, agentId string, limit int) ([]ConversationReference, error)
 	SaveConversationContextReference(accountId, conversationId, messageId string, unifiedExtraction *LlmUnifiedExtraction) error
 	ClaimNextQueuedMessage(ctx context.Context, conversationID string) (*ConversationMessage, error)
+	StartIdleTurn(ctx context.Context, conversationID, accountID, id, message, agentName string, messageConfig toolcore.NBQueryConfig) (bool, error)
 	ClaimQueuedMessageById(ctx *security.RequestContext, accountID, conversationID, messageID, userID string, isAdmin bool) (*ConversationMessage, error)
 	DeleteQueuedMessage(id string, accountID string, userID string, isAdmin bool) error
 	UpdateQueuedMessage(id string, accountID string, userID string, message string, isAdmin bool) error
@@ -1792,6 +1793,43 @@ func (chat *ConversationDao) ClaimNextQueuedMessage(ctx context.Context, convers
 		return nil, err
 	}
 	return &msg, nil
+}
+
+// StartIdleTurn saves message as a user-less turn (one NudgeBee starts) and claims the conversation for it, like
+// ClaimNextQueuedMessage, only while idle (COMPLETED/FAILED, nothing active or queued). Reports whether it did;
+// run the turn with ConversationSessionRequestWithQueuedDispatch.
+func (chat *ConversationDao) StartIdleTurn(ctx context.Context, conversationID, accountID, id, message, agentName string, messageConfig toolcore.NBQueryConfig) (bool, error) {
+	configJson, err := common.MarshalJson(messageConfig)
+	if err != nil {
+		return false, fmt.Errorf("history: idle turn config: %w", err)
+	}
+	tx, err := chat.dbManager.Db.BeginTxx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("history: begin idle turn: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// Every turn start locks the conversation row, so no other turn starts between this check and the claim.
+	var idle bool
+	if err := tx.GetContext(ctx, &idle, `SELECT c.status IN ('COMPLETED', 'FAILED') AND NOT EXISTS (SELECT 1 FROM llm_conversation_messages m
+		WHERE m.conversation_id = c.id AND m.status IN ('IN_PROGRESS', 'QUEUED', 'WAITING', 'WAITING_FOR_CLIENT_TOOL', 'PENDING'))
+		FROM llm_conversations c WHERE c.id = $1 AND c.account_id = $2 FOR UPDATE OF c`, conversationID, accountID); err != nil {
+		return false, fmt.Errorf("history: lock idle turn conversation: %w", err)
+	}
+	if !idle {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO llm_conversation_messages (id, account_id, conversation_id, role, message, response, message_type, status, worker_name, agent_name, parent_agent_id, message_config)
+		VALUES ($1, $2, $3, $4, $5, '', $6, 'IN_PROGRESS', $7, $8, $9, $10)`,
+		id, accountID, conversationID, MessageRoleHuman, message, MessageTypeGeneration, config.Config.ServerName, agentName, uuid.Nil, string(configJson)); err != nil {
+		return false, fmt.Errorf("history: save idle turn: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE llm_conversations SET status = 'IN_PROGRESS', updated_at = now() WHERE id = $1`, conversationID); err != nil {
+		return false, fmt.Errorf("history: claim idle turn conversation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("history: commit idle turn: %w", err)
+	}
+	return true, nil
 }
 
 func (chat *ConversationDao) ClaimQueuedMessageById(ctx *security.RequestContext, accountID, conversationID, messageID, userID string, isAdmin bool) (*ConversationMessage, error) {

@@ -195,6 +195,18 @@ func TestMergeFrom_ReadOnlyRunInheritsWithinTurn(t *testing.T) {
 	}
 }
 
+// #40734: a sub-agent or resume of the alert's follow-up check keeps its strict reads.
+func TestMergeFrom_StrictReadOnlyInheritsWithinTurn(t *testing.T) {
+	q := NBQueryConfig{Namespace: "nudgebee"}
+	q.MergeFrom(NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true})
+	if !q.StrictReadOnly {
+		t.Fatal("strict read-only flag lost on merge")
+	}
+	if (NBQueryConfig{StrictReadOnly: true}).IsEmpty() {
+		t.Fatal("a strict-read-only config must not read as empty")
+	}
+}
+
 func TestNBQueryConfig_DiscoveredTools(t *testing.T) {
 	// IsEmpty checks DiscoveredTools
 	if (NBQueryConfig{DiscoveredTools: []string{"postgres_query_execute"}}).IsEmpty() {

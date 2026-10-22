@@ -18,6 +18,10 @@ import (
 // either side keeps working regardless of which client short-circuited.
 const errMsgAgentNotConnected = "agent not connected"
 
+// ErrAgentNotConnected is Execute's refusal, before any request is sent, when the account's k8s agent is
+// not registered.
+var ErrAgentNotConnected = errors.New(errMsgAgentNotConnected)
+
 func Execute(ctx context.Context, body ActionExecuteBody) (map[string]any, error) {
 
 	relayRequest := RelayExecuteRequest{
@@ -54,7 +58,7 @@ func Execute(ctx context.Context, body ActionExecuteBody) (map[string]any, error
 		if !AgentConnected(body.AccountID) {
 			slog.Debug("relay: skipping request, k8s agent not connected",
 				"account_id", body.AccountID, "action", body.ActionName)
-			return data, errors.New(errMsgAgentNotConnected)
+			return data, ErrAgentNotConnected
 		}
 	}
 
