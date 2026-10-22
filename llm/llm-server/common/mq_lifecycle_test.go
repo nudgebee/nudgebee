@@ -350,8 +350,8 @@ func TestMqPublish_ClosedChannelInsideHandler_DoesNotStopConsumersOrDeadlock(t *
 		return err
 	}))
 	investigate := waitConsumer(t, fleet)
-	require.NoError(t, MqFanoutSubscribe("cache_invalidation", noopProcessor))
-	fanout := waitConsumer(t, fleet)
+	require.NoError(t, MqConsume("other_ex", "other", "q-other", 1, noopProcessor))
+	other := waitConsumer(t, fleet)
 	waitState(t, "q-investigate", MqConsumerRunning)
 
 	assert.Equal(t, rabbitmq.Ack, deliver(t, investigate), "handler must finish and ack")
@@ -364,7 +364,7 @@ func TestMqPublish_ClosedChannelInsideHandler_DoesNotStopConsumersOrDeadlock(t *
 	pubMu.Unlock()
 
 	assert.Zero(t, investigate.closeCalls.Load(), "a publish failure must not close consumers")
-	assert.Zero(t, fanout.closeCalls.Load(), "a publish failure must not close consumers")
+	assert.Zero(t, other.closeCalls.Load(), "a publish failure must not close consumers")
 	assert.Equal(t, 2, fleet.count(), "no consumer may be rebuilt")
 	assert.Equal(t, rabbitmq.Ack, deliver(t, investigate), "consumer must keep consuming")
 }

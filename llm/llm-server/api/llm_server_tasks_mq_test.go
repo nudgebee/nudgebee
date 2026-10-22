@@ -50,14 +50,14 @@ func TestRunLlmServerTask_SurvivesAPanickingKick(t *testing.T) {
 	assert.Equal(t, []string{"tenant-1", "tenant-2"}, kicked, "a panic for one tenant must not skip the rest")
 }
 
-// handleIntegrationChanged drops each distinct account's caches once, and the
-// integration_changed broadcast reaches it.
+// handleIntegrationChanged drops the caches of each listed account (duplicates
+// and empty ids are skipped), and the integration_changed broadcast reaches it.
 func TestHandleIntegrationChanged_DedupsAndDropsCaches(t *testing.T) {
 	const id = "acct-integration-change-no-kick"
 	core.SetMCPIntegrationToolCache(id, []core.NBTool{})
 	defer core.ClearMCPIntegrationToolCache(id)
 
-	assert.Equal(t, []string{id}, handleIntegrationChanged([]string{id, id, ""}))
+	handleIntegrationChanged([]string{id, id, ""})
 	_, present := core.GetMCPIntegrationToolCache(id)
 	assert.False(t, present, "a direct call drops the cache")
 

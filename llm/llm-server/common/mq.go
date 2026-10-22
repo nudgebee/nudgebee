@@ -333,41 +333,6 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 	})
 }
 
-// MqFanoutSubscribe subscribes to a fanout exchange so this pod receives
-// every message regardless of routing key, in addition to every other pod
-// bound to the same exchange. Used for cross-replica events like cache
-// invalidation where each pod must process the message independently —
-// NOT for work-distribution events where load-balancing is desired (use
-// MqConsume for those).
-//
-// Each pod gets its own auto-delete + exclusive queue named
-// "<exchangeName>_<ServerName>" so the queue is uniquely owned by this
-// pod's connection and cleaned up by RabbitMQ when the pod disconnects.
-// No leaked queues survive a pod restart. Supervised like MqConsume.
-func MqFanoutSubscribe(exchangeName string, processor func(ctx context.Context, data []byte) error) error {
-	queue := exchangeName + "_" + config.Config.ServerName
-	return startMqConsumer(queue, processor, func(conn *rabbitmq.Conn) (mqConsumer, error) {
-		return mqNewConsumer(
-			conn,
-			queue,
-			rabbitmq.WithConsumerOptionsExchangeName(exchangeName),
-			rabbitmq.WithConsumerOptionsExchangeKind("fanout"),
-			rabbitmq.WithConsumerOptionsExchangeDeclare,
-			rabbitmq.WithConsumerOptionsExchangeDurable,
-			// Empty routing key is fine for fanout (the exchange ignores it on
-			// publish), but we MUST call WithConsumerOptionsRoutingKey to make
-			// wagslane append a Binding entry — without it the queue is created
-			// but never bound to the exchange and every publish silently
-			// returns "Message published but NOT routed".
-			rabbitmq.WithConsumerOptionsRoutingKey(""),
-			rabbitmq.WithConsumerOptionsQueueAutoDelete,
-			rabbitmq.WithConsumerOptionsQueueExclusive,
-			rabbitmq.WithConsumerOptionsQOSPrefetch(1),
-			rabbitmq.WithConsumerOptionsConsumerName(config.Config.OtelServiceName+"/fanout/"+queue),
-		)
-	})
-}
-
 func startMqConsumer(queue string, processor func(ctx context.Context, data []byte) error, build func(*rabbitmq.Conn) (mqConsumer, error)) error {
 	rbmqMux.Lock()
 	defer rbmqMux.Unlock()
