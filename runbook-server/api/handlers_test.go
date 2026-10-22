@@ -146,6 +146,11 @@ func (m *MockWorkflowService) CompleteApprovalTask(ctx *security.RequestContext,
 	return args.Error(0)
 }
 
+func (m *MockWorkflowService) CompleteApprovalTaskFromLink(ctx *security.RequestContext, token, status, approverEmail string, result any) error {
+	args := m.Called(ctx, token, status, approverEmail, result)
+	return args.Error(0)
+}
+
 func (m *MockWorkflowService) CompleteApprovalTaskFromUI(ctx *security.RequestContext, accountID, workflowID, executionID, taskID, status, comments string) error {
 	args := m.Called(ctx, accountID, workflowID, executionID, taskID, status, comments)
 	return args.Error(0)

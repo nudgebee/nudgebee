@@ -66,6 +66,7 @@ type WorkflowService interface {
 	GetDetailedWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string) (*model.WorkflowExecutionDetails, error)
 	UpdateWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string, inputs map[string]any) error
 	CompleteApprovalTask(ctx *security.RequestContext, token, status string, result any) error
+	CompleteApprovalTaskFromLink(ctx *security.RequestContext, token, status, approverEmail string, result any) error
 	CompleteApprovalTaskFromUI(ctx *security.RequestContext, accountID, workflowID, executionID, taskID, status, comments string) error
 	CompleteApprovalTaskByToken(ctx *security.RequestContext, token, status string) error
 	CancelWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string) error
@@ -3556,6 +3557,16 @@ func (s *Service) UpdateWorkflowExecution(ctx *security.RequestContext, accountI
 }
 
 func (s *Service) CompleteApprovalTask(ctx *security.RequestContext, token, status string, result any) error {
+	return s.completeApprovalTask(ctx, token, status, result, ctx.GetSecurityContext().GetUserId())
+}
+
+// CompleteApprovalTaskFromLink records a decision made through a signed
+// approval email link; the run names the address the link was sent to.
+func (s *Service) CompleteApprovalTaskFromLink(ctx *security.RequestContext, token, status, approverEmail string, result any) error {
+	return s.completeApprovalTask(ctx, token, status, result, "email:"+approverEmail)
+}
+
+func (s *Service) completeApprovalTask(ctx *security.RequestContext, token, status string, result any, approver string) error {
 	var taskTokenStr string
 	var accountID, workflowID, runID, taskID string
 
@@ -3633,7 +3644,7 @@ func (s *Service) CompleteApprovalTask(ctx *security.RequestContext, token, stat
 
 	// Set/Overwrite mandatory fields
 	output["status"] = status
-	output["approver"] = ctx.GetSecurityContext().GetUserId()
+	output["approver"] = approver
 
 	// Merge IM thread coordinates the activity stashed via heartbeat (#29110)
 	// so downstream notifications.im tasks can reply in the same Slack thread

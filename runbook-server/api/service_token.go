@@ -15,7 +15,7 @@ import (
 const serviceTokenHeader = "X-ACTION-TOKEN"
 
 // skipsServiceToken lists the routes that do not take the service token because
-// they carry their own credential (approval links: the token in the URL;
+// they carry their own credential (approval links: the link's signature;
 // webhooks: the per-workflow secret or the integration token) or expose
 // nothing (health, API docs).
 func skipsServiceToken(path string) bool {

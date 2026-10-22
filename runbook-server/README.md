@@ -474,7 +474,7 @@ Both `/runs/*` and `/executions/*` are accepted (aliases of each other).
 
 | Method | Path | What it does |
 |---|---|---|
-| `POST` | `/approvals/:token` | Resolves a paused approval task. The token is signed with `approval_signing_key`. Slack and Teams approval cards don't use it: they send the card's token to the `workflow_complete_approval` action, which decides as the clicking user. |
+| `POST` | `/approvals/:token` | Resolves a paused approval task from a signed email link. The body carries `status`, `approver` and `sig`; the signature (`approval_signing_key`) is verified here, and the run records `email:<approver>`. Slack and Teams approval cards don't use it: they send the card's token to the `workflow_complete_approval` action, which decides as the clicking user. |
 
 ### Tasks
 
@@ -507,7 +507,7 @@ Both `/runs/*` and `/executions/*` are accepted (aliases of each other).
 
 ## Authentication
 
-**Service token.** Every request must carry `X-ACTION-TOKEN` equal to `workflow_server_token` ([`api/service_token.go`](api/service_token.go)); the server refuses to start without one (the Helm chart generates it). Exempt: `/health`, `/swagger/*`, `/openapi.json`, `/approvals/:token` (the HMAC-signed token in the URL, `approval_signing_key`, is the credential) and `/webhook/*` (the per-workflow `X-Webhook-Secret`, or the integration token for `/webhook/by-integration/*`).
+**Service token.** Every request must carry `X-ACTION-TOKEN` equal to `workflow_server_token` ([`api/service_token.go`](api/service_token.go)); the server refuses to start without one (the Helm chart generates it). Exempt: `/health`, `/swagger/*`, `/openapi.json`, `/approvals/:token` (the link's HMAC signature over token, status and approver, checked against `approval_signing_key`, is the credential) and `/webhook/*` (the per-workflow `X-Webhook-Secret`, or the integration token for `/webhook/by-integration/*`).
 
 **User.** Handlers build a `SecurityContext` in [`api/common.go`](api/common.go) from `x-tenant-id` / `x-user-id` (REST, with body fallbacks) or `session_variables` (`/rpc`). The user's roles and custom-role grants are loaded from services-server; a `role` claimed in `session_variables` is ignored. A request with no user is refused — it is never upgraded to admin. Only the webhook routes may proceed without a user, and the runs they start act as the workflow's owner (below).
 

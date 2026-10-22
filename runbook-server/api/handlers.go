@@ -17,6 +17,7 @@ import (
 
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/model"
+	"nudgebee/runbook/internal/tasks/core"
 	"nudgebee/runbook/internal/workflow"
 	"nudgebee/runbook/services/security"
 )
@@ -798,12 +799,22 @@ func (s *Server) handleApproval(c *gin.Context) {
 	}
 
 	var req struct {
-		Status string `json:"status" binding:"required"` // "approved" or "rejected"
-		Result any    `json:"result"`                    // Optional result data
+		Status   string `json:"status" binding:"required"` // "approved" or "rejected"
+		Approver string `json:"approver"`                  // The email the link was sent to
+		Sig      string `json:"sig"`                       // The link's signature
+		Result   any    `json:"result"`                    // Optional result data
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		return
+	}
+
+	// This route skips the service token: the link's signature is its
+	// credential, so it is checked here, where the decision is made. It binds
+	// the decision and the approver the run records.
+	if !core.VerifyApprovalSignature(token, req.Status, req.Approver, req.Sig, config.Config.ApprovalSigningKey) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "the approval link could not be verified"})
 		return
 	}
 
@@ -815,7 +826,7 @@ func (s *Server) handleApproval(c *gin.Context) {
 	}
 
 	sc := security.NewRequestContextForSuperAdmin()
-	err := s.workflowService.CompleteApprovalTask(sc, token, req.Status, req.Result)
+	err := s.workflowService.CompleteApprovalTaskFromLink(sc, token, req.Status, req.Approver, req.Result)
 	if err != nil {
 		var commonErr common.Error
 		if errors.As(err, &commonErr) {
