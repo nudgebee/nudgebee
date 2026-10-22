@@ -1902,10 +1902,18 @@ const IntegrationDynamicFormModal = ({
     azure_monitor_webhook: {
       endpoint: 'azure-monitor',
       message: 'Configure the following url in your monitoring and alerting webhook subscription',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/azure_monitor_webhook/'),
+        text: 'how to configure Azure Monitor Webhook',
+      },
     },
     gcp_monitoring_webhook: {
       endpoint: 'gcp-monitoring',
       message: 'Configure the following URL as a webhook notification channel in GCP Cloud Monitoring',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/gcp_monitoring_webhook/'),
+        text: 'how to configure GCP Monitoring Webhook',
+      },
     },
     servicenow_webhook: {
       endpoint: 'servicenow',
@@ -1934,10 +1942,18 @@ const IntegrationDynamicFormModal = ({
     splunk_webhook: {
       endpoint: 'splunk',
       message: 'Configure the following URL in your Splunk alerting webhook subscription',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/splunk_webhook/'),
+        text: 'how to configure Splunk Webhook',
+      },
     },
     grafana_webhook: {
       endpoint: 'grafana',
       message: 'Configure the following URL in your Grafana alerting webhook contact point',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/grafana_webhook/'),
+        text: 'how to configure Grafana Webhook',
+      },
     },
     solarwinds_webhook: {
       endpoint: 'solarwinds',
@@ -1993,11 +2009,19 @@ const IntegrationDynamicFormModal = ({
       endpoint: 'cubeapm',
       message:
         'Add the following URL as a Webhook notification channel in CubeAPM. Leave the payload template unset — CubeAPM’s default body is already Alertmanager-compatible, which is the expected format',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/cubeapm_webhook/'),
+        text: 'how to configure CubeAPM Webhook',
+      },
     },
     signoz_webhook: {
       endpoint: 'signoz',
       message:
         'Add the following URL as a Webhook notification channel in SigNoz (Settings → Alert Channels → New Channel → Webhook). Alert rules Nudgebee creates in SigNoz notify the channels that use this URL',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/signoz_webhook/'),
+        text: 'how to configure SigNoz Webhook',
+      },
     },
   };
 
