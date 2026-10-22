@@ -39,7 +39,7 @@ const sloStatusCell = (firingNames: string[]) => ({
 
 // CPU SLOs write no report rows, so a breach is read from their latest forecast.
 const breachedCpuSloNames = (row: any[]) =>
-  (row[0]?.drilldownQuery?.cpuConfigs ?? []).filter(isBreachedCpuSlo).map((c: any) => snakeToTitleCase(String(c.name)));
+  (row[0]?.drilldownQuery?.cpuConfigs ?? []).filter((c: any) => isBreachedCpuSlo(c)).map((c: any) => snakeToTitleCase(String(c.name)));
 
 // One line per CPU SLO on the workload: its forecast status and summary.
 const CpuForecastCell = ({ configs }: { configs: any[] }) => {

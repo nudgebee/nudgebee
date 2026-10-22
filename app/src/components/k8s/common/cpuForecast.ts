@@ -33,8 +33,10 @@ export const isCpuSloName = (name?: string) => CPU_SLO_TYPES.some((t) => t.name 
  * rows, so SLO counts built from report observations must also check this, or a
  * workload whose only SLO is a breached CPU one counts as configured but never firing.
  */
-export const isBreachedCpuSlo = (config: { name?: string; last_forecast?: unknown }) =>
-  isCpuSloName(config?.name) && parseForecast(config?.last_forecast)?.status === 'breached';
+export const isBreachedCpuSlo = (config: { name?: string; last_forecast?: unknown }, now = Date.now()) => {
+  const f = parseForecast(config?.last_forecast);
+  return isCpuSloName(config?.name) && f?.status === 'breached' && !isStaleForecast(f, now);
+};
 
 export interface ForecastDailyRow {
   date: string;
@@ -73,6 +75,22 @@ export const parseForecast = (raw: unknown): ForecastResult | null => {
   }
 };
 
+// The hourly SLO run rewrites last_forecast every time. A stored result older than one
+// missed run (a deploy killed the run, the run is failing, the SLO is disabled or the
+// cluster is disconnected) no longer describes the workload, so it is shown as out of
+// date instead of as a live status, and never counts as a breach. Two hours, not just
+// over one: a run evaluates every account in turn, so one that is merely slow must not
+// hide a current breach.
+const STALE_AFTER_MS = 2 * 60 * 60 * 1000;
+
+/** True when a stored forecast is older than a missed hourly run. */
+export const isStaleForecast = (f: ForecastResult | null, now = Date.now()) => {
+  const at = Date.parse(f?.evaluated_at ?? '');
+  return Number.isFinite(at) && now - at > STALE_AFTER_MS;
+};
+
+const ageHours = (f: ForecastResult, now: number) => (now - Date.parse(f.evaluated_at ?? '')) / 3_600_000;
+
 /** A limit or usage figure: cores as millicores ("350m"), the way Kubernetes writes them; any other unit as "<value> <unit>". */
 export const quantity = (v: number, unit?: string) => (unit && unit !== 'cores' ? `${Math.round(v * 10) / 10} ${unit}` : `${Math.round(v * 1000)}m`);
 
@@ -84,7 +102,8 @@ export const humanHours = (h: number) => (h < 48 ? `${Math.max(Math.round(h), 1)
 export type ForecastTone = 'neutral' | 'info' | 'success' | 'warning' | 'critical';
 
 /** A short status for a Label, plus its tone. */
-export const forecastStatus = (f: ForecastResult | null): { text: string; tone: ForecastTone } => {
+export const forecastStatus = (f: ForecastResult | null, now = Date.now()): { text: string; tone: ForecastTone } => {
+  if (isStaleForecast(f, now)) return { text: 'Out of date', tone: 'neutral' };
   switch (f?.status) {
     case 'projected':
       return { text: 'Breach projected', tone: f.level === 'HIGH' ? 'critical' : 'warning' };
@@ -111,8 +130,9 @@ const trend = (slope?: number) => {
 };
 
 /** One sentence describing the result, e.g. "Reaches 75% in ~35h (now 37.3%, rising 25.6 pp/day)". */
-export const forecastSummary = (f: ForecastResult | null): string => {
+export const forecastSummary = (f: ForecastResult | null, now = Date.now()): string => {
   if (!f) return 'Evaluated hourly once saved';
+  if (isStaleForecast(f, now)) return `Last evaluated ${humanHours(ageHours(f, now))} ago`;
   switch (f.status) {
     case 'projected':
       return `Reaches ${pct(f.threshold_pct)} in ~${humanHours(f.eta_hours ?? 0)} (now ${pct(f.current_pct)}, ${trend(f.slope_pct_per_day)})`;

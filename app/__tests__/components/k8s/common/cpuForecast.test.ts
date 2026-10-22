@@ -5,6 +5,7 @@ import {
   humanHours,
   isBreachedCpuSlo,
   isCpuSloName,
+  isStaleForecast,
   parseForecast,
   quantity,
 } from '@components/k8s/common/cpuForecast';
@@ -76,5 +77,36 @@ describe('cpuForecast', () => {
     expect(isBreachedCpuSlo({ name: 'cpu_saturation', last_forecast: { status: 'projected' } })).toBe(false);
     expect(isBreachedCpuSlo({ name: 'latency', last_forecast: { status: 'breached' } })).toBe(false);
     expect(isBreachedCpuSlo({ name: 'cpu_throttling' })).toBe(false);
+  });
+
+  describe('a stored forecast the hourly run has not refreshed', () => {
+    const now = Date.parse('2026-10-22T08:50:00Z');
+    const at = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString();
+
+    it('shows as out of date once an hourly run was missed, not as the old status', () => {
+      const stale = { ...projected, evaluated_at: at(125) };
+      expect(isStaleForecast(stale, now)).toBe(true);
+      expect(forecastStatus(stale, now)).toEqual({ text: 'Out of date', tone: 'neutral' });
+      expect(forecastSummary(stale, now)).toBe('Last evaluated 2h ago');
+      expect(forecastSummary({ status: 'not_projected', evaluated_at: at(3 * 24 * 60) }, now)).toBe('Last evaluated 3 days ago');
+    });
+
+    it('keeps the status of a forecast from the latest run, even a late one', () => {
+      const fresh = { ...projected, evaluated_at: at(110) };
+      expect(isStaleForecast(fresh, now)).toBe(false);
+      expect(forecastStatus(fresh, now).text).toBe('Breach projected');
+      expect(forecastSummary(fresh, now)).toBe('Reaches 75% in ~35h (now 37.3%, rising 25.6 pp/day)');
+    });
+
+    it('treats a forecast without a timestamp as current', () => {
+      expect(isStaleForecast(projected, now)).toBe(false);
+      expect(isStaleForecast(null, now)).toBe(false);
+    });
+
+    it('never counts an out-of-date breach as firing', () => {
+      const breached = (evaluated_at: string) => ({ name: 'cpu_throttling', last_forecast: { status: 'breached', evaluated_at } });
+      expect(isBreachedCpuSlo(breached(at(125)), now)).toBe(false);
+      expect(isBreachedCpuSlo(breached(at(10)), now)).toBe(true);
+    });
   });
 });
