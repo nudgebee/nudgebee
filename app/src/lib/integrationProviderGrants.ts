@@ -50,6 +50,7 @@ export const OBSERVABILITY_INTEGRATION_PROVIDERS: ReadonlyArray<{ section: strin
   { section: 'AZURE_APP_INSIGHTS', type: 'azure_app_insights' },
   { section: 'PROMETHEUS', type: 'prometheus' },
   { section: 'CHRONOSPHERE', type: 'chronosphere' },
+  { section: 'ORION', type: 'orion' },
   { section: 'OTEL', type: 'otel_clickhouse' },
   { section: 'JAEGER', type: 'jaeger' },
   { section: 'NEWRELIC', type: 'newrelic' },

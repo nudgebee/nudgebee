@@ -329,6 +329,7 @@ export const integrationProviders: string[] = [
   'AZURE_APP_INSIGHTS',
   'PROMETHEUS',
   'CHRONOSPHERE',
+  'ORION',
   'OTEL',
   'JAEGER',
   'GRAFANA_TEMPO',

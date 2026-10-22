@@ -181,7 +181,8 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
   } else if (
     cloud_provider.toUpperCase() === 'SOLARWINDS' ||
     cloud_provider.toUpperCase() === 'SOLARWINDS_WEBHOOK' ||
-    cloud_provider.toUpperCase() === 'ORION_WEBHOOK'
+    cloud_provider.toUpperCase() === 'ORION_WEBHOOK' ||
+    cloud_provider.toUpperCase() === 'ORION'
   ) {
     Icon = SolarWindsIcon;
   } else if (cloud_provider.toUpperCase() === 'BITBUCKET') {

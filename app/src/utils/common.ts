@@ -283,6 +283,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'CHRONOSPHERE':
       label = 'Chronosphere';
       break;
+    case 'ORION':
+      label = 'SolarWinds Platform (Orion)';
+      break;
     case 'OTEL':
       label = 'OpenTelemetry';
       break;

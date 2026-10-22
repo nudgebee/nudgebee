@@ -57,6 +57,7 @@ export const METRICS_PROVIDERS: OnboardingProviderDef[] = [
   { route: 'NEWRELIC', label: 'New Relic', types: ['newrelic'] },
   { route: 'AZURE_APP_INSIGHTS', label: 'Azure App Insights', types: ['azure_app_insights'] },
   { route: 'CHRONOSPHERE', label: 'Chronosphere', types: ['chronosphere'], cloudCapable: true },
+  { route: 'ORION', label: 'SolarWinds Platform (Orion)', types: ['orion'] },
   { route: 'ES', label: 'Elasticsearch', types: ['es'], cloudCapable: true },
   { route: 'SOLARWINDS', label: 'SolarWinds', types: ['solarwinds'], cloudCapable: true },
   { route: 'CUBEAPM', label: 'CubeAPM', types: ['cubeapm'] },

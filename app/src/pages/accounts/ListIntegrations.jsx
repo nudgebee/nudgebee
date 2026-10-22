@@ -90,6 +90,7 @@ const integrationConnectionKey = {
   splunk_enterprise: 'splunk_url',
   grafana_tempo: 'tempo_url',
   chronosphere: 'chronosphere_url',
+  orion: 'orion_url',
   signoz: 'signoz_url',
   loki: 'loki_url',
   prometheus: 'prometheus_url',

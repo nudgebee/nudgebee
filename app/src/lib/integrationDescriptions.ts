@@ -94,6 +94,7 @@ export const INTEGRATION_DESCRIPTIONS: Record<string, string> = {
   CUBEAPM: 'Query CubeAPM logs, metrics and traces during investigations.',
   SOLARWINDS: 'Query SolarWinds Observability logs, metrics and traces.',
   CHRONOSPHERE: 'Query Chronosphere metrics and traces during investigations.',
+  ORION: 'Read server and network-device metrics from a self-hosted SolarWinds Platform (Orion) server.',
   SIGNOZ: 'Query SigNoz logs and metrics during investigations.',
   OPENOBSERVE: 'Query OpenObserve logs, metrics and traces during investigations.',
   OBSERVE: 'Query Observe datasets for logs and metrics during investigations.',

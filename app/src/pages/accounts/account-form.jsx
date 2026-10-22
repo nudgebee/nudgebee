@@ -198,6 +198,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'prometheus'} />;
           case 'chronosphere':
             return <ListIntegrations integrationName={'chronosphere'} />;
+          case 'orion':
+            return <ListIntegrations integrationName={'orion'} />;
           case 'otel':
             return <ListIntegrations integrationName={'otel_clickhouse'} />;
           case 'signoz':

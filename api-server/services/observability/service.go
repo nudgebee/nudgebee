@@ -529,6 +529,10 @@ func getMetricsSource(provider, integrationSource string) (MetricSource, error) 
 		return &DynatraceMetricSource{}, nil
 	case provider == "solarwinds" && integrationSource == "user":
 		return &SolarWindsMetricSource{}, nil
+	// Self-hosted SolarWinds Platform (Orion). A different product from
+	// "solarwinds" above, which is the SaaS one: this speaks SWQL over SWIS.
+	case provider == "orion" && integrationSource == "user":
+		return &OrionMetricSource{}, nil
 	case provider == "openobserve" && integrationSource == "user":
 		return &OpenObserveMetricSource{}, nil
 	case provider == "signoz" && integrationSource == "user":
@@ -2452,6 +2456,15 @@ var allProviderCaps = map[string]providerStaticCaps{
 		SupportsHeatmap:       true,
 		TraceSource:           "otel",
 	},
+	// Orion is a hosts-and-network-devices metrics provider: no traces at all in
+	// the self-hosted product, and no service map or heatmap to draw from SWQL.
+	// Raw query is on: SWQL is a language a person can write in the Code tab.
+	"orion": {
+		SupportsServiceMap:    false,
+		SupportsRawQuery:      true,
+		SupportsTraceGrouping: false,
+		SupportsHeatmap:       false,
+	},
 	"azure_app_insights": {
 		SupportsServiceMap: true,
 		// QueryTracesHeatmap and QueryGroupedTraces both return "not implemented"
@@ -3976,6 +3989,29 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 			queries = buildPrometheusWorkloadQueries(meta, meta.RequestedMetrics)
 		}
 
+	// Self-hosted SolarWinds Platform (Orion). Hosts and network devices only: its
+	// container tables carry no namespace, pod, workload, request or limit column,
+	// so a Kubernetes subject has nothing to render and every key falls through to
+	// completeUtilisationResults with a note. See nb-orion-observability-spec.md.
+	case "orion":
+		// An aggregate is answered by fetching the range and collapsing it below.
+		// Orion's statistics rows are per-observation averages, so an instant read
+		// would return the newest sample rather than the window's max or avg.
+		if meta.Aggregate.Name != "" {
+			instant = false
+		}
+		switch meta.Kind {
+		case "vm":
+			lookup := resolveOrionNode(ctx, req, meta)
+			if lookup.Instance == "" {
+				return vmNotFoundResult(meta.RequestedMetrics, lookup.Reason), nil
+			}
+			meta.VMInstance = lookup.Instance
+			queries = buildOrionVMQueries(meta, meta.RequestedMetrics)
+		case "vm_fleet":
+			queries = buildOrionVMFleetQueries(meta.RequestedMetrics)
+		}
+
 	case "newrelic":
 		if meta.Kind == "node" {
 			queries = buildNewRelicNodeQueries(meta, meta.RequestedMetrics)
@@ -4083,6 +4119,12 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 	})
 	if err != nil {
 		return output, err
+	}
+
+	// Orion cannot express an aggregate in SWQL (its tables hold per-observation
+	// averages), so the collapse Aggregate promises is done here instead.
+	if metricsProvider == "orion" {
+		orionCollapseOverTime(output.Results, meta)
 	}
 
 	// Post-process Datadog percentile queries: collapse per-host series into a single percentile series

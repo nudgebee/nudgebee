@@ -485,6 +485,7 @@ const apiAccount = {
         'prometheus',
         'otel_clickhouse',
         'chronosphere',
+        'orion',
         'ssh',
         'observe',
         'jaeger',

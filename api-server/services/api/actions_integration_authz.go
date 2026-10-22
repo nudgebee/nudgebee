@@ -74,6 +74,7 @@ var observabilityIntegrationTypes = map[string]bool{
 	integrations.IntegrationAzureAppInsights: true,
 	integrations.IntegrationPrometheus:       true,
 	integrations.IntegrationChronosphere:     true,
+	integrations.IntegrationOrion:            true,
 	"otel_clickhouse":                        true,
 	integrations.IntegrationJaeger:           true,
 	integrations.IntegrationNewRelic:         true,

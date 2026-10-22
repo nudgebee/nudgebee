@@ -47,13 +47,18 @@ func vmMetricsSupported(provider string) bool {
 	switch provider {
 	case "prometheus", "victoria_metrics", "chronosphere", "cubeapm":
 		return true
+	// Orion is not Prometheus-compatible: it answers the VM keys from its own
+	// statistics tables over SWQL (buildOrionVMQueries), not from node-agent or
+	// node_exporter series.
+	case "orion":
+		return true
 	}
 	return false
 }
 
 // vmMetricsUnsupportedNote is the reason shown for a provider vmMetricsSupported refuses.
 func vmMetricsUnsupportedNote(provider string) string {
-	return fmt.Sprintf("VM metrics are not supported for the %s metrics provider; they need a Prometheus-compatible store holding node-agent or node_exporter series", provider)
+	return fmt.Sprintf("VM metrics are not supported for the %s metrics provider; they need a Prometheus-compatible store holding node-agent or node_exporter series, or a SolarWinds Platform (Orion) server", provider)
 }
 
 // vmIdentifierSafe bounds what is interpolated into the resolution queries. The
