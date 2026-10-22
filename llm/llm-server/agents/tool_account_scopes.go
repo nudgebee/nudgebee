@@ -19,7 +19,7 @@ func init() {
 	)
 	toolcore.DeclareAccountScope(toolcore.AccountScopeIndependent,
 		"loganalysis",
-		"ask_clarification", "github", "gitlab", "prompt_refinement", "search_tools", "tickets",
+		"ask_clarification", "github", "gitlab", "prompt_refinement", "search_tools",
 		"tickets_v2", "visualizer", "websearch",
 	)
 	toolcore.DeclareOriginBound(toolcore.OriginBoundWrite,

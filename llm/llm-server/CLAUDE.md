@@ -264,9 +264,10 @@ For agent files, `_2` / `V2` suffixes mark genuinely versioned agents where both
 | Component | v1 | v2 | Active? |
 |-----------|----|----|---------|
 | Planner runtime | `planner_react_3.go` | `planner_react_4.go` | ReAct4 by default; ReAct3 fallback |
-| Tickets | `agent_tickets.go` | `agent_tickets_V2.go` | Both; v2 opt-in via `TicketV2Enabled` |
 
 The domain orchestrators — `agent_k8s_orchestrator.go`, `agent_aws_orchestrator.go`, `agent_gcp_orchestrator.go`, `agent_azure_orchestrator.go`, `agent_datadog_orchestrator.go` — declare `Orchestrating` and use the same ReAct4-default/ReAct3-fallback routing. They were renamed from `*_debug` (which itself dropped a vestigial `_2`); the old `*_debug` names stay registered as back-compat aliases (`RegisterNBAgentFactoryWithAliases`) so stored history and `@*_debug` invocations keep resolving. Note `agent_aws.go` is a *distinct* sub-agent (direct CLI), not the AWS orchestrator.
+
+Tickets v1 (`agent_tickets.go`, `tool_tickets.go`) is retired: `agent_tickets_V2.go` (`tickets_v2`, tool `ticket_master_v2`) is the only ticket agent, and the old names `tickets` and `ticket_master` are registered as aliases so stored history and configs keep resolving.
 
 **Rule: new planner behavior must account for both ReAct4 and the ReAct3 rollback/capability fallback. There is no v1/v2 planner choice to make.**
 

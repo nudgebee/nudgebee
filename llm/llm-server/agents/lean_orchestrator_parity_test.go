@@ -90,7 +90,7 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 	// (Some clouds may not have every one of these, but if it's present it's a bug.)
 	sharedForbidden := []string{
 		GithubAgentName,
-		getTicketAgentName(),
+		TicketsV2AgentName,
 		VisualizationAgentName,
 		PostgresAgentName,
 		MySQLAgentName,

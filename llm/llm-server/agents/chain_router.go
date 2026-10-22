@@ -271,14 +271,6 @@ func isK8sOrchestratorVariant(name string) bool {
 	return false
 }
 
-// getTicketAgentName returns the appropriate ticket agent name based on the feature flag.
-func getTicketAgentName() string {
-	if config.Config.TicketV2Enabled {
-		return TicketsV2AgentName
-	}
-	return TicketsAgentName
-}
-
 func getAgent(ctx *security.RequestContext, agent string, accountId string) (core.NBAgent, bool) {
 	var agentName string
 	switch strings.ToLower(agent) {
@@ -310,9 +302,7 @@ func getAgent(ctx *security.RequestContext, agent string, accountId string) (cor
 		agentName = EventsAgentName
 	case FinOpsAgentName, "finopschain", "finopsagent", "cost", "spend":
 		agentName = FinOpsAgentName
-	case "ticket", "jira", "bugs", "issues", "ticketagent", "ticketmaster", "create_ticket", "ticket_create", TicketsAgentName:
-		agentName = getTicketAgentName()
-	case TicketsV2AgentName:
+	case "ticket", "jira", "bugs", "issues", "ticketagent", "ticketmaster", "create_ticket", "ticket_create", "tickets", TicketsV2AgentName:
 		agentName = TicketsV2AgentName
 	case core.RouterAgentName:
 		agentName = core.RouterAgentName

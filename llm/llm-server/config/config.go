@@ -1024,7 +1024,6 @@ type appConfig struct {
 	QueuedMessagesEnabled            bool    `mapstructure:"llm_server_queued_messages_enabled"`
 	MaxQueuedMessagesPerConversation int     `mapstructure:"llm_server_max_queued_messages_per_conversation"`
 	ProductivityMetricsEnabled       bool    `mapstructure:"llm_server_productivity_metrics_enabled"`
-	TicketV2Enabled                  bool    `mapstructure:"llm_server_ticket_v2_enabled"`
 	// FollowupResumeV2Enabled routes followup submissions through the clean
 	// single-entry resume path (#28141) that uses conv-level locking and
 	// looks up the agent's correct message_id from DB instead of trusting
@@ -1722,8 +1721,6 @@ func init() {
 	viper.SetDefault("llm_server_waiting_expire_unattended_hours", 12)
 
 	viper.SetDefault("llm_server_productivity_metrics_enabled", false)
-
-	viper.SetDefault("llm_server_ticket_v2_enabled", true)
 
 	viper.SetDefault("llm_server_followup_resume_v2_enabled", true)
 

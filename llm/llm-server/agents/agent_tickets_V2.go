@@ -13,11 +13,14 @@ func init() {
 	toolInput := "A question or request about creating, listing, commenting on, or searching tickets."
 	toolOutput := "Result of the ticket operation including ticket details, ticket lists, comments, or search results."
 
-	core.RegisterNBAgentFactoryAndTool(TicketsV2AgentName, func(accountId string) (core.NBAgent, error) {
+	// "tickets" is the retired v1 agent's name; it resolves here so stored
+	// history, @tickets and agents that list it keep working.
+	core.RegisterNBAgentFactoryAndToolWithAliases(TicketsV2AgentName, func(accountId string) (core.NBAgent, error) {
 		return TicketMasterV2Agent{
 			accountId: accountId,
 		}, nil
-	}, toolDescription, toolInput, toolOutput)
+	}, toolDescription, toolInput, toolOutput, "tickets")
+	toolcore.RegisterNBToolAlias("tickets", TicketsV2AgentName)
 }
 
 const TicketsV2AgentName = "tickets_v2"

@@ -220,7 +220,7 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 		DatadogIncidentAgentName,                     // For Incidents
 		AgentDatadogHostsName,                        // For Hosts
 		AgentDatadogSoftwareCatalogName,              // For Software Catalog
-		getTicketAgentName(),                         // For JIRA/Ticketing
+		TicketsV2AgentName,                           // For JIRA/Ticketing
 		WorkflowAgentName,                            // For Workflows
 		GithubAgentName,                              // For Github
 		WebSearchAgentName,                           // For Web Search
