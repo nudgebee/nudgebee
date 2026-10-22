@@ -283,6 +283,12 @@ var ErrManualDependencyNeedsDeclaredNode = errors.New("needs a node declared out
 // would draw only one of them.
 var ErrManualDependencyPairLinked = errors.New("these nodes are already linked by another declaration")
 
+// ErrManualDependencySelfLink: both sides of the declaration name one node.
+// A dependency from a resource to itself is a typing or copy-paste mistake,
+// and the build would draw a self-loop that investigations and the KG agents
+// then read as a real dependency.
+var ErrManualDependencySelfLink = errors.New("source and destination must be different nodes")
+
 // ValidateRelationshipType checks against the supported set. Returned error
 // is suitable for surfacing back to the caller.
 func ValidateRelationshipType(rt string) error {
@@ -346,34 +352,56 @@ func isDeclaredOutsideAccount(n *core.DbNode, tenantID string) bool {
 	return n != nil && n.Source == core.ManualNodeSource && n.CloudAccountID == tenantID
 }
 
-// checkLinkRules applies, before a write, the two rules a build would
-// otherwise apply after it (see ManualFlowSource.applyLinkRules): a
-// declared-only relationship needs a declared node at one end, and a pair
-// linked with one carries no second declaration. srcPin / dstPin are the
-// sides the caller pinned; the others are resolved now. Unresolved sides
-// constrain nothing yet.
+// checkLinkRules applies, before a write, the rules a build would otherwise
+// apply after it (see ManualFlowSource.processRow): the two sides must be
+// different nodes, a declared-only relationship needs a declared node at one
+// end, and a pair linked with one carries no second declaration. srcPin /
+// dstPin are the sides the caller pinned; the others are resolved now.
+// Unresolved sides constrain nothing yet.
 func (r *ManualDependencyRepository) checkLinkRules(ctx context.Context, tenantID string, selfID int64, dep ManualDependency, srcPin, dstPin string) error {
-	resolveSide := func(pin string, e ManualEndpoint) (string, error) {
+	// A side resolving to several candidates is one the operator pins next
+	// (the form creates the row from text and pins afterwards), so it is not
+	// yet decided and the endpoint text cannot judge it.
+	resolveSide := func(pin string, e ManualEndpoint) (nodeID string, pinnable bool, err error) {
 		if pin != "" {
-			return pin, nil
+			return pin, false, nil
 		}
 		res, err := r.resolver.Resolve(ctx, tenantID, e)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		if res.Status != EndpointStatusResolved {
-			return "", nil
+			return "", res.Status == EndpointStatusAmbiguous || res.Status == EndpointStatusTooManyMatches, nil
 		}
-		return res.NodeID, nil
+		return res.NodeID, false, nil
 	}
-	src, err := resolveSide(strings.TrimSpace(srcPin), dep.sourceEndpoint())
+	src, srcPinnable, err := resolveSide(strings.TrimSpace(srcPin), dep.sourceEndpoint())
 	if err != nil {
 		return fmt.Errorf("resolve source endpoint: %w", err)
 	}
-	dst, err := resolveSide(strings.TrimSpace(dstPin), dep.destEndpoint())
+	dst, dstPinnable, err := resolveSide(strings.TrimSpace(dstPin), dep.destEndpoint())
 	if err != nil {
 		return fmt.Errorf("resolve dest endpoint: %w", err)
 	}
+
+	switch {
+	case src != "" && dst != "":
+		// Where both sides are known the node ids settle it, whether they
+		// came from two pins or from two endpoint texts.
+		if src == dst {
+			return ErrManualDependencySelfLink
+		}
+	case srcPinnable || dstPinnable:
+		// Undecided: the same text may yet be pinned to two different nodes
+		// (two same-named nodes in different accounts). Pinning both sides to
+		// one node comes back through here with two ids.
+	case sameManualEndpoint(dep.sourceEndpoint(), dep.destEndpoint()):
+		// Neither side can be pinned, and both name the same thing: the
+		// resolver reads the same text the same way, so this is one node
+		// whether or not it is in the graph yet.
+		return ErrManualDependencySelfLink
+	}
+
 	if src == "" || dst == "" {
 		return nil
 	}
@@ -410,6 +438,19 @@ func (r *ManualDependencyRepository) checkLinkRules(ctx context.Context, tenantI
 		}
 	}
 	return nil
+}
+
+// sameManualEndpoint reports whether two endpoints name the same thing. Values
+// are compared exactly, the way the resolver matches them against the graph,
+// ignoring only surrounding whitespace.
+func sameManualEndpoint(a, b ManualEndpoint) bool {
+	return strings.TrimSpace(a.NodeType) == strings.TrimSpace(b.NodeType) &&
+		strings.TrimSpace(a.Name) == strings.TrimSpace(b.Name) &&
+		strings.TrimSpace(a.Namespace) == strings.TrimSpace(b.Namespace) &&
+		strings.TrimSpace(a.Cluster) == strings.TrimSpace(b.Cluster) &&
+		strings.TrimSpace(a.ARN) == strings.TrimSpace(b.ARN) &&
+		strings.TrimSpace(a.AccountID) == strings.TrimSpace(b.AccountID) &&
+		strings.TrimSpace(a.Region) == strings.TrimSpace(b.Region)
 }
 
 // pairConflict reports whether two declarations on the same two nodes cannot

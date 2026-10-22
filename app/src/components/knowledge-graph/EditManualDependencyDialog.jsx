@@ -20,6 +20,7 @@ import { Divider } from '@ui/Divider';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import PropTypes from 'prop-types';
 import { Modal } from '@ui/Modal';
+import { Banner } from '@ui/Banner';
 import { Button } from '@ui/Button';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
@@ -90,10 +91,11 @@ const deriveKind = (nodeType) => (nodeType && K8S_NODE_TYPE_SET.has(nodeType) ? 
 
 const defaultNodeTypeForKind = (kind) => (kind === KIND_K8S ? K8S_NODE_TYPE_OPTIONS[0].value : CLOUD_NODE_TYPE_OPTIONS[0].value);
 
-// Endpoint identity fields compared to decide whether a side was edited.
-// When a side is untouched on edit we preserve its existing pin instead of
-// letting the backend resolver re-run and clobber it.
-const PIN_COMPARE_FIELDS = ['node_type', 'name', 'namespace', 'cluster', 'arn', 'account_id', 'region'];
+// The fields that identify an endpoint. Compared side-against-row to decide
+// whether a side was edited (an untouched side keeps its existing pin instead
+// of letting the backend resolver re-run and clobber it), and source-against-
+// destination to catch a declaration from a node to itself.
+const ENDPOINT_IDENTITY_FIELDS = ['node_type', 'name', 'namespace', 'cluster', 'arn', 'account_id', 'region'];
 
 // The first three link any two nodes; the rest need a node declared outside
 // any account at one end. Which end that is the form cannot tell (a typed
@@ -442,8 +444,27 @@ const EditManualDependencyDialog = ({ open, row, schema, onClose, onSaved }) => 
     return sideOk('source') && sideOk('dest');
   }, [form]);
 
-  const handleSubmit = async () => {
+  // The server refuses a declaration whose two sides are one node — it would
+  // draw a self-loop the investigations then read as a real dependency. Say so
+  // here rather than after the round trip. Two picked nodes are compared by
+  // id, anything else by endpoint text; typing one text on both sides is
+  // refused even where it happens to name two nodes (the server allows that
+  // one, since a pin can still separate them) — pick the two nodes instead.
+  const selfLink = useMemo(() => {
     if (!canSubmit) {
+      return false; // a half-filled form is not yet a self-link; both sides start out blank and identical
+    }
+    const pickOf = (prefix) => (form[`${prefix}_kind`] === KIND_KG_PICK ? form[`${prefix}_picked_node_id`] : '');
+    const sourcePick = pickOf('source');
+    const destPick = pickOf('dest');
+    if (sourcePick && destPick) {
+      return sourcePick === destPick;
+    }
+    return ENDPOINT_IDENTITY_FIELDS.every((f) => (form[`source_${f}`] ?? '').trim() === (form[`dest_${f}`] ?? '').trim());
+  }, [form, canSubmit]);
+
+  const handleSubmit = async () => {
+    if (!canSubmit || selfLink) {
       return;
     }
     setSubmitting(true);
@@ -483,7 +504,8 @@ const EditManualDependencyDialog = ({ open, row, schema, onClose, onSaved }) => 
       //      every save, which would otherwise clobber a pin on a side the
       //      operator didn't edit (e.g. they only changed notes/relationship).
       //   3. Otherwise → no pin; let the resolver run.
-      const sideUnchanged = (prefix) => isEdit && PIN_COMPARE_FIELDS.every((f) => (form[`${prefix}_${f}`] ?? '') === (row?.[`${prefix}_${f}`] ?? ''));
+      const sideUnchanged = (prefix) =>
+        isEdit && ENDPOINT_IDENTITY_FIELDS.every((f) => (form[`${prefix}_${f}`] ?? '') === (row?.[`${prefix}_${f}`] ?? ''));
       const pinFor = (prefix) => {
         if (form[`${prefix}_kind`] === KIND_KG_PICK) {
           return form[`${prefix}_picked_node_id`] || '';
@@ -576,11 +598,20 @@ const EditManualDependencyDialog = ({ open, row, schema, onClose, onSaved }) => 
           </Box>
         </Box>
 
+        {selfLink && (
+          <Banner
+            tone='critical'
+            surface='section'
+            title='Source and destination are the same node'
+            message='Change one side. A dependency from a resource to itself would be drawn as a self-loop in the graph.'
+          />
+        )}
+
         <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[2], pt: ds.space[1] }}>
           <Button tone='secondary' size='md' onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button tone='primary' size='md' onClick={handleSubmit} disabled={!canSubmit || submitting} loading={submitting}>
+          <Button tone='primary' size='md' onClick={handleSubmit} disabled={!canSubmit || selfLink || submitting} loading={submitting}>
             {isEdit ? 'Save' : 'Create'}
           </Button>
         </Box>

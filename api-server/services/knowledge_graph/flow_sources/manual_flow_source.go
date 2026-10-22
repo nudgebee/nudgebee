@@ -457,6 +457,17 @@ func buildUpdateFromResults(rowID int64, src, dst *EndpointResolveResult) manual
 		u.ResolvedDestNodeID = dst.NodeID
 	}
 
+	// Both sides on one node: the edge would be a self-loop, which the write
+	// paths refuse up front. A row stored before that guard, or one whose two
+	// sides drifted onto the same node, is caught here instead — in the one
+	// place row resolution is computed, so the build and a single re-resolve
+	// agree. Not resolved means no edge, and retireOrphanedEdges then removes
+	// the self-loop an earlier build drew.
+	if u.ResolvedSourceNodeID != "" && u.ResolvedSourceNodeID == u.ResolvedDestNodeID {
+		u.ResolutionStatus = ManualResolutionInvalidPayload
+		u.ResolutionError = ErrManualDependencySelfLink.Error()
+	}
+
 	switch {
 	case src.ErrorMessage != "" && dst.ErrorMessage != "":
 		u.ResolutionError = fmt.Sprintf("source: %s; dest: %s", src.ErrorMessage, dst.ErrorMessage)

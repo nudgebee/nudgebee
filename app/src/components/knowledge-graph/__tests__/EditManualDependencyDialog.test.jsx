@@ -55,3 +55,36 @@ it('shows an endpoint of a custom kind and the CloudResource category as their o
   expect(screen.getByText('NetworkSwitch (your kind)')).toBeInTheDocument();
   expect(screen.getByText('CloudResource (other)')).toBeInTheDocument();
 });
+
+// #41145: a declaration from a node to itself resolves cleanly and draws a
+// self-loop, so the form refuses it rather than letting the server answer.
+const SELF_ROW = {
+  id: 7,
+  source_node_type: 'Workload',
+  source_name: 'app-dev',
+  source_namespace: 'nudgebee',
+  dest_node_type: 'Workload',
+  dest_name: 'app-dev',
+  dest_namespace: 'nudgebee',
+  relationship_type: 'CALLS',
+};
+
+it('refuses a declaration whose source and destination are the same node', async () => {
+  renderDialog({ row: SELF_ROW });
+  await waitFor(() => expect(apiKnowledgeGraph.getCloudAccounts).toHaveBeenCalled());
+
+  expect(screen.getByText('Source and destination are the same node')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+
+  // Naming a different destination clears it.
+  fireEvent.change(screen.getAllByDisplayValue('app-dev')[1], { target: { value: 'app-test' } });
+  await waitFor(() => expect(screen.queryByText('Source and destination are the same node')).not.toBeInTheDocument());
+  expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled();
+});
+
+it('does not warn on a half-filled form, where both sides start out blank', async () => {
+  renderDialog();
+  await waitFor(() => expect(apiKnowledgeGraph.getCloudAccounts).toHaveBeenCalled());
+
+  expect(screen.queryByText('Source and destination are the same node')).not.toBeInTheDocument();
+});
