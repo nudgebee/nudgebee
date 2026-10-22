@@ -192,7 +192,7 @@
       "want": true
     },
     {
-      "name": "scoped Write grant implies Execute",
+      "name": "scoped Write grant does not imply Execute",
       "context": {
         "ScopedCustomPermissions": {
           "acct-a": {
@@ -203,7 +203,35 @@
       "account": "acct-a",
       "module": "k8s",
       "class": "Execute",
+      "want": false
+    },
+    {
+      "name": "scoped Execute grant allows Execute",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "k8s:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Execute",
       "want": true
+    },
+    {
+      "name": "scoped Execute grant does not imply Write",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "k8s:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Write",
+      "want": false
     },
     {
       "name": "a grant covers only its module",

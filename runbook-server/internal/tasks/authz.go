@@ -657,8 +657,7 @@ func (a StepAuthorizer) Authorize(ctx context.Context, in StepAuthInput) error {
 
 	if in.CheckRunRight &&
 		!sc.HasAccountAccess(in.RunAccountID, security.SecurityAccessTypeCreate) &&
-		!sc.HasScopedPermission(in.RunAccountID, "workflows", classExecute) &&
-		!sc.HasScopedPermission(in.RunAccountID, "workflows", classWrite) {
+		!sc.HasScopedPermission(in.RunAccountID, "workflows", classExecute) {
 		return denied("permission denied: user %s may not run automations on account %s", in.Principal, in.RunAccountID)
 	}
 

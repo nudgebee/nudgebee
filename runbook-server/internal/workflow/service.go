@@ -4265,8 +4265,8 @@ func (s *Service) newIsolatedTaskContext(ctx *security.RequestContext, accountId
 }
 
 func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType string, params map[string]any) (any, error) {
-	// Built-in account role, or a dynamic-RBAC workflows:Execute grant (Write
-	// covers it too). A pure custom-role holder has no built-in account role, so
+	// Built-in account role, or a dynamic-RBAC workflows:Execute grant (Write does
+	// not imply it). A pure custom-role holder has no built-in account role, so
 	// the role check alone would 401 the Task Runner the gateway already admitted.
 	sc := ctx.GetSecurityContext()
 	if !sc.HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&

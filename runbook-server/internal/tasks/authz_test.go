@@ -190,7 +190,7 @@ func TestAuthorizeExecuteOnlyCustomRoleIsRefusedAWriteStep(t *testing.T) {
 }
 
 func TestAuthorizeCustomGrantForTheModuleAllowsTheStep(t *testing.T) {
-	grants := map[string]map[string]bool{"acct-a": {"workflows:Execute": true, "k8s:Write": true}}
+	grants := map[string]map[string]bool{"acct-a": {"workflows:Execute": true, "k8s:Execute": true}}
 	sc := principalContext(t, nil, nil, grants)
 	assert.NoError(t, stubAuthorizer(sc, true).Authorize(context.Background(), stepInput("k8s.pod_delete", "acct-a")))
 }
@@ -304,8 +304,9 @@ func TestChangeStepsNeedExecute(t *testing.T) {
 
 	execute := principalContext(t, nil, nil, map[string]map[string]bool{"acct-a": {"workflows:Execute": true, "k8s:Execute": true}})
 	assert.NoError(t, stubAuthorizer(execute, true).Authorize(context.Background(), stepInput("k8s.pod_delete", "acct-a")))
+	// Write and Execute are separate rights: a Write grant does not run a change step.
 	write := principalContext(t, nil, nil, map[string]map[string]bool{"acct-a": {"workflows:Execute": true, "k8s:Write": true}})
-	assert.NoError(t, stubAuthorizer(write, true).Authorize(context.Background(), stepInput("k8s.pod_delete", "acct-a")), "Write implies Execute")
+	assertDenied(t, stubAuthorizer(write, true).Authorize(context.Background(), stepInput("k8s.pod_delete", "acct-a")), "needs k8s:Execute on account acct-a")
 }
 
 // Execute on the notifications or events module alone, the class granted for

@@ -47,10 +47,10 @@ func canWriteWorkflows(sc *security.SecurityContext, accountId string) bool {
 }
 
 // canRunWorkflows: running, replaying, cancelling, pausing and resuming are the
-// Execute class. Write is accepted too, mirroring ExecuteTask — someone who may
-// rewrite a workflow can already make it do anything running it would.
+// Execute class. Write and Execute are separate rights: a workflows:Write grant
+// (edit workflows) does not let its holder run them.
 func canRunWorkflows(sc *security.SecurityContext, accountId string) bool {
-	return grantedWorkflows(sc, accountId, "Execute", "Write")
+	return grantedWorkflows(sc, accountId, "Execute")
 }
 
 // canInspectWorkflows: the read class, for operations the gateway classifies as

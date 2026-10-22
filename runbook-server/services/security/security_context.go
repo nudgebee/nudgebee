@@ -277,7 +277,7 @@ func (sc *SecurityContext) CanReadAccountData(accountId string, module string) b
 // Can reports whether the caller holds `module:class` on accountId: a built-in
 // account role that allows the class (Read: read, Execute: create, Write:
 // update), or a custom grant for the module on that account. A Write grant
-// implies Read and Execute. The llm-server helper of the same name answers the
+// implies Read; it does not imply Execute. The llm-server helper of the same name answers the
 // same (testdata/can_cases.json).
 func (sc *SecurityContext) Can(accountId string, module string, class string) bool {
 	if sc == nil {
@@ -288,8 +288,7 @@ func (sc *SecurityContext) Can(accountId string, module string, class string) bo
 		return sc.CanReadAccountData(accountId, module)
 	case "Execute":
 		return sc.HasAccountAccess(accountId, SecurityAccessTypeCreate) ||
-			sc.HasScopedPermission(accountId, module, "Execute") ||
-			sc.HasScopedPermission(accountId, module, "Write")
+			sc.HasScopedPermission(accountId, module, "Execute")
 	case "Write":
 		return sc.HasAccountAccess(accountId, SecurityAccessTypeUpdate) ||
 			sc.HasScopedPermission(accountId, module, "Write")

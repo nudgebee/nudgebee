@@ -266,8 +266,7 @@ func canAccessWatchAccount(nbCtx core.NbToolContext, w *watch.Watch, access secu
 		return sc.CanReadAccountData(account, watchModule)
 	}
 	return sc.HasAccountAccess(account, access) ||
-		sc.HasScopedPermission(account, watchModule, "Execute") ||
-		sc.HasScopedPermission(account, watchModule, "Write")
+		sc.HasScopedPermission(account, watchModule, "Execute")
 }
 
 // watchSummary projects a Watch into the shape the agent shows to the

@@ -49,9 +49,9 @@ func grantedWrite(sc *security.SecurityContext, accountId, module string) bool {
 }
 
 // grantedRun is the common case for an operation the catalog classifies as
-// Execute (run an investigation, generate a query, sync a knowledge base).
-// Write is accepted too — someone who may rewrite the thing can already make it
-// do whatever running it would.
+// Execute (run an investigation, generate a query, sync a knowledge base). Write
+// and Execute are separate rights: running needs Execute, and a Write grant does
+// not imply it.
 func grantedRun(sc *security.SecurityContext, accountId, module string) bool {
-	return granted(sc, accountId, module, "Execute", "Write")
+	return granted(sc, accountId, module, "Execute")
 }
