@@ -42,8 +42,11 @@ func ValidateRule(rule Rule) error {
 			return errors.New("tool approval: tool_config_id must identify a resolved execution target")
 		}
 	}
-	if rule.Name == "" || rule.ToolName == "" {
-		return errors.New("tool approval: name and tool_name are required")
+	if rule.Name == "" {
+		return errors.New("tool approval: name is required")
+	}
+	if rule.ToolName == "" {
+		return errors.New("tool approval: tool_name is required")
 	}
 	switch rule.MatchKind {
 	case MatchTool:

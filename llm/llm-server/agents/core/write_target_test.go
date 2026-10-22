@@ -168,6 +168,32 @@ func TestWriteApprovalCardNamesTheConversationsOwnAccount(t *testing.T) {
 	require.Nil(t, (&plannerExecutor{ctx: e.ctx, agentRequest: NBAgentRequest{AccountId: "unknown-id"}}).destinationOf(postgres, action, nil), "an account that cannot be named keeps the generic card")
 }
 
+// fakeMCPTool stands in for an MCP integration tool, which tools/core does not export.
+type fakeMCPTool struct {
+	tools.PostgresExecuteTool
+	integration string
+}
+
+func (f fakeMCPTool) Name() string               { return "mcp_test_ask_wiki_question" }
+func (f fakeMCPTool) MCPIntegrationName() string { return f.integration }
+
+// An MCP tool's call goes to its integration, so the card names the integration,
+// not the conversation's cluster.
+func TestWriteApprovalCardNamesTheMCPIntegration(t *testing.T) {
+	e := writeTargetExecutor(t, "prod-id")
+	tools.StubAccountTargets(t, map[string]*toolcore.ExecutionTarget{
+		"dev-id": {Provider: "kubernetes", Name: "k8s-dev", AccountID: "dev-id"},
+	})
+	tool := fakeMCPTool{integration: "MCP-test"}
+	action := NBAgentPlannerToolAction{Tool: tool.Name(), ToolInput: `{"question":"what is the reconciler?"}`}
+
+	got := confirmationQuestionWithTarget("", action, toolcore.ToolRequestTypeUpdate, e.destinationOf(tool, action, nil))
+
+	require.Contains(t, got, "on MCP integration **MCP-test**")
+	require.NotContains(t, got, "Kubernetes cluster")
+	require.Equal(t, &FollowupTarget{Provider: "mcp", Kind: "MCP integration", Name: "MCP-test"}, e.destinationOf(tool, action, nil).followupTarget())
+}
+
 // The approval's stored config carries where the write lands, for the UI.
 func TestApprovalConfigCarriesTheTarget(t *testing.T) {
 	onProd := &writeTarget{Target: toolcore.ExecutionTarget{Provider: "kubernetes", Name: "k8s-prod", AccountID: "prod-id"}, Integration: "prod"}

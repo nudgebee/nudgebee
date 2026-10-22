@@ -290,6 +290,15 @@ type MCPReadOnlyHinter interface {
 // MCPReadOnlyHint reports the server's readOnlyHint for the tool.
 func (m mcpIntegrationTool) MCPReadOnlyHint() bool { return m.readOnlyHint }
 
+// MCPIntegrationNamer is an MCP tool that names the integration its calls go
+// to, so an approval card can say where a write lands.
+type MCPIntegrationNamer interface {
+	MCPIntegrationName() string
+}
+
+// MCPIntegrationName is the name of the MCP integration the tool belongs to.
+func (m mcpIntegrationTool) MCPIntegrationName() string { return m.config.IntegrationName }
+
 // mcpReadOnlyHint reads a tool's annotations.readOnlyHint: true only for an
 // object whose readOnlyHint is the boolean true. Any other shape (annotations
 // not an object, readOnlyHint a string) counts as not read-only.

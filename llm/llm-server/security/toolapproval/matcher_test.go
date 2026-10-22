@@ -325,3 +325,14 @@ func TestChainMatchesOnlyWhenEveryCommandMatches(t *testing.T) {
 	check(exact, `kubectl rollout status deployment/api`, true)
 	check(exact, `kubectl rollout restart deployment/api && kubectl delete deployment api`, false)
 }
+
+// A missing rule name is reported on its own, not together with a tool that is set.
+func TestValidateRuleNamesTheMissingField(t *testing.T) {
+	unnamed := commandRule(MatchExactCommand, `kubectl rollout restart deployment/api -n staging`)
+	unnamed.Name = " "
+	require.EqualError(t, ValidateRule(unnamed), "tool approval: name is required")
+
+	noTool := commandRule(MatchExactCommand, `kubectl rollout restart deployment/api -n staging`)
+	noTool.ToolName = ""
+	require.EqualError(t, ValidateRule(noTool), "tool approval: tool_name is required")
+}

@@ -114,11 +114,15 @@ func confirmationQuestionWithTarget(question string, action NBAgentPlannerToolAc
 // destinationOf is where a write lands, for the approval card: the other
 // account when it lands elsewhere, else the conversation's own account and
 // the integration the call runs with there (the one it names, else the one
-// already chosen: picked, or the only one). Nil when
+// already chosen: picked, or the only one); for an MCP tool, its integration. Nil when
 // the conversation's account cannot be named; the card then keeps its old text.
 func (e *plannerExecutor) destinationOf(tool toolcore.NBTool, action NBAgentPlannerToolAction, target *writeTarget) *writeTarget {
 	if target != nil {
 		return target
+	}
+	// An MCP tool's call goes to its integration, not to the account's cluster.
+	if named, ok := tool.(toolcore.MCPIntegrationNamer); ok && named.MCPIntegrationName() != "" {
+		return &writeTarget{Target: toolcore.ExecutionTarget{Provider: "mcp", Name: named.MCPIntegrationName(), AccountID: e.agentRequest.AccountId}}
 	}
 	own := tools.AccountTarget(e.agentRequest.AccountId)
 	if own == nil || own.Name == "" {
