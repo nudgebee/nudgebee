@@ -245,10 +245,11 @@ func TestApplyLogQueryDetails_SeriesAndRaw(t *testing.T) {
 	assert.JSONEq(t, `{"lat": {}}`, string(r.AggregationsRaw))
 	assert.Contains(t, r.SeriesNote, "they are in aggregations_raw")
 
-	// Without the new fields set, the JSON a UI caller gets is today's plus truncated.
-	b, err := json.Marshal(FetchLogsResult{Logs: []OutputLog{}, Query: "q", Provider: "ES"})
+	// Without the new fields set, the JSON a UI caller gets is today's plus truncated and
+	// mode (which FetchLogs always sets, so a reader can tell lines from counts).
+	b, err := json.Marshal(FetchLogsResult{Mode: LogResultModeLines, Logs: []OutputLog{}, Query: "q", Provider: "ES"})
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"logs": [], "query": "q", "provider": "ES", "truncated": false}`, string(b))
+	assert.JSONEq(t, `{"mode": "lines", "logs": [], "query": "q", "provider": "ES", "truncated": false}`, string(b))
 }
 
 func TestAnnotateLogLabelKinds(t *testing.T) {

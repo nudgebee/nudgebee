@@ -1050,6 +1050,12 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 		return FetchLogsResult{}, err
 	}
 
+	// Count mode takes the request as the caller sent it: it must see, and refuse, a
+	// query field the SigNoz rewrite below would otherwise fold into the filter.
+	if fetchLogRequest.QueryRequest.Count != nil {
+		return fetchLogCount(ctx, source, fetchLogRequest)
+	}
+
 	// SigNoz is the one provider whose GetQuery has nothing to preview, so the
 	// log-query generator falls back to handing the UI its canonical JSON
 	// (llm/llm-server/agents/agent_log_query.go:158) and it arrives here in
@@ -1107,6 +1113,13 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 
 	provider := resolveResultLogProvider(ctx, fetchLogRequest.AccountId, fetchLogRequest.LogProvider, fetchLogRequest.LogProviderSource)
 
+	// A hand-written query that asked for counts and no lines (size 0 with aggregations)
+	// holds counts, whatever request mode carried it.
+	mode := LogResultModeLines
+	if details.NoLines && details.HasCounts {
+		mode = LogResultModeCount
+	}
+
 	// A query that matched nothing — or that failed with a backend error — is frequently
 	// caused by a mistyped label NAME or VALUE; see diagnoseEmptyLogQuery. When the caller
 	// opts in via ValidateRequest, a hit returns a 200 with empty Logs and the actionable
@@ -1115,7 +1128,7 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	countsOnly := countsQueryMatched(details)
 	if fetchLogRequest.ValidateRequest && (err != nil || (len(logs) == 0 && !countsOnly)) {
 		if suggestion := diagnoseEmptyLogQuery(ctx, source, fetchLogRequest, referencedLabels, referencedValues, filteringMap, err, len(logs) == 0); suggestion != "" {
-			return FetchLogsResult{Logs: []OutputLog{}, Query: usedQuery, Provider: provider, Suggestion: suggestion}, nil
+			return FetchLogsResult{Mode: mode, Logs: []OutputLog{}, Query: usedQuery, Provider: provider, Suggestion: suggestion}, nil
 		}
 	}
 	if err != nil {
@@ -1128,14 +1141,14 @@ func FetchLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) (F
 	}
 	normalizeOutputLogLabels(logs, filteringMap)
 
-	result := FetchLogsResult{Logs: logs, Query: usedQuery, Provider: provider, Partial: partial}
+	result := FetchLogsResult{Mode: mode, Logs: logs, Query: usedQuery, Provider: provider, Partial: partial}
 	applyLogQueryDetails(&result, details, fetchLogRequest.Limit, fetchLogRequest.Offset, partial, fetchLogRequest.IncludeRaw)
 	return result, nil
 }
 
 // prepareLogRequestWhere moves a request's where clause from canonical names into the
 // source's provider space and builds the native query from it, the same way for every
-// caller that queries a LogSource (FetchLogs, FetchLogAggregate). It returns the merged
+// caller that queries a LogSource (FetchLogs and its count mode). It returns the merged
 // canonical→provider label mapping and the keys label expansion produced, which the
 // empty-result diagnosis needs.
 func prepareLogRequestWhere(ctx *security.RequestContext, source LogSource, req *FetchLogRequest) (map[string]string, map[string]bool, error) {
@@ -2608,7 +2621,7 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 			resolvedSource = source
 			caps.SupportedOperators = source.GetSupportedOperators()
 			_, caps.SupportsAutoQuery = source.(PlaybookQueryGenerator)
-			_, caps.SupportsLogCountBy = source.(LogAggregateSource)
+			_, caps.SupportsLogCount = source.(LogCountSource)
 			// Full canonical to provider merge: provider default, then tenant, account,
 			// provider config and finally the integration's own mapping. Skip the merge
 			// when accountId is empty: with no account the lookup can only return the
@@ -3624,6 +3637,10 @@ func GetLogsQuery(ctx *security.RequestContext, fetchLogRequest FetchLogRequest)
 	source, err := getLogSource(logProvider, integrationSource)
 	if err != nil {
 		return OutputLogQuery{}, err
+	}
+	// A count-mode request runs counting queries, not the line query below; preview those.
+	if fetchLogRequest.QueryRequest.Count != nil {
+		return previewLogCount(ctx, source, fetchLogRequest)
 	}
 	// Apply label mapping before building query — mirror FetchLogs so the SQL-preview
 	// endpoint translates both WHERE and ORDER BY identifiers consistently with execution.

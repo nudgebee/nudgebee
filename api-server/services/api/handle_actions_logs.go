@@ -102,31 +102,6 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 		c.JSON(200, resp)
 		return
 
-	case "logs_aggregate":
-		var request observability.FetchLogAggregateRequest
-		err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request)
-		if err != nil {
-			slog.Error("logs_aggregate: failed to decode request", "error", err)
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-		err = common.ValidateStruct(request)
-		if err != nil {
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-
-		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityLogsQueryTimeout, func() (observability.FetchLogAggregateResult, error) {
-			return observability.FetchLogAggregate(ctx, request)
-		})
-		if err != nil {
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-
-		c.JSON(200, resp)
-		return
-
 	case "logs_get_query":
 		var request observability.FetchLogRequest
 		err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request)
