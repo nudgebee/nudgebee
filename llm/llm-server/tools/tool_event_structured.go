@@ -664,10 +664,11 @@ func (t ListEventsTool) Description() string {
 		"range (start_time/end_time ISO8601, or relative_range like '24h'/'7d'). Returns a compact " +
 		"evidence manifest per event (available evidence types + key insights), not full raw evidence — " +
 		"use get_event_by_id or get_event_evidence to drill into a specific event afterward. Use this for " +
-		"any 'show me recent/list events matching X' question instead of writing raw SQL. CPU SLO breach " +
-		"forecasts are events with aggregation_key CPUThrottlingPredicted or CPUSaturationPredicted (status " +
-		"FIRING = projected breach; the title carries the ETA); an actual breach is CPUThrottlingSLOBreached " +
-		"or CPUSaturationSLOBreached, whose evidence carries the daily climb that led to it."
+		"any 'show me recent/list events matching X' question instead of writing raw SQL. SLO breach " +
+		"forecasts are events with aggregation_key CPUThrottlingPredicted, CPUSaturationPredicted or " +
+		"MemorySaturationPredicted (status FIRING = projected breach; the title carries the ETA); an actual breach " +
+		"is CPUThrottlingSLOBreached, CPUSaturationSLOBreached or MemorySaturationSLOBreached, whose evidence " +
+		"carries the daily climb that led to it. Memory ones name their container in the title and the container label."
 }
 
 func (t ListEventsTool) InputSchema() core.ToolSchema {

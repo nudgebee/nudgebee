@@ -30,6 +30,8 @@ def test_event_keys_map_to_curated_copy():
     assert display_name("CPUSaturationPredicted") == "CPU saturation breach predicted"
     assert display_name("CPUThrottlingSLOBreached") == "CPU throttling SLO breached"
     assert display_name("CPUSaturationSLOBreached") == "CPU saturation SLO breached"
+    assert display_name("MemorySaturationPredicted") == "Memory saturation breach predicted"
+    assert display_name("MemorySaturationSLOBreached") == "Memory saturation SLO breached"
     assert display_name("Kubernetes Warning Event") == "Warning events"
 
 

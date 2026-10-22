@@ -26,6 +26,12 @@ func isForecastConfig(c DBSLOConfig) bool { return c.Method == forecastMethod }
 
 func isForecastType(name string) bool { return forecast.IsSLOCondition(strings.ToLower(name)) }
 
+// isContainerScoped reports whether the forecast SLO type watches one container.
+func isContainerScoped(name string) bool {
+	p, ok := forecast.PresetFor(forecast.Condition(strings.ToLower(name)))
+	return ok && p.ContainerScoped
+}
+
 // Seams for tests.
 var (
 	evaluateForecast  = forecast.EvaluateWithSeries
@@ -45,11 +51,12 @@ func executeForecastConfig(config DBSLOConfig, accountId string, dbms *database.
 		Namespace:    config.Namespace,
 		Name:         config.WorkloadName,
 		Kind:         workloadKindOf(config.TenantId, accountId, config.WorkloadName, config.Namespace),
+		Container:    common.StrVal(config.Container),
 		Condition:    forecast.Condition(strings.ToLower(config.Name)),
 		ThresholdPct: config.ThresholdBucket,
 	})
-	slog.Info("slo: cpu forecast evaluated", "config_id", config.Id, "account_id", accountId,
-		"workload", config.WorkloadName, "namespace", config.Namespace, "status", res.Status,
+	slog.Info("slo: forecast evaluated", "config_id", config.Id, "account_id", accountId, "condition", config.Name,
+		"workload", config.WorkloadName, "namespace", config.Namespace, "container", common.StrVal(config.Container), "status", res.Status,
 		"duration_ms", time.Since(start).Milliseconds())
 
 	if err := storeLastForecast(dbms, config.Id, res); err != nil {
@@ -77,9 +84,13 @@ func validateForecastConfig(ctx *security.RequestContext, req SLORequest, c SLOC
 	if c.Threshold <= 0 || c.Threshold > 100 {
 		return fmt.Errorf("%s threshold must be a percentage above 0 and at most 100, got %v", c.Name, c.Threshold)
 	}
+	if isContainerScoped(c.Name) && strings.TrimSpace(c.Container) == "" {
+		return fmt.Errorf("a %s SLO needs a container", c.Name)
+	}
 	kind := workloadKindOf(ctx.GetSecurityContext().GetTenantId(), req.AccountId, req.WorkloadName, req.Namespace)
 	res, _ := evaluateForecast(ctx, forecast.Request{
 		AccountId: req.AccountId, Namespace: req.Namespace, Name: req.WorkloadName, Kind: kind,
+		Container: strings.TrimSpace(c.Container),
 		Condition: forecast.Condition(strings.ToLower(c.Name)), ThresholdPct: c.Threshold,
 	})
 	switch res.Status {
@@ -93,12 +104,24 @@ func validateForecastConfig(ctx *security.RequestContext, req SLORequest, c SLOC
 // evaluated again (disabled or deleted). closeSLOEventByFingerprint is not enough:
 // a forecast has one fingerprint per urgency level, and its close must also set
 // nb_status and the close reason the re-fire cooldown reads.
-func closeForecastEvents(tenantId, accountId, name, workload, namespace string) {
+func closeForecastEvents(tenantId, accountId, name, workload, namespace, container string) {
 	kind := workloadKindOf(tenantId, accountId, workload, namespace)
-	err := closeForecastAll(forecast.Target{TenantId: tenantId, AccountId: accountId}, namespace, kind, workload, forecast.Condition(strings.ToLower(name)))
+	err := closeForecastAll(forecast.Target{TenantId: tenantId, AccountId: accountId}, namespace, kind, workload, container, forecast.Condition(strings.ToLower(name)))
 	if err != nil {
-		slog.Error("slo: failed to close forecast events", "error", err, "workload", workload, "namespace", namespace, "name", name)
+		slog.Error("slo: failed to close forecast events", "error", err, "workload", workload, "namespace", namespace, "name", name, "container", container)
 	}
+}
+
+// storedContainer is the container a forecast SLO watched before this save, or "".
+func storedContainer(dbms *database.DatabaseManager, tenantId string, req SLORequest, name string) string {
+	var c *string
+	err := dbms.Db.Get(&c, `SELECT container FROM slo_config
+		WHERE tenant_id=$1 AND cloud_account_id=$2 AND workload_name=$3 AND workload_namespace=$4 AND "name"=$5`,
+		tenantId, req.AccountId, req.WorkloadName, req.Namespace, name)
+	if err != nil {
+		return ""
+	}
+	return common.StrVal(c)
 }
 
 // workloadKind is resolveSubjectType for callers that hold no config row.

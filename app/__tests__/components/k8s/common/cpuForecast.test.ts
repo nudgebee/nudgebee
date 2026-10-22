@@ -3,8 +3,12 @@ import {
   forecastStatus,
   forecastSummary,
   humanHours,
-  isBreachedCpuSlo,
-  isCpuSloName,
+  isBreachedForecastSlo,
+  isForecastSloName,
+  isContainerScopedSloName,
+  defaultMemoryContainer,
+  memoryLimitedContainers,
+  FORECAST_EVENT_KEYS,
   isStaleForecast,
   parseForecast,
   quantity,
@@ -25,11 +29,14 @@ describe('cpuForecast', () => {
     ],
   };
 
-  it('recognises the two CPU SLO names, any case', () => {
-    expect(isCpuSloName('cpu_throttling')).toBe(true);
-    expect(isCpuSloName('CPU_Saturation')).toBe(true);
-    expect(isCpuSloName('latency')).toBe(false);
-    expect(isCpuSloName(undefined)).toBe(false);
+  it('recognises the forecast SLO names, any case', () => {
+    expect(isForecastSloName('cpu_throttling')).toBe(true);
+    expect(isForecastSloName('CPU_Saturation')).toBe(true);
+    expect(isForecastSloName('memory_saturation')).toBe(true);
+    expect(isForecastSloName('latency')).toBe(false);
+    expect(isForecastSloName(undefined)).toBe(false);
+    expect(isContainerScopedSloName('memory_saturation')).toBe(true);
+    expect(isContainerScopedSloName('cpu_throttling')).toBe(false);
   });
 
   it('parses last_forecast from a JSON string or an object, and tolerates junk', () => {
@@ -72,11 +79,46 @@ describe('cpuForecast', () => {
     expect(quantity(0.35)).toBe('350m');
   });
 
-  it('counts a CPU SLO as firing from its latest forecast, since it writes no SLO reports', () => {
-    expect(isBreachedCpuSlo({ name: 'cpu_throttling', last_forecast: JSON.stringify({ status: 'breached' }) })).toBe(true);
-    expect(isBreachedCpuSlo({ name: 'cpu_saturation', last_forecast: { status: 'projected' } })).toBe(false);
-    expect(isBreachedCpuSlo({ name: 'latency', last_forecast: { status: 'breached' } })).toBe(false);
-    expect(isBreachedCpuSlo({ name: 'cpu_throttling' })).toBe(false);
+  it('counts a forecast SLO as firing from its latest forecast, since it writes no SLO reports', () => {
+    expect(isBreachedForecastSlo({ name: 'cpu_throttling', last_forecast: JSON.stringify({ status: 'breached' }) })).toBe(true);
+    expect(isBreachedForecastSlo({ name: 'memory_saturation', last_forecast: { status: 'breached' } })).toBe(true);
+    expect(isBreachedForecastSlo({ name: 'cpu_saturation', last_forecast: { status: 'projected' } })).toBe(false);
+    expect(isBreachedForecastSlo({ name: 'latency', last_forecast: { status: 'breached' } })).toBe(false);
+    expect(isBreachedForecastSlo({ name: 'cpu_throttling' })).toBe(false);
+  });
+
+  it('writes memory in MiB', () => {
+    expect(quantity(704, 'MiB')).toBe('704 MiB');
+  });
+
+  it('lists the containers whose spec sets a memory limit, from the workload meta', () => {
+    const meta = {
+      config: {
+        containers: [
+          { name: 'api', resources: { limits: { cpu: '500m', memory: '512Mi' } } },
+          { name: 'istio-proxy', resources: { limits: { memory: '128Mi' } } },
+          { name: 'init-ish', resources: { limits: { cpu: '100m' } } },
+        ],
+      },
+    };
+    expect(memoryLimitedContainers(meta)).toEqual(['api', 'istio-proxy']);
+    expect(memoryLimitedContainers(JSON.stringify(meta))).toEqual(['api', 'istio-proxy']);
+    expect(memoryLimitedContainers('not json')).toEqual([]);
+    expect(memoryLimitedContainers(null)).toEqual([]);
+  });
+
+  it('defaults the memory SLO to the only container, or the first that is not a known sidecar', () => {
+    expect(defaultMemoryContainer([])).toBe('');
+    expect(defaultMemoryContainer(['worker'])).toBe('worker');
+    expect(defaultMemoryContainer(['istio-proxy', 'api'])).toBe('api');
+    expect(defaultMemoryContainer(['istio-proxy', 'envoy'])).toBe('istio-proxy');
+  });
+
+  it('lists every forecast alert key, CPU and memory', () => {
+    expect(FORECAST_EVENT_KEYS).toEqual(
+      expect.arrayContaining(['CPUThrottlingPredicted', 'MemorySaturationPredicted', 'MemorySaturationSLOBreached'])
+    );
+    expect(FORECAST_EVENT_KEYS).toHaveLength(6);
   });
 
   describe('a stored forecast the hourly run has not refreshed', () => {
@@ -105,8 +147,8 @@ describe('cpuForecast', () => {
 
     it('never counts an out-of-date breach as firing', () => {
       const breached = (evaluated_at: string) => ({ name: 'cpu_throttling', last_forecast: { status: 'breached', evaluated_at } });
-      expect(isBreachedCpuSlo(breached(at(125)), now)).toBe(false);
-      expect(isBreachedCpuSlo(breached(at(10)), now)).toBe(true);
+      expect(isBreachedForecastSlo(breached(at(125)), now)).toBe(false);
+      expect(isBreachedForecastSlo(breached(at(10)), now)).toBe(true);
     });
   });
 });

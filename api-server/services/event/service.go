@@ -38,6 +38,7 @@ import (
 	"github.com/lib/pq"
 	"github.com/samber/lo"
 	"gopkg.in/yaml.v2"
+	"nudgebee/services/forecast/keys"
 )
 
 func init() {
@@ -724,7 +725,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "CPUThrottlingHigh",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -748,7 +749,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "CPUThrottlingHigh",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -773,7 +774,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "CPUThrottlingHigh",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -791,7 +792,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 		} else {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: unsupported service type- %s", *r.SubjectOwnerKind)
 		}
-	} else if *r.AggregationKey == "PodMemoryReachingLimit" {
+	} else if isMemoryLimitResolvable(*r.AggregationKey) {
 		if common.IsEmptyStringPointer(r.SubjectOwnerKind) || common.IsEmptyStringPointer(r.SubjectOwner) {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: kind or owner is not correct")
 		}
@@ -833,13 +834,22 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					}
 				}
 				if containerName == "" {
-					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: container name cannot be empty")
+					// A memory SLO forecast has no alert-labels table; it names the
+					// container it watches in its labels.
+					containerName = labelValue(r.Labels, "container")
+				}
+				if containerName == "" {
+					containerName = SingleLimitedContainer(common.StrVal(r.CloudAccountId), common.StrVal(r.SubjectNamespace),
+						common.StrVal(r.SubjectOwnerKind), common.StrVal(r.SubjectOwner), "memory")
+				}
+				if containerName == "" {
+					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: container name cannot be empty; the workload has no single container with a memory limit")
 				}
 				recommendationRequest = adapter.ApplyRecommendationRequest{
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "PodMemoryReachingLimit",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -863,7 +873,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "PodMemoryReachingLimit",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -888,7 +898,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "PodMemoryReachingLimit",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -5427,6 +5437,17 @@ func isCPUThrottlingResolvable(aggregationKey string) bool {
 	switch aggregationKey {
 	case "CPUThrottlingHigh", "CPUThrottlingPredicted", "CPUSaturationPredicted",
 		"CPUThrottlingSLOBreached", "CPUSaturationSLOBreached":
+		return true
+	}
+	return false
+}
+
+// isMemoryLimitResolvable reports whether an event takes the memory fixes (resize the
+// memory limit, add replicas, restart): the PodMemoryReachingLimit alert, and the memory
+// SLO forecasts and breach alerts.
+func isMemoryLimitResolvable(aggregationKey string) bool {
+	switch aggregationKey {
+	case "PodMemoryReachingLimit", keys.MemorySaturationPredicted, keys.MemorySaturationSLOBreached:
 		return true
 	}
 	return false

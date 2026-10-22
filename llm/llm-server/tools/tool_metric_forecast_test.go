@@ -46,6 +46,25 @@ func TestParseMetricForecastInput(t *testing.T) {
 			want:  services_server.ForecastRequest{WorkloadNamespace: "ns", WorkloadName: "w", Metric: "cpu_saturation", Threshold: f(30)},
 		},
 		{
+			name: "memory with its container",
+			input: core.NBToolCallRequest{Arguments: map[string]any{
+				"workload_namespace": "shop", "workload_name": "orders", "metric": "memory_saturation", "container": " api ",
+			}},
+			want: services_server.ForecastRequest{WorkloadNamespace: "shop", WorkloadName: "orders", Metric: "memory_saturation", Container: "api"},
+		},
+		{
+			name: "a CPU metric drops a container",
+			input: core.NBToolCallRequest{Arguments: map[string]any{
+				"workload_namespace": "shop", "workload_name": "orders", "metric": "cpu_throttling", "container": "api",
+			}},
+			want: services_server.ForecastRequest{WorkloadNamespace: "shop", WorkloadName: "orders", Metric: "cpu_throttling"},
+		},
+		{
+			name:    "memory needs a container",
+			input:   core.NBToolCallRequest{Arguments: map[string]any{"workload_namespace": "ns", "workload_name": "w", "metric": "memory_saturation"}},
+			wantErr: "memory_saturation needs a container",
+		},
+		{
 			name:    "missing workload",
 			input:   core.NBToolCallRequest{Arguments: map[string]any{"workload_namespace": "ns"}},
 			wantErr: "workload_namespace and workload_name are required",

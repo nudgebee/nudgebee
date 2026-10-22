@@ -13,12 +13,15 @@ import (
 	"nudgebee/services/security"
 )
 
-// Request names one workload and the CPU SLO it is forecast against.
+// Request names one workload and the SLO it is forecast against.
 type Request struct {
-	AccountId    string
-	Namespace    string
-	Name         string
-	Kind         string
+	AccountId string
+	Namespace string
+	Name      string
+	Kind      string
+	// Container is the one container a container-scoped preset measures; required for
+	// those and ignored by the others.
+	Container    string
 	Condition    Condition
 	ThresholdPct float64
 	// EndTime is the end of the 3-day window; zero means now. A past end time replays
@@ -39,12 +42,16 @@ const bucket = time.Hour
 const sampleStep = 5 * time.Minute
 
 // forecastKeys are the utilisation keys one forecast of p reads: its value, the
-// limit and usage it is measured against, and the pod count that makes those per pod.
-// Every one is a workload total, so they divide into per-pod and ratio series cleanly.
+// limit and usage it is measured against, and, for workload totals, the pod count that
+// makes those per pod; plus any evidence-only key.
 func forecastKeys(p Preset) []string {
 	var keys []string
 	seen := map[observability.UtilisationKey]bool{}
-	for _, k := range []observability.UtilisationKey{p.Value, p.Per, p.Limit, p.Usage, observability.KeyPodCount} {
+	podCount := observability.KeyPodCount
+	if p.LimitShape == LimitPerPod {
+		podCount = ""
+	}
+	for _, k := range []observability.UtilisationKey{p.Value, p.Per, p.Limit, p.Usage, podCount, p.OOMRestarts} {
 		if k != "" && !seen[k] {
 			seen[k] = true
 			keys = append(keys, string(k))
@@ -101,6 +108,7 @@ func EvaluateWithSeries(ctx *security.RequestContext, req Request) (Result, Seri
 		Namespace:    req.Namespace,
 		Workload:     req.Name,
 		Kind:         req.Kind,
+		Container:    req.Container,
 		EvaluatedAt:  now,
 		Daily:        []DailyRow{},
 	}
@@ -111,6 +119,12 @@ func EvaluateWithSeries(ctx *security.RequestContext, req Request) (Result, Seri
 	if !known {
 		return fail(StatusError, fmt.Sprintf("unknown metric %q; one of %s", req.Condition, strings.Join(ConditionNames(), ", ")))
 	}
+	if !preset.ContainerScoped {
+		res.Container = ""
+	} else if req.Container == "" {
+		// Never run unscoped: the fingerprint, the label and the fix all name it.
+		return fail(StatusError, fmt.Sprintf("%s needs a container", req.Condition))
+	}
 
 	provider, _, err := metricsProviderFor(ctx, req.AccountId, "", "metrics", "")
 	if err != nil {
@@ -118,7 +132,7 @@ func EvaluateWithSeries(ctx *security.RequestContext, req Request) (Result, Seri
 	}
 	res.Provider = provider
 	if !providerSupported(provider) {
-		return fail(StatusProviderUnsupported, fmt.Sprintf("CPU forecasts do not support the %q metrics provider yet", provider))
+		return fail(StatusProviderUnsupported, fmt.Sprintf("%s forecasts do not support the %q metrics provider yet", preset.Resource, provider))
 	}
 
 	pods, err := workloadPods(req.AccountId, req.Namespace, req.Name, req.Kind, start)
@@ -136,12 +150,7 @@ func EvaluateWithSeries(ctx *security.RequestContext, req Request) (Result, Seri
 		StepInterval: int(sampleStep.Seconds()),
 		Step:         int(sampleStep.Seconds()),
 		PodNames:     pods,
-		Request: map[string]any{
-			"workload_namespace": req.Namespace,
-			"workload_name":      req.Name,
-			"kind":               req.Kind,
-			"metrics":            forecastKeys(preset),
-		},
+		Request:      metricsRequest(req, preset),
 	})
 	if err != nil {
 		return fail(StatusError, "could not fetch metrics: "+err.Error())
@@ -157,7 +166,11 @@ func EvaluateWithSeries(ctx *security.RequestContext, req Request) (Result, Seri
 
 	usage := hourly(series[string(preset.Usage)])
 	limit := hourly(series[string(preset.Limit)])
-	podCount := hourly(series[string(observability.KeyPodCount)])
+	perPodLimit, perPodUsage := limit, usage
+	if preset.LimitShape != LimitPerPod {
+		podCount := hourly(series[string(observability.KeyPodCount)])
+		perPodLimit, perPodUsage = divide(limit, podCount, 1), divide(usage, podCount, 1)
+	}
 
 	values := scale(hourly(series[string(preset.Value)]), 100)
 	if preset.Per != "" {
@@ -168,18 +181,51 @@ func EvaluateWithSeries(ctx *security.RequestContext, req Request) (Result, Seri
 		Condition:     req.Condition,
 		ThresholdPct:  req.ThresholdPct,
 		Value:         values,
-		PerPodLimit:   divide(limit, podCount, 1),
-		PerPodUsage:   divide(usage, podCount, 1),
+		PerPodLimit:   perPodLimit,
+		PerPodUsage:   perPodUsage,
 		RoundStep:     preset.RoundStep,
 		NoLimitReason: preset.NoLimitReason,
+		Resource:      preset.Resource,
 		Now:           end,
 		Params:        paramsFor(req.Condition),
 	})
 	fit.LimitUnit = preset.Unit
-	fit.Namespace, fit.Workload, fit.Kind = res.Namespace, res.Workload, res.Kind
+	fit.Namespace, fit.Workload, fit.Kind, fit.Container = res.Namespace, res.Workload, res.Kind, res.Container
+	if preset.OOMRestarts != "" {
+		fit.OOMRestarts6h = int(math.Round(lastSample(series[string(preset.OOMRestarts)])))
+	}
 	fit.Provider = res.Provider
 	fit.EvaluatedAt = now
 	return fit, series
+}
+
+// metricsRequest is the observability request of one forecast; a container-scoped
+// preset narrows every key to its container.
+func metricsRequest(req Request, preset Preset) map[string]any {
+	m := map[string]any{
+		"workload_namespace": req.Namespace,
+		"workload_name":      req.Name,
+		"kind":               req.Kind,
+		"metrics":            forecastKeys(preset),
+	}
+	if preset.ContainerScoped {
+		m["container_name"] = req.Container
+	}
+	return m
+}
+
+// lastSample is the series' latest finite sample, or 0.
+func lastSample(r observability.QueryResult) float64 {
+	if len(r.Payload) == 0 {
+		return 0
+	}
+	s := r.Payload[0]
+	for i := min(len(s.Values), len(s.Timestamps)) - 1; i >= 0; i-- {
+		if v := s.Values[i]; !math.IsNaN(v) && !math.IsInf(v, 0) {
+			return v
+		}
+	}
+	return 0
 }
 
 func paramsFor(c Condition) Params {

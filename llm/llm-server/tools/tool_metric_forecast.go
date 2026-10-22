@@ -27,7 +27,9 @@ var generateForecastFn = services_server.GenerateForecast
 // api-server rejects a name it does not know and lists the valid ones.
 var (
 	forecastKinds   = []string{"deployment", "statefulset", "daemonset"}
-	forecastMetrics = []string{"cpu_throttling", "cpu_saturation"}
+	forecastMetrics = []string{"cpu_throttling", "cpu_saturation", "memory_saturation"}
+	// containerMetrics measure one container, which the call must name.
+	containerMetrics = []string{"memory_saturation"}
 )
 
 // MetricForecastTool forecasts whether and when one workload metric will cross a
@@ -43,12 +45,14 @@ func (t MetricForecastTool) GetType() core.NBToolType { return core.NBToolTypeTo
 func (t MetricForecastTool) Description() string {
 	return "Forecasts whether and when one Kubernetes workload's metric will reach a threshold, from its trend over " +
 		"the last 3 days with the daily cycle taken out. metric: cpu_throttling (% of throttled CFS periods, default " +
-		"threshold 25) or cpu_saturation (CPU usage as % of the limit, default 90). Use for 'will <service> hit CPU " +
-		"throttling / breach its CPU SLO / run out of CPU?'. Returns an explicit status: projected, not_projected, breached, " +
-		"insufficient_history (under 48h of data since the workload's last limit change), no_limit, " +
-		"provider_unsupported or error. In the answer quote eta_hours, current_pct, threshold_pct and " +
-		"suggested_limit (in limit_unit), with the daily table as evidence. To list services that already have a " +
-		"CPU breach projected, use list_events instead."
+		"threshold 25), cpu_saturation (CPU usage as % of the limit, default 90) or memory_saturation (one " +
+		"container's RSS as % of its memory limit, per pod and the highest pod, default 90; needs container). Use " +
+		"for 'will <service> hit CPU throttling / breach its CPU SLO / run out of CPU / run out of memory?'. Returns an " +
+		"explicit status: projected, not_projected, breached, insufficient_history (under 48h of data since the " +
+		"workload's last limit change), no_limit, provider_unsupported or error. In the answer quote eta_hours, " +
+		"current_pct, threshold_pct and suggested_limit (in limit_unit), with the daily table as evidence; for memory " +
+		"also oom_restarts_6h (restarts whose last exit was OOMKilled, evidence only). To list services that already " +
+		"have a breach projected, use list_events instead."
 }
 
 func (t MetricForecastTool) InputSchema() core.ToolSchema {
@@ -62,8 +66,12 @@ func (t MetricForecastTool) InputSchema() core.ToolSchema {
 				Description: "Workload kind. Omit it when unknown; it is looked up from the cluster inventory.",
 			},
 			"metric": {
-				Type: core.ToolSchemaTypeString, Enum: []any{"cpu_throttling", "cpu_saturation"},
-				Description: "What to forecast: cpu_throttling or cpu_saturation.",
+				Type: core.ToolSchemaTypeString, Enum: []any{"cpu_throttling", "cpu_saturation", "memory_saturation"},
+				Description: "What to forecast: cpu_throttling, cpu_saturation or memory_saturation.",
+			},
+			"container": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Container name; required for memory_saturation (from the event's container label), ignored otherwise.",
 			},
 			"threshold": {
 				Type:        core.ToolSchemaTypeNumber,
@@ -101,6 +109,7 @@ func parseMetricForecastInput(input core.NBToolCallRequest) (services_server.For
 		WorkloadName:      str("workload_name"),
 		Kind:              strings.ToLower(str("kind")),
 		Metric:            strings.ToLower(str("metric")),
+		Container:         str("container"),
 	}
 	if req.WorkloadNamespace == "" || req.WorkloadName == "" {
 		return req, errors.New("workload_namespace and workload_name are required")
@@ -112,6 +121,12 @@ func parseMetricForecastInput(input core.NBToolCallRequest) (services_server.For
 	}
 	if !slices.Contains(forecastMetrics, req.Metric) {
 		return req, fmt.Errorf("metric must be one of %s, got %q", strings.Join(forecastMetrics, ", "), req.Metric)
+	}
+	if slices.Contains(containerMetrics, req.Metric) && req.Container == "" {
+		return req, fmt.Errorf("%s needs a container", req.Metric)
+	}
+	if !slices.Contains(containerMetrics, req.Metric) {
+		req.Container = ""
 	}
 	if v, ok := numberArg(args["threshold"]); ok {
 		if v <= 0 || v > 100 {

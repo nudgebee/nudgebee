@@ -41,8 +41,10 @@ type FitInput struct {
 	// explains a missing limit. Both come from the preset.
 	RoundStep     float64
 	NoLimitReason string
-	Now           time.Time
-	Params        Params
+	// Resource names the limited resource in reasons ("CPU", "memory"); empty is "CPU".
+	Resource string
+	Now      time.Time
+	Params   Params
 }
 
 // limitChangeTolerance is how far the per-pod limit may wander before it counts as a
@@ -117,10 +119,14 @@ func Fit(in FitInput) Result {
 		return res
 	}
 	if window == nil {
+		resource := in.Resource
+		if resource == "" {
+			resource = "CPU"
+		}
 		res.Status = StatusInsufficientHistory
-		res.Reason = fmt.Sprintf("fewer than %d hours of data since the CPU limit last changed", minHours)
+		res.Reason = fmt.Sprintf("fewer than %d hours of data since the %s limit last changed", minHours, resource)
 		if !since.IsZero() {
-			res.Reason = fmt.Sprintf("the CPU limit changed recently; fewer than %d hours of data since then", minHours)
+			res.Reason = fmt.Sprintf("the %s limit changed recently; fewer than %d hours of data since then", resource, minHours)
 		}
 		return res
 	}

@@ -19,6 +19,8 @@ type forecastFakes struct {
 	synced    []forecast.Target
 	stored    []string
 	closed    []forecast.Condition
+	// closedContainers is the container each close named, aligned with closed.
+	closedContainers []string
 }
 
 func installForecastFakes(t *testing.T) *forecastFakes {
@@ -38,8 +40,9 @@ func installForecastFakes(t *testing.T) *forecastFakes {
 		f.synced = append(f.synced, tg)
 		return nil
 	}
-	closeForecastAll = func(_ forecast.Target, _, _, _ string, c forecast.Condition) error {
+	closeForecastAll = func(_ forecast.Target, _, _, _, container string, c forecast.Condition) error {
 		f.closed = append(f.closed, c)
+		f.closedContainers = append(f.closedContainers, container)
 		return nil
 	}
 	storeLastForecast = func(_ *database.DatabaseManager, id string, _ forecast.Result) error {
@@ -101,8 +104,51 @@ func TestValidateForecastConfig(t *testing.T) {
 
 func TestCloseForecastEvents_UsesTheForecastClose(t *testing.T) {
 	f := installForecastFakes(t)
-	closeForecastEvents("ten", "acc", "CPU_Saturation", "order-service", "shop")
+	closeForecastEvents("ten", "acc", "CPU_Saturation", "order-service", "shop", "")
 	assert.Equal(t, []forecast.Condition{forecast.ConditionSaturation}, f.closed)
+}
+
+// A memory SLO's alerts are per container, so its close must name the container the
+// SLO watched, or it matches nothing and leaves them open.
+func TestCloseForecastEvents_MemoryNamesItsContainer(t *testing.T) {
+	f := installForecastFakes(t)
+	closeForecastEvents("ten", "acc", "memory_saturation", "orders", "shop", "api")
+	assert.Equal(t, []forecast.Condition{forecast.ConditionMemorySaturation}, f.closed)
+	assert.Equal(t, []string{"api"}, f.closedContainers)
+}
+
+var memoryConfig = DBSLOConfig{
+	Id: "cfg-m", Name: "memory_saturation", Method: forecastMethod, ThresholdBucket: 90,
+	TenantId: "ten", CloudAccountId: "acc", WorkloadName: "orders", Namespace: "shop", Enabled: true,
+	Container: ptr("api"),
+}
+
+func ptr(s string) *string { return &s }
+
+func TestExecuteSLOConfig_MemorySLOForecastsItsContainer(t *testing.T) {
+	f := installForecastFakes(t)
+	require.NoError(t, executeSLOConfig(memoryConfig, "acc", nil))
+	require.Len(t, f.evaluated, 1)
+	assert.Equal(t, forecast.ConditionMemorySaturation, f.evaluated[0].Condition)
+	assert.Equal(t, "api", f.evaluated[0].Container)
+	assert.Equal(t, 90.0, f.evaluated[0].ThresholdPct)
+}
+
+func TestValidateForecastConfig_MemoryNeedsAContainer(t *testing.T) {
+	f := installForecastFakes(t)
+	req := SLORequest{AccountId: "acc", WorkloadName: "orders", Namespace: "shop"}
+
+	err := validateForecastConfig(tenantCtx(), req, SLOConfigRequest{Name: "memory_saturation", Threshold: 90, Enabled: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "needs a container")
+	assert.Empty(t, f.evaluated, "refused before any forecast runs")
+
+	require.NoError(t, validateForecastConfig(tenantCtx(), req, SLOConfigRequest{Name: "memory_saturation", Threshold: 90, Enabled: true, Container: "api"}))
+	require.Len(t, f.evaluated, 1)
+	assert.Equal(t, "api", f.evaluated[0].Container)
+
+	require.NoError(t, validateForecastConfig(tenantCtx(), req, SLOConfigRequest{Name: "memory_saturation", Enabled: false}),
+		"disabling needs no container, so open alerts can always be closed")
 }
 
 func TestIsForecastType(t *testing.T) {

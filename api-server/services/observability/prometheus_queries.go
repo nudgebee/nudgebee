@@ -635,6 +635,30 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 				`sum(rate(container_cpu_usage_seconds_total{__CLUSTER__ %s}[5m])`+
 					` and on (namespace, pod, container) (%s (kube_pod_container_resource_limits{__CLUSTER__ %sresource="cpu"}) > 0))`,
 				containerFilter, promSpecPerContainer, containerFilter)
+		case KeyContainerMemoryRSSLimitRatio:
+			// Per pod, peak RSS over that pod's own limit; then the highest pod. RSS is the
+			// peak of the trailing hour: a container is OOM-killed the moment it reaches its
+			// limit, so a forecast on the hourly average would miss the spikes that kill it.
+			// `max by` on both sides collapses duplicate scrapes before the join, and the
+			// `> 0` guard leaves a container without a memory limit with no series (no_limit).
+			queries[metricKey] = fmt.Sprintf(
+				`max(max by (namespace, pod, container) (max_over_time(container_memory_rss{__CLUSTER__ %s}[1h]))`+
+					` / on (namespace, pod, container) (%s (kube_pod_container_resource_limits{__CLUSTER__ %sresource="memory"}) > 0))`,
+				containerFilter, promSpecPerContainer, containerFilter)
+		case KeyContainerMemoryLimitPerPodMiB:
+			queries[metricKey] = fmt.Sprintf(`max(%s (kube_pod_container_resource_limits{__CLUSTER__ %sresource="memory"})) / 1048576`,
+				promSpecPerContainer, containerFilter)
+		case KeyContainerMemoryRSSMiB:
+			// The same trailing-hour peak as the ratio, so a suggested limit covers the spikes.
+			queries[metricKey] = fmt.Sprintf(`max(max by (namespace, pod, container) (max_over_time(container_memory_rss{__CLUSTER__ %s}[1h]))) / 1048576`, containerFilter)
+		case KeyContainerRestartsLastOOM6h:
+			// Joined on job, as KeyContainerOOMKilledLimitByPod is: both halves come
+			// from kube-state-metrics, and two scrapers must not count a restart twice.
+			queries[metricKey] = fmt.Sprintf(
+				`sum(max by (namespace, pod, container, job) (increase(kube_pod_container_status_restarts_total{__CLUSTER__ %s}[6h]))`+
+					` * on (namespace, pod, container, job) group_left `+
+					`max by (namespace, pod, container, job) (kube_pod_container_status_last_terminated_reason{__CLUSTER__ %s}))`,
+				containerFilter, promSelector(containerFilter, `reason="OOMKilled"`))
 		case KeyCPURequest:
 			queries[metricKey] = promSpecTotal("kube_pod_container_resource_requests", fmt.Sprintf(`__CLUSTER__ %sresource="cpu"`, containerFilter))
 		case KeyCPULimit:

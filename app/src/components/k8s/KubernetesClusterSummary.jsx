@@ -33,7 +33,7 @@ import { useRouter } from 'next/router';
 import { Button as DSButton } from '@ui/Button';
 import { getInsightRoute } from './common/insightRoutes';
 import Link from 'next/link';
-import { isBreachedCpuSlo } from '@components/k8s/common/cpuForecast';
+import { isBreachedForecastSlo } from '@components/k8s/common/cpuForecast';
 
 export const SummaryBlock = ({ title, children, greenColor, redColor, sx, hideTitle = false, height = '' }) => {
   const getBorderColor = (greenColor, redColor) => {
@@ -240,7 +240,7 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
         });
         // CPU SLOs write no report rows; their breach is in their latest forecast.
         configuredSLOs.forEach((config) => {
-          if (isBreachedCpuSlo(config)) {
+          if (isBreachedForecastSlo(config)) {
             statusMap[`${config.workload_namespace}/${config.workload_name}`] = 'FIRING';
           }
         });

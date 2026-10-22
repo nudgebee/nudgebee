@@ -22,10 +22,16 @@ import { sloFingerprint } from '@lib/eventFingerprint';
 import { toast as snackbar } from '@ui/Toast';
 import { hasWriteAccess } from '@lib/auth';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { CPU_SLO_TYPES, forecastStatus, forecastSummary, isBreachedCpuSlo, isCpuSloName, parseForecast } from '@components/k8s/common/cpuForecast';
-
-// The four event keys a CPU SLO raises (see the backend forecast package).
-const CPU_FORECAST_EVENT_KEYS = ['CPUThrottlingPredicted', 'CPUSaturationPredicted', 'CPUThrottlingSLOBreached', 'CPUSaturationSLOBreached'];
+import {
+  FORECAST_EVENT_KEYS,
+  FORECAST_SLO_TYPES,
+  forecastStatus,
+  forecastSummary,
+  isBreachedForecastSlo,
+  isContainerScopedSloName,
+  isForecastSloName,
+  parseForecast,
+} from '@components/k8s/common/cpuForecast';
 
 // The status cell: FIRING with the firing SLOs' names, or OK.
 const sloStatusCell = (firingNames: string[]) => ({
@@ -37,11 +43,17 @@ const sloStatusCell = (firingNames: string[]) => ({
   ),
 });
 
-// CPU SLOs write no report rows, so a breach is read from their latest forecast.
+// Forecast SLOs write no report rows, so a breach is read from their latest forecast.
 const breachedCpuSloNames = (row: any[]) =>
-  (row[0]?.drilldownQuery?.cpuConfigs ?? []).filter((c: any) => isBreachedCpuSlo(c)).map((c: any) => snakeToTitleCase(String(c.name)));
+  (row[0]?.drilldownQuery?.cpuConfigs ?? []).filter((c: any) => isBreachedForecastSlo(c)).map((c: any) => snakeToTitleCase(String(c.name)));
 
-// One line per CPU SLO on the workload: its forecast status and summary.
+// What a forecast SLO is called in the list: CPU types by their title, memory by its container.
+const forecastSloTitle = (c: any) => {
+  if (isContainerScopedSloName(c.name)) return c.container ? `Memory (${c.container})` : 'Memory';
+  return FORECAST_SLO_TYPES.find((t) => t.name === String(c.name).toLowerCase())?.title ?? c.name;
+};
+
+// One line per forecast SLO on the workload: its forecast status and summary.
 const CpuForecastCell = ({ configs }: { configs: any[] }) => {
   if (configs.length === 0) return <Text value='-' />;
   return (
@@ -49,11 +61,10 @@ const CpuForecastCell = ({ configs }: { configs: any[] }) => {
       {configs.map((c: any) => {
         const forecast = parseForecast(c.last_forecast);
         const status = forecastStatus(forecast);
-        const type = CPU_SLO_TYPES.find((t) => t.name === String(c.name).toLowerCase());
         return (
           <Box key={c.name}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
-              <Text value={`${type?.title ?? c.name} ≤ ${Number(c.threshold)}%`} />
+              <Text value={`${forecastSloTitle(c)} ≤ ${Number(c.threshold)}%`} />
               <Label text={status.text} tone={status.tone} size='sm' />
             </Box>
             <Text secondaryText value={forecastSummary(forecast)} />
@@ -146,7 +157,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
     { name: 'Latency', width: '12%' },
     { name: 'Availability', width: '12%' },
     { name: 'Observation (30D)', width: '20%' },
-    { name: 'CPU Forecast', width: '20%' },
+    { name: 'Forecast', width: '20%' },
     { name: '', width: '8%' },
   ];
 
@@ -184,7 +195,20 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
         const workloadFqdn: string[] = [];
         if (filteredData.length > 0) {
           const groupedWorkloads = filteredData.reduce((acc: any, cur: any) => {
-            const { workload_name, workload_namespace, name, threshold, goal, id, enabled, window, created_at, updated_at, last_forecast } = cur;
+            const {
+              workload_name,
+              workload_namespace,
+              name,
+              threshold,
+              goal,
+              id,
+              enabled,
+              window,
+              created_at,
+              updated_at,
+              last_forecast,
+              container,
+            } = cur;
             const key = `${workload_namespace}_${workload_name}`;
 
             if (!acc[key]) {
@@ -198,7 +222,8 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
               };
             }
 
-            acc[key].config.push({ name, threshold, goal, id, enabled, last_forecast });
+            // container: a memory SLO watches one; Edit must reopen it on that container.
+            acc[key].config.push({ name, threshold, goal, id, enabled, last_forecast, container });
 
             return acc;
           }, {});
@@ -210,7 +235,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
             let latency;
             let availabilityConfig = [];
             let latencyConfig = [];
-            const cpuConfigs = (m.config || []).filter((n: any) => isCpuSloName(n.name));
+            const cpuConfigs = (m.config || []).filter((n: any) => isForecastSloName(n.name));
             if (m.config && m.config.length > 0) {
               availabilityConfig = m.config.filter((n: any) => n.name == 'availability');
               if (availabilityConfig && availabilityConfig.length == 1) {
@@ -456,7 +481,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
                   componentFn: function (opt: any, drilldownQuery: any) {
                     return <SLOCpuAlerts drilldownQuery={drilldownQuery} accountId={accountId} />;
                   },
-                  text: 'CPU Alerts',
+                  text: 'Forecast Alerts',
                   value: 4,
                   key: 'slo-cpu-alerts',
                 },
@@ -742,7 +767,7 @@ const SLOCpuAlerts = ({ drilldownQuery = {} as any, accountId = '' }) => {
         workloadName: drilldownQuery.workloadName,
         startTime: range.startTime,
         endTime: range.endTime,
-        aggregation_key: CPU_FORECAST_EVENT_KEYS,
+        aggregation_key: FORECAST_EVENT_KEYS,
         finding_type: '',
       }}
       showTimeFilter={false}

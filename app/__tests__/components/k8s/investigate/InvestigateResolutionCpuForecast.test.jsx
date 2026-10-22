@@ -37,8 +37,10 @@ describe('CPU SLO forecast alerts', () => {
     expect(screen.getByText('Restart')).toBeInTheDocument();
   });
 
-  it('keeps the memory form for PodMemoryReachingLimit', () => {
-    renderFix('PodMemoryReachingLimit');
+  it.each(['PodMemoryReachingLimit', 'MemorySaturationPredicted', 'MemorySaturationSLOBreached'])('%s offers the memory fixes', (key) => {
+    expect(RESOLVABLE_ALERT_KEYS).toContain(key);
+    renderFix(key);
     expect(screen.getByText('Increase Memory To')).toBeInTheDocument();
+    expect(screen.queryByText('Increase CPU To')).not.toBeInTheDocument();
   });
 });

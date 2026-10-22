@@ -29,6 +29,7 @@ type ForecastRequest struct {
 	WorkloadName      string   `json:"workload_name"`
 	Kind              string   `json:"kind,omitempty"`
 	Metric            string   `json:"metric"`
+	Container         string   `json:"container,omitempty"`
 	Threshold         *float64 `json:"threshold,omitempty"`
 	EndTime           int64    `json:"end_time,omitempty"`
 }

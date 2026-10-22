@@ -32,6 +32,9 @@ type DBSLOConfig struct {
 	// LastForecast is the latest forecast.Result of a CPU SLO, as JSON; NULL for
 	// every other SLO type.
 	LastForecast *string `json:"last_forecast,omitempty" db:"last_forecast"`
+	// Container is the container a container-scoped forecast SLO (memory_saturation)
+	// watches; NULL for every other type.
+	Container *string `json:"container,omitempty" db:"container"`
 }
 
 type SLOConfig struct {
@@ -139,6 +142,9 @@ type SLOConfigRequest struct {
 	Threshold float64 `json:"threshold" validate:"required"`
 	Goal      float64 `json:"goal" validate:"required"`
 	Enabled   bool    `json:"enabled,omitempty"`
+	// Container is required for a container-scoped forecast SLO (memory_saturation)
+	// and ignored for the others.
+	Container string `json:"container,omitempty"`
 }
 
 // SLODeleteRequest removes a workload's SLO configs. Name optionally narrows
@@ -172,8 +178,10 @@ type SLOConfigResponse struct {
 	Threshold float64 `json:"threshold" validate:"required"`
 	Enabled   bool    `json:"enabled,omitempty"`
 	Goal      float64 `json:"goal,omitempty"`
-	// LastForecast is the latest forecast of a CPU SLO; absent for other types.
+	// LastForecast is the latest forecast of a forecast SLO; absent for other types.
 	LastForecast json.RawMessage `json:"last_forecast,omitempty"`
+	// Container is the container a memory_saturation SLO watches.
+	Container string `json:"container,omitempty"`
 }
 
 type DBSLOReport struct {

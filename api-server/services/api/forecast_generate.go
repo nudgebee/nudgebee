@@ -26,6 +26,7 @@ type forecastGenerateRequest struct {
 	Name      string  `json:"workload_name" mapstructure:"workload_name"`
 	Kind      string  `json:"kind" mapstructure:"kind"`
 	Metric    string  `json:"metric" mapstructure:"metric"`
+	Container string  `json:"container" mapstructure:"container"`
 	Threshold float64 `json:"threshold" mapstructure:"threshold"`
 	EndTime   int64   `json:"end_time" mapstructure:"end_time"`
 }
@@ -42,8 +43,12 @@ func (r forecastGenerateRequest) toForecastRequest() (forecast.Request, error) {
 	if r.Threshold < 0 || r.Threshold > 100 {
 		return forecast.Request{}, fmt.Errorf("threshold must be a percentage between 0 and 100")
 	}
+	container := strings.TrimSpace(r.Container)
+	if p, _ := forecast.PresetFor(forecast.Condition(metric)); p.ContainerScoped && container == "" {
+		return forecast.Request{}, fmt.Errorf("%s needs a container", metric)
+	}
 	req := forecast.Request{
-		AccountId: r.AccountId, Namespace: r.Namespace, Name: r.Name, Kind: r.Kind,
+		AccountId: r.AccountId, Namespace: r.Namespace, Name: r.Name, Kind: r.Kind, Container: container,
 		Condition: forecast.Condition(metric), ThresholdPct: r.Threshold,
 	}
 	if r.EndTime > 0 {

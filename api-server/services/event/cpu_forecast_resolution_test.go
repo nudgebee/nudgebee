@@ -16,6 +16,15 @@ func TestIsCPUThrottlingResolvable(t *testing.T) {
 	assert.False(t, isCPUThrottlingResolvable("KubePodCrashLooping"))
 }
 
+func TestIsMemoryLimitResolvable(t *testing.T) {
+	for _, key := range []string{"PodMemoryReachingLimit", "MemorySaturationPredicted", "MemorySaturationSLOBreached"} {
+		assert.True(t, isMemoryLimitResolvable(key), key)
+		assert.False(t, isCPUThrottlingResolvable(key), "a memory alert never gets the CPU fix: "+key)
+	}
+	assert.False(t, isMemoryLimitResolvable("CPUThrottlingPredicted"))
+	assert.False(t, isMemoryLimitResolvable("KubeContainerOOMKilled"))
+}
+
 func TestLabelValue(t *testing.T) {
 	var labels models.Json
 	require.NoError(t, labels.UnmarshalJSON([]byte(`{"container":"app","workload_kind":"deployment"}`)))

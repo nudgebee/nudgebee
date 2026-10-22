@@ -32,9 +32,28 @@ const (
 	// KeyCPUUsageLimited is CPU usage in cores of only the containers that have a CPU
 	// limit. Divided by cpu_limit it is a share of that limit; cpu_usage would also
 	// count containers without a limit and overstate it.
-	KeyCPUUsageLimited   UtilisationKey = "cpu_usage_limited"
-	KeyCPUAllocatable    UtilisationKey = "cpu_allocatable"
-	KeyMemoryAllocatable UtilisationKey = "memory_allocatable"
+	KeyCPUUsageLimited UtilisationKey = "cpu_usage_limited"
+	// The memory forecast's keys. Each answers for ONE container (the request's
+	// container_name) and per pod, never summed across pods, so replicas and HPA scaling
+	// do not change them. RSS, not working set: working set includes page cache, which
+	// the kernel reclaims before it OOM-kills, so a cache climb would read as a leak.
+	//
+	// KeyContainerMemoryRSSLimitRatio is, per pod, RSS over that pod's own memory limit,
+	// the highest across pods, as a ratio 0–1. Pods with different limits (a rollout,
+	// VPA) are each measured against their own.
+	KeyContainerMemoryRSSLimitRatio UtilisationKey = "container_memory_rss_limit_ratio"
+	// KeyContainerMemoryLimitPerPodMiB is the highest per-pod memory limit, in MiB.
+	KeyContainerMemoryLimitPerPodMiB UtilisationKey = "container_memory_limit_per_pod_mib"
+	// KeyContainerMemoryRSSMiB is the busiest pod's RSS, in MiB.
+	KeyContainerMemoryRSSMiB UtilisationKey = "container_memory_rss_mib"
+	// KeyContainerRestartsLastOOM6h is the container's restarts in the last 6h, present
+	// only where its last termination was an OOM kill. kube-state-metrics has no count
+	// of OOM restarts, so it is evidence ("restarts, last exit OOMKilled"), never a count
+	// of kills, and it misses a worker process killed inside a container that keeps
+	// running.
+	KeyContainerRestartsLastOOM6h UtilisationKey = "container_restarts_6h_last_oom"
+	KeyCPUAllocatable             UtilisationKey = "cpu_allocatable"
+	KeyMemoryAllocatable          UtilisationKey = "memory_allocatable"
 
 	// Totals and percentiles that collapse a series to a headline number.
 	KeyCPUReal     UtilisationKey = "cpu_real"
@@ -174,6 +193,10 @@ var utilisationKeys = func() map[UtilisationKey]bool {
 		KeyCPUThrottling,
 		KeyCPUThrottlingRatio,
 		KeyCPUUsageLimited,
+		KeyContainerMemoryRSSLimitRatio,
+		KeyContainerMemoryLimitPerPodMiB,
+		KeyContainerMemoryRSSMiB,
+		KeyContainerRestartsLastOOM6h,
 		KeyCPUAllocatable,
 		KeyMemoryAllocatable,
 		KeyCPUReal,

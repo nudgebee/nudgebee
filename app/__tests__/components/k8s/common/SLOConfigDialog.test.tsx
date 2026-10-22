@@ -18,6 +18,7 @@ jest.mock('@api1/kubernetes1', () => ({
     deleteSLOConfig: jest.fn(),
     generateForecast: jest.fn(),
     getSLOConfig: jest.fn(),
+    getMemoryLimitedContainers: jest.fn(),
   },
 }));
 jest.mock('@api1/kubernetes', () => ({ __esModule: true, default: {} }));
@@ -42,7 +43,18 @@ jest.mock('@ui/Button', () => ({
     </button>
   ),
 }));
-jest.mock('@ui/Select', () => ({ Select: ({ id }: any) => <select data-testid={id} /> }));
+jest.mock('@ui/Select', () => ({
+  Select: ({ id, value, options, onChange }: any) => (
+    <select data-testid={id} value={value ?? ''} onChange={(e) => onChange?.(e.target.value)}>
+      <option value='' />
+      {(options ?? []).map((o: string) => (
+        <option key={o} value={o}>
+          {o}
+        </option>
+      ))}
+    </select>
+  ),
+}));
 jest.mock('@ui/Chip', () => ({ Chip: ({ children }: any) => <span>{children}</span> }));
 jest.mock('@ui/Label', () => ({ Label: ({ text }: any) => <span>{text}</span> }));
 jest.mock('@ui/Callout', () => ({ Callout: ({ children }: any) => <div role='alert'>{children}</div> }));
@@ -53,7 +65,10 @@ const workload = { name: 'nbdemo-orders', namespace: 'demo', cloud_resource_id: 
 const renderDialog = (props: any = {}) =>
   render(<SLOConfigDialog open onClose={jest.fn()} accountId='acc-1' workload={workload} initialConfig={[]} {...props} />);
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  api.getMemoryLimitedContainers.mockResolvedValue(['istio-proxy', 'api']);
+});
 
 describe('SLOConfigDialog CPU SLOs', () => {
   it('saves a CPU-only SLO, sending only the configured type', async () => {
@@ -147,5 +162,76 @@ describe('SLOConfigDialog CPU SLOs', () => {
     expect(screen.queryByTestId('slo-cpu_throttling-remove')).not.toBeInTheDocument();
     expect(mockHasWriteAccess).toHaveBeenCalledWith('acc-1');
     mockHasWriteAccess.mockReturnValue(true);
+  });
+});
+
+describe('SLOConfigDialog memory SLO', () => {
+  it('saves a memory SLO on the app container, not the sidecar, by default', async () => {
+    api.createSLOConfig.mockResolvedValue({ data: { data: { slo_config_create: { data: { success: true } } } } });
+    renderDialog();
+    await waitFor(() => expect(api.getMemoryLimitedContainers).toHaveBeenCalledWith('acc-1', 'demo', 'nbdemo-orders'));
+    await screen.findByRole('option', { name: 'api' });
+
+    fireEvent.change(screen.getByTestId('slo-memory_saturation-threshold-input'), { target: { value: '90' } });
+    fireEvent.click(screen.getByTestId('slo-submit-btn'));
+
+    await waitFor(() => expect(api.createSLOConfig).toHaveBeenCalled());
+    expect(api.createSLOConfig.mock.calls[0][0].config).toEqual([
+      { enabled: true, name: 'memory_saturation', goal: 0, threshold: 90, container: 'api' },
+    ]);
+  });
+
+  it('lets the user pick another container, and Check now forecasts that one', async () => {
+    api.generateForecast.mockResolvedValue({ status: 'not_projected', threshold_pct: 90, current_pct: 41, slope_pct_per_day: 0.2, daily: [] });
+    renderDialog();
+    await screen.findByRole('option', { name: 'istio-proxy' });
+    fireEvent.change(screen.getByTestId('slo-memory_saturation-threshold-input'), { target: { value: '90' } });
+    fireEvent.change(screen.getByTestId('slo-memory_saturation-container'), { target: { value: 'istio-proxy' } });
+    fireEvent.click(screen.getByTestId('slo-memory_saturation-check-now'));
+
+    await waitFor(() =>
+      expect(api.generateForecast).toHaveBeenCalledWith({
+        account_id: 'acc-1',
+        workload_namespace: 'demo',
+        workload_name: 'nbdemo-orders',
+        metric: 'memory_saturation',
+        threshold: 90,
+        container: 'istio-proxy',
+      })
+    );
+  });
+
+  it('fills in the default container when the list arrives after the threshold was typed', async () => {
+    let resolveContainers: (v: string[]) => void = () => undefined;
+    api.getMemoryLimitedContainers.mockReturnValue(new Promise<string[]>((r) => (resolveContainers = r)));
+    api.createSLOConfig.mockResolvedValue({ data: { data: { slo_config_create: { data: { success: true } } } } });
+    renderDialog();
+    fireEvent.change(screen.getByTestId('slo-memory_saturation-threshold-input'), { target: { value: '90' } });
+    resolveContainers(['istio-proxy', 'api']);
+    await screen.findByRole('option', { name: 'api' });
+    await waitFor(() => expect(screen.getByTestId('slo-memory_saturation-container')).toHaveValue('api'));
+
+    fireEvent.click(screen.getByTestId('slo-submit-btn'));
+    await waitFor(() => expect(api.createSLOConfig).toHaveBeenCalled());
+    expect(api.createSLOConfig.mock.calls[0][0].config[0].container).toBe('api');
+  });
+
+  it('refuses to save a memory SLO without a container', async () => {
+    api.getMemoryLimitedContainers.mockResolvedValue([]);
+    renderDialog();
+    await waitFor(() => expect(api.getMemoryLimitedContainers).toHaveBeenCalled());
+    fireEvent.change(screen.getByTestId('slo-memory_saturation-threshold-input'), { target: { value: '90' } });
+    fireEvent.click(screen.getByTestId('slo-submit-btn'));
+    expect(mockToastError).toHaveBeenLastCalledWith('Choose the container the memory SLO watches');
+    expect(api.createSLOConfig).not.toHaveBeenCalled();
+  });
+
+  it('CPU Check now sends no container', async () => {
+    api.generateForecast.mockResolvedValue({ status: 'not_projected', daily: [] });
+    renderDialog();
+    fireEvent.change(await screen.findByTestId('slo-cpu_throttling-threshold-input'), { target: { value: '75' } });
+    fireEvent.click(screen.getByTestId('slo-cpu_throttling-check-now'));
+    await waitFor(() => expect(api.generateForecast).toHaveBeenCalled());
+    expect(api.generateForecast.mock.calls[0][0]).not.toHaveProperty('container');
   });
 });

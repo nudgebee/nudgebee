@@ -25,6 +25,8 @@ type store struct {
 	cooling  map[string]bool
 	closes   []closeCall
 	upserted []event.Event
+	// stale is what the stale-container lookup returns.
+	stale []string
 }
 
 var syncNow = time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
@@ -32,7 +34,7 @@ var syncNow = time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
 func fakeStore(t *testing.T) *store {
 	t.Helper()
 	s := &store{open: map[string]string{}, cooling: map[string]bool{}}
-	orig := [...]any{openFiring, inCooldown, closeFiring, upsertEvent, nowFn, limitedContainer}
+	orig := [...]any{openFiring, inCooldown, closeFiring, upsertEvent, nowFn, limitedContainer, staleContainers}
 	origCooldown := config.Config.NBForecastRefireCooldownHours
 	t.Cleanup(func() {
 		openFiring = orig[0].(func(Target, string) (string, time.Time, error))
@@ -41,6 +43,7 @@ func fakeStore(t *testing.T) *store {
 		upsertEvent = orig[3].(func(event.Event) error)
 		nowFn = orig[4].(func() time.Time)
 		limitedContainer = orig[5].(func(Target, Result) string)
+		staleContainers = orig[6].(func(Target, Result) ([]string, error))
 		config.Config.NBForecastRefireCooldownHours = origCooldown
 	})
 	config.Config.NBForecastRefireCooldownHours = 24
@@ -58,6 +61,7 @@ func fakeStore(t *testing.T) *store {
 		return nil
 	}
 	upsertEvent = func(e event.Event) error { s.upserted = append(s.upserted, e); return nil }
+	staleContainers = func(Target, Result) ([]string, error) { return s.stale, nil }
 	return s
 }
 
@@ -196,7 +200,7 @@ func TestSync_ErrorChangesNothing(t *testing.T) {
 
 func TestCloseAll_IsUnwatched(t *testing.T) {
 	s := fakeStore(t)
-	require.NoError(t, CloseAll(target, "shop", "Deployment", "order-service", ConditionSaturation))
+	require.NoError(t, CloseAll(target, "shop", "Deployment", "order-service", "", ConditionSaturation))
 	require.Len(t, s.closes, 3, "both warnings and the breach alert")
 	for _, c := range s.closes {
 		assert.Equal(t, CloseUnwatched, c.reason)

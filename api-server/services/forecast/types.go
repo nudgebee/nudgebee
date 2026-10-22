@@ -24,18 +24,31 @@ const (
 	ConditionThrottling Condition = "cpu_throttling"
 	// ConditionSaturation is CPU usage as a share of the CPU limit, in percent.
 	ConditionSaturation Condition = "cpu_saturation"
+	// ConditionMemorySaturation is one container's RSS as a share of its memory limit,
+	// in percent, per pod and the highest pod. See docs/ee/memory-forecast-plan.md.
+	ConditionMemorySaturation Condition = "memory_saturation"
 )
 
-// UnitCores is the unit of the CPU presets' limit and usage series. A preset over
-// another resource names its own; memory is deferred until it can be measured per
-// container (an OOM kill hits one container at its own limit, and a workload-wide
-// ratio would dilute it).
+// UnitCores is the unit of the CPU presets' limit and usage series.
 const UnitCores = "cores"
 
+// UnitMiB is the unit of the memory preset's limit and usage series.
+const UnitMiB = "MiB"
+
+// LimitShape says what a preset's Limit and Usage keys return.
+type LimitShape string
+
+const (
+	// LimitTotal is a workload total; the engine divides it by the pod count.
+	LimitTotal LimitShape = ""
+	// LimitPerPod is already per pod (one container, the highest pod); it is used as is.
+	LimitPerPod LimitShape = "per_pod"
+)
+
 // Preset is one forecastable metric. Every preset is a percentage: Value (or
-// Value / Per when Per is set) times 100. Limit and Usage are workload totals of the
-// resource the metric is measured against; the fit divides them by the pod count to
-// cut the history at a limit change and to size a suggested limit.
+// Value / Per when Per is set) times 100. Limit and Usage are the resource the metric
+// is measured against, per pod (see LimitShape); the fit uses them to cut the history
+// at a limit change and to size a suggested limit.
 type Preset struct {
 	Condition Condition
 	// Noun names the metric in titles and insights, e.g. "CPU throttling".
@@ -56,6 +69,17 @@ type Preset struct {
 	SLO bool
 	// NoLimitReason is the reason given when the workload has no limit on Resource.
 	NoLimitReason string
+	// LimitShape says whether Limit and Usage are workload totals or already per pod.
+	LimitShape LimitShape
+	// ContainerScoped says the preset measures one container, which every request
+	// must name; it is also part of the alert's fingerprint.
+	ContainerScoped bool
+	// OOMRestarts is the key whose last sample is the container's recent restarts that
+	// ended in an OOM kill. It is evidence only: it never changes the status.
+	OOMRestarts observability.UtilisationKey
+	// HourlyPeak says the Value and Usage queries return each hour's peak rather than
+	// the instant value, so the evidence calls the daily values means of hourly peaks.
+	HourlyPeak bool
 }
 
 // Presets are the metrics the engine can forecast. 25% throttling is the
@@ -74,6 +98,18 @@ var Presets = map[Condition]Preset{
 		Limit: observability.KeyCPULimit, Usage: observability.KeyCPUUsageLimited,
 		Unit: UnitCores, RoundStep: 0.05, DefaultThreshold: 90, SLO: true,
 		NoLimitReason: "the workload has no CPU limit, so there is nothing to saturate",
+	},
+	// RSS, not working set (page cache is reclaimable); breach is RSS only, OOM kills
+	// are evidence and the OOMKilled alerts own them. 90%: a JVM or Go heap sized as a
+	// share of its limit holds steady in the 80s by design.
+	ConditionMemorySaturation: {
+		Condition: ConditionMemorySaturation, Noun: "Memory usage (RSS)", Resource: "memory", OfLimit: true,
+		Value: observability.KeyContainerMemoryRSSLimitRatio,
+		Limit: observability.KeyContainerMemoryLimitPerPodMiB, Usage: observability.KeyContainerMemoryRSSMiB,
+		Unit: UnitMiB, RoundStep: 64, DefaultThreshold: 90, SLO: true,
+		NoLimitReason: "the container has no memory limit, so there is nothing to saturate",
+		LimitShape:    LimitPerPod, ContainerScoped: true,
+		OOMRestarts: observability.KeyContainerRestartsLastOOM6h, HourlyPeak: true,
 	},
 }
 
@@ -131,7 +167,7 @@ const (
 )
 
 // DailyRow is one day of the evidence table. Values are daily means of the hourly
-// buckets; a projected row is the trend line at that day's midpoint. Limit and usage
+// buckets (each bucket is that hour's peak for an HourlyPeak preset); a projected row is the trend line at that day's midpoint. Limit and usage
 // are per pod, in the Result's LimitUnit.
 type DailyRow struct {
 	Date        string  `json:"date"`
@@ -152,6 +188,8 @@ type Result struct {
 	Namespace string `json:"workload_namespace"`
 	Workload  string `json:"workload_name"`
 	Kind      string `json:"kind"`
+	// Container is the container a container-scoped preset measured.
+	Container string `json:"container,omitempty"`
 
 	CurrentPct     float64    `json:"current_pct"`
 	SlopePctPerDay float64    `json:"slope_pct_per_day"`
@@ -164,6 +202,9 @@ type Result struct {
 	SuggestedLimit float64 `json:"suggested_limit,omitempty"`
 	// LimitUnit is the unit of every limit and usage figure, e.g. "cores".
 	LimitUnit string `json:"limit_unit,omitempty"`
+	// OOMRestarts6h is the container's restarts in the last 6h whose last exit was an
+	// OOM kill (memory only). Evidence: it never changes Status.
+	OOMRestarts6h int `json:"oom_restarts_6h,omitempty"`
 
 	Daily       []DailyRow `json:"daily"`
 	Provider    string     `json:"provider,omitempty"`

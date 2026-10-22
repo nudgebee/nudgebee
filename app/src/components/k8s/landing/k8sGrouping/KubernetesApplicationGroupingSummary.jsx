@@ -21,7 +21,7 @@ import KubernetesApplicationGroupingSummaryDashboard from './KubernetesApplicati
 import { ds } from '@utils/colors';
 import apiTrace from '@api1/kubernetes/trace';
 import Tooltip from '@ui/Tooltip';
-import { isBreachedCpuSlo } from '@components/k8s/common/cpuForecast';
+import { isBreachedForecastSlo } from '@components/k8s/common/cpuForecast';
 
 const KubernetesApplicationGroupingSummary = ({ accountId, applications, setTab, setEventsFilter }) => {
   const router = useRouter();
@@ -380,7 +380,7 @@ const KubernetesApplicationGroupingSummary = ({ accountId, applications, setTab,
       });
       // CPU SLOs write no report rows; their breach is in their latest forecast.
       configuredSLOs.forEach((config) => {
-        if (isBreachedCpuSlo(config)) {
+        if (isBreachedForecastSlo(config)) {
           statusMap[`${config.workload_namespace}/${config.workload_name}`] = 'FIRING';
         }
       });

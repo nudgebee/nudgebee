@@ -12,6 +12,7 @@ import (
 	"nudgebee/services/config"
 	"nudgebee/services/event"
 	eventtypes "nudgebee/services/event/types"
+	"nudgebee/services/forecast/keys"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/observability"
 )
@@ -36,18 +37,24 @@ const sloCadence = time.Hour
 
 // AggregationKey is the event type of a projected breach of condition.
 func AggregationKey(c Condition) string {
-	if c == ConditionSaturation {
-		return "CPUSaturationPredicted"
+	switch c {
+	case ConditionSaturation:
+		return keys.CPUSaturationPredicted
+	case ConditionMemorySaturation:
+		return keys.MemorySaturationPredicted
 	}
-	return "CPUThrottlingPredicted"
+	return keys.CPUThrottlingPredicted
 }
 
 // BreachedAggregationKey is the event type of an actual breach of condition's SLO.
 func BreachedAggregationKey(c Condition) string {
-	if c == ConditionSaturation {
-		return "CPUSaturationSLOBreached"
+	switch c {
+	case ConditionSaturation:
+		return keys.CPUSaturationSLOBreached
+	case ConditionMemorySaturation:
+		return keys.MemorySaturationSLOBreached
 	}
-	return "CPUThrottlingSLOBreached"
+	return keys.CPUThrottlingSLOBreached
 }
 
 // Target identifies the SLO a forecast belongs to.
@@ -58,11 +65,18 @@ type Target struct {
 	SLOConfigId string
 }
 
-// fingerprint is one per workload, condition and level. "|" cannot appear in a UUID,
-// a DNS-1123 name or the enums, so two workloads can never share one (see
-// anomalyFingerprint for the collision "-" allowed).
+// fingerprint is one per workload, condition and level, and for a container-scoped
+// preset per container too: the condition decides the shape, so a memory fingerprint
+// always carries the container. "|" cannot appear in a UUID, a DNS-1123 name or the
+// enums, so two workloads can never share one (see anomalyFingerprint for the collision
+// "-" allowed). The "cpuforecast" prefix predates memory and is kept so CPU
+// fingerprints, and the alerts open under them, are unchanged.
 func fingerprint(t Target, res Result, level Level) string {
-	return strings.Join([]string{"cpuforecast", t.AccountId, res.Namespace, res.Kind, res.Workload, string(res.Condition), string(level)}, "|")
+	parts := []string{"cpuforecast", t.AccountId, res.Namespace, res.Kind, res.Workload, string(res.Condition)}
+	if Presets[res.Condition].ContainerScoped {
+		parts = append(parts, res.Container)
+	}
+	return strings.Join(append(parts, string(level)), "|")
 }
 
 // Seams for tests.
@@ -70,6 +84,7 @@ var (
 	openFiring       = openFiringEvent
 	inCooldown       = recentlyClosed
 	closeFiring      = closeFiringEvents
+	staleContainers  = staleContainerFingerprints
 	upsertEvent      = func(e event.Event) error { _, err := event.InsertEvent(e, "", event.ScheduledDetection()); return err }
 	publishResolve   = publishResolved
 	limitedContainer = onlyLimitedContainer
@@ -79,6 +94,14 @@ var (
 // Sync applies one evaluation to the workload's forecast events. A failed evaluation
 // says nothing about the workload, so it changes nothing.
 func Sync(t Target, res Result, series Series) error {
+	// Repair first, whatever this run concludes: an alert of a container the SLO no
+	// longer watches (the container was changed and its close failed) has no other
+	// evaluator to close it.
+	if Presets[res.Condition].ContainerScoped && res.Container != "" {
+		if err := closeStaleContainers(t, res); err != nil {
+			return err
+		}
+	}
 	switch res.Status {
 	case StatusError:
 		return nil
@@ -102,9 +125,44 @@ func Sync(t Target, res Result, series Series) error {
 }
 
 // CloseAll closes every open forecast event of an SLO whose watch has ended: the SLO
-// was disabled or deleted.
-func CloseAll(t Target, namespace, kind, workload string, c Condition) error {
-	return closeAll(t, Result{Namespace: namespace, Kind: normalizeKind(kind), Workload: workload, Condition: c}, CloseUnwatched, false)
+// was disabled or deleted, or it now watches another container. container is the one
+// the SLO watched; it is ignored for a preset that is not container-scoped.
+func CloseAll(t Target, namespace, kind, workload, container string, c Condition) error {
+	return closeAll(t, Result{Namespace: namespace, Kind: normalizeKind(kind), Workload: workload, Container: container, Condition: c}, CloseUnwatched, false)
+}
+
+// closeStaleContainers closes the open alerts of res's workload and condition that
+// belong to a container other than res's.
+func closeStaleContainers(t Target, res Result) error {
+	fps, err := staleContainers(t, res)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, fp := range fps {
+		if err := closeFiring(t, fp, CloseUnwatched, false); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// staleContainerFingerprints finds them by the alert's own columns, so the
+// (cloud_account_id, tenant, finding_type, aggregation_key) index serves it rather than
+// a prefix match on fingerprint.
+func staleContainerFingerprints(t Target, res Result) ([]string, error) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return nil, err
+	}
+	var fps []string
+	err = dbms.Db.Select(&fps, `SELECT DISTINCT fingerprint FROM events
+		WHERE cloud_account_id = $1 AND tenant = $2 AND finding_type IN ($3, $4) AND aggregation_key IN ($3, $4)
+		  AND source = $5 AND status = 'FIRING' AND subject_namespace = $6 AND subject_owner = $7
+		  AND labels->>'condition' = $8 AND labels->>'container' IS DISTINCT FROM $9`,
+		t.AccountId, t.TenantId, AggregationKey(res.Condition), BreachedAggregationKey(res.Condition),
+		Source, res.Namespace, res.Workload, string(res.Condition), res.Container)
+	return fps, err
 }
 
 // closeAll closes the warnings and the breach alert.
@@ -178,10 +236,13 @@ func buildEvent(t Target, res Result, series Series, level Level, fp, findingId 
 	if t.SLOConfigId != "" {
 		labels["slo_config_id"] = t.SLOConfigId
 	}
-	// The resolution path sizes one container. The forecast is workload-wide, so a
-	// container is named only when exactly one has a CPU limit; otherwise the event
-	// offers replicas and restart, not a resize.
-	if c := limitedContainer(t, res); c != "" {
+	// The resolution path sizes one container. A container-scoped forecast names its
+	// own, which is part of its identity and so never changes; a workload-wide one names
+	// a container only when exactly one has a CPU limit, otherwise the event offers
+	// replicas and restart, not a resize.
+	if Presets[res.Condition].ContainerScoped {
+		labels["container"] = res.Container
+	} else if c := limitedContainer(t, res); c != "" {
 		labels["container"] = c
 	}
 	return event.Event{
@@ -215,6 +276,10 @@ func buildEvent(t Target, res Result, series Series, level Level, fp, findingId 
 // breach: "order-service: CPU throttling breached its 75% SLO (now 78%, rising 24 pp/day)".
 func Title(res Result) string {
 	what := conditionNoun(res.Condition)
+	subject := res.Workload
+	if res.Container != "" {
+		subject += "/" + res.Container
+	}
 	ofLimit := Presets[res.Condition].OfLimit
 	if res.Status == StatusBreached {
 		slo := trimFloat(res.ThresholdPct) + "%"
@@ -225,7 +290,7 @@ func Title(res Result) string {
 		if res.SlopePctPerDay > 0 {
 			trend = fmt.Sprintf(", rising %s pp/day", trimFloat(res.SlopePctPerDay))
 		}
-		return fmt.Sprintf("%s: %s breached its %s SLO (now %s%%%s)", res.Workload, what, slo, trimFloat(res.CurrentPct), trend)
+		return fmt.Sprintf("%s: %s breached its %s SLO (now %s%%%s)", subject, what, slo, trimFloat(res.CurrentPct), trend)
 	}
 	eta := "soon"
 	if res.ETAHours != nil {
@@ -236,7 +301,7 @@ func Title(res Result) string {
 		suffix = " of its limit"
 	}
 	return fmt.Sprintf("%s: %s projected to reach %s%%%s %s (now %s%%)",
-		res.Workload, what, trimFloat(res.ThresholdPct), suffix, eta, trimFloat(res.CurrentPct))
+		subject, what, trimFloat(res.ThresholdPct), suffix, eta, trimFloat(res.CurrentPct))
 }
 
 func conditionNoun(c Condition) string {
@@ -306,9 +371,12 @@ func Evidences(res Result, series Series) []any {
 }
 
 var evidenceTitles = map[observability.UtilisationKey]string{
-	observability.KeyCPUThrottlingRatio: "CPU throttling (share of CFS periods)",
-	observability.KeyCPUUsageLimited:    "CPU usage (cores, containers with a CPU limit)",
-	observability.KeyCPULimit:           "CPU limit (cores, all pods)",
+	observability.KeyCPUThrottlingRatio:            "CPU throttling (share of CFS periods)",
+	observability.KeyCPUUsageLimited:               "CPU usage (cores, containers with a CPU limit)",
+	observability.KeyCPULimit:                      "CPU limit (cores, all pods)",
+	observability.KeyContainerMemoryRSSLimitRatio:  "Memory (RSS) as a share of the limit (highest pod)",
+	observability.KeyContainerMemoryRSSMiB:         "Memory RSS (MiB, busiest pod)",
+	observability.KeyContainerMemoryLimitPerPodMiB: "Memory limit (MiB, largest per pod)",
 }
 
 func evidenceTitle(key observability.UtilisationKey) string {
@@ -375,8 +443,12 @@ func trendInsights(res Result) []eventtypes.EventEvidenceInsight {
 		for _, d := range observed {
 			days = append(days, fmt.Sprintf("%s %s%%", d.Date, trimFloat(d.ValuePct)))
 		}
-		msg := fmt.Sprintf("%s by day (daily mean): %s; now %s%% (last 6h), %s",
-			conditionNoun(res.Condition), strings.Join(days, ", "), trimFloat(res.CurrentPct), slopePhrase(res.SlopePctPerDay))
+		basis := "daily mean"
+		if Presets[res.Condition].HourlyPeak {
+			basis = "daily mean of hourly peaks"
+		}
+		msg := fmt.Sprintf("%s by day (%s): %s; now %s%% (last 6h), %s",
+			conditionNoun(res.Condition), basis, strings.Join(days, ", "), trimFloat(res.CurrentPct), slopePhrase(res.SlopePctPerDay))
 		first, last := observed[0], observed[len(observed)-1]
 		if first.PerPodUsage > 0 && last.PerPodUsage > 0 && res.PerPodLimit > 0 {
 			msg += fmt.Sprintf(". %s usage per pod went from %s to %s against a %s limit", resourceOf(res.Condition),
@@ -403,6 +475,15 @@ func trendInsights(res Result) []eventtypes.EventEvidenceInsight {
 		}
 		insights = append(insights, eventtypes.EventEvidenceInsight{Message: msg, Severity: severity})
 	}
+	if res.OOMRestarts6h > 0 {
+		// Evidence, not the breach: kube-state-metrics counts restarts, not kills, and
+		// the kill itself is the OOMKilled alert's (which agentless accounts do not get).
+		insights = append(insights, eventtypes.EventEvidenceInsight{
+			Message: fmt.Sprintf("%d restarts in the last 6h, last exit OOMKilled (restart-based; a worker process killed inside a running container is not counted). The container's OOMKilled alert, if one was raised, covers the kills.",
+				res.OOMRestarts6h),
+			Severity: "critical",
+		})
+	}
 	return insights
 }
 
@@ -428,16 +509,29 @@ func tableEvidence(res Result) eventtypes.EventEvidence {
 		Insight: []eventtypes.EventEvidenceInsight{},
 		Data: map[string]any{
 			"column_renderers": map[string]any{},
-			"headers": []string{"day", string(res.Condition),
-				strings.ToLower(resourceOf(res.Condition)) + " usage per pod", strings.ToLower(resourceOf(res.Condition)) + " limit per pod", ""},
-			"rows":       rows,
-			"table_name": "Daily trend",
+			"headers":          tableHeaders(res.Condition),
+			"rows":             rows,
+			"table_name":       "Daily trend",
 		},
 		AdditionalInfo: map[string]any{
 			"action_name":        "metric_forecast",
 			"actual_action_name": "metric_forecast",
 		},
 	}
+}
+
+// tableHeaders name the usage and limit columns. A per-pod preset's usage is the busiest
+// pod and its limit the largest per pod, which during a rollout can be different pods.
+func tableHeaders(c Condition) []string {
+	resource := strings.ToLower(resourceOf(c))
+	if Presets[c].LimitShape == LimitPerPod {
+		usage := resource + " of busiest pod"
+		if Presets[c].HourlyPeak {
+			usage = "peak " + usage
+		}
+		return []string{"day", string(c), usage, "largest " + resource + " limit per pod", ""}
+	}
+	return []string{"day", string(c), resource + " usage per pod", resource + " limit per pod", ""}
 }
 
 func openFiringEvent(t Target, fp string) (string, time.Time, error) {

@@ -88,7 +88,7 @@ func executeAccountSLOs(accountId string, forecasts bool) error {
 	sloConfigs := make([]DBSLOConfig, 0)
 	if err = dbms.Db.Select(&sloConfigs, `SELECT id, "name", description, "window", goal, schedule, created_by, updated_by, "method",
 			histogram_query, filter_good_query, filter_bad_query, threshold, created_at, updated_at,
-			cloud_account_id, tenant_id, enabled, workload_name, workload_namespace
+			cloud_account_id, tenant_id, enabled, workload_name, workload_namespace, container
 		FROM public.slo_config WHERE cloud_account_id=$1 AND enabled = true`, accountId); err != nil {
 		return err
 	}
@@ -414,6 +414,8 @@ func CreateOrUpdateSLOConfig(context *security.RequestContext, sloConfigRequest 
 		method := ""
 		histogramQuery := ""
 		window := 60 * 60
+		var container *string
+		previousContainer := ""
 		if strings.ToLower(config.Name) == "latency" {
 			histogramQuery = LatencyHistogramQuery(sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
 			method = "distribution_cut"
@@ -431,27 +433,44 @@ func CreateOrUpdateSLOConfig(context *security.RequestContext, sloConfigRequest 
 			config.Name = strings.ToLower(config.Name)
 			config.Goal = 0
 			method = forecastMethod
+			if isContainerScoped(config.Name) {
+				// Read before the upsert overwrites it: a changed container leaves the
+				// old one's alerts with no evaluator (closed below; the hourly run also
+				// repairs any it misses).
+				previousContainer = storedContainer(dbms, context.GetSecurityContext().GetTenantId(), sloConfigRequest, config.Name)
+				// A request that names no container (a disable sent without it) keeps the
+				// stored one, so the close below still finds that container's alerts.
+				c := strings.TrimSpace(config.Container)
+				if c == "" {
+					c = previousContainer
+				}
+				container = &c
+			}
 		} else {
 			return data, fmt.Errorf("invalid config provided %s", config.Name)
 		}
-		query := `INSERT INTO slo_config ("name", schedule, description, created_by, updated_by, filter_good_query, filter_bad_query, threshold, "method", histogram_query, cloud_account_id, tenant_id, "window", workload_name, workload_namespace, enabled, goal) 
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) 
+		query := `INSERT INTO slo_config ("name", schedule, description, created_by, updated_by, filter_good_query, filter_bad_query, threshold, "method", histogram_query, cloud_account_id, tenant_id, "window", workload_name, workload_namespace, enabled, goal, container) 
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) 
 			ON CONFLICT (tenant_id, cloud_account_id, workload_name, workload_namespace, name)
 			DO UPDATE SET threshold = EXCLUDED.threshold,
 				goal = EXCLUDED.goal,
 				enabled = EXCLUDED.enabled,
+				container = EXCLUDED.container,
 				updated_by = EXCLUDED.updated_by,
 				updated_at = now()`
-		_, err = dbms.Db.Exec(query, config.Name, "", "", context.GetSecurityContext().GetUserId(), context.GetSecurityContext().GetUserId(), filterGoodQuery, filterBadQuery, config.Threshold, method, histogramQuery, sloConfigRequest.AccountId, context.GetSecurityContext().GetTenantId(), window, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace, config.Enabled, config.Goal)
+		_, err = dbms.Db.Exec(query, config.Name, "", "", context.GetSecurityContext().GetUserId(), context.GetSecurityContext().GetUserId(), filterGoodQuery, filterBadQuery, config.Threshold, method, histogramQuery, sloConfigRequest.AccountId, context.GetSecurityContext().GetTenantId(), window, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace, config.Enabled, config.Goal, container)
 		if err != nil {
 			return data, err
+		}
+		if previousContainer != "" && container != nil && previousContainer != *container {
+			closeForecastEvents(context.GetSecurityContext().GetTenantId(), sloConfigRequest.AccountId, config.Name, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace, previousContainer)
 		}
 		if !config.Enabled {
 			// A disabled config never evaluates again, so it never has another
 			// chance to close its own event — same failure class as delete (see
 			// DeleteSLOConfig).
 			if isForecastType(config.Name) {
-				closeForecastEvents(context.GetSecurityContext().GetTenantId(), sloConfigRequest.AccountId, config.Name, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace)
+				closeForecastEvents(context.GetSecurityContext().GetTenantId(), sloConfigRequest.AccountId, config.Name, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace, common.StrVal(container))
 			} else {
 				fingerprint := sloFingerprint(sloConfigRequest.AccountId, config.Name, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace)
 				closeSLOEventByFingerprint(dbms, context.GetSecurityContext().GetTenantId(), sloConfigRequest.AccountId, fingerprint)
@@ -501,8 +520,11 @@ func DeleteSLOConfig(context *security.RequestContext, request SLODeleteRequest)
 	// events can be closed afterward — a deleted config never runs again, so
 	// without this a still-open SLOViolation event it owns has no evaluator
 	// left to ever resolve it (same failure class this whole change fixes).
-	var deletedConfigNames []string
-	if err = tx.Select(&deletedConfigNames, fmt.Sprintf(`SELECT "name" FROM slo_config
+	var deletedConfigs []struct {
+		Name      string  `db:"name"`
+		Container *string `db:"container"`
+	}
+	if err = tx.Select(&deletedConfigs, fmt.Sprintf(`SELECT "name", container FROM slo_config
 		WHERE tenant_id=$1 AND cloud_account_id=$2 AND workload_name=$3 AND workload_namespace=$4%s`, nameFilter), args...); err != nil {
 		return data, err
 	}
@@ -523,9 +545,10 @@ func DeleteSLOConfig(context *security.RequestContext, request SLODeleteRequest)
 		return data, err
 	}
 
-	for _, name := range deletedConfigNames {
+	for _, cfg := range deletedConfigs {
+		name := cfg.Name
 		if isForecastType(name) {
-			closeForecastEvents(sc.GetTenantId(), request.AccountId, name, request.WorkloadName, request.Namespace)
+			closeForecastEvents(sc.GetTenantId(), request.AccountId, name, request.WorkloadName, request.Namespace, common.StrVal(cfg.Container))
 			continue
 		}
 		fingerprint := sloFingerprint(request.AccountId, name, request.WorkloadName, request.Namespace)
@@ -563,7 +586,7 @@ func GetSLOConfig(context *security.RequestContext, sloListRequest SLOListReques
 		return nil, err
 	}
 
-	query := fmt.Sprintf(`SELECT id, "name", description, schedule, created_by, updated_by, filter_good_query, filter_bad_query, threshold, created_at, updated_at, "method", histogram_query, cloud_account_id, tenant_id, "window", workload_name, workload_namespace, goal, enabled, last_forecast FROM public.slo_config where %s`, whereClause)
+	query := fmt.Sprintf(`SELECT id, "name", description, schedule, created_by, updated_by, filter_good_query, filter_bad_query, threshold, created_at, updated_at, "method", histogram_query, cloud_account_id, tenant_id, "window", workload_name, workload_namespace, goal, enabled, last_forecast, container FROM public.slo_config where %s`, whereClause)
 	// Use sqlx.In to handle slice arguments and prevent SQL injection
 	query, args, err = sqlx.In(query, args...)
 	if err != nil {
@@ -580,12 +603,12 @@ func GetSLOConfig(context *security.RequestContext, sloListRequest SLOListReques
 	for _, config := range sloConfigs {
 		configKey := fmt.Sprintf("%s-%s-%s", config.Name, config.WorkloadName, config.Namespace)
 		if response, ok := sloResponseMap[configKey]; ok {
-			configResponse := SLOConfigResponse{Id: config.Id, Name: config.Name, Goal: config.Goal, Threshold: config.ThresholdBucket, Enabled: config.Enabled, LastForecast: lastForecastJSON(config.LastForecast)}
+			configResponse := SLOConfigResponse{Id: config.Id, Name: config.Name, Goal: config.Goal, Threshold: config.ThresholdBucket, Enabled: config.Enabled, LastForecast: lastForecastJSON(config.LastForecast), Container: common.StrVal(config.Container)}
 			response.Config = append(response.Config, configResponse)
 			sloResponseMap[configKey] = response
 		} else {
 			response := SLOResponse{Id: config.Id, AccountId: config.CloudAccountId, WorkloadName: config.WorkloadName, Namespace: config.Namespace, Config: make([]SLOConfigResponse, 0)}
-			configResponse := SLOConfigResponse{Id: config.Id, Name: config.Name, Goal: config.Goal, Threshold: config.ThresholdBucket, Enabled: config.Enabled, LastForecast: lastForecastJSON(config.LastForecast)}
+			configResponse := SLOConfigResponse{Id: config.Id, Name: config.Name, Goal: config.Goal, Threshold: config.ThresholdBucket, Enabled: config.Enabled, LastForecast: lastForecastJSON(config.LastForecast), Container: common.StrVal(config.Container)}
 			response.Config = append(response.Config, configResponse)
 			sloResponseMap[configKey] = response
 		}

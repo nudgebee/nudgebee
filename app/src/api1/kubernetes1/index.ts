@@ -3,6 +3,7 @@ import getMockData from '@api1/mock';
 import cache from '@lib/cache';
 import observability from '@api1/observability';
 import { safeJSONParse, EXCLUDED_TRIAGE_AGGREGATION_KEYS } from 'src/utils/common';
+import { memoryLimitedContainers } from '@components/k8s/common/cpuForecast';
 
 // Event rule names are read for pickers and re-read often; five minutes keeps a
 // newly created or renamed rule from being invisible for long without making the
@@ -285,6 +286,17 @@ mutation SLOCreate($data: SLOCreateRequest!) {
 }
 `;
 
+export const WORKLOAD_SPEC = `
+query WorkloadSpec {
+  k8s_workloads_v2(where: __WHERE__, limit: 1) {
+    rows {
+      name
+      meta
+    }
+  }
+}
+`;
+
 export const SLO_LIST = `
 mutation SLOConfigList($data: SLOListRequest!) {
   slo_config_list(request: $data) {
@@ -298,6 +310,7 @@ mutation SLOConfigList($data: SLOListRequest!) {
         id
         name
         threshold
+        container
       }
     }
   }
@@ -339,6 +352,8 @@ mutation Forecast($data: ForecastGenerateRequest!) {
       per_pod_limit
       suggested_limit
       limit_unit
+      container
+      oom_restarts_6h
       evaluated_at
       daily {
         date
@@ -432,6 +447,7 @@ query GetSLOConfigs {
       created_at
       updated_at
       last_forecast
+      container
     }
   }
 }
@@ -627,8 +643,24 @@ const apiKubernetes1 = {
     });
     return response;
   },
+  /** The workload's containers that set a memory limit, read from the workload inventory's spec. */
+  async getMemoryLimitedContainers(accountId: string, namespace: string, name: string): Promise<string[]> {
+    const where = gqlStringify({
+      _and: [{ account_id: { _eq: accountId } }, { namespace: { _eq: namespace } }, { name: { _eq: name } }, { is_active: { _eq: true } }],
+    });
+    const response = await queryGraphQL(WORKLOAD_SPEC.replaceAll('__WHERE__', where), 'WorkloadSpec', {});
+    const rows = response?.data?.data?.k8s_workloads_v2?.rows ?? [];
+    return rows.length > 0 ? memoryLimitedContainers(rows[0].meta) : [];
+  },
   /** Check now: the forecast of one workload metric preset against a threshold. Creates no event. */
-  async generateForecast(data: { account_id: string; workload_namespace: string; workload_name: string; metric: string; threshold: number }) {
+  async generateForecast(data: {
+    account_id: string;
+    workload_namespace: string;
+    workload_name: string;
+    metric: string;
+    threshold: number;
+    container?: string;
+  }) {
     const response = await queryGraphQL(FORECAST, 'Forecast', { data });
     const result = response?.data?.data?.forecast_generate?.data;
     if (!result) {

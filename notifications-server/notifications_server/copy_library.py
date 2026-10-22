@@ -52,6 +52,8 @@ EVENT_DISPLAY_NAMES = {
     "CPUSaturationPredicted": "CPU saturation breach predicted",
     "CPUThrottlingSLOBreached": "CPU throttling SLO breached",
     "CPUSaturationSLOBreached": "CPU saturation SLO breached",
+    "MemorySaturationPredicted": "Memory saturation breach predicted",
+    "MemorySaturationSLOBreached": "Memory saturation SLO breached",
     "job_failure": "Job failed",
     "KubeJobFailed": "Job failed",
     "KubeJobCompletion": "Job overdue",

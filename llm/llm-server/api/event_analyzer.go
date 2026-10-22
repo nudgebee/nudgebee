@@ -2423,14 +2423,18 @@ func eventKnowledgeHints(event events.Event) []string {
 	return hints
 }
 
-// forecastTrendGuidance asks the report to lead with the climb a CPU SLO forecast
-// alert was raised on. Those alerts (source "forecast", from api-server's forecast
-// package) fire on a trend over days, and their insights carry it: without this the
-// investigation explains what is consuming CPU but never says how the throttling got
-// there or where it is heading, which is the point of the alert.
-func forecastTrendGuidance(source string) string {
+// forecastTrendGuidance asks the report to lead with the climb an SLO forecast alert
+// was raised on. Those alerts (source "forecast", from api-server's forecast package)
+// fire on a trend over days, and their insights carry it: without this the
+// investigation explains what is consuming the resource but never says how it got
+// there or where it is heading, which is the point of the alert. condition is the
+// event's condition label (cpu_throttling, cpu_saturation, memory_saturation).
+func forecastTrendGuidance(source, condition string) string {
 	if source != "forecast" {
 		return ""
+	}
+	if condition == "memory_saturation" {
+		return memoryForecastTrendGuidance
 	}
 	return "\n\n## CPU SLO Forecast Alert\n" +
 		"This alert was raised by Nudgebee's CPU SLO forecast on a gradual climb over days, not on a single spike. " +
@@ -2444,6 +2448,24 @@ func forecastTrendGuidance(source string) string {
 		"forecast insight; for a breach, say that the climb is still rising when the insight says so. Then explain " +
 		"what is driving the climb."
 }
+
+// memoryForecastTrendGuidance is forecastTrendGuidance for a memory SLO: one container's
+// RSS against its own memory limit, with OOM restarts as evidence only.
+const memoryForecastTrendGuidance = "\n\n## Memory SLO Forecast Alert\n" +
+	"This alert was raised by Nudgebee's memory SLO forecast on a gradual climb over days of ONE container's RSS " +
+	"(the container named in the title and the container label) as a share of its own memory limit, per pod and " +
+	"the highest pod. In Quick Investigation, before the cause, state the trend from the Collected Evidence " +
+	"insights: the value on each day (\"by day (daily mean of hourly peaks)\"), the current value, the rate of " +
+	"increase, and the busiest pod's peak RSS against the memory limit, in MiB. The values are hourly peaks because " +
+	"a container is OOM-killed at its peak, not its average. Show the daily values as a small markdown table (day | " +
+	"value | peak RSS of busiest pod) inside Quick Investigation, not under a heading of its own. When the forecast " +
+	"insight lists a \"projected daily mean\", continue the same table with one row per projected day after the " +
+	"observed days, marking each day \"(projected)\" and leaving its RSS as \"-\"; never invent rows the insights " +
+	"do not give. For a projection, also state when the threshold is expected to be reached and the suggested " +
+	"memory limit from the forecast insight. If an insight reports restarts with last exit OOMKilled, say so, and " +
+	"say that the container's OOMKilled alert (if one was raised) covers the kills; never present that count as a " +
+	"number of OOM kills. Then explain what is driving the climb (a leak, a growing cache or working data, more " +
+	"load), naming the container."
 
 // capNamespace / capWorkload are the event's resolved workload
 // (resolveEventWorkload); the caller resolves them once and reuses them.
@@ -2531,7 +2553,8 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 			"\n\n## Collected Evidence\nThe following evidence was already gathered for this event. Treat it as part of the provided data and use it in your assessment before judging whether data is sufficient:\n\n" +
 			core.TruncateHead(evidenceContext, maxInvestigationEvidenceBytes)
 	}
-	eventAnalsysisPrompt += forecastTrendGuidance(event.Source)
+	forecastCondition, _ := parsedLabels["condition"].(string)
+	eventAnalsysisPrompt += forecastTrendGuidance(event.Source, forecastCondition)
 
 	// #41579: the assembly is fetched here and put in the prompt. The
 	// orchestrator does not declare get_event_incident_assembly, so the

@@ -1,14 +1,16 @@
-// CPU SLOs (cpu_throttling, cpu_saturation) are threshold SLOs the backend evaluates
-// with a forecast instead of a good/bad ratio. This module holds what the SLO dialog
-// and the SLO list both need to describe one: the two types and the wording of a
-// forecast result (the forecast_generate response and
+// Forecast SLOs (cpu_throttling, cpu_saturation, memory_saturation) are threshold SLOs
+// the backend evaluates with a forecast instead of a good/bad ratio. This module holds
+// what the SLO dialog and the SLO list both need to describe one: the types and the
+// wording of a forecast result (the forecast_generate response and
 // slo_config.last_forecast share one shape).
 
 export interface CpuSloType {
-  name: 'cpu_throttling' | 'cpu_saturation';
+  name: 'cpu_throttling' | 'cpu_saturation' | 'memory_saturation';
   title: string;
   description: string;
   unit: string;
+  /** Measures one container, which the SLO must name. */
+  containerScoped?: boolean;
 }
 
 export const CPU_SLO_TYPES: CpuSloType[] = [
@@ -26,16 +28,78 @@ export const CPU_SLO_TYPES: CpuSloType[] = [
   },
 ];
 
-export const isCpuSloName = (name?: string) => CPU_SLO_TYPES.some((t) => t.name === String(name ?? '').toLowerCase());
+/** The memory forecast SLO: one container's RSS as a share of its own memory limit. */
+export const MEMORY_SLO_TYPES: CpuSloType[] = [
+  {
+    name: 'memory_saturation',
+    title: 'Saturation',
+    description: "Alert before the container's memory (RSS) reaches",
+    unit: 'of its memory limit',
+    containerScoped: true,
+  },
+];
+
+export const FORECAST_SLO_TYPES: CpuSloType[] = [...CPU_SLO_TYPES, ...MEMORY_SLO_TYPES];
+
+/** Every forecast alert key (events.aggregation_key), CPU and memory. */
+export const FORECAST_EVENT_KEYS = [
+  'CPUThrottlingPredicted',
+  'CPUSaturationPredicted',
+  'CPUThrottlingSLOBreached',
+  'CPUSaturationSLOBreached',
+  'MemorySaturationPredicted',
+  'MemorySaturationSLOBreached',
+];
+
+/** What the memory SLO's help text says it cannot see. */
+export const MEMORY_SLO_CAVEATS =
+  'Measures each hour\'s peak RSS, since a container is OOM-killed at its peak, not its average. Page cache that the kernel can reclaim is not counted. It cannot see shared memory or tmpfs (emptyDir medium Memory, /dev/shm) or kernel memory, so such a container can be OOM-killed while this reads low; the OOMKilled alert covers that. A container whose limit VPA keeps changing may show "Not enough data".';
+
+export const isForecastSloName = (name?: string) => FORECAST_SLO_TYPES.some((t) => t.name === String(name ?? '').toLowerCase());
+
+export const isContainerScopedSloName = (name?: string) => MEMORY_SLO_TYPES.some((t) => t.name === String(name ?? '').toLowerCase());
 
 /**
- * A CPU SLO whose latest forecast says it is breached. CPU SLOs write no slo_report
- * rows, so SLO counts built from report observations must also check this, or a
- * workload whose only SLO is a breached CPU one counts as configured but never firing.
+ * A forecast SLO whose latest forecast says it is breached. Forecast SLOs write no
+ * slo_report rows, so SLO counts built from report observations must also check this,
+ * or a workload whose only SLO is a breached forecast one counts as configured but
+ * never firing.
  */
-export const isBreachedCpuSlo = (config: { name?: string; last_forecast?: unknown }, now = Date.now()) => {
+export const isBreachedForecastSlo = (config: { name?: string; last_forecast?: unknown }, now = Date.now()) => {
   const f = parseForecast(config?.last_forecast);
-  return isCpuSloName(config?.name) && f?.status === 'breached' && !isStaleForecast(f, now);
+  return isForecastSloName(config?.name) && f?.status === 'breached' && !isStaleForecast(f, now);
+};
+
+const KNOWN_SIDECARS = [
+  'istio-proxy',
+  'linkerd-proxy',
+  'envoy',
+  'fluent-bit',
+  'fluentd',
+  'vector',
+  'otel-collector',
+  'oauth2-proxy',
+  'cloud-sql-proxy',
+];
+
+/** The container a new memory SLO starts on: the only one, or the first that is not a known sidecar. */
+export const defaultMemoryContainer = (containers: string[]): string => {
+  if (containers.length <= 1) return containers[0] ?? '';
+  return containers.find((c) => !KNOWN_SIDECARS.includes(c)) ?? containers[0];
+};
+
+/** The containers of a workload's spec that set a memory limit (k8s_workloads meta). */
+export const memoryLimitedContainers = (meta: unknown): string[] => {
+  let m: any = meta;
+  if (typeof m === 'string') {
+    try {
+      m = JSON.parse(m);
+    } catch {
+      return [];
+    }
+  }
+  const containers = Array.isArray(m?.config?.containers) ? m.config.containers : [];
+  return containers.filter((c: any) => c?.name && c?.resources?.limits?.memory).map((c: any) => String(c.name));
 };
 
 export interface ForecastDailyRow {
@@ -57,8 +121,12 @@ export interface ForecastResult {
   level?: 'HIGH' | 'MEDIUM' | 'BREACHED';
   per_pod_limit?: number;
   suggested_limit?: number;
-  /** Unit of every limit and usage figure, e.g. "cores". */
+  /** Unit of every limit and usage figure, e.g. "cores" or "MiB". */
   limit_unit?: string;
+  /** The container a memory forecast measured. */
+  container?: string;
+  /** Restarts in the last 6h whose last exit was OOMKilled (memory only; evidence). */
+  oom_restarts_6h?: number;
   daily?: ForecastDailyRow[];
   evaluated_at?: string;
 }

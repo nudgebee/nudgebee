@@ -20,6 +20,8 @@ export const AGGREGATION_KEY = {
   CPU_SATURATION_PREDICTED: 'CPUSaturationPredicted',
   CPU_THROTTLING_SLO_BREACHED: 'CPUThrottlingSLOBreached',
   CPU_SATURATION_SLO_BREACHED: 'CPUSaturationSLOBreached',
+  MEMORY_SATURATION_PREDICTED: 'MemorySaturationPredicted',
+  MEMORY_SATURATION_SLO_BREACHED: 'MemorySaturationSLOBreached',
 } as const;
 
 // Alert keys that take the CPU fixes: raise the CPU limit, add replicas, or restart.
@@ -32,11 +34,19 @@ export const CPU_LIMIT_ALERT_KEYS: readonly string[] = [
   AGGREGATION_KEY.CPU_SATURATION_SLO_BREACHED,
 ];
 
+// Alert keys that take the memory fixes: raise the memory limit, add replicas, or restart.
+// The memory SLO forecasts and breach alerts take the same fixes as PodMemoryReachingLimit.
+export const MEMORY_LIMIT_ALERT_KEYS: readonly string[] = [
+  AGGREGATION_KEY.POD_MEMORY_REACHING_LIMIT,
+  AGGREGATION_KEY.MEMORY_SATURATION_PREDICTED,
+  AGGREGATION_KEY.MEMORY_SATURATION_SLO_BREACHED,
+];
+
 // Alert keys that support the "Resolve Event" action
 export const RESOLVABLE_ALERT_KEYS = [
   AGGREGATION_KEY.KUBE_PERSISTENT_VOLUME_FILLING_UP,
   ...CPU_LIMIT_ALERT_KEYS,
-  AGGREGATION_KEY.POD_MEMORY_REACHING_LIMIT,
+  ...MEMORY_LIMIT_ALERT_KEYS,
   AGGREGATION_KEY.IMAGE_PULL_BACKOFF_REPORTER,
   AGGREGATION_KEY.KUBE_NODE_NOT_READY,
 ] as const;

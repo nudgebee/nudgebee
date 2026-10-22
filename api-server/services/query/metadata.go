@@ -8462,8 +8462,10 @@ var table_metadata = map[string]TableDefinition{
 			"workload_namespace": {Type: ColumnDefinitionTypeString},
 			"goal":               {Type: ColumnDefinitionTypeString},
 			"enabled":            {Type: ColumnDefinitionTypeBoolean},
-			// The latest forecast of a CPU SLO (forecast.Result); NULL for other types.
+			// The latest forecast of a forecast SLO (forecast.Result); NULL for other types.
 			"last_forecast": {Type: ColumnDefinitionTypeJson},
+			// The container a memory_saturation SLO watches; NULL for other types.
+			"container": {Type: ColumnDefinitionTypeString},
 		},
 	},
 	"slo_report_v2": {
