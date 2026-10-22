@@ -330,7 +330,48 @@ func buildOpenObserveTraceWhereClause(where query.QueryWhereClause) (string, err
 	})
 }
 
+// openObserveRawSubquery wraps a caller's raw SQL as a derived table so an operation that
+// needs to add its own clause — a count, or the root-span narrowing behind "By Traces" —
+// composes with it instead of discarding it. The alias is required: DataFusion (which backs
+// OpenObserve's SQL) rejects an unaliased derived table.
+func openObserveRawSubquery(raw string) string {
+	return fmt.Sprintf("(%s) AS nb_raw", strings.TrimSuffix(strings.TrimSpace(raw), ";"))
+}
+
+// openObserveCountOver counts the rows of a raw query, optionally narrowed further.
+func openObserveCountOver(raw, extraWhere string) string {
+	sql := "SELECT count(*) as count FROM " + openObserveRawSubquery(raw)
+	if extraWhere != "" {
+		sql += " WHERE " + extraWhere
+	}
+	return sql
+}
+
+// openObserveRootSpanWhere selects root spans. OpenObserve stores a root's parent id as
+// NULL, not "" — see withOpenObserveRootSpans, which applies the same narrowing through the
+// canonical where clause.
+const openObserveRootSpanWhere = "parent_id IS NULL"
+
+// openObserveRawRowLimit bounds a raw SQL trace query. The bound travels as the search
+// request's structured `size` field, never as an appended LIMIT: deciding whether SQL
+// already carries one by inspecting its text is unsound — a `rate_limit` column, a
+// `'limit'` string literal, or a subquery's own LIMIT all false-positive.
+func openObserveRawRowLimit(req TracesV3Request) int {
+	limit := req.QueryRequest.Limit
+	if limit <= 0 || limit > 10000 {
+		limit = 10000
+	}
+	return limit
+}
+
 func (s *OpenObserveTraceSource) buildSQL(req TracesV3Request, stream string) (string, error) {
+	// Code mode: the caller's SQL runs verbatim. The time window is deliberately NOT part
+	// of it — it travels in the search request's start_time/end_time, so a raw query can
+	// never widen the window it was asked for.
+	if raw := strings.TrimSpace(req.Query); raw != "" {
+		return raw, nil
+	}
+
 	// Callers pass a config-resolved stream, which GetOpenObserveConfigs has already
 	// validated. Re-checked here so the function is safe for any caller, not just that one.
 	if !integrations.IsSafeOpenObserveStreamName(stream) {
@@ -386,6 +427,11 @@ func (s *OpenObserveTraceSource) QueryTraces(ctx *security.RequestContext, req T
 	searchReq.Query.SQL = sql
 	searchReq.Query.StartTime = startTimeMicros
 	searchReq.Query.EndTime = endTimeMicros
+	// The canonical path carries its own LIMIT inside the generated SQL; a raw query is
+	// bounded here instead, structurally (see openObserveRawRowLimit).
+	if strings.TrimSpace(req.Query) != "" {
+		searchReq.Query.Size = openObserveRawRowLimit(req)
+	}
 
 	payloadBytes, err := json.Marshal(searchReq)
 	if err != nil {
@@ -571,14 +617,21 @@ func (s *OpenObserveTraceSource) CountTraces(ctx *security.RequestContext, req T
 		return common.OpenTelemetryTraceCount{}, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
 
-	whereClause, err := buildOpenObserveTraceWhereClause(req.QueryRequest.Where)
-	if err != nil {
-		return common.OpenTelemetryTraceCount{}, err
-	}
-
-	sql := fmt.Sprintf(`SELECT count(*) as count FROM "%s"`, cfg.TraceStream)
-	if whereClause != "" {
-		sql += " WHERE " + whereClause
+	var sql string
+	if hasRawTraceQuery(req) {
+		// Count what the caller's own query returns, by counting over it as a derived
+		// table. A raw query that carries its own LIMIT therefore counts up to that limit
+		// — the count of the rows that query asks for, which is the honest reading.
+		sql = openObserveCountOver(req.Query, "")
+	} else {
+		whereClause, werr := buildOpenObserveTraceWhereClause(req.QueryRequest.Where)
+		if werr != nil {
+			return common.OpenTelemetryTraceCount{}, werr
+		}
+		sql = fmt.Sprintf(`SELECT count(*) as count FROM "%s"`, cfg.TraceStream)
+		if whereClause != "" {
+			sql += " WHERE " + whereClause
+		}
 	}
 
 	startTimeMicros := req.StartTime * 1000
@@ -648,12 +701,29 @@ func withOpenObserveRootSpans(req TracesV3Request) TracesV3Request {
 }
 
 func (s *OpenObserveTraceSource) QueryRootSpansByTrace(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	// The canonical path narrows to roots through the where clause (withOpenObserveRootSpans),
+	// which a raw query replaces — so for a raw query that narrowing is composed ONTO it as an
+	// outer SELECT instead of being lost. Either way this view lists one row per trace rather
+	// than every span in the window.
+	if hasRawTraceQuery(req) {
+		rawReq := req
+		rawReq.Query = fmt.Sprintf("SELECT * FROM %s WHERE %s ORDER BY _timestamp DESC",
+			openObserveRawSubquery(req.Query), openObserveRootSpanWhere)
+		return s.QueryTraces(ctx, rawReq)
+	}
 	return s.QueryTraces(ctx, withOpenObserveRootSpans(req))
 }
 
 // CountTracesByTrace counts the root spans the "By Traces" view lists, so its pagination is
 // exact instead of the -1 estimate marker.
 func (s *OpenObserveTraceSource) CountTracesByTrace(ctx *security.RequestContext, req TracesV3Request) (common.OpenTelemetryTraceCount, error) {
+	// Counts what QueryRootSpansByTrace lists, by the same two routes: the root narrowing
+	// composed onto a raw query, or AND-ed into the canonical where clause.
+	if hasRawTraceQuery(req) {
+		rawReq := req
+		rawReq.Query = openObserveCountOver(req.Query, openObserveRootSpanWhere)
+		return s.CountTraces(ctx, rawReq)
+	}
 	return s.CountTraces(ctx, withOpenObserveRootSpans(req))
 }
 

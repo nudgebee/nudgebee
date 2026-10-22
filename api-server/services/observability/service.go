@@ -2656,6 +2656,14 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 		if err == nil {
 			resolvedSource = source
 			caps.SupportedOperators = source.GetSupportedOperators()
+			// Every trace provider runs a raw query (#41426), so this is true unless the
+			// backend exposes no endpoint one could be sent to at all. Derived rather than
+			// read from allProviderCaps, whose single bool spans logs, metrics AND traces
+			// at once and for traces was wrong in both directions: ES and OpenObserve said
+			// true while discarding the query, Jaeger and Chronosphere said false while
+			// honouring it. Logs and metrics still read the static value — their own drift
+			// is a separate sweep.
+			caps.SupportsRawQuery = rawTraceQueryUnsupportedReason(source) == ""
 			// Full canonical→provider merge (static ∪ tenant ∪ account ∪ dynamic).
 			// Skip the merge when accountId is empty: with no account the lookup
 			// can only return the static defaults, so there's nothing to merge.
@@ -2666,6 +2674,10 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 				caps.LabelMappings = source.GetLabelMapping()
 			}
 		} else {
+			// The reader is the authority on raw-query support, so with no reader there is
+			// no honest answer — and the static table's value is exactly the thing that was
+			// unreliable. Withdraw the claim rather than inherit it.
+			caps.SupportsRawQuery = false
 			slog.Warn("getProviderCapabilities: failed to get trace source", "provider", provider, "error", err)
 		}
 	case "metrics":
@@ -3289,20 +3301,26 @@ func CountTraces(context *security.RequestContext, fetchTracesRequest TracesV3Re
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
-	if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
-		return common.OpenTelemetryTraceCount{}, err
+	// A raw query bypasses the clause pipeline — see the note in GetTraces.
+	rawQuery := hasRawTraceQuery(fetchTracesRequest)
+	if !rawQuery {
+		if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
+			return common.OpenTelemetryTraceCount{}, err
+		}
 	}
 	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
-	// Resolved, not static — see the note in GetTraces.
-	filteringMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
-		providerRef{Provider: traceProvider, Source: integrationSource}, source)
-	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
-	if msg, err := applyTraceSourceFilter(context, fetchTracesRequest.AccountId, traceProvider, &fetchTracesRequest.QueryRequest.Where); err != nil {
-		return common.OpenTelemetryTraceCount{}, err
-	} else if msg != "" {
-		return common.OpenTelemetryTraceCount{}, nil
+	if !rawQuery {
+		// Resolved, not static — see the note in GetTraces.
+		filteringMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
+			providerRef{Provider: traceProvider, Source: integrationSource}, source)
+		fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
+		if msg, err := applyTraceSourceFilter(context, fetchTracesRequest.AccountId, traceProvider, &fetchTracesRequest.QueryRequest.Where); err != nil {
+			return common.OpenTelemetryTraceCount{}, err
+		} else if msg != "" {
+			return common.OpenTelemetryTraceCount{}, nil
+		}
 	}
 
 	return source.CountTraces(context, fetchTracesRequest)
@@ -3327,32 +3345,48 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 	if err != nil {
 		return TracesResult{}, err
 	}
-	if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
-		return TracesResult{}, err
+	// A raw provider query (Code mode) replaces the canonical where clause rather than
+	// adding to it, so the whole clause pipeline below is skipped for it. This is not an
+	// optimisation: applyTraceSourceFilter returns an explained EMPTY RESULT for a
+	// trace_source the provider cannot satisfy, which would short-circuit the request and
+	// the raw query would never execute at all. Validation and label mapping would equally
+	// be judging a clause that is never sent.
+	rawQuery := hasRawTraceQuery(fetchTracesRequest)
+	// Dropping the builder filter is reported, never silent: the raw query wins, and the
+	// caller is told its where clause did not contribute.
+	rawIgnoredWhere := rawQuery && hasWhereData(fetchTracesRequest.QueryRequest.Where)
+	if !rawQuery {
+		if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
+			return TracesResult{}, err
+		}
 	}
 	// Scope the request to the account's standing trace filters BEFORE the label
 	// mapping below: the filters are canonical field names, so they must be
 	// translated by the same mapping every other clause goes through. This also
 	// puts them inside the ValidateRequest snapshot and the executed-query
-	// recording, so an empty result names the filter that caused it.
+	// recording, so an empty result names the filter that caused it. Runs for a raw
+	// query too — it fails closed there, refusing rather than dropping the operator's
+	// standing scope.
 	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
 		return TracesResult{}, err
 	}
-	// The RESOLVED mapping, not the provider's static one. Every trace query path used
-	// source.GetLabelMapping() here, so a tenant or account trace_labels override reached
-	// the label listing and the empty-result diagnosis (both of which already merged) but
-	// never the query itself — the mapping was configurable and inert. It is also what
-	// keeps the Advanced Settings panel honest: the panel renders a projection of this
-	// same resolve, so a mapping it names as the winner is the one that runs.
-	filteringMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
-		providerRef{Provider: traceProvider, Source: integrationSource}, source)
-	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
-	// A trace_source filter this provider can never satisfy (e.g. eBPF on a provider with
-	// no eBPF spans) returns an explained empty result. Query stays empty: nothing ran.
-	if msg, err := applyTraceSourceFilter(context, fetchTracesRequest.AccountId, traceProvider, &fetchTracesRequest.QueryRequest.Where); err != nil {
-		return TracesResult{Provider: traceProvider}, err
-	} else if msg != "" {
-		return TracesResult{Traces: []common.OpenTelemetryTrace{}, Suggestion: msg, Provider: traceProvider}, nil
+	if !rawQuery {
+		// The RESOLVED mapping, not the provider's static one. Every trace query path used
+		// source.GetLabelMapping() here, so a tenant or account trace_labels override reached
+		// the label listing and the empty-result diagnosis (both of which already merged) but
+		// never the query itself — the mapping was configurable and inert. It is also what
+		// keeps the Advanced Settings panel honest: the panel renders a projection of this
+		// same resolve, so a mapping it names as the winner is the one that runs.
+		filteringMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
+			providerRef{Provider: traceProvider, Source: integrationSource}, source)
+		fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
+		// A trace_source filter this provider can never satisfy (e.g. eBPF on a provider with
+		// no eBPF spans) returns an explained empty result. Query stays empty: nothing ran.
+		if msg, err := applyTraceSourceFilter(context, fetchTracesRequest.AccountId, traceProvider, &fetchTracesRequest.QueryRequest.Where); err != nil {
+			return TracesResult{Provider: traceProvider}, err
+		} else if msg != "" {
+			return TracesResult{Traces: []common.OpenTelemetryTrace{}, Suggestion: msg, Provider: traceProvider}, nil
+		}
 	}
 
 	var referencedLabels map[string]struct{}
@@ -3416,7 +3450,14 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 		// the result after a non-nil error are unaffected.
 		return TracesResult{Query: usedQuery, Provider: traceProvider}, err
 	}
-	return TracesResult{Traces: traces, Query: usedQuery, Provider: traceProvider}, nil
+	result := TracesResult{Traces: traces, Query: usedQuery, Provider: traceProvider}
+	// Say so when a builder filter arrived alongside the raw query and lost. Silently
+	// dropping a filter the caller supplied is the same class of dishonesty as silently
+	// dropping the raw query was.
+	if rawIgnoredWhere {
+		result.Suggestion = "this result came from the raw provider query only — the filter-builder conditions sent with it were not applied; move them into the query text or clear the query to use the builder"
+	}
+	return result, nil
 }
 
 // resolveExecutedTraceQuery returns the provider query GetTraces just ran, for callers that
@@ -3468,20 +3509,28 @@ func GetRootSpansByTrace(context *security.RequestContext, fetchTracesRequest Tr
 	if err != nil {
 		return nil, err
 	}
-	if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
-		return nil, err
+	// A raw query bypasses the clause pipeline — see the note in GetTraces. The root-span
+	// narrowing itself lives in each reader (it is a where-clause condition for most of
+	// them), so the reader refuses a raw query where that narrowing would be lost.
+	rawQuery := hasRawTraceQuery(fetchTracesRequest)
+	if !rawQuery {
+		if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
+			return nil, err
+		}
 	}
 	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
 		return nil, err
 	}
-	// Resolved, not static — see the note in GetTraces.
-	filteringMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
-		providerRef{Provider: traceProvider, Source: integrationSource}, source)
-	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
-	if msg, err := applyTraceSourceFilter(context, fetchTracesRequest.AccountId, traceProvider, &fetchTracesRequest.QueryRequest.Where); err != nil {
-		return []common.OpenTelemetryTrace{}, err
-	} else if msg != "" {
-		return []common.OpenTelemetryTrace{}, nil
+	if !rawQuery {
+		// Resolved, not static — see the note in GetTraces.
+		filteringMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
+			providerRef{Provider: traceProvider, Source: integrationSource}, source)
+		fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
+		if msg, err := applyTraceSourceFilter(context, fetchTracesRequest.AccountId, traceProvider, &fetchTracesRequest.QueryRequest.Where); err != nil {
+			return []common.OpenTelemetryTrace{}, err
+		} else if msg != "" {
+			return []common.OpenTelemetryTrace{}, nil
+		}
 	}
 
 	return source.QueryRootSpansByTrace(context, fetchTracesRequest)
@@ -3507,20 +3556,26 @@ func CountTracesByTrace(context *security.RequestContext, fetchTracesRequest Tra
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
-	if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
-		return common.OpenTelemetryTraceCount{}, err
+	// A raw query bypasses the clause pipeline — see the note in GetTraces.
+	rawQuery := hasRawTraceQuery(fetchTracesRequest)
+	if !rawQuery {
+		if err := validateTraceWhere(source, fetchTracesRequest.QueryRequest.Where); err != nil {
+			return common.OpenTelemetryTraceCount{}, err
+		}
 	}
 	if err := ApplyDefaultTraceFilters(context, &fetchTracesRequest); err != nil {
 		return common.OpenTelemetryTraceCount{}, err
 	}
-	// Resolved, not static — see the note in GetTraces.
-	filteringMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
-		providerRef{Provider: traceProvider, Source: integrationSource}, source)
-	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
-	if msg, err := applyTraceSourceFilter(context, fetchTracesRequest.AccountId, traceProvider, &fetchTracesRequest.QueryRequest.Where); err != nil {
-		return common.OpenTelemetryTraceCount{}, err
-	} else if msg != "" {
-		return common.OpenTelemetryTraceCount{}, nil
+	if !rawQuery {
+		// Resolved, not static — see the note in GetTraces.
+		filteringMap := getMergedTraceLabelMapping(context, fetchTracesRequest.AccountId,
+			providerRef{Provider: traceProvider, Source: integrationSource}, source)
+		fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
+		if msg, err := applyTraceSourceFilter(context, fetchTracesRequest.AccountId, traceProvider, &fetchTracesRequest.QueryRequest.Where); err != nil {
+			return common.OpenTelemetryTraceCount{}, err
+		} else if msg != "" {
+			return common.OpenTelemetryTraceCount{}, nil
+		}
 	}
 
 	return source.CountTracesByTrace(context, fetchTracesRequest)

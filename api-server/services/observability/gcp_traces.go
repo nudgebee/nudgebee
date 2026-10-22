@@ -38,8 +38,9 @@ func (s *GcpTraceSource) buildCloudTracesRequest(req TracesV3Request) cloud.Quer
 		// a window scan; the collector honors Query.TraceId directly.
 		TraceId: extractTraceStringFilter(where, "trace_id"),
 		// Span name / HTTP status / resource filters, pushed to the source as a Cloud
-		// Trace filter string (empty when none selected).
-		Filter: gcpCloudTraceFilter(where),
+		// Trace filter string (empty when none selected). In Code mode the caller's own
+		// filter string is pushed verbatim instead — see gcpTraceFilterFor.
+		Filter: gcpTraceFilterFor(req),
 	}
 	if req.StartTime > 0 {
 		t := time.UnixMilli(req.StartTime).UTC()
@@ -86,12 +87,30 @@ func gcpTraceOrderBy(orderBy []query.QueryOrderBy) string {
 	return col + " " + dir
 }
 
+// gcpTraceFilterFor returns the Cloud Trace filter string pushed to ListTraces: the
+// caller's own filter in Code mode, else the one rendered from the canonical where clause.
+//
+// A raw Cloud Trace filter CANNOT scope by service. Cloud Trace v1's ListTraces filter does
+// not match the OTel service.name label on these spans — `service.name:<v>` returns zero
+// traces (verified live, #41419) — which is why the canonical path scopes service in memory
+// via scopeToWorkload instead. A raw query replaces the where clause, so that in-memory
+// scoping has nothing to work from: a raw filter is honest for span-name, HTTP-status and
+// label terms, and cannot narrow to one service. SupportsRawTraceQuery still reports true
+// because the filter genuinely executes at the source; the limitation is which TERMS Cloud
+// Trace can express, not whether the query runs.
+func gcpTraceFilterFor(req TracesV3Request) string {
+	if raw := strings.TrimSpace(req.Query); raw != "" {
+		return raw
+	}
+	return gcpCloudTraceFilter(req.QueryRequest.Where)
+}
+
 // GetQuery returns the provider-native Cloud Trace filter actually pushed to the source
 // (span / HTTP status / resource terms). Service is deliberately absent — it is scoped in
 // memory, not by Cloud Trace (see buildCloudTracesRequest). Surfaced by the traces_get_query
 // action for transparency.
 func (s *GcpTraceSource) GetQuery(_ *security.RequestContext, req TracesV3Request) (string, error) {
-	return gcpCloudTraceFilter(req.QueryRequest.Where), nil
+	return gcpTraceFilterFor(req), nil
 }
 
 func (s *GcpTraceSource) CountTraces(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
