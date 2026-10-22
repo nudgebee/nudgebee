@@ -578,7 +578,14 @@ const KubernetesEventsTable = ({
   const [searchByMessage, setSearchByMessage] = useState(initialMessageSearch);
   const [appliedSearchByMessage, setAppliedSearchByMessage] = useState(initialMessageSearch);
   const [selectedNbStatus, setSelectedNbStatus] = useState([]);
-  const [selectedSortBy, setSelectedSortBy] = useState(() => getValidParam(router.query.sortBy) || persisted?.sortBy || 'created_at');
+  // `sortBy` in the URL is shared with the Triage Inbox, whose values ('Count',
+  // 'Priority', ...) are not event columns — sorting by one fails the query and
+  // leaves the table empty, including the Inbox's own row drill-down. Accept
+  // only this table's own options, as the Inbox does for its key.
+  const [selectedSortBy, setSelectedSortBy] = useState(() => {
+    const validSortBy = sortByOptions.map((o) => o.value);
+    return [getValidParam(router.query.sortBy), persisted?.sortBy].find((v) => validSortBy.includes(v)) || 'created_at';
+  });
   const [selectedIssueType, setSelectedIssueType] = useState(() => getValidParam(router.query.issueType) || persisted?.issueType || 'all');
   // Events view mode: 'all' | 'grouped' | 'unique'. Default 'all'. Seeded from
   // ?eventsView so the briefing "Issues you could see" tile can deep-link
