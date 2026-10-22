@@ -17,6 +17,7 @@ from notifications_server.schemas.message import (
 )
 from notifications_server.services.channel_watch import ChannelWatchService
 from notifications_server.services.common import CommonService
+from notifications_server.services import remediation_thread
 from notifications_server.services.message import MessageService
 from notifications_server.services.rules import NotificationRulesService
 from notifications_server.services.route_check import RouteCheckService
@@ -79,6 +80,13 @@ def verify_action_token(request: Request):
     callbacks). Disabled when NOTIFICATION_SERVER_TOKEN is unset; when set, a
     missing or wrong token is rejected with 401."""
     if _match_configured_token(request.headers.get(ACTION_TOKEN_HEADER)) is False:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def require_action_token(request: Request):
+    """verify_action_token that fails closed: 401 also when NOTIFICATION_SERVER_TOKEN is unset, for an
+    endpoint no unauthenticated caller may use."""
+    if _match_configured_token(request.headers.get(ACTION_TOKEN_HEADER)) is not True:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -865,3 +873,17 @@ async def get_thread_messages(request: Request, payload: GetThreadMessagesReques
         messages=result["messages"],
         has_more=result.get("has_more", False),
     )
+
+
+# Fails closed (require_action_token): an unauthenticated caller must not be able to post into an alert's thread.
+@router.post("/remediation/thread", dependencies=[Depends(require_action_token)], status_code=200)
+async def post_remediation_thread(payload: remediation_thread.Posts):
+    """llm-server's remediation posts for one alert (#40734): its plan, or a note, in the alert's Slack thread."""
+    try:
+        status = await run_in_threadpool(remediation_thread.deliver, payload)
+    except Exception:
+        LOG.exception("Remediation posts failed for event %s", payload.event_id)
+        raise HTTPException(status_code=502, detail="Posting failed")
+    if status == "failed":
+        raise HTTPException(status_code=502, detail="Slack took none of the posts")
+    return {"status": status}

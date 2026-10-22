@@ -34,6 +34,7 @@ from notifications_server.services.actions import (
 )
 from notifications_server.services.channel_ingest import ChannelIngestService
 from notifications_server.services.common import CommonService
+from notifications_server.services import remediation_thread
 from notifications_server.services.events import Events, event_cache
 from notifications_server.services.messaging_installations import load_installation, load_installation_by_team
 from notifications_server.services.ms_teams.bot_installations import record_team_installations
@@ -230,7 +231,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             action_params = action.get("action_params", {})
             if isinstance(action_params, str):
                 action_params = json.loads(action_params)
-            if action_name == "ask_ai":
+            if action_name in ("ask_ai", "workflow_approval_action"):
                 handler(channel_id, team_id, slack_user_id, user_email, data, action_params, background_tasks)
             else:
                 handler(channel_id, team_id, slack_user_id, user_email, data, action_params)
@@ -419,7 +420,9 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
         )
         return json.dumps(self.action_service.skip_auto_optimize_execution(params=params))
 
-    def handle_approval_action(self, channel_id, team_id, slack_user_id, user_email, data, action_params):
+    def handle_approval_action(
+        self, channel_id, team_id, slack_user_id, user_email, data, action_params, background_tasks=None
+    ):
         try:
             message = data.get("message", {})
             message_ts = message.get("ts")
@@ -438,6 +441,10 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             if auto_optimize_approval.is_auto_optimize_token(token):
                 return self.handle_auto_optimize_approval(
                     channel_id, team_id, slack_user_id, user_email, message, token, status
+                )
+            if remediation_thread.is_token(token):
+                return self.handle_remediation_approval(
+                    channel_id, team_id, slack_user_id, message, token, status, background_tasks
                 )
             params = ApprovalParams(
                 channel_id=channel_id,
@@ -470,6 +477,51 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
                 self.common_service.update_slack_message_with_blocks(channel_id, team_id, message_ts, blocks)
         self.common_service.slack_reply_in_thread(channel_id, team_id, message_ts, text)
         return json.dumps({"status": "settled" if outcome.settled else "not_decided"})
+
+    def handle_remediation_approval(self, channel_id, team_id, slack_user_id, message, token, status, background_tasks):
+        """Run or Decline on a remediation step in an alert's thread (#40734), decided as the clicker's linked
+        user. A run takes up to minutes, past Slack's 3-second answer, so it is decided in the background, on
+        remediation_thread.RUNS.
+        Once settled the step's buttons are replaced by the outcome; otherwise they stay, and only the
+        clicker's reply says why."""
+        message_ts = message.get("ts")
+        thread_ts = message.get("thread_ts") or message_ts
+        app_id = self.common_service.app_id
+
+        def settle():
+            # After the response to Slack, so on its own session and services (the request's are closed).
+            # app_id: only the app that posted the step may edit it.
+            service = SlackActionsBaseService(self.engine, self.slack_app, self.teams_app)
+            service.common_service.app_id = app_id
+            try:
+                outcome = remediation_thread.decide(token, status, slack_user_id)
+                if outcome.settled:
+                    blocks = [b for b in message.get("blocks") or [] if b.get("type") != "actions"]
+                    line = f"<@{slack_user_id}>: {outcome.message}"
+                    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": line}]})
+                    service.common_service.update_slack_message_with_blocks(channel_id, team_id, message_ts, blocks)
+                text = outcome.message
+            except Exception:
+                # On the remediation pool nobody reads the result: log it, and tell the clicker.
+                LOG.exception("remediation step click for %s: not settled", message_ts)
+                text = remediation_thread.UNREACHABLE.format(brand=settings.urls.branding_name)
+            try:
+                service.common_service.post_slack_ephemeral_response(
+                    channel_id, team_id, slack_user_id, text, thread_ts
+                )
+            finally:
+                service.close()
+
+        if str(status).lower() == "run":
+            self.common_service.post_slack_ephemeral_response(
+                channel_id, team_id, slack_user_id, "Running it. The result shows here when it finishes.", thread_ts
+            )
+        if background_tasks is not None:
+            # After Slack's answer, and on the remediation pool, not this server's request threads.
+            background_tasks.add_task(remediation_thread.RUNS.submit, settle)
+        else:
+            remediation_thread.RUNS.submit(settle)
+        return json.dumps({"status": "accepted"})
 
     def handle_workflow_approval_selection(self, channel_id, team_id, user_email, action, data):
         try:

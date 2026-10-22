@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from notifications_server.configs import settings
 from notifications_server.configs.settings import ACCOUNT_SECURITY_CONTEXT, LLM_CHAT_ENDPOINT
 from notifications_server.message_templates.blocks import MarkdownBlock, ContextBlock
-from notifications_server.models.models import ChannelAccountMapping
+from notifications_server.models.models import ChannelAccountMapping, SentNotifications
 from notifications_server.services.cache import Cache
 from notifications_server.services import channel_analysis
 from notifications_server.services.channel_context import ChannelContextService
@@ -301,6 +301,14 @@ class Events:
             self._stash_thread_images(event, team_id, thread_ts)
             self._stash_thread_mentions(event, thread_ts)
 
+            # A message in an alert's thread is about that alert's remediation (#40734): it joins the alert's
+            # own conversation, whatever an earlier turn in the thread cached.
+            if thread_ts != event_ts:
+                alert = self._alert_of_thread(team_id, channel_id, thread_ts)
+                if alert:
+                    self._handle_alert_thread(alert, channel_id, team_id, thread_ts, text, user_email, slack_user_id)
+                    return
+
             cached_entry = self.cache.get_event_entry(thread_ts)
 
             if cached_entry:
@@ -372,6 +380,100 @@ class Events:
 
         except Exception as e:
             LOG.error("Error executing event: %s", e)
+
+    def _alert_of_thread(self, team_id, channel_id, thread_ts):
+        """The alert a Slack thread hangs off, as {tenant_id, account_id, fingerprint}, from the
+        sent_notifications row its message wrote; None outside an alert's thread. Never fatal."""
+        # Runs on every threaded message: one indexed lookup by thread (V1056), and the tenant's flag only
+        # for an alert thread.
+        from notifications_server.services.remediation_thread import loop_on
+
+        try:
+            with Session(self.session.get_bind()) as session:
+                rows = (
+                    session.query(
+                        SentNotifications.tenant_id,
+                        SentNotifications.account_id,
+                        SentNotifications.fingerprint,
+                        SentNotifications.slack_metadata,
+                    )
+                    .filter_by(slack_team_id=team_id, slack_thread_id=thread_ts)
+                    .all()
+                )
+                for row in rows:
+                    if not str(row.fingerprint or "").startswith("remediation-") and (
+                        json.loads(row.slack_metadata or "{}").get("channel") == channel_id
+                    ):
+                        if not loop_on(session, row.tenant_id):
+                            return None
+                        return {
+                            "tenant_id": str(row.tenant_id),
+                            "account_id": str(row.account_id),
+                            "fingerprint": row.fingerprint,
+                        }
+        except Exception as e:
+            LOG.warning("Looking up the alert under Slack thread %s failed: %s", thread_ts, e)
+        return None
+
+    def _handle_alert_thread(self, alert, channel_id, team_id, thread_ts, text, user_email, slack_user_id):
+        """Send a message in an alert's thread to the alert's own conversation, event-<fingerprint>, on the
+        alert's account, as the person who wrote it: the conversation the alert's web chat continues, where
+        llm-server's remediation agent reads the alert's plan and acts on a step once the person confirms."""
+        user_id, tenants = validate_and_get_user_tenants(user_email)
+        if not (
+            user_id
+            and alert["tenant_id"] in {str(t) for t in tenants or []}
+            and self._validate_user_access_to_account(user_id, alert["tenant_id"], alert["account_id"])
+        ):
+            self._reply_error(
+                channel_id, team_id, thread_ts, "You don't have access to this alert's account, so I can't discuss it."
+            )
+            return
+        session_id = f"{EVENT_CONVERSATION_SESSION_PREFIX}{alert['fingerprint']}"
+        cached_entry = self.cache.get_event_entry(thread_ts)
+        if (
+            cached_entry
+            and cached_entry.get("session_id") == session_id
+            and self._has_pending_text_followup(cached_entry)
+        ):
+            self._submit_followup(cached_entry, channel_id, team_id, thread_ts, slack_user_id, text)
+            return
+        self.cache.cache_event_entry(
+            thread_ts,
+            {
+                "event_id": None,
+                "event_context": None,
+                "text": text,
+                "user_id": user_id,
+                "account_id": alert["account_id"],
+                "tenant_id": alert["tenant_id"],
+                "is_thread": True,
+                # The thread is the alert's cards; the agent reads the plan itself (get_remediation_plan), so
+                # the transcript is not sent. A confirmation here is answered as the replying person
+                # (_submit_followup), never as whoever wrote first.
+                "alert_thread": True,
+                "slack_user_id": slack_user_id,
+                "channel_id": channel_id,
+                "team_id": team_id,
+                "session_id": session_id,
+                "platform": "slack",
+                "app_id": self.common_service.app_id,
+            },
+        )
+        self._process_event(channel_id, text, team_id, thread_ts, "chat")
+
+    def _alert_thread_replier(self, cached_entry, slack_user_id):
+        """The user Identity Sync links to slack_user_id in the alert's tenant, or None. Never fatal."""
+        if not slack_user_id:
+            return None
+        try:
+            from notifications_server.services.remediation_thread import linked_user
+
+            with Session(self.session.get_bind()) as session:
+                return linked_user(session, cached_entry.get("tenant_id"), slack_user_id)
+        except Exception as e:
+            LOG.warning("Resolving the replier in an alert thread failed: %s", e)
+            return None
 
     def _check_history_for_conversation(
         self, channel_id, text, context, event_id, team_id, thread_ts, user_email, slack_user_id, is_thread=False
@@ -897,6 +999,21 @@ class Events:
                 self.cache.update_event_entry(thread_ts, user_id=user_id)
                 cached_entry["user_id"] = user_id
 
+        # In an alert's thread an answer may approve a step of the alert's plan (#40734), so it is sent as the
+        # person who answers: the user Identity Sync links to their Slack id, as the plan cards' buttons do.
+        if cached_entry.get("alert_thread"):
+            replier = self._alert_thread_replier(cached_entry, slack_user_id)
+            if not replier:
+                self.reply(
+                    channel_id,
+                    team_id,
+                    thread_ts,
+                    "Your Slack account isn't linked to a user here, so I can't take your answer. "
+                    "Link it in Identity Sync.",
+                )
+                return
+            cached_entry = {**cached_entry, "user_id": replier}
+
         if not (cached_entry.get("user_id") and cached_entry.get("tenant_id")):
             LOG.error(
                 "Cannot submit followup for %s: missing user_id/tenant_id on cached entry",
@@ -1052,8 +1169,9 @@ class Events:
             self.cache.remove_event_entry(thread_ts)
             return
 
-        # If it's a thread: fetch full conversation and update cache
-        if cached_entry.get("is_thread"):
+        # If it's a thread: fetch full conversation and update cache. Not in an alert's thread, whose
+        # messages are the alert's own cards.
+        if cached_entry.get("is_thread") and not cached_entry.get("alert_thread"):
             conversation, sent_messages = self.common_service.get_slack_conversation(
                 channel_id, thread_ts, team_id, cached_entry
             )

@@ -24,6 +24,7 @@ from notifications_server.configs import settings
 
 from notifications_server.models.enums import PlatformTypes
 from notifications_server.schemas.message import SendMessageRequest
+from notifications_server.services import remediation_thread
 from notifications_server.services.cache import Cache, run_in_cache_thread
 from notifications_server.services.delivery_errors import (
     AUTH_FAILED,
@@ -1087,6 +1088,13 @@ class MessageService:
         # report the anomaly as unsupported.
         return [failure("system", INTERNAL_ERROR)]
 
+    async def _post_waiting_remediation_cards(self, tenant_id, fingerprint):
+        """Remediation posts that arrived before the alert had a Slack thread (#40734) go in it now."""
+        try:
+            await asyncio.to_thread(remediation_thread.flush_pending, tenant_id, fingerprint)
+        except Exception as e:
+            LOG.warning("Posting waiting remediation posts for %s failed: %s", fingerprint, e)
+
     async def trigger_notification(
         self,
         session,
@@ -1103,7 +1111,10 @@ class MessageService:
                 session, tenant_id, parameters, fingerprint, installed_platforms
             )
             if new_sent_notifications:
-                await MessageService._save_after_send(session, new_sent_notifications)
+                if await MessageService._save_after_send(session, new_sent_notifications):
+                    # Remediation posts may be waiting for this alert's new Slack thread (#40734).
+                    if any(n.slack_thread_id for n in new_sent_notifications):
+                        await self._post_waiting_remediation_cards(tenant_id, fingerprint)
         elif type_ in template_mapping:
             platform_responses = await self.send_template_notification(
                 session, tenant_id, kwargs, type_, installed_platforms

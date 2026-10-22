@@ -114,6 +114,23 @@ def _slack_retry_after(error):
     return str(headers.get("retry-after", "")).strip()
 
 
+def latest_slack_notification(session, fingerprint, tenant_id=None, account_id=None):
+    """The newest sent_notifications row of fingerprint that has a Slack thread, scoped to tenant_id and
+    account_id when given. A tenant may have Slack, Discord and Teams rows for one fingerprint, and
+    fingerprints carry no tenant identity, so two tenants can share one."""
+    query = session.query(SentNotifications).filter_by(fingerprint=fingerprint)
+    if tenant_id:
+        query = query.filter_by(tenant_id=tenant_id)
+    if account_id:
+        query = query.filter_by(account_id=account_id)
+    return (
+        query.filter(SentNotifications.slack_thread_id.isnot(None))
+        .order_by(SentNotifications.created_at.desc())
+        .limit(1)
+        .first()
+    )
+
+
 class CommonService:
     def __init__(self, engine, slack_app, teams_app):
         self.slack_app = slack_app
@@ -2166,15 +2183,7 @@ class CommonService:
             # by tenant_id whenever the caller has one so a foreign tenant's
             # Slack row can never be selected instead of this tenant's own
             # (non-Slack, or missing) row for the same fingerprint.
-            query = self.session.query(SentNotifications).filter_by(fingerprint=fingerprint)
-            if tenant_id:
-                query = query.filter_by(tenant_id=tenant_id)
-            notification = (
-                query.filter(SentNotifications.slack_thread_id.isnot(None))
-                .order_by(SentNotifications.created_at.desc())
-                .limit(1)
-                .first()
-            )
+            notification = latest_slack_notification(self.session, fingerprint, tenant_id)
         except Exception as e:
             self.session.rollback()
             LOG.error(f"Unable to query sent notifications for conversation_id: {conversation_id} due to {e}")
