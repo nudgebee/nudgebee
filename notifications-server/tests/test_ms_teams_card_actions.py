@@ -700,13 +700,23 @@ def test_a_choice_set_approval_reads_the_picked_option(approval_store):
 
 
 def test_an_approval_prompt_too_large_for_its_buttons_is_still_sent():
-    from notifications_server.message_templates.ms_teams.generic import get_ms_teams_generic_message_template
     from notifications_server.message_templates.slack.generic import get_generic_message_params
 
+    # A card built right up against the size limit on its own (not via the
+    # generic template, which now truncates long messages before this check
+    # would ever run) — the point here is with_approval_buttons' own
+    # too-large-for-buttons fallback, not the template's truncation.
+    card = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "msteams": {"width": "full"},
+        "body": [{"type": "TextBlock", "text": "x" * 24_800, "wrap": True}],
+    }
+    assert ca.fits(card), "the base card must fit on its own for this test to mean anything"
     params = get_generic_message_params(
-        message="details " * 3500, approval_token="run-1:task-2", approval_options=["approve", "reject"]
+        message="x" * 24_800, approval_token="run-1:task-2", approval_options=["approve", "reject"]
     )
-    card = get_ms_teams_generic_message_template(params)
     assert ca.with_approval_buttons(card, params, NB_TENANT) == card
 
 

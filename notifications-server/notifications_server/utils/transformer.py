@@ -95,6 +95,26 @@ class Transformer:
         return msg[: max_length - len(truncator)] + truncator
 
     @staticmethod
+    def apply_byte_length_limit(msg: str, max_bytes: int, truncator: Optional[str] = None) -> str:
+        """Like apply_length_limit, but measured in UTF-8 bytes rather than
+        characters — for platforms (Teams, Google Chat) whose size limit is
+        itself byte-based, where a wide multi-byte character can blow the
+        budget well before the character count does.
+
+        Returns:
+            msg unchanged if it already fits within max_bytes. Otherwise the
+            longest prefix of msg's UTF-8 bytes that leaves room for
+            truncator, decoded leniently so a split multi-byte character is
+            dropped rather than raising.
+        """
+        data = msg.encode()
+        if len(data) <= max_bytes:
+            return msg
+        truncator = truncator or "..."
+        head_bytes = max(max_bytes - len(truncator.encode()), 0)
+        return data[:head_bytes].decode(errors="ignore") + truncator
+
+    @staticmethod
     def _format_json_value(value: Any, show_preview: bool = True, depth: int = 0) -> str:
         if isinstance(value, dict):
             return Transformer._format_dict_value(value, show_preview, depth)

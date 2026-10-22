@@ -23,6 +23,7 @@ from notifications_server.message_templates.slack.generic import (
     get_generic_message_params,
     get_slack_generic_message_template,
 )
+from notifications_server.services.ms_teams import card_actions as ca
 
 
 def _params(**kwargs):
@@ -164,6 +165,28 @@ class TestMsTeamsGenericFooter:
             "(https://app.test/automation/wf-123?accountId=acct-456&utm=teams)" in text
         )
 
+    def test_a_long_message_is_truncated_so_the_card_still_fits(self, base_url):
+        # Regression for #41714: a 33 KB message used to push the card past
+        # Teams' size limit, so the automation output never arrived at all.
+        params = GenericMessageParams(
+            message="x" * 33_000,
+            workflow_metadata=_meta(workflow_name="W", workflow_id="wf-1", account_id="acct-1"),
+        )
+        card = get_ms_teams_generic_message_template(params)
+        assert ca.fits(card), "a truncated message must still fit Teams' size limit"
+        assert "View full output in NudgeBee" in card["body"][0]["text"]
+        assert "https://app.test/automation/wf-1?accountId=acct-1&utm=teams" in card["body"][0]["text"]
+
+    def test_a_long_message_without_a_workflow_link_still_truncates(self):
+        params = GenericMessageParams(message="x" * 33_000)
+        card = get_ms_teams_generic_message_template(params)
+        assert ca.fits(card)
+        assert card["body"][0]["text"].endswith("...")
+
+    def test_a_short_message_is_left_untouched(self):
+        card = get_ms_teams_generic_message_template(_params())
+        assert card["body"][0]["text"] == "hello"
+
 
 # ---------------------------- Google Chat ----------------------------
 
@@ -199,6 +222,26 @@ class TestGoogleChatGenericFooter:
         assert (
             "Automation: <https://app.test/automation/wf-123?accountId=acct-456&utm=gchat|cleanup-old-instances>" in out
         )
+
+    def test_a_long_message_is_truncated_so_it_still_fits(self, base_url):
+        # Regression for #41714: a 33 KB message used to exceed Google Chat's
+        # size limit, so the automation output never arrived at all.
+        params = GenericMessageParams(
+            message="x" * 33_000,
+            workflow_metadata=_meta(workflow_name="W", workflow_id="wf-1", account_id="acct-1"),
+        )
+        out = get_google_chat_generic_message_template(params)
+        assert len(out.encode()) <= 32_000
+        assert "<https://app.test/automation/wf-1?accountId=acct-1&utm=gchat|View full output in NudgeBee>" in out
+
+    def test_a_long_message_without_a_workflow_link_still_truncates(self):
+        params = GenericMessageParams(message="x" * 33_000)
+        out = get_google_chat_generic_message_template(params)
+        assert len(out.encode()) <= 32_000
+        assert out.endswith("...")
+
+    def test_a_short_message_is_left_untouched(self):
+        assert get_google_chat_generic_message_template(_params()) == "hello"
 
 
 # ---------------------------- Param parsing ----------------------------
