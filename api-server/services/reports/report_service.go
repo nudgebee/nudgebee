@@ -662,7 +662,7 @@ func agentStatusSubjectClause(disconnected, partial int) string {
 // in agent_status_report.html so the email subject and body always report the
 // same numbers. An account with no agent row is counted as disconnected.
 func computeAgentStatusStats(accounts []models.Account, agentsByAccount map[string][]interface{}) (total, disconnected, partial int) {
-	connectionKeys := []string{"alertManagerConnection", "grafanaEnabled", "karpenterEnabled", "logsConnection", "opencostConnection"}
+	requiredKeys := []string{"alertManagerConnection", "grafanaEnabled", "logsConnection", "opencostConnection"}
 
 	for _, acc := range accounts {
 		total++
@@ -685,6 +685,10 @@ func computeAgentStatusStats(accounts []models.Account, agentsByAccount map[stri
 		}
 
 		connStatus, _ := agentMap["connection_status"].(map[string]interface{})
+		connectionKeys := requiredKeys
+		if karpenterExpected(connStatus) {
+			connectionKeys = append([]string{"karpenterEnabled"}, requiredKeys...)
+		}
 		connectedCount := 0
 		for _, key := range connectionKeys {
 			if v, ok := connStatus[key].(bool); ok && v {
@@ -696,6 +700,18 @@ func computeAgentStatusStats(accounts []models.Account, agentsByAccount map[stri
 		}
 	}
 	return total, disconnected, partial
+}
+
+// karpenterExpected reports whether Karpenter counts as one of a cluster's
+// connections. Most clusters don't run Karpenter, and karpenterEnabled is false
+// on all of them, so a false flag alone says nothing is wrong. Karpenter counts
+// only when the agent detected it, or reports it as the cluster's autoscaler.
+func karpenterExpected(connStatus map[string]interface{}) bool {
+	if v, ok := connStatus["karpenterEnabled"].(bool); ok && v {
+		return true
+	}
+	autoscalerType, _ := connStatus["autoScalerType"].(string)
+	return strings.EqualFold(autoscalerType, "karpenter")
 }
 
 func prepareDailyTroubleshootCountsQuery(tenant, startDate, endDate string, accountIds []string) query.QueryRequest {
