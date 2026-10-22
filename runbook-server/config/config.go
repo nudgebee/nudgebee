@@ -132,6 +132,7 @@ type appConfig struct {
 	LlmServerShellImage           string `mapstructure:"llm_server_tool_shell_image"`
 	ScriptExecutorNodeImage       string `mapstructure:"script_executor_node_image"`
 	ScriptExecutorPowerShellImage string `mapstructure:"script_executor_powershell_image"`
+	ScriptExecutorGithubCliImage  string `mapstructure:"script_executor_github_cli_image"`
 
 	ServerName string `mapstructure:"runbook_server_name"`
 
@@ -247,6 +248,9 @@ func init() {
 	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.12")
 	viper.SetDefault("SCRIPT_EXECUTOR_NODE_IMAGE", "node:22-alpine")
 	viper.SetDefault("SCRIPT_EXECUTOR_POWERSHELL_IMAGE", "mcr.microsoft.com/powershell:lts-alpine-3.17")
+	// nudgebee-debug ships a pinned gh; the GitHub CLI step runs in it with the
+	// customer's GitHub token, so it must stay a first-party, versioned image.
+	viper.SetDefault("SCRIPT_EXECUTOR_GITHUB_CLI_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.13")
 
 	viper.SetDefault("notification_service_url", "http://notifications:8080")
 	viper.SetDefault("notification_server_token", "")

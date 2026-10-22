@@ -408,6 +408,7 @@ All config is read by Viper from environment variables (and an optional `.env` f
 | `llm_server_tool_shell_image` | `ghcr.io/nudgebee/nudgebee-debug:0.3.12` | Image for shell tasks. |
 | `script_executor_node_image` | `node:22-alpine` | |
 | `script_executor_powershell_image` | `mcr.microsoft.com/powershell:lts-alpine-3.17` | |
+| `script_executor_github_cli_image` | `ghcr.io/nudgebee/nudgebee-debug:0.3.13` | Image for the GitHub CLI step (ships a pinned `gh`); mirror it for air-gapped installs. |
 
 ---
 
