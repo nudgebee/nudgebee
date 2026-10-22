@@ -7,6 +7,7 @@ import (
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
+	"slices"
 	"strings"
 	"time"
 )
@@ -98,7 +99,11 @@ type dataCleanupJob struct {
 }
 
 func CleanupData(ctx *security.RequestContext, job ...string) {
-	hasRelationships := metastoreTableExists(ctx, "cloud_resource_relationships")
+	// Only the inactive-resources sweep needs to know; skip the lookup otherwise.
+	hasRelationships := false
+	if len(job) == 0 || slices.Contains(job, "cloud_resources_inactive") {
+		hasRelationships = metastoreTableExists(ctx, "cloud_resource_relationships")
+	}
 	cleanupJobs :=
 		[]dataCleanupJob{
 			{
@@ -560,7 +565,7 @@ func metastoreTableExists(ctx *security.RequestContext, table string) bool {
 		return true
 	}
 	var exists bool
-	if err := databaseManager.Db.QueryRow("SELECT to_regclass($1) IS NOT NULL", table).Scan(&exists); err != nil {
+	if err := databaseManager.Db.QueryRowContext(ctx.GetContext(), "SELECT to_regclass($1::text) IS NOT NULL", table).Scan(&exists); err != nil {
 		ctx.GetLogger().Warn("nb: cannot check table, assuming it exists", "error", err, "table", table)
 		return true
 	}
