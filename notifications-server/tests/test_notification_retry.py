@@ -129,6 +129,24 @@ def test_process_task_retry_only_targets_the_platform_that_failed():
     assert retried_task["retry_platforms"] == ["ms_teams"]
 
 
+@pytest.mark.parametrize("retry_count, queue", [(0, "delayed"), (settings.notifications.task_retry_count, "dlq")])
+def test_process_task_requeues_the_full_finding(retry_count, queue):
+    """The finding is trimmed only for the log line: the retried task and the DLQ
+    copy must still carry its description and evidences."""
+    producer = _FakeTaskProducer()
+    processor = _processor([{"platform": "slack", "status": "failed"}], producer)
+    finding = {"fingerprint": "fp-1", "description": "CPU throttled for 10 minutes", "evidences": [{"name": "cpu"}]}
+    task = json.dumps(
+        {"kind": "notification", "type": "finding", "tenant_id": "t1", "parameters": {"finding": finding}}
+    ).encode()
+
+    asyncio.run(processor.process_task({"nb-retry-count": retry_count}, task))
+
+    [(published_to, published)] = producer.calls
+    assert published_to == queue
+    assert published["parameters"]["finding"] == finding
+
+
 def test_process_task_forwards_trace_context_and_filters_other_headers():
     producer = _FakeTaskProducer()
     processor = _processor([{"platform": "slack", "status": "failed"}], producer)

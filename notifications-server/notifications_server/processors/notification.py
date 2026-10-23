@@ -138,11 +138,12 @@ class NotificationProcessor:
             LOG.exception("Failed to decode JSON: %s from: %s", e, headers)
         except Exception as e:
             finding = (task.get("parameters") or {}).get("finding")
+            trimmed = task
             if finding:
-                finding.pop("description", None)
-                finding.pop("evidences", None)
+                finding = {k: v for k, v in finding.items() if k not in ("description", "evidences")}
+                trimmed = {**task, "parameters": {**task["parameters"], "finding": finding}}
             LOG.exception("Failed to process task: %s from: %s", e, headers)
-            LOG.debug("Payload: %s", json.dumps(task))
+            LOG.debug("Payload: %s", json.dumps(trimmed))
             failed_platforms = getattr(e, "failed_platforms", None)
             if failed_platforms:
                 task["retry_platforms"] = failed_platforms
