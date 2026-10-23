@@ -166,14 +166,29 @@ export function TimeSeriesChart({
     ...base,
     // Bars are fat enough to hit directly; snap-to-nearest reads as a phantom
     // tooltip on sparse data. Scoped to the tooltip plugin only — the global
-    // interaction stays intersect:false so onClick/onSelectPoint keeps working
-    // on zero-value columns (their bars have no pixels to hit). Line/area keep
-    // intersect:false everywhere: pointRadius is 0, so a direct-hit requirement
-    // would make their tooltips unreachable.
+    // interaction stays intersect:false so hover/tooltip still reach zero-value
+    // columns and 0-radius line points. (The drill in onClick does NOT lean on
+    // that loose mode — it runs its own strict hit test below.)
     ...(isBar ? { plugins: { ...base.plugins, tooltip: { ...base.plugins.tooltip, mode: 'index' as const, intersect: true } } } : {}),
     ...(singleColumn ? { scales: { ...base.scales, x: { ...base.scales.x, offset: true } } } : {}),
     ...(onSelectPoint
-      ? { onClick: (_e: unknown, els: { index: number }[]) => els?.length && onSelectPoint(labels[els[0].index], els[0].index) }
+      ? {
+          onClick: (e: any, _els: unknown, chart: any) => {
+            if (isBar) {
+              const hit = chart.getElementsAtEventForMode(e, 'index', { intersect: true }, false);
+              if (hit.length) onSelectPoint(labels[hit[0].index], hit[0].index);
+              return;
+            }
+            const { chartArea, scales } = chart;
+            const { x, y } = e;
+            if (!chartArea || x < chartArea.left || x > chartArea.right || y < chartArea.top || y > chartArea.bottom) return;
+            const i = Math.round(scales.x.getValueForPixel(x));
+            if (!(i >= 0) || i >= labels.length) return;
+            const stackTop = series.reduce((sum, ds, di) => (chart.isDatasetVisible(di) ? sum + (ds.data[i] ?? 0) : sum), 0);
+            if (stackTop <= 0 || y < scales.y.getPixelForValue(stackTop)) return;
+            onSelectPoint(labels[i], i);
+          },
+        }
       : {}),
   };
 

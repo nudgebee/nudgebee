@@ -43,6 +43,52 @@ describe('TimeSeriesChart y-axis ticks', () => {
   });
 });
 
+describe('TimeSeriesChart drill hit-test', () => {
+  const onSelect = jest.fn();
+  beforeEach(() => onSelect.mockClear());
+
+  function barChart() {
+    render(<TimeSeriesChart labels={['Mon', 'Tue']} series={[{ key: 'Cost', data: [0, 100] }]} shape='bar' onSelectPoint={onSelect} />);
+    return lastOptions.onClick;
+  }
+
+  it('drills when a bar is actually hit (intersect), not on empty canvas', () => {
+    const onClick = barChart();
+    // Empty space: Chart.js returns no intersecting element → no drill.
+    const chart = { getElementsAtEventForMode: () => [] };
+    onClick({}, [], chart);
+    expect(onSelect).not.toHaveBeenCalled();
+    // Pointer over the Tue bar → that column's element is returned → drill.
+    const onBar = { getElementsAtEventForMode: () => [{ index: 1 }] };
+    onClick({}, [], onBar);
+    expect(onSelect).toHaveBeenCalledWith('Tue', 1);
+  });
+
+  it('does not lean on the els Chart.js passes (ignores snap-to-nearest)', () => {
+    const onClick = barChart();
+    // els is non-empty (the loose global interaction), but no real bar hit → no drill.
+    onClick({}, [{ index: 0 }], { getElementsAtEventForMode: () => [] });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('area/line drills only on/under the filled column, not the empty band above it', () => {
+    render(<TimeSeriesChart labels={['Mon', 'Tue']} series={[{ key: 'Cost', data: [10, 40] }]} shape='area' onSelectPoint={onSelect} />);
+    const onClick = lastOptions.onClick;
+    // Fake scales: x maps pixel→index, y maps a stack total of 40 to pixel 50 (its top).
+    const chart = {
+      chartArea: { left: 0, right: 100, top: 0, bottom: 200 },
+      isDatasetVisible: () => true,
+      scales: { x: { getValueForPixel: () => 1 }, y: { getPixelForValue: () => 50 } },
+    };
+    // Click above the fill (y=20 < top 50) → ignored.
+    onClick({ x: 80, y: 20 }, [], chart);
+    expect(onSelect).not.toHaveBeenCalled();
+    // Click inside the fill (y=120 ≥ top 50) → drill.
+    onClick({ x: 80, y: 120 }, [], chart);
+    expect(onSelect).toHaveBeenCalledWith('Tue', 1);
+  });
+});
+
 describe('TimeSeriesChart legend totals', () => {
   const series = [{ key: 'Tokens', data: [9_000_000, 6_302_648] }];
   const full = (v: number) => v.toLocaleString('en-US');
