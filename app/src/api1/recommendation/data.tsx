@@ -8346,7 +8346,7 @@ Restart the instance (*Optional — skip if you want to start it yourself later*
         'This storage resource may benefit from a different storage class based on its access patterns. Optimizing storage class can reduce costs.',
       recommendations: [
         'Review access patterns and consider moving to a more cost-effective storage class.',
-        'NudgeBee cannot make this change for you. On Google Cloud, Copy Command gives you the bucket update ready to paste; on Azure, change the access tier on the storage account.',
+        'This change is not applied automatically. On Google Cloud, Copy Command gives you the command that turns on Autoclass, which moves each object that is not read for 30 days to Nearline; on Azure, change the access tier on the storage account.',
       ],
     },
     unused_load_balancer: {
