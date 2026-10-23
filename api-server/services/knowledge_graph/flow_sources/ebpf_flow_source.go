@@ -1225,6 +1225,22 @@ func (s *EbpfFlowSource) createNodeForApplication(
 		properties[flowAuthoritativeProperty] = true
 	}
 
+	// Concrete native label (specific_type), e.g. KubernetesStatefulSet, mirroring
+	// sources/k8s/workload.go's "Kubernetes"+Kind convention. Without it
+	// core.NewNode defaults specific_type to the literal NodeType string
+	// ("Workload"), which has no registered schema, so the node also loses its
+	// ontology_attributes.
+	//
+	// This path is LIVE, not dead: #41619 gated Workload creation for accounts
+	// that have a K8s inventory, which briefly made this unreachable and it was
+	// removed as dead code — but the gate is per account, so an eBPF-only
+	// install still creates Workload nodes here. Removing it again regresses
+	// exactly the accounts the per-account policy exists to serve.
+	// TestFlowCreatedWorkloadKeepsConcreteSpecificType locks it.
+	if nodeType == core.NodeTypeWorkload && app.Id.Kind != "" {
+		properties["specific_type"] = "Kubernetes" + core.CanonicalWorkloadKind(app.Id.Kind)
+	}
+
 	node := core.NewNode(
 		nodeType,
 		uniqueKey,
@@ -1469,6 +1485,22 @@ func (s *EbpfFlowSource) createNodeForApplicationID(
 	// retire it on silence (see flowAuthoritativeProperty).
 	if inventoryOwnedWorkloadTypes[nodeType] && !cc.inventoryAuthoritative {
 		properties[flowAuthoritativeProperty] = true
+	}
+
+	// Concrete native label (specific_type), e.g. KubernetesStatefulSet, mirroring
+	// sources/k8s/workload.go's "Kubernetes"+Kind convention. Without it
+	// core.NewNode defaults specific_type to the literal NodeType string
+	// ("Workload"), which has no registered schema, so the node also loses its
+	// ontology_attributes.
+	//
+	// This path is LIVE, not dead: #41619 gated Workload creation for accounts
+	// that have a K8s inventory, which briefly made this unreachable and it was
+	// removed as dead code — but the gate is per account, so an eBPF-only
+	// install still creates Workload nodes here. Removing it again regresses
+	// exactly the accounts the per-account policy exists to serve.
+	// TestFlowCreatedWorkloadKeepsConcreteSpecificType locks it.
+	if nodeType == core.NodeTypeWorkload && id.Kind != "" {
+		properties["specific_type"] = "Kubernetes" + core.CanonicalWorkloadKind(id.Kind)
 	}
 
 	node := core.NewNode(
