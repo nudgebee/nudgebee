@@ -5510,6 +5510,16 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 		}); serr != nil {
 			ctx.GetLogger().Error("agentexecutor: failed to submit session-extractor task", "error", serr)
 		}
+
+		// The saver reads the turn the user sees, not each sub-agent's.
+		if request.ParentAgentId == "" || request.ParentAgentId == request.AgentId {
+			invocations, wroteMemory := toolInvocations, memoryWriteSucceeded(toolInvocations)
+			if serr := conversationAsyncTaskWorkerPool.Submit(submissionCtx, func() {
+				SaveMemoriesFn(bgCtx, request, response, invocations, wroteMemory)
+			}); serr != nil {
+				ctx.GetLogger().Error("agentexecutor: failed to submit memory saver task", "error", serr)
+			}
+		}
 	} else {
 		ctx.GetLogger().Info("agentexecutor: skipping memory extraction - conditions not met",
 			"status", status,

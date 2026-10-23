@@ -1163,6 +1163,8 @@ type appConfig struct {
 	// memory_write NBTools. When on, orchestrators expose them via
 	// appendMemoryToolName. On a turn where memory_write saved something, the
 	// post-turn extractor skips that turn so the row is not saved twice.
+	// It also turns on the saver: after each chat answer it keeps preferences
+	// and team knowledge, which the extractor then leaves to it.
 	// See llm/llm-server/ee/memory/docs/memory-tools-plan.md.
 	MemoryToolsEnabled bool `mapstructure:"llm_memory_tools_enabled"`
 	// MemoryPrestepEnabled makes the chat path inject memory only when a small

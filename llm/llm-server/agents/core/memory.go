@@ -72,6 +72,17 @@ var (
 	) {
 	}
 
+	// SaveMemoriesFn keeps what a finished turn taught Nubi, after the answer
+	// is sent. OSS default: no-op.
+	SaveMemoriesFn = func(
+		ctx *security.RequestContext,
+		request NBAgentRequest,
+		response string,
+		invocations []ToolInvocation,
+		memoryWriteSucceeded bool,
+	) {
+	}
+
 	// ComposeMemoryV2BlockFn returns the memory block and the user-style
 	// block the executor injects into the human message, when
 	// memoryModuleActive is true. OSS default: empty —

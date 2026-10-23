@@ -62,6 +62,7 @@ const (
 	PromptLogAnalysisFileExtractor           = "log_analysis_file_extractor"
 	PromptMemoryExtractor                    = "memory_extractor"
 	PromptMemoryPrestep                      = "memory_prestep"
+	PromptMemorySaver                        = "memory_saver"
 	PromptAgentLlm                           = "agent_llm"
 	PromptAnswerConfidence                   = "answer_confidence"
 	PromptResponseFormatter                  = "response_formatter"
@@ -123,6 +124,7 @@ var promptCategories = map[string]PromptCategory{
 	PromptLogAnalysisFileExtractor:           CategoryUtilities,
 	PromptMemoryExtractor:                    CategoryUtilities,
 	PromptMemoryPrestep:                      CategoryUtilities,
+	PromptMemorySaver:                        CategoryUtilities,
 	PromptAgentLlm:                           CategoryUtilities,
 	PromptResponseFormatter:                  CategoryUtilities,
 	PromptResponseFormatterSlack:             CategoryUtilities,
