@@ -13,6 +13,7 @@ import { ThemeProvider } from '@mui/material/styles';
 import { AppErrorBoundary } from '@shared/ErrorBoundary';
 import { DataProvider } from '@context/DataContext';
 import { SetupGateProvider } from '@context/SetupGateContext';
+import TenantSwitchOverlay from '@components/common/TenantSwitchOverlay';
 import { Toast as SnackbarComponent } from '@ui/Toast';
 import TabTenantBanner from '@components/common/TabTenantBanner';
 import { TourProvider } from '@components/common/tour';
@@ -130,6 +131,7 @@ export default function App({ Component, pageProps }: AppProps<{ session: Sessio
               <Component {...pageProps} />
             ) : (
               <SetupGateProvider>
+                <TenantSwitchOverlay />
                 <DataProvider>
                   <TourProvider>
                     <NubiGlobalChatProvider>
