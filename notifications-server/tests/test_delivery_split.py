@@ -256,6 +256,121 @@ def test_retry_platforms_restricts_fan_out_to_the_failed_platform(monkeypatch):
     assert sent_platforms == ["ms_teams"]
 
 
+def _failed_at(channel):
+    return {"platform": "slack", "destination_id": "slack-1", "channel_id": channel["id"]}
+
+
+def test_retry_destinations_resend_only_to_the_channels_that_failed(monkeypatch):
+    service = _service({None: [_deliver(OPS), _deliver(FINOPS)]}, monkeypatch)
+    sent_channels = []
+
+    async def trigger(_session, _fingerprint, platforms, _kwargs, _parameters, _responses, _tenant, _type):
+        sent_channels.extend(ip.to_channel for ip in platforms if ip.to_channel)
+        return [{"status": "success"}]
+
+    service.trigger_notification = trigger
+    request = _request({"type": "generic", "source": "prometheus", "parameters": {"message": "hi"}})
+    request.retry_destinations = [_failed_at(FINOPS)]
+
+    asyncio.run(service.send_message(request))
+
+    assert sent_channels == [FINOPS]
+
+
+def test_a_rollup_retry_resends_only_the_channels_that_failed(monkeypatch):
+    service = _service({PROD: [_deliver(OPS)], DEV: [_deliver(FINOPS)]}, monkeypatch)
+    request = _request(_digest())
+    request.retry_destinations = [_failed_at(FINOPS)]
+
+    asyncio.run(service.send_message(request))
+
+    assert [(channel, set(params["recommendations_by_account"])) for _type, channel, params in service.sent] == [
+        (FINOPS, {DEV})
+    ]
+
+
+def test_a_tenant_with_nowhere_to_send_gets_not_sent(monkeypatch):
+    service = _service({}, monkeypatch)
+    service.installs = []
+
+    for payload in ({"type": "generic", "source": "prometheus", "parameters": {"message": "hi"}}, _digest()):
+        responses = asyncio.run(service.send_message(_request(payload)))
+
+        assert responses == [{"platform": "system", "status": "not_sent", "reason": "no_destination"}]
+
+
+def test_an_install_a_retry_leaves_nothing_to_resend_is_not_tried(monkeypatch):
+    service = _service({None: [_deliver(OPS)]}, monkeypatch)
+    teams_channel = {"id": "T1"}
+    service.installs = [
+        SimpleNamespace(id="slack-1", platform="slack", channels=DEFAULT, to_channel=None),
+        SimpleNamespace(id="teams-1", platform="ms_teams", channels=teams_channel, to_channel=None),
+    ]
+    tried = []
+
+    async def send(_session, _tenant, ip, *_args):
+        tried.append(ip.platform)
+        return {"platform": ip.platform, "status": "success"}, None
+
+    service._get_finding_sender = lambda _platform: send
+    request = _request({"type": "finding", "source": "prometheus", "parameters": {"finding": {"priority": "HIGH"}}})
+    request.retry_destinations = [{"platform": "ms_teams", "destination_id": "teams-1", "channel_id": "T1"}]
+
+    responses = asyncio.run(service.send_message(request))
+
+    assert tried == ["ms_teams"]
+    assert responses == [{"platform": "ms_teams", "status": "success"}]
+
+
+def test_installs_with_nowhere_to_post_get_not_sent(monkeypatch):
+    service = _service({}, monkeypatch)
+    service.installs = [SimpleNamespace(id="slack-1", platform="slack", channels=None, to_channel=None)]
+
+    responses = asyncio.run(
+        service.send_message(_request({"type": "generic", "source": "prometheus", "parameters": {"message": "hi"}}))
+    )
+
+    assert responses == [{"platform": "system", "status": "not_sent", "reason": "no_destination"}]
+
+
+def test_a_message_type_with_no_template_is_a_failure_not_an_empty_result(monkeypatch):
+    service = _service({}, monkeypatch)
+
+    responses = asyncio.run(
+        service.send_message(_request({"type": "no_such_type", "source": "prometheus", "parameters": {}}))
+    )
+
+    assert responses == [{"platform": "system", "status": "failed", "reason": "invalid_request", "retryable": False}]
+
+
+def test_an_older_retry_scope_is_narrowed_by_the_newer_retry_platforms(monkeypatch):
+    """A pod that predates retry_destinations retries the scope it was given
+    and rewrites only retry_platforms; the next attempt honours both."""
+    service = _service({None: [_deliver(OPS)]}, monkeypatch)
+    teams_channel = {"id": "T1"}
+    service.installs = [
+        SimpleNamespace(id="slack-1", platform="slack", channels=DEFAULT, to_channel=None),
+        SimpleNamespace(id="teams-1", platform="ms_teams", channels=teams_channel, to_channel=None),
+    ]
+    sent = []
+
+    async def trigger(_session, _fingerprint, platforms, *_args):
+        sent.extend((ip.platform, ip.to_channel) for ip in platforms if ip.to_channel)
+        return [{"status": "success"}]
+
+    service.trigger_notification = trigger
+    request = _request({"type": "generic", "source": "prometheus", "parameters": {"message": "hi"}})
+    request.retry_destinations = [
+        _failed_at(OPS),
+        {"platform": "ms_teams", "destination_id": "teams-1", "channel_id": "T1"},
+    ]
+    request.retry_platforms = ["ms_teams"]
+
+    asyncio.run(service.send_message(request))
+
+    assert sent == [("ms_teams", teams_channel)]
+
+
 # ----------------------------- grouped alerts -----------------------------
 
 

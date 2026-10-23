@@ -46,6 +46,11 @@ const (
 	// StatusSuppressed is notifications-server's reply when a rule dropped the
 	// message; the request succeeded but nothing was posted.
 	StatusSuppressed = "suppressed"
+	// StatusFailed and StatusNotSent are its replies when nothing was posted
+	// because the platform refused it or there was nowhere to send it; Reason
+	// says which.
+	StatusFailed  = "failed"
+	StatusNotSent = "not_sent"
 )
 
 type SendImNotificationRequest struct {
@@ -68,6 +73,8 @@ type SendImNotificationResponse struct {
 	Status            string `json:"status"`
 	Reason            string `json:"reason"`
 	RuleManagementURL string `json:"rule_management_url"`
+	// Retryable is set on a failed result: whether sending again may work.
+	Retryable *bool `json:"retryable"`
 }
 
 func SendNotification(ctx *security.RequestContext, request SendImNotificationRequest) (SendImNotificationResponse, error) {

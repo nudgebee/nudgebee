@@ -2,8 +2,11 @@ package notifications
 
 import (
 	"errors"
+	"fmt"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/notification"
+
+	"go.temporal.io/sdk/temporal"
 )
 
 // ImSendTask defines a task for sending a notification via IM.
@@ -15,7 +18,7 @@ func (t *ImSendTask) GetName() string {
 
 // GetDescription returns a brief description of the task.
 func (t *ImSendTask) GetDescription() string {
-	return "Send a message to Slack, MS Teams, or Google Chat."
+	return "Send a message to Slack, MS Teams, or Google Chat. As a step it fails, naming the reason, when the message is not delivered; as a hook it only logs that."
 }
 
 // GetDisplayName returns a human-readable name for the task.
@@ -92,6 +95,13 @@ func (t *ImSendTask) Execute(taskCtx types.TaskContext, params map[string]any) (
 		if resp.RuleManagementURL != "" {
 			output["rule_management_url"] = resp.RuleManagementURL
 		}
+	}
+	if err == nil && (resp.Status == notification.StatusFailed || resp.Status == notification.StatusNotSent) {
+		message := fmt.Sprintf("notifications: the message was not delivered (%s)", resp.Reason)
+		if resp.Status == notification.StatusNotSent || (resp.Retryable != nil && !*resp.Retryable) {
+			return output, temporal.NewNonRetryableApplicationError(message, types.ErrTypeNotificationNotDelivered, nil)
+		}
+		return output, temporal.NewApplicationError(message, types.ErrTypeNotificationNotDelivered)
 	}
 
 	return output, err

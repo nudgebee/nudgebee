@@ -52,6 +52,14 @@ class DiscordClient:
             pass
         return f"HTTP {resp.status_code}: {resp.text[:300]}"
 
+    @staticmethod
+    def _error_code(resp) -> Optional[int]:
+        """Discord's own error code from an error response, when it has one."""
+        try:
+            return resp.json().get("code")
+        except Exception:
+            return None
+
     @classmethod
     def get_headers(cls, token: str) -> Dict[str, str]:
         if not token.startswith("Bot "):
@@ -206,7 +214,12 @@ class DiscordClient:
                 return {"ok": True, "ts": data.get("id"), "data": data}
             error = cls._error_message(resp) if resp is not None else "no response"
             LOG.error("Failed to post to Discord channel %s: %s", channel_id, error)
-            return {"ok": False, "error": error}
+            return {
+                "ok": False,
+                "error": error,
+                "status": resp.status_code if resp is not None else None,
+                "code": cls._error_code(resp),
+            }
         except Exception:
             LOG.exception(f"Error posting message to Discord channel {channel_id}")
             return {"ok": False, "error": "Unexpected error; see server logs"}

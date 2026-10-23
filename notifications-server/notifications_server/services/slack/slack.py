@@ -16,13 +16,6 @@ def retriable_slack_api_error(exc: Exception) -> bool:
     return False
 
 
-def slack_channel_not_found_error(exc: Exception) -> bool:
-    """Check if error indicates channel not found."""
-    if isinstance(exc, SlackApiError) and exc.response.data.get("error") == "channel_not_found":
-        return True
-    return False
-
-
 def get_retry_after(exc: SlackApiError) -> Optional[int]:
     """Extract Retry-After header value from Slack API error."""
     retry_after = exc.response.headers.get("Retry-After")

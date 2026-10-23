@@ -4,6 +4,7 @@ import logging
 
 from notifications_server.configs.settings import settings
 from notifications_server.schemas import SendMessageRequest
+from notifications_server.services.delivery_errors import retry_destination
 from notifications_server.services.message import MessageService, NotificationRuleMatcher, resolve_outcome
 from notifications_server.models.db_base import BaseDB
 from notifications_server.models.enums import ReactionTypes
@@ -14,13 +15,15 @@ LOG = logging.getLogger(__name__)
 
 
 class NotificationSendFailed(RuntimeError):
-    """A notification send failed on at least one platform. Carries which
-    platforms failed so a retry can be scoped to just those — platforms that
-    already succeeded must not be delivered to again."""
+    """A notification send failed on at least one destination with an error
+    worth retrying. Carries where, so the retry goes only there: destinations
+    that got the message, or failed for good, must not be sent to again.
+    `retry_destinations` is None when the retry can't be narrowed to channels."""
 
-    def __init__(self, message, failed_platforms):
+    def __init__(self, message, failed_platforms, retry_destinations=None):
         super().__init__(message)
         self.failed_platforms = failed_platforms
+        self.retry_destinations = retry_destinations
 
 
 class NotificationProcessor:
@@ -93,12 +96,21 @@ class NotificationProcessor:
 
         responses = await self._message_service.send_message(parsed)
         failures = [r for r in (responses or []) if isinstance(r, dict) and r.get("status") == "failed"]
-        if failures:
+        permanent = [r for r in failures if r.get("retryable") is False]
+        if permanent:
+            LOG.warning("Notification not delivered, and sending again cannot help: %s", permanent)
+        retryable = [r for r in failures if r.get("retryable") is not False]
+        if retryable:
             # send_message already catches and logs platform-level exceptions, returning
             # a "failed" PlatformResponse instead of raising — so without this, a send
             # that errors out looks identical to one that succeeded and is never retried.
-            failed_platforms = sorted({r.get("platform") for r in failures if r.get("platform")})
-            raise NotificationSendFailed(f"Notification send failed: {failures}", failed_platforms)
+            # A failure outside any one destination ("system") is retried whole.
+            whole = any(r.get("platform") == "system" for r in retryable)
+            failed_platforms = [] if whole else sorted({r.get("platform") for r in retryable if r.get("platform")})
+            retry_destinations = None
+            if not whole and all(r.get("channel_id") for r in retryable):
+                retry_destinations = [retry_destination(r) for r in retryable]
+            raise NotificationSendFailed(f"Notification send failed: {retryable}", failed_platforms, retry_destinations)
         LOG.debug("Notification processed successfully")
 
     async def perform_email(self, email_task):
@@ -144,9 +156,13 @@ class NotificationProcessor:
                 trimmed = {**task, "parameters": {**task["parameters"], "finding": finding}}
             LOG.exception("Failed to process task: %s from: %s", e, headers)
             LOG.debug("Payload: %s", json.dumps(trimmed))
+            # retry_platforms is kept for pods that predate retry_destinations.
             failed_platforms = getattr(e, "failed_platforms", None)
             if failed_platforms:
                 task["retry_platforms"] = failed_platforms
+            retry_destinations = getattr(e, "retry_destinations", None)
+            if retry_destinations:
+                task["retry_destinations"] = retry_destinations
             try:
                 attempt = int((headers or {}).get("nb-retry-count") or 0)
             except (ValueError, TypeError):

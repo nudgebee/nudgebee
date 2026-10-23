@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"nudgebee/runbook/config"
 	"nudgebee/runbook/internal/logsafe"
@@ -2024,6 +2025,13 @@ func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *
 	for _, f := range futures {
 		var result any
 		if err := f.Get(ctx, &result); err != nil {
+			// A hook's message that wasn't delivered is reported, not a
+			// failure of the task the hook belongs to.
+			var appErr *temporal.ApplicationError
+			if errors.As(err, &appErr) && appErr.Type() == types.ErrTypeNotificationNotDelivered {
+				logger.Warn("Hook message was not delivered", "error", err)
+				continue
+			}
 			logger.Error("Hook activity failed deterministically", "error", err)
 			if finalHookErr == nil {
 				finalHookErr = err

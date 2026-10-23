@@ -12,7 +12,9 @@ from notifications_server.utils.datetime_utils import utc_now
 from asyncio import Lock
 from collections import defaultdict
 
+from slack_sdk.errors import SlackApiError
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from notifications_server.clients.google_chat_client import GoogleChatClient
 from notifications_server.clients.google_chat_app_client import GoogleChatAppClient
@@ -23,7 +25,24 @@ from notifications_server.configs import settings
 from notifications_server.models.enums import PlatformTypes
 from notifications_server.schemas.message import SendMessageRequest
 from notifications_server.services.cache import Cache
-from notifications_server.services.response_helpers import success_response, failed_response, system_response
+from notifications_server.services.delivery_errors import (
+    AUTH_FAILED,
+    INTERNAL_ERROR,
+    INVALID_REQUEST,
+    NO_DESTINATION,
+    NOT_CONFIGURED,
+    delivery_channel_id,
+    destination_fields,
+    discord_failure,
+    failure,
+    google_chat_failure,
+    retry_key,
+    retry_keys,
+    slack_failure,
+    teams_failure,
+    webhook_failure,
+)
+from notifications_server.services.response_helpers import not_sent_response, success_response, system_response
 from notifications_server.services.rules import (
     DEFAULT_CHANNELS,
     DEFAULT_DELIVER,
@@ -41,14 +60,14 @@ from notifications_server.services.delivery_split import (
     merged_parameters,
 )
 from notifications_server.message_templates.slack.weekly_digest_events import digest_link, digest_verdict
-from notifications_server.services.slack.slack import retriable_slack_api_error, slack_channel_not_found_error
+from notifications_server.services.slack.slack import retriable_slack_api_error
 from notifications_server.message_templates import template_mapping
 from notifications_server.message_templates.google_chat.finding import get_markdown_message_template
 from notifications_server.message_templates.base import is_resolved
 from notifications_server.message_templates.ms_teams.finding import get_ms_teams_finding_message_template
 from notifications_server.services.ms_teams import card_actions
 from notifications_server.services.ms_teams.bot_sender import (
-    APP_NOT_IN_TEAM,
+    AppNotInTeamError,
     TeamsBotError,
     card_activity,
     get_sender,
@@ -605,18 +624,24 @@ class SlackSender(BaseSender):
                         )
                     return self.slack_app.client.chat_post(channel_id=channel_id, token=installation.token, **message)
 
-            except Exception as exc:
+            except SlackApiError as exc:
                 if retriable_slack_api_error(exc) and max_tries < settings.slack.max_rate_limit_retries:
                     retry_after = self.get_retry_after(exc)
                     # time.sleep is intentional: this method runs via asyncio.to_thread,
                     # so it blocks the threadpool worker, not the event loop.
                     time.sleep(retry_after)
                     max_tries += 1
-                elif slack_channel_not_found_error(exc):
-                    return exc.response
-                else:
-                    LOG.exception(f"Failed to send message for tenant {tenant} due to: {exc}")
-                    return None
+                    continue
+                # Slack's error code is on the response; the caller reports it.
+                LOG.warning(
+                    "Slack refused the post for tenant %s: %s",
+                    tenant,
+                    (getattr(exc.response, "data", None) or {}).get("error"),
+                )
+                return exc.response
+            except Exception as exc:
+                LOG.exception(f"Failed to send message for tenant {tenant} due to: {exc}")
+                return None
 
     @staticmethod
     async def check_if_sent_already(session, fingerprint, team_id, channels):
@@ -946,7 +971,7 @@ class MessageService:
 
             sections = account_sections(type_, parameters)
             if sections:
-                return await self.send_rollup(tenant_id, type_, payload, sections)
+                return await self.send_rollup(tenant_id, type_, payload, sections, request)
 
             async with BaseDB.async_session(self.engine)() as session:
                 matched_rules, source = await self.rule_matcher.match_notification_rules(
@@ -981,12 +1006,15 @@ class MessageService:
                     installed_platforms, getattr(request, "retry_platforms", None)
                 )
                 if not installed_platforms:
-                    return [failed_response("", reason="No messaging platform installation found for this tenant")]
+                    return [not_sent_response("system", NO_DESTINATION)]
 
                 self.get_channels_from_request_or_defaults(
                     installed_platforms, outcome.targets, source, payload, use_defaults=outcome.use_defaults
                 )
                 await self._apply_gchat_default_fallback(session, tenant_id, installed_platforms, payload)
+                self._scope_to_retry_destinations(installed_platforms, getattr(request, "retry_destinations", None))
+                if not any(ip.to_channel for ip in installed_platforms):
+                    return [not_sent_response("system", NO_DESTINATION)]
 
                 fingerprint = get_fingerprint(type_, payload)
                 return await send_in_rounds(
@@ -1002,7 +1030,7 @@ class MessageService:
                 parameters_copy["finding"].pop("description", None)
                 parameters_copy["finding"].pop("evidences", None)
             LOG.exception(f"Can't send message: {exc}, message: {parameters_copy}")
-            return []
+            return [failure("system", INTERNAL_ERROR)]
 
     async def _maybe_handle_grouped_message(self, source, parameters, tenant_id, kwargs):
         if source and source.lower() == "slo":
@@ -1048,7 +1076,7 @@ class MessageService:
             return group_result
         # enqueue logs its own failure and returns None; say so rather than
         # report the anomaly as unsupported.
-        return [system_response("failed", "Could not queue the returned anomaly for the digest")]
+        return [failure("system", INTERNAL_ERROR)]
 
     async def trigger_notification(
         self,
@@ -1066,16 +1094,16 @@ class MessageService:
                 session, tenant_id, parameters, fingerprint, installed_platforms
             )
             if new_sent_notifications:
-                session.add_all(new_sent_notifications)
-                await session.commit()
+                await MessageService._save_after_send(session, new_sent_notifications)
         elif type_ in template_mapping:
             platform_responses = await self.send_template_notification(
                 session, tenant_id, kwargs, type_, installed_platforms
             )
             if session.info.pop(STORED_TEAMS_CARDS, False):
-                await session.commit()
+                await MessageService._save_after_send(session)
         else:
             LOG.warning("No template found for notification type '%s' — notification not delivered", type_)
+            platform_responses = [failure("system", INVALID_REQUEST)]
         return platform_responses
 
     # ----------------------------- Installation loading -----------------------------
@@ -1086,6 +1114,11 @@ class MessageService:
                 return installed_platforms
 
         installed_platforms = await self.get_installed_platforms(session, tenant_id=tenant_id)
+        # Detached, like the cached copies: a rollback later in the send would
+        # otherwise expire the rows under the senders still to run.
+        for ip in installed_platforms:
+            if session is not None and ip in session:
+                session.expunge(ip)
 
         if installed_platforms and self.cache and self.cache.redis_client:
             self.cache.cache_installations(tenant_id, installed_platforms)
@@ -1104,6 +1137,48 @@ class MessageService:
         if not retry_platforms:
             return installed_platforms
         return [ip for ip in installed_platforms if ip.platform in retry_platforms]
+
+    @staticmethod
+    def _scope_to_retry_destinations(installed_platforms, retry_destinations):
+        """Narrow delivery to the channels that failed last attempt with an error
+        worth retrying, set by NotificationProcessor when it re-queues the send.
+        A channel that already got the message, or failed for good, is skipped."""
+        if not retry_destinations:
+            return
+        wanted = retry_keys(retry_destinations)
+        for ip in installed_platforms:
+            channels = [ip.to_channel] + list(getattr(ip, "additional_channels", None) or [])
+            kept = [channel for channel in channels if channel and retry_key(ip, channel) in wanted]
+            ip.to_channel = kept[0] if kept else None
+            ip.additional_channels = kept[1:]
+
+    @staticmethod
+    async def _failed_send(session, ip, exc):
+        """The result for a send to one destination that raised. A database
+        error leaves the session unusable until it is rolled back; any other
+        error leaves it alone, keeping cards already stored for other channels."""
+        LOG.error("Sending through %s installation %s failed", ip.platform, ip.id, exc_info=exc)
+        result = failure(ip.platform, INTERNAL_ERROR, **destination_fields(ip))
+        if session is not None and isinstance(exc, SQLAlchemyError):
+            try:
+                await session.rollback()
+            except Exception:
+                LOG.exception("Rolling back after the failed send failed")
+        return result
+
+    @staticmethod
+    async def _save_after_send(session, rows=()):
+        """Commit rows recorded for posts that already went out. A failure is
+        logged, not raised: raising would send the posts again on retry."""
+        try:
+            if rows:
+                session.add_all(rows)
+            await session.commit()
+            return True
+        except Exception:
+            LOG.exception("Saving the records of posts already sent failed")
+            await session.rollback()
+            return False
 
     # ----------------------------- Rule and channel helpers -----------------------------
     async def match_notification_rules(self, session, tenant_id, type_, kwargs):
@@ -1170,7 +1245,7 @@ class MessageService:
             other.additional_channels = []
         ip.to_channel = channel
 
-    async def send_rollup(self, tenant_id, type_, payload, sections):
+    async def send_rollup(self, tenant_id, type_, payload, sections, request=None):
         """Send a message covering several accounts: one message per channel, each
         with only the accounts routed to that channel."""
         parameters = payload.get("parameters") or {}
@@ -1179,13 +1254,14 @@ class MessageService:
         async with BaseDB.async_session(self.engine)() as session:
             installed_platforms = await self.get_installed_platforms_from_cache_or_db(session, tenant_id)
             if not installed_platforms:
-                return [failed_response("", reason="No messaging platform installation found for this tenant")]
+                return [not_sent_response("system", NO_DESTINATION)]
             routes = await self.route_units(session, tenant_id, units, installed_platforms)
             if not routes:
                 return [system_response("suppressed", "Every account in this message was left out by the rules")]
             routes = [route for route in routes if has_recommendations(parameters, route[2])]
             if not routes:
                 return [system_response("dropped", "No account routed to a channel has anything to send")]
+            routes = self._scope_routes_to_retry(routes, request)
             responses = []
             for ip, channel, account_ids in routes:
                 self.point_at(installed_platforms, ip, channel)
@@ -1196,6 +1272,19 @@ class MessageService:
                     or []
                 )
             return responses
+
+    @staticmethod
+    def _scope_routes_to_retry(routes, request):
+        """The rollup routes a retry still has to deliver: the channels that
+        failed last attempt with an error worth retrying."""
+        retry_platforms = getattr(request, "retry_platforms", None)
+        if retry_platforms:
+            routes = [route for route in routes if route[0].platform in retry_platforms]
+        retry_destinations = getattr(request, "retry_destinations", None)
+        if retry_destinations:
+            wanted = retry_keys(retry_destinations)
+            routes = [route for route in routes if retry_key(route[0], route[1]) in wanted]
+        return routes
 
     @staticmethod
     def get_channels_from_request_or_defaults(installed_platforms, matched_rules, source, kwargs, use_defaults=True):
@@ -1286,7 +1375,11 @@ class MessageService:
                 LOG.warning("Unable to identify platform %s with installation id %s", ip.platform, ip.id)
                 continue
 
-            response_data, sent_notification = await handler(session, tenant_id, ip, finding, fingerprint)
+            # One destination's error must not stop the others or hide what they got.
+            try:
+                response_data, sent_notification = await handler(session, tenant_id, ip, finding, fingerprint)
+            except Exception as exc:
+                response_data, sent_notification = await MessageService._failed_send(session, ip, exc), None
             if sent_notification:
                 new_sent_notifications.append(sent_notification)
             if response_data:
@@ -1306,6 +1399,9 @@ class MessageService:
         }.get(platform)
 
     async def _send_finding_to_slack(self, session, tenant_id, ip, finding, fingerprint):
+        if not delivery_channel_id(ip, ip.to_channel):
+            return failure("slack", NOT_CONFIGURED, team_id=ip.team_id, **destination_fields(ip)), None
+
         # Look up the thread at the channel the message is actually posted to
         # (rule-routed channel or default), not the installation default.
         thread_id = await self.slack_sender.check_if_sent_already(session, fingerprint, ip.team_id, ip.to_channel)
@@ -1326,7 +1422,7 @@ class MessageService:
         )
 
         if not (slack_response and slack_response.status_code == 200 and slack_response.data.get("ok")):
-            return None, None
+            return slack_failure(slack_response, team_id=ip.team_id, **destination_fields(ip)), None
 
         account_id = finding.get("cloud_account_id") if finding else None
         sent_notification = None
@@ -1402,11 +1498,16 @@ class MessageService:
                     )
                 except Exception as exc:
                     LOG.warning("Failed to post resolved reply to thread %s: %s", row.slack_thread_id, exc)
-                    responses.append(failed_response("slack", reason="Failed to post resolved reply"))
+                    slack_response = getattr(exc, "response", None)
+                    responses.append(
+                        slack_failure(slack_response, team_id=row.slack_team_id, **destination_fields(ip, channel_id))
+                    )
                     continue
 
                 if not (slack_response and slack_response.status_code == 200 and slack_response.data.get("ok")):
-                    responses.append(failed_response("slack", reason="Failed to post resolved reply"))
+                    responses.append(
+                        slack_failure(slack_response, team_id=row.slack_team_id, **destination_fields(ip, channel_id))
+                    )
                     continue
 
                 row.slack_metadata = json.dumps({**slack_metadata, "resolved_notified": True})
@@ -1422,7 +1523,7 @@ class MessageService:
                 )
 
             if stamped:
-                await session.commit()
+                await MessageService._save_after_send(session)
 
         return responses or [system_response("dropped", "Resolved reply already delivered")]
 
@@ -1431,7 +1532,7 @@ class MessageService:
         reply under root_message_id. Returns the Teams message id."""
         team = await load_team_async(session, tenant_id, team_id)
         if team is None:
-            raise TeamsBotError(APP_NOT_IN_TEAM)
+            raise AppNotInTeamError()
         sender = get_sender()
         await asyncio.to_thread(sender.check_channel, team, channel_id)
         conversation_id = thread_conversation_id(channel_id, root_message_id) if root_message_id else channel_id
@@ -1444,12 +1545,12 @@ class MessageService:
         channel_id = channels_list[0].get("id") if channels_list else None
         team_id = teams_channels.get("team_id") if isinstance(teams_channels, dict) else None
         if not (team_id and channel_id):
-            return failed_response("ms_teams", reason="No Microsoft Teams channel is mapped")
+            return failure("ms_teams", NOT_CONFIGURED, **destination_fields(ip))
         try:
             message_id = await self._post_teams_card_as_bot(session, ip.tenant_id, team_id, channel_id, card)
         except TeamsBotError as e:
             LOG.warning("Teams bot send to team %s failed: %s", team_id, e)
-            return failed_response("ms_teams", reason=str(e))
+            return teams_failure(e, team_id=team_id, **destination_fields(ip))
         return success_response("ms_teams", team_id=team_id, channel_id=channel_id, message_ts=message_id)
 
     async def _send_finding_to_teams(self, session, tenant_id, ip, finding, fingerprint):
@@ -1474,7 +1575,7 @@ class MessageService:
         """POST a finding card to ip.webhook_url. Returns (response, None) — webhooks
         don't thread, so no sent_notification row."""
         if not getattr(ip, "webhook_url", None):
-            return None, None
+            return failure("ms_teams_webhook", NOT_CONFIGURED, **destination_fields(ip)), None
 
         response = await asyncio.to_thread(
             MsTeamsClient.post_to_ms_teams_webhook,
@@ -1483,7 +1584,7 @@ class MessageService:
             tenant_id,
         )
         if not (response is not None and 200 <= response.status_code < 300):
-            return None, None
+            return webhook_failure("ms_teams_webhook", response, **destination_fields(ip)), None
 
         return success_response("ms_teams_webhook", channel_id=str(ip.id)), None
 
@@ -1493,7 +1594,7 @@ class MessageService:
         strip_interactive_slack_elements) - webhooks don't thread, so no
         sent_notification row."""
         if not getattr(ip, "webhook_url", None):
-            return None, None
+            return failure("slack_webhook", NOT_CONFIGURED, **destination_fields(ip)), None
 
         message, output_blocks, attachments = get_slack_finding_message(self.slack_app, ip, finding)
         payload = strip_interactive_slack_elements(
@@ -1508,7 +1609,7 @@ class MessageService:
             tenant_id,
         )
         if not (response is not None and 200 <= response.status_code < 300):
-            return None, None
+            return webhook_failure("slack_webhook", response, **destination_fields(ip)), None
 
         return success_response("slack_webhook", channel_id=str(ip.id)), None
 
@@ -1560,10 +1661,7 @@ class MessageService:
 
     async def _send_finding_to_gchat(self, session, tenant_id, ip, finding, _):
         if not GoogleChatAppClient.is_enabled():
-            return (
-                failed_response("google_chat", reason="Google Chat service account is not configured"),
-                None,
-            )
+            return failure("google_chat", NOT_CONFIGURED, **destination_fields(ip)), None
 
         result = await asyncio.to_thread(
             GoogleChatAppClient.post_message,
@@ -1582,21 +1680,14 @@ class MessageService:
                 None,
             )
 
-        return (
-            failed_response(
-                "google_chat",
-                reason=result.get("reason"),
-                channel_id=result.get("channel_id"),
-            ),
-            None,
-        )
+        return google_chat_failure(result, **destination_fields(ip)), None
 
     async def _send_finding_to_gchat_webhook(self, session, tenant_id, ip, finding, _):
         """POST a finding card to ip.webhook_url. Reuses the plain-text/markdown
         finding template (no interactive elements exist in it) - webhooks don't
         thread, so no sent_notification row."""
         if not getattr(ip, "webhook_url", None):
-            return None, None
+            return failure("google_chat_webhook", NOT_CONFIGURED, **destination_fields(ip)), None
 
         response = await asyncio.to_thread(
             GoogleChatClient.post_to_google_chat_webhook,
@@ -1605,14 +1696,14 @@ class MessageService:
             tenant_id,
         )
         if not (response is not None and 200 <= response.status_code < 300):
-            return None, None
+            return webhook_failure("google_chat_webhook", response, **destination_fields(ip)), None
 
         return success_response("google_chat_webhook", channel_id=str(ip.id)), None
 
     async def _send_finding_to_discord(self, session, tenant_id, ip, finding, fingerprint):
         token = await self.discord_sender.acquire_discord_access_token(session, ip)
         if not token:
-            return None, None
+            return failure("discord", AUTH_FAILED, **destination_fields(ip)), None
 
         from notifications_server.clients.discord_client import DiscordClient
         from notifications_server.message_templates.discord.finding import get_discord_finding_message
@@ -1626,7 +1717,7 @@ class MessageService:
 
         if not channel_id:
             LOG.error("No channel provided for Discord message")
-            return failed_response("discord", reason="No channel ID provided"), None
+            return failure("discord", NOT_CONFIGURED, **destination_fields(ip)), None
 
         # Repeat findings reply to the original message (Slack-thread parity)
         # instead of posting a fresh top-level message each time.
@@ -1663,14 +1754,7 @@ class MessageService:
                 sent_notification,
             )
 
-        return (
-            failed_response(
-                "discord",
-                reason=result.get("error") if result else "Unknown error",
-                channel_id=channel_id,
-            ),
-            None,
-        )
+        return discord_failure(result or {}, **destination_fields(ip)), None
 
     async def send_template_notification(self, session, tenant, kwargs, notification_type, installed_platforms):
         platform_responses = []
@@ -1708,15 +1792,19 @@ class MessageService:
                     )
                     continue
 
-                response = await self.send_template_messages_to_platforms(
-                    ip, template_func, param_value, session, tenant
-                )
+                # One destination's error must not stop the others or hide what they got.
+                try:
+                    response = await self.send_template_messages_to_platforms(
+                        ip, template_func, param_value, session, tenant
+                    )
+                except Exception as exc:
+                    response = await MessageService._failed_send(session, ip, exc)
                 if response:
                     platform_responses.append(response)
 
         except Exception as exc:
             LOG.exception(f"Failed to send message: {exc}")
-            return platform_responses
+            return platform_responses + [failure("system", INTERNAL_ERROR)]
 
         return platform_responses
 
@@ -1743,6 +1831,8 @@ class MessageService:
                 return None
 
     async def send_slack_template_notification(self, ip, template_func, param_value, tenant, session=None):
+        if not delivery_channel_id(ip, ip.to_channel):
+            return failure("slack", NOT_CONFIGURED, team_id=ip.team_id, **destination_fields(ip))
         response = await asyncio.to_thread(
             self.slack_sender.post_to_slack, tenant, ip, None, **template_func(param_value)
         )
@@ -1751,7 +1841,7 @@ class MessageService:
             message_ts = response.data.get("ts")
             await self.attach_weekly_digest_pdf(session, ip, param_value, channel_id, message_ts)
             return success_response("slack", team_id=ip.team_id, channel_id=channel_id, message_ts=message_ts)
-        return failed_response("slack", team_id=ip.team_id)
+        return slack_failure(response, team_id=ip.team_id, **destination_fields(ip))
 
     async def attach_weekly_digest_pdf(self, session, ip, param_value, channel_id, message_ts):
         """Attach the full review as a PDF, in a thread under the summary.
@@ -1846,7 +1936,7 @@ class MessageService:
     async def send_teams_webhook_template_notification(self, ip, template_func, param_value, tenant):
         """Template send via webhook: same ms_teams card, POSTed to ip.webhook_url."""
         if not getattr(ip, "webhook_url", None):
-            return failed_response("ms_teams_webhook", reason="Webhook target has no URL")
+            return failure("ms_teams_webhook", NOT_CONFIGURED, **destination_fields(ip))
 
         response = await asyncio.to_thread(
             MsTeamsClient.post_to_ms_teams_webhook, ip.webhook_url, template_func(param_value), tenant
@@ -1855,15 +1945,14 @@ class MessageService:
         if response is not None and 200 <= response.status_code < 300:
             return success_response("ms_teams_webhook", channel_id=str(ip.id))
 
-        reason = response.text[:512] if response is not None else "Unable to send teams webhook notification"
-        return failed_response("ms_teams_webhook", reason=reason)
+        return webhook_failure("ms_teams_webhook", response, **destination_fields(ip))
 
     async def send_slack_webhook_template_notification(self, ip, template_func, param_value, tenant):
         """Template send via webhook: same slack template, minus interactive
         elements the webhook has no app behind to service, POSTed to
         ip.webhook_url."""
         if not getattr(ip, "webhook_url", None):
-            return failed_response("slack_webhook", reason="Webhook target has no URL")
+            return failure("slack_webhook", NOT_CONFIGURED, **destination_fields(ip))
 
         payload = strip_interactive_slack_elements(template_func(param_value))
 
@@ -1872,12 +1961,11 @@ class MessageService:
         if response is not None and 200 <= response.status_code < 300:
             return success_response("slack_webhook", channel_id=str(ip.id))
 
-        reason = response.text[:512] if response is not None else "Unable to send slack webhook notification"
-        return failed_response("slack_webhook", reason=reason)
+        return webhook_failure("slack_webhook", response, **destination_fields(ip))
 
     async def send_google_chat_template_notification(self, ip, template_func, param_value, session, tenant_id):
         if not GoogleChatAppClient.is_enabled():
-            return failed_response("google_chat", reason="Google Chat service account is not configured")
+            return failure("google_chat", NOT_CONFIGURED, **destination_fields(ip))
 
         result = await asyncio.to_thread(
             GoogleChatAppClient.post_message,
@@ -1893,17 +1981,13 @@ class MessageService:
                 message_ts=result.get("message_ts"),
             )
 
-        return failed_response(
-            "google_chat",
-            reason=result.get("reason"),
-            channel_id=result.get("channel_id"),
-        )
+        return google_chat_failure(result, **destination_fields(ip))
 
     async def send_google_chat_webhook_template_notification(self, ip, template_func, param_value, tenant):
         """Template send via webhook: same google_chat template, POSTed to
         ip.webhook_url."""
         if not getattr(ip, "webhook_url", None):
-            return failed_response("google_chat_webhook", reason="Webhook target has no URL")
+            return failure("google_chat_webhook", NOT_CONFIGURED, **destination_fields(ip))
 
         response = await asyncio.to_thread(
             GoogleChatClient.post_to_google_chat_webhook, ip.webhook_url, template_func(param_value), tenant
@@ -1912,13 +1996,12 @@ class MessageService:
         if response is not None and 200 <= response.status_code < 300:
             return success_response("google_chat_webhook", channel_id=str(ip.id))
 
-        reason = response.text[:512] if response is not None else "Unable to send google chat webhook notification"
-        return failed_response("google_chat_webhook", reason=reason)
+        return webhook_failure("google_chat_webhook", response, **destination_fields(ip))
 
     async def send_discord_template_notification(self, ip, template_func, param_value, session, tenant):
         token = await self.discord_sender.acquire_discord_access_token(session, ip)
         if not token:
-            return failed_response("discord", reason="Unable to authenticate discord installation")
+            return failure("discord", AUTH_FAILED, **destination_fields(ip))
 
         from notifications_server.clients.discord_client import DiscordClient
 
@@ -1926,7 +2009,7 @@ class MessageService:
         channel = normalize_channel(ip.to_channel)
         channel_id = channel.get("id") if isinstance(channel, dict) else channel
         if not channel_id:
-            return failed_response("discord", reason="No channel ID provided")
+            return failure("discord", NOT_CONFIGURED, **destination_fields(ip))
 
         result = await asyncio.to_thread(
             DiscordClient.chat_post, token=token, channel_id=channel_id, **template_func(param_value)
@@ -1935,11 +2018,7 @@ class MessageService:
         if result and result.get("ok"):
             return success_response("discord", channel_id=channel_id, message_ts=result.get("ts"))
 
-        return failed_response(
-            "discord",
-            reason=result.get("error") if result else "Unknown error",
-            channel_id=channel_id,
-        )
+        return discord_failure(result or {}, **destination_fields(ip))
 
     # ----------------------------- Token + cache helpers -----------------------------
     async def commit_session_and_clear_cache(self, ip, session):
@@ -1996,23 +2075,25 @@ class MessageService:
         ]
 
         if missing:
-            return [failed_response(platform or "unknown", reason=f"Missing required fields: {', '.join(missing)}")]
+            LOG.warning("Threaded reply is missing %s", ", ".join(missing))
+            return [failure(platform or "unknown", INVALID_REQUEST)]
 
         # MS Teams requires team_id
         if platform == PlatformTypes.MS_TEAMS.value and not team_id:
-            return [failed_response(platform, reason="team_id is required for MS Teams threaded replies")]
+            LOG.warning("Teams threaded reply has no team_id")
+            return [failure(platform, INVALID_REQUEST)]
 
         # Fail fast on an empty tenant_id: get_installed_platforms drops None filters,
         # so a missing tenant would run an unscoped cross-tenant query.
         if not tenant_id:
-            return [failed_response(platform, reason="Tenant ID is required")]
+            return [failure(platform, INVALID_REQUEST)]
 
         try:
             async with BaseDB.async_session(self.engine)() as session:
                 installs = await self.get_installed_platforms(session, tenant_id=tenant_id, platform=platform)
                 ip = next((p for p in installs if p.platform == platform), None)
                 if not ip:
-                    return [failed_response(platform, reason="No installation found")]
+                    return [not_sent_response(platform, NO_DESTINATION)]
 
                 # Forward the whole parameter set, as the top-level path does. The
                 # generic template decides an approval purely from approval_token and
@@ -2027,7 +2108,7 @@ class MessageService:
                 }
 
                 if platform not in template_factories:
-                    return [failed_response(platform, reason="Unsupported platform")]
+                    return [failure(platform, INVALID_REQUEST)]
 
                 template = template_factories[platform](generic_params)
                 if platform == PlatformTypes.MS_TEAMS.value:
@@ -2049,7 +2130,7 @@ class MessageService:
 
         except Exception as exc:
             LOG.exception("Failed to send threaded reply: %s", exc)
-            return [failed_response(platform or "unknown", reason=str(exc))]
+            return [failure(platform or "unknown", INTERNAL_ERROR, channel_id=channel_id)]
 
     @staticmethod
     def _extract_thread_params(thread):
@@ -2083,8 +2164,7 @@ class MessageService:
                 )
             ]
 
-        error_msg = response.data.get("error") if response and getattr(response, "data", None) else "Unknown error"
-        return [failed_response("slack", reason=f"API call failed: {error_msg}")]
+        return [slack_failure(response, team_id=ip.team_id, **destination_fields(ip))]
 
     async def _send_teams_threaded_reply(self, session, ip, team_id, channel_id, parent_message_id, template):
         """Send MS Teams threaded reply using generic template (adaptive card)."""
@@ -2094,7 +2174,7 @@ class MessageService:
             )
         except TeamsBotError as e:
             LOG.warning("Teams bot thread reply in team %s failed: %s", team_id, e)
-            return [failed_response("ms_teams", reason=str(e))]
+            return [teams_failure(e, team_id=team_id, **destination_fields(ip, channel_id))]
         if card_actions.has_actions(template):
             row = card_actions.card_row(ip.tenant_id, None, None, channel_id, message_id, template, "approval")
             if row is not None:
@@ -2160,7 +2240,7 @@ class MessageService:
     async def _send_gchat_threaded_reply(self, session, ip, space_id, message_ts, template):
         """Send Google Chat threaded reply using generic template (plain text)."""
         if not GoogleChatAppClient.is_enabled():
-            return [failed_response("google_chat", reason="Google Chat service account is not configured")]
+            return [failure("google_chat", NOT_CONFIGURED, **destination_fields(ip, space_id))]
 
         # Convert message name to thread name for replying
         thread_name = self._convert_gchat_message_to_thread_name(message_ts, space_id)
@@ -2184,4 +2264,4 @@ class MessageService:
                 )
             ]
 
-        return [failed_response("google_chat", reason=result.get("reason", "Unknown error"))]
+        return [google_chat_failure(result or {}, **destination_fields(ip, space_id))]

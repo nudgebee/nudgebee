@@ -209,3 +209,68 @@ def test_process_task_handles_malformed_retry_count_header_defensively(invalid_v
         )
     ]
     assert producer.headers == {"nb-retry-count": 1}
+
+
+def _failed(channel_id, reason, retryable, platform="slack"):
+    return {
+        "platform": platform,
+        "status": "failed",
+        "reason": reason,
+        "retryable": retryable,
+        "destination_id": "slack-1",
+        "channel_id": channel_id,
+    }
+
+
+def _retried_task(responses, task=None):
+    producer = _FakeTaskProducer()
+    processor = _processor(responses, producer)
+    task = task or {"kind": "notification", "tenant_id": "t1", "parameters": {"message": "hi"}}
+    asyncio.run(processor.process_task({}, json.dumps(task).encode()))
+    return [message for _queue, message in producer.calls]
+
+
+def test_a_failure_sending_again_cannot_fix_is_not_retried():
+    assert _retried_task([_failed("C1", "not_in_channel", False)]) == []
+
+
+def test_nowhere_to_send_is_not_retried():
+    assert _retried_task([{"platform": "system", "status": "not_sent", "reason": "no_destination"}]) == []
+
+
+def test_a_retry_names_only_the_channels_that_failed_with_a_temporary_error():
+    [retried] = _retried_task(
+        [
+            {"platform": "slack", "status": "success", "destination_id": "slack-1", "channel_id": "C1"},
+            _failed("C2", "not_in_channel", False),
+            _failed("C3", "platform_unavailable", True),
+        ]
+    )
+
+    assert retried["retry_destinations"] == [{"platform": "slack", "destination_id": "slack-1", "channel_id": "C3"}]
+    assert retried["retry_platforms"] == ["slack"]
+
+
+def test_a_failure_outside_any_destination_retries_the_whole_message():
+    [retried] = _retried_task(
+        [{"platform": "system", "status": "failed", "reason": "internal_error", "retryable": True}]
+    )
+
+    assert "retry_destinations" not in retried and "retry_platforms" not in retried
+
+
+def test_a_whole_message_failure_on_a_retry_keeps_the_earlier_scope():
+    scope = [{"platform": "slack", "destination_id": "slack-1", "channel_id": "C3"}]
+    task = {
+        "kind": "notification",
+        "tenant_id": "t1",
+        "parameters": {"message": "hi"},
+        "retry_destinations": scope,
+        "retry_platforms": ["slack"],
+    }
+
+    [retried] = _retried_task(
+        [{"platform": "system", "status": "failed", "reason": "internal_error", "retryable": True}], task
+    )
+
+    assert retried["retry_destinations"] == scope and retried["retry_platforms"] == ["slack"]
