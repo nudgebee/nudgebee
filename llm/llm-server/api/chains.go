@@ -818,7 +818,7 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 		}
 
 		timer.mark("session_and_access")
-		budgetExceeded := checkChatBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, request.SessionId, request.AgentId, agentContext.GetSecurityContext().GetUserId(), nil, module, logger)
+		budgetExceeded := checkChatBudgetAndRespond(c, agentContext.GetSecurityContext().GetTenantId(), request.AccountId, request.SessionId, request.AgentId, agentContext.GetSecurityContext().GetUserId(), existingConversation, module, logger)
 		timer.mark("budget")
 		if budgetExceeded {
 			return
