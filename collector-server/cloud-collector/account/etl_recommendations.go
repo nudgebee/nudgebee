@@ -362,8 +362,13 @@ func splitUnevaluatedRecommendations(account providers.Account, items []provider
 // evaluated this run, so their not being reported again says nothing about whether
 // they still apply. With no protected keys the statement is exactly what it has
 // always been.
+//
+// A row on one of the service's resources is only the service's to archive when the
+// service wrote it (its stored service_name matches, or is absent on legacy rows).
+// Cross-service sources such as Azure Advisor and Defender link rows to resources of
+// other services; archiving those here left them archived until their own next sync.
 func archiveOpenRecommendationsQuery(accountId, serviceName string, protectedKeys []string) (string, []any) {
-	query := `update recommendation set status = 'Archive' where cloud_account_id = $1 and status = 'Open' and (resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) or lower((recommendation ->> 'service_name')::varchar) = $2)`
+	query := `update recommendation set status = 'Archive' where cloud_account_id = $1 and status = 'Open' and ((resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) and (recommendation ->> 'service_name') is null) or lower(recommendation ->> 'service_name') = $2)`
 	args := []any{accountId, strings.ToLower(serviceName)}
 	if len(protectedKeys) > 0 {
 		query += ` and not ((rule_name || chr(31) || coalesce(account_object_id, '')) = ANY($3::text[]))`

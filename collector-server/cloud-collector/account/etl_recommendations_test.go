@@ -260,7 +260,7 @@ func TestSplitUnevaluatedRecommendations(t *testing.T) {
 func TestArchiveOpenRecommendationsQuery(t *testing.T) {
 	// The statement every sync has always run, kept byte for byte when no rule
 	// reported an unevaluated resource.
-	const unchanged = `update recommendation set status = 'Archive' where cloud_account_id = $1 and status = 'Open' and (resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) or lower((recommendation ->> 'service_name')::varchar) = $2)`
+	const unchanged = `update recommendation set status = 'Archive' where cloud_account_id = $1 and status = 'Open' and ((resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) and (recommendation ->> 'service_name') is null) or lower(recommendation ->> 'service_name') = $2)`
 
 	t.Run("no protected rows", func(t *testing.T) {
 		query, args := archiveOpenRecommendationsQuery("acc-1", "AmazonEC2", nil)
