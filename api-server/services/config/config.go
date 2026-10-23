@@ -402,6 +402,15 @@ type appConfig struct {
 	// cannot answer. Default on; turn it off to force CLI-always as a kill switch.
 	FeatureKGCloudTopologyFromDB bool `mapstructure:"feature_kg_cloud_topology_from_db"`
 
+	// When true, the knowledge graph reads load-balancer target membership from the
+	// target groups already stored on the load balancer's cloud_resourses row,
+	// instead of running `aws elbv2 describe-target-health` once per target group
+	// per build. Default on; turn it off to force the live calls back.
+	//
+	// Separate from FeatureKGCloudTopologyFromDB so reverting this cannot also
+	// revert the ENI, Route 53 and load-balancer-tag paths that flag governs.
+	FeatureKGLBTargetsFromRows bool `mapstructure:"feature_kg_lb_targets_from_rows"`
+
 	// When true, the knowledge graph reads each CloudFormation stack's
 	// managed-resource list from the stack's own cloud_resourses row, falling back
 	// to `aws cloudformation list-stack-resources` only when the key is absent.
@@ -713,6 +722,7 @@ func init() {
 	viper.SetDefault("feature_slo_resolved_digest_enabled", false)
 	viper.SetDefault("feature_provider_health_alerts_enabled", false)
 	viper.SetDefault("feature_kg_cloud_topology_from_db", true)
+	viper.SetDefault("feature_kg_lb_targets_from_rows", true)
 	viper.SetDefault("feature_kg_cfn_stack_resources_from_db", true)
 	viper.SetDefault("webhook_async_execution", true)
 	viper.SetDefault("es_metrics_zero_match_sample_enabled", true)

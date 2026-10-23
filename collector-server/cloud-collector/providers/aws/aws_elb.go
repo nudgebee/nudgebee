@@ -86,6 +86,26 @@ type awsElb struct {
 	DefaultAwsServiceImpl
 }
 
+// targetHealthDescriptions converts a DescribeTargetHealth response into the
+// meta payload the knowledge graph reads as a target group's membership.
+//
+// Always returns a non-nil slice, so an empty target group is stored as `[]`
+// rather than `null` or an absent key. That distinction is load-bearing: the
+// graph treats an absent key as "never captured" and answers it with a live
+// `aws elbv2 describe-target-health`, so omitting empty target groups would send
+// every one of them to the CLI on every build, forever, to be told the same
+// nothing. Read by knowledge_graph/flow_sources.TargetGroupMemberIDs.
+func targetHealthDescriptions(out *elbv2.DescribeTargetHealthOutput) []map[string]any {
+	healthList := []map[string]any{}
+	if out == nil {
+		return healthList
+	}
+	for _, health := range out.TargetHealthDescriptions {
+		healthList = append(healthList, structToMap(health))
+	}
+	return healthList
+}
+
 func (a *awsElb) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
 	// Check if this is an ELB alarm recommendation (ALB, NLB, or CLB)
 	if (strings.HasPrefix(recommendation.RuleName, "aws_alb_") ||
@@ -338,12 +358,8 @@ func buildElbV2Resources(
 					})
 					if healthErr != nil {
 						ctx.GetLogger().Warn("failed to fetch target health", "error", healthErr, "targetGroupArn", *tg.TargetGroupArn, "region", regionName)
-					} else if targetHealthOutput != nil && len(targetHealthOutput.TargetHealthDescriptions) > 0 {
-						healthList := []map[string]any{}
-						for _, health := range targetHealthOutput.TargetHealthDescriptions {
-							healthList = append(healthList, structToMap(health))
-						}
-						tgMap["TargetHealthDescriptions"] = healthList
+					} else if targetHealthOutput != nil {
+						tgMap["TargetHealthDescriptions"] = targetHealthDescriptions(targetHealthOutput)
 					}
 				}
 
