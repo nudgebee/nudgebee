@@ -125,11 +125,7 @@ func agentCreateAgent(c *gin.Context, context *security.RequestContext, payload 
 
 	resp, err := core.CreateCustomAgent(context, request.AccountId, request.Agent, request.Rags, overrideAgent)
 	if err != nil {
-		c.JSON(500, BuildApiResponse(nil, []error{
-			common.Error{
-				Message: err.Error(),
-			},
-		}))
+		c.JSON(serviceErrorStatus(err), BuildApiResponse(nil, []error{toApiError(err)}))
 		return
 	}
 
@@ -166,15 +162,8 @@ func agentDeleteAgent(c *gin.Context, context *security.RequestContext, payload 
 
 	err := core.DeleteCustomAgent(context, accountIdPayload, namePayload)
 	if err != nil {
-		// Consider if different error types from core.DeleteCustomAgent
-		// might warrant different HTTP status codes (e.g., 404 if not found vs 500 for other errors)
-		// For now, a generic 500 is better than 200 on error.
 		slog.Error("agentDeleteAgent: failed to delete custom agent", "error", err, "account_id", accountIdPayload, "name", namePayload)
-		c.JSON(500, BuildApiResponse(nil, []error{
-			common.Error{
-				Message: "agents: failed to delete agent: " + err.Error(),
-			},
-		}))
+		c.JSON(serviceErrorStatus(err), BuildApiResponse(nil, []error{toApiError(err)}))
 	} else {
 		c.JSON(200, BuildApiResponse(map[string]any{
 			"status": "ok",
@@ -221,11 +210,7 @@ func agentUpdateAgent(c *gin.Context, context *security.RequestContext, payload 
 
 	resp, err := core.UpdateCustomAgent(context, request.AccountId, request.Agent)
 	if err != nil {
-		c.JSON(500, BuildApiResponse(nil, []error{
-			common.Error{
-				Message: err.Error(),
-			},
-		}))
+		c.JSON(serviceErrorStatus(err), BuildApiResponse(nil, []error{toApiError(err)}))
 		return
 	}
 

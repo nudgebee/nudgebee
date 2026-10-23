@@ -144,7 +144,9 @@ const KnowledgeBaseSharingModal = ({
       open={open}
       handleClose={onClose}
       title='Who can use it'
-      subtitle={target ? `Accounts that use "${target.name}" in their answers.` : ''}
+      subtitle={
+        target ? (noun === 'knowledge base' ? `Accounts that use "${target.name}" in their answers.` : `Accounts that can use "${target.name}".`) : ''
+      }
       width='sm'
     >
       <Box sx={{ padding: ds.space[5] }} data-testid={testId}>
@@ -164,7 +166,8 @@ const KnowledgeBaseSharingModal = ({
             <Select
               id={`${testId}-accounts`}
               label='Accounts'
-              placeholder='Select accounts'
+              placeholder={loading ? 'Loading accounts…' : 'Select accounts'}
+              disabled={loading}
               multiple
               grouped
               searchable

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 
 	"github.com/gin-gonic/gin"
@@ -192,4 +193,25 @@ func attributionUserId(sc *security.SecurityContext, requestUserId string) strin
 		return security.GetSystemUserId()
 	}
 	return requestUserId
+}
+
+// serviceErrorStatus is the HTTP status for an error from a service call: the
+// code the service set on a common.Error (e.g. 400 from common.ErrorBadRequest),
+// 500 otherwise.
+func serviceErrorStatus(err error) int {
+	var e common.Error
+	if errors.As(err, &e) && e.Code >= 400 && e.Code < 600 {
+		return e.Code
+	}
+	return 500
+}
+
+// toApiError is the error to send for err: the service's own common.Error when
+// err wraps one (a refusal, without the wrapping context), else err's text.
+func toApiError(err error) common.Error {
+	var e common.Error
+	if errors.As(err, &e) {
+		return e
+	}
+	return common.Error{Message: err.Error()}
 }

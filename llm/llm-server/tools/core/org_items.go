@@ -179,10 +179,10 @@ func CheckOrgItemName(tx *sqlx.Tx, k OrgItemKind, tenantId, name, excludeId stri
 	}
 	for _, c := range clashes {
 		if c.Visibility != VisibilityAccount {
-			return fmt.Errorf("an organisation %s named %s already exists; choose another name", k.Label, name)
+			return common.ErrorBadRequest(fmt.Sprintf("an organisation %s named %s already exists; choose another name", k.Label, name))
 		}
 		if org {
-			return fmt.Errorf("%s named %s already exists in account %s; rename it first", k.article(), name, c.AccountName)
+			return common.ErrorBadRequest(fmt.Sprintf("%s named %s already exists in account %s; rename it first", k.article(), name, c.AccountName))
 		}
 	}
 	return nil
@@ -192,7 +192,7 @@ func CheckOrgItemName(tx *sqlx.Tx, k OrgItemKind, tenantId, name, excludeId stri
 // selected_accounts item. Every account must belong to tenantId.
 func ReplaceOrgItemSelection(tx *sqlx.Tx, k OrgItemKind, itemId, tenantId, userId string, accountIds []string) error {
 	if len(accountIds) == 0 {
-		return fmt.Errorf("%s: account_ids is required for selected accounts", k.Label)
+		return common.ErrorBadRequest(fmt.Sprintf("%s: account_ids is required for selected accounts", k.Label))
 	}
 	var inTenant int
 	if err := tx.Get(&inTenant, `SELECT count(*) FROM cloud_accounts WHERE tenant = $1::uuid AND id = ANY($2::uuid[])`,
@@ -200,7 +200,7 @@ func ReplaceOrgItemSelection(tx *sqlx.Tx, k OrgItemKind, itemId, tenantId, userI
 		return fmt.Errorf("%s: failed to check accounts: %w", k.Label, err)
 	}
 	if inTenant != len(uniqueIDs(accountIds)) {
-		return fmt.Errorf("%s: every account must belong to the organisation", k.Label)
+		return common.ErrorBadRequest(fmt.Sprintf("%s: every account must belong to the organisation", k.Label))
 	}
 	if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE %s = $1`, k.OverrideTable, k.OverrideCol), itemId); err != nil {
 		return fmt.Errorf("%s: failed to clear accounts: %w", k.Label, err)
@@ -235,7 +235,7 @@ func upsertOrgItemOverride(tx *sqlx.Tx, k OrgItemKind, itemId, accountId, tenant
 // can't be narrowed. The caller has checked the tenant-admin permission.
 func SetOrgItemVisibility(tx *sqlx.Tx, k OrgItemKind, owner OrgItemOwner, visibility string, accountIds []string, targetAccountId, userId string) error {
 	if !ValidOrgItemVisibility(visibility) {
-		return fmt.Errorf("%s: invalid visibility %q", k.Label, visibility)
+		return common.ErrorBadRequest(fmt.Sprintf("%s: invalid visibility %q", k.Label, visibility))
 	}
 	if owner.Visibility == VisibilityOrganisation && visibility != VisibilityOrganisation {
 		if err := CheckNotUsedByOrgAgents(tx, k, owner.TenantId, owner.Name); err != nil {
@@ -246,14 +246,14 @@ func SetOrgItemVisibility(tx *sqlx.Tx, k OrgItemKind, owner OrgItemOwner, visibi
 	switch visibility {
 	case VisibilityAccount:
 		if targetAccountId == "" {
-			return fmt.Errorf("%s: target_account_id is required to move it to one account", k.Label)
+			return common.ErrorBadRequest(fmt.Sprintf("%s: target_account_id is required to move it to one account", k.Label))
 		}
 		var inTenant bool
 		if err := tx.Get(&inTenant, `SELECT EXISTS (SELECT 1 FROM cloud_accounts WHERE id = $1::uuid AND tenant = $2::uuid)`, targetAccountId, owner.TenantId); err != nil {
 			return fmt.Errorf("%s: failed to check account: %w", k.Label, err)
 		}
 		if !inTenant {
-			return fmt.Errorf("%s: the account must belong to the organisation", k.Label)
+			return common.ErrorBadRequest(fmt.Sprintf("%s: the account must belong to the organisation", k.Label))
 		}
 		if owner.IsOrg() {
 			if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE %s = $1`, k.OverrideTable, k.OverrideCol), idText); err != nil {
@@ -293,14 +293,14 @@ func SetOrgItemVisibility(tx *sqlx.Tx, k OrgItemKind, owner OrgItemOwner, visibi
 // account of its tenant.
 func SetOrgItemAccountSwitch(tx *sqlx.Tx, k OrgItemKind, owner OrgItemOwner, accountId, userId string, enabled bool) error {
 	if !owner.IsOrg() {
-		return fmt.Errorf("%s: only an organisation %s has per-account switches", k.Label, k.Label)
+		return common.ErrorBadRequest(fmt.Sprintf("%s: only an organisation %s has per-account switches", k.Label, k.Label))
 	}
 	var inTenant bool
 	if err := tx.Get(&inTenant, `SELECT EXISTS (SELECT 1 FROM cloud_accounts WHERE id = $1::uuid AND tenant = $2::uuid)`, accountId, owner.TenantId); err != nil {
 		return fmt.Errorf("%s: failed to check account: %w", k.Label, err)
 	}
 	if !inTenant {
-		return fmt.Errorf("%s: the account must belong to the organisation", k.Label)
+		return common.ErrorBadRequest(fmt.Sprintf("%s: the account must belong to the organisation", k.Label))
 	}
 	return upsertOrgItemOverride(tx, k, owner.Id, accountId, owner.TenantId, userId, enabled)
 }
@@ -381,7 +381,7 @@ func CheckOrgToolSecrets(config map[string]any) error {
 		upper := strings.ToUpper(name)
 		for _, marker := range secretEnvMarkers {
 			if strings.Contains(upper, marker) {
-				return fmt.Errorf("tool: environment variable %s looks like a secret; an organisation tool's settings are visible to every tenant admin, so remove it first", name)
+				return common.ErrorBadRequest(fmt.Sprintf("tool: environment variable %s looks like a secret; an organisation tool's settings are visible to every tenant admin, so remove it first", name))
 			}
 		}
 	}
@@ -393,10 +393,10 @@ func CheckOrgToolSecrets(config map[string]any) error {
 func CheckOrgToolName(q sqlx.Queryer, tenantId, name string) error {
 	lower := strings.ToLower(strings.TrimSpace(name))
 	if isSystemToolName(lower) {
-		return fmt.Errorf("tool: %s is a built-in tool name; choose another name", name)
+		return common.ErrorBadRequest(fmt.Sprintf("tool: %s is a built-in tool name; choose another name", name))
 	}
 	if integration := tenantMCPIntegrationFor(q, tenantId, lower); integration != "" {
-		return fmt.Errorf("tool: %s collides with the tools of MCP integration %s; choose another name", name, integration)
+		return common.ErrorBadRequest(fmt.Sprintf("tool: %s collides with the tools of MCP integration %s; choose another name", name, integration))
 	}
 	return nil
 }
@@ -466,7 +466,7 @@ func CheckNotUsedByOrgAgents(q sqlx.Queryer, k OrgItemKind, tenantId, name strin
 		return fmt.Errorf("failed to find organisation agents using %s: %w", name, err)
 	}
 	if len(agents) > 0 {
-		return fmt.Errorf("%s %s is used by organisation agents %s; remove it from them first", k.Label, name, strings.Join(agents, ", "))
+		return common.ErrorBadRequest(fmt.Sprintf("%s %s is used by organisation agents %s; remove it from them first", k.Label, name, strings.Join(agents, ", ")))
 	}
 	return nil
 }

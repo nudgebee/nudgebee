@@ -452,10 +452,10 @@ func validateOrgAgentTools(q sqlx.Queryer, tenantId, accountId, selfName string,
 tools:
 	for _, tool := range tools {
 		if tool == "" {
-			return "", errors.New("agent.tools cannot contain empty tool names")
+			return "", common.ErrorBadRequest("agent.tools cannot contain empty tool names")
 		}
 		if strings.EqualFold(tool, selfName) {
-			return "", errors.New("agent.tools cannot contain name of agent itself")
+			return "", common.ErrorBadRequest("agent.tools cannot contain name of agent itself")
 		}
 		if toolcore.IsSystemToolName(tool) {
 			if nbTool, ok := toolcore.GetNBTool(accountId, tool); ok && nbTool.GetType() == toolcore.NBToolTypeAgent {
@@ -476,7 +476,7 @@ tools:
 				continue
 			}
 			if visibilities[0] != toolcore.VisibilityOrganisation {
-				return "", fmt.Errorf("agent.tools contains %s, which not every account can use; an organisation agent can use built-in, organisation-wide and MCP tools only", tool)
+				return "", common.ErrorBadRequest(fmt.Sprintf("agent.tools contains %s, which not every account can use; an organisation agent can use built-in, organisation-wide and MCP tools only", tool))
 			}
 			if k.Label == toolcore.OrgAgentKind.Label {
 				executorType = AgentPlannerTypeOrchestrating
@@ -495,7 +495,7 @@ tools:
 			// integration's prefix.
 			continue
 		}
-		return "", fmt.Errorf("agent.tools contains tool %s which does not exist", tool)
+		return "", common.ErrorBadRequest(fmt.Sprintf("agent.tools contains tool %s which does not exist", tool))
 	}
 	return executorType, nil
 }
@@ -769,7 +769,7 @@ func UpdateCustomAgent(context *security.RequestContext, accountId string, agent
 		}
 		if !strings.EqualFold(owner.Name, *agent.Name) {
 			if isSystemAgentName(*agent.Name) {
-				return nil, fmt.Errorf("agent: %s is a built-in agent name; choose another name", *agent.Name)
+				return nil, common.ErrorBadRequest(fmt.Sprintf("agent: %s is a built-in agent name; choose another name", *agent.Name))
 			}
 			if err := toolcore.CheckOrgItemName(tx, toolcore.OrgAgentKind, owner.TenantId, *agent.Name, agent.Id, owner.IsOrg()); err != nil {
 				return nil, err

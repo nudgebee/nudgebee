@@ -30,6 +30,7 @@ describe('KnowledgeBaseSharingModal', () => {
     );
 
     expect(screen.queryByRole('radio', { name: 'This account' })).not.toBeInTheDocument();
+    expect(screen.getByText('Accounts that use "Docs" in their answers.')).toBeInTheDocument();
     await waitFor(() => expect(apiKnowledgeBase.listKnowledgeBaseAccountOverrides).toHaveBeenCalledWith('kb-1'));
     fireEvent.click(screen.getByRole('radio', { name: 'Organisation' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -55,11 +56,32 @@ describe('KnowledgeBaseSharingModal', () => {
     );
 
     expect(screen.getByRole('group', { name: 'Who can use this agent' })).toBeInTheDocument();
+    expect(screen.getByText('Accounts that can use "Org agent".')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('radio', { name: 'This account' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(saveVisibility).toHaveBeenCalledWith('agent-org', 'account', [], 'acct-1'));
     expect(apiKnowledgeBase.updateKnowledgeBaseVisibility).not.toHaveBeenCalled();
+  });
+
+  it('says the selected accounts are loading until they arrive', async () => {
+    let resolve;
+    const listOverrides = jest.fn(() => new Promise((r) => (resolve = r)));
+    render(
+      <KnowledgeBaseSharingModal
+        open
+        onClose={jest.fn()}
+        item={{ id: 'tool-sel', name: 'Sel tool', visibility: 'selected_accounts' }}
+        noun='tool'
+        saveVisibility={jest.fn()}
+        listOverrides={listOverrides}
+        testId='tool-sharing-modal'
+      />
+    );
+
+    expect(await screen.findByText('Loading accounts…')).toBeInTheDocument();
+    resolve({ data: [], errors: [] });
+    await waitFor(() => expect(screen.queryByText('Loading accounts…')).not.toBeInTheDocument());
   });
 });

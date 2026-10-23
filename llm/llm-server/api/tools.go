@@ -215,11 +215,7 @@ func toolCreateTool(c *gin.Context, context *security.RequestContext, payload ma
 		AccountIds:   request.Tool.AccountIds,
 	})
 	if err != nil {
-		c.JSON(500, BuildApiResponse(nil, []error{
-			common.Error{
-				Message: err.Error(),
-			},
-		}))
+		c.JSON(serviceErrorStatus(err), BuildApiResponse(nil, []error{toApiError(err)}))
 		return
 	}
 
@@ -256,15 +252,8 @@ func toolDeleteTool(c *gin.Context, context *security.RequestContext, payload ma
 
 	err := core.DeleteCustomTool(context, accountIdPayload, namePayload)
 	if err != nil {
-		// Consider if different error types from core.DeleteCustomTool
-		// might warrant different HTTP status codes (e.g., 404 if not found vs 500 for other errors)
-		// For now, a generic 500 is better than 200 on error.
 		slog.Error("tools: failed to delete custom tool", "error", err, "account_id", accountIdPayload, "name", namePayload)
-		c.JSON(500, BuildApiResponse(nil, []error{
-			common.Error{
-				Message: "tools: failed to delete tool: " + err.Error(),
-			},
-		}))
+		c.JSON(serviceErrorStatus(err), BuildApiResponse(nil, []error{toApiError(err)}))
 	} else {
 		c.JSON(200, BuildApiResponse(map[string]any{
 			"status": "ok",
@@ -321,11 +310,7 @@ func toolUpdateTool(c *gin.Context, context *security.RequestContext, payload ma
 
 	err = core.UpdateCustomTool(context, request.AccountId, request.Tool.Name, tool)
 	if err != nil {
-		c.JSON(500, BuildApiResponse(nil, []error{
-			common.Error{
-				Message: err.Error(),
-			},
-		}))
+		c.JSON(serviceErrorStatus(err), BuildApiResponse(nil, []error{toApiError(err)}))
 		return
 	}
 
