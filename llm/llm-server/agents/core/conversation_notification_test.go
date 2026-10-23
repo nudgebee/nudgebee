@@ -1,6 +1,7 @@
 package core
 
 import (
+	"nudgebee/llm/config"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -61,12 +62,12 @@ func TestRenderFollowupQuestion(t *testing.T) {
 	const markdown = "# Plan\nApprove **this**?"
 
 	t.Run("slack session converts markdown", func(t *testing.T) {
-		got := renderFollowupQuestion(markdown, "C08MHJWAA1Z-1779282615.385979")
+		got := renderFollowupQuestion(markdown, "C08MHJWAA1Z-1779282615.385979", "acc")
 		assert.Equal(t, "*Plan*\nApprove *this*?", got)
 	})
 
 	t.Run("non-slack session keeps original markdown", func(t *testing.T) {
-		got := renderFollowupQuestion(markdown, "fd343b9a-63e2-459c-8c22-3361f308d076")
+		got := renderFollowupQuestion(markdown, "fd343b9a-63e2-459c-8c22-3361f308d076", "acc")
 		assert.Equal(t, markdown, got)
 	})
 }
@@ -80,12 +81,27 @@ func TestRenderFinalResponse(t *testing.T) {
 	const markdown = "# Plan\nApprove **this**?"
 
 	t.Run("slack session converts markdown", func(t *testing.T) {
-		got := renderFinalResponse(markdown, "C08MHJWAA1Z-1779282615.385979")
+		got := renderFinalResponse(markdown, "C08MHJWAA1Z-1779282615.385979", "acc")
 		assert.Equal(t, "*Plan*\nApprove *this*?", got)
 	})
 
 	t.Run("non-slack session keeps original markdown", func(t *testing.T) {
-		got := renderFinalResponse(markdown, "fd343b9a-63e2-459c-8c22-3361f308d076")
+		got := renderFinalResponse(markdown, "fd343b9a-63e2-459c-8c22-3361f308d076", "acc")
 		assert.Equal(t, markdown, got)
 	})
+}
+
+// TestChatCitationPageURL: Slack only links absolute http(s) URLs, so the page
+// is left out when the app's address is not one.
+func TestChatCitationPageURL(t *testing.T) {
+	saved := config.Config.BaseUrl
+	t.Cleanup(func() { config.Config.BaseUrl = saved })
+
+	config.Config.BaseUrl = "https://app.example.com/"
+	assert.Equal(t, "https://app.example.com/ask-nudgebee?accountId=acc&session_id=C0123456789-1792769289.338369",
+		chatCitationPageURL("acc", "C0123456789-1792769289.338369"))
+	assert.Equal(t, "", chatCitationPageURL("", "C0123456789-1.2"))
+
+	config.Config.BaseUrl = "nudgebee"
+	assert.Equal(t, "", chatCitationPageURL("acc", "C0123456789-1.2"))
 }

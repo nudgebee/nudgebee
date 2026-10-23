@@ -3,9 +3,11 @@ package core
 import (
 	"context"
 	"io"
+	"net/url"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,9 +27,9 @@ func resolveNotificationSessionId(response NBAgentResponse, agentRequest NBAgent
 
 // renderFollowupQuestion converts the followup question to Slack mrkdwn. Only
 // Slack needs this; Teams/Google-Chat render GitHub markdown natively.
-func renderFollowupQuestion(question string, sessionId string) string {
+func renderFollowupQuestion(question string, sessionId string, accountId string) string {
 	if isSlackRequest(NBAgentRequest{SessionId: sessionId}) {
-		return convertMarkdownToSlackMarkdown(question)
+		return convertMarkdownToSlackMarkdown(question, chatCitationPageURL(accountId, sessionId))
 	}
 	return question
 }
@@ -35,11 +37,22 @@ func renderFollowupQuestion(question string, sessionId string) string {
 // renderFinalResponse is renderFollowupQuestion's counterpart for the "final"
 // response text - same gate, same reasoning: only Slack needs mrkdwn
 // conversion, Teams/Google-Chat render GitHub markdown closer to natively.
-func renderFinalResponse(response string, sessionId string) string {
+func renderFinalResponse(response string, sessionId string, accountId string) string {
 	if isSlackRequest(NBAgentRequest{SessionId: sessionId}) {
-		return convertMarkdownToSlackMarkdown(response)
+		return convertMarkdownToSlackMarkdown(response, chatCitationPageURL(accountId, sessionId))
 	}
 	return response
+}
+
+// chatCitationPageURL is the app's chat page for this conversation, where a
+// step citation in a Slack reply links to. Slack only links absolute http(s)
+// URLs, so it is "" when the app's address is not configured as one.
+func chatCitationPageURL(accountId string, sessionId string) string {
+	base := strings.TrimRight(config.Config.BaseUrl, "/")
+	if accountId == "" || sessionId == "" || (!strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://")) {
+		return ""
+	}
+	return base + "/ask-nudgebee?" + url.Values{"accountId": {accountId}, "session_id": {sessionId}}.Encode()
 }
 
 func sendReplyToNotificationServer(ctx *security.RequestContext, agentRequest NBAgentRequest, response NBAgentResponse, err error) {
@@ -97,7 +110,7 @@ func sendReplyToNotificationServer(ctx *security.RequestContext, agentRequest NB
 			followupData["message_id"] = response.MessageId
 		}
 		if q, ok := followupData["question"].(string); ok {
-			followupData["question"] = renderFollowupQuestion(q, sessionId)
+			followupData["question"] = renderFollowupQuestion(q, sessionId, agentRequest.AccountId)
 		}
 		jsonBytes, err := common.MarshalJson(followupData)
 		if err != nil {
@@ -110,7 +123,7 @@ func sendReplyToNotificationServer(ctx *security.RequestContext, agentRequest NB
 	default:
 		notificationRequest["type"] = "final"
 		if len(response.Response) > 0 {
-			notificationRequest["response"] = renderFinalResponse(response.Response[0], sessionId)
+			notificationRequest["response"] = renderFinalResponse(response.Response[0], sessionId, agentRequest.AccountId)
 		} else {
 			notificationRequest["response"] = ""
 		}

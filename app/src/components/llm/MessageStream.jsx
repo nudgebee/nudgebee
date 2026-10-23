@@ -432,6 +432,28 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
     [groupedMessages, openTasksDrawer, setCollapsedObj]
   );
 
+  // A link from outside the app (a Slack reply) names its cited step in the URL hash; open that
+  // step once the answer that holds it has loaded.
+  const hashCitationOpenedRef = useRef(false);
+  useEffect(() => {
+    if (hashCitationOpenedRef.current || typeof window === 'undefined') {
+      return;
+    }
+    const citation = parseCitationHref(window.location.hash);
+    if (!citation?.rowId) {
+      return;
+    }
+    for (const group of groupedMessages) {
+      const response = group.children.find((c) => (c.tool ?? c.type) === 'response');
+      const cited = findCitedTask(citation.rowId, response?.drawerTasks);
+      if (cited) {
+        hashCitationOpenedRef.current = true;
+        openTasksDrawer({ tasks: response.drawerTasks, expandedTaskKey: cited.id });
+        return;
+      }
+    }
+  }, [groupedMessages, openTasksDrawer]);
+
   return (
     <Box>
       {groupedMessages.map((group, groupIndex) => {
