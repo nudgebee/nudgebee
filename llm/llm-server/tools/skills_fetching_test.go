@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"html"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -197,4 +198,27 @@ func useLegacySkillLoading(t *testing.T) {
 	old := config.Config.LlmServerKnowledgeWorkspaceEnabled
 	config.Config.LlmServerKnowledgeWorkspaceEnabled = false
 	t.Cleanup(func() { config.Config.LlmServerKnowledgeWorkspaceEnabled = old })
+}
+
+// An ID is never in the embedded text, so only an exact metadata match finds the article (#42047).
+func TestSearchSkills_IDIsLookedUpExactly(t *testing.T) {
+	var body string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body = string(raw)
+		_ = json.NewEncoder(w).Encode(core.RAGSearchResults{{Document: "Deleted Email Recovery", Metadata: map[string]any{"collection": "snow_knowledge_base", "retrieval_id": "doc-1"}}})
+	}))
+	defer server.Close()
+	old := config.Config.RAGServerUrl
+	config.Config.RAGServerUrl = server.URL
+	t.Cleanup(func() { config.Config.RAGServerUrl = old })
+
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: t.Name(), ConversationId: "conv", MessageId: "msg"}
+	resp, err := SearchSkillsTool{}.Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"query": "recover email", "id": "kb0000030"}})
+
+	require.NoError(t, err)
+	assert.Contains(t, resp.Data, "Deleted Email Recovery")
+	assert.Contains(t, body, `{"field":"kb_number","values":["kb0000030","KB0000030"]}`)
+	assert.Contains(t, body, `"query":"recover email"`)
+	assert.Contains(t, body, `"use_reranking":false`)
 }

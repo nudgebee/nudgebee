@@ -368,6 +368,36 @@ func QueryRAGCollectionErr(ctx context.Context, userId, accountId, tenantId, que
 	return response, nil
 }
 
+// QueryRAGByDocumentID matches IDs exactly and skips reranking, because an ID never appears in the embedded text.
+func QueryRAGByDocumentID(ctx context.Context, userId, accountId, id, query, module string, numberOfResults int, conversationID, messageId string) (RAGSearchResults, error) {
+	ids := []string{id}
+	// ServiceNow stores KB numbers uppercase.
+	if upper := strings.ToUpper(id); upper != id {
+		ids = append(ids, upper)
+	}
+	var should []any
+	for _, key := range append([]string{"kb_number"}, documentSourceIDKeys...) {
+		should = append(should, map[string]any{"field": key, "values": ids})
+	}
+	noRerank, noTracking := false, false
+	response, err := executeRAGCall(ctx, ragQueryRequest{
+		AccountID:       accountId,
+		Query:           query,
+		Module:          module,
+		NumberOfResults: numberOfResults,
+		ConversationID:  conversationID,
+		MessageID:       messageId,
+		UserID:          userId,
+		TrackTokenUsage: &noTracking,
+		UseReranking:    &noRerank,
+		MetadataFilter:  map[string]any{"should": should},
+	})
+	if err != nil {
+		return RAGSearchResults{}, fmt.Errorf("QueryRAGByDocumentID: %w", err)
+	}
+	return response, nil
+}
+
 type ragServerCreateRequest struct {
 	AccountID string         `json:"account_id"`
 	Module    string         `json:"module"`

@@ -584,7 +584,7 @@ type SearchSkillsTool struct{ core.ReadOnlyTool }
 func (s SearchSkillsTool) Name() string { return SearchSkillsToolName }
 
 func (s SearchSkillsTool) Description() string {
-	return `Searches knowledge bases and skills by a natural language query. Returns candidate snippets from manual (DB-stored) and external (Confluence, ServiceNow) knowledge bases. Use load_skills with the returned candidate id or exact manual KB name to read a selected result. Candidate ids are valid only in the current turn. Search matches may be weak; select only results relevant to the task. When searching for investigation guidance, finish this search before launching dependent investigation or delegation; do not run those actions in parallel with discovery. If a potentially relevant SOP/procedure is returned, load it and assess its applicability, scope and prerequisites before dependent work. If no applicable procedure is found, continue the investigation normally; do not force a weak match or repeatedly search for a mandatory SOP.`
+	return `Searches knowledge bases and skills by a natural language query. Returns candidate snippets from manual (DB-stored) and external (Confluence, ServiceNow) knowledge bases. If the user gives an article ID, such as a ServiceNow KB number or a Confluence page ID, pass it as id. Use load_skills with the returned candidate id or exact manual KB name to read a selected result. Candidate ids are valid only in the current turn. Search matches may be weak; select only results relevant to the task. When searching for investigation guidance, finish this search before launching dependent investigation or delegation; do not run those actions in parallel with discovery. If a potentially relevant SOP/procedure is returned, load it and assess its applicability, scope and prerequisites before dependent work. If no applicable procedure is found, continue the investigation normally; do not force a weak match or repeatedly search for a mandatory SOP.`
 }
 
 func (s SearchSkillsTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -596,6 +596,10 @@ func (s SearchSkillsTool) InputSchema() core.ToolSchema {
 			"query": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "The search query describing what information you need.",
+			},
+			"id": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "The exact ID of a knowledge-base article when the user names one, e.g. a ServiceNow KB number (KB0010001) or a Confluence page ID. It is looked up exactly before the query is searched.",
 			},
 		},
 		Required: []string{"query"},
@@ -612,6 +616,11 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 	if query == "" && input.Command != "" {
 		query = strings.TrimSpace(input.Command)
 	}
+	id, _ := input.Arguments["id"].(string)
+	id = strings.TrimSpace(id)
+	if query == "" {
+		query = id
+	}
 	if query == "" {
 		common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "error", ctx.AccountId)
 		return core.NBToolResponse{
@@ -620,7 +629,28 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 		}, nil
 	}
 
-	ctx.Ctx.GetLogger().Info("tool: search_skills called", "query", query)
+	ctx.Ctx.GetLogger().Info("tool: search_skills called", "query", query, "id", id)
+
+	// Similarity search and the judge can't match an ID, which is never in the embedded text.
+	var idNotFound string
+	if id != "" {
+		lookupCtx, cancel := context.WithTimeout(ctx.Ctx.GetContext(), ragSkillTimeout)
+		docs, err := core.QueryRAGByDocumentID(lookupCtx, ctx.UserId, ctx.AccountId, id, query, ragKBModule, ragSkillTopK, ctx.ConversationId, ctx.MessageId)
+		cancel()
+		if err != nil {
+			ctx.Ctx.GetLogger().Warn("tool: search_skills id lookup failed", "id", id, "error", err)
+		}
+		docs = core.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, docs)
+		if results := cacheSearchKnowledgeCandidates(ctx, docs); len(results) > 0 {
+			common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "success", ctx.AccountId)
+			return core.NBToolResponse{
+				Status: core.NBToolResponseStatusSuccess,
+				Data:   strings.Join(results, "\n\n---\n\n"),
+				Type:   core.NBToolResponseTypeText,
+			}, nil
+		}
+		idNotFound = fmt.Sprintf("Could not find an indexed knowledge-base article with the ID %q. Any results below come from searching the query and are not that article.", id)
+	}
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -702,9 +732,12 @@ collect:
 		common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "not_found", ctx.AccountId)
 		return core.NBToolResponse{
 			Status: core.NBToolResponseStatusSuccess,
-			Data:   "No matching skills or knowledge base entries found for the given query.",
+			Data:   strings.TrimSpace(idNotFound + "\nNo matching skills or knowledge base entries found for the given query."),
 			Type:   core.NBToolResponseTypeText,
 		}, nil
+	}
+	if idNotFound != "" {
+		finalResults = append([]string{idNotFound}, finalResults...)
 	}
 
 	ctx.Ctx.GetLogger().Info("tool: search_skills success",
