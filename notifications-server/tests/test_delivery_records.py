@@ -166,6 +166,71 @@ def test_a_title_never_carries_an_approval_token_or_a_message_body():
     assert len(dr.title_of("finding", {"finding": {"title": "x" * 500}})) == dr.TITLE_LIMIT
 
 
+@pytest.mark.parametrize(
+    "message, title",
+    [
+        ("🚨 *New Incident Declared* 🚨\nSeverity: high", "New Incident Declared"),
+        (":red_circle:  *CI failed*", "CI failed"),
+        (
+            ":rocket: *New code merged to `prod`* — <https://github.com/o/r/pull/1|#1 feat: ship it>",
+            "New code merged to prod — #1 feat: ship it",
+        ),
+        ("New incident declared: <#C0123ABCD>", "New incident declared: #C0123ABCD"),
+        ("<@U1|ana> approved it, <!here>", "@ana approved it, @here"),
+        ("### Proposed fix\nRestart the pod", "Proposed fix"),
+        ("**Step 3 · Restart deployment `api`**", "Step 3 · Restart deployment api"),
+        ("> _Quoted_ ~old~ [the docs](https://x.io/a_b)", "Quoted old the docs"),
+        ("```\nkubectl get pods\n```", "kubectl get pods"),
+        ("```error: boom``` in api", "error: boom in api"),
+        ("---\n- Deploy &amp; verify", "Deploy & verify"),
+        ("*:rocket: Deployment started*", "Deployment started"),
+        ("**:fire: Alert firing**", "Alert firing"),
+        (":white_check_mark::tada: Done", "Done"),
+        ("*Alert* :fire:, check it", "Alert, check it"),
+        ("*🚨 Alert*", "Alert"),
+        ("\U0001f468\U0000200d\U0001f469\U0000200d\U0001f467 Family day", "Family day"),
+    ],
+)
+def test_a_title_is_the_words_without_chat_markup(message, title):
+    assert dr.title_of("automation", {"message": message}) == title
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ClusterRole grants verbs [*] on resources [*]",
+        'Policy allows "Action": "*" on "Resource": "*"',
+        "Role permits wildcard (*) verbs on (*) resources",
+        "CORS allows origin '*' and header '*'",
+        "Delete *.tmp,*.bak in */* failed",
+        "ImportError in __init__.py",
+        "node_pressure on /pool-a-02132c6e-pxll",
+        "Call failure ratio >30% (provider/model-3.8)",
+        "Merge PR #123 for ns:default:pod at 10:30:45, std::io::Error",
+        "listen :8080: failed, handlers[0](event) raised, <default:pod> restarted",
+        "CACHE_SIZE_MB is 2 * 150 in /api/*/users/*",
+        "\U00000dc1\U00000dca\U0000200d\U00000dbb\U00000dd3 alert",
+    ],
+)
+def test_text_that_only_looks_like_markup_is_kept(text):
+    assert dr.title_of("automation", {"message": text}) == text
+
+
+def test_an_alerts_title_and_an_emails_subject_are_stored_as_written():
+    [row] = dr.email_rows(TENANT, "daily_recap", "*Daily* recap", {"a@x.io": None})
+
+    assert dr.title_of("finding", {"finding": {"title": "Role grants * on *"}}) == "Role grants * on *"
+    assert row.title == "*Daily* recap"
+
+
+def test_a_title_is_capped_after_its_markup_is_gone():
+    title = dr.title_of("automation", {"message": "**" + "x" * 500 + "**"})
+
+    assert len(title) == dr.TITLE_LIMIT and "*" not in title
+    assert dr.title_of("automation", {"message": ":tada:\n---"}) is None
+    assert dr.title_of("automation", {"message": "---\n" * 10 + "Too far down to be the title"}) is None
+
+
 def test_a_send_request_names_its_event_account_and_kind():
     payload = {
         "source": "prometheus",
@@ -251,6 +316,105 @@ def test_a_slack_first_posts_row_gets_its_delivery_columns_and_keeps_the_old_one
     )
     assert row.thread_id is None and row.routed_by == [{"id": "r-ops", "name": "Ops"}]
     assert (row.slack_team_id, row.slack_thread_id, json.loads(row.slack_metadata)["channel"]) == ("T1", "1.1", "C1")
+
+
+@pytest.mark.parametrize(
+    "platform, config",
+    [
+        ("slack", {"default_channel_id": "C1"}),
+        ("discord", {"default_channel_id": "C1"}),
+        ("ms_teams", {"default_team_id": "group-1", "default_channel_id": "C1"}),
+    ],
+)
+def test_a_send_to_an_installs_default_channel_records_its_name(platform, config):
+    from notifications_server.models.models import Integration
+    from notifications_server.services.message import MessageService, _named
+    from notifications_server.services.messaging_installations import build_installation
+
+    integration = Integration(id=uuid.uuid4(), name="team-1", tenant_id=TENANT)
+    ip = build_installation(platform, integration, {**config, "default_channel_name": "alerts"})
+    MessageService.get_channels_from_request_or_defaults([ip], [], "troubleshoot", {})
+    result = {"platform": platform, "status": "success", "channel_id": "C1", "message_ts": "1.1"}
+
+    [row] = dr.rows_for(_dispatch(), [_named(result, ip)])
+
+    assert (row.destination, row.destination_name, row.routed_by) == ("C1", "alerts", "default")
+
+
+def test_only_the_default_channel_takes_the_defaults_name():
+    from notifications_server.services.delivery_errors import channel_name
+
+    ip = SimpleNamespace(platform="discord", channels={"id": "C1"}, default_channel_name="alerts")
+
+    assert channel_name(ip, {"id": "C1"}) == "alerts"
+    assert channel_name(ip, {"id": "C1", "name": "ops"}) == "ops"
+    assert channel_name(ip, {"id": "C2"}) is None
+
+
+def test_an_alerts_first_post_to_discords_default_channel_records_its_name(monkeypatch):
+    from notifications_server.clients.discord_client import DiscordClient
+    from notifications_server.models.models import Integration
+    from notifications_server.schemas.message import SendMessageRequest
+    from notifications_server.services import message as message_module
+    from notifications_server.services.messaging_installations import build_installation
+
+    install = build_installation(
+        "discord",
+        Integration(id=uuid.uuid4(), name="guild-1", tenant_id=TENANT),
+        {"bot_token": "bot", "default_channel_id": "D1", "default_channel_name": "alerts", "thread_repeats": "false"},
+    )
+    saved = []
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        def add_all(self, rows):
+            saved.extend(rows)
+
+        async def commit(self):
+            pass
+
+    async def no_rules(*_args):
+        return [], "troubleshoot"
+
+    service = message_module.MessageService.__new__(message_module.MessageService)
+    service.engine = None
+    service.discord_sender = message_module.DiscordSender(None)
+    service.rule_matcher = SimpleNamespace(
+        match_notification_rules=no_rules,
+        rules_service=SimpleNamespace(get_default_policy=mock.AsyncMock(return_value=None)),
+    )
+    service.get_installed_platforms_from_cache_or_db = mock.AsyncMock(return_value=[install])
+    monkeypatch.setattr(message_module.BaseDB, "async_session", lambda _engine: lambda: _Session())
+    monkeypatch.setattr(DiscordClient, "chat_post", mock.Mock(return_value={"ok": True, "ts": "m-1"}))
+    finding = {"id": str(uuid.uuid4()), "fingerprint": "fp-1", "title": "Disk full", "priority": "HIGH"}
+
+    asyncio.run(
+        service.send_message(SendMessageRequest(tenant_id=str(TENANT), type="finding", parameters={"finding": finding}))
+    )
+
+    [row] = saved
+    assert (row.platform, row.destination, row.destination_name, row.routed_by) == (
+        "discord",
+        "D1",
+        "alerts",
+        "default",
+    )
+
+
+def test_an_automation_posts_row_has_a_plain_title(monkeypatch):
+    recorded = []
+    monkeypatch.setattr(dr, "record_sync", lambda rows, engine=None: recorded.extend(rows))
+    service = common_module.CommonService.__new__(common_module.CommonService)
+    service.engine = None
+
+    service._record_automation_post(TENANT, "slack", "C1", "🚨 *New Incident Declared* 🚨\n*Severity:* high")
+
+    assert [row.title for row in recorded] == ["New Incident Declared"]
 
 
 def test_a_teams_answer_cards_row_is_a_nubi_answer():

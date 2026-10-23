@@ -226,14 +226,20 @@ def delivery_channel_id(ip: Any, channel: Any) -> Optional[str]:
 
 def channel_name(ip: Any, channel: Any = None) -> Optional[str]:
     """The name of the channel a send through `ip` goes to, when its routing
-    names it. A webhook target's name is its label."""
+    names it or it is the installation's default channel. A webhook target's
+    name is its label."""
     if getattr(ip, "platform", None) in WEBHOOK_PLATFORMS:
         return getattr(ip, "team_name", None) or None
-    channel = _channel_of(getattr(ip, "to_channel", None) if channel is None else channel)
+    target = getattr(ip, "to_channel", None) if channel is None else channel
+    channel = _channel_of(target)
     if isinstance(channel, dict) and getattr(ip, "platform", None) == "ms_teams" and "channels" in channel:
         channels = channel["channels"]
         channel = channels[0] if isinstance(channels, list) and channels else None
     name = channel.get("name") if isinstance(channel, dict) else None
+    if not name:
+        channel_id = delivery_channel_id(ip, target)
+        if channel_id and channel_id == delivery_channel_id(ip, getattr(ip, "channels", None)):
+            name = getattr(ip, "default_channel_name", None)
     return str(name) if name else None
 
 

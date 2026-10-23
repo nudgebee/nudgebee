@@ -123,6 +123,7 @@ class MessagingPlatform(Base):
             "webhook_url": getattr(self, "webhook_url", None),
             "thread_repeats": self.thread_repeats,
             "team_url": getattr(self, "team_url", None),
+            "default_channel_name": getattr(self, "default_channel_name", None),
         }
         return {**standard_values}
 
@@ -160,6 +161,7 @@ class MessagingPlatform(Base):
         instance.webhook_url = data.get("webhook_url")
         instance.thread_repeats = data.get("thread_repeats", True)
         instance.team_url = data.get("team_url")
+        instance.default_channel_name = data.get("default_channel_name")
         instance._origin = data.get("_origin")
         # Re-hydrate the integration id as a UUID so the encrypted-token write path
         # filters on the correct type regardless of strict DB-driver coercion.

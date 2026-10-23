@@ -13,9 +13,11 @@ the lookups below still find them through the platform-named columns."""
 
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import timedelta
+from itertools import islice
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -117,10 +119,65 @@ def kind_of(type_, parameters, source=None) -> str:
     return type_
 
 
+# The chat markup a title drops, read from a message's own text. Alert titles and email subjects
+# aren't chat text: a "*" there is a wildcard, so they are stored as written.
+_MARKDOWN_LINK = re.compile(r"!?\[([^\]]+)\]\((?:https?://|mailto:)[^)\s]*\)", re.IGNORECASE)
+_SLACK_LINK = re.compile(r"<((?:https?|mailto):[^<>|\s]+)(?:\|([^<>]+))?>", re.IGNORECASE)
+_SLACK_MENTION = re.compile(r"<([@#!])([^<>|\s]+)(?:\|([^<>]+))?>")
+# Emphasis hugs a word on both sides and ends at its own next delimiter, so "[*]", "*.tmp",
+# "__init__.py" and "a * b" stay as written.
+_EMPHASIS = re.compile(
+    r"(?<![^\s(\[{\"'])(\*\*|__|~~|[*_~])(?=[\w`:(\[]|[^\x00-\x7f])((?:(?!\1).)+?)"
+    r"(?<=[\w`:)\].!?]|[^\x00-\x7f])\1(?=[)\]}\"'.,;:!?]*(?:\s|$))"
+)
+_EMOJI_CODE = re.compile(r"\s*(?<!\S):(?=[a-z0-9_+'-]*[a-z])[a-z0-9_+'-]+:(?=[\s:.,;!?)]|$)")
+_EMOJI_CHAR = (
+    "\U0000231a\U0000231b\U000023e9-\U000023f3\U000023f8-\U000023fa\U00002600-\U000027bf"
+    "\U00002b05-\U00002b07\U00002b1b\U00002b1c\U00002b50\U00002b55\U0001f000-\U0001faff"
+)
+# An emoji with what modifies it and the emoji joined to it: a joiner anywhere else shapes its script.
+_EMOJI = re.compile(
+    f"[{_EMOJI_CHAR}](?:\U0000200d?[{_EMOJI_CHAR}]|[\U0000fe0e\U0000fe0f\U000020e3\U000e0020-\U000e007f])*"
+    "|[\U0000fe0e\U0000fe0f\U000020e3]"
+)
+_CODE_FENCE = re.compile(r"^\s*```[\w+-]*\s*$")
+_LINE_MARKER = re.compile(r"^(?:#{1,6}|>|[-*+•])\s+")
+_TITLE_LINES = 10
+
+
+def _mention(match) -> str:
+    sigil, target, label = match.groups()
+    if sigil == "!":
+        return label or f"@{target}"  # <!here>, <!subteam^S1|@oncall>
+    return f"{sigil}{label or target}"
+
+
+def _plain(line) -> str:
+    """A line of chat text as the words a reader sees: no link or mention syntax,
+    emphasis, code marks, emoji, or heading, quote and list markers. Only the
+    start of a long line is read: a title keeps TITLE_LIMIT characters."""
+    if _CODE_FENCE.match(line):
+        return ""
+    text = _MARKDOWN_LINK.sub(r"\1", line[: TITLE_LIMIT * 5])
+    text = _SLACK_LINK.sub(lambda match: match.group(2) or match.group(1), text)
+    text = _SLACK_MENTION.sub(_mention, text)
+    text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    for _ in range(3):  # emphasis nests (**_word_**) and emoji codes sit side by side (:a::b:)
+        text = _EMOJI_CODE.sub("", _EMPHASIS.sub(r"\2", text))
+    text = _EMOJI.sub("", text).strip()
+    while _LINE_MARKER.match(text):
+        text = _LINE_MARKER.sub("", text, count=1)
+    text = " ".join(text.replace("`", "").split())
+    return text if re.search(r"\w", text) else ""
+
+
 def _first_line(text) -> Optional[str]:
+    """The first line of a chat message that has words, as plain text. Only the
+    message's first few lines are read."""
     if not isinstance(text, str):
         return None
-    return next((line.strip() for line in text.splitlines() if line.strip()), None)
+    lines = islice((line for line in text.splitlines() if line.strip()), _TITLE_LINES)
+    return next((plain for plain in map(_plain, lines) if plain), None)
 
 
 def _cap(text) -> Optional[str]:

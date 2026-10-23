@@ -196,6 +196,7 @@ def _deliver(req: Posts) -> str:
             return "pending"
         # Read before the marker's commit expires them.
         token, thread_ts, team_id = installation.token, alert.slack_thread_id, alert.slack_team_id
+        channel_name = alert.destination_name
         if req.key:
             # Marked before posting, so a send that outlives llm-server's wait is not posted again by its retry.
             marker_id = uuid.uuid4()
@@ -222,6 +223,8 @@ def _deliver(req: Posts) -> str:
     )
     rows = []
     posted = sum(_post(token, channel, thread_ts, post, req.event_id, sent, team_id, rows) for post in req.posts)
+    for row in rows:
+        row.destination_name = channel_name  # every post goes in the alert's thread
     delivery_records.record_sync(rows, engine=sync_engine)
     if req.posts and not posted:
         if marker_id is not None:

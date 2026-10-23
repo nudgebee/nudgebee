@@ -133,6 +133,8 @@ def build_installation(platform: str, integration: Integration, cfg: Dict[str, s
     inst.token_expires_at = _parse_dt(cfg.get("token_expires_at"))
     inst.refresh_token_expires_at = _parse_dt(cfg.get("refresh_token_expires_at"))
     inst.channels = _default_channel_shape(platform, cfg)
+    # Kept beside the shape, not in it: routing compares channel shapes, and the name only labels delivery rows.
+    inst.default_channel_name = cfg.get("default_channel_name") or None
     inst.thread_repeats = str(cfg.get("thread_repeats", "")).lower() != "false"
     inst._origin = ORIGIN_INTEGRATION
     inst._integration_id = integration.id

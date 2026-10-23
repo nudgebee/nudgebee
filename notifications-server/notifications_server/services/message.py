@@ -1876,6 +1876,7 @@ class MessageService:
                             team_id=row.slack_team_id,
                             thread_id=row.slack_thread_id,
                             routed_by=row.routed_by,
+                            destination_name=row.destination_name,
                             **destination_fields(ip, channel_id),
                         )
                     )
@@ -1888,6 +1889,7 @@ class MessageService:
                             team_id=row.slack_team_id,
                             thread_id=row.slack_thread_id,
                             routed_by=row.routed_by,
+                            destination_name=row.destination_name,
                             **destination_fields(ip, channel_id),
                         )
                     )
@@ -1904,6 +1906,7 @@ class MessageService:
                         message_ts=slack_response.data.get("ts"),
                         thread_id=row.slack_thread_id,
                         routed_by=row.routed_by,
+                        destination_name=row.destination_name,
                     )
                 )
 

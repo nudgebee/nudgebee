@@ -15,6 +15,7 @@ from sqlalchemy.pool import StaticPool
 
 from notifications_server.configs import settings
 from notifications_server.models.models import Base, FeatureFlag, SentNotifications
+from notifications_server.services import delivery_records
 from notifications_server.services import remediation_thread as rt
 from notifications_server.services.actions_common import SlackInteractiveActionsService
 from notifications_server.utils.datetime_utils import utc_now
@@ -447,6 +448,31 @@ def test_each_post_in_the_thread_leaves_a_delivery_row(db, slack):
         ("sent", None, CHANNEL, THREAD, FP),
     ]
     assert [r.message_id for r in rows if r.status == "sent"] == ["2.1"]
+
+
+def test_each_posts_row_names_the_alerts_channel_and_has_a_plain_title(db, slack):
+    alert = SentNotifications(
+        id=uuid.uuid4(),
+        created_at=datetime(2026, 10, 19),
+        tenant_id=uuid.UUID(TENANT),
+        account_id=uuid.UUID(ACCOUNT),
+        fingerprint=FP,
+        slack_team_id=TEAM,
+        slack_thread_id=THREAD,
+        slack_metadata=json.dumps({"channel": CHANNEL}),
+    )
+    with Session(db) as s:
+        s.add(delivery_records.fill(alert, destination_name="ops"))
+        s.commit()
+
+    assert rt.deliver(posts(texts=("### Proposed fix", "**Step 1 · Restart**", "FAIL to post"))) == "posted"
+
+    rows = _rows(db, "remediation")
+    assert sorted((r.title, r.status, r.destination, r.destination_name) for r in rows) == [
+        ("FAIL to post", "failed", CHANNEL, "ops"),
+        ("Proposed fix", "sent", CHANNEL, "ops"),
+        ("Step 1 · Restart", "sent", CHANNEL, "ops"),
+    ]
 
 
 def test_the_post_once_marker_and_a_waiting_send_carry_their_kinds(db, slack):
