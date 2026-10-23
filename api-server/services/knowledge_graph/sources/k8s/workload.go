@@ -359,18 +359,7 @@ func (s *K8sSource) convertWorkloadsToGraph(workloads []K8sWorkloadRow, k8sNodeM
 				}
 
 				if !edgeExists {
-					edge := core.NewEdge(
-						namespaceNode.ID,
-						clusterNode.ID,
-						core.RelationshipRunsOn,
-						map[string]interface{}{
-							"connection_type": "cluster",
-						},
-						req.TenantID,
-						req.CloudAccountID,
-						"k8s",
-					)
-					edges = append(edges, edge)
+					edges = append(edges, namespaceClusterEdge(namespaceNode, clusterNode, req))
 				}
 			}
 		}

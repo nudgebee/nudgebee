@@ -265,19 +265,9 @@ func (s *K8sSource) convertK8sServicesToGraph(services []K8sServiceFromRelay, wo
 				nodes = append(nodes, clusterNode)
 			}
 
-			// Link namespace to cluster (if not already linked)
-			nsToClusterEdge := core.NewEdge(
-				namespaceNode.ID,
-				clusterNode.ID,
-				core.RelationshipBelongsTo,
-				map[string]interface{}{
-					"connection_type": "cluster",
-				},
-				req.TenantID,
-				req.CloudAccountID,
-				"k8s",
-			)
-			edges = append(edges, nsToClusterEdge)
+			// Link namespace to cluster. Appended even when the namespace is
+			// already linked: the copy carries the same edge ID and collapses.
+			edges = append(edges, namespaceClusterEdge(namespaceNode, clusterNode, req))
 		}
 
 		// Match service to workloads based on selector
