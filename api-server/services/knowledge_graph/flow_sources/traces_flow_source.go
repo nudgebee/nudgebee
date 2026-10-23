@@ -1636,29 +1636,48 @@ func (s *TracesFlowSource) enrichNodeWithTraceMetadata(node *core.DbNode, app *t
 // inferNodeType returns the inferred NodeType, plus the appType entry (if any)
 // that caused a Database/Cache/MessageQueue override — the caller uses that to
 // look up the matching evidence in app.TypeEvidence.
+// tracesKindMap maps the kind a trace observation carries to the node type it
+// becomes. Keyed lower-case and looked up lower-case, the way
+// ebpf_flow_source.go's ebpfKindMap already is; that asymmetry between the two
+// sources is what let a non-PascalCase kind fall through to NodeTypeService,
+// silently typing a Deployment as a logical service with nothing in the
+// classification recording it.
+//
+// Package-level so it is built once at init rather than on every call:
+// inferNodeType runs per observation, and per upstream and downstream link, on
+// every build.
+//
+// Unlike ebpfKindMap this is NOT an existence policy — a kind absent here is
+// classified NodeTypeService rather than refused, and whether the resulting
+// node may be created is decided separately by flowMayCreate.
+var tracesKindMap = map[string]core.NodeType{
+	"service":         core.NodeTypeService, // OTel logical service identifier
+	"deployment":      core.NodeTypeWorkload,
+	"statefulset":     core.NodeTypeWorkload,
+	"daemonset":       core.NodeTypeWorkload,
+	"pod":             core.NodeTypeWorkload,
+	"runner":          core.NodeTypeWorkload,
+	"database":        core.NodeTypeDatabase,
+	"externalservice": core.NodeTypeExternalService,
+	"node":            core.NodeTypeNode, // K8s worker node (see applicationKindFor in traces/service_map.go)
+}
+
 func (s *TracesFlowSource) inferNodeType(kind string, appType []string) (core.NodeType, string) {
-	kindMap := map[string]core.NodeType{
-		"Service":         core.NodeTypeService, // OTel logical service identifier
-		"Deployment":      core.NodeTypeWorkload,
-		"StatefulSet":     core.NodeTypeWorkload,
-		"DaemonSet":       core.NodeTypeWorkload,
-		"Pod":             core.NodeTypeWorkload,
-		"Runner":          core.NodeTypeWorkload,
-		"Database":        core.NodeTypeDatabase,
-		"ExternalService": core.NodeTypeExternalService,
-		"Node":            core.NodeTypeNode, // K8s worker node (see applicationKindFor in traces/service_map.go)
-	}
+	normalizedKind := strings.ToLower(kind)
 
 	// Default for unknown kinds: NodeTypeService (logical OTel service).
 	// Match strategies will still try Workload and K8sService before
 	// materialising a stand-alone Service node.
 	nodeType := core.NodeTypeService
-	if nt, ok := kindMap[kind]; ok {
+	if nt, ok := tracesKindMap[normalizedKind]; ok {
 		nodeType = nt
 	}
 
-	// Infer more specific node type from appType for non-external services
-	if kind != "ExternalService" {
+	// Infer more specific node type from appType for non-external services.
+	// Compared on the normalised kind for the same reason as the lookup: an
+	// "externalservice" in other casing would otherwise be let into this
+	// branch and could be reclassified as a Database or Cache by appType.
+	if normalizedKind != "externalservice" {
 		for _, t := range appType {
 			switch strings.ToLower(t) {
 			case "database", "postgres", "postgresql", "mysql", "mongodb", "elasticsearch":
