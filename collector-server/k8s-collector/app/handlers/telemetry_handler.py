@@ -454,14 +454,16 @@ def handle_telemetry(tenant_id: str, cloud_account_id: str, agent_id: str, data:
     # relay-server owns `status`; see its UpdateRelayConnectionStatus and
     # TouchRelaySession.
     #
-    # last_connected_at stays: api-server's "Agent Status Check" cron uses it
-    # as one of two staleness signals, and this post is genuine evidence the
-    # agent side is alive. It shares reported_at with healthCheckedAt so the two
-    # are the same instant, but it is not a substitute for it: relay-server also
-    # sets last_connected_at on connect and disconnect, so a reconnect refreshes
-    # it without a single flag having been re-reported.
+    # Deliberately does NOT write `last_connected_at`. relay-server uses it as the
+    # session's identity: its disconnect write only applies while last_connected_at
+    # is no newer than the value the session's own connect write stored. Moving it
+    # forward every 60s made every disconnect look stale, so a dead agent stayed
+    # CONNECTED until api-server's "Agent Status Check" cron retired it ~30 min
+    # later. Liveness for that cron comes from relayLastSeenAt, which relay-server
+    # writes for each live session.
+    #
     update_agent = sql.SQL("""UPDATE {}
-           SET version = %s, last_connected_at = %s,
+           SET version = %s,
                k8s_version = %s,
                connection_status = (COALESCE(connection_status, '{{}}'::jsonb) || %s::jsonb) - %s::text[],
                k8s_provider = %s
@@ -475,7 +477,6 @@ def handle_telemetry(tenant_id: str, cloud_account_id: str, agent_id: str, data:
         update_agent,
         [
             data["version"],
-            reported_at,
             k8s_version,
             connection_status,
             cleared_keys,

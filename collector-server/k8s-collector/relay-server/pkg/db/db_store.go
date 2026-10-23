@@ -64,7 +64,7 @@ type AgentStore interface {
 	// account does not exist). It reads the same cached row as GetAgentStatus,
 	// so calling both costs one DB query at most.
 	AccountTenant(ctx context.Context, accountID, agentType string) (string, error)
-	UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionStart time.Time) (transitioned bool, tenantID string, err error)
+	UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionMark time.Time) (transitioned bool, tenantID string, connectedAt time.Time, err error)
 	TouchRelaySession(ctx context.Context, accountID, agentType string) error
 	UpdateAgentVersion(ctx context.Context, accountID, agentType, version, commit, buildTime, protocolVersion string) error
 	UpdateDatasourceHealth(ctx context.Context, accountID, agentType string, datasources map[string]any) error
@@ -355,15 +355,20 @@ func (p *pgStore) AccountTenant(ctx context.Context, accountID, agentType string
 }
 
 // UpdateRelayConnectionStatus updates the relayConnection field in the agent's connection_status JSON.
-// sessionStart is the time this session began. When disconnecting, the update is skipped if a newer
-// session has already connected (i.e. last_connected_at > sessionStart), preventing stale sessions
-// from clobbering the status of active ones.
+// sessionMark identifies this session on a disconnect: it is the last_connected_at value the session's
+// own connect write returned (connectedAt). The disconnect is skipped if a newer session has connected
+// since (i.e. last_connected_at > sessionMark), preventing stale sessions from clobbering the status of
+// active ones. It must come from the row, not the relay's clock: the connect write stamps NOW() after
+// any locally taken time, so a local timestamp would make the session look stale against itself. When
+// the connect write failed, callers pass the session's local start, which any older row still satisfies.
+// sessionMark is ignored on connect.
 //
 // It returns whether the agent's status actually transitioned (old status != new status) and the
-// agent's tenant id. transitioned is true only when a row was updated AND its status changed, so
+// agent's tenant id. connectedAt is the last_connected_at this call wrote (zero when no row was updated or
+// on disconnect). transitioned is true only when a row was updated AND its status changed, so
 // callers can audit genuine connect/disconnect transitions without emitting on every reconnect,
 // pod restart, or guarded stale-session cleanup.
-func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionStart time.Time) (transitioned bool, tenantID string, err error) {
+func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionMark time.Time) (transitioned bool, tenantID string, connectedAt time.Time, err error) {
 	// Update the connection_status JSON, agent status, and last_connected_at
 	status := "NOT_CONNECTED"
 	if relayConnected {
@@ -389,7 +394,7 @@ func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, ag
 			    last_connected_at = NOW()
 			FROM prev
 			WHERE agent.id = prev.id
-			RETURNING prev.status AS old_status, agent.tenant AS tenant
+			RETURNING prev.status AS old_status, agent.tenant AS tenant, agent.last_connected_at AS connected_at
 		`
 		args = []any{accountID, relayConnected, agentType, status}
 	} else {
@@ -408,20 +413,21 @@ func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, ag
 			FROM prev
 			WHERE agent.id = prev.id
 			  AND (prev.last_connected_at IS NULL OR prev.last_connected_at <= $5)
-			RETURNING prev.status AS old_status, agent.tenant AS tenant
+			RETURNING prev.status AS old_status, agent.tenant AS tenant, agent.last_connected_at AS connected_at
 		`
-		args = []any{accountID, relayConnected, agentType, status, sessionStart}
+		args = []any{accountID, relayConnected, agentType, status, sessionMark}
 	}
 
 	var oldStatus, tenant sql.NullString
-	scanErr := p.db.QueryRowxContext(ctx, query, args...).Scan(&oldStatus, &tenant)
+	var connectedAtCol sql.NullTime
+	scanErr := p.db.QueryRowxContext(ctx, query, args...).Scan(&oldStatus, &tenant, &connectedAtCol)
 	if scanErr != nil {
 		if errors.Is(scanErr, sql.ErrNoRows) {
 			// No row updated: either no matching agent, or the disconnect guard
 			// skipped a stale session. Neither an error nor a transition.
-			return false, "", nil
+			return false, "", time.Time{}, nil
 		}
-		return false, "", fmt.Errorf("failed to update relay connection status for account %s (type=%s): %w", accountID, agentType, scanErr)
+		return false, "", time.Time{}, fmt.Errorf("failed to update relay connection status for account %s (type=%s): %w", accountID, agentType, scanErr)
 	}
 
 	// Invalidate cache after successful DB write to prevent a concurrent read
@@ -430,7 +436,11 @@ func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, ag
 		slog.Warn("failed to invalidate wsCache after status update", "account_id", accountID, "agent_type", agentType, "error", cerr)
 	}
 
-	return oldStatus.String != status, tenant.String, nil
+	connectedAt = time.Time{}
+	if relayConnected {
+		connectedAt = connectedAtCol.Time
+	}
+	return oldStatus.String != status, tenant.String, connectedAt, nil
 }
 
 // TouchRelaySession records that this agent's websocket session was still
@@ -438,7 +448,7 @@ func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, ag
 //
 // It writes connection_status.relayLastSeenAt rather than last_connected_at
 // on purpose. last_connected_at identifies the *session* — the disconnect
-// branch of UpdateRelayConnectionStatus compares it against sessionStart to
+// branch of UpdateRelayConnectionStatus compares it against the session's own connect stamp to
 // tell a stale session's cleanup from a live one's — so moving it forward
 // mid-session would make every session look newer than itself and silently
 // skip its own disconnect write.

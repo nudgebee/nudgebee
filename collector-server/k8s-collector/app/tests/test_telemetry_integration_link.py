@@ -459,7 +459,7 @@ class TestClickHouseLogsCollectedFlag(unittest.TestCase):
         updates = []
 
         def run_query(statement, params=None):
-            if params and params[-1] == AGENT and len(params) == 7:
+            if params and params[-1] == AGENT and len(params) == 6:
                 updates.append((" ".join(statement.split()), params))
             return []
 
@@ -478,15 +478,15 @@ class TestClickHouseLogsCollectedFlag(unittest.TestCase):
         self.assertIn(
             "connection_status = (COALESCE(connection_status, '{}'::jsonb) || %s::jsonb) - %s::text[]", statement
         )
-        self.assertEqual(params[4], ["clickhouseLogsCollected"])
+        self.assertEqual(params[3], ["clickhouseLogsCollected"])
 
     def test_a_post_that_sends_the_flag_keeps_what_it_says(self):
         for value in (True, False):
             with self.subTest(clickhouseLogsCollected=value):
                 _, params = self._agent_update({**CLICKHOUSE_LOGS, "clickhouseLogsCollected": value})
 
-                self.assertEqual(params[4], [])
-                self.assertIs(json.loads(params[3])["clickhouseLogsCollected"], value)
+                self.assertEqual(params[3], [])
+                self.assertIs(json.loads(params[2])["clickhouseLogsCollected"], value)
 
     def test_a_post_that_reports_no_flags_clears_nothing(self):
         """An empty or malformed activity_stats says nothing about any flag."""
@@ -494,7 +494,7 @@ class TestClickHouseLogsCollectedFlag(unittest.TestCase):
             with self.subTest(activity_stats=activity_stats):
                 _, params = self._agent_update(activity_stats)
 
-                self.assertEqual(params[4], [])
+                self.assertEqual(params[3], [])
 
 
 if __name__ == "__main__":
