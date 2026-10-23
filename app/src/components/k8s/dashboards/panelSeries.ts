@@ -32,6 +32,14 @@ export interface RawSeries {
    * account out beside its number instead of splitting a display string.
    */
   accountLabel?: string;
+  /**
+   * The series' PromQL label map (`{pod, namespace, instance, __name__}`) as the
+   * provider returned it. `seriesLabel` collapses these into the display `label`
+   * and the raw map is otherwise dropped; it is kept here so a chart data-link
+   * can fill `{{pod}}`-style tokens from the clicked point's series. Absent on a
+   * consolidated ("All accounts") series, which spans several label sets.
+   */
+  metric?: Record<string, string>;
 }
 
 /**
@@ -265,7 +273,7 @@ export function toRawSeries(results: any[], legendByKey: Record<string, string>)
     for (const series of result?.payload ?? []) {
       const timestamps: number[] = (series?.timestamps ?? []).map(toEpochSeconds);
       const values = (series?.values ?? []).map(toFinite);
-      out.push({ label: seriesLabel(series?.metric, legendByKey[key], key), timestamps, values });
+      out.push({ label: seriesLabel(series?.metric, legendByKey[key], key), timestamps, values, metric: series?.metric });
     }
   }
   return out;
@@ -332,7 +340,7 @@ export function alignSeries(raw: RawSeries[], step?: number): PanelData {
   const series = snapped.map((s) => {
     const byTimestamp = new Map<number, number | null>();
     s.timestamps.forEach((t, i) => byTimestamp.set(t, s.values[i] ?? null));
-    return { label: s.label, accountLabel: s.accountLabel, values: axis.map((t) => byTimestamp.get(t) ?? null) };
+    return { label: s.label, accountLabel: s.accountLabel, metric: s.metric, values: axis.map((t) => byTimestamp.get(t) ?? null) };
   });
   // The same axis twice: `labels` is the printable form the non-timeseries
   // visualisations read, `timestamps` the raw instants the chart's x-axis and

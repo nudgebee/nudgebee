@@ -86,6 +86,11 @@ func ValidateDefinition(def Definition) error {
 		if err := validateTableOptions(p); err != nil {
 			return err
 		}
+		// A chart data link renders an href every viewer follows too; same guard,
+		// gated on the timeseries panel that is the only one with points to click.
+		if err := validateDataLinks(p); err != nil {
+			return err
+		}
 		// A text panel carries prose, not queries; everything else needs a source.
 		if p.Type == VizText {
 			continue

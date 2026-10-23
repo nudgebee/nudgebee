@@ -19,6 +19,10 @@ export interface PanelSeries {
   values: (number | null)[];
   /** The account this series came from, on a panel that queried several. See RawSeries. */
   accountLabel?: string;
+  /** The account's id, resolved from its label — what a drill-down link's path needs. Absent on a consolidated series. */
+  accountId?: string;
+  /** The series' PromQL label map, kept for chart data-link token substitution. See RawSeries. */
+  metric?: Record<string, string>;
   /** True for the series that adds the accounts up — see consolidatedSeries. */
   consolidated?: boolean;
 }
@@ -708,13 +712,20 @@ function shapeMetrics(answer: MetricsAnswer, panel: Panel): { data: PanelData; w
   }
   const capped = accountCappedWarning(perAccount);
   if (capped) notes.push(capped);
+  // Same rule the `prefer` function above uses: a multi-account series carries
+  // its account label, a single-account panel's series carry none and all belong
+  // to the one account asked. A chart data-link's path needs the id, not the
+  // display label — see renderDataLinks.
+  const accountIdFor = (label?: string) => (label ? idByLabel.get(label) : accounts.length === 1 ? accounts[0].value : undefined);
+  const aligned = alignSeries(kept, step);
   return {
     // Aligned across ALL accounts at once, so a series that only one account
     // reports still sits at the right point on the shared axis.
     // The step the accounts were asked for is also what reconciles their
     // answers — see snapToStep, which no-ops on a single-account panel.
     data: {
-      ...alignSeries(kept, step),
+      ...aligned,
+      series: aligned.series.map((s) => ({ ...s, accountId: accountIdFor(s.accountLabel) })),
       failedAccounts: failed,
       emptyAccounts: empty,
       ...(totalCount > shownCount ? { capped: { shown: shownCount, total: totalCount } } : {}),

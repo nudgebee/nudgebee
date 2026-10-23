@@ -127,6 +127,29 @@ export interface PanelTableOptions {
 }
 
 /**
+ * One author-configured drill-down offered when a point on a timeseries panel is
+ * clicked — the chart counterpart of a table column's `link`.
+ */
+export interface PanelDataLink {
+  /** Menu label for the link, e.g. "Open logs". */
+  title: string;
+  /**
+   * An IN-APP path with `{{token}}` placeholders filled from the clicked point:
+   * a series label (`{{pod}}`, `{{namespace}}`), the account (`{{__account_id}}`),
+   * the panel's range (`{{__from}}` / `{{__to}}`) or the clicked instant
+   * (`{{__time}}`). Relative only — see isSafeLinkUrl, and the matching check in
+   * the server's validateDataLinks.
+   */
+  url: string;
+}
+
+/** `options` on a panel that renders as a timeseries chart. */
+export interface PanelChartOptions {
+  /** Drill-down links offered on a point click. See PanelDataLink. */
+  data_links?: PanelDataLink[];
+}
+
+/**
  * The colours a threshold step may take.
  *
  * A NAME, not a value: a stored panel is rendered by every viewer in whatever
@@ -266,7 +289,7 @@ export interface Panel {
   unit?: string;
   /** Backs the `text` panel type. */
   content?: string;
-  options?: PanelTableOptions & PanelThresholdOptions & PanelCombineOptions & PanelFilterOptions & Record<string, unknown>;
+  options?: PanelTableOptions & PanelChartOptions & PanelThresholdOptions & PanelCombineOptions & PanelFilterOptions & Record<string, unknown>;
 }
 
 export interface DashboardDefinition {

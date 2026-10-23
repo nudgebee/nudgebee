@@ -21,6 +21,7 @@ import {
   type Panel,
   type PanelCombine,
   type PanelColumn,
+  type PanelDataLink,
   type PanelDatasource,
   type PanelTarget,
   type PanelThresholdColor,
@@ -32,7 +33,7 @@ import EntityQueryBuilder from './EntityQueryBuilder';
 import PanelPreview, { PREVIEW_RAIL_WIDTH, usePreviewRange } from './PanelPreview';
 import { buildEntityQuery, defaultDraft, draftFromQuery, findTable, tablesFor, type EntityQueryDraft } from './entityQuery';
 import { grantTooltip, missingDatasourceGrant, queryableTables } from './panelAccess';
-import { isCompleteColumn, panelColumnsOf, referencedColumns, setHiddenColumns } from './panelColumns';
+import { isCompleteColumn, isSafeLinkUrl, panelColumnsOf, referencedColumns, setHiddenColumns } from './panelColumns';
 import { filterColumnsOf, savedFilterColumns } from './panelViewerFilters';
 import { accountPickerOptions, accountsOfTypes, deriveAccountTypes, panelScopeFromTypes, resolvePanelAccounts } from './panelAccounts';
 import { ES_PROVIDER, providerChoices, providerLabel, providerTypeOf, useEsIndexes, usePanelProviders } from './panelProviders';
@@ -568,6 +569,15 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
       return { ...prev, options };
     });
 
+  /** A chart's drill-down links, under the same "an empty list is no list" rule. */
+  const patchDataLinks = (next: PanelDataLink[]) =>
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const options: Record<string, unknown> = { ...(prev.options || {}), data_links: next };
+      if (next.length === 0) delete options.data_links;
+      return { ...prev, options };
+    });
+
   /**
    * Thresholds are kept only across visualisations that evaluate them the same
    * way: stat and gauge judge the one shown number, a chart judges every line.
@@ -582,10 +592,19 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
       if (!prev) return prev;
       const keepThresholds = hasThresholds(next) && isLinePanel(next) === isLinePanel(prev.type);
       const keepCombine = showsOneNumber(next);
-      if ((keepThresholds || !prev.options?.thresholds) && (keepCombine || prev.options?.combine === undefined)) return { ...prev, type: next };
+      // Drill-down links are a timeseries-only facet; any other type strands them.
+      const keepDataLinks = next === 'timeseries';
+      if (
+        (keepThresholds || !prev.options?.thresholds) &&
+        (keepCombine || prev.options?.combine === undefined) &&
+        (keepDataLinks || prev.options?.data_links === undefined)
+      ) {
+        return { ...prev, type: next };
+      }
       const options = { ...prev.options };
       if (!keepThresholds) delete options.thresholds;
       if (!keepCombine) delete options.combine;
+      if (!keepDataLinks) delete options.data_links;
       return { ...prev, type: next, options };
     });
 
@@ -805,6 +824,10 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
   // Includes links that are merely unfinished — they block Save, so they have to
   // say so rather than leaving the button greyed out for no visible reason.
   const unfinishedLinks = links.filter((l) => !isCompleteColumn(l));
+  /** A chart's drill-down links — a title and a safe in-app path each. Blocks Save while unfinished, like the table links. */
+  const dataLinks = draft.options?.data_links ?? [];
+  const isCompleteDataLink = (l: PanelDataLink) => (l.title || '').trim().length > 0 && isSafeLinkUrl(l.url || '');
+  const unfinishedDataLinks = dataLinks.filter((l) => !isCompleteDataLink(l));
   /** Only a `nudgebee` panel may name several providers at once. */
   const multiType = isNudgebee;
   const hasScope = accountTypes.length > 0 || accountIds.length > 0;
@@ -815,7 +838,8 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
       (hasScope && (isEntity ? Boolean(targets[0]?.query) : targets.length > 0 && targets.every((t) => (t.expr || '').trim().length > 0)))) &&
     // The server refuses these too; catching them here saves a round trip that
     // comes back as a message about a panel the author can no longer see.
-    columns.every(isCompleteColumn);
+    columns.every(isCompleteColumn) &&
+    dataLinks.every(isCompleteDataLink);
   // Not a server rule — `options` is opaque to it — but a step with no number is a
   // row the author is still filling in, and it would save as inert config. Checked on
   // Save rather than greying the button, so the field says what is missing.
@@ -1224,6 +1248,112 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
                     )}
                 </Form.Section>
               </Card>
+
+              {draft.type === 'timeseries' && draft.datasource === 'metrics' && (
+                <Card
+                  variant='tinted'
+                  header={
+                    <GroupHeader
+                      title='Data links'
+                      description='Where a point on this chart can take you — clicking it opens these links with the series’ labels and the chart’s time range filled in.'
+                    />
+                  }
+                >
+                  <Form.Section>
+                    <Box>
+                      <Stack direction='row' alignItems='center' gap={ds.space[2]} sx={{ mb: ds.space[2] }}>
+                        <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 13, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
+                          Links
+                        </Typography>
+                        <Box sx={{ flex: 1 }} />
+                        <Button
+                          tone='secondary'
+                          size='sm'
+                          onClick={() => patchDataLinks([...dataLinks, { title: 'Open logs', url: '' }])}
+                          id='add-data-link'
+                        >
+                          Add link
+                        </Button>
+                      </Stack>
+
+                      {dataLinks.length === 0 ? (
+                        <Typography variant='caption' sx={{ color: ds.gray[500] }}>
+                          No links — clicking a point does nothing.
+                        </Typography>
+                      ) : (
+                        <Stack gap={ds.space[2]}>
+                          {dataLinks.map((link, i) => {
+                            const patchLink = (next: Partial<PanelDataLink>) =>
+                              patchDataLinks(dataLinks.map((l, j) => (j === i ? { ...l, ...next } : l)));
+                            return (
+                              <Stack key={i} direction='row' gap={ds.space[2]} alignItems='center'>
+                                <Box sx={{ flex: 1 }}>
+                                  <Input value={link.title || ''} onChange={(v: string) => patchLink({ title: v })} placeholder='Open logs' />
+                                </Box>
+                                <Box sx={{ flex: 2 }}>
+                                  <Input
+                                    value={link.url || ''}
+                                    onChange={(v: string) => patchLink({ url: v })}
+                                    placeholder='/kubernetes/details/{{__account_id}}?pod={{pod}}&start_time={{__from}}&end_time={{__to}}'
+                                  />
+                                </Box>
+                                <Button
+                                  tone='ghost'
+                                  composition='icon-only'
+                                  aria-label='Remove link'
+                                  icon={<SafeIcon src={DeleteIconRed} alt='delete' width={16} height={16} />}
+                                  onClick={() => patchDataLinks(dataLinks.filter((_, j) => j !== i))}
+                                  id={`remove-data-link-${i}`}
+                                />
+                              </Stack>
+                            );
+                          })}
+                        </Stack>
+                      )}
+
+                      {dataLinks.length > 0 && (
+                        <Typography variant='caption' sx={{ display: 'block', mt: ds.space[2], color: ds.gray[500] }}>
+                          Write an in-app path and fill it from the clicked point: a series label as{' '}
+                          <Box component='code' sx={{ fontFamily: ds.font.mono }}>
+                            {'{{pod}}'}
+                          </Box>
+                          , the account as{' '}
+                          <Box component='code' sx={{ fontFamily: ds.font.mono }}>
+                            {'{{__account_id}}'}
+                          </Box>
+                          , and the chart’s range as{' '}
+                          <Box component='code' sx={{ fontFamily: ds.font.mono }}>
+                            {'{{__from}}'}
+                          </Box>
+                          /
+                          <Box component='code' sx={{ fontFamily: ds.font.mono }}>
+                            {'{{__to}}'}
+                          </Box>{' '}
+                          (epoch ms). A link whose tokens a clicked point cannot fill is skipped rather than opened dead.
+                        </Typography>
+                      )}
+
+                      {unfinishedDataLinks.length > 0 && (
+                        <Box
+                          sx={{
+                            mt: ds.space[2],
+                            p: ds.space[3],
+                            border: `1px solid ${ds.amber[300]}`,
+                            background: ds.amber[100],
+                            borderRadius: ds.radius.md,
+                          }}
+                        >
+                          <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+                            Every link needs a title and a path inside the product — starting with a single <code>/</code>, as in{' '}
+                            <code>/kubernetes/details/{'{{__account_id}}'}</code>. Anyone who can see this dashboard follows these links, which is why
+                            an external or scripted destination is refused rather than rendered.
+                          </Typography>
+                        </Box>
+                      )}
+                    </Box>
+                  </Form.Section>
+                </Card>
+              )}
 
               {hasThresholds(draft.type) && (
                 <Box id='panel-thresholds'>

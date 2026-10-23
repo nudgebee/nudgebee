@@ -24,7 +24,11 @@ import Memory from '@shared/format/Memory';
 import NumberFormat from '@shared/format/Number';
 import { formatDurationInTrace } from '@utils/common';
 import type { AccountOption, Panel } from '@api1/dashboards';
-import { addedColumns, columnSettings, panelColumnsOf, renderRowUrl } from './panelColumns';
+import { addedColumns, columnSettings, panelColumnsOf, renderDataLinks, renderRowUrl } from './panelColumns';
+// A drill-down menu opens at the clicked point — an arbitrary cursor position,
+// not a trigger element — so it composes the overlay surface directly rather
+// than DropdownMenu, which anchors to and opens from a trigger it clones.
+import { OverlayItem, OverlaySurface } from '@ui/internal/Overlay';
 import PanelAccountBreakdown, { BreakdownRows, breachedPlacement, breakdownPlacement } from './PanelAccountBreakdown';
 import PanelGauge from './PanelGauge';
 import {
@@ -422,6 +426,39 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
   // A sample was never queried, so it has no window to speak of.
   const widened = sampleData ? undefined : queryWindow.widened;
 
+  // Drill-down links: a point click opens a menu of the panel's configured links
+  // with the clicked series' labels, account and the panel's range filled in.
+  const dataLinks = panel.options?.data_links;
+  const hasDataLinks = Array.isArray(dataLinks) && dataLinks.length > 0;
+  const [pointLinks, setPointLinks] = React.useState<{ title: string; href: string }[]>([]);
+  // An invisible, cursor-positioned anchor the menu hangs off, so it opens at the
+  // clicked point without the shared chart component having to own the overlay.
+  const pointAnchorRef = React.useRef<HTMLSpanElement | null>(null);
+  const handlePointClick = React.useCallback(
+    (info: { datasetIndex?: number; epochTimestamp?: number | null; clientX?: number; clientY?: number }) => {
+      if (!data || !hasDataLinks) return;
+      // `datasetIndex` indexes the same `drawn` list the chart was given — each
+      // account's lines, then the consolidated one, which carries no account and
+      // so resolves no account-dependent link.
+      const drawn = [...data.series, ...consolidatedSeries(data.series)];
+      const series = typeof info.datasetIndex === 'number' ? drawn[info.datasetIndex] : undefined;
+      const links = renderDataLinks(dataLinks, {
+        metric: series?.metric,
+        accountId: series?.accountId,
+        from: String(queryWindow.startTime),
+        to: String(queryWindow.endTime),
+        time: info.epochTimestamp != null ? String(info.epochTimestamp) : undefined,
+      });
+      if (!links.length) return;
+      if (pointAnchorRef.current && info.clientX != null && info.clientY != null) {
+        pointAnchorRef.current.style.left = `${info.clientX}px`;
+        pointAnchorRef.current.style.top = `${info.clientY}px`;
+      }
+      setPointLinks(links);
+    },
+    [data, hasDataLinks, dataLinks, queryWindow]
+  );
+
   /** Nothing to draw yet — no data and no error. */
   const pending = panel.type !== 'text' && !data && !error;
   /*
@@ -758,12 +795,13 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
               dynamicHeight={false}
               legendOptions={{ renderer: 'html', unit: panel.unit }}
               customPlugins={[thresholdPlugin]}
+              onDataPointClick={hasDataLinks ? handlePointClick : undefined}
             />
           );
         }
       }
     },
-    [panel, data, stat, breaches, thresholdPlugin, filtering]
+    [panel, data, stat, breaches, thresholdPlugin, filtering, hasDataLinks, handlePointClick]
   );
   const drawing = React.useMemo(() => renderDrawing(CHART_HEIGHT), [renderDrawing]);
   // Built only while the modal is open, so a closed one costs no second chart.
@@ -1075,6 +1113,32 @@ const DashboardPanel: React.FC<Props> = React.memo(function DashboardPanel({
           {body(viewDrawing, VIEW_CHART_HEIGHT)}
         </Box>
       </Modal>
+      {/* Drill-down menu, opened at the clicked point (the anchor is moved there).
+          Links open in a new tab, like a table row's link — following in place
+          would lose the dashboard you were watching, its range and its filter. */}
+      <span ref={pointAnchorRef} aria-hidden style={{ position: 'fixed', width: 0, height: 0 }} />
+      <OverlaySurface
+        anchorEl={pointAnchorRef.current}
+        open={pointLinks.length > 0}
+        onClose={() => setPointLinks([])}
+        role='menu'
+        minWidth={180}
+        disablePortal={false}
+      >
+        {pointLinks.map((link, i) => (
+          <OverlayItem
+            key={`${link.href}-${i}`}
+            size='sm'
+            id={`panel-${panel.id}-datalink-${i}`}
+            onClick={() => {
+              window.open(link.href, '_blank', 'noopener');
+              setPointLinks([]);
+            }}
+          >
+            {link.title}
+          </OverlayItem>
+        ))}
+      </OverlaySurface>
     </Box>
   );
 });
