@@ -754,6 +754,17 @@ class NotificationSettings(BaseSettings):
     grouped_redis_ttl_seconds: int = Field(
         3900, validation_alias=AliasChoices("GROUPED_REDIS_TTL_SECONDS", "grouped_redis_ttl_seconds")
     )
+    # Shorter than the hourly window, so a recovered channel isn't a full cycle behind the others.
+    grouped_flush_retry_delay_seconds: int = Field(
+        300, validation_alias=AliasChoices("GROUPED_FLUSH_RETRY_DELAY_SECONDS", "grouped_flush_retry_delay_seconds")
+    )
+    grouped_sweep_interval_seconds: int = Field(
+        60, validation_alias=AliasChoices("GROUPED_SWEEP_INTERVAL_SECONDS", "grouped_sweep_interval_seconds")
+    )
+    # Must exceed how long a real flush ever takes, or the sweep mistakes a slow one for a crashed one.
+    grouped_claim_stale_seconds: int = Field(
+        600, validation_alias=AliasChoices("GROUPED_CLAIM_STALE_SECONDS", "grouped_claim_stale_seconds")
+    )
     # An anomaly that clears joins the next grouped anomaly digest, in a
     # "Resolved" section. Off: its resolve looks for a Slack thread, as before.
     # An SLO that recovers joins the SLO digest the same way. Off: it is dropped.

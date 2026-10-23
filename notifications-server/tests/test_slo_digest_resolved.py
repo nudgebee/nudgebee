@@ -292,7 +292,8 @@ class TestFlush:
 
         result, redis = _flush(service, batch)
 
-        assert result == {"status": "ok"} and redis.deleted == [SLO_KEY]
+        assert result == {"status": "ok"}
+        assert redis.deleted == [f"{SLO_KEY}:claim", f"{SLO_KEY}:claim:claimed_at", f"{SLO_KEY}:due"]
         assert service.rule_matcher.seen == [
             ("slo_alert", "slo", PROD),
             ("slo_alert", "slo", PROD),

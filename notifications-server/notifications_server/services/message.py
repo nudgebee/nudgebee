@@ -4,6 +4,7 @@ import json
 import logging
 import time
 import uuid
+import redis
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
@@ -852,20 +853,32 @@ class GroupedMessageHandler:
             tenant_id = payload["tenant_id"]
             group_type = payload["type"]
             key = f"grouped:{tenant_id}:{group_type}"
-            redis = self.cache.redis_client
-            if not redis:
+            due_key = f"{key}:due"
+            redis_client = self.cache.redis_client
+            if not redis_client:
                 return {"status": "ignored"}
 
-            await run_in_cache_thread(redis.lpush, key, json.dumps(payload, default=str))
-            await run_in_cache_thread(redis.expire, key, settings.notifications.grouped_redis_ttl_seconds)
+            await run_in_cache_thread(redis_client.lpush, key, json.dumps(payload, default=str))
+            await run_in_cache_thread(redis_client.expire, key, settings.notifications.grouped_redis_ttl_seconds)
+
+            delay_seconds = settings.notifications.grouped_flush_delay_seconds
+            # nx=True: only the alert that creates this key sets its due time,
+            # so the schedule lives in Redis and survives a restart that would
+            # otherwise drop the in-memory timer below.
+            await run_in_cache_thread(
+                redis_client.set,
+                due_key,
+                int(time.time()) + delay_seconds,
+                nx=True,
+                ex=settings.notifications.grouped_redis_ttl_seconds,
+            )
 
             if key not in self._group_tasks:
-                delay_seconds = settings.notifications.grouped_flush_delay_seconds
                 LOG.info("Scheduling flush for %s in %d seconds", key, delay_seconds)
                 task = asyncio.create_task(self._delayed_flush(key, delay_seconds))
                 self._group_tasks[key] = {"task": task, "scheduled_at": utc_now()}
 
-            length = await run_in_cache_thread(redis.llen, key)
+            length = await run_in_cache_thread(redis_client.llen, key)
             LOG.info("Enqueued grouped msg to %s (count=%d)", key, length)
             return {"status": "queued"}
         except Exception as e:
@@ -875,8 +888,12 @@ class GroupedMessageHandler:
         try:
             LOG.debug("Starting delayed flush timer for %s (%d seconds)", key, delay_seconds)
             await asyncio.sleep(delay_seconds)
-            redis = self.cache.redis_client
-            if not redis or (await run_in_cache_thread(redis.llen, key)) == 0:
+            redis_client = self.cache.redis_client
+            if not redis_client:
+                return
+            has_live = await run_in_cache_thread(redis_client.llen, key)
+            has_claimed = await run_in_cache_thread(redis_client.exists, f"{key}:claim")
+            if not has_live and not has_claimed:
                 LOG.info("No messages left for key %s before scheduled flush, skipping", key)
                 return
 
@@ -891,29 +908,205 @@ class GroupedMessageHandler:
             self._group_tasks.pop(key, None)
             LOG.debug("Cleanup complete for delayed flush task of %s", key)
 
+    @staticmethod
+    def _unwrap_entry(raw):
+        """(payload, retry platforms or None, attempts); a brand-new entry has no wrapper."""
+        if isinstance(raw, dict) and "payload" in raw and "attempts" in raw:
+            return raw["payload"], raw.get("retry_platforms") or None, raw["attempts"]
+        return raw, None, 0
+
+    async def _claim_batch(self, key, claim_key):
+        """RENAME atomically moves the batch out of `key`, so a push that
+        lands after this can't be lost. Gated by a lease so two callers — two
+        pods' local timers, a timer racing a sweep — can't both act on the
+        same key: only the lease-holder tries the RENAME. The other gets
+        None, unless the lease is stale, meaning the pod that held it is gone
+        and this claim would otherwise sit unresumed until its TTL silently
+        drops it — the same loss this fix exists to close."""
+        redis_client = self.cache.redis_client
+        lease_key = f"{claim_key}:claimed_at"
+        now_ts = int(time.time())
+        acquired = await run_in_cache_thread(
+            redis_client.set, lease_key, now_ts, nx=True, ex=settings.notifications.grouped_redis_ttl_seconds
+        )
+        if not acquired:
+            claimed_at = await run_in_cache_thread(redis_client.get, lease_key)
+            try:
+                stale = (
+                    claimed_at is None
+                    or (now_ts - int(claimed_at)) >= settings.notifications.grouped_claim_stale_seconds
+                )
+            except (TypeError, ValueError):
+                stale = True
+            if not stale:
+                return None  # another pod is actively working this claim
+            await run_in_cache_thread(
+                redis_client.set, lease_key, now_ts, ex=settings.notifications.grouped_redis_ttl_seconds
+            )
+
+        if not await run_in_cache_thread(redis_client.exists, claim_key):
+            try:
+                await run_in_cache_thread(redis_client.rename, key, claim_key)
+            except redis.exceptions.ResponseError:
+                if await run_in_cache_thread(redis_client.exists, claim_key):
+                    return None  # another pod's rename won; its lease, leave it
+                await run_in_cache_thread(redis_client.delete, lease_key)
+                return []  # nothing queued
+        return await run_in_cache_thread(redis_client.lrange, claim_key, 0, -1)
+
+    async def _release_claim(self, key, claim_key, due_key):
+        """Clears the claim with nothing left to retry. A push landing in
+        `key` while this flush ran couldn't set its own due time — its SET NX
+        no-ops against the in-progress flush's due_key — so if `key` has
+        data, re-arm due_key for a fresh window instead of deleting it and
+        leaving that push with nothing watching to flush it."""
+        redis_client = self.cache.redis_client
+
+        def _execute():
+            has_new_items = bool(redis_client.exists(key))
+            with redis_client.pipeline() as pipe:
+                pipe.delete(claim_key)
+                pipe.delete(f"{claim_key}:claimed_at")
+                if has_new_items:
+                    new_due = int(time.time()) + settings.notifications.grouped_flush_delay_seconds
+                    pipe.set(due_key, new_due, ex=settings.notifications.grouped_redis_ttl_seconds)
+                else:
+                    pipe.delete(due_key)
+                pipe.execute()
+
+        await run_in_cache_thread(_execute)
+
+    async def _send_batch(self, session, tenant_id, orig_type, batch, routes, installed_platforms, dispatch):
+        """Returns (attempted indexes, {index: still-pending platforms}, raw
+        responses, [(title, that route's responses), ...] to record once the
+        session this ran in has closed)."""
+        attempted_indexes = set()
+        failed_platforms_by_index = defaultdict(set)
+        platform_responses = []
+        sent = []
+        for ip, channel, indexes in routes:
+            # batch[i][1] is the item's pending-platforms list on a retry;
+            # skip a platform that's already delivered it.
+            effective_indexes = [i for i in indexes if not batch[i][1] or ip.platform in batch[i][1]]
+            if not effective_indexes:
+                continue
+            attempted_indexes.update(effective_indexes)
+            self.message_service.point_at(installed_platforms, ip, channel)
+            events = [batch[i][0]["parameters"] for i in effective_indexes]
+            if orig_type in ("anomaly", "slo_alert") and settings.notifications.digest_resolved_enabled:
+                # A firing alert and its resolve in one window show once, as resolved;
+                # an SLO's hourly repeats show once too. SLO items carry no updated_at,
+                # so the newest queued one is the state shown.
+                events = latest_per_key(events)
+            params = {"events": events}
+            responses = (
+                await self.message_service.send_template_notification(
+                    session, tenant_id, {"parameters": params}, f"grouped_{orig_type}", [ip]
+                )
+                or []
+            )
+            dispatch.title = delivery_records.title_of(dispatch.kind, params)
+            sent.append((dispatch.title, responses))
+            platform_responses.extend(responses)
+            if any(isinstance(r, dict) and r.get("status") == "failed" for r in responses):
+                for i in effective_indexes:
+                    failed_platforms_by_index[i].add(ip.platform)
+        await MessageService._save_stored_cards(session, dispatch, platform_responses)
+        return attempted_indexes, failed_platforms_by_index, platform_responses, sent
+
+    @staticmethod
+    def _build_retry_entries(key, batch, attempted_indexes, failed_platforms_by_index):
+        """Items still owed to a platform, capped at task_retry_count — past that, drop rather than hold forever."""
+        retry_entries = []
+        for i, (payload, _, attempts) in enumerate(batch):
+            if i not in attempted_indexes:
+                continue  # stopped by rules this round, same as before: drop, don't hold
+            still_pending = failed_platforms_by_index.get(i)
+            if not still_pending:
+                continue  # delivered to every platform it was attempted on
+            attempts += 1
+            if attempts > settings.notifications.task_retry_count:
+                LOG.error(
+                    "Dropping grouped alert for %s after %d failed attempts to %s",
+                    key,
+                    attempts,
+                    sorted(still_pending),
+                )
+                continue
+            retry_entries.append(
+                json.dumps(
+                    {"payload": payload, "retry_platforms": sorted(still_pending), "attempts": attempts}, default=str
+                )
+            )
+        return retry_entries
+
+    async def _finalize_flush(self, key, claim_key, due_key, retry_entries, platform_responses):
+        """One pipeline, so a crash mid-finalize can't land only the claim
+        clear and lose the retry_entries (or vice versa) — it's all or
+        nothing on the Redis side."""
+        if not retry_entries:
+            await self._release_claim(key, claim_key, due_key)
+            LOG.debug("Successfully flushed %s", key)
+            return {"status": "ok"}
+
+        redis_client = self.cache.redis_client
+        retry_due = int(time.time()) + settings.notifications.grouped_flush_retry_delay_seconds
+
+        def _execute():
+            with redis_client.pipeline() as pipe:
+                pipe.delete(claim_key)
+                pipe.delete(f"{claim_key}:claimed_at")
+                # Appends onto whatever a concurrent push already left in
+                # `key` — no separate handling needed for that case here.
+                pipe.rpush(key, *retry_entries)
+                pipe.expire(key, settings.notifications.grouped_redis_ttl_seconds)
+                pipe.set(due_key, retry_due, ex=settings.notifications.grouped_redis_ttl_seconds)
+                pipe.execute()
+
+        await run_in_cache_thread(_execute)
+
+        LOG.warning(
+            "Not all notifications sent successfully for %s (responses: %s), re-queued %d item(s) for the "
+            "failed platform(s) only",
+            key,
+            platform_responses,
+            len(retry_entries),
+        )
+        if key not in self._group_tasks:
+            delay = max(retry_due - int(time.time()), 0)
+            task = asyncio.create_task(self._delayed_flush(key, delay))
+            self._group_tasks[key] = {"task": task, "scheduled_at": utc_now()}
+        return {"status": "partial_failure", "delivery_status": platform_responses}
+
     async def _flush_group(self, key):
         async with self._flush_locks[key]:
-            redis = self.cache.redis_client
-            if not redis:
+            redis_client = self.cache.redis_client
+            if not redis_client:
                 LOG.error("Redis unavailable during flush for %s", key)
                 return {"status": "failed", "error": "redis_unavailable"}
 
+            due_key = f"{key}:due"
+            claim_key = f"{key}:claim"
             try:
-                raw_list = await run_in_cache_thread(redis.lrange, key, 0, -1)
-                if not raw_list:
-                    LOG.info("No messages to flush for key %s", key)
-                    return {"status": "ok"}
+                raw_list = await self._claim_batch(key, claim_key)
             except Exception as e:
                 LOG.exception("Failed reading from Redis for %s: %s", key, e)
                 return {"status": "failed", "error": "Unexpected error; see server logs"}
+
+            if raw_list is None:
+                return {"status": "ok"}  # another pod actively holds the lease
+            if not raw_list:
+                await self._release_claim(key, claim_key, due_key)
+                LOG.info("No messages to flush for key %s", key)
+                return {"status": "ok"}
 
             LOG.info("Flushing %d messages for %s", len(raw_list), key)
 
             try:
                 _, tenant_id, orig_type = key.split(":", 2)
-                batch = [json.loads(item) for item in raw_list]
+                batch = [self._unwrap_entry(json.loads(item)) for item in raw_list]
 
-                units = [grouped_unit(index, orig_type, item) for index, item in enumerate(batch)]
+                units = [grouped_unit(index, orig_type, payload) for index, (payload, _, _) in enumerate(batch)]
                 dispatch = delivery_records.dispatch_for(
                     tenant_id,
                     f"grouped_{orig_type}",
@@ -926,6 +1119,7 @@ class GroupedMessageHandler:
                     )
                     if not installed_platforms:
                         LOG.warning("No messaging platform installation for tenant %s", tenant_id)
+                        await self._release_claim(key, claim_key, due_key)
                         return {"status": "ok"}
 
                     # Each alert is matched on its own, so every channel gets only
@@ -935,30 +1129,12 @@ class GroupedMessageHandler:
                     )
                     if not routes:
                         LOG.debug("Nothing to send for %s: every alert was stopped by the rules", key)
-                        await run_in_cache_thread(redis.delete, key)
+                        await self._release_claim(key, claim_key, due_key)
                         return {"status": "ok"}
 
-                    platform_responses = []
-                    sent = []
-                    for ip, channel, indexes in routes:
-                        self.message_service.point_at(installed_platforms, ip, channel)
-                        events = [batch[index]["parameters"] for index in indexes]
-                        if orig_type in ("anomaly", "slo_alert") and settings.notifications.digest_resolved_enabled:
-                            # A firing alert and its resolve in one window show once, as resolved;
-                            # an SLO's hourly repeats show once too. SLO items carry no updated_at,
-                            # so the newest queued one is the state shown.
-                            events = latest_per_key(events)
-                        params = {"events": events}
-                        route_responses = (
-                            await self.message_service.send_template_notification(
-                                session, tenant_id, {"parameters": params}, f"grouped_{orig_type}", [ip]
-                            )
-                            or []
-                        )
-                        dispatch.title = delivery_records.title_of(dispatch.kind, params)
-                        sent.append((dispatch.title, route_responses))
-                        platform_responses.extend(route_responses)
-                    await MessageService._save_stored_cards(session, dispatch, platform_responses)
+                    attempted_indexes, failed_platforms_by_index, platform_responses, sent = await self._send_batch(
+                        session, tenant_id, orig_type, batch, routes, installed_platforms, dispatch
+                    )
 
                 # Recorded once the session is closed, so recording never holds a second connection.
                 for title, route_responses in sent:
@@ -967,23 +1143,51 @@ class GroupedMessageHandler:
                         getattr(self.message_service, "engine", None), dispatch, route_responses
                     )
 
-                if platform_responses and all(
-                    resp.get("status") == "success" for resp in platform_responses if isinstance(resp, dict)
-                ):
-                    await run_in_cache_thread(redis.delete, key)
-                    LOG.debug("Successfully flushed and deleted Redis key %s", key)
-                    return {"status": "ok"}
-                else:
-                    LOG.warning(
-                        "Not all notifications sent successfully for %s (responses: %s), keeping messages in Redis",
-                        key,
-                        platform_responses,
-                    )
-                    return {"status": "partial_failure", "delivery_status": platform_responses}
+                retry_entries = self._build_retry_entries(key, batch, attempted_indexes, failed_platforms_by_index)
+                return await self._finalize_flush(key, claim_key, due_key, retry_entries, platform_responses)
 
             except Exception as e:
                 LOG.exception("Error flushing group %s: %s", key, e)
                 return {"status": "failed", "error": "Unexpected error; see server logs"}
+
+    async def sweep(self):
+        """Backstop for the in-memory flush timer: a due group, or a claim left by a crashed flush."""
+        redis_client = self.cache.redis_client
+        if not redis_client:
+            return
+
+        now_ts = int(time.time())
+        cursor = 0
+        while True:
+            cursor, due_keys = await run_in_cache_thread(redis_client.scan, cursor, match="grouped:*:due", count=200)
+            for due_key in due_keys:
+                key = due_key[: -len(":due")]
+                if key in self._group_tasks:
+                    continue
+                # An existing claim means it's already claimed (actively being
+                # sent, or crashed) — the claim scan below decides that, gated
+                # on lease staleness; flushing here too would resend it.
+                if await run_in_cache_thread(redis_client.exists, f"{key}:claim"):
+                    continue
+                due_at = await run_in_cache_thread(redis_client.get, due_key)
+                if due_at is not None and int(due_at) <= now_ts:
+                    await self._flush_group(key)
+            if cursor == 0:
+                break
+
+        cursor = 0
+        while True:
+            cursor, claim_keys = await run_in_cache_thread(
+                redis_client.scan, cursor, match="grouped:*:claim", count=200
+            )
+            for claim_key in claim_keys:
+                key = claim_key[: -len(":claim")]
+                if key in self._group_tasks:
+                    continue
+                # Staleness is decided once, inside _claim_batch's lease check.
+                await self._flush_group(key)
+            if cursor == 0:
+                break
 
 
 # ----------------------------- MessageService -----------------------------

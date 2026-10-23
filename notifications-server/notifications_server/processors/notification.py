@@ -38,6 +38,10 @@ class NotificationProcessor:
         self._rules_service = NotificationRulesService(self.engine)
         self._rule_matcher = NotificationRuleMatcher(self._rules_service)
 
+    @property
+    def group_handler(self):
+        return self._message_service.group_handler
+
     @staticmethod
     def _parse_email_channels(channels) -> tuple[list[str], list[str]]:
         emails = []

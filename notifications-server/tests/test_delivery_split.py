@@ -6,10 +6,14 @@ group is flushed; an anomaly is matched as the troubleshooting finding it is.
 """
 
 import asyncio
+import fnmatch
 import json
+import time
 from collections import defaultdict
 from datetime import timedelta
 from types import SimpleNamespace
+
+import redis
 
 from notifications_server.services import message as message_module
 from notifications_server.services.delivery_split import account_sections, has_recommendations, merged_parameters
@@ -375,15 +379,84 @@ def test_an_older_retry_scope_is_narrowed_by_the_newer_retry_platforms(monkeypat
 
 
 class _Redis:
+    """Fake Redis for the grouped-flush claim/retry/sweep path: a dict of
+    lists plus a dict of strings (for the `:due`/`:claimed_at` markers), with
+    just enough of the real commands (rename raises like redis-py does on a
+    missing source key)."""
+
     def __init__(self, items):
         self.lists = {"grouped:%s:anomaly" % TENANT: [json.dumps(item) for item in items]}
+        self.strings = {}
         self.deleted = []
+
+    def exists(self, key):
+        return key in self.lists or key in self.strings
+
+    def rename(self, src, dst):
+        if src not in self.lists:
+            raise redis.exceptions.ResponseError("no such key")
+        self.lists[dst] = self.lists.pop(src)
 
     def lrange(self, key, _start, _end):
         return self.lists.get(key, [])
 
+    def rpush(self, key, *values):
+        self.lists.setdefault(key, []).extend(values)
+
+    def llen(self, key):
+        return len(self.lists.get(key, []))
+
+    def expire(self, _key, _seconds):
+        return True
+
+    def set(self, key, value, nx=False, ex=None):
+        if nx and key in self.strings:
+            return False
+        self.strings[key] = value
+        return True
+
+    def get(self, key):
+        return self.strings.get(key)
+
     def delete(self, key):
         self.deleted.append(key)
+        self.lists.pop(key, None)
+        self.strings.pop(key, None)
+
+    def scan(self, cursor, match=None, count=None):
+        pattern = match or "*"
+        keys = [k for k in {**self.lists, **self.strings} if fnmatch.fnmatch(k, pattern)]
+        return 0, keys
+
+    def pipeline(self):
+        return _Pipeline(self)
+
+
+class _Pipeline:
+    """Queues calls against the same fake and runs them in order on execute() —
+    enough to exercise the real pipeline call shape, not real atomicity."""
+
+    def __init__(self, redis_fake):
+        self._redis = redis_fake
+        self._calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def __getattr__(self, name):
+        def queue(*args, **kwargs):
+            self._calls.append((name, args, kwargs))
+            return self
+
+        return queue
+
+    def execute(self):
+        results = [getattr(self._redis, name)(*args, **kwargs) for name, args, kwargs in self._calls]
+        self._calls = []
+        return results
 
 
 def _anomaly(account, title):
@@ -395,24 +468,28 @@ def _anomaly(account, title):
     }
 
 
+ANOMALY_KEY = "grouped:%s:anomaly" % TENANT
+CLAIM_KEY = f"{ANOMALY_KEY}:claim"
+
+
 def _flush(service, items):
     service._group_tasks = {}
     service._flush_locks = defaultdict(asyncio.Lock)
-    redis = _Redis(items)
-    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis), service)
-    result = asyncio.run(handler._flush_group("grouped:%s:anomaly" % TENANT))
-    return result, redis
+    redis_fake = _Redis(items)
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+    result = asyncio.run(handler._flush_group(ANOMALY_KEY))
+    return result, redis_fake
 
 
 def test_grouped_anomalies_are_matched_as_troubleshooting_findings_one_by_one(monkeypatch):
     service = _service({PROD: [_deliver(OPS)], DEV: [_stop()]}, monkeypatch)
 
-    result, redis = _flush(
+    result, redis_fake = _flush(
         service, [_anomaly(PROD, "cpu"), _anomaly(DEV, "mem"), _anomaly(STAGE, "disk"), _anomaly(PROD, "io")]
     )
 
     assert result == {"status": "ok"}
-    assert redis.deleted == ["grouped:%s:anomaly" % TENANT]
+    assert redis_fake.deleted == [CLAIM_KEY, f"{CLAIM_KEY}:claimed_at", f"{ANOMALY_KEY}:due"]
     assert {entry[1] for entry in service.rule_matcher.seen} == {"troubleshoot"}
     assert [entry[0] for entry in service.rule_matcher.seen] == ["finding"] * 4
     sent = {json.dumps(channel): params for _type, channel, params in service.sent}
@@ -424,11 +501,11 @@ def test_grouped_anomalies_are_matched_as_troubleshooting_findings_one_by_one(mo
 def test_grouped_alerts_all_stopped_clear_the_group(monkeypatch):
     service = _service({PROD: [_stop()]}, monkeypatch)
 
-    result, redis = _flush(service, [_anomaly(PROD, "cpu")])
+    result, redis_fake = _flush(service, [_anomaly(PROD, "cpu")])
 
     assert result == {"status": "ok"}
     assert service.sent == []
-    assert redis.deleted == ["grouped:%s:anomaly" % TENANT]
+    assert redis_fake.deleted == [CLAIM_KEY, f"{CLAIM_KEY}:claimed_at", f"{ANOMALY_KEY}:due"]
 
 
 def test_grouped_alerts_during_a_timed_dont_send_are_dropped_not_held(monkeypatch):
@@ -436,11 +513,291 @@ def test_grouped_alerts_during_a_timed_dont_send_are_dropped_not_held(monkeypatc
     snooze = {**_stop(), "expires_at": until}
     service = _service({PROD: [snooze]}, monkeypatch)
 
-    result, redis = _flush(service, [_anomaly(PROD, "cpu")])
+    result, redis_fake = _flush(service, [_anomaly(PROD, "cpu")])
 
     assert result == {"status": "ok"}
     assert service.sent == []
-    assert redis.deleted == ["grouped:%s:anomaly" % TENANT]
+    assert redis_fake.deleted == [CLAIM_KEY, f"{CLAIM_KEY}:claimed_at", f"{ANOMALY_KEY}:due"]
+
+
+# ----------------------------- grouped alerts: claim race, partial failure, sweep -----------------------------
+
+
+def test_a_push_that_arrives_mid_flush_is_not_lost(monkeypatch):
+    service = _service({PROD: [_deliver(OPS)]}, monkeypatch)
+    redis_fake = _Redis([_anomaly(PROD, "cpu")])
+    original_rename = redis_fake.rename
+
+    def rename_then_concurrent_push(src, dst):
+        original_rename(src, dst)
+        redis_fake.lists[src] = [json.dumps(_anomaly(PROD, "late"))]
+
+    redis_fake.rename = rename_then_concurrent_push
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+
+    result = asyncio.run(handler._flush_group(ANOMALY_KEY))
+
+    assert result == {"status": "ok"}
+    assert [event["title"] for event in service.sent[0][2]["events"]] == ["cpu"]
+    assert redis_fake.lists[ANOMALY_KEY] == [json.dumps(_anomaly(PROD, "late"))]
+
+
+def test_a_push_that_arrives_mid_flush_gets_its_own_due_time(monkeypatch):
+    """The in-progress flush's due_key is still in the past when the new
+    push's enqueue() runs (its SET NX no-ops against it), so a fully
+    successful flush must re-arm due_key for the leftover item instead of
+    deleting it — otherwise nothing is left watching to flush it."""
+    service = _service({PROD: [_deliver(OPS)]}, monkeypatch)
+    redis_fake = _Redis([_anomaly(PROD, "cpu")])
+    original_rename = redis_fake.rename
+
+    def rename_then_concurrent_push(src, dst):
+        original_rename(src, dst)
+        redis_fake.lists[src] = [json.dumps(_anomaly(PROD, "late"))]
+
+    redis_fake.rename = rename_then_concurrent_push
+    redis_fake.strings[f"{ANOMALY_KEY}:due"] = str(int(time.time()) - 5)
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+
+    result = asyncio.run(handler._flush_group(ANOMALY_KEY))
+
+    assert result == {"status": "ok"}
+    assert ANOMALY_KEY in redis_fake.lists
+    assert int(redis_fake.strings[f"{ANOMALY_KEY}:due"]) > int(time.time())
+
+
+def test_a_push_that_arrives_while_everything_else_is_stopped_gets_its_own_due_time(monkeypatch):
+    """Same stranding risk as the full-send case, but through the "every
+    alert in the batch was stopped by rules" exit — the common case, not a
+    rare one, since snoozes and stop rules hit it routinely."""
+    service = _service({PROD: [_stop()]}, monkeypatch)
+    redis_fake = _Redis([_anomaly(PROD, "cpu")])
+    original_rename = redis_fake.rename
+
+    def rename_then_concurrent_push(src, dst):
+        original_rename(src, dst)
+        redis_fake.lists[src] = [json.dumps(_anomaly(PROD, "late"))]
+
+    redis_fake.rename = rename_then_concurrent_push
+    redis_fake.strings[f"{ANOMALY_KEY}:due"] = str(int(time.time()) - 5)
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+
+    result = asyncio.run(handler._flush_group(ANOMALY_KEY))
+
+    assert result == {"status": "ok"}
+    assert service.sent == []
+    assert ANOMALY_KEY in redis_fake.lists
+    assert int(redis_fake.strings[f"{ANOMALY_KEY}:due"]) > int(time.time())
+
+
+def test_partial_failure_retries_only_the_platform_that_failed(monkeypatch):
+    service = _service({}, monkeypatch)
+    service.installs = [
+        SimpleNamespace(id="slack-1", platform="slack", channels=DEFAULT, to_channel=None),
+        SimpleNamespace(id="teams-1", platform="ms_teams", channels=DEFAULT, to_channel=None),
+    ]
+    fail_platforms = {"ms_teams"}
+    attempted = []
+
+    async def send(_session, _tenant, kwargs, notification_type, platforms):
+        ip = platforms[0]
+        attempted.append(ip.platform)
+        if ip.platform in fail_platforms:
+            return [{"status": "failed", "platform": ip.platform}]
+        service.sent.append((notification_type, ip.to_channel, kwargs["parameters"]))
+        return [{"status": "success", "platform": ip.platform}]
+
+    service.send_template_notification = send
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    redis_fake = _Redis([_anomaly(PROD, "cpu")])
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+
+    first = asyncio.run(handler._flush_group(ANOMALY_KEY))
+
+    assert first["status"] == "partial_failure"
+    assert sorted(attempted) == ["ms_teams", "slack"]
+    assert [event["title"] for event in service.sent[0][2]["events"]] == ["cpu"]  # delivered to slack
+    requeued = json.loads(redis_fake.lists[ANOMALY_KEY][0])
+    assert requeued["retry_platforms"] == ["ms_teams"] and requeued["attempts"] == 1
+
+    attempted.clear()
+    service.sent.clear()
+    fail_platforms.clear()  # Teams recovers
+
+    second = asyncio.run(handler._flush_group(ANOMALY_KEY))
+
+    assert second == {"status": "ok"}
+    assert attempted == ["ms_teams"]  # Slack, already delivered, is not resent to
+    assert ANOMALY_KEY not in redis_fake.lists
+
+
+def test_exhausted_retries_drop_the_item_instead_of_holding_it_forever(monkeypatch):
+    monkeypatch.setattr(message_module.settings.notifications, "task_retry_count", 1)
+    service = _service({PROD: [_deliver(OPS)]}, monkeypatch)
+
+    async def always_fails(*_args, **_kwargs):
+        return [{"status": "failed", "platform": "slack"}]
+
+    service.send_template_notification = always_fails
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    redis_fake = _Redis([_anomaly(PROD, "cpu")])
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+
+    first = asyncio.run(handler._flush_group(ANOMALY_KEY))
+    assert first["status"] == "partial_failure"
+    assert json.loads(redis_fake.lists[ANOMALY_KEY][0])["attempts"] == 1
+
+    second = asyncio.run(handler._flush_group(ANOMALY_KEY))
+
+    assert second == {"status": "ok"}
+    assert ANOMALY_KEY not in redis_fake.lists
+
+
+def test_sweep_flushes_a_due_key_with_no_in_memory_timer(monkeypatch):
+    service = _service({PROD: [_deliver(OPS)]}, monkeypatch)
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    redis_fake = _Redis([_anomaly(PROD, "cpu")])
+    redis_fake.strings[f"{ANOMALY_KEY}:due"] = str(int(time.time()) - 5)
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+
+    asyncio.run(handler.sweep())
+
+    assert service.sent
+    assert f"{ANOMALY_KEY}:due" not in redis_fake.strings
+
+
+def test_sweep_resumes_a_claim_left_over_from_a_crashed_flush(monkeypatch):
+    service = _service({PROD: [_deliver(OPS)]}, monkeypatch)
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    redis_fake = _Redis([])
+    redis_fake.lists[CLAIM_KEY] = [json.dumps(_anomaly(PROD, "cpu"))]
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+
+    asyncio.run(handler.sweep())
+
+    assert service.sent
+    assert CLAIM_KEY not in redis_fake.lists
+
+
+def test_sweep_does_not_resume_a_claim_still_being_worked_on(monkeypatch):
+    """A fresh lease means a flush is still in progress elsewhere, not crashed."""
+    service = _service({PROD: [_deliver(OPS)]}, monkeypatch)
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    redis_fake = _Redis([])
+    redis_fake.lists[CLAIM_KEY] = [json.dumps(_anomaly(PROD, "cpu"))]
+    redis_fake.strings[f"{CLAIM_KEY}:claimed_at"] = str(int(time.time()) - 5)
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+
+    asyncio.run(handler.sweep())
+
+    assert service.sent == []
+    assert CLAIM_KEY in redis_fake.lists
+
+
+def test_sweep_resumes_a_claim_once_its_lease_goes_stale(monkeypatch):
+    service = _service({PROD: [_deliver(OPS)]}, monkeypatch)
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    redis_fake = _Redis([])
+    redis_fake.lists[CLAIM_KEY] = [json.dumps(_anomaly(PROD, "cpu"))]
+    stale_after = message_module.settings.notifications.grouped_claim_stale_seconds
+    redis_fake.strings[f"{CLAIM_KEY}:claimed_at"] = str(int(time.time()) - stale_after - 5)
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+
+    asyncio.run(handler.sweep())
+
+    assert service.sent
+    assert CLAIM_KEY not in redis_fake.lists
+
+
+def test_sweep_due_scan_defers_to_the_claim_scan_for_an_already_claimed_key(monkeypatch):
+    """A due key that's already claimed (even freshly, not stale) must not be
+    flushed again from the due-key scan — that's the claim scan's call, gated
+    on staleness. Otherwise the due scan would resend an in-progress batch."""
+    service = _service({PROD: [_deliver(OPS)]}, monkeypatch)
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    redis_fake = _Redis([])
+    redis_fake.lists[CLAIM_KEY] = [json.dumps(_anomaly(PROD, "cpu"))]
+    redis_fake.strings[f"{CLAIM_KEY}:claimed_at"] = str(int(time.time()) - 5)
+    redis_fake.strings[f"{ANOMALY_KEY}:due"] = str(int(time.time()) - 5)
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+
+    asyncio.run(handler.sweep())
+
+    assert service.sent == []
+    assert CLAIM_KEY in redis_fake.lists
+
+
+def test_claim_batch_second_caller_gets_none_while_lease_is_fresh(monkeypatch):
+    """Two pods' local timers (or a timer and a sweep) can both reach
+    _claim_batch for the same key — the lease (SET NX), not the RENAME, is
+    what must stop the second one from resending the batch the first already
+    claimed."""
+    service = _service({PROD: [_deliver(OPS)]}, monkeypatch)
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    redis_fake = _Redis([_anomaly(PROD, "cpu")])
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+
+    first = asyncio.run(handler._claim_batch(ANOMALY_KEY, CLAIM_KEY))
+    second = asyncio.run(handler._claim_batch(ANOMALY_KEY, CLAIM_KEY))
+
+    assert first == [json.dumps(_anomaly(PROD, "cpu"))]
+    assert second is None
+
+
+def test_claim_batch_releases_the_lease_when_nothing_is_queued(monkeypatch):
+    """A lease acquired for a claim that turns out empty must not linger —
+    otherwise it would block a later, real claim on the same key for up to
+    grouped_claim_stale_seconds."""
+    service = _service({PROD: [_deliver(OPS)]}, monkeypatch)
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    redis_fake = _Redis([])
+    redis_fake.lists = {}
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+
+    result = asyncio.run(handler._claim_batch(ANOMALY_KEY, CLAIM_KEY))
+
+    assert result == []
+    assert f"{CLAIM_KEY}:claimed_at" not in redis_fake.strings
+
+
+def test_losing_the_stale_claim_rename_race_does_not_delete_the_winners_lease(monkeypatch):
+    """Two pods both see a stale lease and both take it over; only one wins
+    the RENAME. The loser's ResponseError must not delete the lease the
+    winner now holds — that would let a third caller resend the same batch."""
+    service = _service({PROD: [_deliver(OPS)]}, monkeypatch)
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    fake_redis = _Redis([_anomaly(PROD, "cpu")])
+    stale_after = message_module.settings.notifications.grouped_claim_stale_seconds
+    fake_redis.strings[f"{CLAIM_KEY}:claimed_at"] = str(int(time.time()) - stale_after - 5)
+
+    def rename_but_another_pod_already_won(src, dst):
+        fake_redis.lists.pop(src, None)
+        fake_redis.lists[dst] = [json.dumps(_anomaly(PROD, "cpu"))]
+        raise redis.exceptions.ResponseError("no such key")
+
+    fake_redis.rename = rename_but_another_pod_already_won
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=fake_redis), service)
+
+    result = asyncio.run(handler._claim_batch(ANOMALY_KEY, CLAIM_KEY))
+
+    assert result is None
+    assert f"{CLAIM_KEY}:claimed_at" in fake_redis.strings
 
 
 def test_grouped_slo_items_are_matched_as_queued():
