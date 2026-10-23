@@ -2472,6 +2472,23 @@ func hasInProgressRecommendation(existingRecommendations []models.EventResolutio
 	return false, recommendationResolutionId
 }
 
+// staleWorkflowExecutionAge is how long an automation run may stay InProgress before it is given
+// up on. Workflow timeouts are per-definition, so this is a generous ceiling rather than the exact limit.
+const staleWorkflowExecutionAge = 24 * time.Hour
+
+// failStaleWorkflowExecutionResolutions fails automation runs that runbook-server never settled
+// (terminated, crashed before its final-status step, or out of retries), so they do not show
+// "In progress" on the alert forever.
+func failStaleWorkflowExecutionResolutions(ctx *security.RequestContext, dbms *database.DatabaseManager) error {
+	now := time.Now().UTC()
+	_, err := dbms.Db.Exec(`UPDATE event_resolution SET status = $1, updated_at = $2, status_message = $3
+		WHERE status = $4 AND type = $5 AND created_at < $6`,
+		models.RecommendationResolutionStatusFailed, now.Format(time.RFC3339), "automation run did not finish",
+		models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionTypeWorkflowExecution,
+		now.Add(-staleWorkflowExecutionAge))
+	return err
+}
+
 func UpdateResolutionStatus(ctx *security.RequestContext) error {
 	t0 := time.Now()
 	defer func() {
@@ -2483,11 +2500,17 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		return err
 	}
 
+	if err := failStaleWorkflowExecutionResolutions(ctx, dbms); err != nil {
+		ctx.GetLogger().Error("error failing stale workflow execution resolutions", "error", err)
+	}
+
 	// only check resolutions that are in progress and are user resolutions. A remediation run
 	// (CommandExecution) is settled by llm-server, which sent it; it has no adapter here.
+	// An automation run (WorkflowExecution) is settled by runbook-server, so it is skipped too;
+	// failStaleWorkflowExecutionResolutions covers the runs that never reported back.
 	rows, err := dbms.Db.Queryx(`SELECT id, created_at, updated_at, event_id, type, data, status, type_reference_id,
 			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
-		FROM event_resolution WHERE status = $1 AND resolver_type = $2 AND type <> 'CommandExecution'`, models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionResolverTypeUser)
+		FROM event_resolution WHERE status = $1 AND resolver_type = $2 AND type NOT IN ('CommandExecution', 'WorkflowExecution')`, models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionResolverTypeUser)
 	if err != nil {
 		ctx.GetLogger().Error("error getting event resolutions", "error", err)
 		return err
