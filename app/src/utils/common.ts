@@ -915,6 +915,8 @@ const UPPERCASE_ACRONYMS = new Set([
   'elb',
   'alb',
   'nlb',
+  'clb',
+  'lb',
   's3',
   'sqs',
   'sns',
@@ -947,6 +949,13 @@ const UPPERCASE_ACRONYMS = new Set([
   'cd',
   'llm',
   'mcp',
+  'vmss',
+  'aks',
+  'nsg',
+  'nic',
+  'cdn',
+  'kv',
+  'cfn',
 ]);
 
 /**
