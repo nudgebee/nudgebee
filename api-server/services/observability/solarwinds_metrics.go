@@ -1123,9 +1123,11 @@ var swAttrToLabel = map[string]string{
 	"k8s.daemonset.name":   "workload",
 	"k8s.pod.name":         "pod",
 	"k8s.container.name":   "container",
-	"service.name":         "workload_name",
-	"sw.transaction":       "span_name",
-	"otel.status_code":     "status_code",
+	// The claim keys' identity, under the name Prometheus and Datadog use.
+	"k8s.persistentvolumeclaim.name": "persistentvolumeclaim",
+	"service.name":                   "workload_name",
+	"sw.transaction":                 "span_name",
+	"otel.status_code":               "status_code",
 }
 
 // swGroupingsToQueryResult converts SWO measurement groupings into a QueryResult.

@@ -4105,6 +4105,10 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 				Instant:              instant,
 				Request:              buildSolarWindsRequestParams(meta, buildSolarWindsGroupBy(meta), "AVG", ""),
 			})
+			if err == nil {
+				out, err = swMergePlans(ctx, req, metricsProvider, integrationSource, out, queries,
+					buildSolarWindsNodePlans(meta, meta.RequestedMetrics), instant)
+			}
 		case meta.Namespace == "" && meta.Name == "" && meta.NodeName == "":
 			// Cluster-level needs separate API calls (different groupBy per metric group).
 			// The helper handles the calls, merges results, and post-processes percentiles.
@@ -4114,6 +4118,10 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 			// per entity the SUM must pre-group by.
 			queries = buildSolarWindsWorkloadQueries(meta, meta.RequestedMetrics)
 			out, err = fetchSolarWindsWorkloadUtilisation(ctx, req, metricsProvider, integrationSource, meta, queries, instant)
+			if err == nil {
+				out, err = swMergePlans(ctx, req, metricsProvider, integrationSource, out, queries,
+					buildSolarWindsWorkloadPlans(meta, meta.RequestedMetrics), instant)
+			}
 		}
 		if err != nil {
 			return out, err
