@@ -55,6 +55,9 @@ func policyWriteExecutor(readOnly bool) (*plannerExecutor, map[string]toolcore.N
 // A rule only removes the approval prompt; it must never let a write through
 // in a read-only run, so the read-only refusal happens before any rule lookup.
 func TestReadOnlyRunRefusesWriteBeforeApprovalRuleLookup(t *testing.T) {
+	previousDao := GetConversationDao()
+	SetConversationDao(readOnlyLoopDao{})
+	defer SetConversationDao(previousDao)
 	lookups := policyLookupCounter(t)
 	executor, nameToTool, action := policyWriteExecutor(true)
 

@@ -1206,6 +1206,9 @@ func (e *plannerExecutor) doIteration(
 				continue
 			}
 			if strings.EqualFold(action.Tool, toolcore.ToolExecuteShellCommand) {
+				if !shellTargetUnresolved(tool, action) {
+					continue
+				}
 				needsSequential = true
 				sequentialFallbackReason = "unresolved_shell_target"
 				break
@@ -2175,6 +2178,35 @@ func (e *plannerExecutor) recordFailedActionStep(action NBAgentPlannerToolAction
 	}
 }
 
+// shellTargetUnresolved reports whether a shell call may stop to ask which
+// target to run on. A command that names its own target (`kubectl --context x`)
+// never asks: followupForMultipleToolConfigs resolves it or refuses the call.
+func shellTargetUnresolved(owner toolcore.NBTool, action NBAgentPlannerToolAction) bool {
+	requested, err := actionRequestedTarget(owner, action)
+	return err != nil || requested == ""
+}
+
+// recordRefusedCall writes the tool-call row for a call refused before it ran
+// (no target named in an unattended run, an ambiguous or unsupported target, a
+// run-policy refusal). The planner sees the refusal as an observation; without
+// the row the transcript showed nothing, so the model's retry looked like its
+// first attempt.
+//
+// The row is final: SaveConversationToolCall does not update a row already in
+// 'error'. A single-call tool id is a hash of tool and arguments, so if the
+// identical call later runs in the same message its result is not saved over
+// this row. Retries normally change the call (adding --context), so this is rare.
+func (e *plannerExecutor) recordRefusedCall(step NBAgentPlannerToolActionStep) {
+	if e.toolCallbackHandler == nil || step.Action.ToolID == "" {
+		return
+	}
+	e.toolCallbackHandler.BeforeToolCall(step.Action)
+	e.toolCallbackHandler.AfterToolCallResponse(step.Action, toolcore.NBToolResponse{
+		Data:   step.Observation,
+		Status: toolcore.NBToolResponseStatusError,
+	})
+}
+
 // confirmationKeyForAction returns the key a write-confirmation is recorded and
 // checked under. Default is the tool name — one approval covers every later
 // call to that tool in the conversation. Tools implementing
@@ -2570,11 +2602,13 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	var targetErr error
 	action, targetErr = prepareDelegatedActionInput(tool, e.agentRequest.QueryConfig.DelegatedTarget, e.agentRequest.AccountId, action)
 	if targetErr != nil {
-		return NBAgentPlannerToolActionStep{
+		step := NBAgentPlannerToolActionStep{
 			Action:      action,
 			Observation: targetErr.Error(),
 			Status:      ToolStatusFailure,
-		}, nil, nil
+		}
+		e.recordRefusedCall(step)
+		return step, nil, nil
 	}
 	// validate user access
 	implType := toolcore.ImplTypeFor(tool)
@@ -2590,11 +2624,13 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		// a call with no request type would skip.
 		e.ctx.GetLogger().Info("plannerexecutor: run policy refused an unclassified tool call", "tool", action.Tool, "toolId", action.ToolID, "agent", e.agent.GetName())
 		common.MetricsToolOperationsTotal(implType, toolName, "read_only_refused", accountID)
-		return NBAgentPlannerToolActionStep{
+		step := NBAgentPlannerToolActionStep{
 			Action:      action,
 			Observation: refused.Observation,
 			Status:      ToolStatusFailure,
-		}, nil, nil
+		}
+		e.recordRefusedCall(step)
+		return step, nil, nil
 	}
 	if err2 != nil {
 		// Metrics: record fail
@@ -2611,7 +2647,9 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	if e.agentRequest.QueryConfig.DelegatedTarget != nil && requestType != nil && *requestType != toolcore.ToolRequestTypeRead {
 		if validator, ok := tool.(toolcore.WriteTargetInputValidator); ok {
 			if err := validator.ValidateWriteTargetInput(action.ToolInput); err != nil {
-				return NBAgentPlannerToolActionStep{Action: action, Observation: err.Error(), Status: ToolStatusFailure}, nil, nil
+				step := NBAgentPlannerToolActionStep{Action: action, Observation: err.Error(), Status: ToolStatusFailure}
+				e.recordRefusedCall(step)
+				return step, nil, nil
 			}
 		}
 	}
@@ -2633,12 +2671,17 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				if len(steps) > 0 {
 					step = steps[0]
 				}
+				if finish == nil {
+					e.recordRefusedCall(step)
+				}
 				return step, finish, nil
 			}
 			if requestType != nil && *requestType != toolcore.ToolRequestTypeRead {
 				selected, resolveErr := e.shellWriteTarget(owner, action)
 				if errors.Is(resolveErr, tools.ErrAmbiguousShellTarget) {
-					return NBAgentPlannerToolActionStep{Action: action, Observation: resolveErr.Error(), Status: ToolStatusFailure}, nil, nil
+					step := NBAgentPlannerToolActionStep{Action: action, Observation: resolveErr.Error(), Status: ToolStatusFailure}
+					e.recordRefusedCall(step)
+					return step, nil, nil
 				}
 				if resolveErr != nil {
 					return NBAgentPlannerToolActionStep{}, nil, resolveErr
@@ -2702,6 +2745,9 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			var fupStep NBAgentPlannerToolActionStep
 			if len(followupSteps) > 0 {
 				fupStep = followupSteps[0]
+			}
+			if followupFinish == nil {
+				e.recordRefusedCall(fupStep)
 			}
 			return fupStep, followupFinish, nil
 		}
@@ -2786,11 +2832,13 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				refusals := e.countReadOnlyRefusal()
 				e.ctx.GetLogger().Info("plannerexecutor: write refused in read-only run", "tool", action.Tool, "toolId", action.ToolID, logRequestType, requestType, "refusals", refusals)
 				common.MetricsToolOperationsTotal(toolcore.ImplTypeFor(tool), tool.Name(), "read_only_refused", e.agentRequest.AccountId)
-				return NBAgentPlannerToolActionStep{
+				step := NBAgentPlannerToolActionStep{
 					Action:      action,
 					Observation: readOnlyRefusal(*requestType, refusals),
 					Status:      ToolStatusFailure,
-				}, nil, nil
+				}
+				e.recordRefusedCall(step)
+				return step, nil, nil
 			}
 
 			// Read-only runs refuse writes above, before any rule is consulted:
