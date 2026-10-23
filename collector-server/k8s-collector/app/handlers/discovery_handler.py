@@ -2167,6 +2167,18 @@ def run_namespace_discovery(
     namespace_resources = []
 
     for k8s_data in data:
+        # A namespace the API server has begun deleting keeps appearing in every
+        # snapshot -- for months, when a finalizer is stuck -- and the agent
+        # hardcodes `deleted: false` for all of them, so `deleted` alone never
+        # retires one. Its contents are already reaped (no default ServiceAccount,
+        # no kube-root-ca.crt ConfigMap), so it is gone for every practical
+        # purpose and must not be offered as a live namespace. The agent has sent
+        # status.phase all along (runner/pkg/discovery/converters.go
+        # convertNamespace) and we simply dropped it. `or "Active"` rather than
+        # a .get() default so a missing key and an explicit null both fall back,
+        # keeping an agent too old to send phase behaving exactly as before.
+        is_live = not k8s_data.get("deleted", False) and (k8s_data.get("phase") or "Active") != "Terminating"
+
         namespace = {
             "name": k8s_data["name"],
             "tenant_id": tenant,
@@ -2174,7 +2186,7 @@ def run_namespace_discovery(
             "creation_time": k8s_data["creation_time"],
             "workload_count": k8s_data["workload_count"],
             "pod_count": k8s_data["pod_count"],
-            "is_active": not k8s_data.get("deleted", False),
+            "is_active": is_live,
         }
 
         # Create a mock resource for active resources tracking
@@ -2185,7 +2197,7 @@ def run_namespace_discovery(
         }
 
         namespaces.append(NamespaceDetails(**namespace))
-        if not k8s_data.get("deleted", False):
+        if is_live:
             namespace_resources.append(namespace_resource)
 
     # Stage + gated reconcile (completeness-based for batched snapshots, see
