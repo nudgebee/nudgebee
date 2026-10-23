@@ -9207,12 +9207,12 @@ var table_metadata = map[string]TableDefinition{
 			baseQuery := `(
 				WITH cr_base AS (
 					SELECT cr.region, cr.resourse_id, cr.service_name, cr.status, cr.name, cr.id,
-						cr.meta, cr.account, cr.tags, cr.created_at, cr.resourse_created_on, cr.type, cr.tenant
+						cr.meta, cr.account, cr.tags, cr.created_at, cr.resourse_created_on, cr.type, cr.tenant, cr.is_active
 					FROM cloud_resourses cr
 					__cr__where__
 				)
 				SELECT cr.region, cr.resourse_id, cr.service_name, cr.status, cr.name, cr.id,
-					cr.meta, cr.account, cr.tags, cr.created_at, cr.resourse_created_on, cr.type, cr.tenant,
+					cr.meta, cr.account, cr.tags, cr.created_at, cr.resourse_created_on, cr.type, cr.tenant, cr.is_active,
 					cr.meta ->> 'namespace' as namespace,
 					COALESCE(s.spend_amount, 0)::float as spend_amount,
 					m.metric as latest_metric,
@@ -9239,7 +9239,7 @@ var table_metadata = map[string]TableDefinition{
 
 			metricColumns := []string{"metric"}
 			// Columns that exist directly on cloud_resourses table and can be pushed down
-			crColumns := []string{"region", "resourse_id", "service_name", "status", "name", "id", "type", "account", "tenant", "created_at", "meta", "tags"}
+			crColumns := []string{"region", "resourse_id", "service_name", "status", "name", "id", "type", "account", "tenant", "created_at", "meta", "tags", "is_active"}
 
 			// splitWhereClause recursively separates filters into matched and remaining
 			var splitWhereClause func(where QueryWhereClause, matchColumns []string) (matched QueryWhereClause, remaining QueryWhereClause)
@@ -9333,6 +9333,7 @@ var table_metadata = map[string]TableDefinition{
 						"created_at":   {Type: ColumnDefinitionTypeDatetime},
 						"meta":         {Type: ColumnDefinitionTypeJson},
 						"tags":         {Type: ColumnDefinitionTypeJson},
+						"is_active":    {Type: ColumnDefinitionTypeBoolean},
 					},
 					Type:   Normal,
 					Def:    "cloud_resourses",
@@ -9393,6 +9394,7 @@ var table_metadata = map[string]TableDefinition{
 			"status":                  {Type: ColumnDefinitionTypeString},
 			"meta":                    {Type: ColumnDefinitionTypeJson},
 			"tags":                    {Type: ColumnDefinitionTypeJson},
+			"is_active":               {Type: ColumnDefinitionTypeBoolean},
 			"account":                 {Type: ColumnDefinitionTypeString},
 			"tenant":                  {Type: ColumnDefinitionTypeString},
 			"namespace":               {Type: ColumnDefinitionTypeString},

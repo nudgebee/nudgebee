@@ -176,6 +176,39 @@ func handleRecommendationAction(actionPayload *ActionRequest, c *gin.Context, tr
 
 		c.JSON(200, resp)
 		return
+	case "security_update_vm_active":
+		var request vmpackage.VMActiveRequest
+		payload := mlRequest
+		if mlRequest["object"] != nil {
+			obj, ok := mlRequest["object"].(map[string]interface{})
+			if !ok {
+				c.JSON(400, common.ErrorActionBadRequest("invalid object format"))
+				return
+			}
+			payload = obj
+		}
+		err := common.UnmarshalMapToStruct(payload, &request)
+		if err == nil {
+			err = common.ValidateStruct(request)
+		}
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		if err := vmpackage.UpdateVMActive(ctx, request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		c.JSON(200, map[string]string{"status": "success"})
+		return
 	case "security_scan_vm_account":
 		var request vmpackage.ScanAccountRequest
 		var err error

@@ -177,3 +177,121 @@ func retireOrphanedVMScanArtifacts(tx *sqlx.Tx, tenantID, priorAccountID string)
 
 	return nil
 }
+
+// VMActiveRequest is security_update_vm_active's input. IsActive is a pointer so
+// a missing field fails validation instead of silently decommissioning.
+type VMActiveRequest struct {
+	AccountId       string `json:"account_id" mapstructure:"account_id" validate:"required"`
+	CloudResourceId string `json:"cloud_resource_id" mapstructure:"cloud_resource_id" validate:"required"`
+	IsActive        *bool  `json:"is_active" mapstructure:"is_active" validate:"required"`
+}
+
+// UpdateVMActive decommissions (IsActive=false) or recommissions (IsActive=true) one
+// VM. Decommissioning soft-retires a VM that has left the network: the
+// cloud_resourses row goes inactive, its packages go inactive, and its open
+// vulnerability findings are archived. Nothing is deleted.
+//
+// Manual on purpose. No scan signal says a VM is gone — the sweep only probes
+// a few management ports and a stopped forager looks identical to a departed
+// host — so the operator decides, and the decision sticks: the sweep skips a
+// decommissioned host even while it still answers (see markVMSeen).
+//
+// Recommissioning only flips the VM row back to active; its packages and
+// findings return with the next sweep's scan, since the sweep skipped it while
+// it was decommissioned.
+//
+// Limited to rows in a SelfHosted account: rows under a cloud account belong to
+// cloud-collector, which retires them itself. Both the vm-<ip> placeholders and
+// the cloud-shaped rows resolveByIdentity files there are VMs of this page.
+//
+// The row is marked meta.nb_decommissioned so the sweep can tell an operator's
+// decision from cloud-collector retiring an instance (see resolveByIdentity).
+func UpdateVMActive(ctx *security.RequestContext, req VMActiveRequest) error {
+	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeCreate) {
+		return common.ErrorUnauthorized("unauthorized")
+	}
+
+	a, err := account.GetAccount(ctx, req.AccountId)
+	if err != nil {
+		return err
+	}
+	tenantID := ctx.GetSecurityContext().GetTenantId()
+	if a.Id == "" || a.Tenant != tenantID {
+		return common.ErrorBadRequest(fmt.Sprintf("vmpackage: account %s not found for this tenant", req.AccountId))
+	}
+	if a.CloudProvider != account.AccountProviderSelfHosted {
+		return common.ErrorBadRequest(fmt.Sprintf("vmpackage: account %s is not a self-hosted account", req.AccountId))
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return err
+	}
+	_, err = dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
+		if *req.IsActive {
+			return nil, reactivateVM(tx, tenantID, req.AccountId, req.CloudResourceId)
+		}
+		return nil, retireVM(tx, tenantID, req.AccountId, req.CloudResourceId)
+	})
+	if err != nil {
+		return fmt.Errorf("vmpackage: update VM active: %w", err)
+	}
+	return nil
+}
+
+// retireVM is UpdateVMActive's decommission write set, split out so it runs in one
+// transaction and can be tested without the account lookup.
+func retireVM(tx *sqlx.Tx, tenantID, accountID, cloudResourceID string) error {
+	res, err := tx.Exec(
+		`UPDATE cloud_resourses
+		 SET is_active = false, status = 'Inactive', updated_at = NOW(),
+		     meta = COALESCE(meta::jsonb, '{}'::jsonb) || '{"nb_decommissioned": true}'::jsonb
+		 WHERE id = $1 AND account = $2 AND tenant = $3`,
+		cloudResourceID, accountID, tenantID,
+	)
+	if err != nil {
+		return fmt.Errorf("retire VM %s: %w", cloudResourceID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return common.ErrorBadRequest(fmt.Sprintf("vmpackage: VM %s not found for this account", cloudResourceID))
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE vm_package SET is_active = false, updated_at = NOW()
+		 WHERE tenant_id = $1 AND cloud_resource_id = $2 AND is_active`,
+		tenantID, cloudResourceID,
+	); err != nil {
+		return fmt.Errorf("archive packages of %s: %w", cloudResourceID, err)
+	}
+
+	// archive-all-statuses: decommission, not a re-scan. The operator has said
+	// the VM is gone, so every finding on it is retired whoever owned its status.
+	if _, err := tx.Exec(
+		`UPDATE recommendation SET status = 'Archive', updated_at = NOW()
+		 WHERE tenant_id = $1 AND cloud_account_id = $2 AND resource_id = $3
+		   AND rule_name = $4 AND category = $5 AND status != 'Archive'`,
+		tenantID, accountID, cloudResourceID, recommendationRuleName, recommendationCategory,
+	); err != nil {
+		return fmt.Errorf("archive findings of %s: %w", cloudResourceID, err)
+	}
+	return nil
+}
+
+// reactivateVM undoes retireVM's row change. Packages and findings are not
+// restored here; the next scan of the host writes them.
+func reactivateVM(tx *sqlx.Tx, tenantID, accountID, cloudResourceID string) error {
+	res, err := tx.Exec(
+		`UPDATE cloud_resourses
+		 SET is_active = true, status = 'Active', updated_at = NOW(),
+		     meta = COALESCE(meta::jsonb, '{}'::jsonb) - 'nb_decommissioned'
+		 WHERE id = $1 AND account = $2 AND tenant = $3`,
+		cloudResourceID, accountID, tenantID,
+	)
+	if err != nil {
+		return fmt.Errorf("reactivate VM %s: %w", cloudResourceID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return common.ErrorBadRequest(fmt.Sprintf("vmpackage: VM %s not found for this account", cloudResourceID))
+	}
+	return nil
+}

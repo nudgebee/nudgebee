@@ -6,6 +6,8 @@ import SearchInput from '@ui/SearchInput';
 import { Label } from '@ui/Label';
 import { Chip } from '@ui/Chip';
 import { Button } from '@ui/Button';
+import { Modal } from '@ui/Modal';
+import { toast as snackbar } from '@ui/Toast';
 import Datetime from '@shared/format/Datetime';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { usePagination } from '@hooks/usePagination';
@@ -61,6 +63,8 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
   const [appliedSearch, setAppliedSearch] = useState('');
   const [scanTarget, setScanTarget] = useState<VmResource | null>(null);
   const [showAccountScan, setShowAccountScan] = useState(false);
+  const [decommissionTarget, setDecommissionTarget] = useState<VmResource | null>(null);
+  const [updatingActive, setUpdatingActive] = useState(false);
   const [scopedResourceIds, setScopedResourceIds] = useState<string[] | null>(null);
   const [fleetMetrics, setFleetMetrics] = useState<Record<string, VmFleetMetric>>({});
   const [fleetLoading, setFleetLoading] = useState(false);
@@ -233,6 +237,20 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
     setPage(0);
   };
 
+  const updateActive = (vm: VmResource, isActive: boolean, onDone?: () => void) => {
+    setUpdatingActive(true);
+    apiVm
+      .updateVmActive({ accountId, cloudResourceId: vm.id, isActive })
+      .then(() => {
+        snackbar.success(`${vm.name} ${isActive ? 'recommissioned. Its packages and findings return with the next scan' : 'decommissioned'}`);
+        onDone?.();
+        fetchVms();
+        fetchEnrichment();
+      })
+      .catch((error) => snackbar.error(error?.message || `Failed to ${isActive ? 'recommission' : 'decommission'} VM`))
+      .finally(() => setUpdatingActive(false));
+  };
+
   const tableData = vms.map((vm) => {
     const packages = packageCounts[vm.id];
     const severities = vulnCounts[vm.id];
@@ -263,9 +281,22 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
       },
       {
         component: canScan ? (
-          <Button id={`vm-scan-${vm.id}`} tone='secondary' size='sm' onClick={() => setScanTarget(vm)}>
-            Scan
-          </Button>
+          <Box sx={{ display: 'flex', gap: ds.space[2] }}>
+            {vm.is_active === false ? (
+              <Button id={`vm-recommission-${vm.id}`} tone='secondary' size='sm' disabled={updatingActive} onClick={() => updateActive(vm, true)}>
+                Recommission
+              </Button>
+            ) : (
+              <>
+                <Button id={`vm-scan-${vm.id}`} tone='secondary' size='sm' onClick={() => setScanTarget(vm)}>
+                  Scan
+                </Button>
+                <Button id={`vm-decommission-${vm.id}`} tone='secondary' size='sm' onClick={() => setDecommissionTarget(vm)}>
+                  Decommission
+                </Button>
+              </>
+            )}
+          </Box>
         ) : (
           <></>
         ),
@@ -365,6 +396,19 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
           if (started) fetchEnrichment();
         }}
       />
+
+      <Modal
+        open={Boolean(decommissionTarget)}
+        handleClose={() => setDecommissionTarget(null)}
+        title='Decommission VM?'
+        confirmText='Decommission'
+        onConfirm={() => decommissionTarget && updateActive(decommissionTarget, false, () => setDecommissionTarget(null))}
+        loader={updatingActive}
+        backdropClickClose={false}
+      >
+        {decommissionTarget?.name} will be marked Inactive, and its packages and open vulnerabilities archived. Scans skip it from now on, even if it
+        is still reachable.
+      </Modal>
 
       <ScanAccountDialog
         open={showAccountScan}

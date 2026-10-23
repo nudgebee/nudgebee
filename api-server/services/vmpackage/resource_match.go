@@ -58,6 +58,9 @@ import (
 type resolvedTarget struct {
 	CloudResourceID string
 	AccountID       string
+	// Decommissioned marks a host the operator retired (see UpdateVMActive):
+	// the caller must skip it rather than scan it or fall back to a placeholder.
+	Decommissioned bool
 }
 
 // resolveTargets resolves every host discovery_sweep found against
@@ -274,6 +277,11 @@ func resolveByIdentity(dbms *database.DatabaseManager, targetAccountID, ownAccou
 		SELECT id::text FROM cloud_resourses
 		WHERE account = $1 AND tenant = $2 AND is_active IS NOT FALSE
 		  AND cloud_provider ILIKE $3 AND resourse_id = $4`
+	const decommissionedLookup = `
+		SELECT id::text FROM cloud_resourses
+		WHERE account = $1 AND tenant = $2 AND is_active IS FALSE
+		  AND meta->>'nb_decommissioned' = 'true'
+		  AND cloud_provider ILIKE $3 AND resourse_id = $4`
 
 	id, ok, err := queryOneString(dbms, lookup, targetAccountID, tenantID, shape.CloudProvider, shape.ResourseID)
 	if err != nil {
@@ -284,6 +292,17 @@ func resolveByIdentity(dbms *database.DatabaseManager, targetAccountID, ownAccou
 			return resolvedTarget{}, err
 		}
 		return resolvedTarget{CloudResourceID: id, AccountID: targetAccountID}, nil
+	}
+
+	// An operator-decommissioned row is inactive, so the lookup above misses it
+	// and the insert below would collide with it. Report it instead, so the sweep
+	// skips the host and does not mint a duplicate placeholder.
+	id, ok, err = queryOneString(dbms, decommissionedLookup, targetAccountID, tenantID, shape.CloudProvider, shape.ResourseID)
+	if err != nil {
+		return resolvedTarget{}, fmt.Errorf("lookup decommissioned identity: %w", err)
+	}
+	if ok {
+		return resolvedTarget{CloudResourceID: id, AccountID: targetAccountID, Decommissioned: true}, nil
 	}
 
 	meta, err := json.Marshal(map[string]string{"PrivateIpAddress": host, "PublicIpAddress": identity.PublicIP})

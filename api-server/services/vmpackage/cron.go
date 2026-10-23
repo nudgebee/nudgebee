@@ -295,7 +295,7 @@ func findOrCreateVMResource(dbms *database.DatabaseManager, tenantID, accountID,
 		return id, nil
 	}
 
-	meta, err := json.Marshal(map[string]string{"PrivateIpAddress": ip})
+	meta, err := json.Marshal(map[string]string{"PrivateIpAddress": ip, "nb_source": "vmpackage"})
 	if err != nil {
 		return "", fmt.Errorf("vmpackage: marshal meta for %s: %w", resourceID, err)
 	}
@@ -321,6 +321,22 @@ func findOrCreateVMResource(dbms *database.DatabaseManager, tenantID, accountID,
 		return "", fmt.Errorf("vmpackage: read back cloud_resourse for %s: %w", resourceID, err)
 	}
 	return id, nil
+}
+
+// markVMSeen stamps first_seen/last_seen on a placeholder this package owns and
+// reports whether it is still active. A decommissioned one (see DecommissionVM)
+// is stamped but stays retired: the operator's call outlives the host still
+// answering the sweep, so the caller skips the scan.
+func markVMSeen(dbms *database.DatabaseManager, tenantID, accountID, cloudResourceID string) (bool, error) {
+	var active bool
+	err := dbms.Db.Get(&active,
+		`UPDATE cloud_resourses
+		 SET last_seen = now(), first_seen = COALESCE(first_seen, now())
+		 WHERE id = $1 AND account = $2 AND tenant = $3
+		 RETURNING is_active IS NOT FALSE`,
+		cloudResourceID, accountID, tenantID,
+	)
+	return active, err
 }
 
 // maxInt returns the largest value in vs, or 0 for an empty slice.
@@ -449,6 +465,11 @@ func scanTargetSafely(tenantCtx *security.RequestContext, dbms *database.Databas
 		return
 	}
 
+	if res.Decommissioned {
+		tenantCtx.GetLogger().Debug("vmpackage: VM decommissioned, skipping scan", "host", target.Host, "cloud_resource_id", res.CloudResourceID)
+		return
+	}
+
 	cloudResourceID, resolvedAccountID := res.CloudResourceID, res.AccountID
 	if cloudResourceID == "" {
 		// Tiers 0-2 (resource_match.go) found nothing under the associated
@@ -462,6 +483,14 @@ func scanTargetSafely(tenantCtx *security.RequestContext, dbms *database.Databas
 			return
 		}
 		resolvedAccountID = ds.AccountID
+		// Best-effort stamp: if it fails, scan as before rather than skip a live VM.
+		active, err := markVMSeen(dbms, ds.TenantID, ds.AccountID, cloudResourceID)
+		if err != nil {
+			tenantCtx.GetLogger().Warn("vmpackage: stamp last_seen failed", "cloud_resource_id", cloudResourceID, "error", err)
+		} else if !active {
+			tenantCtx.GetLogger().Debug("vmpackage: VM decommissioned, skipping scan", "host", target.Host, "cloud_resource_id", cloudResourceID)
+			return
+		}
 	}
 
 	attemptID := startScanAttempt(ds.TenantID, resolvedAccountID, cloudResourceID)

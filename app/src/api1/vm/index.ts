@@ -39,6 +39,8 @@ export interface VmResource {
   resourse_id: string;
   type: string;
   status: string;
+  /** false once decommissioned; the row stays listed so it can be recommissioned. */
+  is_active?: boolean;
   region: string;
   meta: Record<string, any>;
   tags: Record<string, any>;
@@ -174,6 +176,7 @@ query ListVms($limit: Int, $offset: Int) {
       resourse_id
       type
       status
+      is_active
       region
       meta
       tags
@@ -314,6 +317,17 @@ mutation ScanVm($accountId: String!, $datasourceId: String!, $cloudResourceId: S
     account_id: $accountId,
     datasource_id: $datasourceId,
     cloud_resource_id: $cloudResourceId
+  }) {
+    data
+  }
+}`;
+
+const UPDATE_VM_ACTIVE = `
+mutation UpdateVmActive($accountId: String!, $cloudResourceId: String!, $isActive: Boolean!) {
+  security_update_vm_active(object: {
+    account_id: $accountId,
+    cloud_resource_id: $cloudResourceId,
+    is_active: $isActive
   }) {
     data
   }
@@ -985,6 +999,21 @@ const apiVm = {
       throw new Error(errors[0]?.message || 'Failed to start VM scan');
     }
     return response?.data?.data?.security_scan_vm?.data || [];
+  },
+
+  /**
+   * Decommission (`isActive` false) a VM that has left the network, or recommission it (true).
+   * Decommissioning archives its packages and open vulnerability findings and makes scans skip
+   * it; the row stays in the list as Inactive. Recommissioning only reactivates the row — the
+   * next scan repopulates its packages and findings.
+   */
+  async updateVmActive({ accountId, cloudResourceId, isActive }: { accountId: string; cloudResourceId: string; isActive: boolean }) {
+    readCache.clear();
+    const response = await queryGraphQL(UPDATE_VM_ACTIVE, 'UpdateVmActive', { accountId, cloudResourceId, isActive });
+    const errors = response?.data?.errors;
+    if (errors?.length) {
+      throw new Error(errors[0]?.message || 'Failed to update VM');
+    }
   },
 
   /**
