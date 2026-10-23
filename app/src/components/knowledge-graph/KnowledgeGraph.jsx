@@ -911,6 +911,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
   const [selectedEdgeDetails, setSelectedEdgeDetails] = useState(null);
   const [isNodeDetailsLoading, setIsNodeDetailsLoading] = useState(false);
   const [isEdgeDetailsLoading, setIsEdgeDetailsLoading] = useState(false);
+  const [edgeDetailsUnavailable, setEdgeDetailsUnavailable] = useState(false);
   const [selectedNodeTypes, setSelectedNodeTypes] = useState([]);
   const [selectedLevel, setSelectedLevel] = useState(1);
   const [queryItems, setQueryItems] = useState([]);
@@ -1091,17 +1092,25 @@ const ServiceMapContent = ({ cardElevation, height }) => {
       // Open modal immediately with basic info, then fetch full edge details
       const requestId = ++edgeDetailRequestRef.current;
       setIsEdgeDetailsLoading(true);
+      setEdgeDetailsUnavailable(false);
       setSelectedEdgeDetails({ ...rawEdge, source_name: sourceName, destination_name: destName });
 
       try {
-        const response = await apiKubernetes1.knowledgeGraphGetEdge(rawEdge.id);
+        const response = await apiKubernetes1.knowledgeGraphGetEdge(rawEdge.id, rawEdge.source_node_id, rawEdge.dest_node_id);
         if (requestId !== edgeDetailRequestRef.current || !isMountedRef.current) return;
         const fullEdge = response?.data?.data?.kg_get_edge?.data;
         if (fullEdge) {
           setSelectedEdgeDetails({ ...fullEdge, source_name: sourceName, destination_name: destName });
+        } else {
+          // The graph edge only carries id/endpoints/type, so without the lookup
+          // the dialog has nothing to show. Say so rather than render it blank.
+          setEdgeDetailsUnavailable(true);
         }
       } catch (err) {
         console.error('Failed to fetch edge details:', err);
+        if (requestId === edgeDetailRequestRef.current && isMountedRef.current) {
+          setEdgeDetailsUnavailable(true);
+        }
       } finally {
         if (requestId === edgeDetailRequestRef.current && isMountedRef.current) {
           setIsEdgeDetailsLoading(false);
@@ -2424,7 +2433,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
             <CircularProgress size={40} />
           </Box>
         ) : (
-          <EdgeDetails edge={selectedEdgeDetails} />
+          <EdgeDetails edge={selectedEdgeDetails} detailsUnavailable={edgeDetailsUnavailable} />
         )}
       </Modal>
 

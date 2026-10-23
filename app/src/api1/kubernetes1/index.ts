@@ -2142,8 +2142,14 @@ const apiKubernetes1 = {
   knowledgeGraphGetNode: async function (nodeId: string) {
     return await queryGraphQL(KG_GET_NODE.replace('__WHERE__', gqlStringify({ node_id: nodeId })), 'KgGetNode', {});
   },
-  knowledgeGraphGetEdge: async function (edgeId: string) {
-    return await queryGraphQL(KG_GET_EDGE.replace('__WHERE__', gqlStringify({ edge_id: edgeId })), 'KgGetEdge', {});
+  // The endpoints are sent alongside the id because Pod edges are synthesized at
+  // read time and stored nowhere: their uuid5 id can't be reversed to the pod it
+  // was built from, so the server needs the endpoints to resolve one (#41504).
+  knowledgeGraphGetEdge: async function (edgeId: string, sourceNodeId?: string, destNodeId?: string) {
+    const request: Record<string, string> = { edge_id: edgeId };
+    if (sourceNodeId) request.source_node_id = sourceNodeId;
+    if (destNodeId) request.dest_node_id = destNodeId;
+    return await queryGraphQL(KG_GET_EDGE.replace('__WHERE__', gqlStringify(request)), 'KgGetEdge', {});
   },
   knowledgeGraphCloudAccounts: async function () {
     const QUERY = `

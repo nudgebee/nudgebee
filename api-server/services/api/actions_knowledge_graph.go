@@ -545,6 +545,11 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 	case "kg_get_edge":
 		var req struct {
 			EdgeID string `json:"edge_id"`
+			// Optional endpoints of the edge being asked for. Read only when
+			// edge_id matches no stored row, to resolve the read-time-synthesized
+			// Pod edges, whose uuid5 ID can't be reversed to its pod (#41504).
+			SourceNodeID string `json:"source_node_id"`
+			DestNodeID   string `json:"dest_node_id"`
 		}
 		err := common.UnmarshalMapToStruct(kgRequest, &req)
 		if err != nil {
@@ -571,7 +576,7 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 			return
 		}
 		kgService := core.NewService(ctx, ctx.GetLogger(), dbManager)
-		edge, err := kgService.GetEdgeByID(req.EdgeID)
+		edge, err := kgService.GetEdgeByIDWithEndpoints(req.EdgeID, req.SourceNodeID, req.DestNodeID)
 		if err != nil {
 			common.MetricsApiRequestsFailedTotal(c.Request.Context(), "knowledge_graph", "get_edge_error")
 			ctx.GetLogger().Error("failed to get edge by id", "error", err, "id", req.EdgeID)

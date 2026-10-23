@@ -5705,6 +5705,8 @@ input kg_get_node_input {
 
 input kg_get_edge_input {
   edge_id: String!
+  source_node_id: String
+  dest_node_id: String
 }
 
 input kg_get_filter_options_input {

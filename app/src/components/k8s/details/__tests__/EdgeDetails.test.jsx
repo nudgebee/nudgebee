@@ -47,6 +47,28 @@ describe('EdgeDetails', () => {
     expect(screen.queryByText('Derived From')).not.toBeInTheDocument();
   });
 
+  // #41504: the dialog opens on the graph's edge object, which carries a
+  // client-side `relationshipLabel` for the hover tooltip. It is not a label of
+  // the edge, and it used to be the only row a failed lookup left on screen.
+  it('never lists the client-side relationshipLabel as a label', () => {
+    render(<EdgeDetails edge={edgeFor({ relationshipLabel: 'Runs As' })} />);
+
+    expect(screen.queryByText('Relationship Label')).not.toBeInTheDocument();
+    expect(screen.queryByText('Runs As')).not.toBeInTheDocument();
+    expect(rowValue('Relationship Type')).toBe('RUNS_AS');
+  });
+
+  it('says so when the full details could not be fetched, instead of rendering blank', () => {
+    const { unmount } = render(<EdgeDetails edge={edgeFor()} />);
+    expect(screen.queryByTestId('edge-details-unavailable')).not.toBeInTheDocument();
+    unmount();
+
+    render(<EdgeDetails edge={edgeFor()} detailsUnavailable={true} />);
+    expect(screen.getByTestId('edge-details-unavailable')).toHaveTextContent('Full details are unavailable for this relationship.');
+    // The endpoints are still worth showing — only the lookup failed.
+    expect(rowValue('From')).toBe('checkout-lambda');
+  });
+
   it('joins several collectors and falls back to the top-level source', () => {
     const { unmount } = render(<EdgeDetails edge={edgeFor({ properties: { contributing_sources: ['ebpf', 'traces'] } })} />);
     expect(rowValue('Detected By')).toBe('ebpf, traces');

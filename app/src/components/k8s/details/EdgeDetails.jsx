@@ -5,7 +5,7 @@ import { ListingLayout } from '@ui/ListingLayout';
 import Datetime from '@shared/format/Datetime';
 import { flattenObject } from '@lib/util';
 
-const EdgeDetails = ({ edge }) => {
+const EdgeDetails = ({ edge, detailsUnavailable = false }) => {
   const keysToFilter = [
     'cloud_account_id',
     'dest_node_id',
@@ -16,6 +16,9 @@ const EdgeDetails = ({ edge }) => {
     'created_at',
     'source',
     'properties',
+    // Client-side only: the graph adds it for the edge hover tooltip, and it is
+    // not one of the edge's labels (#41504).
+    'relationshipLabel',
   ];
   const safeEdge = edge || {};
   const { properties, source_name, destination_name, ...rest } = safeEdge;
@@ -51,6 +54,20 @@ const EdgeDetails = ({ edge }) => {
             sxSecondary={true}
           />
         </Box>
+
+        {detailsUnavailable && (
+          <Box
+            sx={{
+              mb: 'var(--ds-space-3)',
+              color: 'var(--ds-gray-600)',
+              fontSize: 'var(--ds-text-body)',
+              fontFamily: 'var(--ds-font-display)',
+            }}
+            data-testid='edge-details-unavailable'
+          >
+            Full details are unavailable for this relationship.
+          </Box>
+        )}
 
         <CustomTable
           tableData={convertedJson2}

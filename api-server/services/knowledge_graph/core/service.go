@@ -4248,6 +4248,21 @@ func (s *Service) GetNodeByID(nodeID string) (*KgNode, error) {
 
 // GetEdgeByID retrieves a single KgEdge by its ID
 func (s *Service) GetEdgeByID(edgeID string) (*KgEdge, error) {
+	return s.GetEdgeByIDWithEndpoints(edgeID, "", "")
+}
+
+// GetEdgeByIDWithEndpoints retrieves a single KgEdge by its ID, falling back to
+// the pod synthesizer when the ID names an edge that is built at read time
+// rather than stored (#41504).
+//
+// Why the endpoints: a synth edge's ID is GenerateEdgeID(src, dst, rel) — a
+// uuid5 — so unlike a synth Pod's ID (which *is* its k8s_pods.cloud_resource_id,
+// hence GetNodeByID's fallback needs nothing extra) it carries no way back to
+// the pod it was built from. The endpoint IDs the caller already holds supply
+// that. They are hints only: the edge returned is one the synthesizer itself
+// produced with this ID, so endpoints that don't belong together yield the same
+// nil as before rather than a fabricated edge.
+func (s *Service) GetEdgeByIDWithEndpoints(edgeID, sourceNodeID, destNodeID string) (*KgEdge, error) {
 	if s.ctx == nil || s.ctx.GetSecurityContext() == nil {
 		return nil, nil
 	}
@@ -4256,13 +4271,53 @@ func (s *Service) GetEdgeByID(edgeID string) (*KgEdge, error) {
 		return nil, err
 	}
 	if dbEdge == nil {
-		return nil, nil
+		return s.synthEdgeByID(edgeID, sourceNodeID, destNodeID)
 	}
 	kgEdge := ConvertDbEdgeToKgEdge(dbEdge)
 	// Edge Details shows this as the edge's origin; an edge rewritten by a resource
 	// patch carries it only here, not in properties.contributing_sources (#40706).
 	kgEdge.Source = dbEdge.Source
 	return &kgEdge, nil
+}
+
+// synthEdgeByID resolves an edge the pod synthesizer builds at read time:
+// Workload→Pod MANAGES and Pod→Node RUNS_ON. Scoped to the caller's tenant for
+// the same reason GetNodeByID's fallback is — a globally unique UUID doesn't
+// imply authorisation.
+func (s *Service) synthEdgeByID(edgeID, sourceNodeID, destNodeID string) (*KgEdge, error) {
+	if s.podSynth == nil || s.ctx == nil || edgeID == "" {
+		return nil, nil
+	}
+	secCtx := s.ctx.GetSecurityContext()
+	if secCtx == nil {
+		return nil, nil
+	}
+	tenantID := secCtx.GetTenantId()
+	if tenantID == "" {
+		return nil, nil
+	}
+	// A synth edge has the Pod at exactly one end — the destination for MANAGES,
+	// the source for RUNS_ON — so both are tried and the non-pod end resolves to
+	// nothing. NeighborsForPod returns both of a pod's edges, so matching on ID
+	// is enough to pick the one asked for.
+	for _, podID := range []string{destNodeID, sourceNodeID} {
+		if podID == "" {
+			continue
+		}
+		_, _, edges, err := s.podSynth.NeighborsForPod(tenantID, podID)
+		if err != nil {
+			return nil, err
+		}
+		for _, edge := range edges {
+			if edge.ID != edgeID {
+				continue
+			}
+			kgEdge := ConvertDbEdgeToKgEdge(edge)
+			kgEdge.Source = edge.Source
+			return &kgEdge, nil
+		}
+	}
+	return nil, nil
 }
 
 // FilterOptions represents available filter options for the UI
