@@ -16,6 +16,7 @@ import (
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -647,7 +648,7 @@ Do not generalise from it to the other four types.
   "id": "string (required)",
   "description": "string (optional)",
   "type": "string (optional)",        // e.g., "string", "json", "number", "boolean"
-  "default": any (optional),
+  "default": any (optional),          // a plain value, used as written and never rendered: no {{ }} templates
   "required": bool (optional)
 }
 
@@ -1203,8 +1204,8 @@ QUESTION STYLE:
 
 DO NOT INVENT RESOURCE VALUES:
 - Specific resource names (Slack channels, k8s namespaces, S3 buckets, DB tables, repo names, etc.) MUST come from the context above. Never guess or fabricate them.
-- Slack channel: if the automation posts to Slack, the request names no channel, and no key under AVAILABLE CONFIGS holds the channel to use, ask where to post — as a question with "kind": "chat_channel" and an empty options list. Never propose channel names yourself: the user types the channel and it is checked against the workspace. If the user skips, the workflow uses {{ Configs.slack_channel }} as a placeholder.
-- Slack direct message: if the automation sends a Slack direct message to a person, always ask who gets it — as a question with "kind": "chat_user", an empty options list, and "recipient" set to the person exactly as the request names them (empty when it names nobody). Never propose people or Slack IDs yourself: the name is looked up in the workspace, and the question is shown only when that lookup does not find exactly one person. If the user skips, the workflow uses {{ Configs.slack_user_id }} as a placeholder.
+- Slack channel: if the automation posts to Slack, the request names no channel, and no key under AVAILABLE CONFIGS holds the channel to use, ask where to post — as a question with "kind": "chat_channel" and an empty options list. Never propose channel names yourself: the user types the channel and it is checked against the workspace. If the user skips, the step that posts uses {{ Configs.slack_channel }} as a placeholder in its params, never as an input's default.
+- Slack direct message: if the automation sends a Slack direct message to a person, always ask who gets it — as a question with "kind": "chat_user", an empty options list, and "recipient" set to the person exactly as the request names them (empty when it names nobody). Never propose people or Slack IDs yourself: the name is looked up in the workspace, and the question is shown only when that lookup does not find exactly one person. If the user skips, the step that sends uses {{ Configs.slack_user_id }} as a placeholder in its params, never as an input's default.
 - Any other resource value that is not enumerated in the context above: do not ask about it here. Defer to {{ Configs.<key> }} or workflow Inputs.
 
 WHEN TO RETURN ZERO QUESTIONS:
@@ -3362,7 +3363,7 @@ func getWorkflowToolDescriptions() string {
 	tools := []workflowToolDef{
 		{
 			Name:        "init_workflow",
-			Description: "Initialize a new automation with name, triggers, and optional inputs. Call this first when creating a new automation. Valid trigger types: manual, schedule, webhook, event, optimization (see TRIGGER STRUCTURE and TRIGGER TYPES for the params each one needs). A trigger has exactly two keys you write: \"type\" and \"params\". Every setting goes inside \"params\" — a setting at the trigger's top level is rejected. Only \"manual\" needs no params. Automation-level settings the plan asks for (timeout, retry_policy, hooks, output, set_execution_tags, tags) are also set here, as extra keys — no other tool sets them; to change one after tasks exist, call init_workflow again with just the settings.",
+			Description: "Initialize a new automation with name, triggers, and optional inputs. Call this first when creating a new automation. Valid trigger types: manual, schedule, webhook, event, optimization (see TRIGGER STRUCTURE and TRIGGER TYPES for the params each one needs). A trigger has exactly two keys you write: \"type\" and \"params\". Every setting goes inside \"params\" — a setting at the trigger's top level is rejected. Only \"manual\" needs no params. Automation-level settings the plan asks for (timeout, retry_policy, hooks, output, set_execution_tags, tags) are also set here, as extra keys — no other tool sets them; to change one after tasks exist, call init_workflow again with just the settings. Inputs change the same way: call init_workflow again with just \"inputs\", and each one replaces the input with the same id or is added; inputs you leave out are kept.",
 			Params:      `{"name": "string", "triggers": [{"type": "schedule", "params": {"cron": "0 9 * * *", "overlap_policy": "Skip"}}], "inputs": [{"id": "ns", "type": "string", "default": "nudgebee"}]}`,
 		},
 		{
@@ -3451,11 +3452,25 @@ func (a *WorkflowBuilderAgent) toolInitWorkflow(ctx *security.RequestContext, ar
 	if a.state.WorkingWorkflow != nil {
 		if def, ok := a.state.WorkingWorkflow["definition"].(map[string]interface{}); ok {
 			if tasks, ok := def["tasks"].([]interface{}); ok && len(tasks) > 0 {
-				// Settings are the one thing a second call may change. No other tool sets them,
-				// so a setting that validate rejects could not otherwise be corrected without
+				// Settings and inputs are what a second call may change. No other tool sets them,
+				// so one that validate rejects could not otherwise be corrected without
 				// discarding the tasks.
-				if set := a.applyAutomationSettings(args); len(set) > 0 {
-					return fmt.Sprintf("Automation settings updated: %s. The name, triggers, inputs and %d task(s) were left as they are.", strings.Join(set, ", "), len(tasks))
+				var inputIds []string
+				if raw, given := args["inputs"]; given {
+					if inputIds = mergeInputs(def, raw); len(inputIds) == 0 {
+						return `Error: "inputs" must be a list of inputs, each with an "id". Nothing was changed.`
+					}
+				}
+				set := a.applyAutomationSettings(args)
+				otherInputs := "inputs"
+				if len(inputIds) > 0 {
+					otherInputs = "other inputs"
+				}
+				for _, id := range inputIds {
+					set = append(set, "input "+id)
+				}
+				if len(set) > 0 {
+					return fmt.Sprintf("Automation settings updated: %s. The name, triggers, %s and %d task(s) were left as they are.", strings.Join(set, ", "), otherInputs, len(tasks))
 				}
 				return fmt.Sprintf("Warning: automation already has %d task(s). Use modify_task/add_task/delete_task to change it, or call finalize to complete it. Re-initializing would discard all existing tasks.", len(tasks))
 			}
@@ -3516,6 +3531,43 @@ var (
 	initWorkflowDefinitionSettings = []string{"hooks", "output", "set_execution_tags", "retry_policy", "timeout"}
 	initWorkflowTopLevelSettings   = []string{"tags", "status"}
 )
+
+// mergeInputs puts each input in raw into the definition, in place of the input with the same id
+// or as a new one, and returns their ids. Inputs raw does not name are kept. Unless raw is a list
+// of inputs that all have an id, nothing changes and no ids are returned.
+func mergeInputs(definition map[string]interface{}, raw interface{}) []string {
+	given, _ := raw.([]interface{})
+	for _, item := range given {
+		input, _ := item.(map[string]interface{})
+		if id, _ := input["id"].(string); id == "" {
+			return nil
+		}
+	}
+	inputs, _ := definition["inputs"].([]interface{})
+	var ids []string
+	for _, item := range given {
+		input := item.(map[string]interface{})
+		id := input["id"].(string)
+		replaced := false
+		for i, existing := range inputs {
+			if existingInput, _ := existing.(map[string]interface{}); existingInput["id"] == id {
+				inputs[i] = input
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			inputs = append(inputs, input)
+		}
+		if !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) > 0 {
+		definition["inputs"] = inputs
+	}
+	return ids
+}
 
 // applyAutomationSettings copies the automation-level settings present in args onto the working
 // automation, as given, and returns the keys it set.
@@ -4683,6 +4735,10 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 	if err != nil {
 		errMsg := common.SanitizeErrorMessage(err.Error())
 
+		if strings.Contains(errMsg, "an input default is used as written") {
+			return fmt.Sprintf("Validation FAILED: %s\n\nOnly init_workflow changes inputs: call it with just \"inputs\", giving each named input no default and \"required\": false. Then, with set_task_params, make the step that reads the input fall back to the template, as in {{ Inputs.<id> or Configs.<key> }}, so a caller can still override it. Call validate again.", errMsg)
+		}
+
 		// Structural errors (missing depends_on, unknown task types, bad params) are always hard failures.
 		// These indicate real bugs in the workflow definition that must be fixed.
 		structuralErrorPatterns := []string{
@@ -5334,7 +5390,7 @@ type toolLoopOptions struct {
 	//
 	// Only a build may set it. Every part of a new automation is set through tools — name,
 	// triggers, inputs and settings by init_workflow, tasks by the task tools — but no tool
-	// changes the triggers, inputs, settings or name of an existing one, so an edit still makes
+	// changes the triggers, settings or name of an existing one, so an edit still makes
 	// those changes in its closing answer.
 	commitOnFinalize bool
 

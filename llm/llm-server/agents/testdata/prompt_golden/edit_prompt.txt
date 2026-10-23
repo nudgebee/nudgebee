@@ -96,7 +96,7 @@ Do not generalise from it to the other four types.
   "id": "string (required)",
   "description": "string (optional)",
   "type": "string (optional)",        // e.g., "string", "json", "number", "boolean"
-  "default": any (optional),
+  "default": any (optional),          // a plain value, used as written and never rendered: no {{ }} templates
   "required": bool (optional)
 }
 

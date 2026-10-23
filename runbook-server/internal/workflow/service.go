@@ -4424,6 +4424,10 @@ func (s *Service) ValidateWorkflow(ctx *security.RequestContext, accountId strin
 		return common.ErrorBadRequest(err.Error())
 	}
 
+	if err := ValidateUnrenderedInputs(wf.Definition); err != nil {
+		return common.ErrorBadRequest(err.Error())
+	}
+
 	// Surface non-fatal date-format lint warnings (e.g. mixing strftime %-codes with
 	// the Go reference layout) without blocking the save.
 	for _, w := range LintTemplates(wf.Definition.Tasks) {

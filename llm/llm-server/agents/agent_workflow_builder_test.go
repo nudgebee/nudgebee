@@ -1862,7 +1862,7 @@ func TestClarificationPrompt_AsksForTheSlackChannelWithoutNamingAny(t *testing.T
 	assert.NotRegexp(t, `(?i)do not ask which slack channel`, prompt)
 
 	// (3) The placeholder survives only as what happens when the user skips the question.
-	assert.Regexp(t, `(?i)if the user skips, the workflow uses \{\{ Configs\.slack_channel \}\}`, prompt)
+	assert.Regexp(t, `(?i)if the user skips, the step that posts uses \{\{ Configs\.slack_channel \}\}`, prompt)
 }
 
 // TestParseClarifyingQuestionsJSON covers the shared post-processing used by both the create- and
