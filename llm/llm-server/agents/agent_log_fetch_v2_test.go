@@ -255,8 +255,9 @@ func TestBuildCanonicalLogQueryPrompt(t *testing.T) {
 
 	t.Run("advertises the canonical field mapping", func(t *testing.T) {
 		assert.Contains(t, p, "Canonical fields for THIS backend")
-		assert.Contains(t, p, "app → app")
-		assert.Contains(t, p, "content → log")
+		assert.Contains(t, p, "- app\n")
+		assert.Contains(t, p, "- content\n")
+		assert.NotContains(t, p, "→ log")
 	})
 
 	t.Run("forbids service_name (the OTel prior the model leaks)", func(t *testing.T) {

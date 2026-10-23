@@ -863,6 +863,16 @@ type ProviderCapabilities struct {
 	// emits a provider-independent where clause that services-server resolves.
 	// Empty when the backend omits it — callers fall back to provider-native labels.
 	LabelMappings map[string]string `json:"label_mappings"`
+	// CanonicalFields is the provider-independent log vocabulary this backend will
+	// resolve, minus anything it declares it cannot (services-server subtracts
+	// GetIgnoredQueryRequestKeys — e.g. Dynatrace and New Relic strip `trace_id`).
+	//
+	// This is the list the query generator should advertise, and it is why
+	// llm-server no longer invents a field name of its own: before #39573 nothing
+	// told it what the backend accepted, so QueryLabels stapled a synthetic `_body`
+	// onto every provider. Empty when the backend predates that — callers fall back
+	// to the old behaviour. Logs only; traces and metrics leave it unset.
+	CanonicalFields []string `json:"canonical_fields"`
 }
 
 type ObservabilityProvider struct {

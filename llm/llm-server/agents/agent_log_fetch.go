@@ -1825,8 +1825,8 @@ func providerSpecificQueryExamples(provider string) []core.NBAgentPromptExample 
 			},
 			{
 				Question:    "Get error logs for app 'web-api'.",
-				Answer:      `{"where": {"app":{"_eq":"web-api"}, "_body":{"_ilike":"%error%"}}}`,
-				Explanation: "Available Labels - app, _body. PRIORTIZE `app` over `k8s_deployment_name` if both are present",
+				Answer:      `{"where": {"app":{"_eq":"web-api"}, "message":{"_ilike":"%error%"}}}`,
+				Explanation: "Available Labels - app, message. PRIORTIZE `app` over `k8s_deployment_name` if both are present",
 			},
 			{
 				Question:    "Find logs for app 'web-api' in namespace 'prod'.",
@@ -1840,7 +1840,7 @@ func providerSpecificQueryExamples(provider string) []core.NBAgentPromptExample 
 			},
 			{
 				Question:    "Get logs for the api-server pod containing 'timeout'.",
-				Answer:      `{"where": {"app":{"_eq":"api-server"}, "_body":{"_ilike":"%timeout%"}}}`,
+				Answer:      `{"where": {"app":{"_eq":"api-server"}, "message":{"_ilike":"%timeout%"}}}`,
 				Explanation: "Use `app` to identify a service/pod by name — pod names have random suffixes (e.g. api-server-7f8b9c-x2k). Only use `pod` with `_like` for prefix patterns.",
 			},
 			{
@@ -1860,7 +1860,7 @@ func providerSpecificQueryExamples(provider string) []core.NBAgentPromptExample 
 			},
 			{
 				Question:    "Show me errors from the checkout-api service in the last 15 minutes.",
-				Answer:      `{"where": {"app":{"_eq":"checkout-api"}, "_body":{"_ilike":"%error%"}}, "range": "15m"}`,
+				Answer:      `{"where": {"app":{"_eq":"checkout-api"}, "message":{"_ilike":"%error%"}}, "range": "15m"}`,
 				Explanation: "English phrasing 'the X service' / 'X service' means workload=X. In Loki this is the `app` label (or `job` / `container` if `app` is not in Fields). Never emit `service_name`, `service.name`, or `kubernetes.labels.app` unless they appear in the injected Fields list.",
 			},
 			{
@@ -1876,7 +1876,7 @@ func providerSpecificQueryExamples(provider string) []core.NBAgentPromptExample 
 			{
 				Question:    "Get all logs for checkout-api last 1h, limit 2000.",
 				Answer:      `{"where": {"app":{"_eq":"checkout-api"}}, "limit": 2000, "range": "1h"}`,
-				Explanation: "Broad investigation fetch — NO `_body` filter, NO `direction` (Loki defaults to backward = newest first, which surfaces the most recent error window in the response). For 24h-of-history fixtures and long-lived services, forward+limit would truncate before reaching the error window. The orchestrator can issue a narrow forward second-pass around a specific error timestamp once it's identified.",
+				Explanation: "Broad investigation fetch — NO `message` filter, NO `direction` (Loki defaults to backward = newest first, which surfaces the most recent error window in the response). For 24h-of-history fixtures and long-lived services, forward+limit would truncate before reaching the error window. The orchestrator can issue a narrow forward second-pass around a specific error timestamp once it's identified.",
 			},
 			{
 				Question:    "After finding the first error at 2026-05-06T14:30:15Z, get the 5 minutes of context just before it.",

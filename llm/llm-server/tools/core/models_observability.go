@@ -214,6 +214,12 @@ type ObservabilityTraceRawTable struct {
 type ObservabilityLogLabel struct {
 	Label      string         `json:"label"`
 	Attributes map[string]any `json:"attributes"`
+	// Kind and Field are services-server's verdict on the name: Kind "field" when the
+	// backend itself reported it, "alias" when services-server translates it, with
+	// Field naming the reported backend field it translates to when there is one.
+	// Both are empty when the backend reported nothing.
+	Kind  string `json:"kind,omitempty"`
+	Field string `json:"field,omitempty"`
 }
 
 type ObservabilityLogLabelResponse struct {

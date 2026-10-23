@@ -709,11 +709,9 @@ func buildCanonicalLogQueryPrompt(provider services_server.ObservabilityProvider
 	}
 	hasOp := func(op string) bool { _, ok := opSet[op]; return ok }
 
-	canonical := make([]string, 0, len(labelMappings))
-	for k := range labelMappings {
-		canonical = append(canonical, k)
-	}
-	sort.Strings(canonical)
+	// Prefer what the backend says it will resolve; fall back to the mapping keys,
+	// which is what this prompt used before `canonical_fields` existed (#39573).
+	canonical := resolveCanonicalLogFields(provider.Capabilities.CanonicalFields, labelMappings, fields)
 	useCanonical := len(canonical) > 0
 
 	var b strings.Builder
@@ -726,35 +724,31 @@ func buildCanonicalLogQueryPrompt(provider services_server.ObservabilityProvider
 	fmt.Fprintf(&b, "  - **Operators**: %s\n", strings.Join(supportedOperators, ", "))
 
 	if useCanonical {
-		// Show the FULL `canonical_name → backend_field` mapping, not just the
-		// keys. The backend_field carries the semantics the bare key lacks (e.g.
-		// `app → deployment.keyword` tells the model `app` is the workload field),
-		// so the model can map the user's wording onto THIS account's exact
-		// canonical vocabulary instead of guessing the generic service/pod/message
-		// names — which are only correct when they literally appear as keys.
-		b.WriteString("\n**Canonical fields for THIS backend — `canonical_name → backend_field`. Use the canonical_name (LEFT side) in your query; the server resolves it to the backend_field automatically:**\n")
+		// Names only: services-server translates each canonical name to the
+		// backend's own field, so the model never needs to see that field (#39573).
+		b.WriteString("\n**Canonical fields for THIS backend. Use these names exactly as written; the server translates each one to this backend's own field automatically:**\n")
 		for _, k := range canonical {
-			fmt.Fprintf(&b, "   - %s → %s\n", k, labelMappings[k])
+			fmt.Fprintf(&b, "   - %s\n", k)
 		}
-		b.WriteString("Map the user's wording to the closest canonical_name above, inferring its meaning from the backend_field it resolves to:\n")
-		b.WriteString("   - a workload / service / app / deployment name → the canonical_name resolving to a deployment/app/service field\n")
-		b.WriteString("   - a pod name → the canonical_name resolving to a pod field\n")
-		b.WriteString("   - a namespace → the canonical_name resolving to a namespace field\n")
-		b.WriteString("   - a container name → the canonical_name resolving to a container field\n")
-		b.WriteString("   - log text / error keywords → the canonical_name resolving to the log body / message / content field\n")
+		b.WriteString("Map the user's wording to the closest canonical_name above:\n")
+		b.WriteString("   - a workload / service / app / deployment name → the workload canonical_name (e.g. `app`)\n")
+		b.WriteString("   - a pod name → the pod canonical_name (e.g. `pod`)\n")
+		b.WriteString("   - a namespace → the namespace canonical_name (e.g. `namespace`)\n")
+		b.WriteString("   - a container name → the container canonical_name (e.g. `container`)\n")
+		b.WriteString("   - log text / error keywords → the log-text canonical_name (e.g. `message`)\n")
 		b.WriteString("ALWAYS prefer a `canonical_name` over a backend label that refers to the SAME concept — a backend label is a fallback ONLY for a concept that has NO matching canonical_name. Use ONLY names that appear in the lists above (a `canonical_name`, or an advertised backend label); never invent or guess a field name.\n")
 		b.WriteString("**Namespace vs workload — do NOT confuse them.** When the question names a NAMESPACE but NO specific workload/app/pod (e.g. \"errors in nudgebee\", \"logs in the demo namespace\", \"401s in nudgebee\", \"anything failing in <ns>\"), filter on the namespace canonical_name ONLY — NEVER put that value in the workload/app/pod field. A bare environment / namespace name (nudgebee, demo, prod, staging, …) is NOT an app name.\n")
 		if len(fields) > 0 {
 			b.WriteString("Backend labels (use ONLY when NO canonical_name above fits the concept):\n")
 			fmt.Fprintf(&b, "   %s\n", strings.Join(fields, ", "))
 		}
-		b.WriteString("**HARD RULE — field names:** Emit ONLY a `canonical_name` from the list above (or, if none fits, a backend label from the line above). NEVER invent a field name. In particular do NOT emit `service_name`, `service.name`, `service`, `pod`, `message`, `namespace`, or `container` unless that exact word is listed above as a canonical_name — if the word is not listed, use the listed canonical_name that maps to the same concept (e.g. for a workload/service name use the canonical_name resolving to the app/deployment field, which is often `app`).\n")
+		b.WriteString("**HARD RULE — field names:** Emit ONLY a `canonical_name` from the list above (or, if none fits, a backend label from the line above). NEVER invent a field name. In particular do NOT emit `service_name`, `service.name`, `service`, `pod`, `message`, `namespace`, or `container` unless that exact word is listed above as a canonical_name — if the word is not listed, use the listed canonical_name for the same concept (e.g. for a workload/service name use the workload canonical_name, which is often `app`).\n")
 	} else {
 		// No canonical mapping for this account/provider — advertise the
 		// provider-native labels from the backend's label list (get_labels).
 		nativeFields := fields
 		if len(nativeFields) == 0 {
-			nativeFields = []string{"_body", "namespace", "pod"}
+			nativeFields = []string{tools.LegacyLogTextToken, "namespace", "pod"}
 		}
 		b.WriteString("AVAILABLE FIELDS for query building\n")
 		fmt.Fprintf(&b, "  - **Fields**: %s\n", strings.Join(nativeFields, ", "))
@@ -875,8 +869,8 @@ func resolveQueryOperators(providerOperators []string) []string {
 
 // canonicalQueryExamples are STRUCTURE-only few-shots. Field names are
 // placeholders (<WORKLOAD_FIELD>, <LOG_TEXT_FIELD>, <NAMESPACE_FIELD>) the model
-// MUST replace with a canonical_name from the account's advertised
-// `canonical_name → backend_field` list — they intentionally do NOT hardcode
+// MUST replace with a canonical_name from the account's advertised canonical
+// field list — they intentionally do NOT hardcode
 // service/pod/message, because that generic vocabulary only resolves when it
 // literally appears as a key in the account's label_mappings (often it does not,
 // e.g. a backend whose canonical keys are `app`/`content`). The examples teach
@@ -919,4 +913,59 @@ func canonicalQueryExamples(supportedOperators []string) []core.NBAgentPromptExa
 			Explanation: "\"all logs\" → NO log-body filter; explicit window and limit honoured verbatim.",
 		},
 	}
+}
+
+// resolveCanonicalLogFields is the vocabulary the query-generator prompt advertises.
+//
+// Capability-with-fallback, the same shape as resolveQueryOperators: the backend's
+// `canonical_fields` win; the mapping keys are the fallback, because that is what this
+// prompt derived its list from before services-server advertised a vocabulary (#39573).
+// The two are NOT interchangeable — Loki's mapping holds only the log-text aliases, so
+// deriving from keys hid `namespace`, `pod` and `app` from the model on our most-used
+// backend.
+//
+// `canonical_fields` names what a caller may filter on, not what this backend
+// resolves, so a name is advertised only when it is renamed or appears in fields — the
+// label list QueryLabels built, which has already dropped every canonical name
+// services-server says nothing on the backend stands behind. Advertising those as
+// "resolved automatically" steered the model from Loki's `node_name` onto `node`,
+// which matches nothing and reports success.
+func resolveCanonicalLogFields(canonicalFields []string, labelMappings map[string]string, fields []string) []string {
+	if len(canonicalFields) > 0 {
+		// Trimmed on both sides: the canonical names are trimmed below, so a padded
+		// label name here would otherwise fail to match one and drop a resolvable
+		// name from the block.
+		reported := make(map[string]struct{}, len(fields))
+		for _, f := range fields {
+			reported[strings.TrimSpace(f)] = struct{}{}
+		}
+		// Trimmed, de-duplicated and sorted: this list crosses a service boundary
+		// whose image is deployed independently of this one, and it is rendered
+		// verbatim into a prompt — a repeated name wastes tokens and reads to the
+		// model as emphasis, and an unstable order invalidates the prompt cache.
+		out := make([]string, 0, len(canonicalFields))
+		seen := make(map[string]struct{}, len(canonicalFields))
+		for _, f := range canonicalFields {
+			if f = strings.TrimSpace(f); f == "" {
+				continue
+			}
+			if _, dup := seen[f]; dup {
+				continue
+			}
+			_, isReported := reported[f]
+			if !isReported && strings.TrimSpace(labelMappings[f]) == "" {
+				continue
+			}
+			seen[f] = struct{}{}
+			out = append(out, f)
+		}
+		sort.Strings(out)
+		return out
+	}
+	out := make([]string, 0, len(labelMappings))
+	for k := range labelMappings {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
