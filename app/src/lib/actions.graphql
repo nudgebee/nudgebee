@@ -91,6 +91,109 @@ type Query {
 }
 
 type Query {
+  notifications_list_deliveries(
+    limit: Int
+    offset: Int
+    order_by: [QuerySortByRequest!]
+    where: NotificationDeliveriesWhereRequest
+  ): NotificationDeliveriesResponse!
+}
+
+type Query {
+  notifications_aggregate_deliveries(
+    columns: [String]
+    group_by: [String!]
+    having: NotificationDeliveriesGroupingWhereRequest
+    limit: Int
+    order_by: [QuerySortByRequest!]
+    where: NotificationDeliveriesGroupingWhereRequest
+  ): NotificationDeliveriesAggregationResponse!
+}
+
+input NotificationDeliveriesWhereRequest {
+  _and: [NotificationDeliveriesWhereRequest]
+  _or: [NotificationDeliveriesWhereRequest]
+  id: QueryWhereStringRequest
+  created_at: QueryWhereDatetimeRequest
+  account_id: QueryWhereStringRequest
+  fingerprint: QueryWhereStringRequest
+  dispatch_id: QueryWhereStringRequest
+  kind: QueryWhereStringRequest
+  source: QueryWhereStringRequest
+  event_id: QueryWhereStringRequest
+  platform: QueryWhereStringRequest
+  team_id: QueryWhereStringRequest
+  destination: QueryWhereStringRequest
+  status: QueryWhereStringRequest
+  reason: QueryWhereStringRequest
+  is_final: QueryWhereBooleanRequest
+}
+
+input NotificationDeliveriesGroupingWhereRequest {
+  _and: [NotificationDeliveriesGroupingWhereRequest]
+  _or: [NotificationDeliveriesGroupingWhereRequest]
+  created_at: QueryWhereDatetimeRequest
+  account_id: QueryWhereStringRequest
+  fingerprint: QueryWhereStringRequest
+  event_id: QueryWhereStringRequest
+  kind: QueryWhereStringRequest
+  source: QueryWhereStringRequest
+  platform: QueryWhereStringRequest
+  team_id: QueryWhereStringRequest
+  destination: QueryWhereStringRequest
+  status: QueryWhereStringRequest
+  is_final: QueryWhereBooleanRequest
+  last_status: QueryWhereStringRequest
+}
+
+type NotificationDeliveriesResponse {
+  rows: [NotificationDelivery!]!
+}
+
+type NotificationDelivery {
+  id: String
+  created_at: Datetime
+  account_id: String
+  fingerprint: String
+  dispatch_id: String
+  attempt: Int
+  kind: String
+  source: String
+  title: String
+  event_id: String
+  platform: String
+  team_id: String
+  destination: String
+  destination_name: String
+  message_id: String
+  thread_id: String
+  status: String
+  reason: String
+  error_code: String
+  routed_by: String
+  is_final: Boolean
+  team_url: String
+}
+
+type NotificationDeliveriesAggregationResponse {
+  rows: [NotificationDeliveriesAggregation!]!
+}
+
+type NotificationDeliveriesAggregation {
+  platform: String
+  team_id: String
+  destination: String
+  status: String
+  kind: String
+  count: Int
+  first_at: Datetime
+  last_at: Datetime
+  last_status: String
+  last_reason: String
+  last_destination_name: String
+}
+
+type Query {
   usergroups_aggregate(
     where: UserGroupsWhereRequest
   ): UserGroupsAggregationResponse!

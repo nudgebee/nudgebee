@@ -69,6 +69,7 @@ from notifications_server.services.delivery_split import (
     merged_parameters,
 )
 from notifications_server.message_templates.slack.weekly_digest_events import digest_link, digest_verdict
+from notifications_server.services.slack import workspace_url
 from notifications_server.services.slack.slack import retriable_slack_api_error
 from notifications_server.message_templates import template_mapping
 from notifications_server.message_templates.google_chat.finding import get_markdown_message_template
@@ -640,10 +641,15 @@ class SlackSender(BaseSender):
                 for channel in channels:
                     channel_id = channel.get("id")
                     if thread_id:
-                        return self.slack_app.client.reply_in_thread(
+                        response = self.slack_app.client.reply_in_thread(
                             token=installation.token, channel_id=channel_id, thread_ts=thread_id, **message
                         )
-                    return self.slack_app.client.chat_post(channel_id=channel_id, token=installation.token, **message)
+                    else:
+                        response = self.slack_app.client.chat_post(
+                            channel_id=channel_id, token=installation.token, **message
+                        )
+                    workspace_url.remember(installation)
+                    return response
 
             except SlackApiError as exc:
                 if retriable_slack_api_error(exc) and max_tries < settings.slack.max_rate_limit_retries:

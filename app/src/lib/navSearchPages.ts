@@ -191,6 +191,7 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Admin', label: 'Audit Log', path: '/user-management#access-users/audit-log' },
   { group: 'Admin', label: 'Integrations', path: '/user-management#integrations' },
   { group: 'Admin', label: 'Notification Rules', path: '/user-management#notification-rules' },
+  { group: 'Admin', label: 'Delivery history', path: '/user-management#notification-rules/delivery-history' },
   // Relocated from the Settings modal (see docs/ia-consolidation-plan.md,
   // PR 3) into one "AI & Tools" top-level tab, same sibling-sub-tab shape as
   // Access & Users above. Agents is the default sub-tab, so its path carries

@@ -20,6 +20,7 @@ import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import TriageScore from '@shared/widgets/TriageScore';
 import InvestigateDropdown from '@components/k8s/investigate/InvestigateDropdown';
 import { EventOccurrenceRows, EventStateRows, useEventOccurrence } from '@components/k8s/investigate/EventStateRows';
+import { AlertNotifications, useAlertDeliveries } from '@components/k8s/investigate/AlertNotifications';
 import { eventWhen } from '@components/k8s/investigate/eventState';
 import k8sApi from '@api1/kubernetes';
 import { SOURCE_SEVERITY_INFO } from '@api1/triage';
@@ -160,6 +161,7 @@ function InvestigateSidebar({
   const [showDetails, setShowDetails] = useState(false);
   const [showLabels, setShowLabels] = useState(false);
   const occurrence = useEventOccurrence(row);
+  const notifications = useAlertDeliveries(row);
   const [showChain, setShowChain] = useState(false);
   // What the assign dialog was opened on. The target itself rather than an open flag:
   // the chain behind `assignRung` moves when the sidebar is handed another event, and
@@ -944,6 +946,12 @@ function InvestigateSidebar({
 
           {showInternal && <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1] }}>{internalLabelChips}</Box>}
         </Section>
+
+        {notifications.visible && (
+          <Section title='Notifications' testId='sidebar-notifications'>
+            <AlertNotifications row={row} deliveries={notifications} />
+          </Section>
+        )}
       </Box>
       {assignTarget && (
         <AssignOwnerModal

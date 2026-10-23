@@ -7,6 +7,7 @@ import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import { AuditsTable } from '@components/audits';
 import { Box, Typography } from '@mui/material';
 import Notifications from '@components/notifications';
+import DeliveryHistory from '@components/notifications/delivery-history/DeliveryHistory';
 import Integrations from '@components/accounts/integration';
 import OwnershipRules from '@components/user-management/OwnershipRules';
 import TenantSettings from '@shared/settings/TenantSettings';
@@ -19,6 +20,7 @@ import Loader from '@shared/Loader';
 import { ds } from '@utils/colors';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 import AssignmentIndOutlinedIcon from '@mui/icons-material/AssignmentIndOutlined';
+import HistoryIcon from '@mui/icons-material/History';
 import { AI_TOOLS_SUB_TABS } from '@components/llm/admin/aiToolsConfig';
 import { useBCortexEnabled, isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
 import withBrandBlue from '@shared/icons/withBrandBlue';
@@ -27,6 +29,7 @@ import withBrandBlue from '@shared/icons/withBrandBlue';
 // render gray/black instead of matching its blue-SVG siblings (Users,
 // Groups, Audit Log) in the same Access & Users dropdown.
 const OwnershipIcon = withBrandBlue(AssignmentIndOutlinedIcon);
+const DeliveryHistoryIcon = withBrandBlue(HistoryIcon);
 
 // Base filters that ship in OSS. Extensions register additional filters via
 // registerUserManagementFilter — those slot in at the end (e.g. billing on
@@ -124,15 +127,37 @@ const baseFilters = (baseTitle) => [
   },
   // id is pinned so the DOM id (#anchor-tab-Notifications) that app-e2e-tests
   // locates the tab by stays stable if the label ever changes independently.
+  // Rules stays the default sub-tab, so `#notification-rules` and the Overview
+  // card's alert-* actions land on it unchanged. Delivery history is read like
+  // alerts, so it is gated on events rather than notifications.
   {
     name: 'Notification Rules',
     id: 'Notifications',
     fragment: 'notification-rules',
     icon: NotificationIcon1,
-    Body: Notifications,
-    module: 'notifications',
-    description:
-      'Rules decide which troubleshooting, SLO, cloud spend, optimization and automation notifications are delivered, and where. Every matching rule applies; if any says Don’t send, it isn’t sent.',
+    tabOptions: [
+      {
+        id: 'notification-rules-list',
+        fragment: '',
+        text: 'Rules',
+        icon: NotificationIcon1,
+        Body: Notifications,
+        module: 'notifications',
+        description:
+          'Rules decide which troubleshooting, SLO, cloud spend, optimization and automation notifications are delivered, and where. Every matching rule applies; if any says Don’t send, it isn’t sent.',
+      },
+      {
+        id: 'delivery-history',
+        fragment: 'delivery-history',
+        text: 'Delivery history',
+        icon: DeliveryHistoryIcon,
+        Body: DeliveryHistory,
+        module: 'events',
+        description: baseTitle
+          ? `Every notification ${baseTitle} sent or tried to send in the last 14 days: where it went, which rule sent it, and whether it arrived.`
+          : 'Every notification sent or tried to send in the last 14 days: where it went, which rule sent it, and whether it arrived.',
+      },
+    ],
   },
   // AI & Tools (docs/ia-consolidation-plan.md, PR 3) — "what the AI is made
   // of", relocated out of the Settings modal into Admin. Same tabOptions

@@ -165,6 +165,10 @@ const MODULE_OVERRIDES: Record<string, string> = {
   // governed by the accounts permission (accounts:Read) rather than a separate
   // agents grant. Kept in sync with get_agent_health_v2's PermissionModule.
   agents_list_health: 'accounts',
+  // Delivery history is read like the alerts it delivered: governed by events,
+  // matching notification_deliveries_v2's PermissionModule.
+  notifications_list_deliveries: 'events',
+  notifications_aggregate_deliveries: 'events',
   // Cluster catalog/summary backs the cluster picker — governed by accounts
   // (accounts:Read) alongside the accounts list. Kept in sync with
   // k8s_cluster_groupings_v2's PermissionModule.

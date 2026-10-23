@@ -28,6 +28,11 @@ jest.mock('@components/k8s/investigate/EventStateRows', () => ({
   EventStateRows: () => null,
   useEventOccurrence: () => ({}),
 }));
+jest.mock('@components/k8s/investigate/AlertNotifications', () => ({
+  __esModule: true,
+  AlertNotifications: () => null,
+  useAlertDeliveries: () => ({ visible: false, rows: [], historyStart: null, error: '' }),
+}));
 
 const resolveOwners = apiOwnership.resolveOwners as jest.Mock;
 

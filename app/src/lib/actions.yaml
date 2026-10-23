@@ -84,6 +84,34 @@ actions:
     permissions:
       - role: tenant_admin
       - role: tenant_admin_readonly
+  # Delivery history, scoped like alerts (api-server notification_deliveries_v2). Namespace roles are left
+  # out: the rows carry no namespace, so they would see other namespaces' alert titles.
+  - name: notifications_list_deliveries
+    comment: List notification deliveries, one row per attempt to send a message to a destination
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: notifications_aggregate_deliveries
+    comment: Count notification deliveries and summarise them per destination
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
   - name: usergroups_aggregate
     comment: Aggregate user-group counts for the tenant
     definition:

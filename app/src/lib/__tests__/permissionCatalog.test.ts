@@ -211,6 +211,13 @@ describe('permissionCatalog', () => {
     expect(new Set(buildCatalog(ACTION_NAMES).map((e) => e.module)).has('featureflags')).toBe(false);
   });
 
+  // Delivery history is read like the alerts it delivered, so an events:Read
+  // grant reaches it and a notifications grant (rules) does not.
+  it('reads delivery history with events:Read', () => {
+    expect(classifyAction('notifications_list_deliveries')).toEqual({ module: 'events', class: 'Read' });
+    expect(classifyAction('notifications_aggregate_deliveries')).toEqual({ module: 'events', class: 'Read' });
+  });
+
   // The platform changelog is available to every signed-in user via
   // `tenant_agnostic: true`, so there is no grant to hand out for it.
   it('makes the product module non-grantable', () => {

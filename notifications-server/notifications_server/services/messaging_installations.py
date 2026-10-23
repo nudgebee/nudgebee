@@ -58,6 +58,8 @@ WEBHOOK_PLATFORM_TYPES = frozenset({MS_TEAMS_WEBHOOK_TYPE, SLACK_WEBHOOK_TYPE, G
 TOKEN_FIELD = {"slack": "bot_token", "ms_teams": "access_token", "discord": "bot_token"}
 REFRESH_TOKEN_FIELD = "refresh_token"
 _SECRET_FIELDS = {"bot_token", "access_token", "refresh_token", "webhook_url"}
+# A Slack workspace's URL, from auth.test. api-server's delivery history reads this key to build message links.
+TEAM_URL_FIELD = "team_url"
 
 ORIGIN_LEGACY = "legacy"
 ORIGIN_INTEGRATION = "integration"
@@ -120,6 +122,7 @@ def build_installation(platform: str, integration: Integration, cfg: Dict[str, s
     inst.platform = platform
     inst.team_id = integration.name
     inst.team_name = cfg.get("team_name")
+    inst.team_url = cfg.get(TEAM_URL_FIELD)
     inst.client_id = cfg.get("client_id")
     inst.app_id = cfg.get("app_id")
     inst.username = cfg.get("installed_by")
@@ -616,6 +619,11 @@ def upsert_messaging_integration(session, tenant_id, platform: str, name: str, c
     except Exception as e:
         LOG.warning("Clearing cached installations for tenant %s failed: %s", tenant_id, e)
     return integ
+
+
+def persist_team_url(session, integration_id, team_url: str) -> None:
+    """Save a Slack install's workspace URL with its integration. The caller commits."""
+    _write_config_values(session, integration_id, {TEAM_URL_FIELD: team_url})
 
 
 def persist_messaging_token(
