@@ -254,6 +254,10 @@ type NBToolResponse struct {
 	// (the planner's investigation-abort counter, tool-call metrics) treat
 	// this distinctly from a genuine tool failure.
 	IsCircuitOpen bool `json:"is_circuit_open,omitempty"`
+	// IsBadInput marks an error caused by the caller's own arguments (a label
+	// that does not exist), not by the tool failing. The planner counts it as
+	// fail_validation so it stays out of tool-failure alerts.
+	IsBadInput bool `json:"is_bad_input,omitempty"`
 }
 
 // NBToolResponseMetadata is the typed seam for tool-execution metadata. New

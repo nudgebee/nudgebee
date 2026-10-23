@@ -394,6 +394,21 @@ func TestListMetricsLabelValuesTool_RequiresLabel(t *testing.T) {
 	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
 	assert.Contains(t, resp.Data, ToolMetricsLabelsList,
 		"error must point at the tool that lists label names")
+	assert.True(t, resp.IsBadInput, "a missing label is the caller's mistake, not the tool failing")
+}
+
+// A label that looks like query-string syntax is the caller's mistake: it must
+// be flagged so it stays out of the tool-failure alert.
+func TestListMetricsLabelValuesTool_MalformedLabelIsBadInput(t *testing.T) {
+	tool := ListMetricsLabelValuesTool{Provider: "prometheus"}
+
+	resp, err := tool.Call(core.NbToolContext{}, core.NBToolCallRequest{
+		Arguments: map[string]any{"label": "kubernetes.pod.name&filter=api"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+	assert.True(t, resp.IsBadInput)
 }
 
 func TestListMetricsLabelValuesTool_SchemaContract(t *testing.T) {

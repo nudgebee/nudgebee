@@ -551,10 +551,30 @@ Document:
 {content}"""
 
 _CAPABILITY_SECTION_TEMPLATE = """
-Capabilities referenced must be copied EXACTLY, verbatim, from this list — never invent a name that isn't here. \
+Capabilities are the platform tools needed to carry out what the document describes. List every capability \
+whose description matches an action the document performs or tells the reader to perform, even when the \
+document never names the capability (a step that runs kubectl commands needs the Kubernetes CLI capability). \
+Each name must be copied EXACTLY, verbatim, from this list — never invent a name that isn't here. \
 If none of these apply, use an empty list:
 {capability_names}
 """
+
+# A capability's description is context for the model, not data: one line, bounded, so a long
+# or multi-line description cannot swell the prompt or break the list format.
+_CAPABILITY_DESCRIPTION_MAX_CHARS = 160
+
+
+def _capability_listing(catalog):
+    """The catalog as the prompt's `- name: description` lines, sorted by name. A capability
+    without a description is listed by name alone."""
+    descriptions = {}
+    for entry in catalog:
+        text = " ".join(str(entry.get("description") or "").split())
+        descriptions[entry["name"]] = text[:_CAPABILITY_DESCRIPTION_MAX_CHARS]
+    return "\n".join(
+        f"- {name}: {descriptions[name]}" if descriptions[name] else f"- {name}" for name in sorted(descriptions)
+    )
+
 
 # Bounds how many documents are classified concurrently per process_documents
 # call — keeps ingestion off the sequential-call path without opening an
@@ -677,12 +697,11 @@ def _classify_source_documents(groups, account_id, collection_name):
 
     from rag.core.utils.db_query import get_capability_catalog
 
-    valid_capabilities = {entry["name"] for entry in get_capability_catalog()}
+    catalog = get_capability_catalog()
+    valid_capabilities = {entry["name"] for entry in catalog}
     capability_section = ""
     if valid_capabilities:
-        capability_section = _CAPABILITY_SECTION_TEMPLATE.format(
-            capability_names="\n".join(f"- {name}" for name in sorted(valid_capabilities))
-        )
+        capability_section = _CAPABILITY_SECTION_TEMPLATE.format(capability_names=_capability_listing(catalog))
 
     # Each call is one independent, I/O-bound LLM round-trip. Bounded
     # concurrency keeps this off any single request path while capping how many
@@ -747,7 +766,7 @@ def _classify_document_group(group, llm, capability_section, valid_capabilities)
         raw = result.text.strip()
         parsed = json.loads(_extract_json_object(raw))
         shape = str(parsed.get("shape", "")).strip().lower()
-        capabilities = parsed.get("capabilities", [])
+        capabilities = parsed.get("capabilities")  # None when the model left the key out
     except Exception:
         stats["duration_seconds"] = time.monotonic() - call_start
         # Log the raw response, not just the traceback: a JSONDecodeError
@@ -780,6 +799,10 @@ def _classify_document_group(group, llm, capability_section, valid_capabilities)
                     f"kb_metadata: dropped {len(dropped)} capability name(s) not in the real catalog: {dropped}"
                 )
         labels["capabilities"] = confirmed
+        # Stamp only a real answer: a catalog to ground against AND a list back from the
+        # model. A response without a capabilities list is not "the model found none".
+        if valid_capabilities and isinstance(capabilities, list):
+            labels["capabilities_extracted"] = True
         for doc in group:
             if doc.metadata is None:
                 doc.metadata = {}
@@ -796,7 +819,11 @@ def _classify_document_group(group, llm, capability_section, valid_capabilities)
 # The labels a classified chunk carries under its vector payload's `metadata`
 # (what RAG's metadata_filter matches at query time), and the kinds that make a
 # chunk count as classified.
-KB_LABEL_KEYS = ("kind", "shape", "capabilities")
+# capabilities_extracted is stamped only when the extraction really ran against a
+# non-empty catalog. Without it, empty `capabilities` could mean "the model found
+# none" or "the catalog was empty/unreachable", and the backfill could not tell them
+# apart (the labels written before the catalog existed stay empty forever).
+KB_LABEL_KEYS = ("kind", "shape", "capabilities", "capabilities_extracted")
 _KB_KINDS = ("sop", "knowledge")
 _LABEL_PAYLOAD_KEYS = [f"metadata.{key}" for key in KB_LABEL_KEYS]
 _LABEL_WRITE_BATCH = 500
@@ -1012,10 +1039,11 @@ def refresh_kb_collection_summary(collection_name):
 
 
 def _forget_kb_collection_summary(collection_name):
-    """Drop a deleted collection's rollup row (best-effort, like every write to it)."""
+    """Drop a recreated collection's rollup row (best-effort, like every write to it). The
+    per-page label rows stay: Postgres owns them, and re-embedding stamps them back."""
     from rag.core.utils.db_query import delete_kb_capabilities
 
-    delete_kb_capabilities(collection_name)
+    delete_kb_capabilities(collection_name, keep_documents=True)
 
 
 def _stamp_provenance(documents, source=None, tenant_id=None):

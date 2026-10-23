@@ -451,3 +451,102 @@ describe('KBDocumentsModal Fact/SOP marks', () => {
     expect(screen.getByTestId('kb-document-category-legend')).toHaveTextContent('Select an account to change');
   });
 });
+
+describe('KBDocumentsModal classifier labels', () => {
+  const KEY = (n) => `integration-a_knowledge_base|${n}`;
+
+  const listing = (items) => apiKnowledgeBase.getKBDocuments.mockResolvedValue({ data: { items, nextOffset: null }, errors: [] });
+
+  it("shows what the classifier decided, labelled as the classifier's", async () => {
+    listing([
+      {
+        id: 'p1',
+        title: 'Pod CrashLoopBackOff runbook',
+        url: 'https://wiki.example.com/p1',
+        document_key: KEY(1),
+        note_category: '',
+        kind: 'sop',
+        shape: 'deterministic_procedure',
+        capabilities: ['kubectl_execute', 'logs'],
+      },
+    ]);
+    renderModal();
+    const row = (await screen.findByTestId('kb-document-row')).querySelector('[data-testid="kb-document-classification"]');
+    expect(row).toHaveTextContent('Classifier: SOP');
+    expect(row).toHaveTextContent('Deterministic Procedure');
+    expect(row).toHaveTextContent('2 capabilities');
+  });
+
+  it('renders the classifier chips in the small tier, on their own line below the title', async () => {
+    listing([
+      {
+        id: 'p1',
+        title: 'Pod CrashLoopBackOff runbook',
+        url: 'https://wiki.example.com/p1',
+        document_key: KEY(1),
+        note_category: '',
+        kind: 'sop',
+        shape: 'deterministic_procedure',
+        capabilities: [],
+      },
+    ]);
+    renderModal();
+    const row = await screen.findByTestId('kb-document-row');
+    const line = row.querySelector('[data-testid="kb-document-classification"]');
+    const chips = line.querySelectorAll('[data-size]');
+    expect(chips).toHaveLength(2);
+    chips.forEach((chip) => expect(chip).toHaveAttribute('data-size', '2xs'));
+    // The line follows the title in the same block, so it stacks underneath rather than beside it.
+    const title = within(row).getByText('Pod CrashLoopBackOff runbook');
+    expect(title.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(line.parentElement).toBe(title.closest('[data-testid="kb-document-row"] > div > div'));
+  });
+
+  it('says plainly when a document was not classified, rather than showing nothing', async () => {
+    listing([{ id: 'p1', title: 'Old page', url: 'https://wiki.example.com/p1', document_key: KEY(1), note_category: '' }]);
+    renderModal();
+    const row = (await screen.findByTestId('kb-document-row')).querySelector('[data-testid="kb-document-classification"]');
+    expect(row).toHaveTextContent('Not classified');
+  });
+
+  it('renders a server that sends no labels at all exactly as before', async () => {
+    listing([{ id: 'p1', title: 'Old page', url: 'https://wiki.example.com/p1', document_key: KEY(1), note_category: 'fact' }]);
+    renderModal();
+    await screen.findByText('Old page');
+    expect(screen.getByTestId('kb-document-row')).toBeInTheDocument();
+  });
+
+  it('shows no classification line on a hand-made note, which the classifier does not label per document', async () => {
+    listing([{ id: 'kb-1', title: 'Payment runbook', url: null, document_key: '', note_category: '' }]);
+    renderModal();
+    await screen.findByText('Payment runbook');
+    expect(screen.queryByTestId('kb-document-classification')).not.toBeInTheDocument();
+  });
+
+  it('keeps a hand mark visible next to the classifier label so the two are not confused', async () => {
+    listing([
+      {
+        id: 'p1',
+        title: 'Escalation guide',
+        url: 'https://wiki.example.com/p1',
+        document_key: KEY(1),
+        note_category: 'fact',
+        kind: 'sop',
+        shape: 'decision_tree',
+        capabilities: [],
+      },
+    ]);
+    renderModal();
+    const row = await screen.findByTestId('kb-document-row');
+    expect(row.querySelector('[data-testid="kb-document-classification"]')).toHaveTextContent('Classifier: SOP');
+    expect(within(row).getByText('Fact')).toBeInTheDocument();
+  });
+
+  it('explains the classifier and a mark overriding it, and no longer claims synced pages are Fact', async () => {
+    listing([{ id: 'p1', title: 'Page', url: 'https://wiki.example.com/p1', document_key: KEY(1), note_category: '' }]);
+    renderModal();
+    const legend = await screen.findByTestId('kb-document-category-legend');
+    expect(legend).toHaveTextContent('Classifier');
+    expect(legend).not.toHaveTextContent('are treated as Fact');
+  });
+});

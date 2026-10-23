@@ -774,6 +774,59 @@ def set_kb_collection_summary(
         logger.exception("Error writing the KB classification summary of collection %s: %s", collection_name, e)
 
 
+def seed_kb_document_labels(rows: list[dict]) -> int:
+    """Insert entry_type = 'kb_document' rows that do not exist yet. An existing row is left
+    alone, with one exception: a row whose ``capabilities`` are empty takes the capabilities
+    the page's chunks now carry (non-empty only). Those empties were written while the
+    catalog was empty or unreachable, so they are not a classification to protect; kind,
+    shape and source_version are never changed.
+
+    Each row is ``{collection_name, document_key, kind, shape, capabilities, source_version}``. Rows
+    seeded from labels that already sit on a page's chunks carry no source_version
+    (NULL = "version unknown"). The seed is idempotent: a second run changes nothing.
+
+    Returns the number of rows written (inserted, or capabilities filled in). Raises on a
+    database error: the caller retries, and a swallowed failure would look like a run that
+    seeded nothing.
+    """
+    if not rows:
+        return 0
+    # ON CONFLICT DO UPDATE cannot touch the same row twice in one statement, so a batch
+    # carries one row per key: the first, unless a later one has capabilities and it has none.
+    unique: dict = {}
+    for row in rows:
+        key = (row["collection_name"], row["document_key"])
+        if key not in unique or (row.get("capabilities") and not unique[key].get("capabilities")):
+            unique[key] = row
+    rows = list(unique.values())
+    values, params = [], {}
+    for i, row in enumerate(rows):
+        values.append(
+            f"('kb_document', :collection_name_{i}, :document_key_{i}, :kinds_{i}, :shapes_{i}, "
+            f":capabilities_{i}, :source_version_{i}, NOW())"
+        )
+        params[f"collection_name_{i}"] = row["collection_name"]
+        params[f"document_key_{i}"] = row["document_key"]
+        params[f"kinds_{i}"] = [row["kind"]]
+        params[f"shapes_{i}"] = [row["shape"]] if row.get("shape") else []
+        params[f"capabilities_{i}"] = row.get("capabilities") or []
+        params[f"source_version_{i}"] = row.get("source_version")
+    # One statement per batch, one round trip; rowcount is the rows inserted plus the
+    # rows whose empty capabilities were filled.
+    statement = (
+        "INSERT INTO llm_kb_capability_entries "
+        "(entry_type, collection_name, document_key, kinds, shapes, capabilities, source_version, updated_at) "
+        f"VALUES {', '.join(values)} "
+        "ON CONFLICT (collection_name, document_key) WHERE entry_type = 'kb_document' DO UPDATE "
+        "SET capabilities = EXCLUDED.capabilities, updated_at = NOW() "
+        "WHERE llm_kb_capability_entries.capabilities = '{}' AND EXCLUDED.capabilities <> '{}'"
+    )
+    with engine.connect() as connection:
+        with connection.begin():
+            result = connection.execute(text(statement), params)
+            return result.rowcount or 0
+
+
 def get_kb_summary_collection_names() -> set[str]:
     """Every collection that has an entry_type = 'kb_collection' row. The backfill
     uses it to find collections whose chunks are labelled but whose row is missing.
@@ -809,25 +862,29 @@ def has_kb_collection_summary(collection_name: str) -> bool:
         return False
 
 
-def delete_kb_capabilities(collection_name: str) -> None:
-    """Drop a knowledge-base collection's entry_type = 'kb_collection' row.
+def delete_kb_capabilities(collection_name: str, keep_documents: bool = False) -> None:
+    """Drop a knowledge-base collection's entry_type = 'kb_collection' row and, unless
+    ``keep_documents``, its per-page entry_type = 'kb_document' label rows.
 
     Called when the collection itself is deleted (a KB delete, an integration KB
-    delete, or the delete-then-recreate an edit performs), so a recreated
-    collection never shows the labels of the one it replaced.
+    delete), so a recreated collection never shows the labels of the one it replaced.
+    A recreate that must keep the labels (a tag-only edit, a wiped Qdrant being
+    rebuilt) passes ``keep_documents``: Postgres owns the page labels and re-embedding
+    stamps them back without a classification call.
 
     Best-effort: the collection is already gone by the time this runs, so a
     failure is logged rather than failing the delete.
     """
+    entry_types = ["kb_collection"] if keep_documents else ["kb_collection", "kb_document"]
     try:
         with engine.connect() as connection:
             with connection.begin():
                 connection.execute(
                     text(
                         "DELETE FROM llm_kb_capability_entries "
-                        "WHERE entry_type = 'kb_collection' AND collection_name = :collection_name"
+                        "WHERE entry_type = ANY(:entry_types) AND collection_name = :collection_name"
                     ),
-                    {"collection_name": collection_name},
+                    {"collection_name": collection_name, "entry_types": entry_types},
                 )
     except Exception as e:
         logger.exception("Error deleting the KB classification summary of collection %s: %s", collection_name, e)

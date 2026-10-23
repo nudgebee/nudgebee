@@ -50,6 +50,15 @@ func guessAgentStatusFromResponse(plannerResponse NBAgentPlannerExecutorResponse
 		return AgentExecutionStatusFail
 	}
 
+	// A structured answer is judged by its shape, not its prose: a complete
+	// payload that quotes a log line ("unable to fetch …") is not a failure.
+	if structured, failed := structuredResponseFailed(response); structured {
+		if failed {
+			return AgentExecutionStatusFail
+		}
+		return AgentExecutionStatusSuccess
+	}
+
 	if strings.Contains(response, `"error"`) || strings.Contains(response, "bedrock runtime") || strings.HasSuffix(response, "none is not a valid tool") {
 		return AgentExecutionStatusFail
 	}
@@ -72,6 +81,57 @@ func guessAgentStatusFromResponse(plannerResponse NBAgentPlannerExecutorResponse
 	}
 
 	return AgentExecutionStatusSuccess
+}
+
+// structuredResponseFailed reports whether response is a JSON object and, if
+// so, whether it says it failed: a non-empty top-level "error" or "errors", or
+// a top-level "status" of failed. Nested keys are ignored on purpose — complete
+// code-analysis answers carry empty "error" fields inside build steps.
+func structuredResponseFailed(response string) (structured, failed bool) {
+	response = strings.TrimSpace(response)
+	if !strings.HasPrefix(response, "{") {
+		return false, false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(response), &obj); err != nil {
+		return false, false
+	}
+	for _, key := range []string{"error", "errors"} {
+		if v, ok := obj[key]; ok && !isEmptyJSONValue(v) {
+			return true, true
+		}
+	}
+	var status string
+	if v, ok := obj["status"]; ok && json.Unmarshal(v, &status) == nil {
+		switch strings.TrimSpace(status) {
+		case "fail", "failed", "failure", "error":
+			return true, true
+		}
+	}
+	return true, false
+}
+
+func isEmptyJSONValue(v json.RawMessage) bool {
+	switch strings.TrimSpace(string(v)) {
+	case "null", `""`, "false", "[]", "{}":
+		return true
+	}
+	return false
+}
+
+// normalizeAgentStatus maps an agent's status to the stored value, so the metric
+// and the row cannot disagree: custom agents report "FAILED"/"WAITING".
+func normalizeAgentStatus(status AgentExecutionStatus) AgentExecutionStatus {
+	switch {
+	case strings.EqualFold(string(status), string(AgentExecutionStatusWaiting)) || strings.EqualFold(string(status), string(ConversationStatusWaiting)):
+		return AgentExecutionStatusWaiting
+	case strings.EqualFold(string(status), string(AgentExecutionStatusWaitingForClientTool)) || strings.EqualFold(string(status), string(ConversationStatusWaitingForClientTool)):
+		return AgentExecutionStatusWaitingForClientTool
+	case strings.EqualFold(string(status), string(AgentExecutionStatusFail)) || strings.EqualFold(string(status), string(ConversationStatusFailed)):
+		return AgentExecutionStatusFail
+	default:
+		return AgentExecutionStatusSuccess
+	}
 }
 
 // sanitizeErrorForUser checks for sensitive or low-level errors and returns a user-friendly message.
@@ -863,12 +923,15 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		}
 	}
 	// Metrics: record operation result and latency
-	status := response.Status
-	if status == "" {
-		status = guessAgentStatusFromResponse(response)
+	agentStatus := response.Status
+	if agentStatus == "" {
+		agentStatus = guessAgentStatusFromResponse(response)
+		ctx.GetLogger().Info("agentexecutor: agent set no status, inferred from response", "agent", agent.GetName(), "inferredStatus", agentStatus)
 	}
-	ctx.GetLogger().Info("agentexecutor: operation metrics", "agent", agent.GetName(), "status", status, "duration_seconds", time.Since(start).Seconds())
-	switch status {
+	finalDbStatus := normalizeAgentStatus(agentStatus)
+
+	ctx.GetLogger().Info("agentexecutor: operation metrics", "agent", agent.GetName(), "status", finalDbStatus, "duration_seconds", time.Since(start).Seconds())
+	switch finalDbStatus {
 	case AgentExecutionStatusFail:
 		common.MetricsAgentOperationsTotal(agentName, "fail", accountID)
 	case AgentExecutionStatusWaiting:
@@ -877,24 +940,6 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		common.MetricsAgentOperationsTotal(agentName, "success", accountID)
 	}
 	common.MetricsAgentLatencySeconds(agentName, accountID, time.Since(start).Seconds())
-
-	agentStatus := response.Status
-	if agentStatus == "" {
-		agentStatus = guessAgentStatusFromResponse(response)
-	}
-
-	// Map statuses to allowed database values (lowercase)
-	var finalDbStatus AgentExecutionStatus
-	switch {
-	case strings.EqualFold(string(agentStatus), string(AgentExecutionStatusWaiting)) || strings.EqualFold(string(agentStatus), string(ConversationStatusWaiting)):
-		finalDbStatus = AgentExecutionStatusWaiting
-	case strings.EqualFold(string(agentStatus), string(AgentExecutionStatusWaitingForClientTool)) || strings.EqualFold(string(agentStatus), string(ConversationStatusWaitingForClientTool)):
-		finalDbStatus = AgentExecutionStatusWaitingForClientTool
-	case strings.EqualFold(string(agentStatus), string(AgentExecutionStatusFail)) || strings.EqualFold(string(agentStatus), string(ConversationStatusFailed)):
-		finalDbStatus = AgentExecutionStatusFail
-	default:
-		finalDbStatus = AgentExecutionStatusSuccess
-	}
 
 	ctx.GetLogger().Info("agentexecutor: finalized status mapping", "finalStatus", finalDbStatus, "originalStatus", agentStatus)
 

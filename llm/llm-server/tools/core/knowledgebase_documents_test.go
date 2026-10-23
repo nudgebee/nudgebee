@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"nudgebee/llm/common"
@@ -342,4 +344,96 @@ func TestKBManualKBServesJSONAsJSON(t *testing.T) {
 	assert.Equal(t, "application/json", contentType)
 	assert.Equal(t, `[{"id":1}]`, content)
 	assert.Equal(t, "incidents", title)
+}
+
+func labelRows(rows ...[]driver.Value) *sqlmock.Rows {
+	out := sqlmock.NewRows([]string{"document_key", "kinds", "shapes", "capabilities"})
+	for _, row := range rows {
+		out.AddRow(row...)
+	}
+	return out
+}
+
+// The labels come from Postgres, one query for the page, bound to the authorized collection.
+func TestKBDocumentLabelsAreReadFromPostgres(t *testing.T) {
+	mock := mockKBDatabase(t)
+	mock.ExpectQuery(`SELECT document_key, kinds, shapes, capabilities FROM llm_kb_capability_entries`).
+		WithArgs("int-1_knowledge_base", sqlmock.AnyArg()).
+		WillReturnRows(labelRows(
+			[]driver.Value{"int-1_knowledge_base|1", "{sop}", "{deterministic_procedure}", "{kubectl_execute,logs}"},
+			[]driver.Value{"int-1_knowledge_base|2", "{knowledge}", "{}", "{}"},
+		))
+
+	got, err := kbDocumentLabels(context.Background(), "int-1_knowledge_base", []string{"int-1_knowledge_base|1", "int-1_knowledge_base|2", "int-1_knowledge_base|3"})
+	require.NoError(t, err)
+	assert.Equal(t, kbDocumentLabel{Kind: "sop", Shape: "deterministic_procedure", Capabilities: []string{"kubectl_execute", "logs"}}, got["int-1_knowledge_base|1"])
+	assert.Equal(t, "knowledge", got["int-1_knowledge_base|2"].Kind)
+	assert.Empty(t, got["int-1_knowledge_base|2"].Shape)
+	assert.NotContains(t, got, "int-1_knowledge_base|3", "a page with no row is not classified")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestKBDocumentLabelsAskNothingWithoutKeys(t *testing.T) {
+	mock := mockKBDatabase(t)
+	got, err := kbDocumentLabels(context.Background(), "int-1_knowledge_base", nil)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+	require.NoError(t, mock.ExpectationsWereMet(), "no keys means no query")
+}
+
+func TestApplyKBDocumentLabelsFillsTheListingAndSkipsUnlabelledPages(t *testing.T) {
+	mock := mockKBDatabase(t)
+	mock.ExpectQuery(`SELECT document_key, kinds, shapes, capabilities FROM llm_kb_capability_entries`).
+		WillReturnRows(labelRows(
+			[]driver.Value{"c|1", "{sop}", "{decision_tree}", "{a}"},
+			[]driver.Value{"c|9", "{embedded}", "{decision_tree}", "{x}"}, // a kind the classifier never writes
+		))
+	items := []KBDocument{{Id: "p1", DocumentKey: "c|1"}, {Id: "p2", DocumentKey: "c|2"}, {Id: "p9", DocumentKey: "c|9"}}
+
+	applyKBDocumentLabels(security.NewRequestContextForSuperAdmin(), "kb-1", "c", items)
+
+	require.NotNil(t, items[0].Kind)
+	assert.Equal(t, "sop", *items[0].Kind)
+	assert.Equal(t, "decision_tree", *items[0].Shape)
+	assert.Equal(t, []string{"a"}, items[0].Capabilities)
+	assert.Nil(t, items[1].Kind)
+	assert.Nil(t, items[2].Kind, "a kind outside sop/knowledge is not a label")
+	assert.Nil(t, items[2].Shape)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A manual knowledge base is one document, labelled under its collection's name.
+func TestApplyKBDocumentLabelsLabelsAManualKnowledgeBaseByItsCollection(t *testing.T) {
+	mock := mockKBDatabase(t)
+	mock.ExpectQuery(`SELECT document_key, kinds, shapes, capabilities FROM llm_kb_capability_entries`).
+		WithArgs("kb_kb-1", sqlmock.AnyArg()).
+		WillReturnRows(labelRows([]driver.Value{"kb_kb-1", "{sop}", "{deterministic_procedure}", "{}"}))
+	items := []KBDocument{{Id: "kb-1", Title: "Payment runbook"}}
+
+	applyKBDocumentLabels(security.NewRequestContextForSuperAdmin(), "kb-1", "kb_kb-1", items)
+
+	require.NotNil(t, items[0].Kind)
+	assert.Equal(t, "sop", *items[0].Kind)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestApplyKBDocumentLabelsSurvivesAFailedRead(t *testing.T) {
+	mock := mockKBDatabase(t)
+	mock.ExpectQuery(`SELECT document_key, kinds, shapes, capabilities FROM llm_kb_capability_entries`).
+		WillReturnError(assert.AnError)
+	items := []KBDocument{{Id: "p1", DocumentKey: "c|1"}}
+
+	applyKBDocumentLabels(security.NewRequestContextForSuperAdmin(), "kb-1", "c", items)
+
+	assert.Nil(t, items[0].Kind, "the page is listed unlabelled, not failed")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestKBDocumentJSONExposesTheLabelsForTheClient(t *testing.T) {
+	kind := "knowledge"
+	out, err := json.Marshal(KBDocument{Id: "4", Kind: &kind, Capabilities: []string{"events"}})
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"kind":"knowledge"`)
+	assert.Contains(t, string(out), `"capabilities":["events"]`)
+	assert.Contains(t, string(out), `"shape":null`)
 }

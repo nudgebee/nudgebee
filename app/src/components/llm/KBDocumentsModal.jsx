@@ -3,6 +3,8 @@ import PropTypes from 'prop-types';
 import { Box, Typography } from '@mui/material';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
 import apiKnowledgeBase from '@api1/knowledge-base';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
@@ -11,10 +13,14 @@ import { CodeBlock } from '@ui/CodeBlock';
 import { Banner } from '@ui/Banner';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { Label } from '@ui/Label';
+import { Chip } from '@ui/Chip';
+import Tooltip from '@ui/Tooltip';
 import Loader from '@shared/Loader';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import DOMPurify from 'dompurify';
 import { ds } from '@utils/colors';
+import DocumentDetailBody from '@components/llm/KBDocumentDetailBody';
+import { summariseClassifier } from '@components/llm/kbDocumentClassification';
 
 // A stored PDF arrives base64-encoded. Browsers refuse a `data:` URI in a frame, so
 // it is turned into a blob the frame can load, and revoked when the panel closes.
@@ -74,6 +80,52 @@ const seedCategories = (current, items) => {
     }
   });
   return next;
+};
+
+// What the classifier decided about one page, kept apart from the user's Fact/SOP mark: the
+// mark is a decision a person made, this is a suggestion, and the legend says which wins.
+// A page with no stored label says so instead of showing nothing. The chips use the smallest readable tier (14px):
+// they are a secondary signal on a row whose primary content is the title and the mark. Each element has its own
+// role so the eye can follow them: the title is the only blue, the kind is the one colour (SOP green, knowledge
+// neutral), the shape is a quiet outline, and capabilities have their own hue and appear only when there are some.
+const ClassifierLine = ({ doc }) => {
+  const summary = summariseClassifier(doc);
+  const count = summary.classified ? summary.capabilities.length : 0;
+  return (
+    <Box data-testid='kb-document-classification' sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: ds.space[1], mt: ds.space[1] }}>
+      {summary.classified ? (
+        <>
+          <Chip variant='tag' size='2xs' tone={summary.kind === 'sop' ? 'success' : 'neutral'}>
+            {`Classifier: ${summary.kindLabel}`}
+          </Chip>
+          {summary.shapeLabel && (
+            <Chip variant='tag' size='2xs' tone='subtle'>
+              {summary.shapeLabel}
+            </Chip>
+          )}
+          {count > 0 && (
+            <Tooltip title={summary.capabilities.join(', ')} placement='top'>
+              <Box component='span' sx={{ display: 'inline-flex', cursor: 'help' }}>
+                <Chip variant='tag' size='2xs' hue='violet'>
+                  {count} capabilit{count === 1 ? 'y' : 'ies'}
+                </Chip>
+              </Box>
+            </Tooltip>
+          )}
+        </>
+      ) : (
+        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>Not classified</Typography>
+      )}
+    </Box>
+  );
+};
+
+ClassifierLine.propTypes = {
+  doc: PropTypes.shape({
+    kind: PropTypes.string,
+    shape: PropTypes.string,
+    capabilities: PropTypes.arrayOf(PropTypes.string),
+  }).isRequired,
 };
 
 // 'none' is the absence of a mark, not a stored value: ToggleGroup in single
@@ -195,7 +247,7 @@ StoredHtml.propTypes = {
   hasSourceLink: PropTypes.bool,
 };
 
-const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit }) => {
+const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit, knowledgeBase }) => {
   const [documents, setDocuments] = useState([]);
   const [nextOffset, setNextOffset] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -218,6 +270,8 @@ const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit }) =
   // their "accounts differ" count no longer applies.
   const [settledKeys, setSettledKeys] = useState([]);
   const [categoryError, setCategoryError] = useState(null);
+  // Which rows have their detail view open, and on which tab. Rows are independent, as in any accordion.
+  const [openDetails, setOpenDetails] = useState({});
   // Bumped whenever the modal target changes so late responses for a previous
   // KB (or a closed modal) are dropped instead of overwriting fresh state.
   const requestKey = useRef(0);
@@ -229,6 +283,7 @@ const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit }) =
     setError(null);
     setExpandedId(null);
     setContents({});
+    setOpenDetails({});
     setCategories({});
     setSavingKeys([]);
     setSettledKeys([]);
@@ -368,6 +423,18 @@ const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit }) =
     }
   };
 
+  const toggleDetail = (documentId) =>
+    setOpenDetails((current) => {
+      const next = { ...current };
+      if (documentId in next) {
+        delete next[documentId];
+      } else {
+        next[documentId] = 'page';
+      }
+      return next;
+    });
+  const setDetailTab = (documentId, tab) => setOpenDetails((current) => ({ ...current, [documentId]: tab }));
+
   const renderContent = (documentId, sourceUrl) => {
     const state = contents[documentId];
     if (!state || state.loading) return <Loader />;
@@ -400,7 +467,7 @@ const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit }) =
   };
 
   return (
-    <Modal open={open} handleClose={onClose} title={`Documents: ${kbName || ''}`} width='md'>
+    <Modal open={open} handleClose={onClose} title={`Documents: ${kbName || ''}`} width='lg'>
       <Box sx={{ padding: ds.space[4] }} data-testid='kb-documents-modal'>
         {rebuilding && !loading && (
           <Box sx={{ mb: ds.space[3] }} data-testid='kb-rebuilding'>
@@ -453,7 +520,16 @@ const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit }) =
                   <strong>Fact</strong> — reference material. Agents use it as supporting information and read only the parts they need.
                 </li>
                 <li>
-                  <strong>Default</strong> — no mark. Pages synced from Confluence or ServiceNow are treated as <strong>Fact</strong>.
+                  <strong>Default</strong> — no mark. A page the classifier labelled SOP is read as a procedure; any other page, including one that is
+                  not classified, is read as reference material.
+                </li>
+                <li>
+                  <strong>Classifier</strong> — what the automatic classifier decided about a page: SOP or knowledge, its procedure shape and the
+                  platform capabilities it mentions. A mark above overrides it. “Not classified” means no label is stored for the page yet.
+                </li>
+                <li>
+                  <strong>Arrow</strong> — open a page's details: the capabilities it references, what the catalog says about them, and its knowledge
+                  base.
                 </li>
                 {/* Read-only viewers still see marks as labels, so they get the legend
                     too — plus where the marks can be changed. */}
@@ -463,6 +539,7 @@ const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit }) =
             {categoryError && <Banner tone='critical' message={categoryError} />}
             {documents.map((doc) => {
               const expanded = expandedId === doc.id;
+              const detailOpen = doc.id in openDetails;
               const documentKey = doc.document_key || '';
               const category = categories[documentKey] || '';
               const saving = savingKeys.includes(documentKey);
@@ -480,6 +557,9 @@ const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit }) =
                           {doc.title}
                         </Typography>
                       )}
+                      {/* A hand-made note is one document the classifier does not label per document, so
+                          it would read "Not classified" wrongly; only pages with a key, or a label, show it. */}
+                      {(documentKey || doc.kind) && <ClassifierLine doc={doc} />}
                     </Box>
                     {canEdit && documentKey ? (
                       // ToggleGroup declares no data-* props, so the handle an
@@ -515,7 +595,34 @@ const KBDocumentsModal = ({ open, onClose, accountId, kbId, kbName, canEdit }) =
                       data-testid='kb-document-view-content-btn'
                       onClick={() => toggleContent(doc.id)}
                     />
+                    {/* The accordion arrow sits at the right end of the row. A hand-made note has nothing to
+                        expand, so only pages with a key, or a label, get it. */}
+                    {(documentKey || doc.kind) && (
+                      <Button
+                        tone='ghost'
+                        size='sm'
+                        composition='icon-only'
+                        icon={detailOpen ? <KeyboardArrowUpIcon /> : <KeyboardArrowDownIcon />}
+                        tooltip={detailOpen ? 'Hide details' : 'Show details'}
+                        aria-label={`${detailOpen ? 'Hide' : 'Show'} details for ${doc.title}`}
+                        aria-expanded={detailOpen}
+                        data-testid='kb-document-details-toggle'
+                        onClick={() => toggleDetail(doc.id)}
+                      />
+                    )}
                   </Box>
+                  {detailOpen && (
+                    <Box sx={{ mt: ds.space[2] }}>
+                      <DocumentDetailBody
+                        doc={doc}
+                        mark={category}
+                        tab={openDetails[doc.id]}
+                        onTab={(tab) => setDetailTab(doc.id, tab)}
+                        knowledgeBase={knowledgeBase}
+                        documents={documents}
+                      />
+                    </Box>
+                  )}
                   {expanded && <Box sx={{ mt: ds.space[2] }}>{renderContent(doc.id, doc.url)}</Box>}
                 </Box>
               );
@@ -544,6 +651,14 @@ KBDocumentsModal.propTypes = {
   // Whether the viewer may change a document's Fact/SOP mark. Read-only
   // viewers see the mark as a label instead of a control.
   canEdit: PropTypes.bool,
+  // The knowledge base's own row (roll-up and the catalog details of its capabilities), as the Knowledge Base tab
+  // already holds it. Optional: the detail view degrades to a hint.
+  knowledgeBase: PropTypes.shape({
+    kinds: PropTypes.arrayOf(PropTypes.string),
+    shapes: PropTypes.arrayOf(PropTypes.string),
+    capabilities: PropTypes.arrayOf(PropTypes.string),
+    capability_details: PropTypes.arrayOf(PropTypes.object),
+  }),
 };
 
 export default KBDocumentsModal;

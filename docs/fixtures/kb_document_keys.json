@@ -1,0 +1,121 @@
+{
+  "_comment": "Golden vectors for the KB document_key recipe. Read by llm-server (tools/core/knowledgebase_document_key_golden_test.go) and rag-server (tests/test_document_key.py); both must produce `key` (DocumentKey, the Fact/SOP mark key) and `label_key` (LabelKey, the per-page label row key). Change a vector here and both sides move together or CI fails.",
+  "cases": [
+    {
+      "name": "confluence page id as string",
+      "collection": "int-1_knowledge_base",
+      "metadata": {
+        "page_id": "12345"
+      },
+      "url": null,
+      "key": "int-1_knowledge_base|12345",
+      "label_key": "int-1_knowledge_base|12345"
+    },
+    {
+      "name": "confluence page id as JSON number",
+      "collection": "int-1_knowledge_base",
+      "metadata": {
+        "page_id": 12345
+      },
+      "url": null,
+      "key": "int-1_knowledge_base|12345",
+      "label_key": "int-1_knowledge_base|12345"
+    },
+    {
+      "name": "page id 0 is a real id",
+      "collection": "int-1_knowledge_base",
+      "metadata": {
+        "page_id": 0
+      },
+      "url": null,
+      "key": "int-1_knowledge_base|0",
+      "label_key": "int-1_knowledge_base|0"
+    },
+    {
+      "name": "servicenow sys_id",
+      "collection": "int-2_knowledge_base",
+      "metadata": {
+        "sys_id": "abc123"
+      },
+      "url": null,
+      "key": "int-2_knowledge_base|abc123",
+      "label_key": "int-2_knowledge_base|abc123"
+    },
+    {
+      "name": "source_id wins over page_id",
+      "collection": "int-1_knowledge_base",
+      "metadata": {
+        "source_id": "s-1",
+        "page_id": "12345"
+      },
+      "url": null,
+      "key": "int-1_knowledge_base|s-1",
+      "label_key": "int-1_knowledge_base|s-1"
+    },
+    {
+      "name": "blank source id falls through to the next key",
+      "collection": "int-1_knowledge_base",
+      "metadata": {
+        "source_id": "  ",
+        "page_id": "77"
+      },
+      "url": null,
+      "key": "int-1_knowledge_base|77",
+      "label_key": "int-1_knowledge_base|77"
+    },
+    {
+      "name": "no id falls back to an http url",
+      "collection": "int-1_knowledge_base",
+      "metadata": {},
+      "url": "https://wiki.example.com/p/1",
+      "key": "int-1_knowledge_base|https://wiki.example.com/p/1",
+      "label_key": "int-1_knowledge_base|https://wiki.example.com/p/1"
+    },
+    {
+      "name": "no id and a non-http url has no key",
+      "collection": "int-1_knowledge_base",
+      "metadata": {},
+      "url": "ftp://x/y",
+      "key": "",
+      "label_key": ""
+    },
+    {
+      "name": "no id and no url has no key",
+      "collection": "int-1_knowledge_base",
+      "metadata": {},
+      "url": null,
+      "key": "",
+      "label_key": ""
+    },
+    {
+      "name": "manual knowledge base has no per-page key",
+      "collection": "kb_9f1c",
+      "metadata": {
+        "page_id": "1"
+      },
+      "url": null,
+      "key": "",
+      "label_key": "kb_9f1c"
+    },
+    {
+      "name": "blank collection has no key",
+      "collection": "  ",
+      "metadata": {
+        "page_id": "1"
+      },
+      "url": null,
+      "key": "",
+      "label_key": ""
+    },
+    {
+      "name": "ids and collection are trimmed",
+      "collection": " int-1_knowledge_base ",
+      "metadata": {
+        "page_id": " 9 "
+      },
+      "url": null,
+      "key": "int-1_knowledge_base|9",
+      "label_key": "int-1_knowledge_base|9"
+    }
+  ]
+}

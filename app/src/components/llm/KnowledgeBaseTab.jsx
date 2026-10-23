@@ -1693,6 +1693,7 @@ const KnowledgeBaseTab = ({ accountId }) => {
         kbId={documentsKB?.id}
         kbName={documentsKB?.name}
         canEdit={Boolean(documentsKB) && canWriteKb(documentsKB)}
+        knowledgeBase={documentsKB}
       />
 
       <KnowledgeBaseSharingModal

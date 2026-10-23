@@ -226,9 +226,9 @@ def query_collection(collection_name: str, query: str, limit=10) -> List[str] | 
 
 
 def _forget_classification(collection_name: str) -> None:
-    """Drop the classification rollup of a collection that was just deleted, so a
-    collection recreated under the same name (an integration KB's is stable) does
-    not show the labels of the one it replaced."""
+    """Drop the classification rollup and the per-page label rows of a collection that
+    was just deleted, so a collection recreated under the same name (an integration
+    KB's is stable) does not show the labels of the one it replaced."""
     from rag.core.utils.db_query import delete_kb_capabilities
 
     delete_kb_capabilities(collection_name)

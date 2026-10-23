@@ -101,7 +101,9 @@ PAYLOAD_BATCH = 500
 # Label keys a chunk's payload ``metadata`` carries (processing.KB_LABEL_KEYS,
 # kept in step by a test); stripped from the copies handed to the classifier so
 # a stale label from an earlier run can never be mistaken for a fresh result.
-_LABEL_KEYS = ("kind", "shape", "capabilities")
+_LABEL_KEYS = ("kind", "shape", "capabilities", "capabilities_extracted")
+# The labels a re-extraction may add to a document that already has its kind and shape.
+_CAPABILITY_KEYS = ("capabilities", "capabilities_extracted")
 # The kinds that make a chunk count as classified (processing._KB_KINDS).
 _KINDS = ["sop", "knowledge"]
 
@@ -261,6 +263,36 @@ def _any_point(client, collection_name: str, *, labelled: bool) -> bool:
     return bool(points)
 
 
+def _any_ungrounded_point(client, collection_name: str) -> bool:
+    """Whether the collection holds a classified point whose capabilities were never
+    extracted against a real catalog (no ``capabilities_extracted`` stamp): labelled
+    before the catalog existed, or while it was unreachable. Decided by Qdrant in one
+    filtered request, like _any_point."""
+    from qdrant_client import models
+
+    stamped = models.FieldCondition(key="metadata.capabilities_extracted", match=models.MatchValue(value=True))
+    points, _ = client.scroll(
+        collection_name=collection_name,
+        scroll_filter=models.Filter(must=[_kind_condition()], must_not=[stamped]),
+        limit=1,
+        with_payload=False,
+        with_vectors=False,
+    )
+    return bool(points)
+
+
+def _catalog_ready() -> bool:
+    """Whether there is a real catalog to extract capabilities against. An empty one
+    (not synced yet, or unreachable) is why the earliest labels carry none."""
+    from rag.core.utils.db_query import get_capability_catalog
+
+    try:
+        return bool(get_capability_catalog())
+    except Exception:
+        logger.exception("kb_capability_backfill: could not read the capability catalog")
+        return False
+
+
 def _scroll_all(client, collection_name: str) -> List[Any]:
     points: List[Any] = []
     offset = None
@@ -283,6 +315,11 @@ def _metadata(point) -> Dict[str, Any]:
 
 def _is_labelled(point) -> bool:
     return _metadata(point).get("kind") in _KINDS
+
+
+def _is_grounded(point) -> bool:
+    """Capabilities were extracted against a real catalog (see processing.KB_LABEL_KEYS)."""
+    return bool(_metadata(point).get("capabilities_extracted"))
 
 
 def _position(point) -> int:
@@ -348,7 +385,11 @@ def _write_labels(client, kb: KBCollection, group: List[Any], labels: Dict[str, 
 
 
 def _backfill_collection(
-    client, kb: KBCollection, budget: int, summarised: Optional[Set[str]] = None
+    client,
+    kb: KBCollection,
+    budget: int,
+    summarised: Optional[Set[str]] = None,
+    regrounding: Optional[bool] = None,
 ) -> CollectionResult:
     """Classify and label at most `budget` outstanding documents of one
     collection, then bring its rollup row in line with what its payload says.
@@ -363,18 +404,29 @@ def _backfill_collection(
 
     from rag.core.documents.processing import refresh_kb_collection_summary
 
+    # A classified document whose capabilities were never extracted against a real
+    # catalog is outstanding too, but only while there is a catalog to extract
+    # against: without one it would be re-classified on every run for nothing.
+    if regrounding is None:
+        regrounding = _catalog_ready()
+
     # The steady state (everything already labelled) must not cost a payload
     # read of every collection on every restart: Qdrant answers this one.
-    if budget <= 0 or not _any_point(client, kb.name, labelled=False):
+    nothing_to_do = not _any_point(client, kb.name, labelled=False) and not (
+        regrounding and _any_ungrounded_point(client, kb.name)
+    )
+    if budget <= 0 or nothing_to_do:
         if summarised is not None and kb.name not in summarised and _any_point(client, kb.name, labelled=True):
             refresh_kb_collection_summary(kb.name)
             return CollectionResult(summary_rebuilt=1)
         return CollectionResult()
 
     points = _scroll_all(client, kb.name)
-    outstanding = [group for group in _group_points(kb, points) if any(not _is_labelled(point) for point in group)][
-        :budget
-    ]
+    outstanding = [
+        group
+        for group in _group_points(kb, points)
+        if any(not _is_labelled(point) or (regrounding and not _is_grounded(point)) for point in group)
+    ][:budget]
     if not outstanding:
         return CollectionResult()
 
@@ -397,7 +449,15 @@ def _backfill_collection(
         stamped = documents[0].metadata
         if "kind" not in stamped:
             continue  # classification failed; stays outstanding for the next run
-        labels = {key: stamped[key] for key in _LABEL_KEYS if key in stamped}
+        if all(_is_labelled(point) for point in group):
+            # Only the capabilities are missing. The kind and shape it already has stay: they are
+            # what the Postgres label owner and the query-time filter agree on, and a second model
+            # call may answer differently. Without the stamp nothing was extracted, so write nothing.
+            if "capabilities_extracted" not in stamped:
+                continue
+            labels = {key: stamped[key] for key in _CAPABILITY_KEYS if key in stamped}
+        else:
+            labels = {key: stamped[key] for key in _LABEL_KEYS if key in stamped}
         try:
             _write_labels(client, kb, group, labels)
         except Exception:
@@ -449,6 +509,7 @@ def run(client, still_held: Callable[[], bool] = lambda: True) -> Dict[str, int]
         summarised = None
 
     summary["collections_scanned"] = len(pending)
+    regrounding = _catalog_ready()  # once per run, not once per collection
     for kb in pending:
         if not still_held():
             logger.warning("kb_capability_backfill: stopping early, the migration lock is no longer held")
@@ -460,7 +521,7 @@ def run(client, still_held: Callable[[], bool] = lambda: True) -> Dict[str, int]
             )
             summary["budget_exhausted"] = 1
         try:
-            result = _backfill_collection(client, kb, budget, summarised)
+            result = _backfill_collection(client, kb, budget, summarised, regrounding)
         except Exception:
             summary["errors"] += 1
             logger.exception("kb_capability_backfill: %s failed", kb.name)

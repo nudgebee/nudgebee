@@ -200,7 +200,7 @@ class FakeKBTable:
             return False
         return collection_name in self.summaries
 
-    def delete_kb_capabilities(self, collection_name):
+    def delete_kb_capabilities(self, collection_name, keep_documents=False):
         self.deletes.append(collection_name)
         if self.down:
             return
@@ -631,7 +631,7 @@ class TestManualUploads:
         (labels,) = all_labels(stack.qdrant, "kb_kb-1")
         assert labels["capabilities"] == []
         assert labels["shape"] == "deterministic_procedure"  # shape does not depend on the catalog
-        assert "Capabilities referenced must be copied" not in stack.llm.prompts[0]
+        assert "Capabilities are the platform tools" not in stack.llm.prompts[0]
         assert stack.pg.summaries["kb_kb-1"] == SOP_ROLLUP
 
     def test_existing_metadata_survives_beside_the_labels(self, stack):

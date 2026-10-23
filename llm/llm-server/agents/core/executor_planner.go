@@ -2971,6 +2971,8 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	metricStatus := "success"
 	if observation.IsCircuitOpen {
 		metricStatus = "circuit_open"
+	} else if status == ToolStatusFailure && observation.IsBadInput {
+		metricStatus = "fail_validation"
 	} else if status == ToolStatusFailure {
 		metricStatus = "fail"
 	}

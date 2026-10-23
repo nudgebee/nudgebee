@@ -53,6 +53,15 @@ type KBDocument struct {
 	// this document. Set only when listing an integration's organisation
 	// knowledge base (#40605), so a tenant admin sees where they differ.
 	AccountMarks int `json:"account_marks,omitempty"`
+	// Kind, Shape and Capabilities are what the classifier decided about this
+	// document ("sop"/"knowledge", the procedure shape, the platform capabilities
+	// it references), read from Postgres (llm_kb_capability_entries, entry_type
+	// 'kb_document'), never from the vector index. nil/empty means no label row, which
+	// is not the same as classified as knowledge. They describe the classifier's output
+	// only: how retrieval treats the page also depends on user marks and the knowledge base.
+	Kind         *string  `json:"kind"`
+	Shape        *string  `json:"shape"`
+	Capabilities []string `json:"capabilities"`
 }
 
 // KBDocumentsPage is one page of a knowledge base's documents. NextOffset is
@@ -260,6 +269,7 @@ func ListKBDocuments(sc *security.RequestContext, accountId, kbId string, limit 
 		if offset != "" {
 			items = []KBDocument{}
 		}
+		applyKBDocumentLabels(sc, kbId, collection, items)
 		return &KBDocumentsPage{
 			Items:   items,
 			Indexed: kbIndexHasDocuments(sc.GetContext(), collection),
@@ -297,6 +307,7 @@ func ListKBDocuments(sc *security.RequestContext, accountId, kbId string, limit 
 			keys = append(keys, key)
 		}
 	}
+	applyKBDocumentLabels(sc, kbId, collection, page.Items)
 	// A failed read shows the page unmarked rather than failing the list: the
 	// documents are still worth seeing, and the marks still apply at retrieval.
 	categories, err := kbDocumentCategories(sc.GetContext(), accountId, keys)

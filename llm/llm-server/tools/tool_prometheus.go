@@ -1665,15 +1665,17 @@ func (m ListMetricsLabelValuesTool) Call(nbRequestContext core.NbToolContext, in
 
 	if err := validateLabelArg(label); err != nil {
 		return core.NBToolResponse{
-			Data:   "Error: " + err.Error(),
-			Status: core.NBToolResponseStatusError,
+			Data:       "Error: " + err.Error(),
+			Status:     core.NBToolResponseStatusError,
+			IsBadInput: true,
 		}, nil
 	}
 
 	if label == "" {
 		return core.NBToolResponse{
-			Data:   "Error: 'label' is required. Provide the label name whose values you want (e.g. 'instance', 'node', 'pod'). Use metrics_labels_list first if you do not know the label names for a metric.",
-			Status: core.NBToolResponseStatusError,
+			Data:       "Error: 'label' is required. Provide the label name whose values you want (e.g. 'instance', 'node', 'pod'). Use metrics_labels_list first if you do not know the label names for a metric.",
+			Status:     core.NBToolResponseStatusError,
+			IsBadInput: true,
 		}, nil
 	}
 
@@ -1741,7 +1743,8 @@ func (m ListMetricsLabelValuesTool) Call(nbRequestContext core.NbToolContext, in
 				"Call %s to list the labels that do exist before retrying. "+
 				"Check also that %q is a single field name and not a query string.",
 				label, ToolMetricsLabelsList, label),
-			Status: core.NBToolResponseStatusError,
+			Status:     core.NBToolResponseStatusError,
+			IsBadInput: true,
 		}, nil
 	}
 

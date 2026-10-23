@@ -103,6 +103,10 @@ func readStatusReply(body []byte, budget *statusPollBudget) (reply map[string]an
 	return reply, false, nil
 }
 
+// codeAnalysisFailedStatus is the value the service puts in execution_status or
+// pr_creation_status when the work itself failed, inside an otherwise normal reply.
+const codeAnalysisFailedStatus = "failed"
+
 // A no-op carries the reason it happened. Mirrors NoOpBasisKey in
 // llm/code-analysis (orchestrator_agent.go): only a specialist verdict is a
 // finding about the file, so only it may be read back as "already present".
@@ -1939,7 +1943,19 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 	go trackPRInResolution(ctx, query, responseStr, codeAgentRequest.GitRepo, provider)
 	return core.NBAgentResponse{
 		Response: []string{finalResponse},
+		Status:   codeAnalysisResultStatus(actualResponse),
 	}, nil
+}
+
+// codeAnalysisResultStatus reports a failed step when the service says the analysis
+// or the pull request failed; otherwise it leaves the status for the executor.
+func codeAnalysisResultStatus(result map[string]any) core.ConversationStatus {
+	for _, key := range []string{"execution_status", "pr_creation_status"} {
+		if v, _ := result[key].(string); strings.EqualFold(strings.TrimSpace(v), codeAnalysisFailedStatus) {
+			return core.ConversationStatusFailed
+		}
+	}
+	return ""
 }
 
 // handleAnalysisResult inspects the analysis result, maintains the message-scoped

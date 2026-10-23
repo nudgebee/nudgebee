@@ -768,6 +768,9 @@ const apiKnowledgeBase = {
               document_key
               note_category
               account_marks
+              kind
+              shape
+              capabilities
             }
             next_offset
             indexed

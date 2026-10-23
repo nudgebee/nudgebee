@@ -30,7 +30,14 @@ jest.mock('@api1/kubernetes', () => ({ __esModule: true, default: { getK8sWorklo
 jest.mock('@lib/auth', () => ({ hasWriteAccess: jest.fn(), isTenantAdmin: jest.fn() }));
 jest.mock('@components/llm/ScopeChip', () => ({ __esModule: true, default: () => null, HybridScopeChips: () => null }));
 jest.mock('@components/llm/KnowledgePolicySettings', () => ({ __esModule: true, default: () => null }));
-jest.mock('@components/llm/KBDocumentsModal', () => ({ __esModule: true, default: () => null }));
+const mockDocumentsModal = jest.fn();
+jest.mock('@components/llm/KBDocumentsModal', () => ({
+  __esModule: true,
+  default: (props) => {
+    mockDocumentsModal(props);
+    return null;
+  },
+}));
 jest.mock('@components/llm/KnowledgeBaseFormModal', () => ({
   __esModule: true,
   default: ({ open, onSubmit, scopeOptions }) =>
@@ -109,6 +116,9 @@ const kbs = [
     enabled: true,
     account_id: '',
     visibility: 'organisation',
+    document_count: 4,
+    kinds: ['sop'],
+    capability_details: [{ name: 'kubectl_execute', surface: 'agent_tool', scope: 'pass_through', description: 'Runs kubectl' }],
   },
 ];
 
@@ -223,6 +233,20 @@ describe('KnowledgeBaseTab tenant-wide row actions', () => {
 // Organisation KBs: no account_id; visibility says who sees them.
 const orgKb = { id: 'kb-o', name: 'Failover', kb_type: 'manual', status: 'active', enabled: true, account_id: '', visibility: 'organisation' };
 const selectedKb = { ...orgKb, id: 'kb-sel', name: 'Payments', visibility: 'selected_accounts' };
+
+describe('KnowledgeBaseTab documents modal', () => {
+  it("hands the modal the knowledge base's own row, so its detail view has the roll-up and the catalog details", async () => {
+    render(<KnowledgeBaseTab accountId='acct-1' />);
+    fireEvent.click(await screen.findByText('tab:integration'));
+    const row = await screen.findByTestId('row-Confluence');
+    fireEvent.click(within(row).getByRole('button', { name: /documents of knowledge base Confluence/ }));
+
+    const props = mockDocumentsModal.mock.calls.at(-1)[0];
+    expect(props.open).toBe(true);
+    expect(props.knowledgeBase).toMatchObject({ id: 'kb-i', kinds: ['sop'] });
+    expect(props.knowledgeBase.capability_details[0]).toMatchObject({ name: 'kubectl_execute', scope: 'pass_through' });
+  });
+});
 
 describe('KnowledgeBaseTab organisation KBs', () => {
   it("gives an account admin only this account's switch, read-only otherwise", async () => {
