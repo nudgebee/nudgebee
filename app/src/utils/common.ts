@@ -284,7 +284,7 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
       label = 'Chronosphere';
       break;
     case 'OTEL':
-      label = 'Otel';
+      label = 'OpenTelemetry';
       break;
     case 'AZURE_MONITOR_WEBHOOK':
       label = 'Azure Monitor Webhook';
