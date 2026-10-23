@@ -104,7 +104,7 @@ func (m LoadSkillsTool) callWorkspaceKnowledge(ctx core.NbToolContext, input cor
 			if len(menu) == 0 {
 				return knowledgeFailure(fmt.Errorf("no indexed documents found in this knowledge base"))
 			}
-			return core.NBToolResponse{Status: core.NBToolResponseStatusSuccess, Type: core.NBToolResponseTypeText, Data: "Select an exact indexed document with load_skills:\n" + strings.Join(menu, "\n")}, nil
+			return core.NBToolResponse{Status: core.NBToolResponseStatusSuccess, Type: core.NBToolResponseTypeText, Data: "Select an exact indexed document with load_skills:\n" + withSearchGuidance(menu, "\n")}, nil
 		}
 		if c.FileSHA256 != "" && selected.Version != c.Version {
 			return knowledgeFailure(fmt.Errorf("manual knowledge changed; select its name again"))
@@ -174,10 +174,11 @@ func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager,
 	defer func() { _ = temp.Close(); _ = os.Remove(temp.Name()) }()
 	digest := sha256.New()
 	out := io.MultiWriter(temp, digest)
+	wholeDocument, wholeSHA256 := false, ""
 	if c.KBID != "" {
 		err = core.WriteManualKnowledge(ctx.Ctx, ctx.AccountId, *c, out)
 	} else {
-		var source io.ReadCloser
+		var source *core.KnowledgeDocumentStream
 		source, err = core.OpenKnowledgeDocument(ctx.Ctx.GetContext(), ctx.AccountId, *c, false)
 		if err == nil {
 			var n int64
@@ -186,8 +187,14 @@ func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager,
 			if n > core.MaxKnowledgeDocumentBytes {
 				err = fmt.Errorf("document exceeds transfer limit")
 			}
-			if err == nil && n != c.Bytes {
+			if err == nil && n != source.Bytes {
 				err = fmt.Errorf("incomplete indexed document")
+			}
+			// The handle described one chunk. Once the whole page arrives, the
+			// size, and the hash the file is verified against, describe the page.
+			if err == nil && source.Scope == core.KnowledgeScopeDocument {
+				wholeDocument, wholeSHA256 = true, source.SHA256
+				c.Bytes = source.Bytes
 			}
 		}
 	}
@@ -195,7 +202,11 @@ func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager,
 		return fmt.Errorf("materialize knowledge: %w", err)
 	}
 	c.FileSHA256 = hex.EncodeToString(digest.Sum(nil))
-	if c.KBID == "" && c.FileSHA256 != c.Version {
+	expectedSHA256 := c.Version
+	if wholeDocument {
+		expectedSHA256 = wholeSHA256
+	}
+	if c.KBID == "" && c.FileSHA256 != expectedSHA256 {
 		return fmt.Errorf("indexed document content version mismatch")
 	}
 	if _, err = temp.Seek(0, io.SeekStart); err != nil {

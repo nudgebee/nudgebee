@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"nudgebee/llm/common"
@@ -82,12 +83,29 @@ func WriteManualKnowledge(ctx *security.RequestContext, accountID string, c Know
 	return nil
 }
 
+// KnowledgeScopeDocument is the X-Content-Scope rag-server answers with when it
+// rebuilt the whole page from the chunk a handle points at. Anything else (or
+// no header, from an older rag-server) means the body is the chunk itself.
+const KnowledgeScopeDocument = "document"
+
+// KnowledgeDocumentStream is an opened indexed read. For a whole-page body the
+// handle's chunk hash and size no longer describe it, so the hash and size the
+// response declares are exposed for the caller to verify the download against.
+type KnowledgeDocumentStream struct {
+	io.ReadCloser
+	Scope  string
+	SHA256 string
+	Bytes  int64
+}
+
 // OpenKnowledgeDocument always checks current collection visibility and version.
-func OpenKnowledgeDocument(ctx context.Context, accountID string, c KnowledgeCandidate, validateOnly bool) (io.ReadCloser, error) {
+// A read (not a validation) asks for the whole page the chunk belongs to; the
+// server answers with the chunk when it cannot rebuild it cleanly.
+func OpenKnowledgeDocument(ctx context.Context, accountID string, c KnowledgeCandidate, validateOnly bool) (*KnowledgeDocumentStream, error) {
 	if c.Collection == "" || c.DocumentID == "" || len(c.Version) != 64 {
 		return nil, fmt.Errorf("exact indexed document handle unavailable; search again after updating RAG server")
 	}
-	payload, err := json.Marshal(map[string]any{"account_id": accountID, "collection_name": c.Collection, "document_id": c.DocumentID, "content_sha256": c.Version, "validate_only": validateOnly})
+	payload, err := json.Marshal(map[string]any{"account_id": accountID, "collection_name": c.Collection, "document_id": c.DocumentID, "content_sha256": c.Version, "validate_only": validateOnly, "whole_document": !validateOnly})
 	if err != nil {
 		return nil, fmt.Errorf("encode knowledge request: %w", err)
 	}
@@ -105,13 +123,26 @@ func OpenKnowledgeDocument(ctx context.Context, accountID string, c KnowledgeCan
 	if validateOnly {
 		expected = http.StatusNoContent
 	}
-	if resp.StatusCode != expected || resp.Header.Get("X-Content-SHA256") != c.Version || resp.ContentLength > MaxKnowledgeDocumentBytes {
+	stream := &KnowledgeDocumentStream{ReadCloser: resp.Body, Scope: resp.Header.Get("X-Content-Scope"), SHA256: resp.Header.Get("X-Content-SHA256"), Bytes: c.Bytes}
+	wantSHA := c.Version
+	if stream.Scope == KnowledgeScopeDocument && !validateOnly {
+		// The page has its own hash and size; the handle's pinned chunk hash was
+		// already checked by the server before it assembled anything.
+		wantSHA = stream.SHA256
+		size, sizeErr := strconv.ParseInt(resp.Header.Get("X-Content-Bytes"), 10, 64)
+		if len(wantSHA) != 64 || sizeErr != nil || size < 0 || size > MaxKnowledgeDocumentBytes {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("indexed knowledge unavailable: malformed or oversized whole-document response; search again")
+		}
+		stream.Bytes = size
+	}
+	if resp.StatusCode != expected || stream.SHA256 != wantSHA || resp.ContentLength > MaxKnowledgeDocumentBytes {
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("indexed knowledge unavailable, changed, or exceeds limit (status %d); search again", resp.StatusCode)
 	}
 	if validateOnly {
 		_ = resp.Body.Close()
-		return io.NopCloser(strings.NewReader("")), nil
+		stream.ReadCloser = io.NopCloser(strings.NewReader(""))
 	}
-	return resp.Body, nil
+	return stream, nil
 }

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"html"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -382,3 +383,73 @@ func TestLoadSkillsTool_ArgumentParsing(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Integration tests — RAG-based skill loading and search
 // ---------------------------------------------------------------------------
+
+// A search response states each purpose's guidance once, however many hits it
+// has. The paragraph used to ride along with every hit.
+func TestSearchResponsePrintsGuidanceOncePerPurpose(t *testing.T) {
+	useLegacySkillLoading(t)
+	previous := resolveDocumentCategoriesFn
+	resolveDocumentCategoriesFn = func(_ *security.RequestContext, _ string, docs core.RAGSearchResults) core.RAGSearchResults {
+		out := make(core.RAGSearchResults, len(docs))
+		for i, doc := range docs {
+			metadata := map[string]any{}
+			for k, v := range doc.Metadata {
+				metadata[k] = v
+			}
+			if metadata["page_id"] == "101" {
+				metadata[core.DocumentNoteCategoryKey] = core.KBNoteCategorySOP
+			}
+			doc.Metadata = metadata
+			out[i] = doc
+		}
+		return out
+	}
+	t.Cleanup(func() { resolveDocumentCategoriesFn = previous })
+
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(),
+		AccountId: "guidance-once-account", ConversationId: "conversation", MessageId: "message"}
+	var docs core.RAGSearchResults
+	for _, page := range []string{"101", "102", "103", "104", "105"} {
+		docs = append(docs, core.RAGSearchResult{Document: "steps " + page, Metadata: map[string]any{
+			"collection": "integration-a_knowledge_base", "page_id": page, "title": "Page " + page, "url": "https://wiki.test/" + page}})
+	}
+	results := cacheSearchKnowledgeCandidates(ctx, docs)
+	require.Len(t, results, 5)
+
+	procedure := html.EscapeString(core.KnowledgePurposeGuidance(core.KnowledgePurposeProcedure))
+	reference := html.EscapeString(core.KnowledgePurposeGuidance(core.KnowledgePurposeReference))
+	for _, result := range results {
+		assert.NotContains(t, result, procedure, "a hit no longer carries the guidance itself")
+		assert.NotContains(t, result, reference, "a hit no longer carries the guidance itself")
+		assert.Contains(t, result, `purpose="`)
+	}
+
+	response := withSearchGuidance(results, "\n\n---\n\n")
+	assert.Equal(t, 1, strings.Count(response, procedure), "one procedure paragraph")
+	assert.Equal(t, 1, strings.Count(response, reference), "one reference paragraph for four reference hits")
+	assert.Less(t, strings.Index(response, procedure), strings.Index(response, reference), "procedure guidance first")
+	procedureHits := 0
+	for _, result := range results {
+		if strings.Contains(result, `purpose="procedure"`) {
+			procedureHits++
+		}
+	}
+	assert.Equal(t, 1, procedureHits, "only the marked page is a procedure")
+}
+
+func TestSearchResponseOmitsGuidanceNoHitDeclares(t *testing.T) {
+	assert.Equal(t, "", withSearchGuidance(nil, "\n"))
+	onlyReference := []string{`<result system="internal" source="manual" name="a" purpose="reference">x</result>`}
+	response := withSearchGuidance(onlyReference, "\n")
+	assert.NotContains(t, response, `<guidance purpose="procedure">`)
+	assert.Contains(t, response, `<guidance purpose="reference">`)
+}
+
+// Snippet text comes from the knowledge base, so it can say anything; quotes
+// are escaped, so it cannot declare a purpose the hit does not have.
+func TestSearchResponseGuidanceIgnoresPurposeTextInsideAHit(t *testing.T) {
+	hit := fmt.Sprintf(`<result system="internal" source="manual" name="a" purpose="reference">%s</result>`,
+		html.EscapeString(`purpose="procedure"`))
+	response := withSearchGuidance([]string{hit}, "\n")
+	assert.NotContains(t, response, `<guidance purpose="procedure">`)
+}

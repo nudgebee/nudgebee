@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -425,6 +426,135 @@ func TestKnowledgePDFNamedLoadPreservesPurpose(t *testing.T) {
 			require.Empty(t, candidate.KBID)
 			require.Equal(t, "page-6", candidate.DocumentID)
 			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+// ragDocumentServer answers /knowledge/document the way rag-server does for a
+// chunked page: the chunk when whole_document is off or the page cannot be
+// rebuilt, the page (with its own hash, size and scope) otherwise.
+func ragDocumentServer(t *testing.T, chunk, page string, rebuild bool, requests *[]map[string]any) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		*requests = append(*requests, req)
+		body, scope := chunk, "chunk"
+		if req["whole_document"] == true && rebuild {
+			body, scope = page, "document"
+		}
+		w.Header().Set("X-Content-SHA256", fmt.Sprintf("%x", sha256.Sum256([]byte(body))))
+		w.Header().Set("X-Content-Bytes", fmt.Sprint(len(body)))
+		w.Header().Set("X-Content-Scope", scope)
+		if req["validate_only"] == true {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_, _ = io.WriteString(w, body)
+	}))
+}
+
+func TestKnowledgeWholePageReplacesTheChunkSizeAndHash(t *testing.T) {
+	old := config.Config.RAGServerUrl
+	t.Cleanup(func() { config.Config.RAGServerUrl = old })
+	chunk := strings.Repeat("c", 400)
+	page := strings.Repeat("step one\n", 900)
+	var requests []map[string]any
+	server := ragDocumentServer(t, chunk, page, true, &requests)
+	defer server.Close()
+	config.Config.RAGServerUrl = server.URL + "/"
+	chunkSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(chunk)))
+	c := core.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: chunkSHA, Bytes: int64(len(chunk)), ExcerptOnly: true}
+	wm := &knowledgeUploadCapture{}
+	require.NoError(t, materializeKnowledge(core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "account", ConversationId: "conv"}, wm, &c))
+
+	require.Equal(t, true, requests[0]["whole_document"])
+	require.Equal(t, int64(len(page)), c.Bytes)
+	require.Equal(t, int64(len(page)), wm.bytes)
+	require.Equal(t, fmt.Sprintf("%x", sha256.Sum256([]byte(page))), c.FileSHA256)
+	require.Equal(t, chunkSHA, c.Version, "the handle stays pinned to the chunk the search returned")
+
+	// The saved file is checked against the page hash on every later read.
+	text, err := readKnowledgeLines(strings.NewReader(page), c.FileSHA256, "", 1)
+	require.NoError(t, err)
+	require.Contains(t, text, "step one")
+
+	// A re-validation of the handle stays chunk-level and does not ask for the page.
+	validation, err := core.OpenKnowledgeDocument(context.Background(), "account", c, true)
+	require.NoError(t, err)
+	_ = validation.Close()
+	require.Equal(t, false, requests[len(requests)-1]["whole_document"])
+}
+
+func TestKnowledgeSmallWholePageIsReturnedInline(t *testing.T) {
+	old := config.Config.RAGServerUrl
+	t.Cleanup(func() { config.Config.RAGServerUrl = old })
+	chunk, page := strings.Repeat("c", 400), strings.Repeat("d", 1500)
+	var requests []map[string]any
+	server := ragDocumentServer(t, chunk, page, true, &requests)
+	defer server.Close()
+	config.Config.RAGServerUrl = server.URL + "/"
+	c := core.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: fmt.Sprintf("%x", sha256.Sum256([]byte(chunk))), Bytes: int64(len(chunk))}
+	require.NoError(t, materializeKnowledge(core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "account", ConversationId: "conv"}, &knowledgeUploadCapture{}, &c))
+	require.Equal(t, page, c.Content)
+	require.Equal(t, int64(len(page)), c.Bytes)
+	require.False(t, c.ExcerptOnly)
+}
+
+func TestKnowledgeFallsBackToTheChunkWhenTheServerCannotRebuildThePage(t *testing.T) {
+	old := config.Config.RAGServerUrl
+	t.Cleanup(func() { config.Config.RAGServerUrl = old })
+	chunk := strings.Repeat("c", 400)
+	var requests []map[string]any
+	server := ragDocumentServer(t, chunk, "unused", false, &requests)
+	defer server.Close()
+	config.Config.RAGServerUrl = server.URL + "/"
+	version := fmt.Sprintf("%x", sha256.Sum256([]byte(chunk)))
+	c := core.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: version, Bytes: int64(len(chunk))}
+	require.NoError(t, materializeKnowledge(core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "account", ConversationId: "conv"}, &knowledgeUploadCapture{}, &c))
+	require.Equal(t, chunk, c.Content)
+	require.Equal(t, int64(len(chunk)), c.Bytes)
+	require.Equal(t, version, c.FileSHA256)
+}
+
+func TestKnowledgeRejectsAWholePageThatDoesNotMatchItsDeclaredHash(t *testing.T) {
+	old := config.Config.RAGServerUrl
+	t.Cleanup(func() { config.Config.RAGServerUrl = old })
+	page := strings.Repeat("d", 1500)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-SHA256", fmt.Sprintf("%x", sha256.Sum256([]byte("something else"))))
+		w.Header().Set("X-Content-Bytes", fmt.Sprint(len(page)))
+		w.Header().Set("X-Content-Scope", "document")
+		_, _ = io.WriteString(w, page)
+	}))
+	defer server.Close()
+	config.Config.RAGServerUrl = server.URL + "/"
+	c := core.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: strings.Repeat("a", 64), Bytes: 400}
+	err := materializeKnowledge(core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "account", ConversationId: "conv"}, &knowledgeUploadCapture{}, &c)
+	require.ErrorContains(t, err, "content version mismatch")
+}
+
+func TestKnowledgeRejectsAMalformedWholePageResponse(t *testing.T) {
+	old := config.Config.RAGServerUrl
+	t.Cleanup(func() { config.Config.RAGServerUrl = old })
+	for name, declared := range map[string]string{
+		"missing size":   "",
+		"oversized page": fmt.Sprint(core.MaxKnowledgeDocumentBytes + 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Content-SHA256", strings.Repeat("b", 64))
+				w.Header().Set("X-Content-Scope", "document")
+				if declared != "" {
+					w.Header().Set("X-Content-Bytes", declared)
+				}
+				_, _ = io.WriteString(w, "page")
+			}))
+			defer server.Close()
+			config.Config.RAGServerUrl = server.URL + "/"
+			c := core.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: strings.Repeat("a", 64), Bytes: 400}
+			_, err := core.OpenKnowledgeDocument(context.Background(), "account", c, false)
+			require.ErrorContains(t, err, "whole-document response")
 		})
 	}
 }

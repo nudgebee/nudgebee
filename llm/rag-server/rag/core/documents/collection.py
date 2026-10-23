@@ -604,6 +604,15 @@ def _source_identifier(metadata: dict) -> str | None:
     return None
 
 
+def stored_source_for(collection_name: str, metadata: dict) -> dict | None:
+    """The newest stored source of the page a chunk belongs to, found by the id its
+    points carry; None when the scrape kept none or it holds no content. One lookup for
+    everything that reads a page's source, so the Docs page and the agent's read agree."""
+    source_id = _source_identifier(metadata)
+    stored = source_store.get_by_source_id(collection_name, source_id) if source_id else None
+    return stored if stored and stored.get("content") else None
+
+
 def get_collection_document(collection_name: str, point_id: str) -> dict | None:
     """Return one document with its full content, or None when the point is gone
     (point ids are content hashes, so a re-sync can replace them)."""
@@ -630,9 +639,8 @@ def get_collection_document(collection_name: str, point_id: str) -> dict | None:
     content_type = "text/markdown"
 
     if metadata.get("parent_id") and not metadata.get("parent_content"):
-        source_id = _source_identifier(metadata)
-        stored = source_store.get_by_source_id(collection_name, source_id) if source_id else None
-        if stored and stored.get("content"):
+        stored = stored_source_for(collection_name, metadata)
+        if stored:
             content = stored["content"]
             content_source = "source"
             content_type = stored.get("content_type") or "text/html"

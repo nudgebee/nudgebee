@@ -493,8 +493,8 @@ func cacheSearchKnowledgeCandidates(ctx core.NbToolContext, docs core.RAGSearchR
 			ctx.Ctx.GetLogger().Warn("search_skills: unable to cache candidate", "error", err)
 			continue
 		}
-		results = append(results, fmt.Sprintf("<result system=\"rag\" source=\"%s\" id=\"%s\" title=\"%s\">\n%s\nUse load_skills with skill_name=%s to read this candidate.\n</result>",
-			html.EscapeString(source), id, html.EscapeString(candidate.Title), html.EscapeString(core.KnowledgePurposeGuidance(candidate.Purpose)+"\n"+candidate.Snippet), id))
+		results = append(results, fmt.Sprintf("<result system=\"rag\" source=\"%s\" id=\"%s\" title=\"%s\" purpose=\"%s\">\n%s\nUse load_skills with skill_name=%s to read this candidate.\n</result>",
+			html.EscapeString(source), id, html.EscapeString(candidate.Title), resultPurpose(candidate.Purpose), html.EscapeString(candidate.Snippet), id))
 	}
 	return results
 }
@@ -672,8 +672,8 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 	go func() {
 		var out searchOutput
 		for _, mr := range s.searchManualKBs(ctx, dbms, query) {
-			out.results = append(out.results, fmt.Sprintf("<result system=\"internal\" source=\"manual\" name=\"%s\">\n%s\n</result>",
-				html.EscapeString(mr.name), html.EscapeString(core.KnowledgePurposeGuidance(core.KnowledgePurpose("manual", mr.category))+"\n"+mr.snippet)))
+			out.results = append(out.results, fmt.Sprintf("<result system=\"internal\" source=\"manual\" name=\"%s\" purpose=\"%s\">\n%s\n</result>",
+				html.EscapeString(mr.name), resultPurpose(core.KnowledgePurpose("manual", mr.category)), html.EscapeString(mr.snippet)))
 			out.refs = append(out.refs, core.NBToolResponseReference{
 				Text: mr.name, Type: "skill", Url: mr.id, Description: mr.description,
 			})
@@ -745,10 +745,36 @@ collect:
 	common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "success", ctx.AccountId)
 	return core.NBToolResponse{
 		Status:     core.NBToolResponseStatusSuccess,
-		Data:       strings.Join(finalResults, "\n\n---\n\n"),
+		Data:       withSearchGuidance(finalResults, "\n\n---\n\n"),
 		Type:       core.NBToolResponseTypeText,
 		References: finalRefs,
 	}, nil
+}
+
+// resultPurpose is the purpose a search hit declares: a procedure only when the
+// knowledge was marked as one, otherwise reference.
+func resultPurpose(purpose core.KnowledgeContentPurpose) core.KnowledgeContentPurpose {
+	if purpose == core.KnowledgePurposeProcedure {
+		return purpose
+	}
+	return core.KnowledgePurposeReference
+}
+
+// withSearchGuidance joins search hits behind the guidance for each purpose they
+// declare, once. Every hit used to carry its own copy, so a response with several
+// hits was mostly one paragraph repeated.
+func withSearchGuidance(results []string, separator string) string {
+	var blocks []string
+	for _, purpose := range []core.KnowledgeContentPurpose{core.KnowledgePurposeProcedure, core.KnowledgePurposeReference} {
+		marker := fmt.Sprintf("purpose=\"%s\"", purpose)
+		for _, result := range results {
+			if strings.Contains(result, marker) {
+				blocks = append(blocks, fmt.Sprintf("<guidance purpose=\"%s\">%s</guidance>", purpose, html.EscapeString(core.KnowledgePurposeGuidance(purpose))))
+				break
+			}
+		}
+	}
+	return strings.Join(append(blocks, strings.Join(results, separator)), separator)
 }
 
 type manualSearchResult struct {

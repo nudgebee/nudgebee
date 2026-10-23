@@ -69,6 +69,22 @@ def _create_collection(client, collection_name: str, vector_size: int, metadata:
         raise
 
 
+def _ensure_parent_id_index(client, collection_name: str) -> None:
+    """Index the field a whole-page read gathers a page's chunks by.
+
+    /knowledge/document scrolls on ``metadata.parent_id``; unindexed, Qdrant
+    scans every payload in the collection for each read. Creating an index that
+    already exists is a no-op, so this also reaches collections that predate it.
+    """
+    try:
+        client.create_payload_index(
+            collection_name=collection_name, field_name="metadata.parent_id", field_schema="keyword"
+        )
+    except Exception:
+        # A slower page read is not worth failing an ingest over.
+        logger.warning("vector_store: could not ensure the parent_id index on %s", collection_name, exc_info=True)
+
+
 def ensure_collection_exists(
     embedding_function: Any,
     collection_name: str,
@@ -127,6 +143,9 @@ def ensure_collection_exists(
         metadata = collection_metadata or {}
         cache.add(CollectionInfo(name=collection_name, metadata=metadata, points_count=0))
         get_metadata_cache().set(collection_name, metadata, points_count=0)
+
+    if collection_metadata.get("module") == "knowledge_base":
+        _ensure_parent_id_index(qdrant_client, collection_name)
 
     return DirectVectorStore(
         client=qdrant_client,
