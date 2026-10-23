@@ -251,7 +251,13 @@ func TestForEachTenantAccount(t *testing.T) {
 	var mu sync.Mutex
 	var calls []string
 	rest := make(chan struct{})
+	// The background accounts wait until the synchronous ones are checked, so
+	// a fast goroutine can't append before the first assertion.
+	release := make(chan struct{})
 	ForEachTenantAccount(itemTestTenant, []string{"b", "", "b"}, func(id string) {
+		if id != "b" {
+			<-release
+		}
 		mu.Lock()
 		calls = append(calls, id)
 		n := len(calls)
@@ -263,6 +269,7 @@ func TestForEachTenantAccount(t *testing.T) {
 	mu.Lock()
 	assert.Equal(t, []string{"b"}, calls, "the request's accounts are done before it returns")
 	mu.Unlock()
+	close(release)
 
 	select {
 	case <-rest:

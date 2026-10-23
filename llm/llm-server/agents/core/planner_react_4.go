@@ -1304,29 +1304,6 @@ func stripXMLBlocks(text, tag string) string {
 	}
 }
 
-// extractXMLFinalAnswer unwraps a react_3-style <final_answer> block, mirroring
-// NBReActPlanner3.processFinalAnswer: <content> becomes the answer and <thought>
-// becomes the Log (never rendered as the answer). Returns nil when the text is
-// not XML-wrapped, so a normal plain-text react_4 answer passes through as-is.
-func extractXMLFinalAnswer(output string) *NBAgentPlannerFinishAction {
-	if !strings.Contains(output, "<final_answer>") {
-		return nil
-	}
-	content := common.XmlExtractTagContent(output, "content")
-	thought := common.XmlExtractTagContent(output, "thought")
-	if content == "" {
-		content = common.XmlExtractTagContent(output, "final_answer")
-		if content == "" {
-			return nil
-		}
-	}
-	return &NBAgentPlannerFinishAction{
-		Data:       content,
-		Log:        thought,
-		IsTerminal: true,
-	}
-}
-
 func react4RefinementMessage(feedback string) string {
 	return "Your previous answer was reviewed and needs improvement before it can be returned to the user. " +
 		"Feedback:\n" + feedback + "\n\n" +
@@ -1415,15 +1392,16 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 		// <thought> -> Log), so users never saw the wrapper. Taking choice.Content
 		// raw leaked the tags AND the internal monologue into the answer, which
 		// surfaced in the UI as replies opening with "The user is asking for…".
-		// Parsing it here restores react_3's behavior; plain-text answers (the
-		// expected react_4 shape) fall through untouched.
-		if finish := extractXMLFinalAnswer(choice.Content); finish != nil {
-			return nil, finish, nil
+		// The same leak happens without the wrapper (a bare leading <thought>
+		// block) and with an unclosed one, so splitFinalAnswer handles all three;
+		// plain-text answers (the expected react_4 shape) pass through untouched.
+		answer, notes := splitFinalAnswer(choice.Content)
+		if notes == "" {
+			notes = choice.Content
 		}
-
 		return nil, &NBAgentPlannerFinishAction{
-			Data:       choice.Content,
-			Log:        choice.Content,
+			Data:       answer,
+			Log:        notes,
 			IsTerminal: true,
 		}, nil
 	}

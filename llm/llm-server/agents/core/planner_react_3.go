@@ -1586,6 +1586,12 @@ func (o *NBReActPlanner3) processFinalAnswer(output string) *NBAgentPlannerFinis
 			return nil
 		}
 	}
+	// The wrapper is already parsed; this drops notes left before the event
+	// summary heading inside <content> (#41809).
+	content, notes := splitFinalAnswer(content)
+	if notes != "" {
+		thought = strings.TrimSpace(thought + "\n\n" + notes)
+	}
 
 	return &NBAgentPlannerFinishAction{
 		Data: content,
