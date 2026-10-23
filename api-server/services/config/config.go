@@ -684,7 +684,7 @@ func init() {
 	viper.SetDefault("nb_retention_days_slo_reports", 90)
 	viper.SetDefault("stuck_webhook_recovery_max_age_minutes", 60)
 	viper.SetDefault("nb_retention_days_rag_retrieval_trace", 30)
-	viper.SetDefault("nb_retention_days_sent_notifications", 14)
+	viper.SetDefault("nb_retention_days_sent_notifications", 7)
 	viper.SetDefault("nb_retention_days_event_analysis", 90)
 	viper.SetDefault("kg_edge_stale_after_days", 7)
 	viper.SetDefault("kg_selfhosted_scan_freshness", 7)

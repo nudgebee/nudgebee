@@ -6,7 +6,7 @@ import { Label } from '@ui/Label';
 import { Link } from '@ui/Link';
 import { ds } from '@utils/colors';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
-import { hasAdminSurfaceAccess } from '@lib/auth';
+import { getAllowedNamespaces, hasAdminSurfaceAccess } from '@lib/auth';
 import deliveriesApi, { Delivery } from '@api1/notification/deliveries';
 import { destinationLabel, messageLink, platformName, statusLine } from '@components/notifications/delivery-history/deliveryText';
 
@@ -34,29 +34,33 @@ export interface AlertDeliveries {
 const HIDDEN: AlertDeliveries = { visible: false, rows: [], historyStart: null, error: '' };
 
 // The alert's deliveries. The section stays hidden until they load, and for readers the delivery history
-// does not admit (namespace roles), so nobody sees it appear and vanish. They are kept with the fingerprint
-// they were loaded for, so when the sidebar moves to another alert, the last one's never render under it.
+// does not admit (namespace roles), so nobody sees it appear and vanish. It is hidden too where the reader
+// sees only some namespaces of the alert's account: deliveries carry no namespace, so api-server leaves that
+// account's out, and the section would claim nothing was sent. They are kept with the event they were
+// loaded for, so when the sidebar moves to another event, the last one's never render under it.
 export function useAlertDeliveries(row: AlertRow | undefined): AlertDeliveries {
   const fingerprint = row?.fingerprint;
-  const demo = row?.cloud_account_id === 'demo';
-  const [loaded, setLoaded] = useState<{ fingerprint: string; deliveries: AlertDeliveries } | null>(null);
+  const eventId = row?.id;
+  const key = `${fingerprint}|${eventId}`;
+  const skip = row?.cloud_account_id === 'demo' || Boolean(row?.cloud_account_id && getAllowedNamespaces(row.cloud_account_id));
+  const [loaded, setLoaded] = useState<{ key: string; deliveries: AlertDeliveries } | null>(null);
 
   useEffect(() => {
-    if (!fingerprint || demo) return undefined;
+    if (!fingerprint || skip) return undefined;
     let cancelled = false;
-    deliveriesApi.forAlert(fingerprint).then((res) => {
+    deliveriesApi.forAlert(fingerprint, eventId).then((res) => {
       if (cancelled) return;
       setLoaded({
-        fingerprint,
+        key: `${fingerprint}|${eventId}`,
         deliveries: { visible: !res.denied, rows: res.data.rows, historyStart: res.data.historyStart, error: res.denied ? '' : res.error || '' },
       });
     });
     return () => {
       cancelled = true;
     };
-  }, [fingerprint, demo]);
+  }, [fingerprint, eventId, skip]);
 
-  return loaded && !demo && loaded.fingerprint === fingerprint ? loaded.deliveries : HIDDEN;
+  return loaded && fingerprint && !skip && loaded.key === key ? loaded.deliveries : HIDDEN;
 }
 
 interface Why {
@@ -67,8 +71,9 @@ interface Why {
 
 // Why nothing was sent, from the same gates api-server applies before an alert is forwarded
 // (notification/event_processor.go): SLO alerts go to the hourly summary, triage-silenced ones are held
-// back, and only HIGH alerts are posted as they fire. Resolving downgrades a cloud alert to INFO, so INFO
-// is not read as "not high priority".
+// back, and only HIGH alerts are posted as they fire. Triage status and priority can change after an alert
+// fires, so they are only read for an alert inside the history. Resolving downgrades a cloud alert to
+// INFO, so INFO is not read as "not high priority".
 export function emptyReason(row: AlertRow, historyStart: string | null, admin: boolean): Why {
   if ((row.source || '').toLowerCase() === 'slo') {
     return {
@@ -79,12 +84,6 @@ export function emptyReason(row: AlertRow, historyStart: string | null, admin: b
         : undefined,
     };
   }
-  if (['SUPPRESSED', 'DROPPED'].includes((row.nb_status || '').toUpperCase())) {
-    return { title: 'Not posted', body: 'This alert is silenced in triage, so its firings aren’t sent.' };
-  }
-  if (['MEDIUM', 'LOW'].includes((row.priority || '').toUpperCase())) {
-    return { title: 'Not posted as it happened', body: 'Only alerts that are high priority when they first fire are posted as they happen.' };
-  }
   const firedAt = row.starts_at || row.created_at;
   if (historyStart && firedAt && dayjs(firedAt).isBefore(dayjs(historyStart))) {
     return {
@@ -92,9 +91,15 @@ export function emptyReason(row: AlertRow, historyStart: string | null, admin: b
       body: `Delivery history starts on ${dayjs(historyStart).format('D MMM YYYY')}, after this alert fired.`,
     };
   }
+  if (['SUPPRESSED', 'DROPPED'].includes((row.nb_status || '').toUpperCase())) {
+    return { title: 'Not posted', body: 'This alert is silenced in triage, so its firings aren’t sent.' };
+  }
+  if (['MEDIUM', 'LOW'].includes((row.priority || '').toUpperCase())) {
+    return { title: 'Not posted as it happened', body: 'Only alerts that are high priority when they first fire are posted as they happen.' };
+  }
   return {
     title: 'No delivery recorded',
-    body: 'Deliveries are kept for 14 days.',
+    body: 'Deliveries are kept for 7 days.',
     link: admin ? { label: 'Check where it goes', href: RULES_HREF, testId: 'sidebar-notifications-check-rules' } : undefined,
   };
 }
@@ -136,42 +141,59 @@ const DeliveryItem = ({ delivery, current, brand }: { delivery: Delivery; curren
   );
 };
 
+// Why this alert, or this event of it, has no deliveries. Under other firings' deliveries the reason is
+// marked as this event's, so their rows are never read as its own.
+const NothingSent = ({ why, thisEvent }: { why: Why; thisEvent: boolean }) => (
+  <Box data-testid='sidebar-notifications-empty' sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
+    {thisEvent ? (
+      <Typography sx={{ fontSize: ds.text.body }}>
+        This event:{' '}
+        <Box component='span' sx={{ fontWeight: ds.weight.semibold }}>
+          {why.title.charAt(0).toLowerCase() + why.title.slice(1)}
+        </Box>
+      </Typography>
+    ) : (
+      <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold }}>{why.title}</Typography>
+    )}
+    {why.body && <Typography sx={{ fontSize: ds.text.body }}>{why.body}</Typography>}
+    {why.link && (
+      <Box component='span' data-testid={why.link.testId}>
+        <Link href={why.link.href} secondaryText>
+          {why.link.label}
+        </Link>
+      </Box>
+    )}
+  </Box>
+);
+
 export function AlertNotifications({ row, deliveries }: { row: AlertRow; deliveries: AlertDeliveries }) {
   const { title: brand } = useBrandingConfig();
-  const [showEarlier, setShowEarlier] = useState(false);
+  const [showOthers, setShowOthers] = useState(false);
   const admin = hasAdminSurfaceAccess();
 
   if (deliveries.error) {
     return <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>Notifications didn’t load.</Typography>;
   }
   if (deliveries.rows.length === 0) {
-    const why = emptyReason(row, deliveries.historyStart, admin);
-    return (
-      <Box data-testid='sidebar-notifications-empty' sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
-        <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold }}>{why.title}</Typography>
-        {why.body && <Typography sx={{ fontSize: ds.text.body }}>{why.body}</Typography>}
-        {why.link && (
-          <Box component='span' data-testid={why.link.testId}>
-            <Link href={why.link.href} secondaryText>
-              {why.link.label}
-            </Link>
-          </Box>
-        )}
-      </Box>
-    );
+    return <NothingSent why={emptyReason(row, deliveries.historyStart, admin)} thisEvent={false} />;
   }
 
   const current = deliveries.rows.filter((d) => d.event_id && d.event_id === row.id);
-  const earlier = deliveries.rows.filter((d) => !(d.event_id && d.event_id === row.id));
-  const shown = current.length === 0 || showEarlier ? deliveries.rows : current;
+  const others = deliveries.rows.filter((d) => !(d.event_id && d.event_id === row.id));
+  const shown = showOthers ? deliveries.rows : current;
   const counts = ['sent', 'failed', 'not_sent']
     .map((s) => ({ s, n: current.filter((d) => d.status === s).length }))
     .filter(({ n }) => n > 0)
     .map(({ s, n }) => `${n} ${s === 'not_sent' ? 'not sent' : s}`);
+  // Opened on an older event, some of the other firings came after it.
+  const firedAt = row.starts_at || row.created_at;
+  const othersLabel = firedAt && others.some((d) => dayjs(d.created_at).isAfter(dayjs(firedAt))) ? 'other firings' : 'earlier firings';
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
-      {counts.length > 0 && (
+      {current.length === 0 ? (
+        <NothingSent why={emptyReason(row, deliveries.historyStart, admin)} thisEvent />
+      ) : (
         <Typography sx={{ fontSize: ds.text.body }}>
           This event:{' '}
           <Box component='span' sx={{ fontWeight: ds.weight.semibold }}>
@@ -179,21 +201,23 @@ export function AlertNotifications({ row, deliveries }: { row: AlertRow; deliver
           </Box>
         </Typography>
       )}
-      <Box component='ul' sx={{ listStyle: 'none', m: 0, p: 0 }}>
-        {shown.map((delivery) => (
-          <DeliveryItem key={delivery.id} delivery={delivery} current={delivery.event_id === row.id} brand={brand} />
-        ))}
-      </Box>
-      {current.length > 0 && earlier.length > 0 && (
+      {shown.length > 0 && (
+        <Box component='ul' sx={{ listStyle: 'none', m: 0, p: 0 }}>
+          {shown.map((delivery) => (
+            <DeliveryItem key={delivery.id} delivery={delivery} current={delivery.event_id === row.id} brand={brand} />
+          ))}
+        </Box>
+      )}
+      {others.length > 0 && (
         <Box>
           <Button
             tone='link'
             size='xs'
-            onClick={() => setShowEarlier((open) => !open)}
-            aria-expanded={showEarlier}
+            onClick={() => setShowOthers((open) => !open)}
+            aria-expanded={showOthers}
             data-testid='sidebar-notifications-earlier'
           >
-            {showEarlier ? 'Hide earlier firings' : `Show ${earlier.length} from earlier firings`}
+            {showOthers ? `Hide ${othersLabel}` : `Show ${others.length} from ${othersLabel}`}
           </Button>
         </Box>
       )}

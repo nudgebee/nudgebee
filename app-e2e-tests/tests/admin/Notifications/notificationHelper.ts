@@ -75,6 +75,11 @@ export async function navigateToNewNotificationRule(
 
   await locators.notificationsTab.waitFor({ state: "visible" });
   await locators.notificationsTab.click();
+  // The tab's sub-tab dropdown opens on hover, so move the mouse off it and let its backdrop close before any click.
+  await page.mouse.move(600, 600);
+  await page.keyboard.press("Escape");
+  // No dropdown was open, so there is no backdrop to wait for.
+  await locators.tabMenuBackdrop.waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
 
   await expect(locators.notificationRuleBtn).toBeVisible();
   await locators.notificationRuleBtn.click();

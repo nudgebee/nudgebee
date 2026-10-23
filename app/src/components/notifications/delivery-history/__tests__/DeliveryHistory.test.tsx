@@ -15,6 +15,23 @@ jest.mock('@api1/notification/deliveries', () => ({
 jest.mock('@api1/user', () => ({ __esModule: true, default: { getUserPreferencesTablePageSize: () => 25 } }));
 jest.mock('@context/DataContext', () => ({ useData: () => ({ allCluster: [{ value: 'acct-1', label: 'prod-gke-eu' }] }) }));
 jest.mock('@hooks/useTenantBranding', () => ({ useBrandingConfig: () => ({ title: 'Acme Ops' }) }));
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: (props: {
+    id: string;
+    options: { label: string; value: string }[];
+    value: { value: string } | null;
+    onSelect: (e: any, v: any) => void;
+  }) => (
+    <div data-testid={props.id} data-selected={props.value?.value ?? ''}>
+      {props.options.map((o) => (
+        <button key={o.value} type='button' data-testid={`${props.id}-opt-${o.value}`} onClick={() => props.onSelect({}, o)}>
+          {o.label}
+        </button>
+      ))}
+    </div>
+  ),
+}));
 const query: Record<string, string> = {};
 jest.mock('next/router', () => ({ useRouter: () => ({ query, push: jest.fn(), replace: jest.fn(), asPath: '/user-management' }) }));
 
@@ -108,6 +125,40 @@ it('applies a link whose query arrives after the first render, as it does on a p
       0
     )
   );
+});
+
+it('never shows an all-clear when the failing check itself failed', async () => {
+  api.failingDestinations.mockResolvedValueOnce({ data: [], error: 'Upstream unreachable' });
+  render(<DeliveryHistory />);
+
+  expect(await screen.findByText('Couldn’t check for failing destinations.')).toBeInTheDocument();
+  expect(screen.queryByText(/No failing destinations/)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByTestId('delivery-history-failing-retry'));
+
+  expect(await screen.findByText('Acme Ops was removed from #alerts. Re-invite it.')).toBeInTheDocument();
+  expect(api.failingDestinations).toHaveBeenCalledTimes(2);
+});
+
+it('lets a destination on another platform clear the platform filter, and the other way round', async () => {
+  render(<DeliveryHistory />);
+  await screen.findByTestId('delivery-history-destination-filter-opt-slack:C1');
+
+  fireEvent.click(screen.getByTestId('delivery-history-platform-filter-opt-ms_teams'));
+  fireEvent.click(screen.getByTestId('delivery-history-destination-filter-opt-slack:C1'));
+
+  expect(screen.getByTestId('delivery-history-platform-filter')).toHaveAttribute('data-selected', '');
+  await waitFor(() =>
+    expect(api.list).toHaveBeenLastCalledWith(
+      expect.objectContaining({ platforms: undefined, destination: { platform: 'slack', destination: 'C1' } }),
+      25,
+      0
+    )
+  );
+
+  fireEvent.click(screen.getByTestId('delivery-history-platform-filter-opt-ms_teams'));
+
+  expect(screen.getByTestId('delivery-history-destination-filter')).toHaveAttribute('data-selected', '');
+  await waitFor(() => expect(api.list).toHaveBeenLastCalledWith(expect.objectContaining({ platforms: ['ms_teams'], destination: null }), 25, 0));
 });
 
 it('says when the history did not load, and tries again', async () => {

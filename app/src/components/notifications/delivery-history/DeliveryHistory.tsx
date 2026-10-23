@@ -32,7 +32,6 @@ import {
 const RANGES = [
   { label: 'Last 24 hours', value: '24h', hours: 24 },
   { label: 'Last 7 days', value: '7d', hours: 24 * 7 },
-  { label: 'Last 14 days', value: '14d', hours: 24 * 14 },
 ];
 const HEADERS = ['Time', 'What was sent', 'Destination', 'Routed by', 'Status', 'Message'];
 const RULES_HREF = '/user-management#notification-rules';
@@ -44,6 +43,9 @@ interface Option {
 
 const sinceHours = (hours: number) => dayjs().subtract(hours, 'hour').toISOString();
 const queryValue = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value) || '';
+// A destination filter value is "<platform>:<destination id>"; it belongs to one platform filter.
+const platformHolds = (platform: string, destination: string) =>
+  !platform || !destination || Boolean(PLATFORM_FILTERS.find((p) => p.value === platform)?.platforms.includes(destination.split(':')[0]));
 
 const Secondary = ({ children }: { children: React.ReactNode }) => (
   <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>{children}</Typography>
@@ -78,7 +80,7 @@ const StatusCell = ({ delivery, brand }: { delivery: Delivery; brand: string }) 
   );
 };
 
-// Admin → Notification Rules → Delivery history: every notification sent or tried in the last 14 days,
+// Admin → Notification Rules → Delivery history: every notification sent or tried in the last 7 days,
 // one row per send to a destination, reading as its last attempt.
 const DeliveryHistory = () => {
   const router = useRouter();
@@ -101,6 +103,8 @@ const DeliveryHistory = () => {
   const [reload, setReload] = useState(0);
   const [failing, setFailing] = useState<DestinationSummary[]>([]);
   const [failingLoading, setFailingLoading] = useState(true);
+  const [failingError, setFailingError] = useState(false);
+  const [failingReload, setFailingReload] = useState(0);
   const [destinations, setDestinations] = useState<DestinationSummary[]>([]);
 
   const hours = RANGES.find((r) => r.value === range)?.hours ?? 24 * 7;
@@ -120,12 +124,13 @@ const DeliveryHistory = () => {
     deliveriesApi.failingDestinations(sinceHours(24)).then((res) => {
       if (cancelled) return;
       setFailing(res.data);
+      setFailingError(Boolean(res.error));
       setFailingLoading(false);
     });
     return () => {
       cancelled = true;
     };
-  }, [reload]);
+  }, [reload, failingReload]);
 
   useEffect(() => {
     let cancelled = false;
@@ -240,12 +245,19 @@ const DeliveryHistory = () => {
   return (
     <ListingLayout id='delivery-history-container'>
       <Box sx={{ px: ds.space[5], pb: ds.space[4] }}>
-        <FailingDestinations destinations={failing} loading={failingLoading} brand={brand} onShow={showDestination} />
+        <FailingDestinations
+          destinations={failing}
+          loading={failingLoading}
+          error={failingError}
+          brand={brand}
+          onShow={showDestination}
+          onRetry={() => setFailingReload((n) => n + 1)}
+        />
       </Box>
       <ListingLayout.Toolbar
         actions={
           <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>
-            {`${total === 1 ? '1 delivery' : `${total} deliveries`} · newest first · kept 14 days`}
+            {`${total === 1 ? '1 delivery' : `${total} deliveries`} · newest first · kept 7 days`}
           </Typography>
         }
       >
@@ -261,14 +273,20 @@ const DeliveryHistory = () => {
           label='Platform'
           options={PLATFORM_FILTERS}
           value={PLATFORM_FILTERS.find((p) => p.value === platform) ?? null}
-          onSelect={pick(setPlatform)}
+          onSelect={pick((value) => {
+            setPlatform(value);
+            if (!platformHolds(value, destination)) setDestination('');
+          })}
         />
         <FilterDropdown
           id='delivery-history-destination-filter'
           label='Destination'
           options={destinationOptions}
           value={destinationOptions.find((d) => d.value === destination) ?? null}
-          onSelect={pick(setDestination)}
+          onSelect={pick((value) => {
+            setDestination(value);
+            if (!platformHolds(platform, value)) setPlatform('');
+          })}
         />
         <FilterDropdown
           id='delivery-history-status-filter'
@@ -326,7 +344,7 @@ const DeliveryHistory = () => {
             emptySubHeading={
               filtered
                 ? 'Try a longer date range, or clear the filters.'
-                : 'When a rule sends a notification, it shows up here. Deliveries are kept for 14 days.'
+                : 'When a rule sends a notification, it shows up here. Deliveries are kept for 7 days.'
             }
           />
         )}

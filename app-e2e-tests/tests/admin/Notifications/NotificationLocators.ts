@@ -6,6 +6,7 @@ import { CommonLocators } from "../../GlobalLocators";
 // picker per connected app under "Do".
 export class NotificationLocators extends CommonLocators {
   readonly notificationsTab!: Locator;
+  readonly tabMenuBackdrop!: Locator;
 
   readonly notificationRuleBtn!: Locator;
   readonly blankRuleItem!: Locator;
@@ -40,6 +41,7 @@ export class NotificationLocators extends CommonLocators {
 
     this.notificationsTab = page.locator("#anchor-tab-Notifications")
       .or(page.getByRole("tab", { name: "Notifications" }));
+    this.tabMenuBackdrop = page.locator(".MuiModal-backdrop").first();
 
     // "Add rule" opens a menu of starting points; "Blank rule" opens the editor.
     this.notificationRuleBtn = page.locator("#notification-rule")

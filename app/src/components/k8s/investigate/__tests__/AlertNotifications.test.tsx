@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom';
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import deliveriesApi from '@api1/notification/deliveries';
+import { getAllowedNamespaces } from '@lib/auth';
 import { AlertNotifications, emptyReason, useAlertDeliveries } from '@components/k8s/investigate/AlertNotifications';
 
 /*
@@ -9,7 +10,7 @@ import { AlertNotifications, emptyReason, useAlertDeliveries } from '@components
  */
 
 jest.mock('@api1/notification/deliveries', () => ({ __esModule: true, default: { forAlert: jest.fn() } }));
-jest.mock('@lib/auth', () => ({ __esModule: true, hasAdminSurfaceAccess: jest.fn(() => true) }));
+jest.mock('@lib/auth', () => ({ __esModule: true, hasAdminSurfaceAccess: jest.fn(() => true), getAllowedNamespaces: jest.fn(() => null) }));
 
 const forAlert = deliveriesApi.forAlert as jest.Mock;
 const ALERT = { id: 'e2', fingerprint: 'fp-1', cloud_account_id: 'acct', priority: 'HIGH', created_at: '2026-10-23T10:40:00Z' };
@@ -21,6 +22,12 @@ describe('why nothing was sent', () => {
     expect(emptyReason({ ...ALERT, priority: 'MEDIUM' }, null, true).body).toBe(
       'Only alerts that are high priority when they first fire are posted as they happen.'
     );
+  });
+
+  it('says an alert older than the history is not in it, whatever its triage status and priority are now', () => {
+    const why = emptyReason({ ...ALERT, nb_status: 'SUPPRESSED', priority: 'LOW', created_at: '2026-10-01T00:00:00Z' }, '2026-10-09T08:00:00Z', true);
+
+    expect(why.title).toBe('Not in delivery history');
   });
 
   it('never blames priority on an INFO alert, which a resolve sets', () => {
@@ -74,7 +81,7 @@ describe('the section', () => {
 
     const { result } = renderHook(() => useAlertDeliveries(ALERT));
 
-    await waitFor(() => expect(forAlert).toHaveBeenCalledWith('fp-1'));
+    await waitFor(() => expect(forAlert).toHaveBeenCalledWith('fp-1', 'e2'));
     await act(async () => undefined);
     expect(result.current.visible).toBe(false);
   });
@@ -99,6 +106,40 @@ describe('the section', () => {
 
     expect(renders.filter((r) => r.visible).map((r) => r.fingerprint)).toEqual(expect.arrayContaining(['fp-1']));
     expect(renders.filter((r) => r.visible && r.fingerprint !== 'fp-1')).toEqual([]);
+  });
+
+  it("says when this event sent nothing, and keeps other firings' deliveries folded below", () => {
+    const deliveries = {
+      visible: true,
+      historyStart: null,
+      error: '',
+      rows: [delivery('d0', 'e1', 'sent', { created_at: '2026-10-22T09:00:00Z' })],
+    };
+
+    render(<AlertNotifications row={ALERT} deliveries={deliveries} />);
+
+    expect(screen.getByTestId('sidebar-notifications-empty')).toHaveTextContent('This event: no delivery recorded');
+    expect(screen.queryByText('#alerts · Slack')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Show 1 from earlier firings'));
+    expect(screen.getByText('#alerts · Slack')).toBeInTheDocument();
+    expect(screen.queryAllByText('This event')).toHaveLength(0);
+  });
+
+  it("calls a later firing's deliveries other firings, on an older event", () => {
+    const deliveries = { visible: true, historyStart: null, error: '', rows: [delivery('d5', 'e5', 'sent')] };
+
+    render(<AlertNotifications row={{ ...ALERT, created_at: '2026-10-20T10:00:00Z' }} deliveries={deliveries} />);
+
+    expect(screen.getByText('Show 1 from other firings')).toBeInTheDocument();
+  });
+
+  it('stays hidden, without asking, where the reader sees only some namespaces of the account', () => {
+    (getAllowedNamespaces as jest.Mock).mockReturnValueOnce(['payments']);
+
+    const { result } = renderHook(() => useAlertDeliveries(ALERT));
+
+    expect(forAlert).not.toHaveBeenCalled();
+    expect(result.current.visible).toBe(false);
   });
 
   it('never asks for the demo account', () => {

@@ -1,6 +1,7 @@
 package query
 
 import (
+	"slices"
 	"strings"
 
 	"nudgebee/services/security"
@@ -39,8 +40,13 @@ func notificationDeliveriesDef(alias string, teamURL bool) string {
 	return def.String()
 }
 
-// hideEmailDeliveries keeps email rows, which name their recipients, to tenant-wide admins.
-func hideEmailDeliveries(ctx *security.RequestContext, request QueryRequest) (QueryRequest, error) {
+// deliveriesModule is the permission module delivery history is read under: the alerts'.
+const deliveriesModule = "events"
+
+// deliveryReadFilters keeps email rows, which name their recipients, to tenant-wide admins. It also keeps
+// a reader whose access to an account is limited to some of its namespaces out of that account's rows:
+// deliveries carry no namespace, so they cannot be narrowed to the reader's.
+func deliveryReadFilters(ctx *security.RequestContext, request QueryRequest) (QueryRequest, error) {
 	caller := ctx.GetSecurityContext()
 	if caller.IsSuperAdmin() || caller.IsTenantAdmin() || caller.IsTenantReadAdmin() {
 		return request, nil
@@ -48,5 +54,27 @@ func hideEmailDeliveries(ctx *security.RequestContext, request QueryRequest) (Qu
 	request.Where.And = append(request.Where.And, QueryWhereClause{
 		Binary: BinaryWhereClause{"kind": {NLike: "email:%"}},
 	})
+	if caller.HasPermission(deliveriesModule, "Read") || caller.HasPermission(deliveriesModule, "Write") {
+		return request, nil
+	}
+	roles := caller.GetRoles()
+	if !slices.Contains(roles, security.AUTH_K8S_NAMESPACE_ADMIN_ROLE) && !slices.Contains(roles, security.AUTH_K8S_NAMESPACE_READ_ADMIN_ROLE) {
+		return request, nil
+	}
+	var namespaceOnly []string
+	for _, accountId := range caller.ListAccountIds() {
+		if caller.HasScopedRole(security.AUTH_ACCOUNT_ADMIN_ROLE, accountId) ||
+			caller.HasScopedRole(security.AUTH_ACCOUNT_READ_ADMIN_ROLE, accountId) ||
+			caller.HasScopedPermission(accountId, deliveriesModule, "Read") ||
+			caller.HasScopedPermission(accountId, deliveriesModule, "Write") {
+			continue
+		}
+		namespaceOnly = append(namespaceOnly, accountId)
+	}
+	if len(namespaceOnly) > 0 {
+		request.Where.And = append(request.Where.And, QueryWhereClause{
+			Binary: BinaryWhereClause{"account_id": {NotIn: namespaceOnly}},
+		})
+	}
 	return request, nil
 }

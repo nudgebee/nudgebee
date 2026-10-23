@@ -28,7 +28,7 @@ def _install(team_url=None, origin=mi.ORIGIN_INTEGRATION):
 
 @pytest.fixture(autouse=True)
 def fresh(monkeypatch):
-    monkeypatch.setattr(workspace_url, "_tried", set())
+    monkeypatch.setattr(workspace_url, "_tried", {})
     started = []
 
     class InlineThread:
@@ -93,7 +93,21 @@ def test_an_older_install_gets_its_url_once_after_a_post(monkeypatch, fresh):
 
     assert saved == [(INTEGRATION, "https://acme.slack.com/")]
     assert cleared == ["t1"]
-    assert len(fresh) == 1, "looked up once per install per process"
+    assert len(fresh) == 1, "looked up at most once an hour per install"
+
+
+def test_a_lookup_that_found_nothing_is_tried_again_an_hour_later(monkeypatch, fresh):
+    clock = [1000.0]
+    monkeypatch.setattr(workspace_url.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(workspace_url, "WebClient", lambda token: SimpleNamespace(auth_test=lambda: {}))
+
+    workspace_url.remember(_install())
+    clock[0] += 60
+    workspace_url.remember(_install())
+    clock[0] += workspace_url.RETRY_AFTER_SECONDS
+    workspace_url.remember(_install())
+
+    assert len(fresh) == 2
 
 
 @pytest.mark.parametrize(

@@ -154,8 +154,8 @@ const baseFilters = (baseTitle) => [
         Body: DeliveryHistory,
         module: 'events',
         description: baseTitle
-          ? `Every notification ${baseTitle} sent or tried to send in the last 14 days: where it went, which rule sent it, and whether it arrived.`
-          : 'Every notification sent or tried to send in the last 14 days: where it went, which rule sent it, and whether it arrived.',
+          ? `Every notification ${baseTitle} sent or tried to send in the last 7 days: where it went, which rule sent it, and whether it arrived.`
+          : 'Every notification sent or tried to send in the last 7 days: where it went, which rule sent it, and whether it arrived.',
       },
     ],
   },

@@ -3,6 +3,7 @@ install saves it from auth.test; an install made before that gets it after its n
 
 import logging
 import threading
+import time
 
 from slack_sdk.web.client import WebClient
 from sqlalchemy.orm import Session
@@ -12,14 +13,16 @@ from notifications_server.services.messaging_installations import ORIGIN_INTEGRA
 
 LOG = logging.getLogger(__name__)
 
-_tried = set()
+RETRY_AFTER_SECONDS = 3600
+
+_tried = {}
 _tried_lock = threading.Lock()
 
 
 def remember(installation) -> None:
-    """Look up and save the workspace URL of an install that has none: once per install per process, on a
-    thread of its own, so a send never waits for it or fails because of it. Installs still in the legacy
-    messaging_platforms table are left out."""
+    """Look up and save the workspace URL of an install that has none: at most once an hour per install per
+    process, on a thread of its own, so a send never waits for it or fails because of it. Installs still in
+    the legacy messaging_platforms table are left out."""
     integration_id = getattr(installation, "_integration_id", None)
     token = getattr(installation, "token", None)
     tenant_id = getattr(installation, "tenant_id", None)
@@ -31,10 +34,12 @@ def remember(installation) -> None:
         or not tenant_id
     ):
         return
+    now = time.monotonic()
     with _tried_lock:
-        if integration_id in _tried:
+        last = _tried.get(integration_id)
+        if last is not None and now - last < RETRY_AFTER_SECONDS:
             return
-        _tried.add(integration_id)
+        _tried[integration_id] = now
     # It runs after a post went in: raising here would report that post as failed, and a retry would repeat it.
     try:
         threading.Thread(target=_save, args=(token, integration_id, tenant_id), daemon=True).start()

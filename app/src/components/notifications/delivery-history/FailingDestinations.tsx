@@ -10,16 +10,29 @@ import { platformName, reasonWords, summaryLabel } from './deliveryText';
 interface Props {
   destinations: DestinationSummary[];
   loading: boolean;
+  error: boolean;
   brand: string;
   onShow: (destination: DestinationSummary) => void;
+  onRetry: () => void;
 }
 
 // Destinations whose latest delivery in the last 24 hours failed, each with the reason and the fix.
-const FailingDestinations = ({ destinations, loading, brand, onShow }: Props) => {
+const FailingDestinations = ({ destinations, loading, error, brand, onShow, onRetry }: Props) => {
   if (loading) {
     return (
       <Box sx={{ border: `0.5px solid ${ds.gray[200]}`, borderRadius: ds.radius.lg, p: ds.space[4] }}>
         <Skeleton shape='text' size='text' width='40%' />
+      </Box>
+    );
+  }
+  // A failed check is never shown as an all-clear.
+  if (error) {
+    return (
+      <Box id='delivery-history-failing-error' sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: ds.space[2] }}>
+        <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>Couldn’t check for failing destinations.</Typography>
+        <Button tone='link' size='xs' onClick={onRetry} data-testid='delivery-history-failing-retry'>
+          Try again
+        </Button>
       </Box>
     );
   }

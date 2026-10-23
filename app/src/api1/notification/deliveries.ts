@@ -139,8 +139,9 @@ const deliveriesApi = {
     return run(query, 'DeliveryDestinations', {}, [], (data) => data.destinations?.rows || []);
   },
 
-  // An alert's deliveries, newest first, and when the history the reader can see starts.
-  async forAlert(fingerprint: string): Promise<Result<{ rows: Delivery[]; historyStart: string | null }>> {
+  // An alert's deliveries, newest first, and when the history the reader can see starts. With eventId, that
+  // event's own come first and in full, however many other firings the alert has had since.
+  async forAlert(fingerprint: string, eventId?: string): Promise<Result<{ rows: Delivery[]; historyStart: string | null }>> {
     const where = gqlStringify({ fingerprint: { _eq: fingerprint }, is_final: { _eq: true } });
     const query = `query AlertDeliveries {
       deliveries: notifications_list_deliveries(where: ${where}, limit: 50, order_by: [{column: "created_at", order: desc}]) {
@@ -148,10 +149,25 @@ const deliveriesApi = {
       }
       history: notifications_aggregate_deliveries(columns: ["first_at"]) { rows { first_at } }
     }`;
-    return run(query, 'AlertDeliveries', {}, { rows: [], historyStart: null }, (data) => ({
+    const alert = run<{ rows: Delivery[]; historyStart: string | null }>(query, 'AlertDeliveries', {}, { rows: [], historyStart: null }, (data) => ({
       rows: data.deliveries?.rows || [],
       historyStart: data.history?.rows?.[0]?.first_at || null,
     }));
+    if (!eventId) return alert;
+    // The fingerprint keeps this on the (tenant, fingerprint, created_at) index; event_id has none.
+    const eventWhere = gqlStringify({ fingerprint: { _eq: fingerprint }, event_id: { _eq: eventId }, is_final: { _eq: true } });
+    const eventQuery = `query EventDeliveries {
+      deliveries: notifications_list_deliveries(where: ${eventWhere}, limit: 50, order_by: [{column: "created_at", order: desc}]) {
+        rows { ${FIELDS} }
+      }
+    }`;
+    const [all, own] = await Promise.all([alert, run<Delivery[]>(eventQuery, 'EventDeliveries', {}, [], (data) => data.deliveries?.rows || [])]);
+    const ownIds = new Set(own.data.map((d) => d.id));
+    return {
+      data: { rows: [...own.data, ...all.data.rows.filter((d) => !ownIds.has(d.id))], historyStart: all.data.historyStart },
+      error: all.error || own.error,
+      denied: all.denied || own.denied,
+    };
   },
 };
 

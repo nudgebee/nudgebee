@@ -63,7 +63,7 @@ DROPPED_BY_DEFAULT = "dropped_by_default"
 # A repeat of an alert replies in its thread only this long after the first post.
 REPEAT_WINDOW = timedelta(hours=24)
 # How far back a resolved reply looks for the alert's thread: the rows' retention.
-RESOLVED_WINDOW = timedelta(days=14)
+RESOLVED_WINDOW = timedelta(days=7)
 
 TITLE_LIMIT = 200
 

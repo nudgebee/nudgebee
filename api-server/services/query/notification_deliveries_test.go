@@ -79,6 +79,29 @@ func TestNotificationDeliveries_AggregateIsScopedToo(t *testing.T) {
 	assert.Contains(t, sql, "kind NOT LIKE 'email:%'")
 }
 
+func TestNotificationDeliveries_ANamespaceReaderSeesNoneOfThatAccount(t *testing.T) {
+	for name, ctxJSON := range map[string]string{
+		"with an alerts grant on another account": fmt.Sprintf(`{"TenantId":"t1","UserId":"u1","Roles":[%[1]q],"AccountIds":["acctA","acctB"],"ScopedEntityIds":{%[1]q:["acctA"]},"ScopedCustomPermissions":{"acctB":{"events:Read":true}}}`, security.AUTH_K8S_NAMESPACE_READ_ADMIN_ROLE),
+		"while account admin of another account":  fmt.Sprintf(`{"TenantId":"t1","UserId":"u1","Roles":[%[1]q,%[2]q],"AccountIds":["acctA","acctB"],"ScopedEntityIds":{%[1]q:["acctB"],%[2]q:["acctA"]}}`, security.AUTH_ACCOUNT_ADMIN_ROLE, security.AUTH_K8S_NAMESPACE_ADMIN_ROLE),
+	} {
+		t.Run(name, func(t *testing.T) {
+			sql, resp := captureRulesSQL(t, scopedCtx(t, ctxJSON), deliveriesRequest("notification_deliveries_v2"))
+
+			assert.Empty(t, resp.Errors)
+			assert.Regexp(t, `account_id NOT IN \('acctA'\)`, sql)
+		})
+	}
+}
+
+func TestNotificationDeliveries_AnAlertsGrantOnTheAccountStillReadsIt(t *testing.T) {
+	ctx := scopedCtx(t, fmt.Sprintf(`{"TenantId":"t1","UserId":"u1","Roles":[%[1]q],"AccountIds":["acctA"],"ScopedEntityIds":{%[1]q:["acctA"]},"ScopedCustomPermissions":{"acctA":{"events:Read":true}}}`, security.AUTH_K8S_NAMESPACE_READ_ADMIN_ROLE))
+
+	sql, resp := captureRulesSQL(t, ctx, deliveriesRequest("notification_deliveries_v2"))
+
+	assert.Empty(t, resp.Errors)
+	assert.NotContains(t, sql, "account_id NOT IN")
+}
+
 // Runs both tables against Postgres: a send's final attempt only, the Slack workspace URL from its
 // integration, state and pre-upgrade rows never, email rows for tenant admins only, and per-destination
 // latest status for the Failing destinations strip.
@@ -177,6 +200,14 @@ func TestNotificationDeliveries_DB(t *testing.T) {
 	accountAdmin := scopedCtx(t, fmt.Sprintf(`{"TenantId":%[1]q,"UserId":"u1","Roles":[%[2]q],"AccountIds":[%[3]q,%[4]q],"ScopedEntityIds":{%[2]q:[%[3]q]}}`, tenant, security.AUTH_ACCOUNT_ADMIN_ROLE, acctA, acctB))
 	ids, _ = list(accountAdmin)
 	assert.Equal(t, []string{final}, ids, "their account only, and no email")
+
+	namespaceReader := scopedCtx(t, fmt.Sprintf(`{"TenantId":%[1]q,"UserId":"u1","Roles":[%[2]q],"AccountIds":[%[3]q],"ScopedEntityIds":{%[2]q:[%[3]q]}}`, tenant, security.AUTH_K8S_NAMESPACE_READ_ADMIN_ROLE, acctA))
+	ids, _ = list(namespaceReader)
+	assert.Empty(t, ids, "deliveries carry no namespace, so a namespace reader sees none of the account's")
+
+	mixed := scopedCtx(t, fmt.Sprintf(`{"TenantId":%[1]q,"UserId":"u1","Roles":[%[2]q,%[3]q],"AccountIds":[%[4]q,%[5]q],"ScopedEntityIds":{%[2]q:[%[5]q],%[3]q:[%[4]q]}}`, tenant, security.AUTH_ACCOUNT_ADMIN_ROLE, security.AUTH_K8S_NAMESPACE_READ_ADMIN_ROLE, acctA, acctB))
+	ids, _ = list(mixed)
+	assert.Equal(t, []string{other}, ids, "the account they administer, not the one they read some namespaces of")
 
 	failing, err := ExecuteQuery(tenantAdmin, QueryRequest{
 		Table:   "notification_deliveries_grouping_v2",

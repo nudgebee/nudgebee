@@ -7531,17 +7531,18 @@ var table_metadata = map[string]TableDefinition{
 	},
 	// Delivery history: Admin -> Notification Rules -> Delivery history, and the alert page's Notifications
 	// section. Scoped like alerts: account readers see only their accounts' rows and never rows with no
-	// account (summaries, digests); email rows stay with tenant-wide admins. PermissionModule matches the
+	// account (summaries, digests); a reader limited to some namespaces of an account sees none of its rows,
+	// which carry no namespace; email rows stay with tenant-wide admins. PermissionModule matches the
 	// MODULE_OVERRIDES entries for both actions in app/src/lib/permissionCatalog.ts.
 	"notification_deliveries_v2": {
 		Type:                Normal,
 		Source:              database.Metastore,
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
-		PermissionModule:    "events",
+		PermissionModule:    deliveriesModule,
 		Name:                "notification_deliveries_v2",
 		Def:                 notificationDeliveriesDef("notification_deliveries", true),
-		UpdateFilters:       hideEmailDeliveries,
+		UpdateFilters:       deliveryReadFilters,
 		Columns: map[string]ColumnDefinition{
 			"id":               {Type: ColumnDefinitionTypeString},
 			"created_at":       {Type: ColumnDefinitionTypeDatetime},
@@ -7575,10 +7576,10 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
-		PermissionModule:    "events",
+		PermissionModule:    deliveriesModule,
 		Name:                "notification_deliveries_grouping_v2",
 		Def:                 notificationDeliveriesDef("notification_deliveries_grouping", false),
-		UpdateFilters:       hideEmailDeliveries,
+		UpdateFilters:       deliveryReadFilters,
 		Columns: map[string]ColumnDefinition{
 			"created_at":  {Type: ColumnDefinitionTypeDatetime},
 			"tenant_id":   {Type: ColumnDefinitionTypeString},
