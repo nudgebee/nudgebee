@@ -2087,40 +2087,82 @@ func (s *Service) markInactiveNodes(
 	`
 	args := []interface{}{tenantID, syncVersion}
 
+	// The flow-sourced infra rows this build is allowed to retire: a row of an
+	// infra-authoritative type stamped by a flow source that ran to completion.
+	// Both branches below need it, because a flow source can synthesise one of
+	// these rows whether or not the caller named its static sources.
+	//
+	// Gated on the k8s static source having run. Every infra-authoritative type
+	// a flow source can synthesise is K8s-shaped (see ebpfKindMap and the
+	// traces kind map — both key their unique keys on cloud_provider "k8s"), so
+	// k8s_source is the oracle that decides whether such a row is stale.
+	// Without this guard a build narrowed to, say, `sources = ["gcp"]` — which
+	// buildRequestForFilter can produce by intersecting a claim with a filter —
+	// would tombstone every flow-sourced Workload while the source that proves
+	// those workloads exist never ran.
+	sweepableFlowInfra := ""
+	if len(successfulFlowSources) > 0 && (len(sources) == 0 || slices.Contains(sources, "k8s")) {
+		infraTypes := make([]string, 0, len(InfraAuthoritativeNodeTypes))
+		for nt := range InfraAuthoritativeNodeTypes {
+			infraTypes = append(infraTypes, string(nt))
+		}
+		successSources := append([]string(nil), successfulFlowSources...)
+		// Stable ordering for deterministic query plans and test assertions.
+		sort.Strings(infraTypes)
+		sort.Strings(successSources)
+
+		infraIdx := len(args) + 1
+		successIdx := len(args) + 2
+		// flow_authoritative rows are exempt: a flow source created them
+		// because the account has no K8s inventory, so nothing can tell a
+		// deleted workload from a merely quiet one. #41003 measured what
+		// sweeping them would cost — 78 of 87 legitimate kind=Service nodes
+		// on dev were stale beyond 7 days, because the agent only reports
+		// what carried traffic in the window.
+		sweepableFlowInfra = fmt.Sprintf(`
+			node_type = ANY($%d::text[])
+			AND (properties->>'source') = ANY($%d::text[])
+			AND (properties->>'`+FlowAuthoritativeProperty+`') IS DISTINCT FROM 'true'`, infraIdx, successIdx)
+		args = append(args, pq.Array(infraTypes), pq.Array(successSources))
+	}
+
 	if len(sources) > 0 {
-		query += fmt.Sprintf(" AND (properties->>'source') = ANY($%d::text[])", len(args)+1)
+		// A caller-named source list scopes the sweep to those producers. Flow
+		// sources are never in it (the list names static sources), so before
+		// #41619 this branch could not retire a flow-sourced row at all — an
+		// eBPF-created Workload for a deleted workload survived every build
+		// forever on any tenant whose filter names its sources.
+		sourcesIdx := len(args) + 1
+		if sweepableFlowInfra != "" {
+			query += fmt.Sprintf(`
+		AND (
+			(properties->>'source') = ANY($%d::text[])
+			OR (%s
+			)
+		)`, sourcesIdx, sweepableFlowInfra)
+		} else {
+			query += fmt.Sprintf(" AND (properties->>'source') = ANY($%d::text[])", sourcesIdx)
+		}
 		args = append(args, pq.Array(sources))
 	} else if len(s.flowSources) > 0 {
 		flowSourceNames := make([]string, 0, len(s.flowSources))
 		for name := range s.flowSources {
 			flowSourceNames = append(flowSourceNames, name)
 		}
-		infraTypes := make([]string, 0, len(InfraAuthoritativeNodeTypes))
-		for nt := range InfraAuthoritativeNodeTypes {
-			infraTypes = append(infraTypes, string(nt))
-		}
-		// Stable ordering for deterministic query plans and test assertions.
 		sort.Strings(flowSourceNames)
-		sort.Strings(infraTypes)
-		successSources := append([]string(nil), successfulFlowSources...)
-		sort.Strings(successSources)
 
 		flowIdx := len(args) + 1
-		infraIdx := len(args) + 2
-		successIdx := len(args) + 3
-		query += fmt.Sprintf(`
+		if sweepableFlowInfra != "" {
+			query += fmt.Sprintf(`
 		AND (
 			(properties->>'source') != ALL($%d::text[])
-			OR (
-				node_type = ANY($%d::text[])
-				AND (properties->>'source') = ANY($%d::text[])
+			OR (%s
 			)
-		)`, flowIdx, infraIdx, successIdx)
-		args = append(args,
-			pq.Array(flowSourceNames),
-			pq.Array(infraTypes),
-			pq.Array(successSources),
-		)
+		)`, flowIdx, sweepableFlowInfra)
+		} else {
+			query += fmt.Sprintf(" AND (properties->>'source') != ALL($%d::text[])", flowIdx)
+		}
+		args = append(args, pq.Array(flowSourceNames))
 	}
 
 	if len(accountIDs) > 0 {

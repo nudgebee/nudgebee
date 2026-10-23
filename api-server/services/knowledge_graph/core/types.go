@@ -268,6 +268,14 @@ var InfraAuthoritativeNodeTypes = map[NodeType]bool{
 	NodeTypeOnCallService:     true, // pagerduty source is authoritative; tombstone if not re-stamped
 }
 
+// FlowAuthoritativeProperty marks a node a flow source created because the
+// account has no static inventory to check it against, so the flow source is
+// the only authority for it. markInactiveNodes refuses to retire these on sync
+// version: with no inventory there is nothing that can distinguish a deleted
+// workload from one that is merely quiet, and the observation window a flow
+// source reports over makes both look identical.
+const FlowAuthoritativeProperty = "flow_authoritative"
+
 // IsInfraAuthoritative reports whether static infra sources are the ground-truth oracle
 // for this node type. Deliberately distinct from IsInfrastructure — CronJob and Job are
 // tagged NonInfrastructure in nodeCategoryMap for UX taxonomy reasons, but are

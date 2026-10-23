@@ -40,9 +40,9 @@ func TestTracesFlowSource_CreateNodeForServiceApplication_SkipsNode(t *testing.T
 		},
 	}
 
-	node := source.createNodeForServiceApplication(app, "tenant-1", core.K8sAccount{CloudAccountID: "account1"})
+	node := source.createNodeForServiceApplication(app, "tenant-1", core.K8sAccount{CloudAccountID: "account1"}, testCreationContext(true))
 	if node != nil {
-		t.Errorf("createNodeForServiceApplication() = %+v, want nil (k8s-authoritative type)", node)
+		t.Errorf("createNodeForServiceApplication(, nil) = %+v, want nil (k8s-authoritative type)", node)
 	}
 }
 

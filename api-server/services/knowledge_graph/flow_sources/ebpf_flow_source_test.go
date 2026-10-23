@@ -572,42 +572,42 @@ func TestCreateNodeForApplication_UnknownKindNotMaterialised(t *testing.T) {
 			Namespace: "arc-systems",
 		},
 	}
-	skipped := make(map[string]int)
-	if node := source.createNodeForApplication(runner, tenantID, account, skipped); node != nil {
+	cc := testCreationContext(true)
+	if node := source.createNodeForApplication(runner, tenantID, account, cc); node != nil {
 		t.Errorf("materialised a node for an EphemeralRunner: %s", node.UniqueKey)
 	}
-	if skipped["EphemeralRunner"] != 1 {
-		t.Errorf("skipped count = %d, want 1 — the summary log is the only signal this happened", skipped["EphemeralRunner"])
+	if cc.skippedKinds["EphemeralRunner"] != 1 {
+		t.Errorf("skipped count = %d, want 1 — the summary log is the only signal this happened", cc.skippedKinds["EphemeralRunner"])
 	}
 
 	// Same via the ID-only path, which the downstream/upstream branches use.
-	skippedByID := make(map[string]int)
+	ccByID := testCreationContext(true)
 	id := core.ServiceApplicationId{
 		Name:      "arc-nudgebee-vx286-runner-64mwj",
 		Kind:      "EphemeralRunner",
 		Namespace: "arc-systems",
 	}
-	if node := source.createNodeForApplicationID(id, tenantID, account, skippedByID); node != nil {
+	if node := source.createNodeForApplicationID(id, tenantID, account, ccByID); node != nil {
 		t.Errorf("materialised a node for an EphemeralRunner by ID: %s", node.UniqueKey)
 	}
-	if skippedByID["EphemeralRunner"] != 1 {
-		t.Errorf("skipped-by-id count = %d, want 1", skippedByID["EphemeralRunner"])
+	if ccByID.skippedKinds["EphemeralRunner"] != 1 {
+		t.Errorf("skipped-by-id count = %d, want 1", ccByID.skippedKinds["EphemeralRunner"])
 	}
 
 	// A long-lived operator CRD must still land, as a CRD rather than a Service.
 	es := &core.ServiceApplication{
 		Id: core.ServiceApplicationId{Name: "logging-es", Kind: "Elasticsearch", Namespace: "elastic-system"},
 	}
-	skippedES := make(map[string]int)
-	node := source.createNodeForApplication(es, tenantID, account, skippedES)
+	ccES := testCreationContext(true)
+	node := source.createNodeForApplication(es, tenantID, account, ccES)
 	if node == nil {
 		t.Fatal("Elasticsearch was not materialised; a long-lived operator CRD must stay in the graph")
 	}
 	if node.NodeType != core.NodeTypeCRD {
 		t.Errorf("Elasticsearch node type = %s, want %s", node.NodeType, core.NodeTypeCRD)
 	}
-	if len(skippedES) != 0 {
-		t.Errorf("unexpected skips recorded: %v", skippedES)
+	if len(ccES.skippedKinds) != 0 {
+		t.Errorf("unexpected skips recorded: %v", ccES.skippedKinds)
 	}
 }
 

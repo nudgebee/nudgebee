@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"nudgebee/services/knowledge_graph/core"
-	"nudgebee/services/traces"
 )
 
 // nameCriteria is the shape of traces strategy 2 (name + type, same account)
@@ -93,14 +92,19 @@ func TestNamespaceGuard_UnknownObservedNamespaceNeverRejects(t *testing.T) {
 // fixture is built by the real minting code rather than by hand.
 func TestNamespaceGuard_FlowSourceMintedNodeDoesNotMakeNamespaceKnown(t *testing.T) {
 	const acct = "acct-a"
-	tracesSource := NewTracesFlowSource(slog.Default())
-	minted := tracesSource.createNodeForServiceApplication(&traces.ServiceApplication{
-		Id: traces.ServiceApplicationId{Name: "ledger", Kind: "Deployment", Namespace: "demo"},
-	}, "tenant-1", core.K8sAccount{CloudAccountID: acct})
+	// The fixture needs a node a flow source genuinely mints, keyed on
+	// cloud_provider k8s and carrying a namespace. Since #41619 that is no
+	// longer a Deployment — workload-shaped types are gated to k8s_source (see
+	// isK8sAuthoritativeType) — so use an operator CRD, which flow sources are
+	// the only producer of (flowProducedInfraTypes).
+	ebpfSource := NewEbpfFlowSource(slog.Default())
+	minted := ebpfSource.createNodeForApplication(&core.ServiceApplication{
+		Id: core.ServiceApplicationId{Name: "ledger", Kind: "Elasticsearch", Namespace: "demo"},
+	}, "tenant-1", core.K8sAccount{CloudAccountID: acct}, testCreationContext(true))
 	if minted == nil {
-		t.Fatal("createNodeForServiceApplication returned nil for a Deployment")
+		t.Fatal("createNodeForApplication returned nil for an operator CRD kind")
 	}
-	if cp := core.DeriveCloudProvider("traces", minted.NodeType); cp != core.CloudProviderK8s {
+	if cp := core.DeriveCloudProvider("ebpf", minted.NodeType); cp != core.CloudProviderK8s {
 		t.Fatalf("fixture premise: minted %s node has cloud_provider %q, want k8s", minted.NodeType, cp)
 	}
 	if minted.Properties["namespace"] != "demo" {

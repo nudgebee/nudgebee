@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"nudgebee/services/internal/database"
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
@@ -81,6 +82,10 @@ func (s *EbpfFlowSource) isIgnoredKind(kind string) bool {
 // observation residue (terminated nodes, pod names mislabelled as kind="node"
 // by the agent, etc.) leaks into the topology as orphans that no infra sync
 // can clean up.
+//
+// This set is UNCONDITIONAL. Workload/Job/CronJob are refused too, but only
+// for accounts that actually have an inventory — see inventoryOwnedWorkloadTypes
+// and flowMayCreate, which callers use instead of calling this directly.
 func isK8sAuthoritativeType(t core.NodeType) bool {
 	switch t {
 	case core.NodeTypeNode,
@@ -89,6 +94,112 @@ func isK8sAuthoritativeType(t core.NodeType) bool {
 		return true
 	}
 	return false
+}
+
+// flowProducedInfraTypes are infra-authoritative types that a flow source is
+// nonetheless the legitimate producer of, so isK8sAuthoritativeType must NOT
+// gate them.
+//
+// The two concepts are easy to conflate and #41619's first fix attempt did:
+// core.InfraAuthoritativeNodeTypes answers "may the sync-version sweep retire
+// a row of this type?" (lifecycle), while this gate answers "is a static
+// source the only thing allowed to create one?" (existence). They usually
+// agree. CustomResource is where they part company: k8s_source emits only
+// Karpenter CRDs, so the long-lived operator CRDs in ebpfKindMap
+// (Elasticsearch, Kibana, OpenTelemetryCollector, AutoscalingRunnerSet, …)
+// have no producer but the flow sources — every CustomResource node in the
+// graph is flow-created. Gating it would delete all of them and undo the
+// deliberate change that gave those kinds nodes instead of letting them fall
+// through to Service. They stay sweepable, which is the correct lifecycle: a
+// successful flow source that stops reporting one retires it.
+//
+// TestK8sAuthoritativeGateClassifiesEverySynthesisableInfraType requires every
+// reachable infra-authoritative type to be in exactly one of this map or the
+// gate, so a new kind forces that decision rather than defaulting to "may be
+// created and may never be retired".
+var flowProducedInfraTypes = map[core.NodeType]bool{
+	core.NodeTypeCRD: true,
+	// Job and CronJob for the same reason, found by running the policy against
+	// real data before merging: sources/k8s/workload.go registers both kinds
+	// with NodeType: core.NodeTypeWorkload ("Jobs and CronJobs build Workload
+	// nodes today even though their schemas declare Job and CronJob node
+	// types"), so a Job inventory row becomes a Workload node and no static
+	// source ever emits these two types. Every Job and CronJob node in the
+	// test database is flow-sourced. See inventoryOwnedWorkloadTypes.
+	core.NodeTypeJob:     true,
+	core.NodeTypeCronJob: true,
+}
+
+// recordK8sInventoryMiss records an observation of a workload-shaped
+// k8s-authoritative type that matched no k8s_source node, so the signal is
+// not lost when the edge is dropped. Without it the two situations the gate
+// collapses — a workload genuinely deleted from the cluster, and one still
+// serving traffic that the k8s collector failed to report — would be
+// indistinguishable and invisible.
+//
+// Scoped to Workload/Job/CronJob on purpose. Node/Namespace/Cluster keep
+// their existing silent drop: a pod name the agent mislabelled as
+// kind="node" is unbounded in cardinality and means nothing to the
+// inventory, so recording it would fill the review table with the same
+// residue the gate exists to refuse. Workload names are bounded — the
+// caller has already collapsed pod replicas via getWorkloadName.
+//
+// Recorded at most once per object per account per build. `seen` is the
+// caller's per-account dedupe set (nil disables deduplication). This matters:
+// the creation paths are called from inside the per-link loops, so a deleted
+// workload that 50 services still call is refused 50 times in one build, and
+// without the set that is 50 synchronous round-trips all colliding onto the
+// same review row — inside a build that already holds the tenant's lock. Once
+// per object per build is also what keeps occurrence_count meaningful as "how
+// many rebuilds still saw this", matching the traces near-miss flush.
+//
+// Fire-and-forget by construction, per core.RecordUncertainClassification's
+// contract: short timeout off context.Background(), never the build's
+// request context, and no error returned to the caller.
+func recordK8sInventoryMiss(
+	logger *slog.Logger,
+	seen map[string]bool,
+	observer, tenantID string,
+	nodeType core.NodeType,
+	kind, name, namespace, cluster string,
+) {
+	switch nodeType {
+	case core.NodeTypeWorkload, core.NodeTypeJob, core.NodeTypeCronJob:
+	default:
+		return
+	}
+	if tenantID == "" || name == "" {
+		return
+	}
+	if seen != nil {
+		key := string(nodeType) + "/" + namespace + "/" + name
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+	}
+	dbManager, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		logger.Warn("skipping k8s-inventory-miss record: no db manager", "error", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	core.RecordUncertainClassification(ctx, dbManager, core.UncertainClassificationCandidate{
+		TenantID:           tenantID,
+		Source:             observer,
+		ClassificationKind: "node_match",
+		CandidateType:      string(nodeType),
+		CandidateName:      name,
+		CandidateNamespace: namespace,
+		CandidateCluster:   cluster,
+		ReasonCode:         "k8s_inventory_no_active_row",
+		ReasonDescription:  "observed traffic for a K8s workload the inventory has no active row for; edge dropped rather than creating a node no sweep can retire",
+		Evidence: map[string]interface{}{
+			"observed_kind": kind,
+			"node_type":     string(nodeType),
+		},
+	})
 }
 
 // Validate validates the eBPF flow source configuration
@@ -235,7 +346,9 @@ func (s *EbpfFlowSource) processK8sAccount(
 	externalServiceNodes := make(map[string]*core.DbNode)
 	// Agent-reported kinds refused by ebpfKindMap, counted for one summary
 	// line at the end of the account (see createNodeForApplication).
-	skippedKinds := make(map[string]int)
+	// Resolved once per account: whether k8s_source owns which workloads exist
+	// here, plus the per-account counters the creation paths report through.
+	cc := newK8sCreationContext(s.logger, account.CloudAccountID)
 
 	// Extract account ID for use throughout the function
 	K8sAccountID := account.CloudAccountID
@@ -340,7 +453,7 @@ func (s *EbpfFlowSource) processK8sAccount(
 				"kind", app.Id.Kind,
 				"namespace", app.Id.Namespace)
 
-			sourceNode = s.createNodeForApplication(app, req.TenantID, account, skippedKinds)
+			sourceNode = s.createNodeForApplication(app, req.TenantID, account, cc)
 			if sourceNode == nil {
 				// k8s-authoritative type with no match — skip this application
 				// entirely so we don't emit edges to/from a phantom node.
@@ -387,7 +500,7 @@ func (s *EbpfFlowSource) processK8sAccount(
 						"kind", destApp.Id.Kind,
 						"namespace", destApp.Id.Namespace)
 
-					downstreamNode = s.createNodeForApplication(destApp, req.TenantID, account, skippedKinds)
+					downstreamNode = s.createNodeForApplication(destApp, req.TenantID, account, cc)
 					if downstreamNode == nil {
 						// k8s-authoritative type with no match — drop this edge.
 						continue
@@ -408,7 +521,7 @@ func (s *EbpfFlowSource) processK8sAccount(
 				var matchErr error
 				downstreamNode, matchErr = s.matchByApplicationID(downstream.Id, K8sAccountID)
 				if matchErr != nil {
-					downstreamNode = s.createNodeForApplicationID(downstream.Id, req.TenantID, account, skippedKinds)
+					downstreamNode = s.createNodeForApplicationID(downstream.Id, req.TenantID, account, cc)
 					if downstreamNode == nil {
 						// k8s-authoritative type with no match — drop this edge.
 						continue
@@ -536,7 +649,7 @@ func (s *EbpfFlowSource) processK8sAccount(
 						"kind", upstreamApp.Id.Kind,
 						"namespace", upstreamApp.Id.Namespace)
 
-					upstreamNode = s.createNodeForApplication(upstreamApp, req.TenantID, account, skippedKinds)
+					upstreamNode = s.createNodeForApplication(upstreamApp, req.TenantID, account, cc)
 					if upstreamNode == nil {
 						// k8s-authoritative type with no match — drop this edge.
 						continue
@@ -557,7 +670,7 @@ func (s *EbpfFlowSource) processK8sAccount(
 				var matchErr error
 				upstreamNode, matchErr = s.matchByApplicationID(*upstreamID, K8sAccountID)
 				if matchErr != nil {
-					upstreamNode = s.createNodeForApplicationID(*upstreamID, req.TenantID, account, skippedKinds)
+					upstreamNode = s.createNodeForApplicationID(*upstreamID, req.TenantID, account, cc)
 					if upstreamNode == nil {
 						// k8s-authoritative type with no match — drop this edge.
 						continue
@@ -609,10 +722,10 @@ func (s *EbpfFlowSource) processK8sAccount(
 	// observations it covered. This is the only signal that a long-lived kind
 	// is missing from ebpfKindMap, so it is WARN rather than Info — a real
 	// operator CRD showing up here means its topology is being dropped.
-	if len(skippedKinds) > 0 {
+	if len(cc.skippedKinds) > 0 {
 		s.logger.Warn("eBPF: skipped node creation for kinds not in ebpfKindMap",
 			"cloud_account_id", K8sAccountID,
-			"kinds", skippedKinds)
+			"kinds", cc.skippedKinds)
 	}
 
 	return edges, newNodes, externalServiceNodes, nil
@@ -1012,18 +1125,23 @@ func (s *EbpfFlowSource) createNodeForApplication(
 	app *core.ServiceApplication,
 	tenantID string,
 	cloudAccount core.K8sAccount,
-	skippedKinds map[string]int,
+	cc *k8sCreationContext,
 ) *core.DbNode {
+	if cc == nil {
+		cc = strictCreationContext()
+	}
 	nodeType := s.inferNodeType(app.Id.Kind)
 
 	// k8s_source owns Node/Namespace/Cluster. If matching didn't find one,
 	// don't fabricate it here — caller drops the edge. Prevents pod names
 	// upstream-mislabelled as kind="node" from showing up as Node nodes.
-	if isK8sAuthoritativeType(nodeType) {
+	if !flowMayCreate(nodeType, cc.inventoryAuthoritative) {
 		s.logger.Debug("skipping eBPF node creation for k8s-authoritative type",
 			"node_type", nodeType,
 			"name", app.Id.Name,
 			"kind", app.Id.Kind)
+		recordK8sInventoryMiss(s.logger, cc.inventoryMisses, "ebpf", tenantID, nodeType,
+			app.Id.Kind, s.getWorkloadName(app), app.Id.Namespace, cloudAccount.Name)
 		return nil
 	}
 
@@ -1032,7 +1150,7 @@ func (s *EbpfFlowSource) createNodeForApplication(
 	// by nature high-cardinality (one object per CI job), so a line each would
 	// bury the build log in the exact traffic we are refusing.
 	if !isMaterialisableKind(app.Id.Kind) {
-		skippedKinds[app.Id.Kind]++
+		cc.skippedKinds[app.Id.Kind]++
 		return nil
 	}
 
@@ -1100,12 +1218,11 @@ func (s *EbpfFlowSource) createNodeForApplication(
 	// Add subtype property for eBPF application
 	properties["subtype"] = app.Id.Kind
 
-	// Concrete native label (specific_type), e.g. KubernetesStatefulSet, mirrors
-	// sources/k8s/workload.go's convention. Without this, core.NewNode defaults
-	// specific_type to the literal "Workload" NodeType string for every orphan
-	// node this creates (when matching to the authoritative k8s_source node misses).
-	if nodeType == core.NodeTypeWorkload && app.Id.Kind != "" {
-		properties["specific_type"] = "Kubernetes" + core.CanonicalWorkloadKind(app.Id.Kind)
+	// Created because this account has no K8s inventory: a flow source is the
+	// only thing that can say this workload exists, so the sweep must not
+	// retire it on silence (see flowAuthoritativeProperty).
+	if inventoryOwnedWorkloadTypes[nodeType] && !cc.inventoryAuthoritative {
+		properties[flowAuthoritativeProperty] = true
 	}
 
 	node := core.NewNode(
@@ -1295,22 +1412,27 @@ func (s *EbpfFlowSource) createNodeForApplicationID(
 	id core.ServiceApplicationId,
 	tenantID string,
 	cloudAccount core.K8sAccount,
-	skippedKinds map[string]int,
+	cc *k8sCreationContext,
 ) *core.DbNode {
+	if cc == nil {
+		cc = strictCreationContext()
+	}
 	nodeType := s.inferNodeType(id.Kind)
 
-	// k8s_source owns Node/Namespace/Cluster — see createNodeForApplication.
-	if isK8sAuthoritativeType(nodeType) {
+	// k8s_source owns these types — see createNodeForApplication.
+	if !flowMayCreate(nodeType, cc.inventoryAuthoritative) {
 		s.logger.Debug("skipping eBPF node creation for k8s-authoritative type",
 			"node_type", nodeType,
 			"name", id.Name,
 			"kind", id.Kind)
+		recordK8sInventoryMiss(s.logger, cc.inventoryMisses, "ebpf", tenantID, nodeType,
+			id.Kind, s.getWorkloadName(&core.ServiceApplication{Id: id}), id.Namespace, cloudAccount.Name)
 		return nil
 	}
 
 	// An unrecognised kind is not materialised — see createNodeForApplication.
 	if !isMaterialisableKind(id.Kind) {
-		skippedKinds[id.Kind]++
+		cc.skippedKinds[id.Kind]++
 		return nil
 	}
 
@@ -1342,10 +1464,11 @@ func (s *EbpfFlowSource) createNodeForApplicationID(
 		properties["crd_kind"] = id.Kind
 	}
 
-	// Concrete native label (specific_type), e.g. KubernetesStatefulSet — see
-	// createNodeForApplication for why this is needed.
-	if nodeType == core.NodeTypeWorkload && id.Kind != "" {
-		properties["specific_type"] = "Kubernetes" + core.CanonicalWorkloadKind(id.Kind)
+	// Created because this account has no K8s inventory: a flow source is the
+	// only thing that can say this workload exists, so the sweep must not
+	// retire it on silence (see flowAuthoritativeProperty).
+	if inventoryOwnedWorkloadTypes[nodeType] && !cc.inventoryAuthoritative {
+		properties[flowAuthoritativeProperty] = true
 	}
 
 	node := core.NewNode(

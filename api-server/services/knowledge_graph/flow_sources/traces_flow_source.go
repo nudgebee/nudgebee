@@ -398,6 +398,9 @@ func (s *TracesFlowSource) BuildGraphFromServiceMap(
 	edges := make([]*core.DbEdge, 0)
 	newNodes := make([]*core.DbNode, 0)
 	externalServiceNodes := make(map[string]*core.DbNode)
+	// Resolved once per account: whether k8s_source owns which workloads exist
+	// here, plus the per-account counters the creation paths report through.
+	cc := newK8sCreationContext(s.logger, account.CloudAccountID)
 
 	// ipResolver is built once per BuildFlowRelationships invocation and
 	// passed in — used to short-circuit raw-IP destinations into K8sService
@@ -433,7 +436,7 @@ func (s *TracesFlowSource) BuildGraphFromServiceMap(
 				"kind", app.Id.Kind,
 				"namespace", app.Id.Namespace)
 
-			sourceNode = s.createNodeForServiceApplication(app, req.TenantID, account)
+			sourceNode = s.createNodeForServiceApplication(app, req.TenantID, account, cc)
 			if sourceNode == nil {
 				// k8s-authoritative type with no match — skip this application.
 				continue
@@ -466,7 +469,7 @@ func (s *TracesFlowSource) BuildGraphFromServiceMap(
 						"service", targetName,
 						"kind", targetKind)
 
-					upstreamNode = s.createNodeForServiceApplication(upstreamApp, req.TenantID, account)
+					upstreamNode = s.createNodeForServiceApplication(upstreamApp, req.TenantID, account, cc)
 					if upstreamNode == nil {
 						// k8s-authoritative type with no match — drop this edge.
 						continue
@@ -555,7 +558,7 @@ func (s *TracesFlowSource) BuildGraphFromServiceMap(
 						"service", downstreamName,
 						"kind", downstreamKind)
 
-					downstreamNode = s.createNodeForServiceApplication(downstreamApp, req.TenantID, account)
+					downstreamNode = s.createNodeForServiceApplication(downstreamApp, req.TenantID, account, cc)
 					if downstreamNode == nil {
 						// k8s-authoritative type with no match — drop this edge.
 						continue
@@ -1358,21 +1361,37 @@ func (s *TracesFlowSource) tryMatchExternalService(
 }
 
 // createNodeForServiceApplication creates a new node for a traces.ServiceApplication.
-// Returns nil for k8s-authoritative types (Node / Namespace / Cluster); see
-// isK8sAuthoritativeType in ebpf_flow_source.go for the rationale. Callers
-// must handle a nil return by skipping the corresponding edge.
+// Returns nil for k8s-authoritative types (Node / Namespace / Cluster /
+// Workload / Job / CronJob); see isK8sAuthoritativeType in
+// ebpf_flow_source.go for the rationale. Callers must handle a nil return by
+// skipping the corresponding edge.
+//
+// This source reaches the Workload half of that gate through its own kind map
+// (Deployment / StatefulSet / DaemonSet / Pod / Runner all infer
+// NodeTypeWorkload). It only ever runs per K8s account
+// (GetK8sAccountsForTenant), so every Workload it would create is already
+// attributed to an account whose inventory is authoritative — there is no
+// trace-only tenant in which these nodes could come from traces alone. An
+// OTel service that matches no K8s object still becomes a NodeTypeService,
+// which is not gated.
 func (s *TracesFlowSource) createNodeForServiceApplication(
 	app *traces.ServiceApplication,
 	tenantID string,
 	account core.K8sAccount,
+	cc *k8sCreationContext,
 ) *core.DbNode {
+	if cc == nil {
+		cc = strictCreationContext()
+	}
 	nodeType, matchedAppType := s.inferNodeType(app.Id.Kind, app.Type)
 
-	if isK8sAuthoritativeType(nodeType) {
+	if !flowMayCreate(nodeType, cc.inventoryAuthoritative) {
 		s.logger.Debug("skipping traces node creation for k8s-authoritative type",
 			"node_type", nodeType,
 			"name", app.Id.Name,
 			"kind", app.Id.Kind)
+		recordK8sInventoryMiss(s.logger, cc.inventoryMisses, "traces", tenantID, nodeType,
+			app.Id.Kind, normalizeCallTargetName(app.Id.Name, app.Id.Kind), app.Id.Namespace, account.Name)
 		return nil
 	}
 
@@ -1453,12 +1472,10 @@ func (s *TracesFlowSource) createNodeForServiceApplication(
 
 	properties["subtype"] = app.Id.Kind
 
-	// Concrete native label (specific_type), e.g. KubernetesStatefulSet, mirrors
-	// sources/k8s/workload.go's convention. Without this, core.NewNode defaults
-	// specific_type to the literal "Workload" NodeType string for every orphan
-	// node this creates (when matching to the authoritative k8s_source node misses).
-	if nodeType == core.NodeTypeWorkload && app.Id.Kind != "" {
-		properties["specific_type"] = "Kubernetes" + core.CanonicalWorkloadKind(app.Id.Kind)
+	// Created because this account has no K8s inventory — see
+	// flowAuthoritativeProperty for why the sweep must leave these alone.
+	if inventoryOwnedWorkloadTypes[nodeType] && !cc.inventoryAuthoritative {
+		properties[flowAuthoritativeProperty] = true
 	}
 
 	node := core.NewNode(
