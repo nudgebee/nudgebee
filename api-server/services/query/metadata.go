@@ -2074,18 +2074,20 @@ var table_metadata = map[string]TableDefinition{
 				Type: ColumnDefinitionTypeInt,
 				Def:  "coalesce(ecc.incident_member_count, 0)",
 			},
-			// Row-level group signals for the Triage Inbox (#34655): a
-			// fingerprint row LEADS a group when any of its events has
-			// members; it is a CHILD when any of its events links to a
-			// leader. Aggregated because inbox rows span many events.
+			// Row-level group signals for the Triage Inbox (#34655), read from
+			// the row's newest event — the firing latest_event_id names and the
+			// row's Investigate, priority and status act on. A group is the
+			// alerts that fired together in one window, so each firing has its
+			// own; a max or bool_or over the row showed the badge of some
+			// earlier burst under the newest firing's time.
 			"incident_group_size": {
 				Type:         ColumnDefinitionTypeInt,
-				Def:          "max(coalesce(ecc.incident_member_count, 0))",
+				Def:          "(array_agg(coalesce(ecc.incident_member_count, 0) ORDER BY events.created_at DESC))[1]",
 				IsAggregated: true,
 			},
 			"is_incident_child": {
 				Type:         ColumnDefinitionTypeBoolean,
-				Def:          "bool_or(ecl.related_event_id IS NOT NULL)",
+				Def:          "(array_agg(ecl.related_event_id IS NOT NULL ORDER BY events.created_at DESC))[1]",
 				IsAggregated: true,
 			},
 			// eia.* (see the join in DefGenerator) is constant within a
@@ -2097,20 +2099,13 @@ var table_metadata = map[string]TableDefinition{
 				IsAggregated: true,
 			},
 			// The event id the Grouped Alerts drill-down resolves the row's
-			// group from. A row's newest event is usually neither a leader nor
-			// a member — the leader is the OLDEST event of a recurring
-			// fingerprint — so anchoring on latest_event_id left rows that
-			// visibly carry a GROUPED badge showing "no related alerts".
-			// Leading rows anchor on their own largest leader (a row can hold
-			// more than one; incident_group_size is that same max); child rows
-			// anchor on the leader their newest linked event points at.
+			// group from: the newest event itself when it leads a group, else
+			// the leader it is filed under, else NULL (the drill-down then falls
+			// back to latest_event_id and shows no related alerts).
 			"incident_group_leader_id": {
 				Type: ColumnDefinitionTypeString,
-				Def: "coalesce(" +
-					"(array_agg(events.id::text ORDER BY ecc.incident_member_count DESC, events.created_at DESC) " +
-					"FILTER (WHERE ecc.incident_member_count > 0))[1], " +
-					"(array_agg(ecl.related_event_id::text ORDER BY events.created_at DESC) " +
-					"FILTER (WHERE ecl.related_event_id IS NOT NULL))[1])",
+				Def: "(array_agg(CASE WHEN ecc.incident_member_count > 0 THEN events.id::text " +
+					"ELSE ecl.related_event_id::text END ORDER BY events.created_at DESC))[1]",
 				IsAggregated: true,
 			},
 		},

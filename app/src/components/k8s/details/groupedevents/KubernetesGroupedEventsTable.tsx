@@ -182,9 +182,9 @@ const transformTableData = (
       endTime: dateRange.endDate,
       accountId: item.account_id,
       // For the Grouped Alerts drill-down tab (#34655). The group anchor is
-      // not the row's latest event — a recurring fingerprint leads its group
-      // from its OLDEST event — so the drill-down resolves from the anchor and
-      // only falls back to the latest event for rows with no group at all.
+      // the latest event's own group — the latest event when it leads, else
+      // the leader it is filed under; the drill-down falls back to the latest
+      // event when it is in no group.
       latestEventId: item.latest_event_id,
       groupLeaderId: item.incident_group_leader_id,
       aggregationKey: item.aggregation_key,
