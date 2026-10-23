@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from notifications_server import sync_engine
 from notifications_server.configs.settings import URLRoutes, settings
 from notifications_server.models.models import SentNotifications
-from notifications_server.services import auto_optimize_approval, workflow_approval
+from notifications_server.services import auto_optimize_approval, delivery_records, workflow_approval
 from notifications_server.services.cache import Cache
 from notifications_server.services.messaging_installations import ms_teams_aad_tenant_owner
 from notifications_server.services.ms_teams.bot_sender import TeamsBotError, card_activity, get_sender
@@ -66,7 +66,7 @@ ANALYSIS_KICKOFF_TIMEOUT_SECONDS = 90
 # Identifies the signing key, so a later key can be verified alongside this one.
 KEY_ID = "1"
 # How long a card's buttons stay valid. api-server's sent_notifications cleanup
-# keeps a Teams card's row exactly this long (teamsCardRetentionDays).
+# keeps a Teams card's row at least this long (teamsCardButtonDays).
 MAX_AGE_SECONDS = 7 * 24 * 3600
 # Teams refuses a message over about 28 KB; buttons are only added to a card
 # that stays under this with them.
@@ -383,11 +383,8 @@ def stored_card(tenant_id, channel_id, message_id) -> Optional[dict]:
     with Session(sync_engine) as session:
         row = (
             session.query(SentNotifications.account_id, SentNotifications.teams_metadata)
-            .filter(
-                SentNotifications.tenant_id == tenant_id,
-                SentNotifications.teams_channel_id == channel_id,
-                SentNotifications.teams_message_id == message_id,
-            )
+            .filter(SentNotifications.tenant_id == tenant_id, delivery_records.teams_card(channel_id, message_id))
+            .order_by(SentNotifications.created_at.desc())
             .first()
         )
     if row is None:
@@ -456,11 +453,8 @@ def _stamp(card_ref, action, state, mutate: Callable[[dict], dict], refuse_if_st
     with Session(sync_engine) as session:
         row = (
             session.query(SentNotifications)
-            .filter(
-                SentNotifications.tenant_id == tenant_id,
-                SentNotifications.teams_channel_id == channel_id,
-                SentNotifications.teams_message_id == message_id,
-            )
+            .filter(SentNotifications.tenant_id == tenant_id, delivery_records.teams_card(channel_id, message_id))
+            .order_by(SentNotifications.created_at.desc())
             .with_for_update()
             .first()
         )

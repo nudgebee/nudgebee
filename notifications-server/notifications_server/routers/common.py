@@ -464,7 +464,12 @@ async def send_channel_message(request: Request, payload: Dict[Any, Any]):
 
         with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
             result = controller.send_channel_message(
-                platform=platform.lower(), tenant_id=tenant_id, channel_id=channel_id, session_id=session_id, text=text
+                platform=platform.lower(),
+                tenant_id=tenant_id,
+                channel_id=channel_id,
+                session_id=session_id,
+                text=text,
+                account_id=payload.get("account_id"),
             )
 
             if "error" in result:
@@ -517,6 +522,7 @@ async def send_direct_message(request: Request, payload: Dict[Any, Any]):
                 user_id=user_id,
                 text=text,
                 team_id=team_id,
+                account_id=payload.get("account_id"),
             )
 
             if "error" in result:
@@ -683,7 +689,7 @@ async def invalidate_rules_cache(body: Dict[Any, Any]):
 
 
 @router.post("/emails/send", status_code=201, dependencies=[Depends(verify_action_token)])
-async def send_email(payload: Dict[Any, Any]):
+async def send_email(request: Request, payload: Dict[Any, Any]):
     """
     Send an email to one or more recipients.
 
@@ -745,6 +751,7 @@ async def send_email(payload: Dict[Any, Any]):
                 reply_to=reply_to,
                 cc=cc,
                 bcc=bcc,
+                tenant_id=request.headers.get("tenant"),
             )
 
             if not result.get("success"):

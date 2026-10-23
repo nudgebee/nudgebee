@@ -3,8 +3,19 @@ import json
 from typing import Dict, Any
 from uuid import UUID
 
-from sqlalchemy import Column, Integer, String, UniqueConstraint, JSON, Boolean, DateTime, ForeignKey, Text
-from sqlalchemy.dialects.postgresql import ARRAY, UUID as PG_UUID
+from sqlalchemy import (
+    Column,
+    Integer,
+    SmallInteger,
+    String,
+    UniqueConstraint,
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Text,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PG_UUID
 from sqlalchemy import inspect
 from sqlalchemy.orm import DeclarativeBase, declared_attr
 from sqlalchemy.ext.hybrid import hybrid_property
@@ -197,12 +208,17 @@ class IntegrationConfigValue(Base):
 
 
 class SentNotifications(Base):
+    """One attempt to send one message to one destination. slack_metadata and
+    teams_metadata hold the state threading, Teams buttons and remediation act
+    on; the platform-named identity columns are kept for readers that predate
+    the delivery columns."""
+
     __tablename__ = "sent_notifications"
 
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=gen_id)
     created_at = Column(DateTime, nullable=False)
     tenant_id = Column(PG_UUID(as_uuid=True), nullable=False)
-    fingerprint = Column(String, nullable=False)
+    fingerprint = Column(String, nullable=True)
     account_id = Column(PG_UUID(as_uuid=True), nullable=True)
     slack_team_id = Column(String, nullable=True)
     slack_thread_id = Column(String, nullable=True)
@@ -212,6 +228,22 @@ class SentNotifications(Base):
     teams_metadata = Column(String, nullable=True)
     discord_channel_id = Column(String, nullable=True)
     discord_message_id = Column(String, nullable=True)
+    dispatch_id = Column(PG_UUID(as_uuid=True), nullable=True)
+    attempt = Column(SmallInteger, nullable=True)
+    kind = Column(String, nullable=True)
+    source = Column(String, nullable=True)
+    title = Column(String, nullable=True)
+    event_id = Column(PG_UUID(as_uuid=True), nullable=True)
+    platform = Column(String, nullable=True)
+    team_id = Column(String, nullable=True)
+    destination = Column(String, nullable=True)
+    destination_name = Column(String, nullable=True)
+    message_id = Column(String, nullable=True)
+    thread_id = Column(String, nullable=True)
+    status = Column(String, nullable=True)
+    reason = Column(String, nullable=True)
+    error_code = Column(String, nullable=True)
+    routed_by = Column(JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql"), nullable=True)
 
 
 class NotificationRules(Base):

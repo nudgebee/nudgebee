@@ -13,6 +13,7 @@ from datetime import datetime
 from botbuilder.core import TurnContext
 from botbuilder.schema import Activity, ActivityTypes
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from notifications_server.configs import settings
@@ -20,7 +21,7 @@ from notifications_server.configs.settings import ACCOUNT_SECURITY_CONTEXT, LLM_
 from notifications_server.message_templates.blocks import MarkdownBlock, ContextBlock
 from notifications_server.models.models import ChannelAccountMapping, SentNotifications
 from notifications_server.services.cache import Cache
-from notifications_server.services import channel_analysis
+from notifications_server.services import channel_analysis, delivery_records
 from notifications_server.services.channel_context import ChannelContextService
 from notifications_server.services.common import THREAD_CONTEXT_MARKER
 from notifications_server.services.messaging_installations import load_installation_by_team, ms_teams_aad_tenant_owner
@@ -396,13 +397,29 @@ class Events:
                         SentNotifications.account_id,
                         SentNotifications.fingerprint,
                         SentNotifications.slack_metadata,
+                        SentNotifications.kind,
                     )
-                    .filter_by(slack_team_id=team_id, slack_thread_id=thread_ts)
+                    .filter(
+                        or_(
+                            and_(
+                                delivery_records.first_post("slack"),
+                                SentNotifications.team_id == team_id,
+                                SentNotifications.message_id == thread_ts,
+                                SentNotifications.destination == channel_id,
+                            ),
+                            and_(
+                                delivery_records.written_before_delivery_columns(),
+                                SentNotifications.slack_team_id == team_id,
+                                SentNotifications.slack_thread_id == thread_ts,
+                            ),
+                        )
+                    )
                     .all()
                 )
                 for row in rows:
-                    if not str(row.fingerprint or "").startswith("remediation-") and (
-                        json.loads(row.slack_metadata or "{}").get("channel") == channel_id
+                    if row.kind is not None or (
+                        not str(row.fingerprint or "").startswith("remediation-")
+                        and json.loads(row.slack_metadata or "{}").get("channel") == channel_id
                     ):
                         if not loop_on(session, row.tenant_id):
                             return None
@@ -2066,7 +2083,7 @@ class Events:
         if row is None:
             return
         try:
-            card_actions.store(row)
+            card_actions.store(delivery_records.fill(row))
         except Exception as e:
             LOG.warning("Storing Teams answer card %s failed; its feedback buttons won't update: %s", message_id, e)
 

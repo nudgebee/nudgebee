@@ -29,6 +29,8 @@ from notifications_server.models.models import (
 )
 from notifications_server.utils.datetime_utils import utc_now
 from notifications_server.utils.transformer import Transformer
+from notifications_server.services import delivery_records
+from notifications_server.services.delivery_errors import google_chat_failure, slack_failure
 from notifications_server.services.cache import SLACK_USERS_FRESH_SECONDS, Cache
 from notifications_server.services.ms_teams.identity import sender_email
 from notifications_server.services.ms_teams.bot_sender import (
@@ -115,7 +117,7 @@ def _slack_retry_after(error):
 
 
 def latest_slack_notification(session, fingerprint, tenant_id=None, account_id=None):
-    """The newest sent_notifications row of fingerprint that has a Slack thread, scoped to tenant_id and
+    """The newest Slack first post of fingerprint, the alert's thread, scoped to tenant_id and
     account_id when given. A tenant may have Slack, Discord and Teams rows for one fingerprint, and
     fingerprints carry no tenant identity, so two tenants can share one."""
     query = session.query(SentNotifications).filter_by(fingerprint=fingerprint)
@@ -124,10 +126,7 @@ def latest_slack_notification(session, fingerprint, tenant_id=None, account_id=N
     if account_id:
         query = query.filter_by(account_id=account_id)
     return (
-        query.filter(SentNotifications.slack_thread_id.isnot(None))
-        .order_by(SentNotifications.created_at.desc())
-        .limit(1)
-        .first()
+        query.filter(delivery_records.slack_first_post()).order_by(SentNotifications.created_at.desc()).limit(1).first()
     )
 
 
@@ -970,7 +969,34 @@ class CommonService:
         except Exception as e:
             LOG.warning(f"Failed to send welcome message to channel {channel_id}: {e}")
 
-    def send_channel_message(self, platform, tenant_id, channel_id, session_id, text, team_id=None):
+    def _record_automation_post(self, tenant_id, platform, destination, text, account_id=None, **columns):
+        """Record an automation post's delivery row: sent with its message id, or
+        failed with the reason of the failed result in columns."""
+        dispatch = delivery_records.Dispatch(
+            tenant_id=delivery_records.as_uuid(tenant_id),
+            kind=delivery_records.AUTOMATION,
+            source=delivery_records.AUTOMATION,
+            account_id=delivery_records.as_uuid(account_id),
+            title=delivery_records.title_of(delivery_records.AUTOMATION, {"message": text}),
+        )
+        if dispatch.tenant_id is None:
+            return
+        failed = columns.pop("failed", None)
+        status = delivery_records.FAILED if failed else delivery_records.SENT
+        if failed:
+            columns.update(reason=failed.get("reason"), error_code=failed.get("error_code"))
+        row = delivery_records.new_row(dispatch, status, platform=platform, destination=destination, **columns)
+        # This request's own transaction ends first, so recording never waits for a second connection
+        # while it holds one.
+        session = getattr(self, "session", None)
+        if session is not None:
+            try:
+                session.commit()
+            except Exception:
+                session.rollback()
+        delivery_records.record_sync([row], engine=self.engine)
+
+    def send_channel_message(self, platform, tenant_id, channel_id, session_id, text, team_id=None, account_id=None):
         try:
             if platform != "slack":
                 return {"error": {"message": f"Platform {platform} is not supported yet"}}
@@ -990,11 +1016,23 @@ class CommonService:
                 if not message_response.get("ok"):
                     error_msg = message_response.get("error", ERR_UNKNOWN)
                     LOG.error(f"Failed to send message to channel {channel_id}: {error_msg}")
+                    self._record_automation_post(
+                        tenant_id, "slack", channel_id, text, account_id, failed=slack_failure(message_response)
+                    )
                     return {"error": {"message": f"Failed to send message: {error_msg}"}}
 
                 message_ts = message_response.get("ts")
 
                 LOG.info(f"Successfully sent message to channel {channel_id} for session {session_id}")
+                self._record_automation_post(
+                    tenant_id,
+                    "slack",
+                    channel_id,
+                    text,
+                    account_id,
+                    team_id=messaging_platform.team_id,
+                    message_id=message_ts,
+                )
 
                 return {
                     "success": True,
@@ -1010,6 +1048,9 @@ class CommonService:
             except SlackApiError as e:
                 error_msg = e.response.get("error") or "slack_api_error"
                 LOG.error(f"Slack API error sending message to channel {channel_id}: {error_msg}")
+                self._record_automation_post(
+                    tenant_id, "slack", channel_id, text, account_id, failed=slack_failure(e.response)
+                )
 
                 return self._check_error_msg(error_msg, "chat:write")
 
@@ -1017,7 +1058,7 @@ class CommonService:
             LOG.exception("Error sending message to channel")
             return {"error": {"message": "Unexpected error while sending message"}}
 
-    def send_direct_message(self, platform, tenant_id, user_id, text, team_id=None):
+    def send_direct_message(self, platform, tenant_id, user_id, text, team_id=None, account_id=None):
         try:
             if platform not in ["slack", "google_chat"]:
                 return {"error": {"message": f"Platform {platform} is not supported for direct messages"}}
@@ -1027,15 +1068,15 @@ class CommonService:
                 return {"error": {"message": f"No {platform} installation found for tenant: {tenant_id}"}}
 
             if platform == "slack":
-                return self._send_slack_direct_message(messaging_platform, user_id, text)
+                return self._send_slack_direct_message(messaging_platform, user_id, text, account_id)
             elif platform == "google_chat":
-                return self._send_google_chat_direct_message(messaging_platform, user_id, text, tenant_id)
+                return self._send_google_chat_direct_message(messaging_platform, user_id, text, tenant_id, account_id)
 
         except Exception:
             LOG.exception("Error sending direct message")
             return {"error": {"message": "Unexpected error while sending direct message"}}
 
-    def _send_slack_direct_message(self, messaging_platform, user_id, text):
+    def _send_slack_direct_message(self, messaging_platform, user_id, text, account_id=None):
         try:
             # Open a DM channel with the user
             dm_response = self.slack_app.client.conversations_open(token=messaging_platform.token, users=user_id)
@@ -1060,10 +1101,27 @@ class CommonService:
             if not message_response.get("ok"):
                 error_msg = message_response.get("error", ERR_UNKNOWN)
                 LOG.error(f"Failed to send DM to user {user_id}: {error_msg}")
+                self._record_automation_post(
+                    messaging_platform.tenant_id,
+                    "slack",
+                    user_id,
+                    text,
+                    account_id,
+                    failed=slack_failure(message_response),
+                )
                 return {"error": {"message": f"Failed to send message: {error_msg}"}}
 
             message_ts = message_response.get("ts")
             LOG.info(f"Successfully sent DM to user {user_id} via channel {dm_channel_id}")
+            self._record_automation_post(
+                messaging_platform.tenant_id,
+                "slack",
+                user_id,
+                text,
+                account_id,
+                team_id=messaging_platform.team_id,
+                message_id=message_ts,
+            )
 
             return {
                 "success": True,
@@ -1079,9 +1137,12 @@ class CommonService:
         except SlackApiError as e:
             error_msg = e.response.get("error") or "slack_api_error"
             LOG.error(f"Slack API error sending DM to user {user_id}: {error_msg}")
+            self._record_automation_post(
+                messaging_platform.tenant_id, "slack", user_id, text, account_id, failed=slack_failure(e.response)
+            )
             return self._check_dm_error_msg(error_msg)
 
-    def _send_google_chat_direct_message(self, messaging_platform, user_id, text, tenant_id):
+    def _send_google_chat_direct_message(self, messaging_platform, user_id, text, tenant_id, account_id=None):
         error = self._refresh_google_chat_token(messaging_platform)
         if error:
             return {"error": {"message": error}}
@@ -1094,8 +1155,14 @@ class CommonService:
         )
 
         if not result.get("success"):
+            self._record_automation_post(
+                tenant_id, "google_chat", user_id, text, account_id, failed=google_chat_failure(result)
+            )
             return {"error": {"message": result.get("error", "Failed to send direct message")}}
 
+        self._record_automation_post(
+            tenant_id, "google_chat", user_id, text, account_id, message_id=(result.get("data") or {}).get("name")
+        )
         return {
             "success": True,
             "message": MSG_DM_SENT_SUCCESS,
@@ -1495,6 +1562,7 @@ class CommonService:
         reply_to=None,
         cc=None,
         bcc=None,
+        tenant_id=None,
     ):
         """
         Send an email to one or more recipients.
@@ -1512,6 +1580,8 @@ class CommonService:
             cc: Optional list (or single string) of Cc addresses
             bcc: Optional list (or single string) of Bcc addresses
                 (envelope-only; never appears in headers)
+            tenant_id: The tenant the email is sent for; its delivery rows are
+                recorded only when it is known
 
         Returns:
             Dict with success status and details
@@ -1532,12 +1602,18 @@ class CommonService:
 
             email_config = self._prepare_email_config(body, template, template_params, body_format)
 
+            outcomes = {}
             if cc_list or bcc_list:
                 sent_to, errors = await self._send_combined_email(
-                    recipient_list, cc_list, bcc_list, subject, email_config, reply_to
+                    recipient_list, cc_list, bcc_list, subject, email_config, reply_to, outcomes
                 )
             else:
-                sent_to, errors = await self._send_emails_to_recipients(recipient_list, subject, email_config, reply_to)
+                sent_to, errors = await self._send_emails_to_recipients(
+                    recipient_list, subject, email_config, reply_to, outcomes
+                )
+            if tenant_id:
+                rows = delivery_records.email_rows(tenant_id, template, subject, outcomes)
+                await asyncio.to_thread(delivery_records.record_sync, rows)
 
             return self._build_email_response(sent_to, errors)
 
@@ -1656,8 +1732,9 @@ class CommonService:
 
         return {"from_email": from_email, "template_type": template_type, "template_params": params}
 
-    async def _send_emails_to_recipients(self, recipients, subject, email_config, reply_to):
-        """Send emails to all recipients and collect results."""
+    async def _send_emails_to_recipients(self, recipients, subject, email_config, reply_to, outcomes=None):
+        """Send emails to all recipients and collect results. outcomes, when
+        given, gets each recipient's error, or None when it was sent."""
         from notifications_server.emailer import generate_email, send_email_async
 
         sent_to = []
@@ -1675,14 +1752,18 @@ class CommonService:
                 )
                 await send_email_async(email_msg)
                 sent_to.append(recipient)
+                if outcomes is not None:
+                    outcomes[recipient] = None
                 LOG.info("Email sent successfully to %s", recipient)
-            except Exception:
+            except Exception as exc:
                 LOG.exception("Failed to send email to %s", recipient)
                 errors.append({"recipient": recipient, "error": "Unexpected error; see server logs"})
+                if outcomes is not None:
+                    outcomes[recipient] = exc
 
         return sent_to, errors
 
-    async def _send_combined_email(self, to_list, cc_list, bcc_list, subject, email_config, reply_to):
+    async def _send_combined_email(self, to_list, cc_list, bcc_list, subject, email_config, reply_to, outcomes=None):
         """Send a single combined email with To/Cc headers and envelope-only Bcc.
 
         Returns (sent_to, errors). On a successful SMTP send, sent_to is the
@@ -1709,9 +1790,13 @@ class CommonService:
                 len(cc_list or []),
                 len(bcc_list or []),
             )
+            if outcomes is not None:
+                outcomes.update(dict.fromkeys(envelope))
             return envelope, []
-        except Exception:
+        except Exception as exc:
             LOG.exception("Failed to send combined email")
+            if outcomes is not None:
+                outcomes.update(dict.fromkeys(envelope, exc))
             return [], [{"recipients": envelope, "error": "Unexpected error; see server logs"}]
 
     @staticmethod

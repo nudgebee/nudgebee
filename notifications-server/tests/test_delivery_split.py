@@ -209,7 +209,7 @@ def test_rollup_without_account_sections_is_sent_whole(monkeypatch):
     del digest["parameters"]["accounts"]
     service = _service({}, monkeypatch)
 
-    async def trigger(_session, _fingerprint, platforms, _kwargs, parameters, _responses, _tenant, type_):
+    async def trigger(_session, _fingerprint, platforms, _kwargs, parameters, _responses, _tenant, type_, **_kw):
         service.sent.append((type_, platforms[0].to_channel, parameters))
         return [{"status": "success"}]
 
@@ -236,7 +236,7 @@ def test_retry_platforms_restricts_fan_out_to_the_failed_platform(monkeypatch):
     ]
     sent_platforms = []
 
-    async def trigger(_session, _fingerprint, platforms, _kwargs, _parameters, _responses, _tenant, _type):
+    async def trigger(_session, _fingerprint, platforms, _kwargs, _parameters, _responses, _tenant, _type, **_kw):
         sent_platforms.extend(ip.platform for ip in platforms)
         return [{"status": "success"}]
 
@@ -264,7 +264,7 @@ def test_retry_destinations_resend_only_to_the_channels_that_failed(monkeypatch)
     service = _service({None: [_deliver(OPS), _deliver(FINOPS)]}, monkeypatch)
     sent_channels = []
 
-    async def trigger(_session, _fingerprint, platforms, _kwargs, _parameters, _responses, _tenant, _type):
+    async def trigger(_session, _fingerprint, platforms, _kwargs, _parameters, _responses, _tenant, _type, **_kw):
         sent_channels.extend(ip.to_channel for ip in platforms if ip.to_channel)
         return [{"status": "success"}]
 
@@ -354,7 +354,7 @@ def test_an_older_retry_scope_is_narrowed_by_the_newer_retry_platforms(monkeypat
     ]
     sent = []
 
-    async def trigger(_session, _fingerprint, platforms, *_args):
+    async def trigger(_session, _fingerprint, platforms, *_args, **_kw):
         sent.extend((ip.platform, ip.to_channel) for ip in platforms if ip.to_channel)
         return [{"status": "success"}]
 

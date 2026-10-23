@@ -760,6 +760,12 @@ class NotificationSettings(BaseSettings):
     digest_resolved_enabled: bool = Field(
         False, validation_alias=AliasChoices("DIGEST_RESOLVED_ENABLED", "digest_resolved_enabled")
     )
+    # Delivery history rows nothing else reads. Off: only the rows threading,
+    # Teams buttons and remediation act on are written, as before.
+    delivery_history_recording_enabled: bool = Field(
+        True,
+        validation_alias=AliasChoices("DELIVERY_HISTORY_RECORDING_ENABLED", "delivery_history_recording_enabled"),
+    )
     event_cache_ttl_seconds: int = Field(
         7200,
         gt=0,
@@ -771,6 +777,7 @@ class NotificationSettings(BaseSettings):
     @field_validator(
         "channel_awareness_enabled",
         "digest_resolved_enabled",
+        "delivery_history_recording_enabled",
         mode="before",
     )
     @classmethod

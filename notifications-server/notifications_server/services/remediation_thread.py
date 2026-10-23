@@ -14,6 +14,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
 import requests
@@ -26,8 +27,10 @@ from notifications_server import slack_app, sync_engine
 from notifications_server.configs.settings import settings
 from notifications_server.message_templates.slack.generic import _build_buttons
 from notifications_server.models.models import SentNotifications
+from notifications_server.services import delivery_records
 from notifications_server.services.cache import Cache
 from notifications_server.services.common import latest_slack_notification
+from notifications_server.services.delivery_errors import slack_failure
 from notifications_server.services.messaging_installations import load_installation
 from notifications_server.utils.datetime_utils import utc_now
 from notifications_server.utils.feature_flag_utils import is_feature_enabled
@@ -50,6 +53,8 @@ RUNS = ThreadPoolExecutor(max_workers=16, thread_name_prefix="remediation-run")
 # How long one send holds its claim, and the longest rate-limit wait honoured before a post is given up.
 CLAIM_SECONDS = 60
 RATE_LIMIT_WAIT = 10
+# A send that waits longer than this for the alert's thread is dropped, not posted.
+PENDING_LIFETIME = timedelta(hours=24)
 
 NOT_LINKED = (
     "Your Slack account isn't linked to a {brand} user in this workspace, so nothing was recorded."
@@ -75,6 +80,9 @@ class Posts(BaseModel):
     # Names the send so it is posted once (a plan's version); empty for a note.
     key: Optional[str] = None
     posts: List[Post]
+    # When the send first had to wait for the alert's thread (epoch seconds),
+    # kept while it waits again.
+    queued_at: Optional[float] = None
 
 
 # The tenant feature flag that turns the remediation loop on, for every account of the tenant: llm-server's
@@ -155,12 +163,15 @@ def deliver(req: Posts) -> str:
 
 def _deliver(req: Posts) -> str:
     tenant = _uuid(req.tenant_id)
+    marker_id = None
+    # Slack is called, and the posts recorded, after this session ends: an open transaction here would hold
+    # back the recorder's own connection, and with it every write to the table queued behind a lock request.
     with Session(sync_engine) as session:
-        marker = None
         if req.key:
             if (
                 session.query(SentNotifications)
                 .filter_by(tenant_id=tenant, fingerprint=POSTED_PREFIX + req.key)
+                .filter(delivery_records.of_kind(delivery_records.REMEDIATION_MARKER))
                 .first()
             ):
                 return "already"
@@ -175,43 +186,61 @@ def _deliver(req: Posts) -> str:
                     tenant_id=tenant,
                     account_id=_uuid(req.account_id),
                     fingerprint=f"{PENDING_PREFIX}{req.fingerprint}:{uuid.uuid4()}",
-                    slack_metadata=req.model_dump_json(),
+                    kind=delivery_records.REMEDIATION_PENDING,
+                    platform="slack",
+                    status=delivery_records.PENDING,
+                    slack_metadata=req.model_copy(update={"queued_at": req.queued_at or time.time()}).model_dump_json(),
                 )
             )
             session.commit()
             return "pending"
+        # Read before the marker's commit expires them.
+        token, thread_ts, team_id = installation.token, alert.slack_thread_id, alert.slack_team_id
         if req.key:
             # Marked before posting, so a send that outlives llm-server's wait is not posted again by its retry.
-            marker = SentNotifications(
-                id=uuid.uuid4(),
-                created_at=utc_now(),
-                tenant_id=tenant,
-                account_id=_uuid(req.account_id),
-                fingerprint=POSTED_PREFIX + req.key,
-                slack_team_id=alert.slack_team_id,
+            marker_id = uuid.uuid4()
+            session.add(
+                SentNotifications(
+                    id=marker_id,
+                    created_at=utc_now(),
+                    tenant_id=tenant,
+                    account_id=_uuid(req.account_id),
+                    fingerprint=POSTED_PREFIX + req.key,
+                    slack_team_id=team_id,
+                    kind=delivery_records.REMEDIATION_MARKER,
+                    platform="slack",
+                    team_id=team_id,
+                )
             )
-            session.add(marker)
             session.commit()
-        posted = sum(
-            _post(installation.token, channel, alert.slack_thread_id, post, req.event_id) for post in req.posts
-        )
-        if req.posts and not posted:
-            if marker is not None:
-                session.delete(marker)
+    sent = delivery_records.Dispatch(
+        tenant_id=tenant,
+        kind=delivery_records.REMEDIATION,
+        account_id=_uuid(req.account_id),
+        fingerprint=req.fingerprint or None,
+        event_id=delivery_records.as_uuid(req.event_id),
+    )
+    rows = []
+    posted = sum(_post(token, channel, thread_ts, post, req.event_id, sent, team_id, rows) for post in req.posts)
+    delivery_records.record_sync(rows, engine=sync_engine)
+    if req.posts and not posted:
+        if marker_id is not None:
+            with Session(sync_engine) as session:
+                session.query(SentNotifications).filter_by(id=marker_id).delete()
                 session.commit()
-            return "failed"  # nothing went in: not marked posted, so llm-server's retry posts it
-        if posted < len(req.posts):
-            # Kept marked: a retry would post the others again, every time a later note re-sends the plan.
-            LOG.warning("remediation thread for %s: %d of %d posts went in", req.event_id, posted, len(req.posts))
-        return "posted"
+        return "failed"  # nothing went in: not marked posted, so llm-server's retry posts it
+    if posted < len(req.posts):
+        # Kept marked: a retry would post the others again, every time a later note re-sends the plan.
+        LOG.warning("remediation thread for %s: %d of %d posts went in", req.event_id, posted, len(req.posts))
+    return "posted"
 
 
-def _post(token, channel, thread_ts, post: Post, event_id) -> bool:
+def _post(token, channel, thread_ts, post: Post, event_id, sent=None, team_id=None, rows=None) -> bool:
     """One post in the thread, retried once after Slack's rate limit asks to wait. Each post stands alone: one
-    that fails does not hold back the rest."""
+    that fails does not hold back the rest. With sent, the post's delivery row is added to rows."""
     for attempt in range(2):
         try:
-            slack_app.client.reply_in_thread(
+            response = slack_app.client.reply_in_thread(
                 token=token,
                 channel_id=channel,
                 thread_ts=thread_ts,
@@ -221,6 +250,7 @@ def _post(token, channel, thread_ts, post: Post, event_id) -> bool:
                     {"event_type": "remediation_step", "event_payload": {"token": post.token}} if post.token else None
                 ),
             )
+            _record_post(rows, sent, team_id, channel, thread_ts, post, ts=response.get("ts") if response else None)
             return True
         except SlackApiError as e:
             wait = int((e.response.headers or {}).get("Retry-After", 0) or 0) if e.response is not None else 0
@@ -228,10 +258,41 @@ def _post(token, channel, thread_ts, post: Post, event_id) -> bool:
                 time.sleep(wait or 1)
                 continue
             LOG.warning("remediation thread for %s: a post failed: %s", event_id, e)
+            _record_post(rows, sent, team_id, channel, thread_ts, post, failed=True, refusal=e.response)
         except Exception as e:
             LOG.warning("remediation thread for %s: a post failed: %s", event_id, e)
+            _record_post(rows, sent, team_id, channel, thread_ts, post, failed=True)
         return False
     return False
+
+
+def _record_post(rows, sent, team_id, channel, thread_ts, post: Post, ts=None, failed=False, refusal=None) -> None:
+    """Add one post's delivery row to rows: sent with its message id, or failed
+    with the reason Slack's refusal gives."""
+    if sent is None or rows is None:
+        return
+    try:
+        columns = {
+            "platform": "slack",
+            "team_id": team_id,
+            "destination": channel,
+            "thread_id": thread_ts,
+            "title": delivery_records.title_of(delivery_records.AUTOMATION, {"message": post.text}),
+        }
+        if not failed:
+            row = delivery_records.new_row(sent, delivery_records.SENT, message_id=ts, **columns)
+        else:
+            refused = slack_failure(refusal)
+            row = delivery_records.new_row(
+                sent,
+                delivery_records.FAILED,
+                reason=refused.get("reason"),
+                error_code=refused.get("error_code"),
+                **columns,
+            )
+        rows.append(row)
+    except Exception:
+        LOG.warning("Recording a remediation post failed", exc_info=True)
 
 
 def flush_pending(tenant_id, fingerprint) -> int:
@@ -246,15 +307,23 @@ def flush_pending(tenant_id, fingerprint) -> int:
             .filter(
                 SentNotifications.tenant_id == _uuid(tenant_id),
                 SentNotifications.fingerprint.startswith(f"{PENDING_PREFIX}{fingerprint}:", autoescape=True),
+                delivery_records.of_kind(delivery_records.REMEDIATION_PENDING),
             )
             .order_by(SentNotifications.created_at)
             .all()
         )
-        sends = [(row.id, row.slack_metadata) for row in waiting]
+        sends = [(row.id, row.slack_metadata, row.created_at) for row in waiting]
     posted = 0
-    for row_id, meta in sends:
+    oldest = utc_now() - PENDING_LIFETIME
+    for row_id, meta, created_at in sends:
         try:
-            outcome = deliver(Posts.model_validate_json(meta or "{}"))
+            req = Posts.model_validate_json(meta or "{}")
+            if not req.queued_at:
+                # Queued before the time was kept: it has waited since its row was written.
+                req = req.model_copy(update={"queued_at": created_at.replace(tzinfo=timezone.utc).timestamp()})
+            queued_at = datetime.fromtimestamp(req.queued_at, timezone.utc).replace(tzinfo=None)
+            # A plan that waited a day for its thread is stale: dropped, not posted.
+            outcome = "expired" if queued_at < oldest else deliver(req)
         except Exception as e:
             LOG.warning("remediation thread for %s: a waiting send failed: %s", fingerprint, e)
             continue

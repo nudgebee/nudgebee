@@ -219,12 +219,12 @@ class TestRouter:
     def test_flag_on_resolved_slo_that_cannot_be_queued_is_not_sent_as_a_breach(self, flag_on):
         # enqueue() swallows a Redis error and returns None. A firing SLO then
         # goes out on its own; a resolved one would go out as that same breach
-        # card, so it is dropped instead.
+        # card, so it fails instead, without a retry.
         service = _router_service(queueing_fails=True)
 
         result = asyncio.run(service.send_message(_slo_request(_resolved(1))))
 
-        assert [response["status"] for response in result] == ["dropped"]
+        assert [(response["status"], response["retryable"]) for response in result] == [("failed", False)]
 
 
 # ----------------------------- collapse -----------------------------

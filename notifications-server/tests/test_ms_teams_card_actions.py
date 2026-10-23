@@ -500,7 +500,7 @@ def test_a_template_send_with_approval_buttons_stores_its_card():
     assert ca.has_actions(send.call_args.args[2]), "the buttons are on the card that was sent"
     (row,) = [c.args[0] for c in session.add.call_args_list]
     assert (row.teams_message_id, row.teams_channel_id, row.fingerprint) == ("1800", "19:ops", "ms_teams:1800")
-    assert session.info[message_module.STORED_TEAMS_CARDS] is True
+    assert session.info[message_module.STORED_TEAMS_CARDS] == [row]
 
 
 def test_a_template_send_without_buttons_stores_nothing():
@@ -529,7 +529,8 @@ def test_the_template_branch_commits_stored_cards():
     from notifications_server.services.message import MessageService
 
     service = MessageService.__new__(MessageService)
-    session = SimpleNamespace(info={message_module.STORED_TEAMS_CARDS: True}, commit=mock.AsyncMock())
+    card = ca.card_row(NB_TENANT, None, None, "19:ops", "1800", {"body": [], "actions": []}, "approval")
+    session = SimpleNamespace(info={message_module.STORED_TEAMS_CARDS: [card]}, commit=mock.AsyncMock())
     with mock.patch.object(MessageService, "send_template_notification", mock.AsyncMock(return_value=[{"ok": 1}])):
         result = asyncio.run(service.trigger_notification(session, "fp", [], {}, {}, [], NB_TENANT, "generic"))
     assert result == [{"ok": 1}]

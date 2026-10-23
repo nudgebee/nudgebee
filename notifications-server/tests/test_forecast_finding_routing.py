@@ -134,7 +134,7 @@ def service(monkeypatch):
         service.queued.append(payload)
         return {"status": "queued"}
 
-    async def trigger(_session, fingerprint, platforms, _kwargs, _parameters, _responses, _tenant, type_):
+    async def trigger(_session, fingerprint, platforms, _kwargs, _parameters, _responses, _tenant, type_, **_kw):
         service.triggered.append((type_, fingerprint, platforms[0].to_channel))
         return [{"status": "success"}]
 

@@ -3,8 +3,9 @@ step's Run and Decline are main's approval buttons with a token in the message m
 by llm-server as the clicker's Identity Sync user."""
 
 import json
+import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,7 @@ from notifications_server.configs import settings
 from notifications_server.models.models import Base, FeatureFlag, SentNotifications
 from notifications_server.services import remediation_thread as rt
 from notifications_server.services.actions_common import SlackInteractiveActionsService
+from notifications_server.utils.datetime_utils import utc_now
 from notifications_server.utils.transformer import Transformer
 
 TENANT = "aaaaaaaa-1111-4111-8111-111111111111"
@@ -412,3 +414,138 @@ def test_a_run_past_the_wait_is_reported_as_still_running(db, monkeypatch):
     out = rt.decide(TOKEN, "run", "U1")
     assert out.message == rt.STILL_RUNNING and not out.settled
     assert rt.RUN_WAIT_SECONDS > 600, "longer than llm-server's RunSendTimeout"
+
+
+def _rows(engine, kind):
+    with Session(engine) as s:
+        return s.query(SentNotifications).filter(SentNotifications.kind == kind).all()
+
+
+def _waiting(engine, req, kind="remediation_pending"):
+    with Session(engine) as s:
+        s.add(
+            SentNotifications(
+                id=uuid.uuid4(),
+                created_at=utc_now(),
+                tenant_id=uuid.UUID(TENANT),
+                fingerprint=f"{rt.PENDING_PREFIX}{FP}:{uuid.uuid4()}",
+                kind=kind,
+                slack_metadata=req.model_dump_json(),
+            )
+        )
+        s.commit()
+
+
+def test_each_post_in_the_thread_leaves_a_delivery_row(db, slack):
+    alert_row(db)
+
+    assert rt.deliver(posts(texts=("*Proposed remediation*", "FAIL to post"))) == "posted"
+
+    rows = sorted(_rows(db, "remediation"), key=lambda r: r.status)
+    assert [(r.status, r.reason, r.destination, r.thread_id, r.fingerprint) for r in rows] == [
+        ("failed", "platform_unavailable", CHANNEL, THREAD, FP),
+        ("sent", None, CHANNEL, THREAD, FP),
+    ]
+    assert [r.message_id for r in rows if r.status == "sent"] == ["2.1"]
+
+
+def test_the_post_once_marker_and_a_waiting_send_carry_their_kinds(db, slack):
+    assert rt.deliver(posts()) == "pending"
+    [waiting] = _rows(db, "remediation_pending")
+    assert waiting.status == "pending" and json.loads(waiting.slack_metadata)["queued_at"]
+
+    alert_row(db)
+    assert rt.flush_pending(TENANT, FP) == 1
+
+    [marker] = _rows(db, "remediation_marker")
+    assert marker.fingerprint == rt.POSTED_PREFIX + "plan:e:pv-1"
+    assert rt.deliver(posts()) == "already"
+
+
+def test_a_send_that_waits_again_keeps_the_time_it_first_waited(db, slack):
+    first = time.time() - 3600
+
+    assert rt.deliver(posts().model_copy(update={"queued_at": first})) == "pending"
+
+    [waiting] = _rows(db, "remediation_pending")
+    assert json.loads(waiting.slack_metadata)["queued_at"] == first
+
+
+def test_a_send_queued_before_its_wait_was_kept_counts_from_when_it_was_queued(db, slack):
+    queued = utc_now() - timedelta(hours=20)
+    with Session(db) as s:
+        s.add(
+            SentNotifications(
+                id=uuid.uuid4(),
+                created_at=queued,
+                tenant_id=uuid.UUID(TENANT),
+                fingerprint=f"{rt.PENDING_PREFIX}{FP}:{uuid.uuid4()}",
+                slack_metadata=posts(key=None).model_dump_json(),
+            )
+        )
+        s.commit()
+
+    assert rt.flush_pending(TENANT, FP) == 0  # still no thread, so it waits again
+
+    [waiting] = _rows(db, "remediation_pending")
+    expected = queued.replace(tzinfo=timezone.utc).timestamp()
+    assert json.loads(waiting.slack_metadata)["queued_at"] == pytest.approx(expected, abs=1)
+
+
+def test_slack_is_called_and_the_posts_recorded_with_no_session_open(db, slack, monkeypatch):
+    alert_row(db)
+    open_sessions, seen = [], []
+
+    class Tracked(Session):
+        def __enter__(self):
+            open_sessions.append(self)
+            return super().__enter__()
+
+        def __exit__(self, *exc):
+            open_sessions.remove(self)
+            return super().__exit__(*exc)
+
+    reply, record = rt.slack_app.client.reply_in_thread, rt.delivery_records.record_sync
+    monkeypatch.setattr(rt, "Session", Tracked)
+    monkeypatch.setattr(
+        rt.slack_app.client, "reply_in_thread", lambda **kw: seen.append(len(open_sessions)) or reply(**kw)
+    )
+    monkeypatch.setattr(
+        rt.delivery_records,
+        "record_sync",
+        lambda rows, engine=None: seen.append(len(open_sessions)) or record(rows, engine=engine),
+    )
+
+    assert rt.deliver(posts()) == "posted"
+
+    # A held transaction would keep the recorder's own connection waiting behind any lock request on the table.
+    assert seen == [0, 0, 0]
+    assert len(_rows(db, "remediation")) == 2
+
+
+def test_a_send_that_waited_a_day_for_its_thread_is_dropped_not_posted(db, slack):
+    _waiting(db, posts().model_copy(update={"queued_at": time.time() - 25 * 3600}))
+    alert_row(db)
+
+    assert rt.flush_pending(TENANT, FP) == 0
+
+    assert slack == [] and _rows(db, "remediation_pending") == []
+
+
+def test_rows_written_before_the_kind_column_still_work(db, slack):
+    alert_row(db)
+    _waiting(db, posts(key=None), kind=None)
+
+    assert rt.flush_pending(TENANT, FP) == 1
+    with Session(db) as s:
+        s.add(
+            SentNotifications(
+                id=uuid.uuid4(),
+                created_at=utc_now(),
+                tenant_id=uuid.UUID(TENANT),
+                fingerprint=rt.POSTED_PREFIX + "plan:e:pv-9",
+            )
+        )
+        s.commit()
+
+    assert rt.deliver(posts(key="plan:e:pv-9")) == "already"

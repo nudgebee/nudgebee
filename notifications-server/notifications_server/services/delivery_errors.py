@@ -16,6 +16,7 @@ WEBHOOK_GONE = "webhook_gone"
 MESSAGE_REJECTED = "message_rejected"
 NOT_CONFIGURED = "not_configured"
 INVALID_REQUEST = "invalid_request"
+RECIPIENT_REFUSED = "recipient_refused"
 
 # Sending again may work.
 RATE_LIMITED = "rate_limited"
@@ -177,6 +178,27 @@ def discord_failure(result: Dict[str, Any], **extra: Any) -> Dict[str, Any]:
     return failure("discord", reason, error_code=error_code, **extra)
 
 
+def email_reason(error: Any) -> Tuple[str, Optional[str]]:
+    """Why an email to one recipient failed, and the SMTP code, from the
+    smtplib error the send raised."""
+    import smtplib
+
+    if isinstance(error, smtplib.SMTPAuthenticationError):
+        return AUTH_FAILED, str(error.smtp_code)
+    if isinstance(error, smtplib.SMTPRecipientsRefused):
+        code = next((code for code, _ in (error.recipients or {}).values()), None)
+        reason = PLATFORM_UNAVAILABLE if isinstance(code, int) and 400 <= code < 500 else RECIPIENT_REFUSED
+        return reason, str(code) if code else None
+    if isinstance(error, (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError)):
+        return PLATFORM_UNAVAILABLE, None
+    if isinstance(error, smtplib.SMTPResponseException):
+        code = error.smtp_code
+        return (PLATFORM_UNAVAILABLE if 400 <= code < 500 else MESSAGE_REJECTED), str(code)
+    if isinstance(error, (OSError, TimeoutError)):
+        return PLATFORM_UNAVAILABLE, None
+    return INTERNAL_ERROR, None
+
+
 def _channel_of(channel: Any) -> Any:
     if isinstance(channel, str):
         try:
@@ -200,6 +222,19 @@ def delivery_channel_id(ip: Any, channel: Any) -> Optional[str]:
     if isinstance(channel, dict):
         channel = channel.get("id")
     return str(channel) if channel else None
+
+
+def channel_name(ip: Any, channel: Any = None) -> Optional[str]:
+    """The name of the channel a send through `ip` goes to, when its routing
+    names it. A webhook target's name is its label."""
+    if getattr(ip, "platform", None) in WEBHOOK_PLATFORMS:
+        return getattr(ip, "team_name", None) or None
+    channel = _channel_of(getattr(ip, "to_channel", None) if channel is None else channel)
+    if isinstance(channel, dict) and getattr(ip, "platform", None) == "ms_teams" and "channels" in channel:
+        channels = channel["channels"]
+        channel = channels[0] if isinstance(channels, list) and channels else None
+    name = channel.get("name") if isinstance(channel, dict) else None
+    return str(name) if name else None
 
 
 def destination_fields(ip: Any, channel: Any = None) -> Dict[str, Any]:

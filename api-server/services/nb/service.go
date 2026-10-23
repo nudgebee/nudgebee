@@ -80,12 +80,11 @@ func GetVersions(ctx *security.RequestContext) (map[string]string, error) {
 }
 
 const (
-	// How long a Microsoft Teams card's buttons stay valid, and so how long its
-	// sent_notifications row is kept.
-	teamsCardRetentionDays = 7
-	cleanupBatchSize       = 10000
-	cleanupMaxPerRun       = 100000
-	cleanupMaxBatches      = cleanupMaxPerRun / cleanupBatchSize // 10 batches
+	cleanupBatchSize  = 10000
+	cleanupMaxPerRun  = 100000
+	cleanupMaxBatches = cleanupMaxPerRun / cleanupBatchSize // 10 batches
+	// A Teams card's buttons work for 7 days (notifications-server card_actions.MAX_AGE_SECONDS).
+	teamsCardButtonDays = 7
 )
 
 type dataCleanupJob struct {
@@ -182,14 +181,18 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 				Query:     fmt.Sprintf(`alter table nudgebee.events_shard on cluster 'default' delete WHERE created_at < now() - interval %d day and priority in ('HIGH')`, config.Config.NBRetentionDaysEventsCritical),
 			},
 			{
-				// A row holding a Microsoft Teams card with buttons is what a click on
-				// the card updates, so it is kept while the buttons are valid: 7 days
-				// (MAX_AGE_SECONDS in notifications-server's ms_teams/card_actions.py).
+				// Delivery history: one row per attempt to send a notification. A Teams
+				// card's row is kept while its buttons work, whatever the retention.
 				Name:      "notifications_sent",
 				Metastore: database.Metastore,
-				Query: fmt.Sprintf(`DELETE FROM sent_notifications WHERE created_at < now() - interval '%d days'
-					AND (teams_message_id IS NULL OR created_at < now() - interval '%d days')`,
-					config.Config.NBRetentionDaysCronEvents, teamsCardRetentionDays),
+				Batched:   true,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT id FROM sent_notifications
+					WHERE created_at < now() - interval '%d days'
+					  AND (teams_metadata IS NULL OR created_at < now() - interval '%d days')
+					LIMIT %d
+				) DELETE FROM sent_notifications WHERE id IN (SELECT id FROM to_del)`,
+					config.Config.NBRetentionDaysSentNotifications, teamsCardButtonDays, cleanupBatchSize),
 			},
 			{
 				// Rows carry the full candidate set per search, so this table

@@ -275,6 +275,11 @@ type appConfig struct {
 	// rag-server, so it grows with question volume, not with data volume.
 	NBRetentionDaysRagRetrievalTrace int `mapstructure:"nb_retention_days_rag_retrieval_trace"`
 
+	// sent_notifications holds every attempt to send a notification: the
+	// delivery history users read, and the rows threading and Teams buttons
+	// act on.
+	NBRetentionDaysSentNotifications int `mapstructure:"nb_retention_days_sent_notifications"`
+
 	// NBRetentionDaysEventAnalysis ages out event_log_analysis by the recency of
 	// the newest run for an event identity, not per row — see the
 	// event_log_analysis cleanup job in services/nb. Defaults to the critical
@@ -679,6 +684,7 @@ func init() {
 	viper.SetDefault("nb_retention_days_slo_reports", 90)
 	viper.SetDefault("stuck_webhook_recovery_max_age_minutes", 60)
 	viper.SetDefault("nb_retention_days_rag_retrieval_trace", 30)
+	viper.SetDefault("nb_retention_days_sent_notifications", 14)
 	viper.SetDefault("nb_retention_days_event_analysis", 90)
 	viper.SetDefault("kg_edge_stale_after_days", 7)
 	viper.SetDefault("kg_selfhosted_scan_freshness", 7)
