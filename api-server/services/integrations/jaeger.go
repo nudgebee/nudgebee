@@ -28,16 +28,19 @@ func (j Jaeger) Category() core.IntegrationCategory {
 func (j Jaeger) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,
+		Testable: true,
 		Required: []string{"jaeger_query_url"},
 		Properties: map[string]core.IntegrationSchemaProperty{
 			"jaeger_query_url": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Jaeger Query API URL (e.g., https://jaeger.example.com:16686)",
+				IsTestable:  true,
 			},
 			"jaeger_api_token": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Bearer token for Jaeger API authentication (optional)",
 				IsEncrypted: true,
+				IsTestable:  true,
 			},
 			core.AccountId: {
 				Type:             core.ToolSchemaTypeArray,
