@@ -63,6 +63,19 @@ var (
 	replicaSetSchema  = core.SpecificTypeSchema{SpecificType: "KubernetesReplicaSet", NodeType: core.NodeTypeWorkload, Properties: k8sWorkloadProperties}
 )
 
+// rolloutSchema — an Argo Rollout (argoproj.io/v1alpha1) is a Deployment-shaped
+// controller, and the collector reports its rows through the same path with the
+// same meta shape, so it shares k8sWorkloadProperties with the apps/v1 Kinds
+// above rather than declaring a near-copy; it is not apps/v1 itself, which is
+// why it is declared separately.
+//
+// Sharing that shape means sharing its inert fields too: the collector sends no
+// "spec" object, so extractControllerFields populates neither replicas nor
+// strategy_type here — exactly as for a Deployment. Argo's strategy is
+// {canary:{...}} / {blueGreen:{...}} with no "type" key, so strategy_type would
+// need an extractor of its own even if a spec did arrive.
+var rolloutSchema = core.SpecificTypeSchema{SpecificType: "KubernetesRollout", NodeType: core.NodeTypeWorkload, Properties: k8sWorkloadProperties}
+
 // k8sBatchWorkloadProperties is the shared shape for the batch Kinds (Job /
 // CronJob). They flow through createNodeFromWorkload too, so they carry the
 // common workload fields minus the apps/v1-only replicas/strategy fields.
@@ -131,6 +144,7 @@ func init() {
 	core.RegisterSpecificTypeSchema(statefulSetSchema)
 	core.RegisterSpecificTypeSchema(daemonSetSchema)
 	core.RegisterSpecificTypeSchema(replicaSetSchema)
+	core.RegisterSpecificTypeSchema(rolloutSchema)
 	core.RegisterSpecificTypeSchema(jobSchema)
 	core.RegisterSpecificTypeSchema(cronJobSchema)
 	core.RegisterSpecificTypeSchema(podSchema)
@@ -587,7 +601,7 @@ func (s *K8sSource) createNodeFromWorkload(workload *K8sWorkloadRow, frameworks 
 // churn constantly — the change detector ignores their number and the account
 // build refreshes them — and their node records where they were scheduled.
 func init() {
-	for _, kind := range []string{"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"} {
+	for _, kind := range []string{"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Rollout"} {
 		registerWorkloadKind(workloadKind{
 			Kind:      kind,
 			NodeType:  core.NodeTypeWorkload,

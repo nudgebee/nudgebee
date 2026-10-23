@@ -34,17 +34,22 @@ func TestIncludesPod(t *testing.T) {
 
 // TestSupportedManagesKinds pins the exact set of workload_type values
 // for which the synthesizer emits a Workload→Pod MANAGES edge. The
-// audit of public.k8s_pods showed that production traffic in unsupported
-// kinds (ReplicaSet, Runner, Node, Rollout) accounts for 88k+ pods —
-// those must NOT match here, or callers would create dangling edges.
+// audit of public.k8s_pods showed that traffic in unsupported kinds
+// (ReplicaSet, Runner, Node) accounts for 88k+ pods — those must NOT
+// match here, or callers would create dangling edges.
+//
+// Rollout was in that list until #42134: the kind resolved to no Workload
+// node, so its pods' MANAGES edge would have dangled. Now sources/k8s builds
+// one, and the edge resolves — so the rule is "what sources/k8s declares",
+// not a fixed list, and Rollout moved to must.
 func TestSupportedManagesKinds(t *testing.T) {
-	must := []string{"Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob"}
+	must := []string{"Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Rollout"}
 	for _, k := range must {
 		if !supportedManagesKinds[k] {
 			t.Errorf("supportedManagesKinds[%q] = false, want true", k)
 		}
 	}
-	mustNot := []string{"ReplicaSet", "Runner", "Node", "Rollout", "Pod", ""}
+	mustNot := []string{"ReplicaSet", "Runner", "Node", "Pod", ""}
 	for _, k := range mustNot {
 		if supportedManagesKinds[k] {
 			t.Errorf("supportedManagesKinds[%q] = true, want false", k)
