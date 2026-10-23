@@ -45,10 +45,10 @@ type replicaMessage struct {
 	Sender string   `json:"sender"`
 }
 
-// replicaPublishTimeout bounds one best-effort publish. The publish runs off
-// the caller's path, so this only limits how long a Redis outage can keep a
-// goroutine around.
-const replicaPublishTimeout = 2 * time.Second
+// replicaPublishTimeout bounds one publish, made inline by the caller (the
+// relay's datasource handlers already run on their own goroutine per agent
+// message). Dev measured PUBLISH at p50 0.2 ms, p99 ~100 ms (2026-10-23).
+const replicaPublishTimeout = 500 * time.Millisecond
 
 // redisLLMCacheInvalidator publishes integration_changed on the replica
 // broadcast.
@@ -98,32 +98,27 @@ func (i *redisLLMCacheInvalidator) Close() error {
 	return i.client.Close()
 }
 
-// InvalidateAccounts publishes in the background and never blocks or fails the
+// InvalidateAccounts publishes once, inline and bounded, and never fails the
 // caller: a lost message only means waiting for the caches' expiry.
 func (i *redisLLMCacheInvalidator) InvalidateAccounts(accountIDs ...string) {
 	ids := dedupeNonEmpty(accountIDs)
 	if len(ids) == 0 {
 		return
 	}
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				i.logger.Error("replica broadcast: publish panicked — recovered", "type", changeIntegration, "panic", r)
-			}
-		}()
-		payload, err := json.Marshal(replicaMessage{Type: changeIntegration, Keys: ids, Sender: i.sender})
-		if err != nil {
-			i.logger.Warn("replica broadcast: failed to encode message", "type", changeIntegration, "err", err)
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), replicaPublishTimeout)
-		defer cancel()
-		if err := i.client.Publish(ctx, replicaBroadcastChannel, payload).Err(); err != nil {
-			i.logger.Warn("replica broadcast: failed to publish (best-effort)", "type", changeIntegration, "account_ids", ids, "err", err)
-			return
-		}
-		i.logger.Info("replica broadcast: published", "type", changeIntegration, "account_ids", ids)
-	}()
+	payload, err := json.Marshal(replicaMessage{Type: changeIntegration, Keys: ids, Sender: i.sender})
+	if err != nil {
+		i.logger.Warn("replica broadcast: failed to encode message", "type", changeIntegration, "err", err)
+		return
+	}
+	// Inline, bounded: no goroutine per publish, so a burst cannot pile up
+	// goroutines on the Redis pool.
+	ctx, cancel := context.WithTimeout(context.Background(), replicaPublishTimeout)
+	defer cancel()
+	if err := i.client.Publish(ctx, replicaBroadcastChannel, payload).Err(); err != nil {
+		i.logger.Warn("replica broadcast: failed to publish (best-effort)", "type", changeIntegration, "account_ids", ids, "err", err)
+		return
+	}
+	i.logger.Info("replica broadcast: published", "type", changeIntegration, "account_ids", ids)
 }
 
 func dedupeNonEmpty(in []string) []string {
