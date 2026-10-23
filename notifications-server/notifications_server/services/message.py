@@ -71,6 +71,7 @@ from notifications_server.services.delivery_split import (
 from notifications_server.message_templates.slack.weekly_digest_events import digest_link, digest_verdict
 from notifications_server.services.slack import workspace_url
 from notifications_server.services.slack.slack import retriable_slack_api_error
+from notifications_server.utils.rich_text_blocks import send_blocks_with_fallback
 from notifications_server.message_templates import template_mapping
 from notifications_server.message_templates.google_chat.finding import get_markdown_message_template
 from notifications_server.message_templates.base import is_resolved
@@ -657,6 +658,59 @@ class SlackSender(BaseSender):
                     # time.sleep is intentional: this method runs via asyncio.to_thread,
                     # so it blocks the threadpool worker, not the event loop.
                     time.sleep(retry_after)
+                    max_tries += 1
+                    continue
+                # Slack's error code is on the response; the caller reports it.
+                LOG.warning(
+                    "Slack refused the post for tenant %s: %s",
+                    tenant,
+                    (getattr(exc.response, "data", None) or {}).get("error"),
+                )
+                return exc.response
+            except Exception as exc:
+                LOG.exception(f"Failed to send message for tenant {tenant} due to: {exc}")
+                return None
+
+    def post_to_slack_with_blocks_fallback(self, tenant, installation, **message):
+        """Like post_to_slack, but bisects via send_blocks_with_fallback on a
+        block-shape rejection (e.g. Slack's table character caps) instead of
+        dropping the whole message. Non-threaded only."""
+        blocks = message.pop("blocks", None) or []
+        attachments = message.pop("attachments", None)
+        channels = self.extract_channels(installation)
+        if not channels:
+            LOG.warning("No Slack channel resolved for tenant %s; skipping send", tenant)
+            return None
+        channel_id = channels[0].get("id")
+        sent = []
+        blocks_sent_count = 0
+
+        def send_fn(block_list):
+            nonlocal blocks_sent_count
+            kwargs = dict(message)
+            if block_list:
+                kwargs["blocks"] = block_list
+            # attachments render after blocks within a message, so they belong
+            # on whichever send carries the tail of the original blocks - a
+            # running count rather than object identity, since the same block
+            # object can recur in the list (e.g. a shared divider constant).
+            if attachments and (not blocks or blocks_sent_count + len(block_list) == len(blocks)):
+                kwargs["attachments"] = attachments
+            sent.append(self.slack_app.client.chat_post(channel_id=channel_id, token=installation.token, **kwargs))
+            blocks_sent_count += len(block_list)
+
+        max_tries = 0
+        while True:
+            try:
+                if blocks:
+                    send_blocks_with_fallback(blocks, send_fn)
+                else:
+                    send_fn(blocks)
+                return sent[-1] if sent else None
+            except SlackApiError as exc:
+                # Retrying after a partial bisected send would duplicate it.
+                if not sent and retriable_slack_api_error(exc) and max_tries < settings.slack.max_rate_limit_retries:
+                    time.sleep(self.get_retry_after(exc))
                     max_tries += 1
                     continue
                 # Slack's error code is on the response; the caller reports it.
@@ -2227,7 +2281,7 @@ class MessageService:
         if not delivery_channel_id(ip, ip.to_channel):
             return failure("slack", NOT_CONFIGURED, team_id=ip.team_id, **destination_fields(ip))
         response = await asyncio.to_thread(
-            self.slack_sender.post_to_slack, tenant, ip, None, **template_func(param_value)
+            self.slack_sender.post_to_slack_with_blocks_fallback, tenant, ip, **template_func(param_value)
         )
         if response and response.status_code == 200 and not response.data.get("error"):
             channel_id = response.data.get("channel")
