@@ -413,6 +413,12 @@ func syncStuckEventAnalyses() error {
 			continue
 		}
 
+		// With the remediation loop on, an investigation that must wait for the alert's conversation stays
+		// IN_PROGRESS with its reason, kept fresh each tick, and is never abandoned while it waits.
+		if !isRCAAnalysisType(a.AnalysisType) && events.RemediationLoopOn(a.AccountId) && investigationMustWait(dbManager, a, conv) {
+			continue
+		}
+
 		// If conversation is still actively running or waiting for a client tool response,
 		// skip — the sync job must not restart it as the relay may still deliver the result.
 		if conv.Status == core.ConversationStatusInProgress ||
@@ -428,7 +434,9 @@ func syncStuckEventAnalyses() error {
 		// The updated_at floor is a second guard that relies on
 		// UpsertEventAnalysis(InProgress) bumping updated_at on every status
 		// write (see events/event_analyzer_repository.go).
-		if time.Since(a.UpdatedAt) < minRecoveryAge {
+		// A row the gate parked (isGateReason) was last written by no worker, so it restarts as soon as the gate
+		// clears.
+		if time.Since(a.UpdatedAt) < minRecoveryAge && !isGateReason(a.StatusReason) {
 			continue
 		}
 
@@ -461,7 +469,7 @@ func syncStuckEventAnalyses() error {
 		func() {
 			submissionCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
-			err := getEventAnalysisWorkerPool().Submit(submissionCtx, func() {
+			err := submitStuckAnalysisRecovery(submissionCtx, func() {
 				defer cancel()
 				newCtx := security.NewRequestContextForTenantAccountAdmin(tenantId, security.GetSystemUserId(), []string{a.AccountId})
 
@@ -593,4 +601,37 @@ func reconcilePendingEventAnalysisTerminal(ctx *security.RequestContext, db *com
 	if response, terminal := getConfirmedTerminalAnalysis(ctx, EventAnalysisRequest{EventId: eventID, AccountId: accountID}, db); terminal {
 		publish(context.WithoutCancel(ctx.GetContext()), accountID, eventID, response, response.Status)
 	}
+}
+
+// submitStuckAnalysisRecovery queues a stuck analysis's recovery on the event-analysis workers. A var so tests can
+// see what recovery would restart.
+var submitStuckAnalysisRecovery = func(ctx context.Context, task func()) error {
+	return getEventAnalysisWorkerPool().Submit(ctx, task)
+}
+
+// investigationMustWait reports whether the stuck investigation a (remediation loop on) must keep waiting rather
+// than be restarted or abandoned now: its pipeline is running (a live hold), or the alert's conversation is someone
+// else's (investigationBlocked, or still waiting on a person). A waiting one is parked again (reason, fresh
+// updated_at), so it is never aged out while it waits. A var so tests can stub it.
+var investigationMustWait = func(dbManager *common.DatabaseManager, a events.InProgressAnalysis, conv core.Conversation) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), decisionDBTimeout)
+	defer cancel()
+	if hold, err := events.EventPipelineHoldOf(ctx, dbManager.Db, a.AccountId, a.EventFingerprint); err == nil && hold == events.PipelineLive {
+		return true
+	}
+	reason, err := investigationBlocked(ctx, dbManager.Db, a.AccountId, a.EventFingerprint)
+	if err != nil {
+		slog.Warn("sync: alert conversation not checked", "error", err, "event_id", a.EventId)
+	}
+	if reason == "" && (conv.Status == core.ConversationStatusWaiting || conv.Status == core.ConversationStatusWaitingForClientTool) {
+		reason = gateReasonApproval
+	}
+	if reason == "" {
+		return false
+	}
+	reqCtx := security.NewRequestContextForSuperAdmin()
+	if err := events.NewEventAnalysisRepository(dbManager).ParkEventAnalysis(reqCtx, a.EventId, a.EventFingerprint, a.AccountId, a.EventAggregationKey, reason); err != nil {
+		slog.Warn("sync: waiting reason not recorded", "error", err, "event_id", a.EventId)
+	}
+	return true
 }

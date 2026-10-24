@@ -128,6 +128,43 @@ func doApiServerActionRequest(nbCtx core.NbToolContext, rpcPath string, actionNa
 	return string(jsonBody), nil
 }
 
+// DoApiServerSystemAction posts an internal action to an api-server /rpc/*
+// endpoint as NudgeBee itself, not on behalf of a person: X-ACTION-TOKEN and
+// x-tenant-id only, so api-server runs it with the tenant's system identity.
+// Only for actions api-server keeps service-only (not routed by the app
+// gateway) and refuse a call that names a user. Returns the response body.
+func DoApiServerSystemAction(tenant, rpcPath, actionName string, input map[string]any) (string, error) {
+	if tenant == "" {
+		return "", fmt.Errorf("%s: tenant id is empty", actionName)
+	}
+	resp, err := common.HttpPost(
+		fmt.Sprintf("%s%s", config.Config.ServiceEndpoint, rpcPath),
+		common.HttpWithHeaders(map[string]string{
+			"Content-Type":   "application/json",
+			"Accept":         "application/json",
+			"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
+			"x-tenant-id":    tenant,
+		}),
+		common.HttpWithJsonBody(map[string]any{"action": map[string]any{"name": actionName}, "input": input}),
+	)
+	if err != nil {
+		return "", fmt.Errorf("%s: unable to process request: %w", actionName, err)
+	}
+	defer func() {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("%s: reading response body: %w", actionName, err)
+	}
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("%s: failed (status %d): %s", actionName, resp.StatusCode, string(body))
+	}
+	return string(body), nil
+}
+
 // perActionConfirmationKey builds the toolcore.ToolConfirmationScope key for
 // the recommendation write tools: the tool name plus a short digest of the
 // input, so every distinct invocation gets its own user confirmation while a

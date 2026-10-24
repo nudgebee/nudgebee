@@ -203,11 +203,15 @@ type HardeningItem struct {
 	Reason string `json:"reason"`
 }
 
-// RequiredChange says where a durable fix is made and what it is.
+// RequiredChange says where a durable fix is made and what it is. Repo is the repository it is made in, when known
+// (a change in code or a deployment source there is raised as a pull request, remediation_code_fix.go); Reason is
+// why the change fixes the cause.
 type RequiredChange struct {
 	Where  string `json:"where"`
 	Target string `json:"target"`
 	Change string `json:"change"`
+	Repo   string `json:"repo,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // actionable reports whether a required change names both what to change and how.
@@ -507,6 +511,17 @@ type RemediationPlan struct {
 	// Target is where the plan's commands run, from the event's account, shown in the confirmation.
 	// Set when a plan is returned; never stored.
 	Target *RemediationTarget `json:"target,omitempty"`
+	// CauseKey names the plan's cause so the alert's plans compare without a model call (events.CauseKey, C8):
+	// stored normalized, with empty fields when the cause is unclear, on every plan written with the loop on.
+	CauseKey *events.CauseKey `json:"cause_key,omitempty"`
+	// The rest are set on every plan written with the loop on (stampLoopPlan, remediation_planning.go).
+	// GeneratedAt is when this version was written; Version counts the event's plans from 1.
+	GeneratedAt *time.Time `json:"generated_at,omitempty"`
+	Version     int        `json:"version,omitempty"`
+	// Goal is the "done when", in one plain sentence, from the alert's own signal; the model writes it.
+	Goal string `json:"goal,omitempty"`
+	// Revision is what changed from the event's previous plan, and the request that wrote this one.
+	Revision *PlanRevision `json:"revision,omitempty"`
 }
 
 // RemediationExecuteRequest is the payload for ai_remediation_execute (one command per play-button click).
@@ -541,6 +556,9 @@ type RemediationExecuteRequest struct {
 	// Source is where the person decided: empty for the remediation panel, "slack" for the alert's Slack
 	// thread. It only names the surface on the record; who decided is the caller's x-user-id either way.
 	Source string `json:"source"`
+	// ChatApproval is the approval a step decided in the alert's chat was given under (run_step with the
+	// loop on); the decision is recorded under it (C1). Never read from a request body.
+	ChatApproval *chatStepApproval `json:"-"`
 }
 
 // Command slots within one action.
@@ -586,6 +604,12 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 	if sc == nil || (!sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!grantedRun(sc, request.AccountId, moduleAiMisc)) {
 		c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+		return
+	}
+
+	// With the loop on Nubi writes the plan in the alert's conversation; asking here queues that turn.
+	if events.RemediationLoopOn(request.AccountId) {
+		respondGenerateWithLoop(c, ctx, request.AccountId, request.EventId)
 		return
 	}
 
@@ -648,8 +672,8 @@ func storeRemediationPlan(ctx *security.RequestContext, conversationId string, r
 
 // appendPlanToConversation adds the plan as the event conversation's closing message, after the
 // summary / RCA / log-analysis ones, so Ask Nudgebee shows it too. Best effort: the plan is already
-// stored, and the investigation page does not read this message.
-func appendPlanToConversation(ctx *security.RequestContext, conversationId string, request RemediationGenerateRequest, plan RemediationPlan) {
+// stored, and the investigation page does not read this message. A var so tests can count it.
+var appendPlanToConversation = func(ctx *security.RequestContext, conversationId string, request RemediationGenerateRequest, plan RemediationPlan) {
 	dao := agentcore.GetConversationDao()
 	if conversationId == "" || dao == nil {
 		return
@@ -932,21 +956,25 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 	}
 
 	var plan RemediationPlan
-	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	repo, info, err := remediationReadEvent(ctx, request.AccountId, request.EventId)
 	if err != nil {
-		ctx.GetLogger().Warn("remediation_get: database unavailable", "error", err)
+		// A read that could not be made is an error, not an empty answer: an empty answer has no loop state,
+		// and the tab would take it for "the loop is off" and fall back to the one-shot panel, which plans on
+		// mount.
+		ctx.GetLogger().Warn("remediation_get: not read", "error", err)
+		c.JSON(503, BuildApiResponse(nil, []error{common.Error{Message: "remediation could not be read, try again"}}))
+		return
+	}
+	if info == nil {
 		c.JSON(200, BuildApiResponse(plan, nil))
 		return
 	}
-	repo := events.NewEventAnalysisRepository(dbManager)
-	info, err := repo.GetEventInfo(ctx, request.EventId, request.AccountId)
-	if err != nil || info == nil {
-		c.JSON(200, BuildApiResponse(plan, nil))
-		return
-	}
-	saved, err := repo.GetEventAnalysis(ctx, request.EventId, info.Fingerprint, info.AggregationKey, request.AccountId, events.AnalysisTypeRemediation)
+	// With the loop on, a duplicate shows its main event's plan: planEvent and planInfo are the event whose
+	// plan this read returns (the event itself otherwise).
+	planEvent, planInfo := planEventAndInfo(ctx, repo, request.AccountId, request.EventId, info)
+	saved, err := repo.GetEventAnalysis(ctx, planEvent, planInfo.Fingerprint, planInfo.AggregationKey, request.AccountId, events.AnalysisTypeRemediation)
 	if err != nil || saved == nil || strings.TrimSpace(saved.Analysis) == "" {
-		c.JSON(200, BuildApiResponse(plan, nil))
+		c.JSON(200, BuildApiResponse(remediationGetBody(ctx, request.AccountId, request.EventId, info, planEvent, planInfo, plan), nil))
 		return
 	}
 	// When this event has no plan of its own, the lookup falls back to the newest plan saved for the
@@ -954,17 +982,10 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 	// gets back as already generated, so restoring that one shows the operator another incident's root
 	// cause, confidence and commands, and never builds a plan for this incident. Returning no plan here
 	// makes the panel generate one from this event's own investigation.
-	if !planSavedForEvent(saved, request.EventId) {
-		c.JSON(200, BuildApiResponse(plan, nil))
-		return
-	}
-	// A plan is built from the investigation and its report. When either was re-run after the
-	// plan was saved, the plan describes the previous analysis (dev event db61122a: the report
-	// said "configuration error", the restored plan still said "undetermined"). Returning no plan
-	// makes the panel build one from the current analysis, as above.
-	if planPredatesAnalysis(ctx, repo, request.EventId, request.AccountId, info, saved) {
-		ctx.GetLogger().Info("remediation_get: saved plan predates the current analysis, regenerating")
-		c.JSON(200, BuildApiResponse(plan, nil))
+	if !savedPlanShown(request.AccountId, planEvent, saved, func() bool {
+		return planPredatesAnalysis(ctx, repo, planEvent, request.AccountId, planInfo, saved)
+	}) {
+		c.JSON(200, BuildApiResponse(remediationGetBody(ctx, request.AccountId, request.EventId, info, planEvent, planInfo, plan), nil))
 		return
 	}
 	if err := json.Unmarshal([]byte(saved.Analysis), &plan); err != nil {
@@ -976,7 +997,35 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 	}
 	// Delivery describes the executor now, not when the plan was saved.
 	assignDelivery(ctx, request.AccountId, &plan)
-	c.JSON(200, BuildApiResponse(plan, nil))
+	c.JSON(200, BuildApiResponse(remediationGetBody(ctx, request.AccountId, request.EventId, info, planEvent, planInfo, plan), nil))
+}
+
+// remediationReadEvent reads what the remediation read starts from: the event, and that the loop flag can be
+// read. err means a read failed, which the caller must not answer as "no plan"; a nil info with no error means
+// the event does not exist (for this account).
+func remediationReadEvent(ctx *security.RequestContext, accountId, eventId string) (*events.EventAnalysisRepository, *events.EventInfo, error) {
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, nil, fmt.Errorf("database unavailable: %w", err)
+	}
+	loopOn, err := events.RemediationLoopRead(accountId)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loop flag not read: %w", err)
+	}
+	repo := events.NewEventAnalysisRepository(dbManager)
+	info, err := repo.GetEventInfo(ctx, eventId, accountId)
+	if errors.Is(err, events.ErrEventNotFound) {
+		return repo, nil, nil
+	}
+	if err != nil {
+		if !loopOn {
+			// With the loop off the read answers as it always did: no plan, which the one-shot panel handles.
+			ctx.GetLogger().Warn("remediation_get: event not read", "error", err)
+			return repo, nil, nil
+		}
+		return nil, nil, fmt.Errorf("event not read: %w", err)
+	}
+	return repo, info, nil
 }
 
 // planPredatesAnalysis reports whether a completed analysis the stored plan was built from (the
@@ -1059,7 +1108,8 @@ func planHasCommand(plan RemediationPlan, slot, command, executeCommand string) 
 }
 
 // loadSavedPlan returns the plan stored for this event itself (not one inherited from an earlier
-// firing of the same alert), and its version.
+// firing of the same alert), and its version. With the loop on, a duplicate's plan is its main
+// event's (planEventAndInfo): duplicates never get a plan of their own.
 func loadSavedPlan(ctx *security.RequestContext, accountId, eventId string) (storedPlan, bool) {
 	var stored storedPlan
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
@@ -1071,6 +1121,7 @@ func loadSavedPlan(ctx *security.RequestContext, accountId, eventId string) (sto
 	if err != nil || info == nil {
 		return stored, false
 	}
+	eventId, info = planEventAndInfo(ctx, repo, accountId, eventId, info)
 	saved, err := repo.GetEventAnalysis(ctx, eventId, info.Fingerprint, info.AggregationKey, accountId, events.AnalysisTypeRemediation)
 	if err != nil || saved == nil || !planSavedForEvent(saved, eventId) {
 		return stored, false
@@ -1097,6 +1148,48 @@ type storedPlan struct {
 func planSavedForEvent(saved *events.EventAnalysis, eventId string) bool {
 	owner := strings.TrimSpace(saved.RelatedEventId)
 	return owner != "" && strings.EqualFold(owner, strings.TrimSpace(eventId))
+}
+
+// savedPlanShown reports whether the remediation read returns the saved plan of planEvent:
+//   - Only a plan saved for planEvent itself. Otherwise the lookup fell back to the newest plan saved for
+//     the same alert, one generated from an earlier firing's investigation; the panel treats any plan it
+//     gets back as already generated, so restoring that one shows another incident's root cause and
+//     commands. Returning no plan makes the panel generate one from this event's own investigation.
+//   - With the loop off, not a plan older than a re-run of the analysis it was built from (predates): it
+//     describes the previous analysis (e.g. the report said "configuration error", the
+//     restored plan still said "undetermined"), and returning none makes the panel build a fresh one.
+//     With the loop on the page never generates: the plan is returned, and the loop's relevance says it
+//     is stale (fired again, closed after the plan) so a person can ask Nubi to re-check it.
+func savedPlanShown(accountId, planEvent string, saved *events.EventAnalysis, predates func() bool) bool {
+	if !planSavedForEvent(saved, planEvent) {
+		return false
+	}
+	if events.RemediationLoopOn(accountId) {
+		return true
+	}
+	if predates() {
+		slog.Info("remediation_get: saved plan predates the current analysis, regenerating", "account_id", accountId, "event_id", planEvent)
+		return false
+	}
+	return true
+}
+
+// planEventAndInfo is the event whose plan eventId reads and acts on, with its info: with the loop on, the shared
+// rule (planEventOf, events.PlanEventOf: a duplicate's live main event, unless the main has no plan and the
+// duplicate has one; contract C7 primary_event_id); otherwise eventId and info unchanged.
+func planEventAndInfo(ctx *security.RequestContext, repo *events.EventAnalysisRepository, accountId, eventId string, info *events.EventInfo) (string, *events.EventInfo) {
+	if !events.RemediationLoopOn(accountId) {
+		return eventId, info
+	}
+	primary := primaryEventId(ctx, accountId, eventId)
+	if primary == "" {
+		return eventId, info
+	}
+	primaryInfo, err := repo.GetEventInfo(ctx, primary, accountId)
+	if err != nil || primaryInfo == nil {
+		return eventId, info
+	}
+	return primary, primaryInfo
 }
 
 // planOlderThanAnalysis reports whether a completed analysis the plan was built from was
@@ -1306,7 +1399,9 @@ func decideStep(ctx *security.RequestContext, request RemediationExecuteRequest,
 	}
 	// A decision binds the plan the person saw: a regenerated plan, or one older than the analysis it
 	// was built from, needs a fresh look. The claim checks the version again under FOR SHARE.
-	if stored.Stale || stored.Version != strings.TrimSpace(request.PlanVersion) {
+	// With the remediation loop on a newer investigation does not void the plan: the step the person approved is the
+	// one they saw, and Nubi re-checks the plan once the approval is answered (remediation_planning.go).
+	if (stored.Stale && !events.RemediationLoopOn(request.AccountId)) || stored.Version != strings.TrimSpace(request.PlanVersion) {
 		return refuse(409, planChangedMessage)
 	}
 	switch slot {

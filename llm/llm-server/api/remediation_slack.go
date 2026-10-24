@@ -34,6 +34,9 @@ type slackCardStep struct {
 	// Runnable: NudgeBee runs this step when a person presses Run; otherwise DeliveryReason says why not.
 	Runnable       bool
 	DeliveryReason string
+	// SourceChange describes a step whose fix is a change in source (code, a deployment source, ...): where, what
+	// and the repo (sourceChangeText); empty for a command step.
+	SourceChange string
 	// AfterStep is the 1-based step this one runs after (its After), 0 for none.
 	AfterStep int
 	// The step's decision, when there is one: its status, how it ended, when, and its status message.
@@ -103,7 +106,7 @@ type decisionCardData struct {
 // show. A var so tests can stub it.
 var loadSlackPlan = func(ctx *security.RequestContext, accountId, eventId string) (RemediationPlan, string, bool) {
 	stored, ok := loadSavedPlan(ctx, accountId, eventId)
-	if !ok || stored.Stale {
+	if !ok || (stored.Stale && !events.RemediationLoopOn(accountId)) {
 		return RemediationPlan{}, "", false
 	}
 	plan := stored.Plan
@@ -155,7 +158,7 @@ func buildRemediationSlackCards(ctx *security.RequestContext, db *sqlx.DB, accou
 		for i, a := range plan.Actions {
 			step := slackCardStep{Index: i, Title: firstNonEmpty(a.Title, a.Action), Kind: a.Kind,
 				Confidence: int(a.Confidence), Command: strings.TrimSpace(a.ExecuteCommand), Rollback: strings.TrimSpace(a.RollbackCommand),
-				TradeOff: a.TradeOff, DeliveryReason: a.DeliveryReason}
+				TradeOff: a.TradeOff, DeliveryReason: a.DeliveryReason, SourceChange: sourceChangeText(a)}
 			step.Runnable = a.Delivery == DeliveryRun && step.Command != ""
 			if d, ok := decisions[fmt.Sprintf("%d:apply", i)]; ok {
 				at := d.row.UpdatedAt
@@ -171,71 +174,33 @@ func buildRemediationSlackCards(ctx *security.RequestContext, db *sqlx.DB, accou
 	return out, nil
 }
 
-// planAfterInvestigation builds the alert's plan once its automatic investigation completes, when the loop posts
-// to Slack (nobody opens the page to trigger it); persistRemediationPlan's caller posts it. A plan already built
-// from this investigation is kept.
+// planAfterInvestigation asks Nubi for the alert's plan once its investigation completes, with the loop on: a
+// planning turn in the alert's conversation writes it in the background (remediation_planning.go), and storing
+// it posts it here. The one-shot planner no longer runs after an investigation.
 func planAfterInvestigation(ctx *security.RequestContext, accountId, eventId string) {
-	if !remediationSlackOn(accountId) || strings.TrimSpace(eventId) == "" {
+	if strings.TrimSpace(eventId) == "" {
 		return
 	}
-	if !planBuilds.retryDue(eventId, time.Now()) {
-		return
+	if _, refusal, err := requestPlanAfterInvestigation(ctx, accountId, eventId, planRequestInput{Kind: planTurnAuto}); err != nil || refusal != "" {
+		ctx.GetLogger().Info("remediation_planning: no plan after the investigation", "account_id", accountId, "event_id", eventId, "reason", refusal, "error", err)
 	}
-	detached := ctx.WithContext(context.WithoutCancel(ctx.GetContext()))
-	go func() {
-		logger := detached.GetLogger().With("account_id", accountId, "event_id", eventId)
-		defer func() {
-			if r := recover(); r != nil {
-				logger.Error("remediation_slack: panic building plan", "panic", r)
-			}
-		}()
-		genCtx, cancel := context.WithTimeout(detached.GetContext(), 10*time.Minute)
-		defer cancel()
-		// After a plan being built for the alert (by another investigation, or generated on the page): it is
-		// then current and only sent, and if that one failed this one builds.
-		if _, err := planBuilds.claim(genCtx, eventId); err != nil {
-			logger.Warn("remediation_slack: plan after investigation not built", "error", err)
-			return
-		}
-		ok := false
-		defer func() { planBuilds.finish(eventId, ok, time.Now()) }()
-		if _, _, current := loadSlackPlan(detached, accountId, eventId); current {
-			ok = true
-			postPlanToThread(detached, accountId, eventId) // posted once per plan version
-			return
-		}
-		if _, _, err := buildPlanAfterInvestigation(detached.WithContext(genCtx), accountId, eventId); err != nil {
-			logger.Warn("remediation_slack: plan after investigation not built", "error", err)
-			return
-		}
-		ok = true
-		logger.Info("remediation_slack: plan built after investigation")
-	}()
 }
 
-// planBuilds: one plan build per alert at a time per process (a waiter then finds the plan current), and none for
-// planRetryAfter after a failure, so repeated completions don't each pay for a model call.
-// ponytail: per process; two pods finishing the same alert together can still build twice (the newer plan wins).
-var planBuilds = &planBuildGuard{busy: map[string]chan struct{}{}, failedAt: map[string]time.Time{}}
+// requestPlanAfterInvestigation is requestBackgroundPlan; a var so tests can capture it.
+var requestPlanAfterInvestigation = requestBackgroundPlan
 
-const planRetryAfter = 30 * time.Minute
+// planBuilds: one plan build per alert at a time per process; a waiter then finds the plan current.
+// ponytail: per process; two pods building the same alert together can still build twice (the newer plan wins).
+var planBuilds = &planBuildGuard{busy: map[string]chan struct{}{}}
 
 type planBuildGuard struct {
 	mu sync.Mutex
 	// busy holds a channel per alert being built, closed when the build ends.
-	busy     map[string]chan struct{}
-	failedAt map[string]time.Time
+	busy map[string]chan struct{}
 }
 
-// retryDue reports whether a build after an investigation may run: not within planRetryAfter of one that failed.
-func (g *planBuildGuard) retryDue(eventId string, now time.Time) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return now.Sub(g.failedAt[eventId]) >= planRetryAfter
-}
-
-// claim takes the alert's slot, after the build in flight on this process, if any, ends (waited). A failed
-// build does not hold it back. End it with finish or release.
+// claim takes the alert's slot, after the build in flight on this process, if any, ends (waited). End it with
+// release.
 func (g *planBuildGuard) claim(ctx context.Context, eventId string) (waited bool, err error) {
 	for {
 		g.mu.Lock()
@@ -263,22 +228,6 @@ func (g *planBuildGuard) release(eventId string) {
 		close(done)
 		delete(g.busy, eventId)
 	}
-}
-
-func (g *planBuildGuard) finish(eventId string, ok bool, now time.Time) {
-	g.release(eventId)
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if ok {
-		delete(g.failedAt, eventId)
-	} else {
-		g.failedAt[eventId] = now
-	}
-}
-
-// buildPlanAfterInvestigation builds and stores the plan; a var so tests can stub the model call.
-var buildPlanAfterInvestigation = func(ctx *security.RequestContext, accountId, eventId string) (RemediationPlan, string, error) {
-	return storeNewPlan(ctx, accountId, eventId, nil, 0)
 }
 
 // slackSource is the decision source a Slack click names.
@@ -380,6 +329,10 @@ func noteStepInThread(ctx *security.RequestContext, request RemediationExecuteRe
 	})
 }
 
+// threadPostsInFlight counts the thread posts running in the background, so tests can wait for them to end
+// before they change what the posts call.
+var threadPostsInFlight sync.WaitGroup
+
 // inThreadBackground sends, in order, what build makes of the alert's plan view, in the background, when the
 // account's loop is posted to Slack.
 func inThreadBackground(ctx *security.RequestContext, accountId, eventId string, build func(view slackCards) []threadPosts) {
@@ -387,7 +340,9 @@ func inThreadBackground(ctx *security.RequestContext, accountId, eventId string,
 		return
 	}
 	detached := ctx.WithContext(context.WithoutCancel(ctx.GetContext()))
+	threadPostsInFlight.Add(1)
 	go func() {
+		defer threadPostsInFlight.Done()
 		logger := detached.GetLogger().With("account_id", accountId, "event_id", eventId)
 		defer func() {
 			if r := recover(); r != nil {
@@ -474,6 +429,8 @@ func planPosts(view slackCards, card slackCard) []threadPost {
 		post := threadPost{Text: text}
 		if s.Runnable {
 			post.Token = fmt.Sprintf("%s%s:%s:%s:%s:%d", remediationTokenPrefix, view.TenantId, view.AccountId, view.EventId, card.PlanVersion, s.Index)
+		} else if s.SourceChange != "" {
+			post.Text += "\n- **" + s.SourceChange + ".** Make the change in source (or raise it as a pull request), then mark this step done."
 		} else {
 			post.Text += "\n- **Manual step:** NudgeBee doesn't run it: " + firstNonEmpty(s.DeliveryReason, "a person makes this change") + "."
 		}

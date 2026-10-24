@@ -130,6 +130,22 @@ type NBQueryConfig struct {
 	// check (#40734), not by other read-only runs. Inherited like ReadOnlyRun.
 	StrictReadOnly bool `json:"strict_read_only,omitempty"`
 
+	// RemediationPlanTurn marks NudgeBee's background planning turn in an alert's conversation (#40734): the
+	// kind of request it answers (auto, ask, recheck, replan). propose_fix there writes the alert's plan for that
+	// request, without a follow-up run. Set with ReadOnlyRun and StrictReadOnly; inherited like them.
+	RemediationPlanTurn string `json:"remediation_plan_turn,omitempty"`
+
+	// SystemNote marks a message NudgeBee wrote into a conversation (a planning turn, a follow-up check, an
+	// investigation summary): the app shows this one line as a note instead of a person's message. Saved on that
+	// message only; never inherited (MergeFrom does not copy it).
+	SystemNote string `json:"system_note,omitempty"`
+
+	// InvestigationRunId marks a turn of an alert investigation's stages with the run it belongs to (the event's
+	// log_analysis row id), with the remediation loop on (#40734). The message is saved with it in
+	// metadata.investigation_run_id (as is any follow-up the turn raises), which stage recovery reads to stay inside
+	// one run and the conversation history leaves out. Never inherited by the conversation's next turn.
+	InvestigationRunId string `json:"investigation_run_id,omitempty"`
+
 	// Memory overrides the server-wide memory settings for this one request.
 	// Grouped rather than three flat flags because they are one concern, and a
 	// reader should not have to know that a "rerank" flag relates to a "memory"
@@ -147,9 +163,21 @@ type NBQueryConfig struct {
 	// per tool and target account, or per action for tools implementing
 	// ToolConfirmationScope. A new message does not inherit them
 	// (core.inheritableMessageConfig); a resume of the same request does.
-	ToolConfirmations  map[string]string `json:"tool_confirmations,omitempty"`
-	ToolConfigMetadata map[string]any    `json:"tool_config_metadata,omitempty"`
-	DiscoveredTools    []string          `json:"discovered_tools,omitempty"`
+	ToolConfirmations map[string]string `json:"tool_confirmations,omitempty"`
+	// ToolConfirmationRefs says, for each key in ToolConfirmations, which
+	// follow-up message the person answered and who they were, so an approved
+	// write can be recorded under that one approval. Scoped like
+	// ToolConfirmations: a new message does not inherit them.
+	ToolConfirmationRefs map[string]ToolConfirmationRef `json:"tool_confirmation_refs,omitempty"`
+	ToolConfigMetadata   map[string]any                 `json:"tool_config_metadata,omitempty"`
+	DiscoveredTools      []string                       `json:"discovered_tools,omitempty"`
+}
+
+// ToolConfirmationRef is one answered write approval: the follow-up message
+// the person answered, and the person.
+type ToolConfirmationRef struct {
+	MessageId  string `json:"message_id"`
+	ApprovedBy string `json:"approved_by,omitempty"`
 }
 
 // IsEmpty returns true when the config has no meaningful values set.
@@ -159,8 +187,8 @@ func (q NBQueryConfig) IsEmpty() bool {
 		q.WorkflowId == "" && q.ExecutionId == "" && len(q.WorkflowDefinition) == 0 && len(q.Labels) == 0 &&
 		q.CurrentCluster == "" && q.CurrentClusterId == "" && q.K8sOrchestratorMode == "" &&
 		q.LlmProvider == "" && q.LlmModelName == "" && len(q.LlmTierModels) == 0 && q.LlmConfigSource == "" && !q.LlmConfigReset && len(q.ToolConfigs) == 0 && q.DelegatedTarget == nil &&
-		len(q.ClientTools) == 0 && q.Capabilities.IsEmpty() && len(q.ToolConfirmations) == 0 &&
-		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == "" && !q.SkipConversationHistory && !q.ReadOnlyRun && !q.StrictReadOnly &&
+		len(q.ClientTools) == 0 && q.Capabilities.IsEmpty() && len(q.ToolConfirmations) == 0 && len(q.ToolConfirmationRefs) == 0 &&
+		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == "" && !q.SkipConversationHistory && !q.ReadOnlyRun && !q.StrictReadOnly && q.RemediationPlanTurn == "" && q.SystemNote == "" && q.InvestigationRunId == "" &&
 		len(q.DiscoveredTools) == 0 && q.Memory.IsEmpty()
 }
 
@@ -369,6 +397,9 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	if !q.StrictReadOnly {
 		q.StrictReadOnly = src.StrictReadOnly
 	}
+	if q.RemediationPlanTurn == "" {
+		q.RemediationPlanTurn = src.RemediationPlanTurn
+	}
 	if src.ToolConfigs != nil {
 		q.ToolConfigs = lo.Assign(src.ToolConfigs, q.ToolConfigs)
 	}
@@ -380,6 +411,9 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	}
 	if src.ToolConfirmations != nil {
 		q.ToolConfirmations = lo.Assign(src.ToolConfirmations, q.ToolConfirmations)
+	}
+	if src.ToolConfirmationRefs != nil {
+		q.ToolConfirmationRefs = lo.Assign(src.ToolConfirmationRefs, q.ToolConfirmationRefs)
 	}
 	if src.ToolConfigMetadata != nil {
 		q.ToolConfigMetadata = lo.Assign(src.ToolConfigMetadata, q.ToolConfigMetadata)

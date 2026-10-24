@@ -17,6 +17,9 @@ import (
 	toolcore "nudgebee/llm/tools/core"
 )
 
+// matchToolApprovalRule is approvedByToolPolicy; a var so tests can stand in for the rule store.
+var matchToolApprovalRule = (*plannerExecutor).approvedByToolPolicy
+
 // approvedByToolPolicy returns a durable policy decision for this invocation.
 // Lookup or decision-write failures fall back to the normal confirmation
 // prompt. The decision table is the canonical, idempotent audit record; the

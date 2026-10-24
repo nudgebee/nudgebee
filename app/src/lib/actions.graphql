@@ -453,6 +453,16 @@ type Query {
 }
 
 type Mutation {
+  ai_generate_remediation_plan(
+    account_id: String!
+    event_id: String!
+    mode: String!
+    reasons: [String!]
+    note: String
+  ): AIResponse
+}
+
+type Mutation {
   ai_remediation_execute(
     account_id: String!
     event_id: String
@@ -1514,6 +1524,14 @@ type Mutation {
     nb_status: String!
     snoozed_until: String
   ): UpdateNBStatusResponse
+}
+
+type Mutation {
+  events_apply_remediation_resolve(
+    account_id: String!
+    event_id: String!
+    run_id: String!
+  ): RemediationResolveResponse
 }
 
 type Mutation {
@@ -10111,6 +10129,16 @@ type RulePreviewSampleEvent {
   service: String
 }
 
+type RemediationResolveEvent {
+  event_id: String!
+  prev_status: String!
+  new_status: String!
+}
+
+type RemediationResolveResponse {
+  events: [RemediationResolveEvent!]!
+}
+
 type UpdateNBStatusResponse {
   success: Boolean!
   prev_status: String!
@@ -12508,6 +12536,8 @@ type EventResolutionRowResponse {
   event_cloud_account_id: String
   event_priority: String
   event_category: String
+  pr_lifecycle_state: String
+  last_pr_check_at: Datetime
 }
 
 type EventResolutionGroupingsResponse {

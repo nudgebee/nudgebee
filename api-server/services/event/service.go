@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/url"
 	"nudgebee/services/account"
 	"nudgebee/services/account/adapter"
@@ -4042,6 +4043,9 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 		subjectNode = *event.SubjectNode
 	}
 
+	// The playbook writes the labels it extracts into this same map, so the snapshot is taken first: a label
+	// a playbook adds is then in the patch the refresh writes back.
+	labelsBefore := maps.Clone(labels)
 	newEvidenceResponse, err := eventrule.ExecutePlaybook(eventSc, accountId, playbooks.PlaybookEvent{
 		EventId:     eventId,
 		Name:        playbookName,
@@ -4170,12 +4174,12 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 		return err
 	}
 
-	if labelsUpdated {
-		labelsJson, err := common.MarshalJson(labels)
+	if patch := refreshedLabelsPatch(labelsBefore, labels); labelsUpdated && len(patch) > 0 {
+		labelsJson, err := common.MarshalJson(patch)
 		if err != nil {
 			return fmt.Errorf("failed to marshal updated labels: %w", err)
 		}
-		_, err = dbms.Db.Exec("UPDATE events SET evidences = $1, labels = $2, updated_at = $3 WHERE id = $4", evidencesJson, labelsJson, time.Now().UTC(), eventId)
+		_, err = dbms.Db.Exec(refreshLabelsUpdateSQL, evidencesJson, labelsJson, time.Now().UTC(), eventId)
 		if err != nil {
 			return fmt.Errorf("failed to update event: %w", err)
 		}
@@ -4187,6 +4191,28 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 	}
 
 	return nil
+}
+
+// refreshLabelsUpdateSQL writes a refresh's evidences and merges only the labels it changed into the row as it
+// is now. The labels were read before the playbooks ran, often minutes earlier; writing that whole map back
+// dropped every label set meanwhile, such as the remediation loop's resolve and re-fire labels.
+const refreshLabelsUpdateSQL = `UPDATE events SET evidences = $1,
+	labels = (CASE WHEN jsonb_typeof(labels) = 'object' THEN labels ELSE '{}'::jsonb END) || $2::jsonb,
+	updated_at = $3 WHERE id = $4`
+
+// refreshedLabelsPatch is the labels a refresh added or changed (after against before). Never the remediation
+// loop's own labels: they are written only by the loop, so a refresh never replaces them with a stale value.
+func refreshedLabelsPatch(before, after map[string]string) map[string]string {
+	patch := map[string]string{}
+	for k, v := range after {
+		if k == triage.LabelResolvedBy || k == triage.LabelRefire {
+			continue
+		}
+		if old, ok := before[k]; !ok || old != v {
+			patch[k] = v
+		}
+	}
+	return patch
 }
 
 // aggregatedAlertLabelDefs maps aggregation keys to the labels that should be

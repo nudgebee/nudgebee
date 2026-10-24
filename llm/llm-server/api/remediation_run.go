@@ -510,13 +510,21 @@ func decisionSurface(source string) (words, audit string) {
 // It runs on a context closing the page cannot cancel.
 func claimStepDecision(ctx *security.RequestContext, repo *events.EventAnalysisRepository, request RemediationExecuteRequest, userId string, stored storedPlan,
 	step, command, ref, status, message string, data map[string]any) (string, *events.DecisionConflict, error) {
+	claimCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), decisionDBTimeout)
+	defer cancel()
+	return repo.ClaimRemediationDecision(ctx.WithContext(claimCtx), stepDecision(request, userId, stored, step, command, ref, status, message, data))
+}
+
+// stepDecision is the record of a decision on one plan step. A step decided in the alert's chat under a
+// person's approval (request.ChatApproval) is recorded as that approval's run (C1): keyed by the
+// approval, with who approved it, the CLI it runs with and the option (1-based) it is, and the step's own
+// key beside it so the step is still decided once from any surface.
+func stepDecision(request RemediationExecuteRequest, userId string, stored storedPlan, step, command, ref, status, message string, data map[string]any) events.RemediationDecision {
 	data["step"], data["plan_version"] = step, stored.Version
 	if request.Source != "" {
 		data["source"] = request.Source
 	}
-	claimCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), decisionDBTimeout)
-	defer cancel()
-	return repo.ClaimRemediationDecision(ctx.WithContext(claimCtx), events.RemediationDecision{
+	d := events.RemediationDecision{
 		AccountId:          request.AccountId,
 		EventId:            request.EventId,
 		UserId:             userId,
@@ -528,7 +536,31 @@ func claimStepDecision(ctx *security.RequestContext, repo *events.EventAnalysisR
 		AcknowledgeUnknown: request.AcknowledgeUnknown,
 		PlanRowId:          stored.RowId,
 		PlanVersion:        stored.Version,
-	})
+	}
+	if a := request.ChatApproval; a != nil && a.ApprovalKey != "" {
+		data["approved_by"] = firstNonEmpty(a.ApprovedBy, userId)
+		if tool := commandTool(firstNonEmpty(command, request.Command)); tool != "" {
+			data["tool"] = tool
+		}
+		if option := stepOption(step); option > 0 {
+			data["option"] = option
+		}
+		d.StepKey, d.ApprovalKey = d.ApprovalKey, a.ApprovalKey
+	}
+	return d
+}
+
+// stepOption is the option (1-based) a plan step key ("0:apply", "1:rollback") names, or 0.
+func stepOption(step string) int {
+	index, _, ok := strings.Cut(step, ":")
+	if !ok {
+		return 0
+	}
+	var n int
+	if _, err := fmt.Sscanf(index, "%d", &n); err != nil || n < 0 {
+		return 0
+	}
+	return n + 1
 }
 
 // decisionCallerRejection returns the HTTP status and message refusing a decision on a plan step, or 0. The decider

@@ -63,6 +63,11 @@ type RemediationDecision struct {
 	// Ref is the row's type_reference_id: the command, or "change:<action>" for a command-less change.
 	Ref         string
 	ApprovalKey string
+	// StepKey, when set, is the plan step's own key (ApprovalKey of the step) for a decision recorded
+	// under another key: a step approved in the alert's chat is keyed by that approval
+	// (<confirmation key>:<follow-up message id>) and still decides its step once, against every
+	// surface. Stored as data.step_key.
+	StepKey string
 	// Status is RunStatusInProgress for a Run, RunStatusSuccess for "I ran this", RunStatusDeclined.
 	Status        string
 	Data          map[string]any
@@ -75,6 +80,17 @@ type RemediationDecision struct {
 	// re-reads the row under FOR SHARE, so a regenerate either waits for it or makes it fail.
 	PlanRowId   string
 	PlanVersion string
+}
+
+// DecisionSourceChat marks a decision made in an alert's conversation: a person approved a write the
+// agent called there. Such a decision is bound to the approval it was given under (its ApprovalKey),
+// not to a plan, so its plan is optional.
+const DecisionSourceChat = "chat"
+
+// planOptional reports whether a decision may be recorded without a plan to bind it to.
+func (d RemediationDecision) planOptional() bool {
+	source, _ := d.Data["source"].(string)
+	return source == DecisionSourceChat && d.PlanRowId == "" && d.PlanVersion == ""
 }
 
 const (
@@ -100,6 +116,8 @@ type DecisionConflict struct {
 	Manual bool
 	// WaitSeconds is how long until an Unknown run may be run again (DecisionUnknownOutcome only).
 	WaitSeconds int
+	// Ref is the deciding row's type_reference_id: the command it decided.
+	Ref string
 }
 
 // decisionRow is a CommandExecution row as the claim reads it.
@@ -109,7 +127,8 @@ type decisionRow struct {
 	NotSent bool   `db:"not_sent"`
 	Manual  bool   `db:"manual"`
 	// WaitSeconds is how much of UnknownRerunWait is left since the row was created.
-	WaitSeconds int `db:"wait_seconds"`
+	WaitSeconds int    `db:"wait_seconds"`
+	Ref         string `db:"ref"`
 }
 
 // decides reports whether a row is a decision that closes its step. An Unknown run and a run that
@@ -120,7 +139,7 @@ func (r decisionRow) decides() bool {
 }
 
 func (r decisionRow) conflict(reason string) *DecisionConflict {
-	return &DecisionConflict{Reason: reason, RowId: r.Id, Status: r.Status, Manual: r.Manual, WaitSeconds: r.WaitSeconds}
+	return &DecisionConflict{Reason: reason, RowId: r.Id, Status: r.Status, Manual: r.Manual, WaitSeconds: r.WaitSeconds, Ref: r.Ref}
 }
 
 // ClaimRemediationDecision records a decision on a plan step before anything acts on it, or returns the refusing
@@ -128,7 +147,7 @@ func (r decisionRow) conflict(reason string) *DecisionConflict {
 // advisory lock, backed by V1055's unique index on data->>'approval_key'. Every statement runs under ctx: at its
 // deadline the transaction rolls back and nothing is recorded, so nothing may be sent.
 func (r *EventAnalysisRepository) ClaimRemediationDecision(ctx *security.RequestContext, d RemediationDecision) (string, *DecisionConflict, error) {
-	if d.AccountId == "" || d.EventId == "" || d.ApprovalKey == "" || d.PlanRowId == "" || d.PlanVersion == "" {
+	if d.AccountId == "" || d.EventId == "" || d.ApprovalKey == "" || ((d.PlanRowId == "" || d.PlanVersion == "") && !d.planOptional()) {
 		return "", nil, errors.New("ClaimRemediationDecision: account, event, approval key and plan are required")
 	}
 	data := map[string]any{}
@@ -136,6 +155,9 @@ func (r *EventAnalysisRepository) ClaimRemediationDecision(ctx *security.Request
 		data[k] = v
 	}
 	data["approval_key"] = d.ApprovalKey
+	if d.StepKey != "" {
+		data["step_key"] = d.StepKey
+	}
 	dataJSON, err := json.Marshal(data)
 	if err != nil {
 		return "", nil, fmt.Errorf("ClaimRemediationDecision: marshal: %w", err)
@@ -175,20 +197,29 @@ func claimDecisionInTx(goCtx context.Context, tx *sqlx.Tx, d RemediationDecision
 	if len(owned) != 1 {
 		return "", &DecisionConflict{Reason: DecisionWrongTarget}, nil
 	}
-	var stored []string
-	if err := tx.SelectContext(goCtx, &stored, `SELECT COALESCE(analysis, '') FROM event_log_analysis WHERE id = $1 AND event_id = $2 FOR SHARE`,
-		d.PlanRowId, d.EventId); err != nil {
-		return "", nil, fmt.Errorf("read plan: %w", err)
+	if !d.planOptional() {
+		var stored []string
+		if err := tx.SelectContext(goCtx, &stored, `SELECT COALESCE(analysis, '') FROM event_log_analysis WHERE id = $1 AND event_id = $2 FOR SHARE`,
+			d.PlanRowId, d.EventId); err != nil {
+			return "", nil, fmt.Errorf("read plan: %w", err)
+		}
+		if len(stored) != 1 || PlanVersion(stored[0]) != d.PlanVersion {
+			return "", &DecisionConflict{Reason: DecisionPlanChanged}, nil
+		}
 	}
-	if len(stored) != 1 || PlanVersion(stored[0]) != d.PlanVersion {
-		return "", &DecisionConflict{Reason: DecisionPlanChanged}, nil
+	// The decisions under this key, and on this step under any key: a step decided from the panel is
+	// keyed by its step key, one decided in the alert's chat by its approval with the step key beside it.
+	stepKey := d.StepKey
+	if stepKey == "" {
+		stepKey = d.ApprovalKey
 	}
 	var rows []decisionRow
-	if err := tx.SelectContext(goCtx, &rows, `SELECT id, status, 0 AS wait_seconds,
+	if err := tx.SelectContext(goCtx, &rows, `SELECT id, status, 0 AS wait_seconds, COALESCE(type_reference_id, '') AS ref,
 		       COALESCE(data->>'not_sent', '') = 'true' AS not_sent, COALESCE(data->>'manual', '') = 'true' AS manual
 		  FROM event_resolution
-		 WHERE event_id = $1 AND type = 'CommandExecution' AND data->>'approval_key' = $2
-		 ORDER BY created_at DESC`, d.EventId, d.ApprovalKey); err != nil {
+		 WHERE event_id = $1 AND type = 'CommandExecution'
+		   AND (data->>'approval_key' IN ($2, $3) OR data->>'step_key' IN ($2, $3))
+		 ORDER BY created_at DESC`, d.EventId, d.ApprovalKey, stepKey); err != nil {
 		return "", nil, fmt.Errorf("read step: %w", err)
 	}
 	for _, row := range rows {
@@ -206,7 +237,7 @@ func claimDecisionInTx(goCtx context.Context, tx *sqlx.Tx, d RemediationDecision
 		// while the other is running or unresolved. not_sent runs are skipped so they don't hide an Unknown run.
 		// ponytail: type_reference_id is not indexed; CommandExecution rows are few. Index it if they are not.
 		var last []decisionRow
-		if err := tx.SelectContext(goCtx, &last, `SELECT er.id, er.status, false AS not_sent, false AS manual,
+		if err := tx.SelectContext(goCtx, &last, `SELECT er.id, er.status, false AS not_sent, false AS manual, COALESCE(er.type_reference_id, '') AS ref,
 			       GREATEST(0, CEIL(EXTRACT(EPOCH FROM (er.created_at + $3::interval - LOCALTIMESTAMP))))::int AS wait_seconds
 			  FROM event_resolution er JOIN events e ON e.id = er.event_id
 			 WHERE e.cloud_account_id = $1 AND er.type = 'CommandExecution' AND er.type_reference_id = $2
@@ -286,7 +317,7 @@ func StepStatuses(ctx context.Context, db *sqlx.DB, eventId, planVersion string)
 	}
 	if err := db.SelectContext(ctx, &rows, `SELECT DISTINCT ON (data->>'step') data->>'step' AS step, status::text AS status
 		  FROM event_resolution
-		 WHERE event_id::text = $1 AND type = 'CommandExecution' AND data->>'plan_version' = $2
+		 WHERE event_id = $1::uuid AND type = 'CommandExecution' AND data->>'plan_version' = $2
 		   AND COALESCE(data->>'step', '') <> '' AND COALESCE(data->>'not_sent', '') <> 'true'
 		 ORDER BY data->>'step', created_at DESC`, eventId, planVersion); err != nil {
 		return nil, fmt.Errorf("StepStatuses: %w", err)

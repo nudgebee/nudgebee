@@ -116,6 +116,12 @@ import { MdOutlineCategory } from 'react-icons/md';
 import DatadogMonitorSearch from '@components/k8s/investigate/cards/DatadogMonitorSearch';
 import SafeIcon from '@shared/icons/SafeIcon';
 import RemediationPanel, { isRemediationPlan, runnableActionCount } from '@components/k8s/investigate/cards/RemediationPanel';
+import RemediationLoopPanel from '@components/k8s/investigate/cards/RemediationLoopPanel';
+import RemediationResolutionCard from '@components/k8s/investigate/RemediationResolutionCard';
+import { chosenOption, loopNeedsPoll, loopOf, pendingFor, planOptions } from '@components/k8s/investigate/remediationLoop';
+import { describeAnalysisStage } from '@components/k8s/investigate/analysisStage';
+import useRemediationRead, { remediationPanelsFor, remediationReadKeyFor, useStickyLoop } from '@components/k8s/investigate/useRemediationRead';
+import { useFeatureAccess } from '@hooks/useFeatureAccess';
 import { podDetailsFromEvidence } from '@components/k8s/investigate/podFacts';
 import { uniqueInsightLines } from '@components/k8s/investigate/insightLines';
 import { placeByFinding } from '@components/k8s/investigate/cardOrder';
@@ -473,6 +479,11 @@ const Investigate = () => {
   const [row, setRow] = useState({});
   // Whether the Remediation tab's "Stop this alert" section rendered.
   const [hasAlertControls, setHasAlertControls] = useState(false);
+  // The remediation loop's "More actions" menu opens the mute dialog and the automation menu the tab shows when the
+  // loop is off: each request is a counter the component opens on.
+  const [loopMuteRequest, setLoopMuteRequest] = useState(0);
+  const [loopCanMute, setLoopCanMute] = useState(false);
+  const [loopAutomationRequest, setLoopAutomationRequest] = useState(0);
   const [queryParam, setQueryParam] = useState({
     aggregationKey: '',
     serviceKey: '',
@@ -1881,34 +1892,194 @@ const Investigate = () => {
     askAiCard && !askAiCard.errorMessage && askAiCard.isCompleted?.() && remediationEventId && remediationAccountId
       ? `${remediationEventId}-${askAiCard.refreshRenderId || 0}`
       : '';
-  const [savedRemediation, setSavedRemediation] = useState({ key: '', plan: null });
+  // One owner for the remediation reads (useRemediationRead): reads never overlap, a slow read is never thrown away,
+  // and a reload asked during a read runs once it settles. The key names the analysis the plan belongs to; before the
+  // analysis completes the event is still read once, so the remediation loop's state shows (a duplicate has no
+  // analysis of its own). With the loop off nothing polls: one read per key, as before.
+  // The tenant's remediation loop flag (EVENT_REMEDIATION_LOOP, the tenant-wide row the servers read too): null while it
+  // is read. Which panel the tab shows follows it, never the read: with it off the old panel shows whatever the read
+  // answers (an error, null on a demo account), and the event is read once per analysis, as before the loop.
+  const loopFlag = useFeatureAccess('EVENT_REMEDIATION_LOOP');
+  const remediationReadKey = remediationReadKeyFor({
+    accountId: remediationAccountId,
+    eventId: remediationEventId,
+    planKey: remediationPlanKey,
+    loopFlag,
+  });
+  // The alert's conversations (its own, and its main event's on a duplicate): a follow-up the chat shows in one of
+  // them reads at once, so an approval asked in chat appears here within one read.
+  const [loopPrimaryFingerprint, setLoopPrimaryFingerprint] = useState('');
+  const remediationRead = useRemediationRead({
+    accountId: remediationAccountId,
+    eventId: remediationEventId,
+    readKey: remediationReadKey,
+    // Only with the loop flag on: a flag-off page reads the remediation once per analysis, as before the loop.
+    sessionIds: loopFlag === true ? [row?.fingerprint, loopPrimaryFingerprint].filter(Boolean).map((fp) => `event-${fp}`) : [],
+    onFollowup: () => startResolutionsPoll(),
+  });
+  const remediationPlanReady = !!remediationPlanKey && remediationRead.key === remediationPlanKey;
+  const remediationPlan = remediationPlanReady && isRemediationPlan(remediationRead.res) ? remediationRead.res : null;
+  // The whole remediation read, and its `loop` object: present only while the tenant's remediation loop is on. The
+  // loop state of this event's last read stays on screen while a newer key is read.
+  const remediationReadRes = remediationRead.eventId === String(remediationEventId || '') ? remediationRead.res : null;
+  // Loop on is sticky per event (useStickyLoop): once a read had a loop, the old panel never comes back for this event,
+  // whatever a later read returns; the old panel shows only after a read affirmatively came back without one.
+  const stickyLoop = useStickyLoop({
+    eventId: remediationEventId,
+    res: remediationReadRes,
+    planKey: remediationPlanKey,
+    readKey: remediationRead.key,
+  });
+  const { loopOn: remediationLoopOn, legacy: showLegacyRemediation } = remediationPanelsFor({ loopFlag, sticky: stickyLoop });
+  const remediationRes = remediationLoopOn ? stickyLoop.loopRes : remediationReadRes;
+  const remediationLoop = loopOf(remediationRes);
+  // The investigation's progress, as the analysis card shows it: the Remediation tab's empty state follows it (the fix
+  // options are made from the investigation once it completes). The card reads its status only while it is on screen,
+  // so while the Remediation tab is, the page reads it through the card every 10 s until it ends.
+  const [, setInvestigationReads] = useState(0);
+  const investigationState = !askAiCard
+    ? ''
+    : askAiCard.isCompleted?.()
+    ? 'complete'
+    : askAiCard.isFailed?.() || askAiCard.isError?.()
+    ? 'failed'
+    : 'running';
+  const investigationProgress = {
+    state: investigationState,
+    stage: investigationState === 'running' ? describeAnalysisStage(askAiCard?.aiData?.task_statuses) : '',
+  };
+  const readInvestigationHere = remediationLoopOn && activeTab === 3 && investigationState === 'running' && !!askAiCard?.readStatusOnce;
   useEffect(() => {
-    if (!remediationPlanKey) return undefined;
+    if (!readInvestigationHere) return undefined;
     let cancelled = false;
-    apiKubernetes
-      .getRemediation(remediationAccountId, remediationEventId)
-      .catch((err) => {
-        console.error('Failed to load the saved remediation plan', err);
-        return null;
+    let timer = null;
+    const read = async () => {
+      try {
+        await askAiCard.readStatusOnce();
+      } catch {
+        // The next read tries again.
+      }
+      if (cancelled) return;
+      setInvestigationReads((n) => n + 1);
+      timer = setTimeout(read, 10000);
+    };
+    timer = setTimeout(read, 10000);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [readInvestigationHere, askAiCard]);
+  // The investigation card says where its next steps became runnable: "N fixes ready" or "preparing", and opens the
+  // Remediation tab. Only with the loop on and for this event's own plan.
+  const remediationLinkCount = remediationLoopOn ? planOptions(remediationRes).length : 0;
+  const remediationLinkPreparing = remediationLoopOn && remediationLoop?.plan_status === 'preparing';
+  useEffect(() => {
+    if (!askAiCard) return;
+    const link =
+      remediationLinkCount > 0 || remediationLinkPreparing
+        ? { count: remediationLinkCount, preparing: remediationLinkPreparing && remediationLinkCount === 0, open: () => setTabValue(3) }
+        : null;
+    askAiCard.remediationLink = link;
+    askAiCard.remediationLoopOn = remediationLoopOn;
+    window.dispatchEvent(new CustomEvent('nb:remediation-link', { detail: { eventId: askAiCard.event?.id, link, loopOn: remediationLoopOn } }));
+  }, [askAiCard, remediationLinkCount, remediationLinkPreparing, remediationLoopOn]);
+  useEffect(() => {
+    setLoopPrimaryFingerprint(remediationLoop?.primary_fingerprint || '');
+  }, [remediationLoop?.primary_fingerprint]);
+  // A duplicate's plan, runs and approvals are its main event's: the loop reads the main event's run rows too, each
+  // time the remediation is read.
+  const loopPrimaryId =
+    remediationLoop?.primary_event_id && String(remediationLoop.primary_event_id) !== String(remediationEventId || '')
+      ? String(remediationLoop.primary_event_id)
+      : '';
+  const [loopPrimaryRows, setLoopPrimaryRows] = useState({ id: '', rows: [] });
+  useEffect(() => {
+    if (!loopPrimaryId) return undefined;
+    let cancelled = false;
+    apiRecommendations
+      .listEventResolutions(loopPrimaryId)
+      .then((rows) => {
+        if (!cancelled) setLoopPrimaryRows({ id: loopPrimaryId, rows: Array.isArray(rows) ? rows : [] });
       })
-      .then((saved) => {
-        if (!cancelled) setSavedRemediation({ key: remediationPlanKey, plan: isRemediationPlan(saved) ? saved : null });
-      });
+      .catch((err) => console.error('Failed to load the main event resolutions', err));
     return () => {
       cancelled = true;
     };
-  }, [remediationPlanKey, remediationAccountId, remediationEventId]);
-  const remediationPlanReady = !!remediationPlanKey && savedRemediation.key === remediationPlanKey;
-  const remediationPlan = remediationPlanReady ? savedRemediation.plan : null;
+  }, [loopPrimaryId, remediationRead.readCount]);
+  const loopResolutions = loopPrimaryId ? (loopPrimaryRows.id === loopPrimaryId ? loopPrimaryRows.rows : []) : eventResolutions;
+  // Polling while something moves without the person (the read says so), or while the panel waits on a pick or an
+  // approved change it sent.
+  const [loopPanelWaiting, setLoopPanelWaiting] = useState(false);
+  const remediationLoopPolls =
+    remediationLoopOn &&
+    (loopPanelWaiting || loopNeedsPoll({ loop: remediationLoop, res: remediationRes, rows: loopResolutions, nbStatus: row?.nb_status }));
+  const { setPolling: setRemediationPolling, reload: reloadRemediation } = remediationRead;
+  // While the panel waits on a change it approved, each remediation read also re-reads the event's run records: the
+  // new run row is what ends "Fixing · Running the change", whatever the conversation is busy with.
+  const remediationReadCount = remediationRead.readCount;
+  useEffect(() => {
+    if (loopPanelWaiting && remediationReadCount) refetchEventResolutions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remediationReadCount]);
+  // The read says when the event was resolved (relevance.alert_state): the left panel's status follows it at once,
+  // without waiting for the event to be re-loaded. Only for the event's own plan, not a duplicate's main event.
+  const loopResolved = remediationLoop?.relevance?.alert_state === 'resolved' && !loopPrimaryId;
+  useEffect(() => {
+    if (loopResolved && row?.id && String(row?.nb_status || '').toUpperCase() !== 'RESOLVED') {
+      setRow((prev) => (prev?.id === row.id ? { ...prev, nb_status: 'RESOLVED' } : prev));
+    }
+  }, [loopResolved, row?.id, row?.nb_status]);
+  useEffect(() => {
+    setRemediationPolling(remediationLoopPolls);
+  }, [remediationLoopPolls, setRemediationPolling]);
+  const reloadRemediationLoop = () => {
+    reloadRemediation();
+    startResolutionsPoll();
+  };
+  // Shown in the left panel: an option is under way and the event is not resolved yet.
+  const remediationLoopChosen = remediationLoopOn ? chosenOption(remediationRes, loopResolutions, row?.nb_status) : null;
+  const remediationLoopFixing = !!remediationLoopChosen && !remediationLoopChosen.done;
+  // A person resolved the event from the tab ("Likely fixed · Resolve"), or the read says it is resolved: while the row
+  // here still reads open, each remediation read also re-reads the event's status and labels (nb_resolved_by), so
+  // "Fixed by …", Status and State follow without a reload. Nothing resolves the event by itself.
+  const [loopResolveConfirmed, setLoopResolveConfirmed] = useState(0);
+  const loopAwaitsResolve =
+    remediationLoopOn && String(row?.nb_status || '').toUpperCase() !== 'RESOLVED' && (loopResolveConfirmed > 0 || (loopResolved && !loopPrimaryId));
+  const eventStatusReadRef = useRef(false);
+  useEffect(() => {
+    if (!loopAwaitsResolve || !row?.id || eventStatusReadRef.current) return;
+    eventStatusReadRef.current = true;
+    const eventId = row.id;
+    apiKubernetes
+      .resolveEventRecord(eventId, router.query.accountId)
+      .then((res) => {
+        const fresh = res?.data?.events?.[0];
+        if (!fresh || !isMountedRef.current) return;
+        setRow((prev) =>
+          prev?.id === eventId
+            ? { ...prev, nb_status: fresh.nb_status, status: fresh.status, ends_at: fresh.ends_at, labels: fresh.labels ?? prev.labels }
+            : prev
+        );
+      })
+      .catch(() => {})
+      .finally(() => {
+        eventStatusReadRef.current = false;
+      });
+    // Once per remediation read while the resolve is awaited.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loopAwaitsResolve, remediationReadCount, loopResolveConfirmed, row?.id]);
   const handleRemediationPlanChange = (plan) => {
     // A plan that finishes generating after the analysis was refreshed belongs to the old analysis.
-    setSavedRemediation((prev) => (prev.key === remediationPlanKey ? { key: remediationPlanKey, plan } : prev));
+    remediationRead.setPlan(plan, remediationPlanKey);
   };
 
   // How many things this user can run from the tab right now: the built-in rows (already limited to
   // write access) plus the plan's actions that carry something to run. Drives the tab badge and the
   // signpost at the end of the analysis, so both agree without recomputing the filter.
-  const remediationActionCount = remediationRows.length + (hasWriteAccess(router.query.accountId) ? runnableActionCount(remediationPlan) : 0);
+  // With the remediation loop on, the tab runs nothing itself: what needs the person is the approvals waiting there.
+  const remediationActionCount = remediationLoopOn
+    ? pendingFor(remediationLoop).web.length
+    : remediationRows.length + (hasWriteAccess(router.query.accountId) ? runnableActionCount(remediationPlan) : 0);
   // "No fixes are available" is only true once the assistant has nothing to add either: it has no
   // analysis to plan from, or its plan is known and proposes no action. While a plan is still being
   // read or generated the line stays off, so it never sits above fixes that are about to appear.
@@ -2240,6 +2411,7 @@ const Investigate = () => {
         ) : (
           <InvestigateSidebar
             row={row}
+            remediationLoopOn={remediationLoopOn}
             podDetails={podDetails}
             othersData={othersData}
             alertLabels={alertLabels}
@@ -2249,6 +2421,8 @@ const Investigate = () => {
             isCloud={isCloud}
             sourceKnown={sourceKnown}
             onPodClick={handlePodClick}
+            onRowChange={setRow}
+            remediationFixing={remediationLoopFixing}
             onCreateTicket={(r) => {
               setTicketData(r);
               setIsTicketCreateFormOpen(true);
@@ -2496,7 +2670,8 @@ const Investigate = () => {
                             </Box>
                           ) : null}
                           {/* Resolve Event */}
-                          {hasWriteAccess(router.query.accountId) && RESOLVABLE_ALERT_KEYS.includes(row?.aggregation_key) ? (
+                          {/* With the remediation loop on, fixes go through the assistant's approvals and resolve in code. */}
+                          {!remediationLoopOn && hasWriteAccess(router.query.accountId) && RESOLVABLE_ALERT_KEYS.includes(row?.aggregation_key) ? (
                             <Box sx={{ pr: 'var(--ds-space-2)' }}>
                               <Button
                                 tone='secondary'
@@ -2624,6 +2799,12 @@ const Investigate = () => {
                         }}
                       >
                         <TabPanel value={activeTab} index={0} className='ai-custom-panel'>
+                          <RemediationResolutionCard
+                            labels={row?.labels}
+                            nbStatus={row?.nb_status}
+                            remediation={remediationRes}
+                            resolutions={eventResolutions}
+                          />
                           {raisedPrResolution &&
                             (() => {
                               const url = raisedPrResolution.type_reference_id;
@@ -2744,11 +2925,100 @@ const Investigate = () => {
                         </TabPanel>
                         <TabPanel value={activeTab} index={3} className='custom-panel'>
                           <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[6] }}>
+                            {/* The remediation loop: the assistant plans in the background and asks before every
+                                change, so the tab only reads. Card fixes, their undo and the old plan panel are
+                                replaced by it; Activity replaces History. */}
+                            {remediationLoopOn ? (
+                              <RemediationLoopPanel
+                                accountId={remediationAccountId}
+                                eventId={remediationEventId}
+                                fingerprint={row?.fingerprint}
+                                nbStatus={row?.nb_status}
+                                remediation={remediationRes}
+                                resolutions={loopResolutions}
+                                labels={row?.labels}
+                                alertStartedAt={row?.starts_at || row?.created_at}
+                                alertTitle={row?.title}
+                                investigation={investigationProgress}
+                                assistantName={assistantName}
+                                onReload={reloadRemediationLoop}
+                                onResolved={() => setLoopResolveConfirmed((n) => n + 1)}
+                                onWaitingChange={setLoopPanelWaiting}
+                                onOpenEvent={(eventId) => router.push(`/investigate?id=${eventId}&accountId=${remediationAccountId}`)}
+                                onOpenChat={({ sessionId, draft, eventId }) =>
+                                  sessionId &&
+                                  openNubiChat({
+                                    accountId: remediationAccountId,
+                                    sessionId,
+                                    eventId: eventId || row?.id,
+                                    ...(draft ? { draft } : {}),
+                                  })
+                                }
+                                // The page's own re-run of this event's investigation (the refresh button by Generate RCA).
+                                onReinvestigate={
+                                  hasWriteAccess(router.query.accountId) && askAiCard?.refreshInvestigation
+                                    ? () => askAiCard.refreshInvestigation()
+                                    : undefined
+                                }
+                                reinvestigateDisabled={!(askAiCard?.isCompleted?.() || askAiCard?.isFailed?.() || askAiCard?.isError?.())}
+                                moreActions={[
+                                  row?.id && {
+                                    id: 'remediation-loop-mute',
+                                    label: 'Mute this alert…',
+                                    disabled: !loopCanMute,
+                                    onSelect: () => setLoopMuteRequest((n) => n + 1),
+                                  },
+                                  row?.id &&
+                                    hasReadAccess(row?.cloud_account_id || router.query.accountId) && {
+                                      id: 'remediation-loop-run-automation',
+                                      label: 'Run an automation…',
+                                      onSelect: () => setLoopAutomationRequest((n) => n + 1),
+                                    },
+                                  hasReadAccess(router.query.accountId) &&
+                                    !ticketData?.ticket_id && {
+                                      id: 'remediation-loop-create-ticket',
+                                      label: 'Create a ticket…',
+                                      onSelect: () => setIsTicketCreateFormOpen(true),
+                                    },
+                                ]}
+                                headerExtras={
+                                  row?.id ? (
+                                    <>
+                                      <EventAlertControlsSection
+                                        accountId={row?.cloud_account_id || router.query.accountId}
+                                        eventId={row.id}
+                                        canWrite={hasWriteAccess(row?.cloud_account_id || router.query.accountId)}
+                                        alertManagerHref=''
+                                        triageRulesHref=''
+                                        headingSx={remediationSectionSx}
+                                        dialogOnly
+                                        muteRequest={loopMuteRequest}
+                                        onCanMuteChange={setLoopCanMute}
+                                      />
+                                      <RunAutomationMenu
+                                        accountId={row?.cloud_account_id || router.query.accountId}
+                                        eventId={row.id}
+                                        canView={hasReadAccess(row?.cloud_account_id || router.query.accountId)}
+                                        canRun={hasWriteAccess(row?.cloud_account_id || router.query.accountId)}
+                                        onCreateAutomation={() => setShowTemplatesModal(true)}
+                                        onTriggered={handleAutomationTriggered}
+                                        refreshKey={automationListRefreshKey}
+                                        runRequest={automationRunRequest}
+                                        onRunRequestHandled={clearAutomationRunRequest}
+                                        openRequest={loopAutomationRequest}
+                                        hideTrigger
+                                      />
+                                    </>
+                                  ) : null
+                                }
+                              />
+                            ) : null}
                             {/* What has already been done, before what can be done next. The only record of
                                 it was History, at the very bottom of the tab under the plan and the
                                 automations — so someone arriving at an event that had already been acted on
                                 read a list of things to try and no sign that any of them had run. */}
-                            {eventResolutions.length > 0 &&
+                            {!remediationLoopOn &&
+                              eventResolutions.length > 0 &&
                               (() => {
                                 // Rows arrive ordered updated_at desc, so the first is the latest attempt.
                                 const latest = eventResolutions[0];
@@ -2803,11 +3073,15 @@ const Investigate = () => {
                                 );
                               })()}
 
-                            {remediationRows.length === 0 && previousRuns.length === 0 && !hasAlertControls && assistantHasNothingToAdd && (
-                              <Text value='No fixes are available for this event yet.' sx={{ fontSize: ds.text.bodyLg, color: ds.gray[600] }} />
-                            )}
+                            {!remediationLoopOn &&
+                              remediationRows.length === 0 &&
+                              previousRuns.length === 0 &&
+                              !hasAlertControls &&
+                              assistantHasNothingToAdd && (
+                                <Text value='No fixes are available for this event yet.' sx={{ fontSize: ds.text.bodyLg, color: ds.gray[600] }} />
+                              )}
 
-                            {remediationRows.length > 0 && (
+                            {!remediationLoopOn && remediationRows.length > 0 && (
                               <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
                                 <Text value='What you can do' sx={remediationSectionSx} />
                                 {/* One bordered list, one row per action, so a fix that is ready to run and
@@ -3006,7 +3280,8 @@ const Investigate = () => {
                             {/* Acting on the alert itself: mute it in the product, or change the rule
                                 where it is defined. Below the fixes, because for a real fault the fix
                                 comes first; not a remediation row, because a mute stops nothing. */}
-                            {row?.id &&
+                            {!remediationLoopOn &&
+                              row?.id &&
                               (() => {
                                 const alertAccountId = row?.cloud_account_id || router.query.accountId;
                                 const detailsPrefix = isCloud ? '/cloud-account/details' : '/kubernetes/details';
@@ -3031,7 +3306,7 @@ const Investigate = () => {
                                 fixes: gating it on remediationActionCount hid every saved workflow on
                                 events that have no card fix, which the toolbar entry point it replaced
                                 never did. */}
-                            {row?.id && (
+                            {!remediationLoopOn && row?.id && (
                               <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
                                 <Text value='Run an automation' sx={remediationSectionSx} />
                                 <Box
@@ -3081,7 +3356,7 @@ const Investigate = () => {
                             {/* Filing a ticket routes the problem to a person; it does not change the
                                 system. Same tab so there is one place to act, separate group so it never
                                 reads as a fix while someone is scanning for one. */}
-                            {hasReadAccess(router.query.accountId) && !ticketData?.ticket_id && (
+                            {!remediationLoopOn && hasReadAccess(router.query.accountId) && !ticketData?.ticket_id && (
                               <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
                                 <Text value='Hand it on' sx={remediationSectionSx} />
                                 <Box
@@ -3121,7 +3396,7 @@ const Investigate = () => {
                                 provider-agnostic (it reuses the investigation text, which cloud events
                                 have too) and #35503 gave execute a credentialed path for aws/az/gcloud.
                                 The gate was the only thing keeping cloud accounts off the feature. */}
-                            {remediationPlanKey ? (
+                            {remediationPlanKey && showLegacyRemediation ? (
                               <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
                                 <Text value={`Suggested by ${toAssistantLabel(assistantName)}`} sx={remediationSectionSx} />
                                 <RemediationPanel
@@ -3137,7 +3412,7 @@ const Investigate = () => {
                               </Box>
                             ) : null}
 
-                            {previousRuns.length > 0 && (
+                            {!remediationLoopOn && previousRuns.length > 0 && (
                               <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
                                 <Text value={`History (${previousRuns.reduce((n, g) => n + g.count, 0)})`} sx={remediationSectionSx} />
                                 <Box
@@ -3200,14 +3475,15 @@ const Investigate = () => {
                               </Box>
                             )}
 
-                            {remediationRows
-                              .filter((option) => option.id === openResolveComponentId)
-                              .map((option) => {
-                                const ResolveComponent = option?.getResolveComponent?.();
-                                return ResolveComponent ? (
-                                  <ResolveComponent key={`resolve-${option.id}`} open={true} onCloseComponent={handleCloseResolveComponent} />
-                                ) : null;
-                              })}
+                            {!remediationLoopOn &&
+                              remediationRows
+                                .filter((option) => option.id === openResolveComponentId)
+                                .map((option) => {
+                                  const ResolveComponent = option?.getResolveComponent?.();
+                                  return ResolveComponent ? (
+                                    <ResolveComponent key={`resolve-${option.id}`} open={true} onCloseComponent={handleCloseResolveComponent} />
+                                  ) : null;
+                                })}
                           </Box>
                         </TabPanel>
                         <TabPanel value={activeTab} index={1} className='custom-panel'>

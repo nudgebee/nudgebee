@@ -107,6 +107,14 @@ func handleTriageAction(h *ActionRequest, c *gin.Context, tracer *trace.Tracer, 
 		handleEventUpdateTriageRule(h, c, ctx)
 	case "event_update_nb_status":
 		handleEventUpdateNBStatus(h, c, ctx)
+	// Remediation loop, service-only (actions_remediation_internal.go)
+	case "events_apply_remediation_verdict":
+		handleEventsApplyRemediationVerdict(h, c, ctx)
+	case "events_update_refire_label":
+		handleEventsUpdateRefireLabel(h, c, ctx)
+	// Remediation loop: a person confirms a likely-fixed verdict (actions_remediation_resolve.go)
+	case "events_apply_remediation_resolve":
+		handleEventsApplyRemediationResolve(h, c, ctx)
 	case "event_get_classification":
 		handleEventGetClassification(h, c, ctx)
 	case "event_toggle_system_rule_override", "events_update_rule_override":

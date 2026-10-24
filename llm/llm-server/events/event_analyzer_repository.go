@@ -1172,11 +1172,13 @@ type InProgressAnalysis struct {
 	EventAggregationKey string
 	AnalysisType        EventAnalysisType
 	UpdatedAt           time.Time
+	// StatusReason is why the row waits, when something recorded one (e.g. ParkEventAnalysis).
+	StatusReason string
 }
 
 // ListInProgressAnalysis returns all analysis entries that are currently 'IN_PROGRESS'.
 func (r *EventAnalysisRepository) ListInProgressAnalysis(ctx *security.RequestContext) ([]InProgressAnalysis, error) {
-	sqlQuery := `SELECT id, event_id, cloud_account_id, event_fingerprint, event_aggregation_key, analysis_type, COALESCE(updated_at, recorded_at) as updated_at FROM event_log_analysis WHERE status = 'IN_PROGRESS';`
+	sqlQuery := `SELECT id, event_id, cloud_account_id, event_fingerprint, event_aggregation_key, analysis_type, COALESCE(updated_at, recorded_at) as updated_at, COALESCE(status_reason, '') AS status_reason FROM event_log_analysis WHERE status = 'IN_PROGRESS';`
 	rows, err := r.dbManager.Db.Queryx(sqlQuery)
 	if err != nil {
 		ctx.GetLogger().Warn("analyzer: failed to list in-progress analyses", "error", err)
@@ -1191,7 +1193,7 @@ func (r *EventAnalysisRepository) ListInProgressAnalysis(ctx *security.RequestCo
 	var results []InProgressAnalysis
 	for rows.Next() {
 		var a InProgressAnalysis
-		if err := rows.Scan(&a.ID, &a.EventId, &a.AccountId, &a.EventFingerprint, &a.EventAggregationKey, &a.AnalysisType, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.EventId, &a.AccountId, &a.EventFingerprint, &a.EventAggregationKey, &a.AnalysisType, &a.UpdatedAt, &a.StatusReason); err != nil {
 			ctx.GetLogger().Warn("analyzer: failed to scan in-progress analysis", "error", err)
 			continue
 		}

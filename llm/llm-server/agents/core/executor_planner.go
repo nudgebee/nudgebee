@@ -2779,6 +2779,11 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			Status:      ToolStatusFailure,
 		}, nil, nil
 	}
+	// Set when a person's recorded approval lets this write run: the call is
+	// recorded under that approval before it runs (ApprovedWriteRecorder), and
+	// reask asks the person again when that approval cannot be used for it.
+	var approved *ApprovedWrite
+	var reask func() ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error)
 	// confirmation if tehre is write operation
 	if tool.GetType() == toolcore.NBToolTypeTool && verdict.Kind != ToolCallRun && verdict.Kind != ToolCallDecideAtCall {
 		if writeConfirmationRequired(tool, requestType, action) {
@@ -2797,6 +2802,18 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				question = tools.SkillConversationQuestion(action.ToolInput)
 			}
 			confirmationQuestion := confirmationQuestionWithTarget(question, action, *requestType, destination)
+			// The card a person approves this write on, and the approval it is
+			// recorded under once they did.
+			write := e.approvedWriteFor(tool, action, confirmationKey, target, destination)
+			cardWrite := write
+			cardQuestion := func() string {
+				if ApprovalCardQuestion != nil {
+					if q := ApprovalCardQuestion(e.ctx, cardWrite); q != "" {
+						return q
+					}
+				}
+				return confirmationQuestion
+			}
 			isFollowupFound := false
 			if e.agentRequest.QueryConfig.ToolConfirmations != nil {
 				if previousData, exists := e.agentRequest.QueryConfig.ToolConfirmations[confirmationKey]; exists {
@@ -2820,6 +2837,12 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 							Observation: "This action was approved without a signed-in user, so it was not executed. A person must approve it from their own Nudgebee login (link your chat account if you approved from Slack or Teams). Continue with other work or summarize.",
 							Status:      ToolStatusFailure,
 						}, nil, nil
+					}
+					write.Ref = e.agentRequest.QueryConfig.ToolConfirmationRefs[confirmationKey]
+					approved = &write
+					askAction, askType, askTarget, crossAccount := action, *requestType, destination.followupTarget(), target != nil
+					reask = func() ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
+						return e.followupForToolOperationConfirmation(askAction, askType, confirmationKey, cardQuestion(), askTarget, crossAccount)
 					}
 				}
 			}
@@ -2850,17 +2873,25 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				// manual confirmation keys intentionally use the original input so
 				// historical resumes do not re-prompt after scalar-array repair.
 				policyInput, _ := toolcore.CoerceScalarArrays(tool, action.ToolInput)
-				target := e.toolApprovalTarget(tool, action)
-				if match := e.approvedByToolPolicy(action, tool.Name(), policyInput, target); match != nil {
+				policyTarget := e.toolApprovalTarget(tool, action)
+				if match := matchToolApprovalRule(e, action, tool.Name(), policyInput, policyTarget); match != nil {
 					isFollowupFound = true
 					approvedByRule = policyApprovalMetadata(match)
 					e.ctx.GetLogger().Info("plannerexecutor: confirmation waived by tool approval policy", "tool", action.Tool, "policy_rule", policyApprovalLogValue(match))
+					// Recorded like a person's approval, under the rule's own decision for this call; a
+					// write the recorder cannot take under it is asked of a person.
+					write.Rule = &RuleApproval{RuleID: match.RuleID.String(), RuleName: match.RuleName, Revision: match.Revision, ToolCallID: action.ToolID}
+					approved = &write
+					askAction, askType, askTarget, crossAccount := action, *requestType, destination.followupTarget(), target != nil
+					reask = func() ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
+						return e.followupForToolOperationConfirmation(askAction, askType, confirmationKey, cardQuestion(), askTarget, crossAccount)
+					}
 				}
 			}
 
 			if !isFollowupFound {
 				e.ctx.GetLogger().Info("plannerexecutor: generating followup for confirmation", logRequestType, requestType, "request", egressfilter.RedactForLog(action.ToolInput), "tool", action.Tool)
-				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType, confirmationKey, confirmationQuestion, destination.followupTarget(), target != nil)
+				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType, confirmationKey, cardQuestion(), destination.followupTarget(), target != nil)
 				if err != nil {
 					e.ctx.GetLogger().Info("plannerexecutor: error in generating followup for confirmation", logRequestType, requestType, "request", egressfilter.RedactForLog(action.ToolInput), "tool", action.Tool, "error", err)
 					return NBAgentPlannerToolActionStep{}, nil, err
@@ -2994,7 +3025,26 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			}
 			actionCtx = withDecidedAtCall(actionCtx, &decidedAtCall{call: toolCallOf(e.agent, e.agentRequest, tool, action, lo.FromPtr(requestType)), account: account})
 		}
+		if approved != nil {
+			// Recorded with the input the tool receives.
+			approved.Input = action.ToolInput
+			actionCtx = withApprovedWrite(actionCtx, approved)
+		}
 		observation, err = callNbTool(actionCtx, e.agentRequest, e.agent.GetName(), tool, action.ToolInput, nil, queryContext, action.ToolID, action.FollowupAnswer, lo.FromPtr(requestType))
+		if err == nil && reask != nil && needsReask(observation) {
+			// The approval was already used by another write, or which approval
+			// it was is not known: this write gets its own.
+			e.ctx.GetLogger().Info("plannerexecutor: asking again for an approved write's confirmation", "tool", action.Tool, "toolId", action.ToolID)
+			followupSteps, followupFinish, ferr := reask()
+			if ferr != nil {
+				return NBAgentPlannerToolActionStep{}, nil, ferr
+			}
+			var fupStep NBAgentPlannerToolActionStep
+			if len(followupSteps) > 0 {
+				fupStep = followupSteps[0]
+			}
+			return fupStep, followupFinish, nil
+		}
 	}
 	var dt []string
 	if val, ok := observation.AdditionalDetails["discovered_tools"]; ok && val != nil {
@@ -5010,6 +5060,18 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 		}
 	}
 
+	// A write a person approved is recorded before it runs, and settled after.
+	// The tool itself sees which approval its call runs under (CallApproval).
+	if w := approvedWriteOf(toolContext.Ctx, tool); w != nil {
+		toolContext.Ctx = WithCallApproval(withApprovedWrite(toolContext.Ctx, nil), *w)
+	}
+	var settleApproved func(toolcore.NBToolResponse, error)
+	var notRun *toolcore.NBToolResponse
+	nbRequestContext, notRun, settleApproved = claimApprovedWrite(nbRequestContext, tool)
+	if notRun != nil {
+		return *notRun, nil
+	}
+
 	t0 := time.Now()
 	// OTEL: Start ToolExecution Span
 	_, span := nbRequestContext.GetTracer().Start(nbRequestContext.GetContext(), fmt.Sprintf("Agent:ToolExecution:%s", tool.Name()))
@@ -5024,6 +5086,9 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	// connection string) must not reach the model, the stored conversation or
 	// later commands built from them. Governed by the egress filter settings.
 	data.Data = egressfilter.RedactToolOutput(nbRequestContext, parentAgentName, tool.Name(), data.Data)
+	if settleApproved != nil {
+		settleApproved(data, err)
+	}
 	latency := time.Since(t0).Seconds()
 	nbRequestContext.GetLogger().Info("tool execution time", "tool", tool.Name(), "time", latency, "input", egressfilter.RedactForLog(input))
 	// Record tool latency metric

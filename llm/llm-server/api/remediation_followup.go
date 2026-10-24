@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -56,7 +57,14 @@ const (
 var (
 	followupGiveUp        = 2 * time.Hour
 	followupStartsPerTick = 3
+	// At most followupsPerTenantPerTick follow-ups of one tenant move on per tick, each given followupStepDeadline
+	// (its verdict may read the cluster through the relay) before the tick moves on (tickScheduler).
+	followupsPerTenantPerTick = 10
+	followupStepDeadline      = 45 * time.Second
 )
+
+// followupTicks schedules the follow-ups job's steps fairly across tenants.
+var followupTicks = newTickScheduler("remediation_followups")
 
 // RegisterRemediationFollowups starts the leader job that runs due follow-ups.
 func RegisterRemediationFollowups() error {
@@ -86,15 +94,21 @@ func runDueFollowups() error {
 	if err != nil {
 		return fmt.Errorf("remediation_followups: %w", err)
 	}
-	starts := 0
+	var starts atomic.Int32
+	items := make([]tickItem, 0, len(open))
 	for _, run := range open {
-		if run.MessageId == "" && starts >= followupStartsPerTick {
-			continue // started next tick
-		}
-		if advanceFollowup(db, run) {
-			starts++
-		}
+		items = append(items, tickItem{Key: run.Id, AccountId: run.AccountId, Run: func() {
+			if run.MessageId == "" && int(starts.Load()) >= followupStartsPerTick {
+				return // started next tick
+			}
+			if advanceFollowup(db, run) {
+				starts.Add(1)
+			}
+		}})
 	}
+	followupTicks.each(items, followupsPerTenantPerTick, followupStepDeadline)
+	compareRefires(db)
+	supersedeEarlierEpisodeApprovals(db)
 	return nil
 }
 
@@ -102,15 +116,30 @@ func runDueFollowups() error {
 func advanceFollowup(db *sqlx.DB, run followupRun) bool {
 	logger := slog.With("run_id", run.Id, "event_id", run.EventId, "account_id", run.AccountId)
 	if run.MessageId == "" {
-		if claimedLongAgo(run, followupGiveUp) {
-			finishFollowup(db, run, map[string]any{"outcome": followupNeedsHuman, "reason": "conversation_busy"}, logger)
+		// The verdict comes first (remediation_verdict.go): code settles a fix that held, or a change that came
+		// after the alert cleared, with no model turn, and needs neither the conversation nor the AI budget. A
+		// newer run of the alert is the change to judge, so a superseded run gets no verdict.
+		if newer, _, err := alertRuns(db, run); err == nil && newer {
+			finishFollowup(db, run, map[string]any{"outcome": followupSuperseded}, logger)
+			return false
+		}
+		if settleByVerdict(db, run, logger) {
 			return false
 		}
 		if stop := followupStop(db, run, logger); stop != nil {
 			finishFollowup(db, run, stop, logger)
 			return false
 		}
-		return startFollowupTurn(db, run, logger)
+		if startFollowupTurn(db, run, logger) {
+			return true
+		}
+		// The turn could not start: the conversation is in use. A person's turn there, or the alert's own
+		// investigation, is not a reason to give up: the follow-up waits for it to end and starts on the next free
+		// tick, whatever the wait cost. Only a conversation busy for followupGiveUp with neither ends it.
+		if claimedLongAgo(run, followupGiveUp) && !humanTurnLive(db, run, logger) && !followupBehindInvestigation(db, run, logger) {
+			finishFollowup(db, run, map[string]any{"outcome": followupNeedsHuman, "reason": "conversation_busy"}, logger)
+		}
+		return false
 	}
 	status, response, found := followupTurnState(run)
 	switch {
@@ -125,6 +154,31 @@ func advanceFollowup(db *sqlx.DB, run followupRun) bool {
 		endTurn(db, run, status, response, logger)
 	}
 	return false
+}
+
+// humanTurnWindow is how recent a running or waiting turn in the alert's conversation must be for the follow-up
+// to keep waiting for it past followupGiveUp: a pending approval stays live this long (C7 lists approvals up to
+// 12 h old), and an older one is stale.
+const humanTurnWindow = 12 * time.Hour
+
+// humanTurnLive reports whether a person's turn in run's alert conversation is under way, so the follow-up yields
+// to it and retries next tick. A var so tests can stub it.
+var humanTurnLive = func(db *sqlx.DB, run followupRun, logger *slog.Logger) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), decisionDBTimeout)
+	defer cancel()
+	live, err := events.ConversationTurnLive(ctx, db, run.AccountId, followupSession(run), humanTurnWindow)
+	if err != nil {
+		logger.Warn("remediation_followups: conversation state not read", "error", err)
+		return false
+	}
+	return live
+}
+
+// followupBehindInvestigation reports whether the alert's investigation holds its conversation now (a live
+// pipeline, events.EventPipelineHoldOf), so the follow-up keeps waiting. A var so tests can stub it.
+var followupBehindInvestigation = func(db *sqlx.DB, run followupRun, logger *slog.Logger) bool {
+	_, mayStart := pipelineHoldKey(db, run.AccountId, firstNonEmpty(run.Fingerprint, run.EventId), logger)
+	return !mayStart
 }
 
 // claimedLongAgo reports whether run was claimed at least d ago; an unreadable claim time counts as long ago.
@@ -180,14 +234,21 @@ var startFollowupMessage = func(run followupRun, messageId uuid.UUID) (string, b
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), decisionDBTimeout)
 	defer cancel()
+	holdKey, mayStart := "", true
+	if dbManager, err := common.GetDatabaseManager(common.Metastore); err == nil {
+		holdKey, mayStart = pipelineHoldKey(dbManager.Db, run.AccountId, firstNonEmpty(run.Fingerprint, run.EventId), slog.With("run_id", run.Id))
+	}
+	if !mayStart {
+		return conversation.ID.String(), false, nil
+	}
 	started, err := dao.StartIdleTurn(ctx, conversation.ID.String(), run.AccountId, messageId.String(), followupQuery(run),
-		agents.RemediationAgentName, followupConfig)
+		agents.RemediationAgentName, followupConfig, holdKey)
 	return conversation.ID.String(), started, err
 }
 
 // followupConfig is the follow-up turn's config, saved with its message so a recovered turn keeps it: read-only,
 // its kubectl calls are strict reads of the alert's own cluster, no cloud CLI (tools.readOnlyCheckRefusal).
-var followupConfig = toolcore.NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true}
+var followupConfig = toolcore.NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true, SystemNote: "Nubi checked whether the step worked"}
 
 // followupTurnState is the status and answer of run's current turn, and whether that turn's message exists.
 var followupTurnState = func(run followupRun) (core.ConversationStatus, string, bool) {
@@ -272,14 +333,16 @@ func alertRuns(db *sqlx.DB, run followupRun) (newer bool, runs int, err error) {
 		Newer int `db:"newer"`
 		Runs  int `db:"runs"`
 	}
-	err = db.GetContext(ctx, &counts, `SELECT count(*) FILTER (WHERE er.created_at > $3) AS newer,
+	// A write approved in the alert's chat that is no step of the plan (planStep) never supersedes a step's run.
+	err = db.GetContext(ctx, &counts, `SELECT count(*) FILTER (WHERE er.created_at > $3 AND NOT (COALESCE(er.data->>'source', '') = '`+chatSource+`'
+		       AND er.data->'option' IS NULL AND COALESCE(er.data->>'step', '') = '')) AS newer,
 		       count(DISTINCT COALESCE(er.data->>'plan_version', er.id::text)) FILTER (WHERE er.created_at <= $3
 		           AND er.created_at > $3 - interval '24 hours' AND er.id::text <> $4
 		           AND COALESCE(er.data->>'plan_version', er.id::text) <> $5
 		           AND COALESCE(er.data->'followup'->>'message_id', '') <> '') AS runs
 		  FROM event_resolution er JOIN events e ON e.id = er.event_id
 		 WHERE er.type = 'CommandExecution' AND er.status <> 'Declined' AND COALESCE(er.data->>'not_sent', '') <> 'true'
-		   AND e.cloud_account_id::text = $1 AND COALESCE(NULLIF(e.fingerprint, ''), e.id::text) = $2`,
+		   AND e.cloud_account_id = $1::uuid AND COALESCE(NULLIF(e.fingerprint, ''), e.id::text) = $2`,
 		run.AccountId, firstNonEmpty(run.Fingerprint, run.EventId), run.CreatedAt, run.Id, firstNonEmpty(runPlanVersion(run), run.Id))
 	if err != nil {
 		return false, 0, fmt.Errorf("alertRuns: %w", err)

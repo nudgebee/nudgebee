@@ -101,6 +101,10 @@ var (
 	remediationAlertPlanTools  = []string{toolcore.ToolGetRemediationPlan, toolcore.ToolProposeFix, toolcore.ToolRunStep}
 	remediationAlertCheckTools = []string{toolcore.ToolGetRemediationPlan, toolcore.ToolProposeFix, toolcore.ToolScheduleRecheck,
 		tools.ToolQueryPrometheus, tools.ToolGetEventById, tools.ToolGetEventRules}
+	// remediationAlertPlanningTools: in NudgeBee's background planning turn (NBQueryConfig.RemediationPlanTurn), the
+	// check's reads and propose_fix; no re-check, which belongs to a follow-up.
+	remediationAlertPlanningTools = []string{toolcore.ToolGetRemediationPlan, toolcore.ToolProposeFix,
+		tools.ToolQueryPrometheus, tools.ToolGetEventById, tools.ToolGetEventRules}
 )
 
 // readOnlyTurn reports whether request's turn may only read: a follow-up check, or an automatic investigation.
@@ -180,6 +184,9 @@ func (r RemediationAgent) GetSystemPrompt(ctx *security.RequestContext, query co
 	case remediationModeRecommendation:
 		return remediationRecommendationPrompt()
 	case remediationModeAlertPlan:
+		if readOnlyTurn(ctx, query) && query.QueryConfig.RemediationPlanTurn != "" {
+			return remediationAlertPlanningPrompt()
+		}
 		if readOnlyTurn(ctx, query) {
 			return remediationAlertCheckPrompt()
 		}
@@ -224,6 +231,26 @@ func remediationAlertCheckPrompt() core.NBAgentPrompt {
 			"Change nothing: a person decides each step in the remediation panel, the alert's Slack thread or this conversation",
 		},
 		OutputFormat: "Short, in markdown, read on the web and in the alert's Slack thread: **Status:** one line (fixed, not fixed yet, or unclear, and why). **Evidence:** up to four bullets, each a read and what it showed. **Uncertain:** one line, only when something is. **Next:** one line (the step to run next, the plan you proposed, a re-check, or what a person decides). No other headings, no long paragraphs.",
+	}
+}
+
+// remediationAlertPlanningPrompt is the prompt of NudgeBee's background planning turn in remediationModeAlertPlan
+// (#40734): read-only, no person in the turn, it writes the alert's plan with propose_fix. Its own prompt, because
+// the follow-up check's is about judging a step that ran and proposes only when a fix did not hold.
+func remediationAlertPlanningPrompt() core.NBAgentPrompt {
+	return core.NBAgentPrompt{
+		Role: "A Remediation Assistant writing one alert's remediation plan, reading only",
+		Instructions: []string{
+			"You write this alert's remediation plan for the person who will act on it. No person can answer during your turn. You can read (kubectl_execute with one strict read at a time on the alert's own cluster, without a cluster argument; prometheus_execute, get_event_by_id, get_event_rules, get_remediation_plan) and write the plan with propose_fix.",
+			"The message says what to write and gives the investigation of the alert's current firing and what was already tried. Plan from it; read only what you need to make each command exact (names, namespaces, current values).",
+			"Call propose_fix with the plan: each step one command on this alert's own account, with a read that checks it and a command that undoes it, or, when the durable fix is a change in code or a deployment source, a step with a required_change (with its repo when known); order dependent steps with after. Include cause_key {\"what\", \"how\", \"against\"}: what failed (kind and name), how it failed in a word or two (oom, crashloop, timeout), and against what (the limit, dependency or change it hit), without numbers; leave a field empty when the investigation does not establish it. Include goal: one plain sentence saying when the alert counts as fixed, in terms of the signal that fired it.",
+			"When nothing a command can do would help, call propose_fix with an empty actions list and say why in the summary.",
+			"When propose_fix refuses, read its reason: it says what to correct, and may show the live state of what your plan changes. Correct the plan and call it again; repeat a call unchanged only when the refusal says to.",
+		},
+		Constraints: []string{
+			"Change nothing: a person decides each step in the remediation panel, the alert's Slack thread or its chat",
+		},
+		OutputFormat: "One or two lines: the plan you wrote (its cause and first step), or why there is none.",
 	}
 }
 
@@ -540,6 +567,9 @@ func (r RemediationAgent) GetSupportedToolsForRequest(ctx *security.RequestConte
 		names, readOnly := remediationAlertPlanTools, readOnlyTurn(ctx, request)
 		if readOnly {
 			names = remediationAlertCheckTools
+			if request.QueryConfig.RemediationPlanTurn != "" {
+				names = remediationAlertPlanningTools
+			}
 		}
 		var out []toolcore.NBTool
 		// A read-only turn gets the CLI only when its reads are strict (the follow-up check): nobody vets them.

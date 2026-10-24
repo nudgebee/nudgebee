@@ -246,7 +246,9 @@ type IConversationDao interface {
 	ListAgentReferences(accountId, conversationId string, messageIds []string, agentId string, limit int) ([]ConversationReference, error)
 	SaveConversationContextReference(accountId, conversationId, messageId string, unifiedExtraction *LlmUnifiedExtraction) error
 	ClaimNextQueuedMessage(ctx context.Context, conversationID string) (*ConversationMessage, error)
-	StartIdleTurn(ctx context.Context, conversationID, accountID, id, message, agentName string, messageConfig toolcore.NBQueryConfig) (bool, error)
+	StartIdleTurn(ctx context.Context, conversationID, accountID, id, message, agentName string, messageConfig toolcore.NBQueryConfig, holdKey string) (bool, error)
+	AutomaticTurnIdle(ctx context.Context, conversationID, accountID string) (bool, error)
+	CloseWaitingConversation(ctx *security.RequestContext, accountId, conversationId, note, reason string) (bool, error)
 	ClaimQueuedMessageById(ctx *security.RequestContext, accountID, conversationID, messageID, userID string, isAdmin bool) (*ConversationMessage, error)
 	DeleteQueuedMessage(id string, accountID string, userID string, isAdmin bool) error
 	UpdateQueuedMessage(id string, accountID string, userID string, message string, isAdmin bool) error
@@ -1580,6 +1582,24 @@ func (chat *ConversationDao) DeleteConversation(conversationId string) error {
 	return nil
 }
 
+// investigationRunOf is the investigation run a message's config names (toolcore.NBQueryConfig.InvestigationRunId),
+// or "". Only a UUID counts, so it can be written into the statement as a literal.
+func investigationRunOf(messageConfig any) string {
+	var runId string
+	switch c := messageConfig.(type) {
+	case toolcore.NBQueryConfig:
+		runId = c.InvestigationRunId
+	case *toolcore.NBQueryConfig:
+		if c != nil {
+			runId = c.InvestigationRunId
+		}
+	}
+	if _, err := uuid.Parse(runId); err != nil {
+		return ""
+	}
+	return runId
+}
+
 func (chat *ConversationDao) SaveConversationMessage(id, conversationId, accountID, userId string, role MessageRole, messageType MessageType, message, response, agentName string, parentAgentId uuid.UUID, messageConfig any, messageContext string, llmProvider, llmModel string, status ConversationStatus) (uuid.UUID, error) {
 	t0 := time.Now()
 	if id == "" {
@@ -1609,6 +1629,11 @@ func (chat *ConversationDao) SaveConversationMessage(id, conversationId, account
 
 	query := `INSERT INTO llm_conversation_messages (id, account_id, user_id, conversation_id, role, message, response, message_type, status, worker_name, agent_name, parent_agent_id, message_config, message_context, llm_provider, llm_model) 
 				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING llm_conversation_messages.id;`
+	if runId := investigationRunOf(messageConfig); runId != "" {
+		// An investigation stage's turn carries its run in typed metadata (stage recovery and the history read it).
+		query = `INSERT INTO llm_conversation_messages (id, account_id, user_id, conversation_id, role, message, response, message_type, status, worker_name, agent_name, parent_agent_id, message_config, message_context, llm_provider, llm_model, metadata) 
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, jsonb_build_object('investigation_run_id', '` + runId + `'::text)) RETURNING llm_conversation_messages.id;`
+	}
 	var lastId uuid.UUID
 	var err error
 	if status == ConversationStatusQueued {
@@ -1648,6 +1673,15 @@ func (chat *ConversationDao) SaveConversationMessage(id, conversationId, account
 		var currentStatus ConversationStatus
 		if err = tx.Get(&currentStatus, `SELECT status FROM llm_conversations WHERE id = $1 AND account_id = $2 FOR UPDATE`, conversationId, accountID); err != nil {
 			return uuid.Nil, err
+		}
+		// A failed conversation's rows left waiting (a follow-up whose resume failed) can never be answered: a resume only
+		// takes a waiting or running conversation. Left as they are they refuse every new turn, and a conversation that is
+		// never deleted (an alert's, with the remediation loop on) would stay stuck. Close them before this turn.
+		if currentStatus == ConversationStatusFailed {
+			if _, err = tx.Exec(`UPDATE llm_conversation_messages SET status = 'FAILED', updated_at = now()
+				WHERE conversation_id = $1 AND status IN ('WAITING', 'WAITING_FOR_CLIENT_TOOL')`, conversationId); err != nil {
+				return uuid.Nil, err
+			}
 		}
 		var busy bool
 		if err = tx.Get(&busy, `SELECT EXISTS (SELECT 1 FROM llm_conversation_messages WHERE conversation_id = $1 AND status IN ('IN_PROGRESS', 'QUEUED', 'WAITING', 'WAITING_FOR_CLIENT_TOOL', 'PENDING'))`, conversationId); err != nil {
@@ -1795,10 +1829,34 @@ func (chat *ConversationDao) ClaimNextQueuedMessage(ctx context.Context, convers
 	return &msg, nil
 }
 
+// automaticTurnIdle is the SQL condition, over conversation row c, under which NudgeBee may start a turn of its own
+// there: nothing is active or queued, and the conversation is COMPLETED or FAILED, or TERMINATED by NudgeBee closing
+// an unanswered prompt (its newest TERMINATED message carries metadata.closed_reason: lapsed, superseded). A
+// conversation a person stopped (no marker) stays off-limits to automatic turns until someone writes in it.
+// Before #40734's fix a TERMINATED alert conversation was never idle, so once the waiting-expiry job ended an
+// unanswered approval, the alert's planning and follow-up turns never started again.
+const automaticTurnIdle = `(c.status IN ('COMPLETED', 'FAILED') OR (c.status = 'TERMINATED' AND COALESCE((SELECT t.metadata->>'closed_reason'
+		FROM llm_conversation_messages t WHERE t.conversation_id = c.id AND t.status = 'TERMINATED' ORDER BY t.created_at DESC LIMIT 1), '') <> ''))
+	AND NOT EXISTS (SELECT 1 FROM llm_conversation_messages m
+		WHERE m.conversation_id = c.id AND m.status IN ('IN_PROGRESS', 'QUEUED', 'WAITING', 'WAITING_FOR_CLIENT_TOOL', 'PENDING'))`
+
+// AutomaticTurnIdle reports whether NudgeBee may start a turn of its own in the conversation now
+// (automaticTurnIdle); a read only, StartIdleTurn decides under the row lock.
+func (chat *ConversationDao) AutomaticTurnIdle(ctx context.Context, conversationID, accountID string) (bool, error) {
+	var idle bool
+	if err := chat.dbManager.Db.GetContext(ctx, &idle, `SELECT `+automaticTurnIdle+` FROM llm_conversations c WHERE c.id = $1 AND c.account_id = $2`,
+		conversationID, accountID); err != nil {
+		return false, fmt.Errorf("history: idle read: %w", err)
+	}
+	return idle, nil
+}
+
 // StartIdleTurn saves message as a user-less turn (one NudgeBee starts) and claims the conversation for it, like
-// ClaimNextQueuedMessage, only while idle (COMPLETED/FAILED, nothing active or queued). Reports whether it did;
-// run the turn with ConversationSessionRequestWithQueuedDispatch.
-func (chat *ConversationDao) StartIdleTurn(ctx context.Context, conversationID, accountID, id, message, agentName string, messageConfig toolcore.NBQueryConfig) (bool, error) {
+// ClaimNextQueuedMessage, only while idle (automaticTurnIdle). When holdKey is set, it also needs that advisory
+// lock to be free (an alert investigation holds its conversation with it, #40734); it takes it for the
+// transaction, so the holder cannot start between this check and the claim. Reports whether it started; run the
+// turn with ConversationSessionRequestWithQueuedDispatch.
+func (chat *ConversationDao) StartIdleTurn(ctx context.Context, conversationID, accountID, id, message, agentName string, messageConfig toolcore.NBQueryConfig, holdKey string) (bool, error) {
 	configJson, err := common.MarshalJson(messageConfig)
 	if err != nil {
 		return false, fmt.Errorf("history: idle turn config: %w", err)
@@ -1810,13 +1868,21 @@ func (chat *ConversationDao) StartIdleTurn(ctx context.Context, conversationID, 
 	defer func() { _ = tx.Rollback() }()
 	// Every turn start locks the conversation row, so no other turn starts between this check and the claim.
 	var idle bool
-	if err := tx.GetContext(ctx, &idle, `SELECT c.status IN ('COMPLETED', 'FAILED') AND NOT EXISTS (SELECT 1 FROM llm_conversation_messages m
-		WHERE m.conversation_id = c.id AND m.status IN ('IN_PROGRESS', 'QUEUED', 'WAITING', 'WAITING_FOR_CLIENT_TOOL', 'PENDING'))
+	if err := tx.GetContext(ctx, &idle, `SELECT `+automaticTurnIdle+`
 		FROM llm_conversations c WHERE c.id = $1 AND c.account_id = $2 FOR UPDATE OF c`, conversationID, accountID); err != nil {
 		return false, fmt.Errorf("history: lock idle turn conversation: %w", err)
 	}
 	if !idle {
 		return false, nil
+	}
+	if holdKey != "" {
+		var free bool
+		if err := tx.GetContext(ctx, &free, `SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))`, holdKey); err != nil {
+			return false, fmt.Errorf("history: idle turn hold check: %w", err)
+		}
+		if !free {
+			return false, nil
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO llm_conversation_messages (id, account_id, conversation_id, role, message, response, message_type, status, worker_name, agent_name, parent_agent_id, message_config)
 		VALUES ($1, $2, $3, $4, $5, '', $6, 'IN_PROGRESS', $7, $8, $9, $10)`,
@@ -1961,6 +2027,10 @@ type termination struct {
 	messageText   string // written to the ended messages
 	stepText      string // written to the ended agent and tool-call rows
 	onlyIfWaiting bool   // end it only if it is still WAITING when the row is locked
+	// closedReason, when set, is stamped on every ended message as metadata.closed_reason: NudgeBee closed an
+	// unanswered prompt (lapsed, superseded), which lets its own later turns start (automaticTurnIdle). A person's
+	// Stop sets none.
+	closedReason string
 }
 
 var terminatedByUser = termination{messageText: "Conversation terminated by user", stepText: "Terminated by user"}
@@ -1974,12 +2044,26 @@ func (chat *ConversationDao) TerminateConversation(ctx *security.RequestContext,
 	return err
 }
 
+// ClosedReasonLapsed and ClosedReasonSuperseded are why NudgeBee closed an unanswered prompt
+// (metadata.closed_reason): nobody answered it in time, or the alert cleared and fired again since it was asked.
+const (
+	ClosedReasonLapsed     = "lapsed"
+	ClosedReasonSuperseded = "superseded"
+)
+
 // ExpireWaitingConversation ends a conversation that is still WAITING, the same
-// way Stop does, with note shown in place of the unanswered prompt. It returns
-// false, and changes nothing, when the conversation is no longer WAITING.
+// way Stop does, with note shown in place of the unanswered prompt, and marks
+// the prompt lapsed. It returns false, and changes nothing, when the
+// conversation is no longer WAITING.
 func (chat *ConversationDao) ExpireWaitingConversation(ctx *security.RequestContext, accountId, conversationId, note string) (bool, error) {
+	return chat.CloseWaitingConversation(ctx, accountId, conversationId, note, ClosedReasonLapsed)
+}
+
+// CloseWaitingConversation is ExpireWaitingConversation with the reason the prompt is closed for
+// (ClosedReasonLapsed, ClosedReasonSuperseded). No model runs: the waiting turn ends with note.
+func (chat *ConversationDao) CloseWaitingConversation(ctx *security.RequestContext, accountId, conversationId, note, reason string) (bool, error) {
 	_, err := chat.terminateConversation(ctx, accountId, conversationId, "", "", false,
-		termination{messageText: note, stepText: note, onlyIfWaiting: true})
+		termination{messageText: note, stepText: note, onlyIfWaiting: true, closedReason: reason})
 	if errors.Is(err, errConversationNotWaiting) {
 		return false, nil
 	}
@@ -2017,7 +2101,14 @@ func (chat *ConversationDao) terminateConversation(ctx *security.RequestContext,
 	// Update the message status to TERMINATED and capture affected message IDs so
 	// we can invalidate their termination cache entries after commit.
 	messageQuery := `UPDATE llm_conversation_messages SET updated_at = now(), status = $2, response = $4 WHERE conversation_id = $1 AND account_id = $3 AND status in ('IN_PROGRESS', 'WAITING', 'WAITING_FOR_CLIENT_TOOL', 'PENDING') RETURNING id`
-	rows, err := tx.Queryx(messageQuery, conversationId, string(ConversationStatusTerminated), accountId, how.messageText)
+	messageArgs := []any{conversationId, string(ConversationStatusTerminated), accountId, how.messageText}
+	if how.closedReason != "" {
+		messageQuery = `UPDATE llm_conversation_messages SET updated_at = now(), status = $2, response = $4,
+			metadata = COALESCE(NULLIF(metadata, 'null'::jsonb), '{}'::jsonb) || jsonb_build_object('closed_reason', $5::text)
+			WHERE conversation_id = $1 AND account_id = $3 AND status in ('IN_PROGRESS', 'WAITING', 'WAITING_FOR_CLIENT_TOOL', 'PENDING') RETURNING id`
+		messageArgs = append(messageArgs, how.closedReason)
+	}
+	rows, err := tx.Queryx(messageQuery, messageArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("history: failed to terminate message: %w", err)
 	}
@@ -2605,10 +2696,14 @@ func (chat *ConversationDao) LoadConversationMessages(accountID, conversationID,
 	args = append(args, conversationID, accountID)
 
 	// message_config is only needed on followup rows (it names the followup type).
+	// An alert investigation's stage turns and the follow-ups they raise (metadata.investigation_run_id, set only
+	// with the remediation loop on) are not history: a later turn gets the investigation's bounded report instead
+	// (InvestigationReportForHistory).
 	query := `SELECT role, message, response, id::text, message_type,
 		CASE WHEN message_type = 'followup' THEN COALESCE(message_config, '') ELSE '' END
 		FROM llm_conversation_messages
-		WHERE conversation_id = $1 AND account_id = $2 AND status <> 'QUEUED'`
+		WHERE conversation_id = $1 AND account_id = $2 AND status <> 'QUEUED'
+		AND COALESCE(metadata->>'investigation_run_id', '') = ''`
 
 	if userID != "" {
 		args = append(args, userID)

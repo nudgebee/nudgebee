@@ -572,14 +572,14 @@ function isUnknownOutcomeRefusal(message) {
 }
 
 // Improvements the incident does not need. Kept apart from the actions so they never read as its fix.
-export function OptionalHardening({ items }) {
+export function OptionalHardening({ items, title = 'Optional hardening — not required to resolve this incident' }) {
   return (
     <Card variant='tinted' tone='neutral' size='sm' elevation='flat'>
       <Box
         sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)', fontSize: 'var(--ds-text-small)' }}
         data-testid='remediation-optional-hardening'
       >
-        <Box sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>Optional hardening — not required to resolve this incident</Box>
+        <Box sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>{title}</Box>
         {items.map((h, i) => (
           <Box key={i}>
             {trimmedString(h?.target) ? <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>{`${h.target}: `}</Box> : null}
@@ -594,6 +594,8 @@ export function OptionalHardening({ items }) {
 
 OptionalHardening.propTypes = {
   items: PropTypes.arrayOf(PropTypes.shape({ target: PropTypes.string, change: PropTypes.string, reason: PropTypes.string })).isRequired,
+  // The heading; the default keeps the items apart from the fix.
+  title: PropTypes.string,
 };
 
 // One remediation action: header (label + confidence), the hypothesis it addresses (with reasoning +

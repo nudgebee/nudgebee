@@ -151,6 +151,8 @@ Disclosure.propTypes = { open: PropTypes.bool, onToggle: PropTypes.func, label: 
 
 function InvestigateSidebar({
   row,
+  remediationFixing = false,
+  remediationLoopOn = false,
   podDetails,
   othersData,
   alertLabels,
@@ -572,6 +574,12 @@ function InvestigateSidebar({
               }}
               onCreateTicket={!row?.ticket_id ? () => onCreateTicket(row) : undefined}
             />
+            {/* The remediation loop has an option under way; Resolved follows from the status itself. */}
+            {remediationFixing ? (
+              <Box component='span' data-testid='sidebar-remediation-fixing'>
+                <Label tone='info' size='sm' text='Fixing' />
+              </Box>
+            ) : null}
           </Row>
         </Box>
 
@@ -599,6 +607,12 @@ function InvestigateSidebar({
 
         {isK8s && hasCrashDetails && (
           <Section title='Container' testId='sidebar-container'>
+            {/* The pod's state as the alert captured it, not live: it says when, so it is not read as the state now. */}
+            {remediationLoopOn && formatClockCompact(row?.created_at) ? (
+              <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], mt: ds.space.mul(1, -1) }} data-testid='sidebar-container-as-of'>
+                {`As of ${formatClockCompact(row.created_at)}, when the alert fired`}
+              </Typography>
+            ) : null}
             {containersReady?.total > 0 && (
               // The same two-column grid as the container rows below, so the values line up.
               <Box
@@ -1027,6 +1041,10 @@ function InvestigateSidebar({
 
 InvestigateSidebar.propTypes = {
   row: PropTypes.object,
+  // The remediation loop has an option under way on this event (shown as "Fixing" next to the status).
+  remediationFixing: PropTypes.bool,
+  // The tenant's remediation loop is on: the container facts say they are as of when the alert fired.
+  remediationLoopOn: PropTypes.bool,
   podDetails: PropTypes.object,
   othersData: PropTypes.array,
   alertLabels: PropTypes.object,

@@ -485,6 +485,12 @@ func GenerateFollowup(ctx *security.RequestContext, query NBAgentRequest, follow
 	if err != nil {
 		return uuid.Nil, err
 	}
+	if runId := investigationRunOf(query.QueryConfig); runId != "" {
+		// A follow-up an investigation stage raises belongs to that run, like the stage's own message.
+		if err := dao.UpdateConversationMessageMetadata(followupMessage.String(), map[string]any{"investigation_run_id": runId}); err != nil {
+			ctx.GetLogger().Warn("followup: investigation run not recorded on the follow-up", "error", err)
+		}
+	}
 	err = dao.UpdateConversationMessage(query.MessageId, "", ConversationStatusWaiting)
 	if err != nil {
 		return uuid.Nil, err

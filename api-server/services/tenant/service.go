@@ -43,6 +43,10 @@ const FEATURE_ANOMALY_DETECTION_ERROR_RATE = "ANOMALY_DETECTION_ERROR_RATE"
 const FEATURE_TRIAGE_LLM_SCORING = "TRIAGE_LLM_SCORING"
 const FEATURE_WEBHOOK_LLM_RESOLUTION = "WEBHOOK_LLM_RESOLUTION"
 
+// FEATURE_EVENT_REMEDIATION_LOOP turns the alert remediation loop on for a tenant (tenant-wide row only; off
+// without one). llm-server reads the same flag (events.RemediationLoopFeature).
+const FEATURE_EVENT_REMEDIATION_LOOP = "EVENT_REMEDIATION_LOOP"
+
 // FEATURE_OPENCOST_SERVER_SIDE_SPEND is a default-ON kill-switch for the
 // server-side OpenCost spend-sync cron. Enrollment is automatic: the cron runs
 // for any connected K8s cluster whose agent has its own OpenCost disabled

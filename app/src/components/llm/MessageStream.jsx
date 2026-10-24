@@ -19,6 +19,8 @@ import { describeFollowup, isFollowupTask, summarizeFollowups } from './utils/fo
 import FollowupHistory from './common/FollowupHistory';
 import PlanCard from './plan/PlanCard';
 import { filterDrawerTasksForStep } from './plan/planState';
+import { noteTime } from './utils/systemNote';
+import { ds } from '@utils/colors';
 
 const taskKey = (task) => task?.id ?? task?.tool_id ?? task?.originalIndex ?? null;
 
@@ -517,16 +519,34 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
 
         return (
           <React.Fragment key={group.question.originalIndex}>
-            <MessageItem
-              message={group.question}
-              index={group.question.originalIndex}
-              isCollapsed={false}
-              collapsedObj={collapsedObj}
-              onToggle={() => {}}
-              showFullText={!!showFullText[group.question.originalIndex]}
-              onShowFullText={() => handleShowFullText(group.question.originalIndex)}
-              {...itemProps}
-            />
+            {group.question.systemNote ? (
+              // The platform's own turn (a planning turn, a follow-up check, the investigation summary): one line
+              // with its time, never a person's bubble.
+              <Box
+                data-testid='conversation-system-note'
+                sx={{
+                  display: 'flex',
+                  justifyContent: 'center',
+                  py: ds.space[2],
+                  color: 'var(--ds-gray-500)',
+                  fontSize: 'var(--ds-text-small)',
+                  fontFamily: ds.font.sans,
+                }}
+              >
+                {[group.question.systemNote, noteTime(group.question.created_at)].filter(Boolean).join(' · ')}
+              </Box>
+            ) : (
+              <MessageItem
+                message={group.question}
+                index={group.question.originalIndex}
+                isCollapsed={false}
+                collapsedObj={collapsedObj}
+                onToggle={() => {}}
+                showFullText={!!showFullText[group.question.originalIndex]}
+                onShowFullText={() => handleShowFullText(group.question.originalIndex)}
+                {...itemProps}
+              />
+            )}
             {group.question.plan && (
               <PlanCard
                 plan={group.question.plan}

@@ -10117,6 +10117,10 @@ var table_metadata = map[string]TableDefinition{
 			"event_category":          {Type: ColumnDefinitionTypeString},
 			"conversation_session_id": {Type: ColumnDefinitionTypeString},
 			"conversation_title":      {Type: ColumnDefinitionTypeString},
+			// A PullRequest row's PR state (created, needs_followup, addressing, stale, merged, closed,
+			// unresolvable) and when it was last checked; a merge or close sets both.
+			"pr_lifecycle_state": {Type: ColumnDefinitionTypeString},
+			"last_pr_check_at":   {Type: ColumnDefinitionTypeDatetime},
 		},
 	},
 	"event_resolution_groupings_v2": {

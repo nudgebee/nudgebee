@@ -15,6 +15,7 @@ import (
 	"nudgebee/llm/attachments"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/events"
 	"nudgebee/llm/knowledge"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
@@ -772,6 +773,11 @@ func resolveSessionRequestConfigs(configs ...ConversationSessionRequestConfig) a
 	if defaultConfig.skipHistory {
 		defaultConfig.config.SkipConversationHistory = true
 	}
+	// Which follow-up a person answered, and who they were, is written by this server when it
+	// records the answer (refineAgentQuestionAndHandleFollowups) and read back from the message's
+	// stored config. A caller's config never supplies it: an approved write is attributed to, and
+	// used once under, that approval (ApprovedWriteRecorder).
+	defaultConfig.config.ToolConfirmationRefs = nil
 	return defaultConfig
 }
 
@@ -1491,6 +1497,8 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	if IsReadOnlyRun(ctx) {
 		request.QueryConfig.ReadOnlyRun = true
 	}
+	// Before the message's stored config is restored below: only the caller's own config is dropped.
+	dropCallerApprovalsInAlertChat(ctx, request.AccountId, conversation.SessionID, &request.QueryConfig)
 
 	if request.MessageId == "" {
 		parentAgentId := uuid.Nil
@@ -2352,6 +2360,25 @@ func HandleConversationMessageRequest(ctx *security.RequestContext, accountId, c
 	return response, nil
 }
 
+// dropCallerApprovalsInAlertChat drops the approvals a caller's config carries (tool_confirmations) in an alert's
+// conversation with the remediation loop on, or with the flag unread: there a "yes" decides a change on the alert,
+// and it counts only as the answer to its follow-up, which this server records (refineAgentQuestionAndHandleFollowups)
+// after checking who may answer it. Any other conversation is as before.
+func dropCallerApprovalsInAlertChat(ctx *security.RequestContext, accountId, sessionId string, cfg *toolcore.NBQueryConfig) {
+	if len(cfg.ToolConfirmations) == 0 {
+		return
+	}
+	if _, alert := events.AlertFingerprintOfSession(sessionId); !alert {
+		return
+	}
+	on, err := events.RemediationLoopRead(accountId)
+	if err == nil && !on {
+		return
+	}
+	ctx.GetLogger().Warn("conversation: approvals sent with the request dropped in an alert's conversation", "session_id", sessionId, "count", len(cfg.ToolConfirmations), "flag_error", err)
+	cfg.ToolConfirmations = nil
+}
+
 // inheritableMessageConfig is the part of the previous message's config a new
 // message carries over. Skipping history and read-only belong to the turn that
 // asked for them: a user's follow-up after an automated re-analysis needs the
@@ -2362,6 +2389,9 @@ func inheritableMessageConfig(prev toolcore.NBQueryConfig) toolcore.NBQueryConfi
 	prev.SkipConversationHistory = false
 	prev.ReadOnlyRun = false
 	prev.StrictReadOnly = false
+	prev.RemediationPlanTurn = ""
+	prev.InvestigationRunId = ""
 	prev.ToolConfirmations = nil
+	prev.ToolConfirmationRefs = nil
 	return prev
 }

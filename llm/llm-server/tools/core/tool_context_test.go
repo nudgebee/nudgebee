@@ -207,6 +207,18 @@ func TestMergeFrom_StrictReadOnlyInheritsWithinTurn(t *testing.T) {
 	}
 }
 
+// #40734: a sub-agent or resume of the background planning turn keeps its marker.
+func TestMergeFrom_RemediationPlanTurnInheritsWithinTurn(t *testing.T) {
+	q := NBQueryConfig{Namespace: "nudgebee"}
+	q.MergeFrom(NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true, RemediationPlanTurn: "auto"})
+	if q.RemediationPlanTurn != "auto" {
+		t.Fatal("planning-turn marker lost on merge")
+	}
+	if (NBQueryConfig{RemediationPlanTurn: "replan"}).IsEmpty() {
+		t.Fatal("a planning-turn config must not read as empty")
+	}
+}
+
 func TestNBQueryConfig_DiscoveredTools(t *testing.T) {
 	// IsEmpty checks DiscoveredTools
 	if (NBQueryConfig{DiscoveredTools: []string{"postgres_query_execute"}}).IsEmpty() {

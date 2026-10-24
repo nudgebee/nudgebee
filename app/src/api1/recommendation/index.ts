@@ -1989,6 +1989,8 @@ const apiRecommendations = {
             type_reference_id
             resolver_type
             resolver_display_name
+            pr_lifecycle_state
+            last_pr_check_at
             created_at
             updated_at
           }

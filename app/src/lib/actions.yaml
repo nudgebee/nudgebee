@@ -1437,6 +1437,19 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: Generate a structured remediation plan (execute/verify/rollback commands) from an investigation
+  - name: ai_generate_remediation_plan
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/analyze/remediation/plan'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: tenant_admin
+      - role: account_admin
+    comment: Ask the assistant to write, re-check or replan an event's remediation plan in the background (remediation loop)
   - name: ai_remediation_get
     definition:
       kind: "synchronous"
@@ -3667,6 +3680,19 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin
     comment: Update the nb_status (triage status) of an event
+  - name: events_apply_remediation_resolve
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/triage'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: k8s_namespace_admin
+      - role: account_admin
+    comment: Resolve an event whose remediation run was judged likely fixed, confirmed by the person calling (remediation loop)
   - name: event_update_triage_rule
     definition:
       kind: synchronous

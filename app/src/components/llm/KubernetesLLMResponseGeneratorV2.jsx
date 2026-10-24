@@ -141,6 +141,8 @@ const NUBI_NAV_WIDTH_PX = MAIN_RAIL_WIDTH + NUBI_SUBNAV_WIDTH;
 const KubernetesLLMResponseGenerator = ({
   accountId,
   query = '',
+  // A message the opener prepared for the person to review and send (not sent on its own).
+  draft = '',
   queryPrefix = '',
   querySuffix = '',
   popup = false,
@@ -526,6 +528,22 @@ const KubernetesLLMResponseGenerator = ({
   // moment the user optimistically answers, so the sheet collapses into its inline pill
   // instead of sitting with a loader until the next poll.
   const showFollowupSheet = Boolean(activeWaitingFollowup) && conversationStatus !== 'COMPLETED' && !isActiveFollowupOptimisticallyAnswered;
+
+  // Tell the page when a follow-up appears or is answered in this conversation (same pattern as
+  // nb:event-resolution-changed), so a tab showing the same alert reads again at once: the remediation tab shows the
+  // approval chat is asking for within one read.
+  const followupSessionId = selectedSessionId || router.query.session_id || sessionId;
+  const announceFollowup = useCallback(
+    (kind) => {
+      if (followupSessionId && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nb:conversation-followup', { detail: { sessionId: followupSessionId, kind } }));
+      }
+    },
+    [followupSessionId]
+  );
+  useEffect(() => {
+    if (activeFollowupKey) announceFollowup('asked');
+  }, [activeFollowupKey, announceFollowup]);
 
   const displayMessages = useMemo(() => {
     if (!optimisticFollowupAnswer) {
@@ -996,6 +1014,11 @@ const KubernetesLLMResponseGenerator = ({
       }
     }
   }, [queryPrefix, messages.length]);
+
+  // The opener's prepared message goes into the composer; the person sends it.
+  useEffect(() => {
+    if (draft) setGenerateQuestionText(draft);
+  }, [draft, sessionId, setGenerateQuestionText]);
 
   // Open an existing conversation already at the bottom: when its history finishes loading,
   // jump to the latest message instantly (behavior: 'auto'), once per session — so there's no
@@ -2457,7 +2480,10 @@ const KubernetesLLMResponseGenerator = ({
                     selectedTierModels={selectedTierModels}
                     popup={popup}
                     onStop={handleStopInvestigation}
-                    onOptimisticSubmit={(answer) => setOptimisticFollowupAnswer({ key: activeFollowupKey, answer })}
+                    onOptimisticSubmit={(answer) => {
+                      setOptimisticFollowupAnswer({ key: activeFollowupKey, answer });
+                      announceFollowup('answered');
+                    }}
                     onSubmitError={(message) => {
                       setOptimisticFollowupAnswer(null);
                       snackbar.error(message || 'Couldn’t submit your response. Please try again.');
@@ -2648,6 +2674,7 @@ KubernetesLLMResponseGenerator.propTypes = {
   source: PropTypes.string,
   categorySource: PropTypes.string,
   query: PropTypes.string,
+  draft: PropTypes.string,
   queryPrefix: PropTypes.string,
   querySuffix: PropTypes.string,
   popup: PropTypes.bool,

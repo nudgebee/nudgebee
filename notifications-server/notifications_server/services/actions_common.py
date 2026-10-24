@@ -776,6 +776,17 @@ def _finalize_card_after_analysis(service, context, outcome):
 _CLARIFICATION_WAITING_STATUSES = {"WAITING", "WAITING_FOR_CLIENT", "WAITING_FOR_CLIENT_TOOL"}
 
 
+def _is_remediation_step_approval(message):
+    """A plan step's approval (run_step), which the alert's conversation holds
+    along with the investigation when the remediation loop is on. The remediation
+    card posts it; it is not the investigation's question."""
+    try:
+        cfg = json.loads(message.get("message_config") or "{}")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(cfg, dict) and str(cfg.get("confirmationKey") or "").startswith("run_step:")
+
+
 def _fetch_event_conversation(context, user_id, session_id):
     """Flat ai_get_conversation_v3 delta for an `event-<fingerprint>` session, or
     None. Same RPC the Thinking-Steps poller uses."""
@@ -815,9 +826,11 @@ def _surface_event_clarification(service, context, user_id, fingerprint):
 
         pending = None
         for m in sorted(messages, key=lambda r: r.get("updated_at") or "", reverse=True):
-            if (m.get("message_type") or "").lower() == "followup" and (
-                m.get("status") or ""
-            ).upper() in _CLARIFICATION_WAITING_STATUSES:
+            if (
+                (m.get("message_type") or "").lower() == "followup"
+                and (m.get("status") or "").upper() in _CLARIFICATION_WAITING_STATUSES
+                and not _is_remediation_step_approval(m)
+            ):
                 pending = m
                 break
 

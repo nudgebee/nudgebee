@@ -851,11 +851,16 @@ func withMetastore(t *testing.T, db *sqlx.DB) {
 }
 
 // swap sets *p to v for one test.
+// The restore waits for the thread posts the test left running in the background (inThreadBackground): they may
+// still read what was swapped, and the next test swaps it again.
 func swap[T any](t *testing.T, p *T, v T) {
 	t.Helper()
 	prev := *p
 	*p = v
-	t.Cleanup(func() { *p = prev })
+	t.Cleanup(func() {
+		threadPostsInFlight.Wait()
+		*p = prev
+	})
 }
 
 func errorMessage(out map[string]any) string {
@@ -1694,8 +1699,9 @@ func TestAnswerText(t *testing.T) {
 func chatFixture(t *testing.T) (*slackFixture, toolcore.NbToolContext) {
 	t.Helper()
 	f := newSlackFixture(t)
-	_, err := f.db.Exec(`CREATE TABLE llm_conversations (id uuid PRIMARY KEY, session_id text, account_id text);
-		CREATE TABLE llm_conversation_tool_calls (id uuid PRIMARY KEY, conversation_id uuid, tool_name text, status text, created_at timestamp DEFAULT now());
+	_, err := f.db.Exec(`CREATE TABLE llm_conversations (id uuid PRIMARY KEY, session_id text, account_id uuid, status text NOT NULL DEFAULT 'WAITING');
+		CREATE TABLE llm_conversation_tool_calls (id uuid PRIMARY KEY, conversation_id uuid, message_id uuid, tool_name text, status text, created_at timestamp DEFAULT now());
+		CREATE TABLE llm_conversation_messages (id uuid PRIMARY KEY, message_config text);
 		ALTER TABLE events ADD COLUMN created_at timestamp DEFAULT now();
 		CREATE TABLE event_log_analysis (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), event_id uuid, event_fingerprint text,
 			cloud_account_id uuid, analysis_type varchar, recorded_at timestamp DEFAULT now(), updated_at timestamp)`)
@@ -1979,6 +1985,7 @@ func (f *followupFixture) tick(n int) {
 	f.t.Helper()
 	for range n {
 		require.NoError(f.t, runDueFollowups())
+		threadPostsInFlight.Wait() // a tick ends with the thread posts it started
 	}
 }
 
@@ -2678,52 +2685,24 @@ func TestRunNoteWording(t *testing.T) {
 	assert.NotContains(t, runNoteText(RemediationSlotExecute, events.RunStatusFailed, runFacts{NotSent: true}), "ran")
 }
 
-// After an investigation a plan is built only when the alert has none; either way the cards go out, and
-// nothing happens with the loop off.
-func TestPlanAfterInvestigation(t *testing.T) {
-	f := newSlackFixture(t)
-	withMetastore(t, f.db)
-	slackOn(t, f.account, true)
-	built := make(chan string, 2)
-	swap(t, &buildPlanAfterInvestigation, func(_ *security.RequestContext, _, eventId string) (RemediationPlan, string, error) {
-		built <- eventId
-		return RemediationPlan{}, "pv-new", nil
+// After an investigation the alert's plan is asked of Nubi's background planner, never the one-shot planner,
+// and only with the loop on.
+func TestPlanAfterInvestigationAsksThePlanner(t *testing.T) {
+	var asked []planRequestInput
+	swap(t, &requestPlanAfterInvestigation, func(_ *security.RequestContext, _, eventId string, in planRequestInput) (events.PlanningRequest, string, error) {
+		asked = append(asked, in)
+		return events.PlanningRequest{EventId: eventId}, "", nil
 	})
-	notBuilt := func(why string) {
-		t.Helper()
-		select {
-		case <-built:
-			t.Fatal(why)
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-
-	stubSlackPlan(t, "", false)
-	planAfterInvestigation(security.NewRequestContextForSuperAdmin(), f.account, f.event)
-	select {
-	case got := <-built:
-		assert.Equal(t, f.event, got)
-	case <-time.After(5 * time.Second):
-		t.Fatal("no plan built for an alert without one")
-	}
-
-	stubSlackPlan(t, "pv-1", true)
-	c := captureSlackSends(t)
-	planAfterInvestigation(security.NewRequestContextForSuperAdmin(), f.account, f.event)
-	c.wait(t)
-	notBuilt("a plan was built again over a current one")
-
-	slackOn(t, f.account, false)
-	planAfterInvestigation(security.NewRequestContextForSuperAdmin(), f.account, f.event)
-	notBuilt("built with the switch off")
+	planAfterInvestigation(security.NewRequestContextForSuperAdmin(), "acct", "evt")
+	planAfterInvestigation(security.NewRequestContextForSuperAdmin(), "acct", " ")
+	require.Len(t, asked, 1, "one request per completed investigation; none without an event")
+	assert.Equal(t, planTurnAuto, asked[0].Kind)
+	assert.Empty(t, asked[0].By, "nobody asked: NudgeBee did")
 }
 
-// One plan build per alert at a time: a second caller waits and is told it waited; a failure is retried only
-// after planRetryAfter; a caller that gives up is told so.
+// One plan build per alert at a time: a second caller waits and is told it waited; a caller that gives up is told so.
 func TestPlanBuildGuard(t *testing.T) {
-	g := &planBuildGuard{busy: map[string]chan struct{}{}, failedAt: map[string]time.Time{}}
-	now := time.Now()
-	require.True(t, g.retryDue("e1", now))
+	g := &planBuildGuard{busy: map[string]chan struct{}{}}
 	waited, err := g.claim(context.Background(), "e1")
 	require.NoError(t, err)
 	assert.False(t, waited, "nothing in flight")
@@ -2737,16 +2716,9 @@ func TestPlanBuildGuard(t *testing.T) {
 		t.Fatal("claimed while another holds the slot")
 	case <-time.After(50 * time.Millisecond):
 	}
-	g.finish("e1", false, now)
+	g.release("e1")
 	assert.True(t, <-claimed, "claimed once the first ended, after waiting")
-	assert.False(t, g.retryDue("e1", now.Add(time.Minute)), "no retry right after a failure")
-	assert.True(t, g.retryDue("e1", now.Add(planRetryAfter+time.Second)))
-	g.finish("e1", true, now)
-	assert.True(t, g.retryDue("e1", now))
 
-	waited, err = g.claim(context.Background(), "e1")
-	require.NoError(t, err)
-	assert.False(t, waited)
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err = g.claim(cancelled, "e1")

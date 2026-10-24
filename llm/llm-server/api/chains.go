@@ -799,6 +799,11 @@ func handleCompletionApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter
 			return
 		}
 
+		// An approval for a change on an alert needs write access (remediation_approval_gate.go).
+		if refuseReadOnlyAlertApproval(c, agentContext, request) {
+			return
+		}
+
 		// Resolve a pending follow-up without answering it (dismiss/terminate).
 		// Handled before budget checks — cancelling doesn't consume LLM budget.
 		if request.Resolution != "" {

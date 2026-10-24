@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"runtime/debug"
 	"slices"
@@ -1158,6 +1159,7 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 				existingToolConfirmations[k] = v
 			}
 		}
+		existingConfirmationRefs := maps.Clone(request.QueryConfig.ToolConfirmationRefs)
 		if followupMessage.MessageContext != nil {
 			previousQuestion := NBAgentRequest{}
 			err := common.UnmarshalJson([]byte(*followupMessage.MessageContext), &previousQuestion)
@@ -1190,6 +1192,9 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 			}
 			for k, v := range previousQuestion.QueryConfig.ToolConfirmations {
 				existingToolConfirmations[k] = v
+			}
+			for k, v := range previousQuestion.QueryConfig.ToolConfirmationRefs {
+				existingConfirmationRefs = recordConfirmationRef(existingConfirmationRefs, k, v)
 			}
 			// Merge other config fields from previous question
 			request.QueryConfig.MergeFrom(previousQuestion.QueryConfig)
@@ -1226,6 +1231,11 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 				confirmationKey = toolName
 			}
 			existingToolConfirmations[confirmationKey] = followupMessage.Response
+			// Which approval this is, and who gave it: an approved write in an alert's
+			// conversation is recorded under it (ApprovedWriteRecorder).
+			existingConfirmationRefs = recordConfirmationRef(existingConfirmationRefs, confirmationKey, toolcore.ToolConfirmationRef{
+				MessageId: followupMessage.ID.String(), ApprovedBy: requestUserId(ctx),
+			})
 			request.Query = previousQuery
 			updateRequestMessageConfig = true
 		} else {
@@ -1237,6 +1247,7 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 
 		request.QueryConfig.ToolConfigs = existingToolConfigs
 		request.QueryConfig.ToolConfirmations = existingToolConfirmations
+		request.QueryConfig.ToolConfirmationRefs = existingConfirmationRefs
 		if updateRequestMessageConfig {
 			err := GetConversationDao().UpdateConversationMessageConfig(request.MessageId, request.QueryConfig)
 			if err != nil {
@@ -1246,6 +1257,16 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 	}
 
 	return request, NBAgentResponse{}, nil
+}
+
+// InvestigationReportForHistory is the latest completed investigation report of the alert whose conversation
+// conversationId is, bounded, and its event id; "" when there is none or the alert's investigation stages are kept
+// in the history (remediation loop off). Installed by the api package. A var so tests can stub it.
+var InvestigationReportForHistory func(ctx *security.RequestContext, accountId, conversationId string) (eventId, report string)
+
+// investigationReportPreamble introduces the investigation report in a turn's history: NudgeBee's, not a person's.
+func investigationReportPreamble(eventId string) string {
+	return "NudgeBee's investigation of event " + eventId + " (the latest investigated firing of this alert), for reference; not a message from a person."
 }
 
 func getExistingHistory(request NBAgentRequest, ctx *security.RequestContext) ([]prompts.MessageFormatter, error) {
@@ -1285,6 +1306,15 @@ func getExistingHistory(request NBAgentRequest, ctx *security.RequestContext) ([
 
 	// collect existing history
 	messageHistoryFomatter := []prompts.MessageFormatter{}
+	// An alert investigation's stage turns are not in the history (LoadConversationMessages); its latest report,
+	// bounded, stands in for them, first so the prefix stays the same until a newer investigation completes.
+	if InvestigationReportForHistory != nil {
+		if eventId, report := InvestigationReportForHistory(ctx, request.AccountId, request.ConversationId); report != "" {
+			messageHistoryFomatter = append(messageHistoryFomatter,
+				prompts.NewHumanMessagePromptTemplate(escapeTemplateSyntax(investigationReportPreamble(eventId)), []string{}),
+				prompts.NewAIMessagePromptTemplate(escapeTemplateSyntax(report), []string{}))
+		}
+	}
 	// Rows after the current turn's message belong to this turn (its followups).
 	inCurrentTurn := false
 	// Handle formatting of the message history

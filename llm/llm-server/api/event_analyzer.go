@@ -77,6 +77,9 @@ type EventAnalysisRequest struct {
 	// Set by the server at each entry point, never accepted from a caller.
 	Trigger     events.AnalysisTrigger `json:"-" mapstructure:"-"`
 	TriggeredBy string                 `json:"-" mapstructure:"-"`
+	// run is the investigation run the pipeline is on, with the remediation loop on (set by
+	// analyzeEventUsingAgentsAndUpdateDb; zero otherwise): its stage turns carry it and stage recovery reads only it.
+	run events.EventRun
 }
 
 type EventRCAAnalysisRequest struct {
@@ -316,6 +319,11 @@ func handleAnalysisApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 	groupV2.POST("/remediation/get", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal("remediation_get")
 		processRemediationGet(c, tracer, meter)
+	})
+
+	groupV2.POST("/remediation/plan", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal("remediation_plan")
+		processRemediationPlanRequest(c, tracer, meter)
 	})
 
 	groupV2.POST("/remediation/execute", func(c *gin.Context) {
@@ -758,6 +766,8 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 	allCompleted := true
 	anyFailed := false
 	anyInProgress := false
+	loopOn := events.RemediationLoopOn(request.AccountId)
+	waitingReason := ""
 	anyStarted := len(dbAnalyses) > 0
 	// Newest completed stage's write time; the post-loop staleness check ages
 	// it against the event's created_at.
@@ -801,6 +811,10 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 			}
 			if existingAnalysis.Status == string(events.AnalysisStatusInProgress) {
 				anyInProgress = true
+				// With the remediation loop on, a waiting investigation says why (parkInvestigation).
+				if loopOn && waitingReason == "" {
+					waitingReason = existingAnalysis.StatusReason
+				}
 			}
 
 			// Aggregate data
@@ -872,6 +886,9 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 			return
 		} else if anyInProgress {
 			finalResponse.Status = string(events.AnalysisStatusInProgress)
+			if waitingReason != "" {
+				finalResponse.StatusReason = waitingReason
+			}
 			attachEventAnalysisVersions(ctx, eventAnalysisRepo, request.AccountId, &finalResponse)
 			c.JSON(200, BuildApiResponse(finalResponse, nil))
 			return
@@ -972,6 +989,20 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 	}
 
 	finalResponse.Status = string(events.AnalysisStatusInProgress)
+	// With the remediation loop on, a run the alert's conversation cannot take now waits, its rows IN_PROGRESS with
+	// the reason; the recovery job starts it when nothing holds it back. The pipeline checks again under its lock.
+	if loopOn {
+		if reason, gateErr := investigationBlocked(ctx.GetContext(), dbManager.Db, request.AccountId, eventInfo.Fingerprint); reason != "" {
+			if gateErr != nil {
+				ctx.GetLogger().Warn("analyzer: alert conversation not checked", "error", gateErr, "event_id", request.EventId)
+			}
+			parked := parkInvestigation(ctx, eventAnalysisRepo, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey, reason)
+			finalResponse.StatusReason = parked.StatusReason
+			attachEventAnalysisVersions(ctx, eventAnalysisRepo, request.AccountId, &finalResponse)
+			c.JSON(200, BuildApiResponse(finalResponse, nil))
+			return
+		}
+	}
 	attachEventAnalysisVersions(ctx, eventAnalysisRepo, request.AccountId, &finalResponse)
 
 	common.MetricsEventAnalysisOperationsTotal("investigation", "queued", request.AccountId)
@@ -1357,8 +1388,9 @@ func allEventAnalysisTypesCompleted(ctx *security.RequestContext, repo *events.E
 	return !newestInput.After(reportTime)
 }
 
-// eventId, when set, limits recovery to this event's run (see messagesForEvent).
-func getAgentResponseFromConversation(ctx *security.RequestContext, sessionId string, accountId string, agentName string, eventId string) (string, bool) {
+// eventId, when set, limits recovery to this event's run (see messagesForEvent); run, when set (remediation loop
+// on), to that run's own messages (messagesOfRun), so a re-investigation never takes the previous run's answer.
+func getAgentResponseFromConversation(ctx *security.RequestContext, sessionId string, accountId string, agentName string, eventId string, run events.EventRun) (string, bool) {
 	dao := core.GetConversationDao()
 	if dao == nil {
 		return "", false
@@ -1371,7 +1403,7 @@ func getAgentResponseFromConversation(ctx *security.RequestContext, sessionId st
 	if err != nil {
 		return "", false
 	}
-	return latestAgentGenerationResponse(messagesForEvent(messages, eventId), agentName)
+	return latestAgentGenerationResponse(messagesForEvent(messagesOfRun(messages, run), eventId), agentName)
 }
 
 // messagesForEvent drops the messages written before this event's run began.
@@ -1662,7 +1694,7 @@ func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request
 
 	// Try to recover from existing COMPLETED conversation if not regenerating
 	if request.AttemptID != "" || !request.Regenerate {
-		rcaResponse, hasResponse = getAgentResponseFromConversation(ctx, parentSessionId, request.AccountId, rcaAgent.GetName(), "")
+		rcaResponse, hasResponse = getAgentResponseFromConversation(ctx, parentSessionId, request.AccountId, rcaAgent.GetName(), "", events.EventRun{})
 	}
 
 	if hasResponse {
@@ -2724,6 +2756,36 @@ func investigationConversationTitle(eventId string) string {
 	return "Event details - " + eventId
 }
 
+// resetInvestigationConversation deletes the investigation's conversation in session before a run that regenerates,
+// or when there is none or it failed, so the run starts in a fresh one. With the remediation loop on the
+// conversation is the alert's one conversation (its plans, approvals and runs too), so it is never deleted: the
+// run's own messages are told apart by its run id (stage recovery), and the title names the event now investigated
+// so the Investigations tab lists it. Only a flag read as off deletes: when the flag cannot be read nothing is
+// changed, and false says the run must not start now (it is retried, as a stuck analysis is).
+func resetInvestigationConversation(ctx *security.RequestContext, request EventAnalysisRequest, session string, conv core.Conversation) bool {
+	deletes := request.Regenerate || conv.ID == uuid.Nil || conv.Status == core.ConversationStatusFailed
+	loopOn, err := events.RemediationLoopRead(request.AccountId)
+	if err != nil {
+		ctx.GetLogger().Warn("analyzer: remediation loop flag not read, the alert's conversation is left as it is", "error", err, "session_id", session)
+		return !deletes || conv.ID == uuid.Nil
+	}
+	if loopOn {
+		title := investigationConversationTitle(request.EventId)
+		if conv.ID != uuid.Nil && (conv.Title == nil || *conv.Title != title) {
+			if err := core.GetConversationDao().UpdateConversationTitle(conv.ID.String(), title); err != nil {
+				ctx.GetLogger().Warn("analyzer: conversation title not updated", "error", err, "session_id", session)
+			}
+		}
+		return true
+	}
+	if deletes {
+		if err := core.DeleteConversationBySession(session, request.AccountId, request.UserId); err != nil {
+			ctx.GetLogger().Error("analyzer: unable to delete conversation", "error", err)
+		}
+	}
+	return true
+}
+
 // buildEventBriefQuery is the step-1 instruction. With prefetched=false it asks
 // the events agent to call the tools; with prefetched=true (#41579) the reads
 // have already run (buildDirectEventBriefQuery appends their outputs), so the
@@ -2920,7 +2982,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 	// Every investigation completion path ends here; with the loop on, the alert's plan is built now (#40734).
 	// Only a completion the database confirms counts: the returned status isn't the record (the last return has none).
 	defer func() {
-		if runErr != nil || strings.EqualFold(result.Status, string(events.AnalysisStatusInProgress)) || !remediationSlackOn(request.AccountId) {
+		if runErr != nil || strings.EqualFold(result.Status, string(events.AnalysisStatusInProgress)) || !events.RemediationLoopOn(request.AccountId) {
 			return
 		}
 		if dbManager, err := common.GetDatabaseManager(common.Metastore); err == nil {
@@ -3008,6 +3070,33 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		}
 	}()
 
+	// The run marks its rows live while it holds the lock, whatever the remediation loop flag says, so a flip of the
+	// flag mid-run neither restarts it (recovery and the automatic turns see a live run) nor runs it twice (the lock).
+	defer startPipelineHeartbeat(dbManager.Db, request.AccountId, request.EventId)()
+	// With the remediation loop on the pipeline holds the alert's one conversation for its whole run (the lock
+	// above, kept live by the heartbeat), names its run on every stage turn, and waits while the conversation is
+	// someone else's (investigationBlocked) instead of deleting it. The flag is read once: the run keeps the mode it
+	// started in.
+	loopOn, flagErr := events.RemediationLoopRead(request.AccountId)
+	if flagErr != nil {
+		// Unknown is not off: nothing below may take the alert's conversation from whoever is using it.
+		ctx.GetLogger().Warn("analyzer: remediation loop flag not read", "error", flagErr, "event_id", request.EventId)
+	}
+	if loopOn {
+		run, err := events.RunOfEvent(ctx.GetContext(), dbManager.Db, request.AccountId, request.EventId)
+		if err != nil {
+			ctx.GetLogger().Warn("analyzer: investigation run not read; stage recovery is off for this run", "error", err, "event_id", request.EventId)
+		}
+		request.run = run
+		reason, gateErr := investigationBlocked(ctx.GetContext(), dbManager.Db, request.AccountId, eventFingerprint)
+		if gateErr != nil {
+			ctx.GetLogger().Warn("analyzer: alert conversation not checked", "error", gateErr, "event_id", request.EventId)
+		}
+		if reason != "" {
+			return parkInvestigation(ctx, eventAnalysisRepo, request.EventId, eventFingerprint, request.AccountId, eventAggregationKey, reason), nil
+		}
+	}
+
 	response := EventAnalysisResponse{
 		RelatedEventId:   request.EventId,
 		EventId:          request.EventId,
@@ -3019,8 +3108,16 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 	conv, err := core.GetConversationDao().GetConversationBySession(request.AccountId, parentConversationId)
 	if err == nil && conv.ID != uuid.Nil && (conv.Status == core.ConversationStatusInProgress ||
 		conv.Status == core.ConversationStatusWaiting ||
-		conv.Status == core.ConversationStatusWaitingForClientTool) && !request.Regenerate {
+		conv.Status == core.ConversationStatusWaitingForClientTool) && (!request.Regenerate || loopOn || flagErr != nil) {
 		ctx.GetLogger().Info("analyzer: skipping event analysis, conversation still active", "session_id", parentConversationId, "status", conv.Status)
+		if loopOn {
+			// A regenerate cannot take the alert's conversation from the turn using it: it waits for it.
+			reason := gateReasonTurn
+			if conv.Status != core.ConversationStatusInProgress {
+				reason = gateReasonApproval
+			}
+			return parkInvestigation(ctx, eventAnalysisRepo, request.EventId, eventFingerprint, request.AccountId, eventAggregationKey, reason), nil
+		}
 		return EventAnalysisResponse{Status: string(events.AnalysisStatusInProgress)}, nil
 	}
 
@@ -3047,11 +3144,8 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 	}
 
 	// If regenerating, or if no conversation exists, or if conversation failed, we might need to delete old conversation
-	if request.Regenerate || conv.ID == uuid.Nil || conv.Status == core.ConversationStatusFailed {
-		err = core.DeleteConversationBySession(parentConversationId, request.AccountId, request.UserId)
-		if err != nil {
-			ctx.GetLogger().Error("analyzer: unable to delete conversation", "error", err)
-		}
+	if !resetInvestigationConversation(ctx, request, parentConversationId, conv) {
+		return EventAnalysisResponse{Status: string(events.AnalysisStatusInProgress)}, nil
 	}
 
 	// Every stage below runs WithoutConversationHistory. The session is keyed by
@@ -3096,7 +3190,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			// Either agent may have written this run's summary: the flag can
 			// change between the run that started and the one recovering it.
 			for _, name := range []string{eventSummaryAgent.GetName(), agents.EventsAgentName, llmruntime.ToolLlm} {
-				if summaryResponseStr, hasSummary = getAgentResponseFromConversation(ctx, parentConversationId, request.AccountId, name, request.EventId); hasSummary {
+				if summaryResponseStr, hasSummary = getAgentResponseFromConversation(ctx, parentConversationId, request.AccountId, name, request.EventId, request.run); hasSummary {
 					break
 				}
 			}
@@ -3113,10 +3207,13 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 			if directBrief {
 				summaryQuery = buildDirectEventBriefQuery(ctx, request, eventData.Id, parsedLabels)
 			}
-			summaryResp, err := core.HandleConversationSessionRequest(ctx, eventSummaryAgent, request.UserId, request.AccountId, parentConversationId, summaryQuery, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithTitle(investigationConversationTitle(request.EventId)), core.ConversationSessionRequestWithEnableCritique(false), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels}), core.ConversationSessionRequestWithoutConversationHistory())
+			summaryResp, err := core.HandleConversationSessionRequest(ctx, eventSummaryAgent, request.UserId, request.AccountId, parentConversationId, summaryQuery, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithTitle(investigationConversationTitle(request.EventId)), core.ConversationSessionRequestWithEnableCritique(false), core.ConversationSessionRequestWithConfig(request.stageConfig(toolcore.NBQueryConfig{Labels: parsedLabels})), core.ConversationSessionRequestWithoutConversationHistory())
 			if err != nil {
-				if errors.Is(err, core.ErrConversationInProgress) {
+				if conversationHeld(err, loopOn || flagErr != nil) {
 					ctx.GetLogger().Info("analyzer: summary already in progress via conversation", "session_id", parentConversationId)
+					if loopOn {
+						return parkInvestigation(ctx, eventAnalysisRepo, request.EventId, eventFingerprint, request.AccountId, eventAggregationKey, heldReason(ctx, request.AccountId, eventFingerprint, err)), nil
+					}
 					return EventAnalysisResponse{Status: string(events.AnalysisStatusInProgress)}, nil
 				}
 				ctx.GetLogger().Error("analyzer: unable to generate summary", "error", err)
@@ -3232,7 +3329,7 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		var hasInvestigation bool
 
 		if shouldRecoverStageFromConversation(eventAnalysisRepo, existingInvestigation, request.Regenerate) {
-			investigationResponse, hasInvestigation = getAgentResponseFromConversation(ctx, parentConversationId, request.AccountId, rootcauseAgentName, request.EventId)
+			investigationResponse, hasInvestigation = getAgentResponseFromConversation(ctx, parentConversationId, request.AccountId, rootcauseAgentName, request.EventId, request.run)
 		}
 
 		if hasInvestigation {
@@ -3275,11 +3372,14 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 				"named_repo", namedRepo,
 				"prompt_offers_code_analyzer", strings.Contains(eventAnalsysisPrompt, "`code_analyzer` is available"),
 				"prompt_bytes", len(eventAnalsysisPrompt))
-			rootcauseAnalysis, err := core.HandleConversationSessionRequest(core.WithReadOnlyRun(ctx), rootcauseAgent, request.UserId, request.AccountId, parentConversationId, eventAnalsysisPrompt, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithTitle(investigationConversationTitle(request.EventId)), core.ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{Labels: parsedLabels, EventId: request.EventId, KnowledgeHints: eventKnowledgeHints(eventData), Namespace: workloadNamespace, Workload: workloadName, GitRepo: namedRepo}), core.ConversationSessionRequestWitAdditionalSystemPrompt(accountPrompt), core.ConversationSessionRequestWithEnableCritique(true), core.ConversationSessionRequestWithoutConversationHistory())
+			rootcauseAnalysis, err := core.HandleConversationSessionRequest(core.WithReadOnlyRun(ctx), rootcauseAgent, request.UserId, request.AccountId, parentConversationId, eventAnalsysisPrompt, core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation), core.ConversationSessionRequestWithTitle(investigationConversationTitle(request.EventId)), core.ConversationSessionRequestWithConfig(request.stageConfig(toolcore.NBQueryConfig{Labels: parsedLabels, EventId: request.EventId, KnowledgeHints: eventKnowledgeHints(eventData), Namespace: workloadNamespace, Workload: workloadName, GitRepo: namedRepo})), core.ConversationSessionRequestWitAdditionalSystemPrompt(accountPrompt), core.ConversationSessionRequestWithEnableCritique(true), core.ConversationSessionRequestWithoutConversationHistory())
 
 			if err != nil {
-				if errors.Is(err, core.ErrConversationInProgress) {
+				if conversationHeld(err, loopOn || flagErr != nil) {
 					ctx.GetLogger().Info("analyzer: investigation already in progress via conversation", "session_id", parentConversationId)
+					if loopOn {
+						return parkInvestigation(ctx, eventAnalysisRepo, request.EventId, eventFingerprint, request.AccountId, eventAggregationKey, heldReason(ctx, request.AccountId, eventFingerprint, err)), nil
+					}
 					return EventAnalysisResponse{Status: string(events.AnalysisStatusInProgress)}, nil
 				}
 				ctx.GetLogger().Error("analyzer: unable to generate rootcause analysis", "event_id", request.EventId, "session_id", parentConversationId, "error", err)
@@ -3376,10 +3476,13 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		// code_analyzer in fix mode (or diff-only when auto-raise is off).
 		codeFixResponse, err := runCodeFixStage(ctx, request, response, parentConversationId, eventAnalysisRepo, eventData, parsedLabels, codeCapabilities, changePlan, shouldRecoverStageFromConversation(eventAnalysisRepo, existingLog, request.Regenerate))
 		if err != nil {
-			if errors.Is(err, core.ErrConversationInProgress) {
+			if conversationHeld(err, loopOn || flagErr != nil) {
 				ctx.GetLogger().Info("analyzer: code analysis paused awaiting approval or in progress", "event_id", request.EventId)
 				if dbErr := eventAnalysisRepo.UpsertEventAnalysisStatus(ctx, request.EventId, eventData.Fingerprint, request.AccountId, eventData.AggregationKey, string(events.AnalysisStatusInProgress), "code analysis paused awaiting approval", events.AnalysisTypeLog, false); dbErr != nil {
 					ctx.GetLogger().Warn("failed to update log analysis status on pause", "error", dbErr)
+				}
+				if loopOn {
+					return parkInvestigation(ctx, eventAnalysisRepo, request.EventId, eventFingerprint, request.AccountId, eventAggregationKey, heldReason(ctx, request.AccountId, eventFingerprint, err)), nil
 				}
 				return EventAnalysisResponse{Status: string(events.AnalysisStatusInProgress), StatusReason: "code analysis paused awaiting approval"}, nil
 			} else if errors.Is(err, errCodeFixSkipped) {
@@ -4231,7 +4334,7 @@ func runCodeFixStage(ctx *security.RequestContext, request EventAnalysisRequest,
 	var llmResponse core.NBAgentResponse
 	var hasResponse bool
 	if recoverConversation {
-		if respStr, found := getAgentResponseFromConversation(ctx, parentConversationId, request.AccountId, llm.GetName(), request.EventId); found {
+		if respStr, found := getAgentResponseFromConversation(ctx, parentConversationId, request.AccountId, llm.GetName(), request.EventId, request.run); found {
 			llmResponse = core.NBAgentResponse{Response: []string{respStr}, Status: core.ConversationStatusCompleted}
 			hasResponse = true
 			ctx.GetLogger().Info("analyzer: recovered code analysis response from conversation history", "session_id", parentConversationId)
@@ -4242,14 +4345,14 @@ func runCodeFixStage(ctx *security.RequestContext, request EventAnalysisRequest,
 			ctx, llm, request.UserId, request.AccountId, parentConversationId, string(llmParamsJSON),
 			core.ConversationSessionRequestWithSource(core.ConversationSourceInvestigation),
 			core.ConversationSessionRequestWithTitle(investigationConversationTitle(request.EventId)),
-			core.ConversationSessionRequestWithConfig(eventConfig),
+			core.ConversationSessionRequestWithConfig(request.stageConfig(eventConfig)),
 			core.ConversationSessionRequestWithEnableCritique(true),
 			core.ConversationSessionRequestWithoutConversationHistory(),
 		)
 	}
 
 	if err != nil {
-		if errors.Is(err, core.ErrConversationInProgress) {
+		if conversationHeld(err, events.RemediationLoopOn(request.AccountId)) {
 			return response, err
 		}
 		ctx.GetLogger().Warn("analyzer: code analysis fix-mode call errored", "error", err, "event_id", request.EventId)

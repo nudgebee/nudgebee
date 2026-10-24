@@ -110,7 +110,7 @@ func TestStartIdleTurn(t *testing.T) {
 		} else {
 			mock.ExpectRollback()
 		}
-		started, err := dao.StartIdleTurn(context.Background(), "c1", "a1", "m1", "check", "remediation", toolcore.NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true})
+		started, err := dao.StartIdleTurn(context.Background(), "c1", "a1", "m1", "check", "remediation", toolcore.NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true}, "")
 		require.NoError(t, err)
 		assert.Equal(t, idle, started)
 		assert.NoError(t, mock.ExpectationsWereMet())

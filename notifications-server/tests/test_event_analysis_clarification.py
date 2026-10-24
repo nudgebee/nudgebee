@@ -220,3 +220,23 @@ def test_followup_click_from_superseded_message_is_ignored(monkeypatch):
 
     svc.update_followup_for_event({"action_id": "select_followup_option--nudgebee"}, "C1", "T1", "U1", "1786.1", "TS2")
     svc._submit_followup.assert_called_once()
+
+
+def test_surface_skips_a_remediation_step_approval(monkeypatch):
+    """With the remediation loop on the alert's conversation also holds plan step
+    approvals (run_step); the remediation card posts those, so the poller never
+    posts one as the investigation's question."""
+    cache = MagicMock()
+    cache.get_event_entry.return_value = {"slack_user_id": "U1"}
+    approval = _followup_msg(mid="fm2")
+    approval["message_config"] = json.dumps(
+        {"followupType": "tool_confirmation", "confirmationKey": "run_step:pv-1:1:apply", "question": "Approve?"}
+    )
+    conv = {"messages": [approval], "agents": [{"id": "ag1", "message_id": "gen-9"}]}
+    monkeypatch.setattr(actions_common, "_fetch_event_conversation", lambda *a: conv)
+    service = MagicMock()
+    service.event_service.cache = cache
+
+    actions_common._surface_event_clarification(service, _ctx(), "user-1", "fp-1")
+
+    service.event_service.handle_followup_response.assert_not_called()

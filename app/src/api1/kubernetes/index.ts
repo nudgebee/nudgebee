@@ -741,6 +741,29 @@ query AiRemediationGet($accountId: String!, $eventId: String) {
 }
 `;
 
+// Asks the assistant for a plan in the background (remediation loop, #40734): `plan` when there is none,
+// `recheck` when the plan is out of date, `replan` with the person's reasons and note. Queued; returns at once.
+export const AI_GENERATE_REMEDIATION_PLAN = `
+mutation AiGenerateRemediationPlan($accountId: String!, $eventId: String!, $mode: String!, $reasons: [String!], $note: String) {
+  ai_generate_remediation_plan(account_id: $accountId, event_id: $eventId, mode: $mode, reasons: $reasons, note: $note) {
+    data
+  }
+}
+`;
+
+// A person confirms the remediation loop's "Likely fixed" verdict of a run and resolves the event (#40734).
+export const EVENTS_APPLY_REMEDIATION_RESOLVE = `
+mutation EventsApplyRemediationResolve($accountId: String!, $eventId: String!, $runId: String!) {
+  events_apply_remediation_resolve(account_id: $accountId, event_id: $eventId, run_id: $runId) {
+    events {
+      event_id
+      prev_status
+      new_status
+    }
+  }
+}
+`;
+
 export const AI_REMEDIATION_EXECUTE = `
 mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String, $executeCommand: String, $action: String, $acknowledgeUnknown: Boolean, $planVersion: String, $reason: String) {
   ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot, execute_command: $executeCommand, action: $action, acknowledge_unknown: $acknowledgeUnknown, plan_version: $planVersion, reason: $reason) {
@@ -3570,6 +3593,36 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       alertRule,
     });
     return response?.data?.data?.ai_remediation_generate?.data;
+  },
+  async askRemediationPlan({
+    accountId,
+    eventId,
+    mode,
+    reasons = [],
+    note = '',
+  }: {
+    accountId: string;
+    eventId: string;
+    mode: 'plan' | 'recheck' | 'replan';
+    reasons?: string[];
+    note?: string;
+  }) {
+    if (accountId === 'demo') return null;
+    const response = await queryGraphQL(AI_GENERATE_REMEDIATION_PLAN, 'AiGenerateRemediationPlan', {
+      accountId,
+      eventId,
+      mode,
+      reasons: reasons.length ? reasons : null,
+      note: note || null,
+    });
+    // Throws with the server's reason (e.g. the 24 h plan cap), so the tab can show it.
+    return unwrapGraphQL(response, 'Could not ask for the fix.')?.ai_generate_remediation_plan?.data;
+  },
+  // Resolves the event in the person's name, labelled with the run's verdict; throws with the server's reason.
+  async confirmRemediationResolve({ accountId, eventId, runId }: { accountId: string; eventId: string; runId: string }) {
+    if (accountId === 'demo') return null;
+    const response = await queryGraphQL(EVENTS_APPLY_REMEDIATION_RESOLVE, 'EventsApplyRemediationResolve', { accountId, eventId, runId });
+    return unwrapGraphQL(response, 'Could not resolve the event.')?.events_apply_remediation_resolve;
   },
   async getRemediation(accountId: string, eventId: string) {
     if (accountId === 'demo') return null;

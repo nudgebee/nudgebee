@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -70,7 +71,13 @@ Pass your findings (what you checked, what it showed, why the current plan does 
 {"root_cause": "...", "summary": "...", "hypotheses": [{"hypothesis": "...", "reasoning": ["..."], "confidence": 0-100}],
  "actions": [{"action": "short name", "title": "...", "hypothesis": "the hypothesis it addresses", "kind": "fix" or "mitigation", "confidence": 0-100,
    "execute_command": "one command", "verify_command": "a read that shows it worked", "rollback_command": "how to undo it",
-   "after": "the action name of the step this one runs after, if any", "trade_off": "..."}]}
+   "after": "the action name of the step this one runs after, if any", "trade_off": "...",
+   "required_change": {"where": "code" | "deployment_source" | "infrastructure" | "dependency" | "process", "target": "the file, values key or resource", "change": "the exact change", "repo": "the repository, when known", "reason": "why it fixes the cause"}}],
+ "cause_key": {"what": "...", "how": "...", "against": "..."},
+ "optional_hardening": [{"target": "...", "change": "...", "reason": "..."}]}
+cause_key names the cause in a few words, without numbers: what failed (kind and name), how it failed (oom, crashloop, timeout), and against what (the limit, dependency or change it hit). Write it the same way for the same cause on every firing; leave a part empty when it is not established.
+A change the incident needs that no command applies durably (in code, a deployment source such as chart values or a Deployment spec, infrastructure, a dependency or a process) is a step with an empty execute_command and a required_change; never put it in optional_hardening. While the alert fires, also offer a mitigation command that buys time when one exists, kind "mitigation", stating in trade_off what it does not fix.
+optional_hardening lists improvements the incident does not need to resolve (prevention), never a fix step; it may be empty.
 Each command is one invocation on this alert's own account (kubectl, helm or argocd on a cluster; aws, az or gcloud on a cloud account), with real values: no placeholders, no shell syntax, no flags that choose another cluster or identity. Each execute_command makes its change itself: it never fetches a file or manifest from a URL, and a patch to a value that holds a whole document (a ConfigMap key holding JSON or YAML) passes the whole document with only your change. The summary describes exactly these commands. NudgeBee validates the plan as it validates its own; a refusal says what to correct. A person must confirm each command before it runs. The event and account are this conversation's own.`
 }
 
@@ -263,6 +270,12 @@ func alertOfCall(ctx toolcore.NbToolContext, db *sqlx.DB) (eventId, fingerprint 
 		if run, err := events.OpenFollowupOfTurn(readCtx, db, ctx.MessageId, ctx.AccountId); err == nil {
 			return run.EventId, run.Fingerprint, nil
 		}
+		// A planning turn plans its request's event (remediation_planning.go).
+		if ctx.QueryConfig.RemediationPlanTurn != "" {
+			if row, err := events.PlanningOfTurn(readCtx, db, ctx.AccountId, ctx.MessageId); err == nil {
+				return row.EventId, row.Alert, nil
+			}
+		}
 	}
 	session, err := sessionOf(ctx)
 	if err != nil {
@@ -281,15 +294,15 @@ func alertOfSession(db *sqlx.DB, accountId, session string) (eventId, fingerprin
 	defer cancel()
 	err = db.GetContext(readCtx, &eventId, `SELECT id FROM (SELECT COALESCE(
 		   (SELECT a.event_id::text FROM event_log_analysis a JOIN events e ON e.id = a.event_id
-		     WHERE a.cloud_account_id::text = $1 AND a.event_fingerprint = $2 AND a.analysis_type = $3 AND e.cloud_account_id::text = $1
+		     WHERE a.cloud_account_id = $1::uuid AND a.event_fingerprint = $2 AND a.analysis_type = $3 AND e.cloud_account_id = $1::uuid
 		     ORDER BY COALESCE(a.updated_at, a.recorded_at) DESC LIMIT 1),
-		   (SELECT id::text FROM events WHERE cloud_account_id::text = $1 AND fingerprint = $2 ORDER BY created_at DESC LIMIT 1)) AS id) alert
+		   (SELECT id::text FROM events WHERE cloud_account_id = $1::uuid AND fingerprint = $2 ORDER BY created_at DESC LIMIT 1)) AS id) alert
 		 WHERE id IS NOT NULL`, accountId, fingerprint, events.AnalysisTypeRemediation)
 	if errors.Is(err, sql.ErrNoRows) {
 		// An event with no fingerprint is its own alert: its conversation is event-<id>.
 		if id, perr := uuid.Parse(fingerprint); perr == nil {
 			err = db.GetContext(readCtx, &eventId, `SELECT id::text FROM events
-				 WHERE id = $2 AND cloud_account_id::text = $1 AND COALESCE(fingerprint, '') = ''`, accountId, id)
+				 WHERE id = $2 AND cloud_account_id = $1::uuid AND COALESCE(fingerprint, '') = ''`, accountId, id)
 		}
 	}
 	return eventId, fingerprint, err
@@ -363,6 +376,9 @@ func stepDecisionText(s slackCardStep) string {
 	}
 	switch {
 	case s.State == "":
+		if !s.Runnable && s.SourceChange != "" {
+			return "none yet; " + s.SourceChange + ": made in source (or raised as a pull request), then marked done"
+		}
 		if !s.Runnable && s.DeliveryReason != "" {
 			return "none yet; a person makes this change outside NudgeBee (" + s.DeliveryReason + ")"
 		}
@@ -426,16 +442,29 @@ func chatProposalRefusal(ctx toolcore.NbToolContext, db *sqlx.DB, session, finge
 	if busy {
 		return "a step of this alert is running or its follow-up check has not finished; a new plan now would replace the one being checked. Say so, and suggest asking again when the check reports", nil
 	}
-	var proposed int
-	if err := db.GetContext(readCtx, &proposed, `SELECT count(*) FROM llm_conversation_tool_calls tc JOIN llm_conversations c ON c.id = tc.conversation_id
-		 WHERE c.session_id = $1 AND c.account_id::text = $2 AND tc.tool_name = $3 AND tc.status = 'success'
-		   AND tc.created_at > now() - interval '24 hours'`, session, ctx.AccountId, toolcore.ToolProposeFix); err != nil {
-		return "", fmt.Errorf("counting proposals: %w", err)
+	proposed, err := chatProposalCount(readCtx, db, session, ctx.AccountId)
+	if err != nil {
+		return "", err
 	}
 	if max := config.Config.RemediationFollowupMaxRuns; max > 0 && proposed >= max {
 		return fmt.Sprintf("%d plans were already proposed from this alert's chat in 24 hours; a person decides what to try next in the remediation panel", proposed), nil
 	}
 	return "", nil
+}
+
+// chatProposalCount is how many plans were proposed in the alert's conversation in the last 24 hours: by a
+// person's turn (chat, or a replan) or a follow-up check. The background planner's own turns (after an
+// investigation, Ask Nubi, re-check) are not a person's and do not count.
+func chatProposalCount(ctx context.Context, db *sqlx.DB, session, accountId string) (int, error) {
+	var proposed int
+	if err := db.GetContext(ctx, &proposed, `SELECT count(*) FROM llm_conversation_tool_calls tc JOIN llm_conversations c ON c.id = tc.conversation_id
+		  LEFT JOIN llm_conversation_messages m ON m.id = tc.message_id
+		 WHERE c.session_id = $1 AND c.account_id = $2::uuid AND tc.tool_name = $3 AND tc.status = 'success'
+		   AND tc.created_at > now() - interval '24 hours'
+		   AND COALESCE(m.message_config, '') !~ '"remediation_plan_turn"\s*:\s*"(auto|ask|recheck)"'`, session, accountId, toolcore.ToolProposeFix); err != nil {
+		return 0, fmt.Errorf("counting proposals: %w", err)
+	}
+	return proposed, nil
 }
 
 // runStepFromChat is run_step: the person in the alert's chat, who confirmed this call, decides a step of
@@ -471,6 +500,8 @@ func runStepFromChat(ctx toolcore.NbToolContext, request runStepRequest) (string
 	if err != nil {
 		return "", err
 	}
+	// With the loop on, the step is recorded as the run of the approval the person gave (C1).
+	execute.ChatApproval = chatStepApprovalOf(ctx, userId)
 	answer := decideStep(ctx.Ctx, execute, userId)
 	if answer.Message != "" {
 		return "", errors.New("run_step: " + strings.TrimPrefix(answer.Message, "remediation: "))
@@ -573,6 +604,9 @@ func proposeFix(ctx toolcore.NbToolContext, findings, planJSON string) (string, 
 	if strings.TrimSpace(planJSON) == "" {
 		return "", errors.New("propose_fix: pass the plan you propose: its root cause, summary, hypotheses and actions with their commands")
 	}
+	if ctx.QueryConfig.RemediationPlanTurn != "" && agentcore.IsReadOnlyRun(ctx.Ctx) {
+		return proposeFromPlanningTurn(ctx, findings, planJSON) // NudgeBee's background planning turn
+	}
 	if !agentcore.IsReadOnlyRun(ctx.Ctx) {
 		return proposeFromChat(ctx, findings, planJSON) // a person's turn in the alert's chat
 	}
@@ -623,6 +657,22 @@ var proposePlan = func(ctx *security.RequestContext, accountId, eventId, planJSO
 // agent-written plan that validation stripped an action from is refused with what was removed, so the agent fixes
 // it rather than a person getting a short plan; the planner's "nothing to run" is stored.
 func storeNewPlan(ctx *security.RequestContext, accountId, eventId string, write func(system, human string) (string, error), written int) (RemediationPlan, string, error) {
+	return storeNewPlanWith(ctx, accountId, eventId, write, written, planStoreOptions{})
+}
+
+// planStoreOptions are what a planning turn adds to storeNewPlan.
+type planStoreOptions struct {
+	// allowEmpty stores an agent's plan written with no actions (it found nothing to run).
+	allowEmpty bool
+	// revision is the request's part of the plan's revision (kind, reasons, note, findings).
+	revision *PlanRevision
+	// adjust changes the plan last, before it is stored.
+	adjust func(*RemediationPlan)
+}
+
+// storeNewPlanWith is storeNewPlan with options. With the loop on, an agent's plan also goes through the repair
+// pass (targetStateRefusal), and every plan gets its cause key and revision (stampLoopPlan).
+func storeNewPlanWith(ctx *security.RequestContext, accountId, eventId string, write func(system, human string) (string, error), written int, opts planStoreOptions) (RemediationPlan, string, error) {
 	request := lastPlanInputs(ctx, accountId, eventId)
 	conversationId := remediationConversationID(ctx, accountId, eventId)
 	agentWrote := write != nil
@@ -633,12 +683,42 @@ func storeNewPlan(ctx *security.RequestContext, accountId, eventId string, write
 	if err != nil {
 		return RemediationPlan{}, "", err
 	}
+	loop := events.RemediationLoopOn(accountId)
 	if agentWrote {
-		if err := writtenPlanRefusal(plan, trace, written); err != nil {
-			return RemediationPlan{}, "", err
+		if !opts.allowEmpty || written != 0 {
+			if err := writtenPlanRefusal(plan, trace, written); err != nil {
+				return RemediationPlan{}, "", err
+			}
+		}
+		if loop {
+			if err := targetStateRefusal(eventId, trace); err != nil {
+				return RemediationPlan{}, "", err
+			}
+			if err := firingPlanRefusal(ctx.GetContext(), accountId, eventId, plan); err != nil {
+				return RemediationPlan{}, "", err
+			}
 		}
 	}
-	version, err := storeRemediationPlan(ctx, conversationId, request, plan, trace)
+	if loop {
+		var prev *RemediationPlan
+		prevVersion := ""
+		if stored, ok := loadSavedPlan(ctx, accountId, eventId); ok {
+			prev, prevVersion = &stored.Plan, stored.Version
+		}
+		stampLoopPlan(&plan, prev, prevVersion, opts.revision, time.Now())
+		if opts.adjust != nil {
+			opts.adjust(&plan)
+		}
+	}
+	// With the loop on, a plan an agent wrote came from a turn in the alert's conversation (a planning turn, a
+	// follow-up check, or a person's chat), whose answer is the record there; only the planner model's plan, which
+	// has no turn, is added to the conversation as its own message. With it off every plan is added, as before.
+	var version string
+	if agentWrote && loop {
+		version, err = persistRemediationPlan(ctx, accountId, eventId, plan, trace)
+	} else {
+		version, err = storeRemediationPlan(ctx, conversationId, request, plan, trace)
+	}
 	if err != nil {
 		return RemediationPlan{}, "", err
 	}

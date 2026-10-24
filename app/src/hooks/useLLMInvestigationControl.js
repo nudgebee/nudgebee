@@ -11,6 +11,7 @@ import { getBrandTitle } from '@hooks/useTenantBranding';
 import { getUpstreamStatus, mapUpstreamError } from '@lib/errorMessages';
 import { collectAutoApprovals } from '@components/llm/utils/followupRecord';
 import { buildMessagePlan } from '@components/llm/plan/planState';
+import { systemNoteOf } from '@components/llm/utils/systemNote';
 
 // metadata arrives as a JSON string or an already-parsed object.
 const parseMessageMetadata = (metadata) => {
@@ -383,6 +384,8 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           attachments: conversationMessage.attachments || [],
           liveStatus: parseMessageMetadata(conversationMessage.metadata)?.live_status,
           plan: messagePlan || undefined,
+          // The platform's own turn: shown as a one-line note, not as a person's message.
+          systemNote: systemNoteOf(conversationMessage.message_config) || undefined,
         };
 
         if (conversationMessage.ack_message?.trim()) {

@@ -1,11 +1,13 @@
 package core
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"nudgebee/llm/events"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -27,6 +29,17 @@ func TestResolveSessionRequestConfigs_WithoutHistorySurvivesWithConfig(t *testin
 		assert.Equal(t, labels, cfg.config.Labels, "option placed %s WithConfig", name)
 	}
 	assert.False(t, resolveSessionRequestConfigs().config.SkipConversationHistory)
+}
+
+// A caller cannot say which approval a write runs under or who gave it: a forged ref would
+// misattribute the write and, with a fresh message id per request, skip the once-per-approval check.
+func TestResolveSessionRequestConfigs_DropsCallerApprovalRefs(t *testing.T) {
+	cfg := resolveSessionRequestConfigs(ConversationSessionRequestWithConfig(toolcore.NBQueryConfig{
+		ToolConfirmations:    map[string]string{"kubectl_cmd": "yes"},
+		ToolConfirmationRefs: map[string]toolcore.ToolConfirmationRef{"kubectl_cmd": {MessageId: "forged", ApprovedBy: "someone-else"}},
+	}))
+	assert.Empty(t, cfg.config.ToolConfirmationRefs)
+	assert.Equal(t, map[string]string{"kubectl_cmd": "yes"}, cfg.config.ToolConfirmations, "the answer itself is still checked by the planner")
 }
 
 // panicHistoryDao fails the test if history is read at all.
@@ -138,6 +151,7 @@ func TestInheritableMessageConfig_NewMessageDropsApprovals(t *testing.T) {
 		SkipConversationHistory: true,
 		ReadOnlyRun:             true,
 		StrictReadOnly:          true,
+		RemediationPlanTurn:     "auto",
 	}
 
 	var next toolcore.NBQueryConfig
@@ -148,6 +162,7 @@ func TestInheritableMessageConfig_NewMessageDropsApprovals(t *testing.T) {
 	assert.False(t, next.SkipConversationHistory)
 	assert.False(t, next.ReadOnlyRun)
 	assert.False(t, next.StrictReadOnly, "a person's next turn is not the follow-up check")
+	assert.Empty(t, next.RemediationPlanTurn, "a person's next turn is not the planning turn")
 	assert.Equal(t, "yes", prev.ToolConfirmations["kubectl_execute"], "the stored message keeps its own approvals")
 }
 
@@ -166,4 +181,33 @@ func TestMergeLatestMessageConfig_ResumeKeepsApprovals(t *testing.T) {
 func TestResolveSessionRequestConfigs_TitleOption(t *testing.T) {
 	assert.Equal(t, "Event details - x", resolveSessionRequestConfigs(ConversationSessionRequestWithTitle("Event details - x")).title)
 	assert.Empty(t, resolveSessionRequestConfigs().title)
+}
+
+// In an alert's conversation with the remediation loop on (or its flag unread) a caller cannot send an approval with
+// the request: the "yes" counts only as the answer to its follow-up. Other conversations, and the loop off, are as
+// before.
+func TestDropCallerApprovalsInAlertChat(t *testing.T) {
+	orig := events.RemediationLoopRead
+	t.Cleanup(func() { events.RemediationLoopRead = orig })
+	ctx := security.NewRequestContextForSuperAdmin()
+	approvals := func() *toolcore.NBQueryConfig {
+		return &toolcore.NBQueryConfig{ToolConfirmations: map[string]string{"kubectl_execute": "yes"}}
+	}
+	for _, tc := range []struct {
+		name    string
+		session string
+		on      bool
+		err     error
+		dropped bool
+	}{
+		{"alert, loop on", "event-fp-1", true, nil, true},
+		{"alert, flag unread", "event-fp-1", false, errors.New("tenant not found"), true},
+		{"alert, loop off", "event-fp-1", false, nil, false},
+		{"another chat", "chat-1", true, nil, false},
+	} {
+		events.RemediationLoopRead = func(string) (bool, error) { return tc.on, tc.err }
+		cfg := approvals()
+		dropCallerApprovalsInAlertChat(ctx, "acc", tc.session, cfg)
+		assert.Equal(t, tc.dropped, cfg.ToolConfirmations == nil, tc.name)
+	}
 }

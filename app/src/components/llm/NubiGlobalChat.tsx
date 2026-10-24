@@ -613,6 +613,7 @@ const NubiGlobalChat: React.FC = () => {
               source={chatContext?.source || 'ask_nudgbee_chat'}
               sessionId={chatContext?.sessionId || ''}
               query={chatContext?.query || ''}
+              draft={chatContext?.draft || ''}
               categorySource={chatContext?.categorySource || ''}
               eventId={chatContext?.eventId || ''}
               newChatSignal={newChatSignal as any}

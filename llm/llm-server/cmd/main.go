@@ -350,6 +350,10 @@ func main() {
 	if err := api.RegisterRemediationFollowups(); err != nil {
 		slog.Warn("main: failed to register remediation follow-ups", "error", err)
 	}
+	// Starts the background planning turns that write each alert's plan, for the same tenants (#40734).
+	if err := api.RegisterRemediationPlanning(); err != nil {
+		slog.Warn("main: failed to register remediation planning", "error", err)
+	}
 
 	// Daily LLM usage rollup that budget checks read (#40241). Convergent +
 	// leader-elected: rebuilds yesterday, today and any day not yet built.
