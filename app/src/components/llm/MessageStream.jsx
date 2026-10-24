@@ -15,7 +15,7 @@ import { useWatchFeatureEnabled } from '@hooks/useTenantBranding';
 import { TERMINAL_WATCH_STATUSES, WATCH_FOLLOWUP_BUDGET_MS, countAwaitingFollowups, reconcilePendingFollowups } from './utils/watchFollowup';
 import { actionableTasks } from './utils/taskClassification';
 import { CitationClickContext, findCitedTask, findLegacyCitedTask, parseCitationHref } from './utils/citationLinks';
-import { isFollowupTask, summarizeFollowups } from './utils/followupRecord';
+import { describeFollowup, isFollowupTask, summarizeFollowups } from './utils/followupRecord';
 import FollowupHistory from './common/FollowupHistory';
 import PlanCard from './plan/PlanCard';
 import { filterDrawerTasksForStep } from './plan/planState';
@@ -291,8 +291,12 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
     setSecondary({ open: false, task: null });
   }, []);
 
-  const openFollowupsDrawer = useCallback((followups) => {
-    setDrawer({ open: true, kind: 'followups', title: `Approvals & clarifications · ${followups.length}`, data: { followups } });
+  // Each pill opens only its own kind, so an approval and a clarification never share one view.
+  const openFollowupsDrawer = useCallback((kind, followups) => {
+    const isApprovals = kind === 'approvals';
+    const shown = followups.filter((f) => describeFollowup(f).isApproval === isApprovals);
+    const title = `${isApprovals ? 'Approvals' : 'Clarifications'} · ${shown.length}`;
+    setDrawer({ open: true, kind: 'followups', title, data: { followups: shown } });
     setSecondary({ open: false, task: null });
   }, []);
 
@@ -500,7 +504,7 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
               onOpenChannels: channelRefs.length > 0 ? () => openChannelsDrawer(channelRefs) : undefined,
               onOpenWatches: watchesForThisGroup > 0 ? openWatchesDrawer : undefined,
               followups: followupSummary,
-              onOpenFollowups: followups.length > 0 ? () => openFollowupsDrawer(followups) : undefined,
+              onOpenFollowups: followups.length > 0 ? (kind) => openFollowupsDrawer(kind, followups) : undefined,
               messageTokenData: responseTokenData,
               onTokenUsageHover: itemProps.handleTokenUsageHover,
               isFetchingTokenData: itemProps.isFetchingTokenData,
