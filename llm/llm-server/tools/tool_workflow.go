@@ -429,16 +429,57 @@ func (t WorkflowGetTool) Call(ctx core.NbToolContext, input core.NBToolCallReque
 		references = []core.NBToolResponseReference{{Text: "Open automation", Url: link, Type: "link"}}
 	}
 
+	// Steps whose integration points at nothing. Without this an answer to "why doesn't it run"
+	// works from status and configs alone, and tells the person to create a config when what is
+	// missing is the integration itself (#42204).
+	problems := workflowIntegrationProblems(ctx.Ctx, ctx.AccountId, resp)
+
 	// For large workflows (>8KB), return a compact summary to fit within the ReAct scratchpad budget
 	const compactThreshold = 8192
 	if len(resp) > compactThreshold {
 		compact := compactWorkflowResponse(resp, link)
 		if compact != "" {
-			return core.NBToolResponse{Data: compact, Type: core.NBToolResponseTypeJson, References: references}, nil
+			return core.NBToolResponse{Data: string(withIntegrationProblems([]byte(compact), problems)), Type: core.NBToolResponseTypeJson, References: references}, nil
 		}
 	}
 
-	return core.NBToolResponse{Data: string(withAutomationURL(resp, link)), Type: core.NBToolResponseTypeJson, References: references}, nil
+	return core.NBToolResponse{Data: string(withIntegrationProblems(withAutomationURL(resp, link), problems)), Type: core.NBToolResponseTypeJson, References: references}, nil
+}
+
+// workflowIntegrationProblems describes the automation's steps whose integration points at
+// nothing; nil when there are none or the check cannot run.
+func workflowIntegrationProblems(ctx *security.RequestContext, accountId string, raw []byte) []string {
+	var workflow map[string]interface{}
+	if json.Unmarshal(raw, &workflow) != nil {
+		return nil
+	}
+	gaps := WorkflowIntegrationGaps(ctx, accountId, workflow)
+	if len(gaps) == 0 {
+		return nil
+	}
+	return IntegrationGapLines(ctx, accountId, gaps)
+}
+
+// withIntegrationProblems sets a top-level `integration_problems` list on a single-automation
+// JSON object. raw is returned unchanged when there are none or raw is not a JSON object.
+func withIntegrationProblems(raw []byte, problems []string) []byte {
+	if len(problems) == 0 {
+		return raw
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
+		return raw
+	}
+	encoded, err := marshalNoHTMLEscape(problems, "")
+	if err != nil {
+		return raw
+	}
+	obj["integration_problems"] = encoded
+	b, err := marshalNoHTMLEscape(obj, "")
+	if err != nil {
+		return raw
+	}
+	return b
 }
 
 // withAutomationURL sets a top-level `url` on a single-automation JSON object.
@@ -1022,7 +1063,7 @@ func (t WorkflowExamplesTool) Call(ctx core.NbToolContext, input core.NBToolCall
         },
         "failure_policy": {"action": "continue"},
         "params": {
-          "integration_id": "{{ Configs.github_integration_id }}",
+          "integration_id": "github-main",
           "command": "gh issue edit {{ Matrix.issue.number | int }} --repo org/repo --add-label stale"
         }
       },
@@ -1118,7 +1159,7 @@ func (t WorkflowExamplesTool) Call(ctx core.NbToolContext, input core.NBToolCall
         "id": "trigger-workflow",
         "type": "scm.github.cli",
         "params": {
-          "integration_id": "{{ Configs.github_integration_id }}",
+          "integration_id": "github-main",
           "command": "gh workflow run {{ Inputs.workflow_file }} --repo {{ Inputs.repo }}"
         }
       },

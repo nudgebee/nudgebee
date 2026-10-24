@@ -39,8 +39,12 @@ func resolveTicketIntegrationID(taskCtx types.TaskContext, integrationId string,
 	if integrationId == "" {
 		return "", nil
 	}
-	return integrations.ResolveIntegrationID(taskCtx.GetNewRequestContext(), integrationId, expectedTypes)
+	return resolveIntegrationID(taskCtx.GetNewRequestContext(), integrationId, expectedTypes)
 }
+
+// resolveIntegrationID is the integration lookup, as a seam for tests that run ticket steps
+// without a database.
+var resolveIntegrationID = integrations.ResolveIntegrationID
 
 // extractRequiredString extracts a required string parameter from the params map.
 // Returns an error if the parameter is missing or not a string.

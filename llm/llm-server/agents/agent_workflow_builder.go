@@ -891,6 +891,7 @@ func (a *WorkflowBuilderAgent) handleReadOnly(ctx *security.RequestContext, requ
 			if json.Unmarshal(wfResp, &wf) == nil {
 				// Load so list_tasks / get_task in the read-only loop can inspect the definition.
 				a.state.WorkingWorkflow = wf
+				definitionContext += a.readOnlyCheckResults(ctx, wf)
 			}
 		} else {
 			ctx.GetLogger().Warn("workflow_builder: read-only could not fetch workflow, answering from question only", "workflow_id", workflowId, "error", err)
@@ -930,6 +931,7 @@ AVAILABLE TOOLS (use ONLY these; never init_workflow / add_task / modify_task / 
 
 INSTRUCTIONS:
 - Dry-run / test requests ("dry run this", "test it", "does this work", "run it safely"): if the automation contains only side-effect-free tasks (e.g. core.print, read-only queries), call dry_run, then report the overall result and, for any failing task, its id + error. If it contains tasks with external side effects (notifications, mutating CLI commands, scripts, tickets), do NOT run it — explain that a dry-run executes those effects for real and ask the user to confirm. Do NOT claim the automation "has no dry-run mode". Dry-run never modifies the saved automation definition.
+- If CHECK RESULTS are listed above, lead your answer with them: each one stops the automation from working even when it is active, so name it first and say what to connect or change — then mention status, trigger or runs.
 - Failure questions ("why did it fail", "what is this error"): gather evidence first — list_executions(status="FAILED"), then get_execution on the most recent failed run; or dry_run to reproduce. Quote the actual error, name the failing task, and explain the cause. Do NOT propose or apply a fix unless the user explicitly asks to fix it.
 - Explain/summarize questions: describe the trigger, tasks, and flow from the definition above.
 - Capability/greeting questions: briefly say you can build, modify, explain, diagnose, and dry-run automations.
@@ -1575,7 +1577,7 @@ INSTRUCTIONS:
 CRITICAL RULES:
 - Jinja2 references: {{ Tasks['task-id'].output.<field> }} (capital T, bracket notation)
 - TEMPLATES ARE JINJA2 ONLY — NEVER JMESPath/JSONPath: Inside {{ }} only Jinja2 is valid: dotted access, ['key'] subscript, integer index [0], slices [0:3], and | filters. The projection/wildcard forms [*], [?...], .. and @ are JMESPath/JSONPath and are NOT Jinja2 — the validator rejects them with: invalid expression ... near "*". To collect one field across a LIST of objects, do NOT write {{ Tasks['t'].output.result[*].metadata.name }}. Instead add an upstream scripting.run_script (python) task that builds the derived value (e.g. the joined pod names) and reference its scalar output: {{ Tasks['extract-names'].output.data }}. A {{ }} expression must resolve to a single scalar/string, never a projected list.
-- Integration IDs: {{ Configs.<type>_integration_id }} (e.g., {{ Configs.slack_integration_id }})
+- Integration IDs: set integration_id to the integration's exact name from ACCOUNT ENVIRONMENT (e.g., "prod-jira"); the server resolves the name. If no integration of the kind a task needs is listed, do not invent one or use a {{ Configs.* }} placeholder.
 - Integer values: use 5, NOT 5.0
 - Only use task types that get_task_schema returns — do NOT invent types
 - Task IDs in depends_on must match actual task IDs you've added
@@ -1719,7 +1721,7 @@ RULES:
 - EVENT TRIGGERS: if the change touches an event trigger or its filter, CALL get_event_trigger_schema first. The filter sees event.<field> at ROOT (never Inputs.event). There is NO event.reason / event.message (use title/description/labels.alertname); event.cluster is a NAME not a UUID; for severity use event.computed_priority/computed_score (+ {{ event.nb_status == 'OPEN' }} to skip duplicates), not a guessed label; for AI analysis add an llm.event_investigate task; never invent event_type or label keys.
 - Jinja2 references: {{ Tasks['task-id'].output.<field> }} — check get_task_schema output_schema for the correct field name.
 - TEMPLATES ARE JINJA2 ONLY: a parse error like invalid expression ... near "*" means a JMESPath/JSONPath construct ([*], [?...], .., @) was used inside {{ }}. Jinja2 has NO list projection. Add an upstream scripting.run_script (python) task that produces the derived scalar, then reference {{ Tasks['<that-task>'].output.data }}.
-- Integration IDs: {{ Configs.<type>_integration_id }}. Integer values: use 5, NOT 5.0.
+- Integration IDs: the integration's exact name from ACCOUNT ENVIRONMENT, never a {{ Configs.* }} placeholder. Integer values: use 5, NOT 5.0.
 - SCRIPTING DATA INJECTION: pass task output to scripts via the "env" parameter — never embed {{ }} inside the script string. Read it via os.environ in the script. Always set "language" explicitly (omitting it defaults to bash).
 - scripting.run_script with parser_type "json": stdout MUST be valid JSON — wrap Python in try/except and print JSON on error.
 - Template filters use underscores: "to_json" (NOT "tojson"), "from_json" (NOT "fromjson").
@@ -2144,14 +2146,29 @@ func (a *WorkflowBuilderAgent) checkMissingConfigs(ctx *security.RequestContext,
 	workflowJSON = rewriteChatUsersJSON(rewriteChatChannelsJSON(resolvedJSON, a.state.ChatChannels), a.state.ChatUsers)
 
 	refs := extractConfigReferences(workflowJSON)
-	if len(refs) == 0 {
-		return a.finalizeWithAutoSave(ctx, request, workflowJSON, nil), nil
+
+	var existing map[string]bool
+	if len(refs) > 0 {
+		var err error
+		existing, err = fetchExistingConfigKeys(ctx, a.accountId)
+		if err != nil {
+			// Graceful degradation: config API unreachable — return workflow as-is.
+			ctx.GetLogger().Warn("workflow_builder: config API unreachable, skipping missing config check", "error", err)
+			return a.finalizeWithAutoSave(ctx, request, workflowJSON, nil), nil
+		}
 	}
 
-	existing, err := fetchExistingConfigKeys(ctx, a.accountId)
-	if err != nil {
-		// Graceful degradation: config API unreachable — return workflow as-is.
-		ctx.GetLogger().Warn("workflow_builder: config API unreachable, skipping missing config check", "error", err)
+	// A step whose integration is empty or points at a config that does not exist cannot do its
+	// job, and an INACTIVE save with "create config X" sends the person after the wrong fix when
+	// what is missing is the integration itself (#42204). Refuse and say what to connect.
+	if gaps := a.integrationGaps(ctx, workflowJSON, func(key string) bool { return existing[key] }); len(gaps) > 0 {
+		return core.NBAgentResponse{
+			Response:   []string{a.integrationGapMessage(ctx, gaps)},
+			IsTerminal: true,
+		}, nil
+	}
+
+	if len(refs) == 0 {
 		return a.finalizeWithAutoSave(ctx, request, workflowJSON, nil), nil
 	}
 
@@ -2820,7 +2837,7 @@ func (a *WorkflowBuilderAgent) buildEnvironmentContext(ctx *security.RequestCont
 	}
 
 	return "\nACCOUNT ENVIRONMENT (configured integrations and cloud accounts on this account):\n" + strings.Join(parts, "\n") +
-		"\n\nWhen the user references an integration by name (e.g., 'query dev-pg'), match it to the configured integration above and use {{ Configs.<name>_integration_id }} to reference it." +
+		"\n\nWhen the user references an integration by name (e.g., 'query dev-pg'), match it to the configured integration above and set integration_id to that integration's exact name." +
 		accountIDRule +
 		"\nIf a task REQUIRES an integration NOT listed above, warn the user that it is not currently configured." +
 		currentContext
@@ -3008,10 +3025,10 @@ CLOUD CLI (REQUIRES: cloud account of matching provider type):
 
 SOURCE CONTROL (REQUIRES: matching SCM integration configured):
 - scm.github.cli → Execute GitHub CLI (gh) commands with auto-authenticated token.
-  Params: integration_id (use {{ Configs.github_integration_id }}), command (gh CLI string). GITHUB_TOKEN is auto-set. Output: raw stdout
+  Params: integration_id (the GitHub integration's name from ACCOUNT ENVIRONMENT), command (gh CLI string). GITHUB_TOKEN is auto-set. Output: raw stdout
 
 DATABASES (REQUIRES: matching database integration configured):
-- dbms.query → Run SQL queries. Params: integration_id (use {{ Configs.<name>_integration_id }}), dbms_type, command (SQL). Output: query result
+- dbms.query → Run SQL queries. Params: integration_id (the database integration's name from ACCOUNT ENVIRONMENT), dbms_type, command (SQL). Output: query result
 
 TICKETING (REQUIRES: a ticketing integration configured):
 - tickets.create → Create tickets. Params: ticket details. Output: created ticket
@@ -3146,7 +3163,7 @@ AVAILABLE CONFIGS ON THIS ACCOUNT (use {{ Configs.<key> }} to reference these in
 // references differ. It used to say both take {{ Configs.* }}, which the build
 // and edit prompts forbid for account_id — plans then carried config references
 // the builder had to undo.
-const planIntegrationAndAccountRule = "- For integration_id fields: use {{ Configs.<type>_integration_id }} (e.g., {{ Configs.jira_integration_id }}), an account-level stored value that resolves at runtime. " +
+const planIntegrationAndAccountRule = "- For integration_id fields: the integration's exact name from the ACCOUNT ENVIRONMENT (e.g., prod-jira), never a {{ Configs.* }} placeholder. " +
 	"account_id is different: a literal account UUID from the ACCOUNT ENVIRONMENT, or omitted for the automation's own account — never a {{ Configs.* }} reference. NEVER use fake UUIDs."
 
 func (a *WorkflowBuilderAgent) generatePlan(ctx *security.RequestContext, request core.NBAgentRequest, intent string, clarificationContext string) (string, error) {
@@ -3249,7 +3266,7 @@ RULES:
 PREREQUISITES:
 - If a task requires an integration NOT listed in ACCOUNT ENVIRONMENT, warn: "⚠️ Requires <integration type> — not currently configured on this account."
 - Match the customer's actual stack — if their log provider is loki, write LogQL queries. If datadog, use Datadog query syntax. Etc.
-- When the user references an integration by name, match it to the configured integrations and use the correct {{ Configs.<name>_integration_id }}.
+- When the user references an integration by name, match it to the configured integrations and use that integration's exact name as integration_id.
 
 APPROVAL GATES (proactive — suggest even if the user didn't ask):
 - Suggest a core.approval task BEFORE any destructive or high-impact operation:
@@ -4737,6 +4754,13 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 
 		if strings.Contains(errMsg, "an input default is used as written") {
 			return fmt.Sprintf("Validation FAILED: %s\n\nOnly init_workflow changes inputs: call it with just \"inputs\", giving each named input no default and \"required\": false. Then, with set_task_params, make the step that reads the input fall back to the template, as in {{ Inputs.<id> or Configs.<key> }}, so a caller can still override it. Call validate again.", errMsg)
+		}
+
+		// The account has no integration of the kind a step needs. No edit fixes that, and the
+		// obvious workarounds — a {{ Configs.* }} placeholder or an integration of another kind —
+		// produce an automation that cannot run (#42204).
+		if strings.Contains(errMsg, "integration connected") {
+			return fmt.Sprintf("Validation FAILED: %s\n\nThis account has no integration of the kind this step needs, so the step cannot work. Do not replace it with a {{ Configs.* }} placeholder or an integration of another kind. Stop building and give your final answer: tell the user which integration to connect under Integrations, then to ask again.", errMsg)
 		}
 
 		// Structural errors (missing depends_on, unknown task types, bad params) are always hard failures.

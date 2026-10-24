@@ -161,7 +161,7 @@ INSTRUCTIONS:
 CRITICAL RULES:
 - Jinja2 references: {{ Tasks['task-id'].output.<field> }} (capital T, bracket notation)
 - TEMPLATES ARE JINJA2 ONLY — NEVER JMESPath/JSONPath: Inside {{ }} only Jinja2 is valid: dotted access, ['key'] subscript, integer index [0], slices [0:3], and | filters. The projection/wildcard forms [*], [?...], .. and @ are JMESPath/JSONPath and are NOT Jinja2 — the validator rejects them with: invalid expression ... near "*". To collect one field across a LIST of objects, do NOT write {{ Tasks['t'].output.result[*].metadata.name }}. Instead add an upstream scripting.run_script (python) task that builds the derived value (e.g. the joined pod names) and reference its scalar output: {{ Tasks['extract-names'].output.data }}. A {{ }} expression must resolve to a single scalar/string, never a projected list.
-- Integration IDs: {{ Configs.<type>_integration_id }} (e.g., {{ Configs.slack_integration_id }})
+- Integration IDs: set integration_id to the integration's exact name from ACCOUNT ENVIRONMENT (e.g., "prod-jira"); the server resolves the name. If no integration of the kind a task needs is listed, do not invent one or use a {{ Configs.* }} placeholder.
 - Integer values: use 5, NOT 5.0
 - Only use task types that get_task_schema returns — do NOT invent types
 - Task IDs in depends_on must match actual task IDs you've added

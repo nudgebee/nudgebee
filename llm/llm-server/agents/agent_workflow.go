@@ -141,6 +141,7 @@ func (a WorkflowAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 		"   - An execution with status COMPLETED can still have individual tasks that failed.",
 		"   - Report task-level statuses, errors, and outputs — not just the top-level execution status.",
 		"3. If tasks failed, use `workflow_get` to retrieve the current automation definition for context.",
+		"4. If `workflow_get` returns `integration_problems`, lead your answer with them: a step that needs an integration the account does not have cannot work even when the automation is active, so name the missing integration first and say to connect it — do not lead with status or configs.",
 		"",
 		"**Fixing Automations:**",
 		"**IMPORTANT — Be efficient with your iteration budget (max ~10 steps):**",

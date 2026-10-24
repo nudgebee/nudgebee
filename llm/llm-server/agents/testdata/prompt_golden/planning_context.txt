@@ -42,10 +42,10 @@ CLOUD CLI (REQUIRES: cloud account of matching provider type):
 
 SOURCE CONTROL (REQUIRES: matching SCM integration configured):
 - scm.github.cli → Execute GitHub CLI (gh) commands with auto-authenticated token.
-  Params: integration_id (use {{ Configs.github_integration_id }}), command (gh CLI string). GITHUB_TOKEN is auto-set. Output: raw stdout
+  Params: integration_id (the GitHub integration's name from ACCOUNT ENVIRONMENT), command (gh CLI string). GITHUB_TOKEN is auto-set. Output: raw stdout
 
 DATABASES (REQUIRES: matching database integration configured):
-- dbms.query → Run SQL queries. Params: integration_id (use {{ Configs.<name>_integration_id }}), dbms_type, command (SQL). Output: query result
+- dbms.query → Run SQL queries. Params: integration_id (the database integration's name from ACCOUNT ENVIRONMENT), dbms_type, command (SQL). Output: query result
 
 TICKETING (REQUIRES: a ticketing integration configured):
 - tickets.create → Create tickets. Params: ticket details. Output: created ticket

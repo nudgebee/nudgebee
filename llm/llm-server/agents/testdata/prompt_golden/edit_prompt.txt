@@ -171,7 +171,7 @@ RULES:
 - EVENT TRIGGERS: if the change touches an event trigger or its filter, CALL get_event_trigger_schema first. The filter sees event.<field> at ROOT (never Inputs.event). There is NO event.reason / event.message (use title/description/labels.alertname); event.cluster is a NAME not a UUID; for severity use event.computed_priority/computed_score (+ {{ event.nb_status == 'OPEN' }} to skip duplicates), not a guessed label; for AI analysis add an llm.event_investigate task; never invent event_type or label keys.
 - Jinja2 references: {{ Tasks['task-id'].output.<field> }} — check get_task_schema output_schema for the correct field name.
 - TEMPLATES ARE JINJA2 ONLY: a parse error like invalid expression ... near "*" means a JMESPath/JSONPath construct ([*], [?...], .., @) was used inside {{ }}. Jinja2 has NO list projection. Add an upstream scripting.run_script (python) task that produces the derived scalar, then reference {{ Tasks['<that-task>'].output.data }}.
-- Integration IDs: {{ Configs.<type>_integration_id }}. Integer values: use 5, NOT 5.0.
+- Integration IDs: the integration's exact name from ACCOUNT ENVIRONMENT, never a {{ Configs.* }} placeholder. Integer values: use 5, NOT 5.0.
 - SCRIPTING DATA INJECTION: pass task output to scripts via the "env" parameter — never embed {{ }} inside the script string. Read it via os.environ in the script. Always set "language" explicitly (omitting it defaults to bash).
 - scripting.run_script with parser_type "json": stdout MUST be valid JSON — wrap Python in try/except and print JSON on error.
 - Template filters use underscores: "to_json" (NOT "tojson"), "from_json" (NOT "fromjson").

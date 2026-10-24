@@ -23,7 +23,6 @@ import (
 	configSvc "nudgebee/runbook/services/config"
 	"nudgebee/runbook/services/integrations"
 	"nudgebee/runbook/services/security"
-	"nudgebee/runbook/services/ticket"
 	"regexp"
 	"slices"
 	"sort"
@@ -167,6 +166,7 @@ func (s *Service) validateTaskTypes(ctx *security.RequestContext, accountID stri
 	}
 
 	tenantID := ctx.GetSecurityContext().GetTenantId()
+	configValue := s.nonSecretConfigValues(ctx, accountID)
 
 	validateHooks := func(hooks *model.Hooks, ownerID string) error {
 		if hooks == nil {
@@ -189,6 +189,19 @@ func (s *Service) validateTaskTypes(ctx *security.RequestContext, accountID stri
 				if taskImpl.InputSchema() != nil {
 					if err := taskImpl.InputSchema().Validate(action.Params); err != nil {
 						return common.ErrorBadRequest(fmt.Sprintf("hook '%s[%d]' for '%s' parameters validation failed: %v", hookType, i, ownerID, err))
+					}
+					owner := fmt.Sprintf("hook '%s[%d]' for '%s'", hookType, i, ownerID)
+					for paramName, prop := range taskImpl.InputSchema().Properties {
+						if prop.Type != types.PropertyTypeTicket && prop.Type != types.PropertyTypeIntegration {
+							continue
+						}
+						strVal, _ := action.Params[paramName].(string)
+						if strVal == "" {
+							continue
+						}
+						if _, err := validateIntegrationParam(ctx, owner, paramName, prop, strVal, configValue); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -286,31 +299,31 @@ func (s *Service) validateTaskTypes(ctx *security.RequestContext, accountID stri
 						continue
 					}
 
-					// Skip DB-level validation for template expressions — they resolve at execution time
-					if isTemplated(strVal) {
-						continue
-					}
-
-					switch prop.Type {
-					case types.PropertyTypeAccount:
-						if err := cloud.ValidateAccount(ctx, strVal); err != nil {
-							return common.ErrorBadRequest(fmt.Sprintf("task '%s' parameter '%s' validation failed: %v", task.ID, paramName, err))
+					if prop.Type == types.PropertyTypeTicket || prop.Type == types.PropertyTypeIntegration {
+						resolvedID, err := validateIntegrationParam(ctx, fmt.Sprintf("task '%s'", task.ID), paramName, prop, strVal, configValue)
+						if err != nil {
+							return err
 						}
-					case types.PropertyTypeTicket:
-						if err := ticket.ValidateTicketConfig(ctx, strVal); err != nil {
-							return common.ErrorBadRequest(fmt.Sprintf("task '%s' parameter '%s' validation failed: %v", task.ID, paramName, err))
-						}
-					case types.PropertyTypeIntegration:
-						if prop.SubType != "" {
-							resolvedID, err := integrations.ResolveIntegrationID(ctx, strVal, []string{prop.SubType})
-							if err != nil {
-								return common.ErrorBadRequest(fmt.Sprintf("task '%s' parameter '%s' validation failed: %v", task.ID, paramName, err))
-							}
+						// The account-scoped lookup predates the kind check and stays limited to what it
+						// covered: a literal value on a parameter that declares a single integration type.
+						if prop.Type == types.PropertyTypeIntegration && prop.SubType != "" && resolvedID != "" && !isTemplated(strVal) {
 							if lookupAccount, known := integrationLookupAccount(accountID, task); known {
 								if _, err := integrations.GetIntegration(ctx, lookupAccount, prop.SubType, resolvedID); err != nil {
 									return common.ErrorBadRequest(fmt.Sprintf("task '%s' parameter '%s' validation failed: %v", task.ID, paramName, err))
 								}
 							}
+						}
+						continue
+					}
+
+					// Skip DB-level validation for template expressions — they resolve at execution time
+					if isTemplated(strVal) {
+						continue
+					}
+
+					if prop.Type == types.PropertyTypeAccount {
+						if err := cloud.ValidateAccount(ctx, strVal); err != nil {
+							return common.ErrorBadRequest(fmt.Sprintf("task '%s' parameter '%s' validation failed: %v", task.ID, paramName, err))
 						}
 					}
 				}
