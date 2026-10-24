@@ -245,29 +245,29 @@ func TestCheckNotUsedByOrgAgents(t *testing.T) {
 
 func TestForEachTenantAccount(t *testing.T) {
 	orig := TenantAccountIDs
-	defer func() { TenantAccountIDs = orig }()
+	t.Cleanup(func() { TenantAccountIDs = orig })
 	TenantAccountIDs = func(string) []string { return []string{"a", "b", "c"} }
 
 	var mu sync.Mutex
-	var calls []string
+	var batches [][]string
 	rest := make(chan struct{})
-	// The background accounts wait until the synchronous ones are checked, so
-	// a fast goroutine can't append before the first assertion.
+	// The background batch waits until the synchronous one is checked, so a
+	// fast goroutine can't append before the first assertion.
 	release := make(chan struct{})
-	ForEachTenantAccount(itemTestTenant, []string{"b", "", "b"}, func(id string) {
-		if id != "b" {
+	ForEachTenantAccount(itemTestTenant, []string{"b", "", "b"}, func(ids []string) {
+		if len(ids) != 1 || ids[0] != "b" {
 			<-release
 		}
 		mu.Lock()
-		calls = append(calls, id)
-		n := len(calls)
+		batches = append(batches, ids)
+		n := len(batches)
 		mu.Unlock()
-		if n == 3 {
+		if n == 2 {
 			close(rest)
 		}
 	})
 	mu.Lock()
-	assert.Equal(t, []string{"b"}, calls, "the request's accounts are done before it returns")
+	assert.Equal(t, [][]string{{"b"}}, batches, "the request's accounts are done, as one batch, before it returns")
 	mu.Unlock()
 	close(release)
 
@@ -278,5 +278,5 @@ func TestForEachTenantAccount(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	assert.Equal(t, []string{"b", "a", "c"}, calls)
+	assert.Equal(t, [][]string{{"b"}, {"a", "c"}}, batches, "the rest come as one batch")
 }

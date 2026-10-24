@@ -52,9 +52,9 @@ const llmTaskSyncIntegrationKBs = "sync_integration_kbs"
 // one task covers every account the change touched. The cache drops for the
 // same change go to every replica as the integration_changed replica broadcast.
 //
-// Best-effort and off the request path: a lost task only means waiting for
-// the periodic sync. WithoutCancel keeps the trace (context values) but not
-// the request's cancellation, which fires once the response completes.
+// Best-effort: a lost task only means waiting for the periodic sync.
+// WithoutCancel keeps the trace (context values) but not the request's
+// cancellation.
 func requestIntegrationKBSync(ctx *security.RequestContext) {
 	secCtx := ctx.GetSecurityContext()
 	if secCtx == nil || secCtx.GetTenantId() == "" {
@@ -65,19 +65,14 @@ func requestIntegrationKBSync(ctx *security.RequestContext) {
 		Keys:   []string{secCtx.GetTenantId()},
 		Sender: "services-server/" + config.Config.ServerName,
 	}
-	detached := context.WithoutCancel(ctx.GetContext())
-	logger := ctx.GetLogger()
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				logger.Error("integrations: llm-server task publish panicked", "type", task.Type, "panic", r)
-			}
-		}()
-		if err := common.MqPublish(config.Config.RabbitMqLlmServerTasksExchange, config.Config.RabbitMqLlmServerTasksQueue, task,
-			common.MqPublishWithExpiration(time.Hour), common.MqPublishWithContext(detached)); err != nil {
-			logger.Warn("integrations: failed to publish llm-server task (best-effort)", "type", task.Type, "error", err)
-		}
-	}()
+	// One attempt inline; on failure MqPublishWithBackgroundRetry hands the
+	// task to a background retrier instead of retrying with sleeps on the
+	// request (it returns at once when there is no broker connection).
+	if err := common.MqPublish(config.Config.RabbitMqLlmServerTasksExchange, config.Config.RabbitMqLlmServerTasksQueue, task,
+		common.MqPublishWithExpiration(time.Hour), common.MqPublishWithBackgroundRetry(),
+		common.MqPublishWithContext(context.WithoutCancel(ctx.GetContext()))); err != nil {
+		ctx.GetLogger().Warn("integrations: failed to publish llm-server task (best-effort)", "type", task.Type, "error", err)
+	}
 }
 
 // refreshProviderStatusAsync re-checks which provider serves each signal for these

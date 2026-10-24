@@ -1,8 +1,10 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
@@ -340,32 +342,47 @@ var TenantAccountIDs = func(tenantId string) []string {
 	return ids
 }
 
-// ForEachTenantAccount runs fn for the accounts in now before returning and
-// for the tenant's other accounts in the background: a tenant can have
-// hundreds of accounts and each invalidation is a broadcast, which must not
-// hold up the request.
-func ForEachTenantAccount(tenantId string, now []string, fn func(accountId string)) {
+// ForEachTenantAccount calls fn with the accounts in now before returning, and
+// with the tenant's other accounts in the background (listing them is a query,
+// and a tenant can have hundreds). fn gets each group as one batch, so a
+// caller can send one replica broadcast per batch instead of one per account.
+func ForEachTenantAccount(tenantId string, now []string, fn func(accountIds []string)) {
 	done := map[string]bool{}
+	var first []string
 	for _, id := range now {
 		if id != "" && !done[id] {
 			done[id] = true
-			fn(id)
+			first = append(first, id)
 		}
 	}
+	if len(first) > 0 {
+		fn(first)
+	}
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("org-items: tenant account invalidation panicked", "tenant_id", tenantId, "panic", r, "stack", string(debug.Stack()))
+			}
+		}()
+		var rest []string
 		for _, id := range TenantAccountIDs(tenantId) {
 			if !done[id] {
-				fn(id)
+				rest = append(rest, id)
 			}
+		}
+		if len(rest) > 0 {
+			fn(rest)
 		}
 	}()
 }
 
 // InvalidateOrgToolCaches drops the custom-tool caches of every account of
-// tenantId, on every replica (each per-account invalidation is broadcast).
-// The accounts in now, typically the request's, are done before it returns.
+// tenantId, on every replica: one tool_config_changed per batch. The accounts
+// in now, typically the request's, are done before it returns.
 func InvalidateOrgToolCaches(tenantId string, now ...string) {
-	ForEachTenantAccount(tenantId, now, updateToolCache)
+	ForEachTenantAccount(tenantId, now, func(accountIds []string) {
+		common.ReplicaBroadcast(context.Background(), common.ChangeToolConfig, accountIds...)
+	})
 }
 
 // secretEnvMarkers lists the environment-variable name fragments refused on an

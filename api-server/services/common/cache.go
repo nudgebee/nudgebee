@@ -351,9 +351,11 @@ func cacheRedisClient() *redis.Client {
 	return redisClient
 }
 
-// cachePublishTimeout bounds a publish: callers run it right after a write,
-// while the request that made the write is still waiting.
-const cachePublishTimeout = 2 * time.Second
+// cachePublishTimeout bounds a publish: callers run it inline right after a
+// write, while the request that made the write is still waiting. Dev measured
+// PUBLISH at p50 0.2 ms, p99 ~100 ms (2026-10-23), so this only cuts off a
+// degraded Redis.
+const cachePublishTimeout = 500 * time.Millisecond
 
 // CachePublish sends message to every subscriber of channel across replicas.
 // A no-op when the provider is not Redis: in-memory installs are single-process.

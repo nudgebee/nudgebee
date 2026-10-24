@@ -205,12 +205,19 @@ func CacheSet(namespace string, key string, value []byte, options ...CacheSetOpt
 	return cache.Set(context.Background(), namespace+":"+key, string(value), storeOptions...)
 }
 
+// cacheDeleteTimeout bounds one delete. Deletes run inline on request paths
+// and on the replica-broadcast subscriber, where a hung call would delay every
+// message behind it.
+const cacheDeleteTimeout = time.Second
+
 func CacheDelete(namespace string, key string) error {
 	cache, err := cacheGetManager(namespace)
 	if err != nil {
 		return err
 	}
-	return cache.Delete(context.Background(), namespace+":"+key)
+	ctx, cancel := context.WithTimeout(context.Background(), cacheDeleteTimeout)
+	defer cancel()
+	return cache.Delete(ctx, namespace+":"+key)
 }
 
 func CacheDeleteWithTag(namespace string, tags ...string) error {
@@ -228,7 +235,9 @@ func CacheDeleteWithTag(namespace string, tags ...string) error {
 	// the given tags — so including it would invalidate the whole namespace
 	// (every user) on every call, not just the entries matching the caller's
 	// tags. The namespace tag is reserved for CacheClear.
-	return cache.Invalidate(context.Background(), store.WithInvalidateTags(tags))
+	ctx, cancel := context.WithTimeout(context.Background(), cacheDeleteTimeout)
+	defer cancel()
+	return cache.Invalidate(ctx, store.WithInvalidateTags(tags))
 }
 
 func CacheClear(namespace string) error {

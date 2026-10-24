@@ -974,6 +974,14 @@ func conversationModelUnchanged(conv Conversation, llmProvider, llmModel string,
 }
 
 func applyConversationModelConfig(ctx *security.RequestContext, dao IConversationDao, conversationId, llmProvider, llmModel string, llmTierOverrides llmruntime.ConversationTierOverrides, llmConfigSource string, llmConfigReset bool) {
+	// One override-cache broadcast per call, however many columns changed.
+	changed := false
+	defer func() {
+		if changed {
+			InvalidateConversationOverrideCache(conversationId)
+		}
+	}()
+
 	// A reset drops everything and takes no other write: the picker sends it
 	// only when nothing is selected, so there is nothing to persist after it.
 	if llmConfigReset {
@@ -981,7 +989,7 @@ func applyConversationModelConfig(ctx *security.RequestContext, dao IConversatio
 			ctx.GetLogger().Warn("conversation: failed to clear llm model configuration", "error", uerr)
 			return
 		}
-		InvalidateConversationOverrideCache(conversationId)
+		changed = true
 		ctx.GetLogger().Info("conversation: cleared sticky llm model configuration")
 		return
 	}
@@ -990,7 +998,7 @@ func applyConversationModelConfig(ctx *security.RequestContext, dao IConversatio
 		if uerr := dao.UpdateConversationConfigSource(conversationId, llmConfigSource); uerr != nil {
 			ctx.GetLogger().Warn("conversation: failed to update pinned llm config source", "error", uerr)
 		} else {
-			InvalidateConversationOverrideCache(conversationId)
+			changed = true
 			ctx.GetLogger().Info("conversation: updated sticky llm config source", "config_source", llmConfigSource)
 		}
 	}
@@ -1001,14 +1009,14 @@ func applyConversationModelConfig(ctx *security.RequestContext, dao IConversatio
 			ctx.GetLogger().Warn("conversation: failed to update per-tier model configuration", "error", uerr)
 			return
 		}
-		InvalidateConversationOverrideCache(conversationId)
+		changed = true
 		ctx.GetLogger().Info("conversation: updated sticky per-tier model configuration", "tier_count", len(llmTierOverrides.Picks))
 	case llmProvider != "" && llmModel != "":
 		if uerr := dao.UpdateConversationModelBlanket(conversationId, llmProvider, llmModel); uerr != nil {
 			ctx.GetLogger().Warn("conversation: failed to update sticky model configuration", "error", uerr)
 			return
 		}
-		InvalidateConversationOverrideCache(conversationId)
+		changed = true
 		ctx.GetLogger().Info("conversation: updated sticky blanket model configuration", "provider", llmProvider, "model", llmModel)
 	}
 }

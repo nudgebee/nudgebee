@@ -74,8 +74,9 @@ func OnReplicaBroadcast(changeType string, h ReplicaHandler) (unregister func())
 }
 
 // ReplicaBroadcast drops these keys of changeType on this pod at once, then
-// tells every other pod in the background. Call it after the write has
-// committed. Best-effort: a failed publish is logged and never fails the write.
+// tells every other pod (one publish, inline, bounded by cachePublishTimeout).
+// Call it after the write has committed. Best-effort: a failed publish is
+// logged and never fails the write. Send all keys of one change in one call.
 // With no keys it is ReplicaBroadcastAll.
 func ReplicaBroadcast(ctx context.Context, changeType string, keys ...string) {
 	publishReplicaMessage(ctx, ReplicaMessage{Type: changeType, Keys: keys})
@@ -107,21 +108,16 @@ func publishReplicaMessage(ctx context.Context, msg ReplicaMessage) {
 		slog.WarnContext(ctx, "replica broadcast: failed to encode message", "type", msg.Type, "error", err)
 		return
 	}
-	ctx = context.WithoutCancel(ctx)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.ErrorContext(ctx, "replica broadcast: publish panicked", "type", msg.Type, "error", r, "stack", string(debug.Stack()))
-			}
-		}()
-		if err := CachePublish(replicaBroadcastChannel, string(payload)); err != nil {
-			slog.WarnContext(ctx, "replica broadcast: failed to publish", "type", msg.Type, "error", err)
-			metricsReplicaBroadcast(msg.Type, "publish_failed")
-			return
-		}
-		metricsReplicaBroadcast(msg.Type, "published")
-		logReplicaEvent(ctx, "published", msg.Type, "keys", len(msg.Keys))
-	}()
+	// Inline, bounded by cachePublishTimeout: no goroutine per publish, so a
+	// burst of broadcasts queues on the caller instead of piling up goroutines
+	// on the Redis pool, and one caller's messages keep their order.
+	if err := CachePublish(replicaBroadcastChannel, string(payload)); err != nil {
+		slog.WarnContext(ctx, "replica broadcast: failed to publish", "type", msg.Type, "error", err)
+		metricsReplicaBroadcast(msg.Type, "publish_failed")
+		return
+	}
+	metricsReplicaBroadcast(msg.Type, "published")
+	logReplicaEvent(ctx, "published", msg.Type, "keys", len(msg.Keys))
 }
 
 func replicaHandlersFor(changeType string) []*ReplicaHandler {
@@ -155,6 +151,10 @@ func runReplicaHandler(changeType string, fn func()) {
 	}()
 	fn()
 }
+
+// replicaSlowHandler is how long handling one received message may take
+// before it is reported as slow.
+const replicaSlowHandler = time.Second
 
 // replicaLogEvery caps Info lines per direction and type. Chat model changes
 // broadcast on every chat message, so without a cap they would flood the logs;
@@ -245,7 +245,16 @@ func handleReplicaPubSubMessage(msg any, self string) {
 		if rm.Sender == self {
 			return
 		}
-		if dispatchReplicaMessage(rm) {
+		start := time.Now()
+		handled := dispatchReplicaMessage(rm)
+		// The subscriber runs one message at a time, so a slow handler delays
+		// every type behind it (and go-redis drops messages once its buffer is
+		// full). Make that visible.
+		if took := time.Since(start); took > replicaSlowHandler {
+			slog.Warn("replica broadcast: slow handler", "type", rm.Type, "keys", len(rm.Keys), "took", took.String())
+			metricsReplicaBroadcast(rm.Type, "handler_slow")
+		}
+		if handled {
 			metricsReplicaBroadcast(rm.Type, "received")
 			logReplicaEvent(context.Background(), "received", rm.Type, "keys", len(rm.Keys), "sender", rm.Sender)
 		} else {

@@ -3,6 +3,8 @@ package core
 import (
 	"testing"
 
+	"nudgebee/llm/common"
+
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
@@ -223,4 +225,20 @@ func TestConversationModelUnchanged(t *testing.T) {
 			assert.Equal(t, tc.want, conversationModelUnchanged(tc.conv, tc.provider, tc.model, tc.tiers, tc.source, tc.reset))
 		})
 	}
+}
+
+// A turn that pins a config source and picks a model writes two columns but
+// tells the other replicas once.
+func TestApplyConversationModelConfig_BroadcastsOncePerCall(t *testing.T) {
+	var broadcasts [][]string
+	t.Cleanup(common.OnReplicaBroadcast(common.ChangeConversationOverride, common.ReplicaHandler{
+		OnKeys: func(keys []string) { broadcasts = append(broadcasts, keys) },
+		OnAll:  func() {},
+	}))
+	ctx := security.NewRequestContextForSuperAdmin()
+	stub := &modelConfigDaoStub{}
+
+	applyConversationModelConfig(ctx, stub, "conv-once", "openai", "gpt-4o", llmruntime.ConversationTierOverrides{}, "db:int-1", false)
+
+	assert.Equal(t, [][]string{{"conv-once"}}, broadcasts)
 }

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -434,11 +435,19 @@ func isSystemAgentName(name string) bool {
 // every account of tenantId, on every replica. The accounts in now, typically
 // the request's, are done before it returns.
 func invalidateOrgAgentCaches(tenantId string, now []string, names ...string) {
-	toolcore.ForEachTenantAccount(tenantId, now, func(accountId string) {
-		for _, name := range names {
-			if name != "" {
-				InvalidateCustomAgentToolsCache(accountId, name)
+	toolcore.ForEachTenantAccount(tenantId, now, func(accountIds []string) {
+		keys := make([]string, 0, len(accountIds)*len(names))
+		for _, accountId := range accountIds {
+			for _, name := range names {
+				if name != "" {
+					keys = append(keys, agentConfigKey(accountId, name))
+				}
 			}
+		}
+		// One broadcast per batch, not one per account: a tenant can have
+		// hundreds of accounts.
+		if len(keys) > 0 {
+			common.ReplicaBroadcast(context.Background(), common.ChangeAgentConfig, keys...)
 		}
 	})
 }
