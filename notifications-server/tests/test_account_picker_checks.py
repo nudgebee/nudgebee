@@ -158,7 +158,6 @@ def _teams_pick(events, clicker, account_id=ACCOUNT_ID):
 
 def test_teams_the_picker_remembers_what_it_offered():
     events = _events()
-    events._teams_alert_of_thread = mock.Mock(return_value=None)
     events._resolve_mapped_account_async = mock.AsyncMock(return_value=None)
     events._get_valid_accounts_async = mock.AsyncMock(return_value=OFFERED)
     events._extract_conversation_reference = mock.Mock(return_value={"conversation_id": "19:ops"})

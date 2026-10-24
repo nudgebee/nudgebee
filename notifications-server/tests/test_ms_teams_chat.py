@@ -221,7 +221,6 @@ def test_the_confirmation_is_sent_when_the_picker_cant_be_updated():
 
 def test_the_channel_mapping_is_looked_up_without_the_thread_suffix():
     events = _events()
-    events._teams_alert_of_thread = mock.Mock(return_value=None)
     events._resolve_mapped_account_async = mock.AsyncMock(return_value=None)
     events._get_valid_accounts_async = mock.AsyncMock(return_value=[])
     events._extract_conversation_reference = mock.Mock(return_value=REF)
@@ -267,24 +266,102 @@ def test_an_alert_thread_gives_its_account_and_card_text():
     card = get_ms_teams_finding_message_template(FINDING, NB_TENANT)
     events, patches = _alert_events({"kind": "finding", "card": card, "account_id": ACCOUNT})
     with patches[0], patches[1] as stored_card, patches[2]:
-        alert = events._teams_alert_of_thread(THREAD, "aad", [NB_TENANT])
+        alert = events._teams_alert_of_thread(THREAD, "aad")
     assert stored_card.call_args.args == (NB_TENANT, "19:ops", "1700")
     assert alert["account_id"] == ACCOUNT and "Pod crash looping" in alert["context"]
 
 
 @pytest.mark.parametrize(
-    "conversation, stored, tenants",
+    "conversation, stored",
     [
-        ("19:ops", {"kind": "finding", "card": {}, "account_id": ACCOUNT}, [NB_TENANT]),
-        (THREAD, {"kind": "approval", "card": {}, "account_id": ACCOUNT}, [NB_TENANT]),
-        (THREAD, {"kind": "finding", "card": {}, "account_id": ACCOUNT}, ["another-tenant"]),
-        (THREAD, None, [NB_TENANT]),
+        ("19:ops", {"kind": "finding", "card": {}, "account_id": ACCOUNT}),
+        (THREAD, {"kind": "approval", "card": {}, "account_id": ACCOUNT}),
+        (THREAD, {"kind": "finding", "card": {}, "account_id": None}),
+        (THREAD, None),
     ],
 )
-def test_no_alert_outside_an_alert_thread_or_the_users_workspace(conversation, stored, tenants):
+def test_no_alert_outside_an_alert_thread_or_without_an_account(conversation, stored):
     events, patches = _alert_events(stored)
     with patches[0], patches[1], patches[2]:
-        assert events._teams_alert_of_thread(conversation, "aad", tenants) is None
+        assert events._teams_alert_of_thread(conversation, "aad") is None
+
+
+ALERT = {"tenant_id": NB_TENANT, "account_id": ACCOUNT, "context": "Pod crash looping"}
+
+
+def _message_in_thread(alert, *, tenants=(NB_TENANT,), access=True, cached=None, text="why is it down?", value=None):
+    """handle_message_event for a message, or a pick when value is given, in THREAD."""
+    events = _events()
+    events._extract_activity_info = mock.Mock(return_value=(THREAD, "aad-user", text, "1800", "aad"))
+    events._is_bot_message = mock.Mock(return_value=False)
+    events._handle_teams_followup_selection_and_query_llm = mock.AsyncMock()
+    events._handle_exit = mock.AsyncMock()
+    events.common_service.get_teams_user_info = mock.AsyncMock(return_value="dana@example.com")
+    events._teams_alert_of_thread = mock.Mock(return_value=alert)
+    events._validate_user_access_to_account_async = mock.AsyncMock(return_value=access)
+    events._process_teams_message = mock.AsyncMock()
+    events._request_account_confirmation_and_cache_event = mock.AsyncMock()
+    events.cache.get_event_entry.return_value = cached
+    with (
+        mock.patch(
+            "notifications_server.services.events.validate_and_get_user_tenants", return_value=("user-1", list(tenants))
+        ),
+        mock.patch.object(ca, "is_card_action", return_value=False),
+    ):
+        asyncio.run(events.handle_message_event(SimpleNamespace(value=value)))
+    return events
+
+
+@pytest.mark.parametrize("tenants, access", [((NB_TENANT,), False), (("another-tenant",), True)])
+def test_someone_who_cant_access_the_alerts_account_is_told_and_nothing_else_happens(tenants, access):
+    events = _message_in_thread(ALERT, tenants=tenants, access=access)
+    events.common_service.teams_reply.assert_awaited_once_with(
+        mock.ANY, "You don't have access to this alert's account, so I can't discuss it.", "aad"
+    )
+    events._request_account_confirmation_and_cache_event.assert_not_awaited()
+
+
+def test_someone_without_access_is_told_even_in_a_thread_someone_else_started():
+    events = _message_in_thread(ALERT, access=False, cached=_entry())
+    assert "don't have access" in events.common_service.teams_reply.call_args.args[1]
+    events._process_teams_message.assert_not_awaited()
+
+
+def test_a_follow_up_pick_or_exit_in_an_alert_thread_is_held_to_the_same_access_check():
+    pick = {"action_type": "select_followup_option", "followup_option": "payments"}
+    events = _message_in_thread(ALERT, access=False, cached=_entry(), text="", value=pick)
+    events._handle_teams_followup_selection_and_query_llm.assert_not_awaited()
+    events = _message_in_thread(ALERT, access=False, cached=_entry(), text="exit")
+    events._handle_exit.assert_not_awaited()
+    assert "don't have access" in events.common_service.teams_reply.call_args.args[1]
+    events = _message_in_thread(ALERT, cached=_entry(), text="", value=pick)
+    events._handle_teams_followup_selection_and_query_llm.assert_awaited_once()
+
+
+def test_a_new_alert_thread_conversation_is_started_with_its_alert():
+    events = _message_in_thread(ALERT)
+    events.common_service.teams_reply.assert_not_awaited()
+    assert events._request_account_confirmation_and_cache_event.call_args.kwargs == {"alert": ALERT}
+
+
+def test_an_alert_thread_runs_on_the_alerts_account_never_a_mapped_or_picked_one():
+    events = _events()
+    events._handle_mapped_account_teams = mock.AsyncMock()
+    events._resolve_mapped_account_async = mock.AsyncMock()
+    events._get_valid_accounts_async = mock.AsyncMock()
+    events._extract_conversation_reference = mock.Mock(return_value=REF)
+    with mock.patch(
+        "notifications_server.services.events.validate_and_get_user_tenants", return_value=("user-1", [NB_TENANT])
+    ):
+        asyncio.run(
+            events._request_account_confirmation_and_cache_event(
+                "aad-user", SimpleNamespace(), "why?", THREAD, "1800", "aad", THREAD, "dana@example.com", alert=ALERT
+            )
+        )
+    assert events._handle_mapped_account_teams.call_args.args[0] == {"id": ACCOUNT}
+    events.cache.update_event_entry.assert_any_call(THREAD, alert_context="Pod crash looping")
+    events._resolve_mapped_account_async.assert_not_awaited()
+    events._get_valid_accounts_async.assert_not_awaited()
 
 
 def test_the_alert_channel_context_is_sent_on_every_turn():

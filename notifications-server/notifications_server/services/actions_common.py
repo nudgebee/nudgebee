@@ -205,6 +205,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
                 slack_user_id,
                 data["message"]["thread_ts"],
                 data["message"].get("ts"),
+                user_email=user_email,
             )
             return
 
@@ -388,7 +389,13 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             self.handle_suppress_finding(channel_id, team_id, user_email, action, data)
         elif action_id == "select_followup_option_dropdown":
             self.event_service.update_followup_for_event(
-                action, channel_id, team_id, slack_user_id, data["message"]["thread_ts"], data["message"].get("ts")
+                action,
+                channel_id,
+                team_id,
+                slack_user_id,
+                data["message"]["thread_ts"],
+                data["message"].get("ts"),
+                user_email=user_email,
             )
         elif action_id == "select_account_dropdown":
             selected_option = action.get("selected_option", {})

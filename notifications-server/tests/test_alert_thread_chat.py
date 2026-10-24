@@ -1,6 +1,7 @@
-"""A message in an alert thread of a tenant with the remediation loop on joins the alert's own conversation
-(#40734), event-<fingerprint>, on the alert's account, without the thread transcript, answered in the thread; an
-answer there is sent as the person who gives it."""
+"""A message in an alert thread runs on the alert's account, and whoever can't access that account is told so.
+With the remediation loop on it joins the alert's own conversation, event-<fingerprint>, without the thread
+transcript, answered in the thread; an answer there is sent as the person who gives it. With it off the thread's
+own conversation starts on the alert's account, never a channel's or a picked one."""
 
 import json
 import uuid
@@ -42,7 +43,7 @@ def row(engine, account=ACCOUNT, fingerprint=FP, thread=THREAD, channel=CHANNEL,
                 id=uuid.uuid4(),
                 created_at=datetime(2026, 10, 19),
                 tenant_id=uuid.UUID(tenant),
-                account_id=uuid.UUID(account),
+                account_id=uuid.UUID(account) if account else None,
                 fingerprint=fingerprint,
                 slack_team_id=TEAM,
                 slack_thread_id=thread,
@@ -62,16 +63,21 @@ def lookup(engine, channel=CHANNEL, thread=THREAD):
 
 def test_an_alert_thread_is_found(db):
     row(db)
-    assert lookup(db) == {"tenant_id": TENANT, "account_id": ACCOUNT, "fingerprint": FP}
+    assert lookup(db) == {"tenant_id": TENANT, "account_id": ACCOUNT, "fingerprint": FP, "loop_on": True}
+
+
+def test_an_alert_thread_is_found_with_the_loop_off(db):
+    row(db, account=OTHER, thread="1.1", tenant=OTHER)
+    assert lookup(db, thread="1.1") == {"tenant_id": OTHER, "account_id": OTHER, "fingerprint": FP, "loop_on": False}
 
 
 def test_other_threads_are_not_alert_threads(db):
-    row(db, account=OTHER, thread="1.1", tenant=OTHER)
     row(db, fingerprint=f"remediation-pending:{FP}:x", thread="2.2")
     row(db, thread="3.3", channel="C_OTHER")
-    assert lookup(db, thread="1.1") is None, "a tenant with the loop off: today's chat is unchanged"
+    row(db, account=None, thread="4.4")
     assert lookup(db, thread="2.2") is None, "one of our own remediation rows is not an alert"
     assert lookup(db, thread="3.3") is None, "the same ts in another channel"
+    assert lookup(db, thread="4.4") is None, "an alert with no account recorded has no account to run on"
     assert lookup(db, thread="9.9") is None
 
 
@@ -84,6 +90,12 @@ class FakeCache:
 
     def cache_event_entry(self, ts, entry):
         self.entries[ts] = entry
+
+    def update_event_entry(self, ts, **kwargs):
+        self.entries[ts].update(kwargs)
+
+    def remove_event_entry(self, ts):
+        self.entries.pop(ts, None)
 
 
 def alert_service(monkeypatch, *, access=True, cached=None):
@@ -98,11 +110,13 @@ def alert_service(monkeypatch, *, access=True, cached=None):
         _process_event=lambda *a: calls.processed.append(a),
         _reply_error=lambda *a: calls.errors.append(a),
     )
+    fake._alert_account_user = Events._alert_account_user.__get__(fake)
     handle = Events._handle_alert_thread.__get__(fake)
     return handle, fake, calls
 
 
-ALERT = {"tenant_id": TENANT, "account_id": ACCOUNT, "fingerprint": FP}
+ALERT = {"tenant_id": TENANT, "account_id": ACCOUNT, "fingerprint": FP, "loop_on": True}
+ALERT_LOOP_OFF = {**ALERT, "loop_on": False}
 
 
 def test_a_message_in_an_alert_thread_goes_to_the_alerts_conversation(monkeypatch):
@@ -119,7 +133,98 @@ def test_someone_without_access_to_the_account_is_told_and_nothing_is_sent(monke
     handle, fake, calls = alert_service(monkeypatch, access=False)
     handle(ALERT, CHANNEL, TEAM, THREAD, "hi", "a@b.c", "U1")
     assert not calls.processed and not fake.cache.entries
-    assert "don't have access" in calls.errors[0][3]
+    assert calls.errors[0][3] == events_mod.NO_ALERT_ACCOUNT_ACCESS
+
+
+@pytest.mark.parametrize("tenants, access", [([TENANT], True), ([OTHER], True), ([TENANT], False), ([], True)])
+def test_only_someone_who_can_access_the_alerts_account_is_its_user(monkeypatch, tenants, access):
+    monkeypatch.setattr(events_mod, "validate_and_get_user_tenants", lambda email: (USER, tenants))
+    fake = SimpleNamespace(_validate_user_access_to_account=lambda u, t, a: access and (t, a) == (TENANT, ACCOUNT))
+    expected = USER if tenants == [TENANT] and access else None
+    assert Events._alert_account_user(fake, ALERT, "a@b.c") == expected
+
+
+def execute(monkeypatch, alert, *, access=True, cached=None):
+    """execute_event for a message in THREAD, with what it hands each path recorded."""
+    calls = SimpleNamespace(alert_thread=[], new=[], processed=[], errors=[])
+    fake = SimpleNamespace(
+        safe_add_reaction=lambda *a: None,
+        clean_slack_text=lambda text: text,
+        _stash_thread_images=lambda *a: None,
+        _stash_thread_mentions=lambda *a: None,
+        _alert_of_thread=lambda team, channel, thread: alert,
+        _alert_account_user=lambda a, email: USER if access else None,
+        _handle_alert_thread=lambda *a: calls.alert_thread.append(a),
+        _reply_error=lambda *a: calls.errors.append(a),
+        cache=FakeCache(cached),
+        _has_pending_text_followup=lambda entry: False,
+        _process_event=lambda *a: calls.processed.append(a),
+        _check_history_for_conversation=lambda *a: False,
+        _handle_new_conversation=lambda *a, alert=None: calls.new.append(alert),
+    )
+    Events.execute_event(fake, TEAM, "Ev1", "EC1", "a@b.c", CHANNEL, THREAD, "1700000001.000200", {"text": "q"}, "U1")
+    return calls
+
+
+def test_with_the_loop_off_a_new_alert_thread_conversation_is_started_with_its_alert(monkeypatch):
+    calls = execute(monkeypatch, ALERT_LOOP_OFF)
+    assert calls.new == [ALERT_LOOP_OFF] and not calls.alert_thread and not calls.errors
+
+
+def test_with_the_loop_off_someone_without_access_is_told_even_in_a_thread_someone_else_started(monkeypatch):
+    started = {"account_id": ACCOUNT, "tenant_id": TENANT, "user_id": "the-first-asker", "slack_user_id": "U0"}
+    calls = execute(monkeypatch, ALERT_LOOP_OFF, access=False, cached=started)
+    assert [e[3] for e in calls.errors] == [events_mod.NO_ALERT_ACCOUNT_ACCESS]
+    assert not calls.processed and not calls.new
+
+
+def test_with_the_loop_off_an_unfinished_account_pick_restarts_on_the_alerts_account(monkeypatch):
+    calls = execute(monkeypatch, ALERT_LOOP_OFF, cached={"user_id": USER, "text": "q"})
+    assert calls.new == [ALERT_LOOP_OFF] and not calls.processed
+
+
+def click(monkeypatch, *, access):
+    """A follow-up button click in THREAD, which has a pending follow-up."""
+    submitted, errors = [], []
+    fake = SimpleNamespace(
+        cache=FakeCache({"followup_msg_ts": "1.2", "account_id": ACCOUNT, "tenant_id": TENANT, "user_id": USER}),
+        _alert_of_thread=lambda team, channel, thread: ALERT_LOOP_OFF,
+        _alert_account_user=lambda a, email: USER if access and email == "b@c.d" else None,
+        _submit_followup=lambda *a: submitted.append(a),
+        _reply_error=lambda *a: errors.append(a),
+    )
+    action = {"action_id": "select_followup_option--payments"}
+    Events.update_followup_for_event(fake, action, CHANNEL, TEAM, "U2", THREAD, "1.2", user_email="b@c.d")
+    return submitted, errors
+
+
+def test_a_follow_up_pick_in_an_alert_thread_is_held_to_the_same_access_check(monkeypatch):
+    submitted, errors = click(monkeypatch, access=False)
+    assert not submitted and [e[3] for e in errors] == [events_mod.NO_ALERT_ACCOUNT_ACCESS]
+    submitted, errors = click(monkeypatch, access=True)
+    assert len(submitted) == 1 and not errors
+
+
+def test_with_the_loop_on_the_alerts_own_conversation_is_joined(monkeypatch):
+    calls = execute(monkeypatch, ALERT, access=False)
+    assert len(calls.alert_thread) == 1 and not calls.new, "_handle_alert_thread checks access itself"
+
+
+def test_a_new_alert_thread_conversation_takes_the_alerts_account_not_a_bound_or_picked_one(monkeypatch):
+    monkeypatch.setattr(events_mod, "validate_and_get_user_tenants", lambda email: (USER, [TENANT]))
+    selected, other = [], []
+    cache = FakeCache()
+    cache.get_channel_session_mapping = lambda *a: other.append("incident channel session")
+    fake = SimpleNamespace(
+        cache=cache,
+        common_service=SimpleNamespace(app_id="A1"),
+        _session_id=Events._session_id,
+        _handle_selected_account=lambda account, *a: selected.append(account),
+        _request_cluster_confirmation=lambda *a: other.append("account picker"),
+    )
+    Events._handle_new_conversation(fake, CHANNEL, "q", None, None, TEAM, THREAD, "a@b.c", True, "U1", alert=ALERT)
+    assert selected == [{"id": ACCOUNT}] and not other
+    assert cache.entries[THREAD]["session_id"] == f"{CHANNEL}-{THREAD}", "the thread's own conversation"
 
 
 def test_an_answer_to_the_agents_question_resumes_it(monkeypatch):

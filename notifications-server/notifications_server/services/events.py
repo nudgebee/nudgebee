@@ -106,6 +106,7 @@ _DELIMITER_PATTERN = re.compile(r"([,;:])\s+")
 # same prefix+key here lets an @mention in a bound incident channel append to
 # that same conversation instead of starting an unrelated one.
 EVENT_CONVERSATION_SESSION_PREFIX = "event-"
+NO_ALERT_ACCOUNT_ACCESS = "You don't have access to this alert's account, so I can't discuss it."
 
 
 def _parse_iso(iso_str):
@@ -302,12 +303,17 @@ class Events:
             self._stash_thread_images(event, team_id, thread_ts)
             self._stash_thread_mentions(event, thread_ts)
 
-            # A message in an alert's thread is about that alert's remediation (#40734): it joins the alert's
-            # own conversation, whatever an earlier turn in the thread cached.
+            # A message in an alert's thread is about that alert, so it runs on the alert's account, and whoever
+            # can't access that account is told so, on every message, not only the thread's first. With the
+            # remediation loop on it joins the alert's own conversation, whatever an earlier turn cached.
+            alert = None
             if thread_ts != event_ts:
                 alert = self._alert_of_thread(team_id, channel_id, thread_ts)
-                if alert:
+                if alert and alert["loop_on"]:
                     self._handle_alert_thread(alert, channel_id, team_id, thread_ts, text, user_email, slack_user_id)
+                    return
+                if alert and not self._alert_account_user(alert, user_email):
+                    self._reply_error(channel_id, team_id, thread_ts, NO_ALERT_ACCOUNT_ACCESS)
                     return
 
             cached_entry = self.cache.get_event_entry(thread_ts)
@@ -336,6 +342,7 @@ class Events:
                         user_email,
                         thread_ts != event_ts,
                         slack_user_id,
+                        alert=alert,
                     )
                     return
 
@@ -377,14 +384,16 @@ class Events:
                 user_email,
                 is_thread_request,
                 slack_user_id,
+                alert=alert,
             )
 
         except Exception as e:
             LOG.error("Error executing event: %s", e)
 
     def _alert_of_thread(self, team_id, channel_id, thread_ts):
-        """The alert a Slack thread hangs off, as {tenant_id, account_id, fingerprint}, from the
-        sent_notifications row its message wrote; None outside an alert's thread. Never fatal."""
+        """The alert a Slack thread hangs off, as {tenant_id, account_id, fingerprint, loop_on}, from the
+        sent_notifications row its message wrote; None outside an alert's thread, or for an alert with no
+        account recorded. Never fatal."""
         # Runs on every threaded message: one indexed lookup by thread (V1056), and the tenant's flag only
         # for an alert thread.
         from notifications_server.services.remediation_thread import loop_on
@@ -421,12 +430,13 @@ class Events:
                         not str(row.fingerprint or "").startswith("remediation-")
                         and json.loads(row.slack_metadata or "{}").get("channel") == channel_id
                     ):
-                        if not loop_on(session, row.tenant_id):
-                            return None
+                        if not row.account_id:
+                            continue
                         return {
                             "tenant_id": str(row.tenant_id),
                             "account_id": str(row.account_id),
                             "fingerprint": row.fingerprint,
+                            "loop_on": loop_on(session, row.tenant_id),
                         }
         except Exception as e:
             LOG.warning("Looking up the alert under Slack thread %s failed: %s", thread_ts, e)
@@ -436,15 +446,9 @@ class Events:
         """Send a message in an alert's thread to the alert's own conversation, event-<fingerprint>, on the
         alert's account, as the person who wrote it: the conversation the alert's web chat continues, where
         llm-server's remediation agent reads the alert's plan and acts on a step once the person confirms."""
-        user_id, tenants = validate_and_get_user_tenants(user_email)
-        if not (
-            user_id
-            and alert["tenant_id"] in {str(t) for t in tenants or []}
-            and self._validate_user_access_to_account(user_id, alert["tenant_id"], alert["account_id"])
-        ):
-            self._reply_error(
-                channel_id, team_id, thread_ts, "You don't have access to this alert's account, so I can't discuss it."
-            )
+        user_id = self._alert_account_user(alert, user_email)
+        if not user_id:
+            self._reply_error(channel_id, team_id, thread_ts, NO_ALERT_ACCOUNT_ACCESS)
             return
         session_id = f"{EVENT_CONVERSATION_SESSION_PREFIX}{alert['fingerprint']}"
         cached_entry = self.cache.get_event_entry(thread_ts)
@@ -478,6 +482,28 @@ class Events:
             },
         )
         self._process_event(channel_id, text, team_id, thread_ts, "chat")
+
+    def _alert_account_user(self, alert, user_email):
+        """user_email's user id when they can access the alert's account, else None: an alert belongs to its
+        account, so no other account stands in for one they can't access."""
+        user_id, tenants = validate_and_get_user_tenants(user_email)
+        if (
+            user_id
+            and alert["tenant_id"] in {str(t) for t in tenants or []}
+            and self._validate_user_access_to_account(user_id, alert["tenant_id"], alert["account_id"])
+        ):
+            return user_id
+        return None
+
+    async def _alert_account_user_async(self, alert, user_email):
+        user_id, tenants = validate_and_get_user_tenants(user_email)
+        if (
+            user_id
+            and alert["tenant_id"] in {str(t) for t in tenants or []}
+            and await self._validate_user_access_to_account_async(user_id, alert["tenant_id"], alert["account_id"])
+        ):
+            return user_id
+        return None
 
     def _alert_thread_replier(self, cached_entry, slack_user_id):
         """The user Identity Sync links to slack_user_id in the alert's tenant, or None. Never fatal."""
@@ -533,13 +559,14 @@ class Events:
         return True
 
     def _handle_new_conversation(
-        self, channel_id, text, context, event_id, team_id, thread_ts, user_email, is_thread, slack_user_id
+        self, channel_id, text, context, event_id, team_id, thread_ts, user_email, is_thread, slack_user_id, alert=None
     ):
         try:
             user_id, _ = validate_and_get_user_tenants(user_email)
 
-            # Check pre-existing session created during /channels/join
-            incident_channel_session = self.cache.get_channel_session_mapping(channel_id, team_id)
+            # Check pre-existing session created during /channels/join. An alert's thread runs on the alert's
+            # account instead, whatever the channel is bound to.
+            incident_channel_session = None if alert else self.cache.get_channel_session_mapping(channel_id, team_id)
             has_session = incident_channel_session and incident_channel_session.get("session_id")
 
             if has_session:
@@ -575,6 +602,9 @@ class Events:
                 "app_id": self.common_service.app_id,
             }
             self.cache.cache_event_entry(thread_ts, event_entry)
+            if alert:
+                self._handle_selected_account({"id": alert["account_id"]}, channel_id, team_id, thread_ts)
+                return
             self._request_cluster_confirmation(channel_id, team_id, thread_ts, user_email, slack_user_id)
 
         except Exception as e:
@@ -970,7 +1000,7 @@ class Events:
             )
 
     def update_followup_for_event(
-        self, action_data, channel_id, team_id, slack_user_id, thread_ts, clicked_msg_ts=None
+        self, action_data, channel_id, team_id, slack_user_id, thread_ts, clicked_msg_ts=None, user_email=None
     ):
         try:
             action_id = action_data.get("action_id", "")
@@ -988,6 +1018,12 @@ class Events:
             # didn't land — either way it must not answer the current turn.
             if cached_entry and (not pending_msg_ts or (clicked_msg_ts and clicked_msg_ts != pending_msg_ts)):
                 LOG.info("followup click with no matching pending follow-up for %s; ignoring", thread_ts)
+                return
+            # A pick in an alert's thread answers on the alert's account, so it is held to the same access
+            # check as a message there.
+            alert = self._alert_of_thread(team_id, channel_id, thread_ts)
+            if alert and not self._alert_account_user(alert, user_email):
+                self._reply_error(channel_id, team_id, thread_ts, NO_ALERT_ACCOUNT_ACCESS)
                 return
             self._submit_followup(cached_entry, channel_id, team_id, thread_ts, slack_user_id, response_option)
         except Exception as e:
@@ -2163,6 +2199,17 @@ class Events:
 
             thread_ts = conversation_id
 
+            if card_actions.is_card_action(activity):
+                await card_actions.handle(self.common_service, activity, user_email, teams_account_id)
+                return
+
+            # A message in an alert's thread is about that alert, so it runs on the alert's account, and whoever
+            # can't access that account is told so, on every message or pick, not only the thread's first.
+            alert = self._teams_alert_of_thread(conversation_id, teams_account_id)
+            if alert and not await self._alert_account_user_async(alert, user_email):
+                await self.common_service.teams_reply(activity, NO_ALERT_ACCOUNT_ACCESS, teams_account_id)
+                return
+
             if self._is_cluster_selection(activity):
                 await self._handle_teams_cluster_selection_and_query_llm(
                     activity, activity.value["cluster"], thread_ts, teams_account_id
@@ -2177,10 +2224,6 @@ class Events:
                     )
                 else:
                     LOG.warning("Follow-up selection activity received without a followup_option value.")
-                return
-
-            if card_actions.is_card_action(activity):
-                await card_actions.handle(self.common_service, activity, user_email, teams_account_id)
                 return
 
             cleaned_text = message_text.strip()
@@ -2208,13 +2251,23 @@ class Events:
                 teams_account_id,
                 thread_ts,
                 user_email,
+                alert=alert,
             )
 
         except Exception as e:
             await self._handle_processing_error(activity, e, teams_account_id)
 
     async def _request_account_confirmation_and_cache_event(
-        self, aad_user_id, activity, cleaned_text, conversation_id, message_id, teams_account_id, thread_ts, user_email
+        self,
+        aad_user_id,
+        activity,
+        cleaned_text,
+        conversation_id,
+        message_id,
+        teams_account_id,
+        thread_ts,
+        user_email,
+        alert=None,
     ):
         user_id, tenants = validate_and_get_user_tenants(user_email)
 
@@ -2243,17 +2296,13 @@ class Events:
         }
         await self.cache.aio.cache_event_entry(thread_ts, event_entry)
 
-        alert = self._teams_alert_of_thread(conversation_id, teams_account_id, tenants)
+        # handle_message_event has checked the asker can access the alert's account.
         if alert:
             await self.cache.aio.update_event_entry(thread_ts, alert_context=alert["context"])
-            account_id = alert["account_id"]
-            if account_id and await self._validate_user_access_to_account_async(
-                user_id, alert["tenant_id"], account_id
-            ):
-                await self._handle_mapped_account_teams(
-                    {"id": account_id}, thread_ts, activity, cleaned_text, teams_account_id
-                )
-                return
+            await self._handle_mapped_account_teams(
+                {"id": alert["account_id"]}, thread_ts, activity, cleaned_text, teams_account_id
+            )
+            return
 
         mapped_account = await self._resolve_mapped_account_async(
             "ms_teams", card_actions.channel_of(conversation_id), user_id, tenants
@@ -2278,22 +2327,23 @@ class Events:
                 teams_account_id,
             )
 
-    def _teams_alert_of_thread(self, conversation_id, aad_tenant_id, tenants):
+    def _teams_alert_of_thread(self, conversation_id, aad_tenant_id):
         """The alert card a Teams thread hangs off, as {tenant_id, account_id,
-        context}, or None outside an alert's thread. Never fatal."""
+        context}, or None outside an alert's thread, or for an alert with no
+        account recorded. Never fatal."""
         root = card_actions.thread_root_of(conversation_id)
         if not root:
             return None
         try:
             with Session(self.session.get_bind()) as session:
                 tenant_id = ms_teams_aad_tenant_owner(session, aad_tenant_id, enabled_only=True)
-            if not tenant_id or tenant_id not in {str(t) for t in tenants}:
+            if not tenant_id:
                 return None
             stored = card_actions.stored_card(tenant_id, card_actions.channel_of(conversation_id), root)
         except Exception as e:
             LOG.warning("Looking up the Teams card under thread %s failed: %s", conversation_id, e)
             return None
-        if not stored or stored["kind"] != "finding":
+        if not stored or stored["kind"] != "finding" or not stored["account_id"]:
             return None
         return {
             "tenant_id": tenant_id,
