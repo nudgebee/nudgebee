@@ -351,7 +351,7 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 	if err != nil {
 		// Libraries put the failing request in the message — a URL carrying an
 		// api_key, say — so credential values are scrubbed before it goes anywhere.
-		errText := ScrubSecretValues(err.Error(), SecretValues(globalContext.Secrets))
+		errText := logsafe.ScrubSecretValues(err.Error(), logsafe.SecretValues(globalContext.Secrets))
 		logger.Error("Activity failed", "taskID", taskID, "error", errText, "params", globalContext.Tasks[taskID])
 		// find task to run on_failure
 		if currentTask.Hooks != nil && len(currentTask.Hooks.Failure) > 0 {
@@ -746,7 +746,7 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	for k, v := range configsResponse.Secrets {
 		templateContext.Secrets[k] = v
 	}
-	secretValues = SecretValues(templateContext.Secrets)
+	secretValues = logsafe.SecretValues(templateContext.Secrets)
 
 	// Run Tasks using the recursive loop function
 	taskRegistry := tasks.NewInitializedTaskRegistry()
@@ -762,7 +762,7 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	_, executionTrace, workflowError := processTaskLoop(ctx, wf.Definition.Tasks, templateContext, logger, pendingApprovalTokens, approvalTokenSignalChan, workflow.GetSignalChannel(ctx, "update-workflow-inputs"), wf, info.WorkflowExecution.ID, taskRegistry, e.GetClient(), e.GetConverter(), e.GetStore(), e.ExecuteWorkflowInternal)
 
 	if workflowError != nil {
-		logger.Info("Workflow execution failed because of error", "workflowId", wf.ID, "error", ScrubSecretValues(workflowError.Error(), secretValues))
+		logger.Info("Workflow execution failed because of error", "workflowId", wf.ID, "error", logsafe.ScrubSecretValues(workflowError.Error(), secretValues))
 		if !isChildWorkflow {
 			updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, workflowError, secretValues)
 		} else if !wf.DryRun {
@@ -1940,7 +1940,7 @@ func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Wo
 		// On.Always (below) is owed to a cancel.
 		logger.Info("Workflow canceled")
 	} else if workflowError != nil {
-		logger.Error("Workflow failed", "error", ScrubSecretValues(workflowError.Error(), secretValues))
+		logger.Error("Workflow failed", "error", logsafe.ScrubSecretValues(workflowError.Error(), secretValues))
 		if wf != nil && wf.Definition.Hooks != nil && len(wf.Definition.Hooks.Failure) > 0 {
 			onFailureCtx := createActivityCtxForAction(ctx)
 			if err := executeSimpleActions(onFailureCtx, wf.Definition.Hooks.Failure, NewTemplateContext(wf.Definition.Inputs, inputs)); err != nil {

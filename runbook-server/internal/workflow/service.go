@@ -11,6 +11,7 @@ import (
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/config"
 	"nudgebee/runbook/internal/events"
+	"nudgebee/runbook/internal/logsafe"
 	"nudgebee/runbook/internal/model" // Updated import
 	"nudgebee/runbook/internal/storage"
 	"nudgebee/runbook/internal/tasks"
@@ -1596,7 +1597,7 @@ func (s *Service) DryRunWorkflow(ctx *security.RequestContext, accountId string,
 		}
 	}
 
-	response.Error = ScrubSecretValues(response.Error, s.secretValues(ctx, accountId))
+	response.Error = logsafe.ScrubSecretValues(response.Error, s.secretValues(ctx, accountId))
 
 	return response, nil
 }
@@ -4052,7 +4053,7 @@ func (s *Service) secretValues(ctx *security.RequestContext, accountID string) [
 			secrets[cfg.Key] = cfg.Value
 		}
 	}
-	return SecretValues(secrets)
+	return logsafe.SecretValues(secrets)
 }
 
 func (s *Service) ValidateWorkflow(ctx *security.RequestContext, accountId string, wf model.Workflow) error {

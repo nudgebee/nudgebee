@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"nudgebee/runbook/internal/logsafe"
 	"nudgebee/runbook/internal/tasks/safehttp"
 	"nudgebee/runbook/internal/tasks/types"
 	"time"
@@ -47,7 +48,7 @@ func (t *LLMA2ATask) Execute(taskCtx types.TaskContext, params map[string]any) (
 	// SSRF defense: reject URLs that resolve to internal IPs (loopback, RFC1918,
 	// link-local). Defense in depth via the transport's DialContext below.
 	if err := safehttp.ValidateURL(urlVal); err != nil {
-		return nil, fmt.Errorf("url failed safety validation: %w", err)
+		return nil, fmt.Errorf("url failed safety validation: %w", logsafe.RedactURLError(err))
 	}
 
 	methodVal, ok := params["method"].(string)
@@ -111,7 +112,7 @@ func (t *LLMA2ATask) Execute(taskCtx types.TaskContext, params map[string]any) (
 	// Execute Request
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
+		return nil, fmt.Errorf("failed to execute request: %w", logsafe.RedactURLError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 

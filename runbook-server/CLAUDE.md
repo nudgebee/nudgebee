@@ -25,7 +25,9 @@ make swag              # regenerate OpenAPI after changing handler annotations
 
 1. **Credentials never reach logs, step inputs, errors or state.** Anything rendered from
    `{{ Secrets.* }}` is tracked and masked (`internal/workflow/redaction.go`); `set_state` refuses
-   secret-derived values. Log task results with `internal/logsafe` (`logsafe.Shape`), never the
+   secret-derived values. A step's logger and returned error mask the account's secret values
+   (`internal/tasks/secret_scrub.go`), but a URL typed in plain is not a secret: log it with
+   `logsafe.RedactURL`. Log task results with `internal/logsafe` (`logsafe.Shape`), never the
    raw value. Run the `redaction_*_test.go` suite when touching templating, executor or outputs.
 2. **Tasks run against real systems.** Dry-run is *not* a sandbox: only a few tasks honour
    `_dry_run` (see README → Glossary). A new task with side effects should honour it or say why

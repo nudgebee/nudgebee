@@ -157,8 +157,9 @@ func (s *IntegrationTestSuite) SetupSuite() {
 
 	taskRegistry := tasks.NewInitializedTaskRegistry()
 	taskWorker := s.workflowExecutor.GetWorker()
+	secretLoader := workflow.StepSecretLoader(s.configService)
 	for _, task := range taskRegistry.ListTasks() {
-		wrapper := &tasks.TaskWrapper{Task: task, TemporalClient: s.workflowExecutor.GetClient(), Store: s.testWorkflowDao, Converter: dc}
+		wrapper := &tasks.TaskWrapper{Task: task, TemporalClient: s.workflowExecutor.GetClient(), Store: s.testWorkflowDao, Converter: dc, Secrets: secretLoader}
 		taskWorker.RegisterActivityWithOptions(wrapper.Execute, activity.RegisterOptions{
 			Name: task.GetName(),
 		})
