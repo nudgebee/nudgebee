@@ -20,6 +20,7 @@ import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import AutoAwesomeRoundedIcon from '@mui/icons-material/AutoAwesomeRounded';
 import SearchOffRoundedIcon from '@mui/icons-material/SearchOffRounded';
+import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import FilterListIcon from '@mui/icons-material/FilterList';
@@ -934,6 +935,9 @@ const ServiceMapContent = ({ cardElevation, height }) => {
 
   const [isFilterLoading, setIsFilterLoading] = useState(true);
   const [isGraphLoading, setIsGraphLoading] = useState(true);
+  // The last graph request failed — the canvas says so instead of showing an
+  // empty result, and Apply stays enabled to retry the same filters (#41498).
+  const [graphLoadError, setGraphLoadError] = useState(false);
   const [rawData, setRawData] = useState({ nodes: [], edges: [] });
   const [selectedAccountIds, setSelectedAccountIds] = useState([]);
   const [accounts, setAccounts] = useState([]);
@@ -1321,6 +1325,8 @@ const ServiceMapContent = ({ cardElevation, height }) => {
 
       const userFilters = acIds?.length > 0 || nIds?.length > 0 || nTypes?.length > 0 || !!lblFilters || !!attrFilters;
 
+      setGraphLoadError(false);
+
       if (!userFilters && (kgNodeCount || 0) > MAX_NODE_LIMIT) {
         setRawData({ nodes: [], edges: [] });
         setIsGraphLoading(false);
@@ -1379,6 +1385,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
             console.error('Failed to fetch knowledge graph:', errorMessage || `status ${res?.status ?? 'unknown'}`);
             snackbar.error('Failed to load knowledge graph data.');
             setRawData({ nodes: [], edges: [] });
+            setGraphLoadError(true);
             setIsGraphLoading(false);
             return;
           }
@@ -1394,6 +1401,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
           // Same as the error paths above: drop the previous filters' graph so
           // it can't be shown or downloaded as this request's result.
           setRawData({ nodes: [], edges: [] });
+          setGraphLoadError(true);
           setIsGraphLoading(false);
         });
     },
@@ -1626,6 +1634,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
   const isGraphRendered = !isLimitExceeded && nodes.length > 0;
   let downloadDisabledReason = '';
   if (isGraphLoading) downloadDisabledReason = 'Loading the graph…';
+  else if (graphLoadError) downloadDisabledReason = 'The graph failed to load.';
   else if (!hasUserFilters && isLimitExceeded)
     downloadDisabledReason = `The whole graph has ${kgNodeCount.toLocaleString()} nodes, too many to load. Apply a filter to download.`;
   else if (!initialNodes.length) downloadDisabledReason = hasUserFilters ? 'No nodes match your filters.' : 'The knowledge graph is empty.';
@@ -2200,6 +2209,13 @@ const ServiceMapContent = ({ cardElevation, height }) => {
   ]);
 
   const handleApply = useCallback(() => {
+    // Nothing changed: Apply is only enabled to retry a failed load. Refetch the
+    // applied filters — no history step, and no skip flag, since no applied
+    // state changes to consume it.
+    if (!hasChanges) {
+      fetchGraph();
+      return;
+    }
     pushToHistory();
     // Fire the API call immediately with draft values — don't wait for the
     // React render cycle (unmounting a large ReactFlow graph is slow and
@@ -2232,6 +2248,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
     queryItemsLabel,
     fetchGraph,
     pushToHistory,
+    hasChanges,
   ]);
 
   const handleClear = useCallback(() => {
@@ -2751,7 +2768,14 @@ const ServiceMapContent = ({ cardElevation, height }) => {
             </Box>
 
             <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', pt: 'var(--ds-space-1)' }}>
-              <Button data-testid='kg-apply-filters-btn' tone='primary' size='sm' onClick={handleApply} disabled={!hasChanges} fullWidth>
+              <Button
+                data-testid='kg-apply-filters-btn'
+                tone='primary'
+                size='sm'
+                onClick={handleApply}
+                disabled={!hasChanges && !graphLoadError}
+                fullWidth
+              >
                 Apply Filters
               </Button>
               <Button data-testid='kg-clear-filters-btn' tone='secondary' size='sm' onClick={handleClear} fullWidth>
@@ -2971,6 +2995,69 @@ const ServiceMapContent = ({ cardElevation, height }) => {
             )}
             {isGraphLoading ? (
               <Loader style={{ position: 'static', width: '100%', height: '100%' }} />
+            ) : graphLoadError ? (
+              <Box
+                data-testid='kg-load-error'
+                display='flex'
+                flexDirection='column'
+                alignItems='center'
+                justifyContent='center'
+                height='100%'
+                width='100%'
+                p={ds.space[6]}
+              >
+                <Box
+                  sx={{
+                    maxWidth: ds.space.mul(0, 240),
+                    width: '100%',
+                    textAlign: 'center',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 'var(--ds-space-5)',
+                  }}
+                >
+                  <Box
+                    sx={{
+                      width: ds.space.mul(0, 32),
+                      height: ds.space.mul(0, 32),
+                      borderRadius: 'var(--ds-radius-pill)',
+                      background: 'linear-gradient(135deg, var(--ds-red-100) 0%, var(--ds-red-200) 100%)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <ErrorOutlineRoundedIcon sx={{ fontSize: 32, color: 'var(--ds-red-500)' }} />
+                  </Box>
+
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+                    <Typography
+                      sx={{
+                        fontSize: 'var(--ds-text-heading)',
+                        fontWeight: 'var(--ds-font-weight-semibold)',
+                        fontFamily: ds.font.display,
+                        color: ds.gray[700],
+                      }}
+                    >
+                      The knowledge graph could not be loaded
+                    </Typography>
+                    <Typography
+                      sx={{
+                        fontSize: 'var(--ds-text-body)',
+                        fontWeight: 'var(--ds-font-weight-regular)',
+                        color: ds.gray[600],
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      The request failed, so this is not an empty result. Try again with the same filters.
+                    </Typography>
+                  </Box>
+                  <Button data-testid='kg-load-error-retry-btn' tone='secondary' size='sm' onClick={() => fetchGraph()}>
+                    Retry
+                  </Button>
+                </Box>
+              </Box>
             ) : isLimitExceeded ? (
               <Box display='flex' flexDirection='column' alignItems='center' justifyContent='center' height='100%' width='100%' p={ds.space[6]}>
                 <Box
