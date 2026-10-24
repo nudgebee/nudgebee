@@ -81,6 +81,20 @@ from notifications_server.message_templates.google_chat.grouped_anomaly_notifica
     get_grouped_anomaly_alerts_gchat_template,
 )
 
+from notifications_server.message_templates.slack.grouped_batch_notification import (
+    get_grouped_batch_findings_template,
+    get_batch_findings_aggregated_message_params,
+)
+from notifications_server.message_templates.ms_teams.grouped_batch_notification import (
+    get_grouped_batch_findings_ms_teams_template,
+)
+from notifications_server.message_templates.google_chat.grouped_batch_notification import (
+    get_grouped_batch_findings_gchat_template,
+)
+from notifications_server.message_templates.discord.grouped_batch_notification import (
+    get_discord_grouped_batch_findings_template,
+)
+
 from notifications_server.message_templates.slack.generic import (
     get_generic_message_params,
     get_slack_generic_message_template,
@@ -264,6 +278,13 @@ template_mapping = {
         "ms_teams": get_grouped_anomaly_alerts_ms_teams_template,
         "google_chat": get_grouped_anomaly_alerts_gchat_template,
         "discord": get_discord_grouped_anomaly_template,
+    },
+    "grouped_batch": {
+        "common_params": get_batch_findings_aggregated_message_params,
+        "slack": get_grouped_batch_findings_template,
+        "ms_teams": get_grouped_batch_findings_ms_teams_template,
+        "google_chat": get_grouped_batch_findings_gchat_template,
+        "discord": get_discord_grouped_batch_findings_template,
     },
     "recommendation_nudge_digest": {
         "common_params": get_recommendation_nudge_digest_message_params,

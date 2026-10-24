@@ -19,6 +19,13 @@ from notifications_server.message_templates.slack.grouped_anomaly_notification i
     AnomalyAlertParams,
     get_grouped_anomaly_alerts_template,
 )
+from notifications_server.message_templates.slack.grouped_batch_notification import (
+    MAX_BATCH_ITEMS,
+    BatchFindingItem,
+    get_batch_findings_aggregated_message_params,
+    get_grouped_batch_findings_template,
+    item_details_url,
+)
 from notifications_server.message_templates.slack.grouped_slo_notification import (
     get_grouped_slo_alerts_template,
 )
@@ -214,6 +221,105 @@ class TestBatchedFindings:
         assert_no_blocks_in_attachments(msg)
         assert msg["attachments"][0]["color"] == "#C93A36"
         assert msg["attachments"][-1]["color"] == "#94A3B8"  # neutral footer
+
+
+def _batch_event(i, with_id=True, account_name="prod-aws", account_id="acc-1", priority="high"):
+    return {
+        "id": f"f-{i}" if with_id else None,
+        "title": f"Issue {i}",
+        "priority": priority,
+        "account_name": account_name,
+        "cloud_account_id": account_id,
+    }
+
+
+class TestGroupedBatchFindings:
+    def test_caps_items_and_counts_overflow(self):
+        params = get_batch_findings_aggregated_message_params([_batch_event(i) for i in range(8)])
+        assert len(params.items) == MAX_BATCH_ITEMS == 5
+        assert params.overflow_count == 3
+        assert params.total_count == 8
+
+    def test_under_cap_has_no_overflow(self):
+        params = get_batch_findings_aggregated_message_params([_batch_event(i) for i in range(3)])
+        assert len(params.items) == 3
+        assert params.overflow_count == 0
+
+    def test_sparse_finding_falls_back_to_defaults(self):
+        item = get_batch_findings_aggregated_message_params([{}]).items[0]
+        assert item.title == "Untitled finding"
+        assert item.severity == "" and item.account == ""
+        assert item.account_id == "" and item.finding_id == ""
+
+    def test_account_display_name_preferred_over_raw_id(self):
+        item = get_batch_findings_aggregated_message_params([_batch_event(0)]).items[0]
+        assert item.account == "prod-aws" and item.account_id == "acc-1"
+
+    def test_account_falls_back_to_raw_id_without_a_display_name(self):
+        event = {"id": "f-0", "title": "x", "cloud_account_id": "acc-1"}
+        item = get_batch_findings_aggregated_message_params([event]).items[0]
+        assert item.account == "acc-1"
+
+    def test_account_ids_are_deduped_and_sorted(self):
+        events = [
+            _batch_event(0, account_id="acc-2"),
+            _batch_event(1, account_id="acc-1"),
+            _batch_event(2, account_id="acc-2"),
+        ]
+        assert get_batch_findings_aggregated_message_params(events).account_ids == ["acc-1", "acc-2"]
+
+    def test_window_is_floored_at_an_hour(self):
+        params = get_batch_findings_aggregated_message_params([_batch_event(0)])
+        assert params.window_end_ms - params.window_start_ms >= 3600_000
+
+    def test_headline_and_items_render(self):
+        params = get_batch_findings_aggregated_message_params([_batch_event(i) for i in range(3)])
+        text = _text(get_grouped_batch_findings_template(params))
+        assert "3 findings held for this hour's digest" in text
+        assert "Issue 0" in text and "Issue 2" in text
+
+    def test_single_finding_headline_is_singular(self):
+        params = get_batch_findings_aggregated_message_params([_batch_event(0)])
+        text = _text(get_grouped_batch_findings_template(params))
+        assert "1 finding held for this hour's digest" in text
+
+    def test_each_item_with_an_id_gets_a_details_button(self):
+        params = get_batch_findings_aggregated_message_params([_batch_event(i) for i in range(3)])
+        details = [b for b in _buttons(get_grouped_batch_findings_template(params)) if b["text"] == "Details"]
+        assert len(details) == 3
+        assert "id=f-0" in details[0]["url"] and "accountId=acc-1" in details[0]["url"]
+
+    def test_item_without_an_id_gets_no_details_button(self):
+        params = get_batch_findings_aggregated_message_params([_batch_event(0, with_id=False)])
+        assert [b for b in _buttons(get_grouped_batch_findings_template(params)) if b["text"] == "Details"] == []
+
+    def test_view_all_button_only_appears_on_overflow(self):
+        under = get_grouped_batch_findings_template(get_batch_findings_aggregated_message_params([_batch_event(0)]))
+        assert [b for b in _buttons(under) if b["text"] == "View All Findings"] == []
+
+        over = get_grouped_batch_findings_template(
+            get_batch_findings_aggregated_message_params([_batch_event(i) for i in range(8)])
+        )
+        view_all = [b for b in _buttons(over) if b["text"] == "View All Findings"]
+        assert len(view_all) == 1
+        assert "/troubleshoot" in view_all[0]["url"] and "accountIds=acc-1" in view_all[0]["url"]
+
+    def test_overflow_line_counts_remaining_items(self):
+        params = get_batch_findings_aggregated_message_params([_batch_event(i) for i in range(8)])
+        assert "+3 more findings" in _text(get_grouped_batch_findings_template(params))
+
+    def test_items_are_legacy_attachments(self):
+        msg = get_grouped_batch_findings_template(get_batch_findings_aggregated_message_params([_batch_event(0)]))
+        assert_no_blocks_in_attachments(msg)
+        assert msg["attachments"][0]["color"] == "#94A3B8"
+
+    def test_item_details_url_is_none_without_a_finding_id(self):
+        item = BatchFindingItem(title="x", account_id="acc-1", finding_id="")
+        assert item_details_url(item, "slack") is None
+
+    def test_item_details_url_is_none_without_an_account_id(self):
+        item = BatchFindingItem(title="x", account_id="", finding_id="f-1")
+        assert item_details_url(item, "slack") is None
 
 
 def _slo(name: str, current="99.42%", target="99.90%", burn=14, budget="22%") -> SLOAlertParams:

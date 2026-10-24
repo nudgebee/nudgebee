@@ -894,9 +894,17 @@ def rule_category(type_, payload):
 
 def grouped_unit(index, group_type, item):
     """(key, message type, payload) to match one queued alert of a group. An
-    anomaly is queued as its finding, so it is matched as the finding it is."""
+    anomaly is queued as its finding, so it is matched as the finding it is.
+    A batch-delivery item is a finding too, under its own real source rather
+    than a hardcoded one, so it re-matches the same rule that queued it."""
     if group_type == "anomaly":
         return index, "finding", {"source": "anomaly", "parameters": {"finding": item.get("parameters") or {}}}
+    if group_type == "batch":
+        return (
+            index,
+            "finding",
+            {"source": item.get("source") or "", "parameters": {"finding": item.get("parameters") or {}}},
+        )
     return index, group_type, item
 
 
@@ -1184,8 +1192,15 @@ class GroupedMessageHandler:
 
                     # Each alert is matched on its own, so every channel gets only
                     # the alerts routed to it; anomalies match as troubleshooting findings.
+                    # A batch item's own rule still matches here — honour_batch=False
+                    # keeps it from being held for batch delivery a second time.
                     routes = await self.message_service.route_units(
-                        session, tenant_id, units, installed_platforms, dispatch=dispatch
+                        session,
+                        tenant_id,
+                        units,
+                        installed_platforms,
+                        dispatch=dispatch,
+                        honour_batch=(orig_type != "batch"),
                     )
                     if not routes:
                         LOG.debug("Nothing to send for %s: every alert was stopped by the rules", key)
@@ -1371,7 +1386,7 @@ class MessageService:
                 )
                 delivery_records.routed(dispatch, outcome, payload)
                 if outcome.response is not None:
-                    return outcome.response
+                    return await self._handle_stopped_outcome(type_, source, tenant_id, parameters, outcome.response)
 
                 installed_platforms = await self.get_installed_platforms_from_cache_or_db(session, tenant_id)
                 installed_platforms = self._scope_to_retry_platforms(
@@ -1432,6 +1447,29 @@ class MessageService:
             return await self.group_handler.enqueue(anomaly)
 
         return None
+
+    async def _handle_stopped_outcome(self, type_, source, tenant_id, parameters, response):
+        """response is what resolve_outcome decided for a message it won't
+        deliver now. A finding held for batch delivery is queued for the
+        digest instead of dropped; every other stop (suppressed, snoozed,
+        dropped) returns as resolve_outcome already decided it."""
+        if type_ == "finding" and response and response[0].get("status") == "queued":
+            return await self._enqueue_batch_finding(source, tenant_id, parameters) or response
+        return response
+
+    async def _enqueue_batch_finding(self, source, tenant_id, parameters):
+        """A finding matched a rule set to hourly batch delivery — hold it for
+        the grouped digest instead of dropping it. Its real source travels
+        with it so the flush re-matches it against the same rule, the way
+        _flush_group already re-matches every grouped item."""
+        finding = parameters.get("finding") or {}
+        batch_item = {
+            "source": source,
+            "type": "batch",
+            "tenant_id": tenant_id,
+            "parameters": finding,
+        }
+        return await self.group_handler.enqueue(batch_item)
 
     async def _queue_returned_anomaly(self, parameters, tenant_id):
         """An anomaly that had cleared and fired again joins the next digest,
@@ -1600,17 +1638,23 @@ class MessageService:
         overridden = {ip.platform for ip in integration_installs}
         return [ip for ip in installs if ip.platform not in overridden] + integration_installs
 
-    async def route_units(self, session, tenant_id, units, installed_platforms, dispatch=None):
+    async def route_units(self, session, tenant_id, units, installed_platforms, dispatch=None, honour_batch=True):
         """Match each unit — (key, message type, payload) for one account or one
         alert — on its own and group the keys by the channel they go to. Returns
         [(installation, channel, [keys])]; stopped units go nowhere. dispatch
-        collects the rules that routed or stopped any unit."""
+        collects the rules that routed or stopped any unit. honour_batch=False
+        is for the batch digest's own flush: a unit already held for batch
+        delivery must route to its rule's channels here, not be held again."""
         channels = {}
         for key, type_, payload in units:
             matched_rules, source = await self.rule_matcher.match_notification_rules(session, tenant_id, type_, payload)
             default_policy = await self.rule_matcher.rules_service.get_default_policy(tenant_id, source)
             outcome = resolve_outcome(
-                matched_rules, source=source, event_type=payload.get("event_type"), default_policy=default_policy
+                matched_rules,
+                source=source,
+                event_type=payload.get("event_type"),
+                honour_batch=honour_batch,
+                default_policy=default_policy,
             )
             if dispatch is not None:
                 dispatch.matched.extend(matched_rules)

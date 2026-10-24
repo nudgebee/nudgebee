@@ -813,3 +813,142 @@ def _request(payload):
         thread=None,
         dict=lambda **_kwargs: json.loads(json.dumps(payload)),
     )
+
+
+# ----------------------------- hourly batch rules (#41422) -----------------------------
+
+
+def _batch_deliver(channels):
+    return {**_deliver(channels), "rule_id": "batch-r", "delivery_mode": "batch"}
+
+
+def _batch_item(account, title, source="prometheus"):
+    return {
+        "source": source,
+        "type": "batch",
+        "tenant_id": TENANT,
+        "parameters": {"account_id": account, "title": title},
+    }
+
+
+BATCH_KEY = "grouped:%s:batch" % TENANT
+
+
+def _flush_batch(service, items):
+    service._group_tasks = {}
+    service._flush_locks = defaultdict(asyncio.Lock)
+    redis_fake = _Redis([])
+    redis_fake.lists = {BATCH_KEY: [json.dumps(item) for item in items]}
+    handler = GroupedMessageHandler(SimpleNamespace(redis_client=redis_fake), service)
+    result = asyncio.run(handler._flush_group(BATCH_KEY))
+    return result, redis_fake
+
+
+def test_grouped_unit_batch_preserves_the_real_source():
+    item = _batch_item(PROD, "cpu high", source="prometheus")
+    assert grouped_unit(2, "batch", item) == (
+        2,
+        "finding",
+        {"source": "prometheus", "parameters": {"finding": {"account_id": PROD, "title": "cpu high"}}},
+    )
+
+
+def test_route_units_holds_a_batch_rule_back_by_default(monkeypatch):
+    """send_rollup and the SLO/anomaly flush call route_units with no
+    honour_batch argument (default True) — a batch-mode rule must still be
+    held back there, since those two code paths never shared a batch-mode
+    rule before #41422."""
+    service = _service({PROD: [_batch_deliver(OPS)]}, monkeypatch)
+    unit = (0, "finding", {"source": "prometheus", "parameters": {"finding": {"account_id": PROD}}})
+
+    async def run():
+        async with message_module.BaseDB.async_session(service.engine)() as session:
+            return await service.route_units(session, TENANT, [unit], service.installs)
+
+    assert asyncio.run(run()) == []
+
+
+def test_route_units_honour_batch_false_routes_the_batch_rules_channel(monkeypatch):
+    service = _service({PROD: [_batch_deliver(OPS)]}, monkeypatch)
+    unit = (0, "finding", {"source": "prometheus", "parameters": {"finding": {"account_id": PROD}}})
+
+    async def run():
+        async with message_module.BaseDB.async_session(service.engine)() as session:
+            return await service.route_units(session, TENANT, [unit], service.installs, honour_batch=False)
+
+    routes = asyncio.run(run())
+
+    assert len(routes) == 1
+    _ip, channel, keys = routes[0]
+    assert channel == OPS and keys == [0]
+
+
+def test_handle_stopped_outcome_enqueues_a_queued_finding_not_other_stops(monkeypatch):
+    service = _service({}, monkeypatch)
+    queued = []
+
+    async def enqueue(payload):
+        queued.append(payload)
+        return {"status": "queued"}
+
+    service.group_handler = SimpleNamespace(enqueue=enqueue)
+    finding = {"account_id": PROD, "title": "cpu high"}
+
+    queued_result = asyncio.run(
+        service._handle_stopped_outcome("finding", "prometheus", TENANT, {"finding": finding}, [{"status": "queued"}])
+    )
+    suppressed_result = asyncio.run(
+        service._handle_stopped_outcome(
+            "finding", "prometheus", TENANT, {"finding": finding}, [{"status": "suppressed"}]
+        )
+    )
+
+    assert queued_result == {"status": "queued"}
+    assert suppressed_result == [{"status": "suppressed"}]
+    assert queued == [{"source": "prometheus", "type": "batch", "tenant_id": TENANT, "parameters": finding}]
+
+
+def test_a_batch_rule_finding_is_queued_through_send_message(monkeypatch):
+    service = _service({PROD: [_batch_deliver(OPS)]}, monkeypatch)
+    queued = []
+
+    async def enqueue(payload):
+        queued.append(payload)
+        return {"status": "queued"}
+
+    service.group_handler = SimpleNamespace(enqueue=enqueue)
+    request = _request(
+        {
+            "type": "finding",
+            "source": "prometheus",
+            "parameters": {"finding": {"account_id": PROD, "title": "cpu high"}},
+        }
+    )
+
+    responses = asyncio.run(service.send_message(request))
+
+    assert responses == {"status": "queued"}
+    assert queued == [
+        {
+            # the resolved rule-source category, not the raw "prometheus" —
+            # it must re-match the same rule category when flushed.
+            "source": "troubleshoot",
+            "type": "batch",
+            "tenant_id": TENANT,
+            "parameters": {"account_id": PROD, "title": "cpu high"},
+        }
+    ]
+
+
+def test_a_batch_rule_finding_flushes_to_its_own_rules_channel(monkeypatch):
+    """Full round trip: a finding held for batch delivery, once flushed, must
+    reach the channel its own rule names — not be held back again (that
+    would silently drop every batch item forever, the bug route_units'
+    honour_batch=False at flush time exists to close)."""
+    service = _service({PROD: [_batch_deliver(OPS)]}, monkeypatch)
+
+    result, _redis_fake = _flush_batch(service, [_batch_item(PROD, "cpu high")])
+
+    assert result == {"status": "ok"}
+    assert service.sent and service.sent[0][1] == OPS
+    assert [event["title"] for event in service.sent[0][2]["events"]] == ["cpu high"]
