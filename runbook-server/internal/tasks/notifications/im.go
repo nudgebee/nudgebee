@@ -2,7 +2,6 @@ package notifications
 
 import (
 	"errors"
-	"fmt"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/notification"
 
@@ -97,7 +96,8 @@ func (t *ImSendTask) Execute(taskCtx types.TaskContext, params map[string]any) (
 		}
 	}
 	if err == nil && (resp.Status == notification.StatusFailed || resp.Status == notification.StatusNotSent) {
-		message := fmt.Sprintf("notifications: the message was not delivered (%s)", resp.Reason)
+		output["reason"] = resp.Reason
+		message := notification.NotDeliveredMessage(request.Platform, channel, resp.Reason)
 		if resp.Status == notification.StatusNotSent || (resp.Retryable != nil && !*resp.Retryable) {
 			return output, temporal.NewNonRetryableApplicationError(message, types.ErrTypeNotificationNotDelivered, nil)
 		}
@@ -176,7 +176,7 @@ func (t *ImSendTask) OutputSchema() *types.Schema {
 			},
 			"reason": {
 				Type:        "string",
-				Description: "Why the message was not delivered, e.g. which notification rule suppressed it. Set only when status is suppressed.",
+				Description: "Why the message was not delivered: which notification rule suppressed it, or the reason code (e.g. no_destination, channel_not_found) when status is failed or not_sent.",
 				Required:    false,
 			},
 			"rule_management_url": {

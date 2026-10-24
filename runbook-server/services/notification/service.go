@@ -161,7 +161,7 @@ func SendNotification(ctx *security.RequestContext, request SendImNotificationRe
 	}
 
 	if len(responses) == 0 {
-		return SendImNotificationResponse{}, errors.New("notifications: unable to parse response")
+		return SendImNotificationResponse{}, errors.New("notifications: nothing was sent; the notifications service returned no result")
 	}
 
 	return responses[0], nil

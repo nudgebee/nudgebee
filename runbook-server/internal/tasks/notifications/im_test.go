@@ -50,15 +50,27 @@ func TestImSendTask_FailsNamingTheReasonWhenNothingWasPosted(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			serveSendResult(t, tc.result)
 
-			_, err := (&ImSendTask{}).Execute(newImTaskContext(), imParams())
+			output, err := (&ImSendTask{}).Execute(newImTaskContext(), imParams())
 
 			var appErr *temporal.ApplicationError
 			require.ErrorAs(t, err, &appErr)
 			assert.Equal(t, types.ErrTypeNotificationNotDelivered, appErr.Type())
 			assert.Equal(t, tc.nonRetryable, appErr.NonRetryable())
-			assert.ErrorContains(t, err, tc.result["reason"].(string))
+			assert.Equal(t, tc.result["reason"], output.(map[string]any)["reason"])
 		})
 	}
+}
+
+func TestImSendTask_ErrorNamesTheMissingConnection(t *testing.T) {
+	serveSendResult(t, map[string]any{"platform": "system", "status": "not_sent", "reason": "no_destination"})
+	params := imParams()
+	params["provider"] = "ms_teams"
+
+	_, err := (&ImSendTask{}).Execute(newImTaskContext(), params)
+
+	var appErr *temporal.ApplicationError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, "Microsoft Teams isn't connected for this tenant. Connect the Microsoft Teams app in Integrations, or pick another provider.", appErr.Message())
 }
 
 func TestImSendTask_ASuppressedMessageStillCompletes(t *testing.T) {

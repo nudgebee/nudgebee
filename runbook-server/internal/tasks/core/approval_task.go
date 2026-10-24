@@ -124,7 +124,7 @@ func (t *ApprovalTask) Execute(taskCtx types.TaskContext, params map[string]any)
 			// and the signal might still come through other means or the user might retry the notification.
 		} else if resp.Status == notification.StatusFailed || resp.Status == notification.StatusNotSent {
 			// Not failed either, for the same reason.
-			taskCtx.GetLogger().Warn("The approval request was not posted", "status", resp.Status, "reason", resp.Reason)
+			taskCtx.GetLogger().Warn("The approval request was not posted", "status", resp.Status, "reason", resp.Reason, "details", notification.NotDeliveredMessage(imProvider, imChannel, resp.Reason))
 		} else if resp.MessageTs != "" {
 			// Stash the originating IM coordinates as activity heartbeat data so
 			// CompleteApprovalTask can surface them in the task output for #29110
