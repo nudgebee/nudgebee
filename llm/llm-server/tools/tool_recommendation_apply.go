@@ -256,7 +256,7 @@ func (m RecommendationApplyTool) Call(nbCtx core.NbToolContext, input core.NBToo
 		object["provider_config"] = providerConfig
 	}
 
-	resp, err := doApiServerActionRequest(nbCtx, "/rpc/recommendation", "recommendations_apply", map[string]any{"object": object}, "recommendation_apply")
+	resp, err := doApiServerActionRequest(nbCtx, "/rpc/recommendation", "recommendations_apply", recommendationsExecuteKey, map[string]any{"object": object}, "recommendation_apply")
 	if err != nil {
 		nbCtx.Ctx.GetLogger().Error("recommendation_apply: apply failed", "error", err, "recommendation_id", recommendationId)
 		return errNBLLMToolResponse(err), nil

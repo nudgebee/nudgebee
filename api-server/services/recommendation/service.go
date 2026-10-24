@@ -160,7 +160,7 @@ func hasInProgressRecommendation(existingRecommendations []models.Recommendation
 }
 
 func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApplyRequest) (RecommendationApplyResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(query.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
 		return RecommendationApplyResponse{}, common.ErrorUnauthorized("error: account access not found")
 	}
 	if query.ProviderConfig == nil {
@@ -911,7 +911,7 @@ var recommendationJobProviderMap = map[string]string{
 func CreateRecommendationJob(ctx *security.RequestContext, query RecommendationJobCreateRequest) (RecommendationJobCreateResponse, error) {
 	ctx.GetLogger().Info("Creating recommendation job", "query", slog.AnyValue(query))
 
-	if !ctx.GetSecurityContext().HasAccountAccess(query.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
 		return RecommendationJobCreateResponse{}, common.ErrorUnauthorized("error: account access not found")
 	}
 

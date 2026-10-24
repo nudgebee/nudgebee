@@ -1050,7 +1050,7 @@ func (NudgebeeIntegrationDiagnoseTool) Call(nbCtx core.NbToolContext, input core
 	if integrationID == "" {
 		return triageErrorResponse(errors.New("nudgebee_integration_diagnose requires an exact integration id")), nil
 	}
-	data, err := doApiServerActionRequest(nbCtx, "/rpc/integration", "integrations_diagnose_connection", map[string]any{
+	data, err := doApiServerActionRequest(nbCtx, "/rpc/integration", "integrations_diagnose_connection", "", map[string]any{
 		"request": map[string]any{"integration_id": integrationID},
 	}, ToolNudgebeeIntegrationDiagnose)
 	if err != nil {

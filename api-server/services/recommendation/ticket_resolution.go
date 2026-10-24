@@ -46,7 +46,7 @@ func RecordTicketResolution(ctx *security.RequestContext, request Recommendation
 	if err := common.ValidateStruct(request); err != nil {
 		return RecommendationTicketResolutionResponse{}, fmt.Errorf("invalid ticket resolution request: %w", err)
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.CanAccessAccount(request.AccountId, security.SecurityAccessTypeCreate) {
 		return RecommendationTicketResolutionResponse{}, common.ErrorUnauthorized("error: account access not found")
 	}
 

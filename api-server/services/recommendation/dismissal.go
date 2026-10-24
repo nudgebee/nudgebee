@@ -33,7 +33,7 @@ func UpdateRecommendationDismissal(ctx *security.RequestContext, request Recomme
 	if err := common.ValidateStruct(request); err != nil {
 		return RecommendationDismissalResponse{}, fmt.Errorf("invalid dismissal request: %w", err)
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.CanAccessAccount(request.AccountId, security.SecurityAccessTypeCreate) {
 		return RecommendationDismissalResponse{}, common.ErrorUnauthorized("error: account access not found")
 	}
 

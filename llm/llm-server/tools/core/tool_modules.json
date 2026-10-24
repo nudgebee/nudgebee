@@ -164,7 +164,8 @@
       "recommendations"
     ],
     "recommendation_execute_cli": [
-      "recommendations"
+      "recommendations",
+      "cloud"
     ],
     "recommendation_record_ticket_resolution": [
       "recommendations"

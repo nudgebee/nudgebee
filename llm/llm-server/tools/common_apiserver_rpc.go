@@ -17,13 +17,26 @@ import (
 	"nudgebee/llm/tools/core"
 )
 
+// Grant keys sent with a change the AI makes through an api-server action.
+// The call skips the app gateway, which is what classifies an action, so
+// api-server's account check (CanAccessAccount) gets its key from here: without
+// one it honours only built-in roles. A change the AI makes needs Execute, and
+// the module is one the calling tool's grant scope (tool_modules.json) already
+// requires at dispatch, so both services ask for the same grant
+// (TestApiServerGrantKeysMatchTheToolsGrantScope).
+const (
+	recommendationsExecuteKey = "recommendations:Execute"
+	cloudExecuteKey           = "cloud:Execute"
+)
+
 // doApiServerActionRequest posts an action request to an api-server /rpc/*
 // endpoint on behalf of the requesting user: X-ACTION-TOKEN authenticates the
 // service hop, and x-tenant-id / x-user-id let api-server rebuild the user's
 // own SecurityContext, so the RPC handler enforces the user's real role.
 // x-user-id uses EffectiveUserIdForRPC — omitting it would silently escalate
-// the call to tenant-admin on the api-server side.
-func doApiServerActionRequest(nbCtx core.NbToolContext, rpcPath string, actionName string, input map[string]any, errPrefix string) (string, error) {
+// the call to tenant-admin on the api-server side. permission is the action's
+// grant key ("" when it has none), checked against the same user.
+func doApiServerActionRequest(nbCtx core.NbToolContext, rpcPath string, actionName string, permission string, input map[string]any, errPrefix string) (string, error) {
 	tenant := ""
 	if nbCtx.Ctx != nil {
 		if sc := nbCtx.Ctx.GetSecurityContext(); sc != nil {
@@ -61,7 +74,7 @@ func doApiServerActionRequest(nbCtx core.NbToolContext, rpcPath string, actionNa
 	}
 
 	payload := map[string]any{
-		"action": map[string]any{"name": actionName},
+		"action": map[string]any{"name": actionName, "permission": permission},
 		"input":  input,
 	}
 

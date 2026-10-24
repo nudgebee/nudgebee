@@ -136,8 +136,16 @@ func ExecuteScanImageQuery(scanImageRequest ScanImageServiceRequest) (map[string
 	return response, nil
 }
 
+// CisScanActionPermission is the grant key sent with the CIS scan the AI
+// starts (recommendation_job_create). Not the gateway's classification of that
+// action (recommendations:Write, a person creating a job from the UI): a scan
+// the AI runs needs Execute on security, the module its tool (trigger_cis_scan)
+// is checked against at dispatch, as the image scan above.
+const CisScanActionPermission = "security:Execute"
+
 func ExecuteScanCisQuery(scanCisRequest ScanCisServiceRequest) (map[string]string, error) {
 	response := make(map[string]string)
+	scanCisRequest.Action.Permission = CisScanActionPermission
 
 	resp, err := common.HttpPost(fmt.Sprintf("%s/rpc/recommendation", config.Config.ServiceEndpoint), common.HttpWithHeaders(map[string]string{
 		"Content-Type":   contentTypeJson,
