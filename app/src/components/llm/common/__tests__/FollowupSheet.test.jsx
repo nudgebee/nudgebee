@@ -95,7 +95,7 @@ describe('FollowupSheet submit failure', () => {
     fireEvent.change(screen.getByPlaceholderText('Type your response…'), { target: { value: 'yes' } });
     fireEvent.click(screen.getByLabelText('Send'));
 
-    await waitFor(() => expect(onSubmitError).toHaveBeenCalledWith(expect.stringContaining('Budget Limit exceeded')));
+    await waitFor(() => expect(onSubmitError).toHaveBeenCalledWith(expect.stringContaining('Daily budget limit exceeded')));
     expect(onSubmitted).not.toHaveBeenCalled();
   });
 });

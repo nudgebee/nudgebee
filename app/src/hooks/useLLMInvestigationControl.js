@@ -7,7 +7,6 @@ import { buildWorkflowConversationMessages } from '@components/workflow/utils';
 import apiWorkflow from '@api1/workflow';
 import { getUserSession } from '@lib/auth';
 import { configKeyForSource, isWholeConfigSource } from '@utils/llmConfigSource';
-import { getBrandTitle } from '@hooks/useTenantBranding';
 import { getUpstreamStatus, mapUpstreamError } from '@lib/errorMessages';
 import { collectAutoApprovals } from '@components/llm/utils/followupRecord';
 import { buildMessagePlan } from '@components/llm/plan/planState';
@@ -1072,9 +1071,7 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
 
       if (!response?.query && !response?.response) {
         const errorMessage = res?.errors?.[0]?.message;
-        const msg = errorMessage?.includes('budget')
-          ? `Monthly Budget Limit exceeded for this account. Contact ${getBrandTitle()} Support team.`
-          : errorMessage || 'Failed to generate automation.';
+        const msg = errorMessage?.includes('budget') ? mapUpstreamError(429, errorMessage) : errorMessage || 'Failed to generate automation.';
         snackbar.error(msg);
         throw new Error('Automation generation failed');
       }
