@@ -40,7 +40,7 @@ const workspaceSpecAnnotationKey = "nudgebee.com/workspace-spec-version"
 // workspaceSpecVersion is bumped whenever an existing healthy workspace pod
 // must be recreated to pick up a pod-spec-only change. CreateWorkspace checks
 // it during recovery, while the leader sweep upgrades a bounded batch at a time.
-const workspaceSpecVersion = "workspace-readonly-rootfs-v3"
+const workspaceSpecVersion = "workspace-proxy-ca-v5"
 
 const workspaceSpecUpgradeBatchSize = 5
 
@@ -67,6 +67,9 @@ type WorkspaceTokenClaims struct {
 	// Grants is set only on execution tokens (audience AudienceWorkspaceExecute):
 	// the authority of the user whose command is running.
 	Grants *security.WorkspaceGrants `json:"grants,omitempty"`
+	// Scm binds the token to one GitHub/GitLab integration for llm-server's
+	// SCM proxy; set only for gh/glab commands.
+	Scm *ScmClaims `json:"scm,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -464,6 +467,7 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 	args := []string{"/app/code-analysis-agent", "--server"}
 
 	volumes, volumeMounts := workspaceWritableLayout(storageLimit)
+	caVolume, caMount := workspaceProxyCAVolume()
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
@@ -478,7 +482,7 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 			},
 		},
 		Spec: corev1.PodSpec{
-			Volumes: volumes,
+			Volumes: append(volumes, caVolume),
 			// GKE resolves metadata.google.internal to the real metadata IP
 			// (169.254.169.254) inside pods, but the NetworkPolicy blackholes
 			// that IP to prevent IMDS credential theft — silently dropping
@@ -510,7 +514,7 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 						},
 					},
 					Resources:    buildWorkspaceResources(),
-					VolumeMounts: volumeMounts,
+					VolumeMounts: append(volumeMounts, caMount),
 					ReadinessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
 							HTTPGet: &corev1.HTTPGetAction{
@@ -1129,7 +1133,7 @@ func isAgentContractViolation(result executeResponse) bool {
 	return result.CommandStatus == "success" && result.Error != ""
 }
 
-func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountId string, conversationId string, command string, env map[string]string) (string, error) {
+func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountId string, conversationId string, command string, env map[string]string) (out string, err error) {
 	if accountId == "" {
 		ctx.GetLogger().Error("workspace: accountId is required for direct execution")
 		return "", fmt.Errorf("workspace: accountId is required")
@@ -1142,10 +1146,17 @@ func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountI
 	}
 	logger.Info("workspace: executing command", "command_preview", cmdLog, "account_id", accountId, "conversation_id", conversationId)
 
-	env, err := w.commandEnv(ctx, accountId, env)
+	env, err = w.commandEnv(ctx, accountId, env)
 	if err != nil {
 		return "", err
 	}
+	token := env[ENV_NB_WORKSPACE_TOKEN]
+	defer func() {
+		out = scrubToken(out, token)
+		if err != nil && token != "" && strings.Contains(err.Error(), token) {
+			err = fmt.Errorf("%s", scrubToken(err.Error(), token))
+		}
+	}()
 	payload := executePayload{
 		Command:        command,
 		ConversationId: conversationId,

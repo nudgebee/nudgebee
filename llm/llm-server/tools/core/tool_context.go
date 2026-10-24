@@ -487,6 +487,10 @@ type NbToolContext struct {
 	// dependency; only framework code reads these fields.
 	KnowledgePolicy         string
 	KnowledgePolicyResolved bool
+	// RequestType is what the approval gate decided this call is. A write type
+	// (create/update/delete) means the call passed the gate; empty means the
+	// tool was called outside the planner, so it must be treated as a read.
+	RequestType ToolRequestType
 	// Stats accumulates the DB/relay split for the in-flight tool call. A tool
 	// that records sets this on its local copy of the context at the top of
 	// Call(); because NbToolContext is passed by value the pointer — not the

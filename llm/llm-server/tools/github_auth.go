@@ -134,3 +134,15 @@ func githubAPIBase(u string) string {
 	}
 	return u
 }
+
+// GithubConfigFields returns a github integration's auth type, API URL and
+// password (a token, or the installation id for a GitHub App).
+func GithubConfigFields(cfg core.ToolConfig) (authType, apiUrl, password string) {
+	return extractGithubConfigFields(cfg.Values)
+}
+
+// ResolveGithubToken returns the token for a github integration, minting a
+// GitHub App installation token when authType is "application".
+func ResolveGithubToken(ctx context.Context, authType, apiUrl, password string) (string, error) {
+	return resolveGithubToken(ctx, authType, apiUrl, password)
+}

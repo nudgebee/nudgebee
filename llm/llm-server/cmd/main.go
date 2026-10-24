@@ -285,6 +285,7 @@ func main() {
 
 	// Start background integration KB sync
 	syncCtx, syncCancel := context.WithCancel(context.Background())
+	workspaceProxySrv := api.StartWorkspaceProxyTLS(syncCtx)
 	// Periodic cleanup of the in-memory egressfilter tenant-config cache.
 	// Without this, the map grows by one entry per tenant ever resolved
 	// and never shrinks. The cleanup walks the map once a minute and
@@ -407,6 +408,9 @@ func main() {
 		agents.CancelActiveCodeAnalyses()
 		syncCancel() // Stop the KB sync goroutine
 		slog.Info("main: connections closed, shutting down server")
+		if workspaceProxySrv != nil {
+			_ = workspaceProxySrv.Shutdown(context.Background())
+		}
 		err := srv.Shutdown(context.Background())
 		if err != nil {
 			slog.Error("main: server shutdown failed:", "error", err)

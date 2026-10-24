@@ -534,6 +534,18 @@ type appConfig struct {
 	// the proxy route, the per-command nbctl env and the prompt hints. Off by
 	// default (experimental).
 	LlmServerWorkspaceNbctlEnabled bool `mapstructure:"llm_server_workspace_nbctl_enabled"`
+	// LlmServerWorkspaceScmEnabled keeps GitHub/GitLab tokens out of the
+	// workspace (#41852): gh and glab commands get a per-command token for the
+	// workspace proxy's TLS port instead of the integration's token, and the
+	// proxy adds the real one. It also starts that TLS listener. Off by default
+	// until verified on dev.
+	LlmServerWorkspaceScmEnabled bool `mapstructure:"llm_server_workspace_scm_enabled"`
+	// LlmServerWorkspaceProxyTLSPort is the workspace proxy's TLS port, for clients
+	// (gh, glab) that need an https host of their own.
+	LlmServerWorkspaceProxyTLSPort int `mapstructure:"llm_server_workspace_proxy_tls_port"`
+	// LlmServerWorkspaceProxyTLSHost is the host[:port] gh and glab are pointed at. Empty
+	// means LlmServerUrl's host with LlmServerWorkspaceProxyTLSPort.
+	LlmServerWorkspaceProxyTLSHost string `mapstructure:"llm_server_workspace_proxy_tls_host"`
 	// LlmServerWorkspaceNbctlMaxRequests caps proxied nbctl requests per shell
 	// command (per execution token, per replica).
 	LlmServerWorkspaceNbctlMaxRequests int `mapstructure:"llm_server_workspace_nbctl_max_requests"`
@@ -1386,6 +1398,9 @@ func init() {
 	viper.SetDefault("llm_server_max_tool_error_output_len", 16384)
 	viper.SetDefault("llm_server_save_truncated_tool_output", true)
 	viper.SetDefault("llm_server_workspace_nbctl_enabled", false)
+	viper.SetDefault("llm_server_workspace_scm_enabled", false)
+	viper.SetDefault("llm_server_workspace_proxy_tls_port", 8443)
+	viper.SetDefault("llm_server_workspace_proxy_tls_host", "")
 	viper.SetDefault("llm_server_workspace_nbctl_max_requests", 30)
 
 	viper.SetDefault("llm_provider", "bedrock")

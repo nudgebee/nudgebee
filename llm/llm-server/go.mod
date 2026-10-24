@@ -53,6 +53,7 @@ require (
 	github.com/swaggo/gin-swagger v1.6.1
 	github.com/swaggo/swag v1.16.6
 	github.com/tmc/langchaingo v0.1.15
+	github.com/vektah/gqlparser/v2 v2.5.30
 	github.com/wagslane/go-rabbitmq v0.16.1
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.72.0
@@ -81,6 +82,7 @@ require (
 )
 
 require (
+	github.com/agnivade/levenshtein v1.2.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.4 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect

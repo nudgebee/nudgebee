@@ -84,10 +84,14 @@ func (m GitlabCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 	// GITLAB_TOKEN (+ GITLAB_HOST for self-hosted) come from the tenant's gitlab
 	// integration. Shared with the shell tool's injection path so both agree on
 	// how a config becomes glab credentials.
-	auth, err := BuildGitlabAuth(nbRequestContext.ToolConfig)
-	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("gitlab: unable to build auth", "error", err.Error())
-		return core.NBToolResponse{}, fmt.Errorf("failed to resolve GitLab credentials: %w", err)
+	auth := &CloudAuthResult{Env: scmProxyEnv(nbRequestContext, nil, &nbRequestContext.ToolConfig)}
+	if !scmProxyEnabled() {
+		var err error
+		auth, err = BuildGitlabAuth(nbRequestContext.ToolConfig)
+		if err != nil {
+			nbRequestContext.Ctx.GetLogger().Error("gitlab: unable to build auth", "error", err.Error())
+			return core.NBToolResponse{}, fmt.Errorf("failed to resolve GitLab credentials: %w", err)
+		}
 	}
 
 	command = expandEscapedNewlines(command)

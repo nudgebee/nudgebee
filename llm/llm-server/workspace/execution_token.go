@@ -39,6 +39,12 @@ const (
 // targetAccount binds the token to that account, which the caller must be
 // able to read.
 func ExecutionToken(ctx *security.RequestContext, workspaceAccount, targetAccount string, ttl time.Duration) (string, error) {
+	return executionToken(ctx, workspaceAccount, targetAccount, ttl, nil)
+}
+
+// executionToken is ExecutionToken, optionally bound to a GitHub/GitLab
+// integration for the SCM proxy.
+func executionToken(ctx *security.RequestContext, workspaceAccount, targetAccount string, ttl time.Duration, scm *ScmClaims) (string, error) {
 	tenantId, err := security.GetTenantIdFromAccountId(workspaceAccount)
 	if err != nil {
 		return "", fmt.Errorf("execution token: tenant lookup: %w", err)
@@ -61,6 +67,7 @@ func ExecutionToken(ctx *security.RequestContext, workspaceAccount, targetAccoun
 		TenantId:        tenantId,
 		TargetAccountId: targetAccount,
 		Grants:          &grants,
+		Scm:             scm,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Audience:  jwt.ClaimStrings{AudienceWorkspaceExecute},
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
@@ -83,15 +90,22 @@ func (w *workspaceManager) commandEnv(ctx *security.RequestContext, accountId st
 	maps.Copy(out, env)
 	target := out[ENV_NB_TARGET_ACCOUNT_ID]
 	delete(out, ENV_NB_TARGET_ACCOUNT_ID)
+	scm, err := takeScmClaims(out)
+	if err != nil {
+		return nil, err
+	}
 	out["nb_account_id"] = accountId
 	if ctx != nil && ctx.GetSecurityContext() != nil {
 		out["nb_tenant_id"] = ctx.GetSecurityContext().GetTenantId()
 	}
-	token, err := ExecutionToken(ctx, accountId, target, w.httpClient.Timeout+executionTokenGrace)
+	token, err := executionToken(ctx, accountId, target, w.httpClient.Timeout+executionTokenGrace, scm)
 	if err != nil {
 		return nil, fmt.Errorf("workspace: %w", err)
 	}
 	out[ENV_NB_WORKSPACE_TOKEN] = token
+	if scm != nil {
+		addScmEnv(out, scm, token)
+	}
 	if config.Config.LlmServerWorkspaceNbctlEnabled {
 		addNbctlEnv(out, token, accountId, target)
 	}

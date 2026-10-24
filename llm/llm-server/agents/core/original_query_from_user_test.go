@@ -68,3 +68,17 @@ func TestSeedOriginalQuery(t *testing.T) {
 	assert.Equal(t, "why is api failing", underParent.OriginalQuery)
 	assert.True(t, underParent.OriginalQueryFromUser, "a sub-agent keeps what its parent recorded")
 }
+
+// The approval gate's verdict reaches the tool, so a tool that hands out a
+// credential (the SCM proxy token) can allow changes only for an approved
+// write.
+func TestRequestTypeReachesToolCalls(t *testing.T) {
+	ctx := security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{"account"})
+	for _, requestType := range []toolcore.ToolRequestType{toolcore.ToolRequestTypeRead, toolcore.ToolRequestTypeUpdate, ""} {
+		tool := &capturingTool{}
+		_, err := callNbTool(ctx, NBAgentRequest{AccountId: "account", UserId: "user", ConversationId: "conversation", MessageId: "message", AgentId: "agent"},
+			"github", tool, `{"command":"gh pr list"}`, nil, "", "tool-call-1", "", requestType)
+		require.NoError(t, err)
+		assert.Equal(t, requestType, tool.got.RequestType)
+	}
+}

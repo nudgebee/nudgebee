@@ -4896,6 +4896,7 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	toolContext.OriginalQuery = agentRequest.OriginalQuery
 	toolContext.OriginalQueryFromUser = agentRequest.OriginalQueryFromUser
 	toolContext.FollowupAnswer = followupAnswer
+	toolContext.RequestType = requestType
 
 	// Every delegated agent performs its own account-wide search using the original
 	// question plus its delegated task. Agent mappings therefore do not need to be

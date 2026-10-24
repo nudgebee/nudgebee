@@ -42,7 +42,7 @@ func (m GithubCliTool) Description() string {
 		**Usage:**
 
 		* **Prioritize this tool:** Whenever you need to interact with GitHub resources or perform GitHub operations, use this tool.
-		* **Input:** Provide a valid, 'gh' command as input. Include necessary flags like --repo owner/repo when needed.
+		* **Input:** Provide a valid, 'gh' command as input. Always pass --repo owner/repo: gh cannot infer the repository from a local clone here.
 		* **Output:** The tool will return the raw output of the executed 'gh' command.
 
 		**Examples:**
@@ -83,6 +83,11 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 	}
 
 	command := strings.TrimSpace(input.Command)
+
+	if scmProxyEnabled() {
+		env := scmProxyEnv(nbRequestContext, &nbRequestContext.ToolConfig, nil)
+		return m.execute(nbRequestContext, expandEscapedNewlines(command), env)
+	}
 
 	// Extract auth_type, url, and password from tool config
 	authType := ""
@@ -128,12 +133,16 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 
 	command = expandEscapedNewlines(command)
 
-	wm := workspace.NewWorkspaceManager()
-
 	// Prepare env with GITHUB_TOKEN
 	env := map[string]string{
 		"GITHUB_TOKEN": githubToken,
 	}
+	return m.execute(nbRequestContext, command, env)
+}
+
+// execute runs a gh command in the conversation's workspace with env.
+func (m GithubCliTool) execute(nbRequestContext core.NbToolContext, command string, env map[string]string) (core.NBToolResponse, error) {
+	wm := workspace.NewWorkspaceManager()
 	env[workspace.ENV_NB_TOOL_CONFIG_NAME] = nbRequestContext.ToolConfig.Name
 
 	// Use the encapsulated lazy creation/execution logic

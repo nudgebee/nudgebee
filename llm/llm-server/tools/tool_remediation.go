@@ -352,10 +352,16 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 		}, nil
 	}
 
-	wm := workspace.NewWorkspaceManager()
-	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
+	env := map[string]string{
 		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-	})
+	}
+	if scmProxyEnabled() {
+		for k, v := range scmProxyEnvForCommand(nbRequestContext, nbRequestContext.AccountId) {
+			env[k] = v
+		}
+	}
+	wm := workspace.NewWorkspaceManager()
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, env)
 	duration := time.Since(startTime)
 	result.Duration = duration.String()
 
