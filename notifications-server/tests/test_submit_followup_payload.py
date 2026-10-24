@@ -34,25 +34,17 @@ from notifications_server.services.events import Events
 class _FakeEventCache:
     def __init__(self):
         self.removed_keys = None
-        self.updates = []
 
     def remove_event_keys(self, thread_ts, keys):
         self.removed_keys = (thread_ts, list(keys))
         return True
 
-    def update_event_entry(self, thread_ts, **kwargs):
-        self.updates.append((thread_ts, kwargs))
-        return True
-
 
 class _FakeCommonService:
-    def __init__(self, user_email=None, get_user_info_error=None):
+    def __init__(self):
         self.updated_blocks = []
         self.context_replies = []
         self.replies = []
-        self.user_email = user_email
-        self.get_user_info_error = get_user_info_error
-        self.get_user_info_calls = []
 
     def update_slack_message_with_blocks(self, channel_id, team_id, followup_msg_ts, blocks):
         self.updated_blocks.append((channel_id, team_id, followup_msg_ts, blocks))
@@ -63,12 +55,6 @@ class _FakeCommonService:
 
     def slack_reply_in_thread(self, channel_id, team_id, thread_ts, message):
         self.replies.append((channel_id, team_id, thread_ts, message))
-
-    def get_user_info(self, platform, team_id, slack_user_id):
-        self.get_user_info_calls.append((platform, team_id, slack_user_id))
-        if self.get_user_info_error:
-            raise self.get_user_info_error
-        return self.user_email
 
 
 def _make_events_svc(monkeypatch, common_service=None):
@@ -189,45 +175,8 @@ def test_submit_followup_plain_conversation_session_id_unaffected(monkeypatch, e
     assert events_svc.common_service.context_replies
 
 
-# --- Button-click path has no human user_id to start with (#37885's own
-# follow-up-answering gap): a workflow-bound channel's cache entry never goes
-# through execute_event's free-text backfill (validate_and_get_user_tenants
-# from the Slack event's own email), so _submit_followup must resolve one
-# itself from whoever actually clicked, or fail cleanly instead of raising
-# KeyError out of build_llm_payload/headers. ---
-
-
-def test_submit_followup_backfills_user_id_from_clicking_slack_user(monkeypatch):
-    common_service = _FakeCommonService(user_email="ops@example.com")
-    events_svc = _make_events_svc(monkeypatch, common_service)
-    monkeypatch.setattr(events_module, "validate_and_get_user_tenants", lambda email: ("user-resolved", ["tenant-1"]))
-    captured = _stub_dispatch(monkeypatch)
-
-    thread_ts = "1786000000.000400"
-    channel_id = "C0BRFTQCQ48"
-    team_id = "T05JWTTH3NH"
-    cached_entry = {
-        "text": "original question",
-        "account_id": "acc-1",
-        "tenant_id": "tenant-1",
-        # No user_id -- never resolved, since this channel was bound by a
-        # workflow's slack.join_channel, not a human's chat turn.
-        "session_id": "event-fp-abc",
-        "channel_id": channel_id,
-        "agent_id": "agent-1",
-        "message_id": "msg-1",
-    }
-
-    events_svc._submit_followup(cached_entry, channel_id, team_id, thread_ts, "U-CLICKER", "Yes")
-
-    assert common_service.get_user_info_calls == [("slack", team_id, "U-CLICKER")]
-    assert captured["payload"]["user_id"] == "user-resolved"
-    assert cached_entry["user_id"] == "user-resolved"
-    assert events_svc.cache.updates == [(thread_ts, {"user_id": "user-resolved"})]
-
-
-def test_submit_followup_fails_cleanly_when_replying_user_cannot_be_resolved(monkeypatch):
-    common_service = _FakeCommonService(get_user_info_error=ValueError("missing_scope"))
+def test_submit_followup_fails_cleanly_when_user_id_missing(monkeypatch):
+    common_service = _FakeCommonService()
     events_svc = _make_events_svc(monkeypatch, common_service)
     captured = _stub_dispatch(monkeypatch)
 

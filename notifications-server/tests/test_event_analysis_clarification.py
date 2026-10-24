@@ -213,6 +213,7 @@ def test_followup_click_from_superseded_message_is_ignored(monkeypatch):
     svc.cache = MagicMock()
     svc.cache.get_event_entry.return_value = {"followup_msg_ts": "TS2", "agent_id": "A2", "message_id": "M2"}
     monkeypatch.setattr(svc, "_submit_followup", MagicMock())
+    monkeypatch.setattr(svc, "_thread_sender", MagicMock(return_value="user-1"))
 
     svc.update_followup_for_event({"action_id": "select_followup_option--nudgebee"}, "C1", "T1", "U1", "1786.1", "TS1")
     svc._submit_followup.assert_not_called()

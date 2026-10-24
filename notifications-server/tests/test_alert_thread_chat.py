@@ -109,6 +109,9 @@ def alert_service(monkeypatch, *, access=True, cached=None):
         _submit_followup=lambda *a: calls.followups.append(a),
         _process_event=lambda *a: calls.processed.append(a),
         _reply_error=lambda *a: calls.errors.append(a),
+        _refuse_thread_sender=lambda channel, team, thread, message=None: calls.errors.append(
+            (channel, team, thread, message)
+        ),
     )
     fake._alert_account_user = Events._alert_account_user.__get__(fake)
     handle = Events._handle_alert_thread.__get__(fake)
@@ -156,6 +159,9 @@ def execute(monkeypatch, alert, *, access=True, cached=None):
         _alert_account_user=lambda a, email: USER if access else None,
         _handle_alert_thread=lambda *a: calls.alert_thread.append(a),
         _reply_error=lambda *a: calls.errors.append(a),
+        _refuse_thread_sender=lambda channel, team, thread, message=None: calls.errors.append(
+            (channel, team, thread, message)
+        ),
         cache=FakeCache(cached),
         _has_pending_text_followup=lambda entry: False,
         _process_event=lambda *a: calls.processed.append(a),
@@ -190,6 +196,7 @@ def click(monkeypatch, *, access):
         cache=FakeCache({"followup_msg_ts": "1.2", "account_id": ACCOUNT, "tenant_id": TENANT, "user_id": USER}),
         _alert_of_thread=lambda team, channel, thread: ALERT_LOOP_OFF,
         _alert_account_user=lambda a, email: USER if access and email == "b@c.d" else None,
+        _thread_sender=lambda entry, email: USER if access and email == "b@c.d" else None,
         _submit_followup=lambda *a: submitted.append(a),
         _reply_error=lambda *a: errors.append(a),
     )
@@ -231,7 +238,8 @@ def test_an_answer_to_the_agents_question_resumes_it(monkeypatch):
     pending = {"session_id": f"event-{FP}", "user_id": "someone-else", "followup_msg_ts": "1.2"}
     handle, _, calls = alert_service(monkeypatch, cached=pending)
     handle(ALERT, CHANNEL, TEAM, THREAD, "the payments one", "a@b.c", "U1")
-    assert calls.followups and not calls.processed, "whoever answers; _submit_followup sends it as them"
+    assert calls.followups and not calls.processed
+    assert calls.followups[0][0]["user_id"] == USER, "as whoever answers"
 
 
 def test_an_earlier_cached_turn_of_another_session_is_replaced(monkeypatch):

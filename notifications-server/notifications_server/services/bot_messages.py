@@ -267,6 +267,11 @@ def get_account_pick_not_yours(asker_name: Optional[str] = None) -> str:
     return "Only the person who asked can choose the account for this question."
 
 
+def get_thread_account_not_accessible() -> str:
+    """Told to someone who writes in, or answers in, a thread on an account they can't access."""
+    return "You don't have access to this thread's account, so I can't answer you here."
+
+
 def get_thinking_indicator() -> str:
     """Get a random thinking/processing indicator."""
     return get_random_message(THINKING_INDICATORS)
