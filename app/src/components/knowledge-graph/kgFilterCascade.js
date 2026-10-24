@@ -71,12 +71,18 @@ export function decodeFilterOptions(data) {
   const nodeSpecificTypeIdx = d.node_specific_type_idx || [];
   const nodeClusterIdx = d.node_cluster_idx || [];
   const nodeBucketIdx = d.node_bucket_idx || [];
+  // Sparse, not index-aligned: display_name_node_idx[n] is an index into node_keys,
+  // display_names[n] its label. Only identity nodes (UserAccount, keyed on the login)
+  // carry one — see FilterOptions.DisplayNames in api-server.
+  const displayNameNodeIdx = d.display_name_node_idx || [];
+  const displayNames = d.display_names || [];
   const nodeTypes = d.node_types || {}; // merged: node_type -> specific_types
 
   const nodeIdMap = {};
   const nodeClusterMap = {};
   const nodeSpecificTypeMap = {};
   const nodeAccountMap = {};
+  const nodeDisplayNameMap = {};
   const nodeBucketId = {};
   // account id -> { provider, name } read off the first canonical key the account owns.
   // The server rewrites the key's account segment to the account / integration name.
@@ -99,12 +105,18 @@ export function decodeFilterOptions(data) {
     if (nodeBucketIdx[i] >= 0) nodeBucketId[uk] = nodeBucketIdx[i];
   }
 
+  for (let n = 0; n < displayNameNodeIdx.length; n++) {
+    const uk = nodeKeys[displayNameNodeIdx[n]];
+    if (uk && displayNames[n]) nodeDisplayNameMap[uk] = displayNames[n];
+  }
+
   return {
     accountIds,
     nodeIdMap,
     nodeClusterMap,
     nodeSpecificTypeMap,
     nodeAccountMap,
+    nodeDisplayNameMap,
     accountSources,
     nodeTypeList: Object.keys(nodeTypes),
     specificTypesByNodeType: nodeTypes,
@@ -180,6 +192,7 @@ export function computeFilterOptionsClientSide(baseline, { accountIds = [], broa
   const nodeClusterMap = baseline?.nodeClusterMap || {};
   const nodeSpecificTypeMap = baseline?.nodeSpecificTypeMap || {};
   const nodeAccountMap = baseline?.nodeAccountMap || {};
+  const nodeDisplayNameMap = baseline?.nodeDisplayNameMap || {};
   const nodeBucketId = baseline?.nodeBucketId || {};
 
   const accountSet = new Set(accountIds || []);
@@ -191,6 +204,7 @@ export function computeFilterOptionsClientSide(baseline, { accountIds = [], broa
   const scopedNodeIdMap = {};
   const scopedClusterMap = {};
   const scopedSpecificTypeMap = {};
+  const scopedDisplayNameMap = {};
   // The Node-Type dropdown is scoped by account only (not by the type filter itself),
   // so it keeps listing every type present in the selected accounts instead of
   // collapsing to the user's current pick.
@@ -221,6 +235,7 @@ export function computeFilterOptionsClientSide(baseline, { accountIds = [], broa
     scopedNodeIdMap[uniqueKey] = nodeId;
     if (nodeClusterMap[uniqueKey]) scopedClusterMap[uniqueKey] = nodeClusterMap[uniqueKey];
     if (st) scopedSpecificTypeMap[uniqueKey] = st;
+    if (nodeDisplayNameMap[uniqueKey]) scopedDisplayNameMap[uniqueKey] = nodeDisplayNameMap[uniqueKey];
     const tid = nodeBucketId[uniqueKey];
     if (tid !== undefined) presentBucketIds.add(tid);
   });
@@ -235,6 +250,7 @@ export function computeFilterOptionsClientSide(baseline, { accountIds = [], broa
     nodeIdMap: scopedNodeIdMap,
     nodeClusterMap: scopedClusterMap,
     nodeSpecificTypeMap: scopedSpecificTypeMap,
+    nodeDisplayNameMap: scopedDisplayNameMap,
     nodeTypeList,
     specificTypesByNodeType,
     labelMap: scopeKeys(baseline?.labelKeys || [], baseline?.labelKeyBuckets || [], presentBucketIds),

@@ -4390,6 +4390,21 @@ type FilterOptions struct {
 	SpecificTypeDict    []string `json:"specific_type_dict"`     // dictionary for NodeSpecificTypeIdx
 	ClusterDict         []string `json:"cluster_dict"`           // dictionary for NodeClusterIdx
 
+	// Sparse human label for nodes whose unique key is a stable identifier rather
+	// than a readable name — UserAccount nodes, keyed on the login / external user
+	// id (see sources.BaseSource.GenerateUniqueKey). Without it the Node dropdown,
+	// whose label is the key's name segment, would show "mangglesh1653", or a
+	// PagerDuty id like "PA1B2C3", with no human name anywhere on the row.
+	//
+	// Sparse (index + value) rather than a full per-node column, and deliberately
+	// not dictionary-encoded: display names are high-cardinality, so a dict would
+	// not compress them, and only identity nodes carry one — the payload cost is
+	// per user node, not per node. DisplayNameNodeIdx indexes into the per-node
+	// columns above and DisplayNames is aligned to it; indices rather than unique
+	// keys, so the column survives the account-name rewrite applied to NodeKeys.
+	DisplayNameNodeIdx []int    `json:"display_name_node_idx"`
+	DisplayNames       []string `json:"display_names"`
+
 	// Option B — label/attribute key -> covered filterBuckets, for offline dropdown scoping.
 	// FilterBuckets entries are [account_idx, node_type_idx, specific_type_idx] (indices into
 	// AccountIDs / sorted(keys(NodeTypes)) / SpecificTypeDict; -1 = none). LabelKeyBuckets
@@ -4658,6 +4673,7 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 		nodeIDMap               = make(map[string]string)
 		nodeClusterMap          = make(map[string]string)
 		nodeSpecificTypeMap     = make(map[string]string)
+		nodeDisplayNameMap      = make(map[string]string)
 		nodeAccountMap          = make(map[string]string)
 		accountMappings         map[string]string
 		lastSyncTime            *time.Time
@@ -4798,7 +4814,12 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 		// cloud_account_id (raw UUID) is keyed by node id, not unique_key, so the client can
 		// scope by account offline without the applyAccountNames key rewrite (the key's account
 		// segment becomes the account NAME below, which no longer matches the account-id filter).
-		q := `SELECT unique_key, id, query_attributes->>'cluster' AS cluster, specific_type, cloud_account_id FROM knowledge_graph_node
+		// The display name is read only for UserAccount nodes — the one node type
+		// whose key is a login rather than a readable name (see FilterOptions.
+		// DisplayNames). Conditioned on node_type, the same predicate the key rule
+		// in sources.BaseSource.GenerateUniqueKey uses, so the two cannot drift.
+		q := `SELECT unique_key, id, query_attributes->>'cluster' AS cluster, specific_type, cloud_account_id,
+			CASE WHEN node_type = 'UserAccount' THEN properties->>'name' END AS display_name FROM knowledge_graph_node
 			WHERE tenant_id = $1 AND level = 'Tenant' AND unique_key IS NOT NULL AND is_active = true
 			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL
 		rows, err := s.dbManager.Query(q, append([]interface{}{tenantID}, filterArgs...)...)
@@ -4812,13 +4833,19 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 		}()
 		for rows.Next() {
 			var uniqueKey, nodeID string
-			var cluster, specificType, cloudAccountID sql.NullString
-			if err := rows.Scan(&uniqueKey, &nodeID, &cluster, &specificType, &cloudAccountID); err != nil {
+			var cluster, specificType, cloudAccountID, displayName sql.NullString
+			if err := rows.Scan(&uniqueKey, &nodeID, &cluster, &specificType, &cloudAccountID, &displayName); err != nil {
 				return fmt.Errorf("failed to scan node ID map row: %w", err)
 			}
 			nodeIDMap[uniqueKey] = nodeID
 			if cluster.Valid && cluster.String != "" {
 				nodeClusterMap[uniqueKey] = cluster.String
+			}
+			// Only when it adds something: a display name equal to the key's name
+			// segment (an identity whose login is its name, or a NudgebeeUser whose
+			// display name is blank) would be a duplicate string on the wire.
+			if displayName.Valid && displayName.String != "" && displayName.String != GetName(uniqueKey) {
+				nodeDisplayNameMap[uniqueKey] = displayName.String
 			}
 			if specificType.Valid && specificType.String != "" {
 				nodeSpecificTypeMap[uniqueKey] = specificType.String
@@ -4991,8 +5018,14 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 	nodeSpecificTypeIdx := make([]int, 0, len(sortedKeys))
 	nodeClusterIdx := make([]int, 0, len(sortedKeys))
 	nodeBucketIdx := make([]int, 0, len(sortedKeys))
+	displayNameNodeIdx := make([]int, 0, len(nodeDisplayNameMap))
+	displayNames := make([]string, 0, len(nodeDisplayNameMap))
 	for _, uk := range sortedKeys {
 		id := nodeIDMap[uk]
+		if dn, ok := nodeDisplayNameMap[uk]; ok {
+			displayNameNodeIdx = append(displayNameNodeIdx, len(nodeKeys))
+			displayNames = append(displayNames, dn)
+		}
 		nodeKeys = append(nodeKeys, uk)
 		nodeIDsCol = append(nodeIDsCol, id)
 		aIdx := -1
@@ -5072,6 +5105,7 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 		"node_count", len(nodeKeys),
 		"specific_type_dict_count", len(specificTypeDict),
 		"cluster_dict_count", len(clusterDict),
+		"display_names_count", len(displayNames),
 		"filter_buckets_count", len(filterBuckets),
 		"last_sync_time", lastSyncTime)
 
@@ -5088,6 +5122,8 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 		NodeBucketIdx:       nodeBucketIdx,
 		SpecificTypeDict:    specificTypeDict,
 		ClusterDict:         clusterDict,
+		DisplayNameNodeIdx:  displayNameNodeIdx,
+		DisplayNames:        displayNames,
 		FilterBuckets:       filterBuckets,
 		LabelKeyBuckets:     labelKeyBuckets,
 		AttributeKeyBuckets: attributeKeyBuckets,
@@ -5129,7 +5165,11 @@ func (s *Service) refreshFilterOptionsCache(tenantID string) {
 // and are recomputed on the first unfiltered read.
 // v4: renamed the coverage fields (filter_buckets / node_bucket_idx / label_key_buckets /
 // attribute_key_buckets); v3 rows carry the old JSON keys, so bump to invalidate them.
-const filterOptionsCacheSchemaVersion = 4
+// v5: added the sparse display-name column (display_name_node_idx / display_names) that
+// the Node dropdown needs now that UserAccount keys hold the login, not the display name
+// (#41505). A v4 row decodes with the column empty, which would silently leave identity
+// rows showing a bare login for as long as the cache lived — so it must invalidate.
+const filterOptionsCacheSchemaVersion = 5
 
 // filterOptionsCacheEnvelope wraps the cached payload with its schema version.
 type filterOptionsCacheEnvelope struct {

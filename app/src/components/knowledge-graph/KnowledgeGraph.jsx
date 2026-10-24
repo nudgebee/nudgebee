@@ -325,7 +325,7 @@ const AdaptiveServiceNode = memo(
           </div>
           <div className='node-content'>
             <div className='node-title'>{data.name}</div>
-            <span className='node-sub'>{[data.subtitle, ROLE_BADGE_LABELS[data.role], data.location].filter(Boolean).join(' · ')}</span>
+            <span className='node-sub'>{[data.subtitle, data.login, ROLE_BADGE_LABELS[data.role], data.location].filter(Boolean).join(' · ')}</span>
             {contextLine && (
               <span className='node-sub' title={contextLine}>
                 {contextLine}
@@ -370,6 +370,7 @@ const AdaptiveServiceNode = memo(
     prev.data.subtitle === next.data.subtitle &&
     prev.data.accountName === next.data.accountName &&
     prev.data.namespace === next.data.namespace &&
+    prev.data.login === next.data.login &&
     prev.data.location === next.data.location
 );
 AdaptiveServiceNode.displayName = 'AdaptiveServiceNode';
@@ -378,6 +379,7 @@ AdaptiveServiceNode.propTypes = {
     id: PropTypes.string,
     name: PropTypes.string,
     subtitle: PropTypes.string,
+    login: PropTypes.string,
     accountName: PropTypes.string,
     namespace: PropTypes.string,
     type: PropTypes.string,
@@ -689,6 +691,12 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
       // A kind of the tenant's own (NetworkSwitch, declared outside any account) shows by its name, not its category.
       const isCustomKind = tenantId && n.account_id === tenantId && n.specific_type && n.specific_type !== n.kind;
       const subtitle = humanizeType((isIdentityNode || isCustomKind) && n.specific_type ? n.specific_type : n.kind);
+      // A UserAccount's key segment is the login / external user id (see
+      // buildNodeOption), and n.name is the display name, which two different
+      // accounts can share — so show the login beside the source to tell one
+      // person's two accounts apart. Read off the key the payload already carries;
+      // no extra field is needed for it.
+      const login = n.kind === 'UserAccount' ? parseUniqueKey(n.unique_key)?.name || '' : '';
       return {
         id: n.id,
         type: 'serviceNode',
@@ -696,6 +704,7 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
           name: n.name,
           type: n.kind,
           subtitle,
+          login,
           borderColor: n.kind === 'Workload' ? 'var(--ds-blue-500)' : 'var(--ds-green-400)',
           subType: n.logo_id,
           role: n.role, // datastore facet: 'database' | 'cache' | 'messagequeue' (in-cluster datastores)
@@ -823,10 +832,17 @@ const KNOWN_CLOUD_PROVIDERS = new Set(['aws', 'k8s', 'gcp', 'azure', 'github', '
 // indistinguishable. formatTypeBadge then drops that brand prefix on rows that
 // render the provider's icon — the icon carries the source, so the badge spends
 // its width on the resource kind ("Config Map", not "Kubernetes Config …").
+// displayNameMap (unique_key -> human name, from FilterOptions.DisplayNames)
+// supplies the label for identity nodes, whose key segment is a login or an
+// opaque provider id rather than a readable name — without it a PagerDuty user
+// reads as "PA1B2C3". The login then moves into the context chip, which is empty
+// for identity rows (no cluster, location or hierarchy), so one person's two
+// accounts are still tellable apart: "Mangglesh Dagar   mangglesh1653".
 // The full key plus cluster name are kept in `searchText` so search still
-// matches namespace/region/type/cluster (including the un-stripped type), and
+// matches namespace/region/type/cluster (including the un-stripped type) — the
+// display name joins it so an identity row matches its human name too — and
 // `displayLabel` mirrors the legacy value for any consumer that reads it.
-const buildNodeOption = (uniqueKey, id, clusterMap, specificTypeMap) => {
+const buildNodeOption = (uniqueKey, id, clusterMap, specificTypeMap, displayNameMap) => {
   const parsed = parseUniqueKey(uniqueKey);
   const cluster = clusterMap?.[uniqueKey];
   if (!parsed) {
@@ -834,10 +850,11 @@ const buildNodeOption = (uniqueKey, id, clusterMap, specificTypeMap) => {
   }
   const { provider, location, nodeType, hierarchy, name } = parsed;
   const specificType = specificTypeMap?.[uniqueKey];
-  const contextChip = [cluster, location, hierarchy].filter(Boolean).join(' · ');
+  const displayName = displayNameMap?.[uniqueKey];
+  const contextChip = [displayName ? name : '', cluster, location, hierarchy].filter(Boolean).join(' · ');
   const hasIcon = KNOWN_CLOUD_PROVIDERS.has(provider);
   const option = {
-    label: name || uniqueKey,
+    label: displayName || name || uniqueKey,
     displayLabel: uniqueKey,
     value: id,
     badge: formatTypeBadge(specificType || nodeType, provider, hasIcon),
@@ -845,7 +862,7 @@ const buildNodeOption = (uniqueKey, id, clusterMap, specificTypeMap) => {
     // cluster/location/hierarchy are case-sensitive identifiers (k8s cluster,
     // namespace, region, vpc/resource-group id) — keep casing verbatim, don't title-case.
     typeTextTransform: 'none',
-    searchText: [uniqueKey, cluster].filter(Boolean).join(' '),
+    searchText: [uniqueKey, cluster, displayName].filter(Boolean).join(' '),
   };
   if (hasIcon) {
     // The icon is the only thing naming the provider now that the badge doesn't
@@ -1203,6 +1220,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
           nodeIdMap: initialKgFilterOptionsRef.current.nodeIdMap,
           nodeClusterMap: initialKgFilterOptionsRef.current.nodeClusterMap,
           nodeSpecificTypeMap: initialKgFilterOptionsRef.current.nodeSpecificTypeMap,
+          nodeDisplayNameMap: initialKgFilterOptionsRef.current.nodeDisplayNameMap,
         }));
         nodeTypeGroupingRef.current = {
           nodeTypeList: initialKgFilterOptionsRef.current.nodeTypeList || [],
@@ -1241,6 +1259,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
         nodeIdMap: computed.nodeIdMap,
         nodeClusterMap: computed.nodeClusterMap,
         nodeSpecificTypeMap: computed.nodeSpecificTypeMap,
+        nodeDisplayNameMap: computed.nodeDisplayNameMap,
       };
       if (!suppressNodeTypesUpdate) {
         nodeTypeGroupingRef.current = { nodeTypeList, specificTypesByNodeType };
@@ -2041,6 +2060,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
   const filterNodeOptions = useMemo(() => {
     const clusterMap = kgFilterOptions?.nodeClusterMap;
     const specificTypeMap = kgFilterOptions?.nodeSpecificTypeMap;
+    const displayNameMap = kgFilterOptions?.nodeDisplayNameMap;
     if (draftNodes.length > 0 && adjacencyMap.size > 0) {
       const selectedIds = new Set(draftNodes.map((n) => n.value));
       const neighborIds = new Set();
@@ -2057,7 +2077,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
         const node = uniqueServiceKeysMap.get(id);
         if (node) {
           // node.uniqueKey / node.label both hold the canonical unique key.
-          neighborOptions.push(buildNodeOption(node.uniqueKey || node.label, node.value, clusterMap, specificTypeMap));
+          neighborOptions.push(buildNodeOption(node.uniqueKey || node.label, node.value, clusterMap, specificTypeMap, displayNameMap));
         }
       });
       return [...neighborOptions, ...draftNodes];
@@ -2066,7 +2086,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
     // Default: full list from Stage-1 filter data.
     // Always include currently drafted nodes even if not returned by the filtered API response.
     const map = kgFilterOptions?.nodeIdMap || {};
-    const options = Object.entries(map).map(([uniqueKey, id]) => buildNodeOption(uniqueKey, id, clusterMap, specificTypeMap));
+    const options = Object.entries(map).map(([uniqueKey, id]) => buildNodeOption(uniqueKey, id, clusterMap, specificTypeMap, displayNameMap));
     const optionValues = new Set(Object.values(map));
     const selectedNotInMap = (draftNodes || []).filter((sel) => !optionValues.has(sel.value));
     return [...options, ...selectedNotInMap];
@@ -2074,6 +2094,7 @@ const ServiceMapContent = ({ cardElevation, height }) => {
     kgFilterOptions?.nodeIdMap,
     kgFilterOptions?.nodeClusterMap,
     kgFilterOptions?.nodeSpecificTypeMap,
+    kgFilterOptions?.nodeDisplayNameMap,
     draftNodes,
     adjacencyMap,
     uniqueServiceKeysMap,

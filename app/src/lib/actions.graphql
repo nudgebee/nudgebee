@@ -10217,6 +10217,8 @@ type kg_filter_options {
   node_bucket_idx: jsonb
   specific_type_dict: [String]
   cluster_dict: [String]
+  display_name_node_idx: jsonb
+  display_names: [String]
   filter_buckets: jsonb
   label_key_buckets: jsonb
   attribute_key_buckets: jsonb

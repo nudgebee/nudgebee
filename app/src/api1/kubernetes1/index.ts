@@ -2121,6 +2121,8 @@ const apiKubernetes1 = {
           node_bucket_idx
           specific_type_dict
           cluster_dict
+          display_name_node_idx
+          display_names
           filter_buckets
           label_key_buckets
           attribute_key_buckets
