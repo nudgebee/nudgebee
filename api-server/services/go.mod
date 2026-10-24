@@ -197,7 +197,7 @@ require (
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.72.0
 	github.com/prometheus/procfs v0.21.1 // indirect
-	github.com/rabbitmq/amqp091-go v1.15.0
+	github.com/rabbitmq/amqp091-go v1.16.0
 	github.com/sagikazarmark/locafero v0.11.0 // indirect
 	github.com/samber/slog-multi v1.8.0 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
