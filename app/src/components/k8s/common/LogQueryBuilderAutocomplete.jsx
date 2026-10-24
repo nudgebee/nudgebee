@@ -178,8 +178,18 @@ const buildLokiSelectorForScoping = (queryItems, excludeLabel) => {
 // matcher -- block adding that chip instead of silently building a query that will
 // fail (nudgebee-enterprise#19997 follow-up). Returns a user-facing reason, or null
 // when the chip is fine to add.
+//
+// Knowledge Graph sends its chips as one object keyed by name (labels / attributes are
+// map[string]string on the backend), so a second chip for the same key silently
+// replaced the first in the request while both stayed on screen (#42120). A node has
+// one value per key, so the pair could never match under AND anyway -- block it.
 const MATCHER_OPERATORS = ['_eq', '_neq', '_regex', '_nregex'];
 const describeChipConflict = (queryItems, label, operator, logProvider, providerType) => {
+  if (logProvider === 'knowledge_graph') {
+    return (queryItems || []).some((chip) => chip.label === label)
+      ? `"${label}" already has a filter. A node has only one value for it, so remove that chip first to filter on a different value.`
+      : null;
+  }
   const normalizedOperator = normalizeLegacyOperator(operator);
   if (!isPromQLFamilyProvider(logProvider, providerType) || !MATCHER_OPERATORS.includes(normalizedOperator)) {
     return null;

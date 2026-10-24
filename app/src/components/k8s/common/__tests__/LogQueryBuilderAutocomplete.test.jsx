@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import LogQueryBuilderAutocomplete from '../LogQueryBuilderAutocomplete';
 import apiKubernetes1 from '@api1/kubernetes1';
+import { toast } from '@ui/Toast';
 
 jest.mock('@api1/kubernetes1', () => ({ __esModule: true, default: { knowledgeGraphFilterOptionLabelValues: jest.fn() } }));
 jest.mock('@api1/observability', () => ({ __esModule: true, default: {} }));
@@ -136,5 +137,83 @@ describe('LogQueryBuilderAutocomplete — field resets after a typed chip (#4113
 
     expect(onQueryItemsChange).toHaveBeenLastCalledWith([expect.objectContaining({ label: 'region', value: 'us-east-1' })]);
     expect(input).toHaveAttribute('placeholder', 'Type label name or select from suggestions.');
+  });
+});
+
+/*
+ * #42120: KG sends chips as one object keyed by name, so a second chip for the same
+ * key overwrote the first in the request while both chips stayed on screen.
+ */
+describe('LogQueryBuilderAutocomplete — one KG chip per key (#42120)', () => {
+  beforeEach(() => {
+    toast.error.mockClear();
+    apiKubernetes1.knowledgeGraphFilterOptionLabelValues.mockResolvedValue({
+      data: { data: { kg_get_filter_values: { data: { values: ['us-east-1', 'eu-west-1'] } } } },
+    });
+  });
+
+  // Scoped to the suggestion list: once a chip exists its key text is on screen too.
+  const pickSuggestion = async (text) => fireEvent.click(within(await screen.findByRole('list')).getByText(text));
+  const pickChip = async (input, key, value) => {
+    act(() => input.focus());
+    await pickSuggestion(key);
+    await pickSuggestion('= (equals)');
+    await pickSuggestion(value);
+  };
+
+  it('blocks a second value for the same key picked from suggestions, with a notice', async () => {
+    const onQueryItemsChange = jest.fn();
+    render(<Harness heading='Label' onQueryItemsChange={onQueryItemsChange} />);
+    const input = screen.getByPlaceholderText('Type label name or select');
+
+    await pickChip(input, 'region', 'us-east-1');
+    await waitFor(() => expect(onQueryItemsChange).toHaveBeenCalledTimes(1));
+    await pickChip(input, 'region', 'eu-west-1');
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('"region" already has a filter')));
+    expect(onQueryItemsChange).toHaveBeenCalledTimes(1);
+    expect(onQueryItemsChange).toHaveBeenLastCalledWith([expect.objectContaining({ label: 'region', value: 'us-east-1' })]);
+    expect(input).toHaveAttribute('placeholder', 'Type label name or select');
+  });
+
+  it('blocks a typed second value for the same key, with a notice', async () => {
+    const onQueryItemsChange = jest.fn();
+    render(<Harness heading='Attribute' onQueryItemsChange={onQueryItemsChange} />);
+    const input = screen.getByPlaceholderText('Type attribute name or select');
+
+    typeAndCommit(input, 'region = us-east-1');
+    await waitPastDebounce();
+    typeAndCommit(input, 'region = eu-west-1');
+    await waitPastDebounce();
+
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('"region" already has a filter'));
+    expect(onQueryItemsChange).toHaveBeenCalledTimes(1);
+    expect(onQueryItemsChange).toHaveBeenLastCalledWith([expect.objectContaining({ label: 'region', value: 'us-east-1' })]);
+  });
+
+  it('still adds chips for different keys, and allows a new value once the old chip is removed', async () => {
+    const onQueryItemsChange = jest.fn();
+    render(<Harness heading='Label' onQueryItemsChange={onQueryItemsChange} />);
+    const input = screen.getByPlaceholderText('Type label name or select');
+
+    typeAndCommit(input, 'region = us-east-1');
+    await waitPastDebounce();
+    typeAndCommit(input, 'app = checkout');
+    await waitPastDebounce();
+    expect(onQueryItemsChange).toHaveBeenLastCalledWith([
+      expect.objectContaining({ label: 'region', value: 'us-east-1' }),
+      expect.objectContaining({ label: 'app', value: 'checkout' }),
+    ]);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove filter' })[0]);
+    expect(onQueryItemsChange).toHaveBeenLastCalledWith([expect.objectContaining({ label: 'app', value: 'checkout' })]);
+
+    typeAndCommit(input, 'region = eu-west-1');
+    await waitPastDebounce();
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(onQueryItemsChange).toHaveBeenLastCalledWith([
+      expect.objectContaining({ label: 'app', value: 'checkout' }),
+      expect.objectContaining({ label: 'region', value: 'eu-west-1' }),
+    ]);
   });
 });
