@@ -1796,6 +1796,16 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	} else if effectiveSource == "" {
 		effectiveSource = request.ConversationSource
 	}
+	// Before the answer is saved, returned or sent, so every copy carries the
+	// same record of which automations ran. A paused turn's answer is a question
+	// for the user; its record goes on the answer that finishes the turn.
+	runReceipt := ""
+	if executeErr == nil && status != ConversationStatusWaiting && status != ConversationStatusWaitingForClientTool {
+		runReceipt = applyRunReceipt(ctx, request.AccountId, request.MessageId, effectiveSource, agentResponse.Response)
+		if runReceipt != "" {
+			agentResponseContent = agentResponse.Response[0]
+		}
+	}
 	if len(agentResponse.Response) > 0 &&
 		agentResponse.AgentName != RouterAgentName &&
 		agentResponse.AgentName != llmruntime.ToolLlm &&
@@ -1937,9 +1947,14 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	if config.Config.SlackCompactResponse && (effectiveSource == ConversationSourceInstantNotification || effectiveSource == ConversationSourceInvestigation) && status == ConversationStatusCompleted && len(agentResponse.Response) > 0 && agentResponse.Response[0] != "" && agentResponse.AgentName != llmruntime.ToolLlm {
 		// The rewrite model sees chart placeholders, not chart data, and the charts
 		// are put back after: a model must never retype chart numbers.
-		compactResponse, compactErr := generateCompactResponse(ctx, request.AccountId, request.ConversationId, request.MessageId, request.UserId, request.Query, toolcore.StripChartData(agentResponse.Response[0]))
+		// Nor does it see the run record, which goes back on unchanged: a
+		// rewrite must not reword what ran.
+		compactResponse, compactErr := generateCompactResponse(ctx, request.AccountId, request.ConversationId, request.MessageId, request.UserId, request.Query, toolcore.StripChartData(withoutRunReceipt(runReceipt, agentResponse.Response[0])))
 		if compactErr == nil {
 			compactResponse = toolcore.RestoreCharts(compactResponse, agentResponse.Response[0])
+			if runReceipt != "" {
+				compactResponse = joinRunReceipt(runReceipt, compactResponse)
+			}
 		}
 
 		if compactErr != nil {

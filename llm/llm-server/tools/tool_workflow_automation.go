@@ -358,6 +358,10 @@ func (t *automationTool) Description() string {
 	} else {
 		sb.WriteString(" Runs with the user's own permissions after they confirm, and waits for the result.")
 	}
+	// A user who asks for an automation the assistant may not run gets the
+	// nearest one it may, unannounced, unless told otherwise: asked for a newer
+	// version, the assistant ran the older one and titled the reply after it.
+	fmt.Fprintf(&sb, " If the user asked for a different automation or version than %q, tell them this is the one that will run before calling it.", t.name)
 	return sb.String()
 }
 
@@ -533,7 +537,13 @@ func (t *automationTool) Call(ctx core.NbToolContext, input core.NBToolCallReque
 		"workflow_id", t.id, "tool", t.toolName, "account_id", t.accountId,
 		"reason", reason, "input_count", len(inputs))
 
-	return t.runAndWait(ctx, inputs, nil)
+	resp, err := t.runAndWait(ctx, inputs, nil)
+	if err != nil {
+		if refused, ok := runNotStartedResponse(quotedAutomation(t.name, t.id), err); ok {
+			return refused, nil
+		}
+	}
+	return resp, err
 }
 
 // triggerInputs checks a call's arguments and returns the inputs to trigger

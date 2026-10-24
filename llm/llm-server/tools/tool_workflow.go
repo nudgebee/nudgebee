@@ -637,6 +637,9 @@ func (t WorkflowTriggerTool) Call(ctx core.NbToolContext, input core.NBToolCallR
 
 	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/trigger", id), inputs, ctx.AccountId, tenantId, userId)
 	if err != nil {
+		if refused, ok := runNotStartedResponse(refusedAutomationName(ctx, ToolWorkflowTrigger, id), err); ok {
+			return refused, nil
+		}
 		return core.NBToolResponse{}, err
 	}
 
@@ -1531,6 +1534,9 @@ func (t WorkflowExecutionRetriggerTool) Call(ctx core.NbToolContext, input core.
 
 	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/runs/%s/retrigger", id, executionId), body, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
 	if err != nil {
+		if refused, ok := runNotStartedResponse(refusedAutomationName(ctx, ToolWorkflowExecutionRetrigger, id), err); ok {
+			return refused, nil
+		}
 		return core.NBToolResponse{}, err
 	}
 	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
@@ -2161,7 +2167,29 @@ func (t WorkflowResumeTool) Call(ctx core.NbToolContext, input core.NBToolCallRe
 	if err != nil {
 		return core.NBToolResponse{}, err
 	}
-	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+	return core.NBToolResponse{Data: withResumeNote(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// resumeNote travels with every resume result. Resuming only switches an
+// automation's triggers back on, and without saying so a resume was reported
+// as a run, with an execution id and per-step results that no tool returned.
+const resumeNote = "The automation is now ACTIVE. Resuming does not run it: no execution was created and there is no execution ID or result."
+
+// withResumeNote returns the resume result with resumeNote beside it. A body
+// that is not JSON is kept as a string.
+func withResumeNote(raw []byte) string {
+	out := map[string]any{"note": resumeNote}
+	var parsed any
+	if err := common.UnmarshalJson(raw, &parsed); err == nil {
+		out["result"] = parsed
+	} else {
+		out["result"] = string(raw)
+	}
+	b, err := marshalNoHTMLEscape(out, "")
+	if err != nil {
+		return string(raw)
+	}
+	return string(b)
 }
 
 // WorkflowDeleteTool — delete an automation and its versions (delete).

@@ -241,6 +241,7 @@ type IConversationDao interface {
 	UpdateMessageProductivityMetrics(messageId string, classification string, successfulTasks int) error
 	GetSuccessfulToolCallsCountByMessage(messageId string) (int, error)
 	ListToolCallTraceByMessage(messageId string, maxInputChars, maxOutputChars, maxRows int) ([]ToolCallTrace, error)
+	ListRunToolCallsByMessage(messageId string, toolNames []string, toolPrefix string) ([]ToolCallTrace, error)
 	SaveAgentReferences(accountId, conversationId, messageId, agentId string, references []AgentReference) error
 	ListAgentReferences(accountId, conversationId string, messageIds []string, agentId string, limit int) ([]ConversationReference, error)
 	SaveConversationContextReference(accountId, conversationId, messageId string, unifiedExtraction *LlmUnifiedExtraction) error
@@ -3263,6 +3264,29 @@ func (chat *ConversationDao) ListToolCallTraceByMessage(messageId string, maxInp
 	calls := []ToolCallTrace{}
 	if err := chat.dbManager.Db.Select(&calls, query, messageId, maxInputChars, maxOutputChars, maxRows); err != nil {
 		return nil, fmt.Errorf("history: failed to list tool call trace for message: %w", err)
+	}
+	return calls, nil
+}
+
+// maxRunToolCallRows bounds the run record of one reply. A turn that tried to
+// start this many runs has a different problem than its record.
+const maxRunToolCallRows = 50
+
+// ListRunToolCallsByMessage returns a message's calls to the tools that start
+// automation runs — those named in toolNames or starting with toolPrefix —
+// oldest first. Every nesting level of a turn, and the turn resumed after an
+// approval, writes its tool calls under the turn's message id, so this is the
+// whole turn's record whichever agent made the call.
+func (chat *ConversationDao) ListRunToolCallsByMessage(messageId string, toolNames []string, toolPrefix string) ([]ToolCallTrace, error) {
+	query := `
+	SELECT tool_name, COALESCE(parameters, '') AS parameters, COALESCE(status, '') AS status, COALESCE(response, '') AS response
+	FROM llm_conversation_tool_calls
+	WHERE message_id = $1 AND (tool_name = ANY($2) OR starts_with(tool_name, $3))
+	ORDER BY created_at ASC, id ASC
+	LIMIT $4;`
+	calls := []ToolCallTrace{}
+	if err := chat.dbManager.Db.Select(&calls, query, messageId, pq.Array(toolNames), toolPrefix, maxRunToolCallRows); err != nil {
+		return nil, fmt.Errorf("history: failed to list run tool calls for message: %w", err)
 	}
 	return calls, nil
 }

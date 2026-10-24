@@ -104,7 +104,34 @@ func (t WorkflowSearchTool) Call(ctx core.NbToolContext, input core.NBToolCallRe
 		return core.NBToolResponse{}, fmt.Errorf("failed to search automations: %w", err)
 	}
 
-	return core.NBToolResponse{Data: string(injectAutomationURLs(resp, ctx.AccountId)), Type: core.NBToolResponseTypeJson}, nil
+	return core.NBToolResponse{Data: string(withNoMatchNote(injectAutomationURLs(resp, ctx.AccountId))), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// noMatchNote travels with a search that found nothing the assistant may run.
+// An empty list was read as "the automation does not exist" and answered with
+// the assistant's own checks titled as that automation's report; the
+// automation may exist and simply not be runnable by the assistant.
+const noMatchNote = "No automation the assistant may run matched. An automation of that name may still exist but not be runnable " +
+	"by the assistant (paused, not enabled for the assistant, or without a manual trigger); workflow_list shows every " +
+	"automation with its status. Nothing was run."
+
+// withNoMatchNote adds noMatchNote to a search result whose workflows list is
+// empty. Any other result, or one that is not the expected shape, is returned
+// unchanged.
+func withNoMatchNote(raw []byte) []byte {
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return raw
+	}
+	if workflows, ok := parsed["workflows"].([]any); (ok && len(workflows) > 0) || (!ok && parsed["workflows"] != nil) {
+		return raw
+	}
+	parsed["note"] = noMatchNote
+	b, err := marshalNoHTMLEscape(parsed, "")
+	if err != nil {
+		return raw
+	}
+	return b
 }
 
 // injectAutomationURLs adds the canonical `url` to each item in `workflows`.

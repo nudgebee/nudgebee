@@ -150,6 +150,12 @@ type bubbleFakeDao struct {
 	originalQuestion string
 }
 
+// GetConversation is read for the conversation's stored source; these
+// conversations have none.
+func (f *bubbleFakeDao) GetConversation(conversationId string) (Conversation, error) {
+	return Conversation{}, nil
+}
+
 type ancestorFakeDao struct {
 	IConversationDao
 	agents       map[string]ConversationAgent
@@ -909,7 +915,7 @@ func TestPersistFinalMessage_ResolvesChartRefs(t *testing.T) {
 	SetConversationDao(chartFakeDao{bubbleFakeDao: fake, conversationID: conversationID, charts: charts})
 	resp := NBAgentResponse{Response: []string{"CPU rose.\n```nb-chart\n{\"chart_ref\":\"" + ref + "\"}\n```"}}
 
-	persistFinalMessage(security.NewRequestContextForTenantAccountAdmin("44444444-4444-4444-4444-444444444444", "u", nil), conversationID, uuid.New().String(), resp)
+	persistFinalMessage(security.NewRequestContextForTenantAccountAdmin("44444444-4444-4444-4444-444444444444", "u", nil), NBAgentRequest{ConversationId: conversationID, MessageId: uuid.New().String()}, resp)
 
 	assert.NotContains(t, fake.persistedContent, "chart_ref")
 	assert.Contains(t, fake.persistedContent, `"data":[1,2]`)
