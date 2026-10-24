@@ -122,6 +122,11 @@ describe('permissionCatalog', () => {
     'users_get_by_provider_account',
     'users_get_super_admin_role',
     'tenant_by_user_v2',
+    // bees_install / bees_uninstall: installing a Worker Bee creates its account
+    // and the role it acts with. Privilege administration, like role assignment
+    // above; the handler is tenant-admin only.
+    'bees_install',
+    'bees_uninstall',
   ];
 
   it('classifies every action in actions.yaml except the non-grantable ones', () => {

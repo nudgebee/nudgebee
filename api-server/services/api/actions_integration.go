@@ -799,10 +799,9 @@ func diagnoseIntegrationConnection(ctx *security.RequestContext, integrationID s
 	if err != nil {
 		return IntegrationDiagnosisResponse{}, err
 	}
-	securityContext := ctx.GetSecurityContext()
 	authorizedAccountID := ""
 	for _, accountID := range accountIDs {
-		if securityContext.HasAccountAccess(accountID, security.SecurityAccessTypeRead) {
+		if ctx.CanAccessAccount(accountID, security.SecurityAccessTypeRead) {
 			authorizedAccountID = accountID
 			break
 		}

@@ -93,8 +93,8 @@ const MODULE_ALIASES: Record<string, string> = {
   application: 'applications',
   audit: 'audits',
   // bees_* are the Worker Bee pages and actions: a bee is a set of automations,
-  // so they share the workflows grant (bees_install/_uninstall/_update_modes
-  // stay tenant-admin in the handler whatever the grant).
+  // so they share the workflows grant (bees_update_modes stays tenant-admin in
+  // the handler whatever the grant; bees_install/_uninstall are non-grantable).
   bees: 'workflows',
   event: 'events',
   // Feature flags are tenant settings, not a domain of their own. Their two
@@ -133,6 +133,9 @@ const ACTION_OVERRIDES: Record<string, PermissionClass> = {
   database_performance_insights: 'Read',
   event_revert_threshold_suggestion: 'Execute', // operational inverse of event_apply_threshold_suggestion (apply=Execute)
   integrations_autogen_options: 'Read',
+  // `diagnose` is not a taxonomy verb; a connection check with the stored
+  // credentials, like integrations_check_connection (Read).
+  integrations_diagnose_connection: 'Read',
   log_group: 'Read',
   notifications_google_chat_permission_status: 'Read',
   // Proxy for the whole live-cluster surface. Classified at the READ bar so a
@@ -346,6 +349,10 @@ const NON_GRANTABLE_ACTIONS = new Set<string>([
   'users_get_by_provider_account',
   'users_get_super_admin_role',
   'tenant_by_user_v2',
+  // installing a Worker Bee creates its account and the role it acts with, and
+  // uninstalling removes them: privilege administration, tenant-admin only
+  'bees_install',
+  'bees_uninstall',
 ]);
 
 export function normalizeModule(rawModule: string): string {

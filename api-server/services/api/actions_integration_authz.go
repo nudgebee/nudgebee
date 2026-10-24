@@ -48,7 +48,8 @@ var integrationActionClass = map[string]string{
 // integrationActionsAuthorizedInHandler do their own authorization inside the
 // handler and are deliberately not gated by integrationActionClass:
 //   - integrations_diagnose_connection is open to account admins (actions.yaml)
-//     and checks read access to a linked account per integration.
+//     and checks read access to a linked account per integration (a built-in
+//     role, or the integrations:Read grant the gateway classifies it as).
 //   - webhook_subject_mappings_sync requires a tenant or super admin.
 var integrationActionsAuthorizedInHandler = map[string]bool{
 	"integrations_diagnose_connection": true,
