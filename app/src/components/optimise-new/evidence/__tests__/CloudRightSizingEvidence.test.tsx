@@ -83,13 +83,44 @@ describe('CloudRightSizingEvidence range', () => {
     expect(screen.getByTestId('trend-range-toggle')).toBeInTheDocument();
   });
 
-  it('offers a longer range on a rule whose week came back empty', async () => {
+  it('offers a longer range on a utilization rule whose week came back empty', async () => {
     fetchMetrics.mockResolvedValue(noRows);
-    render(
-      <CloudRightSizingEvidence recommendation={{ reason: 'x' }} ruleName='aws_rds_instance_reserved' fullRecommendation={fullRecommendation} />
-    );
+    renderEvidence();
     await waitFor(() => expect(fetchMetrics).toHaveBeenCalledTimes(1));
     expect(screen.getByTestId('trend-range-toggle')).toBeInTheDocument();
+  });
+
+  it('offers no range on a rule without utilization series when no metrics come back', async () => {
+    fetchMetrics.mockResolvedValue(noRows);
+    render(
+      <CloudRightSizingEvidence
+        recommendation={{ reason: 'Retention period not set.' }}
+        ruleName='aws_cloudwatch_log_group_retention'
+        fullRecommendation={fullRecommendation}
+      />
+    );
+    await waitFor(() => expect(fetchMetrics).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole('progressbar')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('trend-range-toggle')).not.toBeInTheDocument();
+  });
+
+  it('keeps the range on such a rule once metrics came back, even when a picked range is empty', async () => {
+    fetchMetrics.mockResolvedValueOnce(metricRows).mockResolvedValueOnce(noRows).mockResolvedValue(noRows);
+    const props = { recommendation: { reason: 'x' }, ruleName: 'aws_rds_free_storage_space' };
+    const { rerender } = render(<CloudRightSizingEvidence {...props} fullRecommendation={fullRecommendation} />);
+    await screen.findByText('Resource Monitoring (7d)');
+    expect(screen.getByTestId('trend-range-toggle')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: '30d' }));
+    await waitFor(() => expect(screen.queryByTestId('chart')).not.toBeInTheDocument());
+    await waitFor(() => expect(fetchMetrics).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId('trend-range-toggle')).toBeInTheDocument();
+
+    // A resource that has returned nothing yet does not inherit the picker.
+    rerender(<CloudRightSizingEvidence {...props} fullRecommendation={{ id: 'rec-2', account_id: 'acct-1', resource_id: 'vol-0def' }} />);
+    await waitFor(() => expect(fetchMetrics).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.queryByRole('progressbar')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('trend-range-toggle')).not.toBeInTheDocument();
   });
 
   it('does not refetch, or clear, when a parent hands down a fresh but equal object', async () => {

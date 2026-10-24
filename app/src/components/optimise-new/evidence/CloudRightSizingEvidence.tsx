@@ -31,6 +31,9 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
   // Hooks must be called before any conditional returns (Rules of Hooks)
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [cloudMetrics, setCloudMetrics] = useState<Record<string, any[]>>({});
+  // The resource some range has returned metrics for. Once set, the range picker
+  // stays while another range loads or comes back empty.
+  const [metricsSeenFor, setMetricsSeenFor] = useState<string | null>(null);
   // Cloud payloads name no lookback window, so the default stays a week.
   const [rangeDays, setRangeDays] = useTrendRange(fullRecommendation?.id, trendRangeFor(null));
   // The query is keyed on the fields it is built from, not on the
@@ -87,6 +90,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
           return acc;
         }, {});
         setCloudMetrics(grouped);
+        if (Object.keys(grouped).length) setMetricsSeenFor(resourceId);
       })
       .catch((err: any) => {
         if (cancelled) return;
@@ -114,6 +118,8 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
   const serviceName = rec.service_name || detailsFallback?.serviceName || '';
 
   const { metricObjects, scalarFields, objectFields } = parseRecFields(rec);
+  // Log groups, volumes and addresses have no utilization series, so a picker there would control nothing.
+  const showRangeToggle = canFetchMetrics && (UTILIZATION_RULES.test(ruleName || '') || metricsSeenFor === resourceId);
 
   // Alternate instances (for aws_ec2_alternate_instances / aws_rds_alternate_instances)
   const alternateInstances = rec.alternate_instances || [];
@@ -309,7 +315,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
       )}
 
       {/* Cloud resource monitoring metrics (CloudWatch / Azure Monitor / GCP) over the picked range */}
-      {canFetchMetrics && (
+      {showRangeToggle && (
         <Box sx={{ mb: ds.space[2] }}>
           <TrendRangeToggle value={rangeDays} onChange={setRangeDays} />
         </Box>
