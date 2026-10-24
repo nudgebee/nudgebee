@@ -23,7 +23,7 @@ func runHookReturning(t *testing.T, hookErr error) error {
 		return nil, hookErr
 	}, activity.RegisterOptions{Name: "notifications.im"})
 	env.RegisterWorkflowWithOptions(func(ctx workflow.Context) error {
-		return executeSimpleActions(ctx, []model.Action{{Type: "notifications.im", Params: map[string]any{"message": "done"}}}, NewTemplateContext(nil, nil), &model.Workflow{ID: "wf-1", TenantID: "t1"})
+		return executeSimpleActions(ctx, []model.Action{{Type: "notifications.im", Params: map[string]any{"message": "done"}}}, NewTemplateContext(nil, nil))
 	}, workflow.RegisterOptions{Name: "hookHarness"})
 
 	env.ExecuteWorkflow("hookHarness")
