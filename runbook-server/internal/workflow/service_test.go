@@ -1931,6 +1931,27 @@ func TestRestoreWorkflowVersion(t *testing.T) {
 	})
 }
 
+// newAIWriteTestService is a Service whose trigger-sync pass is satisfied for saves
+// that register no schedule, for the AI-originated write tests below.
+func newAIWriteTestService() (*Service, *MockWorkflowStore) {
+	mockTemporalClient := &MockTemporalClient{}
+	mockStore := new(MockWorkflowStore)
+	mockTaskRegistry := tasks.NewInitializedTaskRegistry()
+	mockTaskRegistry.RegisterTask(&scripting.RunScriptTask{})
+	executor := &WorkflowExecutor{
+		temporalClient: mockTemporalClient,
+		workflowStore:  mockStore,
+		dataConverter:  converter.GetDefaultDataConverter(),
+	}
+	// No schedules involved in any of these cases; satisfy the trigger-sync
+	// pass that every save runs through.
+	mockTemporalClient.On("Describe", mock.Anything).Return(nil, serviceerror.NewNotFound("schedule not found"))
+	mockTemporalClient.On("List", mock.Anything, mock.Anything).
+		Return(&MockScheduleListIterator{Schedules: []*client.ScheduleListEntry{}}, nil)
+	return NewService(mockTemporalClient, mockStore, converter.GetDefaultDataConverter(),
+		mockTaskRegistry, executor, new(MockConfigService)), mockStore
+}
+
 // TestAIOriginatedWritesCannotMoveTheOptIn covers the write side of the AI
 // boundary: the AI may edit an automation's definition, but ai_invocable is a
 // grant a human makes in the settings UI and an AI-originated call must not be
@@ -1939,24 +1960,7 @@ func TestAIOriginatedWritesCannotMoveTheOptIn(t *testing.T) {
 	config.Config.ServiceEndpoint = "http://mock-integration-service"
 	config.Config.ServiceApiServerToken = "test-token"
 
-	newService := func() (*Service, *MockWorkflowStore) {
-		mockTemporalClient := &MockTemporalClient{}
-		mockStore := new(MockWorkflowStore)
-		mockTaskRegistry := tasks.NewInitializedTaskRegistry()
-		mockTaskRegistry.RegisterTask(&scripting.RunScriptTask{})
-		executor := &WorkflowExecutor{
-			temporalClient: mockTemporalClient,
-			workflowStore:  mockStore,
-			dataConverter:  converter.GetDefaultDataConverter(),
-		}
-		// No schedules involved in any of these cases; satisfy the trigger-sync
-		// pass that every save runs through.
-		mockTemporalClient.On("Describe", mock.Anything).Return(nil, serviceerror.NewNotFound("schedule not found"))
-		mockTemporalClient.On("List", mock.Anything, mock.Anything).
-			Return(&MockScheduleListIterator{Schedules: []*client.ScheduleListEntry{}}, nil)
-		return NewService(mockTemporalClient, mockStore, converter.GetDefaultDataConverter(),
-			mockTaskRegistry, executor, new(MockConfigService)), mockStore
-	}
+	newService := newAIWriteTestService
 
 	aiDefinition := func() model.WorkflowDefinition {
 		return model.WorkflowDefinition{
@@ -2208,4 +2212,78 @@ func TestAIOriginatedWritesCannotMoveTheOptIn(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, created.AIInvocable)
 	})
+}
+
+// TestAIOriginatedWritesCannotSwitchAnAutomationOn: the model can write
+// "status": "ACTIVE" into a definition it composes, and an AI-originated save
+// must not honour it — an event or schedule trigger would start firing before
+// anyone reviewed the automation. Turning it on is a separate, user-approved step.
+func TestAIOriginatedWritesCannotSwitchAnAutomationOn(t *testing.T) {
+	definition := func() model.WorkflowDefinition {
+		return model.WorkflowDefinition{
+			Triggers: []model.Trigger{{Type: model.WorkflowTriggerManual}},
+			Tasks:    []model.Task{{ID: "task1", Type: "scripting.run_script", Params: map[string]any{"script": "echo"}}},
+		}
+	}
+
+	createCases := []struct {
+		name       string
+		aiCtx      bool
+		sent, want model.WorkflowStatus
+	}{
+		{"an AI create asking for ACTIVE lands PAUSED", true, model.WorkflowStatusActive, model.WorkflowStatusPaused},
+		{"an AI create with no status lands PAUSED", true, "", model.WorkflowStatusPaused},
+		{"an AI create marked INACTIVE for missing configs stays INACTIVE", true, model.WorkflowStatusInactive, model.WorkflowStatusInactive},
+		{"a human create still chooses ACTIVE", false, model.WorkflowStatusActive, model.WorkflowStatusActive},
+	}
+	for _, tc := range createCases {
+		t.Run(tc.name, func(t *testing.T) {
+			service, store := newAIWriteTestService()
+			store.On("FindByName", mock.Anything, "test-tenant", "test-account", "built").Return(nil, sql.ErrNoRows)
+
+			var created model.Workflow
+			store.On("CreateWorkflowWithInitialVersion", mock.Anything, "test-tenant", "test-account", mock.Anything).
+				Return("wf-new", (*model.WorkflowVersion)(nil), nil).
+				Run(func(args mock.Arguments) { created = args.Get(3).(model.Workflow) })
+
+			_, _, err := service.CreateWorkflow(aiRequestContext(tc.aiCtx), "test-account", model.Workflow{
+				Name:       "built",
+				Status:     tc.sent,
+				Definition: definition(),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, created.Status)
+		})
+	}
+
+	updateCases := []struct {
+		name                 string
+		aiCtx                bool
+		existing, sent, want model.WorkflowStatus
+	}{
+		{"an AI edit asking for ACTIVE keeps a paused automation PAUSED", true, model.WorkflowStatusPaused, model.WorkflowStatusActive, model.WorkflowStatusPaused},
+		{"an AI edit asking for ACTIVE keeps an inactive automation INACTIVE", true, model.WorkflowStatusInactive, model.WorkflowStatusActive, model.WorkflowStatusInactive},
+		{"an AI edit of an active automation keeps it ACTIVE", true, model.WorkflowStatusActive, model.WorkflowStatusActive, model.WorkflowStatusActive},
+		{"an AI edit can still mark an active automation INACTIVE", true, model.WorkflowStatusActive, model.WorkflowStatusInactive, model.WorkflowStatusInactive},
+		{"a human edit still switches a paused automation ACTIVE", false, model.WorkflowStatusPaused, model.WorkflowStatusActive, model.WorkflowStatusActive},
+	}
+	for _, tc := range updateCases {
+		t.Run(tc.name, func(t *testing.T) {
+			service, store := newAIWriteTestService()
+			existing := &model.Workflow{ID: "wf-edit", Name: "built", Status: tc.existing, Definition: definition()}
+			store.On("Find", mock.Anything, "test-tenant", "test-account", "wf-edit").Return(existing, nil)
+
+			var saved model.Workflow
+			store.On("Update", mock.Anything, "test-tenant", "test-account", "wf-edit", mock.Anything).
+				Return(nil).Run(func(args mock.Arguments) { saved = args.Get(4).(model.Workflow) })
+
+			_, err := service.UpdateWorkflow(aiRequestContext(tc.aiCtx), "test-account", "wf-edit", model.Workflow{
+				Name:       existing.Name,
+				Status:     tc.sent,
+				Definition: definition(),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, saved.Status)
+		})
+	}
 }

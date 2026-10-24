@@ -563,6 +563,13 @@ func (s *Service) CreateWorkflow(ctx *security.RequestContext, accountId string,
 		// saved row carries an unattended-run opt-in waiting for the moment a
 		// human ticks ai_invocable, which is not what that human agreed to.
 		wf.AIAutoApprove = false
+		// Nor is it born switched on. The model can write "status": "ACTIVE" into
+		// the definition, and honouring it starts an event, webhook or schedule
+		// trigger firing before anyone has reviewed the automation. Switching it
+		// on is the user's call, through Activate. INACTIVE (missing configs) stays.
+		if wf.Status == model.WorkflowStatusActive {
+			wf.Status = model.WorkflowStatusPaused
+		}
 	}
 
 	validStatuses := []model.WorkflowStatus{model.WorkflowStatusActive, model.WorkflowStatusPaused, model.WorkflowStatusInactive}
@@ -2471,6 +2478,11 @@ func (s *Service) updateWorkflowInternal(ctx *security.RequestContext, accountId
 		if !isValidStatus {
 			return model.Workflow{}, fmt.Errorf("invalid workflow status: %s", workflow.Status)
 		}
+	}
+	// An AI edit cannot switch an automation on either: ACTIVE is kept only when the
+	// automation already is. Activating stays its own step, which asks the user.
+	if ctx.IsAITriggered() && workflow.Status == model.WorkflowStatusActive && existingWf.Status != model.WorkflowStatusActive {
+		workflow.Status = existingWf.Status
 	}
 	// Always preserve LastExecutionStatus (system managed)
 	workflow.LastExecutionStatus = existingWf.LastExecutionStatus
