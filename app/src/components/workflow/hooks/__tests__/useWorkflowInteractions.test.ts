@@ -1,5 +1,6 @@
 import { act, renderHook } from '@testing-library/react';
 import { useWorkflowInteractions } from '../useWorkflowInteractions';
+import { DEFAULT_SCHEDULE_CRON } from '@components/workflow/components/ScheduleBuilder';
 
 jest.mock('@components/workflow/nodes', () => ({ nodeTypes: {} }));
 jest.mock('@components/workflow/components/DeletableEdge', () => () => null);
@@ -35,5 +36,26 @@ describe('useWorkflowInteractions.updateTriggerConfig', () => {
     act(() => result.current.setSelectedNode(other as any));
     act(() => result.current.updateTriggerConfig('t1', { type: 'event', params: { filter: 'new' } }, (() => {}) as any));
     expect(result.current.selectedNode).toBe(other);
+  });
+});
+
+// #42100: a new Schedule trigger showed Daily 09:00 in its panel but was created with empty
+// params, so Save draft stored `params: {}` and Publish failed.
+describe('useWorkflowInteractions.addNode for triggers', () => {
+  const categories = {
+    triggers: { subcategories: { schedule: { label: 'Schedule' }, manual: { label: 'Manual Trigger' } } },
+  };
+
+  it('creates a Schedule trigger with the schedule its panel shows', () => {
+    const { result } = renderHook(() => useWorkflowInteractions(categories as any, {}));
+    const node: any = result.current.addNode('triggers', 'schedule', []);
+    expect(node.data.trigger.params).toEqual({ cron: DEFAULT_SCHEDULE_CRON });
+    expect(node.data.trigger.valid).toBe(true);
+  });
+
+  it('still creates other triggers with empty params', () => {
+    const { result } = renderHook(() => useWorkflowInteractions(categories as any, {}));
+    const node: any = result.current.addNode('triggers', 'manual', []);
+    expect(node.data.trigger.params).toEqual({});
   });
 });
