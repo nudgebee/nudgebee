@@ -1778,7 +1778,7 @@ func (s *Service) CheckTriggerMatch(ctx *security.RequestContext, accountId stri
 		}
 		filter, _ = request.Params["filter"].(string)
 		if filter == "" {
-			if eventType, _ := request.Params["event_type"].(string); eventType == "" {
+			if len(model.Trigger{Params: request.Params}.EventTypes()) == 0 {
 				// Registry.Refresh drops these — an unfiltered wildcard would match
 				// every event in the account, so it is never registered.
 				return model.CheckTriggerMatchResponse{
@@ -1871,10 +1871,10 @@ func checkEventTriggerGates(request model.CheckTriggerMatchRequest) (model.Check
 		payloadType, _ = request.Payload["aggregation_key"].(string)
 	}
 	// An empty params.event_type is a wildcard rule: evaluated against every event.
-	if triggerType, _ := request.Params["event_type"].(string); triggerType != "" && triggerType != payloadType {
+	if triggerTypes := (model.Trigger{Params: request.Params}).EventTypes(); len(triggerTypes) > 0 && !slices.Contains(triggerTypes, payloadType) {
 		return model.CheckTriggerMatchResponse{
 			Gate:   model.CheckTriggerGateEventType,
-			Reason: fmt.Sprintf("this event's type is '%s', but the trigger listens for '%s'", payloadType, triggerType),
+			Reason: fmt.Sprintf("this event's type is '%s', but the trigger listens for '%s'", payloadType, strings.Join(triggerTypes, "', '")),
 		}, true
 	}
 

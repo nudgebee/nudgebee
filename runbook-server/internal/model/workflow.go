@@ -379,6 +379,31 @@ type Trigger struct {
 	Layout   *WorkflowTaskLayout `yaml:"layout,omitempty" json:"layout,omitempty"`
 }
 
+// EventTypes returns an event trigger's params.event_type, which is stored as a single
+// string or a list (what the builder saves). Empty means a wildcard rule.
+func (t Trigger) EventTypes() []string {
+	var types []string
+	switch v := t.Params["event_type"].(type) {
+	case string:
+		if v != "" {
+			types = []string{v}
+		}
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				types = append(types, s)
+			}
+		}
+	case []string:
+		for _, s := range v {
+			if s != "" {
+				types = append(types, s)
+			}
+		}
+	}
+	return types
+}
+
 // ListenAccounts returns the accounts whose events fire this trigger: params.accounts
 // (event) or params.clusters (optimization), else the workflow's own account.
 func (t Trigger) ListenAccounts(ownAccountID string) []string {
