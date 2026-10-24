@@ -12,9 +12,11 @@ import { ds } from 'src/utils/colors';
 import Datetime, { formatClock, formatClockCompact } from '@shared/format/Datetime';
 import { splitInternalLabels } from './sidebarLabels';
 import Text from '@shared/format/Text';
+import MarkDowns from '@shared/viewers/MarkDowns';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { Label } from '@ui/Label';
 import { Button } from '@ui/Button';
+import { CodeBlock } from '@ui/CodeBlock';
 import { Link } from '@ui/Link';
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import TriageScore from '@shared/widgets/TriageScore';
@@ -105,6 +107,15 @@ const Row = ({ label, children, testId, info }) => (
 );
 Row.propTypes = { label: PropTypes.string, children: PropTypes.node, testId: PropTypes.string, info: PropTypes.string };
 
+// The email-ingest automation writes the description as a parse summary table
+// followed by the mail itself in a fenced block under "**Original email**".
+// Only the mail is worth showing: the table repeats the sidebar and is too wide
+// for it. Empty when the description carries no such block.
+export function sourceEmailBody(description) {
+  const match = String(description || '').match(/\*\*Original email\*\*[^\n]*\n+```[^\n]*\n([\s\S]*?)\n```/);
+  return match ? match[1].trim() : '';
+}
+
 // "pod" → "Pod", "ec2_instance" → "Ec2 Instance"; "Where" when the event has no type.
 const subjectLabel = (type) => {
   const words = String(type || '')
@@ -160,6 +171,11 @@ function InvestigateSidebar({
   const [showInternal, setShowInternal] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [showLabels, setShowLabels] = useState(false);
+  const [showEmail, setShowEmail] = useState(false);
+  // The email-ingest automation stamps its events with the mail they came from;
+  // the body is kept in the description, which is markdown.
+  const isEmailEvent = row?.labels?.nb_ingest_path === 'email';
+  const emailBody = useMemo(() => (isEmailEvent ? sourceEmailBody(row?.description) : ''), [isEmailEvent, row?.description]);
   const occurrence = useEventOccurrence(row);
   const notifications = useAlertDeliveries(row);
   const [showChain, setShowChain] = useState(false);
@@ -814,6 +830,9 @@ function InvestigateSidebar({
           {/* References rather than decisions: each opens on demand. */}
           <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: ds.space[3], mt: ds.space[1] }}>
             <Disclosure open={showDetails} onToggle={() => setShowDetails((prev) => !prev)} label='Details' testId='toggle-details-btn' />
+            {isEmailEvent && (
+              <Disclosure open={showEmail} onToggle={() => setShowEmail((prev) => !prev)} label='Source email' testId='toggle-source-email-btn' />
+            )}
             {labels.length > 0 && (
               <Disclosure
                 open={showLabels}
@@ -923,10 +942,48 @@ function InvestigateSidebar({
                   <Text value={investigateDescription.failureCount} secondaryText sx={valueTextSx} />
                 </Row>
               )}
-              {isCloud && row?.description && (
+              {/* An email event's description is the mail itself, shown in full under Source email. */}
+              {isCloud && row?.description && !isEmailEvent && (
                 <Row label='Description'>
                   <Text value={investigateDescription.logSample} showAutoEllipsis sx={{ fontSize: ds.text.small }} />
                 </Row>
+              )}
+            </Box>
+          )}
+
+          {showEmail && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }} data-testid='sidebar-source-email'>
+              {row?.labels?.email_subject && (
+                <Row label='Subject'>
+                  <Text value={row.labels.email_subject} secondaryText sx={valueTextSx} />
+                </Row>
+              )}
+              {row?.labels?.email_from && (
+                <Row label='From'>
+                  <Text value={row.labels.email_from} secondaryText sx={valueTextSx} />
+                </Row>
+              )}
+              {row?.labels?.email_forwarded_by && (
+                <Row label='Forwarded by'>
+                  <Text value={row.labels.email_forwarded_by} secondaryText sx={valueTextSx} />
+                </Row>
+              )}
+              {row?.labels?.email_received_at && (
+                <Row label='Received'>
+                  <Datetime
+                    value={row.labels.email_received_at}
+                    sx={{ fontSize: ds.text.small }}
+                    sxSuffix={{ color: ds.gray[700], fontSize: ds.text.small }}
+                  />
+                </Row>
+              )}
+              {emailBody ? (
+                <CodeBlock code={emailBody} wrap maxHeight={320} copyToast='Email copied' />
+              ) : (
+                // A description in some other shape: show it whole rather than nothing.
+                // Untrusted content: MarkDowns sanitises the HTML, and without
+                // allowExecutable no code block gets a run button.
+                row?.description && <MarkDowns data={row.description} canRunCode={false} sx={{ fontSize: ds.text.small }} />
               )}
             </Box>
           )}
