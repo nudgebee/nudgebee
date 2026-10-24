@@ -783,8 +783,8 @@ export function buildNodeTypeOptions(nodeTypes, specificTypesByNodeType) {
 // node_type when it has no breakdown) back into the two independent backend filter arrays.
 // A group with every leaf selected collapses to its broad node_type (matches pre-nesting
 // behavior and tolerates nodes whose specific_type hasn't been backfilled yet); a group with
-// only some leaves selected is sent as specific_types instead. The two arrays must never both
-// reference the same group, since the backend ANDs node_types and specific_types together.
+// only some leaves selected is sent as specific_types instead. The backend ORs the two arrays
+// (a node matches if it is in either), so a full group mixed with a leaf of another is safe.
 // `nodeTypes` must be the same full node_type list `buildNodeTypeOptions` was called with, so
 // every group a leaf could belong to (even ones absent from `specificTypesByNodeType`) is
 // accounted for — otherwise a selected leaf whose node_type has no map entry would vanish from

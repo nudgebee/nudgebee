@@ -102,4 +102,65 @@ func TestBuildNodeFilterSQL_ValueScoping(t *testing.T) {
 			t.Errorf("expected 2 args, got %d (%v)", len(args), args)
 		}
 	})
+
+	t.Run("ORs node_types with specific_types", func(t *testing.T) {
+		filters := &GraphFilters{
+			NodeTypes:     []NodeType{NodeTypeDatabase},
+			SpecificTypes: []string{"EC2Instance"},
+		}
+		sql, args, err := buildNodeFilterSQL(filters, nil, 3)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(sql, "(node_type = $3 OR specific_type = ANY($4::text[]))") {
+			t.Errorf("expected node_type OR specific_type, got %q", sql)
+		}
+		if len(args) != 2 {
+			t.Errorf("expected 2 args, got %d (%v)", len(args), args)
+		}
+	})
+}
+
+// TestNodeTypeFilter_UnionOfGroups covers #41502: the Node Type multi-select sends a fully
+// selected group as node_types and a partly selected one as specific_types, and the user
+// means "any of these", so a node in either list must match.
+func TestNodeTypeFilter_UnionOfGroups(t *testing.T) {
+	ec2 := &DbNode{NodeType: NodeTypeComputeInstance, SpecificType: "EC2Instance"}
+	gce := &DbNode{NodeType: NodeTypeComputeInstance, SpecificType: "GCEInstance"}
+	rds := &DbNode{NodeType: NodeTypeDatabase, SpecificType: "RDSInstance"}
+	cloudSQL := &DbNode{NodeType: NodeTypeDatabase, SpecificType: "CloudSQLInstance"}
+	// A node whose specific_type was never backfilled must still match its whole group.
+	unbackfilledDB := &DbNode{NodeType: NodeTypeDatabase}
+	all := []*DbNode{ec2, gce, rds, cloudSQL, unbackfilledDB}
+
+	cases := []struct {
+		name          string
+		nodeTypes     []NodeType
+		specificTypes []string
+		want          []*DbNode
+	}{
+		{"partial group plus full group", []NodeType{NodeTypeDatabase}, []string{"EC2Instance"}, []*DbNode{ec2, rds, cloudSQL, unbackfilledDB}},
+		{"two partial groups", nil, []string{"EC2Instance", "RDSInstance"}, []*DbNode{ec2, rds}},
+		{"single full group", []NodeType{NodeTypeDatabase}, nil, []*DbNode{rds, cloudSQL, unbackfilledDB}},
+		{"single partial group", nil, []string{"EC2Instance"}, []*DbNode{ec2}},
+		{"no type filter", nil, nil, all},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []*DbNode
+			for _, n := range all {
+				if matchesTypeFilter(n, tc.nodeTypes, tc.specificTypes) {
+					got = append(got, n)
+				}
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d nodes, want %d", len(got), len(tc.want))
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("node %d: got %+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
 }

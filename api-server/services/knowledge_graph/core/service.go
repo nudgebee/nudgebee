@@ -2656,7 +2656,8 @@ func (s *Service) GetCompleteGraphFromDatabase(reqCtx *security.RequestContext, 
 }
 
 // GetCompleteGraphFromDatabaseWithFilters retrieves the knowledge graph with optional filters
-// Filters are applied with AND logic: account_id AND node_type AND labels AND label_keys
+// Filters are applied with AND logic: account_id AND type AND labels AND label_keys, where type
+// is node_type OR specific_type (see nodeTypeFilterSQL)
 func (s *Service) GetCompleteGraphFromDatabaseWithFilters(reqCtx *security.RequestContext, tenantID string, filters *GraphFilters) (KnowledgeGraph, error) {
 	if tenantID == "" {
 		return KnowledgeGraph{}, fmt.Errorf("tenant_id is required")
@@ -2887,7 +2888,8 @@ func (s *Service) GetEdgesByTenant(tenantID string) ([]*DbEdge, error) {
 }
 
 // GetNodesByTenantWithFilters retrieves nodes for a tenant with optional filtering
-// Filters are applied with AND logic for account_id, node_type, labels, and label_keys
+// Filters are applied with AND logic for account_id, type, labels, and label_keys; the type
+// filter itself ORs node_types with specific_types (see nodeTypeFilterSQL)
 func (s *Service) GetNodesByTenantWithFilters(tenantID string, filters *GraphFilters) ([]*DbNode, error) {
 	if s.dbManager == nil {
 		return nil, fmt.Errorf("database manager not initialized")
@@ -2913,22 +2915,9 @@ func (s *Service) GetNodesByTenantWithFilters(tenantID string, filters *GraphFil
 		query += fmt.Sprintf(" AND cloud_account_id IN (%s)", strings.Join(placeholders, ","))
 	}
 
-	// For node_type filtering, we need to filter by unique_key pattern since node_type is derived
-	// Format of unique_key: "source:NodeType:name:environment"
-	if len(filters.NodeTypes) > 0 {
-		typeConditions := make([]string, len(filters.NodeTypes))
-		for i, nodeType := range filters.NodeTypes {
-			typeConditions[i] = fmt.Sprintf("node_type = $%d", argCounter)
-			args = append(args, string(nodeType))
-			argCounter++
-		}
-		query += fmt.Sprintf(" AND (%s)", strings.Join(typeConditions, " OR "))
-	}
-
-	// Filter by concrete specific_type (e.g. EC2Instance) — parallel to node_type.
-	if len(filters.SpecificTypes) > 0 {
-		query += fmt.Sprintf(" AND specific_type = ANY($%d::text[])", argCounter)
-		args = append(args, pq.Array(filters.SpecificTypes))
+	if typeSQL, typeArgs, _ := nodeTypeFilterSQL(filters.NodeTypes, filters.SpecificTypes, argCounter); typeSQL != "" {
+		query += " AND " + typeSQL
+		args = append(args, typeArgs...)
 	}
 
 	query += " ORDER BY created_at DESC"
@@ -3060,18 +3049,8 @@ func (s *Service) matchesFilters(node *DbNode, filters *GraphFilters) bool {
 		}
 	}
 
-	// Check specific_type filter (concrete cloud/native type, OR logic).
-	if len(filters.SpecificTypes) > 0 {
-		matched := false
-		for _, st := range filters.SpecificTypes {
-			if node.SpecificType == st {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
+	if !matchesTypeFilter(node, filters.NodeTypes, filters.SpecificTypes) {
+		return false
 	}
 
 	// Check normalized ontology_attributes filters.
@@ -4489,6 +4468,40 @@ func removeStringValue(in []string, target string) []string {
 	return out
 }
 
+// nodeTypeFilterSQL builds the node-type predicate shared by every filtered node query.
+// node_types and specific_types come from one multi-select in the UI: a fully-selected
+// group is sent as its node_type, a partly-selected one as its specific_types. They are
+// alternatives, so a node matches when it is in EITHER list. ANDing them returned nothing
+// for any full group picked alongside a leaf of another group (#41502).
+// Returns the parenthesised clause (no leading AND), its args, and the next placeholder index.
+func nodeTypeFilterSQL(nodeTypes []NodeType, specificTypes []string, argCounter int) (string, []interface{}, int) {
+	var conds []string
+	var args []interface{}
+	for _, nt := range nodeTypes {
+		conds = append(conds, fmt.Sprintf("node_type = $%d", argCounter))
+		args = append(args, string(nt))
+		argCounter++
+	}
+	if len(specificTypes) > 0 {
+		conds = append(conds, fmt.Sprintf("specific_type = ANY($%d::text[])", argCounter))
+		args = append(args, pq.Array(specificTypes))
+		argCounter++
+	}
+	if len(conds) == 0 {
+		return "", nil, argCounter
+	}
+	return "(" + strings.Join(conds, " OR ") + ")", args, argCounter
+}
+
+// matchesTypeFilter is the in-memory twin of nodeTypeFilterSQL: true when no type filter is
+// set, or the node's node_type or specific_type is in its list.
+func matchesTypeFilter(node *DbNode, nodeTypes []NodeType, specificTypes []string) bool {
+	if len(nodeTypes) == 0 && len(specificTypes) == 0 {
+		return true
+	}
+	return slices.Contains(nodeTypes, node.NodeType) || slices.Contains(specificTypes, node.SpecificType)
+}
+
 // buildNodeFilterSQL builds SQL WHERE additions and args for graph filters.
 // startArgCounter is the next $N placeholder index; the caller already has (startArgCounter-1) args.
 // Returns ("", nil, nil) when no filters are active.
@@ -4514,20 +4527,10 @@ func buildNodeFilterSQL(filters *GraphFilters, nodeIDs []string, startArgCounter
 			sqlParts = append(sqlParts, fmt.Sprintf("cloud_account_id IN (%s)", strings.Join(placeholders, ",")))
 		}
 
-		if len(filters.NodeTypes) > 0 {
-			conds := make([]string, len(filters.NodeTypes))
-			for i, nt := range filters.NodeTypes {
-				conds[i] = fmt.Sprintf("node_type = $%d", argCounter)
-				args = append(args, string(nt))
-				argCounter++
-			}
-			sqlParts = append(sqlParts, fmt.Sprintf("(%s)", strings.Join(conds, " OR ")))
-		}
-
-		if len(filters.SpecificTypes) > 0 {
-			sqlParts = append(sqlParts, fmt.Sprintf("specific_type = ANY($%d::text[])", argCounter))
-			args = append(args, pq.Array(filters.SpecificTypes))
-			argCounter++
+		if typeSQL, typeArgs, next := nodeTypeFilterSQL(filters.NodeTypes, filters.SpecificTypes, argCounter); typeSQL != "" {
+			sqlParts = append(sqlParts, typeSQL)
+			args = append(args, typeArgs...)
+			argCounter = next
 		}
 
 		for key, value := range filters.Labels {
