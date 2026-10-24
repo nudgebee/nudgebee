@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Box, Typography } from '@mui/material';
 import { Add as AddIcon } from '@mui/icons-material';
 import CustomTable from '@shared/tables/CustomTable';
@@ -31,6 +31,8 @@ interface ConfigurationManagerProps {
    * modal picks its own, defaulting to the only one when there is only one.
    */
   accountOptions: Array<{ value: string; label: string; group?: string }>;
+  /** The account the opening page has selected; the dialog starts on it when it is in accountOptions. */
+  defaultAccountId?: string;
   open: boolean;
   onClose: () => void;
 }
@@ -50,8 +52,28 @@ interface Config {
   updated_by: string;
 }
 
-const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountOptions, open, onClose }) => {
-  const [accountId, setAccountId] = useState<string>(accountOptions.length === 1 ? accountOptions[0].value : '');
+// The account to start on: the page's account when the user can write configs in it, else the only option.
+const startingAccount = (accountOptions: ConfigurationManagerProps['accountOptions'], defaultAccountId?: string) => {
+  if (defaultAccountId && accountOptions.some((o) => o.value === defaultAccountId)) return defaultAccountId;
+  return accountOptions.length === 1 ? accountOptions[0].value : '';
+};
+
+const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountOptions, defaultAccountId, open, onClose }) => {
+  const [accountId, setAccountId] = useState<string>(() => startingAccount(accountOptions, defaultAccountId));
+  // Each time the dialog opens it starts on the page's account (which may have changed
+  // since the last open); the page's accounts can also load after it opens. A pick made
+  // while it is open is kept.
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    const justOpened = open && !wasOpenRef.current;
+    wasOpenRef.current = open;
+    if (!open) return;
+    const start = startingAccount(accountOptions, defaultAccountId);
+    if (start && (justOpened || !accountId)) {
+      setAccountId(start);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, accountOptions, defaultAccountId]);
   // Add/Edit/Delete: a built-in write role, or a dynamic-RBAC config:Write grant.
   // config:Read deliberately does NOT unlock these — it is read-only.
   const canEdit = hasWriteAccess(accountId) || hasPermission('config', 'Write');
@@ -450,7 +472,18 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountOpti
               </Button>
             )}
           </Box>
-          <CustomTable tableData={tableData} headers={tableHeaders} loading={loading} rowsPerPage={10} totalRows={displayedConfigs.length} />
+          <CustomTable
+            tableData={tableData}
+            headers={tableHeaders}
+            loading={loading}
+            rowsPerPage={10}
+            totalRows={displayedConfigs.length}
+            {...(viewScope === 'account'
+              ? accountId
+                ? { emptyHeading: 'No configs in this account yet', emptySubHeading: 'Use Add Config to create one' }
+                : { emptyHeading: 'No account selected', emptySubHeading: 'Select an account to see its configs' }
+              : {})}
+          />
         </Box>
       </Modal>
 

@@ -56,3 +56,53 @@ describe('ConfigurationManager account-scoped save', () => {
     await waitFor(() => expect(mockSave).toHaveBeenCalledWith('acct-1', expect.objectContaining({ key: 'k', value: 'v' })));
   });
 });
+
+// #41486: Configs opened from the Automations list ignored the account already
+// selected on the page and told the user to "try refreshing".
+describe('ConfigurationManager starting account', () => {
+  beforeEach(() => {
+    mockList.mockReset().mockResolvedValue({ data: { config_list: [] } });
+  });
+
+  it("opens on the page's account and lists its configs", async () => {
+    render(<ConfigurationManager accountOptions={ACCOUNTS} defaultAccountId='acct-2' open onClose={jest.fn()} />);
+    await waitFor(() => expect(mockList).toHaveBeenCalledWith('acct-2'));
+    expect(screen.getByText('Account Two')).toBeInTheDocument();
+    expect(await screen.findByText('No configs in this account yet')).toBeInTheDocument();
+    expect(screen.queryByText(/try refreshing/)).not.toBeInTheDocument();
+  });
+
+  it("picks the page's account once the account list arrives after mount", async () => {
+    const { rerender } = render(<ConfigurationManager accountOptions={[]} defaultAccountId='acct-2' open={false} onClose={jest.fn()} />);
+    rerender(<ConfigurationManager accountOptions={ACCOUNTS} defaultAccountId='acct-2' open onClose={jest.fn()} />);
+    await waitFor(() => expect(mockList).toHaveBeenCalledWith('acct-2'));
+  });
+
+  it("reopens on the page's account when it changed since the last open", async () => {
+    const onClose = jest.fn();
+    const { rerender } = render(<ConfigurationManager accountOptions={ACCOUNTS} defaultAccountId='acct-1' open onClose={onClose} />);
+    await waitFor(() => expect(mockList).toHaveBeenCalledWith('acct-1'));
+    rerender(<ConfigurationManager accountOptions={ACCOUNTS} defaultAccountId='acct-2' open={false} onClose={onClose} />);
+    rerender(<ConfigurationManager accountOptions={ACCOUNTS} defaultAccountId='acct-2' open onClose={onClose} />);
+    await waitFor(() => expect(mockList).toHaveBeenLastCalledWith('acct-2'));
+  });
+
+  it("ignores a page account the user can't write configs in", async () => {
+    render(<ConfigurationManager accountOptions={ACCOUNTS} defaultAccountId='acct-other' open onClose={jest.fn()} />);
+    expect(await screen.findByText('Select an account to see its configs')).toBeInTheDocument();
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it('asks to pick an account instead of suggesting a refresh', async () => {
+    render(<ConfigurationManager accountOptions={ACCOUNTS} open onClose={jest.fn()} />);
+    expect(await screen.findByText('Select an account to see its configs')).toBeInTheDocument();
+    expect(screen.queryByText(/try refreshing/)).not.toBeInTheDocument();
+  });
+
+  it('leaves the Tenant (shared) view unchanged', async () => {
+    render(<ConfigurationManager accountOptions={ACCOUNTS} open onClose={jest.fn()} />);
+    fireEvent.click(await screen.findByRole('radio', { name: 'Tenant (shared)' }));
+    await waitFor(() => expect(mockList).toHaveBeenCalledWith(''));
+    expect(screen.queryByText('Select an account to see its configs')).not.toBeInTheDocument();
+  });
+});

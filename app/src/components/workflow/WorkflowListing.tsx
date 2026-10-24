@@ -2127,7 +2127,12 @@ const WorkflowListing: React.FC = () => {
 
         <WorkflowTemplatesModal open={templateModalOpen} onClose={handleCloseTemplateModal} accountId={createAccountId} />
 
-        <ConfigurationManager accountOptions={writableAccountOptions} open={configModalOpen} onClose={handleConfigModalClose} />
+        <ConfigurationManager
+          accountOptions={writableAccountOptions}
+          defaultAccountId={selectedAccounts.length === 1 ? selectedAccounts[0] : undefined}
+          open={configModalOpen}
+          onClose={handleConfigModalClose}
+        />
 
         <ListingLayout id='workflow-listing-box'>
           <ListingLayout.Toolbar
