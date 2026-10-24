@@ -1,4 +1,4 @@
-import { filterTicketOptionsBySubType, getDropdownOptionsForField, resolveFieldType } from '../fieldTypeUtils';
+import { filterTicketOptionsBySubType, getDropdownOptionsForField, isWebhookProvider, resolveFieldType } from '../fieldTypeUtils';
 
 const TICKET_CONFIGS = [
   { label: 'Jira Prod', value: 'jira-1', tool: 'jira' },
@@ -47,6 +47,19 @@ describe('getDropdownOptionsForField', () => {
   it('offers every ticket integration when the field declares no sub_types', () => {
     const options = getDropdownOptionsForField('integration_id', { type: 'ticket' }, dropdownData);
     expect(options).toHaveLength(5);
+  });
+});
+
+describe('Send IM provider options', () => {
+  it('names webhook providers as the notification rules picker does', () => {
+    const options = getDropdownOptionsForField('provider', { options: ['slack', 'ms_teams_webhook', 'google_chat_webhook'] }, dropdownData);
+    expect(options.map((o) => o.label)).toEqual(['Slack', 'Teams webhook', 'Google Chat webhook']);
+  });
+
+  it('tells a webhook provider from an app', () => {
+    expect(isWebhookProvider('slack_webhook')).toBe(true);
+    expect(isWebhookProvider('slack')).toBe(false);
+    expect(isWebhookProvider(undefined)).toBe(false);
   });
 });
 

@@ -15,20 +15,41 @@ const (
 	ReasonRateLimited         = "rate_limited"
 	ReasonPlatformUnavailable = "platform_unavailable"
 	ReasonInternalError       = "internal_error"
+	ReasonWebhookGone         = "webhook_gone"
 )
 
 var platformNames = map[string]string{
-	"slack":       "Slack",
-	"ms_teams":    "Microsoft Teams",
-	"google_chat": "Google Chat",
+	"slack":               "Slack",
+	"ms_teams":            "Microsoft Teams",
+	"google_chat":         "Google Chat",
+	"slack_webhook":       "Slack webhook",
+	"ms_teams_webhook":    "Teams webhook",
+	"google_chat_webhook": "Google Chat webhook",
+}
+
+// webhookApps names the chat app a webhook posts into.
+var webhookApps = map[string]string{
+	"slack_webhook":       "Slack",
+	"ms_teams_webhook":    "Microsoft Teams",
+	"google_chat_webhook": "Google Chat",
+}
+
+// PlatformName is how a message names platform to a user.
+func PlatformName(platform string) string {
+	if name, ok := platformNames[platform]; ok {
+		return name
+	}
+	return platform
 }
 
 // NotDeliveredMessage says in plain words why a message to channel on
 // platform was not posted, and what fixes it where something can.
 func NotDeliveredMessage(platform, channel, reason string) string {
-	name, ok := platformNames[platform]
-	if !ok {
-		name = platform
+	name := PlatformName(platform)
+	if app, ok := webhookApps[platform]; ok {
+		if message, ok := webhookNotDeliveredMessage(name, app, reason); ok {
+			return message
+		}
 	}
 	switch reason {
 	case ReasonNoDestination:
@@ -59,4 +80,26 @@ func NotDeliveredMessage(platform, channel, reason string) string {
 	default:
 		return fmt.Sprintf("The message wasn't sent to %s (%s).", name, reason)
 	}
+}
+
+// webhookNotDeliveredMessage covers the reasons whose fix differs for a webhook:
+// the channel is the integration, and there is no app to connect or invite.
+func webhookNotDeliveredMessage(name, app, reason string) (string, bool) {
+	switch reason {
+	case ReasonNoDestination:
+		return fmt.Sprintf("The %s this step posts to was removed or disabled. Pick another webhook in the step, or add it again in Integrations.", name), true
+	case ReasonWebhookGone, ReasonChannelNotFound:
+		return fmt.Sprintf("%s no longer accepts this webhook; it was removed or turned off there. Create a new one in %s and update the %s URL in Integrations.", app, app, name), true
+	case ReasonAuthFailed, ReasonPermissionDenied:
+		return fmt.Sprintf("%s refused the %s URL. Update the URL in Integrations.", app, name), true
+	case ReasonNotConfigured:
+		return fmt.Sprintf("The %s has no URL set. Add one in Integrations.", name), true
+	case ReasonMessageRejected, ReasonInvalidRequest:
+		return fmt.Sprintf("%s rejected the message. Check its length and content.", app), true
+	case ReasonRateLimited, ReasonPlatformUnavailable:
+		return fmt.Sprintf("%s isn't accepting messages right now. Try again shortly.", app), true
+	case ReasonInternalError:
+		return fmt.Sprintf("Something went wrong sending the message to the %s. Try again, and contact support if it keeps failing.", name), true
+	}
+	return "", false
 }

@@ -12,7 +12,20 @@ const PROVIDER_ICONS: Record<string, any> = {
   slack: SlackIcon,
   ms_teams: MSTeamsIcon,
   google_chat: GChatIcon,
+  slack_webhook: SlackIcon,
+  ms_teams_webhook: MSTeamsIcon,
+  google_chat_webhook: GChatIcon,
 };
+
+// Webhook integrations as notification providers, named as the notification rules picker names them.
+export const PROVIDER_LABELS: Record<string, string> = {
+  slack_webhook: 'Slack webhook',
+  ms_teams_webhook: 'Teams webhook',
+  google_chat_webhook: 'Google Chat webhook',
+};
+
+export const isWebhookProvider = (provider: unknown): provider is string =>
+  typeof provider === 'string' && Object.prototype.hasOwnProperty.call(PROVIDER_LABELS, provider);
 
 // Static dbms_type dropdown options. Lives here (not in ActionDetailsSidebar)
 // so SubTaskParamForm can import it without a sidebar → foreach-editor →
@@ -376,14 +389,15 @@ export const getDropdownOptionsForField = (
   if (fieldSchema.enum || fieldSchema.options) {
     const options = fieldSchema.enum || fieldSchema.options || [];
     return options.map((value: string) => {
+      const isProviderField = fieldName === 'provider' || fieldName === 'im_provider';
       const option: { label: string; value: string; icon?: React.ReactNode } = {
-        label: value.charAt(0).toUpperCase() + value.slice(1).replace(/_/g, ' '),
+        label: (isProviderField && PROVIDER_LABELS[value]) || value.charAt(0).toUpperCase() + value.slice(1).replace(/_/g, ' '),
         value: value,
       };
       // Add icons for provider fields (notification providers). Wrap in SafeIcon —
       // these are webpack asset modules, not React components, and ds/Select renders
       // option.icon directly as a JSX child (React.ReactNode).
-      if ((fieldName === 'provider' || fieldName === 'im_provider') && PROVIDER_ICONS[value]) {
+      if (isProviderField && PROVIDER_ICONS[value]) {
         option.icon = <SafeIcon src={PROVIDER_ICONS[value]} alt={value} style={{ width: 16, height: 16, objectFit: 'contain' }} />;
       }
       return option;

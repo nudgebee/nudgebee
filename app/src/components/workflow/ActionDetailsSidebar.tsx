@@ -33,7 +33,9 @@ import {
   getCodeLanguage,
   getDropdownOptionsForField,
   getExamplePlaceholder,
+  isWebhookProvider,
   parseJsonExample,
+  PROVIDER_LABELS,
   resolveFieldType,
   normalizeStoredObjectValue,
   resolveObjectFieldValue,
@@ -47,6 +49,7 @@ import { describeScriptRunLocation, executorSupportsAccount, scriptLogin, Script
 import type { RunTaskOutcome } from './utils/runTaskResult';
 import apiWorkflow from '@api1/workflow';
 import apiAccount from '@api1/account';
+import apiIntegrations from '@api1/integrations';
 import { isTenantAdmin } from '@lib/auth';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { isUrlFieldName, urlFieldStatus } from 'src/utils/url';
@@ -922,8 +925,15 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
     let cancelled = false;
     setImChannelLoading(true);
-    apiAccount
-      .getNotificationChannelList(provider)
+    // A webhook provider's "channels" are its webhook integrations, picked by name.
+    const request = isWebhookProvider(provider)
+      ? apiIntegrations.listIntegrations({ type: provider, limit: 200 }).then((res: any) => ({
+          data: {
+            data: (res?.data?.data?.integrations_list?.rows || []).filter((row: any) => row.status !== 'disabled'),
+          },
+        }))
+      : apiAccount.getNotificationChannelList(provider);
+    request
       .then((res: any) => {
         if (cancelled) return;
         const response = res?.data?.data || [];
@@ -2239,14 +2249,21 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
         if (fieldName === 'channel' || fieldName === 'channel_id') {
           const provider = localData?.provider;
           const isTeamsWithoutTeam = provider === 'ms_teams' && !localData?.team_id;
+          const isWebhook = isWebhookProvider(provider);
 
           const getChannelPlaceholder = () => {
             if (!provider) return 'Select a provider first';
             if (isTeamsWithoutTeam) return 'Select a team first';
+            if (isWebhook) {
+              if (imChannelLoading) return 'Loading webhooks...';
+              if (imChannelOptions.length === 0) return `No ${PROVIDER_LABELS[provider]} integrations`;
+              return 'Select webhook';
+            }
             if (imChannelLoading) return 'Loading channels...';
             if (imChannelOptions.length === 0) return 'No channels available';
             return 'Select channel';
           };
+          const channelHint = isWebhook ? `Your ${PROVIDER_LABELS[provider]} integrations. Add one in Integrations.` : fieldSchema.description;
 
           return (
             <Box key={fieldName} sx={{ mb: ds.space[4], display: 'flex', alignItems: 'flex-start', gap: ds.space[4], flexWrap: 'wrap' }}>
@@ -2260,7 +2277,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   pt: ds.space[2],
                 }}
               >
-                {fieldSchema.title || formatFieldLabel(fieldName)}
+                {isWebhook ? 'Webhook' : fieldSchema.title || formatFieldLabel(fieldName)}
                 {isRequired && <span style={{ color: ds.red[500] }}> *</span>}
               </Typography>
               <Box sx={{ flex: '1 1 300px', minWidth: '200px' }}>
@@ -2282,14 +2299,19 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   onDragLeave={viewOnlyMode ? undefined : handleDragLeave}
                   isDropTarget={isDraggingOver === fieldName}
                 />
-                {fieldSchema.description && (
+                {channelHint && (
                   <Typography variant='caption' color='text.secondary' sx={{ mt: ds.space[1], display: 'block' }}>
-                    {fieldSchema.description}
+                    {channelHint}
                   </Typography>
                 )}
               </Box>
             </Box>
           );
+        }
+
+        // A webhook can't reply in a thread.
+        if (fieldName === 'message_thread_id' && isWebhookProvider(localData?.provider)) {
+          return null;
         }
 
         // Handle team_id field for MS Teams (only show when provider is ms_teams)
@@ -2389,6 +2411,8 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     // Batch update: clear team_id, channel and set provider in single state update
 
                     const updatedData = { ...localDataRef.current, team_id: '', channel: '', [fieldName]: newProvider };
+                    // The thread field is hidden for a webhook; a leftover thread id would fail the run.
+                    if (isWebhookProvider(newProvider)) updatedData.message_thread_id = '';
                     setLocalData(updatedData);
                   }}
                   placeholder={`Select ${fieldName.replace(/_/g, ' ')}`}

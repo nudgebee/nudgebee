@@ -1299,11 +1299,11 @@ class MessageService:
 
             # Webhooks route only to the target a rule names by id in its channels
             # JSON; no rule -> to_channel stays None -> skipped (no tenant default).
-            # A directed send (explicit `channels`) silences them like any other
-            # platform it doesn't name.
+            # A directed send (explicit `channels`) reaches a webhook target only
+            # when it names that target's id under the webhook's platform.
             if platform in WEBHOOK_PLATFORM_TYPES:
                 if all_channels:
-                    ip.to_channel = None
+                    ip.to_channel = MessageService._requested_webhook_target(ip, all_channels.get(platform))
                     continue
                 ip.to_channel = next(
                     (
@@ -1335,6 +1335,16 @@ class MessageService:
                     ip.additional_channels = rule_channels[1:]
                 else:
                     ip.to_channel = ip.channels if use_defaults else None
+
+    @staticmethod
+    def _requested_webhook_target(ip, requested):
+        """The channel for webhook target `ip` when a directed send names its id,
+        in the shape a rule gives it; None otherwise."""
+        for entry in requested or []:
+            target_id = entry.get("id") if isinstance(entry, dict) else entry
+            if target_id is not None and str(target_id) == str(ip.id):
+                return {"webhook_target_id": str(ip.id), "name": getattr(ip, "team_name", None)}
+        return None
 
     @staticmethod
     def get_payload_channel(ip, matched_rules, platform, to_channel, use_defaults=True):

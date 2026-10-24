@@ -25,6 +25,13 @@ func TestNotDeliveredMessage(t *testing.T) {
 		{"slack", ReasonInternalError, "Something went wrong sending the message to Slack. Try again, and contact support if it keeps failing."},
 		{"slack", "some_new_reason", "The message wasn't sent to Slack (some_new_reason)."},
 		{"discord", "", "The message wasn't sent to discord."},
+		{"ms_teams_webhook", ReasonNoDestination, "The Teams webhook this step posts to was removed or disabled. Pick another webhook in the step, or add it again in Integrations."},
+		{"ms_teams_webhook", ReasonWebhookGone, "Microsoft Teams no longer accepts this webhook; it was removed or turned off there. Create a new one in Microsoft Teams and update the Teams webhook URL in Integrations."},
+		{"slack_webhook", ReasonAuthFailed, "Slack refused the Slack webhook URL. Update the URL in Integrations."},
+		{"google_chat_webhook", ReasonNotConfigured, "The Google Chat webhook has no URL set. Add one in Integrations."},
+		{"ms_teams_webhook", ReasonInvalidRequest, "Microsoft Teams rejected the message. Check its length and content."},
+		{"slack_webhook", ReasonRateLimited, "Slack isn't accepting messages right now. Try again shortly."},
+		{"google_chat_webhook", ReasonInternalError, "Something went wrong sending the message to the Google Chat webhook. Try again, and contact support if it keeps failing."},
 	} {
 		t.Run(tc.platform+"/"+tc.reason, func(t *testing.T) {
 			assert.Equal(t, tc.want, NotDeliveredMessage(tc.platform, "Cosmos Channel", tc.reason))

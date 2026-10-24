@@ -17,7 +17,7 @@ func (t *ImSendTask) GetName() string {
 
 // GetDescription returns a brief description of the task.
 func (t *ImSendTask) GetDescription() string {
-	return "Send a message to Slack, MS Teams, or Google Chat. As a step it fails, naming the reason, when the message is not delivered; as a hook it only logs that."
+	return "Send a message to Slack, MS Teams, or Google Chat, through the app or through a webhook integration (provider slack_webhook, ms_teams_webhook or google_chat_webhook; channel is the integration id; no team or thread). As a step it fails, naming the reason, when the message is not delivered; as a hook it only logs that."
 }
 
 // GetDisplayName returns a human-readable name for the task.
@@ -114,7 +114,7 @@ func (t *ImSendTask) InputSchema() *types.Schema {
 				Type:        "string",
 				Description: "Notification Provider",
 				Required:    true,
-				Options:     []string{"slack", "ms_teams", "google_chat"},
+				Options:     []string{"slack", "ms_teams", "google_chat", "slack_webhook", "ms_teams_webhook", "google_chat_webhook"},
 				Order:       1,
 			},
 			"team_id": {
@@ -125,7 +125,7 @@ func (t *ImSendTask) InputSchema() *types.Schema {
 			},
 			"channel": {
 				Type:        "string",
-				Description: "Provider Channel",
+				Description: "Provider Channel; for a webhook provider, the webhook integration id",
 				Required:    true,
 				Order:       3,
 			},
@@ -137,7 +137,7 @@ func (t *ImSendTask) InputSchema() *types.Schema {
 			},
 			"message_thread_id": {
 				Type:        "string",
-				Description: "Message ID for Response on Threads",
+				Description: "Message ID for Response on Threads; not supported for webhook providers",
 				Required:    false,
 				Order:       5,
 			},

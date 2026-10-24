@@ -18,6 +18,10 @@ class ChannelMapping(BaseModel):
     slack: Optional[List[ChannelInfo]] = Field(None, description="Slack channels")
     ms_teams: Optional[List[ChannelInfo]] = Field(None, description="MS Teams channels", alias="ms_teams")
     google_chat: Optional[List[ChannelInfo]] = Field(None, description="Google Chat spaces", alias="google_chat")
+    # A webhook target is its integration; `id` is the integration id.
+    slack_webhook: Optional[List[ChannelInfo]] = Field(None, description="Slack webhook targets")
+    ms_teams_webhook: Optional[List[ChannelInfo]] = Field(None, description="MS Teams webhook targets")
+    google_chat_webhook: Optional[List[ChannelInfo]] = Field(None, description="Google Chat webhook targets")
 
 
 class GenericParameters(BaseModel):

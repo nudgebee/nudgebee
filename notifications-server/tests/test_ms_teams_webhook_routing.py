@@ -6,6 +6,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from notifications_server.schemas.message import SendMessageRequest
 from notifications_server.services.message import MessageService
 
 
@@ -53,6 +54,31 @@ def test_directed_send_silences_webhook_even_with_a_matching_rule():
     # are rule-routed and must not fan out on a directed send.
     MessageService.get_channels_from_request_or_defaults([a], [_rule("aaaa")], "finding", {"channels": {"slack": "C1"}})
     assert a.to_channel is None
+
+
+def test_directed_send_naming_a_webhook_target_reaches_only_it():
+    a, b = _webhook_ip("aaaa"), _webhook_ip("bbbb")
+    a.team_name = "Cosmos Channel"
+    app = SimpleNamespace(id="i1", platform="ms_teams", channels={"team_id": "T"}, to_channel=None)
+    MessageService.get_channels_from_request_or_defaults(
+        [a, b, app], [], "automation", {"channels": {"ms_teams_webhook": [{"id": "aaaa"}]}}
+    )
+    assert a.to_channel == {"webhook_target_id": "aaaa", "name": "Cosmos Channel"}
+    assert b.to_channel is None
+    assert app.to_channel is None  # a send naming only the webhook never falls back to the app's default
+
+
+def test_directed_webhook_target_survives_request_validation():
+    request = SendMessageRequest.model_validate(
+        {
+            "kind": "notification",
+            "type": "generic",
+            "tenant_id": "t1",
+            "parameters": {"message": "hi"},
+            "channels": {"ms_teams_webhook": [{"id": "aaaa"}]},
+        }
+    )
+    assert request.model_dump(exclude_none=True, by_alias=True)["channels"] == {"ms_teams_webhook": [{"id": "aaaa"}]}
 
 
 @patch("notifications_server.services.message.MsTeamsClient.post_to_ms_teams_webhook")

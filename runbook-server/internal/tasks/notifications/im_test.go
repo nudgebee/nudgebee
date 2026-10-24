@@ -17,9 +17,12 @@ import (
 	"go.temporal.io/sdk/temporal"
 )
 
-func serveSendResult(t *testing.T, result map[string]any) {
+// serveSendResult answers every send with result and returns the last request body.
+func serveSendResult(t *testing.T, result map[string]any) *map[string]any {
 	t.Helper()
+	sent := map[string]any{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&sent)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode([]map[string]any{result})
 	}))
@@ -27,6 +30,7 @@ func serveSendResult(t *testing.T, result map[string]any) {
 	old := config.Config.NotificationServerUrl
 	config.Config.NotificationServerUrl = server.URL
 	t.Cleanup(func() { config.Config.NotificationServerUrl = old })
+	return &sent
 }
 
 func newImTaskContext() types.TaskContext {
@@ -80,4 +84,22 @@ func TestImSendTask_ASuppressedMessageStillCompletes(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, "Muted by a rule", output.(map[string]any)["reason"])
+}
+
+func TestImSendTask_SendsToAWebhookIntegrationByID(t *testing.T) {
+	sent := serveSendResult(t, map[string]any{"platform": "ms_teams_webhook", "channel_id": "int-1", "status": "sent"})
+
+	output, err := (&ImSendTask{}).Execute(newImTaskContext(), map[string]any{"provider": "ms_teams_webhook", "channel": "int-1", "message": "report"})
+
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"ms_teams_webhook": []any{map[string]any{"id": "int-1"}}}, (*sent)["channels"])
+	assert.Equal(t, "sent", output.(map[string]any)["status"])
+}
+
+func TestImSendTask_AWebhookCantReplyInAThread(t *testing.T) {
+	_, err := (&ImSendTask{}).Execute(newImTaskContext(), map[string]any{
+		"provider": "slack_webhook", "channel": "int-1", "message": "report", "message_thread_id": "123.4",
+	})
+
+	assert.EqualError(t, err, "a Slack webhook can't reply in a thread; leave the message thread ID empty")
 }

@@ -79,6 +79,9 @@ func (t *ApprovalTask) Execute(taskCtx types.TaskContext, params map[string]any)
 		if !ok || imProvider == "" {
 			return nil, fmt.Errorf("im_provider is required when approval_type is instant_message")
 		}
+		if notification.IsWebhookPlatform(imProvider) {
+			return nil, fmt.Errorf("a %s can't carry the approve and reject buttons; send the approval request through the Slack or Teams app", notification.PlatformName(imProvider))
+		}
 
 		imChannel, ok := params["im_channel"].(string)
 		if !ok || imChannel == "" {
