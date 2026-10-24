@@ -14,6 +14,7 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1541,6 +1542,63 @@ func logMetricLookbackWindow(startTime, endTime, startedAt *time.Time) (*time.Ti
 	return &start, &end
 }
 
+// awsAlarmLogMargin is added to an alarm's evaluation window when looking back for
+// its logs, so the lines just before the breach began are included too.
+const awsAlarmLogMargin = 5 * time.Minute
+
+// awsAlarmLogDefaultWindow stands in for the evaluation window when the alarm event
+// carries no period/evaluation-periods labels.
+const awsAlarmLogDefaultWindow = 10 * time.Minute
+
+// awsAlarmLogMaxWindow bounds the look-back for alarms with long periods.
+const awsAlarmLogMaxWindow = 6 * time.Hour
+
+// awsAlarmEvaluationWindow is how long the alarm's metric had to breach before it
+// fired (period x evaluation periods), or the default when the labels are absent.
+func awsAlarmEvaluationWindow(labels map[string]string) time.Duration {
+	period, err1 := strconv.ParseInt(labels["Period"], 10, 64)
+	periods, err2 := strconv.ParseInt(labels["EvaluationPeriods"], 10, 64)
+	if err1 != nil || err2 != nil || period <= 0 || periods <= 0 {
+		return awsAlarmLogDefaultWindow
+	}
+	// Checked by division so a huge label cannot wrap the product negative.
+	if maxSeconds := int64(awsAlarmLogMaxWindow / time.Second); period > maxSeconds/periods {
+		return awsAlarmLogMaxWindow
+	}
+	return time.Duration(period*periods) * time.Second
+}
+
+// awsAlarmLogWindowStart returns the start of the log query for a CloudWatch alarm:
+// the alarm's evaluation window plus a margin before it fired, or the existing start
+// when that is already earlier. breachStart is where the breach began, which the
+// size cap keeps lines closest to.
+func awsAlarmLogWindowStart(labels map[string]string, alertStart, start *time.Time) (windowStart, breachStart *time.Time) {
+	if alertStart == nil || !strings.Contains(labels["aws_event_arn"], ":alarm:") {
+		return start, nil
+	}
+	window := awsAlarmEvaluationWindow(labels)
+	breach := alertStart.Add(-window)
+	from := breach.Add(-awsAlarmLogMargin)
+	if start != nil && start.Before(from) {
+		from = *start
+	}
+	return &from, &breach
+}
+
+// sortLogsByDistanceFrom orders results by how close each is to anchor, so a size
+// cap that drops the tail keeps the lines nearest the breach start. Stable, so
+// equally distant lines keep the collector's order.
+func sortLogsByDistanceFrom(results []LogMessage, anchor time.Time) {
+	at := anchor.UnixMilli()
+	dist := func(m LogMessage) int64 {
+		if d := m.Timestamp - at; d >= 0 {
+			return d
+		}
+		return at - m.Timestamp
+	}
+	sort.SliceStable(results, func(i, j int) bool { return dist(results[i]) < dist(results[j]) })
+}
+
 func (a *cloudLogAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
 	labels := ctx.GetEvent().Labels
 
@@ -1683,6 +1741,13 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 		params.StartTime, params.EndTime = logMetricLookbackWindow(params.StartTime, params.EndTime, ctx.GetEvent().StartedAt)
 	}
 
+	// An AWS alarm's logs must cover the window it evaluated before firing; the
+	// event's own window only reaches a fixed 10 minutes back.
+	var breachStart *time.Time
+	if _, hasStart := rawParams["start_time"]; !hasStart {
+		params.StartTime, breachStart = awsAlarmLogWindowStart(ctx.GetEvent().Labels, ctx.GetEvent().AlertStart(), params.StartTime)
+	}
+
 	query := params.Query
 	if query == "" {
 		query = params.QueryString
@@ -1738,6 +1803,9 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 	approxBytes := 0
 	truncated := false
 
+	if breachStart != nil {
+		sortLogsByDistanceFrom(resourceResp.Results, *breachStart)
+	}
 	for _, item := range resourceResp.Results {
 		if len(logoutput) >= maxLogEntries {
 			truncated = true
@@ -1781,6 +1849,15 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 		}
 		approxBytes += entryBytes
 		logoutput = append(logoutput, log)
+	}
+
+	if breachStart != nil {
+		// Back to the collector's newest-first order after the distance ranking.
+		sort.SliceStable(logoutput, func(i, j int) bool {
+			ti, _ := logoutput[i]["timestamp"].(int64)
+			tj, _ := logoutput[j]["timestamp"].(int64)
+			return ti > tj
+		})
 	}
 
 	if truncated {
