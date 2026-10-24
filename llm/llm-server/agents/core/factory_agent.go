@@ -53,6 +53,13 @@ type ExecutionTargetAwareAgent interface {
 	AcceptsExecutionTarget()
 }
 
+// PriorObservationsConsumer marks an agent that answers from its caller's
+// earlier step observations (a summarizer). Called without dependency context,
+// it gets those observations as QueryContext; other agent-tools get none.
+type PriorObservationsConsumer interface {
+	ConsumesPriorObservations()
+}
+
 // ProviderBoundAgent is a target-aware agent whose tools reach one kind of
 // account only (aws_logs runs the aws CLI). A target of another kind is
 // refused, so it can never answer from the conversation's own account.
@@ -352,6 +359,11 @@ func (m *nbAgentTool) PrepareDelegatedTargetInput(target *toolcore.ExecutionTarg
 }
 
 func (m *nbAgentTool) SupportsDelegatedTarget() bool { return m.targetSupported }
+
+func (m *nbAgentTool) consumesPriorObservations(ctx *security.RequestContext) bool {
+	_, ok := m.GetAgent(ctx).(PriorObservationsConsumer)
+	return ok
+}
 
 // agentForCall is the agent this call runs: the tool's own, or for a tool
 // routed by target, the one its factory builds for the target account.

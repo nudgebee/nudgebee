@@ -2974,10 +2974,11 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		e.toolCallbackHandler.BeforeToolCall(action)
 	}
 
-	// Enhanced Task Delegation: when calling agent-type sub-tools without explicit
-	// dependency context (e.g. react_3 actions), auto-inject previous step observations
-	// so the sub-agent has investigation context from earlier steps.
-	if queryContext == "" && tool != nil && tool.GetType() == toolcore.NBToolTypeAgent && len(e.steps) > 0 {
+	// Summarizer fallback: agent-type summarizers called without explicit dependency
+	// context (e.g. react_3 actions, which never declare Dependency) get the previous
+	// step observations as their source material. Other sub-agents only see what the
+	// action's own input and declared dependencies give them.
+	if queryContext == "" && tool != nil && tool.GetType() == toolcore.NBToolTypeAgent && len(e.steps) > 0 && e.consumesPriorObservations(tool) {
 		var ctxBuilder strings.Builder
 		for _, s := range e.steps {
 			if s.Status != ToolStatusSuccess || s.Observation == "" {
@@ -2995,7 +2996,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		}
 		if ctxBuilder.Len() > 0 {
 			queryContext = ctxBuilder.String()
-			e.ctx.GetLogger().Info("plannerexecutor: injected previous observations as context for agent tool", "tool", action.Tool, "context_len", len(queryContext))
+			e.ctx.GetLogger().Info("plannerexecutor: injected previous observations as summarizer fallback context", "tool", action.Tool, "context_len", len(queryContext))
 		}
 	}
 
@@ -5658,6 +5659,23 @@ func (e *plannerExecutor) rewriteToolInput(action NBAgentPlannerToolAction, quer
 	e.ctx.GetLogger().Info("plannerexecutor: Rewrote tool input", "original", egressfilter.RedactForLog(action.ToolInput), "rewritten", egressfilter.RedactForLog(rewrittenInput))
 
 	return rewrittenInput, nil
+}
+
+// consumesPriorObservations reports whether an agent-type tool reads QueryContext
+// as the observations it should summarize or answer from: this agent's summary
+// tool, or a tool whose agent implements PriorObservationsConsumer (LLM,
+// clarification). Specialists (logs, metrics, traces, ...) do not; their
+// QueryContext is scope, and the whole investigation history there is noise
+// (and, for events_report, a format).
+func (e *plannerExecutor) consumesPriorObservations(tool toolcore.NBTool) bool {
+	if e.summaryToolName != "" && strings.EqualFold(tool.Name(), e.summaryToolName) {
+		return true
+	}
+	if agentTool, ok := tool.(*nbAgentTool); ok {
+		return agentTool.consumesPriorObservations(e.ctx)
+	}
+	_, ok := tool.(PriorObservationsConsumer)
+	return ok
 }
 
 func (e *plannerExecutor) fastSummarizeTool(action NBAgentPlannerToolAction, queryContext string) (string, error) {

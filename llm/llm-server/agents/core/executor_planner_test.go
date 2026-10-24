@@ -2167,3 +2167,112 @@ func TestSummarizeConversation_ProseMentioningNotebookTagUnchanged(t *testing.T)
 	require.NotNil(t, result)
 	assert.Equal(t, prose, result["output"])
 }
+
+// TestDoIterationSequential_PriorObservationFallback covers #37183: ReAct-3/4
+// actions never declare Dependency, so an agent-type tool called without one
+// used to get every earlier observation as QueryContext. Only summarizers keep
+// that fallback; specialists get nothing, and declared dependencies still flow.
+func TestDoIterationSequential_PriorObservationFallback(t *testing.T) {
+	const priorObservation = "pod checkout-7f9 is CrashLoopBackOff"
+	priorStep := NBAgentPlannerToolActionStep{
+		Action:      NBAgentPlannerToolAction{ToolID: "Plan1", Tool: "kubectl", ToolInput: "get pods"},
+		Observation: priorObservation,
+		Status:      ToolStatusSuccess,
+	}
+
+	tests := []struct {
+		name        string
+		tool        toolcore.NBTool
+		summaryTool string
+		dependency  []string
+		wantPrior   bool
+	}{
+		{
+			name:      "independent specialist gets no unrelated observations",
+			tool:      &MockAgentTypeTool{MockContextCapturingTool{NameVal: "logs", ReturnOutput: "ok", ReturnStatus: toolcore.NBToolResponseStatusSuccess}},
+			wantPrior: false,
+		},
+		{
+			name:        "summary tool keeps prior observations",
+			tool:        &MockAgentTypeTool{MockContextCapturingTool{NameVal: "event_summarizer", ReturnOutput: "ok", ReturnStatus: toolcore.NBToolResponseStatusSuccess}},
+			summaryTool: "event_summarizer",
+			wantPrior:   true,
+		},
+		{
+			name:      "agent-tool that implements PriorObservationsConsumer keeps prior observations",
+			tool:      &mockPriorObservationsConsumerTool{MockAgentTypeTool{MockContextCapturingTool{NameVal: "answer_from_context", ReturnOutput: "ok", ReturnStatus: toolcore.NBToolResponseStatusSuccess}}},
+			wantPrior: true,
+		},
+		{
+			name:      "clarification by name alone is not an opt-in",
+			tool:      &MockAgentTypeTool{MockContextCapturingTool{NameVal: ToolClarification, ReturnOutput: "ok", ReturnStatus: toolcore.NBToolResponseStatusSuccess}},
+			wantPrior: false,
+		},
+		{
+			name:        "declared dependency still flows to a specialist",
+			tool:        &MockAgentTypeTool{MockContextCapturingTool{NameVal: "logs", ReturnOutput: "ok", ReturnStatus: toolcore.NBToolResponseStatusSuccess}},
+			summaryTool: "logs", // bypass rewriteToolInput, which calls the LLM when deps are declared
+			dependency:  []string{"Plan1"},
+			wantPrior:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := security.NewRequestContextForTenantAccountAdmin("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", []string{"cccccccc-cccc-cccc-cccc-cccccccccccc"})
+			executor := &plannerExecutor{
+				ctx:   ctx,
+				agent: &MockAgent{SupportedTools: []toolcore.NBTool{tc.tool}},
+				agentRequest: NBAgentRequest{
+					AccountId:      "cccccccc-cccc-cccc-cccc-cccccccccccc",
+					UserId:         "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+					ConversationId: "conv_id",
+					MessageId:      "msg_id",
+					AgentId:        "agent_id",
+				},
+				summaryToolName: tc.summaryTool,
+				steps:           []NBAgentPlannerToolActionStep{priorStep},
+				toolCallCache:   turnToolCallCache{cache: make(map[string]NBAgentPlannerToolActionStep)},
+			}
+			actions := []NBAgentPlannerToolAction{
+				{ToolID: "Plan2", Tool: tc.tool.Name(), ToolInput: "error logs for checkout", Dependency: tc.dependency},
+			}
+
+			_, _, err := executor.doIterationSequential([]NBAgentPlannerToolActionStep{priorStep}, map[string]toolcore.NBTool{strings.ToUpper(tc.tool.Name()): tc.tool}, actions)
+			assert.NoError(t, err)
+
+			var captured string
+			switch tool := tc.tool.(type) {
+			case *MockAgentTypeTool:
+				captured = tool.CapturedCtx
+			case *mockPriorObservationsConsumerTool:
+				captured = tool.CapturedCtx
+			}
+			if tc.wantPrior {
+				assert.Contains(t, captured, priorObservation)
+			} else {
+				assert.NotContains(t, captured, priorObservation)
+				assert.Empty(t, captured)
+			}
+		})
+	}
+}
+
+type mockPriorObservationsConsumerTool struct {
+	MockAgentTypeTool
+}
+
+func (m *mockPriorObservationsConsumerTool) ConsumesPriorObservations() {}
+
+// TestConsumesPriorObservations_AgentTools checks the opt-in through the real
+// agent-tool wrapper: LLM and clarification opt in through their agents, a
+// specialist does not, and the executor's own summary tool always does.
+func TestConsumesPriorObservations_AgentTools(t *testing.T) {
+	ctx := security.NewRequestContextForTenantAccountAdmin("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", []string{"cccccccc-cccc-cccc-cccc-cccccccccccc"})
+	executor := &plannerExecutor{ctx: ctx, summaryToolName: "logs"}
+
+	assert.True(t, executor.consumesPriorObservations(NewToolFromAgent(LLMAgent{})))
+	assert.True(t, executor.consumesPriorObservations(NewToolFromAgent(ClarificationAgent{})))
+	assert.False(t, executor.consumesPriorObservations(NewToolFromAgent(&MockAgent{})))
+	assert.True(t, executor.consumesPriorObservations(&MockAgentTypeTool{MockContextCapturingTool{NameVal: "logs"}}), "the executor's summary tool keeps the fallback")
+}

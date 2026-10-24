@@ -48,6 +48,9 @@ func init() {
 type LLMAgent struct {
 }
 
+// ConsumesPriorObservations: LLM summarizes the caller's earlier observations.
+func (p LLMAgent) ConsumesPriorObservations() {}
+
 func (p LLMAgent) GetName() string {
 	return llmruntime.ToolLlm
 }
@@ -150,6 +153,9 @@ const ToolClarification = "clarification"
 
 type ClarificationAgent struct {
 }
+
+// ConsumesPriorObservations: with a QueryContext, clarification answers from it.
+func (p ClarificationAgent) ConsumesPriorObservations() {}
 
 func (p ClarificationAgent) GetName() string {
 	return ToolClarification
