@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -296,6 +297,9 @@ func (h *ExecutionHandler) HandleExecute(c *gin.Context) {
 	if err != nil {
 		resp.CommandStatus = "failed"
 		resp.Error = err.Error()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			resp.Error = fmt.Sprintf("command stopped at the %s workspace time limit (%v). Narrow it (a shorter time window, a filter, a limit) instead of running it again unchanged", timeout, err)
+		}
 	} else {
 		resp.CommandStatus = "success"
 	}

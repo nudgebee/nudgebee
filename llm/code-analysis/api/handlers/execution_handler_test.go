@@ -359,6 +359,8 @@ func TestHandleExecute_TimeoutKillsGrandchildProcess(t *testing.T) {
 
 	assert.Equal(t, "failed", resp.CommandStatus, "response: %+v", resp)
 	assert.Contains(t, resp.Error, "killed")
+	// The caller (an LLM) must learn why it stopped, not just "signal: killed" (#42167).
+	assert.Contains(t, resp.Error, "1s workspace time limit")
 	assert.Less(t, elapsed, 5*time.Second,
 		"handler took %s — should be bounded by the ~1s configured deadline, not the sleep 30's natural duration; "+
 			"a regression here means the deadline no longer kills grandchild processes", elapsed)

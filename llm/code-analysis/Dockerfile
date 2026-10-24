@@ -99,6 +99,7 @@ WORKDIR /app
 # git, curl, openssh-client, bind-tools (dig), iputils (ping), net-tools (netstat), nmap-ncat (nc)
 # jq, grep, findutils, coreutils, sed, awk, tar, unzip, procps
 # ripgrep (rg), the_silver_searcher (ag)
+# py3-requests for skill scripts; tzdata so Python's zoneinfo resolves time zones
 # OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's
 # cache key so BuildKit re-runs the apk install and pulls current Alpine security
 # patches instead of a stale cached layer. Committed (not a build-arg) so each
@@ -132,6 +133,8 @@ RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     python3 \
     py3-pip \
     py3-pyflakes \
+    py3-requests \
+    tzdata \
     bash
 
 # Keep dependency/build caches in explicit, workspace-owned locations so the
