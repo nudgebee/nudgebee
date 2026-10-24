@@ -1874,6 +1874,12 @@ func (o *NBReActPlanner4) renderObservation(step *NBAgentPlannerToolActionStep, 
 	if note := truncationNote(step.Metadata); note != "" {
 		obs += "\n[" + note + "]"
 	}
+	// Render-only, as on ReAct3 (scratchpad.go): the same tool keeps coming back
+	// with nothing new, so say so before the planner tries another variation. A
+	// turn-cache hit carries the count of the call it repeats, so it gets none.
+	if step.NoProgressRepeatCount > 0 && !step.IsDuplicateCacheHit {
+		obs = noProgressNotice(step.Action.Tool, step.NoProgressRepeatCount) + obs
+	}
 	if ev := strings.TrimSpace(step.SubAgentEvidence); ev != "" {
 		obs = obs + "\n\n" + ev
 	}

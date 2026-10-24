@@ -14,6 +14,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -504,7 +505,12 @@ type loopPlanner struct {
 	tools        []toolcore.NBTool
 	finishFirst  bool
 	finishStatus ConversationStatus // of the first-turn finish; completed when empty
-	calls        int
+	// after the first turn: "repeat" proposes the first turn's call again,
+	// "fail" calls a tool that does not exist, "empty" proposes nothing,
+	// "vary" changes the input but gets the same result — the shapes the loop
+	// brakes stop on.
+	after string
+	calls int
 }
 
 func (p *loopPlanner) GetTools() []toolcore.NBTool { return p.tools }
@@ -517,7 +523,20 @@ func (p *loopPlanner) Plan(_ context.Context, _ []NBAgentPlannerToolActionStep, 
 		}
 		return nil, &NBAgentPlannerFinishAction{Data: "done", Status: status}, nil
 	}
-	return []NBAgentPlannerToolAction{{ToolID: fmt.Sprintf("t%d", p.calls), Tool: "own_tool", ToolInput: "{}"}}, nil, nil
+	id, tool, input := fmt.Sprintf("t%d", p.calls), "own_tool", "{}"
+	if p.calls > 1 {
+		switch p.after {
+		case "repeat":
+			id = "t1"
+		case "fail":
+			tool = "missing_tool"
+		case "empty":
+			return nil, nil, nil
+		case "vary":
+			input = fmt.Sprintf(`{"n":%d}`, p.calls)
+		}
+	}
+	return []NBAgentPlannerToolAction{{ToolID: id, Tool: tool, ToolInput: input}}, nil, nil
 }
 
 // runLoop runs the planner loop for agent from startIteration and returns
@@ -685,4 +704,41 @@ func TestGovernedRunSkipsTheAgentToolCache(t *testing.T) {
 	customAgentToolsCacheInst.set(policyTestAccount, agent.agent.Name, nil)
 	assert.Len(t, agent.configuredTools(governedRun(security.NewRequestContextForSuperAdmin())), 1, "nor read it")
 	assert.Empty(t, agent.configuredTools(security.NewRequestContextForSuperAdmin()), "an ordinary run uses the cache as before")
+}
+
+// A loop brake ends the run before its turns are up; the summary is told it
+// stopped early and why, while a run that used its turns gets no such note (#40199).
+func TestLoopBrakeStopReasonReachesSummary(t *testing.T) {
+	summaryPrompt := func(llm *fakeLLMModel) string {
+		sent := llm.lastSent()
+		require.NotEmpty(t, sent)
+		return sent[len(sent)-1].Parts[0].(llms.TextContent).Text
+	}
+	origBrake := config.Config.LlmServerNoProgressBrakeEnabled
+	t.Cleanup(func() { config.Config.LlmServerNoProgressBrakeEnabled = origBrake })
+	for _, tc := range []struct {
+		after  string
+		brake  bool
+		calls  int
+		reason string
+	}{
+		{after: "repeat", calls: 3, reason: stopReasonDuplicateActions},
+		{after: "fail", brake: true, calls: 3, reason: stopReasonNoUsableActions},
+		{after: "empty", calls: 2, reason: stopReasonPlanFailed},
+		{after: "vary", brake: true, calls: 3, reason: stopReasonNoProgress},
+	} {
+		t.Run(tc.after, func(t *testing.T) {
+			config.Config.LlmServerNoProgressBrakeEnabled = tc.brake
+			agent, planner := loopFixture(false)
+			planner.after = tc.after
+			_, llm := runLoop(t, false, agent, planner, 10, 0)
+			assert.Equal(t, tc.calls, planner.calls, "the run stops well before its 10 turns")
+			assert.Contains(t, summaryPrompt(llm), "stopped early, before it finished, because "+tc.reason)
+		})
+	}
+
+	config.Config.LlmServerNoProgressBrakeEnabled = origBrake
+	agent, planner := loopFixture(false)
+	_, llm := runLoop(t, false, agent, planner, 2, 0)
+	assert.NotContains(t, summaryPrompt(llm), "stopped early")
 }

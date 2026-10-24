@@ -1901,6 +1901,8 @@ func init() {
 
 	viper.SetDefault("llm_server_scratchpad_summarization_enabled", true)
 	viper.SetDefault("llm_server_scratchpad_max_observation_chars", 65536)
+	viper.SetDefault("llm_server_scratchpad_summary_timeout_ms", 10000)
+	viper.SetDefault("llm_server_preflight_max_message_bytes", 512*1024)
 	viper.SetDefault("llm_server_tool_call_response_persist_max_chars", 65536)
 	viper.SetDefault("llm_server_sub_agent_evidence_enabled", true)
 	viper.SetDefault("llm_server_sub_agent_evidence_max_chars", 2048)

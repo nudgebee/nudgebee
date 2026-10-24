@@ -62,11 +62,9 @@ var unregisteredKeys = map[string]bool{
 	"llm_server_image_max_per_message":                 true,
 	"llm_server_image_max_size_mb":                     true,
 	"llm_server_security_mode":                         true,
-	"llm_server_preflight_max_message_bytes":           true,
 	"llm_server_skill_selection_top_k":                 true,
 	"llm_server_scratchpad_summary_max_len":            true,
 	"llm_server_scratchpad_summary_min_bytes":          true,
-	"llm_server_scratchpad_summary_timeout_ms":         true,
 }
 
 // Every tagged field must be settable from the environment, so a new key added
@@ -95,4 +93,12 @@ func TestEveryConfigKeyIsRegisteredWithViper(t *testing.T) {
 // unregistered reads as false and silently disables it.
 func TestCliPipelineStatusDefaultsOn(t *testing.T) {
 	assert.True(t, viper.GetBool("llm_server_cli_pipeline_status_enabled"))
+}
+
+// These defaults equal the fallbacks the code applies when the value is 0
+// (llms/runtime preflightMaxMessageBytesDefault, getScratchpadSummaryTimeout),
+// so registering the keys changes nothing until an environment sets them.
+func TestRegisteredDefaultsMatchCodeFallbacks(t *testing.T) {
+	assert.Equal(t, 512*1024, viper.GetInt("llm_server_preflight_max_message_bytes"))
+	assert.Equal(t, 10000, viper.GetInt("llm_server_scratchpad_summary_timeout_ms"))
 }

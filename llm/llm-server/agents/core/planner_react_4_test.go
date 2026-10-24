@@ -1255,3 +1255,24 @@ func TestReact4RefinementMessageAsksForSelfContainedAnswer(t *testing.T) {
 
 // nemotronFunctionCall is Nemotron Nano's leaked final answer on an S3 question (#38236).
 const nemotronFunctionCall = "<function=cloud_resource_search_execute> <parameter=service> S3 </parameter> </function> </tool_call>"
+
+// ReAct4 shows the same render-only no-progress notice as ReAct3 (#40199),
+// without writing it into the step's stored observation.
+func TestReAct4RenderObservation_NoProgressNotice(t *testing.T) {
+	r4 := &NBReActPlanner4{}
+	step := &NBAgentPlannerToolActionStep{
+		Action:                NBAgentPlannerToolAction{ToolID: "t1", Tool: "kubectl_execute"},
+		Observation:           "Error from server (Forbidden)",
+		NoProgressRepeatCount: 3,
+	}
+	got := r4.renderObservation(step, 0, 1, false, 4096)
+	assert.True(t, strings.HasPrefix(got, noProgressNotice("kubectl_execute", 3)), got)
+	assert.Contains(t, got, "Error from server (Forbidden)")
+	assert.Equal(t, "Error from server (Forbidden)", step.Observation)
+
+	step.IsDuplicateCacheHit = true
+	assert.NotContains(t, r4.renderObservation(step, 0, 1, false, 4096), "NO PROGRESS", "a cache hit repeats an old count")
+
+	step.IsDuplicateCacheHit, step.NoProgressRepeatCount = false, 0
+	assert.NotContains(t, r4.renderObservation(step, 0, 1, false, 4096), "NO PROGRESS")
+}

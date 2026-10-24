@@ -451,6 +451,9 @@ type plannerExecutor struct {
 	// actions refuse concurrently, hence the lock.
 	readOnlyMu       sync.Mutex
 	readOnlyRefusals int
+	// stopReason says why a loop brake ended the run before it finished, for
+	// the summary to tell the reader; empty when no brake fired (#40199).
+	stopReason string
 }
 
 func (e *plannerExecutor) GetInputKeys() []string {
@@ -547,6 +550,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 
 	consecutiveFailedIters := 0
 	consecutiveDuplicateIters := 0
+	e.stopReason = ""
 	// Whether the run ended on a cap rather than a finish; see the end.
 	budgetStopped := false
 	var budgetUsed, budgetLimit int64
@@ -586,6 +590,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 			consecutiveDuplicateIters++
 			if consecutiveDuplicateIters >= 2 {
 				e.ctx.GetLogger().Warn("plannerexecutor: breaking after 2 consecutive duplicate-action iterations (LLM looping on completed work)", "agent", e.agent.GetName(), "iteration", i)
+				e.stopReason = stopReasonDuplicateActions
 				break
 			}
 		} else {
@@ -612,6 +617,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 			// its inner iterations or returning ErrAgentNoReturn after max attempts.
 			if len(e.steps) > 0 {
 				e.ctx.GetLogger().Warn("plannerexecutor: iteration returned error but steps exist, falling through to summarization", "error", err, "stepsCount", len(e.steps))
+				e.stopReason = stopReasonPlanFailed
 				break
 			}
 			return nil, err
@@ -624,6 +630,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 			consecutiveFailedIters++
 			if consecutiveFailedIters >= 2 {
 				e.ctx.GetLogger().Warn("plannerexecutor: breaking after 2 consecutive iterations with no usable actions", "agent", e.agent.GetName(), "iteration", i)
+				e.stopReason = stopReasonNoUsableActions
 				break
 			}
 		} else {
@@ -654,6 +661,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 				}
 			}
 			if stuck {
+				e.stopReason = stopReasonNoProgress
 				break
 			}
 		}
@@ -860,6 +868,10 @@ func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
 			"\n  2. Under a '**Recommended Next Steps**' section, provide specific CLI commands or manual steps the user can run to gather the missing information." +
 			"\n  3. Do NOT fabricate findings for the missing data."
 	}
+	if e.stopReason != "" {
+		summarizationPrompt += "\n\nIMPORTANT: This run was stopped early, before it finished, because " + e.stopReason + "." +
+			" Begin the answer by saying that it stopped early and why, then give what was found and clearly state what was NOT completed."
+	}
 	// This summary is the final answer when the run stops on a cap, so it
 	// carries the run policy's answer instructions too.
 	if format := policyFor(e.ctx).AnswerInstructions(e.ctx, e.agent); format != "" {
@@ -917,6 +929,14 @@ func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
 	}
 	return nil, nil
 }
+
+// Why a loop brake stopped the run, worded for the summary to pass on (#40199).
+const (
+	stopReasonDuplicateActions = "it repeated steps it had already completed twice in a row"
+	stopReasonNoUsableActions  = "two steps in a row produced no usable action"
+	stopReasonNoProgress       = "a tool kept returning errors, empty or identical results"
+	stopReasonPlanFailed       = "it could not plan its next step"
+)
 
 // ponytail: length heuristic for "a real answer is left"; on test, call-only summaries leave
 // <= 93 bytes & answers around a call >= 675. Revisit if a short real answer is failed.
