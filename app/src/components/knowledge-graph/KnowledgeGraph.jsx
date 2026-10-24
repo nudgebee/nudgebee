@@ -848,10 +848,12 @@ const KNOWN_CLOUD_PROVIDERS = new Set(['aws', 'k8s', 'gcp', 'azure', 'github', '
 // for identity rows (no cluster, location or hierarchy), so one person's two
 // accounts are still tellable apart: "Mangglesh Dagar   mangglesh1653".
 // The full key plus cluster name are kept in `searchText` so search still
-// matches namespace/region/type/cluster (including the un-stripped type) — the
-// display name joins it so an identity row matches its human name too — and
-// `displayLabel` mirrors the legacy value for any consumer that reads it.
-const buildNodeOption = (uniqueKey, id, clusterMap, specificTypeMap, displayNameMap) => {
+// matches namespace/region/cluster — the display name joins it so an identity
+// row matches its human name too — and `displayLabel` mirrors the legacy value
+// for any consumer that reads it. The key only carries the broad node type
+// (Workload, ComputeInstance), so the specific type and the badge text join too:
+// "daemonset", "Daemon Set" and "EC2" then find the rows whose badge reads that (#41140).
+export const buildNodeOption = (uniqueKey, id, clusterMap, specificTypeMap, displayNameMap) => {
   const parsed = parseUniqueKey(uniqueKey);
   const cluster = clusterMap?.[uniqueKey];
   if (!parsed) {
@@ -862,16 +864,19 @@ const buildNodeOption = (uniqueKey, id, clusterMap, specificTypeMap, displayName
   const displayName = displayNameMap?.[uniqueKey];
   const contextChip = [displayName ? name : '', cluster, location, hierarchy].filter(Boolean).join(' · ');
   const hasIcon = KNOWN_CLOUD_PROVIDERS.has(provider);
+  const badge = formatTypeBadge(specificType || nodeType, provider, hasIcon);
   const option = {
     label: displayName || name || uniqueKey,
     displayLabel: uniqueKey,
     value: id,
-    badge: formatTypeBadge(specificType || nodeType, provider, hasIcon),
+    badge,
     type: contextChip,
     // cluster/location/hierarchy are case-sensitive identifiers (k8s cluster,
     // namespace, region, vpc/resource-group id) — keep casing verbatim, don't title-case.
     typeTextTransform: 'none',
-    searchText: [uniqueKey, cluster, displayName].filter(Boolean).join(' '),
+    // humanizeType also splits acronyms ("EC2 Instance"), which the badge doesn't, so the
+    // spelling the Node Type dropdown shows finds the row too.
+    searchText: [uniqueKey, cluster, displayName, specificType, badge, humanizeType(specificType || nodeType)].filter(Boolean).join(' '),
   };
   if (hasIcon) {
     // The icon is the only thing naming the provider now that the badge doesn't
