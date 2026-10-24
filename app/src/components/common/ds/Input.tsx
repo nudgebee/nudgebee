@@ -357,56 +357,56 @@ export const Input = React.forwardRef<HTMLInputElement | HTMLTextAreaElement, In
     <Box component='input' type={type} inputMode={inputMode} ref={forwardedRef} {...sharedInputProps} />
   );
 
-  // When an inline icon is present, wrap the input in a position-relative shell
-  // and absolute-position the icon. The input itself owns the padding inset.
-  const inputWithIcons =
-    leadingIcon || trailingIcon ? (
-      <Box sx={{ position: 'relative', display: 'flex', width: '100%' }}>
-        {leadingIcon && (
-          <Box
-            aria-hidden='true'
-            sx={{
-              position: 'absolute',
-              left: tokens.padX,
-              top: '50%',
-              transform: 'translateY(-50%)',
-              width: tokens.iconSize,
-              height: tokens.iconSize,
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--ds-gray-500)',
-              pointerEvents: 'none',
-              fontSize: tokens.iconSize,
-            }}
-          >
-            {leadingIcon}
-          </Box>
-        )}
-        {inputEl}
-        {trailingIcon && (
-          <Box
-            sx={{
-              position: 'absolute',
-              right: tokens.padX,
-              top: '50%',
-              transform: 'translateY(-50%)',
-              width: tokens.iconSize,
-              height: tokens.iconSize,
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--ds-gray-500)',
-              fontSize: tokens.iconSize,
-            }}
-          >
-            {trailingIcon}
-          </Box>
-        )}
-      </Box>
-    ) : (
-      inputEl
-    );
+  // Wrap the input in a position-relative shell and absolute-position any icon;
+  // the input itself owns the padding inset. The shell is rendered even with no
+  // icon so the <input> keeps its place in the tree: callers that show an icon
+  // only once there is a value would otherwise remount it (and drop focus) on
+  // the first keystroke.
+  const inputWithIcons = (
+    <Box sx={{ position: 'relative', display: 'flex', width: '100%' }}>
+      {leadingIcon && (
+        <Box
+          aria-hidden='true'
+          sx={{
+            position: 'absolute',
+            left: tokens.padX,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            width: tokens.iconSize,
+            height: tokens.iconSize,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--ds-gray-500)',
+            pointerEvents: 'none',
+            fontSize: tokens.iconSize,
+          }}
+        >
+          {leadingIcon}
+        </Box>
+      )}
+      {inputEl}
+      {trailingIcon && (
+        <Box
+          sx={{
+            position: 'absolute',
+            right: tokens.padX,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            width: tokens.iconSize,
+            height: tokens.iconSize,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--ds-gray-500)',
+            fontSize: tokens.iconSize,
+          }}
+        >
+          {trailingIcon}
+        </Box>
+      )}
+    </Box>
+  );
 
   const inputBlock =
     prefix || suffix ? (
