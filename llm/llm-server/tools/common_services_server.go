@@ -20,8 +20,20 @@ import (
 // lokiMaxLogLimit is the per-query cap Loki enforces (HTTP 400 above this).
 // Sourced from the production error string `loki: limit exceeds maximum of 5000`
 // (services-server wrapped) — pin here so the clamp does not lag the upstream
-// reality. If Loki raises its cap, bump this constant.
+// reality. If Loki raises its cap, bump this constant. Nudgebee's ClickHouse
+// logs (otel_clickhouse) keep the same cap (logql2ch.MaxLimit).
 const lokiMaxLogLimit = 5000
+
+// IsLogQLProvider reports whether a log provider is queried in LogQL: Loki, and
+// the agent's ClickHouse (otel_clickhouse), whose LogQL services-server
+// translates. Provider name is normalised (trimmed + lowercased).
+func IsLogQLProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "loki", "otel_clickhouse":
+		return true
+	}
+	return false
+}
 
 // clampLogLimitForProvider returns the (possibly capped) limit + a flag that
 // indicates whether a clamp actually happened. Returns (limit, false) for
@@ -29,11 +41,8 @@ const lokiMaxLogLimit = 5000
 // Provider name is normalised (trimmed + lowercased) so accidental whitespace
 // in integration config doesn't bypass the clamp.
 func clampLogLimitForProvider(provider string, limit int) (int, bool) {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "loki":
-		if limit > lokiMaxLogLimit {
-			return lokiMaxLogLimit, true
-		}
+	if IsLogQLProvider(provider) && limit > lokiMaxLogLimit {
+		return lokiMaxLogLimit, true
 	}
 	return limit, false
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -580,6 +581,19 @@ func TestOtelClickhouseLogs_DisplayComesBackAsQuery(t *testing.T) {
 		{"set and negative regex", query.QueryWhereClause{Binary: bw{"namespace": ops{query.Eq: "p"}, "pod": ops{query.NotIn: []any{"a", "b"}, query.NRegex: "c.*"}}}, ""},
 		// BuildLokiQuery refuses this regex; the where-clause still runs.
 		{"unrenderable regex", query.QueryWhereClause{Binary: bw{"namespace": ops{query.Eq: "prod"}, "log": ops{query.Regex: "(a+)+"}}}, ""},
+		// LIKE is shown as the regex that matches the same rows (likeAsRegex).
+		{"line ilike", query.QueryWhereClause{Binary: bw{"namespace": ops{query.Eq: "prod"}, "log": ops{query.ILike: "%error%"}}}, `{namespace="prod"} |~ "(?i)error"`},
+		{"line like prefix", query.QueryWhereClause{Binary: bw{"namespace": ops{query.Eq: "prod"}, "log": ops{query.Like: "GET /api%"}}}, `{namespace="prod"} |~ "^GET /api"`},
+		{"line ilike dotted", query.QueryWhereClause{Binary: bw{"namespace": ops{query.Eq: "prod"}, "log": ops{query.ILike: "%conn.refused%"}}}, `{namespace="prod"} |~ "(?i)conn[.]refused"`},
+		{"line ilike inner wildcards", query.QueryWhereClause{Binary: bw{"namespace": ops{query.Eq: "prod"}, "log": ops{query.ILike: "%user_id=%ms"}}}, `{namespace="prod"} |~ "(?is)user.id=.*ms$"`},
+		{"line nlike", query.QueryWhereClause{Binary: bw{"namespace": ops{query.Eq: "prod"}, "log": ops{query.NLike: "%debug%"}}}, `{namespace="prod"} !~ "debug"`},
+		{"label like", query.QueryWhereClause{Binary: bw{"namespace": ops{query.Eq: "prod"}, "pod": ops{query.Like: "api-%"}}}, `{namespace="prod", pod=~"(?s)api-.*"}`},
+		{"label ilike only", query.QueryWhereClause{Binary: bw{"namespace": ops{query.ILike: "%shop%"}}}, `{namespace=~"(?is).*shop.*"}`},
+		{"two likes on one field", query.QueryWhereClause{Binary: bw{"namespace": ops{query.Eq: "prod"}, "pod": ops{query.Like: "a%", query.ILike: "%b"}}}, ""},
+		{"like beside regex", query.QueryWhereClause{Binary: bw{"namespace": ops{query.Eq: "prod"}, "pod": ops{query.Like: "a%", query.Regex: "b.*"}}}, ""},
+		{"line like only percent", query.QueryWhereClause{Binary: bw{"namespace": ops{query.Eq: "prod"}, "log": ops{query.Like: "%%"}}}, ""},
+		{"like with caret", query.QueryWhereClause{Binary: bw{"namespace": ops{query.Eq: "prod"}, "log": ops{query.ILike: "%^x%"}}}, ""},
+		{"like in an or", query.QueryWhereClause{Or: []query.QueryWhereClause{prod, {Binary: bw{"log": ops{query.ILike: "%error%"}}}}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := FetchLogRequest{AccountId: "acc", StartTime: otelLogsStartMs, EndTime: otelLogsEndMs, QueryRequest: LogsQueryBuilderRequest{Where: tc.where}}
@@ -595,8 +609,41 @@ func TestOtelClickhouseLogs_DisplayComesBackAsQuery(t *testing.T) {
 			_, err = s.QueryLogs(otelLogsCtx(), req)
 			require.NoError(t, err)
 			assert.Contains(t, f.lastSQL(), "AND (1)\n  AND (", "the where-clause runs alone")
+			if strings.Contains(tc.name, "ilike") {
+				assert.Contains(t, f.lastSQL(), " ILIKE ", "GetQuery leaves the where-clause that runs as it was")
+			}
 		})
 	}
+}
+
+func TestLikeRegex(t *testing.T) {
+	for _, tc := range []struct {
+		pattern    string
+		fold, line bool
+		want       string // "" when the pattern has no exact rewrite
+	}{
+		{"%error%", true, true, "(?i)error"},
+		{"error", false, true, "^error$"},
+		{"%a_b%c", false, true, "(?s)a.b.*c$"},
+		{"x%", false, false, "(?s)x.*"},
+		{"a.b+c*d?(e)[f]{g}|h$", false, false, "a[.]b[+]c[*]d[?][(]e[)][[]f[]][{]g[}][|]h[$]"},
+		{"%", false, true, ""},
+		{"%", false, false, "(?s).*"},
+		{`a\%b`, false, true, ""},
+		{`a"b`, false, true, ""},
+		{"^a", false, true, ""},
+	} {
+		got, ok := likeRegex(tc.pattern, tc.fold, tc.line)
+		assert.Equal(t, tc.want != "", ok, tc.pattern)
+		assert.Equal(t, tc.want, got, tc.pattern)
+		if ok {
+			_, err := regexp.Compile(got)
+			assert.NoError(t, err, tc.pattern)
+		}
+	}
+	// WhereCond refuses LIKE on level, so it is not rewritten.
+	_, _, ok := likeOpAsRegex("level", query.Like, "err%")
+	assert.False(t, ok)
 }
 
 // A record's own severity is trusted; without one (SeverityNumber 0) the level

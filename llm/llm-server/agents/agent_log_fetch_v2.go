@@ -581,7 +581,7 @@ func (a *FetchLogsAgent) generateCanonicalLogQueryAndExecute(ctx *security.Reque
 	if matched, reason := looksLikeFetchError(provider.Provider, logs); matched {
 		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", provider.Provider, reason)), jsonQuery, nil
 	}
-	if strings.EqualFold(provider.Provider, "loki") {
+	if tools.IsLogQLProvider(provider.Provider) {
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 	}
 	workspaceAccount := request.AccountId

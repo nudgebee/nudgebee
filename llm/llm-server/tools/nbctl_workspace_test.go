@@ -9,6 +9,8 @@ import (
 
 func TestNbctlProviderPart(t *testing.T) {
 	assert.Equal(t, "Its logs are in loki; write `nbctl logs` queries as LogQL.", nbctlProviderPart("logs", "loki", ""))
+	// The agent's ClickHouse is queried in LogQL with the same labels.
+	assert.Equal(t, "Its logs are in otel_clickhouse; write `nbctl logs` queries as LogQL.", nbctlProviderPart("logs", "otel_clickhouse", ""))
 	es := nbctlProviderPart("logs", "ES", "logs-*")
 	assert.True(t, strings.HasPrefix(es, "Its logs are in es (default index `logs-*`); write `nbctl logs` queries as a full Elasticsearch search body"), es)
 	assert.Contains(t, es, "list-labels --fields-only", "non-native providers are told how to find field names")

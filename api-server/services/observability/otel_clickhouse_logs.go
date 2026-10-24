@@ -82,12 +82,14 @@ func (s *OtelClickhouseLogSource) GetSupportedOperators() []string {
 // QueryLogs recognises its own display by string equality and then runs the
 // where-clause alone, so the display must be the same on every call.
 func (s *OtelClickhouseLogSource) GetQuery(ctx *security.RequestContext, req FetchLogRequest) (string, error) {
-	if !lokiRendersExactly(req.QueryRequest.Where) {
+	qr := req.QueryRequest
+	qr.Where = likeAsRegex(qr.Where)
+	if !lokiRendersExactly(qr.Where) {
 		return "", nil
 	}
 	// A where-clause BuildLokiQuery cannot render (a regex it judges unsafe)
 	// still runs, compiled by WhereCond; it just has no LogQL form.
-	q, err := (&LokiSource{}).BuildLokiQuery(req.QueryRequest)
+	q, err := (&LokiSource{}).BuildLokiQuery(qr)
 	if err != nil {
 		return "", nil
 	}
@@ -184,6 +186,123 @@ func lokiRendersExactly(w query.QueryWhereClause) bool {
 		}
 	}
 	return true
+}
+
+// likeAsRegex returns a copy of w with each _like, _ilike and _nlike rewritten
+// as the _regex or _nregex that selects the same rows, so GetQuery can show
+// them as LogQL (BuildLokiQuery's own LIKE rendering does not match a line
+// holding a newline, which a line joined from split lines does). ClickHouse's
+// LIKE is RE2 over the whole value with . matching a newline, and ILIKE is the
+// same case-insensitively. A pattern it cannot rewrite exactly is left as it
+// is, for lokiRendersExactly to turn down. w itself is not changed: WhereCond
+// still runs the LIKE.
+func likeAsRegex(w query.QueryWhereClause) query.QueryWhereClause {
+	out := query.QueryWhereClause{}
+	if w.Binary != nil {
+		out.Binary = query.BinaryWhereClause{}
+		for field, ops := range w.Binary {
+			// When the regex operator is already taken (two LIKEs, or a LIKE
+			// beside a _regex), the LIKE stays and the field has no LogQL form.
+			rewritten := maps.Clone(ops)
+			for op, v := range ops {
+				to, re, ok := likeOpAsRegex(field, op, v)
+				if _, taken := rewritten[to]; !ok || taken {
+					continue
+				}
+				delete(rewritten, op)
+				rewritten[to] = re
+			}
+			out.Binary[field] = rewritten
+		}
+	}
+	for _, c := range w.And {
+		out.And = append(out.And, likeAsRegex(c))
+	}
+	for _, c := range w.Or {
+		out.Or = append(out.Or, likeAsRegex(c))
+	}
+	if w.Not != nil {
+		n := likeAsRegex(*w.Not)
+		out.Not = &n
+	}
+	return out
+}
+
+// likeOpAsRegex rewrites one LIKE operator. A line filter (|~) matches
+// anywhere in the line, so a leading or trailing % is dropped instead of
+// anchoring; a label matcher (=~) matches the whole value, so it keeps them.
+// level is left alone: WhereCond refuses LIKE on it.
+func likeOpAsRegex(field string, op query.BinaryWhereClauseType, v any) (query.BinaryWhereClauseType, string, bool) {
+	var to query.BinaryWhereClauseType
+	switch op {
+	case query.Like, query.ILike:
+		to = query.Regex
+	case query.NLike:
+		to = query.NRegex
+	default:
+		return "", "", false
+	}
+	pattern, isString := v.(string)
+	if !isString || field == "level" {
+		return "", "", false
+	}
+	re, ok := likeRegex(pattern, op == query.ILike, field == "log")
+	return to, re, ok
+}
+
+// likeRegex returns the RE2 pattern that matches what the LIKE pattern p does.
+// Metacharacters are escaped as one-character classes ([.]), because a
+// backslash does not survive BuildLokiQuery. It refuses a pattern holding a
+// backslash (LIKE's escape character), a quote, or ^ (which has no class form
+// without one), and a line pattern that is only %.
+func likeRegex(p string, fold, line bool) (string, bool) {
+	if strings.ContainsAny(p, `\"^`) {
+		return "", false
+	}
+	anchorStart, anchorEnd := true, true
+	if line {
+		trimmed := strings.TrimLeft(p, "%")
+		anchorStart = trimmed == p
+		p = strings.TrimRight(trimmed, "%")
+		anchorEnd = len(p) == len(trimmed)
+		if p == "" {
+			return "", false
+		}
+	}
+	var b strings.Builder
+	dot := false
+	for _, r := range p {
+		switch r {
+		case '%':
+			b.WriteString(".*")
+			dot = true
+		case '_':
+			b.WriteString(".")
+			dot = true
+		case '.', '+', '*', '?', '(', ')', '[', ']', '{', '}', '|', '$':
+			b.WriteString("[" + string(r) + "]")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	re := b.String()
+	if line && anchorStart {
+		re = "^" + re
+	}
+	if line && anchorEnd {
+		re += "$"
+	}
+	flags := ""
+	if fold {
+		flags += "i"
+	}
+	if dot {
+		flags += "s"
+	}
+	if flags != "" {
+		re = "(?" + flags + ")" + re
+	}
+	return re, true
 }
 
 func emptyList(v any) bool {

@@ -87,6 +87,7 @@ func NbctlAccountProviders(accountId string) NbctlProviders {
 // lower-cased). Pairs not listed get "that provider's own query language".
 var nbctlQueryLanguages = map[string]string{
 	"logs:loki":              "LogQL",
+	"logs:otel_clickhouse":   "LogQL",
 	"logs:es":                "a full Elasticsearch search body (Query DSL) such as `{\"query\":{\"bool\":{\"filter\":[...]}}}`; for counts set `\"size\":0` with a terms or date_histogram aggregation, which `-o json` returns as `series`",
 	"logs:splunk_enterprise": "SPL",
 	"logs:signoz":            "SigNoz query JSON",
@@ -120,7 +121,8 @@ var nbctlServedProviders = map[string]bool{
 	"logs:azure_app_insights": true, "logs:aws_cloudwatch": true, "logs:es": true, "logs:newrelic": true,
 	"logs:splunk_observability_platform": true, "logs:dynatrace": true, "logs:solarwinds": true, "logs:pinot": true,
 	"logs:hive": true, "logs:openobserve": true, "logs:splunk_enterprise": true, "logs:cubeapm": true,
-	"metrics:prometheus": true, "metrics:es": true, "metrics:aws_cloudwatch": true, "metrics:azure_app_insights": true,
+	"logs:otel_clickhouse": true,
+	"metrics:prometheus":   true, "metrics:es": true, "metrics:aws_cloudwatch": true, "metrics:azure_app_insights": true,
 	"metrics:chronosphere": true, "metrics:cubeapm": true, "metrics:datadog": true, "metrics:dynatrace": true,
 	"metrics:newrelic": true, "metrics:openobserve": true, "metrics:solarwinds": true, "metrics:splunk_enterprise": true,
 	"metrics:splunk_observability_platform": true,
@@ -143,7 +145,7 @@ func nbctlProviderPart(group, provider, index string) string {
 		language = "that provider's own query language"
 	}
 	part += "; write `nbctl " + group + "` queries as " + language + "."
-	if provider != "loki" && provider != "prometheus" {
+	if !IsLogQLProvider(provider) && provider != "prometheus" {
 		// The raw query needs the provider's own field names. list-labels mixes
 		// in Nudgebee's short aliases (message, pod, level), which the raw query
 		// does not know, so the reliable source is one fetched record.

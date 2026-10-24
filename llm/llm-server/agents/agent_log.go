@@ -599,7 +599,7 @@ func (a *FetchLogsAgent) executeCanonicalQueryDirect(ctx *security.RequestContex
 	if matched, reason := looksLikeFetchError(provider.Provider, logs); matched {
 		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", provider.Provider, reason)), jsonQuery, nil
 	}
-	if strings.EqualFold(provider.Provider, "loki") {
+	if tools.IsLogQLProvider(provider.Provider) {
 		stepStart = time.Now()
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 		ctx.GetLogger().Info("fetch_logs_direct: step unwrapLokiInnerTimestamps done", "duration", time.Since(stepStart).String())

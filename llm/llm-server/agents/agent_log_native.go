@@ -38,6 +38,11 @@ var explicitLogEndAnchorRE = regexp.MustCompile(`(?i)\b(?:end(?:s|ed|ing)?\s+(?:
 
 func generateLogQueryPlan(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider, fields []string, indices map[string]string) (logQueryPlan, error) {
 	canonicalRules := buildCanonicalLogQueryPromptV3(provider, fields, indices)
+	nativeSyntax := fmt.Sprintf("the native query syntax accepted by provider %q", provider.Provider)
+	if tools.IsLogQLProvider(provider.Provider) {
+		// otel_clickhouse's native language is LogQL too, not ClickHouse SQL.
+		nativeSyntax = "LogQL"
+	}
 	prompt := fmt.Sprintf(`Generate exactly one executable log-query plan for the already-resolved provider %q.
 
 Inspect the complete user request and knowledge reference yourself. Choose native only when they contain a complete provider-native query or an applicable native template that can be completed from concrete values in the request or context. Preserve a complete user-supplied query exactly. If a template is unrelated or cannot be completed safely, choose canonical.
@@ -52,7 +57,7 @@ Return JSON only in exactly one of these forms:
 {"query_type":"canonical","canonical_query":{"where":{},"time_range":"1h","limit":1000}}
 
 Native requirements:
-- The query must use the native query syntax accepted by provider %q.
+- The query must use %s.
 - Preserve fixed selectors, clauses, operators, fields, indices, and literals from an applicable query or template.
 - Never put provider-independent canonical JSON in native.query.
 - If any native placeholder cannot be resolved, return canonical instead.
@@ -61,7 +66,7 @@ Native requirements:
 Canonical requirements:
 %s
 
-Ignore the canonical rules' standalone-output formatting instruction. The final response must use one wrapper object above, without markdown fences.`, provider.Provider, provider.Provider, canonicalRules)
+Ignore the canonical rules' standalone-output formatting instruction. The final response must use one wrapper object above, without markdown fences.`, provider.Provider, nativeSyntax, canonicalRules)
 
 	human := fmt.Sprintf("<knowledge_reference>\n%s\n</knowledge_reference>\n\n<user_request>\n%s\n</user_request>",
 		strings.TrimSpace(request.KBPrestepContent), request.Query)
@@ -179,7 +184,7 @@ func (a *FetchLogsAgent) executeNativeQueryDirect(ctx *security.RequestContext, 
 	if matched, reason := looksLikeFetchError(provider.Provider, logs); matched {
 		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", provider.Provider, reason)), nil
 	}
-	if strings.EqualFold(provider.Provider, "loki") {
+	if tools.IsLogQLProvider(provider.Provider) {
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 	}
 	workspaceAccount := request.AccountId

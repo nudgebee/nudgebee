@@ -155,11 +155,9 @@ func (l *LogQueryAgent) Execute(ctx *security.RequestContext, request core.NBAge
 	if err != nil {
 		return errorResponse(l.GetName(), fmt.Errorf("logs_get_query: %w", err)), nil
 	}
-	if query == "" {
-		// services-server returned no query text (e.g. a provider whose GetQuery
-		// implementation has nothing to preview) — fall back to the canonical
-		// JSON so the caller still sees something rather than an empty string.
-		query = jsonQuery
+	query, err = previewOrCanonical(l.provider.Provider, query, jsonQuery)
+	if err != nil {
+		return errorResponse(l.GetName(), err), nil
 	}
 
 	result := logQueryResult{
@@ -177,6 +175,23 @@ func (l *LogQueryAgent) Execute(ctx *security.RequestContext, request core.NBAge
 		Response:  []string{string(data)},
 		Status:    core.ConversationStatusCompleted,
 	}, nil
+}
+
+// previewOrCanonical picks the query text the editor gets. When services-server
+// returned no query text (e.g. a provider whose GetQuery implementation has
+// nothing to preview) it falls back to the canonical JSON, so the caller still
+// sees something rather than an empty string — except for a LogQL provider,
+// whose Code-mode editor runs only LogQL: otel_clickhouse previews a filter
+// only when the LogQL selects the same lines, so an empty preview means the
+// filter has no such form, and the JSON would fail as LogQL.
+func previewOrCanonical(provider, preview, jsonQuery string) (string, error) {
+	if preview != "" {
+		return preview, nil
+	}
+	if tools.IsLogQLProvider(provider) {
+		return "", fmt.Errorf("the generated filter %s cannot be written as LogQL that selects the same lines (for example an OR across fields, a NOT, or a value with a quote or backslash); run it in Builder mode, or ask for a narrower query", jsonQuery)
+	}
+	return jsonQuery, nil
 }
 
 // effectiveIndex resolves which Elasticsearch index the query is generated

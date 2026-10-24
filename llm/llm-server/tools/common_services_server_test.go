@@ -66,6 +66,13 @@ func TestClampLogLimitForProvider(t *testing.T) {
 			wantClamped: true,
 		},
 		{
+			name:        "otel_clickhouse above cap — clamps to the translator's cap",
+			provider:    "otel_clickhouse",
+			requested:   10000,
+			wantLimit:   lokiMaxLogLimit,
+			wantClamped: true,
+		},
+		{
 			name:        "unknown provider — passes through unchanged, no warning fires",
 			provider:    "elasticsearch",
 			requested:   10000,

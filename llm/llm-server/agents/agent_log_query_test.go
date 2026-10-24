@@ -11,6 +11,25 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// A LogQL provider's Code-mode editor runs only LogQL, so a filter
+// services-server cannot preview as LogQL is an error there, not JSON in the
+// editor; other providers still get the canonical JSON.
+func TestPreviewOrCanonical(t *testing.T) {
+	const jsonQuery = `{"where":{"_or":[{"namespace":{"_eq":"a"}},{"pod":{"_eq":"b"}}]}}`
+
+	q, err := previewOrCanonical("otel_clickhouse", `{namespace="a"}`, jsonQuery)
+	assert.NoError(t, err)
+	assert.Equal(t, `{namespace="a"}`, q)
+
+	_, err = previewOrCanonical("otel_clickhouse", "", jsonQuery)
+	assert.ErrorContains(t, err, "cannot be written as LogQL")
+	assert.ErrorContains(t, err, jsonQuery, "the error shows the filter that was generated")
+
+	q, err = previewOrCanonical("pinot", "", jsonQuery)
+	assert.NoError(t, err)
+	assert.Equal(t, jsonQuery, q)
+}
+
 // TestLogQueryAgent_GetPlannerType covers the NBCustomAgent wiring: Execute is
 // only invoked by the executor when GetPlannerType reports Custom.
 func TestLogQueryAgent_GetPlannerType(t *testing.T) {
